@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/instrument-contract.json",
+  "title": "Instrument contract",
+  "description": "Registration of an instrument before it may produce receipts (docs/design/m0/06 \"Instrument contracts\"). Cross-field rules (no predicate both required and optional, artifact names used by receipts) belong to internal/receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "version", "digest", "subject_type", "required_predicates", "optional_predicates", "preconditions", "payload_schema", "artifact_classes"],
+  "properties": {
+    "name": {"$ref": "receipt.json#/$defs/Name"},
+    "version": {"type": "string", "minLength": 1},
+    "digest": {
+      "description": "Hash of the code and configuration that produce receipts.",
+      "$ref": "../common/defs.json#/$defs/Digest"
+    },
+    "subject_type": {"enum": ["tree", "proposal", "object_revision", "environment", "call"]},
+    "required_predicates": {
+      "description": "The coverage a complete receipt must have.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "evidence_required"],
+        "properties": {
+          "name": {"$ref": "receipt.json#/$defs/Name"},
+          "evidence_required": {"type": "array", "uniqueItems": true, "items": {"$ref": "receipt.json#/$defs/MediaType"}}
+        }
+      }
+    },
+    "optional_predicates": {"type": "array", "uniqueItems": true, "items": {"$ref": "receipt.json#/$defs/Name"}},
+    "preconditions": {
+      "description": "Environment checks before each run (12); a failure is a precondition_failed hold, not a spent attempt.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "receipt.json#/$defs/Name"}
+    },
+    "payload_schema": {
+      "description": "Digest of the JSON Schema for typed predicate fields (rule 7), stored as a blob.",
+      "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]
+    },
+    "artifact_classes": {
+      "type": "object",
+      "propertyNames": {"$ref": "receipt.json#/$defs/Name"},
+      "additionalProperties": {"enum": ["diagnostic", "restricted"]}
+    }
+  }
+}

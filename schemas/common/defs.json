@@ -64,6 +64,7 @@
     "ResourceGroupID": {"$ref": "#/$defs/TypeID", "pattern": "^rg_"},
     "MeasurementID": {"$ref": "#/$defs/TypeID", "pattern": "^msr_"},
     "NodeID": {"$ref": "#/$defs/TypeID", "pattern": "^nod_"},
-    "ResultID": {"$ref": "#/$defs/TypeID", "pattern": "^res_"}
+    "ResultID": {"$ref": "#/$defs/TypeID", "pattern": "^res_"},
+    "CommandID": {"$ref": "#/$defs/TypeID", "pattern": "^cmd_"}
   }
 }

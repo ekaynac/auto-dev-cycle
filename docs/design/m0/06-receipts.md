@@ -18,8 +18,8 @@ InstrumentContract:
     - name: string
       evidence_required: [media_type]   # e.g. application/junit+xml
   optional_predicates: [name]
-  preconditions: [predicate]        # environment checks before each run (12); failure = precondition_failed hold, not a spent attempt
-  payload_schema: schema_ref        # typed predicate fields (rule 7)
+  preconditions: [name]             # environment checks before each run (12); failure = precondition_failed hold, not a spent attempt
+  payload_schema: sha256:…|null     # blob digest of the JSON Schema for typed predicate fields (rule 7)
   artifact_classes: {name: diagnostic|restricted}
 ```
 
@@ -39,7 +39,7 @@ Receipt:
     # call:            {call: cal_…}
     demand: {key: sha256:…, run: run_…}|null   # controller-bound evidence demand (12) and the run that produced it [PR5-2]
   provenance:                       # recorded by the controller, never by the producer [M8]
-    command: …
+    command: cmd_…                  # the accepted command (03 `commands`)
     attempt: att_…|null
     calls: [cal_…]                  # model calls that contributed
     model_families: [family]        # derived from the calls' leased executors and verified routing
@@ -50,11 +50,13 @@ Receipt:
     - name: string
       outcome: found|empty|could_not_run|failed
       reason: reason_code
-      evidence: [{blob: sha256:…, media_type}]
+      evidence: [{blob: sha256:…, media_type, artifact}]   # artifact: a name in the instrument's artifact_classes (rule 7)
+      payload: {…}                  # typed facts, validated against the instrument's payload_schema (rule 7)
   outcome: found|empty|could_not_run|failed     # derived (below), never accepted from the producer
   reason: reason_code
   detail: string
   verdict: go|no_go|null            # review receipts only; derived (below)
+  conclusions_digest: sha256:…      # derived; rule 2a
   supersedes: rcp_…|null
 ```
 
