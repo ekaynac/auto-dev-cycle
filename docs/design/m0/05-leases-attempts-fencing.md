@@ -21,8 +21,8 @@ ResourceGroup:
 
 - **Rate windows and credit balances are separate groups** (`account_quota` vs `broker_balance`). A provider can have
   rate headroom and no credit, or the reverse (nöbetçi Δ§4: a rate-window check passed on an account with no credit).
-- **A lease on a `broker_balance` group requires a fresh balance probe** (within the group's probe TTL) showing at
-  least the reservation. Otherwise the lease waits on `broker_credit_exhausted` (02).
+- **A lease on a `broker_balance` group is admitted by the ledger's affordability rule** (below, `inputs_applicable` /
+  broker affordability). Otherwise it waits on `broker_credit_exhausted` (02).
 
 ## Lease
 
@@ -41,9 +41,17 @@ Lease:
 ```
 
 - **`inputs_applicable`** (nöbetçi Δ§13): a lease for a role that consumes evidence (reviewer, phase reviewer) is granted
-  only when every input the role requires is applicable to the exact candidate tree: gate results, receipts, answered
-  owed inputs. If one is missing, the controller schedules its producer first (`inputs_not_applicable` hold) and never
-  sends the reviewer an inapplicable or missing input.
+  only when every input the role requires is applicable to the exact candidate tree (checked by `internal/receipt`).
+  Placement returns **the missing dependency's canonical hold and signal** [PR5-8]:
+  - a missing gate result or receipt → `inputs_not_applicable` (signal: receipt), and its producer is scheduled;
+  - an unanswered owed input → `awaiting_input` (signal: the answering approval);
+  - an excluded evidence target → `evidence_restore_pending`.
+
+  The reviewer never receives an inapplicable or missing input.
+- **Broker affordability goes through the ledger** [PR5-10]: a `broker_balance` reservation is admitted only if
+  (latest probed balance − outstanding reservations − uncertain liabilities) ≥ the reservation, with the probe within
+  its TTL. A stale or unknown balance means wait (`broker_credit_exhausted` with a probe signal), never "assume
+  affordable".
 - **`fallback_scope`** (nöbetçi Δ§4): a fallback step is allowed only if the role's chain entry is authorised for this
   **role and mode** (e.g. "learning digest" ≠ "phase review"). The check runs in the placement path, not only in a
   record. Moving to another family re-runs `independence`.

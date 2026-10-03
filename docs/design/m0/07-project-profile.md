@@ -46,10 +46,12 @@ gate:
         network: none|loopback|full
         runtime: {language_version, os, arch}
       owner: string                 # who fixes environment faults (wrong_owner holds)
-  ownership_rules: default          # gate-output classification: a setup/teardown error in a test file the candidate
-                                    # added or changed, with a traceback through that file and a fully accounted error
-                                    # count, is a builder repair; collection errors, untouched files, count mismatches and
-                                    # an unknown base are runner/environment faults (a hold)
+  ownership_rules: default          # gate-output classification (nöbetçi Δ§7): an ERROR is candidate-owned (builder
+                                    # repair) only if ALL hold: a test node in a file the candidate added or changed vs
+                                    # the merge-base; setup/teardown section; traceback passes through that file; NOT an
+                                    # import error raised outside the changed files [PR5-9]; the error count is fully
+                                    # accounted. Collection errors, untouched files, count mismatches, external import
+                                    # errors and an unknown base are runner/environment faults (a hold)
 integration:                        # phase 3; topology is controller-owned (A2)
   plugin: none | docker-compose
   topology:                         # pinned; changed only by integration.change_topology (04) [M12]

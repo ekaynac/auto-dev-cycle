@@ -323,10 +323,22 @@ fingerprint too. Evidence production follows the evidence-job lifecycle (`m0/12`
 
 **Strict options** (nöbetçi Δ§10; off by default; one gate code path, never a second gate). A project may enable,
 per phase:
-- **Reviewer pair:** two reviewers of **different vendors/families** on the identical packet, each in a fresh
-  session. Deterministic merge: both pass → pass; any fail → block; one missing → contested, needing one
-  refutation call with passing test ids, else a repair. A vendor at its limit is **waited for** (bounded, then
-  paged), never replaced by a second session of the other family.
+- **Reviewer pair** [PR5-4]: two reviewers of different vendors/families on the identical packet, each in a fresh
+  session.
+  - **Precondition:** two complete, applicable review receipts, each satisfying the independence rule (`m0/06`
+    rule 3) against every contributor. An unavailable member is **waited for** (bounded, then paged) and never
+    replaced by a second session of the other family. A refutation never stands in for a missing member.
+  - **Claim-level merge:**
+
+    | Member A | Member B | Result |
+    |---|---|---|
+    | pass | pass | pass |
+    | fail | any | block (repair) |
+    | pass | missing (no conclusion on this claim) | contested: one refutation call by the missing side's member, with passing test ids or the claim's proof receipt; unrefuted → pass, refuted or no answer → repair |
+    | missing | missing | repair |
+
+  - **Receipt-only claims** (`proof_receipts`) pass only on their applicable receipt. Reviewers can block them
+    but cannot pass them without it.
 - **`test_ids` required:** every pass row names test ids, checked by the controller against the per-test results
   for this tree. Unknown or failed → missing; unreadable results → hold.
 - **`proof_receipts`:** a claim provable only by a receipt declares it, so it can pass on that receipt.

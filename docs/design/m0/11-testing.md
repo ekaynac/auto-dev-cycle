@@ -119,7 +119,15 @@ golden file names:
   - a 402 mid-call with an applied candidate is sealed, never "no changes";
   - a fallback outside its role/mode scope is refused;
   - a review lease is refused while its gate results are for another tree;
-  - an amended line introducing a new identity is refused;
+  - an answer approval that does not bind the owed input's revision is refused; a ruling cannot satisfy a receipt input;
+  - a receipt for another demand with identical conclusions does not apply;
+  - a crash between evidence collection and cleanup leaves no applicable receipt; a new job on an excluded target is refused; a late result from a superseded run is refused;
+  - total-cap exhaustion across demands;
+  - an unchanged `conclusions_digest` does not trigger re-review; a changed step outcome or changed restrictions do;
+  - strict pair: an unavailable member holds (no refutation substitute); the contested path with and without refutation; a receipt-only claim cannot pass on reviewer text;
+  - broker affordability with outstanding reservations and uncertain liabilities; a stale or unknown balance waits;
+  - an import error outside the changed files that passes through a changed test file stays a runner fault;
+  - a missing answer yields `awaiting_input` and recovers on the answering approval without a manual release; a precondition failure recovers on its probe;
   - an acceptance row not producible by its owner is refused by the plan validator (M5).
 
 ## Red-proof rule [M15]

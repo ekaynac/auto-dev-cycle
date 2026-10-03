@@ -123,6 +123,8 @@ roughly time-sortable, but the event store's `seq` is the authoritative order. E
 | `chl` | confirmation challenge (04) |
 | `own` | owed input (04) |
 | `ejb` | evidence job (12) |
+| `run` | evidence run (12) |
+| `tgt` | evidence target (12) |
 
 Ids are minted by the controller only. Adapters and agents never mint authoritative ids.
 

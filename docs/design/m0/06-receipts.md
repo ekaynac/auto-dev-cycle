@@ -18,7 +18,9 @@ InstrumentContract:
     - name: string
       evidence_required: [media_type]   # e.g. application/junit+xml
   optional_predicates: [name]
-  preconditions: [predicate]        # environment checks before each run (12); failure = wrong_owner hold, not a spent attempt
+  preconditions: [predicate]        # environment checks before each run (12); failure = precondition_failed hold, not a spent attempt
+  payload_schema: schema_ref        # typed predicate fields (rule 7)
+  artifact_classes: {name: diagnostic|restricted}
 ```
 
 ## Envelope
@@ -35,6 +37,7 @@ Receipt:
     # object_revision: {object: {type, id, version, digest}}
     # environment:     {identity: sha256:…, description}
     # call:            {call: cal_…}
+    demand: {key: sha256:…, run: run_…}|null   # controller-bound evidence demand (12) and the run that produced it [PR5-2]
   provenance:                       # recorded by the controller, never by the producer [M8]
     command: …
     attempt: att_…|null
@@ -73,8 +76,20 @@ Receipt:
    names an instrument. An instrument upgrade turns dependent requirements into `could_not_run/instrument_changed`,
    to be re-run, never silently orphaned.
 2. **Applicability is separate from validity** (KA4). A valid receipt applies only to a decision about the same typed
-   subject. For tree subjects, tree, environment identity and contract revision must all match. For merge, the subject
-   that counts is the merge queue's final tree (A5).
+   subject **and the same demand**. For tree subjects, tree, environment identity and contract revision must all
+   match. For merge, the subject that counts is the merge queue's final tree (A5). When a requirement names a demand
+   key, a receipt for another demand never applies, even with identical conclusions [PR5-2]. `internal/receipt` is the
+   **only** applicability checker; evidence jobs, the gate and placement call it.
+2a. **Evidence equivalence is not identity** [PR5-5]. Fingerprints (10) stay exact: a new receipt is a new input. Whether
+   a review must run again is a separate, semantic decision. Each receipt carries a `conclusions_digest` over its typed
+   conclusions:
+   - the demand key;
+   - each predicate's outcome and reason;
+   - per-step outcomes where the instrument declares steps;
+   - the restrictions.
+
+   A new receipt whose `conclusions_digest` equals the one the reviewer already saw does not by itself require a new
+   review. A changed step outcome or changed restrictions do.
 3. **Independence is mechanical.** An independent-review requirement is satisfied only if the receipt's
    `provenance.model_families` is disjoint from the families of the proposer and of every contributor to the subject.
    **Unknown family means not independent:** it blocks.
@@ -84,9 +99,15 @@ Receipt:
    refuses while any artifact named in the receipt is missing.
 6. **Proof keyed by content.** Requirements reference receipts by typed subject + instrument digest. Identity never
    includes timestamps or live counters.
-7. **Typed facts, not content** (nöbetçi Δ§8). Predicate evidence is typed facts: exit codes, digests, byte counts,
-   versions, counts. Free text enters a receipt only as a digest, and is never passed into prompts or the journal (12
-   "Receipt content policy").
+7. **Typed predicates; declared artifact classes** (nöbetçi Δ§8, refined by [PR5-6]).
+   - Predicate fields are typed facts (exit codes, digests, byte counts, versions, counts), validated by a payload
+     schema the instrument declares.
+   - Artifacts carry a class declared by the instrument:
+     - `diagnostic` (test output, tracebacks, build logs) may be delivered to builders and reviewers as usual;
+     - `restricted` (output from live systems, production data, remote stderr) is never delivered into prompts or the
+       journal and is kept only under its retention scope.
+
+   Delivery restrictions are enforced at assembly (10) by artifact class.
 8. **Missing evidence never passes.** A required receipt that is absent, stale, incomplete, inapplicable or
    `could_not_run` blocks the dependent decision.
 

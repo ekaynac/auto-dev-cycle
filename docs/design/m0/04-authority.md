@@ -113,10 +113,19 @@ Approval:
 - When a reviewer or an evidence requirement needs something only an outside party can give (a ruling, lab data, a
   named identity), it records an **owed input**: `{id: own_…, requested_by, kind: ruling|data|receipt, question,
   subject}`. The dependent work holds on `awaiting_input`.
-- An approval that answers it names the id in `answers`. The answer becomes an input of the next review's fingerprint
-  (10), so a new answer re-keys the review. A review never receives rulings for inputs it did not owe (no leakage from
-  other phases).
-- Every packet builder takes rulings from one collector, `authority.Answers(owed_ids)`.
+- Answering is its own action, `input.answer` [PR5-1]:
+  - its scope carries `{owed_input: own_…, owed_revision, answer: typed payload}`;
+  - `answers` is derived from the scope, so both are inside the action's binding digest (and the proposal digest when
+    confirmation applies);
+  - authority validates, in the writer transaction, that the responder may answer this kind for this project, that the
+    owed input's subject and revision still match, and that the owed input is still open.
+
+  An approval that merely mentions an id answers nothing.
+- **Kinds are not interchangeable.** A `ruling` or `data` input can be answered by an approval. A `receipt` input
+  (execution evidence) can be satisfied **only** by an applicable receipt (06), never by a ruling.
+- The answer becomes an input of the next review's fingerprint (10), so a new answer re-keys the review. A review never
+  receives answers for inputs it did not owe.
+- Every packet builder takes answers from one collector, `authority.Answers(owed_ids)`.
 
 - **Transactional and idempotent** (03).
 - **Precedence:** a revocation or narrower scope always wins over an earlier, wider one. Conflicting approvals in force
@@ -183,8 +192,9 @@ Two narrow, separately registered actions. Both:
   content, the action is refused, and the change must go through the dedicated widening action with its own
   confirmation;
 - cannot approve their own adoption: the approval precedes and references the candidate, never sits inside it;
-- **may not introduce a new identity** (task, finding, actor or grant id) that the old content did not name. Identity
-  and authority change only through their own actions (nöbetçi Δ§11: "no authority rides in on prose");
+- **do not grant authority through prose.** Authority never derives from document text: ids named in prose are
+  references, not grants. Authoritative identity references (which tasks, findings or grants exist and what they
+  allow) change only through their typed actions. There is no lexical ban on naming ids in documents [PR5-7];
 - the approval UI and CLI render the **exact bytes** being approved (old → new diff), so humans approve bytes, not
   intent.
 
