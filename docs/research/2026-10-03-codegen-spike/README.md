@@ -35,18 +35,23 @@ until the vocabulary PR settles it.
 
 ## Results
 
-`cases.json`: 50 instances (18 valid, 32 invalid). They cover every union variant, both branches of every nullable,
-invalid nullables, the keyed union's neither and both forms, numeric bounds, duplicate items, scope dispatch, typed-map
-keys and values, and the array-or-literal forms. **Adequacy is measured, not claimed.** The Go harness recompiles the
-schemas with one keyword removed everywhere, for each of 13 keywords (`additionalProperties`,
-`unevaluatedProperties`, `required`, `const`, `enum`, `pattern`, `minimum`, `maximum`, `uniqueItems`, `minItems`,
-`propertyNames`, `allOf`, `oneOf`). Each removal flips at least one case. "50/50" is about validation of these
-instances; it says nothing about keywords the schemas don't use.
+`cases.json`: 64 instances (24 valid, 40 invalid). They cover:
+- every union variant;
+- **both branches of every nullable field** (null and a valid value), plus an invalid value for each;
+- the keyed union's neither and both forms;
+- numeric bounds, including every integer at and above 2^53−1;
+- duplicate items, scope dispatch, typed-map keys and values, and the array-or-literal forms.
+
+**Adequacy is measured, not claimed, for global keyword deletions.** The Go harness recompiles the schemas with one
+keyword removed everywhere, for each of 13 keywords (`additionalProperties`, `unevaluatedProperties`, `required`,
+`const`, `enum`, `pattern`, `minimum`, `maximum`, `uniqueItems`, `minItems`, `propertyNames`, `allOf`, `oneOf`). Each
+deletion flips at least one case. That detects the listed global deletions; per-occurrence coverage rests on the
+case list above. "64/64" is about validation of these instances; it says nothing about keywords the schemas don't use.
 
 | Tool (version) | Side | Result |
 |---|---|---|
-| `santhosh-tekuri/jsonschema/v6` v6.0.3 | Go validation | **50/50**, and all 13 mutations detected |
-| Ajv 8.20.0, 2020 dialect, standalone | TS validation | **50/50**. Strict compilation needs the `x-adc-open-payload` annotation registered |
+| `santhosh-tekuri/jsonschema/v6` v6.0.3 | Go validation | **64/64**, and all 13 global deletions detected |
+| Ajv 8.20.0, 2020 dialect, standalone | TS validation | **64/64**. Strict compilation needs the `x-adc-open-payload` annotation registered |
 | `json-schema-to-typescript` 16.0.0 + TypeScript 7.0.2 | TS types | **Faithful** under `types-check.ts`, 8 negative assertions plus narrowing (below) |
 | `atombender/go-jsonschema` v0.24.1 | Go types | **Fails:** `type Subject interface{}`, `type Demand interface{}`, `Verdict interface{}`, `Head interface{}`, and the `const` discriminators `Type interface{}` |
 | quicktype 26.0.0 | Go types | **Fails:** the event union becomes one struct with every variant field optional, and the `allOf` envelope (`attempt`, `fencing_token`, `call`) is missing entirely |
@@ -59,9 +64,18 @@ TS type assertions (`ts/types-check.ts`, `tsc` strict):
 
 Making any of them valid makes `tsc` fail; that was checked by flipping one.
 
-**TS limitation found:** json-schema-to-typescript ignores `if/then`, so `Approval.scope` is typed as an open map.
-The per-action scope types are still emitted (`unreachableDefinitions: true`) and validated by Ajv, and step 2b adds
-typed accessors. **Ajv side finding:** strict mode caught a real defect in the first event schema draft: object
+**TS limitations: accepted, and enforced by validation, not by types.** Three things compile in TypeScript although
+Ajv rejects the documents. `types-check.ts` records each one as a probe that compiles on purpose, so a change in either
+direction shows:
+1. json-schema-to-typescript ignores `if/then`, so `Approval.scope` is typed as an open map. The per-action scope
+   types are still emitted (`unreachableDefinitions: true`).
+2. The keyed `expected_state` union does not exclude the other key (`{version, digest}` compiles).
+3. Generated event types carry an open index signature, so another variant's field compiles.
+
+TypeScript in this project only produces and consumes documents through the Ajv validators, so these gaps never reach
+the wire. The Go types exclude all three: typed accessors, one pointer per key, and closed structs.
+
+**Ajv side finding:** strict mode caught a real defect in the first event schema draft: object
 keywords without `"type": "object"`, and a `required` name defined only in the branches. Strict compilation stays
 on as a schema lint.
 
@@ -117,15 +131,15 @@ The conclusion is limited to the candidates tested. Among them, **no Go type gen
 From a scratch copy of this directory (the commands create `package.json` and `go.mod`):
 
 ```sh
-# TypeScript: types, validators, 50 cases, type assertions
+# TypeScript: types, validators, 64 cases, type assertions
 cd ts && pnpm add json-schema-to-typescript@16.0.0 ajv@8.20.0 typescript@7.0.2 && node spike.mjs && npx tsc -p .
-# Go: 50 cases + 13 keyword mutations
+# Go: 64 cases + 13 global keyword deletions
 cd ../go && go mod init spike && go get github.com/santhosh-tekuri/jsonschema/v6@v6.0.3 && go run spike.go
 # Rejected Go generators
 go install github.com/atombender/go-jsonschema@v0.24.1
 go-jsonschema -p gen -t ../schemas/records/receipt.json -o /tmp/receipt.go    # grep 'interface{}'
 npx quicktype@26.0.0 --src-lang schema --lang go --package gen --just-types-and-package \
-  --additional-schema ../schemas/common/defs.json ../schemas/adapter/event.json   # no attempt/fencing_token/call
+  --additional-schema ../schemas/common/defs.json --src ../schemas/adapter/event.json   # no attempt/fencing_token/call
 ```
 
 Transitive npm and Go dependencies are not locked here. The spike pins its direct tools, and the real pipeline in

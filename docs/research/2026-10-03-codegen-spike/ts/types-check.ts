@@ -55,3 +55,13 @@ export const none: ProjectSet = [];
 export const overrides: Grant["confirmation_overrides"] = { "plan.approve": "human" };
 // @ts-expect-error overrides may only name independent_review or human
 export const weaker: Grant["confirmation_overrides"] = { "plan.approve": "none" };
+
+// Accepted limitations (they compile; Ajv rejects the documents, and the Go
+// generator's types exclude them). Recorded here so a change in either
+// direction is visible:
+// 1. Approval.scope is an open map: json-schema-to-typescript ignores if/then.
+export const anyScope: Approval["scope"] = { anything: 1 };
+// 2. The keyed union does not exclude the other key.
+export const bothKeys: Approval["expected_state"] = { version: 3, digest: "sha256:x" };
+// 3. Generated event types carry an open index signature.
+export const extraField: AdapterEvent = { ...env, event: "heartbeat", provider: "x" };
