@@ -25,6 +25,8 @@ want="$(awk '$1 == "toolchain" { print $2 }' "$repo_root/go.mod")"
 [[ "$want" =~ ^go[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || die "go.mod has no valid toolchain directive (got '${want}')"
 [[ "$prefix" == /* ]] || die "ADC_GO_PREFIX must be an absolute path (got '$prefix')"
 prefix="${prefix%/}"
+# A prefix must sit at least two levels deep and never be the home itself.
+[[ "$prefix" == /*/* && "$prefix" != "${HOME%/}" ]] || die "ADC_GO_PREFIX '$prefix' is too shallow; refusing"
 
 case "${1:-}" in
   "") ;;
@@ -91,6 +93,10 @@ if [[ -e "$prefix" ]]; then
 fi
 mv "$tmp/unpack/go" "$prefix"
 
-got="$("$prefix/bin/go" env GOVERSION)"
-[[ "$got" == "$want" ]] || die "installed $got, expected $want"
+got="$("$prefix/bin/go" env GOVERSION || true)"
+if [[ "$got" != "$want" ]]; then
+  rm -rf "$prefix"
+  if [[ -e "$tmp/old" ]]; then mv "$tmp/old" "$prefix"; fi
+  die "installed '$got', expected $want; previous install restored"
+fi
 printf 'bootstrap-go: installed %s at %s\n' "$got" "$prefix"

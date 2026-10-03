@@ -9,6 +9,12 @@ SHELL := /usr/bin/env bash
 
 GOROOT_PIN := $(shell scripts/bootstrap-go.sh --print-goroot)
 GO_PIN     := $(shell scripts/bootstrap-go.sh --print-version)
+ifeq ($(strip $(GOROOT_PIN)),)
+$(error scripts/bootstrap-go.sh --print-goroot failed; see its message above)
+endif
+ifeq ($(strip $(GO_PIN)),)
+$(error scripts/bootstrap-go.sh --print-version failed; see its message above)
+endif
 GO         := $(GOROOT_PIN)/bin/go
 # Never let `go` fetch a different toolchain: go.mod's toolchain line is the pin.
 export GOTOOLCHAIN := local
