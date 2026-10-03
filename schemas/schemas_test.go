@@ -12,19 +12,20 @@ import (
 
 // The expected value was computed outside Go:
 //
-//	printf 'a/x.json\0%s\nb/c/y.json\0%s\n' "$(printf '{}' | sha256sum | cut -c1-64)" \
-//	  "$(printf '[1]' | sha256sum | cut -c1-64)" | sha256sum
+//	printf 'a/x.json\0%s\nb/c/y.json\0%s\nc/r.yaml\0%s\n' "$(printf '{}' | sha256sum | cut -c1-64)" \
+//	  "$(printf '[1]' | sha256sum | cut -c1-64)" "$(printf 'k: v\n' | sha256sum | cut -c1-64)" | sha256sum
 func TestDigestOfMatchesTheFraming(t *testing.T) {
 	got, err := DigestOf(fstest.MapFS{
 		"b/c/y.json":   {Data: []byte("[1]")},
 		"a/x.json":     {Data: []byte("{}")},
 		"a/readme.md":  {Data: []byte("not a schema")},
+		"c/r.yaml":     {Data: []byte("k: v\n")},
 		"b/c/notes.go": {Data: []byte("package c")},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "sha256:d82741bce6b16eda887516f7067963bd62502f6f2bbbc2372cbfcf5685924477"; got != want {
+	if want := "sha256:b51ba245776da7c1ff52e43d3a9a970ddd59054b26e4c124dbf14575279bb8e1"; got != want {
 		t.Fatalf("DigestOf = %s, want %s", got, want)
 	}
 }
@@ -36,8 +37,15 @@ func TestEmbeddedInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"common/defs.json", "records/instrument-contract.json", "records/receipt.json"}; !reflect.DeepEqual(paths, want) {
+	if want := []string{"common/defs.json", "records/instrument-contract.json", "records/receipt.json", "vocab/registry.json"}; !reflect.DeepEqual(paths, want) {
 		t.Fatalf("embedded schemas = %v, want %v", paths, want)
+	}
+	vocab, err := VocabPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"}; !reflect.DeepEqual(vocab, want) {
+		t.Fatalf("embedded registries = %v, want %v", vocab, want)
 	}
 	a, _ := SetDigest()
 	b, _ := DigestOf(FS())

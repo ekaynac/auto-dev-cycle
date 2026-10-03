@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# The four outcomes (docs/design/m0/02). Every result in every schema carries
+# exactly one, with a registered reason. There is no boolean ok.
+schema: adc.vocab.outcomes/v1
+outcomes:
+  - outcome: found
+    description: The check ran and found something (a change was produced, a defect exists, evidence is present).
+  - outcome: empty
+    description: The check ran completely and found nothing.
+  - outcome: could_not_run
+    description: The check did not run, or did not run completely, so nothing is known. Never read as empty.
+  - outcome: failed
+    description: The check ran and the subject failed a hard requirement, or the operation itself failed after starting.

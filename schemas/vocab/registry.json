@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/vocab/registry.json",
+  "title": "VocabRegistry",
+  "description": "One vocabulary registry file (schemas/vocab/*.yaml, docs/design/m0/02), discriminated by its schema field. Cross-file rules (a reason's hold exists, codes are unique) are checked by internal/vocab.",
+  "oneOf": [
+    {"$ref": "#/$defs/OutcomesFile"},
+    {"$ref": "#/$defs/ReasonsFile"},
+    {"$ref": "#/$defs/HoldsFile"}
+  ],
+  "$defs": {
+    "Code": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "Semver": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "OutcomesFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "outcomes"],
+      "properties": {
+        "schema": {"const": "adc.vocab.outcomes/v1"},
+        "outcomes": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "description"],
+            "properties": {
+              "outcome": {"enum": ["found", "empty", "could_not_run", "failed"]},
+              "description": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "ReasonsFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "reasons"],
+      "properties": {
+        "schema": {"const": "adc.vocab.reasons/v1"},
+        "reasons": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Reason"}}
+      }
+    },
+    "Reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "outcomes", "domain", "description", "introduced", "source"],
+      "properties": {
+        "code": {"$ref": "#/$defs/Code"},
+        "outcomes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["found", "empty", "could_not_run", "failed"]}},
+        "domain": {"enum": ["capacity", "cycle", "gate", "review", "authority", "knowledge", "forge", "sandbox", "adapter", "ops"]},
+        "description": {"type": "string", "minLength": 1},
+        "hold": {"$ref": "#/$defs/Code"},
+        "introduced": {"$ref": "#/$defs/Semver"},
+        "deprecated": {"$ref": "#/$defs/Semver"},
+        "source": {"description": "Where the code was introduced: a design note number, or legacy:<golden>.", "type": "string", "pattern": "^([0-9]{2}|legacy:[a-z0-9-]+)$"}
+      }
+    },
+    "HoldsFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "holds"],
+      "properties": {
+        "schema": {"const": "adc.vocab.holds/v1"},
+        "holds": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Hold"}}
+      }
+    },
+    "Hold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hold", "signal", "signal_detail", "owner", "page_after"],
+      "properties": {
+        "hold": {"$ref": "#/$defs/Code"},
+        "signal": {"enum": ["time", "receipt", "revision", "approval", "human_act", "probe", "config_change"]},
+        "signal_detail": {"type": "string", "minLength": 1},
+        "owner": {"enum": ["system", "operator", "grant_holder", "confirmation_policy", "named_owner", "environment_owner"]},
+        "page_after": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Duration"}]}
+      }
+    }
+  }
+}

@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: Apache-2.0
+# Hold reasons and their resume signals (docs/design/m0/02 "Hold reasons and
+# resume signals"). A hold is a stop that names what restarts it. Internal
+# graph inputs wait structurally and need no hold (13).
+schema: adc.vocab.holds/v1
+holds:
+  - hold: quota_reset
+    signal: time
+    signal_detail: Earliest known reset of the blocking resource group; if none is known, the probe schedule applies.
+    owner: system
+    page_after: PT30M # overdue by
+  - hold: source_invalid_config
+    signal: config_change
+    signal_detail: A config revision of the source.
+    owner: operator
+    page_after: PT1H
+  - hold: awaiting_approval
+    signal: approval
+    signal_detail: An approval of the named object revision.
+    owner: grant_holder
+    page_after: PT1H
+  - hold: awaiting_confirmation
+    signal: approval
+    signal_detail: Confirmation of the open proposal (human or independent review, per its policy).
+    owner: confirmation_policy
+    page_after: PT1H
+  - hold: awaiting_receipt
+    signal: receipt
+    signal_detail: An applicable receipt for the named requirement.
+    owner: system
+    page_after: PT30M
+  - hold: reviewer_unavailable
+    signal: probe
+    signal_detail: An independent reviewer family becomes available.
+    owner: system
+    page_after: PT1H
+  - hold: wrong_owner
+    signal: human_act
+    signal_detail: The named owner (environment, access, tooling) fixes the fault.
+    owner: named_owner
+    page_after: PT1H
+  - hold: maintenance_boundary
+    signal: revision
+    signal_detail: The staged install lands.
+    owner: system
+    page_after: PT45M
+  - hold: budget_rail
+    signal: approval
+    signal_detail: An approval raising the rail.
+    owner: operator
+    page_after: PT1H
+  - hold: base_moved_conflict
+    signal: revision
+    signal_detail: A rebased candidate.
+    owner: system
+    page_after: PT30M
+  - hold: broker_credit_exhausted
+    signal: probe
+    signal_detail: A balance probe passes, or the operator tops up (human_act). Never a time.
+    owner: operator
+    page_after: PT1H
+  - hold: awaiting_input
+    signal: approval
+    signal_detail: An approval that answers the owed input id at its current revision (04).
+    owner: grant_holder
+    page_after: PT1H
+  - hold: evidence_restore_pending
+    signal: receipt
+    signal_detail: Lease settlement of the evidence_target group after a verified restore (05, 13).
+    owner: system
+    page_after: PT1H
+  - hold: precondition_failed
+    signal: probe
+    signal_detail: The failed precondition passes on its bounded probe schedule.
+    owner: environment_owner
+    page_after: PT1H

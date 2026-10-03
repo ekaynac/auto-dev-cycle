@@ -62,7 +62,7 @@ acts, probes) [D40].
 - hold: quota_reset
   signal: time                    # time | receipt | revision | approval | human_act | probe | config_change
   signal_detail: earliest known reset of the blocking resource group; if none known, the probe schedule applies
-  owner: system                   # system | operator | supervisor | project_owner
+  owner: system                   # system | operator | grant_holder | confirmation_policy | named_owner | environment_owner
   page_after: PT1H                # ISO-8601 duration before the pager is involved; null = never page
 ```
 
@@ -72,6 +72,10 @@ Rules:
 - Every hold record carries the concrete signal instance (e.g. the reset timestamp, the approval id awaited).
 - Pages are deduplicated by **event** (hold id + signal instance), never by channel (nöbetçi lesson: dedup by name
   ignored every receipt after the first).
+
+`grant_holder` is the operator or the supervisor the grant names; `confirmation_policy` resolves through the
+proposal's policy (04); `named_owner` is the owner the hold record names (environment, access, tooling);
+`environment_owner` is the one the project profile names (07).
 
 Initial hold registry (M0 defines; later milestones add):
 
