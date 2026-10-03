@@ -1,78 +1,134 @@
-# Code-generator spike: three schemas, one choice
+# Code-generator spike: four schemas, one choice
 
 Date: 2026-10-03. M0 step 2 (`docs/plan/04-development-workflow.md` §9). Implements the spike that
-`docs/design/m0/01-repo-layout-and-toolchain.md` "Code generation" asks for.
+`docs/design/m0/01-repo-layout-and-toolchain.md` "Code generation" asks for. Revision 2 applies Astra's review of
+PR #9 (`docs/reviews/2026-10-03-pr9-astra.md`).
 
 ## Question
 
 Which tools turn `schemas/` into Go and TypeScript types and validators **faithfully**? Note 01 sets the criterion:
-`oneOf`, `const`, `enum` and `additionalProperties: false` must be handled faithfully, on three representative schemas
-(receipt, approval, adapter event).
+`oneOf`, `const`, `enum` and `additionalProperties: false` must be handled faithfully, on representative schemas
+(receipt, approval, adapter event). The grant was added to cover typed maps and an array-or-literal union, which M0
+needs too.
 
 ## Inputs
 
-`schemas/` in this directory holds the spike schemas: draft 2020-12, `$id` under the module path (Q1),
-cross-file `$ref` into `common/defs.json`. They were chosen to exercise every hard case:
+`schemas/` in this directory: draft 2020-12, `$id` under the module path (Q1), cross-file `$ref` into
+`common/defs.json`.
 
-| Case | Where |
+| Shape | Where |
 |---|---|
-| discriminated `oneOf` by a `const` property | receipt `subject` (tree / proposal / call); adapter event (`event`) |
-| nullable `oneOf [null, X]` | receipt `demand`, `valid_until`, `verdict`; approval `project`, `grant`, … |
+| `const`-discriminated `oneOf` | receipt `subject` (tree / proposal / call); adapter event (`event`) |
+| nullable `oneOf [null, X]`, always required | receipt `subject.demand`, `head`, `valid_until`, `verdict`; approval `project`, `grant`, … |
 | keyed `oneOf` (exactly one of two property sets) | approval `expected_state` (`version` xor `digest`) |
-| `allOf` composition + `unevaluatedProperties: false` | adapter event: a shared envelope + per-event fields |
-| `enum`, `pattern`, `minimum`, `uniqueItems` | outcomes, digests, TypeIDs, times |
+| array-or-literal `oneOf` | grant `projects` (`"*"` or a non-empty list); `reads.projects` (`"same"` or a list) |
+| typed map | grant `confirmation_overrides` (`propertyNames` + `additionalProperties` schema) |
+| open payload, validated by a selected schema | approval `scope` (selected by `action` with `if/then` in the same schema); predicate `payload` (selected at run time by the instrument contract) |
+| `allOf` envelope + `unevaluatedProperties: false` | adapter event |
+| bounded integers, `enum`, `pattern`, `uniqueItems`, `minItems` | versions, outcomes, digests, TypeIDs, lists |
 
-`cases.json` holds 16 instances (6 valid, 10 invalid) that each harness must classify identically.
+**These are spike subsets, not the full contracts.** Left out: the receipt's `object_revision` and `environment`
+subjects; 09's other adapter event kinds; the action registry beyond two actions. The scalar definitions check lexical
+form only, and each description names the check that belongs to code (reason registration, calendar validity, TypeID
+version and prefix). Note 02 lists 3-letter prefixes, but note 05 uses `rg_`. The pattern accepts 2–3 letters
+until the vocabulary PR settles it.
 
 ## Results
 
-| Tool | Side | Result |
-|---|---|---|
-| `santhosh-tekuri/jsonschema/v6` v6.0.3 (Apache-2.0) | Go validation | **16/16.** Full 2020-12 including `unevaluatedProperties`, cross-file `$ref` via `AddResource` |
-| Ajv 8.20.0, 2020 dialect, standalone code (MIT) | TS validation | **16/16.** Standalone output must be CommonJS: the ESM output still `require()`s a runtime helper (`ucs2length`) |
-| `json-schema-to-typescript` 16.0.0 (MIT) | TS types | **Faithful.** Discriminated unions with literal `const` types, nullable unions, enum literal unions, `allOf` as intersections |
-| `atombender/go-jsonschema` (MIT) | Go types | **Fails.** Every `oneOf`, nullable or discriminated, and every `const` becomes `interface{}` |
-| quicktype 26.0.0 | Go types | **Fails.** It merges each union into one struct where every variant field is optional (a tree subject can carry proposal fields), and **drops the `allOf` envelope fields** (`attempt`, `fencing_token`, `call`) |
+`cases.json`: 50 instances (18 valid, 32 invalid). They cover every union variant, both branches of every nullable,
+invalid nullables, the keyed union's neither and both forms, numeric bounds, duplicate items, scope dispatch, typed-map
+keys and values, and the array-or-literal forms. **Adequacy is measured, not claimed.** The Go harness recompiles the
+schemas with one keyword removed everywhere, for each of 13 keywords (`additionalProperties`,
+`unevaluatedProperties`, `required`, `const`, `enum`, `pattern`, `minimum`, `maximum`, `uniqueItems`, `minItems`,
+`propertyNames`, `allOf`, `oneOf`). Each removal flips at least one case. "50/50" is about validation of these
+instances; it says nothing about keywords the schemas don't use.
 
-Side finding: Ajv's `strict` mode caught a real schema defect in the first draft of the event schema: object
-keywords without `"type": "object"`, and a `required` name defined only in the branches. Strict compilation is
-worth keeping as a schema lint.
+| Tool (version) | Side | Result |
+|---|---|---|
+| `santhosh-tekuri/jsonschema/v6` v6.0.3 | Go validation | **50/50**, and all 13 mutations detected |
+| Ajv 8.20.0, 2020 dialect, standalone | TS validation | **50/50**. Strict compilation needs the `x-adc-open-payload` annotation registered |
+| `json-schema-to-typescript` 16.0.0 + TypeScript 7.0.2 | TS types | **Faithful** under `types-check.ts`, 8 negative assertions plus narrowing (below) |
+| `atombender/go-jsonschema` v0.24.1 | Go types | **Fails:** `type Subject interface{}`, `type Demand interface{}`, `Verdict interface{}`, `Head interface{}`, and the `const` discriminators `Type interface{}` |
+| quicktype 26.0.0 | Go types | **Fails:** the event union becomes one struct with every variant field optional, and the `allOf` envelope (`attempt`, `fencing_token`, `call`) is missing entirely |
+
+TS type assertions (`ts/types-check.ts`, `tsc` strict):
+- exhaustive narrowing on `subject.type`;
+- these must not compile: a field of another variant, an unknown discriminator, a missing envelope field, a partial
+  demand, a scope without its required field, a literal other than `"*"`, an empty project list, and a weaker
+  override value.
+
+Making any of them valid makes `tsc` fail; that was checked by flipping one.
+
+**TS limitation found:** json-schema-to-typescript ignores `if/then`, so `Approval.scope` is typed as an open map.
+The per-action scope types are still emitted (`unreachableDefinitions: true`) and validated by Ajv, and step 2b adds
+typed accessors. **Ajv side finding:** strict mode caught a real defect in the first event schema draft: object
+keywords without `"type": "object"`, and a `required` name defined only in the branches. Strict compilation stays
+on as a schema lint.
+
+Reproduction commands (each tool, with the exact options) are under "Reproduce".
 
 ## Choice
 
-- **TypeScript:** `json-schema-to-typescript` for types, Ajv 2020 standalone validators (CommonJS) for validation,
-  compiled with `strict: true`, which also serves as the schema lint in `make gen-check`.
-- **Go validation:** `santhosh-tekuri/jsonschema/v6`, compiled from the **embedded** schema files (`go:embed`), so
-  the binary validates against exactly the bytes its schema-set digest names.
-- **Go types:** a **small in-repo generator** (`gen/` tooling, as note 01 anticipated). No maintained Go generator
-  handles `oneOf` and `const` faithfully. It supports exactly the shapes our schemas use and **refuses any other shape
-  at generation time**, so a schema cannot silently degrade to `interface{}`:
-  - object with `properties`, `required`, `additionalProperties: false` → struct; optional → pointer or `omitempty`;
-  - string `enum` → named string type plus constants;
-  - nullable `oneOf [null, X]` → `*X`;
-  - discriminated `oneOf` (every branch an object with the same `const` property) → sealed interface plus one
-    struct per branch, with an `UnmarshalJSON` that dispatches on the discriminator;
-  - keyed `oneOf` (branches with disjoint single `required` keys) → struct with pointer fields; the validator enforces
-    "exactly one";
-  - `allOf` of a `$ref` envelope plus local properties → embedded struct;
-  - `$ref` → named type; arrays → slices.
-- **Decoding rule:** generated code never decodes unvalidated bytes. `Decode` validates against the schema first
-  (santhosh), then decodes strictly (`DisallowUnknownFields`). The schema is the single source of truth, and the Go
-  types are an ergonomic view of it.
+The conclusion is limited to the candidates tested. Among them, **no Go type generator is faithful**, so:
+
+- **TypeScript:** json-schema-to-typescript types (`unreachableDefinitions: true`); Ajv 2020 standalone validators,
+  compiled `strict: true` with the generator annotations registered. Ajv is a **runtime dependency** of
+  `@adc/contract`, because the CommonJS standalone output `require()`s Ajv runtime helpers. Step 2b smoke-tests the
+  installed package from a consumer.
+- **Go validation:** santhosh-tekuri/jsonschema v6 over the **embedded** schema files.
+- **Go types:** a small in-repo generator that accepts **exactly** this grammar and refuses everything else at
+  generation time:
+
+  | Schema shape | Go representation |
+  |---|---|
+  | `string` (with `pattern`/`enum`/`format` as validation only) | `string`; a string `enum` → named type plus constants |
+  | `integer` with `minimum` and `maximum` inside ±(2^53−1) | `int64`. **An integer without both bounds is refused**, so values stay exact in JavaScript |
+  | `boolean` | `bool` |
+  | `number` | refused in M0 (no float appears in any M0 contract) |
+  | object, `additionalProperties: false` | struct; required → value; optional non-null → pointer with `omitempty` |
+  | nullable `oneOf [null, X]` | `*X`. **The field must be required:** null means explicitly empty, absence is invalid. Optional-and-nullable is refused |
+  | `const`-discriminated `oneOf` | sealed interface plus one struct per branch; decoding dispatches on the discriminator |
+  | keyed `oneOf` (branches with disjoint single required keys) | struct with one pointer per key |
+  | array-or-literal `oneOf [const, array]` | struct with a literal flag and a slice, plus custom encode/decode |
+  | typed map (`additionalProperties: <schema>`, optional `propertyNames`) | `map[K]V` |
+  | open payload (`"type": "object"` + `x-adc-open-payload`) | `json.RawMessage`, plus generated typed accessors for each selectable schema (e.g. per action) |
+  | `allOf [$ref Envelope]` + local properties | embedded struct |
+  | `$ref`, arrays | named type, slice |
+
+- **Decoding and encoding contract** (implemented and round-trip tested in step 2b):
+  1. `Decode` validates the bytes against the schema, then decodes **the same bytes** strictly. Every nested decoder,
+     custom union decoders included, rejects unknown fields; trailing data after the document is rejected.
+  2. Integers must be spelled as integers. `3.0` passes the schema but is refused by `Decode` as non-canonical, so
+     Go and TypeScript agree on identity.
+  3. `Encode` validates its own output before returning it. Constructed values (sealed interfaces, enum types, keyed
+     pointer structs) can still be invalid in Go, so nothing reaches the wire unvalidated.
+  4. Absent and null are never conflated, because of the "nullable implies required" rule above.
 
 ## Rejected alternatives
 
-- **Go types from a third-party generator plus runtime validation:** both candidates silently weaken the contract
-  in the types. Callers would build invalid values that compile.
-- **Go structs as the source, schemas generated from them** (e.g. `google/jsonschema-go`): that inverts "one source
+- **Third-party Go type generators plus runtime validation:** both candidates weaken the types, so callers would
+  construct values that compile but are invalid. Validation would catch them late, at encode time.
+- **Go structs as the source, schemas generated from them** (e.g. `google/jsonschema-go`): this inverts "one source
   per contract". TypeScript and the shared knowledge spec (K10) need the schema as the source.
-- **quicktype for both languages:** unfaithful on unions (above).
+- **quicktype for both languages:** unfaithful on unions and `allOf`.
 
 ## Reproduce
 
+From a scratch copy of this directory (the commands create `package.json` and `go.mod`):
+
 ```sh
-cd ts && pnpm add json-schema-to-typescript@16.0.0 ajv@8.20.0 && node spike.mjs      # 16 × ok
-cd ../go && go mod init spike && go get github.com/santhosh-tekuri/jsonschema/v6@v6.0.3 && go run spike.go  # 16 × ok
+# TypeScript: types, validators, 50 cases, type assertions
+cd ts && pnpm add json-schema-to-typescript@16.0.0 ajv@8.20.0 typescript@7.0.2 && node spike.mjs && npx tsc -p .
+# Go: 50 cases + 13 keyword mutations
+cd ../go && go mod init spike && go get github.com/santhosh-tekuri/jsonschema/v6@v6.0.3 && go run spike.go
+# Rejected Go generators
+go install github.com/atombender/go-jsonschema@v0.24.1
+go-jsonschema -p gen -t ../schemas/records/receipt.json -o /tmp/receipt.go    # grep 'interface{}'
+npx quicktype@26.0.0 --src-lang schema --lang go --package gen --just-types-and-package \
+  --additional-schema ../schemas/common/defs.json ../schemas/adapter/event.json   # no attempt/fencing_token/call
 ```
 
-The spike schemas are evidence. The real `schemas/` tree starts in the generator PR and grows from these three.
+Transitive npm and Go dependencies are not locked here. The spike pins its direct tools, and the real pipeline in
+step 2b gets lockfiles.
+
+The spike schemas are evidence. The real `schemas/` tree starts in step 2b and grows from these four.

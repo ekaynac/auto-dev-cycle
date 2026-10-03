@@ -62,18 +62,20 @@ The Go toolchain is installed per user from the official tarball (`~/.local/go`)
 ## Code generation (one source per contract)
 
 - `schemas/**/*.json|yaml` → Go types and validators (`gen/go`) and TypeScript types and validators (`gen/ts`).
-  Chosen by the spike on receipt, approval and adapter event (`docs/research/2026-10-03-codegen-spike/`): faithful
-  handling of `oneOf`/`const`/`enum`/`additionalProperties: false`, 16/16 shared cases on both sides.
+  Chosen by the spike on receipt, approval, grant and adapter event (`docs/research/2026-10-03-codegen-spike/`):
+  50 shared cases on both validators, adequacy checked by keyword mutations, TS type assertions.
   - **Go validation:** `santhosh-tekuri/jsonschema/v6` over the **embedded** schema files.
-  - **Go types:** a small in-repo generator. It supports only the shapes the schemas use (objects; string enums;
-    nullable `oneOf [null, X]`; `const`-discriminated `oneOf` as a sealed interface; keyed `oneOf`; `allOf`
-    envelope embedding) and **refuses any other shape** at generation time, so nothing degrades to `interface{}`.
-    The third-party generators tried both fail this (`interface{}` for unions; merged variants, dropped `allOf`
-    fields).
-  - **Decoding:** generated `Decode` validates against the schema first, then decodes strictly. Types never
-    stand in for validation.
-  - **TypeScript:** `json-schema-to-typescript` types and Ajv 2020 standalone validators (CommonJS), compiled with
-    `strict: true`, which doubles as the schema lint.
+  - **Go types:** a small in-repo generator for exactly the grammar in the spike report: strings and string enums,
+    integers **bounded within ±(2^53−1)**, booleans, closed objects, nullable `oneOf [null, X]` (**always
+    required**: null is explicit, absence invalid), `const`-discriminated `oneOf` as a sealed interface, keyed
+    `oneOf`, array-or-literal `oneOf`, typed maps, open payloads (`x-adc-open-payload`) as raw JSON with typed
+    accessors for each selectable schema, `allOf` envelope embedding. **Any other shape is refused** at generation
+    time, so nothing degrades to `interface{}`. Both third-party Go generators tried fail this.
+  - **Decoding and encoding:** `Decode` validates the bytes, then decodes the same bytes strictly (unknown fields
+    and trailing data rejected at every level; non-integral integer spellings refused); `Encode` validates its
+    output. Types never stand in for validation.
+  - **TypeScript:** `json-schema-to-typescript` types and Ajv 2020 standalone validators (CommonJS; Ajv is a
+    runtime dependency of `@adc/contract`), compiled with `strict: true`, which doubles as the schema lint.
 - `schemas/openapi.yaml` → Go server interfaces and the TS client used by the dashboard.
 - Model structured-output schemas are derived from the same files (with a provider-dialect transform: e.g. OpenAI
   strict mode needs all fields required/nullable and no `oneOf`; nöbetçi lesson 2.2b). In M0 the transform is

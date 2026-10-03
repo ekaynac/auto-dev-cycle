@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/receipt.json",
   "title": "Receipt",
-  "description": "Evidence envelope (docs/design/m0/06). outcome, reason and verdict are derived by internal/receipt, never accepted from the producer.",
+  "description": "Evidence envelope (docs/design/m0/06), spike subset: subjects tree, proposal and call (object_revision and environment omitted). outcome, reason, verdict and conclusions_digest are derived by internal/receipt, never accepted from the producer.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "kind", "instrument", "subject", "provenance", "produced_at", "predicates", "outcome", "reason", "detail"],
+  "required": ["id", "kind", "instrument", "subject", "provenance", "produced_at", "valid_until", "predicates", "outcome", "reason", "detail", "verdict", "conclusions_digest", "supersedes"],
   "properties": {
     "id": {"$ref": "../common/defs.json#/$defs/TypeID"},
     "kind": {"enum": ["gate", "integration", "deploy", "review", "phase_gate", "probe", "dependency_prep", "custom"]},
@@ -20,29 +20,15 @@
       }
     },
     "subject": {"$ref": "#/$defs/Subject"},
-    "demand": {
-      "oneOf": [
-        {"type": "null"},
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["key", "run"],
-          "properties": {
-            "key": {"$ref": "../common/defs.json#/$defs/Digest"},
-            "run": {"$ref": "../common/defs.json#/$defs/TypeID"}
-          }
-        }
-      ]
-    },
     "provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["command", "calls", "model_families", "contributors"],
+      "required": ["command", "attempt", "calls", "model_families", "contributors"],
       "properties": {
         "command": {"type": "string"},
         "attempt": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/TypeID"}]},
         "calls": {"type": "array", "items": {"$ref": "../common/defs.json#/$defs/TypeID"}},
-        "model_families": {"type": "array", "items": {"type": "string"}},
+        "model_families": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "contributors": {"type": "array", "items": {"$ref": "../common/defs.json#/$defs/TypeID"}}
       }
     },
@@ -53,6 +39,7 @@
     "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
     "detail": {"type": "string"},
     "verdict": {"oneOf": [{"type": "null"}, {"enum": ["go", "no_go"]}]},
+    "conclusions_digest": {"$ref": "../common/defs.json#/$defs/Digest"},
     "supersedes": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/TypeID"}]}
   },
   "$defs": {
@@ -75,11 +62,31 @@
               "media_type": {"type": "string", "minLength": 1}
             }
           }
+        },
+        "payload": {
+          "description": "Typed predicate facts; validated against the instrument contract's payload_schema (06 rule 7), selected at run time by instrument digest.",
+          "type": "object",
+          "x-adc-open-payload": "instrument.payload_schema"
         }
       }
     },
+    "Demand": {
+      "description": "Controller-bound evidence demand (12) and the run that produced the receipt [PR5-2].",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key", "run"],
+          "properties": {
+            "key": {"$ref": "../common/defs.json#/$defs/Digest"},
+            "run": {"$ref": "../common/defs.json#/$defs/TypeID"}
+          }
+        }
+      ]
+    },
     "Subject": {
-      "description": "Typed subject, discriminated by type (06 [M8]).",
+      "description": "Typed subject, discriminated by type (06 [M8]); each variant carries the demand.",
       "oneOf": [
         {"$ref": "#/$defs/TreeSubject"},
         {"$ref": "#/$defs/ProposalSubject"},
@@ -89,7 +96,7 @@
     "TreeSubject": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "project", "tree", "environment", "contract_revision"],
+      "required": ["type", "project", "tree", "head", "environment", "contract_revision", "demand"],
       "properties": {
         "type": {"const": "tree"},
         "project": {"$ref": "../common/defs.json#/$defs/TypeID"},
@@ -104,26 +111,29 @@
             "description": {"type": "string"}
           }
         },
-        "contract_revision": {"type": "string", "minLength": 1}
+        "contract_revision": {"type": "string", "minLength": 1},
+        "demand": {"$ref": "#/$defs/Demand"}
       }
     },
     "ProposalSubject": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "proposal", "binding_digest"],
+      "required": ["type", "proposal", "binding_digest", "demand"],
       "properties": {
         "type": {"const": "proposal"},
         "proposal": {"$ref": "../common/defs.json#/$defs/TypeID"},
-        "binding_digest": {"$ref": "../common/defs.json#/$defs/Digest"}
+        "binding_digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+        "demand": {"$ref": "#/$defs/Demand"}
       }
     },
     "CallSubject": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "call"],
+      "required": ["type", "call", "demand"],
       "properties": {
         "type": {"const": "call"},
-        "call": {"$ref": "../common/defs.json#/$defs/TypeID"}
+        "call": {"$ref": "../common/defs.json#/$defs/TypeID"},
+        "demand": {"$ref": "#/$defs/Demand"}
       }
     }
   }
