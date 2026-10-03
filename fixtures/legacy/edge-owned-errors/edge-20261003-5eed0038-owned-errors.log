@@ -1,0 +1,659 @@
+bringing up nodes...
+bringing up nodes...
+
+==================================== ERRORS ====================================
+__ ERROR at setup of test_every_declared_path_exists_after_a_build __
+[gw2] linux -- Python 3.14.4 /home/user/verify/product/.venv/bin/python3
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _trace=<pluggy._tracing.TagTra...2cdf30>, _basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="module")
+    def simulation(tmp_path_factory):
+        """ONE local simulation, shared: build, install, migrate, rollback through
+        the declared scripts, exactly the job's convention, with `keep_work` so
+        the artifacts and the rolled-back database survive for the assertions."""
+        root = tmp_path_factory.mktemp("release_proof")
+        shim_dir = root / "shim-bin"
+        shim_dir.mkdir()
+        interpreter = _qualified_interpreter(shim_dir)
+        if interpreter is None:
+            pytest.skip("no python3 on this box carries setuptools+wheel+ensurepip"
+                        f" at {sys.version_info.major}.{sys.version_info.minor}")
+        path_env = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    
+>       source = _copy_working_tree(root / "source-export")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_release_proof.py:164: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_release_proof.py:80: in _copy_working_tree
+    proc = subprocess.run(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'ls-files', '--cached', '--others', '--exclude-standard'],)
+kwargs = {'text': True, 'stdout': -1, 'stderr': -1}
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout (seconds) is given and the process takes too long,
+         a TimeoutExpired exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'ls-files', '--cached', '--others', '--exclude-standard']' returned non-zero exit status 128.
+
+/usr/lib/python3.14/subprocess.py:578: CalledProcessError
+_ ERROR at setup of test_local_simulation_build_install_migrate_rollback _
+[gw2] linux -- Python 3.14.4 /home/user/verify/product/.venv/bin/python3
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _trace=<pluggy._tracing.TagTra...2cdf30>, _basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="module")
+    def simulation(tmp_path_factory):
+        """ONE local simulation, shared: build, install, migrate, rollback through
+        the declared scripts, exactly the job's convention, with `keep_work` so
+        the artifacts and the rolled-back database survive for the assertions."""
+        root = tmp_path_factory.mktemp("release_proof")
+        shim_dir = root / "shim-bin"
+        shim_dir.mkdir()
+        interpreter = _qualified_interpreter(shim_dir)
+        if interpreter is None:
+            pytest.skip("no python3 on this box carries setuptools+wheel+ensurepip"
+                        f" at {sys.version_info.major}.{sys.version_info.minor}")
+        path_env = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    
+>       source = _copy_working_tree(root / "source-export")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_release_proof.py:164: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_release_proof.py:80: in _copy_working_tree
+    proc = subprocess.run(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'ls-files', '--cached', '--others', '--exclude-standard'],)
+kwargs = {'text': True, 'stdout': -1, 'stderr': -1}
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout (seconds) is given and the process takes too long,
+         a TimeoutExpired exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'ls-files', '--cached', '--others', '--exclude-standard']' returned non-zero exit status 128.
+
+/usr/lib/python3.14/subprocess.py:578: CalledProcessError
+__ ERROR at setup of test_a_script_printing_a_table_row_is_caught ___
+[gw2] linux -- Python 3.14.4 /home/user/verify/product/.venv/bin/python3
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _trace=<pluggy._tracing.TagTra...2cdf30>, _basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="module")
+    def simulation(tmp_path_factory):
+        """ONE local simulation, shared: build, install, migrate, rollback through
+        the declared scripts, exactly the job's convention, with `keep_work` so
+        the artifacts and the rolled-back database survive for the assertions."""
+        root = tmp_path_factory.mktemp("release_proof")
+        shim_dir = root / "shim-bin"
+        shim_dir.mkdir()
+        interpreter = _qualified_interpreter(shim_dir)
+        if interpreter is None:
+            pytest.skip("no python3 on this box carries setuptools+wheel+ensurepip"
+                        f" at {sys.version_info.major}.{sys.version_info.minor}")
+        path_env = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    
+>       source = _copy_working_tree(root / "source-export")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_release_proof.py:164: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_release_proof.py:80: in _copy_working_tree
+    proc = subprocess.run(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'ls-files', '--cached', '--others', '--exclude-standard'],)
+kwargs = {'text': True, 'stdout': -1, 'stderr': -1}
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout (seconds) is given and the process takes too long,
+         a TimeoutExpired exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'ls-files', '--cached', '--others', '--exclude-standard']' returned non-zero exit status 128.
+
+/usr/lib/python3.14/subprocess.py:578: CalledProcessError
+______ ERROR at setup of test_a_lying_migrate_fails_the_driver ______
+[gw2] linux -- Python 3.14.4 /home/user/verify/product/.venv/bin/python3
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _trace=<pluggy._tracing.TagTra...2cdf30>, _basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="module")
+    def simulation(tmp_path_factory):
+        """ONE local simulation, shared: build, install, migrate, rollback through
+        the declared scripts, exactly the job's convention, with `keep_work` so
+        the artifacts and the rolled-back database survive for the assertions."""
+        root = tmp_path_factory.mktemp("release_proof")
+        shim_dir = root / "shim-bin"
+        shim_dir.mkdir()
+        interpreter = _qualified_interpreter(shim_dir)
+        if interpreter is None:
+            pytest.skip("no python3 on this box carries setuptools+wheel+ensurepip"
+                        f" at {sys.version_info.major}.{sys.version_info.minor}")
+        path_env = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    
+>       source = _copy_working_tree(root / "source-export")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_release_proof.py:164: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_release_proof.py:80: in _copy_working_tree
+    proc = subprocess.run(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'ls-files', '--cached', '--others', '--exclude-standard'],)
+kwargs = {'text': True, 'stdout': -1, 'stderr': -1}
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout (seconds) is given and the process takes too long,
+         a TimeoutExpired exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'ls-files', '--cached', '--others', '--exclude-standard']' returned non-zero exit status 128.
+
+/usr/lib/python3.14/subprocess.py:578: CalledProcessError
+_____ ERROR at setup of test_a_lying_rollback_fails_the_driver ______
+[gw2] linux -- Python 3.14.4 /home/user/verify/product/.venv/bin/python3
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _trace=<pluggy._tracing.TagTra...2cdf30>, _basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="module")
+    def simulation(tmp_path_factory):
+        """ONE local simulation, shared: build, install, migrate, rollback through
+        the declared scripts, exactly the job's convention, with `keep_work` so
+        the artifacts and the rolled-back database survive for the assertions."""
+        root = tmp_path_factory.mktemp("release_proof")
+        shim_dir = root / "shim-bin"
+        shim_dir.mkdir()
+        interpreter = _qualified_interpreter(shim_dir)
+        if interpreter is None:
+            pytest.skip("no python3 on this box carries setuptools+wheel+ensurepip"
+                        f" at {sys.version_info.major}.{sys.version_info.minor}")
+        path_env = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    
+>       source = _copy_working_tree(root / "source-export")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_release_proof.py:164: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_release_proof.py:80: in _copy_working_tree
+    proc = subprocess.run(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'ls-files', '--cached', '--others', '--exclude-standard'],)
+kwargs = {'text': True, 'stdout': -1, 'stderr': -1}
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout (seconds) is given and the process takes too long,
+         a TimeoutExpired exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'ls-files', '--cached', '--others', '--exclude-standard']' returned non-zero exit status 128.
+
+/usr/lib/python3.14/subprocess.py:578: CalledProcessError
+____ ERROR at setup of test_rollback_refuses_without_its_backup _____
+[gw2] linux -- Python 3.14.4 /home/user/verify/product/.venv/bin/python3
+
+tmp_path_factory = TempPathFactory(_given_basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _trace=<pluggy._tracing.TagTra...2cdf30>, _basetemp=PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2'), _retention_count=3, _retention_policy='all')
+
+    @pytest.fixture(scope="module")
+    def simulation(tmp_path_factory):
+        """ONE local simulation, shared: build, install, migrate, rollback through
+        the declared scripts, exactly the job's convention, with `keep_work` so
+        the artifacts and the rolled-back database survive for the assertions."""
+        root = tmp_path_factory.mktemp("release_proof")
+        shim_dir = root / "shim-bin"
+        shim_dir.mkdir()
+        interpreter = _qualified_interpreter(shim_dir)
+        if interpreter is None:
+            pytest.skip("no python3 on this box carries setuptools+wheel+ensurepip"
+                        f" at {sys.version_info.major}.{sys.version_info.minor}")
+        path_env = f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    
+>       source = _copy_working_tree(root / "source-export")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_release_proof.py:164: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_release_proof.py:80: in _copy_working_tree
+    proc = subprocess.run(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'ls-files', '--cached', '--others', '--exclude-standard'],)
+kwargs = {'text': True, 'stdout': -1, 'stderr': -1}
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout (seconds) is given and the process takes too long,
+         a TimeoutExpired exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'ls-files', '--cached', '--others', '--exclude-standard']' returned non-zero exit status 128.
+
+/usr/lib/python3.14/subprocess.py:578: CalledProcessError
+=================================== FAILURES ===================================
+____________ test_previous_release_pin_matches_its_wheel ____________
+[gw2] linux -- Python 3.14.4 /home/user/verify/product/.venv/bin/python3
+
+tmp_path = PosixPath('/tmp/pytest-of-user/pytest-1209/popen-gw2/test_previous_relea0')
+
+    def test_previous_release_pin_matches_its_wheel(tmp_path):
+        """The N-1 the rollback reinstalls is a REAL previous release: the pin's
+        digest matches the wheel on disk, the wheel's own METADATA says the pinned
+        version, and that version differs from the release being built. When the
+        version is bumped, this pin moves with it — `previous_release` refuses a
+        pin at the current version."""
+        pin = json.loads((REPO / "deploy/release-proof/previous.json").read_text())
+        wheel = REPO / "deploy" / "release-proof" / pin["wheel"]
+        assert wheel.is_file()
+        assert hashlib.sha256(wheel.read_bytes()).hexdigest() == pin["sha256"]
+        with zipfile.ZipFile(wheel) as archive:
+            metadata = [n for n in archive.namelist()
+                        if n.endswith(".dist-info/METADATA")][0]
+            version_line = [line for line in archive.read(metadata).decode()
+                            .splitlines() if line.startswith("Version:")][0]
+        assert version_line == f"Version: {pin['version']}"
+        assert pin["version"] != product.__version__
+    
+        # the commit the pin names exists (read-only check)
+        proc = subprocess.run(["git", "cat-file", "-e", pin["commit"]])
+>       assert proc.returncode == 0, pin["commit"]
+E       AssertionError: 5eed000100000000000000000000000000000000
+E       assert 128 == 0
+E        +  where 128 = CompletedProcess(args=['git', 'cat-file', '-e', '5eed000100000000000000000000000000000000'], returncode=128).returncode
+
+tests/test_release_proof.py:454: AssertionError
+----------------------------- Captured stderr call -----------------------------
+fatal: not a git repository (or any of the parent directories): .git
+=========================== short test summary info ============================
+FAILED tests/test_release_proof.py::test_previous_release_pin_matches_its_wheel
+ERROR tests/test_release_proof.py::test_every_declared_path_exists_after_a_build
+ERROR tests/test_release_proof.py::test_local_simulation_build_install_migrate_rollback
+ERROR tests/test_release_proof.py::test_a_script_printing_a_table_row_is_caught
+ERROR tests/test_release_proof.py::test_a_lying_migrate_fails_the_driver
+ERROR tests/test_release_proof.py::test_a_lying_rollback_fails_the_driver
+ERROR tests/test_release_proof.py::test_rollback_refuses_without_its_backup
+1 failed, 7602 passed, 13 skipped, 494 warnings, 6 errors in 604.12s (0:10:04)

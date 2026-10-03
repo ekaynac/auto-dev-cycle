@@ -1,0 +1,30 @@
+{
+  "source": "t/fixtures/f16-inline-fallback/",
+  "class": "A phase review's primary reviewer stops on an exhausted credit balance before any model item, and a fallback authorised only for another role and mode (a learning digest) is about to take the review packet.",
+  "design_refs": [
+    "docs/design/m0/02-vocabulary.md",
+    "docs/design/m0/05-leases-attempts-fencing.md",
+    "docs/design/m0/11-testing.md",
+    "docs/design/m0/13-artifact-graph.md"
+  ],
+  "inputs": {
+    "lease": {"role": "reviewer", "mode": "phase_review"},
+    "fallback_chain": [
+      {
+        "step": 1,
+        "route": "fallback",
+        "provider": "openrouter",
+        "model": "z-ai/glm-5.3-flash",
+        "authorised_for": [{"role": "learner", "mode": "learning_digest"}],
+        "authorisation_date": "2026-09-18"
+      }
+    ],
+    "note": "Synthetic: reconstructed from the incident report and usage.json's route block (the authorisation record itself is not imported). Its text said the route is never for a phase audit or any review."
+  },
+  "expected": [
+    {"outcome": "could_not_run", "reason": "broker_credit_exhausted"},
+    {"outcome": "failed", "reason": "fallback_scope"}
+  ],
+  "reason_status": "proposed",
+  "notes": "Step 1 (registered): the primary review attempt (fallback-primary-usage.json, rollout-*.jsonl: credits depleted, zero model items) is an attempt record, not an empty review; its hold waits on a balance probe or an operator top-up, never a time. Step 2 (fallback_scope, proposed; a placement check in note 05): the lease's (reviewer, phase_review) is not in the chain entry's authorised_for, so placement refuses it before egress; the packet never leaves, and no fallback usage (usage.json, the incident's shape) is recorded or allowed to replace the primary's record. An authorised fallback of another family would re-check independence first."
+}

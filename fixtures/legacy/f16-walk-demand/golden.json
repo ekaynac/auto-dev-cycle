@@ -1,0 +1,26 @@
+{
+  "source": "t/fixtures/f16-walk-demand/",
+  "class": "A reviewer demands a walk of a new plan while the legacy framework's coarse conclusions stay the same; the review must re-key on the new demand, and a receipt for the old demand must not satisfy it.",
+  "design_refs": [
+    "docs/design/m0/06-receipts.md",
+    "docs/design/m0/10-context-manifest-and-knowledge-spec.md",
+    "docs/design/m0/11-testing.md",
+    "docs/design/m0/12-evidence-jobs.md",
+    "docs/design/m0/13-artifact-graph.md"
+  ],
+  "inputs": {
+    "demand_key_assumption": "demand.key = H(plan_sha256, subject); requested_by (the requesting review) is not part of it",
+    "demands": {
+      "old": {"plan_sha256": "5eed001b00000000000000000000000000000000000000000000000000000000", "receipts": ["walk-1790902623505136290.json", "walk-1790943778019463141.json"]},
+      "new": {"plan_sha256": "5eed002800000000000000000000000000000000000000000000000000000000", "requested_by_packet": "packet-1524-5eed002400000000.json", "receipts": ["walk-1790945582297587810.json"]}
+    }
+  },
+  "expected": [
+    {"outcome": "could_not_run", "reason": "evidence_inapplicable"},
+    {"outcome": "found", "reason": "evidence_observed"},
+    {"outcome": "found", "reason": "review_input_changed"},
+    {"outcome": "empty", "reason": "conclusions_unchanged"}
+  ],
+  "reason_status": "proposed",
+  "notes": "Order: (1) the internal/receipt applicability verdict when walk-1790943778… (old plan) is offered for the new demand: inapplicable (registered); in the graph this is a structural waiting(input), never a cached or retried node result; (2) the new demand gets its own evidence attempt, walk-1790945582… (24 steps against 18); (3) the successor review's key changes: in auto-dev-cycle terms the conclusions differ too (note 06 conclusions_digest includes the demand key and per-step outcomes), only the legacy coarse conclusions were equal; (4) counter-case: walk-1790902623… and walk-1790943778… walk the same plan with equal conclusions, so no re-review. Step 4 holds only under the demand_key_assumption and only if the grant rebind between those walks (different grant digests) changed none of subject, demand, instrument digest or restrictions; both are open points for the vocabulary PR (README)."
+}
