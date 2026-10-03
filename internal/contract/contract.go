@@ -16,8 +16,9 @@
 //     write U+FFFD in its place), and validates its own output. Its bytes are
 //     not a canonical form (key order follows the Go struct): every digest is
 //     taken over the JCS canonicalisation, never over Encode output;
-//   - the adc-time and adc-typeid formats (schemas/common/defs.json) are
-//     asserted: a calendar-valid UTC time, a TypeID over a UUIDv7.
+//   - the adc-time, adc-typeid and adc-reason formats (schemas/common/defs.json)
+//     are asserted: a calendar-valid UTC time, a TypeID over a UUIDv7, and a
+//     reason code registered in the vocabulary (SetReasonCheck).
 //
 // Strict decoding reaches every type decoded by encoding/json's default
 // rules. A type with its own UnmarshalJSON must decode its fields through
@@ -37,6 +38,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -81,6 +83,7 @@ func compile(fsys fs.FS) (registry, error) {
 	c.AssertFormat()
 	c.RegisterFormat(&jsonschema.Format{Name: "adc-time", Validate: onString(checkTime)})
 	c.RegisterFormat(&jsonschema.Format{Name: "adc-typeid", Validate: onString(CheckTypeID)})
+	c.RegisterFormat(&jsonschema.Format{Name: "adc-reason", Validate: onString(checkReason)})
 	for _, p := range paths {
 		b, err := fs.ReadFile(fsys, p)
 		if err != nil {
@@ -123,6 +126,29 @@ func checkTime(s string) error {
 		return fmt.Errorf("not a valid time: %v", err)
 	}
 	return nil
+}
+
+// reasonCheck decides whether a reason code is registered. internal/vocab
+// installs it; until then every reason is refused, so a document with a
+// reason field can never pass unchecked.
+var reasonCheck atomic.Pointer[func(string) error]
+
+// SetReasonCheck installs the vocabulary's reason check (internal/vocab does
+// this when it is imported). nil removes it.
+func SetReasonCheck(check func(code string) error) {
+	if check == nil {
+		reasonCheck.Store(nil)
+		return
+	}
+	reasonCheck.Store(&check)
+}
+
+func checkReason(code string) error {
+	check := reasonCheck.Load()
+	if check == nil {
+		return errors.New("no reason vocabulary is loaded (import internal/vocab)")
+	}
+	return (*check)(code)
 }
 
 // base32 is the TypeID alphabet (Crockford, lowercase).

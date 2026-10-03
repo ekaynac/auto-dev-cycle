@@ -40,6 +40,23 @@ const (
 // (e.g. one decoded from a record) is checked at runtime by Registry.Check.
 type Reason string
 
+// The contract runtime asks the vocabulary about every reason field of every
+// record it decodes or encodes: readers accept every code ever registered.
+// Writers additionally go through Registry.Check, which refuses deprecated
+// codes; adc dev vocab check refuses them in source.
+func init() {
+	contract.SetReasonCheck(func(code string) error {
+		reg, err := Load()
+		if err != nil {
+			return fmt.Errorf("reason vocabulary: %w", err)
+		}
+		if _, ok := reg.Reasons[code]; !ok {
+			return fmt.Errorf("unregistered reason %q", code)
+		}
+		return nil
+	})
+}
+
 // Registry is the loaded, cross-checked vocabulary.
 type Registry struct {
 	Outcomes map[Outcome]string      // outcome → description

@@ -14,7 +14,7 @@ const (
 	OutcomeFailed      Outcome = "failed"
 )
 
-// ReasonCode: Lexical form of a reason code. Registration (schemas/vocab/reasons.yaml) is checked by internal/vocab, not here.
+// ReasonCode: A registered reason code (schemas/vocab/reasons.yaml). adc-reason asks internal/vocab, which readers and writers share; a document with an unregistered code is invalid.
 type ReasonCode = string
 
 // Digest: Content digest: sha256 over the bytes, lowercase hex.

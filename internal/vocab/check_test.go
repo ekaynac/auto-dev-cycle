@@ -3,10 +3,17 @@
 package vocab
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 )
 
 func write(t *testing.T, root, rel, src string) {
@@ -182,6 +189,21 @@ func TestCheckSourceRefusesUnloadableCode(t *testing.T) {
 			t.Fatal("an unloadable tree must make the check could_not_run, not pass")
 		}
 	})
+	t.Run("type error in a skipped directory", func(t *testing.T) {
+		root := synthetic(t)
+		write(t, root, "gen/bad/bad.go", "package bad\n\nvar X int = \"s\"\n")
+		if _, err := reg.CheckSource(root); err == nil || !strings.Contains(err.Error(), "type-check") {
+			t.Fatalf("a skipped package that does not type-check must fail the check, got %v", err)
+		}
+	})
+	t.Run("type error in an imported package", func(t *testing.T) {
+		root := synthetic(t)
+		write(t, root, "gen/bad/bad.go", "package bad\n\nvar X int = \"s\"\n")
+		write(t, root, "a/a.go", "package a\n\nimport \"example.com/x/gen/bad\"\n\nvar Y = bad.X\n")
+		if _, err := reg.CheckSource(root); err == nil || !strings.Contains(err.Error(), "type-check") {
+			t.Fatalf("an imported package that does not type-check must fail the check, got %v", err)
+		}
+	})
 	t.Run("type error", func(t *testing.T) {
 		root := synthetic(t)
 		write(t, root, "a/a.go", "package a\n\nvar x int = \"s\"\n")
@@ -204,18 +226,134 @@ func TestGoNamesRefusesCollisions(t *testing.T) {
 	}
 }
 
+// The generated constants are exactly the registry: every reason and hold,
+// no more, each named by GoName and carrying its own code.
 func TestGeneratedConstantsCoverTheRegistry(t *testing.T) {
 	reg := mustLoad(t)
-	reasons := map[Reason]string{ReasonQuotaExhausted: "quota_exhausted", ReasonStaleAttempt: "stale_attempt"}
-	for got, want := range reasons {
-		if string(got) != want {
-			t.Errorf("constant value %q, want %q", got, want)
+	f, err := parser.ParseFile(token.NewFileSet(), genFile, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, d := range f.Decls {
+		g, ok := d.(*ast.GenDecl)
+		if !ok || g.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range g.Specs {
+			vs := spec.(*ast.ValueSpec)
+			for i, name := range vs.Names {
+				v, err := strconv.Unquote(vs.Values[i].(*ast.BasicLit).Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got[name.Name] = v
+			}
 		}
 	}
-	if HoldBrokerCreditExhausted != "broker_credit_exhausted" {
-		t.Errorf("hold constant value %q", HoldBrokerCreditExhausted)
+	want := map[string]string{}
+	for code := range reg.Reasons {
+		want["Reason"+GoName(code)] = code
 	}
-	if _, ok := reg.Reasons[string(ReasonFallbackScope)]; !ok {
-		t.Error("generated constant names an unregistered reason")
+	for hold := range reg.Holds {
+		want["Hold"+GoName(hold)] = hold
+	}
+	if !reflect.DeepEqual(got, want) {
+		for k, v := range want {
+			if got[k] != v {
+				t.Errorf("missing or wrong: %s = %q (generated %q)", k, v, got[k])
+			}
+		}
+		for k := range got {
+			if _, ok := want[k]; !ok {
+				t.Errorf("extra generated constant %s", k)
+			}
+		}
+	}
+}
+
+// Astra #24: generics instantiated with a reason type are reported, since
+// their reasons come from type-parameter literals.
+func TestCheckSourceReportsReasonGenerics(t *testing.T) {
+	reg := mustLoad(t)
+	root := synthetic(t)
+	write(t, root, "g/g.go", `package g
+
+import "example.com/x/vocab"
+
+func bad[T ~string]() T { return "typo_generic" }
+
+type Box[T ~string] struct{}
+
+func (Box[T]) Reason() T { return "typo_method" }
+
+var _ = vocab.Result{Reason: bad[vocab.Reason]()}
+var _ = Box[vocab.Reason]{}.Reason
+var _ = bad[string]()
+`)
+	got := findings(t, reg, root)
+	for _, want := range []string{"g/g.go:11:30: generic bad instantiated with a reason type", "g/g.go:12:9: generic Box instantiated with a reason type"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Count(got, "\n")+1 != 2 {
+		t.Errorf("want exactly two findings (bad[string] is not a reason), got:\n%s", got)
+	}
+}
+
+// Astra #24: the reason fields of the generated contract records
+// (types.ReasonCode) are reason types too; a converted generated constant is
+// the constant.
+func TestCheckSourceCoversContractReasonFields(t *testing.T) {
+	reg := mustLoad(t)
+	root := synthetic(t)
+	write(t, root, "types/types.go", `package types
+
+type ReasonCode = string
+
+type Predicate struct {
+	Reason ReasonCode
+}
+`)
+	write(t, root, "r/r.go", `package r
+
+import (
+	"example.com/x/types"
+	"example.com/x/vocab"
+)
+
+var _ = types.Predicate{Reason: "typo_field"}
+var _ = types.Predicate{Reason: string(vocab.ReasonStaleAttempt)}
+var _ = types.Predicate{Reason: types.ReasonCode(vocab.ReasonStaleAttempt)}
+`)
+	want := `r/r.go:8:33: unregistered reason "typo_field" (raw literal)`
+	if got := findings(t, reg, root); got != want {
+		t.Fatalf("findings:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// Astra #24: a deprecated code may not be written, even through its
+// generated constant.
+func TestCheckSourceReportsDeprecatedConstants(t *testing.T) {
+	reg := mustLoad(t)
+	dep := &Registry{Outcomes: reg.Outcomes, Holds: reg.Holds, Reasons: map[string]types.Reason{}}
+	for k, v := range reg.Reasons {
+		dep.Reasons[k] = v
+	}
+	x := dep.Reasons["stale_attempt"]
+	since := "0.2.0"
+	x.Deprecated = &since
+	dep.Reasons["stale_attempt"] = x
+	root := synthetic(t)
+	write(t, root, "a/a.go", `package a
+
+import "example.com/x/vocab"
+
+var _ = vocab.Result{Reason: vocab.ReasonStaleAttempt}
+`)
+	want := `a/a.go:5:30: deprecated reason "stale_attempt" (since 0.2.0); writers may not emit it`
+	if got := findings(t, dep, root); got != want {
+		t.Fatalf("findings:\n%s\nwant:\n%s", got, want)
 	}
 }

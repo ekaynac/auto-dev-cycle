@@ -51,4 +51,5 @@ reasons:
 
   # --- adapters, sandbox, config ---------------------------------------------
   - {code: unsafe_output, outcomes: [failed], domain: adapter, introduced: 0.1.0, deprecated: null, source: "09", description: "An adapter output violated the ingestion boundary (symlink, special file, digest mismatch, foreign handle)."}
+  - {code: check_unloadable, outcomes: [could_not_run], domain: ops, introduced: 0.1.0, deprecated: null, source: "02", description: "A source check could not load or type-check the code it checks; it never passes."}
   - {code: project_unconfigured, outcomes: [could_not_run], domain: ops, introduced: 0.1.0, deprecated: null, source: "07", description: "The project has no valid adopted profile; refuse to run."}

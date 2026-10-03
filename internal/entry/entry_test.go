@@ -5,6 +5,7 @@ package entry
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,5 +104,30 @@ func TestVocabCheckCommand(t *testing.T) {
 	}
 	if code := Main("adcd", []string{"dev", "vocab", "check"}, &out, &errOut); code != ExitUsage {
 		t.Fatalf("adcd dev: exit %d, want usage", code)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+// Astra #24: could_not_run in JSON mode still prints one result document,
+// and a report that cannot be written is could_not_run, never a pass.
+func TestVocabCheckFailureOutput(t *testing.T) {
+	var out, errOut bytes.Buffer
+	missing := filepath.Join(t.TempDir(), "nowhere")
+	if code := Main("adc", []string{"dev", "vocab", "check", "--root", missing, "--json"}, &out, &errOut); code != ExitCouldNotRun {
+		t.Fatalf("missing root: exit %d", code)
+	}
+	var doc struct{ Outcome, Reason, Detail string }
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.Outcome != "could_not_run" || doc.Reason != "check_unloadable" || doc.Detail == "" {
+		t.Fatalf("JSON error document %q (%v)", out.String(), err)
+	}
+	if errOut.Len() == 0 {
+		t.Fatal("no diagnostic on stderr")
+	}
+	errOut.Reset()
+	if code := Main("adc", []string{"dev", "vocab", "check", "--root", "../.."}, failingWriter{}, &errOut); code != ExitCouldNotRun {
+		t.Fatalf("unwritable report: exit %d, want %d", code, ExitCouldNotRun)
 	}
 }

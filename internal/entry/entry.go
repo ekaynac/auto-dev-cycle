@@ -83,15 +83,25 @@ func vocabCheck(args []string, stdout, stderr io.Writer) int {
 			return ExitUsage
 		}
 	}
+	// could not run: the diagnostic on stderr and, in JSON mode, one result
+	// document on stdout (note 08).
+	couldNotRun := func(err error) int {
+		fmt.Fprintf(stderr, "adc dev vocab check: could_not_run: %v\n", err)
+		if asJSON {
+			doc := vocab.Result{Outcome: vocab.CouldNotRun, Reason: vocab.ReasonCheckUnloadable, Detail: err.Error()}
+			if werr := json.NewEncoder(stdout).Encode(doc); werr != nil {
+				fmt.Fprintf(stderr, "adc dev vocab check: could_not_run: writing JSON: %v\n", werr)
+			}
+		}
+		return ExitCouldNotRun
+	}
 	reg, err := vocab.Load()
 	if err != nil {
-		fmt.Fprintf(stderr, "adc dev vocab check: could_not_run: registry: %v\n", err)
-		return ExitCouldNotRun
+		return couldNotRun(fmt.Errorf("registry: %w", err))
 	}
 	findings, err := reg.CheckSource(root)
 	if err != nil {
-		fmt.Fprintf(stderr, "adc dev vocab check: could_not_run: %v\n", err)
-		return ExitCouldNotRun
+		return couldNotRun(err)
 	}
 	if asJSON {
 		if findings == nil {
@@ -102,10 +112,19 @@ func vocabCheck(args []string, stdout, stderr io.Writer) int {
 			return ExitCouldNotRun
 		}
 	} else {
+		var werr error
 		for _, f := range findings {
-			fmt.Fprintf(stdout, "%s: %s\n", f.Pos, f.Problem)
+			if _, err := fmt.Fprintf(stdout, "%s: %s\n", f.Pos, f.Problem); err != nil && werr == nil {
+				werr = err
+			}
 		}
-		fmt.Fprintf(stdout, "vocab check: %d reasons, %d holds registered; %d finding(s)\n", len(reg.Reasons), len(reg.Holds), len(findings))
+		if _, err := fmt.Fprintf(stdout, "vocab check: %d reasons, %d holds registered; %d finding(s)\n", len(reg.Reasons), len(reg.Holds), len(findings)); err != nil && werr == nil {
+			werr = err
+		}
+		if werr != nil {
+			fmt.Fprintf(stderr, "adc dev vocab check: could_not_run: writing the report: %v\n", werr)
+			return ExitCouldNotRun
+		}
 	}
 	if len(findings) > 0 {
 		return ExitRefused

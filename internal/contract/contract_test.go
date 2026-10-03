@@ -5,6 +5,7 @@ package contract
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math/big"
 	"strings"
@@ -35,7 +36,8 @@ const docSchema = `{
       "minProperties": 1,
       "maxProperties": 1
     },
-    "scope": {"type": "object"}
+    "scope": {"type": "object"},
+    "why": {"$ref": "../common/defs.json#/$defs/ReasonCode"}
   }
 }`
 
@@ -344,4 +346,26 @@ func TestEncodeChecksWhatTheEncoderWrites(t *testing.T) {
 	if _, err := r.encode("test/doc", n); err != nil {
 		t.Fatalf("ignored fields were checked or followed: %v", err)
 	}
+}
+
+// Reason fields are checked by the installed vocabulary; with none
+// installed, every reason is refused (fail closed).
+func TestReasonFieldsNeedTheVocabulary(t *testing.T) {
+	r := testRegistry(t)
+	doc := func(why string) []byte {
+		return []byte(strings.Replace(valid(), `"note":"r"`, `"note":"r","why":"`+why+`"`, 1))
+	}
+	t.Cleanup(func() { SetReasonCheck(nil) })
+	SetReasonCheck(nil)
+	contractError(t, r.validate("test/doc", doc("known")), "no reason vocabulary is loaded")
+	SetReasonCheck(func(code string) error {
+		if code != "known" {
+			return fmt.Errorf("unregistered reason %q", code)
+		}
+		return nil
+	})
+	if err := r.validate("test/doc", doc("known")); err != nil {
+		t.Fatalf("a registered reason: %v", err)
+	}
+	contractError(t, r.validate("test/doc", doc("typo")), `unregistered reason "typo"`)
 }

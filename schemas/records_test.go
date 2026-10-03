@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	_ "github.com/ekaynac/auto-dev-cycle/internal/vocab" // installs the contract's reason check
 )
 
 const (
@@ -50,11 +51,11 @@ func receipt(subject string) map[string]any {
 			"model_families": []any{"claude"}, "contributors": []any{actID}},
 		"produced_at": "2026-10-03T10:00:00Z",
 		"valid_until": nil,
-		"predicates": []any{map[string]any{"name": "tests", "outcome": "empty", "reason": "none", "detail": "",
+		"predicates": []any{map[string]any{"name": "tests", "outcome": "empty", "reason": "completed_clean", "detail": "",
 			"evidence": []any{map[string]any{"blob": dgB, "media_type": "application/junit+xml", "artifact": "junit"}},
 			"payload":  map[string]any{"passed": 12}}},
 		"outcome":            "empty",
-		"reason":             "none",
+		"reason":             "completed_clean",
 		"detail":             "",
 		"verdict":            nil,
 		"conclusions_digest": dgB,

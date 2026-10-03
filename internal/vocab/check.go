@@ -59,25 +59,34 @@ var skipDirs = map[string]bool{".git": true, "gen": true, "fixtures": true, "nod
 const genFile = "vocab.gen.go"
 
 // CheckSource type-checks the Go packages of the module at root (go list
-// ./..., non-test files) and reports every constant expression whose type is
-// the reason type, unless it is a generated constant from vocab.gen.go used by
-// name. It catches literals, named constants, concatenations and conversions
-// in any position: composite literals, assignments, call arguments,
-// comparisons, switch cases, map keys; through aliased and dot imports alike.
-// A registered value is reported as a bypass, an unregistered one as
-// unregistered (docs/design/m0/02 `adc dev vocab check`).
+// ./..., non-test files) and reports:
+//   - every constant expression of a reason type that is not a generated
+//     constant from vocab.gen.go used by name (or converted): literals, named
+//     constants, concatenations and conversions in any position, through
+//     aliased and dot imports. A registered value is reported as a bypass, an
+//     unregistered one as unregistered (docs/design/m0/02 `adc dev vocab check`);
+//   - every generated constant whose code is deprecated (writers may not emit
+//     it);
+//   - every generic function or type instantiated with a reason type, whose
+//     reasons come from type-parameter literals the scan cannot see.
+//
+// The reason types are vocab.Reason and the generated types.ReasonCode, the
+// type of every reason field of the contract records.
 //
 // Matching rule: the reason type is any named type called Reason declared in
 // a package named vocab, and the generated constants are the constants
 // declared in that package's file vocab.gen.go. Matching by package name, not
 // import path, lets the tests use a synthetic module.
 //
-// Not covered: test files (they build malformed results on purpose), values
-// converted from non-constant strings (checked at runtime by Check), string
-// fields of other types (such as the generated types.Receipt.Reason), and
-// TypeScript (no TS code exists yet).
+// The scan is not the only line: a reason built at run time (from a
+// non-constant string, a []byte, a pointer) is refused when its record is
+// decoded or encoded, because internal/contract checks every reason field
+// against the vocabulary (adc-reason), and writers go through Registry.Check.
+// Not scanned: test files (they build malformed results on purpose) and
+// TypeScript (there is no product TS emitter yet).
 //
-// A package that does not load or type-check makes the check fail with an
+// A package that does not load or type-check, wherever it lives (skipped
+// directories and imported packages included), makes the check fail with an
 // error, never pass.
 func (reg *Registry) CheckSource(root string) ([]Finding, error) {
 	absRoot, err := filepath.Abs(root)
@@ -86,23 +95,32 @@ func (reg *Registry) CheckSource(root string) ([]Finding, error) {
 	}
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
-			packages.NeedTypes | packages.NeedTypesInfo,
+			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports,
 		Dir: absRoot,
 	}
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
 		return nil, fmt.Errorf("load packages under %s: %w", root, err)
 	}
-	var found []located
+	// Every package must load and type-check before any is excluded from the
+	// scan: a failure in a skipped directory or in an imported package is a
+	// failure of the check, never a pass.
 	var loadErrs []string
 	for _, pkg := range pkgs {
-		if skipped(absRoot, pkg) {
-			continue
-		}
 		for _, e := range pkg.Errors {
 			loadErrs = append(loadErrs, e.Error())
 		}
-		if len(pkg.Errors) > 0 || pkg.TypesInfo == nil {
+		if len(pkg.Errors) == 0 && (pkg.IllTyped || pkg.TypesInfo == nil) {
+			loadErrs = append(loadErrs, pkg.PkgPath+": no complete type information")
+		}
+	}
+	if len(loadErrs) > 0 {
+		sort.Strings(loadErrs)
+		return nil, fmt.Errorf("packages under %s do not type-check:\n  %s", root, strings.Join(loadErrs, "\n  "))
+	}
+	var found []located
+	for _, pkg := range pkgs {
+		if skipped(absRoot, pkg) {
 			continue
 		}
 		for _, file := range pkg.Syntax {
@@ -110,14 +128,20 @@ func (reg *Registry) CheckSource(root string) ([]Finding, error) {
 			if pkg.Name == "vocab" && filepath.Base(name) == genFile {
 				continue
 			}
-			for _, e := range reasonConstants(pkg.Fset, pkg.TypesInfo, file) {
+			cands, generated := reasonConstants(pkg.Fset, pkg.TypesInfo, file)
+			for _, e := range cands {
 				found = append(found, reg.finding(absRoot, pkg, e))
 			}
+			for _, e := range generated {
+				if f, ok := reg.deprecated(absRoot, pkg, e); ok {
+					found = append(found, f)
+				}
+			}
+			for _, id := range reasonInstances(pkg.TypesInfo, file) {
+				found = append(found, locate(absRoot, pkg, id.Pos(), fmt.Sprintf(
+					"generic %s instantiated with a reason type: its reasons cannot be checked statically; use the generated constants", id.Name)))
+			}
 		}
-	}
-	if len(loadErrs) > 0 {
-		sort.Strings(loadErrs)
-		return nil, fmt.Errorf("packages under %s do not type-check:\n  %s", root, strings.Join(loadErrs, "\n  "))
 	}
 	if len(pkgs) == 0 {
 		return nil, fmt.Errorf("no Go packages under %s", root)
@@ -156,10 +180,11 @@ func skipped(absRoot string, pkg *packages.Package) bool {
 	return false
 }
 
-// reasonConstants returns the outermost constant expressions of the reason
-// type in file that are not a generated constant used by name.
-func reasonConstants(fset *token.FileSet, info *types.Info, file *ast.File) []ast.Expr {
-	var cands []ast.Expr
+// reasonConstants returns the outermost constant expressions of a reason
+// type in file: those that are not a generated constant used by name (or
+// converted), and those that are.
+func reasonConstants(fset *token.FileSet, info *types.Info, file *ast.File) (cands, generated []ast.Expr) {
+	var all []ast.Expr
 	ast.Inspect(file, func(n ast.Node) bool {
 		e, ok := n.(ast.Expr)
 		if !ok {
@@ -169,20 +194,68 @@ func reasonConstants(fset *token.FileSet, info *types.Info, file *ast.File) []as
 		if !ok || tv.Value == nil || tv.Value.Kind() != constant.String || !isReason(tv.Type) {
 			return true
 		}
-		cands = append(cands, e)
+		all = append(all, e)
 		return false // the outermost expression is the finding
 	})
-	var out []ast.Expr
-	for _, e := range cands {
-		if !isGenerated(fset, info, e) {
-			out = append(out, e)
+	for _, e := range all {
+		if isGenerated(fset, info, e) {
+			generated = append(generated, e)
+		} else {
+			cands = append(cands, e)
+		}
+	}
+	return cands, generated
+}
+
+// reasonInstances returns the generic functions and types in file
+// instantiated with a reason type (directly or as an element type): code
+// inside them builds reasons the scan cannot see, from literals of a type
+// parameter.
+func reasonInstances(info *types.Info, file *ast.File) []*ast.Ident {
+	var out []*ast.Ident
+	for id, inst := range info.Instances {
+		if id.Pos() < file.Pos() || id.Pos() > file.End() {
+			continue
+		}
+		for i := 0; i < inst.TypeArgs.Len(); i++ {
+			if containsReason(inst.TypeArgs.At(i)) {
+				out = append(out, id)
+				break
+			}
 		}
 	}
 	return out
 }
 
-// isReason matches the named type Reason of a package named vocab.
+func containsReason(t types.Type) bool {
+	if isReason(t) {
+		return true
+	}
+	switch u := types.Unalias(t).(type) {
+	case *types.Pointer:
+		return containsReason(u.Elem())
+	case *types.Slice:
+		return containsReason(u.Elem())
+	case *types.Array:
+		return containsReason(u.Elem())
+	case *types.Map:
+		return containsReason(u.Key()) || containsReason(u.Elem())
+	case *types.Chan:
+		return containsReason(u.Elem())
+	}
+	return false
+}
+
+// isReason matches the named type Reason of a package named vocab, and the
+// generated alias ReasonCode of a package named types (the reason fields of
+// the contract records, e.g. types.Predicate.Reason).
 func isReason(t types.Type) bool {
+	if a, ok := t.(*types.Alias); ok {
+		obj := a.Obj()
+		if obj.Name() == "ReasonCode" && obj.Pkg() != nil && obj.Pkg().Name() == "types" {
+			return true
+		}
+	}
 	n, ok := types.Unalias(t).(*types.Named)
 	if !ok {
 		return false
@@ -194,6 +267,13 @@ func isReason(t types.Type) bool {
 // isGenerated: e names (directly, or qualified) a constant declared in the
 // vocab package's generated file.
 func isGenerated(fset *token.FileSet, info *types.Info, e ast.Expr) bool {
+	// A conversion of a generated constant (string(vocab.ReasonX) into a
+	// record's ReasonCode field) is the constant.
+	if call, ok := ast.Unparen(e).(*ast.CallExpr); ok && len(call.Args) == 1 {
+		if tv, ok := info.Types[call.Fun]; ok && tv.IsType() {
+			return isGenerated(fset, info, call.Args[0])
+		}
+	}
 	c := namedConst(info, e)
 	if c == nil || c.Pkg() == nil || c.Pkg().Name() != "vocab" || !c.Pos().IsValid() {
 		return false
@@ -225,14 +305,33 @@ type located struct {
 	line, col int
 }
 
-func (reg *Registry) finding(absRoot string, pkg *packages.Package, e ast.Expr) located {
-	tv := pkg.TypesInfo.Types[e]
-	code := constant.StringVal(tv.Value)
-	pos := pkg.Fset.Position(e.Pos())
+// deprecated reports a generated constant whose code the registry has
+// deprecated: writers may not emit it, and the scan sees only writers' code.
+func (reg *Registry) deprecated(absRoot string, pkg *packages.Package, e ast.Expr) (located, bool) {
+	code := constant.StringVal(pkg.TypesInfo.Types[e].Value)
+	if x, ok := reg.Reasons[code]; ok && x.Deprecated != nil {
+		return locate(absRoot, pkg, e.Pos(), fmt.Sprintf("deprecated reason %q (since %s); writers may not emit it", code, *x.Deprecated)), true
+	}
+	return located{}, false
+}
+
+// locate places a finding at pos, relative to the scanned root.
+func locate(absRoot string, pkg *packages.Package, p token.Pos, problem string) located {
+	pos := pkg.Fset.Position(p)
 	rel, err := filepath.Rel(absRoot, pos.Filename)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		rel = pos.Filename
 	}
+	rel = filepath.ToSlash(rel)
+	return located{
+		Finding: Finding{Pos: fmt.Sprintf("%s:%d:%d", rel, pos.Line, pos.Column), Problem: problem},
+		file:    rel, line: pos.Line, col: pos.Column,
+	}
+}
+
+func (reg *Registry) finding(absRoot string, pkg *packages.Package, e ast.Expr) located {
+	tv := pkg.TypesInfo.Types[e]
+	code := constant.StringVal(tv.Value)
 	form := "constant expression"
 	switch x := ast.Unparen(e).(type) {
 	case *ast.BasicLit:
@@ -248,9 +347,5 @@ func (reg *Registry) finding(absRoot string, pkg *packages.Package, e ast.Expr) 
 	if _, registered := reg.Reasons[code]; !registered {
 		problem = fmt.Sprintf("unregistered reason %q (%s)", code, form)
 	}
-	rel = filepath.ToSlash(rel)
-	return located{
-		Finding: Finding{Pos: fmt.Sprintf("%s:%d:%d", rel, pos.Line, pos.Column), Problem: problem},
-		file:    rel, line: pos.Line, col: pos.Column,
-	}
+	return locate(absRoot, pkg, e.Pos(), problem)
 }

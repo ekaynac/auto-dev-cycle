@@ -14,6 +14,8 @@ const (
 	ReasonBrokerCreditExhausted Reason = "broker_credit_exhausted"
 	// ReasonCandidateOwnedSetupError: A setup/teardown error in a test file the candidate added or changed, fully accounted; routed to a builder repair (07 ownership rules).
 	ReasonCandidateOwnedSetupError Reason = "candidate_owned_setup_error"
+	// ReasonCheckUnloadable: A source check could not load or type-check the code it checks; it never passes.
+	ReasonCheckUnloadable Reason = "check_unloadable"
 	// ReasonClosureRepair: A finding about the closing record; routed to a new closure step, never to the builder.
 	ReasonClosureRepair Reason = "closure_repair"
 	// ReasonCompletedClean: The check ran completely and found nothing.
