@@ -69,8 +69,12 @@ The Go toolchain is installed per user from the official tarball (`~/.local/go`)
     integers **bounded within ±(2^53−1)**, booleans, closed objects, nullable `oneOf [null, X]` (**always
     required**: null is explicit, absence invalid), `const`-discriminated `oneOf` as a sealed interface, keyed
     `oneOf`, array-or-literal `oneOf`, typed maps, open payloads (`x-adc-open-payload`) as raw JSON with typed
-    accessors for each selectable schema, `allOf` envelope embedding. **Any other shape is refused** at generation
-    time, so nothing degrades to `interface{}`. Both third-party Go generators tried fail this.
+    accessors for each selectable schema, `allOf` envelope embedding. Two validation-only forms keep the Go shape and
+    are accepted: a `$ref` to a plain string schema refined by `pattern`, `minLength`, `maxLength` or `format` (the
+    entity-specific ids), and `if`/`then`/`else` conditions, on an object or in its `allOf`, that only constrain
+    properties the object declares with `const`, `enum`, `not`, lengths, `pattern` or bounds (e.g. "non-empty detail
+    unless the outcome is `empty`"). **Any other shape is refused** at generation time, so nothing degrades to
+    `interface{}`. Both third-party Go generators tried fail this.
   - **Decoding and encoding:** `Decode` validates the bytes, then decodes the same bytes strictly (unknown fields
     and trailing data rejected at every level; non-integral integer spellings refused); `Encode` validates its
     output. Types never stand in for validation.
