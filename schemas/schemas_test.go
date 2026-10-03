@@ -5,21 +5,44 @@ package schemas
 import (
 	"encoding/json"
 	"io/fs"
-	"regexp"
+	"reflect"
 	"testing"
+	"testing/fstest"
 )
 
-func TestSetDigestStableAndWellFormed(t *testing.T) {
-	a, err := SetDigest()
+// The expected value was computed outside Go:
+//
+//	printf 'a/x.json\0%s\nb/c/y.json\0%s\n' "$(printf '{}' | sha256sum | cut -c1-64)" \
+//	  "$(printf '[1]' | sha256sum | cut -c1-64)" | sha256sum
+func TestDigestOfMatchesTheFraming(t *testing.T) {
+	got, err := DigestOf(fstest.MapFS{
+		"b/c/y.json":   {Data: []byte("[1]")},
+		"a/x.json":     {Data: []byte("{}")},
+		"a/readme.md":  {Data: []byte("not a schema")},
+		"b/c/notes.go": {Data: []byte("package c")},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := SetDigest()
-	if a != b {
-		t.Fatalf("digest not stable: %s vs %s", a, b)
+	if want := "sha256:d82741bce6b16eda887516f7067963bd62502f6f2bbbc2372cbfcf5685924477"; got != want {
+		t.Fatalf("DigestOf = %s, want %s", got, want)
 	}
-	if !regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(a) {
-		t.Fatalf("malformed digest %q", a)
+}
+
+// The embedded inventory is exactly the schema files of this release; adding
+// one means listing it here and in the go:embed directive.
+func TestEmbeddedInventory(t *testing.T) {
+	paths, err := Paths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"common/defs.json"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("embedded schemas = %v, want %v", paths, want)
+	}
+	a, _ := SetDigest()
+	b, _ := DigestOf(FS())
+	if a != b {
+		t.Fatalf("SetDigest %s differs from DigestOf(FS()) %s", a, b)
 	}
 }
 

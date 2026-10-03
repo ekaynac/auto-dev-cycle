@@ -7,12 +7,20 @@
 //   - trailing data after the document is refused;
 //   - numbers must be spelled as integers (M0 contracts have no floats), and -0
 //     is refused, so Go and TypeScript agree on identity;
-//   - duplicate object keys (at any depth) and invalid UTF-8 are refused:
-//     encoding/json would silently keep the last duplicate or substitute
-//     U+FFFD, while JCS (event hashes, input digests) refuses them;
-//   - Encode validates its own output before returning it. Its bytes are not a
-//     canonical form (key order follows the Go struct): every digest is taken
-//     over the JCS canonicalisation, never over Encode output.
+//   - duplicate object keys (at any depth), invalid UTF-8 and unpaired
+//     surrogate escapes are refused: encoding/json would silently keep the
+//     last duplicate or substitute U+FFFD, while JCS (event hashes, input
+//     digests) refuses them;
+//   - Encode refuses Go strings that are not valid UTF-8 (encoding/json would
+//     write U+FFFD in their place) and validates its own output. Its bytes are
+//     not a canonical form (key order follows the Go struct): every digest is
+//     taken over the JCS canonicalisation, never over Encode output;
+//   - the adc-time and adc-typeid formats (schemas/common/defs.json) are
+//     asserted: a calendar-valid UTC time, a TypeID over a UUIDv7.
+//
+// Strict decoding reaches every type decoded by encoding/json's default
+// rules. A type with its own UnmarshalJSON must decode its fields through
+// UnmarshalStrict, as generated decoders do; Decode cannot see inside it.
 package contract
 
 import (
@@ -22,9 +30,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -34,74 +46,135 @@ import (
 
 // Error reports a document that does not satisfy its contract.
 type Error struct {
-	Schema string // schema path, e.g. "records/receipt"
+	Schema string // schema path without .json, e.g. "common/defs"
 	Detail string
 }
 
 func (e *Error) Error() string { return "contract " + e.Schema + ": " + e.Detail }
 
+// registry is a compiled schema set, keyed by path without ".json".
+type registry map[string]*jsonschema.Schema
+
 var (
 	loadOnce sync.Once
-	compiled map[string]*jsonschema.Schema
+	embedded registry
 	loadErr  error
 )
 
-// load compiles every embedded schema once. A schema that does not compile is
+// load compiles the embedded schemas once. A schema that does not compile is
 // a build defect, reported on every call.
-func load() (map[string]*jsonschema.Schema, error) {
-	loadOnce.Do(func() {
-		paths, err := schemas.Paths()
+func load() (registry, error) {
+	loadOnce.Do(func() { embedded, loadErr = compile(schemas.FS()) })
+	return embedded, loadErr
+}
+
+// compile builds a registry from every schema file in fsys; each file's $id
+// is schemas.Base + its path, so cross-file $refs resolve inside fsys only.
+func compile(fsys fs.FS) (registry, error) {
+	paths, err := schemas.PathsIn(fsys)
+	if err != nil {
+		return nil, err
+	}
+	c := jsonschema.NewCompiler()
+	c.AssertFormat()
+	c.RegisterFormat(&jsonschema.Format{Name: "adc-time", Validate: onString(checkTime)})
+	c.RegisterFormat(&jsonschema.Format{Name: "adc-typeid", Validate: onString(checkTypeID)})
+	for _, p := range paths {
+		b, err := fs.ReadFile(fsys, p)
 		if err != nil {
-			loadErr = err
-			return
+			return nil, err
 		}
-		c := jsonschema.NewCompiler()
-		for _, p := range paths {
-			b, err := fs.ReadFile(schemas.FS(), p)
-			if err != nil {
-				loadErr = err
-				return
-			}
-			doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(b))
-			if err != nil {
-				loadErr = fmt.Errorf("schema %s: %w", p, err)
-				return
-			}
-			if err := c.AddResource(schemas.Base+p, doc); err != nil {
-				loadErr = fmt.Errorf("schema %s: %w", p, err)
-				return
-			}
+		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(b))
+		if err != nil {
+			return nil, fmt.Errorf("schema %s: %w", p, err)
 		}
-		out := map[string]*jsonschema.Schema{}
-		for _, p := range paths {
-			s, err := c.Compile(schemas.Base + p)
-			if err != nil {
-				loadErr = fmt.Errorf("schema %s: %w", p, err)
-				return
-			}
-			out[strings.TrimSuffix(p, ".json")] = s
+		if err := c.AddResource(schemas.Base+p, doc); err != nil {
+			return nil, fmt.Errorf("schema %s: %w", p, err)
 		}
-		compiled = out
-	})
-	return compiled, loadErr
+	}
+	out := registry{}
+	for _, p := range paths {
+		s, err := c.Compile(schemas.Base + p)
+		if err != nil {
+			return nil, fmt.Errorf("schema %s: %w", p, err)
+		}
+		out[strings.TrimSuffix(p, ".json")] = s
+	}
+	return out, nil
+}
+
+// onString applies a string check; other types are not this format's concern
+// (the schema's "type" keyword covers them).
+func onString(check func(string) error) func(any) error {
+	return func(v any) error {
+		if s, ok := v.(string); ok {
+			return check(s)
+		}
+		return nil
+	}
+}
+
+// checkTime requires a real calendar date and clock time; the schema pattern
+// already fixes the lexical form (UTC, Z suffix).
+func checkTime(s string) error {
+	if _, err := time.Parse(time.RFC3339Nano, s); err != nil {
+		return fmt.Errorf("not a valid time: %v", err)
+	}
+	return nil
+}
+
+// base32 is the TypeID alphabet (Crockford, lowercase).
+const base32 = "0123456789abcdefghjkmnpqrstvwxyz"
+
+// checkTypeID decodes the 26-char suffix to 128 bits and requires a UUIDv7:
+// version nibble 7 and the RFC 9562 variant (binary 10).
+func checkTypeID(s string) error {
+	i := strings.LastIndexByte(s, '_')
+	suffix := s[i+1:]
+	if i < 0 || len(suffix) != 26 || suffix[0] > '7' {
+		return errors.New("not a TypeID suffix")
+	}
+	var hi, lo uint64 // 130 bits read, the top 2 of the first char are zero
+	for _, c := range []byte(suffix) {
+		d := strings.IndexByte(base32, c)
+		if d < 0 {
+			return fmt.Errorf("invalid TypeID character %q", c)
+		}
+		hi = hi<<5 | lo>>59
+		lo = lo<<5 | uint64(d)
+	}
+	if version := hi >> 12 & 0xf; version != 7 {
+		return fmt.Errorf("TypeID is a UUIDv%d, want UUIDv7", version)
+	}
+	if variant := lo >> 62; variant != 2 {
+		return errors.New("TypeID has a non-RFC 9562 UUID variant")
+	}
+	return nil
 }
 
 // integer is the only number spelling accepted: no fraction, no exponent, no
 // leading zeros, no -0.
 var integer = regexp.MustCompile(`^(0|-?[1-9][0-9]*)$`)
 
-// Validate checks data against the named schema (e.g. "records/receipt").
+// Validate checks data against the named schema (e.g. "common/defs").
 func Validate(schema string, data []byte) error {
-	all, err := load()
+	r, err := load()
 	if err != nil {
 		return err
 	}
-	s, ok := all[schema]
+	return r.validate(schema, data)
+}
+
+func (r registry) validate(schema string, data []byte) error {
+	s, ok := r[schema]
 	if !ok {
 		return &Error{Schema: schema, Detail: "unknown schema"}
 	}
 	if !utf8.Valid(data) {
 		return &Error{Schema: schema, Detail: "not JSON: invalid UTF-8"}
+	}
+	if err := checkEscapes(data); err != nil {
+		return &Error{Schema: schema, Detail: err.Error()}
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
@@ -120,6 +193,48 @@ func Validate(schema string, data []byte) error {
 		return &Error{Schema: schema, Detail: err.Error()}
 	}
 	return nil
+}
+
+// checkEscapes walks the \u escapes inside string literals and refuses an
+// unpaired surrogate, which encoding/json would turn into U+FFFD. Malformed
+// JSON is left to the decoder.
+func checkEscapes(data []byte) error {
+	inString := false
+	for i := 0; i < len(data); i++ {
+		switch c := data[i]; {
+		case c == '"':
+			inString = !inString
+		case c == '\\' && inString:
+			i++
+			if i >= len(data) || data[i] != 'u' {
+				continue
+			}
+			r, ok := hex4(data, i+1)
+			i += 4
+			if !ok || !utf16.IsSurrogate(r) {
+				continue
+			}
+			if r >= 0xdc00 { // a low surrogate with no high one before it
+				return errors.New(`unpaired surrogate escape \u` + fmt.Sprintf("%04x", r))
+			}
+			if i+2 >= len(data) || data[i+1] != '\\' || data[i+2] != 'u' {
+				return errors.New(`unpaired surrogate escape \u` + fmt.Sprintf("%04x", r))
+			}
+			if lo, ok := hex4(data, i+3); !ok || lo < 0xdc00 || lo > 0xdfff {
+				return errors.New(`unpaired surrogate escape \u` + fmt.Sprintf("%04x", r))
+			}
+			i += 6
+		}
+	}
+	return nil
+}
+
+func hex4(data []byte, at int) (rune, bool) {
+	if at+4 > len(data) {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(string(data[at:at+4]), 16, 32)
+	return rune(n), err == nil
 }
 
 // strictError is a well-formed JSON document that breaks the stricter rules.
@@ -183,16 +298,38 @@ func readValue(dec *json.Decoder) (any, error) {
 	}
 }
 
-// Decode validates data against the schema, then decodes the same bytes into
-// a T, refusing unknown fields at every level.
-func Decode[T any](schema string, data []byte) (T, error) {
-	var out T
-	if err := Validate(schema, data); err != nil {
-		return out, err
-	}
+// UnmarshalStrict decodes one JSON value into v, refusing unknown fields and
+// trailing data. Custom UnmarshalJSON methods on contract types use it so
+// that strictness does not stop at their boundary.
+func UnmarshalStrict(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&out); err != nil {
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("trailing data after the value")
+	}
+	return nil
+}
+
+// Decode validates data against the schema, then decodes the same bytes into
+// a T, refusing unknown fields at every level the default decoder reaches.
+func Decode[T any](schema string, data []byte) (T, error) {
+	var out T
+	r, err := load()
+	if err != nil {
+		return out, err
+	}
+	return decode[T](r, schema, data)
+}
+
+func decode[T any](r registry, schema string, data []byte) (T, error) {
+	var out T
+	if err := r.validate(schema, data); err != nil {
+		return out, err
+	}
+	if err := UnmarshalStrict(data, &out); err != nil {
 		return out, &Error{Schema: schema, Detail: "valid document does not fit the Go type: " + err.Error()}
 	}
 	return out, nil
@@ -201,15 +338,64 @@ func Decode[T any](schema string, data []byte) (T, error) {
 // Encode marshals v and validates the result, so nothing reaches the wire
 // unvalidated. The bytes are not canonical; digest the JCS form instead.
 func Encode(schema string, v any) ([]byte, error) {
+	r, err := load()
+	if err != nil {
+		return nil, err
+	}
+	return r.encode(schema, v)
+}
+
+func (r registry) encode(schema string, v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false) // <, > and & as themselves, as JSON.stringify writes them
 	if err := enc.Encode(v); err != nil {
 		return nil, &Error{Schema: schema, Detail: "marshal: " + err.Error()}
 	}
+	// encoding/json writes U+FFFD for a string byte that is not valid UTF-8,
+	// indistinguishable in its output from a genuine U+FFFD, so the strings
+	// are checked in v itself. The marshal above has refused cycles.
+	if !validStrings(reflect.ValueOf(v)) {
+		return nil, &Error{Schema: schema, Detail: "a string is not valid UTF-8"}
+	}
 	data := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
-	if err := Validate(schema, data); err != nil {
+	if err := r.validate(schema, data); err != nil {
 		return nil, err
 	}
 	return data, nil
+}
+
+// validStrings reports whether every string reachable the way encoding/json
+// reaches it (exported fields, elements, map keys and values) is valid UTF-8.
+// Byte slices are encoded as base64 and are not strings; the output of a
+// custom MarshalJSON is checked by validate on the encoded bytes.
+func validStrings(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.String:
+		return utf8.ValidString(v.String())
+	case reflect.Pointer, reflect.Interface:
+		return v.IsNil() || validStrings(v.Elem())
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Type().Field(i).IsExported() && !validStrings(v.Field(i)) {
+				return false
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return true
+		}
+		for i := 0; i < v.Len(); i++ {
+			if !validStrings(v.Index(i)) {
+				return false
+			}
+		}
+	case reflect.Map:
+		for it := v.MapRange(); it.Next(); {
+			if !validStrings(it.Key()) || !validStrings(it.Value()) {
+				return false
+			}
+		}
+	}
+	return true
 }

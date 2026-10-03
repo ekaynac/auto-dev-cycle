@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/common/defs.json",
   "title": "Common definitions",
-  "description": "Shared scalar shapes (docs/design/m0/02). Spike simplifications, each stated: the schema checks the lexical form only; the checks named in each description belong to code.",
+  "description": "Shared scalar shapes (docs/design/m0/02). Formats prefixed adc- are asserted by internal/contract, which defines them.",
   "$defs": {
     "Outcome": {
       "description": "The four outcomes. There is no boolean ok.",
@@ -14,22 +14,56 @@
       "pattern": "^[a-z][a-z0-9_]*$"
     },
     "Digest": {
+      "description": "Content digest: sha256 over the bytes, lowercase hex.",
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "GitID": {
+      "description": "Git object id with the algorithm explicit by length: sha1 (40 hex) or sha256 (64 hex).",
       "type": "string",
       "pattern": "^git:([0-9a-f]{40}|[0-9a-f]{64})$"
     },
     "Time": {
-      "description": "Lexical form of RFC 3339 UTC with a Z suffix. Calendar validity is checked when parsed, not here.",
+      "description": "RFC 3339 in UTC with a Z suffix and a valid calendar date and clock time (adc-time).",
       "type": "string",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+      "format": "adc-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "Duration": {
+      "description": "ISO 8601 duration of days and clock units, at least one component (PT30M, P1D, PT1H30M).",
+      "type": "string",
+      "pattern": "^P([0-9]+D(T([0-9]+H([0-9]+M)?([0-9]+S)?|[0-9]+M([0-9]+S)?|[0-9]+S))?|T([0-9]+H([0-9]+M)?([0-9]+S)?|[0-9]+M([0-9]+S)?|[0-9]+S))$"
     },
     "TypeID": {
-      "description": "Lexical form of a TypeID: 2-3 letter prefix (note 05 uses rg_), underscore, 26-char base32 suffix. The UUIDv7 version and the entity-specific prefix are checked by the id package, not here.",
+      "description": "Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.",
       "type": "string",
+      "format": "adc-typeid",
       "pattern": "^[a-z]{2,3}_[0-7][0-9a-hjkmnp-tv-z]{25}$"
-    }
+    },
+    "ProjectID": {"$ref": "#/$defs/TypeID", "pattern": "^prj_"},
+    "TaskID": {"$ref": "#/$defs/TypeID", "pattern": "^tsk_"},
+    "UnitID": {"$ref": "#/$defs/TypeID", "pattern": "^unt_"},
+    "AttemptID": {"$ref": "#/$defs/TypeID", "pattern": "^att_"},
+    "LeaseID": {"$ref": "#/$defs/TypeID", "pattern": "^lea_"},
+    "SourceID": {"$ref": "#/$defs/TypeID", "pattern": "^src_"},
+    "ExecutorID": {"$ref": "#/$defs/TypeID", "pattern": "^exe_"},
+    "ReceiptID": {"$ref": "#/$defs/TypeID", "pattern": "^rcp_"},
+    "ApprovalID": {"$ref": "#/$defs/TypeID", "pattern": "^apr_"},
+    "GrantID": {"$ref": "#/$defs/TypeID", "pattern": "^grt_"},
+    "ProposalID": {"$ref": "#/$defs/TypeID", "pattern": "^prp_"},
+    "ActorID": {"$ref": "#/$defs/TypeID", "pattern": "^act_"},
+    "ManifestID": {"$ref": "#/$defs/TypeID", "pattern": "^cmf_"},
+    "EventID": {"$ref": "#/$defs/TypeID", "pattern": "^evt_"},
+    "EffectID": {"$ref": "#/$defs/TypeID", "pattern": "^eff_"},
+    "CallID": {"$ref": "#/$defs/TypeID", "pattern": "^cal_"},
+    "ChallengeID": {"$ref": "#/$defs/TypeID", "pattern": "^chl_"},
+    "OwedInputID": {"$ref": "#/$defs/TypeID", "pattern": "^own_"},
+    "EvidenceJobID": {"$ref": "#/$defs/TypeID", "pattern": "^ejb_"},
+    "EvidenceRunID": {"$ref": "#/$defs/TypeID", "pattern": "^run_"},
+    "EvidenceTargetID": {"$ref": "#/$defs/TypeID", "pattern": "^tgt_"},
+    "ResourceGroupID": {"$ref": "#/$defs/TypeID", "pattern": "^rg_"},
+    "MeasurementID": {"$ref": "#/$defs/TypeID", "pattern": "^msr_"},
+    "NodeID": {"$ref": "#/$defs/TypeID", "pattern": "^nod_"},
+    "ResultID": {"$ref": "#/$defs/TypeID", "pattern": "^res_"}
   }
 }
