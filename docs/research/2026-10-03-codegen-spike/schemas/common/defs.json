@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/common/defs.json",
+  "title": "Common definitions",
+  "description": "Shared scalar shapes (docs/design/m0/02). Spike simplifications, each stated: the schema checks the lexical form only; the checks named in each description belong to code.",
+  "$defs": {
+    "Outcome": {
+      "description": "The four outcomes. There is no boolean ok.",
+      "enum": ["found", "empty", "could_not_run", "failed"]
+    },
+    "ReasonCode": {
+      "description": "Lexical form of a reason code. Registration (schemas/vocab/reasons.yaml) is checked by internal/vocab, not here.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "GitID": {
+      "type": "string",
+      "pattern": "^git:([0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "Time": {
+      "description": "Lexical form of RFC 3339 UTC with a Z suffix. Calendar validity is checked when parsed, not here.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "TypeID": {
+      "description": "Lexical form of a TypeID: 2-3 letter prefix (note 05 uses rg_), underscore, 26-char base32 suffix. The UUIDv7 version and the entity-specific prefix are checked by the id package, not here.",
+      "type": "string",
+      "pattern": "^[a-z]{2,3}_[0-7][0-9a-hjkmnp-tv-z]{25}$"
+    }
+  }
+}

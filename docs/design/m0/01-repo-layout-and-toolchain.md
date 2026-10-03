@@ -62,10 +62,20 @@ The Go toolchain is installed per user from the official tarball (`~/.local/go`)
 ## Code generation (one source per contract)
 
 - `schemas/**/*.json|yaml` → Go types and validators (`gen/go`) and TypeScript types and validators (`gen/ts`).
-  Generators: a small in-repo Go generator built on a maintained JSON Schema library for Go, and
-  `json-schema-to-typescript` + Ajv standalone validators for TS. The exact libraries are picked in M0
-  implementation by a spike on three representative schemas (receipt, approval, adapter event); the criterion is
-  faithful handling of `oneOf`/`const`/`enum` and `additionalProperties: false`.
+  Chosen by the spike on receipt, approval, grant and adapter event (`docs/research/2026-10-03-codegen-spike/`):
+  72 shared cases on both validators, adequacy checked by global keyword deletions, TS type assertions.
+  - **Go validation:** `santhosh-tekuri/jsonschema/v6` over the **embedded** schema files.
+  - **Go types:** a small in-repo generator for exactly the grammar in the spike report: strings and string enums,
+    integers **bounded within ±(2^53−1)**, booleans, closed objects, nullable `oneOf [null, X]` (**always
+    required**: null is explicit, absence invalid), `const`-discriminated `oneOf` as a sealed interface, keyed
+    `oneOf`, array-or-literal `oneOf`, typed maps, open payloads (`x-adc-open-payload`) as raw JSON with typed
+    accessors for each selectable schema, `allOf` envelope embedding. **Any other shape is refused** at generation
+    time, so nothing degrades to `interface{}`. Both third-party Go generators tried fail this.
+  - **Decoding and encoding:** `Decode` validates the bytes, then decodes the same bytes strictly (unknown fields
+    and trailing data rejected at every level; non-integral integer spellings refused); `Encode` validates its
+    output. Types never stand in for validation.
+  - **TypeScript:** `json-schema-to-typescript` types and Ajv 2020 standalone validators (CommonJS; Ajv is a
+    runtime dependency of `@adc/contract`), compiled with `strict: true`, which doubles as the schema lint.
 - `schemas/openapi.yaml` → Go server interfaces and the TS client used by the dashboard.
 - Model structured-output schemas are derived from the same files (with a provider-dialect transform: e.g. OpenAI
   strict mode needs all fields required/nullable and no `oneOf`; nöbetçi lesson 2.2b). In M0 the transform is
