@@ -19,7 +19,7 @@ const Base = "https://github.com/ekaynac/auto-dev-cycle/schemas/"
 
 // Each schema directory is listed here as it is added.
 //
-//go:embed common
+//go:embed common records
 var files embed.FS
 
 // FS returns the embedded schema tree, rooted at schemas/.

@@ -128,6 +128,11 @@ roughly time-sortable, but the event store's `seq` is the authoritative order. E
 | `ejb` | evidence job (12) |
 | `run` | evidence run (12) |
 | `tgt` | evidence target (12) |
+| `rg` | resource group (05) |
+| `msr` | usage measurement (05) |
+| `nod` | graph node (13) |
+| `res` | graph result (13) |
+| `cmd` | accepted command (03 `commands`) |
 
 Ids are minted by the controller only. Adapters and agents never mint authoritative ids.
 
