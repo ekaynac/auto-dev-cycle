@@ -103,3 +103,17 @@ No Critical or High findings remain within the revised scope.
 I independently reproduced all five mutation failures: disabling surrogate rejection, format assertion, UUID version enforcement, UUID variant enforcement, or the encode UTF-8 walk makes existing tests fail. These establish that the checks are exercised; they do **not** establish the package comment’s full encode guarantee, as the additional probes demonstrate.
 
 The checkout remains unchanged.
+## Third review of #17 (Astra, 2026-10-03)
+
+Verdict: GO
+
+- **Second-review Medium #1 — Resolved:** invalid UTF-8 is rejected in promoted fields, `MarshalText` output (including map keys), `MarshalJSON` output and `RawMessage`. Valid Unicode survives unchanged.
+- **Second-review Medium #2 — Resolved:** ignored invalid strings and ignored self-references encode successfully. Custom marshalers can safely encode cyclic backing structures; ordinary pointer, map and slice cycles return errors.
+
+**New findings:** None.
+
+Independent sandboxed probes confirmed byte-for-byte compatibility with the previous v1 encoder for contract documents and representative types: field order, `omitempty`, nil/empty slices and maps, `RawMessage`, sorted map keys, HTML characters and no trailing newline. Unpaired surrogate output remains rejected.
+
+`make ci` passed at `3744c51`, including sandbox self-tests and distribution builds. Shellcheck was unavailable and explicitly skipped locally.
+
+Changing only `AllowInvalidUTF8(false)` to `true` in a scratch copy made both committed encode tests fail as expected. The checkout remains unchanged.
