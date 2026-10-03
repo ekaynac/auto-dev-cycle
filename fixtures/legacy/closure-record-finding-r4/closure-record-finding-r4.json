@@ -1,0 +1,31 @@
+{
+ "source": "var/reviews/fix_0930-2249-000000-r4.json (TASK-0002 r4, 2026-10-01)",
+ "round": null,
+ "findings": [
+  {
+   "severity": "P2",
+   "surface": "closure",
+   "claim": "The closure artifact states 'Changed behavior — none in production code', but the candidate reviewed here changes production behavior the ledger and phase audit need to see: the redactor's declared identity moved to redact@3, and the keystore / fleet-masker APIs no longer default to `system` (they resolve the bound RunContext's actor or refuse).",
+   "evidence": "redact/version.py adds `Declaration(\"3\", \"5eed003900000000\", \"2026-10-01\", \"attribution only ...\")`, so every new sanitized representation now records `redact@3/…` (knowledge/sanitize.py:132, uploads.py:639); cli.py:4116-4117 marks artifacts whose recorded redactor differs from the running one as `older`; keystore/local_store.py put/lease/rotate/revoke and redact/fleet.py now call `acting_actor(actor)`, which raises `ValueError` when neither an actor nor a bound context is given. None of this appears in /home/user/runtime/var/closing-5eed003a-r4.md.",
+   "failure": "After deploy an operator runs `product corpus remask --all` and every existing sanitized artifact reads 'produced by redact@2/… (older)'. The ledger row for TASK-0002 says no production code changed, so the audit can't explain the redactor version change. Likewise an operator script calling `provider.lease(ref, Purpose.READ)` without an actor now fails with ValueError, and the closing record doesn't mention it.",
+   "fix": "Add the cumulative production changes to the closing record: the redactor Declaration 3 bump and what it does to remask/older reporting, the keystore and fleet-masker actor requirement (refused without an actor or context), and the four spellings removed from LEGACY_ACTORS."
+  },
+  {
+   "severity": "P3",
+   "surface": "product/auth/actors.py:108",
+   "claim": "The branch in canonical_write_actor that resolves an ambiguous spelling from the bound context can't be reached from any write seam, because the seams run assert_writable_actor first and it now refuses those spellings; the test that covers the branch calls the helper directly, a shape no real writer produces.",
+   "evidence": "audit/log.py:117 `assert_writable_actor(actor)` runs before `canonical_write_actor(actor)`; loops/registry.py LEGACY_ACTORS no longer contains `system`, `signal-router`, `telemetry-export` or `bundle-import`. Probe: under `run_context.bind(RunContext(channel=CONSOLE, actor=\"human:user-a\"))`, `AuditLog.record(actor=\"system\")` → `ValueError: actor 'system' is not a declared principal`, not `human:user-a`. tests/test_ob_1_6_013_labels.py calls `canonical_write_actor(spelling)` directly.",
+   "failure": "The docstring and test say a bound context turns `system` into the context's actor, but a real writer passing `system` under a bound context is refused; the tested behavior never happens in production.",
+   "fix": "Remove the dead ambiguous branch (the guard already refuses these spellings) or test the refusal at a real seam instead of the helper."
+  },
+  {
+   "severity": "P3",
+   "surface": "tests/test_run_context.py:269",
+   "claim": "The 'single hop shape' guard is still a source denylist of four literal strings, so other ways of starting a thread or executor pass the test and still lose the context.",
+   "evidence": "forbidden = (\"threading.Thread(\", \"ThreadPoolExecutor(\", \".submit(\", \"copy_context\") — raw substring assert; this round changed only seed_state's `actor=` argument in this file.",
+   "failure": "A product module doing `from threading import Thread; Thread(target=work, daemon=True).start()`, `threading.Timer(...)`, `asyncio.to_thread(...)` or `loop.run_in_executor(...)` passes test_ob_1_6_004_no_raw_thread_or_executor_hops, and that child writes `internal`.",
+   "fix": "Scan imports and calls with ast and allow the threading / concurrent.futures / _thread / asyncio executor APIs only in contracts/run_context.py."
+  }
+ ],
+ "rejected": []
+}

@@ -1,0 +1,16 @@
+{
+  "source": "t/fixtures/f16-inline-fallback/",
+  "class": "A phase review's primary reviewer stops on an exhausted credit balance before any model item, and a fallback authorised only for another role and mode (a learning digest) is about to take the review packet.",
+  "design_refs": [
+    "docs/design/m0/02-vocabulary.md",
+    "docs/design/m0/05-leases-attempts-fencing.md",
+    "docs/design/m0/11-testing.md",
+    "docs/design/m0/13-artifact-graph.md"
+  ],
+  "expected": [
+    {"outcome": "could_not_run", "reason": "broker_credit_exhausted"},
+    {"outcome": "failed", "reason": "fallback_scope"}
+  ],
+  "reason_status": "proposed",
+  "notes": "Step 1 (registered): the primary review attempt (fallback-primary-usage.json, rollout-*.jsonl: credits depleted, zero model items) is an attempt record, not an empty review; its hold waits on a balance probe or an operator top-up, never a time. Step 2 (fallback_scope, proposed; named as a placement check in note 05): the placement path refuses the learning-route fallback for mode phase_review before egress, so the packet never leaves and no fallback usage (usage.json) is ever recorded or allowed to replace the primary's record; an authorised fallback of another family would re-check independence first."
+}

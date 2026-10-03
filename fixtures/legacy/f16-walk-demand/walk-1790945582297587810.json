@@ -1,0 +1,88 @@
+{
+  "identity": {
+    "head": "5eed000400000000000000000000000000000000",
+    "tree": "5eed000500000000000000000000000000000000",
+    "grant_sha256": "5eed001a00000000000000000000000000000000000000000000000000000000",
+    "runtime_identity": "http://host-a:8300"
+  },
+  "status": "observed",
+  "reason": "",
+  "result": {
+    "runtime_identity": "http://host-a:8300",
+    "observed_at": "2026-10-02T12:53:02.286486+00:00",
+    "deployed_identity": {
+      "kind": "installed-python-source-sha256",
+      "sha256": "5eed000f00000000000000000000000000000000000000000000000000000000",
+      "files": 443,
+      "source_ref": "5eed000200000000000000000000000000000000",
+      "process_started_epoch": 1790893794,
+      "code_mtime_epoch": 1790893791,
+      "process_stale": false,
+      "package_kind": "installed-package-sha256",
+      "package_sha256": "5eed001000000000000000000000000000000000000000000000000000000000",
+      "package_files": 478,
+      "host": "user@host-a"
+    },
+    "limitations": [
+      "Read-only walk of the pages the reviewer planned; nothing is clicked, typed or submitted. A count that disagrees with the second source is reported, not judged.",
+      "A receipt is evidence only of the task, candidate, plan, console, adapters and deployment recorded in it; anything else is stale and is launched again within the grant bounds."
+    ],
+    "walk": {
+      "status": "observed",
+      "has_plan": true,
+      "plan_sha256": "5eed002800000000000000000000000000000000000000000000000000000000",
+      "walked": {
+        "task_id": "TASK-0001",
+        "head": "5eed000400000000000000000000000000000000",
+        "tree": "5eed000500000000000000000000000000000000",
+        "origin": "http://host-a:8300",
+        "plan_sha256": "5eed002800000000000000000000000000000000000000000000000000000000",
+        "profile_sha256": "5eed001c00000000000000000000000000000000000000000000000000000000"
+      },
+      "current": {
+        "task_id": "TASK-0001",
+        "head": "5eed000400000000000000000000000000000000",
+        "tree": "5eed000500000000000000000000000000000000",
+        "origin": "http://host-a:8300",
+        "plan_sha256": "5eed002800000000000000000000000000000000000000000000000000000000",
+        "profile_sha256": "5eed001c00000000000000000000000000000000000000000000000000000000"
+      },
+      "stale_reason": null,
+      "age_seconds": 897,
+      "max_observation_age_seconds": 21600,
+      "review_event": "5eed000400000000000000000000000000000000-5eed002400000000",
+      "receipt_path": "/home/user/runtime/var/experiments/browser-walk/20261002T153800-walk.json",
+      "receipt_sha256": "5eed002e00000000000000000000000000000000000000000000000000000000",
+      "planned": 24,
+      "observed": 24,
+      "comparisons": [],
+      "identities_declared": [
+        "reader-a",
+        "reader-b"
+      ],
+      "identities_walked": {
+        "default": {
+          "steps": 24,
+          "login_adapter": {
+            "rc": 0,
+            "note": "{\"session\": \"written\", \"cookies\": 1, \"subject\": \"user-a\", \"provider\": \"local\"}"
+          }
+        }
+      },
+      "disagreements": [],
+      "reason": "",
+      "last_run": "2026-10-02T12:38:04.522473+00:00"
+    },
+    "model_calls": 0
+  },
+  "restored": true,
+  "observed_at_epoch": 1790945582.29756,
+  "max_age_seconds": 60,
+  "model_calls": 0,
+  "acceptance": "Observation only. Independent reviewer must validate scope, identity and meaning; never an automatic pass.",
+  "launched": {
+    "due": false,
+    "status": "observed"
+  },
+  "archive": "/home/user/runtime/var/evidence-jobs/TASK-0001/browser-walk/1790945582297587810.json"
+}

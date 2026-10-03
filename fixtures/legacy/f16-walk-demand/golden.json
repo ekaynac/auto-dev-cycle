@@ -1,0 +1,19 @@
+{
+  "source": "t/fixtures/f16-walk-demand/",
+  "class": "A reviewer demands a walk of a new plan while every observed conclusion stays the same; the review must re-key on the new demand, and a receipt for the old demand must not satisfy it.",
+  "design_refs": [
+    "docs/design/m0/06-receipts.md",
+    "docs/design/m0/10-context-manifest-and-knowledge-spec.md",
+    "docs/design/m0/11-testing.md",
+    "docs/design/m0/12-evidence-jobs.md",
+    "docs/design/m0/13-artifact-graph.md"
+  ],
+  "expected": [
+    {"outcome": "could_not_run", "reason": "evidence_inapplicable"},
+    {"outcome": "found", "reason": "evidence_observed"},
+    {"outcome": "found", "reason": "review_input_changed"},
+    {"outcome": "empty", "reason": "conclusions_unchanged"}
+  ],
+  "reason_status": "proposed",
+  "notes": "Order: (1) walk-1790943778… (old plan) offered for the demand made by the round-6 review (packet-1524-…, the new plan in walk-1790945582…) does not apply (registered); (2) the new demand gets its own evidence attempt, walk-1790945582…; (3) the successor review's key changes although the conclusions are equal, because the demand key is an input; (4) counter-case: walk-1790902623… and walk-1790943778… walk the same plan with equal conclusions, so no re-review. Reasons 2–4 are proposed. In (4) the grant digests differ (a grant rebind); reuse equivalence compares subject, demand, instrument digest and restrictions, so this holds only if the rebind changed none of them."
+}

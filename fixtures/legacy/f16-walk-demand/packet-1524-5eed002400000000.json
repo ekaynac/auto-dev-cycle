@@ -1,0 +1,277 @@
+{
+ "mode": "phase_review",
+ "head": "5eed000400000000000000000000000000000000",
+ "base": "5eed000200000000000000000000000000000000",
+ "tree": "5eed000500000000000000000000000000000000",
+ "gate": "simple",
+ "phase": "1.6",
+ "strategy": "review_first",
+ "input_digest": "5eed002400000000000000000000000000000000000000000000000000000000",
+ "task": {
+  "id": "TASK-0001",
+  "kind": "feature"
+ },
+ "evidence_jobs": [
+  {
+   "id": "lab-deploy",
+   "path": "/home/user/runtime/var/evidence-jobs/TASK-0001/lab-deploy/1790943713114514734.json",
+   "sha256": "5eed000d00000000000000000000000000000000000000000000000000000000",
+   "requirements": [
+    "browser"
+   ],
+   "required_for_acceptance": false,
+   "result": {
+    "identity": {
+     "head": "5eed000400000000000000000000000000000000",
+     "tree": "5eed000500000000000000000000000000000000",
+     "grant_sha256": "5eed000e00000000000000000000000000000000000000000000000000000000",
+     "runtime_identity": "http://host-a:8300"
+    },
+    "status": "observed",
+    "reason": "",
+    "restored": true,
+    "observed_at_epoch": 1790943713.11449,
+    "max_age_seconds": 300,
+    "model_calls": 0,
+    "launched": {
+     "due": false,
+     "status": "observed"
+    },
+    "archive": "/home/user/runtime/var/evidence-jobs/TASK-0001/lab-deploy/1790943713114514734.json",
+    "result": {
+     "runtime_identity": "http://host-a:8300",
+     "observed_at": "2026-10-02T12:21:52.640383+00:00",
+     "deployed_identity": {
+      "kind": "installed-python-source-sha256",
+      "sha256": "5eed000f00000000000000000000000000000000000000000000000000000000",
+      "files": 443,
+      "source_ref": "5eed000200000000000000000000000000000000",
+      "process_started_epoch": 1790893794,
+      "code_mtime_epoch": 1790893791,
+      "process_stale": false,
+      "package_kind": "installed-package-sha256",
+      "package_sha256": "5eed001000000000000000000000000000000000000000000000000000000000",
+      "package_files": 478,
+      "host": "user@host-a"
+     },
+     "model_calls": 0,
+     "deploy": {
+      "status": "observed",
+      "reason": ""
+     }
+    }
+   }
+  },
+  {
+   "id": "browser-walk",
+   "path": "/home/user/runtime/var/evidence-jobs/TASK-0001/browser-walk/1790943778019463141.json",
+   "sha256": "5eed001900000000000000000000000000000000000000000000000000000000",
+   "requirements": [
+    "browser"
+   ],
+   "required_for_acceptance": false,
+   "result": {
+    "identity": {
+     "head": "5eed000400000000000000000000000000000000",
+     "tree": "5eed000500000000000000000000000000000000",
+     "grant_sha256": "5eed001a00000000000000000000000000000000000000000000000000000000",
+     "runtime_identity": "http://host-a:8300"
+    },
+    "status": "observed",
+    "reason": "",
+    "restored": true,
+    "observed_at_epoch": 1790943778.019415,
+    "max_age_seconds": 60,
+    "model_calls": 0,
+    "launched": {
+     "due": false,
+     "status": "observed"
+    },
+    "archive": "/home/user/runtime/var/evidence-jobs/TASK-0001/browser-walk/1790943778019463141.json",
+    "result": {
+     "runtime_identity": "http://host-a:8300",
+     "observed_at": "2026-10-02T12:22:58.007370+00:00",
+     "deployed_identity": {
+      "kind": "installed-python-source-sha256",
+      "sha256": "5eed000f00000000000000000000000000000000000000000000000000000000",
+      "files": 443,
+      "source_ref": "5eed000200000000000000000000000000000000",
+      "process_started_epoch": 1790893794,
+      "code_mtime_epoch": 1790893791,
+      "process_stale": false,
+      "package_kind": "installed-package-sha256",
+      "package_sha256": "5eed001000000000000000000000000000000000000000000000000000000000",
+      "package_files": 478,
+      "host": "user@host-a"
+     },
+     "walk": {
+      "status": "observed",
+      "has_plan": true,
+      "plan_sha256": "5eed001b00000000000000000000000000000000000000000000000000000000",
+      "walked": {
+       "task_id": "TASK-0001",
+       "head": "5eed000400000000000000000000000000000000",
+       "tree": "5eed000500000000000000000000000000000000",
+       "origin": "http://host-a:8300",
+       "plan_sha256": "5eed001b00000000000000000000000000000000000000000000000000000000",
+       "profile_sha256": "5eed001c00000000000000000000000000000000000000000000000000000000"
+      },
+      "current": {
+       "task_id": "TASK-0001",
+       "head": "5eed000400000000000000000000000000000000",
+       "tree": "5eed000500000000000000000000000000000000",
+       "origin": "http://host-a:8300",
+       "plan_sha256": "5eed001b00000000000000000000000000000000000000000000000000000000",
+       "profile_sha256": "5eed001c00000000000000000000000000000000000000000000000000000000"
+      },
+      "stale_reason": null,
+      "age_seconds": 60,
+      "max_observation_age_seconds": 21600,
+      "review_event": "5eed000400000000000000000000000000000000-5eed003700000000",
+      "receipt_path": "/home/user/runtime/var/experiments/browser-walk/20261002T152153-walk.json",
+      "receipt_sha256": "5eed001d00000000000000000000000000000000000000000000000000000000",
+      "planned": 18,
+      "observed": 18,
+      "comparisons": [],
+      "identities_declared": [
+       "reader-a",
+       "reader-b"
+      ],
+      "identities_walked": {
+       "default": {
+        "steps": 18,
+        "login_adapter": {
+         "rc": 0,
+         "note": "{\"session\": \"written\", \"cookies\": 1, \"subject\": \"user-a\", \"provider\": \"local\"}"
+        }
+       }
+      },
+      "disagreements": [],
+      "reason": "",
+      "last_run": "2026-10-02T12:21:56.621833+00:00"
+     },
+     "model_calls": 0
+    }
+   }
+  }
+ ],
+ "receipts": [
+  {
+   "id": "lab-deploy",
+   "problem": null,
+   "rule": {
+    "all": [
+     {
+      "path": "deploy.status",
+      "equals": "observed"
+     },
+     {
+      "path": "deploy.reason",
+      "in": [
+       "",
+       null
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": "browser-walk",
+   "problem": null,
+   "rule": {
+    "all": [
+     {
+      "path": "walk.status",
+      "equals": "observed"
+     },
+     {
+      "path": "walk.stale_reason",
+      "equals": null
+     },
+     {
+      "path": "walk.reason",
+      "in": [
+       "",
+       null
+      ]
+     },
+     {
+      "path": "deployed_identity.kind",
+      "equals": "installed-python-source-sha256"
+     }
+    ]
+   }
+  }
+ ],
+ "operator_rulings": [
+  {
+   "sha256": "5eed001e00000000000000000000000000000000000000000000000000000000",
+   "answers": [
+    "claim:CLAIM-012"
+   ],
+   "approved_at": "2026-10-02T14:45:18+03:00",
+   "acts": []
+  }
+ ],
+ "browser_walk": {
+  "kinds": [
+   "count_rows",
+   "expect_heading",
+   "expect_text",
+   "goto",
+   "logout_wall"
+  ],
+  "max_steps": 80,
+  "serves_check": null,
+  "identities": {
+   "reader-a": "a declared lab-directory reader identity",
+   "reader-b": "a declared lab-directory reader identity"
+  }
+ },
+ "review_digest": {
+  "round": 6,
+  "previous": {
+   "event": "/home/user/runtime/var/phase-reviews/TASK-0001/5eed000400000000000000000000000000000000-5eed003700000000",
+   "head": "5eed000400000000000000000000000000000000",
+   "tree": "5eed000500000000000000000000000000000000",
+   "gate": "simple",
+   "receipt_sha256": "5eed002500000000000000000000000000000000000000000000000000000000"
+  },
+  "claims_open": {
+   "rows": [
+    {
+     "id": "CLAIM-012",
+     "blocking": true,
+     "status": "missing",
+     "owner": "external"
+    }
+   ]
+  },
+  "controller": {
+   "status": "projected",
+   "builder_repairs": [],
+   "held_for_owner": [
+    {
+     "id": "claim:CLAIM-012",
+     "owner": "external"
+    },
+    {
+     "id": "receipt:browser-walk",
+     "owner": "external"
+    }
+   ],
+   "carried_advisory": []
+  },
+  "repair_range": {
+   "previous_head": "5eed000400000000000000000000000000000000",
+   "head": "5eed000400000000000000000000000000000000",
+   "stat": "no change"
+  }
+ },
+ "review_continuation": {
+  "previous_head": "5eed000400000000000000000000000000000000",
+  "previous_tree": "5eed000500000000000000000000000000000000",
+  "previous_receipt": "/home/user/runtime/var/phase-reviews/TASK-0001/5eed000400000000000000000000000000000000-5eed003700000000/receipt.json",
+  "delta_files": []
+ }
+}

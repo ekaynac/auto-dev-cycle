@@ -1,0 +1,15 @@
+{
+  "source": "t/fixtures/edge-20261003-5eed0038-owned-errors.log",
+  "class": "On a target copy without VCS metadata, the candidate's own new test file fails in setup (git exits 128); these errors are candidate-owned and route to a builder repair, not to a runner-fault hold.",
+  "design_refs": [
+    "docs/design/m0/07-project-profile.md",
+    "docs/design/m0/11-testing.md",
+    "docs/design/m0/13-artifact-graph.md"
+  ],
+  "expected": [
+    {"outcome": "found", "reason": "candidate_owned_setup_error"},
+    {"outcome": "found", "reason": "gate_test_failed"}
+  ],
+  "reason_status": "proposed",
+  "notes": "The six ERRORs are all in setup of a module fixture in the file the candidate added, each traceback passes through that file, none is an import error, and the count (6 errors, 1 failed) is fully accounted, so note 07's ownership rules classify them as the candidate's; the one FAILED is an ordinary failing test in the same file. Both go to the builder with the environment facts (vcs_metadata: false); in auto-dev-cycle runtime verification on the package artifact should surface this before merge (note 13 'Source tests, package, runtime verification')."
+}
