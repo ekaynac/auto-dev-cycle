@@ -29,8 +29,9 @@ The attended session writes a handover comment when it hands back. This is the s
 
 - **Branch per PR from `main`:** `feature/<scope>/<desc>`, `fix/<scope>/<desc>`, `chore/<desc>`. Conventional commits.
   Nothing is committed to `main` directly. The shell guard blocks pushing `main`, and that is intended.
-- **Size:** ≤ ~400 hand-written lines. Generated code, fixtures and vendored schemas don't count. A larger piece is
-  split.
+- **Size:** ≤ ~400 hand-written lines of non-test code. Tests, generated code, fixtures and vendored schemas don't
+  count. A larger piece is split, unless it is one cohesive package that splitting would only fill with temporary
+  scaffolding; then it ships as one PR with the reason stated in the description (D41).
 - **The PR description states, before review:**
   - acceptance criteria;
   - the smoke check (exact commands);
