@@ -76,6 +76,12 @@ Concrete sources the operator named:
 | D36 | Knowledge-layer review | Astra (2026-10-02, GO with changes): **all findings applied**: K11 keeps sharing, but with lineage-inherited source restrictions, template-only automatic export and digest-bound human export approval for prose; the M2 fixture-lesson ablation (E1L) becomes the K3 gate; a protected-document change operation; full-input view fingerprints; manifest coverage levels; continuity at every builder exit; predeclared K1 and experiment exits; a minimal spec in M0. Open questions resolved per Astra's recommendations. |
 | D37 | M0 design review | Astra (2026-10-02, GO with changes) on `docs/design/m0/`: **all findings applied**. Also: human confirmation is **WebAuthn on the dashboard only** (the pager notifies and links, never confirms); **tests run inside a sandbox** (bubblewrap or a rootless container) where the real home does not exist; Q1 module path `github.com/ekaynac/auto-dev-cycle`; Q2 standard TypeID/UUIDv7; Q3 owner-only socket + explicit shared socket + verified TLS; Q4 hash chain with full verification and a trusted head. |
 
+### Development workflow (operator, 2026-10-03)
+
+| # | Topic | Decision |
+|---|---|---|
+| D38 | Building v1 until self-host | `04-development-workflow.md`: a lead Claude session plus parallel subagents in worktrees; PRs ≤ ~400 hand-written lines with criteria up front; **Astra reviews contract PRs**, a fresh Opus subagent reviews mechanical PRs; the lead merges on green CI + GO, while decision, plan, licensing and security-posture PRs wait for the operator; a line per merge plus a daily digest on the pinned **Development log issue (#3)**, with Telegram (openclaw) only for blocking decisions; ask with options and keep going when blocked; a **background self-paced session** in tmux `adc-dev`; GitHub-hosted CI with the container sandbox fallback. |
+
 ## Defaults taken without a question (operator may overturn)
 
 - Forge: plain git, GitHub and GitLab all in v1 behind one interface.
