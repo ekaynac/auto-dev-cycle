@@ -11,8 +11,9 @@
 //     surrogate escapes are refused: encoding/json would silently keep the
 //     last duplicate or substitute U+FFFD, while JCS (event hashes, input
 //     digests) refuses them;
-//   - Encode refuses Go strings that are not valid UTF-8 (encoding/json would
-//     write U+FFFD in their place) and validates its own output. Its bytes are
+//   - Encode refuses to write any string that is not valid UTF-8, including
+//     the output of MarshalText and MarshalJSON methods (encoding/json would
+//     write U+FFFD in its place), and validates its own output. Its bytes are
 //     not a canonical form (key order follows the Go struct): every digest is
 //     taken over the JCS canonicalisation, never over Encode output;
 //   - the adc-time and adc-typeid formats (schemas/common/defs.json) are
@@ -26,11 +27,12 @@ package contract
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -346,56 +348,19 @@ func Encode(schema string, v any) ([]byte, error) {
 }
 
 func (r registry) encode(schema string, v any) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false) // <, > and & as themselves, as JSON.stringify writes them
-	if err := enc.Encode(v); err != nil {
+	// v1 semantics, except that a string that is not valid UTF-8 is an error
+	// rather than U+FFFD. The encoder checks every string it writes, so the
+	// output of MarshalText and MarshalJSON methods too, and follows the
+	// encoding/json field rules (embedding, "-", omitempty) by construction.
+	data, err := jsonv2.Marshal(v,
+		json.DefaultOptionsV1(),
+		jsontext.AllowInvalidUTF8(false),
+		jsontext.EscapeForHTML(false)) // <, > and & as themselves, as JSON.stringify writes them
+	if err != nil {
 		return nil, &Error{Schema: schema, Detail: "marshal: " + err.Error()}
 	}
-	// encoding/json writes U+FFFD for a string byte that is not valid UTF-8,
-	// indistinguishable in its output from a genuine U+FFFD, so the strings
-	// are checked in v itself. The marshal above has refused cycles.
-	if !validStrings(reflect.ValueOf(v)) {
-		return nil, &Error{Schema: schema, Detail: "a string is not valid UTF-8"}
-	}
-	data := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	if err := r.validate(schema, data); err != nil {
 		return nil, err
 	}
 	return data, nil
-}
-
-// validStrings reports whether every string reachable the way encoding/json
-// reaches it (exported fields, elements, map keys and values) is valid UTF-8.
-// Byte slices are encoded as base64 and are not strings; the output of a
-// custom MarshalJSON is checked by validate on the encoded bytes.
-func validStrings(v reflect.Value) bool {
-	switch v.Kind() {
-	case reflect.String:
-		return utf8.ValidString(v.String())
-	case reflect.Pointer, reflect.Interface:
-		return v.IsNil() || validStrings(v.Elem())
-	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			if v.Type().Field(i).IsExported() && !validStrings(v.Field(i)) {
-				return false
-			}
-		}
-	case reflect.Slice, reflect.Array:
-		if v.Type().Elem().Kind() == reflect.Uint8 {
-			return true
-		}
-		for i := 0; i < v.Len(); i++ {
-			if !validStrings(v.Index(i)) {
-				return false
-			}
-		}
-	case reflect.Map:
-		for it := v.MapRange(); it.Next(); {
-			if !validStrings(it.Key()) || !validStrings(it.Value()) {
-				return false
-			}
-		}
-	}
-	return true
 }

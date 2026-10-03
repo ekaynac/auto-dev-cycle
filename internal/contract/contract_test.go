@@ -285,12 +285,63 @@ func TestEncode(t *testing.T) {
 	}
 	d.Note = "r\xff"
 	_, err = r.encode("test/doc", map[string]any{"k\xff": 1})
-	contractError(t, err, "not valid UTF-8")
+	contractError(t, err, "invalid UTF-8")
 	_, err = r.encode("test/doc", d)
-	contractError(t, err, "not valid UTF-8")
+	contractError(t, err, "invalid UTF-8")
 	d.Note = "r"
 	dg := "sha256:" + strings.Repeat("b", 64)
 	d.State.Digest = &dg // both keys: maxProperties forbids it
 	_, err = r.encode("test/doc", d)
 	contractError(t, err, "state")
+}
+
+// badText encodes as text that is not valid UTF-8.
+type badText struct{}
+
+func (badText) MarshalText() ([]byte, error) { return []byte("r\xff"), nil }
+
+type noteHolder struct {
+	Note string `json:"note"`
+}
+
+// node points back at itself through a field the encoder ignores.
+type node struct {
+	doc
+	Parent *node  `json:"-"`
+	Hidden string `json:"-"`
+}
+
+// Encode follows the encoder's own field rules: promoted fields of an
+// unexported embedded struct are written (and checked), ignored fields are
+// neither written nor checked nor followed, and text from a MarshalText
+// method is checked.
+func TestEncodeChecksWhatTheEncoderWrites(t *testing.T) {
+	r := testRegistry(t)
+	base, err := decode[doc](r, "test/doc", []byte(valid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type promoted struct {
+		ID string `json:"id"`
+		At string `json:"at"`
+		N  int64  `json:"n"`
+		noteHolder
+	}
+	_, err = r.encode("test/doc", promoted{ID: base.ID, At: base.At, N: 1, noteHolder: noteHolder{Note: "r\xff"}})
+	contractError(t, err, "invalid UTF-8")
+
+	type textNote struct {
+		ID   string  `json:"id"`
+		At   string  `json:"at"`
+		N    int64   `json:"n"`
+		Note badText `json:"note"`
+	}
+	_, err = r.encode("test/doc", textNote{ID: base.ID, At: base.At, N: 1})
+	contractError(t, err, "invalid UTF-8")
+
+	n := &node{doc: base, Hidden: "r\xff"}
+	n.Parent = n
+	if _, err := r.encode("test/doc", n); err != nil {
+		t.Fatalf("ignored fields were checked or followed: %v", err)
+	}
 }

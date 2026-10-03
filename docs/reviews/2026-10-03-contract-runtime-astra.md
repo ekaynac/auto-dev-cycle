@@ -64,3 +64,42 @@ The committed tests exercise trailing documents, decimal/exponent spellings, `-0
 The cleanup change at `scripts/test-sandbox-selftest.sh:62` passed review for the current Linux/GNU implementation: recursive `chmod` and removal did not follow nested file or directory symlinks. External decoy contents and permissions remained unchanged, including with a dangling symlink present.
 
 No `docs/notes` directory exists; the codegen-choice evidence reviewed was `docs/research/2026-10-03-codegen-spike/README.md`.
+
+## Second review of #17 (Astra, 2026-10-03)
+
+Verdict: GO with changes
+
+No Critical or High findings remain within the revised scope.
+
+- **#1 High — Resolved by scope:** all four incomplete record schemas were removed; completing them belongs to their separate PRs.
+- **#2 Medium — Partially resolved:** surrogate rejection and ordinary string/map-key UTF-8 checks work. The encode guarantee still has gaps described below.
+- **#3 Medium — Resolved:** `UnmarshalStrict`, the qualified documentation, and the strict-versus-lax custom-decoder test address the finding.
+- **#4 Medium — Removed from scope:** receipt detail enforcement remains a requirement for the future receipt schema.
+- **#5 Medium — Resolved within scope:** calendar validity, entity prefixes, UUIDv7 version and variant are enforced through referenced definitions. `reported_at` moves with the event schema.
+- **#6 Low — Resolved:** recursive JSON discovery, documented digest framing, an independent expected digest, and exact embedded inventory now have tests.
+
+**New findings — Medium**
+
+1. **The UTF-8 walk misses strings that the JSON encoder emits.**  
+   `internal/contract/contract.go:380`
+
+   `IsExported()` skips unexported anonymous structs entirely, although `encoding/json` emits their promoted exported fields. A probe embedding `reviewEmbedded struct { Note string }` with `Note: "\xff"` returned successful JSON containing U+FFFD. This reproduces the original identity-loss problem using default encoding rules.
+
+   Separately, a custom `MarshalText` returning invalid UTF-8 also succeeds after replacement; checking the final JSON cannot detect that substitution.
+
+   **Fix:** follow JSON’s anonymous-field promotion rules. Define and enforce the custom-marshaler boundary: validate text before substitution, or explicitly constrain/document supported custom marshalers. Add regression cases alongside the existing Unicode controls.
+
+2. **The walk follows ignored fields and can recurse until process termination.**  
+   `internal/contract/contract.go:357`, `internal/contract/contract.go:377–380`
+
+   The assumption that successful marshaling has excluded cycles is incorrect. An exported `Parent *node` tagged `json:"-"` can point back to its containing node: JSON encoding succeeds, then `validStrings` follows the ignored pointer indefinitely. An isolated probe reproduced a fatal stack overflow with a reduced stack limit. An ignored field containing invalid UTF-8 also incorrectly rejects otherwise valid output.
+
+   **Fix:** honor JSON field selection, including ignored fields, and make traversal cycle-safe. Account for custom marshalers that successfully encode cyclic backing structures. Test ignored invalid strings and ignored/self-referential pointers.
+
+**Verification and test adequacy**
+
+`make ci` passed locally, including sandbox self-tests and distribution builds. Shellcheck was unavailable and explicitly skipped.
+
+I independently reproduced all five mutation failures: disabling surrogate rejection, format assertion, UUID version enforcement, UUID variant enforcement, or the encode UTF-8 walk makes existing tests fail. These establish that the checks are exercised; they do **not** establish the package comment’s full encode guarantee, as the additional probes demonstrate.
+
+The checkout remains unchanged.
