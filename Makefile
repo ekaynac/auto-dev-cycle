@@ -8,10 +8,14 @@ SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
 GOROOT_PIN := $(shell scripts/bootstrap-go.sh --print-goroot)
+GO_PIN     := $(shell scripts/bootstrap-go.sh --print-version)
 GO         := $(GOROOT_PIN)/bin/go
 # Never let `go` fetch a different toolchain: go.mod's toolchain line is the pin.
 export GOTOOLCHAIN := local
 export CGO_ENABLED := 0
+# The caller's Go settings never leak into builds.
+export GOFLAGS :=
+export GOEXPERIMENT :=
 
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT     ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
@@ -29,7 +33,7 @@ BINARIES   := adcd adc adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain build dist lint ci clean
+.PHONY: help toolchain go-check build dist lint ci clean
 
 help: ## List targets
 	@grep -hE '^[a-z][a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{ printf "  %-12s %s\n", $$1, $$2 }'
@@ -37,15 +41,18 @@ help: ## List targets
 toolchain: ## Install the pinned Go toolchain per user (~/.local/go)
 	@scripts/bootstrap-go.sh
 
-$(GO):
-	@echo "Go toolchain missing at $(GOROOT_PIN); run 'make toolchain'" >&2; exit 1
+go-check:
+	@have="$$(head -n1 $(GOROOT_PIN)/VERSION 2>/dev/null || true)"; \
+	  if [[ "$$have" != "$(GO_PIN)" ]]; then \
+	    echo "Go $(GO_PIN) required at $(GOROOT_PIN) (found '$${have:-nothing}'); run 'make toolchain'" >&2; exit 1; \
+	  fi
 
-build: $(GO) ## Build the binaries for this host into bin/
+build: go-check ## Build the binaries for this host into bin/
 	@mkdir -p $(BIN_DIR)
 	@for b in $(BINARIES); do $(GOBUILD) -o $(BIN_DIR)/$$b ./cmd/$$b; done
 	@$(BIN_DIR)/adc version
 
-dist: $(GO) ## Cross-build release binaries into dist/<os>-<arch>/
+dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 	@rm -rf $(DIST_DIR)
 	@for p in $(SERVER_PLATFORMS); do \
 	  for b in adcd adc; do \
@@ -58,7 +65,7 @@ dist: $(GO) ## Cross-build release binaries into dist/<os>-<arch>/
 	done
 	@find $(DIST_DIR) -type f | sort
 
-lint: $(GO) ## gofmt, go vet, go mod tidy check, shell syntax (+ shellcheck where installed)
+lint: go-check ## gofmt, go vet, go mod tidy check, shell syntax (+ shellcheck where installed)
 	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal)"; \
 	  if [[ -n "$$unformatted" ]]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	@$(GO) vet ./...

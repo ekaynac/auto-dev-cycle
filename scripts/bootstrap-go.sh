@@ -6,9 +6,15 @@
 # verifying its SHA-256 against go.dev's published checksum. No system
 # packages, no sudo (docs/design/m0/01, docs/plan/04 §8).
 #
-# Usage: scripts/bootstrap-go.sh [--print-goroot]
-#   ADC_GO_PREFIX   install prefix (default: $HOME/.local/go)
+# Usage: scripts/bootstrap-go.sh [--print-goroot | --print-version]
+#   ADC_GO_PREFIX   absolute install prefix (default: $HOME/.local/go). It must
+#                   be absent, empty, or an existing Go install; anything else
+#                   is refused, never replaced.
 set -euo pipefail
+
+# Never let a `go` command fetch a different toolchain (GOTOOLCHAIN=auto would
+# bypass the checksum check below and report the wrong version).
+export GOTOOLCHAIN=local
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 prefix="${ADC_GO_PREFIX:-$HOME/.local/go}"
@@ -17,19 +23,32 @@ die() { printf 'bootstrap-go: %s\n' "$*" >&2; exit 1; }
 
 want="$(awk '$1 == "toolchain" { print $2 }' "$repo_root/go.mod")"
 [[ "$want" =~ ^go[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || die "go.mod has no valid toolchain directive (got '${want}')"
+[[ "$prefix" == /* ]] || die "ADC_GO_PREFIX must be an absolute path (got '$prefix')"
+prefix="${prefix%/}"
 
-if [[ "${1:-}" == "--print-goroot" ]]; then
-  printf '%s\n' "$prefix"
-  exit 0
-fi
+case "${1:-}" in
+  "") ;;
+  --print-goroot) printf '%s\n' "$prefix"; exit 0 ;;
+  --print-version) printf '%s\n' "$want"; exit 0 ;;
+  *) die "unknown argument: $1 (usage: bootstrap-go.sh [--print-goroot | --print-version])" ;;
+esac
 
-if [[ -x "$prefix/bin/go" ]]; then
-  have="$("$prefix/bin/go" env GOVERSION 2>/dev/null || true)"
-  if [[ "$have" == "$want" ]]; then
-    printf 'bootstrap-go: %s already installed at %s\n' "$want" "$prefix"
-    exit 0
+# The installed version comes from the tree's VERSION file, not from running go.
+installed_version() { [[ -f "$prefix/VERSION" ]] && head -n1 "$prefix/VERSION"; }
+
+if [[ -e "$prefix" ]]; then
+  if [[ -f "$prefix/VERSION" && -x "$prefix/bin/go" ]]; then
+    have="$(installed_version)"
+    if [[ "$have" == "$want" ]]; then
+      printf 'bootstrap-go: %s already installed at %s\n' "$want" "$prefix"
+      exit 0
+    fi
+    printf 'bootstrap-go: replacing %s with %s at %s\n' "$have" "$want" "$prefix"
+  elif [[ -d "$prefix" && -z "$(ls -A "$prefix")" ]]; then
+    rmdir "$prefix"
+  else
+    die "$prefix exists and is not a Go install; refusing to replace it"
   fi
-  printf 'bootstrap-go: replacing %s with %s at %s\n' "${have:-unknown}" "$want" "$prefix"
 fi
 
 case "$(uname -s)" in
@@ -48,22 +67,25 @@ for tool in curl jq tar sha256sum; do
   command -v "$tool" >/dev/null || die "required tool not found: $tool"
 done
 
-tmp="$(mktemp -d)"
+# Stage next to the prefix, so the final swap is a rename on one filesystem.
+parent="$(dirname "$prefix")"
+mkdir -p "$parent"
+tmp="$(mktemp -d "$parent/.bootstrap-go.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
-curl -fsSL 'https://go.dev/dl/?mode=json&include=all' -o "$tmp/index.json" \
+curl --proto '=https' --tlsv1.2 -fsSL 'https://go.dev/dl/?mode=json&include=all' -o "$tmp/index.json" \
   || die "could not fetch the go.dev release index"
 sum="$(jq -r --arg f "$file" '[.[].files[] | select(.filename == $f) | .sha256][0] // empty' "$tmp/index.json")"
 [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || die "no published checksum for $file"
 
-curl -fsSL "https://go.dev/dl/$file" -o "$tmp/$file" || die "download failed: $file"
+curl --proto '=https' --tlsv1.2 -fsSL "https://go.dev/dl/$file" -o "$tmp/$file" || die "download failed: $file"
 printf '%s  %s\n' "$sum" "$tmp/$file" | sha256sum -c --quiet - || die "checksum mismatch for $file"
 
 mkdir -p "$tmp/unpack"
 tar -C "$tmp/unpack" -xzf "$tmp/$file"
 [[ -x "$tmp/unpack/go/bin/go" ]] || die "tarball has no go/bin/go"
+[[ "$(head -n1 "$tmp/unpack/go/VERSION")" == "$want" ]] || die "tarball VERSION is not $want"
 
-mkdir -p "$(dirname "$prefix")"
 if [[ -e "$prefix" ]]; then
   mv "$prefix" "$tmp/old"
 fi

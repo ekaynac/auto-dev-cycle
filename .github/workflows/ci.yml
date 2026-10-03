@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   ci:
@@ -27,6 +27,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Install shellcheck
+        run: command -v shellcheck || (sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck)
       - name: Install the pinned Go toolchain (per user)
         run: scripts/bootstrap-go.sh
       - name: make ci

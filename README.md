@@ -8,7 +8,7 @@ Status: **M0 (contracts and foundations)**, under construction. Nothing here run
 
 ## Build
 
-Requirements: Linux or macOS, `curl`, `jq`, `tar`, `sha256sum`, `git`, GNU make. No system Go is needed.
+Requirements: Linux (the controller platform; plan §2.14), `curl`, `jq`, `tar`, `sha256sum`, `git`, GNU make. No system Go is needed.
 
 ```sh
 make toolchain   # installs the Go toolchain pinned in go.mod into ~/.local/go (checksum-verified)
