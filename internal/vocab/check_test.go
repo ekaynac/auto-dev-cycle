@@ -415,3 +415,101 @@ func classify(r vocab.Reason) int {
 		t.Fatalf("findings:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// Astra #26: the generated Hold* constants are not reasons.
+func TestCheckSourceRefusesHoldConstantsAsReasons(t *testing.T) {
+	reg := mustLoad(t)
+	root := synthetic(t)
+	write(t, root, "vocab/vocab.gen.go", `package vocab
+
+const (
+	ReasonQuotaExhausted Reason = "quota_exhausted"
+	ReasonStaleAttempt   Reason = "stale_attempt"
+)
+
+const HoldAwaitingApproval = "awaiting_approval"
+`)
+	write(t, root, "gen/go/types/types.go", "package types\n\ntype ReasonCode = string\n\ntype Predicate struct{ Reason ReasonCode }\n")
+	write(t, root, "h/h.go", `package h
+
+import (
+	"example.com/x/gen/go/types"
+	"example.com/x/vocab"
+)
+
+var _ = vocab.Result{Reason: vocab.HoldAwaitingApproval}
+var _ = types.Predicate{Reason: vocab.HoldAwaitingApproval}
+var _ = vocab.Result{Reason: vocab.Reason(vocab.HoldAwaitingApproval)}
+`)
+	got := findings(t, reg, root)
+	if n := strings.Count(got, `unregistered reason "awaiting_approval"`); n != 3 {
+		t.Fatalf("want 3 hold-as-reason findings, got:\n%s", got)
+	}
+}
+
+// Astra #26: a reason type anywhere inside a type argument (a named slice, a
+// struct, a function signature) makes the instantiation a finding.
+func TestCheckSourceReportsReasonsInsideTypeArguments(t *testing.T) {
+	reg := mustLoad(t)
+	root := synthetic(t)
+	write(t, root, "gen/go/types/types.go", "package types\n\ntype ReasonCode = string\n\ntype Predicate struct{ Reason ReasonCode }\n")
+	write(t, root, "g/g.go", `package g
+
+import "example.com/x/gen/go/types"
+
+type Codes []types.ReasonCode
+
+type Holder struct{ R types.ReasonCode }
+
+type Cycle struct{ Next *Cycle }
+
+func bad[T ~[]string]() T { return T{string("typo_generic")} }
+
+func invoke[F ~func(types.ReasonCode)](f F) { f(string("typo_argument")) }
+
+func box[T any]() (z T) { return z }
+
+var _ = types.Predicate{Reason: bad[Codes]()[0]}
+var _ = func() bool { invoke(func(types.ReasonCode) {}); return true }()
+var _ = box[Holder]()
+var _ = box[Cycle]()
+`)
+	got := findings(t, reg, root)
+	for _, want := range []string{"generic bad instantiated", "generic invoke instantiated", "generic box instantiated"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, "generic "); n != 3 {
+		t.Errorf("want 3 generic findings (box[Cycle] carries no reason), got:\n%s", got)
+	}
+}
+
+// Astra #26: deprecation is about writing a result or a record, not about
+// any struct with a reason field; *& forms of the write count.
+func TestCheckSourceDeprecationOwnership(t *testing.T) {
+	reg := mustLoad(t)
+	dep := &Registry{Outcomes: reg.Outcomes, Holds: reg.Holds, Reasons: map[string]types.Reason{}}
+	for k, v := range reg.Reasons {
+		dep.Reasons[k] = v
+	}
+	x := dep.Reasons["stale_attempt"]
+	since := "0.2.0"
+	x.Deprecated = &since
+	dep.Reasons["stale_attempt"] = x
+	root := synthetic(t)
+	write(t, root, "a/a.go", `package a
+
+import "example.com/x/vocab"
+
+var historical = []struct {
+	Code vocab.Reason
+}{{Code: vocab.ReasonStaleAttempt}}
+
+func emit(res *vocab.Result) { *(&res.Reason) = vocab.ReasonStaleAttempt }
+`)
+	want := `a/a.go:9:49: deprecated reason "stale_attempt" (since 0.2.0); writers may not emit it`
+	if got := findings(t, dep, root); got != want {
+		t.Fatalf("findings:\n%s\nwant:\n%s", got, want)
+	}
+}

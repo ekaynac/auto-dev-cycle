@@ -87,8 +87,8 @@ const genFile = "vocab.gen.go"
 // The scan sees source constants only. A reason built at run time (from a
 // non-constant string, a []byte, a pointer) is the emission boundary's job:
 // results and records validated against the vocabulary when they are
-// written. That boundary is a separate change; until it lands, no product
-// code emits results.
+// written. That boundary is a separate change; until it lands, the only
+// result product code emits is the CLI's fixed check_unloadable diagnostic.
 // Not scanned: test files (they build malformed results on purpose) and
 // TypeScript (there is no product TS emitter yet).
 //
@@ -242,21 +242,46 @@ func reasonInstances(info *types.Info, file *ast.File) []*ast.Ident {
 	return out
 }
 
-func containsReason(t types.Type) bool {
+func containsReason(t types.Type) bool { return reasonInside(t, map[types.Type]bool{}) }
+
+// reasonInside reports a reason type anywhere in t: through aliases, the
+// underlying type of named types, element and key types, struct fields and
+// function signatures. seen breaks cycles through named types.
+func reasonInside(t types.Type, seen map[types.Type]bool) bool {
+	if t == nil || seen[t] {
+		return false
+	}
+	seen[t] = true
 	if isReason(t) {
 		return true
 	}
 	switch u := types.Unalias(t).(type) {
+	case *types.Named:
+		return reasonInside(u.Underlying(), seen)
 	case *types.Pointer:
-		return containsReason(u.Elem())
+		return reasonInside(u.Elem(), seen)
 	case *types.Slice:
-		return containsReason(u.Elem())
+		return reasonInside(u.Elem(), seen)
 	case *types.Array:
-		return containsReason(u.Elem())
+		return reasonInside(u.Elem(), seen)
 	case *types.Map:
-		return containsReason(u.Key()) || containsReason(u.Elem())
+		return reasonInside(u.Key(), seen) || reasonInside(u.Elem(), seen)
 	case *types.Chan:
-		return containsReason(u.Elem())
+		return reasonInside(u.Elem(), seen)
+	case *types.Struct:
+		for i := 0; i < u.NumFields(); i++ {
+			if reasonInside(u.Field(i).Type(), seen) {
+				return true
+			}
+		}
+	case *types.Signature:
+		for _, tup := range []*types.Tuple{u.Params(), u.Results()} {
+			for i := 0; i < tup.Len(); i++ {
+				if reasonInside(tup.At(i).Type(), seen) {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -286,8 +311,9 @@ func isGenPkg(p *types.Package) bool {
 }
 
 // dest is a value flowing into a reason destination. write marks the
-// destinations that statically prove emission: a struct field of a result or
-// a record (keyed, positional, or assigned through a selector). A local
+// destinations that statically prove emission: a field of a vocab.Result or
+// of a generated contract record (keyed, positional, assigned through a
+// selector or *&). A local
 // variable, a lookup table, a return value or an argument may belong to a
 // reader, so a deprecated constant is allowed there.
 type dest struct {
@@ -315,17 +341,18 @@ func reasonDestinations(info *types.Info, file *ast.File) []dest {
 			if t == nil {
 				return true
 			}
+			emits := isEmitted(t)
 			switch u := t.Underlying().(type) {
 			case *types.Struct:
 				for i, el := range x.Elts {
 					if kv, ok := el.(*ast.KeyValueExpr); ok {
 						if id, ok := kv.Key.(*ast.Ident); ok {
 							if v, ok := info.Uses[id].(*types.Var); ok {
-								add(v.Type(), kv.Value, true)
+								add(v.Type(), kv.Value, emits)
 							}
 						}
 					} else if i < u.NumFields() {
-						add(u.Field(i).Type(), el, true)
+						add(u.Field(i).Type(), el, emits)
 					}
 				}
 			case *types.Slice, *types.Array, *types.Map:
@@ -352,8 +379,7 @@ func reasonDestinations(info *types.Info, file *ast.File) []dest {
 		case *ast.AssignStmt:
 			if len(x.Lhs) == len(x.Rhs) {
 				for i := range x.Lhs {
-					_, field := ast.Unparen(x.Lhs[i]).(*ast.SelectorExpr)
-					add(info.TypeOf(x.Lhs[i]), x.Rhs[i], field && isFieldSelector(info, x.Lhs[i]))
+					add(info.TypeOf(x.Lhs[i]), x.Rhs[i], writesEmittedField(info, x.Lhs[i]))
 				}
 			}
 		case *ast.ValueSpec:
@@ -420,15 +446,41 @@ func reasonDestinations(info *types.Info, file *ast.File) []dest {
 	return out
 }
 
-// isFieldSelector: e selects a struct field (x.Reason), not a package-level
-// variable through its package name.
-func isFieldSelector(info *types.Info, e ast.Expr) bool {
-	sel, ok := ast.Unparen(e).(*ast.SelectorExpr)
+// isEmitted: t (or what it points to) is a vocab.Result or a generated
+// contract record, the types whose fields are written out.
+func isEmitted(t types.Type) bool {
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	n, ok := types.Unalias(t).(*types.Named)
+	if !ok || n.Obj().Pkg() == nil {
+		return false
+	}
+	obj := n.Obj()
+	return (obj.Name() == "Result" && obj.Pkg().Name() == "vocab") || isGenPkg(obj.Pkg())
+}
+
+// writesEmittedField: e, seen through parentheses and *&, is a field of a
+// result or a contract record (res.Reason, *(&res.Reason)).
+func writesEmittedField(info *types.Info, e ast.Expr) bool {
+	for {
+		e = ast.Unparen(e)
+		star, ok := e.(*ast.StarExpr)
+		if !ok {
+			break
+		}
+		amp, ok := ast.Unparen(star.X).(*ast.UnaryExpr)
+		if !ok || amp.Op != token.AND {
+			break
+		}
+		e = amp.X
+	}
+	sel, ok := e.(*ast.SelectorExpr)
 	if !ok {
 		return false
 	}
-	v, ok := info.Uses[sel.Sel].(*types.Var)
-	return ok && v.IsField()
+	s, ok := info.Selections[sel]
+	return ok && s.Kind() == types.FieldVal && isEmitted(s.Recv())
 }
 
 // isGenerated: e names (directly, or qualified) a constant declared in the
@@ -445,7 +497,9 @@ func isGenerated(fset *token.FileSet, info *types.Info, e ast.Expr) bool {
 	if c == nil || c.Pkg() == nil || c.Pkg().Name() != "vocab" || !c.Pos().IsValid() {
 		return false
 	}
-	return filepath.Base(fset.Position(c.Pos()).Filename) == genFile
+	// Only the Reason* constants: the generated Hold* constants are holds,
+	// never reasons.
+	return strings.HasPrefix(c.Name(), "Reason") && filepath.Base(fset.Position(c.Pos()).Filename) == genFile
 }
 
 func namedConst(info *types.Info, e ast.Expr) *types.Const {
