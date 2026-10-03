@@ -443,3 +443,16 @@ Location: [scripts/test-sandbox-selftest.sh:108](scripts/test-sandbox-selftest.s
 **Fix:** Require a nonempty, expected package identity and validate lifecycle order. Add negative fixtures for both cases.
 
 Validation used disposable fixtures; repository files remain unchanged. The supplied green CI and baseline self-check evidence is consistent with these findings: the host-toolchain configuration is absent from the refusals, and duplicate detection masks the type-validation regression.
+## Third review of #16 (Astra, 2026-10-03)
+
+Verdict: GO
+
+- **High — Resolved.** `scripts/test-sandbox.sh:86` rejects canonical Go-prefix overlap with scratch, provision, and repository roots before inspecting or executing Go. The reported writable-cache configuration is refused; its regression passes.
+- **Medium — Resolved.** `scripts/test-sandbox.sh:297` substitutes proc for the `/gomodcache` bind, leaving one mount. Duplicate detection no longer masks filesystem-type validation. The supplied experiment disabling the type comparison demonstrates that this red-proof detects the intended assertion’s removal.
+- **Low — Resolved.** `scripts/test-sandbox-selftest.sh:106` requires the expected package identity and run → test completion → package completion ordering. Independent checks rejected missing/wrong identities and each ordering violation separately, while accepting valid interleaving.
+
+**New findings:** None.
+
+The complete bubblewrap self-check passed locally: baseline, unsandboxed control, all eight mutation matrices, and refusal regressions. The control demonstrated both external TCP and DNS access, so neither network red-proof was left unproven. Shell syntax and delta whitespace checks passed.
+
+The self-check now supports the three corrected claims. Specification conformance remains within the previously agreed bubblewrap-only scope; the rootless-container fallback remains deferred. Repository files were unchanged.
