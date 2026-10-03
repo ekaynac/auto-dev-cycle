@@ -103,17 +103,22 @@ results() {
 # event without a start, exactly one package terminal event, and the package
 # outcome is the wanted one and agrees with the tests (fail iff a test failed).
 stream_ok() {
-  jq -s -r --arg want "$2" '
+  jq -s -r --arg want "$2" --arg pkg "${3:-github.com/ekaynac/auto-dev-cycle/test/sandbox}" '
     def terminal: .Action == "pass" or .Action == "fail" or .Action == "skip";
-    ([ .[] | .Package ] | unique) as $pkgs
+    to_entries as $ev
+    | ([ .[] | .Package ] | unique) as $pkgs
+    | ([ $ev[] | select(.value.Test != null and .value.Action == "run") | {(.value.Test): .key} ] | add // {}) as $runat
+    | ([ $ev[] | select(.value.Test != null and (.value | terminal)) | {(.value.Test): .key} ] | add // {}) as $endat
+    | ([ $ev[] | select(.value.Test == null and (.value | terminal)) | .key ] | max // -1) as $pkgat
     | ([ .[] | select(.Test != null and .Action == "run") | .Test ] | sort) as $started
     | ([ .[] | select(.Test != null and terminal) | .Test ] | sort) as $finished
     | [ .[] | select(.Test == null and terminal) ] as $pkgend
     | ([ .[] | select(.Test != null and .Action == "fail") ] | length) as $failed
-    | if ($pkgs | length) != 1 then "packages: \($pkgs | length) (want 1)"
+    | if $pkgs != [$pkg] then "package identity \($pkgs), want [\($pkg)]"
       elif $started != ($started | unique) then "a test started twice"
       elif $finished != $started then "started and finished tests differ"
       elif ($pkgend | length) != 1 then "package completion events: \($pkgend | length) (want 1)"
+      elif ([ $runat | keys[] | select($runat[.] > $endat[.] or $endat[.] > $pkgat) ] | length) > 0 then "events out of order"
       elif $pkgend[0].Action != $want then "package outcome \($pkgend[0].Action), want \($want)"
       elif ($failed > 0) != ($want == "fail") then "package outcome disagrees with the test results"
       else "ok" end' "$1" 2>/dev/null | grep -qx ok
@@ -134,14 +139,16 @@ expect() {  # expect <label> <wanted action> <test>...
 
 echo "evidence validator: malformed streams are rejected"
 ev() { printf '%s\n' "${@:2}" >"$out/ev-$1.json"; }
-P='"Package":"p"'
+P='"Package":"github.com/ekaynac/auto-dev-cycle/test/sandbox"'
 ev good "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\"}"
 ev nopkg "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\",\"Test\":\"TestA\"}"
 ev dup "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"fail\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"fail\"}"
 ev unfinished "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"run\",\"Test\":\"TestB\"}" "{$P,\"Action\":\"pass\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\"}"
 ev failpass "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"fail\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\"}"
 ev failskip "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"fail\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"skip\"}"
-for bad in nopkg dup unfinished failpass; do
+ev noident '{"Action":"run","Test":"TestA"}' '{"Action":"pass","Test":"TestA"}' '{"Action":"pass"}'
+ev order "{$P,\"Action\":\"pass\"}" "{$P,\"Action\":\"pass\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}"
+for bad in nopkg dup unfinished failpass noident order; do
   if stream_ok "$out/ev-$bad.json" pass; then echo "  FAIL  malformed stream '$bad' accepted"; fail=1; else echo "  ok    malformed stream '$bad' rejected"; fi
 done
 if stream_ok "$out/ev-failskip.json" fail; then echo "  FAIL  malformed stream 'failskip' accepted"; fail=1; else echo "  ok    malformed stream 'failskip' rejected"; fi
@@ -238,6 +245,7 @@ else
   echo "  FAIL  symlinked provisioned child: unexpected error: $(head -n1 "$out/refuse.err")"; fail=1
 fi
 refuse "a provision area inside the writable cache" "inside scratch must be" ADC_TEST_SCRATCH="$out/scratch-overlap" ADC_TEST_PROVISION="$out/scratch-overlap/gocache"
+refuse "the Go installation inside the writable cache" "overlaps" ADC_TEST_SCRATCH="$out/scratch-hostgo" ADC_GO_PREFIX="$out/scratch-hostgo/gocache/host-go"
 refuse "a relocated CODEX_HOME inside the repository" "overlaps protected" CODEX_HOME="$repo_root/.adc-test-codex-home"
 if [[ "$(cat "$out/decoy-codex/auth.json")" == decoy ]]; then echo "  ok    the decoy was left untouched"; else echo "  FAIL  the decoy changed"; fail=1; fi
 

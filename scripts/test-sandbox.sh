@@ -79,15 +79,20 @@ fi
 home="$(realpath -m -- "$HOME")"
 goroot="$(realpath -m -- "$("$repo_root/scripts/bootstrap-go.sh" --print-goroot)")"
 go_version="$("$repo_root/scripts/bootstrap-go.sh" --print-version)"
+scratch_root="$(realpath -m -- "${ADC_TEST_SCRATCH:-${XDG_CACHE_HOME:-$HOME/.cache}/adc-test-sandbox}")"
+provision_root="$(realpath -m -- "${ADC_TEST_PROVISION:-$scratch_root/provision}")"
+# The host runs $goroot/bin/go (provisioning): it must lie outside every area
+# the sandbox can reach, before it is used or even inspected.
+for a in "$scratch_root" "$provision_root" "$repo_root"; do
+  { [[ "$goroot" == "$a" || "$goroot" == "$a"/* || "$a" == "$goroot"/* ]]; } \
+    && die "Go installation $goroot overlaps $a, which the sandbox can reach; refused"
+done
 [[ -x "$goroot/bin/go" && "$(head -n1 "$goroot/VERSION" 2>/dev/null)" == "$go_version" ]] \
   || die "Go $go_version missing at $goroot; run 'make toolchain'"
 node_bin="$(command -v node || true)"
 [[ -n "$node_bin" ]] || die "node not found on PATH"
 node_bin="$(realpath -e -- "$node_bin")"
 [[ -f "$node_bin" && ! -u "$node_bin" && ! -g "$node_bin" ]] || die "node at $node_bin is not a plain executable file"
-scratch_root="$(realpath -m -- "${ADC_TEST_SCRATCH:-${XDG_CACHE_HOME:-$HOME/.cache}/adc-test-sandbox}")"
-provision_root="$(realpath -m -- "${ADC_TEST_PROVISION:-$scratch_root/provision}")"
-
 covers() { [[ "$2" == "$1" || "$2" == "$1"/* ]]; }   # covers A B: A is B or an ancestor of B
 # Protected roots: user state, config, data and runtime directories, and
 # credential directories at their default or environment-selected places.
@@ -253,7 +258,7 @@ case "$mutation" in
   repo-writable) mutation_args=(--bind "$repo_root" /src) ;;
   extra-mount) mutation_args=(--ro-bind /usr/share /mut/extra) ;;
   pseudo-mount) mutation_args=(--ro-bind /usr/share /dev/adc-mut) ;;   # hidden under an exempt-looking tree
-  type-change) mutation_args=(--proc /gomodcache) ;;                    # an allowed path, a filesystem no bind can have
+  type-change) ;;                                                         # handled in run_bwrap: proc instead of the bind
   missing-mount) ;;                                                       # handled in run_bwrap: /gomodcache not mounted
 esac
 
@@ -289,7 +294,11 @@ run_bwrap() {
     --bind "$work" /scratch/work --bind "$gocache" /scratch/gocache
     --ro-bind "$toolchain" /opt/go --ro-bind "$node_copy/bin/node" /opt/node/bin/node
     --chdir /src)
-  if [[ "$mutation" == missing-mount ]]; then args+=(--dir /gomodcache); else args+=(--ro-bind "$modcache" /gomodcache); fi
+  case "$mutation" in
+    missing-mount) args+=(--dir /gomodcache) ;;
+    type-change) args+=(--proc /gomodcache) ;;   # one mount, a filesystem no bind source can have
+    *) args+=(--ro-bind "$modcache" /gomodcache) ;;
+  esac
   local p kv
   for p in /bin /lib /lib64 /sbin; do
     if [[ -L "$p" ]]; then args+=(--symlink "$(readlink "$p")" "$p")

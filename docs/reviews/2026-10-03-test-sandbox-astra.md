@@ -399,3 +399,47 @@ Verdict: NO-GO
 Portability is demonstrated for this exact commit: both hosted [ubuntu-24.04 amd64](https://github.com/ekaynac/auto-dev-cycle/actions/runs/37127108605/job/111214526338) and [ubuntu-24.04 arm64](https://github.com/ekaynac/auto-dev-cycle/actions/runs/37127108605/job/111214526542) `make ci` jobs passed. The container fallback’s absence is explicitly documented and consistent with the agreed split.
 
 Local validation passed the complete unmodified bubblewrap self-check, including all seven mutations and refusal cases. Shell syntax and implementation-file whitespace checks passed. The focused reproductions above used disposable fixtures; repository files remain unchanged.
+## Second review of #16 (Astra, 2026-10-03)
+
+Verdict: NO-GO
+
+- **H1 — Partially resolved.** The reported provision/cache overlap is refused, but the original Go installation now executed during provisioning can still overlap the writable cache. See High below.
+- **H2 — Resolved.** Repository overlap with protected roots, including relocated `CODEX_HOME`, is rejected before provisioning or execution.
+- **M1 — Reported failures resolved.** Started/finished matching, package outcomes, and control-run validation are enforced. A smaller validation gap remains below.
+- **M2 — Resolved.** Expected mounts must occur exactly once; the missing-mount mutation exercises absence detection.
+- **M3 — Portability defect resolved.** Substituting proc avoids the tmpfs collision. However, the mutation no longer independently proves filesystem-type checking.
+
+**High — The original Go installation can remain writable from the sandbox.**
+
+Locations: [scripts/test-sandbox.sh:193](scripts/test-sandbox.sh:193), [scripts/test-sandbox.sh:205](scripts/test-sandbox.sh:205).
+
+The overlap checks protect provisioned sources but omit `$goroot`, despite executing `$goroot/bin/go` on the host. An accepted configuration is:
+
+```text
+ADC_TEST_SCRATCH=<temporary>/scratch
+ADC_GO_PREFIX=<temporary>/scratch/gocache/host-go
+```
+
+**Reproduced with a disposable copy of the genuine pinned Go installation:** the first sandbox invocation replaced `/scratch/gocache/host-go/bin/go`. A second invocation, using a fresh provision area to trigger module provisioning, executed that replacement on the host and created a sacrificial marker outside the sandbox. Both invocations exited **0**.
+
+**Fix:** Before provisioning, reject overlap between writable bind sources and the original Go installation, as well as provisioned sources. Add this two-invocation regression.
+
+**Medium — Duplicate-mount detection masks a broken filesystem-type assertion.**
+
+Locations: [scripts/test-sandbox.sh:256](scripts/test-sandbox.sh:256), [scripts/test-sandbox.sh:292](scripts/test-sandbox.sh:292), [test/sandbox/containment_test.go:212](test/sandbox/containment_test.go:212).
+
+The type-change mutation retains the module-cache bind and mounts proc over it. Consequently, `TestOnlyExpectedMounts` fails for duplicate `/gomodcache` mounts even if filesystem-type validation is broken.
+
+**Reproduced in a disposable checkout:** removed only `fstype != want` from the assertion. The **entire self-check still passed**, including all eight mutation matrices and the type-change red-proof.
+
+**Fix:** Make type-change replace the original bind, leaving exactly one mount at `/gomodcache`. Verify that disabling the type comparison makes this mutation’s red-proof fail.
+
+**Low — Stream validation accepts missing package identities and impossible event ordering.**
+
+Location: [scripts/test-sandbox-selftest.sh:108](scripts/test-sandbox-selftest.sh:108).
+
+`unique` treats uniformly missing `.Package` values as one package, while sorting test names discards lifecycle ordering. I reproduced acceptance of both an entirely identity-free stream and a stream reporting package completion before test completion and test start.
+
+**Fix:** Require a nonempty, expected package identity and validate lifecycle order. Add negative fixtures for both cases.
+
+Validation used disposable fixtures; repository files remain unchanged. The supplied green CI and baseline self-check evidence is consistent with these findings: the host-toolchain configuration is absent from the refusals, and duplicate detection masks the type-validation regression.
