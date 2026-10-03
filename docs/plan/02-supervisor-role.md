@@ -59,7 +59,8 @@ What it does **not** do:
 - digests and notes (J5);
 - self-install, with `independent_review` confirmation (D32).
 
-**Proposal + human confirmation** (passkey on the dashboard or a pager reply, D32):
+**Proposal + human confirmation** (a passkey/WebAuthn assertion on the dashboard; the pager only notifies and links,
+D32, D37):
 - widening a data policy or allowed destinations;
 - allowing paid fallback;
 - enrolling agents;
@@ -146,7 +147,7 @@ authority or confirm a proposal.
   - `adc notes`;
   - every command with `--json`.
 - Token kinds (`operator`, `supervisor`) with grants and per-action confirmation policies; passkey confirmation on the
-  dashboard; pager-reply confirmation through the webhook transport.
+  dashboard (the only human-confirmation channel, D37); the pager sends a notification with a link.
 - **A supervisor kit:** instruction templates for Claude Code (`CLAUDE.md`) and Codex (`AGENTS.md`) that load this
   role, and a reference systemd unit for running an unattended supervisor under its own OS user.
 - **Exit check (in M5 / M6):**

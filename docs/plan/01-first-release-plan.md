@@ -413,7 +413,8 @@ proven on a small multi-service T0 fixture in **M1**, before anything depends on
     - agent enrolment: `human`;
     - grant creation or extension: `human`.
 
-    Human confirmation means presence-verified: a passkey/WebAuthn tap on the dashboard or a pager reply. A pending
+    Human confirmation means presence-verified: a passkey/WebAuthn assertion on the dashboard, the only channel (D37).
+    The pager notifies and links. A pending
     proposal is a hold with a named signal while other work continues.
   - **Enforcement strength is stated honestly.** Supervisor-token limits hold only if the unattended agent cannot
     read operator credentials (separate OS user, container or host).
