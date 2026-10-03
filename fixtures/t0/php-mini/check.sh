@@ -174,11 +174,11 @@ for task_dir in "${task_dirs[@]}"; do
     fi
 
     declared="$(printf '%s\n' "${hidden[@]}" | sort)"
-    present="$( (cd "$task_dir/hidden" 2>/dev/null && find . -type f -printf '%P\n' || true) | sort)"
+    present="$(if [[ -d "$task_dir/hidden" ]]; then (cd "$task_dir/hidden" && find . -type f -printf '%P\n'); fi | sort)"
     if [[ ${#hidden[@]} -gt 0 && "$declared" == "$present" ]]; then pass "$tid: hidden tests match task.json"
     else fail "$tid: hidden tests on disk do not match task.json"; fi
     declared="$(printf '%s\n' "${visible_added[@]}" | sed '/^$/d' | sort)"
-    present="$( (cd "$task_dir/visible" 2>/dev/null && find . -type f -printf '%P\n' || true) | sort)"
+    present="$(if [[ -d "$task_dir/visible" ]]; then (cd "$task_dir/visible" && find . -type f -printf '%P\n'); fi | sort)"
     if [[ "$declared" == "$present" ]]; then pass "$tid: added visible tests match task.json"
     else fail "$tid: added visible tests on disk do not match task.json"; fi
 
