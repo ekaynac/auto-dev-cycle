@@ -50,6 +50,7 @@ mutations=(
   repo-alias=TestNoProtectedOrRepoAlias+TestOnlyExpectedMounts
   repo-writable=TestRepoReadOnly
   extra-mount=TestOnlyExpectedMounts
+  pseudo-mount=TestOnlyExpectedMounts
 )
 
 out="$(mktemp -d)"
@@ -75,7 +76,7 @@ run() {
   local rc=0
   env ANTHROPIC_API_KEY=decoy-not-a-key ADC_DECOY_TOKEN=decoy-not-a-token \
     FTP_PROXY=http://decoy:decoy@127.0.0.1:9 NO_PROXY=decoy.invalid \
-    ADC_SELFTEST_LOOPBACK_PORT="$port" ADC_TEST_SCRATCH="$out/scratch-$label" \
+    ADC_SELFTEST_LOOPBACK_PORT="$port" ADC_TEST_SCRATCH="$out/scratch-$label" ADC_TEST_PROVISION="$out/provision" \
     "$repo_root/scripts/test-sandbox.sh" "$@" --env ADC_SELFTEST_LOOPBACK_PORT \
     -- go test -count=1 -json ./test/sandbox/ >"$out/$label.json" 2>"$out/$label.err" || rc=$?
   printf '%s\n' "$rc" >"$out/$label.rc"
@@ -85,6 +86,13 @@ run() {
 action() {
   jq -r --arg t "$2" 'select(.Test == $t and (.Action == "pass" or .Action == "fail" or .Action == "skip")) | .Action' \
     "$out/$1.json" 2>/dev/null | tail -n1
+}
+
+# results <label> <action>: every test (and subtest) with that final action, sorted.
+results() {
+  jq -r --arg a "$2" 'select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip")) | [.Test, .Action] | @tsv' \
+    "$out/$1.json" 2>/dev/null | awk -F'\t' '{last[$1] = $2} END {for (t in last) print t "\t" last[t]}' \
+    | awk -F'\t' -v a="$2" '$2 == a {print $1}' | sort
 }
 
 expect() {  # expect <label> <wanted action> <test>...
@@ -139,6 +147,19 @@ if [[ "$backend" == auto || "$backend" == bwrap ]] && bwrap_starts; then
       [[ " ${red[*]} " == *" $c "* ]] || green+=("$c")
     done
     expect "mut-$name" pass "${green[@]}"
+    got_red="$(results "mut-$name" fail | grep -v / | tr '\n' ' ')"
+    want_red="$(printf '%s\n' "${red[@]}" | sort | tr '\n' ' ')"
+    all_now="$( { results "mut-$name" pass; results "mut-$name" fail; results "mut-$name" skip; } | sort | tr '\n' ' ')"
+    all_clean="$( { results sandboxed pass; results sandboxed fail; results sandboxed skip; } | sort | tr '\n' ' ')"
+    if [[ "$got_red" != "$want_red" ]]; then
+      echo "  FAIL  [$name] failing set is [$got_red], want exactly [$want_red]"; fail=1
+    elif [[ "$all_now" != "$all_clean" ]]; then
+      echo "  FAIL  [$name] the set of reported tests differs from the clean run"; fail=1
+    elif [[ "$(cat "$out/mut-$name.rc")" != 1 ]] || grep -q 'containment breach\|test-sandbox:' "$out/mut-$name.err"; then
+      echo "  FAIL  [$name] exit $(cat "$out/mut-$name.rc") / wrapper message: $(head -n1 "$out/mut-$name.err")"; fail=1
+    else
+      echo "  ok    [$name] exactly its declared checks failed; the test set and exit status match"
+    fi
   done
 elif [[ "$backend" == bwrap || ( -n "${CI:-}" && "$backend" == auto ) ]]; then
   echo "  FAIL  the mutation red-proofs need a working bubblewrap (required for --backend bwrap and in CI)"; fail=1
@@ -146,26 +167,32 @@ else
   echo "  note  mutation red-proofs need bubblewrap; skipped for backend $backend"
 fi
 
-echo "refusals: mount sources overlapping protected state"
-mkdir -p "$out/xdg-state/controller"
-refuse() {  # refuse <label> <env assignments...>
-  local label="$1"; shift
-  if env "$@" "$repo_root/scripts/test-sandbox.sh" -- /bin/true 2>"$out/refuse.err"; then
+echo "refusals: only areas test-sandbox created are ever mounted"
+refuse() {  # refuse <label> <expected message> <env assignments...>
+  local label="$1" want="$2"; shift 2
+  if env ADC_TEST_PROVISION="$out/provision" "$@" "$repo_root/scripts/test-sandbox.sh" -- /bin/true 2>"$out/refuse.err"; then
     echo "  FAIL  $label: the wrapper ran"; fail=1
-  elif grep -q 'overlaps protected' "$out/refuse.err"; then
+  elif grep -q "$want" "$out/refuse.err"; then
     echo "  ok    $label: $(head -n1 "$out/refuse.err")"
   else
     echo "  FAIL  $label: unexpected error: $(head -n1 "$out/refuse.err")"; fail=1
   fi
 }
-refuse "module cache inside state" XDG_STATE_HOME="$out/xdg-state" GOMODCACHE="$out/xdg-state/controller"
-refuse "scratch inside state" XDG_STATE_HOME="$out/xdg-state" ADC_TEST_SCRATCH="$out/xdg-state/controller/scratch"
-refuse "scratch containing state" XDG_STATE_HOME="$out/scratch-outer/state" ADC_TEST_SCRATCH="$out/scratch-outer"
+mkdir -p "$out/decoy-codex" "$out/xdg-state" "$out/xdg-runtime"
+echo decoy >"$out/decoy-codex/auth.json"
+refuse "an existing unmarked directory as scratch" "not created by test-sandbox" ADC_TEST_SCRATCH="$out/decoy-codex"
+refuse "scratch inside the state directory" "overlaps protected" XDG_STATE_HOME="$out/xdg-state" ADC_TEST_SCRATCH="$out/xdg-state/x"
+refuse "scratch inside the runtime directory" "overlaps protected" XDG_RUNTIME_DIR="$out/xdg-runtime" ADC_TEST_SCRATCH="$out/xdg-runtime/x"
+refuse "scratch containing a relocated CODEX_HOME" "overlaps protected" CODEX_HOME="$out/outer/codex" ADC_TEST_SCRATCH="$out/outer"
+refuse "scratch inside a relocated CODEX_HOME" "overlaps protected" CODEX_HOME="$out/decoy-codex" ADC_TEST_SCRATCH="$out/decoy-codex/x"
+if [[ "$(cat "$out/decoy-codex/auth.json")" == decoy ]]; then echo "  ok    the decoy was left untouched"; else echo "  FAIL  the decoy changed"; fail=1; fi
 
 echo "refusals: a cache symlink in an otherwise valid scratch"
-mkdir -p "$out/scratch-symlink" "$out/decoy-target"
+# A genuine (marked, private) scratch area with a symlink planted inside.
+mkdir -m 700 "$out/scratch-symlink" && mkdir -p "$out/decoy-target"
+printf 'adc test-sandbox area v1\n' >"$out/scratch-symlink/.adc-test-area"
 ln -s "$out/decoy-target" "$out/scratch-symlink/gocache"
-if ADC_TEST_SCRATCH="$out/scratch-symlink" "$repo_root/scripts/test-sandbox.sh" -- /bin/true 2>"$out/symlink.err"; then
+if ADC_TEST_PROVISION="$out/provision" ADC_TEST_SCRATCH="$out/scratch-symlink" "$repo_root/scripts/test-sandbox.sh" -- /bin/true 2>"$out/symlink.err"; then
   echo "  FAIL  the wrapper ran with a symlinked cache"; fail=1
 elif grep -q 'symlink; refused' "$out/symlink.err"; then
   echo "  ok    refused: $(head -n1 "$out/symlink.err")"

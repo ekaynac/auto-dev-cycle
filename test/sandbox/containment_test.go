@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -156,16 +157,33 @@ func TestNoProtectedOrRepoAlias(t *testing.T) {
 	}
 }
 
-// Every mount point is one the wrapper made: configured engine mounts (for
-// example from containers.conf) or anything else injected cannot add a path.
-var expectedMounts = map[string]bool{
-	"/": true, "/tmp": true, "/home": true, "/home/sandbox": true, "/src": true,
-	"/scratch/work": true, "/scratch/gocache": true, "/opt/go": true, "/opt/node/bin/node": true,
-	"/gomodcache": true, "/usr": true, "/bin": true, "/lib": true, "/lib64": true, "/sbin": true,
-	"/etc/ld.so.cache": true, "/etc/ld.so.conf": true, "/etc/ld.so.conf.d": true, "/etc/alternatives": true,
-	"/etc/passwd": true, "/etc/group": true, "/etc/nsswitch.conf": true, "/etc/localtime": true,
-	// rootless podman's own bookkeeping files
-	"/etc/hosts": true, "/etc/hostname": true, "/etc/resolv.conf": true, "/run/.containerenv": true,
+// Every mount is one the wrapper (or the backend's fixed runtime setup) made,
+// checked by mount point AND filesystem type: configured engine mounts, a
+// bind hidden under /dev, /proc or /sys, or anything else injected fails.
+// There is no prefix exemption.
+var expectedMounts = map[string][]string{
+	// Wrapper mounts (both backends).
+	"/": {"tmpfs", "overlay", "fuse.fuse-overlayfs"}, "/tmp": {"tmpfs"}, "/home": {"tmpfs"},
+	"/home/sandbox": {"tmpfs"}, "/src": nil, "/scratch/work": nil, "/scratch/gocache": nil,
+	"/opt/go": nil, "/opt/node/bin/node": nil, "/gomodcache": nil,
+	// bubblewrap: read-only system binds.
+	"/usr": nil, "/bin": nil, "/lib": nil, "/lib64": nil, "/sbin": nil,
+	"/etc/ld.so.cache": nil, "/etc/ld.so.conf": nil, "/etc/ld.so.conf.d": nil, "/etc/alternatives": nil,
+	"/etc/passwd": nil, "/etc/group": nil, "/etc/nsswitch.conf": nil, "/etc/localtime": nil,
+	// Pseudo filesystems and device nodes (bubblewrap --proc/--dev; podman's defaults).
+	"/proc": {"proc"}, "/dev": {"tmpfs", "devtmpfs"}, "/dev/pts": {"devpts"}, "/dev/shm": {"tmpfs"},
+	"/dev/mqueue": {"mqueue"}, "/sys": {"sysfs"}, "/sys/fs/cgroup": {"cgroup2", "tmpfs"},
+	"/dev/null": {"devtmpfs"}, "/dev/zero": {"devtmpfs"}, "/dev/full": {"devtmpfs"}, "/dev/tty": {"devtmpfs"},
+	"/dev/random": {"devtmpfs"}, "/dev/urandom": {"devtmpfs"},
+	// Rootless podman: its own bookkeeping files, and the paths it masks or
+	// makes read-only inside /proc and /sys.
+	"/etc/hosts": nil, "/etc/hostname": nil, "/etc/resolv.conf": nil, "/run/.containerenv": nil,
+	"/proc/acpi": {"tmpfs"}, "/proc/kcore": {"devtmpfs", "tmpfs"}, "/proc/keys": {"devtmpfs", "tmpfs"},
+	"/proc/latency_stats": {"devtmpfs", "tmpfs"}, "/proc/timer_list": {"devtmpfs", "tmpfs"},
+	"/proc/timer_stats": {"devtmpfs", "tmpfs"}, "/proc/sched_debug": {"devtmpfs", "tmpfs"},
+	"/proc/scsi": {"tmpfs"}, "/sys/firmware": {"tmpfs"}, "/sys/fs/selinux": {"tmpfs"}, "/sys/dev/block": {"tmpfs"},
+	"/proc/asound": {"proc"}, "/proc/bus": {"proc"}, "/proc/fs": {"proc"}, "/proc/irq": {"proc"},
+	"/proc/sys": {"proc"}, "/proc/sysrq-trigger": {"proc"},
 }
 
 func TestOnlyExpectedMounts(t *testing.T) {
@@ -173,24 +191,28 @@ func TestOnlyExpectedMounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	var extra []string
+	var unexpected []string
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
 		f := strings.Fields(line)
-		if len(f) < 5 {
+		sep := -1
+		for i := 6; i < len(f); i++ {
+			if f[i] == "-" {
+				sep = i
+				break
+			}
+		}
+		if len(f) < 5 || sep < 0 || sep+1 >= len(f) {
 			t.Fatalf("setup: malformed mountinfo line %q", line)
 		}
-		mp := strings.ReplaceAll(f[4], `\040`, " ")
-		switch {
-		case expectedMounts[mp],
-			mp == "/proc" || strings.HasPrefix(mp, "/proc/"),
-			mp == "/dev" || strings.HasPrefix(mp, "/dev/"),
-			mp == "/sys" || strings.HasPrefix(mp, "/sys/"):
-		default:
-			extra = append(extra, mp)
+		mp, fstype := strings.ReplaceAll(f[4], `\040`, " "), f[sep+1]
+		types, known := expectedMounts[mp]
+		ok := known && (types == nil || slices.Contains(types, fstype))
+		if !ok {
+			unexpected = append(unexpected, mp+" ("+fstype+")")
 		}
 	}
-	if len(extra) > 0 {
-		t.Errorf("unexpected mount points: %v", extra)
+	if len(unexpected) > 0 {
+		t.Errorf("unexpected mounts: %s", strings.Join(unexpected, "; "))
 	}
 }
 
