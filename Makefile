@@ -97,8 +97,13 @@ fixtures-check: ## Prove every T0 fixture task well-formed (needs docker, bubble
 	@[[ -n "$(T0_CHECKS)" ]] || { echo "fixtures-check: no fixtures/t0/*/check.sh found" >&2; exit 1; }
 	@for c in $(T0_CHECKS); do echo "== $$c"; $$c || exit 1; done
 
+# The containment tests inspect every process visible in the sandbox, so they
+# run alone: other packages' go tooling would otherwise appear beside them.
+OTHER_PKGS = $(shell $(GO) list ./... | grep -v '/test/sandbox$$')
+
 test: go-check ## Run all tests inside the test sandbox (refuses to run unsandboxed)
-	@scripts/test-sandbox.sh -- go test -count=1 ./...
+	@scripts/test-sandbox.sh -- go test -count=1 ./test/sandbox/
+	@scripts/test-sandbox.sh -- go test -count=1 $(OTHER_PKGS)
 
 test-sandbox-selftest: go-check ## Prove the test sandbox contains writes, credentials and network
 	@scripts/test-sandbox-selftest.sh
