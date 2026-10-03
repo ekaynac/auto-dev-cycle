@@ -6,18 +6,16 @@
 # read-only, one scratch area is writable, there is no network beyond the
 # sandbox's own loopback, and the environment is an explicit allowlist.
 #
-# Usage: scripts/test-sandbox.sh [--backend auto|bwrap|container|none]
+# Usage: scripts/test-sandbox.sh [--backend auto|bwrap|none]
 #                                [--env NAME]... -- COMMAND [ARG]...
 #
-# Backends, in `auto` order. Each is chosen only after a probe run with the
-# exact configuration succeeds; a probe failure is a setup failure, never a
-# test failure.
-#   bwrap      bubblewrap with every namespace unshared (default on Linux)
-#   container  ROOTLESS podman (D37), for hosts without usable user
-#              namespaces for bubblewrap; run with a minimal environment, a
-#              controlled containers.conf and no default mounts file
+# Backends:
+#   bwrap      bubblewrap with every namespace unshared (`auto`); chosen only
+#              after a probe run with the exact configuration succeeds
 #   none       no containment; refused unless ADC_TEST_UNSANDBOXED=1. Exists
 #              only so the sandbox self-test can prove its checks go red.
+# A rootless-container fallback for hosts without user namespaces (D37) is a
+# separate change; until it lands, such hosts cannot run the tests.
 #
 # No arbitrary host directory is ever mounted. The sandbox sees exactly:
 #   /src                the repository, read-only
@@ -30,7 +28,8 @@
 #                       by `go mod download` (checked against go.sum)
 # The scratch and provision areas are directories this script created: an
 # existing directory without its marker (a credential or runtime directory,
-# say) is refused, never mounted.
+# say) is refused, never mounted. Every path below them that is provisioned
+# or mounted must consist of real directories: no symlink anywhere.
 #
 # Supplementary breach detection (the boundary is the namespaces, not this):
 # a host sentinel under /tmp must stay an empty directory with the same inode,
@@ -42,8 +41,6 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-# Multi-arch index digest of ubuntu:24.04, the container backend's base.
-container_image="docker.io/library/ubuntu@sha256:a853f94d226358a79c740cfc7bce0c289748f3fe3488d921d038ccd752c61b60"
 deny_env_re='(_TOKEN|_KEY|_SECRET|_PASSWORD)$|^(ANTHROPIC_|OPENAI_|OPENROUTER_|CLAUDE_|AWS_|GH_|GITHUB_)|^(CODEX_HOME|SSH_AUTH_SOCK)$'
 marker_text="adc test-sandbox area v1"
 
@@ -66,7 +63,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ $# -gt 0 ]] || die "no command given" 64
 case "$backend" in
-  auto | bwrap | container) ;;
+  auto | bwrap) ;;
   none) [[ "${ADC_TEST_UNSANDBOXED:-}" == 1 ]] || die "backend 'none' requires ADC_TEST_UNSANDBOXED=1 (sandbox self-test only)" ;;
   *) die "unknown backend: $backend" 64 ;;
 esac
@@ -76,7 +73,7 @@ mutation="${ADC_TEST_SANDBOX_MUTATION:-}"
 if [[ -n "$mutation" ]]; then
   [[ "${ADC_TEST_UNSANDBOXED:-}" == 1 && "$backend" == bwrap ]] \
     || die "ADC_TEST_SANDBOX_MUTATION needs ADC_TEST_UNSANDBOXED=1 and --backend bwrap (sandbox self-test only)"
-  [[ "$mutation" =~ ^(expose-home|expose-state|repo-alias|repo-writable|extra-mount|pseudo-mount)$ ]] || die "unknown mutation: $mutation" 64
+  [[ "$mutation" =~ ^(expose-home|expose-state|repo-alias|repo-writable|extra-mount|pseudo-mount|type-change)$ ]] || die "unknown mutation: $mutation" 64
 fi
 
 home="$(realpath -m -- "$HOME")"
@@ -136,10 +133,27 @@ claim_area() {
 }
 claim_area scratch "$scratch_root"
 covers "$scratch_root" "$provision_root" || claim_area provision "$provision_root"
+# inside_area <area> <path>: path lies below area through components that are
+# not symlinks (existing ones are checked; missing ones are created later).
+inside_area() {
+  local area="$1" path="$2" cur part parts
+  [[ "$path" == "$area"/* ]] || die "$path is not inside $area; refused"
+  cur="$area"
+  IFS=/ read -r -a parts <<<"${path#"$area"/}"
+  for part in "${parts[@]}"; do
+    cur="$cur/$part"
+    if [[ -L "$cur" ]]; then die "$cur is a symlink; refused"; fi
+  done
+}
+if covers "$scratch_root" "$provision_root" && [[ "$provision_root" != "$scratch_root" ]]; then
+  inside_area "$scratch_root" "$provision_root"
+fi
 mkdir -p "$provision_root"
 
 # Provisioning (outside the sandbox; the only step with network).
 toolchain="$provision_root/go-$go_version"
+inside_area "$provision_root" "$toolchain"
+inside_area "$provision_root" "$toolchain.tmp"
 if [[ ! -f "$toolchain/.complete" ]]; then
   rm -rf "$toolchain.tmp"
   mkdir -p "$toolchain.tmp"
@@ -151,11 +165,14 @@ if [[ ! -f "$toolchain/.complete" ]]; then
 fi
 node_sum="$(sha256sum "$node_bin" | cut -c1-16)"
 node_copy="$provision_root/node-$node_sum"
+inside_area "$provision_root" "$node_copy/bin/node"
+inside_area "$provision_root" "$node_copy/bin/node.tmp"
 if [[ ! -x "$node_copy/bin/node" ]]; then
   mkdir -p "$node_copy/bin"
   cp -- "$node_bin" "$node_copy/bin/node.tmp" && chmod 0555 "$node_copy/bin/node.tmp" && mv "$node_copy/bin/node.tmp" "$node_copy/bin/node"
 fi
 modcache="$provision_root/modcache"
+inside_area "$provision_root" "$modcache"
 sum_digest="$({ cat "$repo_root/go.mod"; if [[ -f "$repo_root/go.sum" ]]; then cat "$repo_root/go.sum"; fi; } | sha256sum | cut -c1-16)"
 if [[ ! -f "$modcache/.complete-$sum_digest" ]]; then
   mkdir -p "$modcache"
@@ -165,10 +182,13 @@ if [[ ! -f "$modcache/.complete-$sum_digest" ]]; then
   touch "$modcache/.complete-$sum_digest"
 fi
 
-[[ -L "$scratch_root/gocache" ]] && die "scratch $scratch_root/gocache is a symlink; refused"
-mkdir -p "$scratch_root/gocache"
 gocache="$scratch_root/gocache"
+inside_area "$scratch_root" "$gocache"
+mkdir -p "$gocache"
 work="$(mktemp -d "$scratch_root/work.XXXXXX")"
+# Re-check every mount source after provisioning, right before use.
+for src in "$toolchain" "$node_copy/bin/node" "$modcache"; do inside_area "$provision_root" "$src"; done
+for src in "$gocache" "$work"; do inside_area "$scratch_root" "$src"; done
 sentinel="$(mktemp -d /tmp/adc-sentinel-XXXXXX)"
 sentinel_inode="$(stat -c %i "$sentinel")"
 # Canaries mark protected places: the home, the user state directory (where
@@ -197,6 +217,17 @@ canary_of() {  # canary_of <kind>: the canary planted for that kind
 }
 canary_names+="repo:$repo_canary"
 
+# The filesystem type each bind must show inside: that of its real source.
+fstype() { findmnt -no FSTYPE --target "$1" | head -n1; }
+command -v findmnt >/dev/null || die "findmnt (util-linux) is required"
+mount_types="/src=$(fstype "$repo_root") /scratch/work=$(fstype "$work") /scratch/gocache=$(fstype "$gocache")"
+mount_types+=" /opt/go=$(fstype "$toolchain") /opt/node/bin/node=$(fstype "$node_copy/bin/node") /gomodcache=$(fstype "$modcache")"
+mount_types+=" /usr=$(fstype /usr)"
+for p in /bin /lib /lib64 /sbin; do [[ -d "$p" && ! -L "$p" ]] && mount_types+=" $p=$(fstype "$p")"; done
+for p in /etc/ld.so.cache /etc/ld.so.conf /etc/ld.so.conf.d /etc/alternatives /etc/passwd /etc/group /etc/nsswitch.conf /etc/localtime; do
+  [[ -e "$p" ]] && mount_types+=" $p=$(fstype "$p")"
+done
+
 mutation_args=()
 case "$mutation" in
   expose-home | expose-state)
@@ -205,6 +236,7 @@ case "$mutation" in
   repo-writable) mutation_args=(--bind "$repo_root" /src) ;;
   extra-mount) mutation_args=(--ro-bind /usr/share /mut/extra) ;;
   pseudo-mount) mutation_args=(--ro-bind /usr/share /dev/adc-mut) ;;   # hidden under an exempt-looking tree
+  type-change) mutation_args=(--tmpfs /gomodcache) ;;                   # an allowed path, the wrong filesystem
 esac
 
 # The environment inside the sandbox: this list and the --env names, nothing else.
@@ -227,6 +259,7 @@ inner_env=(
   ADC_SANDBOX_HOST_HOME="$home"
   ADC_SANDBOX_HOST_REPO="$repo_root"
   ADC_SANDBOX_CANARY="$canary_names"
+  ADC_SANDBOX_MOUNT_TYPES="$mount_types"
 )
 for name in "${pass_env[@]}"; do inner_env+=("$name=${!name-}"); done
 
@@ -255,63 +288,6 @@ run_bwrap() {
   env -i PATH=/usr/bin:/bin "$(command -v bwrap)" "${args[@]}" -- "$@"
 }
 
-# A controlled containers.conf: with CONTAINERS_CONF set, podman reads no
-# system or user containers.conf. podman itself runs under env -i, so no
-# CONTAINERS_CONF_OVERRIDE (or any other configuration variable) reaches it,
-# and --default-mounts-file points at an empty file, so no mounts.conf
-# applies. The same settings are passed as explicit flags.
-podman_conf() {
-  local conf="$scratch_root/containers.conf"
-  cat >"$conf" <<'CONF'
-[containers]
-mounts = []
-volumes = []
-devices = []
-env = []
-env_host = false
-http_proxy = false
-init = false
-read_only_tmpfs = false
-default_capabilities = []
-ipcns = "private"
-pidns = "private"
-utsns = "private"
-cgroupns = "private"
-netns = "none"
-CONF
-  : >"$scratch_root/mounts.conf"
-  printf '%s\n' "$conf"
-}
-
-podman_env() {  # the only environment podman runs with
-  env -i HOME="$HOME" USER="${USER:-$(id -un)}" PATH="/usr/local/bin:/usr/bin:/bin" LANG=C.UTF-8 \
-    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" CONTAINERS_CONF="$(podman_conf)" "$@"
-}
-
-podman_rootless() {
-  command -v podman >/dev/null && [[ "$(podman_env podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" == true ]]
-}
-
-run_container() {
-  podman_rootless || return 125
-  # --init=false explicitly: an init process would keep engine-injected
-  # variables readable through /proc/1/environ. PID 1 is env -i, which execs
-  # the command.
-  local args=(run --rm --init=false --http-proxy=false --userns=keep-id
-    --default-mounts-file="$scratch_root/mounts.conf" --read-only-tmpfs=false
-    --pid=private --ipc=private --uts=private --cgroupns=private
-    --network none --cap-drop ALL
-    --security-opt no-new-privileges --read-only --pids-limit 4096
-    --tmpfs "/tmp:rw,exec,nosuid,nodev,size=4g"
-    --tmpfs "/home/sandbox:rw,nosuid,nodev,size=1g"
-    -v "$repo_root:/src:ro" -v "$work:/scratch/work:rw" -v "$gocache:/scratch/gocache:rw"
-    -v "$toolchain:/opt/go:ro" -v "$node_copy/bin/node:/opt/node/bin/node:ro" -v "$modcache:/gomodcache:ro"
-    -w /src)
-  # The engine adds variables of its own (HOSTNAME, image ENV); env -i inside
-  # the container leaves exactly the allowlist.
-  podman_env podman "${args[@]}" "$container_image" /usr/bin/env -i "${inner_env[@]}" "$@"
-}
-
 run_none() {
   # Host environment kept on purpose: this is the "no containment" control.
   (cd "$repo_root" && env "${inner_env[@]/#PATH=*/PATH=$goroot/bin:$PATH}" \
@@ -323,18 +299,15 @@ probe() { "run_$1" /bin/true >/dev/null 2>&1; }  # the exact configuration, a ha
 
 if [[ "$backend" == auto ]]; then
   if command -v bwrap >/dev/null && probe bwrap; then backend=bwrap
-  elif probe container; then backend=container
-  else die "no sandbox backend works: bubblewrap cannot create namespaces and no rootless podman can run the sandbox; tests refuse to run unsandboxed"
+  else die "no sandbox backend works: bubblewrap cannot create namespaces on this host; tests refuse to run unsandboxed"
   fi
 elif [[ "$backend" != none ]]; then
-  probe "$backend" || die "backend $backend cannot start the sandbox on this host (a container backend must be rootless)"
+  probe "$backend" || die "backend $backend cannot start the sandbox on this host"
 fi
-[[ "$backend" == container ]] && printf 'test-sandbox: container backend via rootless podman\n' >&2
 
 rc=0
 case "$backend" in
   bwrap) run_bwrap "$@" || rc=$? ;;
-  container) run_container "$@" || rc=$? ;;
   none) run_none "$@" || rc=$? ;;
 esac
 

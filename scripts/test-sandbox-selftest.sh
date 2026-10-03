@@ -12,7 +12,7 @@
 #      guards against. The unsandboxed run writes only into a decoy under /tmp
 #      and a probe file it removes again.
 #
-# Usage: scripts/test-sandbox-selftest.sh [--backend auto|bwrap|container]
+# Usage: scripts/test-sandbox-selftest.sh [--backend auto|bwrap]
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -20,7 +20,7 @@ backend=auto
 case "${1:-}" in
   "") ;;
   --backend) backend="${2:?}" ;;
-  *) printf 'usage: %s [--backend auto|bwrap|container]\n' "$0" >&2; exit 64 ;;
+  *) printf 'usage: %s [--backend auto|bwrap]\n' "$0" >&2; exit 64 ;;
 esac
 
 # Checks whose red needs nothing from the host but the harness itself.
@@ -51,6 +51,7 @@ mutations=(
   repo-writable=TestRepoReadOnly
   extra-mount=TestOnlyExpectedMounts
   pseudo-mount=TestOnlyExpectedMounts
+  type-change=TestOnlyExpectedMounts
 )
 
 out="$(mktemp -d)"
@@ -95,6 +96,19 @@ results() {
     | awk -F'\t' -v a="$2" '$2 == a {print $1}' | sort
 }
 
+# stream_ok <json file>: the go test -json stream is complete and unambiguous:
+# exactly one terminal event (pass/fail/skip) per test and subtest, and
+# exactly one terminal package event. Prints the problem and fails otherwise.
+stream_ok() {
+  jq -s -r '
+    [ .[] | select(.Action == "pass" or .Action == "fail" or .Action == "skip") ] as $t
+    | ($t | map(select(.Test == null)) | length) as $pkg
+    | ($t | map(select(.Test != null)) | group_by(.Test) | map(select(length > 1) | .[0].Test)) as $dups
+    | if $pkg != 1 then "package completion events: \($pkg) (want 1)"
+      elif ($dups | length) > 0 then "duplicate terminal results: \($dups | join(", "))"
+      else "ok" end' "$1" 2>/dev/null | grep -qx ok
+}
+
 expect() {  # expect <label> <wanted action> <test>...
   local label="$1" want="$2" t got; shift 2
   for t in "$@"; do
@@ -108,8 +122,17 @@ expect() {  # expect <label> <wanted action> <test>...
   done
 }
 
+echo "evidence validator: malformed streams are rejected"
+printf '%s\n' '{"Action":"pass","Test":"TestA"}' >"$out/ev-nopkg.json"
+printf '%s\n' '{"Action":"pass","Test":"TestA"}' '{"Action":"fail","Test":"TestA"}' '{"Action":"fail"}' >"$out/ev-dup.json"
+printf '%s\n' '{"Action":"pass","Test":"TestA"}' '{"Action":"pass"}' >"$out/ev-good.json"
+if stream_ok "$out/ev-nopkg.json"; then echo "  FAIL  a stream without package completion was accepted"; fail=1; else echo "  ok    missing package completion rejected"; fi
+if stream_ok "$out/ev-dup.json"; then echo "  FAIL  a stream with a duplicate result was accepted"; fail=1; else echo "  ok    duplicate terminal result rejected"; fi
+if stream_ok "$out/ev-good.json"; then echo "  ok    a complete stream accepted"; else echo "  FAIL  a complete stream was rejected"; fail=1; fi
+
 echo "sandboxed run (backend $backend): every check must pass"
 run sandboxed --backend "$backend"
+stream_ok "$out/sandboxed.json" || { echo "  FAIL  the sandboxed run's test stream is incomplete or ambiguous"; fail=1; }
 expect sandboxed pass "${checks[@]}" "${net_checks[@]}" "${mutation_checks[@]}"
 if [[ "$(cat "$out/sandboxed.rc")" != 0 ]]; then
   echo "  FAIL  the sandboxed run exited $(cat "$out/sandboxed.rc"):"; sed 's/^/        /' "$out/sandboxed.err"; fail=1
@@ -151,7 +174,9 @@ if [[ "$backend" == auto || "$backend" == bwrap ]] && bwrap_starts; then
     want_red="$(printf '%s\n' "${red[@]}" | sort | tr '\n' ' ')"
     all_now="$( { results "mut-$name" pass; results "mut-$name" fail; results "mut-$name" skip; } | sort | tr '\n' ' ')"
     all_clean="$( { results sandboxed pass; results sandboxed fail; results sandboxed skip; } | sort | tr '\n' ' ')"
-    if [[ "$got_red" != "$want_red" ]]; then
+    if ! stream_ok "$out/mut-$name.json"; then
+      echo "  FAIL  [$name] the test stream is incomplete or ambiguous"; fail=1
+    elif [[ "$got_red" != "$want_red" ]]; then
       echo "  FAIL  [$name] failing set is [$got_red], want exactly [$want_red]"; fail=1
     elif [[ "$all_now" != "$all_clean" ]]; then
       echo "  FAIL  [$name] the set of reported tests differs from the clean run"; fail=1
@@ -161,10 +186,8 @@ if [[ "$backend" == auto || "$backend" == bwrap ]] && bwrap_starts; then
       echo "  ok    [$name] exactly its declared checks failed; the test set and exit status match"
     fi
   done
-elif [[ "$backend" == bwrap || ( -n "${CI:-}" && "$backend" == auto ) ]]; then
-  echo "  FAIL  the mutation red-proofs need a working bubblewrap (required for --backend bwrap and in CI)"; fail=1
 else
-  echo "  note  mutation red-proofs need bubblewrap; skipped for backend $backend"
+  echo "  FAIL  the mutation red-proofs need a working bubblewrap"; fail=1
 fi
 
 echo "refusals: only areas test-sandbox created are ever mounted"
@@ -185,6 +208,16 @@ refuse "scratch inside the state directory" "overlaps protected" XDG_STATE_HOME=
 refuse "scratch inside the runtime directory" "overlaps protected" XDG_RUNTIME_DIR="$out/xdg-runtime" ADC_TEST_SCRATCH="$out/xdg-runtime/x"
 refuse "scratch containing a relocated CODEX_HOME" "overlaps protected" CODEX_HOME="$out/outer/codex" ADC_TEST_SCRATCH="$out/outer"
 refuse "scratch inside a relocated CODEX_HOME" "overlaps protected" CODEX_HOME="$out/decoy-codex" ADC_TEST_SCRATCH="$out/decoy-codex/x"
+# A genuine provision area whose module cache was replaced by a symlink.
+mkdir -m 700 "$out/prov-symlink" && printf 'adc test-sandbox area v1\n' >"$out/prov-symlink/.adc-test-area"
+ln -s "$out/decoy-codex" "$out/prov-symlink/modcache"
+if env ADC_TEST_PROVISION="$out/prov-symlink" ADC_TEST_SCRATCH="$out/scratch-prov-symlink" "$repo_root/scripts/test-sandbox.sh" -- /bin/true 2>"$out/refuse.err"; then
+  echo "  FAIL  a symlinked provisioned module cache was mounted"; fail=1
+elif grep -q 'is a symlink; refused' "$out/refuse.err"; then
+  echo "  ok    a symlinked provisioned child: $(head -n1 "$out/refuse.err")"
+else
+  echo "  FAIL  symlinked provisioned child: unexpected error: $(head -n1 "$out/refuse.err")"; fail=1
+fi
 if [[ "$(cat "$out/decoy-codex/auth.json")" == decoy ]]; then echo "  ok    the decoy was left untouched"; else echo "  FAIL  the decoy changed"; fail=1; fi
 
 echo "refusals: a cache symlink in an otherwise valid scratch"

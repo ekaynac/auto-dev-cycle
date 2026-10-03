@@ -266,3 +266,68 @@ Location: [scripts/test-sandbox-selftest.sh:134](scripts/test-sandbox-selftest.s
 **Fix:** Compare the complete terminal test-result set against the baseline, reject unexpected/missing/duplicate cases, and require the expected package completion and wrapper exit status.
 
 Independent validation passed the full bubblewrap self-test: all five mutation matrices, three protected-overlap refusals, and cache-symlink refusal. Repository files remain unchanged; no secrets were printed. Hosted validation of `805f7a9` remains unverified: GitHub returned no checks/run for that SHA; the available green [branch run](https://github.com/ekaynac/auto-dev-cycle/actions/runs/37110902407) belongs to `e12d669`.
+## Third review of #10 (Astra, 2026-10-03)
+
+Verdict: NO-GO
+
+- **Earlier H1 — environment/proxy/init exposure:** resolved for the reported paths.
+- **Earlier H2 / #10 H1 / re-review H1 — unsafe mount sources:** partially resolved; runtime and relocated credential roots are protected, but provisioned child paths bypass validation. See High 1.
+- **Earlier H3 — rootful runtime accepted:** resolved.
+- **Earlier M4 — incomplete containment red-proofs:** improved, but proof gaps remain below.
+- **Earlier M5 — sentinel inspection fails open:** resolved.
+- **Earlier M6 / re-review M3 — backend probing/fallback:** resolved within the rootless-Podman-only fallback scope.
+- **Earlier M7 / re-review M5 — combined TCP/DNS prerequisites:** resolved.
+- **Earlier M8 — shared self-test scratch:** resolved.
+- **Earlier re-review M6 — destructive repository probe:** resolved.
+- **Earlier second re-review M4 — nondeterministic state fixture:** resolved for the reported cases.
+- **Earlier second re-review — mutation selection prevents fallback:** resolved for the reported scenario.
+- **#10 H2 / re-review H2 — inherited Podman configuration mounts:** implementation resolved for the reported channels; regression coverage remains missing. The isolation matches upstream’s [configuration loader](https://github.com/containers/podman/blob/v4.9.3/vendor/github.com/containers/common/pkg/config/new.go) and [mount-file selection](https://github.com/containers/podman/blob/v4.9.3/vendor/github.com/containers/common/pkg/subscriptions/subscriptions.go).
+- **#10 M1 / re-review M3 — incomplete mutation evidence:** partially resolved; exit status and test-name sets are checked, but package completion and duplicate results are not. See Medium 1.
+- **Re-review M1 — unexpected Podman tmpfs mounts:** resolved by the explicit `--read-only-tmpfs=false` policy, consistent with [Podman’s documented behavior](https://docs.podman.io/en/v4.9.3/markdown/podman-run.1.html#read-only-tmpfs).
+- **Re-review M2 — recursive pseudo-filesystem exemptions:** resolved; `pseudo-mount` exercises the replacement. Filesystem-type wildcards remain a separate gap.
+
+### High
+
+**1. Provisioned child symlinks still expose protected host directories.**
+
+**Locations:** [scripts/test-sandbox.sh:158](scripts/test-sandbox.sh:158), [scripts/test-sandbox.sh:240](scripts/test-sandbox.sh:240).
+
+`claim_area` validates the scratch/provision roots, but their mounted children are not equivalently validated. In particular, `provision/modcache` can be a symlink outside the claimed area. Provisioning follows it, and the backend subsequently mounts its target at `/gomodcache`. The explicit symlink refusal applies only to `gocache`.
+
+**Reproduced:** Let the runner create legitimate marked areas, then replace `provision/modcache` with a symlink to a sacrificial subdirectory beneath a relocated `CODEX_HOME`. Reading its decoy through `/gomodcache` succeeded with wrapper exit **0**. Every executed containment assertion passed; the host-loopback assertion skipped because this focused reproduction supplied no listener.
+
+This violates both the absence-of-personal-state requirement and the claimed restriction to harness-created mount sources.
+
+**Fix:** Validate every actual provisioned source, including intermediate components, before provisioning, reuse, and mounting. Reject symlinks escaping the claimed area and resolved paths overlapping protected roots. Apply this to the toolchain, Node, and module-cache paths. Add this sacrificial child-symlink refusal regression.
+
+### Medium
+
+**1. Mutation verification still accepts incomplete and duplicate execution evidence.**
+
+**Locations:** [scripts/test-sandbox-selftest.sh:93](scripts/test-sandbox-selftest.sh:93), [scripts/test-sandbox-selftest.sh:150](scripts/test-sandbox-selftest.sh:150).
+
+`results` collapses repeated terminal events through `last[$1]`; `action` likewise retains only the last event. Package-level events are ignored entirely. Consequently, the additional name-set and exit-status checks do not establish complete execution.
+
+**Reproduced:** The existing verifier accepted both a stream lacking package completion and a stream containing duplicate terminal results, printing “exactly its declared checks failed” with its failure flag still zero.
+
+**Fix:** Validate the complete JSON event stream: require exactly one terminal result per test/subtest, the expected package completion, matching case sets, and the expected wrapper status. Exercise the validator with malformed evidence.
+
+**2. The mount assertion does not enforce its stated filesystem-type contract.**
+
+**Locations:** [test/sandbox/containment_test.go:167](test/sandbox/containment_test.go:167), [test/sandbox/containment_test.go:209](test/sandbox/containment_test.go:209).
+
+Many entries, including `/gomodcache`, have `nil` types, which accept every filesystem type. This contradicts the comment that every mount is checked by destination **and** filesystem type.
+
+**Reproduced:** Replacing the module-cache bind with `--tmpfs /gomodcache` in a disposable runner copy still passed `TestOnlyExpectedMounts`, with wrapper exit **0**.
+
+**Fix:** Supply explicit expected types, deriving host bind types from validated source metadata where portability requires it. Add a mutation that changes the type at an allowed destination.
+
+**3. The reported Podman configuration fixes lack their requested regression tests.**
+
+**Locations:** [scripts/test-sandbox-selftest.sh:77](scripts/test-sandbox-selftest.sh:77), [scripts/test-sandbox-selftest.sh:137](scripts/test-sandbox-selftest.sh:137).
+
+The self-check never supplies a decoy `CONTAINERS_CONF_OVERRIDE` or configured `mounts.conf`. Its mutations run only through bubblewrap. Clean hosted Podman runs therefore do not prove either configuration channel is excluded.
+
+**Fix:** Add disposable Podman configuration fixtures containing sacrificial mounts and verify that their content remains unavailable, with controls establishing that each fixture is effective.
+
+No additional hosted amd64/arm64 portability blocker was established. I accept the supplied CI results; Podman was unavailable locally. Shell syntax and the focused reproductions were checked, and repository files remain unchanged.

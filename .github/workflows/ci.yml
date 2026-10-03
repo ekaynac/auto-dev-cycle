@@ -38,8 +38,6 @@ jobs:
         run: scripts/bootstrap-go.sh
       - name: make ci
         run: make ci
-      - name: Sandbox self-test on the rootless container backend
-        run: scripts/test-sandbox-selftest.sh --backend container
 
   fixtures:
     name: T0 fixtures well-formed

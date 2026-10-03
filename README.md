@@ -13,7 +13,7 @@ Requirements: Linux (the controller platform; plan §2.14), `curl`, `jq`, `tar`,
 ```sh
 make toolchain   # installs the Go toolchain pinned in go.mod into ~/.local/go (checksum-verified)
 make build       # bin/adcd, bin/adc, bin/adc-agent
-make test        # all tests, inside the test sandbox (bubblewrap, else a rootless container)
+make test        # all tests, inside the test sandbox (bubblewrap)
 make ci          # everything CI runs
 ```
 

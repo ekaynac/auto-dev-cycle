@@ -17,7 +17,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -28,7 +27,8 @@ import (
 var allowedEnv = []string{
 	"PATH", "HOME", "TMPDIR", "LANG", "GOROOT", "GOCACHE", "GOMODCACHE", "GOFLAGS", "GOPROXY",
 	"GOTOOLCHAIN", "GOTELEMETRY", "CGO_ENABLED", "ADC_TEST_WORK", "ADC_TEST_PASSENV",
-	"ADC_SANDBOX_SENTINEL", "ADC_SANDBOX_HOST_HOME", "ADC_SANDBOX_HOST_REPO", "ADC_SANDBOX_CANARY", "PWD",
+	"ADC_SANDBOX_SENTINEL", "ADC_SANDBOX_HOST_HOME", "ADC_SANDBOX_HOST_REPO", "ADC_SANDBOX_CANARY",
+	"ADC_SANDBOX_MOUNT_TYPES", "PWD",
 }
 
 // Same deny list as scripts/test-sandbox.sh.
@@ -157,36 +157,27 @@ func TestNoProtectedOrRepoAlias(t *testing.T) {
 	}
 }
 
-// Every mount is one the wrapper (or the backend's fixed runtime setup) made,
-// checked by mount point AND filesystem type: configured engine mounts, a
-// bind hidden under /dev, /proc or /sys, or anything else injected fails.
-// There is no prefix exemption.
-var expectedMounts = map[string][]string{
-	// Wrapper mounts (both backends).
-	"/": {"tmpfs", "overlay", "fuse.fuse-overlayfs"}, "/tmp": {"tmpfs"}, "/home": {"tmpfs"},
-	"/home/sandbox": {"tmpfs"}, "/src": nil, "/scratch/work": nil, "/scratch/gocache": nil,
-	"/opt/go": nil, "/opt/node/bin/node": nil, "/gomodcache": nil,
-	// bubblewrap: read-only system binds.
-	"/usr": nil, "/bin": nil, "/lib": nil, "/lib64": nil, "/sbin": nil,
-	"/etc/ld.so.cache": nil, "/etc/ld.so.conf": nil, "/etc/ld.so.conf.d": nil, "/etc/alternatives": nil,
-	"/etc/passwd": nil, "/etc/group": nil, "/etc/nsswitch.conf": nil, "/etc/localtime": nil,
-	// Pseudo filesystems and device nodes (bubblewrap --proc/--dev; podman's defaults).
-	"/proc": {"proc"}, "/dev": {"tmpfs", "devtmpfs"}, "/dev/pts": {"devpts"}, "/dev/shm": {"tmpfs"},
-	"/dev/mqueue": {"mqueue"}, "/sys": {"sysfs"}, "/sys/fs/cgroup": {"cgroup2", "tmpfs"},
-	"/dev/null": {"devtmpfs"}, "/dev/zero": {"devtmpfs"}, "/dev/full": {"devtmpfs"}, "/dev/tty": {"devtmpfs"},
-	"/dev/random": {"devtmpfs"}, "/dev/urandom": {"devtmpfs"},
-	// Rootless podman: its own bookkeeping files, and the paths it masks or
-	// makes read-only inside /proc and /sys.
-	"/etc/hosts": nil, "/etc/hostname": nil, "/etc/resolv.conf": nil, "/run/.containerenv": nil,
-	"/proc/acpi": {"tmpfs"}, "/proc/kcore": {"devtmpfs", "tmpfs"}, "/proc/keys": {"devtmpfs", "tmpfs"},
-	"/proc/latency_stats": {"devtmpfs", "tmpfs"}, "/proc/timer_list": {"devtmpfs", "tmpfs"},
-	"/proc/timer_stats": {"devtmpfs", "tmpfs"}, "/proc/sched_debug": {"devtmpfs", "tmpfs"},
-	"/proc/scsi": {"tmpfs"}, "/sys/firmware": {"tmpfs"}, "/sys/fs/selinux": {"tmpfs"}, "/sys/dev/block": {"tmpfs"},
-	"/proc/asound": {"proc"}, "/proc/bus": {"proc"}, "/proc/fs": {"proc"}, "/proc/irq": {"proc"},
-	"/proc/sys": {"proc"}, "/proc/sysrq-trigger": {"proc"},
+// Every mount is one the wrapper made, checked by mount point AND exact
+// filesystem type: each bind must show its source's type (the wrapper passes
+// them in ADC_SANDBOX_MOUNT_TYPES), and the sandbox's own tmpfs, proc and
+// device mounts have fixed types. There is no prefix exemption, so a bind
+// hidden under /dev, a configured extra mount or a wrong filesystem at an
+// allowed path all fail.
+var fixedMounts = map[string]string{
+	"/": "tmpfs", "/tmp": "tmpfs", "/home": "tmpfs", "/proc": "proc", "/dev": "tmpfs", "/dev/pts": "devpts",
+	"/dev/null": "devtmpfs", "/dev/zero": "devtmpfs", "/dev/full": "devtmpfs", "/dev/tty": "devtmpfs",
+	"/dev/random": "devtmpfs", "/dev/urandom": "devtmpfs",
 }
 
 func TestOnlyExpectedMounts(t *testing.T) {
+	binds := map[string]string{}
+	for _, kv := range strings.Fields(mustEnv(t, "ADC_SANDBOX_MOUNT_TYPES")) {
+		dest, typ, ok := strings.Cut(kv, "=")
+		if !ok || typ == "" {
+			t.Fatalf("setup: malformed ADC_SANDBOX_MOUNT_TYPES entry %q", kv)
+		}
+		binds[dest] = typ
+	}
 	b, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
 		t.Fatalf("setup: %v", err)
@@ -205,10 +196,12 @@ func TestOnlyExpectedMounts(t *testing.T) {
 			t.Fatalf("setup: malformed mountinfo line %q", line)
 		}
 		mp, fstype := strings.ReplaceAll(f[4], `\040`, " "), f[sep+1]
-		types, known := expectedMounts[mp]
-		ok := known && (types == nil || slices.Contains(types, fstype))
+		want, ok := binds[mp]
 		if !ok {
-			unexpected = append(unexpected, mp+" ("+fstype+")")
+			want, ok = fixedMounts[mp]
+		}
+		if !ok || fstype != want {
+			unexpected = append(unexpected, fmt.Sprintf("%s (%s, want %q)", mp, fstype, want))
 		}
 	}
 	if len(unexpected) > 0 {
