@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/instrument-contract.json",
-  "title": "Instrument contract",
+  "title": "InstrumentContract",
   "description": "Registration of an instrument before it may produce receipts (docs/design/m0/06 \"Instrument contracts\"). Cross-field rules (no predicate both required and optional, artifact names used by receipts) belong to internal/receipt.",
   "type": "object",
   "additionalProperties": false,

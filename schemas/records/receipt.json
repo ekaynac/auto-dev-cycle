@@ -101,7 +101,8 @@
         },
         "payload": {
           "description": "Typed predicate facts. Present only when the instrument declares a payload_schema, and then validated against it by internal/receipt (06 rule 7).",
-          "type": "object"
+          "type": "object",
+          "x-adc-open-payload": "instrument.payload_schema"
         }
       }
     },
@@ -177,7 +178,7 @@
           "properties": {
             "type": {"$ref": "#/$defs/Name"},
             "id": {"type": "string", "minLength": 1},
-            "version": {"type": "integer", "minimum": 0},
+            "version": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
             "digest": {"$ref": "../common/defs.json#/$defs/Digest"}
           }
         },

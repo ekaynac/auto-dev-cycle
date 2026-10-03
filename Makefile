@@ -37,7 +37,7 @@ BINARIES   := adcd adc adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check build dist lint test test-sandbox-selftest fixtures-check ci clean
+.PHONY: help toolchain go-check gen gen-check build dist lint test test-sandbox-selftest fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
@@ -72,8 +72,18 @@ dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 	done
 	@find $(DIST_DIR) -type f | sort
 
+GEN_GO := gen/go/types
+
+gen: go-check ## Regenerate the Go types (gen/go/types) from schemas/
+	@$(GO) run ./tools/schemagen $(GEN_GO)
+
+gen-check: go-check ## Fail if the committed generated code differs from a fresh generation
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	  $(GO) run ./tools/schemagen "$$tmp/types" && diff -r -x '*_test.go' "$$tmp/types" $(GEN_GO) \
+	  || { echo "gen-check: generated code is stale; run 'make gen'" >&2; exit 1; }
+
 lint: go-check ## gofmt, go vet, go mod tidy check, SPDX headers, shell syntax (+ shellcheck where installed)
-	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal schemas test)"; \
+	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal schemas test tools gen)"; \
 	  if [[ -n "$$unformatted" ]]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	@$(GO) vet ./...
 	@$(GO) mod tidy -diff
@@ -93,7 +103,7 @@ test: go-check ## Run all tests inside the test sandbox (refuses to run unsandbo
 test-sandbox-selftest: go-check ## Prove the test sandbox contains writes, credentials and network
 	@scripts/test-sandbox-selftest.sh
 
-ci: lint build test test-sandbox-selftest dist ## Everything CI runs
+ci: lint gen-check build test test-sandbox-selftest dist ## Everything CI runs
 
 clean: ## Remove build outputs
 	@rm -rf $(BIN_DIR) $(DIST_DIR)
