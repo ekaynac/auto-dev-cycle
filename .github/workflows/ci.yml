@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    name: make ci (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install shellcheck
+        run: command -v shellcheck || (sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck)
+      - name: Install the pinned Go toolchain (per user)
+        run: scripts/bootstrap-go.sh
+      - name: make ci
+        run: make ci
