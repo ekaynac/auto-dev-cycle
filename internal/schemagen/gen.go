@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 const maxSafeInt = 9007199254740991 // 2^53-1: integers stay exact in JavaScript
@@ -31,7 +32,7 @@ const maxSafeInt = 9007199254740991 // 2^53-1: integers stay exact in JavaScript
 func Generate(files map[string][]byte, pkg string) (map[string][]byte, error) {
 	g := &gen{
 		roots: map[string]*Node{}, names: map[string]string{}, taken: map[string]string{},
-		nullable: map[string]bool{}, envelopes: map[string]bool{}, isRoot: map[*Node]bool{},
+		envelopes: map[string]bool{}, isRoot: map[*Node]bool{},
 		emitted: map[string]string{"decodeStrict": "helpers.gen.go"},
 	}
 	paths := make([]string, 0, len(files))
@@ -73,9 +74,6 @@ func Generate(files map[string][]byte, pkg string) (map[string][]byte, error) {
 				if err := g.name(p+"#/$defs/"+k, k); err != nil {
 					return nil, err
 				}
-				if one := defs.Get(k).Get("oneOf"); one != nil && len(one.Items) == 2 && (isNull(one.Items[0]) || isNull(one.Items[1])) {
-					g.nullable[k] = true // known before any $ref to it is emitted
-				}
 				if isEnvelope(defs.Get(k)) {
 					g.envelopes[k] = true
 				}
@@ -84,8 +82,14 @@ func Generate(files map[string][]byte, pkg string) (map[string][]byte, error) {
 	}
 	// Pass 2: emit.
 	out := map[string][]byte{}
+	outFrom := map[string]string{helpersFile: "the generated helpers"}
 	for _, p := range paths {
-		g.file, g.buf, g.needs = p, &bytes.Buffer{}, map[string]bool{}
+		name := strings.ReplaceAll(strings.TrimSuffix(p, ".json"), "/", "_") + ".gen.go"
+		if prev, clash := outFrom[name]; clash {
+			return nil, fmt.Errorf("%s: output file %s is also the one for %s", p, name, prev)
+		}
+		outFrom[name] = p
+		g.file, g.base, g.buf, g.needs = p, p, &bytes.Buffer{}, map[string]bool{}
 		root := g.roots[p]
 		if name, ok := g.names[p+"#"]; ok {
 			g.declare(name, root)
@@ -102,15 +106,18 @@ func Generate(files map[string][]byte, pkg string) (map[string][]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", p, err)
 		}
-		out[strings.ReplaceAll(strings.TrimSuffix(p, ".json"), "/", "_")+".gen.go"] = src
+		out[name] = src
 	}
 	helpers, err := format.Source([]byte(fmt.Sprintf(helpersSrc, pkg)))
 	if err != nil {
 		return nil, err
 	}
-	out["helpers.gen.go"] = helpers
+	out[helpersFile] = helpers
 	return out, nil
 }
+
+// helpersFile holds decodeStrict; no schema file may generate it.
+const helpersFile = "helpers.gen.go"
 
 type gen struct {
 	roots  map[string]*Node
@@ -121,11 +128,10 @@ type gen struct {
 	// Nested type names (Parent+Field, +Item, +Value, +List, variants), enum
 	// constants and Variant interfaces share the package with the $defs.
 	emitted map[string]string
-	// nullable names declared as aliases of a pointer (a $defs nullable union)
-	nullable map[string]bool
 	// envelopes: open objects with properties, usable only as an allOf base
 	envelopes map[string]bool
-	file      string
+	file      string // the file being emitted; error locations name it
+	base      string // the file the node being read comes from; $refs resolve against it
 	buf       *bytes.Buffer
 	needs     map[string]bool // imports
 	err       error
@@ -167,6 +173,10 @@ func (g *gen) emit(ident, where string) bool {
 // field returns the Go field name for JSON key k, refusing an empty or
 // invalid name and a second field with the same name in seen.
 func (g *gen) field(k, where string, seen map[string]string) string {
+	if !validTag(k) {
+		g.fail(where, "property %q cannot be written as a Go JSON tag name (encoding/json would change or drop it)", k)
+		return "Invalid"
+	}
 	f := goName(k)
 	if !token.IsIdentifier(f) || !token.IsExported(f) {
 		g.fail(where, "property %q gives no exported Go field name (%q)", k, f)
@@ -178,6 +188,23 @@ func (g *gen) field(k, where string, seen map[string]string) string {
 	}
 	seen[f] = k
 	return f
+}
+
+// validTag mirrors encoding/json's rule for tag names: letters, digits and
+// a fixed set of punctuation. "-" alone means "skip" and is refused too.
+func validTag(k string) bool {
+	if k == "" || k == "-" {
+		return false
+	}
+	for _, c := range k {
+		switch {
+		case strings.ContainsRune("!#$%&()*+-./:;<=>?@[]^_{|}~ ", c):
+		case unicode.IsLetter(c) || unicode.IsDigit(c):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Keyword allow-lists. Annotations are accepted everywhere; rootKeys only at
@@ -212,6 +239,8 @@ var (
 		"conditional":  keySet("if", "then", "else"),
 		"condition":    keySet("properties", "required"),
 		"constraint":   keySet("const", "enum", "not", "minLength", "maxLength", "pattern", "minimum", "maximum"),
+		"keyed branch": keySet("type", "additionalProperties", "required", "properties"),
+		"key names":    keySet("type", "enum", "pattern", "minLength", "maxLength", "format"),
 	}
 )
 
@@ -236,16 +265,37 @@ func (g *gen) only(n *Node, where, shape string) bool {
 	return true
 }
 
-// deref follows a chain of $ref to the schema it names (nil if dangling).
+// deref follows a chain of $ref to the schema it names (nil if dangling or
+// deeper than 16), resolving each hop against the file it appears in.
 func (g *gen) deref(n *Node) *Node {
+	n, _ = g.derefFrom(g.base, n)
+	return n
+}
+
+func (g *gen) derefFrom(base string, n *Node) (*Node, string) {
 	for i := 0; n != nil && i < 16; i++ {
 		ref := n.Get("$ref")
 		if ref == nil {
-			return n
+			return n, base
 		}
-		n, _, _ = g.resolve(ref.Str)
+		n, base, _ = g.resolveFrom(base, ref.Str)
 	}
-	return nil
+	return nil, ""
+}
+
+// within reads nodes of another file: $refs inside them resolve against it.
+func (g *gen) within(base string, f func()) {
+	prev := g.base
+	g.base = base
+	f()
+	g.base = prev
+}
+
+// isNullable: n, after following every $ref (aliases and other files
+// included), is a oneOf [null, X].
+func (g *gen) isNullable(n *Node) bool {
+	one := g.deref(n).Get("oneOf")
+	return one != nil && len(one.Items) == 2 && (isNull(one.Items[0]) || isNull(one.Items[1]))
 }
 
 // isCollection: an array or a typed map, after following $ref.
@@ -267,13 +317,16 @@ func (g *gen) doc(n *Node, name string) {
 	}
 }
 
-// resolve follows a $ref to its target node, file and key.
-func (g *gen) resolve(ref string) (*Node, string, string) {
+// resolve follows a $ref written in the current base file to its target
+// node, file and key.
+func (g *gen) resolve(ref string) (*Node, string, string) { return g.resolveFrom(g.base, ref) }
+
+func (g *gen) resolveFrom(base, ref string) (*Node, string, string) {
 	file, frag, _ := strings.Cut(ref, "#")
 	if file == "" {
-		file = g.file
+		file = base
 	} else {
-		file = path.Clean(path.Join(path.Dir(g.file), file))
+		file = path.Clean(path.Join(path.Dir(base), file))
 	}
 	root := g.roots[file]
 	if root == nil {
@@ -349,7 +402,7 @@ func (g *gen) typeOf(n *Node, name, where string) string {
 			// A refinement validates more but keeps the Go type of its target,
 			// so the target must be a plain string schema.
 			g.only(n, where, "refinement")
-			if t := g.deref(n); t != nil && (t.Get("type") == nil || t.Get("type").Str != "string" || t.Get("enum") != nil || t.Get("const") != nil) {
+			if t := g.deref(n); t == nil || t.Get("type") == nil || t.Get("type").Str != "string" || t.Get("enum") != nil || t.Get("const") != nil {
 				return g.fail(where, "a $ref with sibling keywords must name a string schema, which the siblings refine")
 			}
 		} else {
@@ -429,6 +482,9 @@ func (g *gen) typeOf(n *Node, name, where string) string {
 		}
 		if ap := n.Get("additionalProperties"); ap != nil && ap.Kind == Object && n.Get("properties") == nil {
 			g.only(n, where, "map")
+			if pn := n.Get("propertyNames"); pn != nil {
+				g.keyNames(pn, where+"/propertyNames")
+			}
 			return "map[string]" + g.typeOf(ap, name+"Value", where+"/additionalProperties")
 		}
 		if isStruct(n) {
@@ -438,6 +494,26 @@ func (g *gen) typeOf(n *Node, name, where string) string {
 		return g.fail(where, "open object without x-adc-open-payload")
 	}
 	return g.fail(where, "type %q", t.Str)
+}
+
+// keyNames checks a propertyNames schema: a string schema, inline or by
+// $ref, since map keys are Go strings.
+func (g *gen) keyNames(n *Node, where string) {
+	if n.Get("$ref") != nil {
+		if !g.only(n, where, "$ref") {
+			return
+		}
+		n = g.deref(n)
+		if n == nil {
+			g.fail(where, "propertyNames $ref does not name a schema")
+			return
+		}
+	} else if !g.only(n, where, "key names") {
+		return
+	}
+	if t := n.Get("type"); (t == nil || t.Str != "string") && !isStringEnum(n) {
+		g.fail(where, "propertyNames must be a string schema")
+	}
 }
 
 // refines: a $ref with a keyword beside it that is not an annotation.
@@ -594,11 +670,11 @@ func (g *gen) structType(n *Node, name, where string) {
 			tag := k
 			switch {
 			case required[k]:
-			case strings.HasPrefix(typ, "*") || g.nullable[typ]:
+			case strings.HasPrefix(typ, "*") || g.isNullable(prop):
 				g.fail(at, "a nullable field must be required (null is explicit, absence invalid)")
 			case g.isCollection(prop):
-				// With omitempty, [] or {} would re-encode as absent.
-				g.fail(at, "an array or map field must be required (an empty value and absence would be conflated)")
+				// A pointer keeps absence (nil) apart from [] or {} (non-nil).
+				typ, tag = "*"+typ, tag+",omitempty"
 			case typ == "json.RawMessage":
 				// Absent decodes to nil and is omitted; any present object
 				// is at least "{}", so it survives omitempty.

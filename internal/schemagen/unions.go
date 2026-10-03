@@ -19,7 +19,7 @@ func (g *gen) union(n *Node, items []*Node, name, where string) string {
 			other = items[0]
 		}
 		inner := g.typeOf(other, name+"Value", where+"/oneOf")
-		if strings.HasPrefix(inner, "*") || g.nullable[inner] {
+		if strings.HasPrefix(inner, "*") || g.isNullable(other) {
 			return g.fail(where, "nested nullable")
 		}
 		return "*" + inner
@@ -38,12 +38,15 @@ func (g *gen) union(n *Node, items []*Node, name, where string) string {
 	}
 	// Resolve the branches to object schemas.
 	var branches []*Node
-	var names []string
+	var names, bases []string
 	for i, it := range items {
-		b, bn := it, ""
+		b, bn, base := it, "", g.base
 		if ref := it.Get("$ref"); ref != nil {
-			target, _, key := g.resolve(ref.Str)
-			b, bn = target, g.names[key]
+			if refines(it) {
+				return g.fail(fmt.Sprintf("%s/oneOf/%d", where, i), "a union branch $ref may not have sibling keywords")
+			}
+			target, file, key := g.resolve(ref.Str)
+			b, bn, base = target, g.names[key], file
 		}
 		if b == nil || !isStruct(b) {
 			return g.fail(fmt.Sprintf("%s/oneOf/%d", where, i), "union branches must be closed objects")
@@ -51,14 +54,14 @@ func (g *gen) union(n *Node, items []*Node, name, where string) string {
 		if bn == "" && !g.only(b, fmt.Sprintf("%s/oneOf/%d", where, i), "struct") {
 			return "invalid"
 		}
-		branches, names = append(branches, b), append(names, bn)
+		branches, names, bases = append(branches, b), append(names, bn), append(bases, base)
 	}
 	if disc := discriminator(branches); disc != "" {
 		g.discriminated(n, name, disc, branches, names, where)
 		return name
 	}
 	if keyed(branches) {
-		g.keyedUnion(n, name, branches, where)
+		g.keyedUnion(n, name, branches, bases, where)
 		return name
 	}
 	return g.fail(where, "oneOf is neither nullable, array-or-literal, const-discriminated nor keyed")
@@ -107,10 +110,18 @@ func discriminator(branches []*Node) string {
 	return ""
 }
 
-// keyed: each branch requires exactly one property, and those keys are disjoint.
+// keyed: each branch is a closed object with exactly one property, which it
+// requires, and those keys are disjoint. A branch with anything else (an
+// embedded envelope, a condition) is not keyed: its other contents would be
+// dropped by the one-field-per-branch type.
 func keyed(branches []*Node) bool {
 	seen := map[string]bool{}
 	for _, b := range branches {
+		for _, k := range b.Keys {
+			if !shapeKeys["keyed branch"][k] && !annotations[k] {
+				return false
+			}
+		}
 		req := b.Get("required").Strings()
 		if len(req) != 1 || len(b.Get("properties").Keys) != 1 || seen[req[0]] {
 			return false
@@ -160,15 +171,21 @@ func (u *%[1]s) UnmarshalJSON(b []byte) error {
 	g.p("\tdefault:\n\t\treturn fmt.Errorf(\"%s: unknown %s %%q\", head.D)\n\t}\n\treturn nil\n}\n", name, disc)
 }
 
-func (g *gen) keyedUnion(n *Node, name string, branches []*Node, where string) {
+func (g *gen) keyedUnion(n *Node, name string, branches []*Node, bases []string, where string) {
 	g.emit(name, where)
 	var fields []string
 	seen := map[string]string{}
-	for _, b := range branches {
+	for i, b := range branches {
 		k := b.Get("required").Strings()[0]
 		f := g.field(k, where+"/"+k, seen)
-		typ := g.typeOf(b.Get("properties").Get(k), name+goName(k), where+"/"+k)
-		if strings.HasPrefix(typ, "*") || g.nullable[typ] {
+		prop := b.Get("properties").Get(k)
+		var typ string
+		var nullable bool
+		g.within(bases[i], func() {
+			typ = g.typeOf(prop, name+goName(k), where+"/"+k)
+			nullable = g.isNullable(prop)
+		})
+		if strings.HasPrefix(typ, "*") || nullable {
 			g.fail(where+"/"+k, "a keyed-union branch may not be nullable (it would decode as a double pointer)")
 		}
 		fields = append(fields, fmt.Sprintf("\t%s *%s `json:%q`", f, typ, k+",omitempty"))
@@ -184,8 +201,8 @@ func (g *gen) arrayOrLiteral(n *Node, name, lit, list, where string) {
 	if field == "" {
 		field = "All" // a non-word literal such as "*"
 	}
-	if field == "List" || !token.IsIdentifier(field) || !token.IsExported(field) {
-		g.fail(where, "literal %q gives no usable Go field name next to List", lit)
+	if field == "List" || field == "MarshalJSON" || field == "UnmarshalJSON" || !token.IsIdentifier(field) || !token.IsExported(field) {
+		g.fail(where, "literal %q gives no usable Go field name next to List and the generated methods", lit)
 	}
 	g.doc(n, name)
 	g.p(`// Either %[2]s is true (the literal %[3]q) or List holds the items.
@@ -357,12 +374,17 @@ func (g *gen) condition(n, props *Node, where string) {
 				g.fail(at, "%q is not a property of the object", k)
 				continue
 			}
-			if !g.only(c, at+"/properties/"+k, "constraint") {
-				continue
-			}
-			if not := c.Get("not"); not != nil {
-				g.only(not, at+"/properties/"+k+"/not", "constraint")
-			}
+			g.constraint(c, at+"/properties/"+k)
+		}
+	}
+}
+
+// constraint checks a validation-only property schema, following not to
+// any depth.
+func (g *gen) constraint(c *Node, where string) {
+	for ; c != nil; c, where = c.Get("not"), where+"/not" {
+		if !g.only(c, where, "constraint") {
+			return
 		}
 	}
 }

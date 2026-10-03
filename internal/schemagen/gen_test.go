@@ -56,16 +56,13 @@ func TestRefusesShapesOutsideTheGrammar(t *testing.T) {
 		{"property redeclaring an envelope property", envelope + `,"A":{"type":"object","allOf":[{"$ref":"#/$defs/E"}],"unevaluatedProperties":false,"properties":{"a":{"type":"string"}}}`, "already declared by the embedded envelope"},
 
 		// C2-3: optional arrays and maps.
-		{"optional array", `"A":{"type":"object","additionalProperties":false,"properties":{"l":{"type":"array","items":{"type":"string"}}}}`, "array or map field must be required"},
-		{"optional map", `"A":{"type":"object","additionalProperties":false,"properties":{"m":{"type":"object","additionalProperties":{"type":"string"}}}}`, "array or map field must be required"},
-		{"optional array via $ref", `"L":{"type":"array","items":{"type":"string"}},"A":{"type":"object","additionalProperties":false,"properties":{"l":{"$ref":"#/$defs/L"}}}`, "array or map field must be required"},
 
 		// C2-4: generated name collisions.
 		{"nested name collides with a $defs entry", `"AB":{"type":"string"},"A":{"type":"object","additionalProperties":false,"required":["b"],"properties":{"b":{"type":"object","additionalProperties":false,"properties":{}}}}`, "generated name AB collides"},
 		{"enum constant collides with a type", `"KindA":{"type":"string"},"Kind":{"enum":["a"]}`, "generated name KindA collides"},
 		{"enum value without a name", `"Kind":{"enum":["*"]}`, `enum value "*" gives no Go constant name`},
 		{"field names collide", `"A":{"type":"object","additionalProperties":false,"required":["foo_bar","fooBar"],"properties":{"foo_bar":{"type":"string"},"fooBar":{"type":"string"}}}`, "both give the Go field name FooBar"},
-		{"property without a field name", `"A":{"type":"object","additionalProperties":false,"required":["-"],"properties":{"-":{"type":"string"}}}`, "gives no exported Go field name"},
+		{"property without a field name", `"A":{"type":"object","additionalProperties":false,"properties":{"_":{"type":"string"}}}`, "gives no exported Go field name"},
 		{"literal named list", `"A":{"oneOf":[{"const":"list"},{"type":"array","items":{"type":"string"}}]}`, "no usable Go field name next to List"},
 		{"unexported $defs name", `"a":{"type":"string"}`, "not an exported Go identifier"},
 
@@ -74,6 +71,26 @@ func TestRefusesShapesOutsideTheGrammar(t *testing.T) {
 		{"anyOf next to type", `"A":{"type":"string","anyOf":[{"minLength":1}]}`, `keyword "anyOf"`},
 		{"not", `"A":{"type":"string","not":{"const":"x"}}`, `keyword "not"`},
 		{"dependentSchemas", `"A":{"type":"object","additionalProperties":false,"properties":{},"dependentSchemas":{}}`, `keyword "dependentSchemas"`},
+		// Astra #19: keyed branches are exactly the single-key shape.
+		{"keyed branch embedding an envelope", envelope + `,"K":{"oneOf":[{"type":"object","allOf":[{"$ref":"#/$defs/E"}],"unevaluatedProperties":false,"required":["x"],"properties":{"x":{"type":"string"}}},{"type":"object","additionalProperties":false,"required":["y"],"properties":{"y":{"type":"string"}}}]}`, "neither nullable"},
+		{"keyed branch with a condition", `"K":{"oneOf":[{"type":"object","additionalProperties":false,"required":["x"],"properties":{"x":{"type":"string"}},"if":{"properties":{"q":{"const":"a"}}},"then":{"required":["q"]}},{"type":"object","additionalProperties":false,"required":["y"],"properties":{"y":{"type":"string"}}}]}`, "neither nullable"},
+		// Astra #19: nullability through alias chains.
+		{"optional nullable via an alias", `"N":{"oneOf":[{"type":"null"},{"type":"string"}]},"Al":{"$ref":"#/$defs/N"},"A":{"type":"object","additionalProperties":false,"properties":{"p":{"$ref":"#/$defs/Al"}}}`, "nullable field must be required"},
+		{"nested nullable via an alias", `"N":{"oneOf":[{"type":"null"},{"type":"string"}]},"Al":{"$ref":"#/$defs/N"},"A":{"oneOf":[{"type":"null"},{"$ref":"#/$defs/Al"}]}`, "nested nullable"},
+		{"nullable keyed branch via an alias", `"N":{"oneOf":[{"type":"null"},{"type":"string"}]},"Al":{"$ref":"#/$defs/N"},"K":{"oneOf":[{"type":"object","additionalProperties":false,"required":["x"],"properties":{"x":{"$ref":"#/$defs/Al"}}},{"type":"object","additionalProperties":false,"required":["y"],"properties":{"y":{"type":"string"}}}]}`, "may not be nullable"},
+		// Astra #19: JSON keys a struct tag cannot carry.
+		{"key with a comma", `"A":{"type":"object","additionalProperties":false,"required":["a,b"],"properties":{"a,b":{"type":"string"}}}`, "cannot be written as a Go JSON tag"},
+		{"key with a quote", `"A":{"type":"object","additionalProperties":false,"required":["a\"b"],"properties":{"a\"b":{"type":"string"}}}`, "cannot be written as a Go JSON tag"},
+		{"key that is a dash", `"A":{"type":"object","additionalProperties":false,"properties":{"-":{"type":"string"}}}`, "cannot be written as a Go JSON tag"},
+		// Astra #19: every schema-bearing position is checked.
+		{"union branch $ref with a sibling", `"C":{"type":"object","additionalProperties":false,"required":["t"],"properties":{"t":{"const":"c"}}},"D":{"type":"object","additionalProperties":false,"required":["t"],"properties":{"t":{"const":"d"}}},"A":{"oneOf":[{"$ref":"#/$defs/C","anyOf":[]},{"$ref":"#/$defs/D"}]}`, "may not have sibling keywords"},
+		{"condition with a deep not", condHead + `"allOf":[{"if":{"properties":{"o":{"const":"x"}}},"then":{"properties":{"d":{"not":{"not":{"anyOf":[]}}}}}}]}`, `keyword "anyOf" is not supported on a constraint`},
+		{"propertyNames with an unknown keyword", `"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"anyOf":[]}}`, `keyword "anyOf" is not supported on a key names`},
+		{"propertyNames not a string", `"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"type":"integer"}}`, "propertyNames must be a string schema"},
+		{"propertyNames $ref to an integer", `"I":{"type":"integer","minimum":0,"maximum":9},"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"$ref":"#/$defs/I"}}`, "propertyNames must be a string schema"},
+		// Astra #19: generated methods are reserved.
+		{"literal naming a generated method", `"A":{"oneOf":[{"const":"marshalJSON"},{"type":"array","items":{"type":"string"}}]}`, "next to List and the generated methods"},
+
 		// Refinements: string keywords beside a $ref to a plain string schema.
 		{"refinement of an integer", `"B":{"type":"integer","minimum":0,"maximum":9},"A":{"$ref":"#/$defs/B","pattern":"x"}`, "must name a string schema"},
 		{"refinement of an enum", `"B":{"enum":["x"]},"A":{"$ref":"#/$defs/B","minLength":1}`, "must name a string schema"},
@@ -105,6 +122,65 @@ func TestRefusesShapesOutsideTheGrammar(t *testing.T) {
 				t.Errorf("error does not name the file: %v", err)
 			}
 		})
+	}
+}
+
+// files builds a schema set from path → $defs body.
+func files(defs map[string]string) map[string][]byte {
+	out := map[string][]byte{}
+	for p, d := range defs {
+		out[p] = []byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{` + d + `}}`)
+	}
+	return out
+}
+
+func TestRefusesAcrossFiles(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"optional nullable from another file", map[string]string{
+			"common/x.json":  `"N":{"oneOf":[{"type":"null"},{"type":"string"}]}`,
+			"records/y.json": `"A":{"type":"object","additionalProperties":false,"properties":{"p":{"$ref":"../common/x.json#/$defs/N"}}}`,
+		}, "nullable field must be required"},
+		{"refinement through a cross-file chain to an integer", map[string]string{
+			"common/x.json":  `"I":{"type":"integer","minimum":0,"maximum":9},"Al":{"$ref":"#/$defs/I"}`,
+			"records/y.json": `"R":{"$ref":"../common/x.json#/$defs/Al","pattern":"x"}`,
+		}, "must name a string schema"},
+		{"refinement of a dangling $ref", map[string]string{
+			"records/y.json": `"R":{"$ref":"#/$defs/Missing","pattern":"x"}`,
+		}, "must name a string schema"},
+		{"two schema files with one output file", map[string]string{
+			"a/b.json": `"P":{"type":"string"}`,
+			"a_b.json": `"Q":{"type":"string"}`,
+		}, "output file a_b.gen.go"},
+		{"a schema file named like the helpers", map[string]string{
+			"helpers.json": `"P":{"type":"string"}`,
+		}, "output file helpers.gen.go"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Generate(files(c.files), "types")
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("want an error containing %q, got %v", c.want, err)
+			}
+		})
+	}
+}
+
+// A keyed branch from another file keeps resolving its own $refs there.
+func TestCrossFileKeyedBranchResolvesInItsFile(t *testing.T) {
+	out, err := Generate(files(map[string]string{
+		"common/x.json": `"S":{"type":"string"},"B":{"type":"object","additionalProperties":false,"required":["b"],"properties":{"b":{"$ref":"#/$defs/S"}}}`,
+		"records/y.json": `"K":{"oneOf":[{"$ref":"../common/x.json#/$defs/B"},` +
+			`{"type":"object","additionalProperties":false,"required":["c"],"properties":{"c":{"type":"string"}}}]}`,
+	}), "types")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src := string(out["records_y.gen.go"]); !strings.Contains(src, "B *S") {
+		t.Fatalf("keyed field B is not typed by its own file's S:\n%s", src)
 	}
 }
 
@@ -142,7 +218,9 @@ const supported = `
 		"l":{"type":"array","items":{"type":"string"}},
 		"m":{"$ref":"#/$defs/Map"},
 		"nul":{"oneOf":[{"type":"null"},{"type":"string"}]},
-		"raw":{"type":"object","x-adc-open-payload":"test"}}},
+		"raw":{"type":"object","x-adc-open-payload":"test"},
+		"ol":{"type":"array","items":{"type":"string"}},
+		"om":{"$ref":"#/$defs/Map"}}},
 	"Set":{"oneOf":[{"const":"*"},{"type":"array","minItems":1,"items":{"type":"string"}}]},
 	"Env":{"type":"object","required":["a"],"properties":{"a":{"type":"string"}}},
 	"Evt":{"oneOf":[
@@ -206,6 +284,9 @@ func main() {
 	// and absence apart; null stays null; properties keep schema order.
 	same[types.Opt](` + "`" + `{"z":"","n":0,"l":[],"m":{},"nul":null}` + "`" + `)
 	same[types.Opt](` + "`" + `{"z":"s","n":1,"b":false,"l":["x"],"m":{"k":"could_not_run"},"nul":"v","raw":{}}` + "`" + `)
+	// Optional collections: absent, empty and populated stay distinct.
+	same[types.Opt](` + "`" + `{"z":"","n":0,"l":[],"m":{},"nul":null,"ol":[],"om":{}}` + "`" + `)
+	same[types.Opt](` + "`" + `{"z":"","n":0,"l":[],"m":{},"nul":null,"ol":["a"],"om":{"k":"plan.approve"}}` + "`" + `)
 
 	same[types.Set](` + "`" + `"*"` + "`" + `)
 	same[types.Set](` + "`" + `["a"]` + "`" + `)
