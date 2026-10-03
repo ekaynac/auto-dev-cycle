@@ -35,6 +35,22 @@ the planning session to act as the filter: "we don't have to take everything it 
 | A13 | **Footprint is learned per executor, not per role.** On an identical packet Opus used 9× Astra's input | Δ§17 | plan §2.2 | Directly shapes the scheduler model |
 | A14 | **Pre-existing drift** found by a deploy plugin is recorded and routed to its owner, never charged to the candidate | Δ§16 | plan §2.13 | Generic deploy behaviour |
 
+## Reframed by D40: design out, don't patch
+
+After the intake, the operator ruled that during development the lessons should become **architectural choices**
+that remove their failure classes, not rules to watch (D40, `m0/13-artifact-graph.md`). Effect on the accepted
+items:
+
+| Item | Now |
+|---|---|
+| A1 owed inputs, re-key | **By construction:** answers are graph inputs; only the manifest reaches a model; conclusions-only keys decide re-review. The `input.answer` authority action remains |
+| A2 evidence jobs | **Mostly by construction:** targets are leased resources released on verified restore; publication at settlement; fencing. Note 12 keeps only the evidence specifics |
+| A4 credit exhaustion | **By construction:** build outcome = observed diff; the 402 is only a reason. Separate rate/balance groups and ledger affordability remain |
+| A5 producible acceptance | **By construction:** typed acceptance producers in the plan schema |
+| A6 environment facts, ownership | **Mostly by construction:** the gate runs on the ship tree; ownership rules remain for genuine faults |
+| A7 applicable inputs | **By construction:** an inapplicable input is a missing input; the node waits |
+| A3, A8–A14 | Unchanged (policy, data, process or measurement items, not failure-class patches) |
+
 ## Deferred (useful later; no change now)
 
 | Item | Source | When |

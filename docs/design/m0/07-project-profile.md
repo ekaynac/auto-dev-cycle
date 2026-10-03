@@ -29,6 +29,9 @@ forge:
     protected_branches: bool
     required_checks: bool
   settings: {…}                     # per forge kind (schema per kind)
+package:                            # the ship tree the gate runs on (13 "Test what you ship") [D40]
+  recipe: [argv]|null               # build steps producing the deployable tree; default: export without VCS metadata
+  includes_vcs_metadata: false      # tests needing VCS metadata, network etc. must declare it here as a fact
 toolchain:
   images: {name: image_ref@digest}  # pinned by digest
   dependency_recipe:                # phase 1 of the sandbox (plan §2.10)

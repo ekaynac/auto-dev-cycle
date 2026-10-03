@@ -125,7 +125,8 @@ Approval:
   (execution evidence) can be satisfied **only** by an applicable receipt (06), never by a ruling.
 - The answer becomes an input of the next review's fingerprint (10), so a new answer re-keys the review. A review never
   receives answers for inputs it did not owe.
-- Every packet builder takes answers from one collector, `authority.Answers(owed_ids)`.
+- **Delivery is structural** [D40]. An accepted answer is an `approval_answer` artifact. A review node that declared
+  the owed input has it as an input (13), and nothing else can reach a model (10). There is no separate collector.
 
 - **Transactional and idempotent** (03).
 - **Precedence:** a revocation or narrower scope always wins over an earlier, wider one. Conflicting approvals in force

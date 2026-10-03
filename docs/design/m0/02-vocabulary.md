@@ -44,13 +44,17 @@ Rules:
 - `routing_violation`, `quota_unknown`, `stale_attempt`, `protected_path`, `test_integrity_violation`,
   `evidence_inapplicable`, `broker_credit_exhausted`, `precondition_failed`, and similar are reason codes, not
   outcomes (Astra A15).
-- **Adapter and harness exits map to `(outcome, reason)` in one table** (`internal/vocab/exitmap`). Credit exhaustion
-  (HTTP 402, "insufficient credits") is `could_not_run/broker_credit_exhausted`, never "no changes". If the attempt
-  had already changed the candidate, its work is sealed as a checkpoint (05), never discarded or mislabelled (nöbetçi
-  Δ§14).
+- **Outcomes come from observed facts** [D40]. A build's outcome is the controller's diff of the sandbox output
+  against the base (13 "Facts, not claims"). Adapter and harness exits only fill the **reason** field, through one
+  table (`internal/vocab/exitmap`). A 402 mid-run with edits is a sealed patch with reason `broker_credit_exhausted`,
+  never "no changes" (nöbetçi Δ§14).
 - `adc dev vocab check` scans the Go and TS code for reason literals and fails on unregistered ones.
 
 ## Hold reasons and resume signals
+
+In the artifact graph (13), a node waiting on an internal input waits **structurally**: its signal is the input's
+artifact, and no hold record is needed. The registry below names the **external** waits (approvals, quotas, human
+acts, probes) [D40].
 
 `schemas/vocab/holds.yaml`. A hold is a stop that must name what restarts it (nöbetçi PLANNING_CANON §16). Each entry:
 
@@ -85,9 +89,8 @@ Initial hold registry (M0 defines; later milestones add):
 | `base_moved_conflict` | revision (rebased candidate) | system |
 | `broker_credit_exhausted` | probe (balance probe passes) or human_act (operator top-up); never a time | operator |
 | `awaiting_input` | approval that `answers` the owed input id (04) | operator or supervisor |
-| `evidence_restore_pending` | receipt (restore succeeded, 12) | system, then operator |
+| `evidence_restore_pending` | lease settlement of the `evidence_target` group (restore verified, 13) | system, then operator |
 | `precondition_failed` | probe (precondition passes) | the environment owner named in the profile |
-| `inputs_not_applicable` | receipt (the missing producer ran for this tree, 05) | system |
 
 **`page_after` defaults come from data** (nöbetçi stall profile, 382 terminals: long tails of 4–17 h sat on holds
 whose signal was a human act or unwatched external state). Defaults:

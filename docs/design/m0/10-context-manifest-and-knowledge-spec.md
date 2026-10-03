@@ -71,6 +71,8 @@ A manifest is not one record written before egress with fields it cannot know ye
    ```
 
 Invariants:
+- **Nothing reaches a model except through its manifest** [D40]. A model node's prompt is rendered only from its
+  resolved graph inputs (13), and the manifest lists exactly those refs.
 - Cuts are named in `omitted`, never silent.
 - `status` is derived from evidence, never from declarations alone. Unknown stays unknown (E0).
 - Restricted refs are checked at intent and at every delivery (lookup, fallback), against both their inherited

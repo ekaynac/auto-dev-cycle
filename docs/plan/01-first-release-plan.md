@@ -238,11 +238,31 @@ profile** applies:
   marks the gaps as `uncertain`.
 - **Proof.** The hostile-repository conformance cases must pass on the installed harness versions.
 
-### 2.5 Cycle engine
+### 2.5 Cycle engine: an artifact graph (D40; `m0/13`)
 
-`intake → plan → build → accept → gate → review → repair* → merge-queue (rebase, re-validate) → closure → deploy → record`
+The cycle is a **graph of nodes over content-addressed artifacts**, not a stage script:
+- **Nodes:** plan, build, accept, gate, integration, evidence, review, closure, merge, deploy, record, phase gate.
+- **Each node declares its inputs.** Its output artifact is keyed by its exact inputs, and nothing else can
+  influence it.
+- **Evaluation is demand-driven.** The controller resolves a goal ("merge task T's candidate"), reuses artifacts
+  whose keys already exist, runs the producers of missing inputs first, and leases what each runnable node needs.
+- **Repairs are unrolled rounds**, so the graph stays acyclic.
+- **The logical order stays the same:**
 
-plus a phase gate at phase boundaries. Closure comes **after** the final merge tree is known [A5].
+  `plan → build → accept → gate → review → repair* → merge-queue (rebase, re-validate) → closure → deploy → record`
+
+  plus a phase gate at phase boundaries. Closure comes **after** the final merge tree is known [A5].
+
+**The graph makes several nöbetçi failure classes structurally impossible.** They were rules before; now they are
+consequences:
+- a model sees only its manifest, which is exactly its declared inputs;
+- an inapplicable or missing input makes a node wait for its producer, never run;
+- identical conclusions reuse a review, and changed ones re-run it;
+- every wait has its signal: the missing input;
+- outcomes come from facts the controller observes (a build's diff, the gate's result files), never from executor
+  claims;
+- evidence targets are leased resources released only on verified restore;
+- the gate runs on the **ship tree**, so target-only failures surface in the gate.
 
 - **Accept:**
   - the patch is applied to a temp index;
@@ -272,8 +292,6 @@ plus a phase gate at phase boundaries. Closure comes **after** the final merge t
   is a builder repair; collection errors, untouched files and unaccounted counts are runner faults. Each target
   environment's **facts** (VCS metadata, network, runtime) are published to the builder and the reviewer
   (nöbetçi Δ§7).
-- **Review leases need applicable inputs.** A reviewer is leased only when its gate results, receipts and answered
-  owed inputs apply to the exact candidate tree; otherwise their producer runs first (nöbetçi Δ§13).
 - **Drain and resume** [A4]:
   - *Graceful drain.* The source announces the drain. The executor is asked to stop at a turn boundary. The
     controller seals a checkpoint: notes, trail, the partial worktree diff, the evidence manifest. The checkpoint
@@ -364,9 +382,10 @@ With no strict options, the simple gate's packet, schema and prompt are byte-ide
 - **Validators** [A12]:
   - *Mechanical, blocking:* schema valid; every required row covered or deferred by record; anchors resolve;
     dependencies acyclic; units' owned paths disjoint; no task requests protected-path edits; every hold reason has a
-    signal; human acts enumerated; no builder-only closure prose; **every acceptance row's evidence is producible
-    by its owner**: a row needing an act outside the builder's reach (live acts, other hosts, protected edits)
-    must name that actor's receipt (nöbetçi Δ§9).
+    signal; human acts enumerated; no builder-only closure prose; **every acceptance row declares its evidence
+    producer** (`builder_test` | `evidence:<instrument>` | `human_act:<actor>`) as a typed field. A builder task's
+    rows must be builder-producible or name the evidence node, which the graph wires into the phase gate (D40,
+    nöbetçi Δ§9).
   - *Judgement, advisory:* size versus builder economics, whether acceptance is whole. Reported to the approver. Never
     a blocking heuristic.
 - **Approval** goes through the authority layer (§2.11). Later changes are typed revisions (add, prerequisite,
@@ -594,7 +613,7 @@ It runs against installed artifacts, not the source tree [A9].
 
 | M | Name | Contents | Exit check |
 |---|---|---|---|
-| **M0** | Contracts & foundations | Repo layout (Go module + `adapters/` workspace), Apache-2.0, CI. Schemas: outcome + reason codes, authority/approval/grant, lease/attempt/fencing, receipt, event store, project profile, **`ContextManifest` with coverage levels + ref/fingerprint/source-restriction types; shared knowledge spec draft: schemas, invariants and fixture definitions only (K10, K12)**. **Evidence-job schema (`m0/12`). Anonymised nöbetçi incident goldens in `fixtures/legacy/`.** Controller API skeleton + `adc` CLI. Test write-guard. Contract-faithful fakes. T0 fixtures | CI green; schema docs generated from code; fake-driven T0 dry run passes |
+| **M0** | Contracts & foundations | Repo layout (Go module + `adapters/` workspace), Apache-2.0, CI. Schemas: outcome + reason codes, authority/approval/grant, lease/attempt/fencing, receipt, event store, project profile, **`ContextManifest` with coverage levels + ref/fingerprint/source-restriction types; shared knowledge spec draft: schemas, invariants and fixture definitions only (K10, K12)**. **Artifact graph: Node/Artifact schemas, key computation, resolver and evaluator with fakes (`m0/13`); evidence node parameters (`m0/12`). Anonymised nöbetçi incident goldens in `fixtures/legacy/`.** Controller API skeleton + `adc` CLI. Test write-guard. Contract-faithful fakes. T0 fixtures | CI green; schema docs generated from code; fake-driven T0 dry run passes |
 | **M1** | One task, one source, safely | Three-phase sandbox (phase 3 proven on the multi-service fixture). Minimum gateway + accounting. Recovery (restart, interrupted, fencing). Accept/gate/review with the host-role profile; amended simple-gate checks; closure; `git` forge; CLI approvals; **task views fingerprinted by exact inputs, `AttemptRecord` as checkpoint schema sealed at every builder exit, protected-document change operation** | T0 Python delivered on GLM-5.3-flash or Qwen3.8 27B; fault fixtures yield the right outcome + reason; controller killed mid-build recovers without double charge; hostile-repo cases pass; **E0 manifest reconciliation passes** |
 | **M2** | Capacity layer (direct sources) | Source registry, resource groups, quota states, health, scheduler with atomic reserve/settle and fairness, fallback chains with re-checks, data placement + destinations, all v1 adapters + conformance kit + `AUTHORING.md`. **T1 suite established with baseline numbers**; **knowledge ablations E1, E1L (fixture lessons, the K3 gate), E2, E4, E5; `FailureSignature` as a derived aggregate**; **one-shot anonymised nöbetçi measurement export (usage, builds, context, terminals) as T1/footprint priors and classifier-eval data** | T0 task placed across ≥3 direct source kinds; shared-quota exhaustion waits on the right signal; builds cannot starve review; T1 baseline published; **ablation decisions published, including K3** |
 | **M3** | Remote capacity | Operator-only enrolment (CLI + minimal dashboard view), adc-agent on Linux then Windows/macOS, endpoint allowlist, live-tunnel revocation, graceful drain and abrupt-loss handling | An agent-relayed local model contributes accepted work; disconnect mid-attempt resumes elsewhere; a late stale result is rejected; revocation is immediate |

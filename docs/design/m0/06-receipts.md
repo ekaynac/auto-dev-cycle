@@ -79,7 +79,7 @@ Receipt:
    subject **and the same demand**. For tree subjects, tree, environment identity and contract revision must all
    match. For merge, the subject that counts is the merge queue's final tree (A5). When a requirement names a demand
    key, a receipt for another demand never applies, even with identical conclusions [PR5-2]. `internal/receipt` is the
-   **only** applicability checker; evidence jobs, the gate and placement call it.
+   **only** applicability checker. The graph calls it whenever an input resolves (13) [D40].
 2a. **Evidence equivalence is not identity** [PR5-5]. Fingerprints (10) stay exact: a new receipt is a new input. Whether
    a review must run again is a separate, semantic decision. Each receipt carries a `conclusions_digest` over its typed
    conclusions:

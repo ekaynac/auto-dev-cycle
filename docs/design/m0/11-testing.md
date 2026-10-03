@@ -110,6 +110,8 @@ golden file names:
 - The nöbetçi incident→test index (`/home/mega/nobetci-dev/docs/handoff/2026-10-03/08-incident-test-index.md`, 206
   verified test names) is the checklist of behaviours T0 must reproduce. Each row maps to a T0 fixture, or to a
   documented reason it does not apply.
+- **"Cannot occur" fixtures for the artifact graph** are listed in `13-artifact-graph.md` (D40). They take
+  priority: each proves a nöbetçi failure class is structurally impossible.
 - **New contract fixtures from the intake:**
   - a ruling answers an owed input and re-keys the review;
   - a ruling for an input not owed is not delivered;

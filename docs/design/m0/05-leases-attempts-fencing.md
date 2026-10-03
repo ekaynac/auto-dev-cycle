@@ -8,21 +8,20 @@ M0 fixes the records and their state machines; the scheduler policy that fills t
 ```yaml
 ResourceGroup:
   id: rg_…
-  kind: account_quota | broker_balance | gpu | concurrency | controller_gate | controller_integration
+  kind: account_quota | broker_balance | gpu | concurrency | controller_gate | controller_integration | evidence_target
   capacity_model:
     unit: requests | tokens | usd | slots | gpu_seconds
     limit: number|null              # null = unknown
     window: duration|null
     reset_at: time|null
     quota_state: known | estimated | unknown
-  release_rule: on_settle | on_attempt_end | on_window_reset   # how reserved amounts return [M7]
+  release_rule: on_settle | on_attempt_end | on_window_reset | on_restore_verified   # how reserved amounts return [M7]; evidence targets use on_restore_verified (13) [D40]
   members: [exe_…]
 ```
 
 - **Rate windows and credit balances are separate groups** (`account_quota` vs `broker_balance`). A provider can have
   rate headroom and no credit, or the reverse (nöbetçi Δ§4: a rate-window check passed on an account with no credit).
-- **A lease on a `broker_balance` group is admitted by the ledger's affordability rule** (below, `inputs_applicable` /
-  broker affordability). Otherwise it waits on `broker_credit_exhausted` (02).
+- **A lease on a `broker_balance` group is admitted by the ledger's affordability rule** (below, broker affordability). Otherwise it waits on `broker_credit_exhausted` (02).
 
 ## Lease
 
@@ -37,17 +36,10 @@ Lease:
   footprint: {context_tokens, expected_turns, gpu_seconds?}
   deadline: time
   fallback_step: int
-  placement_checks: {data_floor, destinations, capability, independence, paid_authority, budget, inputs_applicable, fallback_scope}
+  placement_checks: {data_floor, destinations, capability, independence, paid_authority, budget, fallback_scope}
 ```
 
-- **`inputs_applicable`** (nöbetçi Δ§13): a lease for a role that consumes evidence (reviewer, phase reviewer) is granted
-  only when every input the role requires is applicable to the exact candidate tree (checked by `internal/receipt`).
-  Placement returns **the missing dependency's canonical hold and signal** [PR5-8]:
-  - a missing gate result or receipt → `inputs_not_applicable` (signal: receipt), and its producer is scheduled;
-  - an unanswered owed input → `awaiting_input` (signal: the answering approval);
-  - an excluded evidence target → `evidence_restore_pending`.
-
-  The reviewer never receives an inapplicable or missing input.
+- **Inputs are not a placement concern** [D40]. A node is runnable only once all its inputs resolved to applicable artifacts (13). Missing or inapplicable inputs never reach placement; they make the node `waiting(input)`, and the producer is scheduled.
 - **Broker affordability goes through the ledger** [PR5-10]: a `broker_balance` reservation is admitted only if
   (latest probed balance − outstanding reservations − uncertain liabilities) ≥ the reservation, with the probe within
   its TTL. A stale or unknown balance means wait (`broker_credit_exhausted` with a probe signal), never "assume
