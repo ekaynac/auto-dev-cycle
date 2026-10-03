@@ -48,10 +48,11 @@ mutations=(
   expose-home=TestNoProtectedOrRepoAlias+TestOnlyExpectedMounts
   expose-state=TestNoProtectedOrRepoAlias+TestOnlyExpectedMounts
   repo-alias=TestNoProtectedOrRepoAlias+TestOnlyExpectedMounts
-  repo-writable=TestRepoReadOnly
+  repo-writable=TestRepoReadOnly+TestOnlyExpectedMounts   # the writable bind is a second mount at /src
   extra-mount=TestOnlyExpectedMounts
   pseudo-mount=TestOnlyExpectedMounts
   type-change=TestOnlyExpectedMounts
+  missing-mount=TestOnlyExpectedMounts
 )
 
 out="$(mktemp -d)"
@@ -96,16 +97,25 @@ results() {
     | awk -F'\t' -v a="$2" '$2 == a {print $1}' | sort
 }
 
-# stream_ok <json file>: the go test -json stream is complete and unambiguous:
-# exactly one terminal event (pass/fail/skip) per test and subtest, and
-# exactly one terminal package event. Prints the problem and fails otherwise.
+# stream_ok <json file> <pass|fail>: the go test -json stream is complete,
+# unambiguous and consistent: one package, every started test and subtest
+# finishes with exactly one terminal event (pass/fail/skip), no terminal
+# event without a start, exactly one package terminal event, and the package
+# outcome is the wanted one and agrees with the tests (fail iff a test failed).
 stream_ok() {
-  jq -s -r '
-    [ .[] | select(.Action == "pass" or .Action == "fail" or .Action == "skip") ] as $t
-    | ($t | map(select(.Test == null)) | length) as $pkg
-    | ($t | map(select(.Test != null)) | group_by(.Test) | map(select(length > 1) | .[0].Test)) as $dups
-    | if $pkg != 1 then "package completion events: \($pkg) (want 1)"
-      elif ($dups | length) > 0 then "duplicate terminal results: \($dups | join(", "))"
+  jq -s -r --arg want "$2" '
+    def terminal: .Action == "pass" or .Action == "fail" or .Action == "skip";
+    ([ .[] | .Package ] | unique) as $pkgs
+    | ([ .[] | select(.Test != null and .Action == "run") | .Test ] | sort) as $started
+    | ([ .[] | select(.Test != null and terminal) | .Test ] | sort) as $finished
+    | [ .[] | select(.Test == null and terminal) ] as $pkgend
+    | ([ .[] | select(.Test != null and .Action == "fail") ] | length) as $failed
+    | if ($pkgs | length) != 1 then "packages: \($pkgs | length) (want 1)"
+      elif $started != ($started | unique) then "a test started twice"
+      elif $finished != $started then "started and finished tests differ"
+      elif ($pkgend | length) != 1 then "package completion events: \($pkgend | length) (want 1)"
+      elif $pkgend[0].Action != $want then "package outcome \($pkgend[0].Action), want \($want)"
+      elif ($failed > 0) != ($want == "fail") then "package outcome disagrees with the test results"
       else "ok" end' "$1" 2>/dev/null | grep -qx ok
 }
 
@@ -123,16 +133,23 @@ expect() {  # expect <label> <wanted action> <test>...
 }
 
 echo "evidence validator: malformed streams are rejected"
-printf '%s\n' '{"Action":"pass","Test":"TestA"}' >"$out/ev-nopkg.json"
-printf '%s\n' '{"Action":"pass","Test":"TestA"}' '{"Action":"fail","Test":"TestA"}' '{"Action":"fail"}' >"$out/ev-dup.json"
-printf '%s\n' '{"Action":"pass","Test":"TestA"}' '{"Action":"pass"}' >"$out/ev-good.json"
-if stream_ok "$out/ev-nopkg.json"; then echo "  FAIL  a stream without package completion was accepted"; fail=1; else echo "  ok    missing package completion rejected"; fi
-if stream_ok "$out/ev-dup.json"; then echo "  FAIL  a stream with a duplicate result was accepted"; fail=1; else echo "  ok    duplicate terminal result rejected"; fi
-if stream_ok "$out/ev-good.json"; then echo "  ok    a complete stream accepted"; else echo "  FAIL  a complete stream was rejected"; fail=1; fi
+ev() { printf '%s\n' "${@:2}" >"$out/ev-$1.json"; }
+P='"Package":"p"'
+ev good "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\"}"
+ev nopkg "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\",\"Test\":\"TestA\"}"
+ev dup "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"fail\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"fail\"}"
+ev unfinished "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"run\",\"Test\":\"TestB\"}" "{$P,\"Action\":\"pass\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\"}"
+ev failpass "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"fail\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"pass\"}"
+ev failskip "{$P,\"Action\":\"run\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"fail\",\"Test\":\"TestA\"}" "{$P,\"Action\":\"skip\"}"
+for bad in nopkg dup unfinished failpass; do
+  if stream_ok "$out/ev-$bad.json" pass; then echo "  FAIL  malformed stream '$bad' accepted"; fail=1; else echo "  ok    malformed stream '$bad' rejected"; fi
+done
+if stream_ok "$out/ev-failskip.json" fail; then echo "  FAIL  malformed stream 'failskip' accepted"; fail=1; else echo "  ok    malformed stream 'failskip' rejected"; fi
+if stream_ok "$out/ev-good.json" pass; then echo "  ok    a complete stream accepted"; else echo "  FAIL  a complete stream was rejected"; fail=1; fi
 
 echo "sandboxed run (backend $backend): every check must pass"
 run sandboxed --backend "$backend"
-stream_ok "$out/sandboxed.json" || { echo "  FAIL  the sandboxed run's test stream is incomplete or ambiguous"; fail=1; }
+stream_ok "$out/sandboxed.json" pass || { echo "  FAIL  the sandboxed run's test stream is incomplete or ambiguous"; fail=1; }
 expect sandboxed pass "${checks[@]}" "${net_checks[@]}" "${mutation_checks[@]}"
 if [[ "$(cat "$out/sandboxed.rc")" != 0 ]]; then
   echo "  FAIL  the sandboxed run exited $(cat "$out/sandboxed.rc"):"; sed 's/^/        /' "$out/sandboxed.err"; fail=1
@@ -140,6 +157,8 @@ fi
 
 echo "unsandboxed control: every check must fail (red-proof)"
 ADC_TEST_UNSANDBOXED=1 run control --backend none
+stream_ok "$out/control.json" fail || { echo "  FAIL  the control run's test stream is incomplete or inconsistent"; fail=1; }
+[[ "$(cat "$out/control.rc")" == 1 ]] || { echo "  FAIL  the control run exited $(cat "$out/control.rc"), want 1"; fail=1; }
 expect control fail "${checks[@]}"
 for pair in TestNoExternalTCP:$host_tcp TestNoDNS:$host_dns; do
   if [[ "${pair#*:}" == 1 ]]; then
@@ -174,7 +193,7 @@ if [[ "$backend" == auto || "$backend" == bwrap ]] && bwrap_starts; then
     want_red="$(printf '%s\n' "${red[@]}" | sort | tr '\n' ' ')"
     all_now="$( { results "mut-$name" pass; results "mut-$name" fail; results "mut-$name" skip; } | sort | tr '\n' ' ')"
     all_clean="$( { results sandboxed pass; results sandboxed fail; results sandboxed skip; } | sort | tr '\n' ' ')"
-    if ! stream_ok "$out/mut-$name.json"; then
+    if ! stream_ok "$out/mut-$name.json" fail; then
       echo "  FAIL  [$name] the test stream is incomplete or ambiguous"; fail=1
     elif [[ "$got_red" != "$want_red" ]]; then
       echo "  FAIL  [$name] failing set is [$got_red], want exactly [$want_red]"; fail=1
@@ -218,6 +237,8 @@ elif grep -q 'is a symlink; refused' "$out/refuse.err"; then
 else
   echo "  FAIL  symlinked provisioned child: unexpected error: $(head -n1 "$out/refuse.err")"; fail=1
 fi
+refuse "a provision area inside the writable cache" "inside scratch must be" ADC_TEST_SCRATCH="$out/scratch-overlap" ADC_TEST_PROVISION="$out/scratch-overlap/gocache"
+refuse "a relocated CODEX_HOME inside the repository" "overlaps protected" CODEX_HOME="$repo_root/.adc-test-codex-home"
 if [[ "$(cat "$out/decoy-codex/auth.json")" == decoy ]]; then echo "  ok    the decoy was left untouched"; else echo "  FAIL  the decoy changed"; fail=1; fi
 
 echo "refusals: a cache symlink in an otherwise valid scratch"

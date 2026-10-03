@@ -73,7 +73,7 @@ mutation="${ADC_TEST_SANDBOX_MUTATION:-}"
 if [[ -n "$mutation" ]]; then
   [[ "${ADC_TEST_UNSANDBOXED:-}" == 1 && "$backend" == bwrap ]] \
     || die "ADC_TEST_SANDBOX_MUTATION needs ADC_TEST_UNSANDBOXED=1 and --backend bwrap (sandbox self-test only)"
-  [[ "$mutation" =~ ^(expose-home|expose-state|repo-alias|repo-writable|extra-mount|pseudo-mount|type-change)$ ]] || die "unknown mutation: $mutation" 64
+  [[ "$mutation" =~ ^(expose-home|expose-state|repo-alias|repo-writable|extra-mount|pseudo-mount|type-change|missing-mount)$ ]] || die "unknown mutation: $mutation" 64
 fi
 
 home="$(realpath -m -- "$HOME")"
@@ -131,8 +131,20 @@ claim_area() {
     printf '%s\n' "$marker_text" >"$d/.adc-test-area"
   fi
 }
+# The repository is mounted too: it may not contain the home or overlap a
+# protected root (a credential directory relocated into the checkout, say).
+covers "$repo_root" "$home" && die "repository $repo_root contains \$HOME; refused"
+for p in "${protected_roots[@]}"; do
+  { covers "$repo_root" "$p" || covers "$p" "$repo_root"; } && die "repository $repo_root overlaps protected $p; refused"
+done
 claim_area scratch "$scratch_root"
-covers "$scratch_root" "$provision_root" || claim_area provision "$provision_root"
+if covers "$scratch_root" "$provision_root"; then
+  [[ "$provision_root" == "$scratch_root/provision" ]] \
+    || die "provision area $provision_root inside scratch must be $scratch_root/provision; refused"
+else
+  covers "$provision_root" "$scratch_root" && die "provision area $provision_root contains scratch; refused"
+  claim_area provision "$provision_root"
+fi
 # inside_area <area> <path>: path lies below area through components that are
 # not symlinks (existing ones are checked; missing ones are created later).
 inside_area() {
@@ -178,7 +190,7 @@ if [[ ! -f "$modcache/.complete-$sum_digest" ]]; then
   mkdir -p "$modcache"
   (cd "$repo_root" && env -u GOFLAGS -u GONOSUMDB -u GONOSUMCHECK -u GOINSECURE -u GOPRIVATE -u GONOPROXY \
      GOMODCACHE="$modcache" GOSUMDB=sum.golang.org GOTOOLCHAIN=local GOTELEMETRY=off \
-     "$toolchain/bin/go" mod download) || die "could not prepare the module cache (go mod download)"
+     "$goroot/bin/go" mod download) || die "could not prepare the module cache (go mod download)"
   touch "$modcache/.complete-$sum_digest"
 fi
 
@@ -189,6 +201,11 @@ work="$(mktemp -d "$scratch_root/work.XXXXXX")"
 # Re-check every mount source after provisioning, right before use.
 for src in "$toolchain" "$node_copy/bin/node" "$modcache"; do inside_area "$provision_root" "$src"; done
 for src in "$gocache" "$work"; do inside_area "$scratch_root" "$src"; done
+for w in "$gocache" "$work"; do
+  for r in "$provision_root" "$toolchain" "$node_copy" "$modcache"; do
+    { covers "$w" "$r" || covers "$r" "$w"; } && die "writable $w overlaps provisioned $r; refused"
+  done
+done
 sentinel="$(mktemp -d /tmp/adc-sentinel-XXXXXX)"
 sentinel_inode="$(stat -c %i "$sentinel")"
 # Canaries mark protected places: the home, the user state directory (where
@@ -236,7 +253,8 @@ case "$mutation" in
   repo-writable) mutation_args=(--bind "$repo_root" /src) ;;
   extra-mount) mutation_args=(--ro-bind /usr/share /mut/extra) ;;
   pseudo-mount) mutation_args=(--ro-bind /usr/share /dev/adc-mut) ;;   # hidden under an exempt-looking tree
-  type-change) mutation_args=(--tmpfs /gomodcache) ;;                   # an allowed path, the wrong filesystem
+  type-change) mutation_args=(--proc /gomodcache) ;;                    # an allowed path, a filesystem no bind can have
+  missing-mount) ;;                                                       # handled in run_bwrap: /gomodcache not mounted
 esac
 
 # The environment inside the sandbox: this list and the --env names, nothing else.
@@ -270,8 +288,8 @@ run_bwrap() {
     --ro-bind "$repo_root" /src
     --bind "$work" /scratch/work --bind "$gocache" /scratch/gocache
     --ro-bind "$toolchain" /opt/go --ro-bind "$node_copy/bin/node" /opt/node/bin/node
-    --ro-bind "$modcache" /gomodcache
     --chdir /src)
+  if [[ "$mutation" == missing-mount ]]; then args+=(--dir /gomodcache); else args+=(--ro-bind "$modcache" /gomodcache); fi
   local p kv
   for p in /bin /lib /lib64 /sbin; do
     if [[ -L "$p" ]]; then args+=(--symlink "$(readlink "$p")" "$p")

@@ -331,3 +331,71 @@ The self-check never supplies a decoy `CONTAINERS_CONF_OVERRIDE` or configured `
 **Fix:** Add disposable Podman configuration fixtures containing sacrificial mounts and verify that their content remains unavailable, with controls establishing that each fixture is effective.
 
 No additional hosted amd64/arm64 portability blocker was established. I accept the supplied CI results; Podman was unavailable locally. Shell syntax and the focused reproductions were checked, and repository files remain unchanged.
+# PR #16 review (Astra, 2026-10-03)
+
+Verdict: NO-GO
+
+- **Last #10 High 1 — provisioned child symlinks: resolved for the reported escape.** Intermediate components are checked before provisioning and mounting; the module-cache symlink regression passes.
+- **Last #10 Medium 1 — incomplete execution evidence: partially resolved.** Missing package completion and duplicate terminal results are rejected, but incomplete test execution and incorrect package outcomes remain accepted.
+- **Last #10 Medium 2 — filesystem-type wildcards: resolved.** Observed mounts now require explicit types. Separate completeness and mutation-portability gaps remain below.
+- **Last #10 Medium 3 — missing Podman configuration regressions: deferred with the removed backend.** These remain requirements for the subsequent container PR; their absence does not block this bubblewrap-only PR.
+
+**High**
+
+1. **An accepted provision/cache overlap lets sandboxed code modify an executable subsequently run on the host.**
+
+   Locations: [scripts/test-sandbox.sh:135](scripts/test-sandbox.sh:135), [scripts/test-sandbox.sh:181](scripts/test-sandbox.sh:181), [scripts/test-sandbox.sh:271](scripts/test-sandbox.sh:271).
+
+   `ADC_TEST_PROVISION="$ADC_TEST_SCRATCH/gocache"` is accepted. Consequently, the provisioned Go executable is accessible through writable `/scratch/gocache`, despite its read-only `/opt/go` alias.
+
+   **Reproduced with disposable fixtures:** a sandboxed command replaced that copied executable and removed the module-cache completion marker. The next wrapper invocation executed the replacement during host-side provisioning, creating a sacrificial file outside the sandbox. Both invocations exited **0**.
+
+   **Fix:** Reject overlaps between actual writable bind sources and provisioned toolchain, Node, and module-cache sources. Add this two-invocation regression, proving that sandbox writes cannot alter subsequent host-side execution.
+
+2. **The repository bind bypasses protected-root validation.**
+
+   Locations: [scripts/test-sandbox.sh:119](scripts/test-sandbox.sh:119), [scripts/test-sandbox.sh:270](scripts/test-sandbox.sh:270).
+
+   Protected-root checks apply to scratch and provision areas, but not to the repository. A relocated `CODEX_HOME` inside the checkout is therefore exposed through `/src`. Credential roots also receive no canaries, so the containment assertions miss this configuration.
+
+   **Reproduced in a disposable checkout:** set `CODEX_HOME` to its `credentials` directory, read the sacrificial `auth.json` through `/src/credentials/auth.json`, then ran the containment package. Every executed assertion passed; only the host-listener check skipped because this focused reproduction supplied no listener. Wrapper exit: **0**.
+
+   **Fix:** Before launching anything sandboxed, reject repository overlap with protected roots and repositories encompassing the real home. Add a relocated-credential fixture inside the checkout and require refusal before command execution.
+
+**Medium**
+
+1. **The event validator still does not establish complete, consistent execution.**
+
+   Locations: [scripts/test-sandbox-selftest.sh:102](scripts/test-sandbox-selftest.sh:102), [scripts/test-sandbox-selftest.sh:142](scripts/test-sandbox-selftest.sh:142).
+
+   `stream_ok` counts terminal events but never matches started tests to completed tests or checks the package’s terminal action. I reproduced acceptance of:
+   
+   - A started test with no terminal result.
+   - A failed test followed by a passing package result.
+   - A failed test followed by a skipped package result.
+
+   Started-but-unfinished cases also escape the later name-set comparison, which uses only terminal events. The unsandboxed control never calls `stream_ok` or checks its recorded exit status.
+
+   **Fix:** Validate package identity and expected outcome, match every started test/subtest to exactly one terminal event, and apply validation to every run, including the control. Add negative fixtures for these cases.
+
+2. **The claimed exact mount table permits missing mounts.**
+
+   Location: [test/sandbox/containment_test.go:186](test/sandbox/containment_test.go:186).
+
+   The assertion checks each observed mount against the allowlist but never requires expected mounts to exist.
+
+   **Reproduced:** in a disposable runner copy, replaced the `/gomodcache` bind with an ordinary empty directory. `TestOnlyExpectedMounts` passed and the wrapper exited **0**.
+
+   **Fix:** Compare the complete observed and required mount sets, including types and duplicate destinations. Add a missing-mount mutation.
+
+3. **The type-change mutation assumes the original source is not tmpfs.**
+
+   Location: [scripts/test-sandbox.sh:239](scripts/test-sandbox.sh:239).
+
+   The mutation always substitutes tmpfs. When the provision area already resides on tmpfs—for example, an executable tmpfs-backed `/tmp`—the expected and substituted filesystem types are identical. The asserted type mismatch disappears, causing the self-check to fail despite correct containment.
+
+   **Fix:** Verify that the mutation actually changes the type, choosing a suitable alternative or using a controlled fixture. Exercise a tmpfs-backed provision area.
+
+Portability is demonstrated for this exact commit: both hosted [ubuntu-24.04 amd64](https://github.com/ekaynac/auto-dev-cycle/actions/runs/37127108605/job/111214526338) and [ubuntu-24.04 arm64](https://github.com/ekaynac/auto-dev-cycle/actions/runs/37127108605/job/111214526542) `make ci` jobs passed. The container fallback’s absence is explicitly documented and consistent with the agreed split.
+
+Local validation passed the complete unmodified bubblewrap self-check, including all seven mutations and refusal cases. Shell syntax and implementation-file whitespace checks passed. The focused reproductions above used disposable fixtures; repository files remain unchanged.

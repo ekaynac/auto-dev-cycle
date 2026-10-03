@@ -183,6 +183,7 @@ func TestOnlyExpectedMounts(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	var unexpected []string
+	seen := map[string]int{}
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
 		f := strings.Fields(line)
 		sep := -1
@@ -202,6 +203,15 @@ func TestOnlyExpectedMounts(t *testing.T) {
 		}
 		if !ok || fstype != want {
 			unexpected = append(unexpected, fmt.Sprintf("%s (%s, want %q)", mp, fstype, want))
+		}
+		seen[mp]++
+	}
+	// Every expected mount exists exactly once.
+	for _, set := range []map[string]string{binds, fixedMounts} {
+		for mp := range set {
+			if seen[mp] != 1 {
+				unexpected = append(unexpected, fmt.Sprintf("%s mounted %d times, want once", mp, seen[mp]))
+			}
 		}
 	}
 	if len(unexpected) > 0 {
