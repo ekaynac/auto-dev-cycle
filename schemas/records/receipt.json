@@ -52,9 +52,13 @@
     }
   ],
   "$defs": {
-    "Name": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "Name": {
+      "description": "Instrument, predicate, artifact, precondition and model-family names: lowercase letters and digits, then also '.', '_' and '-' (06 \"Names and media types\").",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
     "MediaType": {
-      "description": "RFC 6838 type/subtype, lowercase, no parameters.",
+      "description": "RFC 6838 type/subtype, lowercase, without parameters (06 \"Names and media types\").",
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$"
     },
@@ -71,11 +75,14 @@
     "Predicate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "outcome", "reason", "evidence"],
+      "required": ["name", "outcome", "reason", "detail", "evidence"],
+      "if": {"properties": {"outcome": {"not": {"const": "empty"}}}},
+      "then": {"properties": {"detail": {"minLength": 1}}},
       "properties": {
         "name": {"$ref": "#/$defs/Name"},
         "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
         "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
+        "detail": {"description": "Non-empty for every non-empty outcome (02 \"Outcome\").", "type": "string"},
         "evidence": {
           "type": "array",
           "items": {
@@ -93,7 +100,7 @@
           }
         },
         "payload": {
-          "description": "Typed predicate facts, validated against the instrument contract's payload_schema by internal/receipt (06 rule 7).",
+          "description": "Typed predicate facts. Present only when the instrument declares a payload_schema, and then validated against it by internal/receipt (06 rule 7).",
           "type": "object"
         }
       }

@@ -36,7 +36,7 @@
       "items": {"$ref": "receipt.json#/$defs/Name"}
     },
     "payload_schema": {
-      "description": "Digest of the JSON Schema for typed predicate fields (rule 7), stored as a blob.",
+      "description": "Blob digest of the JSON Schema for typed predicate fields (rule 7); null means the instrument's predicates carry no payload.",
       "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]
     },
     "artifact_classes": {

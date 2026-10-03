@@ -50,7 +50,7 @@ func receipt(subject string) map[string]any {
 			"model_families": []any{"claude"}, "contributors": []any{actID}},
 		"produced_at": "2026-10-03T10:00:00Z",
 		"valid_until": nil,
-		"predicates": []any{map[string]any{"name": "tests", "outcome": "empty", "reason": "none",
+		"predicates": []any{map[string]any{"name": "tests", "outcome": "empty", "reason": "none", "detail": "",
 			"evidence": []any{map[string]any{"blob": dgB, "media_type": "application/junit+xml", "artifact": "junit"}},
 			"payload":  map[string]any{"passed": 12}}},
 		"outcome":            "empty",
@@ -60,6 +60,12 @@ func receipt(subject string) map[string]any {
 		"conclusions_digest": dgB,
 		"supersedes":         nil,
 	}
+}
+
+// setPredicate sets the outcome and detail of the receipt's one predicate.
+func setPredicate(r map[string]any, outcome, detail string) {
+	p := r["predicates"].([]any)[0].(map[string]any)
+	p["outcome"], p["detail"] = outcome, detail
 }
 
 func instrument() map[string]any {
@@ -150,6 +156,36 @@ func TestReceiptOutcomesAndVerdicts(t *testing.T) {
 			}
 			s["demand"] = map[string]any{"key": dgB, "run": attID}
 			r["subject"] = s
+		}, false},
+		{"failed with detail", func(r map[string]any) { r["outcome"], r["detail"] = "failed", "merge refused" }, true},
+		{"could_not_run with detail", func(r map[string]any) { r["outcome"], r["detail"] = "could_not_run", "quota" }, true},
+		{"review no_go on failed", func(r map[string]any) {
+			r["kind"], r["verdict"], r["outcome"], r["detail"] = "review", "no_go", "failed", "x"
+		}, true},
+		{"review no_go on could_not_run", func(r map[string]any) {
+			r["kind"], r["verdict"], r["outcome"], r["detail"] = "review", "no_go", "could_not_run", "x"
+		}, true},
+		{"review go on failed", func(r map[string]any) {
+			r["kind"], r["verdict"], r["outcome"], r["detail"] = "review", "go", "failed", "x"
+		}, false},
+		{"review go on could_not_run", func(r map[string]any) {
+			r["kind"], r["verdict"], r["outcome"], r["detail"] = "review", "go", "could_not_run", "x"
+		}, false},
+		{"predicate found with detail", func(r map[string]any) { setPredicate(r, "found", "2 failures") }, true},
+		{"predicate failed with detail", func(r map[string]any) { setPredicate(r, "failed", "exit 2") }, true},
+		{"predicate could_not_run with detail", func(r map[string]any) { setPredicate(r, "could_not_run", "no junit") }, true},
+		{"predicate found without detail", func(r map[string]any) { setPredicate(r, "found", "") }, false},
+		{"predicate failed without detail", func(r map[string]any) { setPredicate(r, "failed", "") }, false},
+		{"predicate could_not_run without detail", func(r map[string]any) { setPredicate(r, "could_not_run", "") }, false},
+		{"predicate without a detail field", func(r map[string]any) {
+			delete(r["predicates"].([]any)[0].(map[string]any), "detail")
+		}, false},
+		{"name with dots and digits", func(r map[string]any) { r["instrument"].(map[string]any)["name"] = "go-test.v2" }, true},
+		{"name with capitals", func(r map[string]any) { r["instrument"].(map[string]any)["name"] = "GoTest" }, false},
+		{"name starting with a dash", func(r map[string]any) { r["instrument"].(map[string]any)["name"] = "-x" }, false},
+		{"media type with capitals", func(r map[string]any) {
+			ev := r["predicates"].([]any)[0].(map[string]any)["evidence"].([]any)[0].(map[string]any)
+			ev["media_type"] = "Text/Plain"
 		}, false},
 		{"supersedes a receipt", func(r map[string]any) { r["supersedes"] = rcpPrev }, true},
 		{"valid_until set", func(r map[string]any) { r["valid_until"] = "2026-10-04T10:00:00Z" }, true},

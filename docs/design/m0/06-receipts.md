@@ -19,7 +19,7 @@ InstrumentContract:
       evidence_required: [media_type]   # e.g. application/junit+xml
   optional_predicates: [name]
   preconditions: [name]             # environment checks before each run (12); failure = precondition_failed hold, not a spent attempt
-  payload_schema: sha256:…|null     # blob digest of the JSON Schema for typed predicate fields (rule 7)
+  payload_schema: sha256:…|null     # blob digest of the JSON Schema for typed predicate fields (rule 7); null: predicates carry no payload
   artifact_classes: {name: diagnostic|restricted}
 ```
 
@@ -50,8 +50,9 @@ Receipt:
     - name: string
       outcome: found|empty|could_not_run|failed
       reason: reason_code
+      detail: string                # non-empty for every non-empty outcome (02)
       evidence: [{blob: sha256:…, media_type, artifact}]   # artifact: a name in the instrument's artifact_classes (rule 7)
-      payload: {…}                  # typed facts, validated against the instrument's payload_schema (rule 7)
+      payload: {…}                  # optional; only when the instrument declares a payload_schema, validated against it (rule 7)
   outcome: found|empty|could_not_run|failed     # derived (below), never accepted from the producer
   reason: reason_code
   detail: string
@@ -59,6 +60,12 @@ Receipt:
   conclusions_digest: sha256:…      # derived; rule 2a
   supersedes: rcp_…|null
 ```
+
+## Names and media types
+
+Instrument, predicate, artifact, precondition and model-family names are lowercase: a letter or digit, then letters,
+digits, `.`, `_` or `-` (`go-test`, `junit.xml`). Media types are RFC 6838 `type/subtype`, lowercase, without
+parameters. Names compare as written, so one spelling per name keeps instrument identity and requirement matching exact.
 
 ## Derivation (one function)
 
@@ -103,7 +110,8 @@ Receipt:
    includes timestamps or live counters.
 7. **Typed predicates; declared artifact classes** (nöbetçi Δ§8, refined by [PR5-6]).
    - Predicate fields are typed facts (exit codes, digests, byte counts, versions, counts), validated by a payload
-     schema the instrument declares.
+     schema the instrument declares. A payload from an instrument that declares none is invalid, never unvalidated
+     (`internal/receipt`).
    - Artifacts carry a class declared by the instrument:
      - `diagnostic` (test output, tracebacks, build logs) may be delivered to builders and reviewers as usual;
      - `restricted` (output from live systems, production data, remote stderr) is never delivered into prompts or the
