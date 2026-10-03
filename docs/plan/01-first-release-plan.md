@@ -253,16 +253,22 @@ The cycle is a **graph of nodes over content-addressed artifacts**, not a stage 
 
   plus a phase gate at phase boundaries. Closure comes **after** the final merge tree is known [A5].
 
-**The graph makes several nöbetçi failure classes structurally impossible.** They were rules before; now they are
-consequences:
-- a model sees only its manifest, which is exactly its declared inputs;
-- an inapplicable or missing input makes a node wait for its producer, never run;
-- identical conclusions reuse a review, and changed ones re-run it;
-- every wait has its signal: the missing input;
-- outcomes come from facts the controller observes (a build's diff, the gate's result files), never from executor
-  claims;
-- evidence targets are leased resources released only on verified restore;
-- the gate runs on the **ship tree**, so target-only failures surface in the gate.
+**What the graph makes structural** (narrowed after Astra's review of the redesign, `m0/13` rev 2):
+- a model's **controller-supplied** context comes only from its declared inputs (harness-internal context stays
+  `partial`/`unknown`);
+- an inapplicable, missing or expired input makes a node wait for its producer, never run;
+- `could_not_run` is retried on its signal, never cached;
+- answers and new demands create successor nodes;
+- equal typed conclusions reuse a review, and changed ones re-run it;
+- build outcomes combine observed completion with the observed diff, never executor claims alone;
+- effects are durable operations reconciled against current state, never cache hits;
+- evidence targets are leases whose settlement requires verified restore;
+- the merge queue runs in **generations**, with a carry-over attestation or delta review per generation;
+- tests run in a source-test workspace, exactly the hashed package bytes are deployed, and runtime verification
+  runs on that package with the target's runtime facts.
+
+**Still checked explicitly:** authority and applicability are re-validated at commit (approvals can be revoked and
+receipts can expire between claim and commit), and semantic acceptance review stays with humans and reviewers.
 
 - **Accept:**
   - the patch is applied to a temp index;
@@ -382,10 +388,10 @@ With no strict options, the simple gate's packet, schema and prompt are byte-ide
 - **Validators** [A12]:
   - *Mechanical, blocking:* schema valid; every required row covered or deferred by record; anchors resolve;
     dependencies acyclic; units' owned paths disjoint; no task requests protected-path edits; every hold reason has a
-    signal; human acts enumerated; no builder-only closure prose; **every acceptance row declares its evidence
-    producer** (`builder_test` | `evidence:<instrument>` | `human_act:<actor>`) as a typed field. A builder task's
-    rows must be builder-producible or name the evidence node, which the graph wires into the phase gate (D40,
-    nöbetçi Δ§9).
+    signal; human acts enumerated; no builder-only closure prose; **every acceptance row binds to a concrete
+    producer instance** (a builder test id pattern; an evidence node spec with instrument, subject, demand and grant;
+    or a human act with actor and completion artifact). The validator proves wiring and capability, not semantic
+    satisfiability, which stays with contract review (D40, `m0/13` rev 2, nöbetçi Δ§9).
   - *Judgement, advisory:* size versus builder economics, whether acceptance is whole. Reported to the approver. Never
     a blocking heuristic.
 - **Approval** goes through the authority layer (§2.11). Later changes are typed revisions (add, prerequisite,

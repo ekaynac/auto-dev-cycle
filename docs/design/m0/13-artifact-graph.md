@@ -1,147 +1,222 @@
 # 13 — The cycle as an artifact graph
 
-Status: added 2026-10-03 by operator ruling D40: "we are in development, so instead of carrying lessons as rules, make
-architectural choices that remove their failure classes". This note replaces the stage-script model of the cycle
-(plan §2.5) with a **graph of nodes over content-addressed artifacts**. Several rules elsewhere become consequences of
-this structure. Each such place cites `[D40]`.
+Status: revision 2, 2026-10-03.
+- Revision 1 was added by operator ruling D40: "we are in development, so instead of carrying lessons as rules, make
+  architectural choices that remove their failure classes".
+- Revision 2 applies Astra's review of revision 1 (`docs/reviews/2026-10-03-pr5-d40-astra.md`, cited `[G#]`). That
+  review found several "by construction" claims overstated; they are corrected or narrowed here.
 
 ## Why
 
-nöbetçi's cycle was a stage script with state in scratch files. Its recurring failures had one shape: **a decision was
-made from an input that was missing, stale, for another tree, or silently not part of the identity.** Examples:
-- a ruling that never reached the reviewer;
-- a demanded walk that did not re-key the review;
-- a review admitted with another tree's gate results;
-- a receipt reused across demands.
+nöbetçi's cycle was a stage script with state in scratch files. Its recurring failures shared one shape: **a decision
+was made from an input that was missing, stale, for another tree, or not part of the identity.** Examples:
+- a ruling never reached the reviewer;
+- a demanded walk did not re-key the review;
+- a review was admitted with another tree's gate results;
+- a receipt was reused across demands.
 
-Each was patched with a rule. In a graph where every decision is a node whose output is keyed by its exact inputs,
-these become impossible by construction, not prevented by care.
+The graph makes each decision a node with **declared inputs**, so these become structural properties. Where structure
+alone is not enough, this note says so and names the remaining check.
 
 ## Model
 
 ```yaml
-Artifact:                          # immutable, content-addressed
-  key: sha256:…                    # = H(node kind, node definition version, params digest, ordered input identities)
-  kind: plan | patch | tree | accept_record | gate_result | review | evidence | closure | merge_result | deploy_result | record | approval_answer | …
-  value: [Ref]                     # receipts, blobs, records (06, 10)
-  conclusions_digest: sha256:…     # semantic summary of the value (06 rule 2a); downstream keys use this
-  outcome, reason                  # four outcomes (02)
-
-Node:
+Node:                              # one instance in a task's graph
   id: nod_…
-  kind: build | accept | gate | integration | evidence | review | closure | merge | deploy | record | phase_gate | plan
-  definition_version: string       # the Go implementation's version; changing it changes every key it produces
-  inputs: [InputSpec]              # declared, typed; nothing else can influence the node
-  params: {…}                      # e.g. the task contract revision, the role requirements
-  requires: {role, capability, resources}   # what the scheduler must lease (05) to run it
-  effect: none | effect_kind       # merge, deploy and notifications are effectful (03)
+  kind: plan | build | accept | gate | runtime_verify | integration | evidence | review | carry_over | closure | merge | deploy | record | phase_gate
+  definition_version: string
+  inputs: [InputSpec]              # declared, typed
+  params: {…}
+  requires: {role, capability, resources}   # leased via 05
+  effect: none | effect_kind       # merge, deploy, notification (03)
+  round: int                       # successor index, see "Successor rounds"
+
+ComputationKey:                    # what to compute  [G1]
+  key: sha256:…                    # = H(kind, definition_version, params digest, ordered input result ids, generation)
+  generation: int                  # bumped only by an explicit, recorded invalidation
+
+Result:                            # what was computed: immutable  [G1]
+  id: res_…                        # identity of THIS output (content digest + attempt), never the computation key
+  computation: sha256:…            # the ComputationKey it answers
+  kind: plan | patch | partial_patch | tree | package | gate_result | review | evidence | carry_over_attestation | merge_result | …
+  value: [Ref]
+  conclusions: {typed projection}  # for reuse decisions only (see below)
+  outcome, reason
+  completed: bool                  # did execution observably complete? (see "Facts, not claims")
 ```
 
-- **Inputs are the only influence.** A node implementation receives exactly its resolved inputs. It cannot read state
-  outside them: the event store, files or "the latest X". Lint and a sandboxed node runner enforce this for model nodes;
-  for controller nodes, the input set is the function signature.
-- **Identity of an input** is the input artifact's **key**, except where the consuming node declares that it depends on
-  conclusions only. Review nodes key on the `conclusions_digest` of evidence inputs, so the same conclusions mean the
-  same key and no re-review, while a changed step outcome or restriction changes the key (nöbetçi Δ§3 by construction).
-- **A model node is not pure, but it is memoized.** If an artifact for its key exists, it is reused and the node does
-  not re-run. This is exactly "proof keyed by content" (nöbetçi PLANNING_CANON §4c). Re-running with identical inputs
-  happens only by explicit invalidation:
-  - an operator action;
-  - a node definition or instrument version change, which changes the keys.
+- **Computation keys and result identities are different things** [G1].
+  - A computation key names *what* would be computed. A result is *one* immutable output.
+  - Downstream inputs and manifests reference **result ids**, so every manifest stays exact.
+  - Each key has one **selected result** at a time. An explicit invalidation (an operator action, or a definition or
+    instrument version change) bumps the generation, so the key changes, a new result is produced, and dependants
+    re-key. No artifact is ever overwritten.
+- **Reuse decisions use typed conclusions.** For the declared edges below, a consumer may treat a new result as
+  equivalent to one it already used if their `conclusions` projections are equal **and** the subject, demand,
+  instrument digest and restrictions are identical. Equivalence decides only whether to re-run. Manifests still list
+  the exact result ids.
+
+## What is cached, and what is retried [G2]
+
+- **Only completed results are reusable.** A result is reusable if `completed: true` and its outcome is `found`,
+  `empty`, or a conclusive `failed` (e.g. a gate that ran and failed).
+- **`could_not_run` is an attempt record, not a cached result.** The node retries automatically when its signal fires
+  (a precondition probe passes, a balance probe passes, a reset arrives). Retries are bounded by the rails and attempt
+  caps (05, 12). Retrying never resets demand counters or charges.
+- **Freshness.** A result with `valid_until` (e.g. an evidence receipt) is reusable only while fresh. Expiry makes it a
+  missing input, and a renewal run is a new attempt under the same counters.
 
 ## Evaluation: demand-driven
 
 The controller evaluates **goals** (e.g. "merge the candidate of task T", "close phase P"):
-1. Resolve the goal node's inputs recursively.
-2. Reuse an input whose artifact exists and is applicable (06).
-3. Schedule the **producer** of a missing input first.
-4. Run a node when all its inputs are present, by leasing (05) what it `requires`.
+1. Resolve each node's inputs to selected, reusable, applicable results (06).
+2. Schedule producers of missing inputs first.
+3. Run a node when all its inputs are present, by leasing what it requires (05).
 
-- **Waiting is structural.** A node with a missing input is `waiting(input)`. Its resume signal is that input's
-  artifact. External waits (an approval, a quota reset, a human act) are inputs too: an `approval_answer` artifact, a
-  `capacity` signal. So **every hold has a signal by construction**, and the hold registry (02) names the external
-  ones.
-- **No inapplicable input can reach a node.** Applicability (06) is checked when an input resolves. An inapplicable
-  artifact is a missing input. This replaces the `inputs_applicable` placement check (nöbetçi Δ§13 by construction).
+- **Atomic producer claiming** [G10]. Claiming a runnable node instance is a writer-transaction step (03), so two goals
+  needing the same node never run it twice. Duplicate demands join the existing claim.
+- **Waiting is structural for internal inputs.** A node with a missing input is `waiting(input)`, and its signal is
+  that input's result. External waits (approval, quota, human act, probe) use the hold registry (02).
+- **Inputs are resolved, and mutable eligibility is re-checked at commit** [G4]. A node's inputs are fixed when it is
+  claimed. But approvals and grants can be revoked, receipts can expire and policy can tighten in the meantime. So
+  authority (04) and applicability (06) are **re-validated in the writer transaction that commits the node's
+  result**, and for effectful nodes before the effect starts. This is the explicit exception to "inputs only".
 
-## Rounds without cycles
+## Successor rounds [G10]
 
-Repair loops are **unrolled**. Round *n* is a new build node whose inputs include round *n−1*'s review findings and
-candidate tree. The graph stays acyclic. Round counts are rails (plan §6); the "same blocking findings three times"
-rule compares artifacts across rounds.
+The graph is append-only. Nothing modifies an existing node's inputs. New information creates **successor nodes**:
+- **Repair:** round *n* is a new build node whose inputs include round *n−1*'s review findings and candidate tree.
+- **Answers and new demands:** when a review records an owed input or an evidence demand, the answer or the demanded
+  evidence is an input of the **successor review** (round *n+1*), never of the review that asked. No cycles.
 
-## What reaches a model: only the manifest
+Rails (round caps, "same blocking findings three times") are cumulative across rounds.
 
-For every model node, the controller renders its prompt **only** from its resolved inputs, and writes the
-`ContextManifest` (10) listing exactly those refs. Consequences:
-- **A review sees what its inputs are, nothing else.** An operator ruling that answers a reviewer's owed input is an
-  `approval_answer` artifact. It is an input of the next review node because the review declared that owed input. A
-  ruling for an input the review did not declare cannot reach it (nöbetçi Δ§1 by construction; no separate collector).
-- **A new demand re-keys the review** because the demanded evidence is a declared input whose conclusions changed.
+## Facts, not claims [G3]
 
-## Facts, not claims
+Results are computed by the controller from observed facts:
+- **Build:** two observed facts, combined.
+  - *Changes:* the controller's diff of the sandbox output tree against the base.
+  - *Completion:* whether the executor reached a terminal result the controller accepted (05 attempt states).
 
-Node outcomes are computed by the controller from **observed facts**, never from what an executor reports:
-- **Build:** the controller computes the diff between the sandbox's output tree and the base. An empty diff is `empty`;
-  a non-empty diff is a `patch` artifact (sealed as a checkpoint if the attempt ended early). The adapter's exit
-  status only explains *why* a run ended (02 exit map, now a fallback for the reason field). A 402 mid-run with edits is
-  a sealed patch plus `broker_credit_exhausted`, never "no changes" (nöbetçi Δ§14 by construction).
-- **Gate:** the verdict comes from result files the controller collects and compares to the baseline (06), never from
-  printed counts.
-- **Evidence:** from predicates the controller evaluates against the instrument's payload schema (06).
-- **Usage:** from the gateway's counts where it sees the traffic; adapter reports where it cannot, marked as such (05).
+  | Completed | Diff | Result |
+  |---|---|---|
+  | yes | non-empty | `patch`, outcome `found` |
+  | yes | empty | `empty` |
+  | no | non-empty | `partial_patch` checkpoint (05 AttemptRecord), outcome `could_not_run`, reason from the exit map (e.g. `broker_credit_exhausted`) |
+  | no | empty | `could_not_run`, reason from the exit map. **Never `empty`** |
 
-## Evidence targets are leased resources
+  The adapter's exit status only fills the reason (02).
+- **Gate:** the verdict comes from result files the controller collects and compares to the baseline (06).
+- **Evidence:** from predicates evaluated against the instrument's payload schema (06, 12).
+- **Usage:** gateway counts where possible; adapter reports otherwise, marked (05).
 
-An evidence node's external target (an environment, a host, a deployment slot) is a **resource group of kind
-`evidence_target` with capacity 1** (05). Its release rule is `on_restore_verified`:
-- while a run holds or has not released the target, no other evidence node, for any job, demand or instrument, can
-  lease it;
-- the run's output artifact is **published at lease settlement**, which requires verified restore/cleanup. A crash
-  between collection and cleanup leaves the lease unsettled and nothing published;
-- late results are refused by the attempt's fencing token (05).
+## What reaches a model [G7]
 
-This is the existing lease/attempt/fencing machinery. Note 12 now only adds the evidence-specific parts (preconditions,
-attempt keys by demand, content classes, remote processes).
+- **Guarantee:** the **controller-supplied context** of a model node (its prompt, and every tool result the controller
+  mediates) is rendered **only** from the node's resolved inputs, and the ContextManifest (10) lists exactly those
+  results.
+- **Not guaranteed by structure:** harness-internal instructions, harness tools and compaction. Their coverage stays
+  `partial` or `unknown` per adapter (09, 10). Host-side roles reduce them by confinement (plan §2.4).
+- **Controller nodes:** purity (no reads outside declared inputs) is enforced by tests and review of node
+  implementations, not by a function signature.
 
-## Test what you ship
+Consequences that hold:
+- a ruling that answers an owed input reaches only the successor review that declared it;
+- a ruling for an undeclared input cannot be in a review's controller-supplied context.
 
-The gate node's input tree is the **ship tree**: what the project's package recipe produces for deployment (07
-`package`). By default that is the candidate exported without VCS metadata, plus the declared build steps. Tests that
-need VCS metadata, network or other environment features must declare them as facts. The gate then runs with the same
-facts as the target environment, so target-only failures surface in the gate (nöbetçi Δ§7 class). The gate-output
-ownership rules (07) remain for classifying genuine faults, with far fewer cases reaching them.
+## Effects are operations, not cached state [G4]
 
-## Typed acceptance producers
+- Effectful nodes (merge, deploy, notifications) run under 03's **durable effect identities**:
+  - intent before egress;
+  - reconciliation on restart;
+  - a crash before result publication **resumes the existing effect**, never allocates another.
+- **A cached effect result is history, not current state.** A new goal ("deploy A") always creates a new operation,
+  which reconciles against the target's current state. Deploying A, then B, then requesting A again deploys A again.
+  It does not hit the old result.
 
-Each acceptance row in the plan schema declares its **evidence producer**: `builder_test` | `evidence:<instrument>` |
-`human_act:<actor>`. The planning head's validator checks that a builder task's rows are producible by the builder or
-name the producing evidence node; the graph wires those evidence nodes in as inputs of the phase gate (nöbetçi Δ§9 by
-construction).
+## Evidence targets and restore [G5]
 
-## Engine scope (kept small)
+Evidence targets are `evidence_target` resource groups, capacity 1 (05). Restore is encoded in the lease contract (05
+"Evidence-target leases"):
+- settlement requires a persisted `lease.restore_verified`;
+- `restore_failed` keeps the target excluded across restarts, with an owner and a page;
+- the **controller** publishes the run's accepted draft result at settlement;
+- late executor submissions are refused by fencing.
 
-- Node kinds are Go code, not a user-defined workflow language. The per-task graph is instantiated from a fixed cycle
-  template plus the approved plan.
-- Storage: nodes, artifacts and node state are events and projections in the event store (03).
-- Scheduling: the capacity scheduler (05) leases resources for runnable nodes. Independent nodes run in parallel,
-  bounded by leases and owned-path overlap.
-- No speculative execution or remote caching in v1.
+Replacement nodes on the same target wait for the lease.
+
+## Merge-queue generations [G6]
+
+The merge queue is serialized per project and base branch. Each attempt to merge a candidate is a **queue generation**:
+
+| Node in the generation | Inputs | Result |
+|---|---|---|
+| `rebase` | candidate result, pinned base head | prospective tree (+ conflict flag) |
+| `carry_over` | the reviewed candidate's review/closure results, the prospective tree | a **carry-over attestation** if the rebased change has the same patch identity and no conflict resolution (06 applicability is satisfied by the attestation, which binds the old review to the new tree); otherwise a demand for a **delta review** |
+| `gate`, `runtime_verify`, required evidence | the prospective tree / package | refreshed receipts for the prospective tree |
+| `merge` (effect) | all of the above + the expected base head | merge result, by expected-base compare-and-swap |
+
+If the base moves before the merge commits, the CAS fails, and a **new generation** starts from the new base. The old
+generation's results remain as history.
+
+## Source tests, package, runtime verification [G8]
+
+One tree cannot serve every purpose, so three are distinguished (07):
+- **Source-test workspace:** the candidate with its development dependencies, where the project's test suite runs (the
+  gate). Build-time facts apply. VCS metadata is present only if the profile declares tests need it.
+- **Package artifact:** what the project's package recipe produces. **Its bytes are hashed, and exactly those bytes are
+  deployed.**
+- **Runtime verification:** declared runtime-facing checks run against the package artifact, in an environment with
+  the target's **runtime facts** (no VCS metadata, network policy, interpreter version). This is where target-only
+  failures (the nöbetçi `.git` class) surface before merge.
+
+Declarations narrow the gap between environments; they do not guarantee parity. The ownership rules (07) still
+classify genuine faults.
+
+## Acceptance producers [G9]
+
+- Each acceptance row binds to a **concrete producer instance**:
+  - a builder test (by test id pattern);
+  - an evidence node specification (instrument, subject, demand, grant);
+  - a human act (actor + the completion artifact, an approval answering an owed input).
+- The validator proves the wiring:
+  - the producer exists;
+  - it is reachable by the graph;
+  - the role or instrument has the capability;
+  - the human act names an actor with authority.
+
+  It does **not** prove that a row's text is semantically satisfiable. A live action mislabelled as a builder test
+  passes the type check. Semantic acceptance review stays with the planner contract checks and the reviewer.
+
+## v1 scope [G10]
+
+- A **fixed cycle template** instantiated per task from the approved plan. Node kinds are Go code. No workflow
+  language.
+- Memoization **only** for gate, runtime_verify, evidence, review and carry_over results. Build, plan and effect nodes
+  are not reused across goals.
+- Conclusions-only equivalence **only** on review←evidence and review←gate edges.
+- The existing scheduler, lease, attempt and effect machines. No speculative execution, no remote cache.
 
 ## What M0 delivers
 
-Schemas for Node, Artifact, InputSpec and node state; key computation (including conclusions-only inputs); the
-resolver and evaluator with a fake node set; the waiting → signal mapping; unrolled rounds; ship-tree and
-acceptance-producer schema fields (07, plan).
+Schemas for Node, ComputationKey, Result, InputSpec and node state; key and generation computation; the resolver and
+evaluator with atomic claiming and fake nodes; successor-round instantiation; the build outcome table; queue
+generations as a template.
 
-Contract fixtures that prove each nöbetçi class **cannot occur**:
-- an undeclared ruling never reaches a review;
-- a declared answer re-keys the review;
-- identical conclusions reuse the review;
-- a changed step outcome re-runs it;
+Fixtures, each tied to the class it addresses:
+- an undeclared ruling never enters a review's controller context;
+- an answer reaches only the successor review;
+- equal conclusions reuse a review; a changed step outcome re-runs it;
 - a review cannot start with another tree's gate result;
-- a 402 mid-build with edits yields a sealed patch;
-- two evidence nodes cannot hold one target;
-- nothing is published before restore;
-- a builder-unproducible row is rejected at plan validation;
-- a gate on the ship tree sees no `.git`.
+- a 402 **before** the first edit is `could_not_run`, never `empty`;
+- a 402 **after** edits is a sealed `partial_patch`;
+- a `could_not_run` evidence result retries on its probe without operator invalidation;
+- an expired receipt triggers renewal without resetting counters;
+- deploy A, B, A deploys A again;
+- a crash after effect intent resumes, never re-allocates;
+- a revoked approval between claim and commit blocks the commit;
+- restore failure keeps the target excluded across restart;
+- a base move mid-generation starts a new generation;
+- carry-over applies only with an equal patch identity;
+- duplicate demands share one claimed node;
+- a gate on the source-test workspace and runtime verification on the package artifact see their declared facts.

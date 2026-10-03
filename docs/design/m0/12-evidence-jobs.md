@@ -17,9 +17,9 @@ An evidence node produces receipts by acting on something outside the sandbox:
 | Concern | Covered by |
 |---|---|
 | Exclusive use of a target; nothing runs on an unrestored target | `evidence_target` resource group, capacity 1, release rule `on_restore_verified` (05, 13) |
-| Collected ≠ published; a crash before cleanup publishes nothing | the output artifact is published at lease settlement, which requires verified restore (13) |
+| Collected ≠ published; a crash before cleanup publishes nothing | the controller publishes the accepted draft at lease settlement, which requires a persisted `restore_verified` (05 "Evidence-target leases") |
 | Late results from a superseded run | attempt fencing (05) |
-| Re-running only when needed; a new demand re-keys the review | artifact keys and conclusions-only inputs (13) |
+| Re-running only when needed; a new demand re-keys the review | computation keys, typed conclusions and successor reviews (13); `could_not_run` retries on its signal, never cached (13) |
 | Applicability, including the demand | `internal/receipt` (06 rule 2) on input resolution (13) |
 | External effects and crash recovery | effects (03), including `remote_process` |
 

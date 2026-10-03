@@ -44,8 +44,8 @@ Rules:
 - `routing_violation`, `quota_unknown`, `stale_attempt`, `protected_path`, `test_integrity_violation`,
   `evidence_inapplicable`, `broker_credit_exhausted`, `precondition_failed`, and similar are reason codes, not
   outcomes (Astra A15).
-- **Outcomes come from observed facts** [D40]. A build's outcome is the controller's diff of the sandbox output
-  against the base (13 "Facts, not claims"). Adapter and harness exits only fill the **reason** field, through one
+- **Outcomes come from observed facts** [D40, G3]. A build's outcome combines observed **completion** with the
+  observed **diff** (13 "Facts, not claims"). No changes plus incomplete execution is `could_not_run`, never `empty`. Adapter and harness exits only fill the **reason** field, through one
   table (`internal/vocab/exitmap`). A 402 mid-run with edits is a sealed patch with reason `broker_credit_exhausted`,
   never "no changes" (nöbetçi Δ§14).
 - `adc dev vocab check` scans the Go and TS code for reason literals and fails on unregistered ones.

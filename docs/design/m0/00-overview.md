@@ -27,7 +27,7 @@ Inputs: `docs/plan/01-first-release-plan.md` (rev 3), `00-brainstorm-decisions.m
 | 10 | `10-context-manifest-and-knowledge-spec.md` | ContextManifest, refs and fingerprints, the shared knowledge spec draft (schemas, invariants, fixture definitions only) |
 | 11 | `11-testing.md` | Test guard, contract-faithful fakes, T0 fixtures, mutation ("red-proof") rule |
 | 12 | `12-evidence-jobs.md` | Evidence nodes: what is specific to evidence (attempts by demand, preconditions, content classes, remote processes) |
-| 13 | `13-artifact-graph.md` | **The cycle as an artifact graph** (D40): nodes over content-addressed artifacts, demand-driven evaluation, structural waiting, facts not claims, evidence targets as leases, ship tree, typed acceptance producers |
+| 13 | `13-artifact-graph.md` | **The cycle as an artifact graph** (D40): nodes over content-addressed artifacts, demand-driven evaluation, structural waiting, retry vs cache, successor rounds, facts not claims, effects as operations, restore-gated evidence leases, merge-queue generations, source tests / package / runtime verification, acceptance producer instances |
 
 ## Cross-cutting rules (apply to every note)
 

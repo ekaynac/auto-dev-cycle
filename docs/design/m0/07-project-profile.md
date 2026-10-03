@@ -29,9 +29,15 @@ forge:
     protected_branches: bool
     required_checks: bool
   settings: {…}                     # per forge kind (schema per kind)
-package:                            # the ship tree the gate runs on (13 "Test what you ship") [D40]
-  recipe: [argv]|null               # build steps producing the deployable tree; default: export without VCS metadata
-  includes_vcs_metadata: false      # tests needing VCS metadata, network etc. must declare it here as a fact
+source_tests:                       # the gate's workspace (13 "Source tests, package, runtime verification") [G8]
+  dev_dependencies: true            # test tools and dev deps installed (npm devDependencies, composer require-dev, …)
+  vcs_metadata: false               # true only if the test suite needs it (declared build-time fact)
+package:                            # the deployable artifact; its bytes are hashed and exactly those bytes are deployed
+  recipe: [argv]                    # e.g. `npm ci --omit=dev && npm run build`, `go build -o …`, `composer install --no-dev`
+  outputs: [path]
+runtime_verification:               # runtime-facing checks against the package artifact, with the target's runtime facts
+  command: [argv]|null              # e.g. smoke tests, health checks, migration dry run
+  facts_from: <environment name>    # gate.environments entry whose runtime facts apply
 toolchain:
   images: {name: image_ref@digest}  # pinned by digest
   dependency_recipe:                # phase 1 of the sandbox (plan §2.10)

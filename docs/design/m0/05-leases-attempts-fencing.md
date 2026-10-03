@@ -66,6 +66,24 @@ Complete state machine. Every transition is an event, and terminal states are im
 | settling | `lease.settled{usage_summary, liabilities}` | settled ✱ |
 | releasing | `lease.released` | released ✱ |
 
+### Evidence-target leases [G5]
+
+For a lease that holds an `evidence_target` group, settlement carries a **restore obligation**:
+
+| From | Event | To |
+|---|---|---|
+| settling | `lease.restore_started` | restoring |
+| restoring | `lease.restore_verified{receipt}` | settling_verified |
+| restoring | `lease.restore_failed{reason}` | restore_failed (target stays excluded; hold `evidence_restore_pending`, owner per profile, paged after `page_after`) |
+| restore_failed | `lease.restore_verified{receipt}` (retry or operator act) | settling_verified |
+| settling_verified | `lease.settled{…, published: res_…}` | settled ✱ |
+
+- **Publication guard:** the run's accepted draft result is published by the **controller** in the same transaction
+  as `lease.settled`, and only from `settling_verified`. Executor submissions after publication closed are refused
+  by fencing. Publishing an already-accepted draft is a controller act, not a late submission.
+- **Restart:** a lease found in `active`, `settling`, `restoring` or `restore_failed` stays in that state, and the
+  target stays excluded. The recovery owner is `internal/evidence`, which resumes restore as an effect (03).
+
 - **Reservations return** per their group's `release_rule` at `settled`/`released`. A provider charge still uncertain at
   settlement becomes an **uncertain liability** on the group's ledger. Liabilities reduce available budget until
   reconciled, so a lease can settle without waiting forever on billing [M7].
