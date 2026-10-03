@@ -71,12 +71,13 @@ dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 	done
 	@find $(DIST_DIR) -type f | sort
 
-lint: go-check ## gofmt, go vet, go mod tidy check, shell syntax (+ shellcheck where installed)
+lint: go-check ## gofmt, go vet, go mod tidy check, SPDX headers, shell syntax (+ shellcheck where installed)
 	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal)"; \
 	  if [[ -n "$$unformatted" ]]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	@$(GO) vet ./...
 	@$(GO) mod tidy -diff
 	@for f in scripts/*.sh; do bash -n "$$f"; done
+	@scripts/check-spdx.sh
 	@if command -v shellcheck >/dev/null; then shellcheck scripts/*.sh; \
 	  elif [[ -n "$${CI:-}" ]]; then echo "shellcheck is required in CI" >&2; exit 1; \
 	  else echo "lint: shellcheck not installed; skipped locally (required in CI)"; fi
