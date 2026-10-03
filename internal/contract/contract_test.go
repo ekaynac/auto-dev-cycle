@@ -56,7 +56,7 @@ func testRegistry(t *testing.T) registry {
 	return r
 }
 
-// typeID encodes 16 bytes as a TypeID, independently of checkTypeID.
+// typeID encodes 16 bytes as a TypeID, independently of CheckTypeID.
 func typeID(prefix string, b [16]byte) string {
 	n := new(big.Int).SetBytes(b[:])
 	out := make([]byte, 26)

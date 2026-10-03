@@ -80,7 +80,7 @@ func compile(fsys fs.FS) (registry, error) {
 	c := jsonschema.NewCompiler()
 	c.AssertFormat()
 	c.RegisterFormat(&jsonschema.Format{Name: "adc-time", Validate: onString(checkTime)})
-	c.RegisterFormat(&jsonschema.Format{Name: "adc-typeid", Validate: onString(checkTypeID)})
+	c.RegisterFormat(&jsonschema.Format{Name: "adc-typeid", Validate: onString(CheckTypeID)})
 	for _, p := range paths {
 		b, err := fs.ReadFile(fsys, p)
 		if err != nil {
@@ -128,9 +128,10 @@ func checkTime(s string) error {
 // base32 is the TypeID alphabet (Crockford, lowercase).
 const base32 = "0123456789abcdefghjkmnpqrstvwxyz"
 
-// checkTypeID decodes the 26-char suffix to 128 bits and requires a UUIDv7:
+// CheckTypeID is the adc-typeid format: it decodes the 26-char suffix after
+// the last underscore to 128 bits and requires a UUIDv7:
 // version nibble 7 and the RFC 9562 variant (binary 10).
-func checkTypeID(s string) error {
+func CheckTypeID(s string) error {
 	i := strings.LastIndexByte(s, '_')
 	suffix := s[i+1:]
 	if i < 0 || len(suffix) != 26 || suffix[0] > '7' {

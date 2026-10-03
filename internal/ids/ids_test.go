@@ -3,9 +3,11 @@
 package ids
 
 import (
+	"io/fs"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -73,8 +75,9 @@ func TestCheckRefuses(t *testing.T) {
 		"unregistered prefix":  {apr, "xyz", "unregistered"},
 		"not a TypeID":         {"apr_notatypeid", "apr", "not a TypeID"},
 		"uppercase":            {strings.ToUpper(apr), "apr", "not a TypeID"},
-		"UUIDv4":               {v4.String(), "apr", "not a UUIDv7"},
-		"non-RFC 9562 variant": {ncs.String(), "apr", "not a UUIDv7"},
+		"uppercase suffix":     {"apr_" + strings.ToUpper(strings.TrimPrefix(apr, "apr_")), "apr", "not a TypeID"},
+		"UUIDv4":               {v4.String(), "apr", "want UUIDv7"},
+		"non-RFC 9562 variant": {ncs.String(), "apr", "variant"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := Check(c.id, c.prefix)
@@ -85,9 +88,19 @@ func TestCheckRefuses(t *testing.T) {
 	}
 }
 
+// prj opens a defs file with one valid entity id; cases append to it.
+const prj = `{"$defs":{"P":{"$ref":"#/$defs/TypeID","pattern":"^prj_"}`
+
 func TestParseRefusesABrokenRegistry(t *testing.T) {
 	for name, c := range map[string]struct{ defs, want string }{
-		"pattern not a prefix": {`{"$defs":{"A":{"$ref":"#/$defs/TypeID","pattern":"^ab"}}}`, "want a ^<prefix>_ pattern"},
+		"pattern not a prefix": {`{"$defs":{"A":{"$ref":"#/$defs/TypeID","pattern":"^ab"}}}`, `must be {"$ref"`},
+		"mistyped ref":         {prj + `,"X":{"$ref":"#/$defs/TypeId","pattern":"^xyz_"}}}`, `must be {"$ref"`},
+		"file-qualified ref":   {prj + `,"X":{"$ref":"defs.json#/$defs/TypeID","pattern":"^xyz_"}}}`, `must be {"$ref"`},
+		"ref inside allOf":     {prj + `,"X":{"allOf":[{"$ref":"#/$defs/TypeID"}],"pattern":"^xyz_"}}}`, "must be exactly"},
+		"string with a prefix": {prj + `,"X":{"type":"string","pattern":"^xyz_"}}}`, "must be exactly"},
+		"prefix too long":      {prj + `,"X":{"$ref":"#/$defs/TypeID","pattern":"^abcd_"}}}`, `must be {"$ref"`},
+		"extra keyword":        {prj + `,"X":{"$ref":"#/$defs/TypeID","pattern":"^xyz_","minLength":3}}}`, "must be exactly"},
+		"duplicate key":        {`{"$defs":{"P":{"$ref":"#/$defs/TypeID","pattern":"^xyz_"},"P":{"$ref":"#/$defs/TypeID","pattern":"^prj_"}}}`, "duplicate object key"},
 		"duplicate prefix":     {`{"$defs":{"A":{"$ref":"#/$defs/TypeID","pattern":"^ab_"},"B":{"$ref":"#/$defs/TypeID","pattern":"^ab_"}}}`, "defined by both"},
 		"no entity ids":        {`{"$defs":{"TypeID":{"type":"string"}}}`, "defines no entity ids"},
 		"not JSON":             {`{`, "common/defs.json"},
@@ -98,5 +111,23 @@ func TestParseRefusesABrokenRegistry(t *testing.T) {
 				t.Fatalf("parse = %v, want an error containing %q", err, c.want)
 			}
 		})
+	}
+}
+
+// A registry that does not load makes New, Check and Prefixes fail; nothing
+// is minted or accepted without it.
+func TestLoadErrorIsReported(t *testing.T) {
+	origFS := defsFS
+	t.Cleanup(func() { defsFS, loadOnce = origFS, new(sync.Once) })
+	defsFS = func() fs.FS { return fstest.MapFS{"common/defs.json": {Data: []byte(`{"$defs":{}}`)}} }
+	loadOnce = new(sync.Once)
+	if _, err := New("prj"); err == nil {
+		t.Error("New minted without a registry")
+	}
+	if err := Check("prj_01m3250vkwffc979nzjw0g2sf9", "prj"); err == nil {
+		t.Error("Check accepted without a registry")
+	}
+	if _, err := Prefixes(); err == nil {
+		t.Error("Prefixes listed without a registry")
 	}
 }
