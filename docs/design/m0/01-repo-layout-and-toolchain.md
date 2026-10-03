@@ -63,7 +63,7 @@ The Go toolchain is installed per user from the official tarball (`~/.local/go`)
 
 - `schemas/**/*.json|yaml` → Go types and validators (`gen/go`) and TypeScript types and validators (`gen/ts`).
   Chosen by the spike on receipt, approval, grant and adapter event (`docs/research/2026-10-03-codegen-spike/`):
-  64 shared cases on both validators, adequacy checked by global keyword deletions, TS type assertions.
+  72 shared cases on both validators, adequacy checked by global keyword deletions, TS type assertions.
   - **Go validation:** `santhosh-tekuri/jsonschema/v6` over the **embedded** schema files.
   - **Go types:** a small in-repo generator for exactly the grammar in the spike report: strings and string enums,
     integers **bounded within ±(2^53−1)**, booleans, closed objects, nullable `oneOf [null, X]` (**always

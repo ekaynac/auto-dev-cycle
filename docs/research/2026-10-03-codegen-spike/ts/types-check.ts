@@ -56,8 +56,8 @@ export const overrides: Grant["confirmation_overrides"] = { "plan.approve": "hum
 // @ts-expect-error overrides may only name independent_review or human
 export const weaker: Grant["confirmation_overrides"] = { "plan.approve": "none" };
 
-// Accepted limitations (they compile; Ajv rejects the documents, and the Go
-// generator's types exclude them). Recorded here so a change in either
+// Accepted limitations (they compile; Ajv rejects the documents, as the Go
+// Decode/Encode validation does). Recorded here so a change in either
 // direction is visible:
 // 1. Approval.scope is an open map: json-schema-to-typescript ignores if/then.
 export const anyScope: Approval["scope"] = { anything: 1 };

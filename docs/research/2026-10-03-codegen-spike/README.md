@@ -35,23 +35,23 @@ until the vocabulary PR settles it.
 
 ## Results
 
-`cases.json`: 64 instances (24 valid, 40 invalid). They cover:
+`cases.json`: 72 instances (27 valid, 45 invalid). They cover:
 - every union variant;
-- **both branches of every nullable field** (null and a valid value), plus an invalid value for each;
+- **both branches of every nullable field** (null and a valid value), plus an invalid value for each (receipt: `demand`, `head`, `valid_until`, `verdict`, `provenance.attempt`, `supersedes`; approval: `project`, `grant`, `confirmation.challenge`, `question`, `answer_verbatim`);
 - the keyed union's neither and both forms;
-- numeric bounds, including every integer at and above 2^53−1;
+- numeric bounds: the 2^53−1 boundary (at and above) for every adapter-event integer (`fencing_token`, each variant's `turn`) and for `expected_state.version`; other approval integers are checked above their maximum only through the global `maximum` deletion;
 - duplicate items, scope dispatch, typed-map keys and values, and the array-or-literal forms.
 
 **Adequacy is measured, not claimed, for global keyword deletions.** The Go harness recompiles the schemas with one
 keyword removed everywhere, for each of 13 keywords (`additionalProperties`, `unevaluatedProperties`, `required`,
 `const`, `enum`, `pattern`, `minimum`, `maximum`, `uniqueItems`, `minItems`, `propertyNames`, `allOf`, `oneOf`). Each
 deletion flips at least one case. That detects the listed global deletions; per-occurrence coverage rests on the
-case list above. "64/64" is about validation of these instances; it says nothing about keywords the schemas don't use.
+case list above. "72/72" is about validation of these instances; it says nothing about keywords the schemas don't use.
 
 | Tool (version) | Side | Result |
 |---|---|---|
-| `santhosh-tekuri/jsonschema/v6` v6.0.3 | Go validation | **64/64**, and all 13 global deletions detected |
-| Ajv 8.20.0, 2020 dialect, standalone | TS validation | **64/64**. Strict compilation needs the `x-adc-open-payload` annotation registered |
+| `santhosh-tekuri/jsonschema/v6` v6.0.3 | Go validation | **72/72**, and all 13 global deletions detected |
+| Ajv 8.20.0, 2020 dialect, standalone | TS validation | **72/72**. Strict compilation needs the `x-adc-open-payload` annotation registered |
 | `json-schema-to-typescript` 16.0.0 + TypeScript 7.0.2 | TS types | **Faithful** under `types-check.ts`, 8 negative assertions plus narrowing (below) |
 | `atombender/go-jsonschema` v0.24.1 | Go types | **Fails:** `type Subject interface{}`, `type Demand interface{}`, `Verdict interface{}`, `Head interface{}`, and the `const` discriminators `Type interface{}` |
 | quicktype 26.0.0 | Go types | **Fails:** the event union becomes one struct with every variant field optional, and the `allOf` envelope (`attempt`, `fencing_token`, `call`) is missing entirely |
@@ -73,7 +73,7 @@ direction shows:
 3. Generated event types carry an open index signature, so another variant's field compiles.
 
 TypeScript in this project only produces and consumes documents through the Ajv validators, so these gaps never reach
-the wire. The Go types exclude all three: typed accessors, one pointer per key, and closed structs.
+the wire. The same states are not excluded at compile time in Go either (both keyed pointers can be set; a scope `json.RawMessage` can hold anything): Go's guarantee is that `Decode` and `Encode` validate, so none of them is ever accepted or emitted. The difference from TypeScript is only that Go types are closed structs (no index signature) and offer typed scope accessors.
 
 **Ajv side finding:** strict mode caught a real defect in the first event schema draft: object
 keywords without `"type": "object"`, and a `required` name defined only in the branches. Strict compilation stays
@@ -131,9 +131,9 @@ The conclusion is limited to the candidates tested. Among them, **no Go type gen
 From a scratch copy of this directory (the commands create `package.json` and `go.mod`):
 
 ```sh
-# TypeScript: types, validators, 64 cases, type assertions
+# TypeScript: types, validators, 72 cases, type assertions
 cd ts && pnpm add json-schema-to-typescript@16.0.0 ajv@8.20.0 typescript@7.0.2 && node spike.mjs && npx tsc -p .
-# Go: 64 cases + 13 global keyword deletions
+# Go: 72 cases + 13 global keyword deletions
 cd ../go && go mod init spike && go get github.com/santhosh-tekuri/jsonschema/v6@v6.0.3 && go run spike.go
 # Rejected Go generators
 go install github.com/atombender/go-jsonschema@v0.24.1
