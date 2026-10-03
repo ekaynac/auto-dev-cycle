@@ -1,3 +1,5 @@
 /bin/
 /dist/
 node_modules/
+.adc-sandbox-canary-*
+.adc-sandbox-write-probe
