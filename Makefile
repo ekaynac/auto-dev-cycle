@@ -25,11 +25,9 @@ export GOEXPERIMENT :=
 
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT     ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
-# Replaced by the schema-set digest once schemas/ exists (M0 generator PR).
-SCHEMA_SET ?= none
 
 BUILDINFO  := github.com/ekaynac/auto-dev-cycle/internal/buildinfo
-LDFLAGS    := -s -w -X $(BUILDINFO).Version=$(VERSION) -X $(BUILDINFO).Commit=$(COMMIT) -X $(BUILDINFO).SchemaSet=$(SCHEMA_SET)
+LDFLAGS    := -s -w -X $(BUILDINFO).Version=$(VERSION) -X $(BUILDINFO).Commit=$(COMMIT)
 GOBUILD    := $(GO) build -trimpath -ldflags '$(LDFLAGS)'
 
 BIN_DIR    := bin
@@ -75,7 +73,7 @@ dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 	@find $(DIST_DIR) -type f | sort
 
 lint: go-check ## gofmt, go vet, go mod tidy check, SPDX headers, shell syntax (+ shellcheck where installed)
-	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal test)"; \
+	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal schemas test)"; \
 	  if [[ -n "$$unformatted" ]]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	@$(GO) vet ./...
 	@$(GO) mod tidy -diff
