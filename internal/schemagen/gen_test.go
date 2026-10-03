@@ -4,6 +4,7 @@ package schemagen
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,6 +89,12 @@ func TestRefusesShapesOutsideTheGrammar(t *testing.T) {
 		{"propertyNames with an unknown keyword", `"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"anyOf":[]}}`, `keyword "anyOf" is not supported on a key names`},
 		{"propertyNames not a string", `"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"type":"integer"}}`, "propertyNames must be a string schema"},
 		{"propertyNames $ref to an integer", `"I":{"type":"integer","minimum":0,"maximum":9},"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"$ref":"#/$defs/I"}}`, "propertyNames must be a string schema"},
+		// Astra #19 round 2: boolean schemas and full literal checks.
+		{"boolean if and then", condHead + `"allOf":[{"if":false,"then":false}]}`, "boolean schemas are not supported"},
+		{"boolean not", condHead + `"allOf":[{"if":{"properties":{"o":{"const":"x"}}},"then":{"properties":{"d":{"not":false}}}}]}`, "boolean schemas are not supported"},
+		{"integer literal branch", `"A":{"oneOf":[{"const":"x","type":"integer"},{"type":"array","items":{"type":"string"}}]}`, "must be a string const"},
+		{"a $ref cycle", `"A1":{"$ref":"#/$defs/A2"},"A2":{"$ref":"#/$defs/A1"}`, "does not resolve"},
+		{"optional field through a $ref cycle", `"A1":{"$ref":"#/$defs/A2"},"A2":{"$ref":"#/$defs/A1"},"S":{"type":"object","additionalProperties":false,"properties":{"p":{"$ref":"#/$defs/A1"}}}`, "does not resolve"},
 		// Astra #19: generated methods are reserved.
 		{"literal naming a generated method", `"A":{"oneOf":[{"const":"marshalJSON"},{"type":"array","items":{"type":"string"}}]}`, "next to List and the generated methods"},
 
@@ -132,6 +139,29 @@ func files(defs map[string]string) map[string][]byte {
 		out[p] = []byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{` + d + `}}`)
 	}
 	return out
+}
+
+// A nullable reached through a long alias chain stays nullable: there is
+// no traversal limit to exhaust (Astra #19 round 2).
+func TestLongAliasChainsStayNullable(t *testing.T) {
+	defs := `"N":{"oneOf":[{"type":"null"},{"type":"string"}]},"A0":{"$ref":"#/$defs/N"}`
+	for i := 1; i <= 40; i++ {
+		defs += fmt.Sprintf(`,"A%d":{"$ref":"#/$defs/A%d"}`, i, i-1)
+	}
+	cases := map[string]struct{ use, want string }{
+		"optional field":  {`"S":{"type":"object","additionalProperties":false,"properties":{"p":{"$ref":"#/$defs/A40"}}}`, "nullable field must be required"},
+		"nested nullable": {`"S":{"oneOf":[{"type":"null"},{"$ref":"#/$defs/A40"}]}`, "nested nullable"},
+		"keyed branch": {`"S":{"oneOf":[{"type":"object","additionalProperties":false,"required":["x"],"properties":{"x":{"$ref":"#/$defs/A40"}}},` +
+			`{"type":"object","additionalProperties":false,"required":["y"],"properties":{"y":{"type":"string"}}}]}`, "may not be nullable"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Generate(one(defs+","+c.use), "types")
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("a nullable behind 41 aliases: want an error containing %q, got %v", c.want, err)
+			}
+		})
+	}
 }
 
 func TestRefusesAcrossFiles(t *testing.T) {
@@ -230,6 +260,11 @@ const supported = `
 		{"type":"object","additionalProperties":false,"required":["v"],"properties":{"v":{"type":"integer","minimum":0,"maximum":9}}},
 		{"type":"object","additionalProperties":false,"required":["d"],"properties":{"d":{"type":"string"}}}]},
 	"ScopeX":{"type":"object","additionalProperties":false,"required":["r"],"properties":{"r":{"type":"integer","minimum":1,"maximum":9}}},
+	"Case":{"oneOf":[
+		{"type":"object","additionalProperties":false,"required":["kind","KIND"],"properties":{"kind":{"const":"a"},"KIND":{"type":"string"}}},
+		{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"b"}}}]},
+	"Tree":{"type":"array","items":{"$ref":"#/$defs/Tree"}},
+	"MTree":{"type":"object","additionalProperties":{"$ref":"#/$defs/MTree"}},
 	"Str":{"type":"string"},
 	"Ref":{"$ref":"#/$defs/Str","pattern":"^a","minLength":1},
 	"Cond":{"type":"object","additionalProperties":false,"required":["o","d","v"],
@@ -307,6 +342,18 @@ func main() {
 
 	same[types.Key](` + "`" + `{"v":0}` + "`" + `)
 	same[types.Key](` + "`" + `{"d":"x"}` + "`" + `)
+
+	// The discriminator is read by its exact key, in either property order.
+	same[types.Case](` + "`" + `{"kind":"a","KIND":"b"}` + "`" + `)
+	var c types.Case
+	if err := json.Unmarshal([]byte(` + "`" + `{"KIND":"b","kind":"a"}` + "`" + `), &c); err != nil {
+		fail("%v", err)
+	}
+	if a, ok := c.Variant.(*types.CaseA); !ok || a.KIND != "b" {
+		fail("case-related keys chose variant %#v", c.Variant)
+	}
+	same[types.Tree](` + "`" + `[[],[[]]]` + "`" + `)
+	same[types.MTree](` + "`" + `{"a":{},"b":{"c":{}}}` + "`" + `)
 
 	var ref types.Ref = "ab"
 	same[types.Cond](` + "`" + `{"o":"y","d":"z","v":"go","r":"` + "`" + ` + string(ref) + ` + "`" + `"}` + "`" + `)

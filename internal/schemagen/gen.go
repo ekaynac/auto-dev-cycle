@@ -18,6 +18,7 @@ import (
 	"go/format"
 	"go/token"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -254,6 +255,10 @@ func keySet(keys ...string) map[string]bool {
 
 // only refuses any keyword of n outside the allow-list of shape.
 func (g *gen) only(n *Node, where, shape string) bool {
+	if n == nil || n.Kind != Object {
+		g.fail(where, "a %s schema must be an object (boolean schemas are not supported)", shape)
+		return false
+	}
 	allowed := shapeKeys[shape]
 	for _, k := range n.Keys {
 		if allowed[k] || annotations[k] || (g.isRoot[n] && rootKeys[k]) {
@@ -265,20 +270,26 @@ func (g *gen) only(n *Node, where, shape string) bool {
 	return true
 }
 
-// deref follows a chain of $ref to the schema it names (nil if dangling or
-// deeper than 16), resolving each hop against the file it appears in.
+// deref follows a chain of $ref of any length to the schema it names (nil if
+// dangling or cyclic), resolving each hop against the file it appears in.
 func (g *gen) deref(n *Node) *Node {
 	n, _ = g.derefFrom(g.base, n)
 	return n
 }
 
 func (g *gen) derefFrom(base string, n *Node) (*Node, string) {
-	for i := 0; n != nil && i < 16; i++ {
+	seen := map[string]bool{}
+	for n != nil {
 		ref := n.Get("$ref")
 		if ref == nil {
 			return n, base
 		}
-		n, base, _ = g.resolveFrom(base, ref.Str)
+		var key string
+		n, base, key = g.resolveFrom(base, ref.Str)
+		if seen[key] {
+			return nil, "" // a $ref cycle names no schema
+		}
+		seen[key] = true
 	}
 	return nil, ""
 }
@@ -293,8 +304,13 @@ func (g *gen) within(base string, f func()) {
 
 // isNullable: n, after following every $ref (aliases and other files
 // included), is a oneOf [null, X].
-func (g *gen) isNullable(n *Node) bool {
-	one := g.deref(n).Get("oneOf")
+func (g *gen) isNullable(n *Node, where string) bool {
+	t := g.deref(n)
+	if t == nil {
+		g.fail(where, "the $ref chain does not resolve (dangling or cyclic)")
+		return true
+	}
+	one := t.Get("oneOf")
 	return one != nil && len(one.Items) == 2 && (isNull(one.Items[0]) || isNull(one.Items[1]))
 }
 
@@ -387,7 +403,12 @@ func (g *gen) declare(name string, n *Node) {
 		t := g.typeOf(n, name+"Value", name)
 		g.emit(name, name)
 		g.doc(n, name)
-		g.p("type %s = %s\n", name, t)
+		if regexp.MustCompile(`\b` + name + `\b`).MatchString(t) {
+			// A recursive collection (A = []A) cannot be an alias.
+			g.p("type %s %s\n", name, t)
+		} else {
+			g.p("type %s = %s\n", name, t)
+		}
 	}
 }
 
@@ -409,6 +430,9 @@ func (g *gen) typeOf(n *Node, name, where string) string {
 			g.only(n, where, "$ref")
 		}
 		_, _, key := g.resolve(ref.Str)
+		if _, ok := g.names[key]; ok && g.deref(n) == nil {
+			return g.fail(where, "$ref %s does not resolve (a $ref cycle)", ref.Str)
+		}
 		if gn, ok := g.names[key]; ok {
 			if g.envelopes[gn] {
 				return g.fail(where, "envelope %s may only be used as an allOf base", gn)
@@ -670,7 +694,7 @@ func (g *gen) structType(n *Node, name, where string) {
 			tag := k
 			switch {
 			case required[k]:
-			case strings.HasPrefix(typ, "*") || g.isNullable(prop):
+			case strings.HasPrefix(typ, "*") || g.isNullable(prop, at):
 				g.fail(at, "a nullable field must be required (null is explicit, absence invalid)")
 			case g.isCollection(prop):
 				// A pointer keeps absence (nil) apart from [] or {} (non-nil).

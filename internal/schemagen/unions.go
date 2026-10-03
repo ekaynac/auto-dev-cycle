@@ -19,7 +19,7 @@ func (g *gen) union(n *Node, items []*Node, name, where string) string {
 			other = items[0]
 		}
 		inner := g.typeOf(other, name+"Value", where+"/oneOf")
-		if strings.HasPrefix(inner, "*") || g.isNullable(other) {
+		if strings.HasPrefix(inner, "*") || g.isNullable(other, where+"/oneOf") {
 			return g.fail(where, "nested nullable")
 		}
 		return "*" + inner
@@ -31,7 +31,11 @@ func (g *gen) union(n *Node, items []*Node, name, where string) string {
 			lit, arr = arr, lit
 		}
 		if c := lit.Get("const"); c != nil && c.Kind == String && arr.Get("type") != nil && arr.Get("type").Str == "array" {
-			g.only(lit, where+"/oneOf", "const")
+			if g.only(lit, where+"/oneOf", "const") {
+				if t := lit.Get("type"); t != nil && t.Str != "string" {
+					return g.fail(where+"/oneOf", "the literal branch must be a string const")
+				}
+			}
 			g.arrayOrLiteral(n, name, c.Str, g.typeOf(arr, name+"List", where+"/oneOf"), where)
 			return name
 		}
@@ -159,16 +163,26 @@ func (u %[1]s) MarshalJSON() ([]byte, error) {
 }
 
 func (u *%[1]s) UnmarshalJSON(b []byte) error {
-	var head struct{ D string `+"`json:%[2]q`"+` }
+	// The discriminator is read by its exact key: encoding/json matches
+	// struct fields case-insensitively.
+	var head map[string]json.RawMessage
 	if err := json.Unmarshal(b, &head); err != nil {
 		return err
 	}
-	switch head.D {`, name, disc)
+	raw, ok := head[%[2]q]
+	if !ok {
+		return fmt.Errorf("%[1]s: no %[2]s")
+	}
+	var d string
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return err
+	}
+	switch d {`, name, disc)
 	for i, b := range branches {
 		g.p("\tcase %q:\n\t\tv := &%s{}\n\t\tif err := decodeStrict(b, v); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tu.Variant = v",
 			b.Get("properties").Get(disc).Get("const").Str, names[i])
 	}
-	g.p("\tdefault:\n\t\treturn fmt.Errorf(\"%s: unknown %s %%q\", head.D)\n\t}\n\treturn nil\n}\n", name, disc)
+	g.p("\tdefault:\n\t\treturn fmt.Errorf(\"%s: unknown %s %%q\", d)\n\t}\n\treturn nil\n}\n", name, disc)
 }
 
 func (g *gen) keyedUnion(n *Node, name string, branches []*Node, bases []string, where string) {
@@ -183,7 +197,7 @@ func (g *gen) keyedUnion(n *Node, name string, branches []*Node, bases []string,
 		var nullable bool
 		g.within(bases[i], func() {
 			typ = g.typeOf(prop, name+goName(k), where+"/"+k)
-			nullable = g.isNullable(prop)
+			nullable = g.isNullable(prop, where+"/"+k)
 		})
 		if strings.HasPrefix(typ, "*") || nullable {
 			g.fail(where+"/"+k, "a keyed-union branch may not be nullable (it would decode as a double pointer)")
