@@ -1,0 +1,31 @@
+{
+ "source": "var/reviews/fix_0930-1949-000000-r4.json (TASK-0002 r4, 2026-10-01)",
+ "round": null,
+ "findings": [
+  {
+   "severity": "P2",
+   "surface": "closure",
+   "claim": "The closure artifact states 'Changed behavior — none in production code', but the candidate reviewed here changes production behavior the ledger and phase audit need to see: module A's declared identity moved to module-a@3, and the module-e / module-b APIs no longer default to `system` (they resolve the bound context's actor or refuse).",
+   "evidence": "module_a/version.py adds `Declaration(\"3\", \"5eed003900000000\", \"2026-10-01\", \"attribution only ...\")`, so every new sanitized representation now records `module-a@3/…` (module_c/records.py:132, module_d.py:639); cli.py:4116-4117 marks artifacts whose recorded module A version differs from the running one as `older`; module_e/store.py put/get/rotate/revoke and module_b/api.py now call `current_actor(actor)`, which raises `ValueError` when neither an actor nor a bound context is given. None of this appears in /home/user/runtime/var/closing-5eed003a-r4.md.",
+   "failure": "After deploy an operator runs `product rebuild-all` and every existing sanitized artifact reads 'produced by module-a@2/… (older)'. The ledger row for TASK-0002 says no production code changed, so the audit can't explain the module A version change. Likewise an operator script calling `store.get(ref, mode=READ)` without an actor now fails with ValueError, and the closing record doesn't mention it.",
+   "fix": "Add the cumulative production changes to the closing record: the module A Declaration 3 bump and what it does to rebuild-all/older reporting, the module-e and module-b actor requirement (refused without an actor or context), and the four spellings removed from LEGACY_NAMES."
+  },
+  {
+   "severity": "P3",
+   "surface": "product/module_g/actors.py:108",
+   "claim": "The branch in resolve_writer that resolves an ambiguous spelling from the bound context can't be reached from any write seam, because the seams run check_writer first and it now refuses those spellings; the test that covers the branch calls the helper directly, a shape no real writer produces.",
+   "evidence": "module_h/log.py:117 `check_writer(actor)` runs before `resolve_writer(actor)`; module_f/names.py LEGACY_NAMES no longer contains `system`, `principal-b`, `principal-c` or `principal-d`. Probe: under `context.bind(Context(channel=CONSOLE, actor=\"human:user-a\"))`, `EventLog.record(actor=\"system\")` → `ValueError: actor 'system' is not a declared principal`, not `human:user-a`. tests/test_labels.py calls `resolve_writer(spelling)` directly.",
+   "failure": "The docstring and test say a bound context turns `system` into the context's actor, but a real writer passing `system` under a bound context is refused; the tested behavior never happens in production.",
+   "fix": "Remove the dead ambiguous branch (the guard already refuses these spellings) or test the refusal at a real seam instead of the helper."
+  },
+  {
+   "severity": "P3",
+   "surface": "tests/test_context.py:269",
+   "claim": "The 'single hop shape' guard is still a source denylist of four literal strings, so other ways of starting a thread or executor pass the test and still lose the context.",
+   "evidence": "forbidden = (\"threading.Thread(\", \"ThreadPoolExecutor(\", \".submit(\", \"copy_context\") — raw substring assert; this round changed only setup_state's `actor=` argument in this file.",
+   "failure": "A product module doing `from threading import Thread; Thread(target=work, daemon=True).start()`, `threading.Timer(...)`, `asyncio.to_thread(...)` or `loop.run_in_executor(...)` passes test_no_raw_thread_or_executor_hops, and that child writes `internal`.",
+   "fix": "Scan imports and calls with ast and allow the threading / concurrent.futures / _thread / asyncio executor APIs only in module_i/context.py."
+  }
+ ],
+ "rejected": []
+}

@@ -1,0 +1,23 @@
+{
+  "call": "00000000-0000-4000-8000-000000000002",
+  "session_id": "00000000-0000-4000-8000-000000000003",
+  "completed": false,
+  "usage": {},
+  "cumulative_usage": {},
+  "usage_scope": "this invocation; cumulative minus pre-call counters",
+  "terminal_error": {
+    "message": "Your workspace is out of credits. Ask your workspace owner to refill in order to continue."
+  },
+  "billing_status": "unpriced_reserved",
+  "reserved_usd": 5,
+  "modelUsage": {
+    "gpt-6-astra": {}
+  },
+  "total_cost_usd": 0,
+  "mode": "phase_review",
+  "session_mode": "fresh",
+  "tool_events": 0,
+  "successful_commands": 0,
+  "model_items": 0,
+  "validation_error": ""
+}

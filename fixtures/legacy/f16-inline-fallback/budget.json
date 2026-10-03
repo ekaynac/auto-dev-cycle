@@ -1,0 +1,21 @@
+{
+  "task_id": "TASK-0001",
+  "first_at": "2026-10-01T22:29:48Z",
+  "last_at": "2026-10-01T22:29:48Z",
+  "calls": {
+    "supervisor": 1
+  },
+  "cli_cost_usd": 0.0,
+  "openrouter_est_usd": 0.00026802,
+  "provider_est_usd": 0.001714,
+  "tokens_in": 22859,
+  "tokens_out": 0,
+  "api_sec": 0.0,
+  "unmeasured": 0,
+  "runs": [
+    "00000000-0000-4000-8000-000000000001"
+  ],
+  "charged_calls": [
+    "00000000-0000-4000-8000-000000000002"
+  ]
+}

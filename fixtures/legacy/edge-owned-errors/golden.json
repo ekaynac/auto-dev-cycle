@@ -1,0 +1,27 @@
+{
+  "source": "t/fixtures/edge-20261003-5eed0038-owned-errors.log",
+  "class": "On a target copy without VCS metadata, the candidate's own new test file fails (six setup errors, one call failure, all from git exiting 128); these are candidate-owned and route to a builder repair, not to a runner-fault hold.",
+  "design_refs": [
+    "docs/design/m0/07-project-profile.md",
+    "docs/design/m0/11-testing.md",
+    "docs/design/m0/13-artifact-graph.md"
+  ],
+  "inputs": {
+    "changed_files": [{"path": "tests/test_release_proof.py", "change": "added"}],
+    "merge_base_known": true,
+    "environment": {"name": "edge", "facts": {"vcs_metadata": false, "network": "none"}},
+    "note": "Synthetic: the log does not carry the diff or the environment declaration; these are the facts of the incident (the file was new in the candidate; the target is a copy without .git)."
+  },
+  "expected": [
+    {"outcome": "found", "reason": "candidate_owned_setup_error"},
+    {"outcome": "found", "reason": "gate_test_failed"}
+  ],
+  "variants": [
+    {"change": "inputs.changed_files = [] (the same errors in a file the candidate did not touch)", "expected": [{"outcome": "could_not_run", "reason": "runner_fault"}]},
+    {"change": "inputs.merge_base_known = false", "expected": [{"outcome": "could_not_run", "reason": "runner_fault"}]},
+    {"change": "one of the ERRORs is a collection error of the same file instead of a setup error", "expected": [{"outcome": "could_not_run", "reason": "runner_fault"}]},
+    {"change": "the summary line reports 7 errors while 6 ERROR entries are listed (unaccounted count)", "expected": [{"outcome": "could_not_run", "reason": "runner_fault"}]}
+  ],
+  "reason_status": "proposed",
+  "notes": "One gate run, one result (found); the two expected entries are the per-item ownership classifications of that result, in log order of kind: the six setup ERRORs, then the one FAILED. All pass note 07's rule: a test node in a file the candidate added, setup section, traceback through that file, not an import error, count fully accounted. The FAILED test has the same cause (git cat-file in the call phase); it is candidate-owned as an ordinary failure. Both go to the builder with the environment facts; runtime verification on the package artifact should surface this before merge (note 13). Variants are runner/environment faults (a hold); runner_fault is proposed."
+}

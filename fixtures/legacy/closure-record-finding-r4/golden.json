@@ -1,0 +1,15 @@
+{
+  "source": "t/fixtures/closure-record-finding-r4.json",
+  "class": "A review finding against the closing record cites product source lines as its counterexample, but its remedy is to the record; routing it to a builder repair loops on builds with no changes.",
+  "design_refs": [
+    "docs/design/m0/02-vocabulary.md",
+    "docs/design/m0/13-artifact-graph.md"
+  ],
+  "expected": [
+    {"outcome": "found", "reason": "closure_repair"},
+    {"outcome": "found", "reason": "p3_banked"},
+    {"outcome": "found", "reason": "p3_banked"}
+  ],
+  "reason_status": "proposed",
+  "notes": "One entry per finding, in file order. Finding 1 (P2, surface closure, remedy names an absolute path outside the repository) routes to a successor closure node, never to a builder round; a builder round given it would end empty (completed, no diff) and must not repeat. Findings 2 and 3 are P3 product findings, banked as background work (plan section 2.5, Review)."
+}
