@@ -57,7 +57,9 @@ mutations=(
 
 out="$(mktemp -d)"
 listener_pid=""
-trap 'rm -rf "$out"; [[ -n "$listener_pid" ]] && kill "$listener_pid" 2>/dev/null; true' EXIT
+# The provisioned module cache is read-only (go mod download), so make it
+# writable before removing it.
+trap 'chmod -R u+w "$out" 2>/dev/null; rm -rf "$out"; [[ -n "$listener_pid" ]] && kill "$listener_pid" 2>/dev/null; true' EXIT
 
 # A host-side TCP listener on 127.0.0.1; it prints its port, then serves.
 node -e 'require("net").createServer(s => s.end()).listen(0, "127.0.0.1", function () { console.log(this.address().port) })' \
