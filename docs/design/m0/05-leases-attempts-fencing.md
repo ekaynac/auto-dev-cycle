@@ -8,16 +8,20 @@ M0 fixes the records and their state machines; the scheduler policy that fills t
 ```yaml
 ResourceGroup:
   id: rg_…
-  kind: account_quota | broker_balance | gpu | concurrency | controller_gate | controller_integration
+  kind: account_quota | broker_balance | gpu | concurrency | controller_gate | controller_integration | evidence_target
   capacity_model:
     unit: requests | tokens | usd | slots | gpu_seconds
     limit: number|null              # null = unknown
     window: duration|null
     reset_at: time|null
     quota_state: known | estimated | unknown
-  release_rule: on_settle | on_attempt_end | on_window_reset   # how reserved amounts return [M7]
+  release_rule: on_settle | on_attempt_end | on_window_reset | on_restore_verified   # how reserved amounts return [M7]; evidence targets use on_restore_verified (13) [D40]
   members: [exe_…]
 ```
+
+- **Rate windows and credit balances are separate groups** (`account_quota` vs `broker_balance`). A provider can have
+  rate headroom and no credit, or the reverse (nöbetçi Δ§4: a rate-window check passed on an account with no credit).
+- **A lease on a `broker_balance` group is admitted by the ledger's affordability rule** (below, broker affordability). Otherwise it waits on `broker_credit_exhausted` (02).
 
 ## Lease
 
@@ -32,8 +36,20 @@ Lease:
   footprint: {context_tokens, expected_turns, gpu_seconds?}
   deadline: time
   fallback_step: int
-  placement_checks: {data_floor, destinations, capability, independence, paid_authority, budget}
+  placement_checks: {data_floor, destinations, capability, independence, paid_authority, budget, fallback_scope}
 ```
+
+- **Inputs are not a placement concern** [D40]. A node is runnable only once all its inputs resolved to applicable artifacts (13). Missing or inapplicable inputs never reach placement; they make the node `waiting(input)`, and the producer is scheduled.
+- **Broker affordability goes through the ledger** [PR5-10]: a `broker_balance` reservation is admitted only if
+  (latest probed balance − outstanding reservations − uncertain liabilities) ≥ the reservation, with the probe within
+  its TTL. A stale or unknown balance means wait (`broker_credit_exhausted` with a probe signal), never "assume
+  affordable".
+- **`fallback_scope`** (nöbetçi Δ§4): a fallback step is allowed only if the role's chain entry is authorised for this
+  **role and mode** (e.g. "learning digest" ≠ "phase review"). The check runs in the placement path, not only in a
+  record. Moving to another family re-runs `independence`.
+- **Footprint is learned per executor**, not per role. On an identical review packet, nöbetçi measured 9× the input
+  tokens for one reviewer family versus another. `footprint` starts from priors (the nöbetçi measurement export,
+  intake A12) and is updated from settled usage.
 
 Complete state machine. Every transition is an event, and terminal states are immutable:
 
@@ -49,6 +65,24 @@ Complete state machine. Every transition is an event, and terminal states are im
 | active | `lease.revoked{reason}` · `lease.preempted` · `lease.expired` | settling (the attempt is stopped first, see fencing) |
 | settling | `lease.settled{usage_summary, liabilities}` | settled ✱ |
 | releasing | `lease.released` | released ✱ |
+
+### Evidence-target leases [G5]
+
+For a lease that holds an `evidence_target` group, settlement carries a **restore obligation**:
+
+| From | Event | To |
+|---|---|---|
+| settling | `lease.restore_started` | restoring |
+| restoring | `lease.restore_verified{receipt}` | settling_verified |
+| restoring | `lease.restore_failed{reason}` | restore_failed (target stays excluded; hold `evidence_restore_pending`, owner per profile, paged after `page_after`) |
+| restore_failed | `lease.restore_verified{receipt}` (retry or operator act) | settling_verified |
+| settling_verified | `lease.settled{…, published: res_…}` | settled ✱ |
+
+- **Publication guard:** the run's accepted draft result is published by the **controller** in the same transaction
+  as `lease.settled`, and only from `settling_verified`. Executor submissions after publication closed are refused
+  by fencing. Publishing an already-accepted draft is a controller act, not a late submission.
+- **Restart:** a lease found in `active`, `settling`, `restoring` or `restore_failed` stays in that state, and the
+  target stays excluded. The recovery owner is `internal/evidence`, which resumes restore as an effect (03).
 
 - **Reservations return** per their group's `release_rule` at `settled`/`released`. A provider charge still uncertain at
   settlement becomes an **uncertain liability** on the group's ledger. Liabilities reduce available budget until

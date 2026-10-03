@@ -135,6 +135,13 @@ These are classifier surfaces like any other (plan §2.8): they start in **shado
 supervisor's own choices, and are promoted only by an approved record citing an eval report. They never grant
 authority or confirm a proposal.
 
+## 5b. No blocking prompts (nöbetçi Δ§15)
+
+The supervisor never blocks its own turn on a question. Questions are asynchronous **decision packets**. Non-urgent
+questions are batched. Only decisions that truly need operator authority are pushed at once. After any answer,
+the first act is a liveness check (`adc holds list`, `adc events`). In nöbetçi, a stop went unseen for about 2 h
+while a blocking question held the supervisor's turn.
+
 ## 6. What v1 ships for the role
 
 - This role definition as `docs/operating/supervisor.md`, written for the agent as much as for the human.

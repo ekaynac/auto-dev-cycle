@@ -100,9 +100,33 @@ Approval:
   scope: {…}                        # schema per action
   grant: grt_…|null
   confirmation: {policy, challenge: chl_…|null, satisfied_by: [evt_…]}
+  answers: [owed_input_id]          # owed inputs (reviewer demands) this approval answers; see below
+  supersedes: [apr_…]               # explicit lineage
+  question: string|null             # what the actor was asked (from the proposal or packet)
+  answer_verbatim: string|null      # the actor's own words, when a human answered
   reason: string
   at: time
 ```
+
+### Owed inputs (nöbetçi Δ§1, Δ§3; intake A1)
+
+- When a reviewer or an evidence requirement needs something only an outside party can give (a ruling, lab data, a
+  named identity), it records an **owed input**: `{id: own_…, requested_by, kind: ruling|data|receipt, question,
+  subject}`. The dependent work holds on `awaiting_input`.
+- Answering is its own action, `input.answer` [PR5-1]:
+  - its scope carries `{owed_input: own_…, owed_revision, answer: typed payload}`;
+  - `answers` is derived from the scope, so both are inside the action's binding digest (and the proposal digest when
+    confirmation applies);
+  - authority validates, in the writer transaction, that the responder may answer this kind for this project, that the
+    owed input's subject and revision still match, and that the owed input is still open.
+
+  An approval that merely mentions an id answers nothing.
+- **Kinds are not interchangeable.** A `ruling` or `data` input can be answered by an approval. A `receipt` input
+  (execution evidence) can be satisfied **only** by an applicable receipt (06), never by a ruling.
+- The answer becomes an input of the next review's fingerprint (10), so a new answer re-keys the review. A review never
+  receives answers for inputs it did not owe.
+- **Delivery is structural** [D40]. An accepted answer is an `approval_answer` artifact. A review node that declared
+  the owed input has it as an input (13), and nothing else can reach a model (10). There is no separate collector.
 
 - **Transactional and idempotent** (03).
 - **Precedence:** a revocation or narrower scope always wins over an earlier, wider one. Conflicting approvals in force
@@ -168,7 +192,12 @@ Two narrow, separately registered actions. Both:
 - **can never widen authority or data policy.** If the effective-change computation finds any widening in the new
   content, the action is refused, and the change must go through the dedicated widening action with its own
   confirmation;
-- cannot approve their own adoption: the approval precedes and references the candidate, never sits inside it.
+- cannot approve their own adoption: the approval precedes and references the candidate, never sits inside it;
+- **do not grant authority through prose.** Authority never derives from document text: ids named in prose are
+  references, not grants. Authoritative identity references (which tasks, findings or grants exist and what they
+  allow) change only through their typed actions. There is no lexical ban on naming ids in documents [PR5-7];
+- the approval UI and CLI render the **exact bytes** being approved (old → new diff), so humans approve bytes, not
+  intent.
 
 `knowledge.change_protected_document` accepts only the profile's `protected_documents` set.
 `integration.change_topology` accepts only the profile's topology files. Other protected paths (canon) change only by

@@ -80,7 +80,9 @@ planned ──[effect.intent committed]──▶ pending ──[effect.observed{
   - forge push: compare the remote ref to the expected new head (done-probe);
   - merge: query the change-request state;
   - deploy: query the target's running version;
-  - notification: query the outbox delivery id.
+  - notification: query the outbox delivery id;
+  - remote process (12): "no process of the recorded remote sessions remains", killing leftovers;
+  - evidence job run (12): its restore procedure, then the receipt.
 - **Retry versus reconcile.** An effect kind declares whether it is idempotent at the target (safe to retry with the
   same effect id) or must be reconciled first. Non-idempotent effects are never blindly retried. A command result
   returned on an idempotent retry includes its effects' current states, so unfinished work is visible, not lost.

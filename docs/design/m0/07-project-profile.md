@@ -29,6 +29,15 @@ forge:
     protected_branches: bool
     required_checks: bool
   settings: {…}                     # per forge kind (schema per kind)
+source_tests:                       # the gate's workspace (13 "Source tests, package, runtime verification") [G8]
+  dev_dependencies: true            # test tools and dev deps installed (npm devDependencies, composer require-dev, …)
+  vcs_metadata: false               # true only if the test suite needs it (declared build-time fact)
+package:                            # the deployable artifact; its bytes are hashed and exactly those bytes are deployed
+  recipe: [argv]                    # e.g. `npm ci --omit=dev && npm run build`, `go build -o …`, `composer install --no-dev`
+  outputs: [path]
+runtime_verification:               # runtime-facing checks against the package artifact, with the target's runtime facts
+  command: [argv]|null              # e.g. smoke tests, health checks, migration dry run
+  facts_from: <environment name>    # gate.environments entry whose runtime facts apply
 toolchain:
   images: {name: image_ref@digest}  # pinned by digest
   dependency_recipe:                # phase 1 of the sandbox (plan §2.10)
@@ -39,7 +48,19 @@ gate:
   command: [argv]                   # run in phase 2, no network
   result_adapter: junit_xml | tap | go_test_json | custom:<plugin> | none
   baseline: {kind: measured, relock_requires: approval}
-  environments: [name]              # target environments whose gate must hold before merge
+  environments:                     # target environments whose gate must hold before merge
+    - name: string
+      facts:                        # published to the builder brief and the reviewer (nöbetçi Δ§7)
+        vcs_metadata: bool          # e.g. false for a deployed copy without .git
+        network: none|loopback|full
+        runtime: {language_version, os, arch}
+      owner: string                 # who fixes environment faults (wrong_owner holds)
+  ownership_rules: default          # gate-output classification (nöbetçi Δ§7): an ERROR is candidate-owned (builder
+                                    # repair) only if ALL hold: a test node in a file the candidate added or changed vs
+                                    # the merge-base; setup/teardown section; traceback passes through that file; NOT an
+                                    # import error raised outside the changed files [PR5-9]; the error count is fully
+                                    # accounted. Collection errors, untouched files, count mismatches, external import
+                                    # errors and an unknown base are runner/environment faults (a hold)
 integration:                        # phase 3; topology is controller-owned (A2)
   plugin: none | docker-compose
   topology:                         # pinned; changed only by integration.change_topology (04) [M12]

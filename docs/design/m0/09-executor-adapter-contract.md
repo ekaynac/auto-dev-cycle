@@ -97,7 +97,7 @@ Every adapter must pass these before registration:
 - round-trips;
 - stream normalisation;
 - sub-call identity;
-- error classes (4xx, 429, 5xx, idle cut, degenerate);
+- error classes (4xx, 429, **402 / credit exhaustion mid-call** with partial work, 5xx, idle cut, degenerate);
 - patch boundary (cumulative patch; declared paths only);
 - stale-token output rejection with usage still accepted;
 - cancel during a tool call;

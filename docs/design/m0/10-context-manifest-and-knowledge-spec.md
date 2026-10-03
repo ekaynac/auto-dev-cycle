@@ -18,7 +18,9 @@ Ref:
 
 ViewFingerprint:
   renderer: {name, version, config_digest}
-  inputs: [Ref]                     # ordered: tree/candidate snapshot, receipts, findings/dispositions, adopted contract (KA4)
+  inputs: [Ref]                     # ordered: tree/candidate snapshot, receipts, findings/dispositions, adopted contract (KA4),
+                                    # and for review packets: the reviewer's demands (owed inputs and evidence demand keys)
+                                    # and the approvals that answered them (04, 12; nöbetçi Δ§1, Δ§3)
   digest: sha256:…                  # over renderer + ordered input identity_digests (not content digests)
 ```
 
@@ -69,6 +71,10 @@ A manifest is not one record written before egress with fields it cannot know ye
    ```
 
 Invariants:
+- **Controller-supplied context comes only from declared inputs** [D40, G7]. A model node's prompt and every
+  controller-mediated tool result are rendered only from its resolved graph inputs (13), and the manifest lists
+  exactly those results. Harness-internal instructions, harness tools and compaction are outside this guarantee and
+  keep `partial`/`unknown` coverage.
 - Cuts are named in `omitted`, never silent.
 - `status` is derived from evidence, never from declarations alone. Unknown stays unknown (E0).
 - Restricted refs are checked at intent and at every delivery (lookup, fallback), against both their inherited

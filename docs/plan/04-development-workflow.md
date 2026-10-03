@@ -84,6 +84,9 @@ These PRs **wait for the operator**:
   - attended: in the session;
   - background: a Development log comment **and** a Telegram message;
   - continue with independent work. Nothing gated by the decision merges until it is answered.
+- **Never block on a question** (nöbetçi Δ§15). The background session does not use synchronous prompts. It posts
+  the question and continues. Non-urgent questions are batched into the daily digest. After an answer arrives,
+  the first act is a status check (CI, open PRs, background jobs).
 - **Telegram:** only for blocking decisions and an unattended stop.
   - Command: `openclaw message send --channel "$ADC_DEV_TG_CHANNEL" --target "$ADC_DEV_TG_TARGET" -m "<text>"`.
   - The values live in `~/.config/adc-dev/notify.env` (0600). Source it in a subshell and **never print it**.
