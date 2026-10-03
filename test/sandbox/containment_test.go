@@ -10,6 +10,7 @@ package sandbox
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
@@ -89,34 +90,50 @@ func TestRealHomeAbsent(t *testing.T) {
 	}
 }
 
-// The repository (the working directory) must be read-only.
+// The repository (the working directory) must be read-only. The probe is
+// created exclusively under a unique name and removed only if this call made it.
 func TestRepoReadOnly(t *testing.T) {
-	probe := filepath.Join(".", ".adc-sandbox-write-probe")
-	if err := os.WriteFile(probe, []byte("x"), 0o600); err == nil {
+	probe := fmt.Sprintf(".adc-sandbox-write-probe-%d-%d", os.Getpid(), time.Now().UnixNano())
+	f, err := os.OpenFile(probe, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		f.Close()
 		os.Remove(probe)
 		t.Errorf("the repository is writable")
 	}
 }
 
-// The wrapper planted canaries in the real home and the repository root. The
-// home canary must be reachable under no path; the repository canary only at
-// /src, so no mount exposes the home or a second (possibly writable) alias of
-// the repository.
-func TestNoHomeOrRepoAlias(t *testing.T) {
-	names := strings.Fields(mustEnv(t, "ADC_SANDBOX_CANARY"))
-	if len(names) != 2 {
-		t.Fatalf("ADC_SANDBOX_CANARY must name two canaries, got %q", names)
+// The wrapper planted canaries (kind:host-path) in protected places (home,
+// user state/config/data) and in the repository root. No protected canary may
+// be reachable under any path, and the repository canary only at /src, so no
+// mount exposes protected state or a second alias of the repository.
+func TestNoProtectedOrRepoAlias(t *testing.T) {
+	var protected []string
+	repo := ""
+	for _, f := range strings.Fields(mustEnv(t, "ADC_SANDBOX_CANARY")) {
+		kind, path, _ := strings.Cut(f, ":")
+		switch kind {
+		case "protected":
+			protected = append(protected, path)
+		case "repo":
+			repo = path
+		}
 	}
-	homeCanary, repoCanary := names[0], names[1]
-	// Direct paths first: an unsandboxed run fails here without a full walk.
-	if _, err := os.Stat(filepath.Join(mustEnv(t, "ADC_SANDBOX_HOST_HOME"), homeCanary)); err == nil {
-		t.Fatalf("the home canary is reachable at the real home")
+	if len(protected) == 0 || repo == "" {
+		t.Fatalf("setup: ADC_SANDBOX_CANARY must name protected and repo canaries")
 	}
-	if _, err := os.Stat(filepath.Join(mustEnv(t, "ADC_SANDBOX_HOST_REPO"), repoCanary)); err == nil {
-		t.Fatalf("the repository canary is reachable at the host repository path")
+	// Direct host paths first: an unsandboxed run fails here without a walk.
+	for _, p := range append(protected, repo) {
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("a canary is reachable at its host path %s", p)
+		}
 	}
-	if _, err := os.Stat(filepath.Join("/src", repoCanary)); err != nil {
+	repoAtSrc := filepath.Join("/src", filepath.Base(repo))
+	if _, err := os.Stat(repoAtSrc); err != nil {
 		t.Fatalf("setup: the repository canary is missing at /src: %v", err)
+	}
+	names := map[string]bool{}
+	for _, p := range protected {
+		names[filepath.Base(p)] = true
 	}
 	var found []string
 	err := filepath.WalkDir("/", func(path string, d fs.DirEntry, err error) error {
@@ -126,13 +143,8 @@ func TestNoHomeOrRepoAlias(t *testing.T) {
 		if d.IsDir() && (path == "/proc" || path == "/sys" || path == "/dev") {
 			return fs.SkipDir
 		}
-		switch d.Name() {
-		case homeCanary:
+		if names[d.Name()] || (d.Name() == filepath.Base(repo) && path != repoAtSrc) {
 			found = append(found, path)
-		case repoCanary:
-			if path != filepath.Join("/src", repoCanary) {
-				found = append(found, path)
-			}
 		}
 		return nil
 	})
@@ -140,7 +152,7 @@ func TestNoHomeOrRepoAlias(t *testing.T) {
 		t.Fatalf("walking the sandbox filesystem: %v", err)
 	}
 	if len(found) > 0 {
-		t.Errorf("home or repository exposed at extra paths: %v", found)
+		t.Errorf("protected state or the repository exposed at extra paths: %v", found)
 	}
 }
 
@@ -160,6 +172,40 @@ func TestExactEnv(t *testing.T) {
 	sort.Strings(extra)
 	if len(extra) > 0 {
 		t.Errorf("variables outside the allowlist: %v", extra)
+	}
+}
+
+// Every process this test can see, PID 1 included, carries only allowlisted
+// variables: an init process started with the host environment would expose
+// it through /proc/<pid>/environ even when the test's own environment is clean.
+func TestNoForeignProcessEnv(t *testing.T) {
+	allowed := map[string]bool{}
+	for _, n := range append(allowedEnv, strings.Fields(os.Getenv("ADC_TEST_PASSENV"))...) {
+		allowed[n] = true
+	}
+	procs, err := filepath.Glob("/proc/[0-9]*/environ")
+	if err != nil || len(procs) == 0 {
+		t.Fatalf("setup: cannot list /proc: %v", err)
+	}
+	extra := map[string]bool{}
+	for _, p := range procs {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue // not readable by this process, so not exposed to it
+		}
+		for _, kv := range strings.Split(string(b), "\x00") {
+			if name, _, _ := strings.Cut(kv, "="); name != "" && !allowed[name] {
+				extra[name] = true
+			}
+		}
+	}
+	if len(extra) > 0 {
+		names := make([]string, 0, len(extra))
+		for n := range extra {
+			names = append(names, n) // names only, never values
+		}
+		sort.Strings(names)
+		t.Errorf("process environments outside the allowlist: %v", names)
 	}
 }
 
