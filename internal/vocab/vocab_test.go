@@ -114,13 +114,13 @@ outcomes:
 `
 	holdsYAML = `schema: adc.vocab.holds/v1
 holds:
-  - {hold: h1, signal: probe, signal_detail: x, owner: system, page_after: PT1H}
+  - {hold: h1, signal: probe, signal_detail: x, owner: system, page_after: PT1H, escalate_to: null}
 `
 )
 
 func TestLoaderRefuses(t *testing.T) {
 	reason := func(code, hold string) string {
-		s := "  - {code: " + code + ", outcomes: [failed], domain: ops, description: d, introduced: 0.1.0, source: \"02\""
+		s := "  - {code: " + code + ", outcomes: [failed], domain: ops, description: d, introduced: 0.1.0, deprecated: null, source: \"02\""
 		if hold != "" {
 			s += ", hold: " + hold
 		}
@@ -131,6 +131,9 @@ func TestLoaderRefuses(t *testing.T) {
 		{"duplicate code", "schema: adc.vocab.reasons/v1\nreasons:\n" + reason("r1", "") + reason("r1", ""), "registered twice"},
 		{"schema violation", "schema: adc.vocab.reasons/v1\nreasons:\n  - {code: R1}\n", "contract vocab/registry"},
 		{"duplicate YAML key", "schema: adc.vocab.reasons/v1\nschema: adc.vocab.reasons/v1\nreasons: []\n", "already defined"},
+		{"a second YAML document", "schema: adc.vocab.reasons/v1\nreasons:\n" + reason("r1", "") + "---\nschema: adc.vocab.reasons/v1\nreasons:\n" + reason("r2", ""), "exactly one YAML document"},
+		{"a malformed trailing document", "schema: adc.vocab.reasons/v1\nreasons:\n" + reason("r1", "") + "---\n: [\n", "exactly one YAML document"},
+		{"deprecated omitted", "schema: adc.vocab.reasons/v1\nreasons:\n  - {code: r1, outcomes: [failed], domain: ops, description: d, introduced: 0.1.0, source: \"02\"}\n", "deprecated"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -154,7 +157,7 @@ func TestLoaderRefusesDuplicateOutcome(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/outcomes.yaml": {Data: []byte(dup)},
 		"vocab/holds.yaml":    {Data: []byte(holdsYAML)},
-		"vocab/reasons.yaml":  {Data: []byte("schema: adc.vocab.reasons/v1\nreasons:\n  - {code: r1, outcomes: [failed], domain: ops, description: d, introduced: 0.1.0, source: \"02\"}\n")},
+		"vocab/reasons.yaml":  {Data: []byte("schema: adc.vocab.reasons/v1\nreasons:\n  - {code: r1, outcomes: [failed], domain: ops, description: d, introduced: 0.1.0, deprecated: null, source: \"02\"}\n")},
 	}
 	_, err := loadFrom(fsys, []string{"vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"})
 	if err == nil || !strings.Contains(err.Error(), "outcome found registered twice") {
@@ -163,7 +166,7 @@ func TestLoaderRefusesDuplicateOutcome(t *testing.T) {
 }
 
 const reasonsYAML = "schema: adc.vocab.reasons/v1\nreasons:\n" +
-	"  - {code: r1, outcomes: [failed], domain: ops, description: d, introduced: 0.1.0, source: \"02\"}\n" +
+	"  - {code: r1, outcomes: [failed], domain: ops, description: d, introduced: 0.1.0, deprecated: null, source: \"02\"}\n" +
 	"  - {code: old, outcomes: [failed], domain: ops, description: d, introduced: 0.1.0, deprecated: 0.2.0, source: \"02\"}\n"
 
 // Each registry kind exactly once: a missing or a second registry is an error.
@@ -201,5 +204,76 @@ func TestCheckRefusesDeprecatedReasons(t *testing.T) {
 	}
 	if err := reg.Check(Result{Failed, "old", "x"}); err == nil || !strings.Contains(err.Error(), "deprecated") {
 		t.Fatalf("a deprecated code was accepted for writing: %v", err)
+	}
+}
+
+func TestLoaderRefusesDuplicateHold(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/outcomes.yaml": {Data: []byte(outcomesYAML)},
+		"vocab/holds.yaml":    {Data: []byte(holdsYAML + "  - {hold: h1, signal: time, signal_detail: y, owner: system, page_after: null, escalate_to: null}\n")},
+		"vocab/reasons.yaml":  {Data: []byte(reasonsYAML)},
+	}
+	_, err := loadFrom(fsys, []string{"vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"})
+	if err == nil || !strings.Contains(err.Error(), "hold h1 registered twice") {
+		t.Fatalf("want a duplicate-hold error, got %v", err)
+	}
+}
+
+func TestCheckNeedsDetailForEveryNonEmptyOutcome(t *testing.T) {
+	reg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []Result{{Found, "gate_test_failed", ""}, {CouldNotRun, "quota_exhausted", ""}, {Failed, "stale_attempt", ""}} {
+		if err := reg.Check(r); err == nil || !strings.Contains(err.Error(), "non-empty detail") {
+			t.Errorf("%s/%s with an empty detail: got %v", r.Outcome, r.Reason, err)
+		}
+	}
+}
+
+// The hold registry against note 02's table and paging defaults: every hold,
+// its signal, owner, escalation and page_after.
+func TestHoldsMatchNote02(t *testing.T) {
+	type want struct{ signal, owner, page, escalate string }
+	note02 := map[string]want{
+		"quota_reset":              {"time", "system", "PT30M", ""},
+		"source_invalid_config":    {"config_change", "operator", "PT1H", ""},
+		"awaiting_approval":        {"approval", "grant_holder", "PT1H", ""},
+		"awaiting_confirmation":    {"approval", "confirmation_policy", "PT1H", ""},
+		"awaiting_receipt":         {"receipt", "system", "PT30M", ""},
+		"reviewer_unavailable":     {"probe", "system", "PT1H", ""},
+		"wrong_owner":              {"human_act", "named_owner", "PT1H", ""},
+		"maintenance_boundary":     {"revision", "system", "PT45M", ""},
+		"budget_rail":              {"approval", "operator", "PT1H", ""},
+		"base_moved_conflict":      {"revision", "system", "PT30M", ""},
+		"broker_credit_exhausted":  {"probe", "operator", "PT1H", ""},
+		"awaiting_input":           {"approval", "grant_holder", "PT1H", ""},
+		"evidence_restore_pending": {"receipt", "system", "PT1H", "environment_owner"},
+		"precondition_failed":      {"probe", "environment_owner", "PT1H", ""},
+	}
+	reg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Holds) != len(note02) {
+		t.Fatalf("%d holds registered, note 02 has %d", len(reg.Holds), len(note02))
+	}
+	for name, w := range note02 {
+		h, ok := reg.Holds[name]
+		if !ok {
+			t.Errorf("hold %s is not registered", name)
+			continue
+		}
+		page, escalate := "", ""
+		if h.PageAfter != nil {
+			page = string(*h.PageAfter)
+		}
+		if h.EscalateTo != nil {
+			escalate = string(*h.EscalateTo)
+		}
+		got := want{string(h.Signal), string(h.Owner), page, escalate}
+		if got != w {
+			t.Errorf("hold %s = %+v, note 02 wants %+v", name, got, w)
+		}
 	}
 }

@@ -68,6 +68,17 @@ func (u *VocabRegistry) UnmarshalJSON(b []byte) error {
 
 type Code = string
 
+type Owner string
+
+const (
+	OwnerSystem             Owner = "system"
+	OwnerOperator           Owner = "operator"
+	OwnerGrantHolder        Owner = "grant_holder"
+	OwnerConfirmationPolicy Owner = "confirmation_policy"
+	OwnerNamedOwner         Owner = "named_owner"
+	OwnerEnvironmentOwner   Owner = "environment_owner"
+)
+
 type Semver = string
 
 type OutcomesFileOutcomesItemOutcome string
@@ -125,7 +136,8 @@ type Reason struct {
 	Description string               `json:"description"`
 	Hold        *Code                `json:"hold,omitempty"`
 	Introduced  Semver               `json:"introduced"`
-	Deprecated  *Semver              `json:"deprecated,omitempty"`
+	// The version that deprecated the code; null while current.
+	Deprecated *Semver `json:"deprecated"`
 	// Where the code was introduced: a design note number, or legacy:<golden>.
 	Source string `json:"source"`
 }
@@ -147,21 +159,12 @@ const (
 	HoldSignalConfigChange HoldSignal = "config_change"
 )
 
-type HoldOwner string
-
-const (
-	HoldOwnerSystem             HoldOwner = "system"
-	HoldOwnerOperator           HoldOwner = "operator"
-	HoldOwnerGrantHolder        HoldOwner = "grant_holder"
-	HoldOwnerConfirmationPolicy HoldOwner = "confirmation_policy"
-	HoldOwnerNamedOwner         HoldOwner = "named_owner"
-	HoldOwnerEnvironmentOwner   HoldOwner = "environment_owner"
-)
-
 type Hold struct {
 	Hold         Code       `json:"hold"`
 	Signal       HoldSignal `json:"signal"`
 	SignalDetail string     `json:"signal_detail"`
-	Owner        HoldOwner  `json:"owner"`
+	Owner        Owner      `json:"owner"`
 	PageAfter    *Duration  `json:"page_after"`
+	// Who owns the hold once page_after passes without the signal; null keeps the owner.
+	EscalateTo *Owner `json:"escalate_to"`
 }

@@ -10,6 +10,7 @@
   ],
   "$defs": {
     "Code": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "Owner": {"enum": ["system", "operator", "grant_holder", "confirmation_policy", "named_owner", "environment_owner"]},
     "Semver": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
     "OutcomesFile": {
       "type": "object",
@@ -45,7 +46,7 @@
     "Reason": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["code", "outcomes", "domain", "description", "introduced", "source"],
+      "required": ["code", "outcomes", "domain", "description", "introduced", "deprecated", "source"],
       "properties": {
         "code": {"$ref": "#/$defs/Code"},
         "outcomes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["found", "empty", "could_not_run", "failed"]}},
@@ -53,7 +54,7 @@
         "description": {"type": "string", "minLength": 1},
         "hold": {"$ref": "#/$defs/Code"},
         "introduced": {"$ref": "#/$defs/Semver"},
-        "deprecated": {"$ref": "#/$defs/Semver"},
+        "deprecated": {"description": "The version that deprecated the code; null while current.", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Semver"}]},
         "source": {"description": "Where the code was introduced: a design note number, or legacy:<golden>.", "type": "string", "pattern": "^([0-9]{2}|legacy:[a-z0-9-]+)$"}
       }
     },
@@ -69,13 +70,14 @@
     "Hold": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["hold", "signal", "signal_detail", "owner", "page_after"],
+      "required": ["hold", "signal", "signal_detail", "owner", "page_after", "escalate_to"],
       "properties": {
         "hold": {"$ref": "#/$defs/Code"},
         "signal": {"enum": ["time", "receipt", "revision", "approval", "human_act", "probe", "config_change"]},
         "signal_detail": {"type": "string", "minLength": 1},
-        "owner": {"enum": ["system", "operator", "grant_holder", "confirmation_policy", "named_owner", "environment_owner"]},
-        "page_after": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Duration"}]}
+        "owner": {"$ref": "#/$defs/Owner"},
+        "page_after": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Duration"}]},
+        "escalate_to": {"description": "Who owns the hold once page_after passes without the signal; null keeps the owner.", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Owner"}]}
       }
     }
   }

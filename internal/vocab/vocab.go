@@ -8,9 +8,11 @@
 package vocab
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"sync"
 
@@ -73,9 +75,16 @@ func loadFrom(fsys fs.FS, paths []string) (*Registry, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Exactly one YAML document: yaml.Unmarshal would read the first and
+		// silently ignore any further (possibly malformed) ones.
+		dec := yaml.NewDecoder(bytes.NewReader(raw))
 		var doc any
-		if err := yaml.Unmarshal(raw, &doc); err != nil { // duplicate keys are an error in yaml.v3
+		if err := dec.Decode(&doc); err != nil { // duplicate keys are an error in yaml.v3
 			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+		var extra any
+		if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("%s: a registry file holds exactly one YAML document", p)
 		}
 		js, err := json.Marshal(doc)
 		if err != nil {
