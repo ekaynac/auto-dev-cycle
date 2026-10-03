@@ -4,7 +4,12 @@
 // (<state_dir>/blobs/sha256/ab/cd/<hex>, docs/design/m0/03). A blob is
 // written to a temp file, fsynced, digest-verified and renamed into place,
 // and its directory chain is fsynced, before Put returns, so an event that
-// references the digest can never outlive the blob. Blobs are immutable.
+// references the digest can never outlive the blob. Blobs are immutable: a
+// stored blob whose bytes changed is reported, never overwritten, and is
+// repaired only by restoring it from a backup (03 "Backups").
+//
+// One process owns the store: the caller holds the state-directory lock, and
+// Open removes every temp file it finds as a crash leftover.
 package blobstore
 
 import (
@@ -17,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 )
 
@@ -26,8 +32,22 @@ type Store struct {
 	mu   sync.Mutex // serialises publication, so a concurrent Put never returns before the blob is durable
 }
 
-// ErrDigestMismatch: the bytes do not hash to the declared digest.
+// ErrDigestMismatch: the bytes do not hash to the declared digest, or a
+// stored blob no longer hashes to its own.
 var ErrDigestMismatch = errors.New("blob digest mismatch")
+
+// ErrNotABlob: something other than a regular file sits at a blob's path.
+var ErrNotABlob = errors.New("not a regular blob file")
+
+// syncDir fsyncs a directory; a variable so tests can record the order.
+var syncDir = func(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
 
 var digestRe = regexp.MustCompile(`^sha256:([0-9a-f]{64})$`)
 
@@ -49,7 +69,29 @@ func Open(stateDir string) (*Store, error) {
 			return nil, err
 		}
 	}
+	// Make the store's own directories durable. The state directory's entry
+	// in its parent belongs to whoever created the state directory.
+	for _, d := range []string{filepath.Join(root, "sha256"), filepath.Join(root, "tmp"), root, stateDir} {
+		if err := syncDir(d); err != nil {
+			return nil, err
+		}
+	}
 	return &Store{root: root}, nil
+}
+
+// regular reports whether a regular file (not a symlink, not a directory)
+// is at p, and an error for anything else that is there.
+func regular(p string) (bool, error) {
+	fi, err := os.Lstat(p)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, err
+	case !fi.Mode().IsRegular():
+		return false, fmt.Errorf("%w: %s is %s", ErrNotABlob, p, fi.Mode().Type())
+	}
+	return true, nil
 }
 
 func (s *Store) path(hexsum string) string {
@@ -88,14 +130,15 @@ func (s *Store) Put(r io.Reader, declared string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dst := s.path(sum)
-	if _, err := os.Stat(dst); err == nil {
-		// Already present: prove it is intact and durable before reporting success.
+	if present, err := regular(dst); err != nil {
+		return "", err
+	} else if present {
+		// Already present: prove it is intact and durable before reporting
+		// success. This also completes a Put that crashed after its rename.
 		if err := s.Verify(got); err != nil {
 			return "", err
 		}
 		return got, s.syncChain(filepath.Dir(dst))
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return "", err
@@ -109,10 +152,13 @@ func (s *Store) Put(r io.Reader, declared string) (string, error) {
 	return got, s.syncChain(filepath.Dir(dst))
 }
 
-// syncChain fsyncs dir and each parent up to the store's sha256 root, so new
-// directory entries survive a crash.
+// syncChain fsyncs dir and each parent up to the store's sha256 root, then
+// the store root, so new directory entries survive a crash.
 func (s *Store) syncChain(dir string) error {
 	stop := filepath.Join(s.root, "sha256")
+	if rel, err := filepath.Rel(stop, dir); err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return fmt.Errorf("blobstore: %s is outside %s", dir, stop)
+	}
 	for d := dir; ; d = filepath.Dir(d) {
 		if err := syncDir(d); err != nil {
 			return err
@@ -123,39 +169,31 @@ func (s *Store) syncChain(dir string) error {
 	}
 }
 
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
-}
-
-// Open returns the blob's bytes.
+// Open returns the blob's bytes. It refuses anything but a regular file.
 func (s *Store) Open(digest string) (io.ReadCloser, error) {
 	m := digestRe.FindStringSubmatch(digest)
 	if m == nil {
 		return nil, fmt.Errorf("blobstore: malformed digest %q", digest)
 	}
-	return os.Open(s.path(m[1]))
+	p := s.path(m[1])
+	if present, err := regular(p); err != nil {
+		return nil, err
+	} else if !present {
+		return nil, fmt.Errorf("blobstore: %s: %w", digest, fs.ErrNotExist)
+	}
+	return os.Open(p)
 }
 
-// Has reports whether the blob is published. I/O errors are errors, never
-// "absent".
+// Has reports whether a regular file is stored under the digest. It is a
+// stat only: it neither re-hashes the bytes nor makes them durable. Before an
+// event references a blob, publish it with Put, which verifies and fsyncs
+// even when the blob is already there. I/O errors are errors, never "absent".
 func (s *Store) Has(digest string) (bool, error) {
 	m := digestRe.FindStringSubmatch(digest)
 	if m == nil {
 		return false, fmt.Errorf("blobstore: malformed digest %q", digest)
 	}
-	_, err := os.Stat(s.path(m[1]))
-	switch {
-	case err == nil:
-		return true, nil
-	case errors.Is(err, fs.ErrNotExist):
-		return false, nil
-	}
-	return false, err
+	return regular(s.path(m[1]))
 }
 
 // Verify re-hashes a stored blob and fails if its bytes changed on disk.
@@ -170,7 +208,7 @@ func (s *Store) Verify(digest string) error {
 		return err
 	}
 	if got := "sha256:" + hex.EncodeToString(h.Sum(nil)); got != digest {
-		return fmt.Errorf("%w: stored %s now hashes to %s", ErrDigestMismatch, digest, got)
+		return fmt.Errorf("%w: stored %s now hashes to %s; restore it from a backup", ErrDigestMismatch, digest, got)
 	}
 	return nil
 }
