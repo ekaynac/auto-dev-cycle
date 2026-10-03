@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invoicekit"
+version = "0.1.0"
+description = "Small invoice arithmetic: amounts, bulk discounts, totals."
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.setuptools]
+packages = ["invoicekit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-p no:cacheprovider"
+junit_family = "xunit2"

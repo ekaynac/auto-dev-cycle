@@ -1,0 +1,16 @@
+{
+  "id": "ts-mini-failing-then-green-1",
+  "kind": "failing_then_green",
+  "title": "Make the failing negative-amount formatting test pass",
+  "requirement": "The test test/money-negative.test.ts fails: formatCents renders negative amounts with the minus sign after the currency symbol. Fix formatCents in code so that negative amounts render as a leading minus sign followed by the usual positive formatting (for example -$12.34), for every amount and currency. Zero and positive amounts are unchanged. Do not change the test.",
+  "acceptance": {
+    "hidden_tests": ["test/money-negative-hidden.test.ts"],
+    "visible_tests_added": ["test/money-negative.test.ts"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {
+    "base_visible": "fail",
+    "base_hidden": "fail",
+    "after_all": "pass"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "id": "go-mini-failing-then-green-1",
+  "kind": "failing_then_green",
+  "title": "Make the failing negative-amount test for FormatCents pass",
+  "requirement": "The visible test TestFormatCentsNegative in inventory/money_negative_test.go fails: FormatCents renders negative amounts wrongly (for example -150 comes out as \"-1.-50\" instead of \"-1.50\"). Fix FormatCents in code so that every negative amount is rendered as a leading minus sign followed by the same digits as its absolute value, with two fraction digits. Do not change any test.",
+  "acceptance": {
+    "hidden_tests": ["inventory/money_hidden_test.go"],
+    "visible_tests_added": ["inventory/money_negative_test.go"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {"base_visible": "fail", "base_hidden": "fail", "after_all": "pass"}
+}

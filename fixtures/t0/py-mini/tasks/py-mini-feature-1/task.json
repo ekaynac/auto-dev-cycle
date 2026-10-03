@@ -1,0 +1,11 @@
+{
+  "id": "py-mini-feature-1",
+  "kind": "feature",
+  "title": "Split a money amount evenly into cent-exact shares",
+  "requirement": "Add a function split_evenly(amount, parts) to invoicekit.money and export it from the invoicekit package (including its __all__). It splits a Decimal money amount into a list of `parts` shares. Every share is rounded to the cent, the shares sum exactly to the amount rounded to the cent (using the package's existing rounding), and they differ from each other by at most one cent. Any leftover cents go to the first shares, so larger shares come first; for a negative amount every share is negative and the shares with the larger magnitude come first. A `parts` value below 1 raises ValueError. Example: splitting 10.00 into 3 parts gives 3.34, 3.33, 3.33.",
+  "acceptance": {
+    "hidden_tests": ["tests/test_hidden_split_evenly.py"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {"base_visible": "pass", "base_hidden": "fail", "after_all": "pass"}
+}

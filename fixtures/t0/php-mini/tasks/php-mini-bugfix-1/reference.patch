@@ -1,0 +1,20 @@
+diff --git a/src/Money.php b/src/Money.php
+index 9e241d0..f11ab82 100644
+--- a/src/Money.php
++++ b/src/Money.php
+@@ -71,10 +71,12 @@ final class Money
+      */
+     public function format(): string
+     {
+-        $units = intdiv($this->cents, 100);
+-        $rest = $this->cents % 100;
++        $sign = $this->cents < 0 ? '-' : '';
++        $absolute = abs($this->cents);
++        $units = intdiv($absolute, 100);
++        $rest = $absolute % 100;
+ 
+-        return sprintf('%s %d.%02d', $this->currency, $units, $rest);
++        return sprintf('%s %s%d.%02d', $this->currency, $sign, $units, $rest);
+     }
+ 
+     private function assertSameCurrency(self $other): void

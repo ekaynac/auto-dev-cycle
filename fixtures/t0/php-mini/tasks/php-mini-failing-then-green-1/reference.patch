@@ -1,0 +1,18 @@
+diff --git a/src/Cart.php b/src/Cart.php
+index fd9d0ce..3901cb8 100644
+--- a/src/Cart.php
++++ b/src/Cart.php
+@@ -66,7 +66,12 @@ final class Cart
+      */
+     public function itemCount(): int
+     {
+-        return count($this->lines);
++        $units = 0;
++        foreach ($this->lines as $line) {
++            $units += $line->quantity;
++        }
++
++        return $units;
+     }
+ 
+     public function subtotal(): Money

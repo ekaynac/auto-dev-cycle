@@ -1,0 +1,11 @@
+{
+  "id": "go-mini-feature-1",
+  "kind": "feature",
+  "title": "Move stock between two stores with Store.Transfer",
+  "requirement": "Add a method `func (s *Store) Transfer(dst *Store, sku string, qty int) error` to package inventory. It moves qty units of sku from s to dst; the destination takes the source's unit price for that SKU (as Add does when restocking). The SKU is normalised and validated the same way as in Add and Remove, and the existing errors apply (invalid SKU, non-positive quantity, unknown SKU, insufficient stock). Transferring a store's whole stock of an SKU drops it from the source, as Remove does. A transfer whose source and destination are the same store fails with a new exported error `ErrSameStore`. When Transfer returns an error, neither store has changed.",
+  "acceptance": {
+    "hidden_tests": ["inventory/transfer_hidden_test.go"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {"base_visible": "pass", "base_hidden": "fail", "after_all": "pass"}
+}

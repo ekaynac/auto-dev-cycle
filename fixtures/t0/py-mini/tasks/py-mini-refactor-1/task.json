@@ -1,0 +1,11 @@
+{
+  "id": "py-mini-refactor-1",
+  "kind": "refactor",
+  "title": "Move the rounding rule into its own module",
+  "requirement": "Behaviour-preserving refactor: move the CENT constant and the round_money function out of invoicekit/money.py into a new module invoicekit/rounding.py, which becomes their single definition (money.py must no longer define the rounding itself). Existing import paths must keep working and refer to the same objects: invoicekit.money.CENT, invoicekit.money.round_money and invoicekit.round_money. No observable behaviour may change.",
+  "acceptance": {
+    "hidden_tests": ["tests/test_hidden_rounding_module.py"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {"base_visible": "pass", "base_hidden": "fail", "after_all": "pass"}
+}

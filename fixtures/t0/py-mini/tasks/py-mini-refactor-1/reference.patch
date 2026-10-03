@@ -1,0 +1,37 @@
+diff --git a/invoicekit/money.py b/invoicekit/money.py
+--- a/invoicekit/money.py
++++ b/invoicekit/money.py
+@@ -1,14 +1,10 @@
+ # SPDX-License-Identifier: Apache-2.0
+ """Money amounts as Decimal values rounded to the cent."""
+ 
+-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
++from decimal import Decimal, InvalidOperation
+ 
+-CENT = Decimal("0.01")
+-
+-
+-def round_money(amount: Decimal) -> Decimal:
+-    """Round to the cent, halves away from zero (commercial rounding)."""
+-    return Decimal(amount).quantize(CENT, rounding=ROUND_HALF_UP)
++# Re-exported: callers import CENT and round_money from here.
++from invoicekit.rounding import CENT, round_money
+ 
+ 
+ def parse_amount(text: str) -> Decimal:
+diff --git a/invoicekit/rounding.py b/invoicekit/rounding.py
+new file mode 100644
+--- /dev/null
++++ b/invoicekit/rounding.py
+@@ -0,0 +1,11 @@
++# SPDX-License-Identifier: Apache-2.0
++"""Rounding rules for money amounts."""
++
++from decimal import ROUND_HALF_UP, Decimal
++
++CENT = Decimal("0.01")
++
++
++def round_money(amount: Decimal) -> Decimal:
++    """Round to the cent, halves away from zero (commercial rounding)."""
++    return Decimal(amount).quantize(CENT, rounding=ROUND_HALF_UP)

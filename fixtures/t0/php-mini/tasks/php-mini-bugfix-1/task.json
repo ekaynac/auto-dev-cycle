@@ -1,0 +1,8 @@
+{
+  "id": "php-mini-bugfix-1",
+  "kind": "bugfix",
+  "title": "Money::format prints negative amounts wrongly",
+  "requirement": "A customer refund shows up as \"EUR -1.-99\" instead of \"EUR -1.99\", and minus five cents shows as \"EUR 0.-5\" instead of \"EUR -0.05\". Fix Money::format so a negative amount is printed as \"<CUR> -<units>.<two-digit cents>\", with a single leading minus sign, for every negative amount, including amounts below one unit. Positive and zero amounts must keep their current format.",
+  "acceptance": {"hidden_tests": ["tests/MoneyNegativeFormatTest.php"], "visible_tests_must_pass": true},
+  "expected": {"base_visible": "pass", "base_hidden": "fail", "after_all": "pass"}
+}

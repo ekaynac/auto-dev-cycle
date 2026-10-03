@@ -1,0 +1,11 @@
+{
+  "id": "go-mini-refactor-1",
+  "kind": "refactor",
+  "title": "Extract SKU normalisation into its own package example.com/gomini/sku",
+  "requirement": "Move the SKU normalisation and validation logic out of package inventory into a new package `example.com/gomini/sku` (directory `sku/`). It exports `const MaxLength = 32`, `var ErrInvalid error`, and `func Normalize(raw string) (string, error)`, which trims surrounding whitespace, upper-cases, and accepts 1..MaxLength characters of A-Z, 0-9 and '-'; on failure it returns an empty string and an error wrapping ErrInvalid. Package inventory must use package sku for all SKU handling. Its public API is unchanged: `inventory.MaxSKULength` equals `sku.MaxLength`, and `inventory.ErrInvalidSKU` is the same error value as `sku.ErrInvalid`, so errors from inventory match both with errors.Is. This is a behaviour-preserving refactor: no observable behaviour of inventory changes.",
+  "acceptance": {
+    "hidden_tests": ["sku/sku_hidden_test.go"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {"base_visible": "pass", "base_hidden": "fail", "after_all": "pass"}
+}

@@ -1,0 +1,15 @@
+diff --git a/invoicekit/money.py b/invoicekit/money.py
+--- a/invoicekit/money.py
++++ b/invoicekit/money.py
+@@ -26,9 +26,9 @@
+ 
+ 
+ def format_amount(amount: Decimal, currency: str) -> str:
+-    """Format an amount for display, e.g. "EUR 12.50" or "-EUR 3.00"."""
++    """Format an amount for display, e.g. "EUR 1,250.00" or "-EUR 3.00"."""
+     if not currency:
+         raise ValueError("currency is required")
+     value = round_money(amount)
+     sign = "-" if value < 0 else ""
+-    return f"{sign}{currency} {abs(value):.2f}"
++    return f"{sign}{currency} {abs(value):,.2f}"

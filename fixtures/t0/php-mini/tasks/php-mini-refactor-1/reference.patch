@@ -1,0 +1,58 @@
+diff --git a/src/Cart.php b/src/Cart.php
+index fd9d0ce..effce5a 100644
+--- a/src/Cart.php
++++ b/src/Cart.php
+@@ -84,13 +84,6 @@ final class Cart
+      */
+     public function totalWithPercentDiscount(int $percent): Money
+     {
+-        if ($percent < 0 || $percent > 100) {
+-            throw new InvalidArgumentException("Discount must be between 0 and 100, got {$percent}");
+-        }
+-
+-        $subtotal = $this->subtotal();
+-        $discount = intdiv($subtotal->cents() * $percent + 50, 100);
+-
+-        return $subtotal->subtract(Money::ofCents($discount, $this->currency));
++        return (new PercentDiscount($percent))->applyTo($this->subtotal());
+     }
+ }
+diff --git a/src/PercentDiscount.php b/src/PercentDiscount.php
+new file mode 100644
+index 0000000..d314390
+--- /dev/null
++++ b/src/PercentDiscount.php
+@@ -0,0 +1,33 @@
++<?php
++// SPDX-License-Identifier: Apache-2.0
++
++declare(strict_types=1);
++
++namespace PhpMini\Shop;
++
++use InvalidArgumentException;
++
++/**
++ * A whole-number percentage discount (0-100); the discount is rounded half up to the cent.
++ */
++final class PercentDiscount
++{
++    public function __construct(private readonly int $percent)
++    {
++        if ($percent < 0 || $percent > 100) {
++            throw new InvalidArgumentException("Discount must be between 0 and 100, got {$percent}");
++        }
++    }
++
++    public function percent(): int
++    {
++        return $this->percent;
++    }
++
++    public function applyTo(Money $amount): Money
++    {
++        $discount = intdiv($amount->cents() * $this->percent + 50, 100);
++
++        return $amount->subtract(Money::ofCents($discount, $amount->currency()));
++    }
++}

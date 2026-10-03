@@ -1,0 +1,25 @@
+{
+  "name": "py-mini",
+  "language": "python",
+  "toolchain": {
+    "language_version": "3.12",
+    "interpreter": "python3.12",
+    "dependency_recipe": {
+      "lockfiles": ["requirements-dev.txt"],
+      "command": ["python", "-m", "pip", "install", "--require-hashes", "--only-binary=:all:", "-r", "requirements-dev.txt"],
+      "registries": ["pypi"]
+    }
+  },
+  "gate": {
+    "command": ["python", "-m", "pytest", "-q", "--junitxml={results_path}"],
+    "result_adapter": "junit_xml",
+    "results_path": "junit.xml",
+    "network": "none"
+  },
+  "tasks": [
+    "py-mini-feature-1",
+    "py-mini-bugfix-1",
+    "py-mini-refactor-1",
+    "py-mini-failing-then-green-1"
+  ]
+}

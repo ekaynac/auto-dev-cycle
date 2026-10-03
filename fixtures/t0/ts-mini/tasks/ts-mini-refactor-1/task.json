@@ -1,0 +1,15 @@
+{
+  "id": "ts-mini-refactor-1",
+  "kind": "refactor",
+  "title": "Move the tax calculation into its own module",
+  "requirement": "Tax rules are about to grow, so the tax calculation should live in its own module. Move taxCents out of src/cart.ts into a new module src/tax.ts that exports it. Existing callers must keep working unchanged: src/cart.ts and src/index.ts still export taxCents (the same function, re-exported), and no behaviour changes anywhere.",
+  "acceptance": {
+    "hidden_tests": ["test/tax.test.ts"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {
+    "base_visible": "pass",
+    "base_hidden": "fail",
+    "after_all": "pass"
+  }
+}

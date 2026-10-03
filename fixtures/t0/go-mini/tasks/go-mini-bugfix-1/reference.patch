@@ -1,0 +1,13 @@
+diff --git a/inventory/inventory.go b/inventory/inventory.go
+index 2f157e8..c090038 100644
+--- a/inventory/inventory.go
++++ b/inventory/inventory.go
+@@ -136,7 +136,7 @@ func (s *Store) TotalValueCents() int {
+ func (s *Store) LowStock(threshold int) []string {
+ 	out := []string{}
+ 	for k, it := range s.items {
+-		if it.Qty <= threshold {
++		if it.Qty < threshold {
+ 			out = append(out, k)
+ 		}
+ 	}
