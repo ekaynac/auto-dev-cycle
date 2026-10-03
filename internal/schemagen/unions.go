@@ -22,6 +22,12 @@ func (g *gen) union(n *Node, items []*Node, name, where string) string {
 		if strings.HasPrefix(inner, "*") || g.isNullable(other, where+"/oneOf") {
 			return g.fail(where, "nested nullable")
 		}
+		if isCollectionType(inner) {
+			// A defined helper keeps A = *[]A representable.
+			g.emit(name+"Value", where)
+			g.p("type %sValue %s\n", name, inner)
+			inner = name + "Value"
+		}
 		return "*" + inner
 	}
 	// Array or literal: oneOf [{const: L}, {type: array}].
@@ -287,7 +293,8 @@ func (g *gen) accessors(all, props *Node, required map[string]bool, fields map[s
 		}
 		test := cond.Get("properties").Get(disc)
 		val := test.Get("const")
-		if !g.only(test, at+"/if/properties/"+disc, "const") || val == nil || val.Kind != String {
+		if !g.only(test, at+"/if/properties/"+disc, "const") || val == nil || val.Kind != String ||
+			(test.Get("type") != nil && test.Get("type").Str != "string") {
 			g.fail(at, "the if must test %s against one string const", disc)
 			return
 		}

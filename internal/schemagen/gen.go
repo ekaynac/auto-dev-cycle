@@ -18,7 +18,6 @@ import (
 	"go/format"
 	"go/token"
 	"path"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -403,8 +402,10 @@ func (g *gen) declare(name string, n *Node) {
 		t := g.typeOf(n, name+"Value", name)
 		g.emit(name, name)
 		g.doc(n, name)
-		if regexp.MustCompile(`\b` + name + `\b`).MatchString(t) {
-			// A recursive collection (A = []A) cannot be an alias.
+		if isCollectionType(t) {
+			// A named collection is a defined type, never an alias, so any
+			// recursion through collections (A = []A, A = []B with B = []A)
+			// is representable: Go refuses alias cycles, not type cycles.
 			g.p("type %s %s\n", name, t)
 		} else {
 			g.p("type %s = %s\n", name, t)
@@ -520,6 +521,11 @@ func (g *gen) typeOf(n *Node, name, where string) string {
 	return g.fail(where, "type %q", t.Str)
 }
 
+// isCollectionType: a Go slice or map type literal.
+func isCollectionType(t string) bool {
+	return strings.HasPrefix(t, "[]") || strings.HasPrefix(t, "map[")
+}
+
 // keyNames checks a propertyNames schema: a string schema, inline or by
 // $ref, since map keys are Go strings.
 func (g *gen) keyNames(n *Node, where string) {
@@ -535,7 +541,9 @@ func (g *gen) keyNames(n *Node, where string) {
 	} else if !g.only(n, where, "key names") {
 		return
 	}
-	if t := n.Get("type"); (t == nil || t.Str != "string") && !isStringEnum(n) {
+	t, e := n.Get("type"), n.Get("enum")
+	switch {
+	case t != nil && t.Str != "string", e != nil && !isStringEnum(n), t == nil && e == nil:
 		g.fail(where, "propertyNames must be a string schema")
 	}
 }

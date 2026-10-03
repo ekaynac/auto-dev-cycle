@@ -95,6 +95,10 @@ func TestRefusesShapesOutsideTheGrammar(t *testing.T) {
 		{"integer literal branch", `"A":{"oneOf":[{"const":"x","type":"integer"},{"type":"array","items":{"type":"string"}}]}`, "must be a string const"},
 		{"a $ref cycle", `"A1":{"$ref":"#/$defs/A2"},"A2":{"$ref":"#/$defs/A1"}`, "does not resolve"},
 		{"optional field through a $ref cycle", `"A1":{"$ref":"#/$defs/A2"},"A2":{"$ref":"#/$defs/A1"},"S":{"type":"object","additionalProperties":false,"properties":{"p":{"$ref":"#/$defs/A1"}}}`, "does not resolve"},
+		// Astra #19 round 3: scalar checks at the special positions.
+		{"dispatch test with an integer type", scopeX + "," + dispatchHead + `{"if":{"properties":{"k":{"const":"x","type":"integer"}},"required":["k"]},"then":{"properties":{"p":{"$ref":"#/$defs/X"}}}}]}`, "against one string const"},
+		{"propertyNames integer with a string enum", `"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"type":"integer","enum":["a"]}}`, "propertyNames must be a string schema"},
+		{"propertyNames with a non-string enum", `"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"enum":[1]}}`, "propertyNames must be a string schema"},
 		// Astra #19: generated methods are reserved.
 		{"literal naming a generated method", `"A":{"oneOf":[{"const":"marshalJSON"},{"type":"array","items":{"type":"string"}}]}`, "next to List and the generated methods"},
 
@@ -264,6 +268,12 @@ const supported = `
 		{"type":"object","additionalProperties":false,"required":["kind","KIND"],"properties":{"kind":{"const":"a"},"KIND":{"type":"string"}}},
 		{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"b"}}}]},
 	"Tree":{"type":"array","items":{"$ref":"#/$defs/Tree"}},
+	"RA":{"type":"array","items":{"$ref":"#/$defs/RB"}},
+	"RB":{"type":"array","items":{"$ref":"#/$defs/RA"}},
+	"SA":{"type":"array","items":{"$ref":"#/$defs/SB"}},
+	"SB":{"$ref":"#/$defs/SA"},
+	"NA":{"oneOf":[{"type":"null"},{"type":"array","items":{"$ref":"#/$defs/NA"}}]},
+	"É":{"type":"array","items":{"$ref":"#/$defs/É"}},
 	"MTree":{"type":"object","additionalProperties":{"$ref":"#/$defs/MTree"}},
 	"Str":{"type":"string"},
 	"Ref":{"$ref":"#/$defs/Str","pattern":"^a","minLength":1},
@@ -353,6 +363,11 @@ func main() {
 		fail("case-related keys chose variant %#v", c.Variant)
 	}
 	same[types.Tree](` + "`" + `[[],[[]]]` + "`" + `)
+	// Recursion through collections, however composed, compiles.
+	same[types.RA](` + "`" + `[[]]` + "`" + `)
+	same[types.SA](` + "`" + `[[]]` + "`" + `)
+	same[types.NA](` + "`" + `[null,[]]` + "`" + `)
+	same[types.É](` + "`" + `[[]]` + "`" + `)
 	same[types.MTree](` + "`" + `{"a":{},"b":{"c":{}}}` + "`" + `)
 
 	var ref types.Ref = "ab"
