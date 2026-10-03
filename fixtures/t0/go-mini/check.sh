@@ -4,6 +4,13 @@
 # Well-formedness check for the go-mini T0 fixture (fixtures/t0/README.md rules 1-4).
 # For every task it works in a fresh temporary git copy of repo/ and prints one line per check.
 # Exits non-zero if any check deviates.
+#
+# Every gate run is wrapped in `bwrap --dev-bind / / --unshare-net` (same filesystem, so the Go
+# toolchain and build cache stay reachable; no network), and a probe proves the sandbox has no
+# network. Without a working bwrap the check fails, unless ADC_T0_ALLOW_NETWORK=1 is set (then the
+# gate runs with the host network and the offline property is reported as SKIP).
+# failing_then_green: "base with hidden" must fail in a hidden test function, and nothing may fail
+# that did not already fail at base visible. A skipped test never counts as a pass.
 set -euo pipefail
 
 FIXTURE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,6 +49,25 @@ report() { # report <ok:0|1> <message>
 	fi
 }
 
+# --- offline wrapper (rule 4) ---------------------------------------------------
+OFFLINE=()
+OFFLINE_LABEL=""
+if command -v bwrap >/dev/null && bwrap --dev-bind / / --unshare-net -- true 2>/dev/null; then
+	OFFLINE=(bwrap --dev-bind / / --unshare-net --)
+	OFFLINE_LABEL=" (offline)"
+	# The probe succeeds only if a TCP connection to a public address opens.
+	if "${OFFLINE[@]}" timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then
+		echo "FAIL rule4 the bwrap gate sandbox still reaches the network" >&2
+		exit 1
+	fi
+	report 0 "rule4 gate runs offline (bwrap --unshare-net; probe found no network)"
+elif [[ "${ADC_T0_ALLOW_NETWORK:-}" == 1 ]]; then
+	echo "SKIP rule4 bwrap cannot drop the network; gate runs with the host network (ADC_T0_ALLOW_NETWORK=1)"
+else
+	echo "FAIL rule4 bwrap cannot drop the network; set ADC_T0_ALLOW_NETWORK=1 to run without isolation" >&2
+	exit 1
+fi
+
 check_eq() { # check_eq <label> <got> <want>
 	if [[ "$2" == "$3" ]]; then report 0 "$1: $2"; else report 1 "$1: got $2, want $3"; fi
 }
@@ -75,7 +101,7 @@ run_gate() {
 	local repo="$1" out rc=0
 	out="$repo/$RESULTS_PATH"
 	mkdir -p "$(dirname "$out")"
-	(cd "$repo" && "${GATE_CMD[@]}" >"$out" 2>"$repo/.gate-stderr") || rc=$?
+	(cd "$repo" && "${OFFLINE[@]}" "${GATE_CMD[@]}" >"$out" 2>"$repo/.gate-stderr") || rc=$?
 	if [[ ! -s "$out" ]]; then
 		echo "nostream"
 		return
@@ -86,9 +112,22 @@ run_gate() {
 		echo "badjson"
 		return
 	fi
-	local fails
+	local fails skips
 	fails="$(jq -r 'select(.Action == "fail" or .Action == "build-fail") | .Action' "$out" | wc -l)"
-	if [[ "$rc" == 0 && "$fails" == 0 ]]; then echo pass; else echo fail; fi
+	# A skipped test is not a pass (package-level "no test files" skips carry no Test field).
+	skips="$(jq -r 'select(.Action == "skip" and .Test != null) | .Test' "$out" | wc -l)"
+	if [[ "$rc" == 0 && "$fails" == 0 && "$skips" == 0 ]]; then
+		echo pass
+	elif [[ "$rc" == 0 && "$fails" == 0 ]]; then
+		echo "skipped($skips)"
+	else
+		echo fail
+	fi
+}
+
+# failing_tests <stream>: top-level test functions with a fail event, one per line, sorted.
+failing_tests() {
+	jq -r 'select(.Action == "fail" and .Test != null) | .Test | split("/")[0]' "$1" | sort -u
 }
 
 # test_names <file...>: top-level Test functions declared in the given Go test files.
@@ -149,10 +188,30 @@ for task_dir in "$TASKS_DIR"/*/; do
 	base="$WORK_ROOT/$id-base"
 	fresh_copy "$base" "$task_dir"
 	r="$(run_gate "$base")"
-	check_eq "$id rule1 base visible" "$r" "$exp_bv"
+	check_eq "$id rule1 base visible$OFFLINE_LABEL" "$r" "$exp_bv"
+	visible_failed=""
+	if [[ -s "$base/$RESULTS_PATH" ]]; then visible_failed="$(failing_tests "$base/$RESULTS_PATH")"; fi
 	copy_hidden "$base" "$task_dir"
 	r="$(run_gate "$base")"
-	check_eq "$id rule1 base with hidden" "$r" "$exp_bh"
+	check_eq "$id rule1 base with hidden$OFFLINE_LABEL" "$r" "$exp_bh"
+	if [[ "$kind" == failing_then_green ]]; then
+		# The visible overlay already fails the gate, so prove the hidden test functions fail
+		# themselves, and that nothing fails which did not fail at base visible.
+		mapfile -t hidden_names < <(cd "$task_dir/hidden" && test_names "${hidden[@]}" | sort -u)
+		hidden_hit="" others=""
+		if [[ -s "$base/$RESULTS_PATH" ]]; then
+			while IFS= read -r n; do
+				[[ -n "$n" ]] || continue
+				if printf '%s\n' "${hidden_names[@]}" | grep -qxF "$n"; then
+					hidden_hit+=" $n"
+				elif ! grep -qxF "$n" <<<"$visible_failed"; then
+					others+=" $n"
+				fi
+			done < <(failing_tests "$base/$RESULTS_PATH")
+		fi
+		check_eq "$id rule1 base with hidden fails in hidden tests (failing:${hidden_hit:- none}; new elsewhere:${others:- none})" \
+			"$([[ -n "$hidden_hit" && -z "$others" ]] && echo yes || echo no)" "yes"
+	fi
 
 	# Rule 2 + 4: fresh copy, apply the patch, add hidden tests, run the gate offline.
 	after="$WORK_ROOT/$id-after"
@@ -165,7 +224,7 @@ for task_dir in "$TASKS_DIR"/*/; do
 	fi
 	copy_hidden "$after" "$task_dir"
 	r="$(run_gate "$after")"
-	check_eq "$id rule2+4 gate after patch (offline)" "$r" "$exp_after"
+	check_eq "$id rule2+4 gate after patch$OFFLINE_LABEL" "$r" "$exp_after"
 	stream="$after/$RESULTS_PATH"
 	check_eq "$id rule4 $ADAPTER stream at $RESULTS_PATH" \
 		"$([[ -s "$stream" ]] && jq -e . "$stream" >/dev/null 2>&1 && echo valid || echo invalid)" "valid"

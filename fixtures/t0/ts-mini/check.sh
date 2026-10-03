@@ -6,13 +6,17 @@
 #   1. base: the visible tests give expected.base_visible; with the hidden tests, expected.base_hidden;
 #   2. after: reference.patch applies with `git apply`, and with the hidden tests the gate passes;
 #   3. the patch never edits a test file;
-#   4. the gate runs offline (network namespace via bwrap when available) and writes a parseable
+#   4. the gate runs offline (a bwrap network namespace, checked by a probe) and writes a parseable
 #      junit XML results file.
-# Prints one line per check and exits non-zero on any deviation.
+# "Base with hidden" must fail in the hidden tests themselves: at least one test case that the hidden
+# files add fails, and nothing fails that did not already fail at base visible. A skipped test case is
+# never a pass. Prints one line per check and exits non-zero on any deviation.
 #
-# Environment: ADC_T0_REQUIRE_OFFLINE=1 turns a missing bwrap into a failure instead of a skip.
+# Environment: without a working bwrap the check fails, unless ADC_T0_ALLOW_NETWORK=1 is set (then the
+# gate runs with the host network and the offline property is reported as SKIP).
 
 set -euo pipefail
+export LC_ALL=C # comm needs the byte order that python's sorted() writes
 
 FIXTURE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly FIXTURE_DIR
@@ -85,41 +89,70 @@ read_list() {
   rm -f "$tmp"
 }
 
-# junit_summary FILE: prints "<tests> <failures+errors>" or exits non-zero if the XML is not junit.
+# junit_summary FILE ALL_OUT FAILED_OUT: prints "<tests> <failures+errors> <skipped>" or exits
+# non-zero if the XML is not junit. Writes every test case's key (its enclosing suite names and its
+# own name, joined by " > ") to ALL_OUT and the failing ones to FAILED_OUT, one per line, sorted.
 # The file is produced locally by the fixture's own gate run, so the stdlib parser is adequate here.
 junit_summary() {
-  python3 - "$1" <<'PY'
+  python3 - "$@" <<'PY'
 import sys
 import xml.etree.ElementTree as ET
 root = ET.parse(sys.argv[1]).getroot()
 if root.tag not in ("testsuites", "testsuite"):
     sys.exit(f"unexpected root element {root.tag}")
-cases = list(root.iter("testcase"))
-bad = sum(1 for c in cases if c.find("failure") is not None or c.find("error") is not None)
-print(len(cases), bad)
+cases = []
+def walk(node, path):
+    for child in node:
+        if child.tag == "testsuite":
+            walk(child, path + [child.get("name", "")])
+        elif child.tag == "testcase":
+            cases.append((" > ".join(path + [child.get("name", "")]), child))
+walk(root, [root.get("name", "")] if root.tag == "testsuite" else [])
+failed = [k for k, c in cases if c.find("failure") is not None or c.find("error") is not None]
+skipped = sum(1 for _, c in cases if c.find("skipped") is not None)
+with open(sys.argv[2], "w", encoding="utf-8") as out:
+    out.writelines(k + "\n" for k in sorted(k for k, _ in cases))
+with open(sys.argv[3], "w", encoding="utf-8") as out:
+    out.writelines(k + "\n" for k in sorted(failed))
+print(len(cases), len(failed), skipped)
 PY
 }
+
+# The probe exits 0 only when a TCP connection to a public address fails.
+readonly NET_PROBE='const s = require("node:net").connect({ host: "1.1.1.1", port: 443 });
+s.setTimeout(3000, () => process.exit(0));
+s.on("connect", () => process.exit(1));
+s.on("error", () => process.exit(0));'
 
 offline_mode=""
 detect_offline() {
   if command -v bwrap >/dev/null 2>&1 \
     && bwrap --unshare-net --ro-bind / / --dev /dev --proc /proc true >/dev/null 2>&1; then
-    offline_mode="bwrap"
-    pass "offline: gate runs in a bwrap network namespace (no network)"
-  elif [[ "${ADC_T0_REQUIRE_OFFLINE:-0}" == "1" ]]; then
-    fail "offline: bwrap unavailable and ADC_T0_REQUIRE_OFFLINE=1"
-  else
+    if bwrap --unshare-net --ro-bind / / --dev /dev --proc /proc -- node -e "$NET_PROBE" >/dev/null 2>&1; then
+      offline_mode="bwrap"
+      pass "offline: gate runs in a bwrap network namespace (probe found no network)"
+    else
+      fail "offline: the bwrap gate sandbox still reaches the network"
+      exit 1
+    fi
+  elif [[ "${ADC_T0_ALLOW_NETWORK:-0}" == "1" ]]; then
     offline_mode="none"
-    skip "offline: bwrap unavailable; gate runs without network isolation"
+    skip "offline: bwrap unavailable; gate runs with the host network (ADC_T0_ALLOW_NETWORK=1)"
+  else
+    fail "offline: bwrap cannot drop the network; set ADC_T0_ALLOW_NETWORK=1 to run without isolation"
+    exit 1
   fi
 }
 
 # run_gate DIR LABEL: runs the gate in DIR; sets gate_result to pass|fail, or error when the
-# results file is missing, unparseable or inconsistent with the exit status.
+# results file is missing, unparseable or inconsistent with the exit status, or when a test case was
+# skipped in a run that would otherwise pass. Leaves the case keys in $work_root/cases.{all,failed}.
 gate_result=""
 run_gate() {
   local dir=$1 label=$2 status=0 log="$work_root/gate.log"
   rm -f "$dir/$RESULTS_PATH"
+  : >"$work_root/cases.all"
+  : >"$work_root/cases.failed"
   if [[ "$offline_mode" == "bwrap" ]]; then
     (cd "$dir" && bwrap --unshare-net --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
       --bind "$dir" "$dir" --chdir "$dir" -- "${GATE_CMD[@]}") >"$log" 2>&1 || status=$?
@@ -135,12 +168,13 @@ run_gate() {
     gate_result="error"
     return 0
   fi
-  if ! summary="$(junit_summary "$dir/$RESULTS_PATH" 2>&1)"; then
+  if ! summary="$(junit_summary "$dir/$RESULTS_PATH" "$work_root/cases.all" "$work_root/cases.failed" 2>&1)"; then
     fail "$label: $RESULTS_PATH is not parseable junit XML: $summary"
     gate_result="error"
     return 0
   fi
-  local tests=${summary% *} bad=${summary#* }
+  local tests bad skipped
+  read -r tests bad skipped <<<"$summary"
   if [[ "$tests" -eq 0 ]]; then
     fail "$label: $RESULTS_PATH holds no test cases"
     gate_result="error"
@@ -157,7 +191,12 @@ run_gate() {
     gate_result="error"
     return 0
   fi
-  pass "$label: junit results parse ($tests test cases, $bad failing)"
+  if [[ "$gate_result" == "pass" && "$skipped" -ne 0 ]]; then
+    fail "$label: $skipped skipped test case(s); a skipped test is not a pass"
+    gate_result="error"
+    return 0
+  fi
+  pass "$label: junit results parse ($tests test cases, $bad failing, $skipped skipped)"
 }
 
 # fresh_copy NAME: copies repo/ into a new git repository and prints its path.
@@ -284,12 +323,25 @@ check_task() {
   else
     fail "$task: rule 1 base visible tests $gate_result (expected $base_visible)"
   fi
+  mv "$work_root/cases.all" "$work_root/visible.all"
+  mv "$work_root/cases.failed" "$work_root/visible.failed"
   copy_tests "$task_dir/hidden" "$base" "${hidden[@]}"
   run_gate "$base" "$task: rule 4 base hidden"
-  if [[ "$gate_result" == "$base_hidden" ]]; then
-    pass "$task: rule 1 base with hidden tests $gate_result (expected $base_hidden)"
-  else
+  if [[ "$gate_result" != "$base_hidden" ]]; then
     fail "$task: rule 1 base with hidden tests $gate_result (expected $base_hidden)"
+  else
+    # The hidden files add the cases absent from the base visible run. At least one of them must
+    # fail, and every other failure must already have failed at base visible.
+    local hidden_failed others
+    hidden_failed="$(comm -23 "$work_root/cases.all" "$work_root/visible.all" \
+      | comm -12 - "$work_root/cases.failed" | wc -l)"
+    others="$(comm -23 "$work_root/cases.failed" "$work_root/visible.failed" \
+      | comm -12 - "$work_root/visible.all" | tr '\n' ';')"
+    if [[ "$hidden_failed" -gt 0 && -z "$others" ]]; then
+      pass "$task: rule 1 base with hidden tests $gate_result, $hidden_failed hidden test case(s) failing"
+    else
+      fail "$task: rule 1 base with hidden tests: $hidden_failed hidden test case(s) failing (want > 0); new failures elsewhere: [$others]"
+    fi
   fi
 
   # Rule 2: after the reference patch.
@@ -317,12 +369,18 @@ main() {
   require_tool node
   require_tool python3
 
-  local node_major
-  node_major="$(node -p 'process.versions.node.split(".")[0]')"
-  if [[ "$node_major" -ge 22 ]]; then
-    pass "toolchain: node $(node --version)"
+  # Type stripping is on by default only from the declared minimum version (22.18).
+  local min_version have_version
+  min_version="$(json_get "$FIXTURE_JSON" toolchain.minimum_version)"
+  have_version="$(node -p 'process.versions.node')"
+  if node -e '
+    const [have, want] = process.argv.slice(1).map((v) => v.split(".").map(Number));
+    for (let i = 0; i < want.length; i++) {
+      if ((have[i] ?? 0) !== want[i]) process.exit((have[i] ?? 0) > want[i] ? 0 : 1);
+    }' "$have_version" "$min_version"; then
+    pass "toolchain: node $have_version (>= $min_version)"
   else
-    fail "toolchain: node $(node --version) is older than 22"
+    fail "toolchain: node $have_version is older than $min_version, the first version that strips TypeScript types by default"
     exit 1
   fi
 

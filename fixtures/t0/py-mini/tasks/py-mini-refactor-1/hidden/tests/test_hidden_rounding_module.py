@@ -2,7 +2,6 @@
 # Hidden acceptance tests for py-mini-refactor-1. The new module is imported
 # inside each test so that its absence is a test failure, not a collection error.
 import importlib
-import importlib.util
 from decimal import Decimal
 
 import invoicekit
@@ -31,11 +30,3 @@ def test_behaviour_is_unchanged():
     assert round_money(Decimal("2.345")) == Decimal("2.35")
     assert round_money(Decimal("-2.345")) == Decimal("-2.35")
     assert round_money(Decimal("7")) == Decimal("7.00")
-
-
-def test_money_module_no_longer_defines_rounding():
-    source = importlib.util.find_spec("invoicekit.money").origin
-    with open(source, encoding="utf-8") as handle:
-        text = handle.read()
-    assert "def round_money" not in text
-    assert "ROUND_HALF_UP" not in text

@@ -42,7 +42,7 @@ AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 
 .PHONY: help toolchain go-check build dist lint fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh fixtures/t0/*/check.sh
-T0_FIXTURES   := $(notdir $(wildcard fixtures/t0/*-mini))
+T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
 
 help: ## List targets
 	@grep -hE '^[a-z][a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{ printf "  %-12s %s\n", $$1, $$2 }'
@@ -86,7 +86,8 @@ lint: go-check ## gofmt, go vet, go mod tidy check, SPDX headers, shell syntax (
 	  else echo "lint: shellcheck not installed; skipped locally (required in CI)"; fi
 
 fixtures-check: ## Prove every T0 fixture task well-formed (needs docker, bubblewrap and network for dependency recipes)
-	@for f in $(T0_FIXTURES); do echo "== $$f"; fixtures/t0/$$f/check.sh || exit 1; done
+	@[[ -n "$(T0_CHECKS)" ]] || { echo "fixtures-check: no fixtures/t0/*/check.sh found" >&2; exit 1; }
+	@for c in $(T0_CHECKS); do echo "== $$c"; $$c || exit 1; done
 
 ci: lint build dist ## Everything CI runs
 

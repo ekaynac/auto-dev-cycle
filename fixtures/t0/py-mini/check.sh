@@ -16,9 +16,12 @@
 # "acceptance.visible_tests_added", and is copied into the repo before that task's base
 # commit. At base exactly those files fail; no other task may add visible tests.
 #
-# Only the dependency recipe may use the network. The gate runs under `bwrap --unshare-net`
-# (or `unshare -rn`). With neither available the check fails, unless
-# ADC_FIXTURE_ALLOW_NETWORK=1 is set (then the offline property is reported as SKIP).
+# Only the dependency recipe may use the network. Every gate run is wrapped in
+# `bwrap --dev-bind / / --unshare-net`, and a probe proves the sandbox has no network.
+# Without a working bwrap the check fails, unless ADC_T0_ALLOW_NETWORK=1 is set (then the
+# gate runs with the host network and the offline property is reported as SKIP).
+#
+# A skipped test is never a pass: a gate run with any skipped test does not count as passing.
 #
 # Usage: fixtures/t0/py-mini/check.sh            (PYTHON=python3.12 by default)
 set -euo pipefail
@@ -101,29 +104,28 @@ fi
 offline=()
 if command -v bwrap >/dev/null && bwrap --dev-bind / / --unshare-net -- true 2>/dev/null; then
   offline=(bwrap --dev-bind / / --unshare-net --)
-elif command -v unshare >/dev/null && unshare -rn true 2>/dev/null; then
-  offline=(unshare -rn)
 fi
 probe='import socket,sys
 s=socket.socket(); s.settimeout(3)
-try: s.connect(("1.1.1.1", 53))
+try: s.connect(("1.1.1.1", 443))
 except OSError: sys.exit(0)
 sys.exit(1)'
 if ((${#offline[@]})); then
   if "${offline[@]}" "$venv/bin/python" -c "$probe"; then
-    ok "rule 4: gate sandbox has no network (${offline[0]})"
+    ok "rule 4: gate runs offline (bwrap --unshare-net; probe found no network)"
   else
-    bad "rule 4: gate sandbox (${offline[0]}) still reaches the network"
+    die "rule 4: the bwrap gate sandbox still reaches the network"
   fi
-elif [[ "${ADC_FIXTURE_ALLOW_NETWORK:-}" == 1 ]]; then
-  skip "rule 4: no network namespace tool; gate runs with the host network (ADC_FIXTURE_ALLOW_NETWORK=1)"
+elif [[ "${ADC_T0_ALLOW_NETWORK:-}" == 1 ]]; then
+  skip "rule 4: bwrap cannot drop the network; gate runs with the host network (ADC_T0_ALLOW_NETWORK=1)"
 else
-  die "rule 4: neither bwrap nor unshare can drop the network; set ADC_FIXTURE_ALLOW_NETWORK=1 to run anyway"
+  die "rule 4: bwrap cannot drop the network; set ADC_T0_ALLOW_NETWORK=1 to run without isolation"
 fi
 
 # ---------------------------------------------------------------- gate runner
 # run_gate <workspace> <label>: runs the gate offline and sets
-#   outcome   pass | fail | error   (error = anything that is not a clean pass or plain test failures)
+#   outcome   pass | fail | error   (error = anything that is not a clean pass or plain test failures;
+#             a run with skipped tests is never a pass)
 #   failed    space-separated repo paths of test files with a failing testcase
 #   summary   one-line description
 run_gate() {
@@ -168,7 +170,7 @@ PY
   local tests fails errs skips
   read -r tests fails errs skips failed <<<"$parsed"
   summary="exit $rc, $tests tests, $fails failed, $errs errors, $skips skipped"
-  if ((rc == 0 && tests > 0 && fails == 0 && errs == 0)); then
+  if ((rc == 0 && tests > 0 && fails == 0 && errs == 0 && skips == 0)); then
     outcome=pass
   elif ((rc == 1 && fails > 0 && errs == 0)); then
     outcome=fail

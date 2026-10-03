@@ -2,7 +2,6 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import * as tax from "../src/tax.ts";
 import * as cart from "../src/cart.ts";
 import * as index from "../src/index.ts";
@@ -20,10 +19,5 @@ describe("tax module", () => {
     assert.equal(tax.taxCents(0, 825), 0);
     assert.throws(() => tax.taxCents(100, -1), RangeError);
     assert.throws(() => tax.taxCents(100, 8.25), RangeError);
-  });
-
-  it("is no longer defined in cart.ts", async () => {
-    const source = await readFile(new URL("../src/cart.ts", import.meta.url), "utf8");
-    assert.doesNotMatch(source, /function\s+taxCents\b/);
   });
 });

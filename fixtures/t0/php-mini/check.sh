@@ -12,6 +12,11 @@
 # The dependency recipe runs in the composer image (network allowed for that step only); the gate runs
 # in the php image. Both run as the invoking user. Prints one line per check; exits non-zero on any deviation.
 #
+# A probe proves that a --network none container has no network. If such a container cannot run, the check
+# fails, unless ADC_T0_ALLOW_NETWORK=1 is set (then the gate runs with the default network and the offline
+# property is reported as SKIP). failing_then_green: "base with hidden" must fail in a hidden test file, and
+# nothing may fail that did not already fail at base visible. A skipped test never counts as a pass.
+#
 # Requires: bash, git, docker (or a docker-compatible CLI), python3.
 
 set -euo pipefail
@@ -77,6 +82,29 @@ mkdir -p "$WORK_ROOT/composer-home"
 
 USER_SPEC="$(id -u):$(id -g)"
 
+# Offline gate (rule 4). The probe exits 0 only when a TCP connection to a public address fails;
+# docker itself exits 125 or more when it cannot start the container.
+NETWORK_ARGS=(--network none)
+OFFLINE_LABEL=" (offline gate)"
+probe_rc=0
+# shellcheck disable=SC2016 # the single-quoted $ variables are PHP, not shell
+"$DOCKER" run --rm --network none --user "$USER_SPEC" "$PHP_IMAGE" \
+    php -r 'exit(@fsockopen("1.1.1.1", 443, $errno, $errstr, 3) ? 1 : 0);' >"$WORK_ROOT/probe.log" 2>&1 || probe_rc=$?
+if [[ $probe_rc -eq 0 ]]; then
+    pass "fixture: gate runs offline (--network none; probe found no network)"
+elif [[ $probe_rc -eq 1 ]]; then
+    fail "fixture: a --network none container still reaches the network"
+    exit 1
+elif [[ "${ADC_T0_ALLOW_NETWORK:-}" == 1 ]]; then
+    NETWORK_ARGS=()
+    OFFLINE_LABEL=""
+    echo "SKIP fixture: --network none unavailable (exit $probe_rc); gate runs with the default network (ADC_T0_ALLOW_NETWORK=1)"
+else
+    fail "fixture: cannot run a --network none container (exit $probe_rc); set ADC_T0_ALLOW_NETWORK=1 to run without isolation"
+    tail -n 5 "$WORK_ROOT/probe.log" | sed 's/^/    | /'
+    exit 1
+fi
+
 # run_recipe <repo dir>: dependency recipe, network allowed.
 run_recipe() {
     "$DOCKER" run --rm --user "$USER_SPEC" \
@@ -85,12 +113,15 @@ run_recipe() {
         "$COMPOSER_IMAGE" "${RECIPE_CMD[@]}" >"$WORK_ROOT/recipe.log" 2>&1
 }
 
-# run_gate <repo dir> <results dir>: gate offline; prints "pass" or "fail", or "error: <why>".
+# run_gate <repo dir> <results dir>: gate offline; prints "pass" or "fail", or "error: <why>" (a run with
+# skipped tests is never "pass"). Writes the repo paths of test files with a failing test case, one per
+# line, to $WORK_ROOT/failed.txt.
 run_gate() {
     local repo="$1" results="$2" rc=0
     rm -rf "$results"
     mkdir -p "$results"
-    "$DOCKER" run --rm --network none --user "$USER_SPEC" -e HOME=/tmp \
+    : >"$WORK_ROOT/failed.txt"
+    "$DOCKER" run --rm "${NETWORK_ARGS[@]}" --user "$USER_SPEC" -e HOME=/tmp \
         -v "$repo:/app" -v "$results:$RESULTS_MOUNT" -w /app \
         "$PHP_IMAGE" "${GATE_CMD[@]}" >"$WORK_ROOT/gate.log" 2>&1 || rc=$?
     local junit="$results/${RESULTS_PATH#"$RESULTS_MOUNT"/}"
@@ -98,11 +129,11 @@ run_gate() {
         echo "error: no junit file (gate exit $rc)"
         return
     fi
-    python3 - "$junit" "$rc" <<'PY'
+    python3 - "$junit" "$rc" "$WORK_ROOT/failed.txt" <<'PY'
 import sys
 # The file is produced by our own gate run; Python's expat does not expand external entities.
 import xml.etree.ElementTree as ET
-path, rc = sys.argv[1], int(sys.argv[2])
+path, rc, failed_out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 try:
     root = ET.parse(path).getroot()
 except ET.ParseError as e:
@@ -110,8 +141,14 @@ except ET.ParseError as e:
     sys.exit(0)
 cases = root.findall(".//testcase")
 bad = [c for c in cases if c.find("failure") is not None or c.find("error") is not None]
+skipped = [c for c in cases if c.find("skipped") is not None]
+files = sorted({c.get("file", "?").removeprefix("/app/") for c in bad})
+with open(failed_out, "w", encoding="utf-8") as out:
+    out.writelines(f + "\n" for f in files)
 if not cases:
     print(f"error: junit has no testcases (gate exit {rc})")
+elif rc == 0 and not bad and skipped:
+    print(f"error: {len(skipped)} skipped test(s); a skipped test is not a pass")
 elif rc == 0 and not bad:
     print("pass")
 elif rc != 0 and bad:
@@ -220,9 +257,24 @@ PY
 
     # Rule 1: base.
     copy_overlay "$task_dir/visible" "$repo" >/dev/null
-    expect_outcome "$tid: base visible (offline gate)" "$exp_visible" "$(run_gate "$repo" "$work/results")"
+    expect_outcome "$tid: base visible$OFFLINE_LABEL" "$exp_visible" "$(run_gate "$repo" "$work/results")"
+    visible_failed="$(cat "$WORK_ROOT/failed.txt")"
     copy_overlay "$task_dir/hidden" "$repo" >/dev/null
-    expect_outcome "$tid: base with hidden tests" "$exp_hidden" "$(run_gate "$repo" "$work/results")"
+    expect_outcome "$tid: base with hidden tests$OFFLINE_LABEL" "$exp_hidden" "$(run_gate "$repo" "$work/results")"
+    if [[ "$kind" == failing_then_green ]]; then
+        # The visible overlay already fails the gate, so prove the hidden tests fail themselves, and
+        # that nothing fails which did not fail at base visible.
+        hidden_hit="" others=""
+        while IFS= read -r f; do
+            if printf '%s\n' "${hidden[@]}" | grep -qxF "$f"; then hidden_hit+=" $f"
+            elif ! grep -qxF "$f" <<<"$visible_failed"; then others+=" $f"; fi
+        done <"$WORK_ROOT/failed.txt"
+        if [[ -n "$hidden_hit" && -z "$others" ]]; then
+            pass "$tid: base with hidden tests fails in the hidden tests:$hidden_hit"
+        else
+            fail "$tid: base with hidden tests: failing hidden files [${hidden_hit# }] (want some), new failures elsewhere [${others# }]"
+        fi
+    fi
 
     # Rule 2: after.
     for rel in "${hidden[@]}"; do rm -f "$repo/$rel"; done
@@ -234,7 +286,7 @@ PY
         continue
     fi
     copy_overlay "$task_dir/hidden" "$repo" >/dev/null
-    expect_outcome "$tid: after patch with hidden tests" "$exp_after" "$(run_gate "$repo" "$work/results")"
+    expect_outcome "$tid: after patch with hidden tests$OFFLINE_LABEL" "$exp_after" "$(run_gate "$repo" "$work/results")"
 done
 
 for k in feature bugfix refactor failing_then_green; do
