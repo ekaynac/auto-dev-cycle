@@ -1,0 +1,22 @@
+diff --git a/src/cart.ts b/src/cart.ts
+index 2b3256b..a4c1d6e 100644
+--- a/src/cart.ts
++++ b/src/cart.ts
+@@ -31,7 +31,7 @@ export function subtotal(items: readonly LineItem[]): number {
+   return items.reduce((sum, item) => sum + lineTotal(item), 0);
+ }
+ 
+-/** Returns the discount amount in cents for the given subtotal. */
++/** Returns the discount amount in cents for the given subtotal; never more than the subtotal. */
+ export function discountCents(amount: number, discount: Discount | undefined): number {
+   if (discount === undefined) {
+     return 0;
+@@ -46,7 +46,7 @@ export function discountCents(amount: number, discount: Discount | undefined): n
+   if (discount.cents < 0) {
+     throw new RangeError("fixed discount must not be negative");
+   }
+-  return discount.cents;
++  return Math.min(discount.cents, amount);
+ }
+ 
+ /** Tax on an amount at a rate given in basis points (825 = 8.25%). */

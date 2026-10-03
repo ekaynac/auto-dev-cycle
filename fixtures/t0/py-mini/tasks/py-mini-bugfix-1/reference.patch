@@ -1,0 +1,11 @@
+diff --git a/invoicekit/discounts.py b/invoicekit/discounts.py
+--- a/invoicekit/discounts.py
++++ b/invoicekit/discounts.py
+@@ -19,6 +19,6 @@
+     if quantity < 0:
+         raise ValueError("quantity must not be negative")
+     for threshold, rate in BULK_TIERS:
+-        if quantity > threshold:
++        if quantity >= threshold:
+             return rate
+     return NO_DISCOUNT

@@ -1,0 +1,8 @@
+{
+  "id": "php-mini-refactor-1",
+  "kind": "refactor",
+  "title": "Extract the percentage discount rule out of Cart into PercentDiscount",
+  "requirement": "Move the percentage discount rule out of Cart into a new final class PhpMini\\Shop\\PercentDiscount in src/PercentDiscount.php. Its constructor takes the whole-number percentage and throws InvalidArgumentException outside 0-100; percent(): int returns it; applyTo(Money $amount): Money returns the amount reduced by the discount, rounded half up to the cent, in the amount's currency. Cart::totalWithPercentDiscount(int $percent) must keep its signature and behaviour exactly (including the exception for an out-of-range percentage) and delegate to PercentDiscount, so the rule lives in one place. No behaviour change.",
+  "acceptance": {"hidden_tests": ["tests/PercentDiscountTest.php"], "visible_tests_must_pass": true},
+  "expected": {"base_visible": "pass", "base_hidden": "fail", "after_all": "pass"}
+}

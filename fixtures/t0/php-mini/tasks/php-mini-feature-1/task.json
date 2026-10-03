@@ -1,0 +1,8 @@
+{
+  "id": "php-mini-feature-1",
+  "kind": "feature",
+  "title": "Split a Money amount by ratios without losing a cent",
+  "requirement": "Add a method Money::allocate(array $ratios): array that splits a non-negative amount into one Money per ratio, in the same currency and in the same order as the ratios. Each part receives the floor of its proportional share in cents; the cents left over are then handed out one at a time to the parts in order, skipping parts whose ratio is zero, so the parts always add up exactly to the original amount (for example 10.00 split [1, 1, 1] gives 3.34, 3.33, 3.33). Ratios are non-negative integers. An empty ratio list, a negative ratio, or ratios that are all zero throw InvalidArgumentException. Money stays immutable.",
+  "acceptance": {"hidden_tests": ["tests/MoneyAllocateTest.php"], "visible_tests_must_pass": true},
+  "expected": {"base_visible": "pass", "base_hidden": "fail", "after_all": "pass"}
+}

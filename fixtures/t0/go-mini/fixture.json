@@ -1,0 +1,25 @@
+{
+  "name": "go-mini",
+  "language": "go",
+  "toolchain": {
+    "go": "1.27.1",
+    "binary": "go",
+    "env": {"GOTOOLCHAIN": "local", "GOFLAGS": "-mod=mod", "GOPROXY": "off"}
+  },
+  "dependency_recipe": {
+    "lockfiles": [],
+    "command": null,
+    "registries": [],
+    "note": "standard library only; no dependency phase"
+  },
+  "gate": {
+    "command": ["go", "test", "-json", "./..."],
+    "stdout_to": "adc-results/go-test.json",
+    "network": "none"
+  },
+  "result_adapter": "go_test_json",
+  "results_path": "adc-results/go-test.json",
+  "task_overlays": {
+    "visible": "tasks/<task-id>/visible/ holds visible tests that are part of that task's base state (copied into repo/ before the base run); used by failing_then_green so repo/ itself stays green for the other tasks; listed in task.json acceptance.visible_tests_added"
+  }
+}

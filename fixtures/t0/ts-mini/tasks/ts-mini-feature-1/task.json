@@ -1,0 +1,15 @@
+{
+  "id": "ts-mini-feature-1",
+  "kind": "feature",
+  "title": "Parse coupon codes into discounts",
+  "requirement": "Add a parseCoupon(code) function, exported from src/index.ts, that turns a coupon code into a Discount. SAVE<n> means n percent off, with n from 1 to 100. TAKE<n> means n whole currency units off (TAKE5 is 500 cents), with n of at least 1 and at most four digits. Codes are case-insensitive and surrounding whitespace is ignored. Any other code, including an out-of-range number, throws a RangeError. The result must be usable as the discount option of totals().",
+  "acceptance": {
+    "hidden_tests": ["test/coupon.test.ts"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {
+    "base_visible": "pass",
+    "base_hidden": "fail",
+    "after_all": "pass"
+  }
+}

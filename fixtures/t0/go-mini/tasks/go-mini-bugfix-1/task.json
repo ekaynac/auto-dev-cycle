@@ -1,0 +1,11 @@
+{
+  "id": "go-mini-bugfix-1",
+  "kind": "bugfix",
+  "title": "LowStock reports items whose quantity equals the threshold",
+  "requirement": "Store.LowStock(threshold) is documented to return the SKUs whose quantity is strictly below threshold, but a user reports that an item with exactly `threshold` units in stock is also listed as low. Fix LowStock so it matches its documentation. Results stay sorted in ascending order and the rest of the package behaves as before.",
+  "acceptance": {
+    "hidden_tests": ["inventory/lowstock_hidden_test.go"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {"base_visible": "pass", "base_hidden": "fail", "after_all": "pass"}
+}

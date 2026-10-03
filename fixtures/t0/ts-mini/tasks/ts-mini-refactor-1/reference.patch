@@ -1,0 +1,58 @@
+diff --git a/src/cart.ts b/src/cart.ts
+index 2b3256b..f4b590f 100644
+--- a/src/cart.ts
++++ b/src/cart.ts
+@@ -1,6 +1,9 @@
+ // SPDX-License-Identifier: Apache-2.0
+ 
+ import { assertCents, roundCents } from "./money.ts";
++import { taxCents } from "./tax.ts";
++
++export { taxCents };
+ 
+ export interface LineItem {
+   sku: string;
+@@ -49,14 +52,6 @@ export function discountCents(amount: number, discount: Discount | undefined): n
+   return discount.cents;
+ }
+ 
+-/** Tax on an amount at a rate given in basis points (825 = 8.25%). */
+-export function taxCents(amount: number, rateBasisPoints: number): number {
+-  if (!Number.isInteger(rateBasisPoints) || rateBasisPoints < 0) {
+-    throw new RangeError(`tax rate must be a non-negative integer of basis points, got ${rateBasisPoints}`);
+-  }
+-  return roundCents((amount * rateBasisPoints) / 10_000);
+-}
+-
+ export function totals(
+   items: readonly LineItem[],
+   options: { discount?: Discount; taxBasisPoints?: number } = {},
+diff --git a/src/index.ts b/src/index.ts
+index 75154ed..6ebedfe 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: Apache-2.0
+ 
+ export { CURRENCY_SYMBOLS, assertCents, formatCents, roundCents } from "./money.ts";
+-export { discountCents, lineTotal, subtotal, taxCents, totals } from "./cart.ts";
++export { discountCents, lineTotal, subtotal, totals } from "./cart.ts";
+ export type { Discount, LineItem, Totals } from "./cart.ts";
++export { taxCents } from "./tax.ts";
+diff --git a/src/tax.ts b/src/tax.ts
+new file mode 100644
+index 0000000..252dabb
+--- /dev/null
++++ b/src/tax.ts
+@@ -0,0 +1,11 @@
++// SPDX-License-Identifier: Apache-2.0
++
++import { roundCents } from "./money.ts";
++
++/** Tax on an amount at a rate given in basis points (825 = 8.25%). */
++export function taxCents(amount: number, rateBasisPoints: number): number {
++  if (!Number.isInteger(rateBasisPoints) || rateBasisPoints < 0) {
++    throw new RangeError(`tax rate must be a non-negative integer of basis points, got ${rateBasisPoints}`);
++  }
++  return roundCents((amount * rateBasisPoints) / 10_000);
++}

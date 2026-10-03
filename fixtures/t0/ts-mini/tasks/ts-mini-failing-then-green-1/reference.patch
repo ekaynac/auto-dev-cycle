@@ -1,0 +1,25 @@
+diff --git a/src/money.ts b/src/money.ts
+index 8a8e519..3f60efb 100644
+--- a/src/money.ts
++++ b/src/money.ts
+@@ -19,14 +19,16 @@ export function roundCents(value: number): number {
+   return Math.sign(value) * Math.round(Math.abs(value));
+ }
+ 
+-/** Formats cents as a currency string, e.g. 1234 -> "$12.34". */
++/** Formats cents as a currency string, e.g. 1234 -> "$12.34" and -1234 -> "-$12.34". */
+ export function formatCents(cents: number, currency = "USD"): string {
+   assertCents(cents);
+   const symbol = CURRENCY_SYMBOLS[currency];
+   if (symbol === undefined) {
+     throw new RangeError(`unknown currency: ${currency}`);
+   }
+-  const whole = Math.trunc(cents / 100);
+-  const fraction = Math.abs(cents % 100).toString().padStart(2, "0");
+-  return `${symbol}${whole}.${fraction}`;
++  const sign = cents < 0 ? "-" : "";
++  const magnitude = Math.abs(cents);
++  const whole = Math.trunc(magnitude / 100);
++  const fraction = (magnitude % 100).toString().padStart(2, "0");
++  return `${sign}${symbol}${whole}.${fraction}`;
+ }

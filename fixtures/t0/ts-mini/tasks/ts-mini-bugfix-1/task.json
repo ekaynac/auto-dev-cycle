@@ -1,0 +1,15 @@
+{
+  "id": "ts-mini-bugfix-1",
+  "kind": "bugfix",
+  "title": "A large fixed discount makes the order total negative",
+  "requirement": "A customer reported that applying a fixed discount larger than the order subtotal produces a negative total (and negative tax). A discount must never exceed the subtotal it applies to: the discount amount is capped at the subtotal, so the total and the tax are never negative. Discounts within the subtotal must behave as before.",
+  "acceptance": {
+    "hidden_tests": ["test/discount-cap.test.ts"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {
+    "base_visible": "pass",
+    "base_hidden": "fail",
+    "after_all": "pass"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "ts-mini",
+  "description": "A tiny cart pricing module: line items, discounts, tax and money formatting, in integer cents.",
+  "language": "typescript",
+  "toolchain": {
+    "runtime": "node",
+    "version": "22",
+    "minimum_version": "22.18",
+    "notes": "TypeScript runs through Node's built-in type stripping (on by default from Node 22.18): erasable syntax only, .ts extensions in relative imports, no compiler, no npm dependencies."
+  },
+  "dependency_recipe": {
+    "lockfiles": [],
+    "command": [],
+    "registries": []
+  },
+  "gate": {
+    "command": [
+      "node",
+      "--test",
+      "--test-reporter=spec",
+      "--test-reporter-destination=stdout",
+      "--test-reporter=junit",
+      "--test-reporter-destination=junit.xml",
+      "test/**/*.test.ts"
+    ],
+    "result_adapter": "junit_xml",
+    "results_path": "junit.xml",
+    "network": "none"
+  }
+}

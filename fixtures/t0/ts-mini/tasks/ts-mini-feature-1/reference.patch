@@ -1,0 +1,47 @@
+diff --git a/src/coupon.ts b/src/coupon.ts
+new file mode 100644
+index 0000000..1a87df2
+--- /dev/null
++++ b/src/coupon.ts
+@@ -0,0 +1,32 @@
++// SPDX-License-Identifier: Apache-2.0
++
++import type { Discount } from "./cart.ts";
++
++const PERCENT_CODE = /^SAVE(\d{1,3})$/;
++const FIXED_CODE = /^TAKE(\d{1,4})$/;
++
++/**
++ * Parses a coupon code into a discount.
++ * SAVE<n> is n percent off (1..100); TAKE<n> is n whole currency units off (1..9999).
++ * Codes are case-insensitive and surrounding whitespace is ignored.
++ */
++export function parseCoupon(code: string): Discount {
++  const normalized = code.trim().toUpperCase();
++  const percent = PERCENT_CODE.exec(normalized);
++  if (percent !== null) {
++    const value = Number(percent[1]);
++    if (value < 1 || value > 100) {
++      throw new RangeError(`coupon percent must be within 1..100: ${code}`);
++    }
++    return { kind: "percent", percent: value };
++  }
++  const fixed = FIXED_CODE.exec(normalized);
++  if (fixed !== null) {
++    const value = Number(fixed[1]);
++    if (value < 1) {
++      throw new RangeError(`coupon amount must be at least 1: ${code}`);
++    }
++    return { kind: "fixed", cents: value * 100 };
++  }
++  throw new RangeError(`unrecognized coupon code: ${code}`);
++}
+diff --git a/src/index.ts b/src/index.ts
+index 75154ed..343ba5e 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -3,3 +3,4 @@
+ export { CURRENCY_SYMBOLS, assertCents, formatCents, roundCents } from "./money.ts";
+ export { discountCents, lineTotal, subtotal, taxCents, totals } from "./cart.ts";
+ export type { Discount, LineItem, Totals } from "./cart.ts";
++export { parseCoupon } from "./coupon.ts";

@@ -1,0 +1,53 @@
+diff --git a/src/Money.php b/src/Money.php
+index 9e241d0..008b294 100644
+--- a/src/Money.php
++++ b/src/Money.php
+@@ -61,6 +61,48 @@ final class Money
+         return new self($this->cents * $factor, $this->currency);
+     }
+ 
++    /**
++     * Splits this amount by the given ratios without losing or creating a cent.
++     * Each part gets its floor share; the leftover cents go one each to the first parts.
++     *
++     * @param list<int> $ratios non-negative, at least one, with a positive sum
++     * @return list<Money>
++     */
++    public function allocate(array $ratios): array
++    {
++        if ($ratios === []) {
++            throw new InvalidArgumentException('At least one ratio is required');
++        }
++
++        $total = 0;
++        foreach ($ratios as $ratio) {
++            if ($ratio < 0) {
++                throw new InvalidArgumentException("Ratios must not be negative, got {$ratio}");
++            }
++            $total += $ratio;
++        }
++        if ($total === 0) {
++            throw new InvalidArgumentException('Ratios must not all be zero');
++        }
++
++        $shares = [];
++        $remainder = $this->cents;
++        foreach ($ratios as $ratio) {
++            $share = intdiv($this->cents * $ratio, $total);
++            $shares[] = $share;
++            $remainder -= $share;
++        }
++
++        for ($i = 0; $remainder > 0; $i++) {
++            if ($ratios[$i] > 0) {
++                $shares[$i]++;
++                $remainder--;
++            }
++        }
++
++        return array_map(fn (int $cents): self => new self($cents, $this->currency), $shares);
++    }
++
+     public function equals(self $other): bool
+     {
+         return $this->currency === $other->currency && $this->cents === $other->cents;

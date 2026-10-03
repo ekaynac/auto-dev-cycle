@@ -1,0 +1,12 @@
+{
+  "id": "py-mini-failing-then-green-1",
+  "kind": "failing_then_green",
+  "title": "Make the failing thousands-separator test pass",
+  "requirement": "The test tests/test_format_grouping.py fails: formatted amounts must group thousands with commas, e.g. 1234567.5 in EUR is shown as \"EUR 1,234,567.50\". Make the test pass by fixing the code, not the test. Amounts below 1,000 keep their current format, negative amounts keep the leading minus sign before the currency, and formatted amounts must still parse back with parse_amount.",
+  "acceptance": {
+    "hidden_tests": ["tests/test_hidden_format_grouping.py"],
+    "visible_tests_must_pass": true,
+    "visible_tests_added": ["tests/test_format_grouping.py"]
+  },
+  "expected": {"base_visible": "fail", "base_hidden": "fail", "after_all": "pass"}
+}

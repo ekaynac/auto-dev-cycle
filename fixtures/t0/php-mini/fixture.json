@@ -1,0 +1,28 @@
+{
+  "name": "php-mini",
+  "language": {"name": "php", "version": "8.4"},
+  "toolchain": {
+    "images": {
+      "php": "docker.io/library/php:8.4-cli@sha256:0177c7589c0715b63e5343342a7c1f1887db759ad0b0d6ad3bb949938bba6b47",
+      "composer": "docker.io/library/composer:2@sha256:af98f42dfff7c68ba8d53c2164fd9fde1087b7d449514baa38c418b1f6bc4bac"
+    },
+    "dependency_recipe": {
+      "image": "composer",
+      "lockfiles": ["composer.json", "composer.lock"],
+      "command": ["composer", "install", "--no-interaction", "--no-progress", "--prefer-dist"],
+      "registries": ["packagist"]
+    }
+  },
+  "gate": {
+    "image": "php",
+    "command": ["vendor/bin/phpunit", "--log-junit", "{results_path}"],
+    "network": "none",
+    "result_adapter": "junit_xml",
+    "results_path": "/results/junit.xml",
+    "results_mount": "a writable directory outside the repo, mounted at /results"
+  },
+  "task_overlays": {
+    "hidden_tests": "tasks/<task-id>/hidden/",
+    "visible_tests_added": "tasks/<task-id>/visible/"
+  }
+}

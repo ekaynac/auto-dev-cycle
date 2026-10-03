@@ -1,0 +1,16 @@
+diff --git a/inventory/money.go b/inventory/money.go
+index e0803a3..8b918ff 100644
+--- a/inventory/money.go
++++ b/inventory/money.go
+@@ -7,5 +7,10 @@ import "fmt"
+ // FormatCents renders an amount of cents as a decimal string with two
+ // fraction digits, for example 1999 as "19.99" and -150 as "-1.50".
+ func FormatCents(cents int) string {
+-	return fmt.Sprintf("%d.%02d", cents/100, cents%100)
++	sign := ""
++	if cents < 0 {
++		sign = "-"
++		cents = -cents
++	}
++	return fmt.Sprintf("%s%d.%02d", sign, cents/100, cents%100)
+ }

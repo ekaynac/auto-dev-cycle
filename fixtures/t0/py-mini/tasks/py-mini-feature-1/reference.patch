@@ -1,0 +1,38 @@
+diff --git a/invoicekit/__init__.py b/invoicekit/__init__.py
+--- a/invoicekit/__init__.py
++++ b/invoicekit/__init__.py
+@@ -3,7 +3,7 @@
+ 
+ from invoicekit.discounts import bulk_discount_rate
+ from invoicekit.invoice import Invoice, LineItem
+-from invoicekit.money import format_amount, parse_amount, round_money
++from invoicekit.money import format_amount, parse_amount, round_money, split_evenly
+ 
+ __all__ = [
+     "Invoice",
+@@ -12,4 +12,5 @@
+     "format_amount",
+     "parse_amount",
+     "round_money",
++    "split_evenly",
+ ]
+diff --git a/invoicekit/money.py b/invoicekit/money.py
+--- a/invoicekit/money.py
++++ b/invoicekit/money.py
+@@ -32,3 +32,16 @@
+     value = round_money(amount)
+     sign = "-" if value < 0 else ""
+     return f"{sign}{currency} {abs(value):.2f}"
++
++
++def split_evenly(amount: Decimal, parts: int) -> list[Decimal]:
++    """Split an amount into `parts` cent-exact shares that sum to the rounded amount.
++
++    Shares differ by at most one cent; the larger shares (by magnitude) come first.
++    """
++    if parts < 1:
++        raise ValueError("parts must be at least 1")
++    cents = int(round_money(amount) / CENT)
++    sign = -1 if cents < 0 else 1
++    share, remainder = divmod(abs(cents), parts)
++    return [sign * (share + (1 if index < remainder else 0)) * CENT for index in range(parts)]

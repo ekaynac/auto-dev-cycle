@@ -1,0 +1,12 @@
+{
+  "id": "php-mini-failing-then-green-1",
+  "kind": "failing_then_green",
+  "title": "Make the failing Cart item count test pass",
+  "requirement": "The visible test tests/CartItemCountTest.php fails: Cart::itemCount() is documented as the number of units in the cart summed over all lines, but it returns the number of distinct lines. Fix Cart::itemCount() in the source so the failing test passes. Do not change any test.",
+  "acceptance": {
+    "hidden_tests": ["tests/CartItemCountMergeTest.php"],
+    "visible_tests_added": ["tests/CartItemCountTest.php"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {"base_visible": "fail", "base_hidden": "fail", "after_all": "pass"}
+}

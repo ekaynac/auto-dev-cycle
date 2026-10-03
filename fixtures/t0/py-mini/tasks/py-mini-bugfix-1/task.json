@@ -1,0 +1,11 @@
+{
+  "id": "py-mini-bugfix-1",
+  "kind": "bugfix",
+  "title": "Bulk discount is not applied at exactly 50 or 100 units",
+  "requirement": "A customer reports that an invoice line of exactly 50 units got no bulk discount. The pricing policy (documented in invoicekit/discounts.py) is that a line of at least 50 units gets 5% off and a line of at least 100 units gets 10% off. Find and fix the defect so that the policy holds at every quantity, including the exact thresholds, without changing any other behaviour.",
+  "acceptance": {
+    "hidden_tests": ["tests/test_hidden_bulk_thresholds.py"],
+    "visible_tests_must_pass": true
+  },
+  "expected": {"base_visible": "pass", "base_hidden": "fail", "after_all": "pass"}
+}

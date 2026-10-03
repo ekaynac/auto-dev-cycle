@@ -39,7 +39,10 @@ BINARIES   := adcd adc adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check build dist lint ci clean
+.PHONY: help toolchain go-check build dist lint fixtures-check ci clean
+
+SHELL_SCRIPTS = scripts/*.sh fixtures/t0/*/check.sh
+T0_FIXTURES   := $(notdir $(wildcard fixtures/t0/*-mini))
 
 help: ## List targets
 	@grep -hE '^[a-z][a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{ printf "  %-12s %s\n", $$1, $$2 }'
@@ -76,11 +79,14 @@ lint: go-check ## gofmt, go vet, go mod tidy check, SPDX headers, shell syntax (
 	  if [[ -n "$$unformatted" ]]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	@$(GO) vet ./...
 	@$(GO) mod tidy -diff
-	@for f in scripts/*.sh; do bash -n "$$f"; done
+	@for f in $(SHELL_SCRIPTS); do bash -n "$$f"; done
 	@scripts/check-spdx.sh
-	@if command -v shellcheck >/dev/null; then shellcheck scripts/*.sh; \
+	@if command -v shellcheck >/dev/null; then shellcheck $(SHELL_SCRIPTS); \
 	  elif [[ -n "$${CI:-}" ]]; then echo "shellcheck is required in CI" >&2; exit 1; \
 	  else echo "lint: shellcheck not installed; skipped locally (required in CI)"; fi
+
+fixtures-check: ## Prove every T0 fixture task well-formed (needs docker, bubblewrap and network for dependency recipes)
+	@for f in $(T0_FIXTURES); do echo "== $$f"; fixtures/t0/$$f/check.sh || exit 1; done
 
 ci: lint build dist ## Everything CI runs
 
