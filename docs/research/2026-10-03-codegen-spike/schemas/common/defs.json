@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/common/defs.json",
+  "title": "Common definitions",
+  "description": "Shared scalar shapes (docs/design/m0/02): outcomes, digests, times, ids.",
+  "$defs": {
+    "Outcome": {
+      "description": "The four outcomes. There is no boolean ok.",
+      "enum": ["found", "empty", "could_not_run", "failed"]
+    },
+    "ReasonCode": {
+      "description": "A registered reason code (schemas/vocab/reasons.yaml).",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "GitID": {
+      "type": "string",
+      "pattern": "^git:([0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "Time": {
+      "description": "RFC 3339 UTC with a Z suffix, from the controller clock.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "TypeID": {
+      "description": "A TypeID: lowercase prefix, underscore, 26-char base32 UUIDv7.",
+      "type": "string",
+      "pattern": "^[a-z]{3}_[0-7][0-9a-hjkmnp-tv-z]{25}$"
+    }
+  }
+}

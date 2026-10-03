@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/receipt.json",
+  "title": "Receipt",
+  "description": "Evidence envelope (docs/design/m0/06). outcome, reason and verdict are derived by internal/receipt, never accepted from the producer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "kind", "instrument", "subject", "provenance", "produced_at", "predicates", "outcome", "reason", "detail"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/TypeID"},
+    "kind": {"enum": ["gate", "integration", "deploy", "review", "phase_gate", "probe", "dependency_prep", "custom"]},
+    "instrument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "digest"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "../common/defs.json#/$defs/Digest"}
+      }
+    },
+    "subject": {"$ref": "#/$defs/Subject"},
+    "demand": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key", "run"],
+          "properties": {
+            "key": {"$ref": "../common/defs.json#/$defs/Digest"},
+            "run": {"$ref": "../common/defs.json#/$defs/TypeID"}
+          }
+        }
+      ]
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "calls", "model_families", "contributors"],
+      "properties": {
+        "command": {"type": "string"},
+        "attempt": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/TypeID"}]},
+        "calls": {"type": "array", "items": {"$ref": "../common/defs.json#/$defs/TypeID"}},
+        "model_families": {"type": "array", "items": {"type": "string"}},
+        "contributors": {"type": "array", "items": {"$ref": "../common/defs.json#/$defs/TypeID"}}
+      }
+    },
+    "produced_at": {"$ref": "../common/defs.json#/$defs/Time"},
+    "valid_until": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]},
+    "predicates": {"type": "array", "items": {"$ref": "#/$defs/Predicate"}},
+    "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
+    "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
+    "detail": {"type": "string"},
+    "verdict": {"oneOf": [{"type": "null"}, {"enum": ["go", "no_go"]}]},
+    "supersedes": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/TypeID"}]}
+  },
+  "$defs": {
+    "Predicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "outcome", "reason", "evidence"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
+        "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["blob", "media_type"],
+            "properties": {
+              "blob": {"$ref": "../common/defs.json#/$defs/Digest"},
+              "media_type": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "Subject": {
+      "description": "Typed subject, discriminated by type (06 [M8]).",
+      "oneOf": [
+        {"$ref": "#/$defs/TreeSubject"},
+        {"$ref": "#/$defs/ProposalSubject"},
+        {"$ref": "#/$defs/CallSubject"}
+      ]
+    },
+    "TreeSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "project", "tree", "environment", "contract_revision"],
+      "properties": {
+        "type": {"const": "tree"},
+        "project": {"$ref": "../common/defs.json#/$defs/TypeID"},
+        "tree": {"$ref": "../common/defs.json#/$defs/GitID"},
+        "head": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/GitID"}]},
+        "environment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity", "description"],
+          "properties": {
+            "identity": {"$ref": "../common/defs.json#/$defs/Digest"},
+            "description": {"type": "string"}
+          }
+        },
+        "contract_revision": {"type": "string", "minLength": 1}
+      }
+    },
+    "ProposalSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "proposal", "binding_digest"],
+      "properties": {
+        "type": {"const": "proposal"},
+        "proposal": {"$ref": "../common/defs.json#/$defs/TypeID"},
+        "binding_digest": {"$ref": "../common/defs.json#/$defs/Digest"}
+      }
+    },
+    "CallSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "call"],
+      "properties": {
+        "type": {"const": "call"},
+        "call": {"$ref": "../common/defs.json#/$defs/TypeID"}
+      }
+    }
+  }
+}
