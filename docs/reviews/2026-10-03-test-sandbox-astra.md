@@ -1,0 +1,458 @@
+# PR #8 review (Astra, 2026-10-03)
+
+Verdict: NO-GO
+
+The namespace and mount structure is a reasonable foundation, and `make test` has no automatic unsandboxed fallback. However, the container environment is not cleared, mount configuration can expose protected host paths, and the Docker fallback violates D37’s rootless requirement.
+
+## High
+
+1. **Container backend leaks environment outside the allowlist.**  
+   **Location:** [scripts/test-sandbox.sh:126](scripts/test-sandbox.sh:126), [test/sandbox/containment_test.go:83](test/sandbox/containment_test.go:83).  
+   **Problem:** Supplying `-e` entries does not clear the container environment. Podman automatically forwards proxy variables; Docker injects proxies configured in its client configuration. Both can contain credentials, and the test’s name-based denylist misses them. See [Podman’s environment rules](https://docs.podman.io/en/v4.9.3/markdown/podman-run.1.html#http-proxy) and [Docker’s proxy configuration](https://docs.docker.com/engine/cli/proxy/).  
+   **Failure scenario:** A developer uses an authenticated HTTPS proxy. Container tests can read its credentials despite passing `TestNoCredentialEnv` and the self-test.  
+   **Fix:** Disable automatic proxy forwarding and launch the test command through a trusted `env -i` with the explicit allowlist. Restrict `--env` to approved names and prevent overrides of harness variables. Test the complete environment using decoy proxy/configuration values, without logging their contents.
+
+2. **Unchecked bind sources can reintroduce home/state or make the repository writable through an alias.**  
+   **Location:** [scripts/test-sandbox.sh:27](scripts/test-sandbox.sh:27), [scripts/test-sandbox.sh:51](scripts/test-sandbox.sh:51), [scripts/test-sandbox.sh:103](scripts/test-sandbox.sh:103).  
+   **Problem:** `ADC_TEST_SCRATCH` is mounted writable without validating its relationship to protected paths. Node’s entire grandparent directory and the host-configured module cache are also exposed without checking their scope.  
+   **Failure scenario:** `ADC_TEST_SCRATCH="$HOME"` exposes the real home writable at `/scratch`; setting it to the checkout exposes a writable alias of `/src`. Separately, a standalone Node installation at `$HOME/bin/node` causes the whole home to appear read-only at `/opt/node`. `TestRealHomeAbsent` still passes because it checks only the original pathname.  
+   **Fix:** Canonicalize and validate mount sources; reject scratch paths that encompass home, state, repository, or toolchains. Create a dedicated private scratch child. Mount a validated Node distribution or stage its required runtime files. Add sacrificial tests for alternate-path exposure.
+
+3. **Rootful Docker is accepted despite the explicit rootless contract.**  
+   **Location:** [scripts/test-sandbox.sh:124](scripts/test-sandbox.sh:124).  
+   **Problem:** `--user`, dropped capabilities, and `no-new-privileges` constrain the container process but do not make the daemon rootless. Runtime identity is never checked.  
+   **Failure scenario:** On the described Docker-only controller, unavailable bubblewrap causes tests to run through the rootful daemon and report success under a policy D37 does not authorize. This is a contract violation; daemon rootfulness alone is not evidence of a demonstrated escape. [Docker distinguishes these security modes explicitly.](https://docs.docker.com/engine/security/userns-remap/)  
+   **Fix:** Require and verify rootless Podman or Docker, otherwise refuse. Account for rootless Docker’s UID mapping when mounting scratch; blindly passing the host UID can make it unwritable. Alternatively, obtain an explicit amendment to D37 before accepting rootful Docker.
+
+## Medium
+
+4. **The red-proof covers seven outcomes, not the complete containment contract.**  
+   **Location:** [scripts/test-sandbox-selftest.sh:25](scripts/test-sandbox-selftest.sh:25), [test/sandbox/containment_test.go:73](test/sandbox/containment_test.go:73).  
+   **Problem:** There is no repository-write probe, state-read probe, mount-alias probe, or exact environment assertion.  
+   **Failure scenario:** Changing the repository mount from read-only to writable leaves all seven checks green. Exposing home under another mount also goes undetected.  
+   **Fix:** Add harness-owned sacrificial fixtures for these properties and require each corresponding policy mutation to turn its check red. The existing per-test JSON checks are useful and should remain.
+
+5. **The sentinel check fails open on inspection errors and cannot establish that no write occurred.**  
+   **Location:** [scripts/test-sandbox.sh:155](scripts/test-sandbox.sh:155).  
+   **Problem:** Only `find`’s stdout is checked; its failure status is discarded. Checking once after execution also misses writes subsequently removed.  
+   **Failure scenario:** A broken boundary permits deleting the sentinel directory. `find` fails, produces no stdout, and a successful command yields wrapper exit 0. I reproduced this behavior using the exact check block and a nonexistent path.  
+   **Fix:** Fail on missing/replaced sentinels or inspection errors, verify directory identity, and ensure descendants have terminated before inspection. Describe this as supplementary detection, not authoritative proof of all historical writes.
+
+6. **Backend availability probes do not prove the configured sandbox can start.**  
+   **Location:** [scripts/test-sandbox.sh:57](scripts/test-sandbox.sh:57), [scripts/test-sandbox.sh:125](scripts/test-sandbox.sh:125).  
+   **Problem:** `podman info` succeeding permanently selects Podman, even if `run --userns=keep-id` fails. Startup failures are returned directly rather than consistently classified as exit 2.  
+   **Failure scenario:** Podman can report information but lacks usable subordinate-ID mappings or fails its runtime setup; another usable backend is never tried.  
+   **Fix:** Probe a harmless command using the actual sandbox configuration before choosing a backend. Fall back only on setup failure, never on a test failure.
+
+7. **Network red-proof depends on public connectivity and combines distinct assertions.**  
+   **Location:** [test/sandbox/containment_test.go:92](test/sandbox/containment_test.go:92).  
+   **Problem:** The control requires external TCP or DNS success. One successful DNS lookup makes the combined test fail without proving the TCP checks can detect access.  
+   **Failure scenario:** An offline developer gets a failed self-test despite correct containment; alternatively, DNS alone supplies the expected red.  
+   **Fix:** Use controlled reachable host-side endpoints, verify their setup, and require separate TCP and DNS outcomes.
+
+8. **Persistent scratch allows contamination between runs, including containment verification.**  
+   **Location:** [scripts/test-sandbox.sh:74](scripts/test-sandbox.sh:74).  
+   **Problem:** Every test can modify the entire shared cache and other active runs’ work directories. `-count=1` disables test-result caching, not reuse of compiled artifacts.  
+   **Failure scenario:** One run corrupts or poisons cached artifacts used by a later self-test, undermining its independence. This is not, by itself, an escape to arbitrary host files.  
+   **Fix:** Give containment self-tests fresh private scratch and build caches. Isolate normal runs’ work directories; keep any shared cache explicitly untrusted.
+
+Both hosted runner images currently include Node, jq, Docker, and Podman, so I found no missing-tool or demonstrated architecture-specific blocker. Their availability does not establish that this exact container configuration works: both matrix jobs still need successful execution evidence. Sources: [amd64 image](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md), [arm64 image](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Arm64-Readme.md).
+
+Validation: shell syntax and diff checks passed; credential-name rejection and unauthorized `--backend none` refusal behaved as expected. Full sandbox execution was unavailable in this restricted review environment. No files were changed.
+## Re-review (Astra, 2026-10-03)
+
+Verdict: NO-GO
+
+- **H1: partially** — The command environment is cleared, but Docker’s init process can still expose injected proxy credentials through `/proc`.
+- **H2: partially** — Top-level sources are validated; the actual `gocache` bind source can still resolve to a protected directory.
+- **H3: fixed** — Rootful runtimes are refused; rootless Docker’s UID mapping is accommodated.
+- **M4: partially** — Repository-write, alias and environment checks exist, but there is no independent state fixture or targeted alias mutation proof.
+- **M5: fixed** — Missing/replaced sentinels and inspection failures cause breaches; detection is correctly described as supplementary.
+- **M6: partially** — Actual configurations are probed, but a failing rootless Podman still prevents trying rootless Docker.
+- **M7: partially** — Controlled host-loopback and separate external TCP/DNS checks exist; DNS availability still incorrectly determines whether external TCP must succeed.
+- **M8: fixed** — Self-tests receive fresh caches, and normal runs mount their individual work directories.
+
+**High — remaining blockers**
+
+1. **Docker’s init retains the environment cleared from its child.**  
+   **Location:** `scripts/test-sandbox.sh:158`, `scripts/test-sandbox.sh:171`; `test/sandbox/containment_test.go:148`.  
+   **Scenario:** Docker injects an authenticated proxy from client configuration. `--init` starts the init process with that environment; the subsequent `env -i` only clears its child. Tests running with the same identity can read the proxy through `/proc/1/environ`, while `TestExactEnv` passes. Docker documents [automatic proxy injection](https://docs.docker.com/engine/cli/proxy/), and [Tini forks its child](https://github.com/krallin/tini/blob/master/src/tini.c). A local fixture using the installed `docker-init` confirmed that a child with a clean environment could read its parent’s decoy proxy. This was a process-level reproduction, not an end-to-end rootless Docker run.  
+   **Fix:** Sanitize the environment before the init process starts, including suppressing Docker’s proxy injection. Add a decoy check for credentials accessible through other container processes’ environments.
+
+2. **An unchecked cache symlink exposes protected files writable.**  
+   **Location:** `scripts/test-sandbox.sh:88`, `scripts/test-sandbox.sh:128`, `scripts/test-sandbox.sh:162`.  
+   **Scenario:** A valid scratch directory contains `gocache -> $HOME` or `gocache -> checkout`. Validation checks only `scratch_root`; `mkdir -p` accepts the existing directory symlink, and the bind exposes its target writable. **Reproduced with the current wrapper and bubblewrap:** a disposable fake home was readable and modified through `/scratch/gocache`; the wrapper returned **0**, without reporting a breach. The self-test’s fresh scratch cannot exercise this configuration.  
+   **Fix:** Validate the actual cache source, reject symlinks and protected-path overlaps, and bind the validated directory. Add sacrificial home/repository symlink cases.
+
+**Medium — nonblocking remaining gaps and regressions**
+
+3. **Container fallback still stops at Podman’s information check.**  
+   **Location:** `scripts/test-sandbox.sh:147`, `scripts/test-sandbox.sh:156`.  
+   **Scenario:** Podman reports rootless operation but cannot start the configured container. A working rootless Docker installation is never tried. An isolated mock of the current functions confirmed this selection behavior.  
+   **Fix:** Probe each eligible engine separately and retain the successful engine for execution.
+
+4. **The expanded tests still cannot establish state isolation.**  
+   **Location:** `test/sandbox/containment_test.go:105`; `scripts/test-sandbox-selftest.sh:97`.  
+   **Scenario:** Exposing only a state directory under an alternate mount exposes neither root-level canary. Also, the unsandboxed alias check terminates at the direct-home assertion, so its failure does not exercise the filesystem-walk detection.  
+   **Fix:** Add a sacrificial state fixture and targeted mutations that expose state and alternate home/repository paths independently.
+
+5. **DNS success is treated as proof of external TCP availability.**  
+   **Location:** `scripts/test-sandbox-selftest.sh:56`, `scripts/test-sandbox-selftest.sh:99`.  
+   **Scenario:** A developer can resolve `example.com` but direct connections to all tested external addresses are blocked. Correct containment still produces a failed self-test because the TCP control stays green.  
+   **Fix:** Establish TCP and DNS prerequisites independently; report unavailable local red-proofs explicitly while keeping CI’s required-proof policy.
+
+6. **The repository probe can overwrite an existing file or symlink target.**  
+   **Location:** `test/sandbox/containment_test.go:94`.  
+   **Scenario:** During the unsandboxed control, an existing `.adc-sandbox-write-probe` in the package directory is truncated and removed. A symlink causes its target to be overwritten.  
+   **Fix:** Use a unique probe created exclusively, and remove only a file successfully created by that invocation.
+
+Validation: read all three current files in full; shell syntax and implementation diff checks passed. Disposable reproductions left the checkout unchanged. The reported green bwrap run and rootful-Docker refusal do not cover the two High scenarios above.
+## Second re-review (Astra, 2026-10-03)
+
+Verdict: NO-GO
+
+- **H1 — partially fixed; still High.** Bubblewrap’s init now starts with a clean environment. Docker can still enable its init through daemon defaults; see below.
+- **H2 — fixed.** The cache symlink is rejected, its canonical path is checked, and the refusal test passes.
+- **M3 — fixed.** Each rootless engine receives an actual configuration probe; the successful engine is retained. A mock verified fallback from failing Podman to working Docker.
+- **M4 — partially fixed.** Alias mutations exercise the filesystem walk, but state coverage still depends on existing, nonsymlink host directories. The protected mutation exposes only the last available canary.
+- **M5 — fixed.** TCP and DNS prerequisites are established independently.
+- **M6 — fixed.** The repository probe uses a unique filename and exclusive creation, avoiding the previous overwrite.
+
+**High — H1 remains: omitting `--init` does not disable Docker’s configured init.**
+
+**Location:** [scripts/test-sandbox.sh:190](scripts/test-sandbox.sh:190).
+
+**Failure scenario:** A rootless Docker daemon has `"init": true`, and its client configuration injects an authenticated proxy. The wrapper omits `--init`, so Docker still starts init with that proxy environment. The subsequent `env -i` cleans only its child; tests can read init’s environment through `/proc/1/environ`. Docker’s implementation explicitly inherits the daemon setting when the option is omitted. [Docker implementation](https://github.com/moby/moby/blob/v28.5.1/daemon/oci_linux.go#L682-L703), [proxy injection documentation](https://docs.docker.com/engine/cli/proxy/).
+
+`TestNoForeignProcessEnv` can detect this exposure, but detection occurs after test code has access. A synthetic process-level probe confirmed that a clean child could read its init parent’s decoy variable.
+
+**Fix:** Explicitly pass `--init=false`. Add a rootless Docker regression using daemon-default init and synthetic client-configured proxy credentials, asserting absence without printing values.
+
+**Medium — M4 remains: state isolation lacks a deterministic fixture.**
+
+**Location:** [scripts/test-sandbox.sh:110](scripts/test-sandbox.sh:110), [scripts/test-sandbox.sh:123](scripts/test-sandbox.sh:123).
+
+**Failure scenario:** A symlinked XDG state directory receives no canary. On another host, missing XDG directories reduce the protected mutation to the home canary; when all directories exist, it selects the data canary. Consequently, successful mutation results do not independently establish state-directory coverage.
+
+**Fix:** Create sacrificial state/config/data fixtures, canonicalize symlinked protected paths, and independently mutate the state and home exposures.
+
+**Medium — new: mutation execution breaks working automatic fallback.**
+
+**Location:** [scripts/test-sandbox-selftest.sh:118](scripts/test-sandbox-selftest.sh:118).
+
+**Failure scenario:** Bubblewrap is installed but cannot create namespaces. The sandboxed `auto` run successfully uses a rootless container, but mutation selection checks only whether `bwrap` exists. It then forces bwrap, obtains no test results, and fails the self-test despite working containment.
+
+**Fix:** Base mutation selection on the successfully selected backend or an exact bwrap startup probe. Keep mutations mandatory for the dedicated bwrap CI run.
+
+The mutation hook otherwise has appropriate explicit gates: the opt-in flag, explicit bwrap backend, and enumerated mutation names. Unauthorized combinations were refused. The CI sysctl disables a runner-wide hardening restriction, but does not itself remove bubblewrap’s namespace isolation. A scoped AppArmor profile would reduce its breadth; this is not an additional blocker for the configured hosted jobs. [Ubuntu guidance](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007).
+
+Validation: read all four files fully; independently passed the complete bwrap self-test, including controls, mutations, and symlink refusal. Shell syntax and code-diff whitespace checks passed. Rootless Docker was not tested end to end. Checkout unchanged; no secrets printed.
+# PR #10 review (Astra, 2026-10-03)
+
+Verdict: NO-GO
+
+- **Earlier H1 — environment/proxy/init exposure: fixed for the reported paths.** Docker is removed; Podman explicitly disables init and proxy forwarding; bubblewrap starts with a clean environment.
+- **Earlier H2 — unsafe mount sources: partially fixed.** Repository/home-root overlap and cache symlinks are refused, but protected state can still be mounted. See High 1.
+- **Earlier H3 — rootful runtime accepted: fixed.** Only verified rootless Podman is eligible.
+- **Earlier M4 — incomplete containment red-proofs: partially fixed.** The missing checks and independent home/state mutations exist; mutation verification remains incomplete. See Medium 1.
+- **Earlier M5 — sentinel inspection fails open: fixed.** Missing/replaced directories and inspection errors fail; historical-write detection is correctly described as supplementary.
+- **Earlier M6 / re-review M3 — backend probing/fallback: resolved within the reduced scope.** Actual configurations are probed; Docker fallback is intentionally removed.
+- **Earlier M7 / re-review M5 — combined TCP/DNS prerequisites: fixed.** They are checked independently and required in CI.
+- **Earlier M8 — shared self-test scratch: fixed.** Each run receives fresh scratch/cache; normal work directories are isolated.
+- **Re-review M6 — destructive repository probe: fixed.** Creation is unique and exclusive.
+- **Second re-review M4 — nondeterministic state fixture: fixed for the reported missing/symlinked-state cases.** State is canonicalized, created when missing, and independently exposed by mutation.
+- **Second re-review — mutation selection breaks unavailable-bwrap fallback: fixed for the reported scenario.** Selection now checks namespace startup.
+
+**High 1 — Protected state remains accessible through accepted mount sources.**
+
+**Location:** [scripts/test-sandbox.sh:84](scripts/test-sandbox.sh:84), [scripts/test-sandbox.sh:173](scripts/test-sandbox.sh:173), [scripts/test-sandbox.sh:185](scripts/test-sandbox.sh:185).
+
+`check_source` rejects sources covering `$HOME` or overlapping the repository, but never checks overlap with protected state/config/data directories.
+
+**Failure scenario:** `GOMODCACHE=$XDG_STATE_HOME/controller` exposes controller state read-only at `/gomodcache`. A state directory overlapping `scratch/gocache` exposes it writable. Root-level canaries do not identify exposed descendants, and unchanged canaries cannot detect reads or writes to other files.
+
+**Reproduced with disposable fixtures and the current bubblewrap wrapper:**
+
+- Read a decoy through `/gomodcache`; wrapper exit **0**.
+- Modified a decoy through `/scratch/gocache`; wrapper exit **0**.
+- Exposed a state subdirectory, verified its decoy was readable, then ran the containment package successfully; wrapper exit **0**.
+
+This violates D37’s requirement that real state be absent, even when containment tests pass.
+
+**Fix:** Resolve protected paths before validating mounts; reject protected-root and descendant overlaps for every actual source. Provision narrowly scoped cache/toolchain directories rather than accepting arbitrary protected directories as caches. Add sacrificial refusal tests covering both entire protected roots and their descendants.
+
+**High 2 — Podman inherits additional mounts and isolation settings from host configuration.**
+
+**Location:** [scripts/test-sandbox.sh:202](scripts/test-sandbox.sh:202), [scripts/test-sandbox.sh:213](scripts/test-sandbox.sh:213).
+
+Disabling configured init addresses that particular default, but the invocation still inherits other containment-relevant defaults. Podman 4.9.3 merges `containers.conf` mounts with command-line mounts. Unspecified PID namespace settings also come from configuration. This follows directly from Podman’s [mount implementation](https://github.com/containers/podman/blob/v4.9.3/pkg/specgenutil/volumes.go#L28-L35) and [namespace implementation](https://github.com/containers/podman/blob/v4.9.3/pkg/specgen/generate/namespaces.go#L77-L83).
+
+**Failure scenario:** A developer’s configured bind of a credential or state subdirectory into containers is added alongside this wrapper’s mounts. It bypasses `check_source`; `/bin/true` still passes the availability probe; `env -i` cannot remove filesystem exposure. A subdirectory without a root canary can also evade the containment tests.
+
+**Fix:** Use a controlled Podman configuration that excludes implicit mounts and explicitly fixes namespace/security settings, or validate and reject unexpected effective mounts/settings before starting test code. Add a rootless Podman regression with a configured sacrificial mount. This finding is source-confirmed; I did not reproduce the altered configuration locally because Podman is unavailable here.
+
+**Medium 1 — Mutations do not prove that exactly their intended check changes.**
+
+**Location:** [scripts/test-sandbox-selftest.sh:121](scripts/test-sandbox-selftest.sh:121).
+
+Each mutation checks only its target’s final `fail` action. It does not require other checks to pass, equal case counts, or the expected process outcome.
+
+**Failure scenario:** A mutation also exposes network access or breaks another containment property; its target still fails, so the self-test accepts it as a single-property red-proof.
+
+**Fix:** Assert the complete expected result set for each mutation: target fails, every unaffected check passes, case counts match, and execution finishes with the expected status.
+
+Both hosted jobs passed at reviewed commit `e12d669`, including their rootless Podman self-test steps: [amd64](https://github.com/ekaynac/auto-dev-cycle/actions/runs/37110902407/job/111168451123), [arm64](https://github.com/ekaynac/auto-dev-cycle/actions/runs/37110902407/job/111168451267). Thus the configured runner compatibility is demonstrated.
+
+Local validation passed the full bubblewrap self-test, including all 13 sandboxed/control outcomes, four mutations, and cache-symlink refusal. Shell syntax and sampled environment/unsandboxed refusals passed. Repository files were unchanged; no secrets were printed.
+## Re-review of #10 (Astra, 2026-10-03)
+**Verdict: NO-GO — two High containment gaps remain. Medium findings are nonblocking.**
+
+- **Prior High 1 — partially fixed.** The reported XDG state/config/data overlaps are rejected; runtime directories and relocated credential roots remain unprotected.
+- **Prior High 2 — partially fixed.** Ordinary `containers.conf` files are excluded and namespaces are explicit, but other configuration paths still inject mounts.
+- **Prior Medium 1 — partially fixed.** Every declared unaffected check must now pass; complete result-set and process-outcome validation remain missing.
+
+**High 1 — Protected roots omit runtime sockets and relocated credentials.**
+
+Location: [scripts/test-sandbox.sh:87](scripts/test-sandbox.sh:87).
+
+The inventory covers three XDG roots and fixed home-relative names, but excludes `XDG_RUNTIME_DIR` and effective credential locations such as `CODEX_HOME`.
+
+**Failure scenario:** `GOMODCACHE=$XDG_RUNTIME_DIR` exposes host Unix sockets through `/gomodcache`. Read-only mounting and network isolation do not prevent connecting to those sockets. Likewise, a custom credential directory outside the listed roots can be exposed through either cache.
+
+**Reproduced with disposable fixtures:**
+
+- Connected from the sandbox to a host Unix socket under a temporary `XDG_RUNTIME_DIR`; wrapper exited **0**.
+- Read a decoy from a custom `CODEX_HOME` through `/gomodcache`; containment package passed.
+- Modified a decoy with `CODEX_HOME` overlapping `scratch/gocache`; containment package passed and wrapper exited **0**.
+
+**Fix:** Protect the effective runtime and credential locations, including environment-selected paths, before accepting mount sources. Add socket and relocated-credential refusal regressions. Prefer explicitly provisioned cache/toolchain directories over arbitrary host-directory sources.
+
+**High 2 — The controlled Podman configuration still permits implicit mounts.**
+
+Location: [scripts/test-sandbox.sh:206](scripts/test-sandbox.sh:206), [scripts/test-sandbox.sh:251](scripts/test-sandbox.sh:251).
+
+Podman 4.9.3 does skip normal system/user `containers.conf` files when `CONTAINERS_CONF` is set. However, it subsequently merges **`CONTAINERS_CONF_OVERRIDE`**, which these invocations inherit. [Upstream configuration loader](https://github.com/containers/podman/blob/v4.9.3/vendor/github.com/containers/common/pkg/config/new.go#L93-L110).
+
+Separately, Podman still reads **`mounts.conf`** from rootless-user or system locations and copies/mounts its configured content. This mechanism is independent of the controlled file. [Upstream mount-file selection](https://github.com/containers/podman/blob/v4.9.3/vendor/github.com/containers/common/pkg/subscriptions/subscriptions.go#L157-L181).
+
+**Failure scenario:** Either channel introduces a credential/state directory without passing `check_source`. The `/bin/true` probe succeeds; test code subsequently receives the exposed files. A containment assertion running afterward cannot prevent the access.
+
+**Fix:** Clear `CONTAINERS_CONF_OVERRIDE` for every Podman invocation and explicitly disable default mount-file loading—for this version, a controlled empty file via `--default-mounts-file`. Add rootless regressions for both channels, verifying exclusion before running test code. These paths are source-confirmed; Podman is unavailable locally.
+
+**Medium 1 — The mount allowlist rejects ordinary Podman tmpfs mounts.**
+
+Location: [test/sandbox/containment_test.go:161](test/sandbox/containment_test.go:161).
+
+**Failure scenario:** The wrapper uses `--read-only` without disabling `--read-only-tmpfs`. Podman 4.9.3 therefore adds `/run` and `/var/tmp` tmpfs mounts, neither of which is allowed. A correctly isolated container fails `TestOnlyExpectedMounts`. [Podman 4.9.3 documentation](https://docs.podman.io/en/v4.9.3/markdown/podman-run.1.html#read-only-tmpfs).
+
+**Fix:** Explicitly choose the tmpfs policy and validate the corresponding exact destinations and filesystem types. This is a concrete container-test compatibility regression; I have not established a separate rootless startup failure caused by replacing `containers.conf`.
+
+**Medium 2 — Recursive mount exemptions hide unexpected host mounts.**
+
+Location: [test/sandbox/containment_test.go:184](test/sandbox/containment_test.go:184).
+
+**Failure scenario:** Every descendant of `/dev`, `/proc`, and `/sys` is accepted regardless of source or filesystem type. The protected-canary walk also skips these trees.
+
+**Reproduced:** Injected a readable decoy bind at `/dev/adc-decoy`; both `TestOnlyExpectedMounts` and `TestNoProtectedOrRepoAlias` passed.
+
+**Fix:** Replace recursive exemptions with backend-specific expected mounts and validate their types/options and provenance where applicable. Add a mutation beneath an otherwise permitted pseudo-filesystem.
+
+**Medium 3 — Mutation verification still accepts incomplete execution evidence.**
+
+Location: [scripts/test-sandbox-selftest.sh:134](scripts/test-sandbox-selftest.sh:134).
+
+**Failure scenario:** After emitting the expected named results, a mutation run can terminate abnormally or produce an additional failing test. The harness ignores its recorded exit status, package completion, and results outside the hardcoded lists.
+
+**Fix:** Compare the complete terminal test-result set against the baseline, reject unexpected/missing/duplicate cases, and require the expected package completion and wrapper exit status.
+
+Independent validation passed the full bubblewrap self-test: all five mutation matrices, three protected-overlap refusals, and cache-symlink refusal. Repository files remain unchanged; no secrets were printed. Hosted validation of `805f7a9` remains unverified: GitHub returned no checks/run for that SHA; the available green [branch run](https://github.com/ekaynac/auto-dev-cycle/actions/runs/37110902407) belongs to `e12d669`.
+## Third review of #10 (Astra, 2026-10-03)
+
+Verdict: NO-GO
+
+- **Earlier H1 — environment/proxy/init exposure:** resolved for the reported paths.
+- **Earlier H2 / #10 H1 / re-review H1 — unsafe mount sources:** partially resolved; runtime and relocated credential roots are protected, but provisioned child paths bypass validation. See High 1.
+- **Earlier H3 — rootful runtime accepted:** resolved.
+- **Earlier M4 — incomplete containment red-proofs:** improved, but proof gaps remain below.
+- **Earlier M5 — sentinel inspection fails open:** resolved.
+- **Earlier M6 / re-review M3 — backend probing/fallback:** resolved within the rootless-Podman-only fallback scope.
+- **Earlier M7 / re-review M5 — combined TCP/DNS prerequisites:** resolved.
+- **Earlier M8 — shared self-test scratch:** resolved.
+- **Earlier re-review M6 — destructive repository probe:** resolved.
+- **Earlier second re-review M4 — nondeterministic state fixture:** resolved for the reported cases.
+- **Earlier second re-review — mutation selection prevents fallback:** resolved for the reported scenario.
+- **#10 H2 / re-review H2 — inherited Podman configuration mounts:** implementation resolved for the reported channels; regression coverage remains missing. The isolation matches upstream’s [configuration loader](https://github.com/containers/podman/blob/v4.9.3/vendor/github.com/containers/common/pkg/config/new.go) and [mount-file selection](https://github.com/containers/podman/blob/v4.9.3/vendor/github.com/containers/common/pkg/subscriptions/subscriptions.go).
+- **#10 M1 / re-review M3 — incomplete mutation evidence:** partially resolved; exit status and test-name sets are checked, but package completion and duplicate results are not. See Medium 1.
+- **Re-review M1 — unexpected Podman tmpfs mounts:** resolved by the explicit `--read-only-tmpfs=false` policy, consistent with [Podman’s documented behavior](https://docs.podman.io/en/v4.9.3/markdown/podman-run.1.html#read-only-tmpfs).
+- **Re-review M2 — recursive pseudo-filesystem exemptions:** resolved; `pseudo-mount` exercises the replacement. Filesystem-type wildcards remain a separate gap.
+
+### High
+
+**1. Provisioned child symlinks still expose protected host directories.**
+
+**Locations:** [scripts/test-sandbox.sh:158](scripts/test-sandbox.sh:158), [scripts/test-sandbox.sh:240](scripts/test-sandbox.sh:240).
+
+`claim_area` validates the scratch/provision roots, but their mounted children are not equivalently validated. In particular, `provision/modcache` can be a symlink outside the claimed area. Provisioning follows it, and the backend subsequently mounts its target at `/gomodcache`. The explicit symlink refusal applies only to `gocache`.
+
+**Reproduced:** Let the runner create legitimate marked areas, then replace `provision/modcache` with a symlink to a sacrificial subdirectory beneath a relocated `CODEX_HOME`. Reading its decoy through `/gomodcache` succeeded with wrapper exit **0**. Every executed containment assertion passed; the host-loopback assertion skipped because this focused reproduction supplied no listener.
+
+This violates both the absence-of-personal-state requirement and the claimed restriction to harness-created mount sources.
+
+**Fix:** Validate every actual provisioned source, including intermediate components, before provisioning, reuse, and mounting. Reject symlinks escaping the claimed area and resolved paths overlapping protected roots. Apply this to the toolchain, Node, and module-cache paths. Add this sacrificial child-symlink refusal regression.
+
+### Medium
+
+**1. Mutation verification still accepts incomplete and duplicate execution evidence.**
+
+**Locations:** [scripts/test-sandbox-selftest.sh:93](scripts/test-sandbox-selftest.sh:93), [scripts/test-sandbox-selftest.sh:150](scripts/test-sandbox-selftest.sh:150).
+
+`results` collapses repeated terminal events through `last[$1]`; `action` likewise retains only the last event. Package-level events are ignored entirely. Consequently, the additional name-set and exit-status checks do not establish complete execution.
+
+**Reproduced:** The existing verifier accepted both a stream lacking package completion and a stream containing duplicate terminal results, printing “exactly its declared checks failed” with its failure flag still zero.
+
+**Fix:** Validate the complete JSON event stream: require exactly one terminal result per test/subtest, the expected package completion, matching case sets, and the expected wrapper status. Exercise the validator with malformed evidence.
+
+**2. The mount assertion does not enforce its stated filesystem-type contract.**
+
+**Locations:** [test/sandbox/containment_test.go:167](test/sandbox/containment_test.go:167), [test/sandbox/containment_test.go:209](test/sandbox/containment_test.go:209).
+
+Many entries, including `/gomodcache`, have `nil` types, which accept every filesystem type. This contradicts the comment that every mount is checked by destination **and** filesystem type.
+
+**Reproduced:** Replacing the module-cache bind with `--tmpfs /gomodcache` in a disposable runner copy still passed `TestOnlyExpectedMounts`, with wrapper exit **0**.
+
+**Fix:** Supply explicit expected types, deriving host bind types from validated source metadata where portability requires it. Add a mutation that changes the type at an allowed destination.
+
+**3. The reported Podman configuration fixes lack their requested regression tests.**
+
+**Locations:** [scripts/test-sandbox-selftest.sh:77](scripts/test-sandbox-selftest.sh:77), [scripts/test-sandbox-selftest.sh:137](scripts/test-sandbox-selftest.sh:137).
+
+The self-check never supplies a decoy `CONTAINERS_CONF_OVERRIDE` or configured `mounts.conf`. Its mutations run only through bubblewrap. Clean hosted Podman runs therefore do not prove either configuration channel is excluded.
+
+**Fix:** Add disposable Podman configuration fixtures containing sacrificial mounts and verify that their content remains unavailable, with controls establishing that each fixture is effective.
+
+No additional hosted amd64/arm64 portability blocker was established. I accept the supplied CI results; Podman was unavailable locally. Shell syntax and the focused reproductions were checked, and repository files remain unchanged.
+# PR #16 review (Astra, 2026-10-03)
+
+Verdict: NO-GO
+
+- **Last #10 High 1 — provisioned child symlinks: resolved for the reported escape.** Intermediate components are checked before provisioning and mounting; the module-cache symlink regression passes.
+- **Last #10 Medium 1 — incomplete execution evidence: partially resolved.** Missing package completion and duplicate terminal results are rejected, but incomplete test execution and incorrect package outcomes remain accepted.
+- **Last #10 Medium 2 — filesystem-type wildcards: resolved.** Observed mounts now require explicit types. Separate completeness and mutation-portability gaps remain below.
+- **Last #10 Medium 3 — missing Podman configuration regressions: deferred with the removed backend.** These remain requirements for the subsequent container PR; their absence does not block this bubblewrap-only PR.
+
+**High**
+
+1. **An accepted provision/cache overlap lets sandboxed code modify an executable subsequently run on the host.**
+
+   Locations: [scripts/test-sandbox.sh:135](scripts/test-sandbox.sh:135), [scripts/test-sandbox.sh:181](scripts/test-sandbox.sh:181), [scripts/test-sandbox.sh:271](scripts/test-sandbox.sh:271).
+
+   `ADC_TEST_PROVISION="$ADC_TEST_SCRATCH/gocache"` is accepted. Consequently, the provisioned Go executable is accessible through writable `/scratch/gocache`, despite its read-only `/opt/go` alias.
+
+   **Reproduced with disposable fixtures:** a sandboxed command replaced that copied executable and removed the module-cache completion marker. The next wrapper invocation executed the replacement during host-side provisioning, creating a sacrificial file outside the sandbox. Both invocations exited **0**.
+
+   **Fix:** Reject overlaps between actual writable bind sources and provisioned toolchain, Node, and module-cache sources. Add this two-invocation regression, proving that sandbox writes cannot alter subsequent host-side execution.
+
+2. **The repository bind bypasses protected-root validation.**
+
+   Locations: [scripts/test-sandbox.sh:119](scripts/test-sandbox.sh:119), [scripts/test-sandbox.sh:270](scripts/test-sandbox.sh:270).
+
+   Protected-root checks apply to scratch and provision areas, but not to the repository. A relocated `CODEX_HOME` inside the checkout is therefore exposed through `/src`. Credential roots also receive no canaries, so the containment assertions miss this configuration.
+
+   **Reproduced in a disposable checkout:** set `CODEX_HOME` to its `credentials` directory, read the sacrificial `auth.json` through `/src/credentials/auth.json`, then ran the containment package. Every executed assertion passed; only the host-listener check skipped because this focused reproduction supplied no listener. Wrapper exit: **0**.
+
+   **Fix:** Before launching anything sandboxed, reject repository overlap with protected roots and repositories encompassing the real home. Add a relocated-credential fixture inside the checkout and require refusal before command execution.
+
+**Medium**
+
+1. **The event validator still does not establish complete, consistent execution.**
+
+   Locations: [scripts/test-sandbox-selftest.sh:102](scripts/test-sandbox-selftest.sh:102), [scripts/test-sandbox-selftest.sh:142](scripts/test-sandbox-selftest.sh:142).
+
+   `stream_ok` counts terminal events but never matches started tests to completed tests or checks the package’s terminal action. I reproduced acceptance of:
+   
+   - A started test with no terminal result.
+   - A failed test followed by a passing package result.
+   - A failed test followed by a skipped package result.
+
+   Started-but-unfinished cases also escape the later name-set comparison, which uses only terminal events. The unsandboxed control never calls `stream_ok` or checks its recorded exit status.
+
+   **Fix:** Validate package identity and expected outcome, match every started test/subtest to exactly one terminal event, and apply validation to every run, including the control. Add negative fixtures for these cases.
+
+2. **The claimed exact mount table permits missing mounts.**
+
+   Location: [test/sandbox/containment_test.go:186](test/sandbox/containment_test.go:186).
+
+   The assertion checks each observed mount against the allowlist but never requires expected mounts to exist.
+
+   **Reproduced:** in a disposable runner copy, replaced the `/gomodcache` bind with an ordinary empty directory. `TestOnlyExpectedMounts` passed and the wrapper exited **0**.
+
+   **Fix:** Compare the complete observed and required mount sets, including types and duplicate destinations. Add a missing-mount mutation.
+
+3. **The type-change mutation assumes the original source is not tmpfs.**
+
+   Location: [scripts/test-sandbox.sh:239](scripts/test-sandbox.sh:239).
+
+   The mutation always substitutes tmpfs. When the provision area already resides on tmpfs—for example, an executable tmpfs-backed `/tmp`—the expected and substituted filesystem types are identical. The asserted type mismatch disappears, causing the self-check to fail despite correct containment.
+
+   **Fix:** Verify that the mutation actually changes the type, choosing a suitable alternative or using a controlled fixture. Exercise a tmpfs-backed provision area.
+
+Portability is demonstrated for this exact commit: both hosted [ubuntu-24.04 amd64](https://github.com/ekaynac/auto-dev-cycle/actions/runs/37127108605/job/111214526338) and [ubuntu-24.04 arm64](https://github.com/ekaynac/auto-dev-cycle/actions/runs/37127108605/job/111214526542) `make ci` jobs passed. The container fallback’s absence is explicitly documented and consistent with the agreed split.
+
+Local validation passed the complete unmodified bubblewrap self-check, including all seven mutations and refusal cases. Shell syntax and implementation-file whitespace checks passed. The focused reproductions above used disposable fixtures; repository files remain unchanged.
+## Second review of #16 (Astra, 2026-10-03)
+
+Verdict: NO-GO
+
+- **H1 — Partially resolved.** The reported provision/cache overlap is refused, but the original Go installation now executed during provisioning can still overlap the writable cache. See High below.
+- **H2 — Resolved.** Repository overlap with protected roots, including relocated `CODEX_HOME`, is rejected before provisioning or execution.
+- **M1 — Reported failures resolved.** Started/finished matching, package outcomes, and control-run validation are enforced. A smaller validation gap remains below.
+- **M2 — Resolved.** Expected mounts must occur exactly once; the missing-mount mutation exercises absence detection.
+- **M3 — Portability defect resolved.** Substituting proc avoids the tmpfs collision. However, the mutation no longer independently proves filesystem-type checking.
+
+**High — The original Go installation can remain writable from the sandbox.**
+
+Locations: [scripts/test-sandbox.sh:193](scripts/test-sandbox.sh:193), [scripts/test-sandbox.sh:205](scripts/test-sandbox.sh:205).
+
+The overlap checks protect provisioned sources but omit `$goroot`, despite executing `$goroot/bin/go` on the host. An accepted configuration is:
+
+```text
+ADC_TEST_SCRATCH=<temporary>/scratch
+ADC_GO_PREFIX=<temporary>/scratch/gocache/host-go
+```
+
+**Reproduced with a disposable copy of the genuine pinned Go installation:** the first sandbox invocation replaced `/scratch/gocache/host-go/bin/go`. A second invocation, using a fresh provision area to trigger module provisioning, executed that replacement on the host and created a sacrificial marker outside the sandbox. Both invocations exited **0**.
+
+**Fix:** Before provisioning, reject overlap between writable bind sources and the original Go installation, as well as provisioned sources. Add this two-invocation regression.
+
+**Medium — Duplicate-mount detection masks a broken filesystem-type assertion.**
+
+Locations: [scripts/test-sandbox.sh:256](scripts/test-sandbox.sh:256), [scripts/test-sandbox.sh:292](scripts/test-sandbox.sh:292), [test/sandbox/containment_test.go:212](test/sandbox/containment_test.go:212).
+
+The type-change mutation retains the module-cache bind and mounts proc over it. Consequently, `TestOnlyExpectedMounts` fails for duplicate `/gomodcache` mounts even if filesystem-type validation is broken.
+
+**Reproduced in a disposable checkout:** removed only `fstype != want` from the assertion. The **entire self-check still passed**, including all eight mutation matrices and the type-change red-proof.
+
+**Fix:** Make type-change replace the original bind, leaving exactly one mount at `/gomodcache`. Verify that disabling the type comparison makes this mutation’s red-proof fail.
+
+**Low — Stream validation accepts missing package identities and impossible event ordering.**
+
+Location: [scripts/test-sandbox-selftest.sh:108](scripts/test-sandbox-selftest.sh:108).
+
+`unique` treats uniformly missing `.Package` values as one package, while sorting test names discards lifecycle ordering. I reproduced acceptance of both an entirely identity-free stream and a stream reporting package completion before test completion and test start.
+
+**Fix:** Require a nonempty, expected package identity and validate lifecycle order. Add negative fixtures for both cases.
+
+Validation used disposable fixtures; repository files remain unchanged. The supplied green CI and baseline self-check evidence is consistent with these findings: the host-toolchain configuration is absent from the refusals, and duplicate detection masks the type-validation regression.
+## Third review of #16 (Astra, 2026-10-03)
+
+Verdict: GO
+
+- **High — Resolved.** `scripts/test-sandbox.sh:86` rejects canonical Go-prefix overlap with scratch, provision, and repository roots before inspecting or executing Go. The reported writable-cache configuration is refused; its regression passes.
+- **Medium — Resolved.** `scripts/test-sandbox.sh:297` substitutes proc for the `/gomodcache` bind, leaving one mount. Duplicate detection no longer masks filesystem-type validation. The supplied experiment disabling the type comparison demonstrates that this red-proof detects the intended assertion’s removal.
+- **Low — Resolved.** `scripts/test-sandbox-selftest.sh:106` requires the expected package identity and run → test completion → package completion ordering. Independent checks rejected missing/wrong identities and each ordering violation separately, while accepting valid interleaving.
+
+**New findings:** None.
+
+The complete bubblewrap self-check passed locally: baseline, unsandboxed control, all eight mutation matrices, and refusal regressions. The control demonstrated both external TCP and DNS access, so neither network red-proof was left unproven. Shell syntax and delta whitespace checks passed.
+
+The self-check now supports the three corrected claims. Specification conformance remains within the previously agreed bubblewrap-only scope; the rootless-container fallback remains deferred. Repository files were unchanged.

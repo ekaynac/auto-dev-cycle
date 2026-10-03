@@ -39,7 +39,7 @@ BINARIES   := adcd adc adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check build dist lint fixtures-check ci clean
+.PHONY: help toolchain go-check build dist lint test test-sandbox-selftest fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
@@ -75,7 +75,7 @@ dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 	@find $(DIST_DIR) -type f | sort
 
 lint: go-check ## gofmt, go vet, go mod tidy check, SPDX headers, shell syntax (+ shellcheck where installed)
-	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal)"; \
+	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal test)"; \
 	  if [[ -n "$$unformatted" ]]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	@$(GO) vet ./...
 	@$(GO) mod tidy -diff
@@ -89,7 +89,13 @@ fixtures-check: ## Prove every T0 fixture task well-formed (needs docker, bubble
 	@[[ -n "$(T0_CHECKS)" ]] || { echo "fixtures-check: no fixtures/t0/*/check.sh found" >&2; exit 1; }
 	@for c in $(T0_CHECKS); do echo "== $$c"; $$c || exit 1; done
 
-ci: lint build dist ## Everything CI runs
+test: go-check ## Run all tests inside the test sandbox (refuses to run unsandboxed)
+	@scripts/test-sandbox.sh -- go test -count=1 ./...
+
+test-sandbox-selftest: go-check ## Prove the test sandbox contains writes, credentials and network
+	@scripts/test-sandbox-selftest.sh
+
+ci: lint build test test-sandbox-selftest dist ## Everything CI runs
 
 clean: ## Remove build outputs
 	@rm -rf $(BIN_DIR) $(DIST_DIR)
