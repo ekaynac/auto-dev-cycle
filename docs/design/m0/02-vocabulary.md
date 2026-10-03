@@ -62,8 +62,9 @@ acts, probes) [D40].
 - hold: quota_reset
   signal: time                    # time | receipt | revision | approval | human_act | probe | config_change
   signal_detail: earliest known reset of the blocking resource group; if none known, the probe schedule applies
-  owner: system                   # system | operator | supervisor | project_owner
+  owner: system                   # system | operator | grant_holder | confirmation_policy | named_owner | environment_owner
   page_after: PT1H                # ISO-8601 duration before the pager is involved; null = never page
+  escalate_to: null               # owner once page_after passes without the signal; null = the owner keeps it
 ```
 
 Rules:
@@ -72,6 +73,10 @@ Rules:
 - Every hold record carries the concrete signal instance (e.g. the reset timestamp, the approval id awaited).
 - Pages are deduplicated by **event** (hold id + signal instance), never by channel (nöbetçi lesson: dedup by name
   ignored every receipt after the first).
+
+`grant_holder` is the operator or the supervisor the grant names; `confirmation_policy` resolves through the
+proposal's policy (04); `named_owner` is the owner the hold record names (environment, access, tooling);
+`environment_owner` is the one the project profile names (07).
 
 Initial hold registry (M0 defines; later milestones add):
 
@@ -89,7 +94,7 @@ Initial hold registry (M0 defines; later milestones add):
 | `base_moved_conflict` | revision (rebased candidate) | system |
 | `broker_credit_exhausted` | probe (balance probe passes) or human_act (operator top-up); never a time | operator |
 | `awaiting_input` | approval that `answers` the owed input id (04) | operator or supervisor |
-| `evidence_restore_pending` | lease settlement of the `evidence_target` group (restore verified, 13) | system, then operator |
+| `evidence_restore_pending` | lease settlement of the `evidence_target` group (restore verified, 13) | system, then (`escalate_to`) the environment owner the profile names (05); the operator when it names none |
 | `precondition_failed` | probe (precondition passes) | the environment owner named in the profile |
 
 **`page_after` defaults come from data** (nöbetçi stall profile, 382 terminals: long tails of 4–17 h sat on holds

@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+# The reason-code registry (docs/design/m0/02 "Reason codes"). Writers may emit
+# only registered, non-deprecated codes; readers accept every code ever
+# registered. A code is never reused for another meaning. `source` names where
+# the code was introduced (a design note, or a legacy golden in
+# fixtures/legacy/ for codes proposed there).
+schema: adc.vocab.reasons/v1
+reasons:
+  # --- generic completions ---------------------------------------------------
+  - {code: completed_with_findings, outcomes: [found], domain: cycle, introduced: 0.1.0, deprecated: null, source: "02", description: "The check ran completely and found something."}
+  - {code: completed_clean, outcomes: [empty], domain: cycle, introduced: 0.1.0, deprecated: null, source: "02", description: "The check ran completely and found nothing."}
+
+  # --- capacity --------------------------------------------------------------
+  - {code: quota_exhausted, outcomes: [could_not_run], domain: capacity, hold: quota_reset, introduced: 0.1.0, deprecated: null, source: "02", description: "The leased source reported its quota as exhausted."}
+  - {code: quota_unknown, outcomes: [could_not_run], domain: capacity, hold: quota_reset, introduced: 0.1.0, deprecated: null, source: "02", description: "The source's remaining quota cannot be determined; the probe schedule applies."}
+  - {code: broker_credit_exhausted, outcomes: [could_not_run], domain: capacity, hold: broker_credit_exhausted, introduced: 0.1.0, deprecated: null, source: "05", description: "The broker balance cannot cover the reservation (402, or stale/unknown balance). Partial work is sealed, never read as no changes."}
+  - {code: routing_violation, outcomes: [failed], domain: capacity, introduced: 0.1.0, deprecated: null, source: "02", description: "The destination is outside the project's allowed set; refused before egress."}
+  - {code: fallback_scope, outcomes: [failed], domain: capacity, introduced: 0.1.0, deprecated: null, source: "legacy:f16-inline-fallback", description: "The fallback chain entry is not authorised for this role and mode; refused in the placement path."}
+  - {code: inconsistent_usage, outcomes: [found], domain: capacity, introduced: 0.1.0, deprecated: null, source: "05", description: "A final usage report is lower than the sum of its deltas; the larger figure is kept until reconciled."}
+
+  # --- attempts, leases, effects ---------------------------------------------
+  - {code: stale_attempt, outcomes: [failed], domain: cycle, introduced: 0.1.0, deprecated: null, source: "05", description: "Output from an attempt whose id or fencing token is not current, or whose publication is closed."}
+  - {code: idempotency_key_reused, outcomes: [failed], domain: ops, introduced: 0.1.0, deprecated: null, source: "03", description: "A command repeats an idempotency key with a different input."}
+  - {code: stale_expected_state, outcomes: [failed], domain: ops, introduced: 0.1.0, deprecated: null, source: "03", description: "The command's expected object version or digest is not current."}
+  - {code: ambiguous_state, outcomes: [could_not_run], domain: ops, introduced: 0.1.0, deprecated: null, source: "03", description: "A projection found two live records where one is allowed; fails closed."}
+  - {code: controller_already_running, outcomes: [could_not_run], domain: ops, introduced: 0.1.0, deprecated: null, source: "03", description: "Another adcd holds the state directory lock."}
+
+  # --- gate, accept, evidence -------------------------------------------------
+  - {code: protected_path, outcomes: [failed], domain: gate, introduced: 0.1.0, deprecated: null, source: "02", description: "The patch touches a protected path outside the protected-document operation."}
+  - {code: test_integrity_violation, outcomes: [failed], domain: gate, introduced: 0.1.0, deprecated: null, source: "02", description: "A test was deleted or skipped, or an assertion removed, without an approved row (conclusive)."}
+  - {code: candidate_owned_setup_error, outcomes: [found], domain: gate, introduced: 0.1.0, deprecated: null, source: "legacy:edge-owned-errors", description: "A setup/teardown error in a test file the candidate added or changed, fully accounted; routed to a builder repair (07 ownership rules)."}
+  - {code: runner_fault, outcomes: [could_not_run], domain: gate, hold: wrong_owner, introduced: 0.1.0, deprecated: null, source: "legacy:edge-owned-errors", description: "Gate output that is not candidate-owned (collection error, untouched file, unaccounted count, external import error, unknown base); goes to the environment owner."}
+  - {code: gate_test_failed, outcomes: [found], domain: gate, introduced: 0.1.0, deprecated: null, source: "legacy:edge-owned-errors", description: "A test failed relative to the measured baseline."}
+  - {code: receipt_incomplete, outcomes: [could_not_run], domain: gate, hold: awaiting_receipt, introduced: 0.1.0, deprecated: null, source: "06", description: "A required predicate or its evidence media is missing; never derives empty."}
+  - {code: instrument_changed, outcomes: [could_not_run], domain: gate, hold: awaiting_receipt, introduced: 0.1.0, deprecated: null, source: "06", description: "The instrument digest changed; dependent requirements must be re-run."}
+  - {code: evidence_inapplicable, outcomes: [could_not_run], domain: gate, hold: awaiting_receipt, introduced: 0.1.0, deprecated: null, source: "02", description: "A valid receipt does not apply (other subject, tree, environment, contract revision or demand)."}
+  - {code: evidence_observed, outcomes: [found], domain: gate, introduced: 0.1.0, deprecated: null, source: "legacy:f16-walk-demand", description: "An evidence run for this demand produced its receipt."}
+  - {code: evidence_cap_exhausted, outcomes: [could_not_run], domain: gate, hold: wrong_owner, introduced: 0.1.0, deprecated: null, source: "12", description: "Attempts for this subject reached the total cap across demands."}
+  - {code: precondition_failed, outcomes: [could_not_run], domain: gate, hold: precondition_failed, introduced: 0.1.0, deprecated: null, source: "12", description: "An instrument precondition failed before the run; no attempt is spent."}
+
+  # --- review and closure -----------------------------------------------------
+  - {code: review_input_changed, outcomes: [found], domain: review, introduced: 0.1.0, deprecated: null, source: "legacy:f16-walk-demand", description: "A review input changed (new answer, new demand, changed conclusions), so a successor review is required."}
+  - {code: conclusions_unchanged, outcomes: [empty], domain: review, introduced: 0.1.0, deprecated: null, source: "legacy:f16-walk-demand", description: "A new receipt has the conclusions_digest the reviewer already saw; no new review is required."}
+  - {code: reviewer_not_independent, outcomes: [could_not_run], domain: review, hold: reviewer_unavailable, introduced: 0.1.0, deprecated: null, source: "06", description: "No reviewer family disjoint from every contributor is available; unknown family counts as not independent."}
+  - {code: closure_repair, outcomes: [found], domain: review, introduced: 0.1.0, deprecated: null, source: "legacy:closure-record-finding-r4", description: "A finding about the closing record; routed to a new closure step, never to the builder."}
+  - {code: p3_banked, outcomes: [found], domain: review, introduced: 0.1.0, deprecated: null, source: "legacy:closure-record-finding-r4", description: "A P3 finding banked as background work (plan §2.5)."}
+
+  # --- authority --------------------------------------------------------------
+  - {code: authority_revoked, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "04", description: "The actor's grant was revoked, expired or narrowed; streams close with this reason."}
+  - {code: seat_not_held, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "08", description: "A supervisor write action without holding the seat."}
+
+  # --- adapters, sandbox, config ---------------------------------------------
+  - {code: unsafe_output, outcomes: [failed], domain: adapter, introduced: 0.1.0, deprecated: null, source: "09", description: "An adapter output violated the ingestion boundary (symlink, special file, digest mismatch, foreign handle)."}
+  - {code: project_unconfigured, outcomes: [could_not_run], domain: ops, introduced: 0.1.0, deprecated: null, source: "07", description: "The project has no valid adopted profile; refuse to run."}
