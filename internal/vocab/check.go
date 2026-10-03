@@ -65,8 +65,14 @@ const genFile = "vocab.gen.go"
 //     constants, concatenations and conversions in any position, through
 //     aliased and dot imports. A registered value is reported as a bypass, an
 //     unregistered one as unregistered (docs/design/m0/02 `adc dev vocab check`);
-//   - every generated constant whose code is deprecated (writers may not emit
-//     it);
+//   - every constant written to a reason destination (a struct field, an
+//     assignment, a typed declaration, a return, an argument) that is not a
+//     generated constant, so string-typed values such as string("x") or a
+//     typed string constant are caught where they become reasons;
+//   - every generated constant whose code is deprecated, where it is written
+//     (readers may still compare against it);
+//   - every encoding/json call that encodes a generated contract record,
+//     bypassing contract.Encode;
 //   - every generic function or type instantiated with a reason type, whose
 //     reasons come from type-parameter literals the scan cannot see.
 //
@@ -79,9 +85,10 @@ const genFile = "vocab.gen.go"
 // import path, lets the tests use a synthetic module.
 //
 // The scan is not the only line: a reason built at run time (from a
-// non-constant string, a []byte, a pointer) is refused when its record is
-// decoded or encoded, because internal/contract checks every reason field
-// against the vocabulary (adc-reason), and writers go through Registry.Check.
+// non-constant string, a []byte, a pointer) is refused when it is written:
+// contract.Encode checks every reason field of a record against the
+// vocabulary (adc-reason, deprecated codes refused), and Result.MarshalJSON
+// runs Registry.Check.
 // Not scanned: test files (they build malformed results on purpose) and
 // TypeScript (there is no product TS emitter yet).
 //
@@ -128,14 +135,26 @@ func (reg *Registry) CheckSource(root string) ([]Finding, error) {
 			if pkg.Name == "vocab" && filepath.Base(name) == genFile {
 				continue
 			}
-			cands, generated := reasonConstants(pkg.Fset, pkg.TypesInfo, file)
-			for _, e := range cands {
+			seen := map[token.Pos]bool{}
+			for _, e := range reasonConstants(pkg.Fset, pkg.TypesInfo, file) {
+				seen[e.Pos()] = true
 				found = append(found, reg.finding(absRoot, pkg, e))
 			}
-			for _, e := range generated {
-				if f, ok := reg.deprecated(absRoot, pkg, e); ok {
+			for _, d := range reasonDestinations(pkg.TypesInfo, file) {
+				tv, ok := pkg.TypesInfo.Types[d.e]
+				if !ok || tv.Value == nil || tv.Value.Kind() != constant.String || seen[d.e.Pos()] {
+					continue
+				}
+				seen[d.e.Pos()] = true
+				if !isGenerated(pkg.Fset, pkg.TypesInfo, d.e) {
+					found = append(found, reg.finding(absRoot, pkg, d.e))
+				} else if f, ok := reg.deprecated(absRoot, pkg, d.e); ok && d.write {
 					found = append(found, f)
 				}
+			}
+			for _, call := range recordEncodes(pkg.TypesInfo, file) {
+				found = append(found, locate(absRoot, pkg, call.Pos(),
+					"a contract record encoded with encoding/json; use contract.Encode, which validates it"))
 			}
 			for _, id := range reasonInstances(pkg.TypesInfo, file) {
 				found = append(found, locate(absRoot, pkg, id.Pos(), fmt.Sprintf(
@@ -181,9 +200,9 @@ func skipped(absRoot string, pkg *packages.Package) bool {
 }
 
 // reasonConstants returns the outermost constant expressions of a reason
-// type in file: those that are not a generated constant used by name (or
-// converted), and those that are.
-func reasonConstants(fset *token.FileSet, info *types.Info, file *ast.File) (cands, generated []ast.Expr) {
+// type in file that are not a generated constant used by name (or
+// converted).
+func reasonConstants(fset *token.FileSet, info *types.Info, file *ast.File) []ast.Expr {
 	var all []ast.Expr
 	ast.Inspect(file, func(n ast.Node) bool {
 		e, ok := n.(ast.Expr)
@@ -197,14 +216,13 @@ func reasonConstants(fset *token.FileSet, info *types.Info, file *ast.File) (can
 		all = append(all, e)
 		return false // the outermost expression is the finding
 	})
+	var cands []ast.Expr
 	for _, e := range all {
-		if isGenerated(fset, info, e) {
-			generated = append(generated, e)
-		} else {
+		if !isGenerated(fset, info, e) {
 			cands = append(cands, e)
 		}
 	}
-	return cands, generated
+	return cands
 }
 
 // reasonInstances returns the generic functions and types in file
@@ -250,18 +268,198 @@ func containsReason(t types.Type) bool {
 // generated alias ReasonCode of a package named types (the reason fields of
 // the contract records, e.g. types.Predicate.Reason).
 func isReason(t types.Type) bool {
-	if a, ok := t.(*types.Alias); ok {
+	for a, ok := t.(*types.Alias); ok; a, ok = t.(*types.Alias) {
 		obj := a.Obj()
-		if obj.Name() == "ReasonCode" && obj.Pkg() != nil && obj.Pkg().Name() == "types" {
+		if obj.Name() == "ReasonCode" && obj.Pkg() != nil && isGenPkg(obj.Pkg()) {
 			return true
 		}
+		t = a.Rhs() // type Why = types.ReasonCode is a reason type too
 	}
-	n, ok := types.Unalias(t).(*types.Named)
+	n, ok := t.(*types.Named)
 	if !ok {
 		return false
 	}
 	obj := n.Obj()
 	return obj.Name() == "Reason" && obj.Pkg() != nil && obj.Pkg().Name() == "vocab"
+}
+
+// isGenPkg: the generated contract types package (gen/go/types).
+func isGenPkg(p *types.Package) bool {
+	return p.Name() == "types" && strings.HasSuffix(p.Path(), "gen/go/types")
+}
+
+// isRecord: t is a generated contract record (or a pointer, slice, array or
+// map of them).
+func isRecord(t types.Type) bool {
+	switch u := types.Unalias(t).(type) {
+	case *types.Pointer:
+		return isRecord(u.Elem())
+	case *types.Slice:
+		return isRecord(u.Elem())
+	case *types.Array:
+		return isRecord(u.Elem())
+	case *types.Map:
+		return isRecord(u.Elem())
+	case *types.Named:
+		return u.Obj().Pkg() != nil && isGenPkg(u.Obj().Pkg())
+	}
+	return false
+}
+
+// recordEncodes returns encoding/json calls that encode a generated contract
+// record: records are written through contract.Encode, which validates them
+// (deprecated reasons included); plain encoding would skip it.
+func recordEncodes(info *types.Info, file *ast.File) []*ast.CallExpr {
+	var out []*ast.CallExpr
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		f, ok := info.Uses[sel.Sel].(*types.Func)
+		if !ok || f.Pkg() == nil || !strings.HasPrefix(f.Pkg().Path(), "encoding/json") {
+			return true
+		}
+		switch f.Name() {
+		case "Marshal", "MarshalIndent", "MarshalWrite", "MarshalEncode", "Encode":
+			if isRecord(info.TypeOf(call.Args[0])) {
+				out = append(out, call)
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// dest is a value written to a reason destination; write is false for a
+// call argument, which may be a reader (a comparison helper, a lookup).
+type dest struct {
+	e     ast.Expr
+	write bool
+}
+
+// reasonDestinations returns the values flowing into a reason-typed
+// destination: struct fields (keyed or positional), assignments, typed
+// variable declarations, returns, call arguments, and the elements and keys
+// of reason-typed composite literals. The destination keeps the reason
+// meaning that a string-typed value (string("x"), a typed string constant)
+// does not carry itself.
+func reasonDestinations(info *types.Info, file *ast.File) []dest {
+	var out []dest
+	add := func(t types.Type, e ast.Expr, write bool) {
+		if t != nil && isReason(t) {
+			out = append(out, dest{e, write})
+		}
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.CompositeLit:
+			t := info.TypeOf(x)
+			if t == nil {
+				return true
+			}
+			switch u := t.Underlying().(type) {
+			case *types.Struct:
+				for i, el := range x.Elts {
+					if kv, ok := el.(*ast.KeyValueExpr); ok {
+						if id, ok := kv.Key.(*ast.Ident); ok {
+							if v, ok := info.Uses[id].(*types.Var); ok {
+								add(v.Type(), kv.Value, true)
+							}
+						}
+					} else if i < u.NumFields() {
+						add(u.Field(i).Type(), el, true)
+					}
+				}
+			case *types.Slice, *types.Array, *types.Map:
+				var key, elem types.Type
+				switch c := u.(type) {
+				case *types.Slice:
+					elem = c.Elem()
+				case *types.Array:
+					elem = c.Elem()
+				case *types.Map:
+					key, elem = c.Key(), c.Elem()
+				}
+				for _, el := range x.Elts {
+					if kv, ok := el.(*ast.KeyValueExpr); ok {
+						if key != nil {
+							add(key, kv.Key, true)
+						}
+						add(elem, kv.Value, true)
+					} else {
+						add(elem, el, true)
+					}
+				}
+			}
+		case *ast.AssignStmt:
+			if len(x.Lhs) == len(x.Rhs) {
+				for i := range x.Lhs {
+					add(info.TypeOf(x.Lhs[i]), x.Rhs[i], true)
+				}
+			}
+		case *ast.ValueSpec:
+			if x.Type != nil {
+				for _, v := range x.Values {
+					add(info.TypeOf(x.Type), v, true)
+				}
+			}
+		case *ast.CallExpr:
+			if tv, ok := info.Types[x.Fun]; ok && tv.IsType() {
+				return true // a conversion, not a call
+			}
+			sig, ok := types.Unalias(info.TypeOf(x.Fun)).(*types.Signature)
+			if !ok {
+				return true
+			}
+			params := sig.Params()
+			for i, a := range x.Args {
+				var pt types.Type
+				switch {
+				case sig.Variadic() && i >= params.Len()-1 && !x.Ellipsis.IsValid():
+					if s, ok := params.At(params.Len() - 1).Type().(*types.Slice); ok {
+						pt = s.Elem()
+					}
+				case i < params.Len():
+					pt = params.At(i).Type()
+				}
+				add(pt, a, false)
+			}
+		case *ast.FuncDecl, *ast.FuncLit:
+			var sig *types.Signature
+			var body *ast.BlockStmt
+			if f, ok := x.(*ast.FuncDecl); ok {
+				if obj, ok := info.Defs[f.Name].(*types.Func); ok {
+					sig, _ = obj.Type().(*types.Signature)
+				}
+				body = f.Body
+			} else {
+				f := x.(*ast.FuncLit)
+				sig, _ = info.TypeOf(f).(*types.Signature)
+				body = f.Body
+			}
+			if sig == nil || body == nil {
+				return true
+			}
+			ast.Inspect(body, func(m ast.Node) bool {
+				if _, ok := m.(*ast.FuncLit); ok {
+					return false // its returns belong to its own signature
+				}
+				if r, ok := m.(*ast.ReturnStmt); ok && len(r.Results) == sig.Results().Len() {
+					for i, e := range r.Results {
+						add(sig.Results().At(i).Type(), e, true)
+					}
+				}
+				return true
+			})
+		}
+		return true
+	})
+	return out
 }
 
 // isGenerated: e names (directly, or qualified) a constant declared in the
@@ -306,7 +504,8 @@ type located struct {
 }
 
 // deprecated reports a generated constant whose code the registry has
-// deprecated: writers may not emit it, and the scan sees only writers' code.
+// deprecated, where it is written (a field, an assignment, a declaration, a
+// return); reading it (a comparison, a switch case, a lookup) stays allowed.
 func (reg *Registry) deprecated(absRoot string, pkg *packages.Package, e ast.Expr) (located, bool) {
 	code := constant.StringVal(pkg.TypesInfo.Types[e].Value)
 	if x, ok := reg.Reasons[code]; ok && x.Deprecated != nil {

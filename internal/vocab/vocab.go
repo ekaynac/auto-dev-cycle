@@ -41,17 +41,20 @@ const (
 type Reason string
 
 // The contract runtime asks the vocabulary about every reason field of every
-// record it decodes or encodes: readers accept every code ever registered.
-// Writers additionally go through Registry.Check, which refuses deprecated
-// codes; adc dev vocab check refuses them in source.
+// record it decodes (any code ever registered) or encodes (registered and not
+// deprecated).
 func init() {
-	contract.SetReasonCheck(func(code string) error {
+	contract.SetReasonCheck(func(code string, writing bool) error {
 		reg, err := Load()
 		if err != nil {
 			return fmt.Errorf("reason vocabulary: %w", err)
 		}
-		if _, ok := reg.Reasons[code]; !ok {
+		x, ok := reg.Reasons[code]
+		if !ok {
 			return fmt.Errorf("unregistered reason %q", code)
+		}
+		if writing && x.Deprecated != nil {
+			return fmt.Errorf("reason %q is deprecated since %s; writers may not emit it", code, *x.Deprecated)
 		}
 		return nil
 	})
@@ -158,6 +161,43 @@ type Result struct {
 	Outcome Outcome `json:"outcome"`
 	Reason  Reason  `json:"reason"`
 	Detail  string  `json:"detail"`
+}
+
+// MarshalJSON is the result's emission boundary: a result is written only
+// if Registry.Check accepts it (registered, non-deprecated reason allowed
+// with the outcome, non-empty detail), however it is marshalled.
+func (r Result) MarshalJSON() ([]byte, error) {
+	reg, err := Load()
+	if err != nil {
+		return nil, err
+	}
+	if err := reg.Check(r); err != nil {
+		return nil, err
+	}
+	type plain Result
+	return json.Marshal(plain(r))
+}
+
+// UnmarshalJSON reads a result: its outcome must be one of the four and its
+// reason registered (deprecated codes stay readable).
+func (r *Result) UnmarshalJSON(b []byte) error {
+	type plain Result
+	var p plain
+	if err := contract.UnmarshalStrict(b, &p); err != nil {
+		return err
+	}
+	reg, err := Load()
+	if err != nil {
+		return err
+	}
+	if _, ok := reg.Outcomes[p.Outcome]; !ok {
+		return fmt.Errorf("%w: unknown outcome %q", ErrMalformed, p.Outcome)
+	}
+	if _, ok := reg.Reasons[string(p.Reason)]; !ok {
+		return fmt.Errorf("%w: unregistered reason %q", ErrMalformed, p.Reason)
+	}
+	*r = Result(p)
+	return nil
 }
 
 // ErrMalformed marks a result that breaks the vocabulary rules.

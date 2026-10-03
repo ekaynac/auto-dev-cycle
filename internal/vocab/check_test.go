@@ -303,12 +303,13 @@ var _ = bad[string]()
 }
 
 // Astra #24: the reason fields of the generated contract records
-// (types.ReasonCode) are reason types too; a converted generated constant is
-// the constant.
+// (gen/go/types ReasonCode) are reason destinations: a string-typed value
+// written there is a reason, whatever its own type; a converted generated
+// constant is the constant; records are encoded through contract.Encode.
 func TestCheckSourceCoversContractReasonFields(t *testing.T) {
 	reg := mustLoad(t)
 	root := synthetic(t)
-	write(t, root, "types/types.go", `package types
+	write(t, root, "gen/go/types/types.go", `package types
 
 type ReasonCode = string
 
@@ -319,17 +320,50 @@ type Predicate struct {
 	write(t, root, "r/r.go", `package r
 
 import (
-	"example.com/x/types"
+	"encoding/json"
+
+	"example.com/x/gen/go/types"
 	"example.com/x/vocab"
 )
 
+type Why = types.ReasonCode
+
+const code string = "typo_typed"
+
 var _ = types.Predicate{Reason: "typo_field"}
+var _ = types.Predicate{Reason: string("typo_explicit")}
+var _ = types.Predicate{Reason: code}
+var _ = types.Predicate{Reason: Why("typo_alias")}
 var _ = types.Predicate{Reason: string(vocab.ReasonStaleAttempt)}
 var _ = types.Predicate{Reason: types.ReasonCode(vocab.ReasonStaleAttempt)}
+var _, _ = json.Marshal(types.Predicate{Reason: string(vocab.ReasonStaleAttempt)})
+
+func set(p *types.Predicate) { p.Reason = "typo_assigned" }
+
+func give() types.ReasonCode { return "typo_returned" }
+
+func giveTyped() types.ReasonCode { return code }
+
+var w Why = string("typo_chain")
 `)
-	want := `r/r.go:8:33: unregistered reason "typo_field" (raw literal)`
-	if got := findings(t, reg, root); got != want {
-		t.Fatalf("findings:\n%s\nwant:\n%s", got, want)
+	got := findings(t, reg, root)
+	for _, want := range []string{
+		`r/r.go:14:33: unregistered reason "typo_field"`,
+		`r/r.go:15:33: unregistered reason "typo_explicit"`,
+		`r/r.go:16:33: unregistered reason "typo_typed"`,
+		`r/r.go:17:33: unregistered reason "typo_alias"`,
+		`r/r.go:20:12: a contract record encoded with encoding/json; use contract.Encode`,
+		`r/r.go:22:43: unregistered reason "typo_assigned"`,
+		`r/r.go:24:39: unregistered reason "typo_returned"`,
+		`r/r.go:26:44: unregistered reason "typo_typed" (non-generated constant code)`,
+		`r/r.go:28:13: unregistered reason "typo_chain" (conversion)`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, "\n") + 1; n != 9 {
+		t.Errorf("want exactly 9 findings, got %d:\n%s", n, got)
 	}
 }
 
@@ -351,6 +385,20 @@ func TestCheckSourceReportsDeprecatedConstants(t *testing.T) {
 import "example.com/x/vocab"
 
 var _ = vocab.Result{Reason: vocab.ReasonStaleAttempt}
+
+func IsHistorical(r vocab.Reason) bool { return r == vocab.ReasonStaleAttempt }
+
+func lookup(r vocab.Reason) bool { return len(r) > 0 }
+
+var _ = lookup(vocab.ReasonStaleAttempt)
+
+func classify(r vocab.Reason) int {
+	switch r {
+	case vocab.ReasonStaleAttempt:
+		return 1
+	}
+	return 0
+}
 `)
 	want := `a/a.go:5:30: deprecated reason "stale_attempt" (since 0.2.0); writers may not emit it`
 	if got := findings(t, dep, root); got != want {

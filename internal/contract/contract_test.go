@@ -51,7 +51,7 @@ func testRegistry(t *testing.T) registry {
 	r, err := compile(fstest.MapFS{
 		"common/defs.json": {Data: defs},
 		"test/doc.json":    {Data: []byte(docSchema)},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -111,7 +111,7 @@ func contractError(t *testing.T, err error, want string) {
 }
 
 func TestEmbeddedSchemasCompile(t *testing.T) {
-	r, err := load()
+	r, err := load(false)
 	if err != nil {
 		t.Fatalf("embedded schemas: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestReasonFieldsNeedTheVocabulary(t *testing.T) {
 	t.Cleanup(func() { SetReasonCheck(nil) })
 	SetReasonCheck(nil)
 	contractError(t, r.validate("test/doc", doc("known")), "no reason vocabulary is loaded")
-	SetReasonCheck(func(code string) error {
+	SetReasonCheck(func(code string, writing bool) error {
 		if code != "known" {
 			return fmt.Errorf("unregistered reason %q", code)
 		}
