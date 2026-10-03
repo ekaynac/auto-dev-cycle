@@ -26,6 +26,7 @@ Inputs: `docs/plan/01-first-release-plan.md` (rev 3), `00-brainstorm-decisions.m
 | 09 | `09-executor-adapter-contract.md` | JSON-RPC protocol between the Go core and TS adapters; conformance kit. Draft of `docs/adapters/AUTHORING.md` |
 | 10 | `10-context-manifest-and-knowledge-spec.md` | ContextManifest, refs and fingerprints, the shared knowledge spec draft (schemas, invariants, fixture definitions only) |
 | 11 | `11-testing.md` | Test guard, contract-faithful fakes, T0 fixtures, mutation ("red-proof") rule |
+| 12 | `12-evidence-jobs.md` | Evidence-job lifecycle: states, attempts by demand, preconditions, restore, receipt content policy, remote processes (added 2026-10-03 from the nöbetçi delta intake) |
 
 ## Cross-cutting rules (apply to every note)
 

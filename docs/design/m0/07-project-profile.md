@@ -39,7 +39,17 @@ gate:
   command: [argv]                   # run in phase 2, no network
   result_adapter: junit_xml | tap | go_test_json | custom:<plugin> | none
   baseline: {kind: measured, relock_requires: approval}
-  environments: [name]              # target environments whose gate must hold before merge
+  environments:                     # target environments whose gate must hold before merge
+    - name: string
+      facts:                        # published to the builder brief and the reviewer (nöbetçi Δ§7)
+        vcs_metadata: bool          # e.g. false for a deployed copy without .git
+        network: none|loopback|full
+        runtime: {language_version, os, arch}
+      owner: string                 # who fixes environment faults (wrong_owner holds)
+  ownership_rules: default          # gate-output classification: a setup/teardown error in a test file the candidate
+                                    # added or changed, with a traceback through that file and a fully accounted error
+                                    # count, is a builder repair; collection errors, untouched files, count mismatches and
+                                    # an unknown base are runner/environment faults (a hold)
 integration:                        # phase 3; topology is controller-owned (A2)
   plugin: none | docker-compose
   topology:                         # pinned; changed only by integration.change_topology (04) [M12]

@@ -42,7 +42,12 @@ and a `refused` command carries its own `(outcome, reason)` explaining the refus
 Rules:
 - Writers may emit only registered, non-deprecated codes. Readers accept every registered code ever issued.
 - `routing_violation`, `quota_unknown`, `stale_attempt`, `protected_path`, `test_integrity_violation`,
-  `evidence_inapplicable`, and similar are reason codes, not outcomes (Astra A15).
+  `evidence_inapplicable`, `broker_credit_exhausted`, `precondition_failed`, and similar are reason codes, not
+  outcomes (Astra A15).
+- **Adapter and harness exits map to `(outcome, reason)` in one table** (`internal/vocab/exitmap`). Credit exhaustion
+  (HTTP 402, "insufficient credits") is `could_not_run/broker_credit_exhausted`, never "no changes". If the attempt
+  had already changed the candidate, its work is sealed as a checkpoint (05), never discarded or mislabelled (nöbetçi
+  Δ§14).
 - `adc dev vocab check` scans the Go and TS code for reason literals and fails on unregistered ones.
 
 ## Hold reasons and resume signals
@@ -78,6 +83,19 @@ Initial hold registry (M0 defines; later milestones add):
 | `maintenance_boundary` | revision (staged install lands) | system |
 | `budget_rail` | approval (raise) | operator |
 | `base_moved_conflict` | revision (rebased candidate) | system |
+| `broker_credit_exhausted` | probe (balance probe passes) or human_act (operator top-up); never a time | operator |
+| `awaiting_input` | approval that `answers` the owed input id (04) | operator or supervisor |
+| `evidence_restore_pending` | receipt (restore succeeded, 12) | system, then operator |
+| `precondition_failed` | probe (precondition passes) | the environment owner named in the profile |
+| `inputs_not_applicable` | receipt (the missing producer ran for this tree, 05) | system |
+
+**`page_after` defaults come from data** (nöbetçi stall profile, 382 terminals: long tails of 4–17 h sat on holds
+whose signal was a human act or unwatched external state). Defaults:
+- operator-owned holds: `PT1H`;
+- system holds with a time signal: page when the signal is overdue by `PT30M`;
+- `maintenance_boundary`: never page under `PT45M`.
+
+Projects can override.
 
 ## Identifiers
 
@@ -103,6 +121,8 @@ roughly time-sortable, but the event store's `seq` is the authoritative order. E
 | `eff` | external effect (03) |
 | `cal` | model call (call ledger) |
 | `chl` | confirmation challenge (04) |
+| `own` | owed input (04) |
+| `ejb` | evidence job (12) |
 
 Ids are minted by the controller only. Adapters and agents never mint authoritative ids.
 

@@ -19,6 +19,11 @@ ResourceGroup:
   members: [exe_…]
 ```
 
+- **Rate windows and credit balances are separate groups** (`account_quota` vs `broker_balance`). A provider can have
+  rate headroom and no credit, or the reverse (nöbetçi Δ§4: a rate-window check passed on an account with no credit).
+- **A lease on a `broker_balance` group requires a fresh balance probe** (within the group's probe TTL) showing at
+  least the reservation. Otherwise the lease waits on `broker_credit_exhausted` (02).
+
 ## Lease
 
 ```yaml
@@ -32,8 +37,19 @@ Lease:
   footprint: {context_tokens, expected_turns, gpu_seconds?}
   deadline: time
   fallback_step: int
-  placement_checks: {data_floor, destinations, capability, independence, paid_authority, budget}
+  placement_checks: {data_floor, destinations, capability, independence, paid_authority, budget, inputs_applicable, fallback_scope}
 ```
+
+- **`inputs_applicable`** (nöbetçi Δ§13): a lease for a role that consumes evidence (reviewer, phase reviewer) is granted
+  only when every input the role requires is applicable to the exact candidate tree: gate results, receipts, answered
+  owed inputs. If one is missing, the controller schedules its producer first (`inputs_not_applicable` hold) and never
+  sends the reviewer an inapplicable or missing input.
+- **`fallback_scope`** (nöbetçi Δ§4): a fallback step is allowed only if the role's chain entry is authorised for this
+  **role and mode** (e.g. "learning digest" ≠ "phase review"). The check runs in the placement path, not only in a
+  record. Moving to another family re-runs `independence`.
+- **Footprint is learned per executor**, not per role. On an identical review packet, nöbetçi measured 9× the input
+  tokens for one reviewer family versus another. `footprint` starts from priors (the nöbetçi measurement export,
+  intake A12) and is updated from settled usage.
 
 Complete state machine. Every transition is an event, and terminal states are immutable:
 

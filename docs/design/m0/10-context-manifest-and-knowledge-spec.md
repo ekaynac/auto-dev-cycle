@@ -18,7 +18,9 @@ Ref:
 
 ViewFingerprint:
   renderer: {name, version, config_digest}
-  inputs: [Ref]                     # ordered: tree/candidate snapshot, receipts, findings/dispositions, adopted contract (KA4)
+  inputs: [Ref]                     # ordered: tree/candidate snapshot, receipts, findings/dispositions, adopted contract (KA4),
+                                    # and for review packets: the reviewer's demands (owed inputs and evidence demand keys)
+                                    # and the approvals that answered them (04, 12; nöbetçi Δ§1, Δ§3)
   digest: sha256:…                  # over renderer + ordered input identity_digests (not content digests)
 ```
 

@@ -135,7 +135,13 @@ Thresholds quarantine a source with a receipt. Health never comes from configura
   - paid-fallback authority;
   - budget.
 
-  A fallback never widens what the initial placement could do [A3, A7].
+  A fallback never widens what the initial placement could do [A3, A7]. Each chain entry is authorised for a
+  **role and mode** (e.g. a learning digest ≠ a phase review), checked in the placement path (nöbetçi Δ§4).
+- **Footprints are learned per executor**, not per role: on one identical review packet nöbetçi measured 9× the
+  input tokens for one reviewer family against another. Priors come from the nöbetçi measurement export (§4 M2).
+- **Rate windows and credit balances are separate resource groups.** A broker-balance lease needs a fresh balance
+  probe. Credit exhaustion (402) is `could_not_run/broker_credit_exhausted`, a hold on balance probe / operator
+  top-up, with partial work sealed, never read as "no changes" (nöbetçi Δ§14).
 - **Never fail a task because one source is exhausted.** Walk the chain. Otherwise `wait` on the earliest *known*
   reset. When no reset is known, wait on a bounded probe schedule plus a page if the wait exceeds the project's
   threshold.
@@ -261,7 +267,13 @@ plus a phase gate at phase boundaries. Closure comes **after** the final merge t
   - severity policy lives in code;
   - P3 is banked as background work.
 - **Repair** routing is a table in one module, with wrong-owner routing: access, environment, tooling and
-  infrastructure failures go to their owner through hold and page, **never** as a builder repair [A6].
+  infrastructure failures go to their owner through hold and page, **never** as a builder repair [A6]. Gate output is
+  classified by **ownership** (`m0/07` ownership rules): a setup error in a test file the candidate added or changed
+  is a builder repair; collection errors, untouched files and unaccounted counts are runner faults. Each target
+  environment's **facts** (VCS metadata, network, runtime) are published to the builder and the reviewer
+  (nöbetçi Δ§7).
+- **Review leases need applicable inputs.** A reviewer is leased only when its gate results, receipts and answered
+  owed inputs apply to the exact candidate tree; otherwise their producer runs first (nöbetçi Δ§13).
 - **Drain and resume** [A4]:
   - *Graceful drain.* The source announces the drain. The executor is asked to stop at a turn boundary. The
     controller seals a checkpoint: notes, trail, the partial worktree diff, the evidence manifest. The checkpoint
@@ -304,6 +316,27 @@ plus a phase gate at phase boundaries. Closure comes **after** the final merge t
 
 Each rule has a test in T0.
 
+**Owed inputs.** When the reviewer needs something only an outside party can give (a ruling, lab data), it records
+a typed owed input. The answering approval names it, and the answer becomes part of the next review's input
+fingerprint, so it re-keys the review. Every evidence demand the reviewer makes (e.g. a walk plan) is part of that
+fingerprint too. Evidence production follows the evidence-job lifecycle (`m0/12`) (nöbetçi Δ§1–3).
+
+**Strict options** (nöbetçi Δ§10; off by default; one gate code path, never a second gate). A project may enable,
+per phase:
+- **Reviewer pair:** two reviewers of **different vendors/families** on the identical packet, each in a fresh
+  session. Deterministic merge: both pass → pass; any fail → block; one missing → contested, needing one
+  refutation call with passing test ids, else a repair. A vendor at its limit is **waited for** (bounded, then
+  paged), never replaced by a second session of the other family.
+- **`test_ids` required:** every pass row names test ids, checked by the controller against the per-test results
+  for this tree. Unknown or failed → missing; unreadable results → hold.
+- **`proof_receipts`:** a claim provable only by a receipt declares it, so it can pass on that receipt.
+- **Dispositions:** an operator-owned, schema-validated file of deferrals (`moved_to_later_phase` with triggers,
+  `substituted`, `unperformed_pending_authority`, `transition_condition`, `recorded_only`), each with an owner
+  and an approval digest. Validated at admission and re-checked at acceptance; a pass on a deferred claim is a
+  hold.
+
+With no strict options, the simple gate's packet, schema and prompt are byte-identical (tested).
+
 ### 2.7 Planning head
 
 - **Input:** requirements documents (an SRS with ids, a roadmap table, issues) plus doctrine/canon documents.
@@ -319,7 +352,9 @@ Each rule has a test in T0.
 - **Validators** [A12]:
   - *Mechanical, blocking:* schema valid; every required row covered or deferred by record; anchors resolve;
     dependencies acyclic; units' owned paths disjoint; no task requests protected-path edits; every hold reason has a
-    signal; human acts enumerated; no builder-only closure prose.
+    signal; human acts enumerated; no builder-only closure prose; **every acceptance row's evidence is producible
+    by its owner**: a row needing an act outside the builder's reach (live acts, other hosts, protected edits)
+    must name that actor's receipt (nöbetçi Δ§9).
   - *Judgement, advisory:* size versus builder economics, whether acceptance is whole. Reported to the approver. Never
     a blocking heuristic.
 - **Approval** goes through the authority layer (§2.11). Later changes are typed revisions (add, prerequisite,
@@ -457,8 +492,9 @@ proven on a small multi-service T0 fixture in **M1**, before anything depends on
   - delivery identity as an opaque id.
 
   v1 has `git`, `github` and `gitlab`.
-- **Deploy/evidence plugins:** receipts with inner predicates. v1 has `none`, `script` and `docker-compose`. `ssh` is
-  v1.x (D25).
+- **Deploy/evidence plugins:** evidence jobs (`m0/12`) producing receipts with inner predicates. v1 has `none`,
+  `script` and `docker-compose`. `ssh` is v1.x (D25). Drift found before apply is recorded and routed to its owner,
+  never charged to the candidate.
 - **Pager:** webhook in v1. Telegram and email in v1.x (D25). Durable outbox. Pages only on real blockers.
 
 ### 2.14 Operations
@@ -546,12 +582,12 @@ It runs against installed artifacts, not the source tree [A9].
 
 | M | Name | Contents | Exit check |
 |---|---|---|---|
-| **M0** | Contracts & foundations | Repo layout (Go module + `adapters/` workspace), Apache-2.0, CI. Schemas: outcome + reason codes, authority/approval/grant, lease/attempt/fencing, receipt, event store, project profile, **`ContextManifest` with coverage levels + ref/fingerprint/source-restriction types; shared knowledge spec draft: schemas, invariants and fixture definitions only (K10, K12)**. Controller API skeleton + `adc` CLI. Test write-guard. Contract-faithful fakes. T0 fixtures | CI green; schema docs generated from code; fake-driven T0 dry run passes |
+| **M0** | Contracts & foundations | Repo layout (Go module + `adapters/` workspace), Apache-2.0, CI. Schemas: outcome + reason codes, authority/approval/grant, lease/attempt/fencing, receipt, event store, project profile, **`ContextManifest` with coverage levels + ref/fingerprint/source-restriction types; shared knowledge spec draft: schemas, invariants and fixture definitions only (K10, K12)**. **Evidence-job schema (`m0/12`). Anonymised nöbetçi incident goldens in `fixtures/legacy/`.** Controller API skeleton + `adc` CLI. Test write-guard. Contract-faithful fakes. T0 fixtures | CI green; schema docs generated from code; fake-driven T0 dry run passes |
 | **M1** | One task, one source, safely | Three-phase sandbox (phase 3 proven on the multi-service fixture). Minimum gateway + accounting. Recovery (restart, interrupted, fencing). Accept/gate/review with the host-role profile; amended simple-gate checks; closure; `git` forge; CLI approvals; **task views fingerprinted by exact inputs, `AttemptRecord` as checkpoint schema sealed at every builder exit, protected-document change operation** | T0 Python delivered on GLM-5.3-flash or Qwen3.8 27B; fault fixtures yield the right outcome + reason; controller killed mid-build recovers without double charge; hostile-repo cases pass; **E0 manifest reconciliation passes** |
-| **M2** | Capacity layer (direct sources) | Source registry, resource groups, quota states, health, scheduler with atomic reserve/settle and fairness, fallback chains with re-checks, data placement + destinations, all v1 adapters + conformance kit + `AUTHORING.md`. **T1 suite established with baseline numbers**; **knowledge ablations E1, E1L (fixture lessons, the K3 gate), E2, E4, E5; `FailureSignature` as a derived aggregate** | T0 task placed across ≥3 direct source kinds; shared-quota exhaustion waits on the right signal; builds cannot starve review; T1 baseline published; **ablation decisions published, including K3** |
+| **M2** | Capacity layer (direct sources) | Source registry, resource groups, quota states, health, scheduler with atomic reserve/settle and fairness, fallback chains with re-checks, data placement + destinations, all v1 adapters + conformance kit + `AUTHORING.md`. **T1 suite established with baseline numbers**; **knowledge ablations E1, E1L (fixture lessons, the K3 gate), E2, E4, E5; `FailureSignature` as a derived aggregate**; **one-shot anonymised nöbetçi measurement export (usage, builds, context, terminals) as T1/footprint priors and classifier-eval data** | T0 task placed across ≥3 direct source kinds; shared-quota exhaustion waits on the right signal; builds cannot starve review; T1 baseline published; **ablation decisions published, including K3** |
 | **M3** | Remote capacity | Operator-only enrolment (CLI + minimal dashboard view), adc-agent on Linux then Windows/macOS, endpoint allowlist, live-tunnel revocation, graceful drain and abrupt-loss handling | An agent-relayed local model contributes accepted work; disconnect mid-attempt resumes elsewhere; a late stale result is rejected; revocation is immediate |
 | **M4** | Many tasks, projects, forges | Merge queue with tree-bound evidence and delta review, parallel tasks, multi-project fairness, `github` + `gitlab`, TS/Go/PHP toolchains | T0 in all four languages on two concurrent projects across three forges; external base move handled; parked candidate does not block the other project; **K11 exposure checks hold across the two projects** |
-| **M5** | Planning head, phase gate, dashboard | Plan schema, mechanical validators, approval through CLI and dashboard (full parity), shaping within approved units, amended simple phase gate, `docker-compose` integration plugin | A small SRS fixture compiles to a plan approved by a supervisor actor under a grant and executes; stale approval refused; phase gate closes on receipts; every dashboard action reproduced by CLI in a parity test; **planner/supervisor knowledge views and the curation queue (CLI + dashboard)** |
+| **M5** | Planning head, phase gate, dashboard | Plan schema, mechanical validators, approval through CLI and dashboard (full parity), shaping within approved units, amended simple phase gate with **strict options** (pair, `test_ids`, `proof_receipts`, dispositions), `docker-compose` integration plugin | A small SRS fixture compiles to a plan approved by a supervisor actor under a grant and executes; stale approval refused; phase gate closes on receipts; every dashboard action reproduced by CLI in a parity test; **planner/supervisor knowledge views and the curation queue (CLI + dashboard)** |
 | **M6** | Self-host | The project's own backlog runs through the cycle; independent review before self-install | ≥5 auto-dev-cycle changes delivered by the cycle (D15); **framework lessons turned into mechanisms; live E3 only if E1L was positive** |
 | **M7** | Background work + classifier shadow | Background-work contract, filler leases with downstream reservation, P3 surface live. systemone port, eval harness, sanitised datasets, Jev and small Kev in shadow mode | Filler uses idle capacity without delaying cycle work or flooding review; eval report per candidate surface (zero promotions is a valid result) |
 | **M8** | T2 + release | CTIS-SIMS slice, docs (quickstart, concepts, adapters, profiles, security model, supervisor operation), release run (§3.2), final name | Release run passes |

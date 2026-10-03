@@ -36,7 +36,7 @@ sandbox in which the real home and state do not exist**:
 | Fake adapter | the full JSON-RPC contract: cumulative patches, streaming gaps, sub-calls, usage, errors, stale submissions, unsafe-output modes | `adapters/fake` |
 | Fake forge | push with expected-base, change requests, merge, ambiguous remote outcomes, external base moves | `internal/testguard/fakes/forge` |
 | Fake sandbox | three phases, artifact-before-teardown, evidence manifest, abrupt loss | `…/fakes/sandbox` |
-| Fake provider | quota headers, 429 with reset, unknown quota, degenerate output, single-chunk tool arguments | `…/fakes/provider` |
+| Fake provider | quota headers, 429 with reset, unknown quota, **402 credit exhaustion mid-call**, separate rate window and balance, degenerate output, single-chunk tool arguments | `…/fakes/provider` |
 | Fake clock | deadlines, resets, TTLs, challenge expiry | `…/fakes/clock` |
 
 When a real implementation is found to differ from its fake, the fake is fixed first, with a test that fails on the
@@ -97,6 +97,30 @@ golden file names:
   - non-English requirements;
   - crash at each effect boundary (03);
   - the knowledge fixtures in 10.
+
+## Legacy incident goldens (nöbetçi intake A11)
+
+- Real incident artifacts from nöbetçi's `t/fixtures/` are copied read-only, **anonymised** (hosts, ids, personal
+  names, product names replaced), into `fixtures/legacy/` as data-only goldens. Each gets a one-line expected
+  `(outcome, reason)`. Examples:
+  - the inline-fallback-after-limit shape;
+  - a reviewer's new walk demand with an unchanged observation;
+  - candidate-owned setup errors on a `.git`-less target;
+  - the closure-routing record.
+- The nöbetçi incident→test index (`/home/mega/nobetci-dev/docs/handoff/2026-10-03/08-incident-test-index.md`, 206
+  verified test names) is the checklist of behaviours T0 must reproduce. Each row maps to a T0 fixture, or to a
+  documented reason it does not apply.
+- **New contract fixtures from the intake:**
+  - a ruling answers an owed input and re-keys the review;
+  - a ruling for an input not owed is not delivered;
+  - a new demand gets new evidence attempts and re-keys;
+  - a precondition failure spends no attempt;
+  - an unrestored evidence run blocks;
+  - a 402 mid-call with an applied candidate is sealed, never "no changes";
+  - a fallback outside its role/mode scope is refused;
+  - a review lease is refused while its gate results are for another tree;
+  - an amended line introducing a new identity is refused;
+  - an acceptance row not producible by its owner is refused by the plan validator (M5).
 
 ## Red-proof rule [M15]
 

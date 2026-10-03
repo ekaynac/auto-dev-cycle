@@ -100,9 +100,23 @@ Approval:
   scope: {…}                        # schema per action
   grant: grt_…|null
   confirmation: {policy, challenge: chl_…|null, satisfied_by: [evt_…]}
+  answers: [owed_input_id]          # owed inputs (reviewer demands) this approval answers; see below
+  supersedes: [apr_…]               # explicit lineage
+  question: string|null             # what the actor was asked (from the proposal or packet)
+  answer_verbatim: string|null      # the actor's own words, when a human answered
   reason: string
   at: time
 ```
+
+### Owed inputs (nöbetçi Δ§1, Δ§3; intake A1)
+
+- When a reviewer or an evidence requirement needs something only an outside party can give (a ruling, lab data, a
+  named identity), it records an **owed input**: `{id: own_…, requested_by, kind: ruling|data|receipt, question,
+  subject}`. The dependent work holds on `awaiting_input`.
+- An approval that answers it names the id in `answers`. The answer becomes an input of the next review's fingerprint
+  (10), so a new answer re-keys the review. A review never receives rulings for inputs it did not owe (no leakage from
+  other phases).
+- Every packet builder takes rulings from one collector, `authority.Answers(owed_ids)`.
 
 - **Transactional and idempotent** (03).
 - **Precedence:** a revocation or narrower scope always wins over an earlier, wider one. Conflicting approvals in force
@@ -168,7 +182,11 @@ Two narrow, separately registered actions. Both:
 - **can never widen authority or data policy.** If the effective-change computation finds any widening in the new
   content, the action is refused, and the change must go through the dedicated widening action with its own
   confirmation;
-- cannot approve their own adoption: the approval precedes and references the candidate, never sits inside it.
+- cannot approve their own adoption: the approval precedes and references the candidate, never sits inside it;
+- **may not introduce a new identity** (task, finding, actor or grant id) that the old content did not name. Identity
+  and authority change only through their own actions (nöbetçi Δ§11: "no authority rides in on prose");
+- the approval UI and CLI render the **exact bytes** being approved (old → new diff), so humans approve bytes, not
+  intent.
 
 `knowledge.change_protected_document` accepts only the profile's `protected_documents` set.
 `integration.change_topology` accepts only the profile's topology files. Other protected paths (canon) change only by

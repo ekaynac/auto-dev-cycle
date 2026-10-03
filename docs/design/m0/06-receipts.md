@@ -16,8 +16,9 @@ InstrumentContract:
   subject_type: tree | proposal | object_revision | environment | call
   required_predicates:              # the coverage a complete receipt must have
     - name: string
-      evidence_required: [media_type]   # e.g. application/junit+xml, text/plain log
+      evidence_required: [media_type]   # e.g. application/junit+xml
   optional_predicates: [name]
+  preconditions: [predicate]        # environment checks before each run (12); failure = wrong_owner hold, not a spent attempt
 ```
 
 ## Envelope
@@ -83,7 +84,10 @@ Receipt:
    refuses while any artifact named in the receipt is missing.
 6. **Proof keyed by content.** Requirements reference receipts by typed subject + instrument digest. Identity never
    includes timestamps or live counters.
-7. **Missing evidence never passes.** A required receipt that is absent, stale, incomplete, inapplicable or
+7. **Typed facts, not content** (nöbetçi Δ§8). Predicate evidence is typed facts: exit codes, digests, byte counts,
+   versions, counts. Free text enters a receipt only as a digest, and is never passed into prompts or the journal (12
+   "Receipt content policy").
+8. **Missing evidence never passes.** A required receipt that is absent, stale, incomplete, inapplicable or
    `could_not_run` blocks the dependent decision.
 
 ## What M0 delivers
