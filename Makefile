@@ -39,7 +39,7 @@ BINARIES   := adcd adc adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check build dist lint ci clean
+.PHONY: help toolchain go-check build dist lint test test-sandbox-selftest ci clean
 
 help: ## List targets
 	@grep -hE '^[a-z][a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{ printf "  %-12s %s\n", $$1, $$2 }'
@@ -72,7 +72,7 @@ dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 	@find $(DIST_DIR) -type f | sort
 
 lint: go-check ## gofmt, go vet, go mod tidy check, shell syntax (+ shellcheck where installed)
-	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal)"; \
+	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal test)"; \
 	  if [[ -n "$$unformatted" ]]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	@$(GO) vet ./...
 	@$(GO) mod tidy -diff
@@ -81,7 +81,13 @@ lint: go-check ## gofmt, go vet, go mod tidy check, shell syntax (+ shellcheck w
 	  elif [[ -n "$${CI:-}" ]]; then echo "shellcheck is required in CI" >&2; exit 1; \
 	  else echo "lint: shellcheck not installed; skipped locally (required in CI)"; fi
 
-ci: lint build dist ## Everything CI runs
+test: go-check ## Run all tests inside the test sandbox (refuses to run unsandboxed)
+	@scripts/test-sandbox.sh -- go test -count=1 ./...
+
+test-sandbox-selftest: go-check ## Prove the test sandbox contains writes, credentials and network
+	@scripts/test-sandbox-selftest.sh
+
+ci: lint build test test-sandbox-selftest dist ## Everything CI runs
 
 clean: ## Remove build outputs
 	@rm -rf $(BIN_DIR) $(DIST_DIR)
