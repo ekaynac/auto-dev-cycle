@@ -142,7 +142,7 @@ func keyed(branches []*Node) bool {
 }
 
 func (g *gen) discriminated(n *Node, name, disc string, branches []*Node, names []string, where string) {
-	g.needs["encoding/json"], g.needs["fmt"] = true, true
+	g.needs["encoding/json"], g.needs["encoding/json/jsontext"], g.needs["fmt"] = true, true, true
 	g.emit(name, where)
 	g.emit(name+"Variant", where)
 	g.doc(n, name)
@@ -166,6 +166,15 @@ func (u %[1]s) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("%[1]s: no variant set")
 	}
 	return json.Marshal(u.Variant)
+}
+
+// MarshalJSONTo encodes the variant on the caller's encoder, so its options
+// (internal/contract refuses invalid UTF-8) reach the variant's strings.
+func (u %[1]s) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if u.Variant == nil {
+		return fmt.Errorf("%[1]s: no variant set")
+	}
+	return marshalTo(enc, u.Variant)
 }
 
 func (u *%[1]s) UnmarshalJSON(b []byte) error {
@@ -215,13 +224,13 @@ func (g *gen) keyedUnion(n *Node, name string, branches []*Node, bases []string,
 }
 
 func (g *gen) arrayOrLiteral(n *Node, name, lit, list, where string) {
-	g.needs["bytes"], g.needs["encoding/json"], g.needs["fmt"] = true, true, true
+	g.needs["bytes"], g.needs["encoding/json"], g.needs["encoding/json/jsontext"], g.needs["fmt"] = true, true, true, true
 	g.emit(name, where)
 	field := goName(lit)
 	if field == "" {
 		field = "All" // a non-word literal such as "*"
 	}
-	if field == "List" || field == "MarshalJSON" || field == "UnmarshalJSON" || !token.IsIdentifier(field) || !token.IsExported(field) {
+	if field == "List" || field == "MarshalJSON" || field == "MarshalJSONTo" || field == "UnmarshalJSON" || !token.IsIdentifier(field) || !token.IsExported(field) {
 		g.fail(where, "literal %q gives no usable Go field name next to List and the generated methods", lit)
 	}
 	g.doc(n, name)
@@ -236,6 +245,14 @@ func (v %[1]s) MarshalJSON() ([]byte, error) {
 		return json.Marshal(%[3]q)
 	}
 	return json.Marshal(v.List)
+}
+
+// MarshalJSONTo encodes on the caller's encoder, keeping its options.
+func (v %[1]s) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if v.%[2]s {
+		return marshalTo(enc, %[3]q)
+	}
+	return marshalTo(enc, v.List)
 }
 
 func (v *%[1]s) UnmarshalJSON(b []byte) error {
