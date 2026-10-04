@@ -51,12 +51,7 @@ type Bound struct {
 // object, expected_state, scope, proposed_by} (04). Classes are sorted, so
 // their order never changes the digest.
 func BindingDigest(b Bound) (types.Digest, error) {
-	classes := slices.Clone(b.Classes)
-	slices.Sort(classes)
-	classes = slices.Compact(classes)
-	if classes == nil {
-		classes = []string{}
-	}
+	classes := canonical(b.Classes)
 	if len(b.Scope) == 0 {
 		return "", errors.New("authority: a proposal binds its scope")
 	}
@@ -80,13 +75,23 @@ func BindingDigest(b Bound) (types.Digest, error) {
 	return types.Digest("sha256:" + hex.EncodeToString(sum[:])), nil
 }
 
+// canonical is a class list sorted and without repeats: the form both the
+// digest and the proposal record use.
+func canonical(classes []string) []string {
+	c := slices.Compact(slices.Sorted(slices.Values(classes)))
+	if c == nil {
+		c = []string{}
+	}
+	return c
+}
+
 // NewProposal records a Propose decision as an open proposal, bound to its
 // digest, expiring at expires.
 func NewProposal(id types.ProposalID, d Decision, b Bound, expires time.Time) (types.Proposal, error) {
 	if d.Disposition != Propose || d.Policy == None {
 		return types.Proposal{}, errors.New("authority: only a decision to propose records a proposal")
 	}
-	b.Classes = d.Classes
+	b.Classes = canonical(d.Classes)
 	digest, err := BindingDigest(b)
 	if err != nil {
 		return types.Proposal{}, err
@@ -112,14 +117,38 @@ func open(p types.Proposal, now time.Time) error {
 	return nil
 }
 
-// Close moves an open proposal to a final status; only an open one moves.
+// Close ends an open proposal as rejected, expired or superseded. A
+// proposal is confirmed only through ConfirmHuman or ConfirmByReview, and
+// invalidated only through Invalidate.
 func Close(p types.Proposal, to types.ProposalStatus) (types.Proposal, error) {
-	if p.Status != types.ProposalStatusOpen || to == types.ProposalStatusOpen {
+	if p.Status != types.ProposalStatusOpen {
 		return types.Proposal{}, refusal(vocab.ReasonProposalNotOpen, "proposal %s is %s, not open", p.ID, p.Status)
+	}
+	if !slices.Contains([]types.ProposalStatus{types.ProposalStatusRejected, types.ProposalStatusExpired, types.ProposalStatusSuperseded}, to) {
+		return types.Proposal{}, fmt.Errorf("authority: a proposal is not closed as %s", to)
 	}
 	n := p
 	n.Status = to
 	return n, nil
+}
+
+// Invalidate ends an open or confirmed proposal for good: the writer
+// persists it whenever revalidation fails, so a later change (a restored
+// grant, say) can never make it applicable again.
+func Invalidate(p types.Proposal) (types.Proposal, error) {
+	if p.Status != types.ProposalStatusOpen && p.Status != types.ProposalStatusConfirmed {
+		return types.Proposal{}, refusal(vocab.ReasonProposalNotOpen, "proposal %s is %s", p.ID, p.Status)
+	}
+	n := p
+	n.Status = types.ProposalStatusInvalidated
+	return n, nil
+}
+
+// confirmed returns the proposal confirmed.
+func confirmed(p types.Proposal) types.Proposal {
+	n := p
+	n.Status = types.ProposalStatusConfirmed
+	return n
 }
 
 // IssueChallenge issues a single-use human challenge for an open
@@ -150,11 +179,35 @@ func IssueChallenge(id types.ChallengeID, p types.Proposal, confirmers []types.A
 		AllowedConfirmers: allowed, ExpiresAt: types.Time(now.Add(ChallengeTTL).UTC().Format(time.RFC3339))}, nil
 }
 
-// ConsumeChallenge uses a challenge once, for the proposal it was issued
-// for, by one of its confirmers. The WebAuthn assertion over nonce ‖
-// binding_digest is verified by the dashboard before this (D37); this is
-// the single-use, binding and confirmer check that commits with it.
-func ConsumeChallenge(c types.Challenge, p types.Proposal, confirmer types.Actor, now time.Time) (types.Challenge, error) {
+// Assertion is a WebAuthn assertion the dashboard verified (D37): RP ID and
+// origin, challenge equality over nonce ‖ binding_digest, the signature,
+// user presence and verification, the counter, and that the credential is
+// the confirmer's. Only that verifier constructs one.
+type Assertion struct {
+	Challenge types.ChallengeID
+	Confirmer types.ActorID
+}
+
+// ConfirmHuman confirms an open, unexpired human-policy proposal with a
+// verified assertion for its challenge: the challenge is consumed and the
+// proposal confirmed together, for the writer to persist in one transaction.
+func ConfirmHuman(p types.Proposal, c types.Challenge, confirmer types.Actor, a Assertion, now time.Time) (types.Proposal, types.Challenge, error) {
+	if p.Policy != types.ProposalPolicyHuman {
+		return types.Proposal{}, types.Challenge{}, refusal(vocab.ReasonConfirmationRefused, "proposal %s is confirmed by %s, not a human", p.ID, p.Policy)
+	}
+	if a.Challenge != c.ID || a.Confirmer != confirmer.ID {
+		return types.Proposal{}, types.Challenge{}, refusal(vocab.ReasonConfirmationRefused, "the assertion is not for challenge %s by %s", c.ID, confirmer.ID)
+	}
+	used, err := consumeChallenge(c, p, confirmer, now)
+	if err != nil {
+		return types.Proposal{}, types.Challenge{}, err
+	}
+	return confirmed(p), used, nil
+}
+
+// consumeChallenge uses a challenge once, for the proposal it was issued
+// for, by one of its confirmers.
+func consumeChallenge(c types.Challenge, p types.Proposal, confirmer types.Actor, now time.Time) (types.Challenge, error) {
 	if err := open(p, now); err != nil {
 		return types.Challenge{}, err
 	}
@@ -179,7 +232,18 @@ func ConsumeChallenge(c types.Challenge, p types.Proposal, confirmer types.Actor
 // independent_review proposal (04): checked under its instrument, about
 // exactly this proposal's binding digest, independent of the proposer's
 // and every contributor's model families, and a derived GO.
-func ConfirmByReview(p types.Proposal, r types.Receipt, c types.InstrumentContract, blobs receipt.Blobs, excluded []string, now time.Time) error {
+//
+// excluded must hold the proposer's and every contributor's families, from
+// authoritative provenance; an unknown one is passed as "unknown" (and
+// blocks), never left out.
+func ConfirmByReview(p types.Proposal, r types.Receipt, c types.InstrumentContract, blobs receipt.Blobs, excluded []string, now time.Time) (types.Proposal, error) {
+	if err := confirmReview(p, r, c, blobs, excluded, now); err != nil {
+		return types.Proposal{}, err
+	}
+	return confirmed(p), nil
+}
+
+func confirmReview(p types.Proposal, r types.Receipt, c types.InstrumentContract, blobs receipt.Blobs, excluded []string, now time.Time) error {
 	if err := open(p, now); err != nil {
 		return err
 	}
@@ -209,7 +273,13 @@ func ConfirmByReview(p types.Proposal, r types.Receipt, c types.InstrumentContra
 // policy and under the very grant the proposal records (never a substitute,
 // never one the caller names); and a human confirmer must still be an
 // unrevoked operator. Any change invalidates the proposal, never applies it.
-func Revalidate(reg *vocab.Registry, p types.Proposal, confirmer *types.Actor, current Request, state types.ExpectedState) error {
+//
+// op is the operation being applied (its object and scope); with the
+// request's actor, action, project and re-decided classes it must hash to
+// the proposal's binding digest, and so must the proposal record itself.
+// Any mismatch returns proposal_invalidated (a moved object returns
+// stale_expected_state); the writer then persists Invalidate.
+func Revalidate(reg *vocab.Registry, p types.Proposal, confirmer *types.Actor, current Request, op Bound, state types.ExpectedState) error {
 	grant := p.Grant
 	if p.Status != types.ProposalStatusConfirmed {
 		return refusal(vocab.ReasonProposalNotOpen, "proposal %s is %s, not confirmed", p.ID, p.Status)
@@ -217,15 +287,20 @@ func Revalidate(reg *vocab.Registry, p types.Proposal, confirmer *types.Actor, c
 	if !sameState(p.ExpectedState, state) {
 		return refusal(vocab.ReasonStaleExpectedState, "proposal %s was decided against another state", p.ID)
 	}
-	if current.Actor.ID != p.ProposedBy || current.Action != string(p.Action) {
-		return refusal(vocab.ReasonProposalInvalidated, "the request is not proposal %s's", p.ID)
+	record := Bound{Action: string(p.Action), Project: p.Project, Object: p.Object, ExpectedState: p.ExpectedState, Scope: p.Scope, ProposedBy: p.ProposedBy}
+	for _, c := range p.ChangeClass {
+		record.Classes = append(record.Classes, string(c))
 	}
-	if (current.Project == nil) != (p.Project == nil) || (current.Project != nil && *current.Project != *p.Project) {
-		return refusal(vocab.ReasonProposalInvalidated, "the request is for another project than proposal %s", p.ID)
+	if got, err := BindingDigest(record); err != nil || got != p.BindingDigest {
+		return refusal(vocab.ReasonProposalInvalidated, "proposal %s does not match its own binding digest", p.ID)
 	}
 	d := Decide(reg, current)
-	if d.Disposition != Refuse && !sameClasses(d.Classes, p.ChangeClass) {
-		return refusal(vocab.ReasonProposalInvalidated, "proposal %s: the change's classes are now %v, not %v", p.ID, d.Classes, p.ChangeClass)
+	if d.Disposition != Refuse {
+		applied := Bound{Action: current.Action, Classes: d.Classes, Project: current.Project, Object: op.Object,
+			ExpectedState: p.ExpectedState, Scope: op.Scope, ProposedBy: current.Actor.ID}
+		if got, err := BindingDigest(applied); err != nil || got != p.BindingDigest {
+			return refusal(vocab.ReasonProposalInvalidated, "proposal %s: the operation applied is not the one confirmed", p.ID)
+		}
 	}
 	switch {
 	case d.Disposition == Refuse:
@@ -241,16 +316,6 @@ func Revalidate(reg *vocab.Registry, p types.Proposal, confirmer *types.Actor, c
 		return refusal(vocab.ReasonProposalInvalidated, "proposal %s: its confirmer is no longer an operator in force", p.ID)
 	}
 	return nil
-}
-
-// sameClasses compares the re-decided classes with the proposal's, as sets.
-func sameClasses(got []string, want []types.ChangeClass) bool {
-	g := slices.Compact(slices.Sorted(slices.Values(got)))
-	w := make([]string, 0, len(want))
-	for _, c := range want {
-		w = append(w, string(c))
-	}
-	return slices.Equal(g, slices.Compact(slices.Sorted(slices.Values(w))))
 }
 
 func sameState(a, b types.ExpectedState) bool {

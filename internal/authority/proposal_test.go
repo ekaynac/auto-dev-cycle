@@ -104,15 +104,45 @@ func TestNewProposalAndClose(t *testing.T) {
 	if _, err := NewProposal(prpID, Decision{Disposition: Allow}, bound(), now); err == nil {
 		t.Error("a proposal from an allow")
 	}
-	confirmed, err := Close(p, types.ProposalStatusConfirmed)
-	if err != nil || confirmed.Status != types.ProposalStatusConfirmed || p.Status != types.ProposalStatusOpen {
-		t.Fatalf("close: %v, %+v", err, confirmed)
+	rejected, err := Close(p, types.ProposalStatusRejected)
+	if err != nil || rejected.Status != types.ProposalStatusRejected || p.Status != types.ProposalStatusOpen {
+		t.Fatalf("close: %v, %+v", err, rejected)
 	}
-	if got := refusalOf(t, func() error { _, err := Close(confirmed, types.ProposalStatusRejected); return err }()); got != vocab.ReasonProposalNotOpen {
+	if got := refusalOf(t, func() error { _, err := Close(rejected, types.ProposalStatusExpired); return err }()); got != vocab.ReasonProposalNotOpen {
 		t.Errorf("a closed proposal closed again: %s", got.String())
 	}
-	if _, err := Close(p, types.ProposalStatusOpen); err == nil {
-		t.Error("closing to open")
+	// Astra #56: Close never confirms, invalidates or re-opens.
+	for _, to := range []types.ProposalStatus{types.ProposalStatusConfirmed, types.ProposalStatusInvalidated, types.ProposalStatusOpen} {
+		if _, err := Close(p, to); err == nil {
+			t.Errorf("closing to %s", to)
+		}
+	}
+	// Invalidation ends an open or confirmed proposal for good.
+	for _, from := range []types.Proposal{p, confirmed(p)} {
+		inv, err := Invalidate(from)
+		if err != nil || inv.Status != types.ProposalStatusInvalidated {
+			t.Errorf("invalidating a %s proposal: %v", from.Status, err)
+		}
+		if _, err := Invalidate(inv); err == nil {
+			t.Error("an invalidated proposal invalidated again")
+		}
+	}
+	if _, err := Invalidate(rejected); err == nil {
+		t.Error("a rejected proposal invalidated")
+	}
+	// Astra #56: the record holds the canonical classes the digest hashed.
+	b := bound()
+	b.Classes = nil
+	dup, err := NewProposal(prpID, Decision{Disposition: Propose, Policy: Human, Grant: ptr(grtA),
+		Classes: []string{"policy.widen_destinations", "policy.widen_data", "policy.widen_data"}}, b, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := contract.Encode("records/proposal", dup); err != nil {
+		t.Errorf("a proposal from repeated classes: %v", err)
+	}
+	if len(dup.ChangeClass) != 2 || dup.ChangeClass[0] != "policy.widen_data" {
+		t.Errorf("classes %v", dup.ChangeClass)
 	}
 }
 
@@ -168,32 +198,48 @@ func TestChallenges(t *testing.T) {
 		t.Error("a nonce from a short random source")
 	}
 
-	used, err := ConsumeChallenge(c, p, operator, now)
-	if err != nil || used.UsedAt == nil || c.UsedAt != nil {
-		t.Fatalf("consume: %v", err)
+	consume := func(c types.Challenge, p types.Proposal, a types.Actor, at time.Time) error {
+		_, _, err := ConfirmHuman(p, c, a, Assertion{Challenge: c.ID, Confirmer: a.ID}, at)
+		return err
+	}
+	done, used, err := ConfirmHuman(p, c, operator, Assertion{Challenge: c.ID, Confirmer: opID}, now)
+	if err != nil || used.UsedAt == nil || c.UsedAt != nil || done.Status != types.ProposalStatusConfirmed || p.Status != types.ProposalStatusOpen {
+		t.Fatalf("confirm: %v", err)
+	}
+	for name, a := range map[string]Assertion{"another challenge": {Challenge: "chl_01m3250v57fhm9v1z9xd1wk8gw", Confirmer: opID},
+		"another confirmer": {Challenge: c.ID, Confirmer: sup2ID}} {
+		if _, _, err := ConfirmHuman(p, c, operator, a, now); err == nil {
+			t.Errorf("an assertion for %s", name)
+		}
+	}
+	if _, _, err := ConfirmHuman(proposal(t, IndependentReview), c, operator, Assertion{Challenge: c.ID, Confirmer: opID}, now); err == nil {
+		t.Error("a human confirmation of a review proposal")
+	}
+	expiredP := p
+	expiredP.ExpiresAt = "2026-10-05T11:59:59Z"
+	if got := refusalOf(t, consume(c, expiredP, operator, now)); got != vocab.ReasonProposalExpired {
+		t.Errorf("confirming an expired proposal: %s", got.String())
 	}
 	other := p
 	other.BindingDigest = dgB
-	for name, consume := range map[string]func() error{
-		"twice":               func() error { _, err := ConsumeChallenge(used, p, operator, now); return err },
-		"after its expiry":    func() error { _, err := ConsumeChallenge(c, p, operator, now.Add(ChallengeTTL)); return err },
-		"for another binding": func() error { _, err := ConsumeChallenge(c, other, operator, now); return err },
+	for name, try := range map[string]func() error{
+		"twice":               func() error { return consume(used, p, operator, now) },
+		"after its expiry":    func() error { return consume(c, p, operator, now.Add(ChallengeTTL)) },
+		"for another binding": func() error { return consume(c, other, operator, now) },
 		"by another operator": func() error {
-			_, err := ConsumeChallenge(c, p, actor(sup2ID, types.ActorKindOperator), now)
-			return err
+			return consume(c, p, actor(sup2ID, types.ActorKindOperator), now)
 		},
-		"by a revoked operator": func() error { _, err := ConsumeChallenge(c, p, revokedOp, now); return err },
+		"by a revoked operator": func() error { return consume(c, p, revokedOp, now) },
 		"by a supervisor": func() error {
-			_, err := ConsumeChallenge(c, p, actor(opID, types.ActorKindSupervisor), now)
-			return err
+			return consume(c, p, actor(opID, types.ActorKindSupervisor), now)
 		},
 	} {
-		if got := refusalOf(t, consume()); got != vocab.ReasonConfirmationRefused {
+		if got := refusalOf(t, try()); got != vocab.ReasonConfirmationRefused {
 			t.Errorf("consumed %s: %s", name, got.String())
 		}
 	}
 	closed, _ := Close(p, types.ProposalStatusRejected)
-	if got := refusalOf(t, func() error { _, err := ConsumeChallenge(c, closed, operator, now); return err }()); got != vocab.ReasonProposalNotOpen {
+	if got := refusalOf(t, func() error { return consume(c, closed, operator, now) }()); got != vocab.ReasonProposalNotOpen {
 		t.Errorf("a challenge for a closed proposal: %s", got.String())
 	}
 }
@@ -236,26 +282,30 @@ func review(t *testing.T, p types.Proposal, binding types.Digest, outcome vocab.
 func TestConfirmByReview(t *testing.T) {
 	p := proposal(t, IndependentReview)
 	claude := []string{"claude"}
-	if err := ConfirmByReview(p, review(t, p, p.BindingDigest, vocab.Empty), reviewContract(), blobs{}, claude, now); err != nil {
+	done, err := ConfirmByReview(p, review(t, p, p.BindingDigest, vocab.Empty), reviewContract(), blobs{}, claude, now)
+	if err != nil || done.Status != types.ProposalStatusConfirmed || p.Status != types.ProposalStatusOpen {
 		t.Fatalf("an independent GO: %v", err)
 	}
-	if err := ConfirmByReview(p, review(t, p, dgB, vocab.Empty), reviewContract(), blobs{}, claude, now); err == nil {
+	if _, err := ConfirmByReview(p, review(t, p, dgB, vocab.Empty), reviewContract(), blobs{}, claude, now); err == nil {
+		t.Error("a confirmed proposal from a GO for another binding")
+	}
+	if err := confirmReview(p, review(t, p, dgB, vocab.Empty), reviewContract(), blobs{}, claude, now); err == nil {
 		t.Error("a GO for another binding")
 	}
-	if err := ConfirmByReview(p, review(t, p, p.BindingDigest, vocab.Empty), reviewContract(), blobs{}, []string{"gpt"}, now); err == nil {
+	if err := confirmReview(p, review(t, p, p.BindingDigest, vocab.Empty), reviewContract(), blobs{}, []string{"gpt"}, now); err == nil {
 		t.Error("a review by the proposer's family")
 	}
-	if got := refusalOf(t, ConfirmByReview(p, review(t, p, p.BindingDigest, vocab.Found), reviewContract(), blobs{}, claude, now)); got != vocab.ReasonConfirmationRefused {
+	if got := refusalOf(t, confirmReview(p, review(t, p, p.BindingDigest, vocab.Found), reviewContract(), blobs{}, claude, now)); got != vocab.ReasonConfirmationRefused {
 		t.Errorf("a NO-GO: %s", got.String())
 	}
 	forged := review(t, p, p.BindingDigest, vocab.Found)
 	goVerdict := types.ReceiptVerdictValueGo
 	forged.Verdict = &goVerdict
-	if err := ConfirmByReview(p, forged, reviewContract(), blobs{}, claude, now); !errors.Is(err, receipt.ErrInvalid) {
+	if err := confirmReview(p, forged, reviewContract(), blobs{}, claude, now); !errors.Is(err, receipt.ErrInvalid) {
 		t.Errorf("a recorded GO the derivation does not give: %v", err)
 	}
 	human := proposal(t, Human)
-	if got := refusalOf(t, ConfirmByReview(human, review(t, human, human.BindingDigest, vocab.Empty), reviewContract(), blobs{}, claude, now)); got != vocab.ReasonConfirmationRefused {
+	if got := refusalOf(t, confirmReview(human, review(t, human, human.BindingDigest, vocab.Empty), reviewContract(), blobs{}, claude, now)); got != vocab.ReasonConfirmationRefused {
 		t.Errorf("a review for a human proposal: %s", got.String())
 	}
 }
@@ -265,16 +315,16 @@ func TestConfirmByReview(t *testing.T) {
 func TestRevalidate(t *testing.T) {
 	reg := registry(t)
 	g := grant(grtA, on(prjA), "profile.adopt")
-	p, _ := Close(proposal(t, Human), types.ProposalStatusConfirmed)
+	p, _ := confirmed(proposal(t, Human)), error(nil)
 	req := supRequest("profile.adopt", []string{"policy.widen_destinations"}, g)
 	state := types.ExpectedState{Version: ptr(int64(4))}
-	if err := Revalidate(reg, p, &operator, req, state); err != nil {
+	if err := Revalidate(reg, p, &operator, req, bound(), state); err != nil {
 		t.Fatalf("an unchanged proposal: %v", err)
 	}
-	if got := refusalOf(t, Revalidate(reg, proposal(t, Human), &operator, req, state)); got != vocab.ReasonProposalNotOpen {
+	if got := refusalOf(t, Revalidate(reg, proposal(t, Human), &operator, req, bound(), state)); got != vocab.ReasonProposalNotOpen {
 		t.Errorf("an unconfirmed proposal: %s", got.String())
 	}
-	if got := refusalOf(t, Revalidate(reg, p, &operator, req, types.ExpectedState{Version: ptr(int64(5))})); got != vocab.ReasonStaleExpectedState {
+	if got := refusalOf(t, Revalidate(reg, p, &operator, req, bound(), types.ExpectedState{Version: ptr(int64(5))})); got != vocab.ReasonStaleExpectedState {
 		t.Errorf("a moved object: %s", got.String())
 	}
 	revokedOp := operator
@@ -295,7 +345,7 @@ func TestRevalidate(t *testing.T) {
 		"a revoked confirmer": {ptr(grtA), &revokedOp, req},
 		"no confirmer":        {ptr(grtA), nil, req},
 	} {
-		if got := refusalOf(t, Revalidate(reg, p, c.confirmer, c.req, state)); got != vocab.ReasonProposalInvalidated {
+		if got := refusalOf(t, Revalidate(reg, p, c.confirmer, c.req, bound(), state)); got != vocab.ReasonProposalInvalidated {
 			t.Errorf("%s: %s", name, got.String())
 		}
 	}
@@ -304,12 +354,12 @@ func TestRevalidate(t *testing.T) {
 	peer.Actor = sup2ID
 	byPeer := supRequest("profile.adopt", []string{"policy.widen_destinations"}, peer)
 	byPeer.Actor = actor(sup2ID, types.ActorKindSupervisor)
-	if got := refusalOf(t, Revalidate(reg, p, &operator, byPeer, state)); got != vocab.ReasonProposalInvalidated {
+	if got := refusalOf(t, Revalidate(reg, p, &operator, byPeer, bound(), state)); got != vocab.ReasonProposalInvalidated {
 		t.Errorf("another proposer under an equal grant: %s", got.String())
 	}
 	both := grant(grtA, on(prjA), "profile.adopt", "task.create")
 	other := supRequest("task.create", []string{"policy.widen_destinations"}, both)
-	if got := refusalOf(t, Revalidate(reg, p, &operator, other, state)); got != vocab.ReasonProposalInvalidated {
+	if got := refusalOf(t, Revalidate(reg, p, &operator, other, bound(), state)); got != vocab.ReasonProposalInvalidated {
 		t.Errorf("another action under the same grant: %s", got.String())
 	}
 	// An operator's proposal has no grant: a refusal at apply (here, the
@@ -320,9 +370,9 @@ func TestRevalidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opP, _ = Close(opP, types.ProposalStatusConfirmed)
+	opP = confirmed(opP)
 	opReq := Request{Actor: operator, Action: "profile.adopt", Project: ptr(prjA), Classes: opBound.Classes, Now: now}
-	if err := Revalidate(reg, opP, &operator, opReq, state); err != nil {
+	if err := Revalidate(reg, opP, &operator, opReq, bound(), state); err != nil {
 		t.Fatalf("an operator's export at apply: %v", err)
 	}
 	// The registry no longer binds that class to every actor kind: the
@@ -331,13 +381,13 @@ func TestRevalidate(t *testing.T) {
 	cd := relaxed.ChangeClasses["knowledge.export_framework_prose"]
 	cd.EveryActorKind = false
 	relaxed.ChangeClasses["knowledge.export_framework_prose"] = cd
-	if got := refusalOf(t, Revalidate(relaxed, opP, &operator, opReq, state)); got != vocab.ReasonProposalInvalidated {
+	if got := refusalOf(t, Revalidate(relaxed, opP, &operator, opReq, bound(), state)); got != vocab.ReasonProposalInvalidated {
 		t.Errorf("a change that no longer needs confirmation: %s", got.String())
 	}
 	gone := operator
 	gone.RevokedAt = ptr(types.Time("2026-10-05T11:00:00Z"))
 	opReq.Actor = gone
-	if got := refusalOf(t, Revalidate(reg, opP, &operator, opReq, state)); got != vocab.ReasonProposalInvalidated {
+	if got := refusalOf(t, Revalidate(reg, opP, &operator, opReq, bound(), state)); got != vocab.ReasonProposalInvalidated {
 		t.Errorf("a revoked proposer at apply: %s", got.String())
 	}
 	// Security review: the re-decision is bound to the proposal's project
@@ -345,20 +395,45 @@ func TestRevalidate(t *testing.T) {
 	elsewhere := grant(grtA, on(prjA, prjB), "profile.adopt")
 	moved := supRequest("profile.adopt", []string{"policy.widen_destinations"}, elsewhere)
 	moved.Project = ptr(prjB)
-	if got := refusalOf(t, Revalidate(reg, p, &operator, moved, state)); got != vocab.ReasonProposalInvalidated {
+	if got := refusalOf(t, Revalidate(reg, p, &operator, moved, bound(), state)); got != vocab.ReasonProposalInvalidated {
 		t.Errorf("another project: %s", got.String())
 	}
 	reclassed := supRequest("profile.adopt", []string{"policy.widen_data"}, g)
-	if got := refusalOf(t, Revalidate(reg, p, &operator, reclassed, state)); got != vocab.ReasonProposalInvalidated {
+	if got := refusalOf(t, Revalidate(reg, p, &operator, reclassed, bound(), state)); got != vocab.ReasonProposalInvalidated {
 		t.Errorf("another change at the same policy: %s", got.String())
 	}
-	review, _ := Close(proposalOf(t, IndependentReview, []string{"install.self"}), types.ProposalStatusConfirmed)
+	// Astra #56: the operation applied must be the one confirmed, and the
+	// record its own digest's.
+	for name, op := range map[string]Bound{
+		"another scope":  func() Bound { b := bound(); b.Scope = json.RawMessage(`{"revision":6}`); return b }(),
+		"another object": func() Bound { b := bound(); b.Object.Version = ptr(int64(5)); return b }(),
+	} {
+		if got := refusalOf(t, Revalidate(reg, p, &operator, req, op, state)); got != vocab.ReasonProposalInvalidated {
+			t.Errorf("%s: %s", name, got.String())
+		}
+	}
+	tampered := p
+	tampered.Scope = json.RawMessage(`{"revision":6}`)
+	if got := refusalOf(t, Revalidate(reg, tampered, &operator, req, func() Bound { b := bound(); b.Scope = tampered.Scope; return b }(), state)); got != vocab.ReasonProposalInvalidated {
+		t.Errorf("a record changed under its digest: %s", got.String())
+	}
+	reclass := p
+	reclass.ChangeClass = []types.ChangeClass{"install.self"}
+	if got := refusalOf(t, Revalidate(reg, reclass, &operator, req, bound(), state)); got != vocab.ReasonProposalInvalidated {
+		t.Errorf("a record's classes changed under its digest: %s", got.String())
+	}
+	// Once invalidated, restored authority never makes it applicable.
+	inv, _ := Invalidate(p)
+	if got := refusalOf(t, Revalidate(reg, inv, &operator, req, bound(), state)); got != vocab.ReasonProposalNotOpen {
+		t.Errorf("an invalidated proposal at apply: %s", got.String())
+	}
+	review, _ := confirmed(proposalOf(t, IndependentReview, []string{"install.self"})), error(nil)
 	reviewReq := supRequest("profile.adopt", []string{"install.self"}, g)
-	if err := Revalidate(reg, review, nil, reviewReq, state); err != nil {
+	if err := Revalidate(reg, review, nil, reviewReq, bound(), state); err != nil {
 		t.Errorf("a review-confirmed proposal needs no human confirmer: %v", err)
 	}
 	tight := supRequest("profile.adopt", []string{"install.self"}, tighter)
-	if got := refusalOf(t, Revalidate(reg, review, nil, tight, state)); got != vocab.ReasonProposalInvalidated {
+	if got := refusalOf(t, Revalidate(reg, review, nil, tight, bound(), state)); got != vocab.ReasonProposalInvalidated {
 		t.Errorf("a tighter policy now: %s", got.String())
 	}
 }
