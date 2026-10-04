@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/ref.json",
+  "title": "Ref",
+  "description": "An exact reference to an input (docs/design/m0/10 \"Refs and fingerprints\"). Canonical form: lineage, restrictions and each restriction's allowed_destinations are sets, written sorted (strings by Unicode code point; restrictions by project, policy_digest, floor, routing, then allowed_destinations compared element by element, a shorter prefix first), without duplicates, and an empty set is [] (never null or absent). identity_digest is \"sha256:\" followed by the lowercase hex SHA-256 of the RFC 8785 (JCS) encoding of the canonical ref without identity_digest, so a change of revision, scope, lineage or restrictions changes the identity even when the bytes are identical. Content deduplication never merges restrictions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "id", "revision", "scope", "lineage", "restrictions", "content_digest", "identity_digest"],
+  "properties": {
+    "type": {"enum": ["blob", "git_tree", "git_path", "receipt", "finding", "approval", "contract", "claim", "view", "attempt_record"]},
+    "id": {"description": "A digest, a git id and path, or a controller id, by type.", "type": "string", "minLength": 1},
+    "revision": {
+      "description": "E.g. an adopted contract revision; null when the type has none.",
+      "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "framework"],
+      "properties": {
+        "project": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ProjectID"}]},
+        "framework": {"description": "Framework scope: about auto-dev-cycle itself, never a project's code or domain.", "type": "boolean"}
+      }
+    },
+    "lineage": {
+      "description": "The ids of the refs this one was derived from, recorded by the controller.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "restrictions": {
+      "description": "Source restrictions inherited through lineage (KA1): every distinct snapshot of a contributing project's data policy is kept, several per project when the ref was derived from inputs under different policy revisions, wherever the ref goes. All apply together: a delivery must satisfy each one. They record lineage; they never replace the live checks at each delivery (initial, lookup, fallback) of the receiving project's policy, revocation and export approval.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/Restriction"}
+    },
+    "content_digest": {"description": "Of the bytes.", "$ref": "../common/defs.json#/$defs/Digest"},
+    "identity_digest": {"$ref": "../common/defs.json#/$defs/Digest"}
+  },
+  "$defs": {
+    "Restriction": {
+      "description": "The data policy of a contributing project when the ref was derived from it: a receiving project and destination must satisfy every restriction at each delivery.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "policy_digest", "floor", "routing", "allowed_destinations"],
+      "properties": {
+        "project": {"$ref": "../common/defs.json#/$defs/ProjectID"},
+        "policy_digest": {"description": "Of the project's adopted data policy.", "$ref": "../common/defs.json#/$defs/Digest"},
+        "floor": {"enum": ["own", "contracted", "free_unknown"]},
+        "routing": {"enum": ["verified", "reported_ok"]},
+        "allowed_destinations": {
+          "description": "Resolved destinations, recorded when the restriction is: here an empty set means no destination may receive the ref (never 'derived from the usage profile').",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"}
+        }
+      }
+    }
+  }
+}
