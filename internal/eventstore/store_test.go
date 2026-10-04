@@ -4,12 +4,14 @@ package eventstore
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 )
@@ -365,4 +367,237 @@ func TestLockOwnsOneStore(t *testing.T) {
 	if err := e.lock.Release(); err != nil {
 		t.Fatalf("release after close: %v", err)
 	}
+}
+
+// Astra #25 round 2: meta has no rowid to replace a guarded row through, and
+// verify accepts exactly the three meta keys.
+func TestMetaHasNoRowid(t *testing.T) {
+	e := openEnv(t, stateDir(t))
+	e.appendN(t, 1)
+	trusted, err := e.s.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := raw(t, e.dir)
+	for _, col := range []string{"rowid", "_rowid_", "oid"} {
+		q := `INSERT OR REPLACE INTO meta(` + col + `, key, value) SELECT ` + col + `, 'moved_format', 'x' FROM meta WHERE key = 'format'`
+		if _, err := db.Exec(q); err == nil {
+			t.Errorf("%s: a replacement through the row id ran", col)
+		}
+	}
+	var format string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'format'`).Scan(&format); err != nil || format != Format {
+		t.Fatalf("format %q, %v", format, err)
+	}
+	mustExec(t, db, `INSERT INTO meta(key, value) VALUES ('extra', 'x')`)
+	if _, err := e.s.Verify(context.Background(), &trusted); !errors.Is(err, ErrChainBroken) {
+		t.Fatalf("an extra meta key verified: %v", err)
+	}
+}
+
+// Astra #25 round 2: a database whose meta table has a rowid is refused.
+func TestOpenRefusesARowidMeta(t *testing.T) {
+	dir := stateDir(t)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, raw(t, dir), `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
+	lock, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	blobs, err := blobstore.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(context.Background(), lock, Config{Kinds: testKinds, Blobs: blobs}); err == nil || !strings.Contains(err.Error(), "WITHOUT ROWID") {
+		t.Fatalf("a rowid meta table opened: %v", err)
+	}
+	if lock.owner != 0 {
+		t.Fatal("a failed open left its claim on the lock")
+	}
+}
+
+// Astra #25 round 2: a database shared with another state directory, by a
+// symlink or a hardlink, is refused; so is a database replaced after Open.
+func TestDatabaseAliasesAreRefused(t *testing.T) {
+	a := openEnv(t, stateDir(t))
+	a.appendN(t, 1)
+	for name, link := range map[string]func(string, string) error{"symlink": os.Symlink, "hardlink": os.Link} {
+		dir := stateDir(t)
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := link(filepath.Join(a.dir, DBFile), filepath.Join(dir, DBFile)); err != nil {
+			t.Fatal(err)
+		}
+		lock, err := AcquireLock(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blobs, err := blobstore.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s, err := Open(context.Background(), lock, Config{Kinds: testKinds, Blobs: blobs}); err == nil || !strings.Contains(err.Error(), "one link") {
+			if err == nil {
+				s.Close()
+			}
+			t.Errorf("%s: a database of another state directory: %v", name, err)
+		}
+		lock.Release()
+		if name == "hardlink" {
+			os.Remove(filepath.Join(dir, DBFile))
+		}
+	}
+	other := filepath.Join(a.dir, "replacement")
+	if err := os.WriteFile(other, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(other, filepath.Join(a.dir, DBFile)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.Head(context.Background()); err == nil || !strings.Contains(err.Error(), "no longer the database") {
+		t.Fatalf("a replaced database was used: %v", err)
+	}
+	if _, err := a.appendRaw(t, Event{Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(`{}`)}); err == nil {
+		t.Fatal("appended to a replaced database")
+	}
+}
+
+// Astra #25 round 2: a stale Close never frees the lock under a successor.
+func TestStaleCloseKeepsTheSuccessorsClaim(t *testing.T) {
+	e := openEnv(t, stateDir(t))
+	first := e.s
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(context.Background(), e.lock, Config{Kinds: testKinds, Blobs: e.blobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.s = second
+	if err := first.Close(); err != nil {
+		t.Fatalf("a second Close: %v", err)
+	}
+	if err := e.lock.Release(); err == nil {
+		t.Fatal("a stale Close freed the lock under the open successor")
+	}
+	if _, err := first.Head(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("a closed store answered: %v", err)
+	}
+}
+
+// Astra #25 round 2: Close waits for a running transaction, and nothing
+// runs after it.
+func TestCloseWaitsForTransactions(t *testing.T) {
+	e := openEnv(t, stateDir(t))
+	ctx := context.Background()
+	inside, release := make(chan struct{}), make(chan struct{})
+	txDone := make(chan error, 1)
+	go func() {
+		txDone <- e.s.inTx(ctx, func(tx *sql.Tx) error {
+			close(inside)
+			<-release
+			_, err := e.s.append(ctx, tx, Event{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: testSubject, Actor: sysActor, Payload: []byte(`{}`)})
+			return err
+		})
+	}()
+	<-inside
+	closed := make(chan error, 1)
+	go func() { closed <- e.s.Close() }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a transaction was running")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	if err := <-txDone; err != nil {
+		t.Fatalf("the running transaction: %v", err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	if err := e.s.inTx(ctx, func(*sql.Tx) error { return nil }); !errors.Is(err, ErrClosed) {
+		t.Fatalf("a transaction after Close: %v", err)
+	}
+	e.s = nil
+}
+
+// Astra #25 round 2: the caller's kinds cannot change after Open.
+func TestKindsAreCopied(t *testing.T) {
+	dir := stateDir(t)
+	lock, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	blobs, err := blobstore.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := []string{"payload_schema"}
+	s, err := Open(context.Background(), lock, Config{Kinds: Kinds{"test.typed/v1": {Schema: "records/instrument-contract", BlobFields: fields}}, Blobs: blobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	fields[0] = "nothing"
+	e := &env{dir: dir, s: s, lock: lock, blobs: blobs}
+	unpublished := "sha256:" + strings.Repeat("b", 64)
+	if _, err := e.appendRaw(t, Event{Kind: "test.typed/v1", Subject: testSubject, Payload: typedPayload(unpublished)}); err == nil {
+		t.Fatal("changing the caller's BlobFields disabled publish-before-reference")
+	}
+}
+
+// Astra #25 round 2: a dangling database symlink is refused before SQLite
+// opens it, so nothing is created at its target.
+func TestDanglingDatabaseSymlinkCreatesNothing(t *testing.T) {
+	dir := stateDir(t)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "elsewhere.db")
+	if err := os.Symlink(target, filepath.Join(dir, DBFile)); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	blobs, err := blobstore.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(context.Background(), lock, Config{Kinds: testKinds, Blobs: blobs}); err == nil {
+		t.Fatal("a dangling database symlink opened")
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("SQLite created the symlink's target: %v", err)
+	}
+}
+
+// Astra #25 round 2: a stale claim never ends its successor's.
+func TestStaleClaimIsIgnored(t *testing.T) {
+	e := openEnv(t, stateDir(t))
+	if err := e.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e.s = nil
+	first, err := e.lock.claim()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.lock.unclaim(first)
+	second, err := e.lock.claim()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.lock.unclaim(first)
+	if err := e.lock.Release(); err == nil {
+		t.Fatal("a stale claim freed the lock")
+	}
+	e.lock.unclaim(second)
 }

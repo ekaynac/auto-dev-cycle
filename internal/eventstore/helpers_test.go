@@ -91,16 +91,13 @@ func (e *env) appendRaw(t *testing.T, ev Event) (Event, error) {
 		ev.Actor = sysActor
 	}
 	ctx := context.Background()
-	tx, err := e.s.w.BeginTx(ctx, nil)
-	if err != nil {
-		return Event{}, err
-	}
-	out, err := e.s.append(ctx, tx, ev)
-	if err != nil {
-		tx.Rollback()
-		return Event{}, err
-	}
-	return out, tx.Commit()
+	var out Event
+	err := e.s.inTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		out, err = e.s.append(ctx, tx, ev)
+		return err
+	})
+	return out, err
 }
 
 func (e *env) appendN(t *testing.T, n int) {

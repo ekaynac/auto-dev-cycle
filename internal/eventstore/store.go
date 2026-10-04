@@ -24,8 +24,10 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gowebpki/jcs"
@@ -47,7 +49,7 @@ const ddl = `
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
-);
+) WITHOUT ROWID;
 CREATE TRIGGER IF NOT EXISTS meta_immutable_update BEFORE UPDATE ON meta
   BEGIN SELECT RAISE(ABORT, 'meta is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS meta_immutable_delete BEFORE DELETE ON meta
@@ -104,10 +106,16 @@ type BlobChecker interface {
 type Store struct {
 	w, r      *sql.DB // one writer connection; a read-only pool
 	lock      *Lock
+	claim     uint64 // this store's claim on the lock
+	file      string // the database file
+	ident     fileID // its identity when opened
 	genesis   string
 	schemaSet string
 	kinds     Kinds
 	blobs     BlobChecker
+
+	ops    sync.RWMutex // held for reading by each operation; Close takes it
+	closed bool
 }
 
 // Config is what Open needs besides the lock.
@@ -125,12 +133,13 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (s *Store, err error) {
 	if cfg.Blobs == nil {
 		return nil, errors.New("eventstore: a blob checker is required (publish-before-reference)")
 	}
-	if err := lock.claim(); err != nil {
+	claim, err := lock.claim()
+	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		if err != nil {
-			lock.unclaim()
+			lock.unclaim(claim)
 		}
 	}()
 	set, err := schemas.SetDigest()
@@ -138,6 +147,9 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (s *Store, err error) {
 		return nil, err
 	}
 	file := filepath.Join(lock.dir, DBFile)
+	if err := checkDBFiles(file); err != nil {
+		return nil, err
+	}
 	const pragmas = "_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 	w, err := sql.Open("sqlite", fileURI(file, "_txlock=immediate&"+pragmas))
 	if err != nil {
@@ -148,29 +160,33 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (s *Store, err error) {
 		w.Close()
 		return nil, err
 	}
+	if err := checkMetaTable(ctx, w); err != nil {
+		w.Close()
+		return nil, err
+	}
 	r, err := sql.Open("sqlite", fileURI(file, "mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"))
 	if err != nil {
 		w.Close()
 		return nil, err
 	}
+	// A deep copy: the caller's configuration cannot change the kinds later.
 	kinds := Kinds{}
 	for k, v := range cfg.Kinds {
-		kinds[k] = v
+		kinds[k] = Kind{Schema: v.Schema, BlobFields: slices.Clone(v.BlobFields)}
 	}
-	s = &Store{w: w, r: r, lock: lock, schemaSet: set, kinds: kinds, blobs: cfg.Blobs}
-	if s.genesis, err = s.ensureGenesis(ctx); err != nil {
-		s.Close()
+	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs}
+	if s.genesis, err = s.ensureGenesis(ctx); err == nil {
+		err = checkDBFiles(file)
+	}
+	if err == nil {
+		s.ident, err = fileIdentity(file)
+	}
+	if err != nil {
+		w.Close()
+		r.Close()
 		return nil, err
 	}
 	return s, nil
-}
-
-// Close closes both pools and frees the lock for another store or for
-// release by its holder.
-func (s *Store) Close() error {
-	err := errors.Join(s.w.Close(), s.r.Close())
-	s.lock.unclaim()
-	return err
 }
 
 // fileURI is the SQLite URI for a file path: the path is escaped, so ?, #

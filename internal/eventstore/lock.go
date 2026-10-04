@@ -24,10 +24,11 @@ var ErrAlreadyRunning = errors.New("controller_already_running")
 // Lock is a held exclusive lock on a state directory. At most one Store is
 // open on it, and it cannot be released while that store is open.
 type Lock struct {
-	mu   sync.Mutex
-	f    *os.File
-	dir  string
-	open bool // a Store is open on this lock
+	mu    sync.Mutex
+	f     *os.File
+	dir   string
+	owner uint64 // the claim of the Store open on this lock; 0 when none
+	next  uint64 // the last claim handed out
 }
 
 // AcquireLock takes the exclusive advisory lock on <stateDir>/adcd.lock and
@@ -114,25 +115,30 @@ func (l *Lock) Held() bool {
 	return l.f != nil
 }
 
-// claim marks a store open on the lock; a second store is refused.
-func (l *Lock) claim() error {
+// claim marks a store open on the lock and returns its claim; a second
+// store is refused.
+func (l *Lock) claim() (uint64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	switch {
 	case l.f == nil:
-		return errors.New("eventstore: the state directory lock must be held before the database is opened")
-	case l.open:
-		return errors.New("eventstore: a store is already open on this lock")
+		return 0, errors.New("eventstore: the state directory lock must be held before the database is opened")
+	case l.owner != 0:
+		return 0, errors.New("eventstore: a store is already open on this lock")
 	}
-	l.open = true
-	return nil
+	l.next++
+	l.owner = l.next
+	return l.owner, nil
 }
 
-// unclaim marks the lock's store closed.
-func (l *Lock) unclaim() {
+// unclaim ends the claim it is given; a stale claim (an earlier store's)
+// never frees the lock under its successor.
+func (l *Lock) unclaim(claim uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.open = false
+	if l.owner == claim {
+		l.owner = 0
+	}
 }
 
 // Dir is the absolute state directory the lock guards.
@@ -149,7 +155,7 @@ func (l *Lock) Release() error {
 	if l.f == nil {
 		return nil
 	}
-	if l.open {
+	if l.owner != 0 {
 		return errors.New("eventstore: close the store before releasing its lock")
 	}
 	err := syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)

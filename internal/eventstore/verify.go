@@ -22,12 +22,14 @@ var ErrChainBroken = errors.New("event log integrity")
 
 // Head returns the current head. An empty log's head is seq 0 and the
 // genesis hash, so even an empty store is anchored.
-func (s *Store) Head(ctx context.Context) (Head, error) {
-	var h Head
-	err := s.r.QueryRowContext(ctx, `SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1`).Scan(&h.Seq, &h.Hash)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Head{Seq: 0, Hash: s.genesis}, nil
-	}
+func (s *Store) Head(ctx context.Context) (h Head, err error) {
+	err = s.do(func() error {
+		err := s.r.QueryRowContext(ctx, `SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1`).Scan(&h.Seq, &h.Hash)
+		if errors.Is(err, sql.ErrNoRows) {
+			h, err = Head{Seq: 0, Hash: s.genesis}, nil
+		}
+		return err
+	})
 	return h, err
 }
 
@@ -37,7 +39,25 @@ func (s *Store) Head(ctx context.Context) (Head, error) {
 // detects truncation and a rewritten tail: the log must reach trusted.Seq
 // and carry trusted.Hash there. It cannot detect a complete, consistent
 // rewrite by someone who also replaced the trusted head (03 rule 3).
-func (s *Store) Verify(ctx context.Context, trusted *Head) (Head, error) {
+func (s *Store) Verify(ctx context.Context, trusted *Head) (h Head, err error) {
+	err = s.do(func() error {
+		var err error
+		h, err = s.verify(ctx, trusted)
+		return err
+	})
+	return h, err
+}
+
+func (s *Store) verify(ctx context.Context, trusted *Head) (Head, error) {
+	// meta holds exactly the format and the genesis record and hash.
+	var n int
+	var format string
+	if err := s.r.QueryRowContext(ctx, `SELECT count(*) FROM meta`).Scan(&n); err != nil {
+		return Head{}, err
+	}
+	if err := s.r.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'format'`).Scan(&format); err != nil || n != 3 || format != Format {
+		return Head{}, fmt.Errorf("%w: meta holds %d keys, format %q", ErrChainBroken, n, format)
+	}
 	var record, genesisHash string
 	if err := s.r.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'genesis_record'`).Scan(&record); err != nil {
 		return Head{}, fmt.Errorf("%w: genesis record: %v", ErrChainBroken, err)
