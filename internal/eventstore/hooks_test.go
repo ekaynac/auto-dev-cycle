@@ -86,10 +86,18 @@ func TestHooksShareTheWriterTransaction(t *testing.T) {
 	defer s.Close()
 	actor := id(t, "act")
 	subject := id(t, "prj")
+	var lastEvent string
+	var check func(*eventstore.Tx) error
 	submit := func(key string) error {
+		lastEvent = id(t, "evt")
 		_, err := s.Submit(ctx, eventstore.Command{ID: id(t, "cmd"), Actor: actor, IdempotencyKey: key, Input: []byte(`{}`)},
-			func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
-				return []eventstore.Event{{ID: id(t, "evt"), Kind: "test.appended/v1", Subject: subject, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
+			func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+				if check != nil {
+					if err := check(tx); err != nil {
+						return nil, nil, err
+					}
+				}
+				return []eventstore.Event{{ID: lastEvent, Kind: "test.appended/v1", Subject: subject, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
 			})
 		return err
 	}
@@ -98,11 +106,25 @@ func TestHooksShareTheWriterTransaction(t *testing.T) {
 	if err := submit("first"); err == nil {
 		t.Fatal("the failing command applied")
 	}
+	failed := lastEvent
 	fail = false
+	// The next command sees neither: its apply runs before it projects.
+	checked := false
+	check = func(tx *eventstore.Tx) error {
+		if _, ok, err := tx.Get("seen", failed); err != nil || ok {
+			t.Errorf("the failed command's projection record survived the rollback (%v)", err)
+		}
+		checked = true
+		return nil
+	}
 	// The unit is still free, so this one reserves it…
 	if err := submit("second"); err != nil {
 		t.Fatalf("the reservation was not rolled back: %v", err)
 	}
+	if !checked {
+		t.Fatal("the projection rollback was not checked")
+	}
+	check = nil
 	// …and the next one finds none, through the same transaction's reads.
 	if err := submit("third"); err == nil {
 		t.Fatal("a reservation beyond capacity applied")

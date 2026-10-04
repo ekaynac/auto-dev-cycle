@@ -349,3 +349,50 @@ func TestAbsentInputIsRefused(t *testing.T) {
 		t.Fatal("a command without input")
 	}
 }
+
+func TestSubmitValidatesTheCommand(t *testing.T) {
+	e := openWriter(t, Hooks{Authorize: allow})
+	cases := map[string]func(c *Command){
+		"bad command id": func(c *Command) { c.ID = "cmd_x" },
+		"bad actor":      func(c *Command) { c.Actor = testSubject },
+		"empty key":      func(c *Command) { c.IdempotencyKey = "" },
+		"long key":       func(c *Command) { c.IdempotencyKey = strings.Repeat("k", 257) },
+		"input not JSON": func(c *Command) { c.Input = []byte("{") },
+	}
+	for name, mutate := range cases {
+		c := command(t, "k-"+name, `{}`)
+		mutate(&c)
+		// No events: the command itself must be checked, not only its events.
+		if _, err := e.s.Submit(context.Background(), c, appendTo(t, testSubject, 0)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestCommandWithoutEvents(t *testing.T) {
+	e := openWriter(t, Hooks{Authorize: allow})
+	out, err := e.s.Submit(context.Background(), command(t, "noop", `{}`), appendTo(t, testSubject, 0))
+	if err != nil || out.FirstSeq != 0 || out.LastSeq != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+// The commands table is append-only, like the log.
+func TestCommandsAreAppendOnly(t *testing.T) {
+	e := openWriter(t, Hooks{Authorize: allow})
+	c := command(t, "k", `{}`)
+	if _, err := e.s.Submit(context.Background(), c, appendTo(t, testSubject, 1)); err != nil {
+		t.Fatal(err)
+	}
+	db := raw(t, e.dir)
+	for _, q := range []string{
+		`UPDATE commands SET result_json = '{}'`,
+		`DELETE FROM commands`,
+		`INSERT OR REPLACE INTO commands SELECT id, actor, idempotency_key, 'sha256:x', disposition, result_json, first_seq, last_seq FROM commands`,
+		`INSERT INTO commands VALUES ('cmd_other', '` + sysActor + `', 'k', 'd', 'applied', '{}', NULL, NULL)`,
+	} {
+		if _, err := db.Exec(q); err == nil {
+			t.Errorf("%s: ran", q)
+		}
+	}
+}
