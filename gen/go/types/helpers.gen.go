@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"runtime"
+	"strings"
+	"sync/atomic"
 )
 
 // decodeStrict decodes exactly one document, refusing unknown fields and
@@ -23,4 +26,54 @@ func decodeStrict(b []byte, v any) error {
 		return errors.New("trailing data after the document")
 	}
 	return nil
+}
+
+// reasonCheck decides whether a reason code may be read (writing false:
+// registered) or written (writing true: registered and not deprecated).
+var reasonCheck atomic.Pointer[func(code string, writing bool) error]
+
+// reasonCheckOwner is the import path of the only package that may install
+// the reason check.
+const reasonCheckOwner = "github.com/ekaynac/auto-dev-cycle/internal/vocab"
+
+// SetReasonCheck installs the reason check. Only the vocabulary package (an
+// import path ending in /internal/vocab) may call it, once; any other caller,
+// direct or indirect, and a second installation are refused. Until it is
+// installed every reason is refused.
+func SetReasonCheck(check func(code string, writing bool) error) error {
+	pc, _, _, ok := runtime.Caller(1)
+	fn := runtime.FuncForPC(pc)
+	if !ok || fn == nil || !ownsReasonCheck(fn.Name()) {
+		return errors.New("only the vocabulary package installs the reason check")
+	}
+	if check == nil || !reasonCheck.CompareAndSwap(nil, &check) {
+		return errors.New("the reason check is installed once")
+	}
+	return nil
+}
+
+// ownsReasonCheck reports whether the runtime function name belongs to
+// exactly the reason check's owner package (never a package elsewhere with
+// the same name or suffix).
+func ownsReasonCheck(fn string) bool { return funcPackage(fn) == reasonCheckOwner }
+
+// funcPackage is the import path of a runtime function name
+// (example.com/x/internal/vocab.init.0 → example.com/x/internal/vocab).
+func funcPackage(name string) string {
+	slash := strings.LastIndexByte(name, '/')
+	if dot := strings.IndexByte(name[slash+1:], '.'); dot >= 0 {
+		return name[:slash+1+dot]
+	}
+	return name
+}
+
+func checkReason(code string, writing bool) error {
+	if code == "" {
+		return errors.New("an empty reason code is never valid")
+	}
+	check := reasonCheck.Load()
+	if check == nil {
+		return errors.New("no reason vocabulary is loaded")
+	}
+	return (*check)(code, writing)
 }

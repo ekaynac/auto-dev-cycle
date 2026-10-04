@@ -8,6 +8,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	_ "github.com/ekaynac/auto-dev-cycle/internal/vocab" // installs the contract's reason check
 )
 
 var (
@@ -23,13 +24,13 @@ var receipts = map[string]string{
 		`"environment":{"identity":"` + dgA + `","description":"linux"},"contract_revision":"3","demand":{"key":"` + dgB + `","run":"run_01m3250v03fpq92bcrrpmkpsj9"}},` +
 		`"provenance":{"command":"cmd_01m3250vz2ezn81cgvbkcn17jd","attempt":null,"calls":[],"model_families":[],"contributors":[]},` +
 		`"produced_at":"2026-10-03T10:00:00Z","valid_until":null,` +
-		`"predicates":[{"name":"tests","outcome":"found","reason":"gate_failures","detail":"2 failed","evidence":[{"blob":"` + dgB + `","media_type":"application/junit+xml","artifact":"junit"}],"payload":{"failed":2}}],` +
-		`"outcome":"found","reason":"gate_failures","detail":"2 failed","verdict":null,"conclusions_digest":"` + dgB + `","supersedes":null}`,
+		`"predicates":[{"name":"tests","outcome":"found","reason":"gate_test_failed","detail":"2 failed","evidence":[{"blob":"` + dgB + `","media_type":"application/junit+xml","artifact":"junit"}],"payload":{"failed":2}}],` +
+		`"outcome":"found","reason":"gate_test_failed","detail":"2 failed","verdict":null,"conclusions_digest":"` + dgB + `","supersedes":null}`,
 	"review of a proposal": `{"id":"rcp_01m3250v57fhm9v1z9xd1wk8gw","kind":"review","instrument":{"name":"astra","version":"6","digest":"` + dgA + `"},` +
 		`"subject":{"type":"proposal","proposal":"prp_01m3250vm7f6ktw39dszqnyddr","binding_digest":"` + dgA + `","demand":null},` +
 		`"provenance":{"command":"cmd_01m3250vz2ezn81cgvbkcn17jd","attempt":"att_01m3250vnfeyrv67x6w0ddqr6a","calls":["cal_01m3250v9xft08ssr4ygq6g2np"],"model_families":["gpt"],"contributors":["act_01m3250v0aer9ss2097svmefj8"]},` +
 		`"produced_at":"2026-10-03T10:00:00Z","valid_until":"2026-10-04T10:00:00Z","predicates":[],` +
-		`"outcome":"empty","reason":"none","detail":"","verdict":"go","conclusions_digest":"` + dgB + `","supersedes":"rcp_01m3250v57ft7aehkqwq0yrq3n"}`,
+		`"outcome":"empty","reason":"completed_clean","detail":"","verdict":"go","conclusions_digest":"` + dgB + `","supersedes":"rcp_01m3250v57ft7aehkqwq0yrq3n"}`,
 }
 
 const instrument = `{"name":"go-test","version":"1.0.0","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","subject_type":"tree",` +
