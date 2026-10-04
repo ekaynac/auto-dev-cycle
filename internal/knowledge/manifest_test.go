@@ -312,3 +312,44 @@ func TestFinalizedRefusals(t *testing.T) {
 		t.Fatal("finalization over an intent with a silent cut")
 	}
 }
+
+// Astra #38 round 2: inputs sharing an id (identical bytes, different
+// history) each pass their restrictions to anything derived from that id,
+// whatever their order.
+func TestSameIDInputsKeepEveryRestriction(t *testing.T) {
+	restricted := seal(t, types.Ref{Type: types.RefTypeBlob, ID: "shared", ContentDigest: dgA, Restrictions: []types.Restriction{onPrem(prjA)}})
+	plain := seal(t, types.Ref{Type: types.RefTypeBlob, ID: "shared", ContentDigest: dgA, Lineage: []string{"other"}})
+	stripped := seal(t, types.Ref{Type: types.RefTypeBlob, ID: "derived", ContentDigest: dgB, Lineage: []string{"shared"}})
+	kept := seal(t, types.Ref{Type: types.RefTypeBlob, ID: "derived", ContentDigest: dgB, Lineage: []string{"shared"}, Restrictions: []types.Restriction{onPrem(prjA)}})
+	for name, order := range map[string][]types.Ref{"restricted first": {restricted, plain}, "plain first": {plain, restricted}} {
+		f := fixture(t)
+		f.intent.Inputs = order
+		f.intent.Included = []types.ManifestIntentIncludedItem{{Ref: order[0], Order: 0, Bytes: 1, Purpose: "a"}, {Ref: order[1], Order: 1, Bytes: 1, Purpose: "b"}}
+		f.intent.Omitted = []types.ManifestIntentOmittedItem{}
+		if err := CheckIntent(f.intent); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if err := CheckDelivery(f.intent, f.turn(1, stripped)); err == nil {
+			t.Errorf("%s: a derived ref dropped the restriction of one same-id input", name)
+		}
+		if err := CheckDelivery(f.intent, f.turn(1, kept)); err != nil {
+			t.Errorf("%s: a derived ref keeping every restriction: %v", name, err)
+		}
+	}
+}
+
+// Astra #38 round 2: with an uncertain prompt, a ref a delivery event
+// confirms is delivered, not possibly delivered; the lists never overlap.
+func TestConfirmedDeliveryLeavesPossible(t *testing.T) {
+	f := fixture(t)
+	deliveries := []types.ManifestDelivery{f.turn(1, f.spec)}
+	c := coverage(uncertain, nil, unknown, f.spec.IdentityDigest)
+	c.PossiblyDeliveredRefs = []types.Digest{f.tree.IdentityDigest}
+	if err := CheckFinalized(f.intent, deliveries, f.finalized(c)); err != nil {
+		t.Fatalf("a confirmed ref outside possibly_delivered: %v", err)
+	}
+	c.PossiblyDeliveredRefs = []types.Digest{f.tree.IdentityDigest, f.spec.IdentityDigest}
+	if err := CheckFinalized(f.intent, deliveries, f.finalized(c)); err == nil {
+		t.Fatal("a confirmed ref also listed as possibly delivered")
+	}
+}

@@ -76,7 +76,9 @@ func CheckIntent(in types.ManifestIntent) error {
 // intent: a valid document for the same manifest, each handle supplied once,
 // and every tool result within the declared inputs: either a declared input,
 // or a checked ref derived only from declared inputs (non-empty lineage of
-// declared input ids) that keeps every restriction those inputs carry.
+// declared input ids) that keeps every restriction of every declared input
+// its lineage names. Several inputs may share an id (identical bytes,
+// different history); a lineage id names all of them.
 func CheckDelivery(in types.ManifestIntent, d types.ManifestDelivery) error {
 	if _, err := contract.Encode("records/manifest-delivery", d); err != nil {
 		return fmt.Errorf("knowledge: manifest delivery: %w", err)
@@ -85,10 +87,10 @@ func CheckDelivery(in types.ManifestIntent, d types.ManifestDelivery) error {
 		return fmt.Errorf("knowledge: a delivery for manifest %s offered to %s", d.Manifest, in.ID)
 	}
 	byIdentity := map[types.Digest]bool{}
-	byID := map[string]types.Ref{}
+	byID := map[string][]types.Ref{}
 	for _, r := range in.Inputs {
 		byIdentity[r.IdentityDigest] = true
-		byID[r.ID] = r
+		byID[r.ID] = append(byID[r.ID], r)
 	}
 	handles := map[string]bool{}
 	for _, t := range d.ToolResults {
@@ -110,8 +112,9 @@ func CheckDelivery(in types.ManifestIntent, d types.ManifestDelivery) error {
 }
 
 // derivedFrom: r was derived only from the inputs (its lineage is non-empty
-// and names only them) and keeps every restriction they carry.
-func derivedFrom(r types.Ref, inputs map[string]types.Ref) error {
+// and names only them) and keeps every restriction of every input each
+// lineage id names.
+func derivedFrom(r types.Ref, inputs map[string][]types.Ref) error {
 	if len(r.Lineage) == 0 {
 		return fmt.Errorf("is neither a declared input nor derived from one")
 	}
@@ -120,13 +123,15 @@ func derivedFrom(r types.Ref, inputs map[string]types.Ref) error {
 		kept[restrictionKey(x)] = true
 	}
 	for _, id := range r.Lineage {
-		src, ok := inputs[id]
+		srcs, ok := inputs[id]
 		if !ok {
 			return fmt.Errorf("is derived from %s, which is not a declared input", id)
 		}
-		for _, x := range src.Restrictions {
-			if !kept[restrictionKey(x)] {
-				return fmt.Errorf("drops a restriction of %s (project %s)", id, x.Project)
+		for _, src := range srcs {
+			for _, x := range src.Restrictions {
+				if !kept[restrictionKey(x)] {
+					return fmt.Errorf("drops a restriction of %s (project %s)", id, x.Project)
+				}
 			}
 		}
 	}
@@ -180,11 +185,7 @@ func Coverage(in types.ManifestIntent, deliveries []types.ManifestDelivery, c ty
 			delivered[x.Ref.IdentityDigest] = true
 		}
 	}
-	if c.Prompt == types.ManifestFinalizedCoveragePromptUncertain {
-		for _, x := range in.Included {
-			d.PossiblyDelivered = append(d.PossiblyDelivered, x.Ref.IdentityDigest)
-		}
-	}
+
 	evidenced := map[int64]bool{}
 	for _, del := range deliveries {
 		if err := CheckDelivery(in, del); err != nil {
@@ -211,6 +212,15 @@ func Coverage(in types.ManifestIntent, deliveries []types.ManifestDelivery, c ty
 	}
 	for r := range delivered {
 		d.Delivered = append(d.Delivered, r)
+	}
+	// What remains uncertain: the included inputs of an uncertain prompt
+	// that no delivery event confirms.
+	if c.Prompt == types.ManifestFinalizedCoveragePromptUncertain {
+		for _, x := range in.Included {
+			if !delivered[x.Ref.IdentityDigest] {
+				d.PossiblyDelivered = append(d.PossiblyDelivered, x.Ref.IdentityDigest)
+			}
+		}
 	}
 	slices.Sort(d.Delivered)
 	slices.Sort(d.PossiblyDelivered)

@@ -7,7 +7,7 @@ package types
 type ManifestDeliveryToolResultsItem struct {
 	// The handle the core supplied for this result.
 	Handle string `json:"handle"`
-	// A declared input of the intent, or a ref derived only from declared inputs: its lineage is non-empty, names only declared inputs, and it keeps every restriction they carry.
+	// A declared input of the intent, or a ref derived only from declared inputs: its lineage is non-empty and names only declared input ids, and it keeps every restriction of every declared input each lineage id names (several inputs may share an id).
 	Ref Ref `json:"ref"`
 }
 

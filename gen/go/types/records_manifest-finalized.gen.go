@@ -52,7 +52,7 @@ type ManifestFinalizedCoverage struct {
 	// How many turns the call had; null when the adapter could not tell.
 	Turns         *int64   `json:"turns"`
 	DeliveredRefs []Digest `json:"delivered_refs"`
-	// Refs whose delivery is uncertain: neither confirmed nor ruled out.
+	// Refs whose delivery is uncertain: included inputs of an uncertain prompt that no delivery event confirms. Disjoint from delivered_refs.
 	PossiblyDeliveredRefs []Digest `json:"possibly_delivered_refs"`
 	// Adapter declarations no controller evidence backs.
 	DeclaredOnly []ManifestFinalizedCoverageDeclaredOnlyItem `json:"declared_only"`
@@ -84,7 +84,7 @@ func (x *ManifestFinalizedDelivery) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// ManifestFinalized: The third ContextManifest event (docs/design/m0/10), on call end. Coverage is derived from evidence, never from declarations alone (E0), and internal/knowledge derives and checks it: (1) prompt is the controller's own evidence of the initial prompt's egress: delivered, not_sent (refused or failed before egress: no turns, no delivery events) or uncertain. (2) delivered_refs are the identity digests of the included inputs when the prompt was delivered, plus every tool result of every delivery event; possibly_delivered_refs are the included inputs when the prompt is uncertain (never confirmed exposure). (3) Every compaction mark of a delivery event appears in unobservable as {turn, compaction}, and every adapter declaration appears in declared_only as {turn, what}: declarations are never evidence. Either list may name more, which only lowers the status. (4) When turns is known, every turn named anywhere is within 1..turns. (5) status is unknown when turns is unknown or the prompt is uncertain; otherwise complete only when every turn 1..turns has exactly one delivery event and both lists are empty; partial otherwise.
+// ManifestFinalized: The third ContextManifest event (docs/design/m0/10), on call end. Coverage is derived from evidence, never from declarations alone (E0), and internal/knowledge derives and checks it: (1) prompt is the controller's own evidence of the initial prompt's egress: delivered, not_sent (refused or failed before egress: no turns, no delivery events) or uncertain. (2) delivered_refs are the identity digests of the included inputs when the prompt was delivered, plus every tool result of every delivery event; possibly_delivered_refs are the included inputs when the prompt is uncertain, minus any a delivery event confirms (uncertainty is never confirmed exposure, and the two lists never overlap). (3) Every compaction mark of a delivery event appears in unobservable as {turn, compaction}, and every adapter declaration appears in declared_only as {turn, what}: declarations are never evidence. Either list may name more, which only lowers the status. (4) When turns is known, every turn named anywhere is within 1..turns. (5) status is unknown when turns is unknown or the prompt is uncertain; otherwise complete only when every turn 1..turns has exactly one delivery event and both lists are empty; partial otherwise.
 type ManifestFinalized struct {
 	Manifest ManifestID                `json:"manifest"`
 	Coverage ManifestFinalizedCoverage `json:"coverage"`
