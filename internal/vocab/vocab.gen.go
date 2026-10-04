@@ -9,6 +9,12 @@ import "github.com/ekaynac/auto-dev-cycle/gen/go/types"
 // Registered reason codes (schemas/vocab/reasons.yaml). The values are
 // immutable; adc dev vocab check refuses writing to them.
 var (
+	// ReasonActionNotGranted: No grant in force (not revoked, within its validity) covers this action on this project for the supervisor.
+	ReasonActionNotGranted = types.ReasonCodeOf("action_not_granted")
+	// ReasonActionUnregistered: The action is not in the action registry, or is deprecated; authority classifies only registered, current actions.
+	ReasonActionUnregistered = types.ReasonCodeOf("action_unregistered")
+	// ReasonActorRevoked: The acting actor is revoked; nothing it asks is allowed.
+	ReasonActorRevoked = types.ReasonCodeOf("actor_revoked")
 	// ReasonAmbiguousState: A projection found two live records where one is allowed; fails closed.
 	ReasonAmbiguousState = types.ReasonCodeOf("ambiguous_state")
 	// ReasonAuthorityRevoked: The actor's grant was revoked, expired or narrowed; streams close with this reason.
@@ -17,6 +23,8 @@ var (
 	ReasonBrokerCreditExhausted = types.ReasonCodeOf("broker_credit_exhausted")
 	// ReasonCandidateOwnedSetupError: A setup/teardown error in a test file the candidate added or changed, fully accounted; routed to a builder repair (07 ownership rules).
 	ReasonCandidateOwnedSetupError = types.ReasonCodeOf("candidate_owned_setup_error")
+	// ReasonChangeClassUnknown: The effective change named a class with no confirmation default; refused, never read as no confirmation.
+	ReasonChangeClassUnknown = types.ReasonCodeOf("change_class_unknown")
 	// ReasonCheckUnloadable: A source check could not load or type-check the code it checks; it never passes.
 	ReasonCheckUnloadable = types.ReasonCodeOf("check_unloadable")
 	// ReasonClosureRepair: A finding about the closing record; routed to a new closure step, never to the builder.
@@ -39,6 +47,8 @@ var (
 	ReasonFallbackScope = types.ReasonCodeOf("fallback_scope")
 	// ReasonGateTestFailed: A test failed relative to the measured baseline.
 	ReasonGateTestFailed = types.ReasonCodeOf("gate_test_failed")
+	// ReasonGrantOverrideWeaker: A covering grant overrides the action's confirmation with a policy weaker than the change's default; refused, never silently ignored.
+	ReasonGrantOverrideWeaker = types.ReasonCodeOf("grant_override_weaker")
 	// ReasonIdempotencyKeyReused: A command repeats an idempotency key with a different input.
 	ReasonIdempotencyKeyReused = types.ReasonCodeOf("idempotency_key_reused")
 	// ReasonInconsistentUsage: A final usage report is lower than the sum of its deltas; the larger figure is kept until reconciled.
@@ -51,6 +61,8 @@ var (
 	ReasonPreconditionFailed = types.ReasonCodeOf("precondition_failed")
 	// ReasonProjectUnconfigured: The project has no valid adopted profile; refuse to run.
 	ReasonProjectUnconfigured = types.ReasonCodeOf("project_unconfigured")
+	// ReasonProtectedChangeWidens: A protected document or topology change whose effective change also widens authority or data policy; refused for every actor, and the widening goes through its dedicated action.
+	ReasonProtectedChangeWidens = types.ReasonCodeOf("protected_change_widens")
 	// ReasonProtectedPath: The patch touches a protected path outside the protected-document operation.
 	ReasonProtectedPath = types.ReasonCodeOf("protected_path")
 	// ReasonQuotaExhausted: The leased source reported its quota as exhausted.
@@ -69,6 +81,8 @@ var (
 	ReasonRunnerFault = types.ReasonCodeOf("runner_fault")
 	// ReasonSeatNotHeld: A supervisor write action without holding the seat.
 	ReasonSeatNotHeld = types.ReasonCodeOf("seat_not_held")
+	// ReasonSelfGrantRefused: A supervisor asked to create or extend its own grant; grants are never created or extended by the grantee.
+	ReasonSelfGrantRefused = types.ReasonCodeOf("self_grant_refused")
 	// ReasonStaleAttempt: Output from an attempt whose id or fencing token is not current, or whose publication is closed.
 	ReasonStaleAttempt = types.ReasonCodeOf("stale_attempt")
 	// ReasonStaleExpectedState: The command's expected object version or digest is not current.
