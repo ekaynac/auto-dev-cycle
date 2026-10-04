@@ -59,7 +59,7 @@
       }
     },
     "hold": {
-      "description": "Set exactly while waiting: the registered hold (schemas/vocab/holds.yaml, checked by internal/lease) and the concrete signal instance that resumes it (02).",
+      "description": "Set exactly while waiting or restore_failed: the registered hold (schemas/vocab/holds.yaml, checked by internal/lease; restore_failed holds evidence_restore_pending) and the concrete signal instance that resumes it (02). It is cleared when the lease leaves the state.",
       "oneOf": [
         {"type": "null"},
         {
@@ -96,7 +96,7 @@
     }
   },
   "allOf": [
-    {"if": {"properties": {"state": {"const": "waiting"}}}, "then": {"properties": {"hold": {"not": {"const": null}}}}, "else": {"properties": {"hold": {"const": null}}}},
+    {"if": {"properties": {"state": {"enum": ["waiting", "restore_failed"]}}}, "then": {"properties": {"hold": {"not": {"const": null}}}}, "else": {"properties": {"hold": {"const": null}}}},
     {"if": {"properties": {"state": {"const": "settled"}}}, "then": {"properties": {"settlement": {"not": {"const": null}}}}, "else": {"properties": {"settlement": {"const": null}}}},
     {"if": {"properties": {"state": {"const": "settling_verified"}}}, "then": {"properties": {"restore_receipt": {"not": {"const": null}}}}},
     {"if": {"properties": {"state": {"enum": ["requested", "waiting", "granted", "releasing", "released", "active", "settling", "restoring", "restore_failed"]}}}, "then": {"properties": {"restore_receipt": {"const": null}}}},
@@ -104,9 +104,12 @@
   ],
   "$defs": {
     "PlacementCheck": {
+      "description": "Every result but empty names its detail (02). Whether the reason fits the outcome is the vocabulary's check, in internal/lease's placement validator.",
       "type": "object",
       "additionalProperties": false,
       "required": ["outcome", "reason", "detail"],
+      "if": {"properties": {"outcome": {"enum": ["found", "could_not_run", "failed"]}}},
+      "then": {"properties": {"detail": {"not": {"const": ""}}}},
       "properties": {
         "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
         "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},

@@ -78,7 +78,7 @@ type Lease struct {
 	FallbackStep int64          `json:"fallback_step"`
 	// Re-evaluated and recorded at every fallback step. Each check is empty when nothing blocks; anything else blocks the grant.
 	PlacementChecks LeasePlacementChecks `json:"placement_checks"`
-	// Set exactly while waiting: the registered hold (schemas/vocab/holds.yaml, checked by internal/lease) and the concrete signal instance that resumes it (02).
+	// Set exactly while waiting or restore_failed: the registered hold (schemas/vocab/holds.yaml, checked by internal/lease; restore_failed holds evidence_restore_pending) and the concrete signal instance that resumes it (02). It is cleared when the lease leaves the state.
 	Hold *LeaseHoldValue `json:"hold"`
 	// The attempt this lease started, once active.
 	Attempt *AttemptID `json:"attempt"`
@@ -88,6 +88,7 @@ type Lease struct {
 	Settlement *LeaseSettlementValue `json:"settlement"`
 }
 
+// PlacementCheck: Every result but empty names its detail (02). Whether the reason fits the outcome is the vocabulary's check, in internal/lease's placement validator.
 type PlacementCheck struct {
 	Outcome Outcome    `json:"outcome"`
 	Reason  ReasonCode `json:"reason"`
