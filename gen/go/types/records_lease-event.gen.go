@@ -28,7 +28,7 @@ const (
 	LeaseEventTransitionAttemptSuperseded      LeaseEventTransition = "attempt.superseded"
 )
 
-// LeaseEvent: The payload of every lease and attempt transition event (docs/design/m0/05): <transition>/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*).
+// LeaseEvent: The payload of every lease and attempt transition event (docs/design/m0/05): <transition>/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*). attempt.started also changes the lease under the attempt's subject, so commands expect a record's projection revision (not its subject's last seq) for every record they act on.
 type LeaseEvent struct {
 	Transition LeaseEventTransition `json:"transition"`
 	// Why: required for lease.revoked and lease.restore_failed (05), null otherwise. Attempt stop and loss reasons live in the attempt record.

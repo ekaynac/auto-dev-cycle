@@ -132,7 +132,13 @@ func TestSealNeedsItsPublishedRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	record := []byte(`{"attempt":"att_01m3250vnfeyrv67x6w0ddqr6a"}`)
+	record, err := contract.Encode("records/attempt-record", types.AttemptRecord{Attempt: attA, Project: "prj_01m3250vkwffc979nzjw0g2sf9",
+		Task: "tsk_01m3250v9xft08ssr4ygq6g2np", ContractRevision: "7", FencingToken: 1, BaseTree: base.Tree,
+		FailingTests: []string{}, Trail: "sha256:" + types.Digest(strings.Repeat("b", 64)), EvidenceManifest: "sha256:" + types.Digest(strings.Repeat("c", 64)),
+		Seal: types.AttemptRecordSeal{Reason: "abrupt_loss", At: "2026-10-05T12:00:00Z", SealedBy: "act_01m3250v0aer9ss2097svmefj8"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	sum := sha256.Sum256(record)
 	digest := types.Digest("sha256:" + hex.EncodeToString(sum[:]))
 	sealed, err := ApplyAttempt(reachAttempt(t, types.AttemptStatusLost), AttemptEvent{Kind: Sealed, Checkpoint: digest})

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/lease-event.json",
   "title": "LeaseEvent",
-  "description": "The payload of every lease and attempt transition event (docs/design/m0/05): <transition>/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*).",
+  "description": "The payload of every lease and attempt transition event (docs/design/m0/05): <transition>/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*). attempt.started also changes the lease under the attempt's subject, so commands expect a record's projection revision (not its subject's last seq) for every record they act on.",
   "type": "object",
   "additionalProperties": false,
   "required": ["transition", "reason", "lease", "attempt"],
