@@ -55,6 +55,7 @@ type Decision struct {
 	Disposition Disposition
 	Policy      Policy         // for Propose
 	Grant       *types.GrantID // the grant it acts under (supervisors)
+	Classes     []string       // the change classes decided on, the action's own included
 	Reason      vocab.Reason   // for Refuse
 	Detail      string
 }
@@ -133,9 +134,9 @@ func Decide(reg *vocab.Registry, r Request) Decision {
 		// Unrestricted (D31), except where a class binds every actor kind
 		// (KA1: framework prose export needs a presence-verified human).
 		if everyActor {
-			return Decision{Disposition: Propose, Policy: Human}
+			return Decision{Disposition: Propose, Policy: Human, Classes: classes}
 		}
-		return Decision{Disposition: Allow}
+		return Decision{Disposition: Allow, Classes: classes}
 	case types.ActorKindSupervisor:
 		return supervisor(r, classes, policy)
 	}
@@ -181,7 +182,7 @@ func supervisor(r Request, classes []string, policy Policy) Decision {
 			policy, chosen = p, g.ID
 		}
 	}
-	d := Decision{Disposition: Allow, Grant: &chosen}
+	d := Decision{Disposition: Allow, Grant: &chosen, Classes: classes}
 	if policy != None {
 		d.Disposition, d.Policy = Propose, policy
 	}

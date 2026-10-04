@@ -36,8 +36,10 @@ type Proposal struct {
 	ExpectedState ExpectedState   `json:"expected_state"`
 	Scope         json.RawMessage `json:"scope"`
 	ProposedBy    ActorID         `json:"proposed_by"`
-	Policy        ProposalPolicy  `json:"policy"`
-	BindingDigest Digest          `json:"binding_digest"`
-	Status        ProposalStatus  `json:"status"`
-	ExpiresAt     Time            `json:"expires_at"`
+	// The grant the proposal was decided under (null for an operator's); at apply it must still be the one that covers it, never a substitute.
+	Grant         *GrantID       `json:"grant"`
+	Policy        ProposalPolicy `json:"policy"`
+	BindingDigest Digest         `json:"binding_digest"`
+	Status        ProposalStatus `json:"status"`
+	ExpiresAt     Time           `json:"expires_at"`
 }
