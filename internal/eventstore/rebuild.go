@@ -1,0 +1,167 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package eventstore
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"sort"
+)
+
+// ProjectionDiff is one projection record on which the live tables and a
+// rebuild from the log disagree. A nil side is a record that side lacks.
+type ProjectionDiff struct {
+	Projection, Key string
+	Live, Rebuilt   *string
+}
+
+// rebuildBatch bounds the events held in memory at once during a rebuild.
+var rebuildBatch = 512
+
+// RebuildProjections replays the whole log through the Project hook into
+// fresh projection tables and compares them with the live ones (03, `adc dev
+// rebuild-projections`). It verifies the full chain first and changes
+// nothing: the rebuild runs in a writer transaction that is always rolled
+// back. An empty result means the live projections are exactly what the log
+// derives.
+//
+// The fresh tables are a TEMP proj_kv, which shadows the live one for the
+// unqualified statements Tx issues, so the hook runs unchanged. A projector
+// must derive its records from the events it is given and the projections
+// alone; it is replayed one event at a time, in log order.
+func (s *Store) RebuildProjections(ctx context.Context) ([]ProjectionDiff, error) {
+	if _, err := s.Verify(ctx, nil); err != nil {
+		return nil, err
+	}
+	var diffs []ProjectionDiff
+	err := s.do(func() error {
+		tx, err := s.w.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		rolledBack := false
+		defer func() {
+			if !rolledBack {
+				_ = tx.Rollback() // only on a panic, which keeps unwinding
+			}
+		}()
+		diffs, err = s.rebuild(ctx, tx)
+		rolledBack = true
+		// Always rolled back: a rebuild never changes the store.
+		return errors.Join(err, tx.Rollback())
+	})
+	if err != nil {
+		return nil, err
+	}
+	return diffs, nil
+}
+
+func (s *Store) rebuild(ctx context.Context, tx *sql.Tx) ([]ProjectionDiff, error) {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE proj_kv (
+		projection TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (projection, key)) WITHOUT ROWID`); err != nil {
+		return nil, err
+	}
+	if err := s.replay(ctx, tx); err != nil {
+		return nil, err
+	}
+	live, err := projections(ctx, tx, `SELECT projection, key, value FROM main.proj_kv`)
+	if err != nil {
+		return nil, err
+	}
+	rebuilt, err := projections(ctx, tx, `SELECT projection, key, value FROM temp.proj_kv`)
+	if err != nil {
+		return nil, err
+	}
+	return compare(live, rebuilt), nil
+}
+
+// replay feeds every event, in seq order and in bounded batches, to the
+// Project hook.
+func (s *Store) replay(ctx context.Context, tx *sql.Tx) error {
+	if s.hooks.Project == nil {
+		return nil
+	}
+	for after := int64(0); ; {
+		batch, err := eventsAfter(ctx, tx, after, rebuildBatch)
+		if err != nil {
+			return err
+		}
+		if len(batch) == 0 {
+			return nil
+		}
+		for _, e := range batch {
+			if err := s.hooks.Project(&Tx{ctx: ctx, tx: tx}, []Event{e}); err != nil {
+				return fmt.Errorf("eventstore: rebuild: projecting seq %d: %w", e.Seq, err)
+			}
+		}
+		after = batch[len(batch)-1].Seq
+	}
+}
+
+func eventsAfter(ctx context.Context, tx *sql.Tx, after int64, limit int) ([]Event, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT seq, id, at, kind, subject, project, actor, command, causation, schema_set, payload, prev_hash, hash
+		FROM events WHERE seq > ? ORDER BY seq LIMIT ?`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		var payload []byte
+		if err := rows.Scan(&e.Seq, &e.ID, &e.At, &e.Kind, &e.Subject, &e.Project, &e.Actor, &e.Command, &e.Causation, &e.SchemaSet, &payload, &e.PrevHash, &e.Hash); err != nil {
+			return nil, err
+		}
+		e.Payload = payload
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+type projKey struct{ projection, key string }
+
+func projections(ctx context.Context, tx *sql.Tx, query string) (map[projKey]string, error) {
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[projKey]string{}
+	for rows.Next() {
+		var k projKey
+		var v string
+		if err := rows.Scan(&k.projection, &k.key, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+// compare lists every record on which live and rebuilt differ, sorted.
+func compare(live, rebuilt map[projKey]string) []ProjectionDiff {
+	var diffs []ProjectionDiff
+	for k, v := range live {
+		if r, ok := rebuilt[k]; !ok || r != v {
+			d := ProjectionDiff{Projection: k.projection, Key: k.key, Live: &v}
+			if ok {
+				d.Rebuilt = &r
+			}
+			diffs = append(diffs, d)
+		}
+	}
+	for k, r := range rebuilt {
+		if _, ok := live[k]; !ok {
+			diffs = append(diffs, ProjectionDiff{Projection: k.projection, Key: k.key, Rebuilt: &r})
+		}
+	}
+	sort.Slice(diffs, func(i, j int) bool {
+		if diffs[i].Projection != diffs[j].Projection {
+			return diffs[i].Projection < diffs[j].Projection
+		}
+		return diffs[i].Key < diffs[j].Key
+	})
+	return diffs
+}
