@@ -86,8 +86,24 @@ func TestFinalAndReconciliation(t *testing.T) {
 		t.Fatalf("a reconciliation: %+v", fixed)
 	}
 	later := reconcile(t, report(calA, final, 0, 100), report(calA, final, 1, 140))[calA]
-	if later.Usage.In != 140 {
-		t.Fatalf("a later final: %+v", later)
+	if later.Usage.In != 140 || later.Inconsistent {
+		t.Fatalf("a later, larger final: %+v", later)
+	}
+	// Astra #49: a later final never lowers usage, in either arrival order.
+	for _, order := range [][]types.UsageMeasurement{
+		{report(calA, final, 0, 140), report(calA, final, 1, 100)},
+		{report(calA, final, 1, 100), report(calA, final, 0, 140)},
+	} {
+		got := reconcile(t, order...)[calA]
+		if got.Usage.In != 140 || !got.Inconsistent || got.Reason != vocab.ReasonInconsistentUsage {
+			t.Fatalf("a decreasing final: %+v", got)
+		}
+	}
+	mixedUp, mixedDown := report(calA, final, 0, 100), report(calA, final, 1, 100)
+	mixedDown.Tokens.In, mixedDown.Tokens.Out = 90, 50 // in lower, out higher
+	mixed := reconcile(t, mixedUp, mixedDown)[calA]
+	if mixed.Usage.In != 100 || mixed.Usage.Out != 50 || !mixed.Inconsistent {
+		t.Fatalf("a final lower in one field: %+v", mixed)
 	}
 	clash := reconcile(t, report(calA, final, 2, 100), report(calA, final, 2, 140))[calA]
 	if clash.Usage.In != 140 || !clash.Inconsistent {

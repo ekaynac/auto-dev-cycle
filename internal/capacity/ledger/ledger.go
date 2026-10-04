@@ -10,8 +10,10 @@
 package ledger
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -138,7 +140,7 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 	for call, cur := range currency {
 		c := Call{Call: call, Usage: sums[call], Currency: cur, Uncertain: true, Inconsistent: conflict[call]}
 		if fs := finals[call]; len(fs) > 0 {
-			f, clash := latest(fs)
+			f, clash := finalFigure(fs)
 			var lower bool
 			c.Usage, lower = maxOf(f, sums[call])
 			c.Inconsistent = c.Inconsistent || clash || lower
@@ -157,7 +159,36 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 	return out, nil
 }
 
-// latest resolves a call's finals (or reconciliations): the highest
+// finalFigure combines a call's finals: no final can lower another's
+// figure, so the result is each field's largest value over all of them. A
+// final lower in any field than one with a lower or equal sequence, or two
+// with one sequence and different figures, is flagged. Arrival order never
+// matters.
+func finalFigure(ms []types.UsageMeasurement) (f Figure, inconsistent bool) {
+	sorted := slices.Clone(ms)
+	slices.SortStableFunc(sorted, func(a, b types.UsageMeasurement) int { return cmp.Compare(a.Sequence, b.Sequence) })
+	for i, m := range sorted {
+		g := figureOf(m)
+		if i > 0 {
+			if _, lower := maxOf(g, f); lower {
+				inconsistent = true
+			}
+		}
+		f, _ = maxOf(f, g)
+	}
+	// Same-sequence reports differing only upward from an earlier one are
+	// still a conflict.
+	seen := map[int64]Figure{}
+	for _, m := range ms {
+		if prev, ok := seen[m.Sequence]; ok && prev != figureOf(m) {
+			inconsistent = true
+		}
+		seen[m.Sequence] = figureOf(m)
+	}
+	return f, inconsistent
+}
+
+// latest resolves a call's provider reconciliations: the highest
 // sequence wins; reports sharing it with different figures merge field by
 // field to the larger and are flagged. Arrival order never matters.
 func latest(ms []types.UsageMeasurement) (f Figure, conflict bool) {
