@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/lease-event.json",
   "title": "LeaseEvent",
-  "description": "The payload of every lease and attempt transition event (docs/design/m0/05): <transition>/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*). attempt.started also changes the lease under the attempt's subject, so commands expect a record's projection revision (not its subject's last seq) for every record they act on.",
+  "description": "The payload of every lease and attempt transition event (docs/design/m0/05): <transition>/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*). attempt.started and attempt.superseded also change the lease under the attempt's subject, so commands expect a record's projection revision (not its subject's last seq) for every record they act on. attempt.superseded is atomic: one event carries the retired attempt, its successor (with the next token) and the lease the successor runs under (05: supersession and the replacement's token in one transaction).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["transition", "reason", "lease", "attempt"],
+  "required": ["transition", "reason", "lease", "attempt", "successor"],
   "properties": {
     "transition": {
       "enum": [
@@ -20,11 +20,13 @@
       "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 1024}]
     },
     "lease": {"description": "The lease after a lease transition, or after attempt.started (granted → active).", "oneOf": [{"type": "null"}, {"$ref": "lease.json"}]},
-    "attempt": {"description": "The attempt after an attempt transition.", "oneOf": [{"type": "null"}, {"$ref": "attempt.json"}]}
+    "attempt": {"description": "The attempt after an attempt transition (for attempt.superseded, the retired one).", "oneOf": [{"type": "null"}, {"$ref": "attempt.json"}]},
+    "successor": {"description": "attempt.superseded only: the replacement attempt, started with the next token.", "oneOf": [{"type": "null"}, {"$ref": "attempt.json"}]}
   },
   "allOf": [
     {"if": {"properties": {"transition": {"enum": ["lease.revoked", "lease.restore_failed"]}}}, "then": {"properties": {"reason": {"not": {"const": null}}}}, "else": {"properties": {"reason": {"const": null}}}},
-    {"if": {"properties": {"transition": {"enum": ["lease.requested", "lease.waiting", "lease.granted", "lease.expired", "lease.completed", "lease.revoked", "lease.preempted", "lease.settled", "lease.released", "lease.restore_started", "lease.restore_verified", "lease.restore_failed", "attempt.started"]}}}, "then": {"properties": {"lease": {"not": {"const": null}}}}, "else": {"properties": {"lease": {"const": null}}}},
-    {"if": {"properties": {"transition": {"enum": ["attempt.started", "attempt.stop_requested", "attempt.result_submitted", "attempt.lost", "attempt.sealed", "attempt.completed", "attempt.superseded"]}}}, "then": {"properties": {"attempt": {"not": {"const": null}}}}, "else": {"properties": {"attempt": {"const": null}}}}
+    {"if": {"properties": {"transition": {"enum": ["lease.requested", "lease.waiting", "lease.granted", "lease.expired", "lease.completed", "lease.revoked", "lease.preempted", "lease.settled", "lease.released", "lease.restore_started", "lease.restore_verified", "lease.restore_failed", "attempt.started", "attempt.superseded"]}}}, "then": {"properties": {"lease": {"not": {"const": null}}}}, "else": {"properties": {"lease": {"const": null}}}},
+    {"if": {"properties": {"transition": {"enum": ["attempt.started", "attempt.stop_requested", "attempt.result_submitted", "attempt.lost", "attempt.sealed", "attempt.completed", "attempt.superseded"]}}}, "then": {"properties": {"attempt": {"not": {"const": null}}}}, "else": {"properties": {"attempt": {"const": null}}}},
+    {"if": {"properties": {"transition": {"const": "attempt.superseded"}}}, "then": {"properties": {"successor": {"not": {"const": null}}}}, "else": {"properties": {"successor": {"const": null}}}}
   ]
 }

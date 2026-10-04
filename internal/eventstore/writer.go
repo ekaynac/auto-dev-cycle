@@ -67,6 +67,12 @@ const (
 	rebuildProjections = "temp.proj_rebuild"
 )
 
+// Replaying reports a rebuild's replay of recorded events, as opposed to the
+// admission of new ones: a projector keeps its deterministic fold, and skips
+// admission checks that read state outside the log (blob contents, a
+// vocabulary that may have changed since).
+func (t *Tx) Replaying() bool { return t.rebuild }
+
 // table is the projection table this transaction reads and writes.
 func (t *Tx) table() string {
 	if t.rebuild {
