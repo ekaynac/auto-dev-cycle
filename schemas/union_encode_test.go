@@ -43,7 +43,9 @@ func TestUnionsEncodeStrictly(t *testing.T) {
 		t.Fatalf("a valid grant: %v", err)
 	}
 	grant.Projects.List[0] = types.ProjectID("prj_" + string([]byte{0xff}))
-	if _, err := contract.Encode("records/grant", grant); err == nil || !strings.Contains(err.Error(), "UTF-8") {
+	// The repaired id would also fail adc-typeid, so check the refusal comes
+	// from marshalling.
+	if _, err := contract.Encode("records/grant", grant); err == nil || !strings.Contains(err.Error(), "marshal:") || !strings.Contains(err.Error(), "UTF-8") {
 		t.Fatalf("invalid UTF-8 inside a literal-or-list union: %v", err)
 	}
 }
