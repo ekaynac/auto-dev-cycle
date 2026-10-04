@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/proposal.json",
+  "title": "Proposal",
+  "description": "A proposed action awaiting confirmation (docs/design/m0/04 \"Proposals and confirmation\"), recorded when the action's confirmation policy is not none. binding_digest is the JCS digest of {action, change_class, project, object, expected_state, scope, proposed_by}; a confirmation binds exactly that digest. At apply, authority revalidates the expected state, the proposer's grant, the policy and the confirmer, and otherwise invalidates the proposal.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "action", "change_class", "project", "object", "expected_state", "scope", "proposed_by", "policy", "binding_digest", "status", "expires_at"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/ProposalID"},
+    "action": {"$ref": "grant.json#/$defs/ActionKind"},
+    "change_class": {"type": "array", "uniqueItems": true, "items": {"$ref": "approval.json#/$defs/ChangeClass"}},
+    "project": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ProjectID"}]},
+    "object": {"$ref": "approval.json#/$defs/ObjectRef"},
+    "expected_state": {"$ref": "approval.json#/$defs/ExpectedState"},
+    "scope": {"type": "object", "x-adc-open-payload": "action"},
+    "proposed_by": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "policy": {"enum": ["independent_review", "human"]},
+    "binding_digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+    "status": {"enum": ["open", "confirmed", "rejected", "expired", "superseded", "invalidated"]},
+    "expires_at": {"$ref": "../common/defs.json#/$defs/Time"}
+  }
+}

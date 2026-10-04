@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/grant.json",
+  "title": "Grant",
+  "description": "A scoped, dated, expiring delegation of actions from an operator to a supervisor actor (docs/design/m0/04 \"Grants\"). A supervisor cannot create, extend or widen grants; confirmation overrides may only tighten. internal/authority enforces both.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "actor", "projects", "actions", "reads", "valid_from", "expires_at", "confirmation_overrides", "issued_by", "approval"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/GrantID"},
+    "actor": {"description": "A supervisor actor.", "$ref": "../common/defs.json#/$defs/ActorID"},
+    "projects": {"$ref": "#/$defs/ProjectScope"},
+    "actions": {
+      "description": "The write actions allowed.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/ActionKind"}
+    },
+    "reads": {
+      "description": "The read scope [M5]: which projects (same as projects, or listed) and which resource kinds.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projects", "kinds"],
+      "properties": {
+        "projects": {"oneOf": [{"const": "same"}, {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/ProjectID"}}]},
+        "kinds": {"type": "array", "uniqueItems": true, "items": {"$ref": "receipt.json#/$defs/Name"}}
+      }
+    },
+    "valid_from": {"$ref": "../common/defs.json#/$defs/Time"},
+    "expires_at": {"description": "Required: every grant expires.", "$ref": "../common/defs.json#/$defs/Time"},
+    "confirmation_overrides": {
+      "description": "Per action, a stricter confirmation than its default; never a looser one.",
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/ActionKind"},
+      "additionalProperties": {"enum": ["independent_review", "human"]}
+    },
+    "issued_by": {"description": "An operator.", "$ref": "../common/defs.json#/$defs/ActorID"},
+    "approval": {"$ref": "../common/defs.json#/$defs/ApprovalID"}
+  },
+  "$defs": {
+    "ActionKind": {
+      "description": "A mutating action kind of the action registry (schemas/vocab), e.g. task.create or policy.widen_destinations.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+    },
+    "ProjectScope": {
+      "description": "The projects a grant covers: a list, or every project.",
+      "oneOf": [{"const": "*"}, {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/ProjectID"}}]
+    }
+  }
+}

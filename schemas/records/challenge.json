@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/challenge.json",
+  "title": "Challenge",
+  "description": "A single-use human confirmation challenge for a proposal under the human policy (docs/design/m0/04). It is answered only by a WebAuthn assertion on the dashboard (D37) over nonce ‖ binding_digest, and consumed atomically. The nonce is a secret until consumed: logs redact it by type.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "proposal", "binding_digest", "nonce", "allowed_confirmers", "expires_at", "used_at"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/ChallengeID"},
+    "proposal": {"$ref": "../common/defs.json#/$defs/ProposalID"},
+    "binding_digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+    "nonce": {"description": "32 fresh random bytes, lowercase hex.", "type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "allowed_confirmers": {
+      "description": "Operator actors who may confirm.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "../common/defs.json#/$defs/ActorID"}
+    },
+    "expires_at": {"description": "Short (default 15 minutes); re-issued on demand.", "$ref": "../common/defs.json#/$defs/Time"},
+    "used_at": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]}
+  }
+}
