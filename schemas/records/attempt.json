@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/attempt.json",
+  "title": "Attempt",
+  "description": "One try at a unit under a lease (docs/design/m0/05 \"Attempt and fencing\"), as its events project. An output is accepted only if its attempt id and fencing token match the unit's current attempt and publication is open; anything else is failed/stale_attempt. Publication is open only while running. internal/lease enforces the state machine and fencing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "unit", "lease", "fencing_token", "supersedes", "base", "status", "publication", "stop_reason", "lost_reason", "checkpoint", "completion", "superseded_by"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/AttemptID"},
+    "unit": {"$ref": "../common/defs.json#/$defs/UnitID"},
+    "lease": {"$ref": "../common/defs.json#/$defs/LeaseID"},
+    "fencing_token": {"description": "Strictly increasing per unit; minted only by the controller.", "type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "supersedes": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]},
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tree", "contract_revision"],
+      "properties": {
+        "tree": {"$ref": "../common/defs.json#/$defs/GitID"},
+        "contract_revision": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "status": {"enum": ["running", "stopping", "finishing", "lost", "sealed", "completed", "superseded"]},
+    "publication": {"description": "Whether outputs may still land: open only while running, closed atomically with the event that leaves running.", "enum": ["open", "closed"]},
+    "stop_reason": {"description": "Why a stop was requested, once it was.", "oneOf": [{"type": "null"}, {"enum": ["revoke", "preempt", "expire", "drain", "cancel"]}]},
+    "lost_reason": {"oneOf": [{"type": "null"}, {"enum": ["stream_dead", "agent_disconnect", "controller_restart"]}]},
+    "checkpoint": {"description": "The digest of the sealed AttemptRecord blob (records/attempt-record), once sealed.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]},
+    "completion": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["outcome", "reason"],
+          "properties": {
+            "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
+            "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"}
+          }
+        }
+      ]
+    },
+    "superseded_by": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "running"}}}, "then": {"properties": {"publication": {"const": "open"}}}, "else": {"properties": {"publication": {"const": "closed"}}}},
+    {"if": {"properties": {"status": {"const": "stopping"}}}, "then": {"properties": {"stop_reason": {"not": {"const": null}}, "lost_reason": {"const": null}}}},
+    {"if": {"properties": {"status": {"const": "lost"}}}, "then": {"properties": {"lost_reason": {"not": {"const": null}}, "stop_reason": {"const": null}}}},
+    {"if": {"properties": {"status": {"enum": ["running", "finishing"]}}}, "then": {"properties": {"stop_reason": {"const": null}, "lost_reason": {"const": null}}}},
+    {"if": {"properties": {"stop_reason": {"not": {"const": null}}}}, "then": {"properties": {"lost_reason": {"const": null}}}},
+    {"if": {"properties": {"status": {"enum": ["sealed", "completed", "superseded"]}}}, "then": {"properties": {"checkpoint": {"not": {"const": null}}}}, "else": {"properties": {"checkpoint": {"const": null}}}},
+    {"if": {"properties": {"status": {"const": "completed"}}}, "then": {"properties": {"completion": {"not": {"const": null}}}}, "else": {"properties": {"completion": {"const": null}}}},
+    {"if": {"properties": {"status": {"const": "superseded"}}}, "then": {"properties": {"superseded_by": {"not": {"const": null}}}}, "else": {"properties": {"superseded_by": {"const": null}}}}
+  ]
+}
