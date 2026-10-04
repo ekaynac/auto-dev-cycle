@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/adapter/event.json",
+  "title": "AdapterEvent",
+  "description": "Adapter → core notifications, normalised (docs/design/m0/09 \"Notifications\"), discriminated by event. Every one carries the attempt, its fencing token and the call. Outputs are fenced by the token; usage is not (05).",
+  "oneOf": [
+    {"$ref": "#/$defs/CallSubEvent"},
+    {"$ref": "#/$defs/TurnStartEvent"},
+    {"$ref": "#/$defs/TurnEndEvent"},
+    {"$ref": "#/$defs/DeltaTextEvent"},
+    {"$ref": "#/$defs/DeltaThinkingEvent"},
+    {"$ref": "#/$defs/DeltaToolCallEvent"},
+    {"$ref": "#/$defs/ToolRequestEvent"},
+    {"$ref": "#/$defs/ToolResultEvent"},
+    {"$ref": "#/$defs/CoverageEvent"},
+    {"$ref": "#/$defs/UsageEvent"},
+    {"$ref": "#/$defs/UpstreamEvent"},
+    {"$ref": "#/$defs/CompactionEvent"},
+    {"$ref": "#/$defs/ErrorEvent"},
+    {"$ref": "#/$defs/HeartbeatEvent"}
+  ],
+  "$defs": {
+    "AdapterTurn": {
+      "description": "1 for the first turn, the same domain as the ContextManifest records the turn feeds (manifest-delivery, manifest-finalized).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "AdapterSubCall": {
+      "description": "The adapter's label for a model request within the call; not an authoritative id.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "AdapterHandle": {
+      "description": "An attempt-scoped blob handle (M9), never a raw path. A handle naming another attempt than its event's is refused (internal/adapterhost).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "handle", "digest", "size"],
+      "properties": {"attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "handle": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$"}, "digest": {"$ref": "../common/defs.json#/$defs/Digest"}, "size": {"$ref": "../records/resource-group.json#/$defs/Amount"}}
+    },
+    "CallSubEvent": {
+      "description": "A model request inside the run, so usage and coverage attach to an identified call (call ledger).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "sub_call", "model_requested"],
+      "properties": {"event": {"const": "call.sub"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "sub_call": {"$ref": "#/$defs/AdapterSubCall"}, "model_requested": {"type": "string", "minLength": 1, "maxLength": 256}}
+    },
+    "TurnStartEvent": {
+      "description": "Timing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "turn", "sub_call", "reported_at"],
+      "properties": {"event": {"const": "turn.start"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "sub_call": {"$ref": "#/$defs/AdapterSubCall"}, "reported_at": {"$ref": "../common/defs.json#/$defs/Time"}}
+    },
+    "TurnEndEvent": {
+      "description": "Timing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "turn", "sub_call", "reported_at"],
+      "properties": {"event": {"const": "turn.end"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "sub_call": {"$ref": "#/$defs/AdapterSubCall"}, "reported_at": {"$ref": "../common/defs.json#/$defs/Time"}}
+    },
+    "DeltaTextEvent": {
+      "description": "Streamed text; the content goes to the transcript handle, the event carries its size (stream gaps).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "turn", "bytes"],
+      "properties": {"event": {"const": "delta.text"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "bytes": {"$ref": "../records/resource-group.json#/$defs/Amount"}}
+    },
+    "DeltaThinkingEvent": {
+      "description": "Streamed thinking, as delta.text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "turn", "bytes"],
+      "properties": {"event": {"const": "delta.thinking"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "bytes": {"$ref": "../records/resource-group.json#/$defs/Amount"}}
+    },
+    "DeltaToolCallEvent": {
+      "description": "A streamed tool call, as delta.text.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "turn", "bytes"],
+      "properties": {"event": {"const": "delta.tool_call"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "bytes": {"$ref": "../records/resource-group.json#/$defs/Amount"}}
+    },
+    "ToolRequestEvent": {
+      "description": "A controller-mediated tool request (e.g. run test X in the sandbox); the core executes it and answers with a tool.response request.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "turn", "tool", "request"],
+      "properties": {"event": {"const": "tool.request"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "tool": {"$ref": "../records/receipt.json#/$defs/Name"}, "request": {"$ref": "#/$defs/AdapterHandle"}}
+    },
+    "ToolResultEvent": {
+      "description": "A tool result. A controller-mediated one references the exact content handle the core supplied (delivered coverage); any other is only declared and names none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "turn", "tool", "mediated_by_controller", "delivered", "bytes"],
+      "properties": {"event": {"const": "tool.result"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "tool": {"$ref": "../records/receipt.json#/$defs/Name"}, "mediated_by_controller": {"type": "boolean"}, "delivered": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/AdapterHandle"}]}, "bytes": {"$ref": "../records/resource-group.json#/$defs/Amount"}},
+      "if": {"properties": {"mediated_by_controller": {"const": true}}},
+      "then": {"properties": {"delivered": {"not": {"const": null}}}},
+      "else": {"properties": {"delivered": {"const": null}}}
+    },
+    "CoverageEvent": {
+      "description": "The adapter's coverage declaration for a turn; it stays declared and never makes coverage complete by itself (M11).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "turn", "observable", "unobservable"],
+      "properties": {"event": {"const": "coverage"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "observable": {"enum": ["complete", "partial", "none"]}, "unobservable": {"type": "array", "uniqueItems": true, "items": {"enum": ["harness_instructions", "compaction", "harness_tool", "other"]}}},
+      "if": {"properties": {"observable": {"const": "complete"}}},
+      "then": {"properties": {"unobservable": {"const": []}}}
+    },
+    "UsageEvent": {
+      "description": "A usage delta the adapter observed for the call or a sub-call, numbered per call from 0 (05). It is a report, not a record: the controller mints the measurement id, takes the lease and attempt from the envelope it fenced, records kind delta, and sets source_of_truth itself (gateway_count when its gateway counted the call, adapter_report otherwise). Accepted even from a stale attempt: accounting is not fenced.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "sub_call", "sequence", "tokens", "turns", "milliseconds", "cost"],
+      "properties": {"event": {"const": "usage"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "sub_call": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/AdapterSubCall"}]}, "sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "tokens": {"$ref": "../records/usage-measurement.json#/$defs/UsageMeasurementTokens"}, "turns": {"$ref": "../records/resource-group.json#/$defs/Amount"}, "milliseconds": {"$ref": "../records/resource-group.json#/$defs/Amount"}, "cost": {"$ref": "../records/usage-measurement.json#/$defs/UsageMeasurementCost"}}
+    },
+    "UpstreamEvent": {
+      "description": "The provider and model the harness reports; routing compares reported with verified.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "turn", "sub_call", "provider", "model_reported"],
+      "properties": {"event": {"const": "upstream"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "sub_call": {"$ref": "#/$defs/AdapterSubCall"}, "provider": {"type": "string", "minLength": 1, "maxLength": 256}, "model_reported": {"type": "string", "minLength": 1, "maxLength": 256}}
+    },
+    "CompactionEvent": {
+      "description": "The harness compacted its context; the turn's coverage becomes partial.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "turn", "before_tokens", "after_tokens"],
+      "properties": {"event": {"const": "compaction"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "before_tokens": {"$ref": "../records/resource-group.json#/$defs/Amount"}, "after_tokens": {"$ref": "../records/resource-group.json#/$defs/Amount"}}
+    },
+    "ErrorEvent": {
+      "description": "An error with the adapter's hint; the core's rules classify it, never the adapter.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call", "turn", "class_hint", "raw_excerpt"],
+      "properties": {"event": {"const": "error"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "class_hint": {"enum": ["http_4xx", "rate_limited", "credit_exhausted", "http_5xx", "idle_cut", "degenerate", "other"]}, "raw_excerpt": {"$ref": "#/$defs/AdapterHandle"}}
+    },
+    "HeartbeatEvent": {
+      "description": "Liveness, at least every 10 s.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "attempt", "fencing_token", "call"],
+      "properties": {"event": {"const": "heartbeat"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}}
+    }
+  }
+}

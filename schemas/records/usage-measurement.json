@@ -13,7 +13,17 @@
     "lease": {"$ref": "../common/defs.json#/$defs/LeaseID"},
     "kind": {"enum": ["delta", "final", "provider_reconciliation"]},
     "sequence": {"description": "Per call: deltas are numbered from 0; a final or reconciliation also carries one, so a later report of the same kind supersedes an earlier.", "type": "integer", "minimum": 0, "maximum": 9007199254740991},
-    "tokens": {
+    "tokens": {"$ref": "#/$defs/UsageMeasurementTokens"},
+    "turns": {"$ref": "resource-group.json#/$defs/Amount"},
+    "milliseconds": {"$ref": "resource-group.json#/$defs/Amount"},
+    "cost": {"$ref": "#/$defs/UsageMeasurementCost"},
+    "source_of_truth": {"enum": ["provider_usage", "adapter_report", "gateway_count", "none"]}
+  },
+  "allOf": [
+    {"if": {"properties": {"kind": {"const": "provider_reconciliation"}}}, "then": {"properties": {"source_of_truth": {"const": "provider_usage"}}}}
+  ],
+  "$defs": {
+    "UsageMeasurementTokens": {
       "type": "object",
       "additionalProperties": false,
       "required": ["in", "out", "cache_read", "cache_write"],
@@ -24,9 +34,7 @@
         "cache_write": {"$ref": "resource-group.json#/$defs/Amount"}
       }
     },
-    "turns": {"$ref": "resource-group.json#/$defs/Amount"},
-    "milliseconds": {"$ref": "resource-group.json#/$defs/Amount"},
-    "cost": {
+    "UsageMeasurementCost": {
       "type": "object",
       "additionalProperties": false,
       "required": ["amount_micros", "currency", "basis", "estimate"],
@@ -36,10 +44,6 @@
         "basis": {"enum": ["cash", "subscription_equivalent", "free", "local"]},
         "estimate": {"type": "boolean"}
       }
-    },
-    "source_of_truth": {"enum": ["provider_usage", "adapter_report", "gateway_count", "none"]}
-  },
-  "allOf": [
-    {"if": {"properties": {"kind": {"const": "provider_reconciliation"}}}, "then": {"properties": {"source_of_truth": {"const": "provider_usage"}}}}
-  ]
+    }
+  }
 }

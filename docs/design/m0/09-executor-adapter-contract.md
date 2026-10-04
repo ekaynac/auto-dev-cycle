@@ -62,7 +62,7 @@ All carry `attempt`, `fencing_token`, `call`. They are normalised in `schemas/ad
 | `tool.request` | `{turn, tool, request: handle}` for a **controller-mediated** tool (e.g. "run test X in the sandbox") | the core executes it and answers with a `tool.response` request to the adapter |
 | `tool.result` | `{turn, tool, mediated_by_controller, delivered: handle|null, bytes}` | ContextManifest *delivered* coverage: a controller-mediated result references the exact content handle the core supplied |
 | `coverage` | `{turn, observable: complete|partial|none, unobservable: [harness_instructions|compaction|harness_tool|other]}` | ContextManifest coverage declaration |
-| `usage` | a `UsageMeasurement` of kind `delta` with `(call/sub_call, sequence)` (05) | ledger |
+| `usage` | a usage report: `{sub_call, sequence, tokens, turns, milliseconds, cost}`, numbered per call from 0. The controller builds the `UsageMeasurement` (05): it mints the id, takes the lease and attempt from the fenced envelope, records kind `delta` and sets `source_of_truth` | ledger |
 | `upstream` | `{turn, sub_call, provider, model_reported}` | routing: reported vs verified |
 | `compaction` | `{turn, before_tokens, after_tokens}` | coverage (turn becomes partial) |
 | `error` | `{turn, class_hint, raw_excerpt: handle}` | the core's rules classify |
