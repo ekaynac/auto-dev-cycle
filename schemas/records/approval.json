@@ -27,6 +27,7 @@
     },
     "grant": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/GrantID"}]},
     "confirmation": {
+      "description": "A confirmed policy records its evidence: human needs its consumed challenge, and both human and independent_review name the events that satisfied them. Whether that evidence applies is internal/authority's check.",
       "type": "object",
       "additionalProperties": false,
       "required": ["policy", "challenge", "satisfied_by"],
@@ -39,7 +40,11 @@
           "uniqueItems": true,
           "items": {"$ref": "../common/defs.json#/$defs/EventID"}
         }
-      }
+      },
+      "allOf": [
+        {"if": {"properties": {"policy": {"const": "human"}}}, "then": {"properties": {"challenge": {"not": {"const": null}}}}},
+        {"if": {"properties": {"policy": {"enum": ["independent_review", "human"]}}}, "then": {"properties": {"satisfied_by": {"not": {"const": []}}}}}
+      ]
     },
     "answers": {
       "description": "The owed inputs this approval answers, derived from an input.answer scope; an approval that merely mentions an id answers nothing.",
@@ -72,7 +77,7 @@
       ]
     },
     "ObjectRef": {
-      "description": "The exact object the action applies to.",
+      "description": "The exact object the action applies to: its version, its digest, or both, never neither (version 0: the object does not exist yet).",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "id", "version", "digest"],
@@ -81,17 +86,21 @@
         "id": {"type": "string", "minLength": 1},
         "version": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 9007199254740991}]},
         "digest": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]}
-      }
+      },
+      "if": {"properties": {"version": {"const": null}}},
+      "then": {"properties": {"digest": {"not": {"const": null}}}}
     },
     "ExpectedState": {
-      "description": "The object state the action was decided against: its version (seq of its last event) or its content digest.",
+      "description": "The object state the action was decided against: its version (seq of its last event), its content digest, or both, never neither.",
       "type": "object",
       "additionalProperties": false,
       "required": ["version", "digest"],
       "properties": {
         "version": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 9007199254740991}]},
         "digest": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]}
-      }
+      },
+      "if": {"properties": {"version": {"const": null}}},
+      "then": {"properties": {"digest": {"not": {"const": null}}}}
     }
   }
 }

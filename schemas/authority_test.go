@@ -76,13 +76,17 @@ func TestAuthorityRecords(t *testing.T) {
 		"actor unknown key":       {"records/actor", func(d map[string]any) { d["token"] = "secret" }},
 		"actor absent revoked_at": {"records/actor", func(d map[string]any) { delete(d, "revoked_at") }},
 		"grant without expiry":    {"records/grant", func(d map[string]any) { delete(d, "expires_at") }},
-		"grant loosening override": {"records/grant", func(d map[string]any) {
+		// The override enum has no "none"; refusing a weaker override than an
+		// action's default is internal/authority's check.
+		"grant override enum": {"records/grant", func(d map[string]any) {
 			d["confirmation_overrides"] = map[string]any{"task.create": "none"}
 		}},
 		"grant bad action":       {"records/grant", func(d map[string]any) { d["actions"] = []any{"Delete Everything"} }},
 		"grant bad project list": {"records/grant", func(d map[string]any) { d["projects"] = "all" }},
 		"grant read projects":    {"records/grant", func(d map[string]any) { d["reads"].(map[string]any)["projects"] = "everything" }},
-		"approval supplied class": {"records/approval", func(d map[string]any) {
+		// The class enum is closed; computing the class (never trusting a
+		// supplied one) is internal/authority's check.
+		"approval class enum": {"records/approval", func(d map[string]any) {
 			d["change_class"] = []any{"policy.anything"}
 		}},
 		"approval policy":         {"records/approval", func(d map[string]any) { d["confirmation"].(map[string]any)["policy"] = "maybe" }},
@@ -93,7 +97,33 @@ func TestAuthorityRecords(t *testing.T) {
 		"challenge short nonce":   {"records/challenge", func(d map[string]any) { d["nonce"] = "abcd" }},
 		"challenge no confirmer":  {"records/challenge", func(d map[string]any) { d["allowed_confirmers"] = []any{} }},
 		"owed input kind":         {"records/owed-input", func(d map[string]any) { d["kind"] = "opinion" }},
-		"owed input revision":     {"records/owed-input", func(d map[string]any) { d["revision"] = 0 }},
+		// Astra #42: exact-state references bind some state.
+		"approval object binds nothing": {"records/approval", func(d map[string]any) {
+			d["object"] = map[string]any{"type": "profile", "id": prjID, "version": nil, "digest": nil}
+		}},
+		"approval expected state binds nothing": {"records/approval", func(d map[string]any) {
+			d["expected_state"] = map[string]any{"version": nil, "digest": nil}
+		}},
+		"proposal object binds nothing": {"records/proposal", func(d map[string]any) {
+			d["object"] = map[string]any{"type": "profile", "id": prjID, "version": nil, "digest": nil}
+		}},
+		"proposal expected state binds nothing": {"records/proposal", func(d map[string]any) {
+			d["expected_state"] = map[string]any{"version": nil, "digest": nil}
+		}},
+		"owed input subject binds nothing": {"records/owed-input", func(d map[string]any) {
+			d["subject"] = map[string]any{"type": "profile", "id": prjID, "version": nil, "digest": nil}
+		}},
+		// Astra #42: a confirmed policy records its evidence.
+		"human without a challenge": {"records/approval", func(d map[string]any) {
+			d["confirmation"] = map[string]any{"policy": "human", "challenge": nil, "satisfied_by": []any{evtID}}
+		}},
+		"human without evidence": {"records/approval", func(d map[string]any) {
+			d["confirmation"] = map[string]any{"policy": "human", "challenge": chlID, "satisfied_by": []any{}}
+		}},
+		"review without evidence": {"records/approval", func(d map[string]any) {
+			d["confirmation"] = map[string]any{"policy": "independent_review", "challenge": nil, "satisfied_by": []any{}}
+		}},
+		"owed input revision": {"records/owed-input", func(d map[string]any) { d["revision"] = 0 }},
 	}
 	for name, c := range cases {
 		d := authorityDocs()[c.schema]
@@ -132,6 +162,24 @@ func TestAuthorityRoundTrip(t *testing.T) {
 		}
 		if !reflect.DeepEqual(a, b) {
 			t.Errorf("%s: round trip changed the document:\nin  %s\nout %s", schema, in, out)
+		}
+	}
+}
+
+// Version-only, digest-only and both-present references are all accepted,
+// as is an unconfirmed (policy none) approval.
+func TestExactStateForms(t *testing.T) {
+	for name, obj := range map[string]map[string]any{
+		"version only": {"type": "profile", "id": prjID, "version": 0, "digest": nil},
+		"digest only":  {"type": "profile", "id": prjID, "version": nil, "digest": dgA},
+		"both":         {"type": "profile", "id": prjID, "version": 3, "digest": dgA},
+	} {
+		d := authorityDocs()["records/approval"]
+		d["object"] = obj
+		d["confirmation"] = map[string]any{"policy": "none", "challenge": nil, "satisfied_by": []any{}}
+		b, _ := json.Marshal(d)
+		if err := contract.Validate("records/approval", b); err != nil {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 }

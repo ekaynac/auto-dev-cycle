@@ -24,6 +24,7 @@ const (
 	ApprovalConfirmationPolicyHuman             ApprovalConfirmationPolicy = "human"
 )
 
+// ApprovalConfirmation: A confirmed policy records its evidence: human needs its consumed challenge, and both human and independent_review name the events that satisfied them. Whether that evidence applies is internal/authority's check.
 type ApprovalConfirmation struct {
 	Policy    ApprovalConfirmationPolicy `json:"policy"`
 	Challenge *ChallengeID               `json:"challenge"`
@@ -43,8 +44,9 @@ type Approval struct {
 	Object        ObjectRef     `json:"object"`
 	ExpectedState ExpectedState `json:"expected_state"`
 	// The action's parameters; one schema per action, from the action registry.
-	Scope        json.RawMessage      `json:"scope"`
-	Grant        *GrantID             `json:"grant"`
+	Scope json.RawMessage `json:"scope"`
+	Grant *GrantID        `json:"grant"`
+	// A confirmed policy records its evidence: human needs its consumed challenge, and both human and independent_review name the events that satisfied them. Whether that evidence applies is internal/authority's check.
 	Confirmation ApprovalConfirmation `json:"confirmation"`
 	// The owed inputs this approval answers, derived from an input.answer scope; an approval that merely mentions an id answers nothing.
 	Answers    []OwedInputID `json:"answers"`
@@ -75,7 +77,7 @@ const (
 	ChangeClassIntegrationChangeTopology        ChangeClass = "integration.change_topology"
 )
 
-// ObjectRef: The exact object the action applies to.
+// ObjectRef: The exact object the action applies to: its version, its digest, or both, never neither (version 0: the object does not exist yet).
 type ObjectRef struct {
 	Type    Name    `json:"type"`
 	ID      string  `json:"id"`
@@ -83,7 +85,7 @@ type ObjectRef struct {
 	Digest  *Digest `json:"digest"`
 }
 
-// ExpectedState: The object state the action was decided against: its version (seq of its last event) or its content digest.
+// ExpectedState: The object state the action was decided against: its version (seq of its last event), its content digest, or both, never neither.
 type ExpectedState struct {
 	Version *int64  `json:"version"`
 	Digest  *Digest `json:"digest"`
