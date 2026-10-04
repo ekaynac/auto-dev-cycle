@@ -54,7 +54,7 @@ func ParseReason(code string) (Reason, error) {
 // (registered and not deprecated); it backs the generated types, the contract
 // runtime and ParseReason alike.
 func checkReason(code string, writing bool) error {
-	reg, err := Load()
+	reg, err := authoritative()
 	if err != nil {
 		return fmt.Errorf("reason vocabulary: %w", err)
 	}
@@ -92,8 +92,10 @@ var (
 	errLd  error
 )
 
-// Load returns the embedded registry, loaded and checked once.
-func Load() (*Registry, error) {
+// authoritative is the embedded registry, loaded and checked once. It backs
+// every reason decision and never leaves this package: changing what Load
+// returns cannot change a decision.
+func authoritative() (*Registry, error) {
 	once.Do(func() {
 		paths, err := schemas.VocabPaths()
 		if err != nil {
@@ -103,6 +105,29 @@ func Load() (*Registry, error) {
 		loaded, errLd = loadFrom(schemas.FS(), paths)
 	})
 	return loaded, errLd
+}
+
+// Load returns a deep copy of the embedded registry, for reading.
+func Load() (*Registry, error) {
+	reg, err := authoritative()
+	if err != nil {
+		return nil, err
+	}
+	return reg.clone()
+}
+
+// clone deep-copies the registry (through JSON: every entry is a contract
+// type, so no pointer or slice is shared with the copy).
+func (reg *Registry) clone() (*Registry, error) {
+	b, err := json.Marshal(reg)
+	if err != nil {
+		return nil, fmt.Errorf("vocabulary copy: %w", err)
+	}
+	var c Registry
+	if err := json.Unmarshal(b, &c); err != nil {
+		return nil, fmt.Errorf("vocabulary copy: %w", err)
+	}
+	return &c, nil
 }
 
 // loadFrom reads and cross-checks the registries at paths in fsys.

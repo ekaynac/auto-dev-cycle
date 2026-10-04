@@ -99,6 +99,11 @@ func TestRefusesShapesOutsideTheGrammar(t *testing.T) {
 		{"dispatch test with an integer type", scopeX + "," + dispatchHead + `{"if":{"properties":{"k":{"const":"x","type":"integer"}},"required":["k"]},"then":{"properties":{"p":{"$ref":"#/$defs/X"}}}}]}`, "against one string const"},
 		{"propertyNames integer with a string enum", `"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"type":"integer","enum":["a"]}}`, "propertyNames must be a string schema"},
 		{"propertyNames with a non-string enum", `"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"enum":[1]}}`, "propertyNames must be a string schema"},
+		// Astra #28 round 2: a reason code is never a map key, and has one name.
+		{"reason map key", `"M":{"type":"object","propertyNames":{"type":"string","format":"adc-reason"},"additionalProperties":{"type":"string"}}`, "cannot be a map key"},
+		{"reason map key by $ref", `"ReasonCode":{"type":"string","format":"adc-reason"},"M":{"type":"object","propertyNames":{"$ref":"#/$defs/ReasonCode"},"additionalProperties":{"type":"string"}}`, "cannot be a map key"},
+		{"reason map key by a $ref chain", `"ReasonCode":{"type":"string","format":"adc-reason"},"R2":{"$ref":"#/$defs/ReasonCode"},"M":{"type":"object","propertyNames":{"$ref":"#/$defs/R2"},"additionalProperties":{"type":"string"}}`, "cannot be a map key"},
+		{"reason under another name", `"Why":{"type":"string","format":"adc-reason"}`, "declared once, as ReasonCode"},
 		// Astra #28: a reason code is a $defs declaration only.
 		{"inline reason code", `"A":{"type":"object","additionalProperties":false,"required":["r"],"properties":{"r":{"type":"string","format":"adc-reason"}}}`, "must be a $defs declaration"},
 		{"refined reason code", `"S":{"type":"string"},"R":{"$ref":"#/$defs/S","format":"adc-reason"}`, "must be a $defs declaration"},
@@ -279,8 +284,8 @@ const supported = `
 	"NA":{"oneOf":[{"type":"null"},{"type":"array","items":{"$ref":"#/$defs/NA"}}]},
 	"É":{"type":"array","items":{"$ref":"#/$defs/É"}},
 	"MTree":{"type":"object","additionalProperties":{"$ref":"#/$defs/MTree"}},
-	"Why":{"type":"string","format":"adc-reason","pattern":"^[a-z_]+$"},
-	"Rsn":{"type":"object","additionalProperties":false,"required":["r"],"properties":{"r":{"$ref":"#/$defs/Why"}}},
+	"ReasonCode":{"type":"string","format":"adc-reason","pattern":"^[a-z_]+$"},
+	"Rsn":{"type":"object","additionalProperties":false,"required":["r"],"properties":{"r":{"$ref":"#/$defs/ReasonCode"}}},
 	"Str":{"type":"string"},
 	"Ref":{"$ref":"#/$defs/Str","pattern":"^a","minLength":1},
 	"Cond":{"type":"object","additionalProperties":false,"required":["o","d","v"],
@@ -302,6 +307,7 @@ import (
 	"os"
 
 	"example.com/gen/internal/vocab"
+	foreign "example.com/gen/tools/probe"
 	"example.com/gen/types"
 )
 
@@ -379,11 +385,14 @@ func main() {
 
 	// A reason code (format adc-reason) is opaque and checked on every read
 	// and write; without a check installed every reason is refused.
-	if _, err := json.Marshal(types.Rsn{R: types.WhyOf("ok")}); err == nil {
+	if _, err := json.Marshal(types.Rsn{R: types.ReasonCodeOf("ok")}); err == nil {
 		fail("a reason was written with no check installed")
 	}
 	if err := types.SetReasonCheck(func(string, bool) error { return nil }); err == nil {
 		fail("package main installed the reason check")
+	}
+	if err := foreign.Install(); err == nil {
+		fail("a package elsewhere ending in /internal/vocab installed the reason check")
 	}
 	if err := vocab.Install(func(code string, writing bool) error {
 		if code == "bad" || (writing && code == "old") {
@@ -397,7 +406,7 @@ func main() {
 	same[types.Rsn](` + "`" + `{"r":"ok"}` + "`" + `)
 	same[types.Rsn](` + "`" + `{"r":"old"}` + "`" + `[:0] + ` + "`" + `{"r":"ok"}` + "`" + `)
 	refused[types.Rsn](` + "`" + `{"r":"bad"}` + "`" + `)
-	if _, err := json.Marshal(types.Rsn{R: types.WhyOf("bad")}); err == nil {
+	if _, err := json.Marshal(types.Rsn{R: types.ReasonCodeOf("bad")}); err == nil {
 		fail("a refused reason was written")
 	}
 	if _, err := json.Marshal(types.Rsn{}); err == nil {
@@ -432,7 +441,7 @@ func main() {
 // TestGeneratedCodeCompilesAndRoundTrips is the behavioural check of the
 // supported grammar: the output is built and run, not inspected as text.
 func TestGeneratedCodeCompilesAndRoundTrips(t *testing.T) {
-	out, err := Generate(one(supported), "types")
+	out, err := GenerateFor(one(supported), "types", "example.com/gen/internal/vocab")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,10 +453,15 @@ func TestGeneratedCodeCompilesAndRoundTrips(t *testing.T) {
 	files := map[string][]byte{
 		"go.mod":  []byte("module example.com/gen\n\ngo 1.22\n"),
 		"main.go": []byte(roundtrip),
-		// Only a package whose path ends in /internal/vocab may install the
-		// reason check, once.
+		// Only the vocabulary package (exactly the path given to
+		// GenerateFor) may install the reason check, once; a package with the
+		// same suffix elsewhere is refused.
 		"internal/vocab/vocab.go": []byte("package vocab\n\nimport \"example.com/gen/types\"\n\n" +
 			"func Install(f func(string, bool) error) error {\n\tif err := types.SetReasonCheck(f); err != nil {\n\t\treturn err\n\t}\n\treturn types.SetReasonCheck(f)\n}\n"),
+		"tools/probe/probe.go": []byte("package probe\n\nimport v \"example.com/gen/tools/probe/internal/vocab\"\n\n" +
+			"func Install() error { return v.Install() }\n"),
+		"tools/probe/internal/vocab/vocab.go": []byte("package vocab\n\nimport \"example.com/gen/types\"\n\n" +
+			"func Install() error { return types.SetReasonCheck(func(string, bool) error { return nil }) }\n"),
 	}
 	for name, src := range out {
 		files[filepath.Join("types", name)] = src

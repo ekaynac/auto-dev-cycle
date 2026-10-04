@@ -143,13 +143,17 @@ func checkTime(s string) error {
 // document with a reason field can never pass unchecked.
 var reasonCheck atomic.Pointer[func(code string, writing bool) error]
 
+// reasonCheckOwner is the import path of the only package that may install
+// the reason check.
+const reasonCheckOwner = "github.com/ekaynac/auto-dev-cycle/internal/vocab"
+
 // SetReasonCheck installs the vocabulary's reason check. Only the vocabulary
-// package (an import path ending in /internal/vocab) may call it, once; any
-// other caller, direct or indirect, and a second installation are refused.
+// package (exactly reasonCheckOwner) may call it, once; any other caller,
+// direct or indirect, and a second installation are refused.
 func SetReasonCheck(check func(code string, writing bool) error) error {
 	pc, _, _, ok := runtime.Caller(1)
 	fn := runtime.FuncForPC(pc)
-	if !ok || fn == nil || !strings.HasSuffix(funcPackage(fn.Name()), "/internal/vocab") {
+	if !ok || fn == nil || !ownsReasonCheck(fn.Name()) {
 		return errors.New("only the vocabulary package installs the reason check")
 	}
 	if check == nil || !reasonCheck.CompareAndSwap(nil, &check) {
@@ -157,6 +161,11 @@ func SetReasonCheck(check func(code string, writing bool) error) error {
 	}
 	return nil
 }
+
+// ownsReasonCheck reports whether the runtime function name belongs to
+// exactly the reason check's owner package (never a package elsewhere with
+// the same name or suffix).
+func ownsReasonCheck(fn string) bool { return funcPackage(fn) == reasonCheckOwner }
 
 // funcPackage is the import path of a runtime function name.
 func funcPackage(name string) string {

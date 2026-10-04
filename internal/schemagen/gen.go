@@ -26,10 +26,25 @@ import (
 
 const maxSafeInt = 9007199254740991 // 2^53-1: integers stay exact in JavaScript
 
+// VocabPackage is the import path of the only package that may install the
+// reason check in this module's generated code.
+const VocabPackage = "github.com/ekaynac/auto-dev-cycle/internal/vocab"
+
+// ReasonTypeName is the one name a reason code declaration may have, so the
+// generated unchecked constructor is always ReasonCodeOf (which the
+// vocabulary check guards).
+const ReasonTypeName = "ReasonCode"
+
 // Generate returns one Go source file per schema file (keyed by output file
-// name) in package pkg. files maps schema paths ("records/receipt.json") to
-// their bytes.
+// name) in package pkg, for this module (GenerateFor with VocabPackage).
+// files maps schema paths ("records/receipt.json") to their bytes.
 func Generate(files map[string][]byte, pkg string) (map[string][]byte, error) {
+	return GenerateFor(files, pkg, VocabPackage)
+}
+
+// GenerateFor is Generate for a module whose vocabulary package (the only
+// installer of the reason check) has the import path vocabPkg.
+func GenerateFor(files map[string][]byte, pkg, vocabPkg string) (map[string][]byte, error) {
 	g := &gen{
 		roots: map[string]*Node{}, names: map[string]string{}, taken: map[string]string{},
 		envelopes: map[string]bool{}, isRoot: map[*Node]bool{},
@@ -108,7 +123,7 @@ func Generate(files map[string][]byte, pkg string) (map[string][]byte, error) {
 		}
 		out[name] = src
 	}
-	helpers, err := format.Source([]byte(fmt.Sprintf(helpersSrc, pkg)))
+	helpers, err := format.Source([]byte(fmt.Sprintf(helpersSrc, pkg, vocabPkg)))
 	if err != nil {
 		return nil, err
 	}
@@ -391,6 +406,10 @@ func decodeStrict(b []byte, v any) error {
 // registered) or written (writing true: registered and not deprecated).
 var reasonCheck atomic.Pointer[func(code string, writing bool) error]
 
+// reasonCheckOwner is the import path of the only package that may install
+// the reason check.
+const reasonCheckOwner = %[2]q
+
 // SetReasonCheck installs the reason check. Only the vocabulary package (an
 // import path ending in /internal/vocab) may call it, once; any other caller,
 // direct or indirect, and a second installation are refused. Until it is
@@ -398,7 +417,7 @@ var reasonCheck atomic.Pointer[func(code string, writing bool) error]
 func SetReasonCheck(check func(code string, writing bool) error) error {
 	pc, _, _, ok := runtime.Caller(1)
 	fn := runtime.FuncForPC(pc)
-	if !ok || fn == nil || !strings.HasSuffix(funcPackage(fn.Name()), "/internal/vocab") {
+	if !ok || fn == nil || !ownsReasonCheck(fn.Name()) {
 		return errors.New("only the vocabulary package installs the reason check")
 	}
 	if check == nil || !reasonCheck.CompareAndSwap(nil, &check) {
@@ -406,6 +425,11 @@ func SetReasonCheck(check func(code string, writing bool) error) error {
 	}
 	return nil
 }
+
+// ownsReasonCheck reports whether the runtime function name belongs to
+// exactly the reason check's owner package (never a package elsewhere with
+// the same name or suffix).
+func ownsReasonCheck(fn string) bool { return funcPackage(fn) == reasonCheckOwner }
 
 // funcPackage is the import path of a runtime function name
 // (example.com/x/internal/vocab.init.0 → example.com/x/internal/vocab).
@@ -443,6 +467,10 @@ func (g *gen) declare(name string, n *Node) {
 			g.p("type %s = %s\n", name, t)
 		}
 	case isReasonString(n):
+		if name != ReasonTypeName {
+			g.fail("$defs/"+name, "a reason code (format adc-reason) is declared once, as "+ReasonTypeName)
+			return
+		}
 		g.reasonType(name, n)
 	default:
 		t := g.typeOf(n, name+"Value", name)
@@ -654,6 +682,8 @@ func (g *gen) keyNames(n *Node, where string) {
 	}
 	t, e := n.Get("type"), n.Get("enum")
 	switch {
+	case isReasonString(n): // n is already resolved through any $ref chain
+		g.fail(where, "a reason code cannot be a map key (its keys would be unchecked strings)")
 	case t != nil && t.Str != "string", e != nil && !isStringEnum(n), t == nil && e == nil:
 		g.fail(where, "propertyNames must be a string schema")
 	}

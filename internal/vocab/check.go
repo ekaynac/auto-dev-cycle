@@ -89,7 +89,7 @@ func (reg *Registry) CheckSource(root string) ([]Finding, error) {
 	}
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
-			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports,
+			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports | packages.NeedModule,
 		Dir: absRoot,
 	}
 	pkgs, err := packages.Load(cfg, "./...")
@@ -112,13 +112,24 @@ func (reg *Registry) CheckSource(root string) ([]Finding, error) {
 		sort.Strings(loadErrs)
 		return nil, fmt.Errorf("packages under %s do not type-check:\n  %s", root, strings.Join(loadErrs, "\n  "))
 	}
+	mod := ""
+	for _, pkg := range pkgs {
+		if pkg.Module != nil && pkg.Module.Main {
+			mod = pkg.Module.Path
+			break
+		}
+	}
+	if mod == "" {
+		return nil, fmt.Errorf("no main module under %s", root)
+	}
+	mp := modPaths{vocab: mod + "/internal/vocab", gen: mod + "/gen/go/types", contract: mod + "/internal/contract"}
 	var found []located
 	for _, pkg := range pkgs {
 		if skipped(absRoot, pkg) {
 			continue
 		}
 		for _, file := range pkg.Syntax {
-			for _, f := range scan(pkg.PkgPath, pkg.TypesInfo, file) {
+			for _, f := range scan(pkg.PkgPath, mp, pkg.TypesInfo, file) {
 				found = append(found, locate(absRoot, pkg, f.pos, f.problem))
 			}
 		}
@@ -145,13 +156,21 @@ type raw struct {
 	problem string
 }
 
-// isVocabPkg: the vocabulary package, by import path.
-func isVocabPkg(path string) bool { return strings.HasSuffix(path, "/internal/vocab") }
+// modPaths are the exact import paths the rules trust or guard, derived from
+// the scanned module: a package elsewhere with the same name or suffix is
+// neither trusted nor guarded.
+type modPaths struct{ vocab, gen, contract string }
+
+func (m modPaths) isVocab(p *types.Package) bool { return p != nil && p.Path() == m.vocab }
+func (m modPaths) isGen(p *types.Package) bool   { return p != nil && p.Path() == m.gen }
+func (m modPaths) isContract(p *types.Package) bool {
+	return p != nil && p.Path() == m.contract
+}
 
 // scan applies the rules to one file of the package at pkgPath.
-func scan(pkgPath string, info *types.Info, file *ast.File) []raw {
+func scan(pkgPath string, mp modPaths, info *types.Info, file *ast.File) []raw {
 	var out []raw
-	trusted := isVocabPkg(pkgPath)
+	trusted := pkgPath == mp.vocab
 	// Identifiers in call position, to tell a call from a function value.
 	called := map[*ast.Ident]bool{}
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -174,11 +193,11 @@ func scan(pkgPath string, info *types.Info, file *ast.File) []raw {
 			}
 			switch {
 			case trusted:
-			case f.Name() == "ReasonCodeOf" && isGenPkg(f.Pkg()):
+			case f.Name() == "ReasonCodeOf" && mp.isGen(f.Pkg()):
 				out = append(out, raw{x.Pos(), "types.ReasonCodeOf builds an unchecked reason; use a generated vocab.Reason* value or vocab.ParseReason"})
-			case f.Name() == "SetReasonCheck" && (isGenPkg(f.Pkg()) || f.Pkg().Name() == "contract"):
+			case f.Name() == "SetReasonCheck" && (mp.isGen(f.Pkg()) || mp.isContract(f.Pkg())):
 				out = append(out, raw{x.Pos(), "only the vocabulary package installs the reason check"})
-			case f.Name() == "ParseReason" && isVocabPkg(f.Pkg().Path()) && !called[x]:
+			case f.Name() == "ParseReason" && mp.isVocab(f.Pkg()) && !called[x]:
 				out = append(out, raw{x.Pos(), "ParseReason used as a function value; call it directly"})
 			}
 		case *ast.CallExpr:
@@ -186,24 +205,36 @@ func scan(pkgPath string, info *types.Info, file *ast.File) []raw {
 			if f == nil || f.Pkg() == nil {
 				return true
 			}
-			if f.Name() == "ParseReason" && isVocabPkg(f.Pkg().Path()) && len(x.Args) == 1 {
+			if f.Name() == "ParseReason" && mp.isVocab(f.Pkg()) && len(x.Args) == 1 {
 				if tv, ok := info.Types[x.Args[0]]; ok && tv.Value != nil {
 					out = append(out, raw{x.Pos(), fmt.Sprintf("ParseReason(%s) with a constant; use the generated vocab.Reason%s value", tv.Value, GoName(strings.Trim(tv.Value.String(), `"`)))})
 				}
 			}
 		case *ast.AssignStmt:
 			for _, l := range x.Lhs {
-				if v := generatedValue(info, l); v != nil {
+				if v := generatedValue(mp, info, l); v != nil {
 					out = append(out, raw{l.Pos(), fmt.Sprintf("assignment to the generated reason %s, which is immutable", v.Name())})
 				}
 			}
+		case *ast.RangeStmt:
+			// for k, v = range …: both targets are assigned.
+			if x.Tok == token.ASSIGN {
+				for _, l := range []ast.Expr{x.Key, x.Value} {
+					if l == nil {
+						continue
+					}
+					if v := generatedValue(mp, info, l); v != nil {
+						out = append(out, raw{l.Pos(), fmt.Sprintf("assignment to the generated reason %s, which is immutable", v.Name())})
+					}
+				}
+			}
 		case *ast.IncDecStmt:
-			if v := generatedValue(info, x.X); v != nil {
+			if v := generatedValue(mp, info, x.X); v != nil {
 				out = append(out, raw{x.Pos(), fmt.Sprintf("assignment to the generated reason %s, which is immutable", v.Name())})
 			}
 		case *ast.UnaryExpr:
 			if x.Op == token.AND {
-				if v := generatedValue(info, x.X); v != nil {
+				if v := generatedValue(mp, info, x.X); v != nil {
 					out = append(out, raw{x.Pos(), fmt.Sprintf("the address of the generated reason %s, which is immutable", v.Name())})
 				}
 			}
@@ -211,7 +242,7 @@ func scan(pkgPath string, info *types.Info, file *ast.File) []raw {
 			// v.M with a pointer receiver takes &v implicitly (a call or a
 			// method value alike).
 			if sel, ok := info.Selections[x]; ok && sel.Kind() == types.MethodVal {
-				if v := generatedValue(info, x.X); v != nil {
+				if v := generatedValue(mp, info, x.X); v != nil {
 					if sig, ok := sel.Obj().Type().(*types.Signature); ok && sig.Recv() != nil {
 						if _, ptr := sig.Recv().Type().(*types.Pointer); ptr {
 							out = append(out, raw{x.Pos(), fmt.Sprintf("pointer method %s on the generated reason %s, which is immutable", x.Sel.Name, v.Name())})
@@ -244,7 +275,7 @@ func callee(info *types.Info, call *ast.CallExpr) *types.Func {
 }
 
 // generatedValue returns the generated vocab.Reason* variable e names, or nil.
-func generatedValue(info *types.Info, e ast.Expr) *types.Var {
+func generatedValue(mp modPaths, info *types.Info, e ast.Expr) *types.Var {
 	var id *ast.Ident
 	switch x := ast.Unparen(e).(type) {
 	case *ast.Ident:
@@ -255,18 +286,13 @@ func generatedValue(info *types.Info, e ast.Expr) *types.Var {
 		return nil
 	}
 	v, ok := info.Uses[id].(*types.Var)
-	if !ok || v.IsField() || v.Pkg() == nil || !isVocabPkg(v.Pkg().Path()) || !strings.HasPrefix(v.Name(), "Reason") {
+	if !ok || v.IsField() || !mp.isVocab(v.Pkg()) || !strings.HasPrefix(v.Name(), "Reason") {
 		return nil
 	}
 	if v.Parent() != v.Pkg().Scope() { // package-level only
 		return nil
 	}
 	return v
-}
-
-// isGenPkg: the generated contract types package (gen/go/types).
-func isGenPkg(p *types.Package) bool {
-	return p.Name() == "types" && strings.HasSuffix(p.Path(), "gen/go/types")
 }
 
 // skipped reports a package that lives under one of skipDirs.

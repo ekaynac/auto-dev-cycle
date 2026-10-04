@@ -243,18 +243,47 @@ func (r *ReasonCode) UnmarshalText(b []byte) error { r.code = string(b); return 
 
 func (r ReasonCode) String() string { return r.code }
 `)
-	write(t, root, "contract/contract.go", "package contract\n\nfunc SetReasonCheck(func(string, bool) error) error { return nil }\n")
+	write(t, root, "internal/contract/contract.go", "package contract\n\nfunc SetReasonCheck(func(string, bool) error) error { return nil }\n")
 	write(t, root, "other/vocab/vocab.go", `package vocab
 
 import "example.com/x/gen/go/types"
 
 var Smuggled = types.ReasonCodeOf("typo_namesake")
 `)
+	// Astra #28 round 2: the same suffix elsewhere is not the vocabulary,
+	// and an unrelated contract package is not the contract runtime.
+	write(t, root, "tools/hookprobe/internal/vocab/vocab.go", `package vocab
+
+import "example.com/x/gen/go/types"
+
+var Smuggled = types.ReasonCodeOf("typo_foreign_vocab")
+`)
+	write(t, root, "tools/foreign/contract/contract.go", "package contract\n\nfunc SetReasonCheck() {}\n")
+	write(t, root, "b/b.go", `package b
+
+import (
+	"example.com/x/internal/vocab"
+	"example.com/x/tools/foreign/contract"
+)
+
+func use() {
+	contract.SetReasonCheck()
+	for _, vocab.ReasonStaleAttempt = range []vocab.Reason{vocab.ReasonQuotaExhausted} {
+	}
+	m := map[vocab.Reason]int{}
+	for vocab.ReasonQuotaExhausted = range m {
+	}
+	var v vocab.Reason
+	for _, v = range []vocab.Reason{vocab.ReasonStaleAttempt} {
+	}
+	_ = v
+}
+`)
 	write(t, root, "a/a.go", `package a
 
 import (
-	"example.com/x/contract"
 	"example.com/x/gen/go/types"
+	"example.com/x/internal/contract"
 	"example.com/x/internal/vocab"
 )
 
@@ -279,12 +308,17 @@ func mutate() {
 		"a/a.go:15:6: pointer method UnmarshalText on the generated reason ReasonStaleAttempt",
 		"a/a.go:16:7: pointer method UnmarshalText on the generated reason ReasonQuotaExhausted",
 		"other/vocab/vocab.go:5:22: types.ReasonCodeOf builds an unchecked reason",
+		"tools/hookprobe/internal/vocab/vocab.go:5:22: types.ReasonCodeOf builds an unchecked reason",
+		"b/b.go:10:9: assignment to the generated reason ReasonStaleAttempt",
+		"b/b.go:13:6: assignment to the generated reason ReasonQuotaExhausted",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
 	}
-	if n := strings.Count(got, "\n") + 1; n != 7 {
-		t.Errorf("want 7 findings (String is a value method), got %d:\n%s", n, got)
+	// String is a value method, ranging into a local is fine, and the
+	// foreign contract namesake is not the installer.
+	if n := strings.Count(got, "\n") + 1; n != 10 {
+		t.Errorf("want 10 findings, got %d:\n%s", n, got)
 	}
 }

@@ -64,17 +64,8 @@ func TestRecordReasonsAreCheckedHoweverSerialised(t *testing.T) {
 // A deprecated reason stays readable in a historical record and result, and
 // is refused whenever one is written.
 func TestDeprecatedReasonsAreReadButNotWritten(t *testing.T) {
-	reg, err := vocab.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
 	const code = "completed_clean"
-	orig := reg.Reasons[code]
-	dep := orig
-	since := "0.2.0"
-	dep.Deprecated = &since
-	reg.Reasons[code] = dep
-	t.Cleanup(func() { reg.Reasons[code] = orig })
+	t.Cleanup(vocab.DeprecateForTest(code, "0.2.0"))
 
 	r, err := contract.Decode[types.Receipt]("records/receipt", []byte(receipt))
 	if err != nil {
@@ -184,5 +175,36 @@ func TestNullAndMissingReasonsAreRefused(t *testing.T) {
 	var direct types.Receipt
 	if err := json.Unmarshal([]byte(nullPredicate), &direct); err == nil {
 		t.Error("plain json.Unmarshal read a null predicate reason")
+	}
+}
+
+// Astra #28 round 2: Load returns a copy; changing it changes no decision.
+func TestLoadedRegistryIsACopy(t *testing.T) {
+	reg, err := vocab.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := reg.Reasons["completed_clean"]
+	entry.Code = "typo_mutated_registry"
+	reg.Reasons["typo_mutated_registry"] = entry
+	if _, err := vocab.ParseReason("typo_mutated_registry"); err == nil {
+		t.Fatal("adding to a loaded registry registered a reason")
+	}
+	since := types.Semver("0.2.0")
+	dep := reg.Reasons["stale_attempt"]
+	dep.Deprecated = &since
+	reg.Reasons["stale_attempt"] = dep
+	if _, err := json.Marshal(vocab.ReasonStaleAttempt); err != nil {
+		t.Fatalf("deprecating in a loaded registry changed the writer check: %v", err)
+	}
+	if x := reg.Reasons["completed_clean"]; len(x.Outcomes) > 0 {
+		x.Outcomes[0] = "failed"
+		again, err := vocab.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again.Reasons["completed_clean"].Outcomes[0] == "failed" {
+			t.Fatal("a nested slice is shared between copies")
+		}
 	}
 }
