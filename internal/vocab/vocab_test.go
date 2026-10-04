@@ -4,13 +4,25 @@ package vocab
 
 import (
 	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/schemas"
 )
+
+// actionsYAML is the embedded action registry, which the loader needs whole
+// (every change class with its default).
+var actionsYAML = func() string {
+	b, err := fs.ReadFile(schemas.FS(), "vocab/actions.yaml")
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}()
 
 func mustLoad(t *testing.T) *Registry {
 	t.Helper()
@@ -143,9 +155,10 @@ func TestLoaderRefuses(t *testing.T) {
 			fsys := fstest.MapFS{
 				"vocab/outcomes.yaml": {Data: []byte(outcomesYAML)},
 				"vocab/holds.yaml":    {Data: []byte(holdsYAML)},
+				"vocab/actions.yaml":  {Data: []byte(actionsYAML)},
 				"vocab/reasons.yaml":  {Data: []byte(c.reasons)},
 			}
-			_, err := loadFrom(fsys, []string{"vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"})
+			_, err := loadFrom(fsys, []string{"vocab/actions.yaml", "vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"})
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("want an error containing %q, got %v", c.want, err)
 			}
@@ -160,9 +173,10 @@ func TestLoaderRefusesDuplicateOutcome(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/outcomes.yaml": {Data: []byte(dup)},
 		"vocab/holds.yaml":    {Data: []byte(holdsYAML)},
+		"vocab/actions.yaml":  {Data: []byte(actionsYAML)},
 		"vocab/reasons.yaml":  {Data: []byte("schema: adc.vocab.reasons/v1\nreasons:\n  - {code: r1, outcomes: [failed], domain: ops, description: d, introduced: 0.1.0, deprecated: null, source: \"02\"}\n")},
 	}
-	_, err := loadFrom(fsys, []string{"vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"})
+	_, err := loadFrom(fsys, []string{"vocab/actions.yaml", "vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"})
 	if err == nil || !strings.Contains(err.Error(), "outcome found registered twice") {
 		t.Fatalf("want a duplicate-outcome error, got %v", err)
 	}
@@ -177,13 +191,14 @@ func TestLoaderNeedsEachKindOnce(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/outcomes.yaml": {Data: []byte(outcomesYAML)},
 		"vocab/holds.yaml":    {Data: []byte(holdsYAML)},
+		"vocab/actions.yaml":  {Data: []byte(actionsYAML)},
 		"vocab/reasons.yaml":  {Data: []byte(reasonsYAML)},
 		"vocab/more.yaml":     {Data: []byte(reasonsYAML)},
 	}
-	if _, err := loadFrom(fsys, []string{"vocab/holds.yaml", "vocab/outcomes.yaml"}); err == nil || !strings.Contains(err.Error(), "exactly one outcomes, reasons and holds registry") {
+	if _, err := loadFrom(fsys, []string{"vocab/actions.yaml", "vocab/holds.yaml", "vocab/outcomes.yaml"}); err == nil || !strings.Contains(err.Error(), "exactly one outcomes, reasons, holds and actions registry") {
 		t.Errorf("a missing reasons registry: got %v", err)
 	}
-	if _, err := loadFrom(fsys, []string{"vocab/holds.yaml", "vocab/more.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"}); err == nil || !strings.Contains(err.Error(), "a second") {
+	if _, err := loadFrom(fsys, []string{"vocab/actions.yaml", "vocab/holds.yaml", "vocab/more.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"}); err == nil || !strings.Contains(err.Error(), "a second") {
 		t.Errorf("a second reasons registry: got %v", err)
 	}
 }
@@ -193,9 +208,10 @@ func TestCheckRefusesDeprecatedReasons(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/outcomes.yaml": {Data: []byte(outcomesYAML)},
 		"vocab/holds.yaml":    {Data: []byte(holdsYAML)},
+		"vocab/actions.yaml":  {Data: []byte(actionsYAML)},
 		"vocab/reasons.yaml":  {Data: []byte(reasonsYAML)},
 	}
-	reg, err := loadFrom(fsys, []string{"vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"})
+	reg, err := loadFrom(fsys, []string{"vocab/actions.yaml", "vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,9 +230,10 @@ func TestLoaderRefusesDuplicateHold(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/outcomes.yaml": {Data: []byte(outcomesYAML)},
 		"vocab/holds.yaml":    {Data: []byte(holdsYAML + "  - {hold: h1, signal: time, signal_detail: y, owner: system, page_after: null, escalate_to: null}\n")},
+		"vocab/actions.yaml":  {Data: []byte(actionsYAML)},
 		"vocab/reasons.yaml":  {Data: []byte(reasonsYAML)},
 	}
-	_, err := loadFrom(fsys, []string{"vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"})
+	_, err := loadFrom(fsys, []string{"vocab/actions.yaml", "vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"})
 	if err == nil || !strings.Contains(err.Error(), "hold h1 registered twice") {
 		t.Fatalf("want a duplicate-hold error, got %v", err)
 	}

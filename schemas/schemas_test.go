@@ -44,7 +44,7 @@ func TestEmbeddedInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"}; !reflect.DeepEqual(vocab, want) {
+	if want := []string{"vocab/actions.yaml", "vocab/holds.yaml", "vocab/outcomes.yaml", "vocab/reasons.yaml"}; !reflect.DeepEqual(vocab, want) {
 		t.Fatalf("embedded registries = %v, want %v", vocab, want)
 	}
 	a, _ := SetDigest()
