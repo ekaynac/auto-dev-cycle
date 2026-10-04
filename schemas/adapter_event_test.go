@@ -125,29 +125,69 @@ func TestAdapterEventRoundTrip(t *testing.T) {
 }
 
 // Astra #52: adapter turns are the turns the ContextManifest records count,
-// so a valid notification's turn is always valid manifest evidence.
+// so a valid notification's turn is always valid manifest evidence: every
+// turn field of manifest-delivery and manifest-finalized has the adapter's
+// bounds, starting at 1.
 func TestAdapterTurnsMatchManifests(t *testing.T) {
-	bounds := func(path string, walk func(doc map[string]any) map[string]any) [2]float64 {
+	load := func(path string) any {
 		b, err := fs.ReadFile(schemas.FS(), path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var doc map[string]any
+		var doc any
 		if err := json.Unmarshal(b, &doc); err != nil {
 			t.Fatal(err)
 		}
-		n := walk(doc)
-		return [2]float64{n["minimum"].(float64), n["maximum"].(float64)}
+		return doc
 	}
-	get := func(m map[string]any, keys ...string) map[string]any {
-		for _, k := range keys {
-			m = m[k].(map[string]any)
+	// turnBounds collects the integer bounds of every property named turn
+	// (directly, or in a nullable oneOf).
+	var turnBounds func(v any, out *[][2]float64)
+	integer := func(n map[string]any) ([2]float64, bool) {
+		lo, ok1 := n["minimum"].(float64)
+		hi, ok2 := n["maximum"].(float64)
+		return [2]float64{lo, hi}, ok1 && ok2
+	}
+	turnBounds = func(v any, out *[][2]float64) {
+		switch x := v.(type) {
+		case map[string]any:
+			if props, ok := x["properties"].(map[string]any); ok {
+				if turn, ok := props["turn"].(map[string]any); ok {
+					if b, ok := integer(turn); ok {
+						*out = append(*out, b)
+					}
+					if branches, ok := turn["oneOf"].([]any); ok {
+						for _, br := range branches {
+							if b, ok := integer(br.(map[string]any)); ok {
+								*out = append(*out, b)
+							}
+						}
+					}
+				}
+			}
+			for _, y := range x {
+				turnBounds(y, out)
+			}
+		case []any:
+			for _, y := range x {
+				turnBounds(y, out)
+			}
 		}
-		return m
 	}
-	adapter := bounds("adapter/event.json", func(d map[string]any) map[string]any { return get(d, "$defs", "AdapterTurn") })
-	delivery := bounds("records/manifest-delivery.json", func(d map[string]any) map[string]any { return get(d, "properties", "turn") })
-	if adapter != delivery || adapter[0] != 1 {
-		t.Fatalf("adapter turns %v, manifest delivery turns %v", adapter, delivery)
+	adapter, ok := integer(load("adapter/event.json").(map[string]any)["$defs"].(map[string]any)["AdapterTurn"].(map[string]any))
+	if !ok || adapter[0] != 1 {
+		t.Fatalf("adapter turns %v", adapter)
+	}
+	for _, path := range []string{"records/manifest-delivery.json", "records/manifest-finalized.json"} {
+		var found [][2]float64
+		turnBounds(load(path), &found)
+		if len(found) == 0 {
+			t.Fatalf("%s: no turn field found", path)
+		}
+		for _, b := range found {
+			if b != adapter {
+				t.Errorf("%s: a turn field bounded %v, adapter turns %v", path, b, adapter)
+			}
+		}
 	}
 }
