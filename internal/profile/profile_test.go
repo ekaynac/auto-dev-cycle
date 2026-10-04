@@ -3,6 +3,9 @@
 package profile
 
 import (
+	"encoding/json"
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +125,12 @@ func TestRefusals(t *testing.T) {
 		{"hex integer", edit("priority: 10\n", "priority: 0x10\n"), "plain decimal"},
 		{"negative zero", edit("priority: 10\n", "priority: -0\n"), "-0"},
 		{"oversized", valid + "# " + strings.Repeat("x", MaxBytes) + "\n", "at most"},
+		{"NUL in an output", edit("outputs: [dist/service]", `outputs: ["dist/ser\0vice"]`), "NUL"},
+		{"NUL in a lockfile", edit("lockfiles: [go.sum]", `lockfiles: ["go\0.sum"]`), "NUL"},
+		{"NUL in a topology file", edit("    files: [deploy/compose.yaml]\n", "    files: [\"deploy/comp\\0ose.yaml\"]\n"), "NUL"},
+		{"NUL in a protected path", edit("CANON.md]", "\"CAN\\0ON.md\"]"), "NUL"},
+		{"NUL in a protected document", edit("protected_documents: [docs/decisions/*.md]", "protected_documents: [\"docs/decisions/\\0.md\"]"), "NUL"},
+		{"branch prefix starting with -", edit("branch_prefix: adc/", "branch_prefix: -adc/"), "'-'"},
 		{"base ref not a branch", edit("base_ref: refs/heads/main", "base_ref: main"), "base_ref"},
 		{"topology without a plugin", edit("  plugin: docker-compose\n", "  plugin: none\n"), "topology"},
 		{"plugin without a topology", edit("  topology:\n    files: [deploy/compose.yaml]\n    adopted_revision: git:cccccccccccccccccccccccccccccccccccccccc\n    digest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n", "  topology: null\n"), "topology"},
@@ -310,5 +319,44 @@ func TestAcceptedForms(t *testing.T) {
 	doc = strings.Replace(doc, "branch_prefix: adc/", "branch_prefix: team/ADC/", 1)
 	if _, err := Load([]byte(doc)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Astra #33: the coverage checks of a whole profile are bounded together:
+// many expensive patterns are refused quickly, never matched for seconds.
+func TestCoverageWorkIsBounded(t *testing.T) {
+	var prot, docs []string
+	for i := 0; i < 300; i++ {
+		prot = append(prot, fmt.Sprintf("'%sz%d'", strings.Repeat("**/a/", 12), i))
+		docs = append(docs, fmt.Sprintf("'%sb%d'", strings.Repeat("a/", 30), i))
+	}
+	prot = append(prot, "'**'")
+	doc := edit("protected_paths: [docs/decisions/**, deploy/*.yaml, CANON.md]", "protected_paths: ["+strings.Join(prot, ", ")+"]")
+	doc = strings.Replace(doc, "protected_documents: [docs/decisions/*.md]", "protected_documents: ["+strings.Join(docs, ", ")+"]", 1)
+	if len(doc) > MaxBytes {
+		t.Fatalf("fixture is %d bytes, over the input bound", len(doc))
+	}
+	start := time.Now()
+	_, err := Load([]byte(doc))
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("validation took %v", took)
+	}
+	if err == nil || !strings.Contains(err.Error(), "steps") {
+		t.Fatalf("want the coverage budget refusal, got %v", err)
+	}
+}
+
+// Astra #33: a YAML flow mapping (not valid JSON) is read as YAML.
+func TestFlowStyleYAML(t *testing.T) {
+	js, err := yamlToJSON([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow := regexp.MustCompile(`"([a-z_]+)":`).ReplaceAllString(string(js), "$1: ")
+	if json.Valid([]byte(flow)) {
+		t.Fatal("fixture: the flow form is still JSON")
+	}
+	if _, err := Load([]byte(flow)); err != nil {
+		t.Fatalf("a flow-style YAML profile: %v", err)
 	}
 }

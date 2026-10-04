@@ -52,8 +52,8 @@ func Check(p *types.ProjectProfile) error {
 	if err := checkRefName(p.Repo.BaseRef); err != nil {
 		bad("repo.base_ref", "%q: %v", p.Repo.BaseRef, err)
 	}
-	// A prefix is valid when a branch name completes it to a valid ref.
-	if err := checkRefName("refs/heads/" + p.Vocabulary.BranchPrefix + "x"); err != nil {
+	// A prefix is valid when a branch name completes it to a valid branch.
+	if err := checkBranchName(p.Vocabulary.BranchPrefix + "x"); err != nil {
 		bad("vocabulary.branch_prefix", "%q: %v", p.Vocabulary.BranchPrefix, err)
 	}
 
@@ -86,7 +86,7 @@ func Check(p *types.ProjectProfile) error {
 		repoPaths("integration.topology.files", t.Files)
 	}
 
-	var protected [][]string
+	var protected, documents [][]string
 	for _, g := range p.ProtectedPaths {
 		segs, err := compileGlob(string(g))
 		if err != nil {
@@ -95,20 +95,36 @@ func Check(p *types.ProjectProfile) error {
 		}
 		protected = append(protected, segs)
 	}
+	var docNames []types.Glob
 	for _, g := range p.ProtectedDocuments {
 		segs, err := compileGlob(string(g))
 		if err != nil {
 			bad("protected_documents", "%q: %v", g, err)
 			continue
 		}
-		if !anyCovers(protected, segs) {
-			bad("protected_documents", "%q is not covered by protected_paths", g)
-		}
+		documents, docNames = append(documents, segs), append(docNames, g)
 	}
+	var files [][]string
+	var fileNames []types.RepoPath
 	if t := p.Integration.Topology; t != nil {
 		for _, f := range t.Files {
-			if checkRepoPath(string(f)) == nil && !anyMatches(protected, strings.Split(string(f), "/")) {
-				bad("integration.topology.files", "%q is not covered by protected_paths (the topology is protected)", f)
+			if checkRepoPath(string(f)) == nil {
+				files, fileNames = append(files, strings.Split(string(f), "/")), append(fileNames, f)
+			}
+		}
+	}
+	// The coverage checks are bounded as a whole before any of them runs.
+	if work := coverageWork(protected, documents) + coverageWork(protected, files); work > maxCoverageWork {
+		bad("protected_paths", "checking coverage would take %d steps, more than %d; use fewer or simpler patterns", work, maxCoverageWork)
+	} else {
+		for i, d := range documents {
+			if !anyCovers(protected, d) {
+				bad("protected_documents", "%q is not covered by protected_paths", docNames[i])
+			}
+		}
+		for i, f := range files {
+			if !anyMatches(protected, f) {
+				bad("integration.topology.files", "%q is not covered by protected_paths (the topology is protected)", fileNames[i])
 			}
 		}
 	}
@@ -163,6 +179,27 @@ func checkArgv(argv types.Argv) error {
 		}
 	}
 	return nil
+}
+
+// checkBranchName applies git's branch name rules (git check-ref-format
+// --branch): a valid refs/heads/ ref that does not start with '-'.
+func checkBranchName(name string) error {
+	if strings.HasPrefix(name, "-") {
+		return errors.New("a branch name does not start with '-'")
+	}
+	return checkRefName("refs/heads/" + name)
+}
+
+// coverageWork is the number of positions the coverage checks of every
+// pattern in globs against every entry of against examine together.
+func coverageWork(globs, against [][]string) int {
+	n := 0
+	for _, a := range against {
+		for _, g := range globs {
+			n += matchWork(g, a)
+		}
+	}
+	return n
 }
 
 // checkRefName applies git's ref name rules (git check-ref-format) to a full

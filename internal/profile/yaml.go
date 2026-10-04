@@ -22,15 +22,15 @@ const MaxBytes = 64 << 10
 // written, never through float64, so the schema sees what the author wrote.
 var jsonInt = regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`)
 
-// toJSON returns the profile as JSON. A JSON document (it starts with '{') is
+// toJSON returns the profile as JSON. A syntactically valid JSON document is
 // passed on unchanged to the contract's strict decoding (which refuses
-// duplicate names, invalid UTF-8 and non-integral numbers); anything else is
-// read as exactly one YAML document.
+// duplicate names, invalid UTF-8 and non-integral numbers); anything else,
+// including a YAML flow mapping, is read as exactly one YAML document.
 func toJSON(raw []byte) ([]byte, error) {
 	if len(raw) > MaxBytes {
 		return nil, fmt.Errorf("a profile is at most %d bytes (this one is %d)", MaxBytes, len(raw))
 	}
-	if t := bytes.TrimSpace(raw); len(t) > 0 && t[0] == '{' {
+	if json.Valid(raw) {
 		return raw, nil
 	}
 	return yamlToJSON(raw)

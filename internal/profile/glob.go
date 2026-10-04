@@ -9,17 +9,21 @@ import (
 	"strings"
 )
 
-// Glob bounds: a protected glob is short, so matching stays cheap even
-// before memoisation.
+// Glob bounds: a protected glob is short, and the coverage checks of a whole
+// profile together examine at most maxCoverageWork pattern/path positions,
+// so validation stays fast whatever the profile.
 const (
 	maxGlobBytes    = 256
 	maxGlobSegments = 32
+	maxCoverageWork = 1 << 20
 )
 
 // checkRepoPath: a relative, slash-separated, clean path inside the
 // repository.
 func checkRepoPath(p string) error {
 	switch {
+	case strings.ContainsRune(p, 0):
+		return errors.New("a path has no NUL byte")
 	case strings.ContainsRune(p, '\\'):
 		return errors.New("use forward slashes")
 	case strings.HasPrefix(p, "/"):
@@ -37,6 +41,9 @@ func checkRepoPath(p string) error {
 func compileGlob(g string) ([]string, error) {
 	if len(g) > maxGlobBytes {
 		return nil, fmt.Errorf("a glob is at most %d bytes", maxGlobBytes)
+	}
+	if strings.ContainsRune(g, 0) {
+		return nil, errors.New("a glob has no NUL byte")
 	}
 	if strings.ContainsRune(g, '\\') || strings.HasPrefix(g, "/") || path.Clean(g) != g {
 		return nil, errors.New("a glob is relative, clean and slash-separated")
@@ -63,33 +70,28 @@ func compileGlob(g string) ([]string, error) {
 
 // match reports whether the glob segments g match the segments s, where one
 // decides a single non-** glob segment against a single segment of s. A
-// "**" in g matches any number of segments of s. It is memoised on positions,
-// so it is polynomial in the number of segments, whatever the "**"s.
+// "**" in g matches any number of segments of s. It fills one table of
+// (len(g)+1)·(len(s)+1) positions, bottom-up, so its work is exactly
+// matchWork(g, s), whatever the "**"s.
 func match(g, s []string, one func(g, s string) bool) bool {
-	type pos struct{ i, j int }
-	memo := map[pos]bool{}
-	var at func(i, j int) bool
-	at = func(i, j int) bool {
-		k := pos{i, j}
-		if r, ok := memo[k]; ok {
-			return r
+	w := len(s) + 1
+	at := make([]bool, (len(g)+1)*w) // at[i*w+j]: g[i:] matches s[j:]
+	at[len(g)*w+len(s)] = true
+	for i := len(g) - 1; i >= 0; i-- {
+		for j := len(s); j >= 0; j-- {
+			switch {
+			case g[i] == "**":
+				at[i*w+j] = at[(i+1)*w+j] || (j < len(s) && at[i*w+j+1])
+			case j < len(s):
+				at[i*w+j] = at[(i+1)*w+j+1] && one(g[i], s[j])
+			}
 		}
-		var r bool
-		switch {
-		case i == len(g):
-			r = j == len(s)
-		case g[i] == "**":
-			r = at(i+1, j) || (j < len(s) && at(i, j+1))
-		case j == len(s):
-			r = false
-		default:
-			r = one(g[i], s[j]) && at(i+1, j+1)
-		}
-		memo[k] = r
-		return r
 	}
-	return at(0, 0)
+	return at[0]
 }
+
+// matchWork is the number of positions match examines for g against s.
+func matchWork(g, s []string) int { return (len(g) + 1) * (len(s) + 1) }
 
 // matchesPath: the glob matches the literal repository path segments.
 func matchesPath(g, segs []string) bool {
