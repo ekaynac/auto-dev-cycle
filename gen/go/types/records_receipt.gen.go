@@ -6,6 +6,7 @@ package types
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 )
@@ -152,6 +153,15 @@ func (u Subject) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("Subject: no variant set")
 	}
 	return json.Marshal(u.Variant)
+}
+
+// MarshalJSONTo encodes the variant on the caller's encoder, so its options
+// (internal/contract refuses invalid UTF-8) reach the variant's strings.
+func (u Subject) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if u.Variant == nil {
+		return fmt.Errorf("Subject: no variant set")
+	}
+	return marshalTo(enc, u.Variant)
 }
 
 func (u *Subject) UnmarshalJSON(b []byte) error {

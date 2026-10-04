@@ -455,11 +455,11 @@ func TestDeriveValidatesProducerFields(t *testing.T) {
 	noReason := receipt(pred("tests", vocab.Empty, vocab.Reason{}, "", junitEvidence))
 	nilTree := receipt(clean())
 	nilTree.Subject = types.Subject{Variant: (*types.TreeSubject)(nil)}
-	// A union's own encoding repairs invalid UTF-8 (a schemagen fix follows),
-	// so this case uses a plain field.
 	badUTF8 := receipt(pred("tests", vocab.Empty, vocab.ReasonCompletedClean, string([]byte{0xff}), junitEvidence))
+	badSubject := receipt(clean())
+	badSubject.Subject.Variant.(*types.TreeSubject).ContractRevision = string([]byte{0xff})
 	for name, r := range map[string]types.Receipt{"an empty tree": emptyTree, "a malformed demand key": badDemand,
-		"no predicate reason": noReason, "a nil subject": nilTree, "invalid UTF-8": badUTF8} {
+		"no predicate reason": noReason, "a nil subject": nilTree, "invalid UTF-8": badUTF8, "invalid UTF-8 in the subject": badSubject} {
 		if _, err := Derive(contract(), r, blobs()); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
