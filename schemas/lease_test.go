@@ -78,7 +78,14 @@ func TestLeaseRecords(t *testing.T) {
 	verified["state"], verified["restore_receipt"] = "settling_verified", rcpID
 	target := leaseDocs()["records/resource-group"]
 	target["kind"], target["release_rule"] = "evidence_target", "on_restore_verified"
-	target["capacity_model"] = map[string]any{"unit": "slots", "limit": nil, "window": nil, "reset_at": nil, "quota_state": "unknown"}
+	target["capacity_model"] = map[string]any{"unit": "slots", "limit": 1, "window": nil, "reset_at": nil, "quota_state": "known"}
+	failed := leaseDocs()["records/lease"]
+	failed["state"] = "restore_failed"
+	failed["hold"] = map[string]any{"hold": "evidence_restore_pending", "signal_instance": "tgt_01m3250v57fhm9v1z9xd1wk8gw"}
+	sealedLost := leaseDocs()["records/attempt"]
+	sealedLost["status"], sealedLost["publication"], sealedLost["lost_reason"], sealedLost["checkpoint"] = "sealed", "closed", "agent_disconnect", dgA
+	blocked := leaseDocs()["records/lease"]
+	blocked["placement_checks"].(map[string]any)["budget"] = map[string]any{"outcome": "could_not_run", "reason": "quota_unknown", "detail": "no probe yet"}
 	sealed := leaseDocs()["records/attempt"]
 	sealed["status"], sealed["publication"], sealed["stop_reason"], sealed["checkpoint"] = "sealed", "closed", "revoke", dgA
 	superseded := leaseDocs()["records/attempt"]
@@ -87,7 +94,9 @@ func TestLeaseRecords(t *testing.T) {
 		schema string
 		doc    map[string]any
 	}{"waiting": {"records/lease", waiting}, "settled": {"records/lease", settled}, "restore verified": {"records/lease", verified}, "evidence target": {"records/resource-group", target},
-		"sealed": {"records/attempt", sealed}, "superseded": {"records/attempt", superseded}} {
+		"sealed": {"records/attempt", sealed}, "superseded": {"records/attempt", superseded},
+		"restore failed with its hold": {"records/lease", failed}, "sealed after a loss": {"records/attempt", sealedLost},
+		"a blocking check with its detail": {"records/lease", blocked}} {
 		if err := valid(t, c.schema, c.doc); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -138,7 +147,26 @@ func TestLeaseRecords(t *testing.T) {
 		"completion while running": {"records/attempt", func(d map[string]any) {
 			d["completion"] = map[string]any{"outcome": "empty", "reason": "completed_clean"}
 		}},
-		"successor while running":              {"records/attempt", func(d map[string]any) { d["superseded_by"] = attNew }},
+		"successor while running": {"records/attempt", func(d map[string]any) { d["superseded_by"] = attNew }},
+		// Astra #47.
+		"restore failed without its hold": {"records/lease", func(d map[string]any) { d["state"] = "restore_failed" }},
+		"a blocking check without detail": {"records/lease", func(d map[string]any) {
+			d["placement_checks"].(map[string]any)["budget"] = map[string]any{"outcome": "could_not_run", "reason": "quota_unknown", "detail": ""}
+		}},
+		"running with a stop reason": {"records/attempt", func(d map[string]any) { d["stop_reason"] = "revoke" }},
+		"running with a lost reason": {"records/attempt", func(d map[string]any) { d["lost_reason"] = "stream_dead" }},
+		"finishing with a reason": {"records/attempt", func(d map[string]any) {
+			d["status"], d["publication"], d["stop_reason"] = "finishing", "closed", "drain"
+		}},
+		"stopping and lost": {"records/attempt", func(d map[string]any) {
+			d["status"], d["publication"], d["stop_reason"], d["lost_reason"] = "stopping", "closed", "revoke", "stream_dead"
+		}},
+		"lost and stopped": {"records/attempt", func(d map[string]any) {
+			d["status"], d["publication"], d["lost_reason"], d["stop_reason"] = "lost", "closed", "stream_dead", "revoke"
+		}},
+		"sealed with both reasons": {"records/attempt", func(d map[string]any) {
+			d["status"], d["publication"], d["checkpoint"], d["stop_reason"], d["lost_reason"] = "sealed", "closed", dgA, "revoke", "stream_dead"
+		}},
 		"seal reason":                          {"records/attempt-record", func(d map[string]any) { d["seal"].(map[string]any)["reason"] = "gave_up" }},
 		"record without a trail":               {"records/attempt-record", func(d map[string]any) { delete(d, "trail") }},
 		"usage kind":                           {"records/usage-measurement", func(d map[string]any) { d["kind"] = "session_total" }},

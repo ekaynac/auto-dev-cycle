@@ -43,7 +43,7 @@ const (
 	ResourceGroupReleaseRuleOnRestoreVerified ResourceGroupReleaseRule = "on_restore_verified"
 )
 
-// ResourceGroup: A pool that leases reserve from (docs/design/m0/05 "Resource groups"). Rate windows (account_quota) and credit balances (broker_balance) are separate groups: a provider can have one and not the other. A broker balance is counted in usd_micros; internal/capacity checks that cross-field rule.
+// ResourceGroup: A pool that leases reserve from (docs/design/m0/05 "Resource groups"). Rate windows (account_quota) and credit balances (broker_balance) are separate groups: a provider can have one and not the other. A broker balance is counted in usd_micros, and an evidence target has a known capacity of exactly one slot (12, 13); capacity.CheckGroup checks those nested rules.
 type ResourceGroup struct {
 	ID            ResourceGroupID            `json:"id"`
 	Kind          ResourceGroupKind          `json:"kind"`

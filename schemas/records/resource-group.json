@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/resource-group.json",
   "title": "ResourceGroup",
-  "description": "A pool that leases reserve from (docs/design/m0/05 \"Resource groups\"). Rate windows (account_quota) and credit balances (broker_balance) are separate groups: a provider can have one and not the other. A broker balance is counted in usd_micros; internal/capacity checks that cross-field rule.",
+  "description": "A pool that leases reserve from (docs/design/m0/05 \"Resource groups\"). Rate windows (account_quota) and credit balances (broker_balance) are separate groups: a provider can have one and not the other. A broker balance is counted in usd_micros, and an evidence target has a known capacity of exactly one slot (12, 13); capacity.CheckGroup checks those nested rules.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "kind", "capacity_model", "release_rule", "members"],
