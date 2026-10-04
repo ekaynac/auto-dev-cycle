@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/manifest-intent.json",
+  "title": "ManifestIntent",
+  "description": "The first ContextManifest event (docs/design/m0/10 \"ContextManifest: three append-only events\"), committed before egress as part of the call's effect intent. Controller-supplied context comes only from the declared inputs: every input is named exactly once, either included or omitted (cuts are never silent). internal/knowledge checks the cross-field rules.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "call", "consumer", "task", "attempt", "inputs", "policy", "included", "omitted", "budget", "rendered_digest", "destination", "routing"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/ManifestID"},
+    "call": {"$ref": "../common/defs.json#/$defs/CallID"},
+    "consumer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "executor", "model_snapshot", "harness_version", "capability_profile"],
+      "properties": {
+        "role": {"$ref": "receipt.json#/$defs/Name"},
+        "executor": {"$ref": "../common/defs.json#/$defs/ExecutorID"},
+        "model_snapshot": {"type": "string", "minLength": 1},
+        "harness_version": {"type": "string", "minLength": 1},
+        "capability_profile": {"$ref": "receipt.json#/$defs/Name"}
+      }
+    },
+    "task": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/TaskID"}]},
+    "attempt": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]},
+    "inputs": {
+      "description": "The node's resolved graph inputs (13), in order.",
+      "type": "array",
+      "items": {"$ref": "ref.json"}
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["usage_profile", "data_policy_digest", "renderer_versions"],
+      "properties": {
+        "usage_profile": {"enum": ["standard", "open", "on-prem"]},
+        "data_policy_digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+        "renderer_versions": {
+          "type": "object",
+          "propertyNames": {"$ref": "receipt.json#/$defs/Name"},
+          "additionalProperties": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "included": {
+      "description": "Inputs rendered into the prompt, with their position (0, 1, … in rendering order) and size.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "order", "bytes", "purpose"],
+        "properties": {
+          "ref": {"$ref": "ref.json"},
+          "order": {"type": "integer", "minimum": 0, "maximum": 1000000},
+          "bytes": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "purpose": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "omitted": {
+      "description": "Inputs left out, each with its reason.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "reason"],
+        "properties": {
+          "ref": {"$ref": "ref.json"},
+          "reason": {"enum": ["budget", "policy", "unavailable", "restricted"]}
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tokens", "bytes"],
+      "properties": {
+        "tokens": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
+      }
+    },
+    "rendered_digest": {"description": "Of the rendered prompt bytes.", "$ref": "../common/defs.json#/$defs/Digest"},
+    "destination": {
+      "description": "The destination of the source registry the call goes to.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+    },
+    "routing": {"enum": ["verified", "reported"]}
+  }
+}

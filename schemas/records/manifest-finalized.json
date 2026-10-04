@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/manifest-finalized.json",
+  "title": "ManifestFinalized",
+  "description": "The third ContextManifest event (docs/design/m0/10), on call end. Coverage is derived from evidence, never from declarations alone (E0), and internal/knowledge derives and checks it: (1) prompt is the controller's own evidence of the initial prompt's egress: delivered, not_sent (refused or failed before egress: no turns, no delivery events) or uncertain. (2) delivered_refs are the identity digests of the included inputs when the prompt was delivered, plus every tool result of every delivery event; possibly_delivered_refs are the included inputs when the prompt is uncertain, minus any a delivery event confirms (uncertainty is never confirmed exposure, and the two lists never overlap). (3) Every compaction mark of a delivery event appears in unobservable as {turn, compaction}, and every adapter declaration appears in declared_only as {turn, what}: declarations are never evidence. Either list may name more, which only lowers the status. (4) When turns is known, every turn named anywhere is within 1..turns. (5) status is unknown when turns is unknown or the prompt is uncertain; otherwise complete only when every turn 1..turns has exactly one delivery event and both lists are empty; partial otherwise.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest", "coverage", "delivery"],
+  "properties": {
+    "manifest": {"$ref": "../common/defs.json#/$defs/ManifestID"},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assembled", "prompt", "turns", "delivered_refs", "possibly_delivered_refs", "declared_only", "unobservable", "status"],
+      "properties": {
+        "assembled": {"const": "complete"},
+        "prompt": {"description": "The controller's evidence of the initial prompt's egress.", "enum": ["delivered", "not_sent", "uncertain"]},
+        "turns": {
+          "description": "How many turns the call had; null when the adapter could not tell.",
+          "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 1000000}]
+        },
+        "delivered_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/Digest"}},
+        "possibly_delivered_refs": {
+          "description": "Refs whose delivery is uncertain: included inputs of an uncertain prompt that no delivery event confirms. Disjoint from delivered_refs.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "../common/defs.json#/$defs/Digest"}
+        },
+        "declared_only": {
+          "description": "Adapter declarations no controller evidence backs.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turn", "what"],
+            "properties": {
+              "turn": {"type": "integer", "minimum": 1, "maximum": 1000000},
+              "what": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "unobservable": {
+          "description": "Context outside the controller's guarantee: harness instructions, compaction, harness tools.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turn", "what"],
+            "properties": {
+              "turn": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1, "maximum": 1000000}]},
+              "what": {"enum": ["harness_instructions", "compaction", "harness_tool", "other"]}
+            }
+          }
+        },
+        "status": {"enum": ["complete", "partial", "unknown"]}
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "reason"],
+      "properties": {
+        "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
+        "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"}
+      }
+    }
+  }
+}
