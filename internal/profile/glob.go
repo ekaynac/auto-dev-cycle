@@ -10,8 +10,8 @@ import (
 )
 
 // Glob bounds: a protected glob is short, and the coverage checks of a whole
-// profile together cost at most maxCoverageWork byte comparisons (see
-// matchWork), so validation stays fast whatever the profile.
+// profile are refused unless their work bound (coverageWork, from weight) is
+// at most maxCoverageWork, so validation stays fast whatever the profile.
 const (
 	maxGlobBytes    = 256
 	maxGlobSegments = 32
@@ -53,8 +53,9 @@ func compileGlob(g string) ([]string, error) {
 // match reports whether the glob segments g match the segments s, where one
 // decides a single non-** glob segment against a single segment of s. A
 // "**" in g matches any number of segments of s. It fills one table of
-// (len(g)+1)·(len(s)+1) positions, bottom-up, so its work is exactly
-// matchWork(g, s), whatever the "**"s.
+// (len(g)+1)·(len(s)+1) cells, bottom-up, whatever the "**"s; with the
+// segment comparisons, its work is bounded by weight(g)·weight(s) up to a
+// constant factor (see weight).
 func match(g, s []string, one func(g, s string) bool) bool {
 	w := len(s) + 1
 	at := make([]bool, (len(g)+1)*w) // at[i*w+j]: g[i:] matches s[j:]
