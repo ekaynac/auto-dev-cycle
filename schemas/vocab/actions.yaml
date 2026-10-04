@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# The action registry (docs/design/m0/04 "Action registry and effective-change
+# classification"; 08 "Reads, commands, events"). Every mutating action kind
+# has one command endpoint, POST /v1/commands/{action}, and one CLI command.
+# Authority classifies a command by its effective change, never by its name;
+# change_classes holds each sensitive class's supervisor confirmation default
+# (D32, K5, KA1, M12). An action whose change is in no class needs none.
+schema: adc.vocab.actions/v1
+actions:
+  - {action: project.create, family: project, description: "Register a project and its first profile revision.", introduced: 0.1.0, deprecated: null, source: "07"}
+  - {action: profile.adopt, family: project, description: "Adopt a project profile revision; authority classifies what it widens or weakens.", introduced: 0.1.0, deprecated: null, source: "07"}
+  - {action: task.create, family: task, description: "Create a task in a project.", introduced: 0.1.0, deprecated: null, source: "08"}
+  - {action: review.request, family: task, description: "Ask for an independent review of a subject.", introduced: 0.1.0, deprecated: null, source: "06"}
+  - {action: input.answer, family: holds, description: "Answer an owed input of kind ruling or data, bound to its revision [PR5-1].", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: proposal.confirm, family: approve, description: "Confirm a proposal under independent_review; human confirmation happens only on the dashboard (D37).", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: proposal.withdraw, family: propose, description: "Withdraw an open proposal.", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: grant.create, family: grant, description: "Grant a supervisor actions on projects, with an expiry.", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: grant.extend, family: grant, description: "Extend a grant's expiry or scope.", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: grant.revoke, family: grant, description: "Revoke a grant at once.", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: agent.enrol, family: admin, description: "Enrol a supervisor actor and issue its token.", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: actor.revoke, family: admin, description: "Revoke an actor and its tokens.", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: seat.take, family: seat, description: "Take the supervisor seat, optionally forcing a handover after a delay.", introduced: 0.1.0, deprecated: null, source: "08"}
+  - {action: seat.release, family: seat, description: "Release the supervisor seat.", introduced: 0.1.0, deprecated: null, source: "08"}
+  - {action: note.add, family: notes, description: "Add an operator or supervisor note to a project.", introduced: 0.1.0, deprecated: null, source: "08"}
+change_classes:
+  - {class: install.self, confirmation: independent_review, settable_to_human: true, every_actor_kind: false, description: "The controller installs a new build of itself.", source: D32}
+  - {class: policy.widen_data, confirmation: human, settable_to_human: false, every_actor_kind: false, description: "Lowers the data floor or widens what data may leave.", source: D32}
+  - {class: policy.widen_destinations, confirmation: human, settable_to_human: false, every_actor_kind: false, description: "Adds allowed destinations.", source: D32}
+  - {class: policy.weaken_protection, confirmation: human, settable_to_human: false, every_actor_kind: false, description: "Removes protected paths or loosens routing.", source: D32}
+  - {class: capacity.allow_paid_fallback, confirmation: human, settable_to_human: false, every_actor_kind: false, description: "Allows falling back to paid capacity.", source: D32}
+  - {class: agent.enrol, confirmation: human, settable_to_human: false, every_actor_kind: false, description: "Enrols an agent.", source: D32}
+  - {class: grant.create, confirmation: human, settable_to_human: false, every_actor_kind: false, description: "Creates a grant; never confirmed by the grantee.", source: D32}
+  - {class: grant.extend, confirmation: human, settable_to_human: false, every_actor_kind: false, description: "Extends a grant; never confirmed by the grantee.", source: D32}
+  - {class: knowledge.accept_claim, confirmation: independent_review, settable_to_human: true, every_actor_kind: false, description: "Accepts a fact, lesson or negative result.", source: K5}
+  - {class: knowledge.export_framework_prose, confirmation: human, settable_to_human: false, every_actor_kind: true, description: "Exports framework prose; acceptance never implies export, so even an operator token needs a presence-verified confirmation.", source: KA1}
+  - {class: knowledge.change_protected_document, confirmation: independent_review, settable_to_human: true, every_actor_kind: false, description: "Changes a protected document, plus the effective-change check.", source: K5}
+  - {class: integration.change_topology, confirmation: independent_review, settable_to_human: true, every_actor_kind: false, description: "Changes the integration topology, plus the effective-change check.", source: M12}

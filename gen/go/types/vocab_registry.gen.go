@@ -13,12 +13,13 @@ import (
 // VocabRegistry: One vocabulary registry file (schemas/vocab/*.yaml, docs/design/m0/02), discriminated by its schema field. Cross-file rules (a reason's hold exists, codes are unique) are checked by internal/vocab.
 type VocabRegistry struct{ Variant VocabRegistryVariant }
 
-// VocabRegistryVariant is implemented by *OutcomesFile, *ReasonsFile, *HoldsFile.
+// VocabRegistryVariant is implemented by *OutcomesFile, *ReasonsFile, *HoldsFile, *ActionsFile.
 type VocabRegistryVariant interface{ isVocabRegistry() }
 
 func (*OutcomesFile) isVocabRegistry() {}
 func (*ReasonsFile) isVocabRegistry()  {}
 func (*HoldsFile) isVocabRegistry()    {}
+func (*ActionsFile) isVocabRegistry()  {}
 
 func (u VocabRegistry) MarshalJSON() ([]byte, error) {
 	if u.Variant == nil {
@@ -66,6 +67,12 @@ func (u *VocabRegistry) UnmarshalJSON(b []byte) error {
 		u.Variant = v
 	case "adc.vocab.holds/v1":
 		v := &HoldsFile{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	case "adc.vocab.actions/v1":
+		v := &ActionsFile{}
 		if err := decodeStrict(b, v); err != nil {
 			return err
 		}
@@ -155,6 +162,62 @@ type Reason struct {
 type HoldsFile struct {
 	Schema string `json:"schema"`
 	Holds  []Hold `json:"holds"`
+}
+
+// ActionsFile: The action registry (docs/design/m0/04 "Action registry"): every mutating action kind, one command endpoint each (08), and the supervisor confirmation default of every sensitive change class. An action whose effective change is in no class needs no confirmation (none). Authority computes the class from the effective change and never trusts the action's name.
+type ActionsFile struct {
+	Schema        string               `json:"schema"`
+	Actions       []Action             `json:"actions"`
+	ChangeClasses []ChangeClassDefault `json:"change_classes"`
+}
+
+// ActionFamily: The CLI noun that carries it (08 "CLI rules"); the parity test maps each action to a CLI command and a dashboard control.
+type ActionFamily string
+
+const (
+	ActionFamilyProject ActionFamily = "project"
+	ActionFamilyTask    ActionFamily = "task"
+	ActionFamilyHolds   ActionFamily = "holds"
+	ActionFamilyApprove ActionFamily = "approve"
+	ActionFamilyPropose ActionFamily = "propose"
+	ActionFamilyGrant   ActionFamily = "grant"
+	ActionFamilySeat    ActionFamily = "seat"
+	ActionFamilyPacket  ActionFamily = "packet"
+	ActionFamilyDigest  ActionFamily = "digest"
+	ActionFamilyNotes   ActionFamily = "notes"
+	ActionFamilySources ActionFamily = "sources"
+	ActionFamilyAdmin   ActionFamily = "admin"
+)
+
+type Action struct {
+	Action ActionKind `json:"action"`
+	// The CLI noun that carries it (08 "CLI rules"); the parity test maps each action to a CLI command and a dashboard control.
+	Family      ActionFamily `json:"family"`
+	Description string       `json:"description"`
+	Introduced  Semver       `json:"introduced"`
+	Deprecated  *Semver      `json:"deprecated"`
+	Source      string       `json:"source"`
+}
+
+// ChangeClassDefaultConfirmation: The supervisor default (D32).
+type ChangeClassDefaultConfirmation string
+
+const (
+	ChangeClassDefaultConfirmationIndependentReview ChangeClassDefaultConfirmation = "independent_review"
+	ChangeClassDefaultConfirmationHuman             ChangeClassDefaultConfirmation = "human"
+)
+
+type ChangeClassDefault struct {
+	Class ChangeClass `json:"class"`
+	// The supervisor default (D32).
+	Confirmation ChangeClassDefaultConfirmation `json:"confirmation"`
+	// Whether a grant may tighten it to human (a human default is already the tightest).
+	SettableToHuman bool `json:"settable_to_human"`
+	// True only where an operator token also needs a presence-verified confirmation (KA1: framework prose export).
+	EveryActorKind bool   `json:"every_actor_kind"`
+	Description    string `json:"description"`
+	// The decision or review item that set it.
+	Source string `json:"source"`
 }
 
 type HoldSignal string

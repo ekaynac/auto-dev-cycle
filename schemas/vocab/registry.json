@@ -6,7 +6,8 @@
   "oneOf": [
     {"$ref": "#/$defs/OutcomesFile"},
     {"$ref": "#/$defs/ReasonsFile"},
-    {"$ref": "#/$defs/HoldsFile"}
+    {"$ref": "#/$defs/HoldsFile"},
+    {"$ref": "#/$defs/ActionsFile"}
   ],
   "$defs": {
     "Code": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
@@ -66,6 +67,47 @@
         "schema": {"const": "adc.vocab.holds/v1"},
         "holds": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Hold"}}
       }
+    },
+    "ActionsFile": {
+      "description": "The action registry (docs/design/m0/04 \"Action registry\"): every mutating action kind, one command endpoint each (08), and the supervisor confirmation default of every sensitive change class. An action whose effective change is in no class needs no confirmation (none). Authority computes the class from the effective change and never trusts the action's name.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "actions", "change_classes"],
+      "properties": {
+        "schema": {"const": "adc.vocab.actions/v1"},
+        "actions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Action"}},
+        "change_classes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ChangeClassDefault"}}
+      }
+    },
+    "Action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "family", "description", "introduced", "deprecated", "source"],
+      "properties": {
+        "action": {"$ref": "../records/grant.json#/$defs/ActionKind"},
+        "family": {"description": "The CLI noun that carries it (08 \"CLI rules\"); the parity test maps each action to a CLI command and a dashboard control.", "enum": ["project", "task", "holds", "approve", "propose", "grant", "seat", "packet", "digest", "notes", "sources", "admin"]},
+        "description": {"type": "string", "minLength": 1},
+        "introduced": {"$ref": "#/$defs/Semver"},
+        "deprecated": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/Semver"}]},
+        "source": {"type": "string", "pattern": "^[0-9]{2}$"}
+      }
+    },
+    "ChangeClassDefault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "confirmation", "settable_to_human", "every_actor_kind", "description", "source"],
+      "properties": {
+        "class": {"$ref": "../records/approval.json#/$defs/ChangeClass"},
+        "confirmation": {"description": "The supervisor default (D32).", "enum": ["independent_review", "human"]},
+        "settable_to_human": {"description": "Whether a grant may tighten it to human (a human default is already the tightest).", "type": "boolean"},
+        "every_actor_kind": {"description": "True only where an operator token also needs a presence-verified confirmation (KA1: framework prose export).", "type": "boolean"},
+        "description": {"type": "string", "minLength": 1},
+        "source": {"description": "The decision or review item that set it.", "type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {"if": {"properties": {"confirmation": {"const": "human"}}}, "then": {"properties": {"settable_to_human": {"const": false}}}},
+        {"if": {"properties": {"every_actor_kind": {"const": true}}}, "then": {"properties": {"confirmation": {"const": "human"}}}}
+      ]
     },
     "Hold": {
       "type": "object",

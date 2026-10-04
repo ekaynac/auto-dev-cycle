@@ -84,6 +84,11 @@ type Registry struct {
 	Outcomes map[Outcome]string      // outcome → description
 	Reasons  map[string]types.Reason // code → entry
 	Holds    map[string]types.Hold   // hold → entry
+	// Actions are the mutating action kinds (04 "Action registry").
+	Actions map[string]types.Action // action → entry
+	// ChangeClasses are the supervisor confirmation defaults of every
+	// sensitive change class; each class in records/approval has one.
+	ChangeClasses map[string]types.ChangeClassDefault // class → default
 }
 
 var (
@@ -132,7 +137,8 @@ func (reg *Registry) clone() (*Registry, error) {
 
 // loadFrom reads and cross-checks the registries at paths in fsys.
 func loadFrom(fsys fs.FS, paths []string) (*Registry, error) {
-	r := &Registry{Outcomes: map[Outcome]string{}, Reasons: map[string]types.Reason{}, Holds: map[string]types.Hold{}}
+	r := &Registry{Outcomes: map[Outcome]string{}, Reasons: map[string]types.Reason{}, Holds: map[string]types.Hold{},
+		Actions: map[string]types.Action{}, ChangeClasses: map[string]types.ChangeClassDefault{}}
 	seen := map[string]string{}
 	for _, p := range paths {
 		raw, err := fs.ReadFile(fsys, p)
@@ -185,10 +191,32 @@ func loadFrom(fsys fs.FS, paths []string) (*Registry, error) {
 				}
 				r.Holds[h.Hold] = h
 			}
+		case *types.ActionsFile:
+			for _, a := range v.Actions {
+				if _, dup := r.Actions[string(a.Action)]; dup {
+					return nil, fmt.Errorf("%s: action %s registered twice", p, a.Action)
+				}
+				r.Actions[string(a.Action)] = a
+			}
+			for _, c := range v.ChangeClasses {
+				if _, dup := r.ChangeClasses[string(c.Class)]; dup {
+					return nil, fmt.Errorf("%s: change class %s has two defaults", p, c.Class)
+				}
+				r.ChangeClasses[string(c.Class)] = c
+			}
 		}
 	}
-	if len(seen) != 3 {
-		return nil, fmt.Errorf("vocabulary needs exactly one outcomes, reasons and holds registry; found %d kinds", len(seen))
+	if len(seen) != 4 {
+		return nil, fmt.Errorf("vocabulary needs exactly one outcomes, reasons, holds and actions registry; found %d kinds", len(seen))
+	}
+	classes, err := changeClasses()
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range classes {
+		if _, ok := r.ChangeClasses[c]; !ok {
+			return nil, fmt.Errorf("change class %s has no confirmation default", c)
+		}
 	}
 	for code, x := range r.Reasons {
 		if x.Hold != nil {
@@ -198,6 +226,30 @@ func loadFrom(fsys fs.FS, paths []string) (*Registry, error) {
 		}
 	}
 	return r, nil
+}
+
+// changeClasses lists the closed set of sensitive change classes, from the
+// approval record's schema: the registry must give each one a default, so
+// authority never meets a class without one.
+func changeClasses() ([]string, error) {
+	raw, err := fs.ReadFile(schemas.FS(), "records/approval.json")
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		Defs struct {
+			ChangeClass struct {
+				Enum []string `json:"enum"`
+			} `json:"ChangeClass"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("records/approval.json: %w", err)
+	}
+	if len(doc.Defs.ChangeClass.Enum) == 0 {
+		return nil, errors.New("records/approval.json names no change classes")
+	}
+	return doc.Defs.ChangeClass.Enum, nil
 }
 
 // Result is the (outcome, reason, detail) triple every result carries.
