@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/resource-group.json",
+  "title": "ResourceGroup",
+  "description": "A pool that leases reserve from (docs/design/m0/05 \"Resource groups\"). Rate windows (account_quota) and credit balances (broker_balance) are separate groups: a provider can have one and not the other. A broker balance is counted in usd_micros; internal/capacity checks that cross-field rule.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "kind", "capacity_model", "release_rule", "members"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/ResourceGroupID"},
+    "kind": {"enum": ["account_quota", "broker_balance", "gpu", "concurrency", "controller_gate", "controller_integration", "evidence_target"]},
+    "capacity_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "limit", "window", "reset_at", "quota_state"],
+      "properties": {
+        "unit": {"$ref": "#/$defs/CapacityUnit"},
+        "limit": {"description": "In the unit's integer amount (usd_micros for money); null is unknown.", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Amount"}]},
+        "window": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Duration"}]},
+        "reset_at": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]},
+        "quota_state": {"enum": ["known", "estimated", "unknown"]}
+      },
+      "if": {"properties": {"quota_state": {"const": "unknown"}}},
+      "then": {"properties": {"limit": {"const": null}}},
+      "else": {"properties": {"limit": {"not": {"const": null}}}}
+    },
+    "release_rule": {
+      "description": "How reserved amounts return [M7]. An evidence target returns only once its restore is verified (13, D40).",
+      "enum": ["on_settle", "on_attempt_end", "on_window_reset", "on_restore_verified"]
+    },
+    "members": {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/ExecutorID"}}
+  },
+  "allOf": [
+    {"if": {"properties": {"kind": {"const": "evidence_target"}}}, "then": {"properties": {"release_rule": {"const": "on_restore_verified"}}}, "else": {"properties": {"release_rule": {"not": {"const": "on_restore_verified"}}}}}
+  ],
+  "$defs": {
+    "CapacityUnit": {
+      "description": "Every amount is an integer: money in millionths of a US dollar, GPU time in seconds.",
+      "enum": ["requests", "tokens", "usd_micros", "slots", "gpu_seconds"]
+    },
+    "Amount": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
+  }
+}

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/lease.json",
+  "title": "Lease",
+  "description": "A unit's claim on an executor and its resource groups (docs/design/m0/05 \"Lease\"): the current state a lease's events project to. Reservations are made all-or-nothing inside the writer transaction; terminal states (settled, released) are immutable. internal/lease enforces the state machine.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "unit", "role", "executor", "state", "reservations", "priority", "footprint", "deadline", "fallback_step", "placement_checks", "hold", "attempt", "settlement"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/LeaseID"},
+    "unit": {"$ref": "../common/defs.json#/$defs/UnitID"},
+    "role": {"$ref": "receipt.json#/$defs/Name"},
+    "executor": {"$ref": "../common/defs.json#/$defs/ExecutorID"},
+    "state": {
+      "description": "requested, waiting, granted, active and releasing; settling, then (evidence targets) restoring, restore_failed and settling_verified; settled and released are terminal.",
+      "enum": ["requested", "waiting", "granted", "active", "releasing", "settling", "restoring", "restore_failed", "settling_verified", "settled", "released"]
+    },
+    "reservations": {
+      "description": "One per resource group, all made or none.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["group", "amount", "unit"],
+        "properties": {
+          "group": {"$ref": "../common/defs.json#/$defs/ResourceGroupID"},
+          "amount": {"$ref": "resource-group.json#/$defs/Amount"},
+          "unit": {"$ref": "resource-group.json#/$defs/CapacityUnit"}
+        }
+      }
+    },
+    "priority": {"type": "integer", "minimum": 0, "maximum": 1000},
+    "footprint": {
+      "description": "Learned per executor from settled usage, starting from priors.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context_tokens", "expected_turns", "gpu_seconds"],
+      "properties": {
+        "context_tokens": {"$ref": "resource-group.json#/$defs/Amount"},
+        "expected_turns": {"$ref": "resource-group.json#/$defs/Amount"},
+        "gpu_seconds": {"oneOf": [{"type": "null"}, {"$ref": "resource-group.json#/$defs/Amount"}]}
+      }
+    },
+    "deadline": {"$ref": "../common/defs.json#/$defs/Time"},
+    "fallback_step": {"type": "integer", "minimum": 0, "maximum": 1000},
+    "placement_checks": {
+      "description": "Re-evaluated and recorded at every fallback step. Each check is empty when nothing blocks; anything else blocks the grant.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data_floor", "destinations", "capability", "independence", "paid_authority", "budget", "fallback_scope"],
+      "properties": {
+        "data_floor": {"$ref": "#/$defs/PlacementCheck"},
+        "destinations": {"$ref": "#/$defs/PlacementCheck"},
+        "capability": {"$ref": "#/$defs/PlacementCheck"},
+        "independence": {"$ref": "#/$defs/PlacementCheck"},
+        "paid_authority": {"$ref": "#/$defs/PlacementCheck"},
+        "budget": {"$ref": "#/$defs/PlacementCheck"},
+        "fallback_scope": {"$ref": "#/$defs/PlacementCheck"}
+      }
+    },
+    "hold": {
+      "description": "Set exactly while waiting: the registered hold (schemas/vocab/holds.yaml, checked by internal/lease) and the concrete signal instance that resumes it (02).",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hold", "signal_instance"],
+          "properties": {
+            "hold": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+            "signal_instance": {"type": "string", "minLength": 1, "maxLength": 1024}
+          }
+        }
+      ]
+    },
+    "attempt": {"description": "The attempt this lease started, once active.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]},
+    "settlement": {
+      "description": "Set at settled: the calls whose usage settled, those still an uncertain liability on their groups, the restore receipt (evidence targets), and the result the controller published in the same transaction. Amounts live in the call ledger, never here.",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["calls", "liabilities", "restore_receipt", "published"],
+          "properties": {
+            "calls": {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/CallID"}},
+            "liabilities": {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/CallID"}},
+            "restore_receipt": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ReceiptID"}]},
+            "published": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ResultID"}]}
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"state": {"const": "waiting"}}}, "then": {"properties": {"hold": {"not": {"const": null}}}}, "else": {"properties": {"hold": {"const": null}}}},
+    {"if": {"properties": {"state": {"const": "settled"}}}, "then": {"properties": {"settlement": {"not": {"const": null}}}}, "else": {"properties": {"settlement": {"const": null}}}},
+    {"if": {"properties": {"state": {"enum": ["requested", "waiting", "granted", "releasing", "released"]}}}, "then": {"properties": {"attempt": {"const": null}}}, "else": {"properties": {"attempt": {"not": {"const": null}}}}}
+  ],
+  "$defs": {
+    "PlacementCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "reason", "detail"],
+      "properties": {
+        "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
+        "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
+        "detail": {"type": "string", "maxLength": 4096}
+      }
+    }
+  }
+}

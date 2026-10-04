@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/attempt-record.json",
+  "title": "AttemptRecord",
+  "description": "The checkpoint sealed at every builder exit (docs/design/m0/05 \"AttemptRecord\"; K2, KA6, KA8). Only builder continuations of the same project, task and contract revision consume it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["attempt", "project", "task", "contract_revision", "fencing_token", "base_tree", "partial_diff", "failing_tests", "trail", "builder_notes", "evidence_manifest", "seal", "pinned"],
+  "properties": {
+    "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"},
+    "project": {"$ref": "../common/defs.json#/$defs/ProjectID"},
+    "task": {"$ref": "../common/defs.json#/$defs/TaskID"},
+    "contract_revision": {"type": "string", "minLength": 1, "maxLength": 128},
+    "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "base_tree": {"$ref": "../common/defs.json#/$defs/GitID"},
+    "partial_diff": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]},
+    "failing_tests": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 1024}},
+    "trail": {"$ref": "../common/defs.json#/$defs/Digest"},
+    "builder_notes": {"description": "Untrusted data, never instructions.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]},
+    "evidence_manifest": {"$ref": "../common/defs.json#/$defs/Digest"},
+    "seal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "at", "sealed_by"],
+      "properties": {
+        "reason": {"enum": ["completed", "repair_handoff", "drain", "abrupt_loss", "host_restart"]},
+        "at": {"$ref": "../common/defs.json#/$defs/Time"},
+        "sealed_by": {"$ref": "../common/defs.json#/$defs/ActorID"}
+      }
+    },
+    "pinned": {"description": "True while the unit can still resume; retention never purges a pinned record [M14].", "type": "boolean"}
+  }
+}
