@@ -421,18 +421,27 @@ func TestCoverageBudgetIsLinear(t *testing.T) {
 	}
 	list := "[" + strings.Join(names, ", ") + "]"
 	doc := edit("protected_paths: [docs/decisions/**, deploy/*.yaml, CANON.md]", "protected_paths: "+list)
-	doc = strings.Replace(doc, "protected_documents: [docs/decisions/*.md]", "protected_documents: "+list, 1)
-	doc = strings.Replace(doc, "    files: [deploy/compose.yaml]\n", "    files: [p0]\n", 1)
+	// One protected document and one topology file no pattern covers: if
+	// either coverage check ran before the budget refused, its "not covered"
+	// refusal would show.
+	doc = strings.Replace(doc, "protected_documents: [docs/decisions/*.md]", "protected_documents: [uncovered/x.md, "+list[1:], 1)
+	doc = strings.Replace(doc, "    files: [deploy/compose.yaml]\n", "    files: [uncovered/y.yaml]\n", 1)
 	if len(doc) > MaxBytes {
 		t.Fatalf("fixture is %d bytes", len(doc))
 	}
+	// The check is the order, which no runner's load can change: the budget
+	// refuses before any of the (pairwise) coverage checks runs. The time
+	// bound is only a backstop.
 	start := time.Now()
 	_, err := Load([]byte(doc))
-	if took := time.Since(start); took > 50*time.Millisecond {
+	if took := time.Since(start); took > 2*time.Second {
 		t.Fatalf("validation took %v", took)
 	}
 	if err == nil || !strings.Contains(err.Error(), "steps") {
 		t.Fatalf("want the coverage budget refusal, got %v", err)
+	}
+	if strings.Contains(err.Error(), "not covered") {
+		t.Fatalf("coverage checks ran before the budget refused: %v", err)
 	}
 	if w := coverageWork(maxCoverageWork, [][]string{{strings.Repeat("a", 200)}}, [][]string{{strings.Repeat("b", 200)}}); w != 202*202 { // weight = 1 + (200 bytes + 1)
 		t.Fatalf("coverageWork = %d", w)
