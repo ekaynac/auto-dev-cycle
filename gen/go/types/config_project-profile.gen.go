@@ -7,7 +7,7 @@ package types
 type ProjectProfileRepo struct {
 	// Any git URL.
 	Url string `json:"url"`
-	// The branch work lands on; parameterised, never assumed (A15).
+	// The branch work lands on; parameterised, never assumed (A15). Full git ref syntax is checked by internal/profile.
 	BaseRef string `json:"base_ref"`
 }
 
@@ -79,7 +79,7 @@ type ProjectProfileToolchainDependencyRecipe struct {
 }
 
 type ProjectProfileToolchain struct {
-	// Images pinned by digest.
+	// Images pinned by digest; at least one, since dependency preparation, build and gate run in containers.
 	Images map[string]PinnedImage `json:"images"`
 	// Phase 1 of the sandbox: the only phase with network, limited to the registries named.
 	DependencyRecipe ProjectProfileToolchainDependencyRecipe `json:"dependency_recipe"`
@@ -229,7 +229,7 @@ type ProjectProfileRetention struct {
 type ProjectProfileVocabulary struct {
 	// An RE2 regular expression for product task ids (e.g. a ledger grammar); null means framework ids.
 	TaskIDPattern *string `json:"task_id_pattern"`
-	// E.g. adc/.
+	// E.g. adc/ or team/adc/. Full git ref syntax is checked by internal/profile.
 	BranchPrefix string `json:"branch_prefix"`
 	// Product language(s); framework vocabulary stays English.
 	Language string `json:"language"`
@@ -267,7 +267,7 @@ type ProjectProfile struct {
 	Vocabulary ProjectProfileVocabulary `json:"vocabulary"`
 }
 
-// Argv: A command as argv, run without a shell.
+// Argv: A command as argv, run without a shell. Arguments may be empty (some commands need an empty argument); internal/profile requires a non-empty executable and refuses NUL bytes.
 type Argv []string
 
 // RepoPath: A path inside the repository: relative, slash-separated, clean (internal/profile checks the form).

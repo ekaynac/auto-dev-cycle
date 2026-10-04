@@ -17,9 +17,9 @@
       "properties": {
         "url": {"description": "Any git URL.", "type": "string", "minLength": 1},
         "base_ref": {
-          "description": "The branch work lands on; parameterised, never assumed (A15).",
+          "description": "The branch work lands on; parameterised, never assumed (A15). Full git ref syntax is checked by internal/profile.",
           "type": "string",
-          "pattern": "^refs/heads/[A-Za-z0-9._/-]+$"
+          "pattern": "^refs/heads/\\S+$"
         }
       }
     },
@@ -87,8 +87,9 @@
       "required": ["images", "dependency_recipe"],
       "properties": {
         "images": {
-          "description": "Images pinned by digest.",
+          "description": "Images pinned by digest; at least one, since dependency preparation, build and gate run in containers.",
           "type": "object",
+          "minProperties": 1,
           "propertyNames": {"$ref": "#/$defs/Slug"},
           "additionalProperties": {"$ref": "#/$defs/PinnedImage"}
         },
@@ -278,17 +279,21 @@
           "description": "An RE2 regular expression for product task ids (e.g. a ledger grammar); null means framework ids.",
           "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]
         },
-        "branch_prefix": {"description": "E.g. adc/.", "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*/$"},
+        "branch_prefix": {
+          "description": "E.g. adc/ or team/adc/. Full git ref syntax is checked by internal/profile.",
+          "type": "string",
+          "pattern": "^\\S+/$"
+        },
         "language": {"description": "Product language(s); framework vocabulary stays English.", "type": "string", "minLength": 1}
       }
     }
   },
   "$defs": {
     "Argv": {
-      "description": "A command as argv, run without a shell.",
+      "description": "A command as argv, run without a shell. Arguments may be empty (some commands need an empty argument); internal/profile requires a non-empty executable and refuses NUL bytes.",
       "type": "array",
       "minItems": 1,
-      "items": {"type": "string", "minLength": 1}
+      "items": {"type": "string"}
     },
     "RepoPath": {
       "description": "A path inside the repository: relative, slash-separated, clean (internal/profile checks the form).",

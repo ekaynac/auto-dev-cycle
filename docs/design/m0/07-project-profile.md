@@ -28,7 +28,7 @@ forge:
     change_requests: bool
     protected_branches: bool
     required_checks: bool
-  settings: {…}                     # per forge kind (schema per kind)
+  settings: {}                      # per forge kind; reserved in v1 (an empty object) until a forge needs settings
 source_tests:                       # the gate's workspace (13 "Source tests, package, runtime verification") [G8]
   dev_dependencies: true            # test tools and dev deps installed (npm devDependencies, composer require-dev, …)
   vcs_metadata: false               # true only if the test suite needs it (declared build-time fact)

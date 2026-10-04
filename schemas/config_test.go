@@ -4,6 +4,7 @@ package schemas_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -79,10 +80,41 @@ func TestProjectProfileSchema(t *testing.T) {
 		"empty gate command": func(p map[string]any) {
 			p["gate"].(map[string]any)["command"] = []any{}
 		},
-		"empty argument": func(p map[string]any) { p["gate"].(map[string]any)["command"] = []any{"go", ""} },
 		"no environment": func(p map[string]any) { p["gate"].(map[string]any)["environments"] = []any{} },
 		"base ref not a branch": func(p map[string]any) {
 			p["repo"].(map[string]any)["base_ref"] = "main"
+		},
+		"base ref with a space": func(p map[string]any) {
+			p["repo"].(map[string]any)["base_ref"] = "refs/heads/my branch"
+		},
+		"no image": func(p map[string]any) { p["toolchain"].(map[string]any)["images"] = map[string]any{} },
+		"nested unknown key": func(p map[string]any) {
+			p["gate"].(map[string]any)["baseline"].(map[string]any)["window"] = 3
+		},
+		"unknown key in an environment": func(p map[string]any) {
+			p["gate"].(map[string]any)["environments"].([]any)[0].(map[string]any)["region"] = "eu"
+		},
+		"malformed topology revision": func(p map[string]any) {
+			p["integration"].(map[string]any)["topology"].(map[string]any)["adopted_revision"] = "HEAD"
+		},
+		"malformed topology digest": func(p map[string]any) {
+			p["integration"].(map[string]any)["topology"].(map[string]any)["digest"] = "md5:00"
+		},
+		"empty topology files": func(p map[string]any) {
+			p["integration"].(map[string]any)["topology"].(map[string]any)["files"] = []any{}
+		},
+		"data floor": func(p map[string]any) { p["data_policy"].(map[string]any)["floor"] = "anyone" },
+		"routing":    func(p map[string]any) { p["data_policy"].(map[string]any)["routing"] = "trusted" },
+		"destination": func(p map[string]any) {
+			p["data_policy"].(map[string]any)["allowed_destinations"] = []any{"Not A Slug"}
+		},
+		"usage profile": func(p map[string]any) { p["usage_profile_override"] = "everything" },
+		"network": func(p map[string]any) {
+			p["gate"].(map[string]any)["environments"].([]any)[0].(map[string]any)["facts"].(map[string]any)["network"] = "internet"
+		},
+		"absent nullable ttl": func(p map[string]any) { delete(p["retention"].(map[string]any), "blob_payload_ttl") },
+		"absent nullable task pattern": func(p map[string]any) {
+			delete(p["vocabulary"].(map[string]any), "task_id_pattern")
 		},
 		"forge settings": func(p map[string]any) {
 			p["forge"].(map[string]any)["settings"] = map[string]any{"token": "x"}
@@ -108,6 +140,9 @@ func TestProjectProfileSchema(t *testing.T) {
 		"branch prefix without a slash": func(p map[string]any) {
 			p["vocabulary"].(map[string]any)["branch_prefix"] = "adc"
 		},
+		"empty command": func(p map[string]any) {
+			p["toolchain"].(map[string]any)["dependency_recipe"].(map[string]any)["command"] = []any{}
+		},
 		"zero-length ttl": func(p map[string]any) {
 			p["retention"].(map[string]any)["attempt_continuity_post_closure_ttl"] = "P"
 		},
@@ -119,10 +154,56 @@ func TestProjectProfileSchema(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	// The custom adapter form is accepted with a name.
+	// Accepted forms: a custom adapter with a name, an empty argument after
+	// the executable, unconventional branch names, every nullable as null.
 	p := profile()
 	p["gate"].(map[string]any)["result_adapter"] = "custom:pytest-json"
+	p["gate"].(map[string]any)["command"] = []any{"git", "-c", "core.hooksPath=", "config", "x.y", ""}
+	p["repo"].(map[string]any)["base_ref"] = "refs/heads/release+hotfix"
+	p["vocabulary"].(map[string]any)["branch_prefix"] = "team/ADC/"
+	p["usage_profile_override"] = "on-prem"
 	if err := ok(p); err != nil {
-		t.Fatalf("custom adapter: %v", err)
+		t.Fatalf("accepted forms: %v", err)
+	}
+	nulls := profile()
+	nulls["retention"] = map[string]any{"attempt_continuity_post_closure_ttl": "P30D", "supervisor_notes_ttl": nil, "blob_payload_ttl": nil}
+	nulls["vocabulary"].(map[string]any)["task_id_pattern"] = nil
+	nulls["runtime_verification"] = map[string]any{"command": nil, "facts_from": nil}
+	nulls["integration"] = map[string]any{"plugin": "none", "topology": nil, "receipts_required": []any{}}
+	if err := ok(nulls); err != nil {
+		t.Fatalf("every nullable null: %v", err)
+	}
+}
+
+// Decode and encode round-trip both populated and null values unchanged.
+func TestProjectProfileRoundTrip(t *testing.T) {
+	nulls := profile()
+	nulls["retention"].(map[string]any)["blob_payload_ttl"] = nil
+	nulls["vocabulary"].(map[string]any)["task_id_pattern"] = nil
+	nulls["runtime_verification"] = map[string]any{"command": nil, "facts_from": nil}
+	nulls["integration"] = map[string]any{"plugin": "none", "topology": nil, "receipts_required": []any{}}
+	for name, doc := range map[string]map[string]any{"populated": profile(), "nulls": nulls} {
+		in, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := contract.Decode[types.ProjectProfile]("config/project-profile", in)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		out, err := contract.Encode("config/project-profile", p)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var a, b any
+		if err := json.Unmarshal(in, &a); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(out, &b); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(a, b) {
+			t.Fatalf("%s: round trip changed the document:\nin  %s\nout %s", name, in, out)
+		}
 	}
 }
