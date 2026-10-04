@@ -53,6 +53,14 @@ func reachAttempt(t *testing.T, s types.AttemptStatus) types.Attempt {
 	return a
 }
 
+// expectedAttempt is note 05's attempt table, written out independently of
+// the code (superseded comes only from Supersede).
+var expectedAttempt = map[attemptStep]types.AttemptStatus{
+	{"running", StopRequested}: "stopping", {"running", ResultSubmitted}: "finishing", {"running", Lost}: "lost",
+	{"stopping", Sealed}: "sealed", {"finishing", Sealed}: "sealed", {"lost", Sealed}: "sealed",
+	{"sealed", AttemptDone}: "completed",
+}
+
 // Every (status, event) pair is allowed exactly as note 05's table says,
 // every reachable attempt fits its schema, and publication is open only
 // while running.
@@ -66,12 +74,14 @@ func TestAttemptTable(t *testing.T) {
 		}
 		for _, k := range attemptKinds {
 			got, err := ApplyAttempt(from, attemptEvent(k))
-			want, ok := attemptTable[attemptStep{s, k}]
+			want, ok := expectedAttempt[attemptStep{s, k}]
 			switch {
 			case ok && (err != nil || got.Status != want || got.Publication != types.AttemptPublicationClosed):
 				t.Errorf("%s --%s--> %s/%s, %v; want %s/closed", s, k, got.Status, got.Publication, err, want)
 			case !ok && !errors.Is(err, ErrTransition):
 				t.Errorf("%s --%s--> accepted (%v)", s, k, err)
+			case ok:
+				encodes(t, "records/attempt", got)
 			}
 		}
 	}
@@ -122,8 +132,11 @@ func TestFencing(t *testing.T) {
 // Supersession retires the old attempt and mints the next token in one
 // step; the old attempt's outputs are then stale.
 func TestSupersede(t *testing.T) {
-	if _, _, err := Supersede(Start(attA, untID, leaID, base), attB, leaID, base); !errors.Is(err, ErrTransition) {
-		t.Errorf("superseding a running attempt: %v", err)
+	for _, s := range []types.AttemptStatus{types.AttemptStatusRunning, types.AttemptStatusStopping, types.AttemptStatusFinishing,
+		types.AttemptStatusLost, types.AttemptStatusCompleted, types.AttemptStatusSuperseded} {
+		if _, _, err := Supersede(reachAttempt(t, s), attB, leaID, base); !errors.Is(err, ErrTransition) {
+			t.Errorf("superseding a %s attempt: %v", s, err)
+		}
 	}
 	sealed := reachAttempt(t, types.AttemptStatusSealed)
 	if _, _, err := Supersede(sealed, attA, leaID, base); err == nil {

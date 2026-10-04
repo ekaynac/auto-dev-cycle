@@ -48,6 +48,11 @@ func event(kind string) LeaseEvent {
 	switch kind {
 	case Waiting:
 		e.Hold = &types.LeaseHoldValue{Hold: "quota_reset", SignalInstance: "2026-10-04T15:00:00Z"}
+	case Revoked:
+		e.Reason = "grant_revoked"
+	case RestoreFailed:
+		e.Reason = "restore probe failed"
+		e.Hold = &types.LeaseHoldValue{Hold: RestoreHold, SignalInstance: "tgt_01m3250v57fhm9v1z9xd1wk8gw"}
 	case AttemptStarted:
 		e.Attempt = &a
 	case RestoreVerified:
@@ -109,14 +114,27 @@ func encodes(t *testing.T, schema string, v any) {
 // plain and evidence-target leases; every reachable lease fits its schema;
 // terminal states refuse everything.
 func TestLeaseTable(t *testing.T) {
+	type step = leaseStep
+	common := map[step]types.LeaseState{
+		{"requested", Waiting}: "waiting", {"waiting", Requested}: "requested", {"requested", Granted}: "granted",
+		{"granted", AttemptStarted}: "active", {"granted", Expired}: "releasing",
+		{"active", Completed}: "settling", {"active", Revoked}: "settling", {"active", Preempted}: "settling",
+		{"active", Expired}: "settling", {"releasing", Released}: "released",
+	}
+	plain := map[step]types.LeaseState{{"settling", Settled}: "settled"}
+	restore := map[step]types.LeaseState{
+		{"settling", RestoreStarted}: "restoring", {"restoring", RestoreVerified}: "settling_verified",
+		{"restoring", RestoreFailed}: "restore_failed", {"restore_failed", RestoreVerified}: "settling_verified",
+		{"settling_verified", Settled}: "settled",
+	}
 	for _, target := range []bool{false, true} {
 		allowed := map[leaseStep]types.LeaseState{}
-		for k, v := range leaseTable {
+		for k, v := range common {
 			allowed[k] = v
 		}
-		settle := plainSettle
+		settle := plain
 		if target {
-			settle = restoreTable
+			settle = restore
 		}
 		for k, v := range settle {
 			allowed[k] = v
@@ -135,6 +153,8 @@ func TestLeaseTable(t *testing.T) {
 					t.Errorf("target=%v %s --%s--> refused: %v", target, s, k, err)
 				case ok && got.State != want:
 					t.Errorf("target=%v %s --%s--> %s, want %s", target, s, k, got.State, want)
+				case ok:
+					encodes(t, "records/lease", got)
 				case !ok && !errors.Is(err, ErrTransition):
 					t.Errorf("target=%v %s --%s--> accepted (%v)", target, s, k, err)
 				}
@@ -194,6 +214,29 @@ func TestLeaseEventData(t *testing.T) {
 	}
 	if _, err := ApplyLease(reach(t, types.LeaseStateRestoring, true), LeaseEvent{Kind: RestoreVerified}, true, h); err == nil {
 		t.Error("a verified restore without its receipt")
+	}
+	// Astra #48: the reasons note 05 requires, and the restore hold.
+	if _, err := ApplyLease(reach(t, types.LeaseStateActive, false), LeaseEvent{Kind: Revoked}, false, h); err == nil {
+		t.Error("a revocation without its reason")
+	}
+	restoring := reach(t, types.LeaseStateRestoring, true)
+	noReason := event(RestoreFailed)
+	noReason.Reason = ""
+	wrongHold := event(RestoreFailed)
+	wrongHold.Hold = &types.LeaseHoldValue{Hold: "quota_reset", SignalInstance: "x"}
+	noHold := event(RestoreFailed)
+	noHold.Hold = nil
+	for name, e := range map[string]LeaseEvent{"no reason": noReason, "another hold": wrongHold, "no hold": noHold} {
+		if _, err := ApplyLease(restoring, e, true, h); err == nil {
+			t.Errorf("a failed restore with %s", name)
+		}
+	}
+	failed, err := ApplyLease(restoring, event(RestoreFailed), true, h)
+	if err != nil || failed.Hold == nil || failed.Hold.Hold != RestoreHold {
+		t.Fatalf("a failed restore: %v, %+v", err, failed.Hold)
+	}
+	if retried, err := ApplyLease(failed, event(RestoreVerified), true, h); err != nil || retried.Hold != nil {
+		t.Errorf("the restore hold outlived the verified retry: %v, %+v", err, retried.Hold)
 	}
 	settling := reach(t, types.LeaseStateSettling, false)
 	if _, err := ApplyLease(settling, LeaseEvent{Kind: Settled}, false, h); err == nil {

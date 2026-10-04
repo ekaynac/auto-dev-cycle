@@ -36,10 +36,15 @@ const (
 	RestoreFailed   = "lease.restore_failed"
 )
 
+// RestoreHold is the hold of a lease whose evidence-target restore failed:
+// the target stays excluded until a restore is verified (05).
+const RestoreHold = "evidence_restore_pending"
+
 // LeaseEvent is one lease transition with the data it carries.
 type LeaseEvent struct {
 	Kind       string
-	Hold       *types.LeaseHoldValue       // lease.waiting
+	Reason     string                      // lease.revoked, lease.restore_failed: why (05)
+	Hold       *types.LeaseHoldValue       // lease.waiting; lease.restore_failed (evidence_restore_pending)
 	Attempt    *types.AttemptID            // attempt.started
 	Receipt    *types.ReceiptID            // lease.restore_verified
 	Settlement *types.LeaseSettlementValue // lease.settled
@@ -93,14 +98,24 @@ func ApplyLease(l types.Lease, e LeaseEvent, evidenceTarget bool, holds map[stri
 		}
 	}
 	n := l
-	n.State, n.Hold = to, nil
+	n.State, n.Hold = to, nil // a hold lasts exactly as long as its state
 	switch e.Kind {
-	case Waiting:
+	case Revoked:
+		if e.Reason == "" {
+			return types.Lease{}, errors.New("lease: a revocation names its reason")
+		}
+	case Waiting, RestoreFailed:
+		if e.Kind == RestoreFailed && e.Reason == "" {
+			return types.Lease{}, errors.New("lease: a failed restore names its reason")
+		}
 		if e.Hold == nil || e.Hold.SignalInstance == "" {
-			return types.Lease{}, errors.New("lease: a wait names its hold and signal instance")
+			return types.Lease{}, errors.New("lease: a hold names its code and signal instance")
 		}
 		if _, ok := holds[e.Hold.Hold]; !ok {
 			return types.Lease{}, fmt.Errorf("lease: hold %q is not registered", e.Hold.Hold)
+		}
+		if e.Kind == RestoreFailed && e.Hold.Hold != RestoreHold {
+			return types.Lease{}, fmt.Errorf("lease: a failed restore holds on %s, not %s", RestoreHold, e.Hold.Hold)
 		}
 		h := *e.Hold
 		n.Hold = &h
