@@ -64,8 +64,11 @@ type Request struct {
 	Actor   types.Actor
 	Action  string
 	Project *types.ProjectID // nil for an action outside any project
-	// Classes is the effective change's sensitive classes, computed from
-	// the current and resulting state; empty when nothing sensitive changes.
+	// Classes is the effective change's sensitive classes, computed by the
+	// caller (the Authorize hook's classifier) from the current and resulting
+	// state; empty when nothing sensitive changes. An action that is itself
+	// a class carries that class regardless. Grantee must be set whenever the
+	// change creates or extends a grant.
 	Classes []string
 	// Grants are the actor's grants; Revoked names the ones revoked since.
 	Grants  []types.Grant
@@ -93,8 +96,15 @@ func Decide(reg *vocab.Registry, r Request) Decision {
 	}
 	// The policy is the strongest default among the change's classes; a
 	// class without a default is refused, never read as none.
+	// An action that is itself a change class (grant.create, agent.enrol,
+	// …) always carries it, whatever the caller's computation found: its
+	// sensitivity never depends on the effective change alone.
+	classes := slices.Clone(r.Classes)
+	if _, ok := reg.ChangeClasses[r.Action]; ok && !slices.Contains(classes, r.Action) {
+		classes = append(classes, r.Action)
+	}
 	policy, everyActor := None, false
-	for _, c := range r.Classes {
+	for _, c := range classes {
 		d, ok := reg.ChangeClasses[c]
 		if !ok {
 			return refuse(vocab.ReasonChangeClassUnknown, "change class %q has no confirmation default", c)
@@ -112,7 +122,7 @@ func Decide(reg *vocab.Registry, r Request) Decision {
 		}
 		return Decision{Disposition: Allow}
 	case types.ActorKindSupervisor:
-		return supervisor(r, policy)
+		return supervisor(r, classes, policy)
 	}
 	return refuse(vocab.ReasonActionNotGranted, "actor kind %q acts under no rule", r.Actor.Kind)
 }
@@ -120,8 +130,11 @@ func Decide(reg *vocab.Registry, r Request) Decision {
 // supervisor: a grant in force must cover the action on the project; its
 // override can only tighten the policy; a supervisor never creates or
 // extends its own grant.
-func supervisor(r Request, policy Policy) Decision {
-	if (r.Action == "grant.create" || r.Action == "grant.extend") && (r.Grantee == nil || *r.Grantee == r.Actor.ID) {
+func supervisor(r Request, classes []string, policy Policy) Decision {
+	// Keyed on the change, not the action's name: any command whose
+	// effective change creates or extends a grant is a grant change.
+	grantChange := slices.Contains(classes, "grant.create") || slices.Contains(classes, "grant.extend")
+	if grantChange && (r.Grantee == nil || *r.Grantee == r.Actor.ID) {
 		return refuse(vocab.ReasonSelfGrantRefused, "a supervisor never creates or extends its own grant")
 	}
 	var covering []types.Grant

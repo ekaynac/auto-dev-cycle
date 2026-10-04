@@ -166,3 +166,20 @@ func TestSelfGrant(t *testing.T) {
 		expect(t, action+" for another supervisor", Decide(reg, peer), Propose, Human, vocab.Reason{})
 	}
 }
+
+// Security review: an action that is a change class carries it even when
+// the caller's classes omit it, and a grant change under another action's
+// name is still a grant change.
+func TestClassesCannotBeOmitted(t *testing.T) {
+	reg := registry(t)
+	g := grant(grtA, on(prjA), "grant.create", "agent.enrol", "profile.adopt")
+	peer := supRequest("grant.create", nil, g)
+	peer.Grantee = ptr(sup2ID)
+	expect(t, "grant.create without its class", Decide(reg, peer), Propose, Human, vocab.Reason{})
+	expect(t, "agent.enrol without its class", Decide(reg, supRequest("agent.enrol", nil, g)), Propose, Human, vocab.Reason{})
+	self := supRequest("profile.adopt", []string{"grant.extend"}, g)
+	self.Grantee = ptr(supID)
+	expect(t, "extending its own grant through a profile", Decide(reg, self), Refuse, None, vocab.ReasonSelfGrantRefused)
+	unnamed := supRequest("profile.adopt", []string{"grant.create"}, g)
+	expect(t, "a grant change naming no grantee", Decide(reg, unnamed), Refuse, None, vocab.ReasonSelfGrantRefused)
+}
