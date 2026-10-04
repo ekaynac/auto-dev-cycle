@@ -415,48 +415,32 @@ func TestCoverageBudgetCountsBytes(t *testing.T) {
 // Astra #33 round 3: computing the budget is linear: thousands of globs in
 // both protection arrays are refused (or checked) without a quadratic pass.
 func TestCoverageBudgetIsLinear(t *testing.T) {
-	doc := func(n int) string {
-		var names []string
-		for i := 0; i < n; i++ {
-			names = append(names, fmt.Sprintf("p%d", i))
-		}
-		list := "[" + strings.Join(names, ", ") + "]"
-		d := edit("protected_paths: [docs/decisions/**, deploy/*.yaml, CANON.md]", "protected_paths: "+list)
-		d = strings.Replace(d, "protected_documents: [docs/decisions/*.md]", "protected_documents: "+list, 1)
-		d = strings.Replace(d, "    files: [deploy/compose.yaml]\n", "    files: [p0]\n", 1)
-		if len(d) > MaxBytes {
-			t.Fatalf("fixture is %d bytes", len(d))
-		}
-		return d
+	var names []string
+	for i := 0; i < 4000; i++ {
+		names = append(names, fmt.Sprintf("p%d", i))
 	}
-	// best is the fastest of three loads, so a busy runner's noise does not
-	// decide the ratio.
-	best := func(d string) (time.Duration, error) {
-		var fastest time.Duration
-		var err error
-		for i := 0; i < 3; i++ {
-			start := time.Now()
-			_, err = Load([]byte(d))
-			if took := time.Since(start); i == 0 || took < fastest {
-				fastest = took
-			}
-		}
-		return fastest, err
+	list := "[" + strings.Join(names, ", ") + "]"
+	doc := edit("protected_paths: [docs/decisions/**, deploy/*.yaml, CANON.md]", "protected_paths: "+list)
+	// One protected document no pattern covers: if any coverage check ran
+	// before the budget refused, its "not covered" refusal would show.
+	doc = strings.Replace(doc, "protected_documents: [docs/decisions/*.md]", "protected_documents: [uncovered/x.md, "+list[1:], 1)
+	doc = strings.Replace(doc, "    files: [deploy/compose.yaml]\n", "    files: [p0]\n", 1)
+	if len(doc) > MaxBytes {
+		t.Fatalf("fixture is %d bytes", len(doc))
 	}
-	small, _ := best(doc(1000))
-	large, err := best(doc(4000))
-	// Linear work grows about 4x from 1000 to 4000 entries per array; a
-	// pass over the pairs grows 16x. The ratio, not a wall-clock budget
-	// (which a loaded runner misses), is the check; the absolute bound is
-	// only a backstop.
-	if ratio := float64(large) / float64(max(small, time.Microsecond)); ratio > 8 {
-		t.Fatalf("validation grew %.1fx from 1000 to 4000 entries (%v, %v)", ratio, small, large)
-	}
-	if large > 2*time.Second {
-		t.Fatalf("validation took %v", large)
+	// The check is the order, which no runner's load can change: the budget
+	// refuses before any of the (pairwise) coverage checks runs. The time
+	// bound is only a backstop.
+	start := time.Now()
+	_, err := Load([]byte(doc))
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("validation took %v", took)
 	}
 	if err == nil || !strings.Contains(err.Error(), "steps") {
 		t.Fatalf("want the coverage budget refusal, got %v", err)
+	}
+	if strings.Contains(err.Error(), "not covered") {
+		t.Fatalf("coverage checks ran before the budget refused: %v", err)
 	}
 	if w := coverageWork(maxCoverageWork, [][]string{{strings.Repeat("a", 200)}}, [][]string{{strings.Repeat("b", 200)}}); w != 202*202 { // weight = 1 + (200 bytes + 1)
 		t.Fatalf("coverageWork = %d", w)
