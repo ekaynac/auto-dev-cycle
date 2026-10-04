@@ -21,6 +21,8 @@ actions:
   - {action: actor.revoke, family: admin, description: "Revoke an actor and its tokens.", introduced: 0.1.0, deprecated: null, source: "04"}
   - {action: seat.take, family: seat, description: "Take the supervisor seat, optionally forcing a handover after a delay.", introduced: 0.1.0, deprecated: null, source: "08"}
   - {action: seat.release, family: seat, description: "Release the supervisor seat.", introduced: 0.1.0, deprecated: null, source: "08"}
+  - {action: knowledge.change_protected_document, family: project, description: "Change a protected document: exact paths and old and new digests, through independent review and the merge queue; never widens authority (04 \"Protected changes\").", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: integration.change_topology, family: project, description: "Change the integration topology, bound like a protected document; never widens authority (04, M12).", introduced: 0.1.0, deprecated: null, source: "04"}
   - {action: note.add, family: notes, description: "Add an operator or supervisor note to a project.", introduced: 0.1.0, deprecated: null, source: "08"}
 change_classes:
   - {class: install.self, confirmation: independent_review, settable_to_human: true, every_actor_kind: false, description: "The controller installs a new build of itself.", source: D32}

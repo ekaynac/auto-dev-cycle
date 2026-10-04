@@ -10,35 +10,58 @@ import (
 
 // The defaults are note 04's table (D32, K5, KA1, M12), exactly.
 func TestChangeClassDefaults(t *testing.T) {
-	want := map[string]string{
-		"install.self":                        "independent_review",
-		"policy.widen_data":                   "human",
-		"policy.widen_destinations":           "human",
-		"policy.weaken_protection":            "human",
-		"capacity.allow_paid_fallback":        "human",
-		"agent.enrol":                         "human",
-		"grant.create":                        "human",
-		"grant.extend":                        "human",
-		"knowledge.accept_claim":              "independent_review",
-		"knowledge.export_framework_prose":    "human",
-		"knowledge.change_protected_document": "independent_review",
-		"integration.change_topology":         "independent_review",
+	type policy struct {
+		confirmation string
+		settable     bool
+	}
+	want := map[string]policy{
+		"install.self":                        {"independent_review", true},
+		"policy.widen_data":                   {"human", false},
+		"policy.widen_destinations":           {"human", false},
+		"policy.weaken_protection":            {"human", false},
+		"capacity.allow_paid_fallback":        {"human", false},
+		"agent.enrol":                         {"human", false},
+		"grant.create":                        {"human", false},
+		"grant.extend":                        {"human", false},
+		"knowledge.accept_claim":              {"independent_review", true}, // K5: settable to human
+		"knowledge.export_framework_prose":    {"human", false},
+		"knowledge.change_protected_document": {"independent_review", true},
+		"integration.change_topology":         {"independent_review", true},
 	}
 	reg := mustLoad(t)
 	if len(reg.ChangeClasses) != len(want) {
 		t.Fatalf("%d defaults, want %d", len(reg.ChangeClasses), len(want))
 	}
-	for class, policy := range want {
+	for class, p := range want {
 		d, ok := reg.ChangeClasses[class]
-		if !ok || string(d.Confirmation) != policy {
-			t.Errorf("%s: %+v, want %s", class, d, policy)
+		if !ok || string(d.Confirmation) != p.confirmation || d.SettableToHuman != p.settable {
+			t.Errorf("%s: %+v, want %+v", class, d, p)
 		}
 		if d.EveryActorKind != (class == "knowledge.export_framework_prose") {
 			t.Errorf("%s: every_actor_kind %v", class, d.EveryActorKind)
 		}
 	}
-	if len(reg.Actions) == 0 {
-		t.Fatal("no actions")
+}
+
+// The M0 action inventory and each action's CLI family (04, 08): an action
+// dropped from the registry would drop its endpoint and parity mapping.
+func TestActionInventory(t *testing.T) {
+	want := map[string]string{
+		"project.create": "project", "profile.adopt": "project", "task.create": "task", "review.request": "task",
+		"input.answer": "holds", "proposal.confirm": "approve", "proposal.withdraw": "propose",
+		"grant.create": "grant", "grant.extend": "grant", "grant.revoke": "grant",
+		"agent.enrol": "admin", "actor.revoke": "admin", "seat.take": "seat", "seat.release": "seat",
+		"knowledge.change_protected_document": "project", "integration.change_topology": "project",
+		"note.add": "notes",
+	}
+	got := mustLoad(t).Actions
+	if len(got) != len(want) {
+		t.Errorf("%d actions, want %d", len(got), len(want))
+	}
+	for action, family := range want {
+		if a, ok := got[action]; !ok || string(a.Family) != family {
+			t.Errorf("%s: %+v, want family %s", action, a, family)
+		}
 	}
 }
 
