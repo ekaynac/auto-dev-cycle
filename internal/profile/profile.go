@@ -4,9 +4,7 @@
 // the schema first, then the semantic checks the schema cannot express.
 // Validation runs before adoption, never after.
 //
-// The coverage of protected documents and topology files by protected_paths
-// is a separate change. Two checks of note 07 need what M0 does not have yet
-// and land with it:
+// Two checks of note 07 need what M0 does not have yet and land with it:
 // that the base ref exists (repository access) and that the data policy is
 // within the installation's usage profile (the usage profiles, M2).
 package profile
@@ -88,8 +86,48 @@ func Check(p *types.ProjectProfile) error {
 		repoPaths("integration.topology.files", t.Files)
 	}
 
-	// Protected globs and their coverage of protected documents and topology
-	// files are checked by the coverage checks (a separate change).
+	var protected, documents [][]string
+	for _, g := range p.ProtectedPaths {
+		segs, err := compileGlob(string(g))
+		if err != nil {
+			bad("protected_paths", "%q: %v", g, err)
+			continue
+		}
+		protected = append(protected, segs)
+	}
+	var docNames []types.Glob
+	for _, g := range p.ProtectedDocuments {
+		segs, err := compileGlob(string(g))
+		if err != nil {
+			bad("protected_documents", "%q: %v", g, err)
+			continue
+		}
+		documents, docNames = append(documents, segs), append(docNames, g)
+	}
+	var files [][]string
+	var fileNames []types.RepoPath
+	if t := p.Integration.Topology; t != nil {
+		for _, f := range t.Files {
+			if checkRepoPath(string(f)) == nil {
+				files, fileNames = append(files, strings.Split(string(f), "/")), append(fileNames, f)
+			}
+		}
+	}
+	// The coverage checks are bounded as a whole before any of them runs.
+	if work := coverageWork(maxCoverageWork, protected, documents, files); work > maxCoverageWork {
+		bad("protected_paths", "checking coverage would take more than %d steps; use fewer or simpler patterns", maxCoverageWork)
+	} else {
+		for i, d := range documents {
+			if !anyCovers(protected, d) {
+				bad("protected_documents", "%q is not covered by protected_paths", docNames[i])
+			}
+		}
+		for i, f := range files {
+			if !anyMatches(protected, f) {
+				bad("integration.topology.files", "%q is not covered by protected_paths (the topology is protected)", fileNames[i])
+			}
+		}
+	}
 
 	if p.Forge.Kind == types.ProjectProfileForgeKindGit {
 		c := p.Forge.Capabilities

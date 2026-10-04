@@ -4,10 +4,12 @@ package profile
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // valid is a complete profile for a Go service on GitHub.
@@ -147,6 +149,15 @@ func TestRefusals(t *testing.T) {
 		{"escaping lockfile", edit("lockfiles: [go.sum]", "lockfiles: [../go.sum]"), "inside the repository"},
 		{"unclean path", edit("outputs: [dist/service]", "outputs: [dist//service]"), "clean"},
 		{"backslash path", edit("outputs: [dist/service]", `outputs: ['dist\service']`), "forward slashes"},
+		{"bad glob", edit("CANON.md]", "'CANON[.md']"), "syntax error"},
+		{"partial double star", edit("docs/decisions/**", "docs/decisions/a**"), "whole segment"},
+		{"escaping glob", edit("CANON.md]", "../CANON.md]"), "inside the repository"},
+		{"uncovered document", edit("protected_documents: [docs/decisions/*.md]", "protected_documents: [docs/notes/*.md]"), "not covered"},
+		{"uncovered topology", edit("deploy/*.yaml", "deploy/*.yml"), "topology is protected"},
+		{"spelling is not coverage", edit("protected_paths: [docs/decisions/**, deploy/*.yaml, CANON.md]", "protected_paths: ['docs/decisions/a?.md', deploy/*.yaml, CANON.md]"), "not covered"},
+		{"bracket topology file", strings.Replace(edit("    files: [deploy/compose.yaml]\n", "    files: ['deploy/[ab].yaml']\n"), "deploy/*.yaml", "'deploy/[ab].yaml'", 1), "topology is protected"},
+		{"NUL in a protected path", edit("CANON.md]", "\"CAN\\0ON.md\"]"), "NUL"},
+		{"NUL in a protected document", edit("protected_documents: [docs/decisions/*.md]", "protected_documents: [\"docs/decisions/\\0.md\"]"), "NUL"},
 		{"git with capabilities", edit("kind: github", "kind: git"), "plain git"},
 		{"duplicate environment", edit("  ownership_rules: default\n", "    - name: production\n      facts: {vcs_metadata: false, network: none, runtime: {language_version: \"1\", os: linux, arch: amd64}}\n      owner: ops\n  ownership_rules: default\n"), "named twice"},
 		{"unknown environment", edit("facts_from: production", "facts_from: staging"), "not a gate environment"},
@@ -262,5 +273,175 @@ func TestTaskPatternIsNotCompiled(t *testing.T) {
 	nested := edit(`'^SVC-[0-9]+$'`, `'((a{1000}){1000}){1000}'`)
 	if _, err := Load([]byte(nested)); err == nil {
 		t.Fatal("a pattern whose expansion is too large was accepted")
+	}
+}
+
+func segs(t *testing.T, g string) []string {
+	t.Helper()
+	s, err := compileGlob(g)
+	if err != nil {
+		t.Fatalf("%s: %v", g, err)
+	}
+	return s
+}
+
+func TestMatchesPath(t *testing.T) {
+	cases := []struct {
+		glob, path string
+		want       bool
+	}{
+		{"docs/**", "docs/a/b.md", true},
+		{"docs/**", "docs", true},
+		{"**/*.md", "a/b/c.md", true},
+		{"**/*.md", "c.md", true},
+		{"docs/*.md", "docs/a/b.md", false},
+		{"a/**/b", "a/x/y/b", true},
+		{"a/**/b", "a/b", true},
+		{"a/**/b", "a/x/c", false},
+		// Astra #30: a literal path is matched, never compared by spelling:
+		// [ab].yaml matches a.yaml and b.yaml, not a file named "[ab].yaml".
+		{"deploy/[ab].yaml", "deploy/a.yaml", true},
+		{"deploy/[ab].yaml", "deploy/[ab].yaml", false},
+	}
+	for _, c := range cases {
+		if got := matchesPath(segs(t, c.glob), strings.Split(c.path, "/")); got != c.want {
+			t.Errorf("matchesPath(%q, %q) = %v, want %v", c.glob, c.path, got, c.want)
+		}
+	}
+}
+
+func TestCovers(t *testing.T) {
+	cases := []struct {
+		glob, doc string
+		want      bool
+	}{
+		{"docs/**", "docs/*.md", true},
+		{"docs/**", "docs/**", true},
+		{"**", "a/**/b/*.md", true},
+		{"docs/*", "docs/*.md", true},
+		{"docs/*.md", "docs/*.md", true},
+		{"docs/*.md", "docs/a.md", true},
+		{"docs/[ab].md", "docs/[ab].md", true},
+		{"docs/*", "docs/**", false},
+		{"*.yaml", "*.yml", false},
+		// Astra #30: matching a pattern's spelling is not containment.
+		{"docs/a?.md", "docs/a*.md", false},
+		{"docs/[ab].md", "docs/[ac].md", false},
+		{"docs/a*", "docs/a?", false},
+	}
+	for _, c := range cases {
+		if got := covers(segs(t, c.glob), segs(t, c.doc)); got != c.want {
+			t.Errorf("covers(%q, %q) = %v, want %v", c.glob, c.doc, got, c.want)
+		}
+	}
+}
+
+// Astra #30: separated ** segments against a long non-matching path stay
+// fast (memoised), and over-long globs are refused before matching.
+func TestGlobMatchingIsBounded(t *testing.T) {
+	g := segs(t, strings.Repeat("**/a/", 15)+"z")
+	path := strings.Split(strings.Repeat("a/", 31)+"a", "/")
+	done := make(chan bool, 1)
+	go func() { done <- matchesPath(g, path) || covers(g, path) }()
+	select {
+	case got := <-done:
+		if got {
+			t.Fatal("matched a path that does not end in z")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("glob matching is not bounded")
+	}
+	if _, err := compileGlob(strings.Repeat("a/", 40) + "a"); err == nil {
+		t.Fatal("a glob with too many segments")
+	}
+	if _, err := compileGlob(strings.Repeat("a", 300)); err == nil {
+		t.Fatal("an over-long glob")
+	}
+}
+
+// Astra #33: the coverage checks of a whole profile are bounded together:
+// many expensive patterns are refused quickly, never matched for seconds.
+func TestCoverageWorkIsBounded(t *testing.T) {
+	var prot, docs []string
+	for i := 0; i < 300; i++ {
+		prot = append(prot, fmt.Sprintf("'%sz%d'", strings.Repeat("**/a/", 12), i))
+		docs = append(docs, fmt.Sprintf("'%sb%d'", strings.Repeat("a/", 30), i))
+	}
+	prot = append(prot, "'**'")
+	doc := edit("protected_paths: [docs/decisions/**, deploy/*.yaml, CANON.md]", "protected_paths: ["+strings.Join(prot, ", ")+"]")
+	doc = strings.Replace(doc, "protected_documents: [docs/decisions/*.md]", "protected_documents: ["+strings.Join(docs, ", ")+"]", 1)
+	if len(doc) > MaxBytes {
+		t.Fatalf("fixture is %d bytes, over the input bound", len(doc))
+	}
+	start := time.Now()
+	_, err := Load([]byte(doc))
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("validation took %v", took)
+	}
+	if err == nil || !strings.Contains(err.Error(), "steps") {
+		t.Fatalf("want the coverage budget refusal, got %v", err)
+	}
+}
+
+// Astra #33 round 2: the budget counts the bytes each segment comparison
+// costs, not only table cells: long character classes against long names
+// are refused quickly, through both coverage routes.
+func TestCoverageBudgetCountsBytes(t *testing.T) {
+	var prot, names []string
+	for i := 0; i < 120; i++ {
+		prot = append(prot, fmt.Sprintf("'*[%s]z%03d'", strings.Repeat("a", 238), i))
+		names = append(names, fmt.Sprintf("'%s%03d'", strings.Repeat("a", 250), i))
+	}
+	prot = append(prot, "'**'")
+	base := edit("protected_paths: [docs/decisions/**, deploy/*.yaml, CANON.md]", "protected_paths: ["+strings.Join(prot, ", ")+"]")
+	topology := strings.Replace(base, "    files: [deploy/compose.yaml]\n", "    files: ["+strings.Join(names, ", ")+"]\n", 1)
+	topology = strings.Replace(topology, "protected_documents: [docs/decisions/*.md]", "protected_documents: []", 1)
+	documents := strings.Replace(base, "protected_documents: [docs/decisions/*.md]", "protected_documents: ["+strings.Join(names, ", ")+"]", 1)
+	for name, doc := range map[string]string{"topology files": topology, "protected documents": documents} {
+		if len(doc) > MaxBytes {
+			t.Fatalf("%s: fixture is %d bytes", name, len(doc))
+		}
+		start := time.Now()
+		_, err := Load([]byte(doc))
+		if took := time.Since(start); took > 500*time.Millisecond {
+			t.Errorf("%s: validation took %v", name, took)
+		}
+		if err == nil || !strings.Contains(err.Error(), "steps") {
+			t.Errorf("%s: want the coverage budget refusal, got %v", name, err)
+		}
+	}
+}
+
+// Astra #33 round 3: computing the budget is linear: thousands of globs in
+// both protection arrays are refused (or checked) without a quadratic pass.
+func TestCoverageBudgetIsLinear(t *testing.T) {
+	var names []string
+	for i := 0; i < 4000; i++ {
+		names = append(names, fmt.Sprintf("p%d", i))
+	}
+	list := "[" + strings.Join(names, ", ") + "]"
+	doc := edit("protected_paths: [docs/decisions/**, deploy/*.yaml, CANON.md]", "protected_paths: "+list)
+	doc = strings.Replace(doc, "protected_documents: [docs/decisions/*.md]", "protected_documents: "+list, 1)
+	doc = strings.Replace(doc, "    files: [deploy/compose.yaml]\n", "    files: [p0]\n", 1)
+	if len(doc) > MaxBytes {
+		t.Fatalf("fixture is %d bytes", len(doc))
+	}
+	start := time.Now()
+	_, err := Load([]byte(doc))
+	if took := time.Since(start); took > 50*time.Millisecond {
+		t.Fatalf("validation took %v", took)
+	}
+	if err == nil || !strings.Contains(err.Error(), "steps") {
+		t.Fatalf("want the coverage budget refusal, got %v", err)
+	}
+	if w := coverageWork(maxCoverageWork, [][]string{{strings.Repeat("a", 200)}}, [][]string{{strings.Repeat("b", 200)}}); w != 202*202 { // weight = 1 + (200 bytes + 1)
+		t.Fatalf("coverageWork = %d", w)
+	}
+	huge := make([][]string, 3000)
+	for i := range huge {
+		huge[i] = []string{strings.Repeat("a", 250)}
+	}
+	if w := coverageWork(maxCoverageWork, huge, huge); w != maxCoverageWork+1 {
+		t.Fatalf("coverageWork does not saturate: %d", w)
 	}
 }
