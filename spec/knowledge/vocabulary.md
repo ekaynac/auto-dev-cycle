@@ -12,7 +12,7 @@ long it lives.
 | **Authoritative state** | receipts, approvals, attempts, findings, plan revisions, decisions | the controller | everyone, as regenerated status |
 | **Regenerated view** | dossier, code index, digests, plan sidecar, canon excerpts | deterministic code from the tree and receipts | per-role assembly; regenerated per call, never stored as knowledge |
 | **Ephemeral attempt continuity** | partial diff, failing tests, trail, untrusted builder notes, sealed at every builder exit | the attempt (notes) and the controller (seal) | builder continuations of the same project, task and contract revision only; never reviewers |
-| **Supervisor continuity** | notes, open threads, handovers | the supervisor | the supervisor seat only; never cycle roles |
+| **Supervisor continuity** | notes, open threads, handovers | the supervisor | the supervisor seat only, within its grant and projects; untrusted; never cycle roles |
 | **Durable knowledge** | accepted decisions, conventions, verified lessons, scoped negative results | proposals from any role or code, accepted by policy | role views, by purpose |
 
 ## Claim kinds
@@ -34,7 +34,8 @@ Competing interpretations are separate claims with an explicit dispute: one home
 Three independent dimensions. None of them grants authority.
 
 - **Decision:** `unassessed`, `accepted(purpose)`, `rejected` or `disputed`. Supersession is an explicit link.
-- **Validity:** `current`, `stale`, `unknown` or `expired`, each with a reason.
+- **Validity:** `current`, `stale`, `unknown` or `expired`, each with a reason. A claim declares the dependencies
+  its validity rests on; a change to one makes it `stale` or `unknown` until revalidated (K6).
 - **Retention:** `available`, `held` or `purged`; a purge leaves a tombstone.
 
 ## Refs
@@ -91,7 +92,25 @@ Three append-only events on one manifest id, for every model call:
 
 **Coverage levels:** *assembled* (what the controller built), *delivered* (the initial prompt plus every
 controller-mediated tool result, per turn) and *unobservable* (harness instructions, compaction, harness-internal
-tools). The coverage **status** is `complete`, `partial` or `unknown`, derived from evidence.
+tools).
+
+**Coverage derivation** (normative; the same rules are in
+[`records/manifest-finalized.json`](../../schemas/records/manifest-finalized.json)):
+
+1. `prompt` is the controller's own evidence of the initial prompt's egress: `delivered`, `not_sent` (refused or
+   failed before egress: no turns, no delivery events) or `uncertain`.
+2. The **delivered refs** are the included inputs when the prompt was delivered, plus every tool result of every
+   delivery event. The **possibly delivered refs** are the included inputs of an uncertain prompt that no delivery
+   event confirms. The two never overlap.
+3. Every compaction mark of a delivery event is listed as unobservable for its turn, and every adapter
+   declaration as declared-only for its turn: a declaration is never evidence. Either list may name more.
+4. When the number of turns is known, every turn named anywhere lies in 1..turns.
+5. The **status** is `unknown` when the number of turns is unknown or the prompt is uncertain; otherwise `complete`
+   only when every turn 1..turns has exactly one delivery event and both lists are empty; otherwise `partial`.
+
+A delivered tool result is a declared input of the intent, or a ref derived only from declared inputs: its lineage
+is non-empty, names only declared input ids, and it keeps every restriction of every declared input each lineage
+id names.
 
 ## Records named but not yet specified
 

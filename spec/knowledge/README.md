@@ -19,7 +19,11 @@ this directory, in the auto-dev-cycle repository.
 
 ## Rules for consumers
 
-- InfraMedic vendors a **pinned revision** of this directory and maps onto it in its own repository.
+- InfraMedic vendors a **pinned revision** of this directory **together with its schema dependency closure** at the
+  same revision: `schemas/common/defs.json`, `schemas/records/receipt.json`, `schemas/records/ref.json`,
+  `schemas/records/view-fingerprint.json` and `schemas/records/manifest-*.json`, keeping the repository layout
+  (`spec/knowledge/` and `schemas/` side by side) so every relative `$ref` and link resolves. It maps onto them in
+  its own repository.
 - The spec carries its own semantic version. A breaking change to a term, an invariant or a schema raises the major
   version; a new fixture or a clarification raises the minor or patch version.
 - **A spec or fixture update never changes grants, accepted claims or policy by itself** (KA8). Adopting a new

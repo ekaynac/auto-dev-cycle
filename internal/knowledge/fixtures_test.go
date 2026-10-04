@@ -70,18 +70,23 @@ func TestFixtureDefinitions(t *testing.T) {
 		}
 		defined[f.ID] = true
 	}
-	// Note 10's required cases.
+	// Note 10's required cases (revocation between selection and delivery
+	// is split into before and after the intent is committed) and the KA1
+	// disclosure controls.
 	for _, id := range []string{"stale-view-after-finding-change", "same-bytes-different-lineage", "on-prem-lesson-to-open-project",
-		"revocation-before-delivery", "poisoned-builder-note", "real-but-irrelevant-citation", "compaction-turn",
-		"declared-only-coverage", "mixed-project-handover", "refactor-under-anchored-item"} {
+		"revocation-before-intent", "revocation-after-intent", "poisoned-builder-note", "real-but-irrelevant-citation",
+		"compaction-turn", "declared-only-coverage", "mixed-project-handover", "refactor-under-anchored-item",
+		"opaque-evidence-pointer", "automatic-versus-prose-export"} {
 		if !defined[id] {
 			t.Errorf("required fixture %s is not defined", id)
 		}
 	}
 	// Every fixture the invariants mention is defined.
-	for _, m := range regexp.MustCompile("`([a-z0-9-]+)`").FindAllStringSubmatch(string(inv), -1) {
-		if !defined[m[1]] {
-			t.Errorf("invariants.md mentions fixture %s, which is not defined", m[1])
+	for _, line := range regexp.MustCompile(`(?m)\*Fixtures?:\*.*$`).FindAllString(string(inv), -1) {
+		for _, m := range regexp.MustCompile("`([a-z0-9-]+)`").FindAllStringSubmatch(line, -1) {
+			if !defined[m[1]] {
+				t.Errorf("invariants.md mentions fixture %s, which is not defined", m[1])
+			}
 		}
 	}
 }

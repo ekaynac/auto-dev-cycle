@@ -14,4 +14,6 @@ the single source of every shape in this repository; this page adds nothing to t
 | FailureSignature | — | M2 |
 | Claim | — | after M2 (K3) |
 
-The digests these schemas define are pinned by the golden vectors in [`../fixtures/golden.json`](../fixtures/golden.json).
+The schemas refer to `schemas/common/defs.json` and `schemas/records/receipt.json`; vendor the whole closure at the
+same revision (see the [README](../README.md)). The digests these schemas define are pinned by the golden vectors
+in [`../fixtures/golden.json`](../fixtures/golden.json).
