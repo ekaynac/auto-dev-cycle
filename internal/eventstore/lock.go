@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -20,10 +21,13 @@ const LockFile = "adcd.lock"
 // (could_not_run/controller_already_running).
 var ErrAlreadyRunning = errors.New("controller_already_running")
 
-// Lock is a held exclusive lock on a state directory.
+// Lock is a held exclusive lock on a state directory. At most one Store is
+// open on it, and it cannot be released while that store is open.
 type Lock struct {
-	f   *os.File
-	dir string
+	mu   sync.Mutex
+	f    *os.File
+	dir  string
+	open bool // a Store is open on this lock
 }
 
 // AcquireLock takes the exclusive advisory lock on <stateDir>/adcd.lock and
@@ -46,9 +50,22 @@ func AcquireLock(stateDir string) (*Lock, error) {
 	if fi.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("eventstore: state directory %s is accessible to group or others (%v); it must be 0700", dir, fi.Mode().Perm())
 	}
-	f, err := os.OpenFile(filepath.Join(dir, LockFile), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	path := filepath.Join(dir, LockFile)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, err
+	}
+	// Before anything is written: the lock file must be a private regular
+	// file owned by this user with one link. A hardlink to another file, or
+	// a file someone else owns, is refused untouched.
+	var st syscall.Stat_t
+	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
+		f.Close()
+		return nil, err
+	}
+	if st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Nlink != 1 || int(st.Uid) != os.Geteuid() || st.Mode&0o077 != 0 {
+		f.Close()
+		return nil, fmt.Errorf("eventstore: %s must be a private regular file owned by this user with one link; refused", path)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
@@ -88,15 +105,52 @@ func processStart() string {
 }
 
 // Held reports whether the lock is still held by this process.
-func (l *Lock) Held() bool { return l != nil && l.f != nil }
+func (l *Lock) Held() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.f != nil
+}
+
+// claim marks a store open on the lock; a second store is refused.
+func (l *Lock) claim() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	switch {
+	case l.f == nil:
+		return errors.New("eventstore: the state directory lock must be held before the database is opened")
+	case l.open:
+		return errors.New("eventstore: a store is already open on this lock")
+	}
+	l.open = true
+	return nil
+}
+
+// unclaim marks the lock's store closed.
+func (l *Lock) unclaim() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.open = false
+}
 
 // Dir is the absolute state directory the lock guards.
 func (l *Lock) Dir() string { return l.dir }
 
 // Release drops the lock. The file stays; its content is the last holder's.
+// It is refused while a store is open on the lock: close the store first.
 func (l *Lock) Release() error {
-	if !l.Held() {
+	if l == nil {
 		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f == nil {
+		return nil
+	}
+	if l.open {
+		return errors.New("eventstore: close the store before releasing its lock")
 	}
 	err := syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
 	if cerr := l.f.Close(); err == nil {

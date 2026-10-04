@@ -3,6 +3,7 @@
 package eventstore
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -19,12 +20,13 @@ type Head struct {
 // ErrChainBroken marks a log that fails verification.
 var ErrChainBroken = errors.New("event log integrity")
 
-// Head returns the current head, or the zero Head for an empty log.
+// Head returns the current head. An empty log's head is seq 0 and the
+// genesis hash, so even an empty store is anchored.
 func (s *Store) Head(ctx context.Context) (Head, error) {
 	var h Head
 	err := s.r.QueryRowContext(ctx, `SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1`).Scan(&h.Seq, &h.Hash)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Head{}, nil
+		return Head{Seq: 0, Hash: s.genesis}, nil
 	}
 	return h, err
 }
@@ -60,6 +62,9 @@ func (s *Store) Verify(ctx context.Context, trusted *Head) (Head, error) {
 			return Head{}, err
 		}
 		e.Payload = payload
+		if c, err := canonical(payload); err != nil || !bytes.Equal(c, payload) {
+			return Head{}, fmt.Errorf("%w: seq %d payload is not stored in its canonical form", ErrChainBroken, e.Seq)
+		}
 		if e.Seq != head.Seq+1 {
 			return Head{}, fmt.Errorf("%w: gap or reorder at seq %d (expected %d)", ErrChainBroken, e.Seq, head.Seq+1)
 		}
@@ -81,6 +86,9 @@ func (s *Store) Verify(ctx context.Context, trusted *Head) (Head, error) {
 	if err := rows.Err(); err != nil {
 		return Head{}, err
 	}
+	if trusted != nil && trusted.Seq == 0 && trusted.Hash != genesisHash {
+		return Head{}, fmt.Errorf("%w: the genesis differs from the trusted head", ErrChainBroken)
+	}
 	if trusted != nil && trusted.Seq > 0 {
 		if head.Seq < trusted.Seq {
 			return Head{}, fmt.Errorf("%w: truncated: log ends at seq %d, trusted head is seq %d", ErrChainBroken, head.Seq, trusted.Seq)
@@ -88,9 +96,6 @@ func (s *Store) Verify(ctx context.Context, trusted *Head) (Head, error) {
 		if atTrusted != trusted.Hash {
 			return Head{}, fmt.Errorf("%w: seq %d differs from the trusted head", ErrChainBroken, trusted.Seq)
 		}
-	}
-	if head.Seq == 0 {
-		head.Hash = ""
 	}
 	return head, nil
 }

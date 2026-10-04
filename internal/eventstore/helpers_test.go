@@ -16,9 +16,16 @@ import (
 // sysActor is the system actor of the test events.
 const sysActor = "act_01m3250v0aer9ss2097svmefj8"
 
-// testKinds: a test event kind whose payload schema accepts any JSON
-// (common/defs has no root constraints).
-var testKinds = Kinds{"test.appended/v1": "common/defs", "test.typed/v1": "records/instrument-contract"}
+// testKinds: test.appended accepts any JSON (common/defs has no root
+// constraints); test.typed is an instrument contract, whose payload_schema
+// field holds a blob digest.
+var testKinds = Kinds{
+	"test.appended/v1": {Schema: "common/defs"},
+	"test.typed/v1":    {Schema: "records/instrument-contract", BlobFields: []string{"payload_schema"}},
+}
+
+// testSubject is a project id used as the subject of test events.
+const testSubject = "prj_01m3250vkwffc979nzjw0g2sf9"
 
 type env struct {
 	dir   string
@@ -99,7 +106,7 @@ func (e *env) appendRaw(t *testing.T, ev Event) (Event, error) {
 func (e *env) appendN(t *testing.T, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
-		ev := Event{Kind: "test.appended/v1", Subject: "prj_x", Payload: []byte(fmt.Sprintf(`{"n": %d, "b": "x", "a": [1,2]}`, i))}
+		ev := Event{Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(fmt.Sprintf(`{"n": %d, "b": "x", "a": [1,2]}`, i))}
 		if _, err := e.appendRaw(t, ev); err != nil {
 			t.Fatal(err)
 		}

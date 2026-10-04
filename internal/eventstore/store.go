@@ -16,12 +16,16 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gowebpki/jcs"
@@ -48,6 +52,9 @@ CREATE TRIGGER IF NOT EXISTS meta_immutable_update BEFORE UPDATE ON meta
   BEGIN SELECT RAISE(ABORT, 'meta is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS meta_immutable_delete BEFORE DELETE ON meta
   BEGIN SELECT RAISE(ABORT, 'meta is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS meta_no_replace BEFORE INSERT ON meta
+  WHEN EXISTS (SELECT 1 FROM meta WHERE key = NEW.key)
+  BEGIN SELECT RAISE(ABORT, 'meta is immutable'); END;
 CREATE TABLE IF NOT EXISTS events (
   seq        INTEGER PRIMARY KEY,
   id         TEXT UNIQUE NOT NULL,
@@ -69,12 +76,23 @@ CREATE TRIGGER IF NOT EXISTS events_append_only_update BEFORE UPDATE ON events
   BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_append_only_delete BEFORE DELETE ON events
   BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS events_no_replace BEFORE INSERT ON events
+  WHEN EXISTS (SELECT 1 FROM events WHERE seq = NEW.seq OR id = NEW.id)
+  BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 `
 
-// Kinds maps every registered event kind (<domain>.<name>/v<n>) to the
-// contract schema its payload must satisfy (e.g. "records/effect-intent").
+// Kind is a registered event kind: the contract schema its payload must
+// satisfy (e.g. "records/effect-intent") and the payload fields that hold
+// blob digests (at any depth, e.g. "blob", "payload_schema"). The store
+// derives a payload's blob references from them; a caller cannot omit one.
+type Kind struct {
+	Schema     string
+	BlobFields []string
+}
+
+// Kinds maps every registered event kind (<domain>.<name>/v<n>) to its Kind.
 // An unregistered kind is never appended.
-type Kinds map[string]string
+type Kinds map[string]Kind
 
 // BlobChecker reports whether a referenced blob is published (03
 // "publish-before-reference"); the blob store implements it.
@@ -100,20 +118,28 @@ type Config struct {
 
 // Open opens (creating on first use) the store in the lock's state
 // directory. There is no other way to obtain a Store.
-func Open(ctx context.Context, lock *Lock, cfg Config) (*Store, error) {
-	if !lock.Held() {
+func Open(ctx context.Context, lock *Lock, cfg Config) (s *Store, err error) {
+	if lock == nil {
 		return nil, errors.New("eventstore: the state directory lock must be held before the database is opened")
 	}
 	if cfg.Blobs == nil {
 		return nil, errors.New("eventstore: a blob checker is required (publish-before-reference)")
 	}
+	if err := lock.claim(); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			lock.unclaim()
+		}
+	}()
 	set, err := schemas.SetDigest()
 	if err != nil {
 		return nil, err
 	}
 	file := filepath.Join(lock.dir, DBFile)
 	const pragmas = "_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
-	w, err := sql.Open("sqlite", "file:"+file+"?_txlock=immediate&"+pragmas)
+	w, err := sql.Open("sqlite", fileURI(file, "_txlock=immediate&"+pragmas))
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +148,7 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (*Store, error) {
 		w.Close()
 		return nil, err
 	}
-	r, err := sql.Open("sqlite", "file:"+file+"?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)")
+	r, err := sql.Open("sqlite", fileURI(file, "mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"))
 	if err != nil {
 		w.Close()
 		return nil, err
@@ -131,7 +157,7 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (*Store, error) {
 	for k, v := range cfg.Kinds {
 		kinds[k] = v
 	}
-	s := &Store{w: w, r: r, lock: lock, schemaSet: set, kinds: kinds, blobs: cfg.Blobs}
+	s = &Store{w: w, r: r, lock: lock, schemaSet: set, kinds: kinds, blobs: cfg.Blobs}
 	if s.genesis, err = s.ensureGenesis(ctx); err != nil {
 		s.Close()
 		return nil, err
@@ -139,9 +165,19 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (*Store, error) {
 	return s, nil
 }
 
-// Close closes both pools. The lock is released separately by its holder.
+// Close closes both pools and frees the lock for another store or for
+// release by its holder.
 func (s *Store) Close() error {
-	return errors.Join(s.w.Close(), s.r.Close())
+	err := errors.Join(s.w.Close(), s.r.Close())
+	s.lock.unclaim()
+	return err
+}
+
+// fileURI is the SQLite URI for a file path: the path is escaped, so ?, #
+// and % in a directory name never become URI syntax (which would open
+// another file or change connection options).
+func fileURI(path, query string) string {
+	return (&url.URL{Scheme: "file", Path: path, RawQuery: query}).String()
 }
 
 // ensureGenesis checks the store format and creates the creation record
@@ -261,16 +297,53 @@ type Event struct {
 	Payload   json.RawMessage `json:"payload"`
 	PrevHash  string          `json:"prev_hash"`
 	Hash      string          `json:"-"`
-	Blobs     []string        `json:"-"` // digests the payload references; they must be published first
 }
 
 // rowHash is sha256 over the canonical encoding of every column but hash.
+// A text column that is not valid UTF-8 is an error, never replaced: two
+// different stored values must never share an encoding.
 func rowHash(e Event) (string, error) {
-	b, err := json.Marshal(e)
+	b, err := jsonv2.Marshal(e, json.DefaultOptionsV1(), jsontext.AllowInvalidUTF8(false))
 	if err != nil {
 		return "", err
 	}
 	return digest(b)
+}
+
+// blobRefs returns the digests held by the given fields anywhere in a
+// (validated) payload.
+func blobRefs(payload []byte, fields []string) ([]string, error) {
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	var v any
+	if err := json.Unmarshal(payload, &v); err != nil {
+		return nil, err
+	}
+	want := map[string]bool{}
+	for _, f := range fields {
+		want[f] = true
+	}
+	var refs []string
+	var walk func(any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			for k, x := range t {
+				if s, ok := x.(string); ok && want[k] {
+					refs = append(refs, s)
+					continue
+				}
+				walk(x)
+			}
+		case []any:
+			for _, x := range t {
+				walk(x)
+			}
+		}
+	}
+	walk(v)
+	return refs, nil
 }
 
 // append adds e inside the writer's tx: it checks the kind, the payload
@@ -281,12 +354,16 @@ func (s *Store) append(ctx context.Context, tx *sql.Tx, e Event) (Event, error) 
 	if err := ids.Check(e.ID, "evt"); err != nil {
 		return Event{}, fmt.Errorf("eventstore: %w", err)
 	}
-	schema, ok := s.kinds[e.Kind]
+	kind, ok := s.kinds[e.Kind]
 	if !ok {
 		return Event{}, fmt.Errorf("eventstore: unregistered event kind %q", e.Kind)
 	}
-	if e.Subject == "" || e.Actor == "" {
-		return Event{}, errors.New("eventstore: subject and actor are required")
+	if err := ids.Check(e.Actor, "act"); err != nil {
+		return Event{}, fmt.Errorf("eventstore: actor: %w", err)
+	}
+	prefix, _, _ := strings.Cut(e.Subject, "_")
+	if err := ids.Check(e.Subject, prefix); err != nil {
+		return Event{}, fmt.Errorf("eventstore: subject: %w", err)
 	}
 	for _, opt := range []struct {
 		v      *string
@@ -298,14 +375,20 @@ func (s *Store) append(ctx context.Context, tx *sql.Tx, e Event) (Event, error) 
 			}
 		}
 	}
+	// The payload as given is validated first: canonicalisation must not
+	// hide what the contract refuses (-0, for one).
+	if err := contract.Validate(kind.Schema, e.Payload); err != nil {
+		return Event{}, fmt.Errorf("eventstore: %s payload: %w", e.Kind, err)
+	}
 	payload, err := canonical(e.Payload)
 	if err != nil {
 		return Event{}, fmt.Errorf("eventstore: %s payload: %w", e.Kind, err)
 	}
-	if err := contract.Validate(schema, payload); err != nil {
+	refs, err := blobRefs(payload, kind.BlobFields)
+	if err != nil {
 		return Event{}, fmt.Errorf("eventstore: %s payload: %w", e.Kind, err)
 	}
-	for _, d := range e.Blobs {
+	for _, d := range refs {
 		present, err := s.blobs.Has(d)
 		if err != nil {
 			return Event{}, err

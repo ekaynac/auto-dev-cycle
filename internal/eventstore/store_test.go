@@ -104,20 +104,26 @@ func TestOpenRefusesAnotherFormat(t *testing.T) {
 
 func TestAppendRefuses(t *testing.T) {
 	e := openEnv(t, stateDir(t))
-	ok := Event{Kind: "test.appended/v1", Subject: "s", Payload: []byte(`{}`)}
+	ok := Event{Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(`{}`)}
 	other := "sha256:" + strings.Repeat("1", 64)
 	cases := map[string]func(*Event){
-		"unregistered kind":   func(ev *Event) { ev.Kind = "a.b/v1" },
-		"bad id":              func(ev *Event) { ev.ID = "evt_x" },
-		"integer beyond 2^53": func(ev *Event) { ev.Payload = []byte(`{"n": 9007199254740993}`) },
-		"float":               func(ev *Event) { ev.Payload = []byte(`{"n": 1.5}`) },
-		"not JSON":            func(ev *Event) { ev.Payload = []byte(`{`) },
-		"bad project id":      func(ev *Event) { p := "proj-1"; ev.Project = &p },
-		"unpublished blob":    func(ev *Event) { ev.Blobs = []string{other} },
-		"no subject":          func(ev *Event) { ev.Subject = "" },
-		"bad command id":      func(ev *Event) { c := "cmd_x"; ev.Command = &c },
-		"bad causation id":    func(ev *Event) { c := "evt_x"; ev.Causation = &c },
-		"payload off schema":  func(ev *Event) { ev.Kind = "test.typed/v1"; ev.Payload = []byte(`{"id": 1}`) },
+		"unregistered kind":           func(ev *Event) { ev.Kind = "a.b/v1" },
+		"bad id":                      func(ev *Event) { ev.ID = "evt_x" },
+		"integer beyond 2^53":         func(ev *Event) { ev.Payload = []byte(`{"n": 9007199254740993}`) },
+		"float":                       func(ev *Event) { ev.Payload = []byte(`{"n": 1.5}`) },
+		"not JSON":                    func(ev *Event) { ev.Payload = []byte(`{`) },
+		"bad project id":              func(ev *Event) { p := "proj-1"; ev.Project = &p },
+		"unpublished blob":            func(ev *Event) { ev.Kind, ev.Payload = "test.typed/v1", typedPayload(other) },
+		"bad actor":                   func(ev *Event) { ev.Actor = "not-an-actor" },
+		"actor of another kind":       func(ev *Event) { ev.Actor = testSubject },
+		"bad subject":                 func(ev *Event) { ev.Subject = "not-an-id" },
+		"unregistered subject prefix": func(ev *Event) { ev.Subject = "zzz_01m3250vkwffc979nzjw0g2sf9" },
+		"negative zero":               func(ev *Event) { ev.Payload = []byte(`{"n": -0}`) },
+		"invalid UTF-8 kind":          func(ev *Event) { ev.Kind = "test.appended/v1\xff" },
+		"no subject":                  func(ev *Event) { ev.Subject = "" },
+		"bad command id":              func(ev *Event) { c := "cmd_x"; ev.Command = &c },
+		"bad causation id":            func(ev *Event) { c := "evt_x"; ev.Causation = &c },
+		"payload off schema":          func(ev *Event) { ev.Kind = "test.typed/v1"; ev.Payload = []byte(`{"id": 1}`) },
 	}
 	for name, mut := range cases {
 		ev := ok
@@ -135,7 +141,7 @@ func TestAppendRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	ev := ok
-	ev.Blobs = []string{d}
+	ev.Kind, ev.Payload = "test.typed/v1", typedPayload(d)
 	if _, err := e.appendRaw(t, ev); err != nil {
 		t.Fatalf("published blob reference refused: %v", err)
 	}
@@ -198,5 +204,165 @@ func TestOpenNeedsTheLockAndABlobChecker(t *testing.T) {
 	defer lock.Release()
 	if _, err := Open(context.Background(), lock, Config{Kinds: testKinds}); err == nil {
 		t.Fatal("Open without a blob checker succeeded")
+	}
+}
+
+// typedPayload is an instrument contract whose payload_schema is the given
+// blob digest.
+func typedPayload(digest string) []byte {
+	return []byte(`{"name":"go-test","version":"1","digest":"sha256:` + strings.Repeat("a", 64) + `","subject_type":"tree",` +
+		`"required_predicates":[{"name":"tests","evidence_required":[]}],"optional_predicates":[],"preconditions":[],` +
+		`"payload_schema":"` + digest + `","artifact_classes":{}}`)
+}
+
+// Astra #25: a state path with URI syntax opens its own database, and the
+// lock of one directory never guards another's database.
+func TestStatePathsWithURISyntax(t *testing.T) {
+	base := t.TempDir()
+	var envs []*env
+	for _, name := range []string{"state?a", "state?b", "st#ate", "st%41te"} {
+		envs = append(envs, openEnv(t, filepath.Join(base, name)))
+	}
+	if _, err := envs[0].appendRaw(t, Event{Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	for i, e := range envs {
+		h, err := e.s.Head(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := int64(0); i == 0 {
+			want = 1
+			if h.Seq != want {
+				t.Errorf("%s: head seq %d, want %d", e.dir, h.Seq, want)
+			}
+		} else if h.Seq != want {
+			t.Errorf("%s sees another directory's events (seq %d)", e.dir, h.Seq)
+		}
+		if _, err := os.Stat(filepath.Join(e.dir, DBFile)); err != nil {
+			t.Errorf("%s: database not inside its directory: %v", e.dir, err)
+		}
+	}
+}
+
+// Astra #25: INSERT OR REPLACE cannot overwrite an event or a meta key.
+func TestReplacingInsertsAreRefused(t *testing.T) {
+	e := openEnv(t, stateDir(t))
+	e.appendN(t, 1)
+	db := raw(t, e.dir)
+	var id string
+	if err := db.QueryRow(`SELECT id FROM events WHERE seq = 1`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	other := newID(t, "evt")
+	for _, q := range []string{
+		`INSERT OR REPLACE INTO events SELECT 1, '` + other + `', at, kind, subject, project, actor, command, causation, schema_set, payload, prev_hash, hash FROM events WHERE seq = 1`,
+		`INSERT OR REPLACE INTO events SELECT 2, id, at, kind, subject, project, actor, command, causation, schema_set, payload, prev_hash, hash FROM events WHERE seq = 1`,
+		`REPLACE INTO meta(key, value) VALUES ('format', 'adc.eventstore/v99')`,
+		`INSERT OR REPLACE INTO meta(key, value) VALUES ('genesis_hash', 'x')`,
+	} {
+		if _, err := db.Exec(q); err == nil || !(strings.Contains(err.Error(), "append-only") || strings.Contains(err.Error(), "immutable")) {
+			t.Errorf("%s: want a refusal, got %v", q, err)
+		}
+	}
+	var got string
+	if err := db.QueryRow(`SELECT id FROM events WHERE seq = 1`).Scan(&got); err != nil || got != id {
+		t.Fatalf("event 1 changed: %q, %v", got, err)
+	}
+}
+
+// Astra #25: an edited text column that is not valid UTF-8 breaks the chain;
+// it never shares an encoding with the original.
+func TestVerifyDetectsInvalidUTF8Edits(t *testing.T) {
+	e := openEnv(t, stateDir(t))
+	e.appendN(t, 2)
+	trusted, err := e.s.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, raw(t, e.dir), `DROP TRIGGER events_append_only_update`, `UPDATE events SET subject = CAST(X'70726A5FFF' AS TEXT) WHERE seq = 1`)
+	if _, err := e.s.Verify(context.Background(), &trusted); !errors.Is(err, ErrChainBroken) {
+		t.Fatalf("an invalid UTF-8 edit verified: %v", err)
+	}
+}
+
+// Astra #25: a stored payload must be in its canonical form.
+func TestVerifyRefusesNonCanonicalPayloads(t *testing.T) {
+	e := openEnv(t, stateDir(t))
+	if _, err := e.appendRaw(t, Event{Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(`{"n": 0}`)}); err != nil {
+		t.Fatal(err)
+	}
+	trusted, err := e.s.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, raw(t, e.dir), `DROP TRIGGER events_append_only_update`, `UPDATE events SET payload = '{ "n" : -0 }' WHERE seq = 1`)
+	if _, err := e.s.Verify(context.Background(), &trusted); !errors.Is(err, ErrChainBroken) || !strings.Contains(err.Error(), "canonical") {
+		t.Fatalf("a non-canonical payload verified: %v", err)
+	}
+}
+
+// Astra #25: an empty store's head anchors its genesis.
+func TestEmptyHeadAnchorsGenesis(t *testing.T) {
+	dir := stateDir(t)
+	e := openEnv(t, dir)
+	trusted, err := e.s.Head(context.Background())
+	if err != nil || trusted.Seq != 0 || !strings.HasPrefix(trusted.Hash, "sha256:") {
+		t.Fatalf("empty head %+v, %v", trusted, err)
+	}
+	if _, err := e.s.Verify(context.Background(), &trusted); err != nil {
+		t.Fatalf("verify against its own empty head: %v", err)
+	}
+	e.close()
+	record := `{"created_at":"2026-10-04T00:00:00Z","format":"adc.eventstore/v1","store_id":"00"}`
+	h, err := digest([]byte(record))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, raw(t, dir), `DROP TRIGGER meta_immutable_update`,
+		`UPDATE meta SET value = '`+record+`' WHERE key = 'genesis_record'`,
+		`UPDATE meta SET value = '`+h+`' WHERE key = 'genesis_hash'`)
+	again := openEnv(t, dir)
+	if _, err := again.s.Verify(context.Background(), &trusted); !errors.Is(err, ErrChainBroken) {
+		t.Fatalf("a replaced genesis verified against the original empty head: %v", err)
+	}
+}
+
+// Astra #25: a hardlinked lock file is refused and its target left intact.
+func TestLockRefusesAHardlink(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(victim, filepath.Join(dir, LockFile)); err != nil {
+		t.Skipf("hardlinks unavailable: %v", err)
+	}
+	if _, err := AcquireLock(dir); err == nil || !strings.Contains(err.Error(), "one link") {
+		t.Fatalf("a hardlinked lock file: %v", err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "keep" {
+		t.Fatal("the hardlink target was overwritten")
+	}
+}
+
+// Astra #25: one store per lock, and the lock cannot be released under it.
+func TestLockOwnsOneStore(t *testing.T) {
+	e := openEnv(t, stateDir(t))
+	if _, err := Open(context.Background(), e.lock, Config{Kinds: testKinds, Blobs: e.blobs}); err == nil {
+		t.Fatal("a second store opened on the same lock")
+	}
+	if err := e.lock.Release(); err == nil {
+		t.Fatal("the lock was released under an open store")
+	}
+	if err := e.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e.s = nil
+	if err := e.lock.Release(); err != nil {
+		t.Fatalf("release after close: %v", err)
 	}
 }
