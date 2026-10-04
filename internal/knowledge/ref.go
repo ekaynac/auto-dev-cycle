@@ -216,11 +216,14 @@ func Fingerprint(renderer types.ViewFingerprintRenderer, inputs []types.Ref) (ty
 	return fp, nil
 }
 
-// CheckFingerprint checks fp's internal consistency only: its digest is the
-// one its own renderer and inputs give. It does not show that the view is
-// fresh (its inputs may have changed since) or where the inputs came from;
-// serving a view needs CheckServable.
+// CheckFingerprint checks that fp is a valid records/view-fingerprint whose
+// digest is the one its own renderer and inputs give: internal consistency
+// only. It does not show that the view is fresh (its inputs may have changed
+// since) or where the inputs came from; serving a view needs CheckServable.
 func CheckFingerprint(fp types.ViewFingerprint) error {
+	if _, err := contract.Encode("records/view-fingerprint", fp); err != nil {
+		return fmt.Errorf("knowledge: %w", err)
+	}
 	d, err := fingerprintDigest(fp.Renderer, fp.Inputs)
 	if err != nil {
 		return err
@@ -231,14 +234,22 @@ func CheckFingerprint(fp types.ViewFingerprint) error {
 	return nil
 }
 
-// CheckServable decides whether a cached view may be served: the fingerprint
-// recorded with it must equal the one computed from the expected renderer
-// and the current inputs, which the caller resolves independently from the
-// controller's records (never from the cached fingerprint). Any difference,
-// a changed input, a changed renderer or another order, means regenerate.
-// Evidence applicability is checked separately (06).
+// CheckServable decides whether a cached view may be served. The recorded
+// fingerprint must itself pass CheckFingerprint, and it must equal the
+// fingerprint of the expected renderer over the current inputs, which the
+// caller resolves independently from the controller's records (never from
+// the cached fingerprint). Any difference, a changed input, a changed
+// renderer or another order, means regenerate. Evidence applicability is
+// checked separately (06).
 func CheckServable(recorded types.ViewFingerprint, renderer types.ViewFingerprintRenderer, current []types.Ref) error {
-	d, err := fingerprintDigest(renderer, current)
+	if err := CheckFingerprint(recorded); err != nil {
+		return err
+	}
+	expected, err := Fingerprint(renderer, current) // validates the renderer and every input
+	if err != nil {
+		return err
+	}
+	d := expected.Digest
 	if err != nil {
 		return err
 	}

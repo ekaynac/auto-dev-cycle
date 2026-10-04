@@ -1,0 +1,85 @@
+{
+  "description": "Golden vectors for ref identity and view fingerprint digests (schemas/records/ref.json, view-fingerprint.json). Computed independently of the Go code. input is a ref as given (sets in any order); canonical_preimage is the JCS of its canonical form without identity_digest; identity_digest is sha256 of the preimage's UTF-8 bytes.",
+  "refs": [
+    {
+      "name": "blob",
+      "input": {
+        "type": "blob",
+        "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": null,
+        "scope": {
+          "project": null,
+          "framework": true
+        },
+        "lineage": [],
+        "restrictions": [],
+        "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "canonical_preimage": "{\"content_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lineage\":[],\"restrictions\":[],\"revision\":null,\"scope\":{\"framework\":true,\"project\":null},\"type\":\"blob\"}",
+      "identity_digest": "sha256:2fa19757603c283c4ad7150deb6510ae91cd1696214a13c6848b503f6da2030b"
+    },
+    {
+      "name": "claim",
+      "input": {
+        "type": "claim",
+        "id": "lsn_x",
+        "revision": "3",
+        "scope": {
+          "project": null,
+          "framework": true
+        },
+        "lineage": [
+          "lsn_𐀀",
+          "lsn_b",
+          "lsn_",
+          "lsn_é"
+        ],
+        "restrictions": [
+          {
+            "project": "prj_01m3250vkwffc979nzjw0g2sf9",
+            "policy_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "floor": "own",
+            "routing": "verified",
+            "allowed_destinations": [
+              "local-gpu",
+              "eu-api"
+            ]
+          },
+          {
+            "project": "prj_01m3250vkwffc979nzjw0g2sf9",
+            "policy_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "floor": "contracted",
+            "routing": "reported_ok",
+            "allowed_destinations": []
+          }
+        ],
+        "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "canonical_preimage": "{\"content_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"lsn_x\",\"lineage\":[\"lsn_b\",\"lsn_é\",\"lsn_\",\"lsn_𐀀\"],\"restrictions\":[{\"allowed_destinations\":[],\"floor\":\"contracted\",\"policy_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"project\":\"prj_01m3250vkwffc979nzjw0g2sf9\",\"routing\":\"reported_ok\"},{\"allowed_destinations\":[\"eu-api\",\"local-gpu\"],\"floor\":\"own\",\"policy_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"project\":\"prj_01m3250vkwffc979nzjw0g2sf9\",\"routing\":\"verified\"}],\"revision\":\"3\",\"scope\":{\"framework\":true,\"project\":null},\"type\":\"claim\"}",
+      "identity_digest": "sha256:e14d576d463f48db7cddc610536ceecd841f0c96d7c84ad162358724293626dd"
+    }
+  ],
+  "fingerprint": {
+    "renderer": {
+      "name": "review-packet",
+      "version": "1",
+      "config_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "inputs": [
+      "blob",
+      "claim"
+    ],
+    "preimage": "{\"inputs\":[\"sha256:2fa19757603c283c4ad7150deb6510ae91cd1696214a13c6848b503f6da2030b\",\"sha256:e14d576d463f48db7cddc610536ceecd841f0c96d7c84ad162358724293626dd\"],\"renderer\":{\"config_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"name\":\"review-packet\",\"version\":\"1\"}}",
+    "digest": "sha256:7e41a68accd5191fb7d39e713e721c3fa05133bfbf02cd44e8de2aa7ec387f57"
+  },
+  "empty_inputs": {
+    "renderer": {
+      "name": "review-packet",
+      "version": "1",
+      "config_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "preimage": "{\"inputs\":[],\"renderer\":{\"config_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"name\":\"review-packet\",\"version\":\"1\"}}",
+    "digest": "sha256:5a00b3c5345b9c28a714339828a1b591193325898753c4e46791769261860074",
+    "note": "a view has at least one input: a fingerprint over no inputs is refused even when this digest is recorded"
+  }
+}

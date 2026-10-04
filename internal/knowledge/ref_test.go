@@ -3,9 +3,14 @@
 package knowledge
 
 import (
+	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/gowebpki/jcs"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
@@ -213,33 +218,121 @@ func TestFingerprint(t *testing.T) {
 	}
 }
 
-// Golden vectors (computed independently from the canonical-form rules in
-// schemas/records/ref.json): code-point ordering of non-ASCII lineage (a
-// UTF-16 sort would put U+10000 before U+E000), two restrictions of one
-// project under two policy revisions, unsorted destinations, and a
-// complete fingerprint.
-func TestGoldenVectors(t *testing.T) {
-	rev := "3"
-	r := types.Ref{Type: types.RefTypeClaim, ID: "lsn_x", Revision: &rev, Scope: types.RefScope{Framework: true},
-		Lineage: []string{"lsn_\U00010000", "lsn_b", "lsn_\ue000", "lsn_\u00e9"},
-		Restrictions: []types.Restriction{
-			{Project: prjA, PolicyDigest: dgC, Floor: types.RestrictionFloorOwn, Routing: types.RestrictionRoutingVerified, AllowedDestinations: []string{"local-gpu", "eu-api"}},
-			{Project: prjA, PolicyDigest: dgB, Floor: types.RestrictionFloorContracted, Routing: types.RestrictionRoutingReportedOk, AllowedDestinations: []string{}},
-		},
-		ContentDigest: dgA}
-	s := seal(t, r)
-	if want := types.Digest("sha256:e14d576d463f48db7cddc610536ceecd841f0c96d7c84ad162358724293626dd"); s.IdentityDigest != want {
-		t.Fatalf("identity %s, want %s", s.IdentityDigest, want)
-	}
-	if got := s.Lineage; got[2] != "lsn_\ue000" || got[3] != "lsn_\U00010000" {
-		t.Fatalf("lineage order %q", got)
-	}
-	fp, err := Fingerprint(types.ViewFingerprintRenderer{Name: "review-packet", Version: "1", ConfigDigest: dgB}, []types.Ref{seal(t, blob()), s})
+// golden is testdata/golden.json: language-neutral vectors computed
+// independently of this code, for a second implementation to reuse (K10).
+type golden struct {
+	Refs []struct {
+		Name              string    `json:"name"`
+		Input             types.Ref `json:"input"`
+		CanonicalPreimage string    `json:"canonical_preimage"`
+		IdentityDigest    string    `json:"identity_digest"`
+	} `json:"refs"`
+	Fingerprint struct {
+		Renderer types.ViewFingerprintRenderer `json:"renderer"`
+		Inputs   []string                      `json:"inputs"`
+		Digest   string                        `json:"digest"`
+	} `json:"fingerprint"`
+	EmptyInputs struct {
+		Renderer types.ViewFingerprintRenderer `json:"renderer"`
+		Digest   string                        `json:"digest"`
+	} `json:"empty_inputs"`
+}
+
+func loadGolden(t *testing.T) golden {
+	t.Helper()
+	b, err := os.ReadFile("testdata/golden.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := types.Digest("sha256:7e41a68accd5191fb7d39e713e721c3fa05133bfbf02cd44e8de2aa7ec387f57"); fp.Digest != want {
-		t.Fatalf("fingerprint %s, want %s", fp.Digest, want)
+	var g golden
+	if err := json.Unmarshal(b, &g); err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+// The vectors cover code-point ordering of non-ASCII lineage (a UTF-16 sort
+// would put U+10000 before U+E000), two restrictions of one project under two
+// policy revisions, unsorted destinations, and a complete fingerprint.
+func TestGoldenVectors(t *testing.T) {
+	g := loadGolden(t)
+	sealed := map[string]types.Ref{}
+	for _, r := range g.Refs {
+		s := seal(t, r.Input)
+		if string(s.IdentityDigest) != r.IdentityDigest {
+			t.Fatalf("%s: identity %s, want %s", r.Name, s.IdentityDigest, r.IdentityDigest)
+		}
+		pre, err := jsonv2.Marshal(identity{s.Type, s.ID, s.Revision, s.Scope, s.Lineage, s.Restrictions, s.ContentDigest}, json.DefaultOptionsV1())
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := jcs.Transform(pre)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(c) != r.CanonicalPreimage {
+			t.Fatalf("%s: preimage\n%s\nwant\n%s", r.Name, c, r.CanonicalPreimage)
+		}
+		sealed[r.Name] = s
+	}
+	var inputs []types.Ref
+	for _, n := range g.Fingerprint.Inputs {
+		inputs = append(inputs, sealed[n])
+	}
+	fp, err := Fingerprint(g.Fingerprint.Renderer, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(fp.Digest) != g.Fingerprint.Digest {
+		t.Fatalf("fingerprint %s, want %s", fp.Digest, g.Fingerprint.Digest)
+	}
+}
+
+// Astra #31 round 2: a fingerprint over no inputs is refused by both
+// checkers even when its digest is the correct one for an empty list.
+func TestEmptyInputsAreRefused(t *testing.T) {
+	g := loadGolden(t)
+	empty := types.ViewFingerprint{Renderer: g.EmptyInputs.Renderer, Inputs: []types.Ref{}, Digest: types.Digest(g.EmptyInputs.Digest)}
+	if err := CheckFingerprint(empty); err == nil {
+		t.Fatal("CheckFingerprint accepted a view without inputs")
+	}
+	if err := CheckServable(empty, g.EmptyInputs.Renderer, nil); err == nil {
+		t.Fatal("CheckServable accepted a view without inputs")
+	}
+	if _, err := fingerprintDigest(g.EmptyInputs.Renderer, nil); err == nil {
+		t.Fatal("a digest was computed over no inputs")
+	}
+}
+
+// Astra #31 round 2: the checkers validate whole documents: an empty
+// renderer is refused even with a correctly computed digest, and a recorded
+// fingerprint that is not itself consistent is never servable.
+func TestCheckersValidateDocuments(t *testing.T) {
+	in := seal(t, blob())
+	d, err := fingerprintDigest(types.ViewFingerprintRenderer{}, []types.Ref{in})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := types.ViewFingerprint{Inputs: []types.Ref{in}, Digest: d}
+	if err := CheckFingerprint(bad); err == nil {
+		t.Fatal("CheckFingerprint accepted an empty renderer")
+	}
+	good, err := Fingerprint(renderer(), []types.Ref{in})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckServable(good, types.ViewFingerprintRenderer{}, []types.Ref{in}); err == nil {
+		t.Fatal("CheckServable accepted an empty expected renderer")
+	}
+	cleared := good
+	cleared.Inputs = []types.Ref{}
+	if err := CheckServable(cleared, renderer(), []types.Ref{in}); err == nil {
+		t.Fatal("a recorded fingerprint without its inputs was servable")
+	}
+	other := good
+	other.Renderer.Version = "9"
+	if err := CheckServable(other, renderer(), []types.Ref{in}); err == nil {
+		t.Fatal("an inconsistent recorded fingerprint was servable")
 	}
 }
 
