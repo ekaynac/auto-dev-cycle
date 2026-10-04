@@ -48,6 +48,11 @@ reasons:
   # --- authority --------------------------------------------------------------
   - {code: authority_revoked, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "04", description: "The actor's grant was revoked, expired or narrowed; streams close with this reason."}
   - {code: seat_not_held, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "08", description: "A supervisor write action without holding the seat."}
+  - {code: actor_revoked, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "04", description: "The acting actor is revoked; nothing it asks is allowed."}
+  - {code: action_unregistered, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "04", description: "The action is not in the action registry, or is deprecated; authority classifies only registered, current actions."}
+  - {code: change_class_unknown, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "04", description: "The effective change named a class with no confirmation default; refused, never read as no confirmation."}
+  - {code: action_not_granted, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "04", description: "No grant in force (not revoked, within its validity) covers this action on this project for the supervisor."}
+  - {code: self_grant_refused, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "04", description: "A supervisor asked to create or extend its own grant; grants are never created or extended by the grantee."}
 
   # --- adapters, sandbox, config ---------------------------------------------
   - {code: unsafe_output, outcomes: [failed], domain: adapter, introduced: 0.1.0, deprecated: null, source: "09", description: "An adapter output violated the ingestion boundary (symlink, special file, digest mismatch, foreign handle)."}

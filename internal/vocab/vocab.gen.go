@@ -9,6 +9,12 @@ import "github.com/ekaynac/auto-dev-cycle/gen/go/types"
 // Registered reason codes (schemas/vocab/reasons.yaml). The values are
 // immutable; adc dev vocab check refuses writing to them.
 var (
+	// ReasonActionNotGranted: No grant in force (not revoked, within its validity) covers this action on this project for the supervisor.
+	ReasonActionNotGranted = types.ReasonCodeOf("action_not_granted")
+	// ReasonActionUnregistered: The action is not in the action registry, or is deprecated; authority classifies only registered, current actions.
+	ReasonActionUnregistered = types.ReasonCodeOf("action_unregistered")
+	// ReasonActorRevoked: The acting actor is revoked; nothing it asks is allowed.
+	ReasonActorRevoked = types.ReasonCodeOf("actor_revoked")
 	// ReasonAmbiguousState: A projection found two live records where one is allowed; fails closed.
 	ReasonAmbiguousState = types.ReasonCodeOf("ambiguous_state")
 	// ReasonAuthorityRevoked: The actor's grant was revoked, expired or narrowed; streams close with this reason.
@@ -17,6 +23,8 @@ var (
 	ReasonBrokerCreditExhausted = types.ReasonCodeOf("broker_credit_exhausted")
 	// ReasonCandidateOwnedSetupError: A setup/teardown error in a test file the candidate added or changed, fully accounted; routed to a builder repair (07 ownership rules).
 	ReasonCandidateOwnedSetupError = types.ReasonCodeOf("candidate_owned_setup_error")
+	// ReasonChangeClassUnknown: The effective change named a class with no confirmation default; refused, never read as no confirmation.
+	ReasonChangeClassUnknown = types.ReasonCodeOf("change_class_unknown")
 	// ReasonCheckUnloadable: A source check could not load or type-check the code it checks; it never passes.
 	ReasonCheckUnloadable = types.ReasonCodeOf("check_unloadable")
 	// ReasonClosureRepair: A finding about the closing record; routed to a new closure step, never to the builder.
@@ -69,6 +77,8 @@ var (
 	ReasonRunnerFault = types.ReasonCodeOf("runner_fault")
 	// ReasonSeatNotHeld: A supervisor write action without holding the seat.
 	ReasonSeatNotHeld = types.ReasonCodeOf("seat_not_held")
+	// ReasonSelfGrantRefused: A supervisor asked to create or extend its own grant; grants are never created or extended by the grantee.
+	ReasonSelfGrantRefused = types.ReasonCodeOf("self_grant_refused")
 	// ReasonStaleAttempt: Output from an attempt whose id or fencing token is not current, or whose publication is closed.
 	ReasonStaleAttempt = types.ReasonCodeOf("stale_attempt")
 	// ReasonStaleExpectedState: The command's expected object version or digest is not current.
