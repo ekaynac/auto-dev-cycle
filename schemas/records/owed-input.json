@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/owed-input.json",
+  "title": "OwedInput",
+  "description": "Something only an outside party can give, recorded by a reviewer or an evidence requirement (docs/design/m0/04 \"Owed inputs\"). The dependent work holds on awaiting_input. A ruling or data input is answered by an input.answer approval binding its revision; a receipt input is satisfied only by an applicable receipt, never by a ruling.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "requested_by", "kind", "question", "subject", "revision"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/OwedInputID"},
+    "requested_by": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "kind": {"enum": ["ruling", "data", "receipt"]},
+    "question": {"type": "string", "minLength": 1},
+    "subject": {"$ref": "approval.json#/$defs/ObjectRef"},
+    "revision": {
+      "description": "The owed input's revision; an answer binds it, so a changed question needs a new answer.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  }
+}

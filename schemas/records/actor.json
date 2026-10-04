@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/actor.json",
+  "title": "Actor",
+  "description": "Who acts (docs/design/m0/04 \"Actors and tokens\"). Operators are unrestricted (D31); supervisors act only under grants; system actors are adcd's own components. Tokens bound to an actor are secrets, stored hashed, never in this record.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "kind", "name", "declared_agent", "created_by", "revoked_at"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "kind": {"enum": ["operator", "supervisor", "system"]},
+    "name": {"description": "Display only.", "type": "string", "minLength": 1, "maxLength": 200},
+    "declared_agent": {
+      "description": "A self-declared label (e.g. a harness name); audit only, never enforcement.",
+      "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 200}]
+    },
+    "created_by": {
+      "description": "The actor that created this one; the first operator is created by the bootstrap secret, recorded as the system actor.",
+      "$ref": "../common/defs.json#/$defs/ActorID"
+    },
+    "revoked_at": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]}
+  }
+}

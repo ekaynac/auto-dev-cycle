@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/approval.json",
+  "title": "Approval",
+  "description": "An approval record (docs/design/m0/04 \"Approval records\"): who approved which action on which exact object state, under which grant and confirmation. change_class is computed by internal/authority from the effective change, never supplied. Approvals are append-only; supersedes is explicit lineage, and a revocation or narrower scope wins over an earlier, wider one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "actor", "actor_kind", "action", "change_class", "project", "object", "expected_state", "scope", "grant", "confirmation", "answers", "supersedes", "question", "answer_verbatim", "reason", "at"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/ApprovalID"},
+    "actor": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "actor_kind": {"enum": ["operator", "supervisor", "system"]},
+    "action": {"$ref": "grant.json#/$defs/ActionKind"},
+    "change_class": {
+      "description": "The sensitive change classes the effective change contains; empty when none.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/ChangeClass"}
+    },
+    "project": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ProjectID"}]},
+    "object": {"$ref": "#/$defs/ObjectRef"},
+    "expected_state": {"$ref": "#/$defs/ExpectedState"},
+    "scope": {
+      "description": "The action's parameters; one schema per action, from the action registry.",
+      "type": "object",
+      "x-adc-open-payload": "action"
+    },
+    "grant": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/GrantID"}]},
+    "confirmation": {
+      "description": "A confirmed policy records its evidence: human needs its consumed challenge, and both human and independent_review name the events that satisfied them. Whether that evidence applies is internal/authority's check.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "challenge", "satisfied_by"],
+      "properties": {
+        "policy": {"enum": ["none", "independent_review", "human"]},
+        "challenge": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ChallengeID"}]},
+        "satisfied_by": {
+          "description": "The events that satisfied the confirmation (a consumed challenge, an applicable review receipt).",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "../common/defs.json#/$defs/EventID"}
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"policy": {"const": "human"}}}, "then": {"properties": {"challenge": {"not": {"const": null}}}}},
+        {"if": {"properties": {"policy": {"enum": ["independent_review", "human"]}}}, "then": {"properties": {"satisfied_by": {"not": {"const": []}}}}}
+      ]
+    },
+    "answers": {
+      "description": "The owed inputs this approval answers, derived from an input.answer scope; an approval that merely mentions an id answers nothing.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "../common/defs.json#/$defs/OwedInputID"}
+    },
+    "supersedes": {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/ApprovalID"}},
+    "question": {
+      "description": "What the actor was asked (from the proposal or packet).",
+      "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]
+    },
+    "answer_verbatim": {
+      "description": "The actor's own words, when a human answered.",
+      "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]
+    },
+    "reason": {"type": "string", "minLength": 1},
+    "at": {"$ref": "../common/defs.json#/$defs/Time"}
+  },
+  "$defs": {
+    "ChangeClass": {
+      "description": "Sensitive change classes and their supervisor confirmation defaults are in docs/design/m0/04 (D32, K5, KA1, M12).",
+      "enum": [
+        "install.self",
+        "policy.widen_data", "policy.widen_destinations", "policy.weaken_protection",
+        "capacity.allow_paid_fallback", "agent.enrol",
+        "grant.create", "grant.extend",
+        "knowledge.accept_claim", "knowledge.export_framework_prose", "knowledge.change_protected_document",
+        "integration.change_topology"
+      ]
+    },
+    "ObjectRef": {
+      "description": "The exact object the action applies to: its version, its digest, or both, never neither (version 0: the object does not exist yet).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "version", "digest"],
+      "properties": {
+        "type": {"$ref": "receipt.json#/$defs/Name"},
+        "id": {"type": "string", "minLength": 1},
+        "version": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 9007199254740991}]},
+        "digest": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]}
+      },
+      "if": {"properties": {"version": {"const": null}}},
+      "then": {"properties": {"digest": {"not": {"const": null}}}}
+    },
+    "ExpectedState": {
+      "description": "The object state the action was decided against: its version (seq of its last event), its content digest, or both, never neither.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "digest"],
+      "properties": {
+        "version": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 9007199254740991}]},
+        "digest": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]}
+      },
+      "if": {"properties": {"version": {"const": null}}},
+      "then": {"properties": {"digest": {"not": {"const": null}}}}
+    }
+  }
+}

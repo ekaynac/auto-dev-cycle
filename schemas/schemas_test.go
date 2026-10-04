@@ -37,7 +37,7 @@ func TestEmbeddedInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"common/defs.json", "config/project-profile.json", "records/instrument-contract.json", "records/manifest-delivery.json", "records/manifest-finalized.json", "records/manifest-intent.json", "records/receipt.json", "records/ref.json", "records/view-fingerprint.json", "vocab/registry.json"}; !reflect.DeepEqual(paths, want) {
+	if want := []string{"common/defs.json", "config/project-profile.json", "records/actor.json", "records/approval.json", "records/challenge.json", "records/grant.json", "records/instrument-contract.json", "records/manifest-delivery.json", "records/manifest-finalized.json", "records/manifest-intent.json", "records/owed-input.json", "records/proposal.json", "records/receipt.json", "records/ref.json", "records/view-fingerprint.json", "vocab/registry.json"}; !reflect.DeepEqual(paths, want) {
 		t.Fatalf("embedded schemas = %v, want %v", paths, want)
 	}
 	vocab, err := VocabPaths()
