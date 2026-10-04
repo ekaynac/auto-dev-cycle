@@ -41,7 +41,7 @@ func authorityDocs() map[string]map[string]any {
 			"reason": "adds the staging destination", "at": "2026-10-04T10:00:00Z"},
 		"records/proposal": {"id": prpID, "action": "profile.adopt", "change_class": []any{"policy.widen_destinations"},
 			"project": prjID, "object": object(), "expected_state": map[string]any{"version": 4, "digest": nil},
-			"scope": map[string]any{"revision": 5}, "proposed_by": actID, "policy": "human", "binding_digest": dgB,
+			"scope": map[string]any{"revision": 5}, "proposed_by": actID, "grant": grtID, "policy": "human", "binding_digest": dgB,
 			"status": "open", "expires_at": "2026-10-05T10:00:00Z"},
 		"records/challenge": {"id": chlID, "proposal": prpID, "binding_digest": dgB, "nonce": strings.Repeat("ab", 32),
 			"allowed_confirmers": []any{opID}, "expires_at": "2026-10-04T10:15:00Z", "used_at": nil},

@@ -77,7 +77,15 @@ func TestBindingDigest(t *testing.T) {
 
 func proposal(t *testing.T, policy Policy) types.Proposal {
 	t.Helper()
-	p, err := NewProposal(prpID, Decision{Disposition: Propose, Policy: policy, Classes: []string{"policy.widen_destinations"}}, bound(), now.Add(time.Hour))
+	return proposalOf(t, policy, []string{"policy.widen_destinations"})
+}
+
+// proposalOf is an open proposal decided under grtA with the given classes.
+func proposalOf(t *testing.T, policy Policy, classes []string) types.Proposal {
+	t.Helper()
+	b := bound()
+	b.Classes = classes
+	p, err := NewProposal(prpID, Decision{Disposition: Propose, Policy: policy, Grant: ptr(grtA), Classes: classes}, b, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,13 +268,13 @@ func TestRevalidate(t *testing.T) {
 	p, _ := Close(proposal(t, Human), types.ProposalStatusConfirmed)
 	req := supRequest("profile.adopt", []string{"policy.widen_destinations"}, g)
 	state := types.ExpectedState{Version: ptr(int64(4))}
-	if err := Revalidate(reg, p, ptr(grtA), &operator, req, state); err != nil {
+	if err := Revalidate(reg, p, &operator, req, state); err != nil {
 		t.Fatalf("an unchanged proposal: %v", err)
 	}
-	if got := refusalOf(t, Revalidate(reg, proposal(t, Human), ptr(grtA), &operator, req, state)); got != vocab.ReasonProposalNotOpen {
+	if got := refusalOf(t, Revalidate(reg, proposal(t, Human), &operator, req, state)); got != vocab.ReasonProposalNotOpen {
 		t.Errorf("an unconfirmed proposal: %s", got.String())
 	}
-	if got := refusalOf(t, Revalidate(reg, p, ptr(grtA), &operator, req, types.ExpectedState{Version: ptr(int64(5))})); got != vocab.ReasonStaleExpectedState {
+	if got := refusalOf(t, Revalidate(reg, p, &operator, req, types.ExpectedState{Version: ptr(int64(5))})); got != vocab.ReasonStaleExpectedState {
 		t.Errorf("a moved object: %s", got.String())
 	}
 	revokedOp := operator
@@ -287,7 +295,7 @@ func TestRevalidate(t *testing.T) {
 		"a revoked confirmer": {ptr(grtA), &revokedOp, req},
 		"no confirmer":        {ptr(grtA), nil, req},
 	} {
-		if got := refusalOf(t, Revalidate(reg, p, c.grant, c.confirmer, c.req, state)); got != vocab.ReasonProposalInvalidated {
+		if got := refusalOf(t, Revalidate(reg, p, c.confirmer, c.req, state)); got != vocab.ReasonProposalInvalidated {
 			t.Errorf("%s: %s", name, got.String())
 		}
 	}
@@ -296,12 +304,12 @@ func TestRevalidate(t *testing.T) {
 	peer.Actor = sup2ID
 	byPeer := supRequest("profile.adopt", []string{"policy.widen_destinations"}, peer)
 	byPeer.Actor = actor(sup2ID, types.ActorKindSupervisor)
-	if got := refusalOf(t, Revalidate(reg, p, ptr(grtA), &operator, byPeer, state)); got != vocab.ReasonProposalInvalidated {
+	if got := refusalOf(t, Revalidate(reg, p, &operator, byPeer, state)); got != vocab.ReasonProposalInvalidated {
 		t.Errorf("another proposer under an equal grant: %s", got.String())
 	}
 	both := grant(grtA, on(prjA), "profile.adopt", "task.create")
 	other := supRequest("task.create", []string{"policy.widen_destinations"}, both)
-	if got := refusalOf(t, Revalidate(reg, p, ptr(grtA), &operator, other, state)); got != vocab.ReasonProposalInvalidated {
+	if got := refusalOf(t, Revalidate(reg, p, &operator, other, state)); got != vocab.ReasonProposalInvalidated {
 		t.Errorf("another action under the same grant: %s", got.String())
 	}
 	// An operator's proposal has no grant: a refusal at apply (here, the
@@ -314,22 +322,43 @@ func TestRevalidate(t *testing.T) {
 	}
 	opP, _ = Close(opP, types.ProposalStatusConfirmed)
 	opReq := Request{Actor: operator, Action: "profile.adopt", Project: ptr(prjA), Classes: opBound.Classes, Now: now}
-	if err := Revalidate(reg, opP, nil, &operator, opReq, state); err != nil {
+	if err := Revalidate(reg, opP, &operator, opReq, state); err != nil {
 		t.Fatalf("an operator's export at apply: %v", err)
+	}
+	// The registry no longer binds that class to every actor kind: the
+	// same change now needs no confirmation, so the proposal is stale.
+	relaxed := registry(t)
+	cd := relaxed.ChangeClasses["knowledge.export_framework_prose"]
+	cd.EveryActorKind = false
+	relaxed.ChangeClasses["knowledge.export_framework_prose"] = cd
+	if got := refusalOf(t, Revalidate(relaxed, opP, &operator, opReq, state)); got != vocab.ReasonProposalInvalidated {
+		t.Errorf("a change that no longer needs confirmation: %s", got.String())
 	}
 	gone := operator
 	gone.RevokedAt = ptr(types.Time("2026-10-05T11:00:00Z"))
 	opReq.Actor = gone
-	if got := refusalOf(t, Revalidate(reg, opP, nil, &operator, opReq, state)); got != vocab.ReasonProposalInvalidated {
+	if got := refusalOf(t, Revalidate(reg, opP, &operator, opReq, state)); got != vocab.ReasonProposalInvalidated {
 		t.Errorf("a revoked proposer at apply: %s", got.String())
 	}
-	review, _ := Close(proposal(t, IndependentReview), types.ProposalStatusConfirmed)
+	// Security review: the re-decision is bound to the proposal's project
+	// and change, not to whatever the caller passes.
+	elsewhere := grant(grtA, on(prjA, prjB), "profile.adopt")
+	moved := supRequest("profile.adopt", []string{"policy.widen_destinations"}, elsewhere)
+	moved.Project = ptr(prjB)
+	if got := refusalOf(t, Revalidate(reg, p, &operator, moved, state)); got != vocab.ReasonProposalInvalidated {
+		t.Errorf("another project: %s", got.String())
+	}
+	reclassed := supRequest("profile.adopt", []string{"policy.widen_data"}, g)
+	if got := refusalOf(t, Revalidate(reg, p, &operator, reclassed, state)); got != vocab.ReasonProposalInvalidated {
+		t.Errorf("another change at the same policy: %s", got.String())
+	}
+	review, _ := Close(proposalOf(t, IndependentReview, []string{"install.self"}), types.ProposalStatusConfirmed)
 	reviewReq := supRequest("profile.adopt", []string{"install.self"}, g)
-	if err := Revalidate(reg, review, ptr(grtA), nil, reviewReq, state); err != nil {
+	if err := Revalidate(reg, review, nil, reviewReq, state); err != nil {
 		t.Errorf("a review-confirmed proposal needs no human confirmer: %v", err)
 	}
 	tight := supRequest("profile.adopt", []string{"install.self"}, tighter)
-	if got := refusalOf(t, Revalidate(reg, review, ptr(grtA), nil, tight, state)); got != vocab.ReasonProposalInvalidated {
+	if got := refusalOf(t, Revalidate(reg, review, nil, tight, state)); got != vocab.ReasonProposalInvalidated {
 		t.Errorf("a tighter policy now: %s", got.String())
 	}
 }

@@ -96,7 +96,7 @@ func NewProposal(id types.ProposalID, d Decision, b Bound, expires time.Time) (t
 		classes = append(classes, types.ChangeClass(c))
 	}
 	return types.Proposal{ID: id, Action: types.ActionKind(b.Action), ChangeClass: classes, Project: b.Project, Object: b.Object,
-		ExpectedState: b.ExpectedState, Scope: b.Scope, ProposedBy: b.ProposedBy, Policy: types.ProposalPolicy(d.Policy.String()),
+		ExpectedState: b.ExpectedState, Scope: b.Scope, ProposedBy: b.ProposedBy, Grant: d.Grant, Policy: types.ProposalPolicy(d.Policy.String()),
 		BindingDigest: digest, Status: types.ProposalStatusOpen, ExpiresAt: types.Time(expires.UTC().Format(time.RFC3339))}, nil
 }
 
@@ -205,11 +205,12 @@ func ConfirmByReview(p types.Proposal, r types.Receipt, c types.InstrumentContra
 
 // Revalidate re-decides a confirmed proposal at apply, in the writer
 // transaction (04): the object must still be in its expected state; the
-// same action must still be proposable under the same policy and under the
-// very grant it was proposed under (never a substitute); and a human
-// confirmer must still be an unrevoked operator. Any change invalidates the
-// proposal, never applies it.
-func Revalidate(reg *vocab.Registry, p types.Proposal, grant *types.GrantID, confirmer *types.Actor, current Request, state types.ExpectedState) error {
+// same action, project and change must still be proposable under the same
+// policy and under the very grant the proposal records (never a substitute,
+// never one the caller names); and a human confirmer must still be an
+// unrevoked operator. Any change invalidates the proposal, never applies it.
+func Revalidate(reg *vocab.Registry, p types.Proposal, confirmer *types.Actor, current Request, state types.ExpectedState) error {
+	grant := p.Grant
 	if p.Status != types.ProposalStatusConfirmed {
 		return refusal(vocab.ReasonProposalNotOpen, "proposal %s is %s, not confirmed", p.ID, p.Status)
 	}
@@ -219,7 +220,13 @@ func Revalidate(reg *vocab.Registry, p types.Proposal, grant *types.GrantID, con
 	if current.Actor.ID != p.ProposedBy || current.Action != string(p.Action) {
 		return refusal(vocab.ReasonProposalInvalidated, "the request is not proposal %s's", p.ID)
 	}
+	if (current.Project == nil) != (p.Project == nil) || (current.Project != nil && *current.Project != *p.Project) {
+		return refusal(vocab.ReasonProposalInvalidated, "the request is for another project than proposal %s", p.ID)
+	}
 	d := Decide(reg, current)
+	if d.Disposition != Refuse && !sameClasses(d.Classes, p.ChangeClass) {
+		return refusal(vocab.ReasonProposalInvalidated, "proposal %s: the change's classes are now %v, not %v", p.ID, d.Classes, p.ChangeClass)
+	}
 	switch {
 	case d.Disposition == Refuse:
 		return refusal(vocab.ReasonProposalInvalidated, "proposal %s: %s: %s", p.ID, d.Reason.String(), d.Detail)
@@ -234,6 +241,16 @@ func Revalidate(reg *vocab.Registry, p types.Proposal, grant *types.GrantID, con
 		return refusal(vocab.ReasonProposalInvalidated, "proposal %s: its confirmer is no longer an operator in force", p.ID)
 	}
 	return nil
+}
+
+// sameClasses compares the re-decided classes with the proposal's, as sets.
+func sameClasses(got []string, want []types.ChangeClass) bool {
+	g := slices.Compact(slices.Sorted(slices.Values(got)))
+	w := make([]string, 0, len(want))
+	for _, c := range want {
+		w = append(w, string(c))
+	}
+	return slices.Equal(g, slices.Compact(slices.Sorted(slices.Values(w))))
 }
 
 func sameState(a, b types.ExpectedState) bool {
