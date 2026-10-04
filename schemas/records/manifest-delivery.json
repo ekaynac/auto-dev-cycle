@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/manifest-delivery.json",
+  "title": "ManifestDelivery",
+  "description": "The second ContextManifest event (docs/design/m0/10), appended once per turn as the adapter streams. It evidences that turn: the controller-mediated tool results with the exact handles the core supplied, the adapter's coverage declarations, and compaction marks. Every delivered ref passed the restriction check again before it was supplied (KA1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest", "turn", "tool_results", "declarations", "compacted"],
+  "properties": {
+    "manifest": {"$ref": "../common/defs.json#/$defs/ManifestID"},
+    "turn": {"description": "1 for the first turn.", "type": "integer", "minimum": 1, "maximum": 1000000},
+    "tool_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["handle", "ref"],
+        "properties": {
+          "handle": {"description": "The handle the core supplied for this result.", "type": "string", "minLength": 1},
+          "ref": {"$ref": "ref.json"}
+        }
+      }
+    },
+    "declarations": {
+      "description": "What the adapter says it delivered in this turn, unverified.",
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "compacted": {"description": "The harness compacted its context in this turn.", "type": "boolean"}
+  }
+}

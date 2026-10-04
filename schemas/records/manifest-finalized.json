@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/manifest-finalized.json",
+  "title": "ManifestFinalized",
+  "description": "The third ContextManifest event (docs/design/m0/10), on call end. coverage.status is derived from evidence, never from declarations alone (E0): complete only when the number of turns is known, every turn 1..turns has its delivery event, and nothing is declared-only or unobservable; unknown when the number of turns is unknown; partial otherwise. delivered_refs are the identity digests of the included inputs and of every delivered tool result. internal/knowledge derives and checks both.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest", "coverage", "delivery"],
+  "properties": {
+    "manifest": {"$ref": "../common/defs.json#/$defs/ManifestID"},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assembled", "turns", "delivered_refs", "declared_only", "unobservable", "status"],
+      "properties": {
+        "assembled": {"const": "complete"},
+        "turns": {
+          "description": "How many turns the call had; null when the adapter could not tell.",
+          "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 1000000}]
+        },
+        "delivered_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/Digest"}},
+        "declared_only": {
+          "description": "Adapter declarations no controller evidence backs.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turn", "what"],
+            "properties": {
+              "turn": {"type": "integer", "minimum": 1, "maximum": 1000000},
+              "what": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "unobservable": {
+          "description": "Context outside the controller's guarantee: harness instructions, compaction, harness tools.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["turn", "what"],
+            "properties": {
+              "turn": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1, "maximum": 1000000}]},
+              "what": {"enum": ["harness_instructions", "compaction", "harness_tool", "other"]}
+            }
+          }
+        },
+        "status": {"enum": ["complete", "partial", "unknown"]}
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "reason"],
+      "properties": {
+        "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
+        "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"}
+      }
+    }
+  }
+}
