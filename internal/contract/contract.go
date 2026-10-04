@@ -13,7 +13,10 @@
 //     digests) refuses them;
 //   - Encode refuses to write any string that is not valid UTF-8, including
 //     the output of MarshalText and MarshalJSON methods (encoding/json would
-//     write U+FFFD in its place), and validates its own output. Its bytes are
+//     write U+FFFD in its place), and validates its own output. A custom
+//     marshaler on a contract type must implement MarshalJSONTo (or write
+//     only raw bytes): a MarshalJSON built on encoding/json hands over output
+//     it has already repaired. Generated unions implement MarshalJSONTo. Its bytes are
 //     not a canonical form (key order follows the Go struct): every digest is
 //     taken over the JCS canonicalisation, never over Encode output;
 //   - the adc-time, adc-typeid and adc-reason formats (schemas/common/defs.json)

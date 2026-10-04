@@ -390,12 +390,18 @@ package %s
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"io"
 	"runtime"
 	"strings"
 	"sync/atomic"
 )
+
+// marshalTo encodes v on enc with enc's options: a union's MarshalJSONTo
+// uses it so a strict encoder stays strict inside the union.
+func marshalTo(enc *jsontext.Encoder, v any) error { return jsonv2.MarshalEncode(enc, v) }
 
 // decodeStrict decodes exactly one document, refusing unknown fields and
 // trailing data, so nested decoders are as strict as internal/contract.

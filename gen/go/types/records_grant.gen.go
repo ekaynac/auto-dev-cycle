@@ -7,6 +7,7 @@ package types
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 )
 
@@ -21,6 +22,14 @@ func (v GrantReadsProjects) MarshalJSON() ([]byte, error) {
 		return json.Marshal("same")
 	}
 	return json.Marshal(v.List)
+}
+
+// MarshalJSONTo encodes on the caller's encoder, keeping its options.
+func (v GrantReadsProjects) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if v.Same {
+		return marshalTo(enc, "same")
+	}
+	return marshalTo(enc, v.List)
 }
 
 func (v *GrantReadsProjects) UnmarshalJSON(b []byte) error {
@@ -90,6 +99,14 @@ func (v ProjectScope) MarshalJSON() ([]byte, error) {
 		return json.Marshal("*")
 	}
 	return json.Marshal(v.List)
+}
+
+// MarshalJSONTo encodes on the caller's encoder, keeping its options.
+func (v ProjectScope) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if v.All {
+		return marshalTo(enc, "*")
+	}
+	return marshalTo(enc, v.List)
 }
 
 func (v *ProjectScope) UnmarshalJSON(b []byte) error {
