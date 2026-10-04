@@ -73,6 +73,24 @@ CREATE TABLE IF NOT EXISTS events (
   hash       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_subject ON events(subject, seq);
+CREATE TABLE IF NOT EXISTS commands (
+  id              TEXT PRIMARY KEY,
+  actor           TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  input_digest    TEXT NOT NULL,
+  disposition     TEXT NOT NULL,
+  result_json     TEXT NOT NULL,
+  first_seq       INTEGER,
+  last_seq        INTEGER,
+  UNIQUE(actor, idempotency_key)
+) WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS commands_immutable_update BEFORE UPDATE ON commands
+  BEGIN SELECT RAISE(ABORT, 'commands are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS commands_immutable_delete BEFORE DELETE ON commands
+  BEGIN SELECT RAISE(ABORT, 'commands are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS commands_no_replace BEFORE INSERT ON commands
+  WHEN EXISTS (SELECT 1 FROM commands WHERE id = NEW.id OR (actor = NEW.actor AND idempotency_key = NEW.idempotency_key))
+  BEGIN SELECT RAISE(ABORT, 'commands are append-only'); END;
 CREATE INDEX IF NOT EXISTS events_command ON events(command, seq);
 CREATE TRIGGER IF NOT EXISTS events_append_only_update BEFORE UPDATE ON events
   BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
@@ -113,6 +131,7 @@ type Store struct {
 	schemaSet string
 	kinds     Kinds
 	blobs     BlobChecker
+	hooks     Hooks
 
 	// Operation tracking: each operation is admitted while the store is
 	// open and counted; Close stops admissions and waits for the count to
@@ -128,6 +147,7 @@ type Store struct {
 type Config struct {
 	Kinds Kinds       // event kinds the controller may write
 	Blobs BlobChecker // required: referenced blobs must be published first
+	Hooks Hooks       // the writer's in-transaction decisions (writer.go)
 }
 
 // Open opens (creating on first use) the store in the lock's state
@@ -180,7 +200,7 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (s *Store, err error) {
 	for k, v := range cfg.Kinds {
 		kinds[k] = Kind{Schema: v.Schema, BlobFields: slices.Clone(v.BlobFields)}
 	}
-	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs}
+	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs, hooks: cfg.Hooks}
 	s.idle = sync.NewCond(&s.mu)
 	if s.genesis, err = s.ensureGenesis(ctx); err == nil {
 		err = checkDBFiles(file)
