@@ -6,6 +6,7 @@ package types
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -55,6 +56,24 @@ type Receipt struct {
 	Supersedes        *ReceiptID           `json:"supersedes"`
 }
 
+// UnmarshalJSON decodes Receipt and refuses an omitted reason code.
+
+func (x *Receipt) UnmarshalJSON(b []byte) error {
+	type plain Receipt
+	var p plain
+
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+
+	if p.Reason.code == "" {
+		return errors.New("Receipt: a reason code is required (Reason)")
+	}
+
+	*x = Receipt(p)
+	return nil
+}
+
 // Name: Instrument, predicate, artifact, precondition and model-family names: lowercase letters and digits, then also '.', '_' and '-' (06 "Names and media types").
 type Name = string
 
@@ -83,6 +102,24 @@ type Predicate struct {
 	Evidence []PredicateEvidenceItem `json:"evidence"`
 	// Typed predicate facts. Present only when the instrument declares a payload_schema, and then validated against it by internal/receipt (06 rule 7).
 	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+// UnmarshalJSON decodes Predicate and refuses an omitted reason code.
+
+func (x *Predicate) UnmarshalJSON(b []byte) error {
+	type plain Predicate
+	var p plain
+
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+
+	if p.Reason.code == "" {
+		return errors.New("Predicate: a reason code is required (Reason)")
+	}
+
+	*x = Predicate(p)
+	return nil
 }
 
 type DemandValue struct {

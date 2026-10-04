@@ -813,6 +813,7 @@ func (g *gen) structType(n *Node, name, where string) {
 		g.fail(where, "properties must be an object")
 		return
 	}
+	var reasons []string // required reason fields, checked for presence on decode
 	required := map[string]bool{}
 	if r := n.Get("required"); r != nil {
 		if r.Kind != Array {
@@ -842,6 +843,9 @@ func (g *gen) structType(n *Node, name, where string) {
 			tag := k
 			switch {
 			case required[k]:
+				if typ == ReasonTypeName && !envelope {
+					reasons = append(reasons, fname)
+				}
 			case strings.HasPrefix(typ, "*") || g.isNullable(prop, at):
 				g.fail(at, "a nullable field must be required (null is explicit, absence invalid)")
 			case g.isCollection(prop):
@@ -869,6 +873,24 @@ func (g *gen) structType(n *Node, name, where string) {
 	if all := n.Get("allOf"); all != nil {
 		g.accessors(all, props, required, names, name, where)
 	}
+	if len(reasons) > 0 {
+		g.reasonPresence(name, reasons)
+	}
+}
+
+// reasonPresence emits an UnmarshalJSON that refuses an omitted required
+// reason code: encoding/json never calls the reason's own decoder for an
+// absent field. It decodes into a fresh value, so an omitted field cannot
+// keep a reason left in a reused destination.
+func (g *gen) reasonPresence(name string, fields []string) {
+	g.needs["encoding/json"], g.needs["errors"] = true, true
+	g.p("\n// UnmarshalJSON decodes %s and refuses an omitted reason code.\n", name)
+	g.p("func (x *%s) UnmarshalJSON(b []byte) error {\n\ttype plain %s\n\tvar p plain\n", name, name)
+	g.p("\tif err := json.Unmarshal(b, &p); err != nil {\n\t\treturn err\n\t}\n")
+	for _, f := range fields {
+		g.p("\tif p.%s.code == \"\" {\n\t\treturn errors.New(%q)\n\t}\n", f, name+": a reason code is required ("+f+")")
+	}
+	g.p("\t*x = %s(p)\n\treturn nil\n}\n", name)
 }
 
 // reasonFormatOnlyDeclared refuses format adc-reason anywhere in n except a

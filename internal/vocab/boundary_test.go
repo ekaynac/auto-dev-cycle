@@ -218,3 +218,33 @@ func mustReason(t *testing.T, code string) vocab.Reason {
 	}
 	return r
 }
+
+// Astra #32: an omitted required reason, in the record or in a predicate,
+// is refused by plain JSON decoding (v1 and v2) too, also into a reused
+// destination that already holds a valid reason.
+func TestOmittedReasonsAreRefused(t *testing.T) {
+	omitted := map[string]string{
+		"record":    strings.Replace(receipt, `"outcome":"empty","reason":"completed_clean","detail":"","verdict"`, `"outcome":"empty","detail":"","verdict"`, 1),
+		"predicate": strings.Replace(receipt, `"outcome":"empty","reason":"completed_clean","detail":"","evidence"`, `"outcome":"empty","detail":"","evidence"`, 1),
+	}
+	for where, doc := range omitted {
+		if doc == receipt {
+			t.Fatalf("%s: fixture edit did not apply", where)
+		}
+		var v1 types.Receipt
+		if err := json.Unmarshal([]byte(doc), &v1); err == nil {
+			t.Errorf("%s: encoding/json read an omitted reason", where)
+		}
+		var v2 types.Receipt
+		if err := jsonv2.Unmarshal([]byte(doc), &v2); err == nil {
+			t.Errorf("%s: encoding/json/v2 read an omitted reason", where)
+		}
+		var reused types.Receipt
+		if err := json.Unmarshal([]byte(receipt), &reused); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(doc), &reused); err == nil {
+			t.Errorf("%s: an omitted reason kept the reused destination's reason", where)
+		}
+	}
+}
