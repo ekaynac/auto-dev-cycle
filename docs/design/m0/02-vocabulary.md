@@ -50,9 +50,10 @@ Rules:
   never "no changes" (nöbetçi Δ§14).
 - `adc dev vocab check` scans the Go and TS code for reason literals and fails on unregistered ones. In Go the
   reason type is opaque (generated from `format: adc-reason`, 01), so no literal can become a reason and reasons are
-  checked whenever they are read or written; the check reports the remaining ways source can go wrong (an unchecked
-  constructor outside the vocabulary package, parsing a constant instead of using the generated value, writing to a
-  generated value).
+  checked whenever they are read or written; the check reports the remaining ways source can go wrong outside the
+  vocabulary package, identified by import path: any reference to the unchecked constructor or to a check installer,
+  parsing a constant or using the parser as a function value, and writing to a generated value (assignment, address,
+  or a pointer method).
 
 ## Hold reasons and resume signals
 

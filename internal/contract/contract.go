@@ -35,6 +35,7 @@ import (
 	"io"
 	"io/fs"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -142,14 +143,28 @@ func checkTime(s string) error {
 // document with a reason field can never pass unchecked.
 var reasonCheck atomic.Pointer[func(code string, writing bool) error]
 
-// SetReasonCheck installs the vocabulary's reason check (internal/vocab does
-// this when it is imported). nil removes it.
-func SetReasonCheck(check func(code string, writing bool) error) {
-	if check == nil {
-		reasonCheck.Store(nil)
-		return
+// SetReasonCheck installs the vocabulary's reason check. Only the vocabulary
+// package (an import path ending in /internal/vocab) may call it, once; any
+// other caller, direct or indirect, and a second installation are refused.
+func SetReasonCheck(check func(code string, writing bool) error) error {
+	pc, _, _, ok := runtime.Caller(1)
+	fn := runtime.FuncForPC(pc)
+	if !ok || fn == nil || !strings.HasSuffix(funcPackage(fn.Name()), "/internal/vocab") {
+		return errors.New("only the vocabulary package installs the reason check")
 	}
-	reasonCheck.Store(&check)
+	if check == nil || !reasonCheck.CompareAndSwap(nil, &check) {
+		return errors.New("the reason check is installed once")
+	}
+	return nil
+}
+
+// funcPackage is the import path of a runtime function name.
+func funcPackage(name string) string {
+	slash := strings.LastIndexByte(name, '/')
+	if dot := strings.IndexByte(name[slash+1:], '.'); dot >= 0 {
+		return name[:slash+1+dot]
+	}
+	return name
 }
 
 func checkReason(code string, writing bool) error {

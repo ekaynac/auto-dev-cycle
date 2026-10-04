@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 func TestMainExitCodes(t *testing.T) {
@@ -67,11 +69,11 @@ func TestVocabCheckCommand(t *testing.T) {
 		t.Helper()
 		dir := t.TempDir()
 		files := map[string]string{
-			"go.mod":                "module example.com/x\n\ngo 1.22\n",
-			"gen/go/types/types.go": "package types\n\ntype ReasonCode struct{ code string }\n\nfunc ReasonCodeOf(c string) ReasonCode { return ReasonCode{c} }\n",
-			"vocab/vocab.go":        "package vocab\n\nimport \"example.com/x/gen/go/types\"\n\ntype Reason = types.ReasonCode\n",
-			"vocab/vocab.gen.go":    "package vocab\n\nimport \"example.com/x/gen/go/types\"\n\nvar ReasonStaleAttempt = types.ReasonCodeOf(\"stale_attempt\")\n",
-			"use/use.go":            "package use\n\nimport (\n\t\"example.com/x/gen/go/types\"\n\t\"example.com/x/vocab\"\n)\n\nvar _ types.ReasonCode\n\nvar R vocab.Reason = " + use + "\n",
+			"go.mod":                      "module example.com/x\n\ngo 1.22\n",
+			"gen/go/types/types.go":       "package types\n\ntype ReasonCode struct{ code string }\n\nfunc ReasonCodeOf(c string) ReasonCode { return ReasonCode{c} }\n",
+			"internal/vocab/vocab.go":     "package vocab\n\nimport \"example.com/x/gen/go/types\"\n\ntype Reason = types.ReasonCode\n",
+			"internal/vocab/vocab.gen.go": "package vocab\n\nimport \"example.com/x/gen/go/types\"\n\nvar ReasonStaleAttempt = types.ReasonCodeOf(\"stale_attempt\")\n",
+			"use/use.go":                  "package use\n\nimport (\n\t\"example.com/x/gen/go/types\"\n\t\"example.com/x/internal/vocab\"\n)\n\nvar _ types.ReasonCode\n\nvar R vocab.Reason = " + use + "\n",
 		}
 		for name, src := range files {
 			p := filepath.Join(dir, name)
@@ -131,5 +133,24 @@ func TestVocabCheckFailureOutput(t *testing.T) {
 	errOut.Reset()
 	if code := Main("adc", []string{"dev", "vocab", "check", "--root", "../.."}, failingWriter{}, &errOut); code != ExitCouldNotRun {
 		t.Fatalf("unwritable report: exit %d, want %d", code, ExitCouldNotRun)
+	}
+}
+
+// Astra #28: when the registry itself fails to load, JSON mode still prints
+// the bootstrap could_not_run document (it never goes through the registry).
+func TestVocabCheckRegistryFailure(t *testing.T) {
+	orig := loadVocab
+	t.Cleanup(func() { loadVocab = orig })
+	loadVocab = func() (*vocab.Registry, error) { return nil, errors.New("broken registry") }
+	var out, errOut bytes.Buffer
+	if code := Main("adc", []string{"dev", "vocab", "check", "--json"}, &out, &errOut); code != ExitCouldNotRun {
+		t.Fatalf("exit %d, want %d", code, ExitCouldNotRun)
+	}
+	var doc struct{ Outcome, Reason, Detail string }
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.Outcome != "could_not_run" || doc.Reason != "check_unloadable" || !strings.Contains(doc.Detail, "broken registry") {
+		t.Fatalf("bootstrap document %q (%v)", out.String(), err)
+	}
+	if !strings.Contains(errOut.String(), "broken registry") {
+		t.Fatalf("no diagnostic on stderr: %q", errOut.String())
 	}
 }

@@ -100,6 +100,10 @@ func TestDeprecatedReasonsAreReadButNotWritten(t *testing.T) {
 	if _, err := vocab.ParseReason(code); err != nil {
 		t.Fatalf("ParseReason refused a readable deprecated code: %v", err)
 	}
+	var historical vocab.Result
+	if err := json.Unmarshal([]byte(`{"outcome":"empty","reason":"completed_clean","detail":""}`), &historical); err != nil {
+		t.Fatalf("a historical result with a deprecated reason must stay readable: %v", err)
+	}
 	if _, err := json.Marshal(vocab.Result{Outcome: vocab.Empty, Reason: vocab.ReasonCompletedClean}); err == nil {
 		t.Fatal("json.Marshal wrote a result with a deprecated reason")
 	}
@@ -133,5 +137,52 @@ func TestResultMarshalIsTheEmissionBoundary(t *testing.T) {
 	}
 	if _, err := vocab.ParseReason("typo"); err == nil {
 		t.Fatal("ParseReason accepted an unregistered code")
+	}
+}
+
+// Astra #28: the hooks are installed once, by the vocabulary package only;
+// a replacement attempt fails and checking continues.
+func TestReasonHooksCannotBeReplaced(t *testing.T) {
+	allow := func(string, bool) error { return nil }
+	if err := types.SetReasonCheck(allow); err == nil {
+		t.Fatal("the generated types' reason check was replaced")
+	}
+	if err := contract.SetReasonCheck(allow); err == nil {
+		t.Fatal("the contract runtime's reason check was replaced")
+	}
+	r, err := contract.Decode[types.Receipt]("records/receipt", []byte(receipt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Reason = types.ReasonCodeOf("typo_override")
+	if _, err := contract.Encode("records/receipt", r); err == nil {
+		t.Fatal("an unregistered reason was written after a replacement attempt")
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(receipt), &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["reason"] = "typo_override"
+	if _, err := contract.Encode("records/receipt", doc); err == nil {
+		t.Fatal("an untyped document with an unregistered reason was written")
+	}
+}
+
+// Astra #28: null and missing reasons are refused on read.
+func TestNullAndMissingReasonsAreRefused(t *testing.T) {
+	var res vocab.Result
+	for _, doc := range []string{`{"outcome":"empty","detail":""}`, `{"outcome":"empty","reason":null,"detail":""}`} {
+		if err := json.Unmarshal([]byte(doc), &res); err == nil {
+			t.Errorf("read %s", doc)
+		}
+	}
+	var code types.ReasonCode
+	if err := json.Unmarshal([]byte(`null`), &code); err == nil {
+		t.Error("read a null reason code")
+	}
+	nullPredicate := strings.Replace(receipt, `"reason":"completed_clean","detail":"","evidence"`, `"reason":null,"detail":"","evidence"`, 1)
+	var direct types.Receipt
+	if err := json.Unmarshal([]byte(nullPredicate), &direct); err == nil {
+		t.Error("plain json.Unmarshal read a null predicate reason")
 	}
 }

@@ -71,8 +71,12 @@ func checkReason(code string, writing bool) error {
 // Every reason the contract runtime or the generated types read or write is
 // checked here; without this package imported, every reason is refused.
 func init() {
-	types.ReasonCheck = checkReason
-	contract.SetReasonCheck(checkReason)
+	if err := types.SetReasonCheck(checkReason); err != nil {
+		panic("vocab: " + err.Error())
+	}
+	if err := contract.SetReasonCheck(checkReason); err != nil {
+		panic("vocab: " + err.Error())
+	}
 }
 
 // Registry is the loaded, cross-checked vocabulary.
@@ -207,6 +211,10 @@ func (r *Result) UnmarshalJSON(b []byte) error {
 	}
 	if _, ok := reg.Outcomes[p.Outcome]; !ok {
 		return fmt.Errorf("%w: unknown outcome %q", ErrMalformed, p.Outcome)
+	}
+	// A missing reason never reaches the reason decoder; refuse it here.
+	if _, ok := reg.Reasons[p.Reason.String()]; !ok {
+		return fmt.Errorf("%w: unregistered or missing reason %q", ErrMalformed, p.Reason.String())
 	}
 	*r = Result(p)
 	return nil

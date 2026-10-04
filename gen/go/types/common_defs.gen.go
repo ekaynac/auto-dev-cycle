@@ -4,6 +4,11 @@
 
 package types
 
+import (
+	"encoding/json"
+	"errors"
+)
+
 // Outcome: The four outcomes. There is no boolean ok.
 type Outcome string
 
@@ -41,6 +46,19 @@ func (r *ReasonCode) UnmarshalText(b []byte) error {
 	}
 	r.code = string(b)
 	return nil
+}
+
+// UnmarshalJSON reads a JSON string through UnmarshalText; null is never a
+// reason (encoding/json would otherwise skip UnmarshalText for it).
+func (r *ReasonCode) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return errors.New("a reason code cannot be null")
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	return r.UnmarshalText([]byte(s))
 }
 
 // Digest: Content digest: sha256 over the bytes, lowercase hex.

@@ -355,17 +355,31 @@ func TestReasonFieldsNeedTheVocabulary(t *testing.T) {
 	doc := func(why string) []byte {
 		return []byte(strings.Replace(valid(), `"note":"r"`, `"note":"r","why":"`+why+`"`, 1))
 	}
-	t.Cleanup(func() { SetReasonCheck(nil) })
-	SetReasonCheck(nil)
+	t.Cleanup(func() { reasonCheck.Store(nil) })
+	reasonCheck.Store(nil)
 	contractError(t, r.validate("test/doc", doc("known")), "no reason vocabulary is loaded")
-	SetReasonCheck(func(code string, writing bool) error {
+	stub := func(code string, writing bool) error {
 		if code != "known" {
 			return fmt.Errorf("unregistered reason %q", code)
 		}
 		return nil
-	})
+	}
+	reasonCheck.Store(&stub)
 	if err := r.validate("test/doc", doc("known")); err != nil {
 		t.Fatalf("a registered reason: %v", err)
 	}
 	contractError(t, r.validate("test/doc", doc("typo")), `unregistered reason "typo"`)
+}
+
+// Only the vocabulary package installs the reason check: a caller here (the
+// contract package's own test) is refused, and nothing is installed.
+func TestSetReasonCheckRefusesOtherCallers(t *testing.T) {
+	t.Cleanup(func() { reasonCheck.Store(nil) })
+	reasonCheck.Store(nil)
+	if err := SetReasonCheck(func(string, bool) error { return nil }); err == nil {
+		t.Fatal("a caller outside the vocabulary installed the reason check")
+	}
+	if reasonCheck.Load() != nil {
+		t.Fatal("a refused installation left a check behind")
+	}
 }

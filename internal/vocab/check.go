@@ -63,13 +63,19 @@ var skipDirs = map[string]bool{".git": true, "gen": true, "fixtures": true, "nod
 // is written only through MarshalText, which refuses unregistered and
 // deprecated codes however it is serialised.
 //
-// What remains for source to get wrong, CheckSource reports:
-//   - a call to the unchecked constructor types.ReasonCodeOf outside the vocab
-//     package;
-//   - ParseReason with a constant argument: use the generated value (an
-//     unregistered constant would otherwise fail only at run time);
-//   - an assignment to a generated vocab.Reason* value, or taking its address:
-//     the values are immutable.
+// What remains for source to get wrong, CheckSource reports. The vocabulary
+// package is identified by its import path (ending in /internal/vocab), never
+// by its package name:
+//   - any reference to the unchecked constructor types.ReasonCodeOf outside
+//     the vocabulary package (a call, or a function value);
+//   - any reference to a SetReasonCheck (generated types or contract runtime)
+//     outside the vocabulary package; at run time they also refuse any other
+//     caller and a second installation;
+//   - ParseReason with a constant argument (use the generated value), and
+//     ParseReason used as a function value (its argument cannot be checked);
+//   - writing to a generated vocab.Reason* value: an assignment, taking its
+//     address, or calling a pointer method on it (which takes the address
+//     implicitly). The values are immutable.
 //
 // It type-checks the module's packages (go list ./..., non-test files); a
 // package that does not load or type-check, wherever it lives (skipped
@@ -112,7 +118,7 @@ func (reg *Registry) CheckSource(root string) ([]Finding, error) {
 			continue
 		}
 		for _, file := range pkg.Syntax {
-			for _, f := range scan(pkg.Name, pkg.TypesInfo, file) {
+			for _, f := range scan(pkg.PkgPath, pkg.TypesInfo, file) {
 				found = append(found, locate(absRoot, pkg, f.pos, f.problem))
 			}
 		}
@@ -139,20 +145,48 @@ type raw struct {
 	problem string
 }
 
-// scan applies the three rules to one file of package pkgName.
-func scan(pkgName string, info *types.Info, file *ast.File) []raw {
+// isVocabPkg: the vocabulary package, by import path.
+func isVocabPkg(path string) bool { return strings.HasSuffix(path, "/internal/vocab") }
+
+// scan applies the rules to one file of the package at pkgPath.
+func scan(pkgPath string, info *types.Info, file *ast.File) []raw {
 	var out []raw
+	trusted := isVocabPkg(pkgPath)
+	// Identifiers in call position, to tell a call from a function value.
+	called := map[*ast.Ident]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			switch f := ast.Unparen(call.Fun).(type) {
+			case *ast.Ident:
+				called[f] = true
+			case *ast.SelectorExpr:
+				called[f.Sel] = true
+			}
+		}
+		return true
+	})
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch x := n.(type) {
+		case *ast.Ident:
+			f, ok := info.Uses[x].(*types.Func)
+			if !ok || f.Pkg() == nil {
+				return true
+			}
+			switch {
+			case trusted:
+			case f.Name() == "ReasonCodeOf" && isGenPkg(f.Pkg()):
+				out = append(out, raw{x.Pos(), "types.ReasonCodeOf builds an unchecked reason; use a generated vocab.Reason* value or vocab.ParseReason"})
+			case f.Name() == "SetReasonCheck" && (isGenPkg(f.Pkg()) || f.Pkg().Name() == "contract"):
+				out = append(out, raw{x.Pos(), "only the vocabulary package installs the reason check"})
+			case f.Name() == "ParseReason" && isVocabPkg(f.Pkg().Path()) && !called[x]:
+				out = append(out, raw{x.Pos(), "ParseReason used as a function value; call it directly"})
+			}
 		case *ast.CallExpr:
 			f := callee(info, x)
 			if f == nil || f.Pkg() == nil {
 				return true
 			}
-			switch {
-			case f.Name() == "ReasonCodeOf" && isGenPkg(f.Pkg()) && pkgName != "vocab":
-				out = append(out, raw{x.Pos(), "types.ReasonCodeOf builds an unchecked reason; use a generated vocab.Reason* value or vocab.ParseReason"})
-			case f.Name() == "ParseReason" && f.Pkg().Name() == "vocab" && len(x.Args) == 1:
+			if f.Name() == "ParseReason" && isVocabPkg(f.Pkg().Path()) && len(x.Args) == 1 {
 				if tv, ok := info.Types[x.Args[0]]; ok && tv.Value != nil {
 					out = append(out, raw{x.Pos(), fmt.Sprintf("ParseReason(%s) with a constant; use the generated vocab.Reason%s value", tv.Value, GoName(strings.Trim(tv.Value.String(), `"`)))})
 				}
@@ -171,6 +205,18 @@ func scan(pkgName string, info *types.Info, file *ast.File) []raw {
 			if x.Op == token.AND {
 				if v := generatedValue(info, x.X); v != nil {
 					out = append(out, raw{x.Pos(), fmt.Sprintf("the address of the generated reason %s, which is immutable", v.Name())})
+				}
+			}
+		case *ast.SelectorExpr:
+			// v.M with a pointer receiver takes &v implicitly (a call or a
+			// method value alike).
+			if sel, ok := info.Selections[x]; ok && sel.Kind() == types.MethodVal {
+				if v := generatedValue(info, x.X); v != nil {
+					if sig, ok := sel.Obj().Type().(*types.Signature); ok && sig.Recv() != nil {
+						if _, ptr := sig.Recv().Type().(*types.Pointer); ptr {
+							out = append(out, raw{x.Pos(), fmt.Sprintf("pointer method %s on the generated reason %s, which is immutable", x.Sel.Name, v.Name())})
+						}
+					}
 				}
 			}
 		}
@@ -209,7 +255,7 @@ func generatedValue(info *types.Info, e ast.Expr) *types.Var {
 		return nil
 	}
 	v, ok := info.Uses[id].(*types.Var)
-	if !ok || v.IsField() || v.Pkg() == nil || v.Pkg().Name() != "vocab" || !strings.HasPrefix(v.Name(), "Reason") {
+	if !ok || v.IsField() || v.Pkg() == nil || !isVocabPkg(v.Pkg().Path()) || !strings.HasPrefix(v.Name(), "Reason") {
 		return nil
 	}
 	if v.Parent() != v.Pkg().Scope() { // package-level only

@@ -67,6 +67,9 @@ func version(binary string, args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
+// loadVocab loads the vocabulary; a test replaces it to make loading fail.
+var loadVocab = vocab.Load
+
 // vocabCheck runs `adc dev vocab check`: the registries load and cross-check,
 // and the Go sources under --root name reasons only through the constants.
 func vocabCheck(args []string, stdout, stderr io.Writer) int {
@@ -102,7 +105,7 @@ func vocabCheck(args []string, stdout, stderr io.Writer) int {
 		}
 		return ExitCouldNotRun
 	}
-	reg, err := vocab.Load()
+	reg, err := loadVocab()
 	if err != nil {
 		return couldNotRun(fmt.Errorf("registry: %w", err))
 	}

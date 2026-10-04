@@ -9,6 +9,7 @@ import (
 	"testing/fstest"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 )
 
 func mustLoad(t *testing.T) *Registry {
@@ -283,3 +284,21 @@ func TestHoldsMatchNote02(t *testing.T) {
 // r builds a reason from any code, unchecked: tests build malformed results
 // on purpose (test files are not scanned by adc dev vocab check).
 func r(code string) Reason { return types.ReasonCodeOf(code) }
+
+// Astra #28: even the vocabulary package cannot replace an installed check;
+// init installed both, so a second installation is refused.
+func TestReasonChecksInstallOnce(t *testing.T) {
+	allow := func(string, bool) error { return nil }
+	if err := types.SetReasonCheck(allow); err == nil {
+		t.Error("the generated types' reason check was installed twice")
+	}
+	if err := contract.SetReasonCheck(allow); err == nil {
+		t.Error("the contract runtime's reason check was installed twice")
+	}
+	if _, err := contract.Encode("common/defs", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkReason("typo_after_install", true); err == nil {
+		t.Fatal("the vocabulary check accepted an unregistered code")
+	}
+}

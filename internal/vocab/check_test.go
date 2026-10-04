@@ -40,7 +40,7 @@ func ReasonCodeOf(code string) ReasonCode { return ReasonCode{code: code} }
 
 type Predicate struct{ Reason ReasonCode }
 `)
-	write(t, root, "vocab/vocab.go", `package vocab
+	write(t, root, "internal/vocab/vocab.go", `package vocab
 
 import "example.com/x/gen/go/types"
 
@@ -54,7 +54,7 @@ type Result struct {
 	Detail  string
 }
 `)
-	write(t, root, "vocab/vocab.gen.go", `package vocab
+	write(t, root, "internal/vocab/vocab.gen.go", `package vocab
 
 import "example.com/x/gen/go/types"
 
@@ -88,7 +88,7 @@ func TestCheckSourceFindings(t *testing.T) {
 
 import (
 	"example.com/x/gen/go/types"
-	"example.com/x/vocab"
+	"example.com/x/internal/vocab"
 )
 
 var _ = types.Predicate{Reason: types.ReasonCodeOf("typo_unchecked")}
@@ -108,7 +108,7 @@ func dynamic(s string) (vocab.Reason, error) { return vocab.ParseReason(s) }
 func read(r vocab.Reason) bool { return r == vocab.ReasonStaleAttempt }
 `)
 	want := strings.Join([]string{
-		`a/a.go:8:33: types.ReasonCodeOf builds an unchecked reason; use a generated vocab.Reason* value or vocab.ParseReason`,
+		`a/a.go:8:39: types.ReasonCodeOf builds an unchecked reason; use a generated vocab.Reason* value or vocab.ParseReason`,
 		`a/a.go:9:12: ParseReason("stale_attempt") with a constant; use the generated vocab.ReasonStaleAttempt value`,
 		`a/a.go:10:12: ParseReason("quota_exhausted") with a constant; use the generated vocab.ReasonQuotaExhausted value`,
 		`a/a.go:15:2: assignment to the generated reason ReasonStaleAttempt, which is immutable`,
@@ -127,7 +127,7 @@ func TestCheckSourceTypeRefusesStringReasons(t *testing.T) {
 	root := synthetic(t)
 	write(t, root, "a/a.go", `package a
 
-import "example.com/x/vocab"
+import "example.com/x/internal/vocab"
 
 var _ = vocab.Result{Reason: vocab.ReasonStaleAttempt}
 `)
@@ -143,7 +143,7 @@ var _ = vocab.Result{Reason: vocab.ReasonStaleAttempt}
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := synthetic(t)
-			write(t, root, "b/b.go", "package b\n\nimport \"example.com/x/vocab\"\n\n"+src+"\n")
+			write(t, root, "b/b.go", "package b\n\nimport \"example.com/x/internal/vocab\"\n\n"+src+"\n")
 			if _, err := reg.CheckSource(root); err == nil || !strings.Contains(err.Error(), "type-check") {
 				t.Fatalf("a string reason must fail to type-check, got %v", err)
 			}
@@ -227,5 +227,64 @@ func TestGeneratedValuesCoverTheRegistry(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("generated values differ from the registry:\n got %v\nwant %v", got, want)
+	}
+}
+
+// Astra #28: references, not only calls; trust by import path; hooks; and
+// pointer methods that take a generated value's address implicitly.
+func TestCheckSourceReferencesAndMutation(t *testing.T) {
+	reg := mustLoad(t)
+	root := synthetic(t)
+	write(t, root, "gen/go/types/hook.go", `package types
+
+func SetReasonCheck(func(string, bool) error) error { return nil }
+
+func (r *ReasonCode) UnmarshalText(b []byte) error { r.code = string(b); return nil }
+
+func (r ReasonCode) String() string { return r.code }
+`)
+	write(t, root, "contract/contract.go", "package contract\n\nfunc SetReasonCheck(func(string, bool) error) error { return nil }\n")
+	write(t, root, "other/vocab/vocab.go", `package vocab
+
+import "example.com/x/gen/go/types"
+
+var Smuggled = types.ReasonCodeOf("typo_namesake")
+`)
+	write(t, root, "a/a.go", `package a
+
+import (
+	"example.com/x/contract"
+	"example.com/x/gen/go/types"
+	"example.com/x/internal/vocab"
+)
+
+var construct = types.ReasonCodeOf
+var parse = vocab.ParseReason
+var _ = types.SetReasonCheck(nil)
+var _ = contract.SetReasonCheck(nil)
+
+func mutate() {
+	_ = vocab.ReasonStaleAttempt.UnmarshalText([]byte("quota_exhausted"))
+	f := vocab.ReasonQuotaExhausted.UnmarshalText
+	_ = f
+	_ = vocab.ReasonStaleAttempt.String()
+}
+`)
+	got := findings(t, reg, root)
+	for _, want := range []string{
+		"a/a.go:9:23: types.ReasonCodeOf builds an unchecked reason",
+		"a/a.go:10:19: ParseReason used as a function value",
+		"a/a.go:11:15: only the vocabulary package installs the reason check",
+		"a/a.go:12:18: only the vocabulary package installs the reason check",
+		"a/a.go:15:6: pointer method UnmarshalText on the generated reason ReasonStaleAttempt",
+		"a/a.go:16:7: pointer method UnmarshalText on the generated reason ReasonQuotaExhausted",
+		"other/vocab/vocab.go:5:22: types.ReasonCodeOf builds an unchecked reason",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, "\n") + 1; n != 7 {
+		t.Errorf("want 7 findings (String is a value method), got %d:\n%s", n, got)
 	}
 }

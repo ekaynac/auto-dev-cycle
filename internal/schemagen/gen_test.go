@@ -99,6 +99,10 @@ func TestRefusesShapesOutsideTheGrammar(t *testing.T) {
 		{"dispatch test with an integer type", scopeX + "," + dispatchHead + `{"if":{"properties":{"k":{"const":"x","type":"integer"}},"required":["k"]},"then":{"properties":{"p":{"$ref":"#/$defs/X"}}}}]}`, "against one string const"},
 		{"propertyNames integer with a string enum", `"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"type":"integer","enum":["a"]}}`, "propertyNames must be a string schema"},
 		{"propertyNames with a non-string enum", `"A":{"type":"object","additionalProperties":{"type":"string"},"propertyNames":{"enum":[1]}}`, "propertyNames must be a string schema"},
+		// Astra #28: a reason code is a $defs declaration only.
+		{"inline reason code", `"A":{"type":"object","additionalProperties":false,"required":["r"],"properties":{"r":{"type":"string","format":"adc-reason"}}}`, "must be a $defs declaration"},
+		{"refined reason code", `"S":{"type":"string"},"R":{"$ref":"#/$defs/S","format":"adc-reason"}`, "must be a $defs declaration"},
+		{"definition named like a helper", `"SetReasonCheck":{"type":"string"}`, "SetReasonCheck"},
 		// Astra #19: generated methods are reserved.
 		{"literal naming a generated method", `"A":{"oneOf":[{"const":"marshalJSON"},{"type":"array","items":{"type":"string"}}]}`, "next to List and the generated methods"},
 
@@ -297,6 +301,7 @@ import (
 	"fmt"
 	"os"
 
+	"example.com/gen/internal/vocab"
 	"example.com/gen/types"
 )
 
@@ -377,12 +382,18 @@ func main() {
 	if _, err := json.Marshal(types.Rsn{R: types.WhyOf("ok")}); err == nil {
 		fail("a reason was written with no check installed")
 	}
-	types.ReasonCheck = func(code string, writing bool) error {
+	if err := types.SetReasonCheck(func(string, bool) error { return nil }); err == nil {
+		fail("package main installed the reason check")
+	}
+	if err := vocab.Install(func(code string, writing bool) error {
 		if code == "bad" || (writing && code == "old") {
 			return fmt.Errorf("refused %q", code)
 		}
 		return nil
+	}); err == nil {
+	fail("a second installation succeeded")
 	}
+	refused[types.Rsn](` + "`" + `{"r":null}` + "`" + `)
 	same[types.Rsn](` + "`" + `{"r":"ok"}` + "`" + `)
 	same[types.Rsn](` + "`" + `{"r":"old"}` + "`" + `[:0] + ` + "`" + `{"r":"ok"}` + "`" + `)
 	refused[types.Rsn](` + "`" + `{"r":"bad"}` + "`" + `)
@@ -433,6 +444,10 @@ func TestGeneratedCodeCompilesAndRoundTrips(t *testing.T) {
 	files := map[string][]byte{
 		"go.mod":  []byte("module example.com/gen\n\ngo 1.22\n"),
 		"main.go": []byte(roundtrip),
+		// Only a package whose path ends in /internal/vocab may install the
+		// reason check, once.
+		"internal/vocab/vocab.go": []byte("package vocab\n\nimport \"example.com/gen/types\"\n\n" +
+			"func Install(f func(string, bool) error) error {\n\tif err := types.SetReasonCheck(f); err != nil {\n\t\treturn err\n\t}\n\treturn types.SetReasonCheck(f)\n}\n"),
 	}
 	for name, src := range out {
 		files[filepath.Join("types", name)] = src
