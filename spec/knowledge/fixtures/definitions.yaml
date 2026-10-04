@@ -59,10 +59,11 @@ fixtures:
     given:
       - "project A's failure-signature counts and reason codes for stage review (allowlisted telemetry)"
       - "a lesson text written by a model from project A's runs, accepted by independent review, without an export approval"
+      - the shared framework collection is a destination that project A's inherited restrictions, its policy and the live authorization checks all permit
     when: both are offered to the shared framework collection
     then:
       - the telemetry is exported through its fixed template, with nothing outside the template's fields
-      - "the lesson text is refused: prose needs an explicit, digest-bound human export approval"
+      - "the lesson text is refused, for the missing approval alone: prose needs an explicit, digest-bound human export approval"
       - a lesson text containing a project path or symbol is rejected by the mechanical filter before any approval
 
   - id: revocation-before-intent
@@ -130,6 +131,7 @@ fixtures:
     milestone: M1
     given:
       - a call whose prompt was delivered and which had 1 turn
+      - the intent's included inputs do not contain docs/design.md (nor anything derived from it)
       - "the delivery event for turn 1 has no tool result and one declaration: read docs/design.md"
     when: the manifest is finalized
     then:
