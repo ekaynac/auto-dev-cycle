@@ -218,7 +218,7 @@ func TestFingerprint(t *testing.T) {
 	}
 }
 
-// golden is testdata/golden.json: language-neutral vectors computed
+// golden is spec/knowledge/fixtures/golden.json: language-neutral vectors computed
 // independently of this code, for a second implementation to reuse (K10).
 type golden struct {
 	Refs []struct {
@@ -240,7 +240,7 @@ type golden struct {
 
 func loadGolden(t *testing.T) golden {
 	t.Helper()
-	b, err := os.ReadFile("testdata/golden.json")
+	b, err := os.ReadFile("../../spec/knowledge/fixtures/golden.json")
 	if err != nil {
 		t.Fatal(err)
 	}
