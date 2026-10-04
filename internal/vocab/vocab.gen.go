@@ -35,6 +35,8 @@ var (
 	ReasonCompletedWithFindings = types.ReasonCodeOf("completed_with_findings")
 	// ReasonConclusionsUnchanged: A new receipt has the conclusions_digest the reviewer already saw; no new review is required.
 	ReasonConclusionsUnchanged = types.ReasonCodeOf("conclusions_unchanged")
+	// ReasonConfirmationRefused: A confirmation did not count: a challenge used, expired, for another binding or by an actor who may not confirm, or a review that is not a GO for this proposal.
+	ReasonConfirmationRefused = types.ReasonCodeOf("confirmation_refused")
 	// ReasonControllerAlreadyRunning: Another adcd holds the state directory lock.
 	ReasonControllerAlreadyRunning = types.ReasonCodeOf("controller_already_running")
 	// ReasonEvidenceCapExhausted: Attempts for this subject reached the total cap across demands.
@@ -61,6 +63,12 @@ var (
 	ReasonPreconditionFailed = types.ReasonCodeOf("precondition_failed")
 	// ReasonProjectUnconfigured: The project has no valid adopted profile; refuse to run.
 	ReasonProjectUnconfigured = types.ReasonCodeOf("project_unconfigured")
+	// ReasonProposalExpired: The proposal passed its expiry before it was confirmed.
+	ReasonProposalExpired = types.ReasonCodeOf("proposal_expired")
+	// ReasonProposalInvalidated: At apply, the confirmed proposal no longer holds: its grant, policy, confirmer or request changed; it is invalidated, never applied.
+	ReasonProposalInvalidated = types.ReasonCodeOf("proposal_invalidated")
+	// ReasonProposalNotOpen: The proposal is not open (or, at apply, not confirmed); a closed proposal is never confirmed, re-opened or applied.
+	ReasonProposalNotOpen = types.ReasonCodeOf("proposal_not_open")
 	// ReasonProtectedChangeWidens: A protected document or topology change whose effective change also widens authority or data policy; refused for every actor, and the widening goes through its dedicated action.
 	ReasonProtectedChangeWidens = types.ReasonCodeOf("protected_change_widens")
 	// ReasonProtectedPath: The patch touches a protected path outside the protected-document operation.
