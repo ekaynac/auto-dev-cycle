@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 )
@@ -38,14 +40,41 @@ type Command struct {
 
 // Expectation: the subject's last event is seq Version (0: it has none).
 type Expectation struct {
-	Subject string
-	Version int64
+	Subject string `json:"subject"`
+	Version int64  `json:"version"`
 }
 
 // Tx is the writer transaction as the hooks and the command's logic see it.
+// They read anything through it and write projections (proj_* tables)
+// through it; commit and rollback stay with Submit. Events are appended only
+// by Submit, through the checked append path.
 type Tx struct {
 	ctx context.Context
 	tx  *sql.Tx
+}
+
+// QueryRow runs a read in the writer transaction.
+func (t *Tx) QueryRow(query string, args ...any) *sql.Row {
+	return t.tx.QueryRowContext(t.ctx, query, args...)
+}
+
+// Query runs a read in the writer transaction.
+func (t *Tx) Query(query string, args ...any) (*sql.Rows, error) {
+	return t.tx.QueryContext(t.ctx, query, args...)
+}
+
+// projectionWrite: one statement that creates, inserts into, updates or
+// deletes from a proj_* table.
+var projectionWrite = regexp.MustCompile(`(?is)^\s*(CREATE\s+(TABLE|INDEX|UNIQUE\s+INDEX)\s+(IF\s+NOT\s+EXISTS\s+)?(\w+\s+ON\s+)?|INSERT\s+(OR\s+\w+\s+)?INTO\s+|UPDATE\s+|DELETE\s+FROM\s+)proj_\w+\b[^;]*;?\s*$`)
+
+// Exec writes a projection in the writer transaction: one statement on a
+// proj_* table. Anything else (the log, commands, meta, several statements)
+// is refused.
+func (t *Tx) Exec(query string, args ...any) (sql.Result, error) {
+	if !projectionWrite.MatchString(query) {
+		return nil, fmt.Errorf("eventstore: hooks write only projections (one statement on a proj_* table): %.60q", query)
+	}
+	return t.tx.ExecContext(t.ctx, query, args...)
 }
 
 // SubjectVersion is the seq of the subject's last event, or 0.
@@ -89,12 +118,22 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 	if c.IdempotencyKey == "" || len(c.IdempotencyKey) > maxIdempotencyKey {
 		return Outcome{}, fmt.Errorf("eventstore: an idempotency key is 1 to %d bytes", maxIdempotencyKey)
 	}
-	inputDigest, err := digest(c.Input)
+	// The request is the input and the expectations together: a repeat with
+	// other expectations is another request.
+	expected := c.Expected
+	if expected == nil {
+		expected = []Expectation{}
+	}
+	request, err := json.Marshal(struct {
+		Input    json.RawMessage `json:"input"`
+		Expected []Expectation   `json:"expected"`
+	}{c.Input, expected})
+	if err != nil {
+		return Outcome{}, fmt.Errorf("eventstore: command request: %w", err)
+	}
+	inputDigest, err := digest(request)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("eventstore: command input: %w", err)
-	}
-	if s.hooks.Authorize == nil {
-		return Outcome{}, errors.New("eventstore: no authorizer is configured; every command is refused")
 	}
 	var out Outcome
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
@@ -115,7 +154,11 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
-		// 2. Authorization.
+		// 2. Authorization: without an authorizer every new command is
+		// refused (a stored result still replays above).
+		if s.hooks.Authorize == nil {
+			return errors.New("eventstore: no authorizer is configured; every command is refused")
+		}
 		if err := s.hooks.Authorize(t, c); err != nil {
 			return err
 		}
@@ -157,18 +200,18 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 			}
 			appended = append(appended, a)
 		}
-		// 6. Projections.
-		if s.hooks.Project != nil && len(appended) > 0 {
-			if err := s.hooks.Project(t, appended); err != nil {
-				return err
-			}
-		}
-		// 7. The command-result row.
 		var first, last sql.NullInt64
 		if len(appended) > 0 {
 			first = sql.NullInt64{Int64: appended[0].Seq, Valid: true}
 			last = sql.NullInt64{Int64: appended[len(appended)-1].Seq, Valid: true}
 		}
+		// 6. Projections (on a copy: a hook cannot change what is recorded).
+		if s.hooks.Project != nil && len(appended) > 0 {
+			if err := s.hooks.Project(t, slices.Clone(appended)); err != nil {
+				return err
+			}
+		}
+		// 7. The command-result row.
 		if _, err := tx.ExecContext(ctx, `INSERT INTO commands(id, actor, idempotency_key, input_digest, disposition, result_json, first_seq, last_seq)
 			VALUES (?, ?, ?, ?, 'applied', ?, ?, ?)`, c.ID, c.Actor, c.IdempotencyKey, inputDigest, string(canonResult), first, last); err != nil {
 			return err

@@ -205,6 +205,117 @@ func TestNoAuthorizerFailsClosed(t *testing.T) {
 	}
 }
 
+// Astra #39: idempotency comes first: reopened without an authorizer, an
+// accepted command still replays and a changed one is key reuse; only new
+// commands are refused.
+func TestReplayPrecedesTheAuthorizerCheck(t *testing.T) {
+	dir := stateDir(t)
+	ctx := context.Background()
+	open := func(h Hooks) (*Store, *Lock) {
+		lock, err := AcquireLock(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blobs, err := blobstore.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := Open(ctx, lock, Config{Kinds: testKinds, Blobs: blobs, Hooks: h})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, lock
+	}
+	s, lock := open(Hooks{Authorize: allow})
+	c := command(t, "k", `{"a": 1}`)
+	if _, err := s.Submit(ctx, c, appendTo(t, testSubject, 1)); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	lock.Release()
+	s, lock = open(Hooks{})
+	defer func() { s.Close(); lock.Release() }()
+	if out, err := s.Submit(ctx, command(t, "k", `{"a": 1}`), appendTo(t, testSubject, 1)); err != nil || !out.Replayed {
+		t.Fatalf("a replay without an authorizer: %+v, %v", out, err)
+	}
+	if _, err := s.Submit(ctx, command(t, "k", `{"a": 2}`), appendTo(t, testSubject, 1)); !errors.Is(err, ErrIdempotencyKeyReused) {
+		t.Fatalf("a changed input without an authorizer: %v", err)
+	}
+	if _, err := s.Submit(ctx, command(t, "new", `{}`), appendTo(t, testSubject, 1)); err == nil {
+		t.Fatal("a new command without an authorizer")
+	}
+}
+
+// Astra #39: the expectations are part of the request.
+func TestExpectationsArePartOfTheRequest(t *testing.T) {
+	e := openWriter(t, Hooks{Authorize: allow})
+	ctx := context.Background()
+	if _, err := e.s.Submit(ctx, command(t, "k", `{}`, Expectation{testSubject, 0}), appendTo(t, testSubject, 1)); err != nil {
+		t.Fatal(err)
+	}
+	for name, exp := range map[string][]Expectation{
+		"another version": {{testSubject, 1}},
+		"another subject": {{"prj_01m3250vm7f6ktw39dszqnyddr", 0}},
+		"none":            nil,
+	} {
+		if _, err := e.s.Submit(ctx, command(t, "k", `{}`, exp...), appendTo(t, testSubject, 1)); !errors.Is(err, ErrIdempotencyKeyReused) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// Astra #39: a projector that reorders its events cannot change the
+// recorded range.
+func TestProjectorCannotChangeTheRange(t *testing.T) {
+	e := openWriter(t, Hooks{Authorize: allow, Project: func(_ *Tx, evs []Event) error {
+		evs[0], evs[1] = evs[1], evs[0]
+		return nil
+	}})
+	out, err := e.s.Submit(context.Background(), command(t, "k", `{}`), appendTo(t, testSubject, 2))
+	if err != nil || out.FirstSeq != 1 || out.LastSeq != 2 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	var first, last int64
+	if err := raw(t, e.dir).QueryRow(`SELECT first_seq, last_seq FROM commands`).Scan(&first, &last); err != nil || first != 1 || last != 2 {
+		t.Fatalf("recorded range %d..%d, %v", first, last, err)
+	}
+}
+
+// Astra #39: hooks write only projections through the transaction.
+func TestHookWritesAreLimitedToProjections(t *testing.T) {
+	refused := []string{
+		`INSERT INTO events(seq) VALUES (99)`,
+		`INSERT INTO commands VALUES ('a','b','c','d','e','{}',NULL,NULL)`,
+		`DELETE FROM meta`,
+		`INSERT INTO proj_x VALUES (1); DELETE FROM events`,
+		`UPDATE proj_x SET a = 1; INSERT INTO events(seq) VALUES (1)`,
+		`DROP TABLE proj_x`,
+		`INSERT INTO proj_x SELECT * FROM events; INSERT INTO events DEFAULT VALUES`,
+	}
+	e := openWriter(t, Hooks{Authorize: func(tx *Tx, _ Command) error {
+		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS proj_x (a INTEGER)`); err != nil {
+			return err
+		}
+		// A second statement after a valid projection write never runs.
+		if _, err := tx.Exec(`INSERT INTO proj_x VALUES (1); CREATE TABLE sneaky (a)`); err == nil {
+			t.Error("a chained statement was accepted")
+		}
+		var n int
+		if err := tx.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = 'sneaky'`).Scan(&n); err != nil || n != 0 {
+			t.Errorf("a chained statement ran: %d, %v", n, err)
+		}
+		for _, q := range refused {
+			if _, err := tx.Exec(q); err == nil {
+				t.Errorf("%s: ran", q)
+			}
+		}
+		return nil
+	}})
+	if _, err := e.s.Submit(context.Background(), command(t, "k", `{}`), appendTo(t, testSubject, 0)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSubmitValidatesTheCommand(t *testing.T) {
 	e := openWriter(t, Hooks{Authorize: allow})
 	cases := map[string]func(c *Command){
