@@ -300,3 +300,37 @@ func TestRefusals(t *testing.T) {
 		t.Error("a group twice")
 	}
 }
+
+// A waiting lease blocked on another group with the same hold code waits on
+// that group, and the scheduler keeps its own copy of the hold registry.
+func TestRewaitsOnTheNewGroup(t *testing.T) {
+	h := maps.Clone(holds(t))
+	s, err := New(groups(), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(h, "quota_reset") // the caller's map changes; the scheduler's does not
+	tokens := newLease(1, 5, res(gTokens, types.CapacityUnitTokens, 900))
+	slots := newLease(2, 5, res(gSlots, types.CapacityUnitSlots, 3))
+	both := newLease(3, 0, res(gTokens, types.CapacityUnitTokens, 200), res(gSlots, types.CapacityUnitSlots, 1))
+	for _, l := range []types.Lease{tokens, slots, both} {
+		if err := s.Request(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Step(); err != nil {
+		t.Fatal(err)
+	}
+	if w, _ := s.Lease(both.ID); w.State != types.LeaseStateWaiting || w.Hold.SignalInstance != string(gTokens) {
+		t.Fatalf("first wait: %s %+v", w.State, w.Hold)
+	}
+	if err := s.Run(tokens.ID, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Step(); err != nil {
+		t.Fatal(err)
+	}
+	if w, _ := s.Lease(both.ID); w.State != types.LeaseStateWaiting || w.Hold.Hold != "quota_reset" || w.Hold.SignalInstance != string(gSlots) {
+		t.Fatalf("now blocked on slots: %s %+v", w.State, w.Hold)
+	}
+}
