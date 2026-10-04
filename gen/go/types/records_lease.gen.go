@@ -56,10 +56,9 @@ type LeaseHoldValue struct {
 }
 
 type LeaseSettlementValue struct {
-	Calls          []CallID   `json:"calls"`
-	Liabilities    []CallID   `json:"liabilities"`
-	RestoreReceipt *ReceiptID `json:"restore_receipt"`
-	Published      *ResultID  `json:"published"`
+	Calls       []CallID  `json:"calls"`
+	Liabilities []CallID  `json:"liabilities"`
+	Published   *ResultID `json:"published"`
 }
 
 // Lease: A unit's claim on an executor and its resource groups (docs/design/m0/05 "Lease"): the current state a lease's events project to. Reservations are made all-or-nothing inside the writer transaction; terminal states (settled, released) are immutable. internal/lease enforces the state machine.
@@ -83,7 +82,9 @@ type Lease struct {
 	Hold *LeaseHoldValue `json:"hold"`
 	// The attempt this lease started, once active.
 	Attempt *AttemptID `json:"attempt"`
-	// Set at settled: the calls whose usage settled, those still an uncertain liability on their groups, the restore receipt (evidence targets), and the result the controller published in the same transaction. Amounts live in the call ledger, never here.
+	// An evidence-target lease's verified restore (13): set from settling_verified on, never before. Only a lease with one may publish a result at settlement; internal/lease checks that.
+	RestoreReceipt *ReceiptID `json:"restore_receipt"`
+	// Set at settled: the calls whose usage settled, those still an uncertain liability on their groups, and the result the controller published in the same transaction. Amounts live in the call ledger, never here.
 	Settlement *LeaseSettlementValue `json:"settlement"`
 }
 

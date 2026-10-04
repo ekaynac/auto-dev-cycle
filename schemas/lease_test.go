@@ -38,7 +38,7 @@ func leaseDocs() map[string]map[string]any {
 		"records/lease": {"id": leaID, "unit": untID, "role": "builder", "executor": exeID, "state": "active",
 			"reservations": []any{map[string]any{"group": rgID, "amount": 200000, "unit": "tokens"}}, "priority": 10,
 			"footprint": map[string]any{"context_tokens": 120000, "expected_turns": 40, "gpu_seconds": nil},
-			"deadline":  "2026-10-04T14:00:00Z", "fallback_step": 0, "placement_checks": checks, "hold": nil, "attempt": attID, "settlement": nil},
+			"deadline":  "2026-10-04T14:00:00Z", "fallback_step": 0, "placement_checks": checks, "hold": nil, "attempt": attID, "restore_receipt": nil, "settlement": nil},
 		"records/attempt": {"id": attID, "unit": untID, "lease": leaID, "fencing_token": 3, "supersedes": nil,
 			"base": map[string]any{"tree": git, "contract_revision": "7"}, "status": "running", "publication": "open",
 			"stop_reason": nil, "lost_reason": nil, "checkpoint": nil, "completion": nil, "superseded_by": nil},
@@ -73,7 +73,9 @@ func TestLeaseRecords(t *testing.T) {
 	waiting["hold"] = map[string]any{"hold": "quota_reset", "signal_instance": "2026-10-04T15:00:00Z"}
 	settled := leaseDocs()["records/lease"]
 	settled["state"] = "settled"
-	settled["settlement"] = map[string]any{"calls": []any{calID}, "liabilities": []any{}, "restore_receipt": nil, "published": nil}
+	settled["settlement"] = map[string]any{"calls": []any{calID}, "liabilities": []any{}, "published": nil}
+	verified := leaseDocs()["records/lease"]
+	verified["state"], verified["restore_receipt"] = "settling_verified", rcpID
 	target := leaseDocs()["records/resource-group"]
 	target["kind"], target["release_rule"] = "evidence_target", "on_restore_verified"
 	target["capacity_model"] = map[string]any{"unit": "slots", "limit": nil, "window": nil, "reset_at": nil, "quota_state": "unknown"}
@@ -84,7 +86,7 @@ func TestLeaseRecords(t *testing.T) {
 	for name, c := range map[string]struct {
 		schema string
 		doc    map[string]any
-	}{"waiting": {"records/lease", waiting}, "settled": {"records/lease", settled}, "evidence target": {"records/resource-group", target},
+	}{"waiting": {"records/lease", waiting}, "settled": {"records/lease", settled}, "restore verified": {"records/lease", verified}, "evidence target": {"records/resource-group", target},
 		"sealed": {"records/attempt", sealed}, "superseded": {"records/attempt", superseded}} {
 		if err := valid(t, c.schema, c.doc); err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -111,10 +113,12 @@ func TestLeaseRecords(t *testing.T) {
 		}},
 		"settled without a settlement": {"records/lease", func(d map[string]any) { d["state"] = "settled" }},
 		"settlement before settled": {"records/lease", func(d map[string]any) {
-			d["settlement"] = map[string]any{"calls": []any{}, "liabilities": []any{}, "restore_receipt": nil, "published": nil}
+			d["settlement"] = map[string]any{"calls": []any{}, "liabilities": []any{}, "published": nil}
 		}},
-		"active without an attempt": {"records/lease", func(d map[string]any) { d["attempt"] = nil }},
-		"granted with an attempt":   {"records/lease", func(d map[string]any) { d["state"] = "granted" }},
+		"verified without its receipt": {"records/lease", func(d map[string]any) { d["state"] = "settling_verified" }},
+		"restore receipt while active": {"records/lease", func(d map[string]any) { d["restore_receipt"] = rcpID }},
+		"active without an attempt":    {"records/lease", func(d map[string]any) { d["attempt"] = nil }},
+		"granted with an attempt":      {"records/lease", func(d map[string]any) { d["state"] = "granted" }},
 		"check outcome": {"records/lease", func(d map[string]any) {
 			d["placement_checks"].(map[string]any)["budget"].(map[string]any)["outcome"] = "ok"
 		}},

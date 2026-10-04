@@ -5,7 +5,7 @@
   "description": "A unit's claim on an executor and its resource groups (docs/design/m0/05 \"Lease\"): the current state a lease's events project to. Reservations are made all-or-nothing inside the writer transaction; terminal states (settled, released) are immutable. internal/lease enforces the state machine.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "unit", "role", "executor", "state", "reservations", "priority", "footprint", "deadline", "fallback_step", "placement_checks", "hold", "attempt", "settlement"],
+  "required": ["id", "unit", "role", "executor", "state", "reservations", "priority", "footprint", "deadline", "fallback_step", "placement_checks", "hold", "attempt", "restore_receipt", "settlement"],
   "properties": {
     "id": {"$ref": "../common/defs.json#/$defs/LeaseID"},
     "unit": {"$ref": "../common/defs.json#/$defs/UnitID"},
@@ -74,18 +74,21 @@
       ]
     },
     "attempt": {"description": "The attempt this lease started, once active.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]},
+    "restore_receipt": {
+      "description": "An evidence-target lease's verified restore (13): set from settling_verified on, never before. Only a lease with one may publish a result at settlement; internal/lease checks that.",
+      "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ReceiptID"}]
+    },
     "settlement": {
-      "description": "Set at settled: the calls whose usage settled, those still an uncertain liability on their groups, the restore receipt (evidence targets), and the result the controller published in the same transaction. Amounts live in the call ledger, never here.",
+      "description": "Set at settled: the calls whose usage settled, those still an uncertain liability on their groups, and the result the controller published in the same transaction. Amounts live in the call ledger, never here.",
       "oneOf": [
         {"type": "null"},
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["calls", "liabilities", "restore_receipt", "published"],
+          "required": ["calls", "liabilities", "published"],
           "properties": {
             "calls": {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/CallID"}},
             "liabilities": {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/CallID"}},
-            "restore_receipt": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ReceiptID"}]},
             "published": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ResultID"}]}
           }
         }
@@ -95,6 +98,8 @@
   "allOf": [
     {"if": {"properties": {"state": {"const": "waiting"}}}, "then": {"properties": {"hold": {"not": {"const": null}}}}, "else": {"properties": {"hold": {"const": null}}}},
     {"if": {"properties": {"state": {"const": "settled"}}}, "then": {"properties": {"settlement": {"not": {"const": null}}}}, "else": {"properties": {"settlement": {"const": null}}}},
+    {"if": {"properties": {"state": {"const": "settling_verified"}}}, "then": {"properties": {"restore_receipt": {"not": {"const": null}}}}},
+    {"if": {"properties": {"state": {"enum": ["requested", "waiting", "granted", "releasing", "released", "active", "settling", "restoring", "restore_failed"]}}}, "then": {"properties": {"restore_receipt": {"const": null}}}},
     {"if": {"properties": {"state": {"enum": ["requested", "waiting", "granted", "releasing", "released"]}}}, "then": {"properties": {"attempt": {"const": null}}}, "else": {"properties": {"attempt": {"not": {"const": null}}}}}
   ],
   "$defs": {
