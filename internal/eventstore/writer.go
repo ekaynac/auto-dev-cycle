@@ -56,6 +56,23 @@ type Tx struct {
 	tx      *sql.Tx
 	store   *Store   // set for a command's transaction
 	intents []intent // effects the command intends
+	// rebuild: projections go to the rebuild's scratch table instead of
+	// the live proj_kv (RebuildProjections).
+	rebuild bool
+}
+
+// Projection tables. Table names are never input: they are these constants.
+const (
+	liveProjections    = "main.proj_kv"
+	rebuildProjections = "temp.proj_rebuild"
+)
+
+// table is the projection table this transaction reads and writes.
+func (t *Tx) table() string {
+	if t.rebuild {
+		return rebuildProjections
+	}
+	return liveProjections
 }
 
 // Projections are derived, rebuildable records (docs/design/m0/03): JSON
@@ -82,7 +99,7 @@ func (t *Tx) Get(projection, key string) (json.RawMessage, bool, error) {
 		return nil, false, err
 	}
 	var v string
-	err := t.tx.QueryRowContext(t.ctx, `SELECT value FROM proj_kv WHERE projection = ? AND key = ?`, projection, key).Scan(&v)
+	err := t.tx.QueryRowContext(t.ctx, `SELECT value FROM `+t.table()+` WHERE projection = ? AND key = ?`, projection, key).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -101,7 +118,7 @@ func (t *Tx) Put(projection, key string, value json.RawMessage) error {
 	if err != nil {
 		return fmt.Errorf("eventstore: projection %s value: %w", projection, err)
 	}
-	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO proj_kv(projection, key, value) VALUES (?, ?, ?)
+	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO `+t.table()+`(projection, key, value) VALUES (?, ?, ?)
 		ON CONFLICT(projection, key) DO UPDATE SET value = excluded.value`, projection, key, string(c))
 	return err
 }
@@ -111,7 +128,7 @@ func (t *Tx) Delete(projection, key string) error {
 	if err := checkProjection(projection, key); err != nil {
 		return err
 	}
-	_, err := t.tx.ExecContext(t.ctx, `DELETE FROM proj_kv WHERE projection = ? AND key = ?`, projection, key)
+	_, err := t.tx.ExecContext(t.ctx, `DELETE FROM `+t.table()+` WHERE projection = ? AND key = ?`, projection, key)
 	return err
 }
 
@@ -120,7 +137,7 @@ func (t *Tx) Keys(projection, prefix string) ([]string, error) {
 	if !projectionName.MatchString(projection) {
 		return nil, fmt.Errorf("eventstore: projection name %q", projection)
 	}
-	rows, err := t.tx.QueryContext(t.ctx, `SELECT key FROM proj_kv WHERE projection = ? ORDER BY key`, projection)
+	rows, err := t.tx.QueryContext(t.ctx, `SELECT key FROM `+t.table()+` WHERE projection = ? ORDER BY key`, projection)
 	if err != nil {
 		return nil, err
 	}
@@ -151,9 +168,13 @@ func (t *Tx) SubjectVersion(subject string) (int64, error) {
 // transaction. Authorize is required: with none, every command is refused
 // (fail closed). Reserve and Project may be nil.
 type Hooks struct {
-	Authorize func(t *Tx, c Command) error      // internal/authority
-	Reserve   func(t *Tx, c Command) error      // capacity reservations
-	Project   func(t *Tx, events []Event) error // projection updates
+	Authorize func(t *Tx, c Command) error // internal/authority
+	Reserve   func(t *Tx, c Command) error // capacity reservations
+	// Project updates projections. It must be a fold: derive its records
+	// from the events it is given and the projections alone, whether it
+	// gets a command's events at once or one at a time (a rebuild replays
+	// them singly), and never from Tx.SubjectVersion.
+	Project func(t *Tx, events []Event) error
 }
 
 // Apply is the command's logic: from the current state (read through t) it
