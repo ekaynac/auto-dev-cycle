@@ -16,8 +16,9 @@
 //     write U+FFFD in its place), and validates its own output. Its bytes are
 //     not a canonical form (key order follows the Go struct): every digest is
 //     taken over the JCS canonicalisation, never over Encode output;
-//   - the adc-time and adc-typeid formats (schemas/common/defs.json) are
-//     asserted: a calendar-valid UTC time, a TypeID over a UUIDv7.
+//   - the adc-time, adc-typeid and adc-reason formats (schemas/common/defs.json)
+//     are asserted: a calendar-valid UTC time, a TypeID over a UUIDv7, and a
+//     reason code registered in the vocabulary (SetReasonCheck).
 //
 // Strict decoding reaches every type decoded by encoding/json's default
 // rules. A type with its own UnmarshalJSON must decode its fields through
@@ -37,6 +38,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -58,21 +60,29 @@ func (e *Error) Error() string { return "contract " + e.Schema + ": " + e.Detail
 type registry map[string]*jsonschema.Schema
 
 var (
-	loadOnce sync.Once
-	embedded registry
-	loadErr  error
+	loadOnce         sync.Once
+	readers, writers registry
+	loadErr          error
 )
 
-// load compiles the embedded schemas once. A schema that does not compile is
-// a build defect, reported on every call.
-func load() (registry, error) {
-	loadOnce.Do(func() { embedded, loadErr = compile(schemas.FS()) })
-	return embedded, loadErr
+// load compiles the embedded schemas once per direction: readers accept
+// every reason ever registered, writers refuse deprecated ones (note 02). A
+// schema that does not compile is a build defect, reported on every call.
+func load(writing bool) (registry, error) {
+	loadOnce.Do(func() {
+		if readers, loadErr = compile(schemas.FS(), false); loadErr == nil {
+			writers, loadErr = compile(schemas.FS(), true)
+		}
+	})
+	if writing {
+		return writers, loadErr
+	}
+	return readers, loadErr
 }
 
 // compile builds a registry from every schema file in fsys; each file's $id
 // is schemas.Base + its path, so cross-file $refs resolve inside fsys only.
-func compile(fsys fs.FS) (registry, error) {
+func compile(fsys fs.FS, writing bool) (registry, error) {
 	paths, err := schemas.PathsIn(fsys)
 	if err != nil {
 		return nil, err
@@ -81,6 +91,7 @@ func compile(fsys fs.FS) (registry, error) {
 	c.AssertFormat()
 	c.RegisterFormat(&jsonschema.Format{Name: "adc-time", Validate: onString(checkTime)})
 	c.RegisterFormat(&jsonschema.Format{Name: "adc-typeid", Validate: onString(CheckTypeID)})
+	c.RegisterFormat(&jsonschema.Format{Name: "adc-reason", Validate: onString(func(code string) error { return checkReason(code, writing) })})
 	for _, p := range paths {
 		b, err := fs.ReadFile(fsys, p)
 		if err != nil {
@@ -125,6 +136,30 @@ func checkTime(s string) error {
 	return nil
 }
 
+// reasonCheck decides whether a reason code may appear in a document being
+// read (registered) or written (registered and not deprecated).
+// internal/vocab installs it; until then every reason is refused, so a
+// document with a reason field can never pass unchecked.
+var reasonCheck atomic.Pointer[func(code string, writing bool) error]
+
+// SetReasonCheck installs the vocabulary's reason check (internal/vocab does
+// this when it is imported). nil removes it.
+func SetReasonCheck(check func(code string, writing bool) error) {
+	if check == nil {
+		reasonCheck.Store(nil)
+		return
+	}
+	reasonCheck.Store(&check)
+}
+
+func checkReason(code string, writing bool) error {
+	check := reasonCheck.Load()
+	if check == nil {
+		return errors.New("no reason vocabulary is loaded (import internal/vocab)")
+	}
+	return (*check)(code, writing)
+}
+
 // base32 is the TypeID alphabet (Crockford, lowercase).
 const base32 = "0123456789abcdefghjkmnpqrstvwxyz"
 
@@ -159,9 +194,10 @@ func CheckTypeID(s string) error {
 // leading zeros, no -0.
 var integer = regexp.MustCompile(`^(0|-?[1-9][0-9]*)$`)
 
-// Validate checks data against the named schema (e.g. "common/defs").
+// Validate checks data against the named schema (e.g. "common/defs") as a
+// document being read; Encode checks its output as one being written.
 func Validate(schema string, data []byte) error {
-	r, err := load()
+	r, err := load(false)
 	if err != nil {
 		return err
 	}
@@ -320,7 +356,7 @@ func UnmarshalStrict(data []byte, v any) error {
 // a T, refusing unknown fields at every level the default decoder reaches.
 func Decode[T any](schema string, data []byte) (T, error) {
 	var out T
-	r, err := load()
+	r, err := load(false)
 	if err != nil {
 		return out, err
 	}
@@ -341,7 +377,7 @@ func decode[T any](r registry, schema string, data []byte) (T, error) {
 // Encode marshals v and validates the result, so nothing reaches the wire
 // unvalidated. The bytes are not canonical; digest the JCS form instead.
 func Encode(schema string, v any) ([]byte, error) {
-	r, err := load()
+	r, err := load(true)
 	if err != nil {
 		return nil, err
 	}

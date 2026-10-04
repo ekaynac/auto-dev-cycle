@@ -275,6 +275,8 @@ const supported = `
 	"NA":{"oneOf":[{"type":"null"},{"type":"array","items":{"$ref":"#/$defs/NA"}}]},
 	"É":{"type":"array","items":{"$ref":"#/$defs/É"}},
 	"MTree":{"type":"object","additionalProperties":{"$ref":"#/$defs/MTree"}},
+	"Why":{"type":"string","format":"adc-reason","pattern":"^[a-z_]+$"},
+	"Rsn":{"type":"object","additionalProperties":false,"required":["r"],"properties":{"r":{"$ref":"#/$defs/Why"}}},
 	"Str":{"type":"string"},
 	"Ref":{"$ref":"#/$defs/Str","pattern":"^a","minLength":1},
 	"Cond":{"type":"object","additionalProperties":false,"required":["o","d","v"],
@@ -369,6 +371,34 @@ func main() {
 	same[types.NA](` + "`" + `[null,[]]` + "`" + `)
 	same[types.É](` + "`" + `[[]]` + "`" + `)
 	same[types.MTree](` + "`" + `{"a":{},"b":{"c":{}}}` + "`" + `)
+
+	// A reason code (format adc-reason) is opaque and checked on every read
+	// and write; without a check installed every reason is refused.
+	if _, err := json.Marshal(types.Rsn{R: types.WhyOf("ok")}); err == nil {
+		fail("a reason was written with no check installed")
+	}
+	types.ReasonCheck = func(code string, writing bool) error {
+		if code == "bad" || (writing && code == "old") {
+			return fmt.Errorf("refused %q", code)
+		}
+		return nil
+	}
+	same[types.Rsn](` + "`" + `{"r":"ok"}` + "`" + `)
+	same[types.Rsn](` + "`" + `{"r":"old"}` + "`" + `[:0] + ` + "`" + `{"r":"ok"}` + "`" + `)
+	refused[types.Rsn](` + "`" + `{"r":"bad"}` + "`" + `)
+	if _, err := json.Marshal(types.Rsn{R: types.WhyOf("bad")}); err == nil {
+		fail("a refused reason was written")
+	}
+	if _, err := json.Marshal(types.Rsn{}); err == nil {
+		fail("the zero reason was written")
+	}
+	var old types.Rsn
+	if err := json.Unmarshal([]byte(` + "`" + `{"r":"old"}` + "`" + `), &old); err != nil || old.R.String() != "old" {
+		fail("a readable reason was not read: %v", err)
+	}
+	if _, err := json.Marshal(old); err == nil {
+		fail("a reason refused for writing was written")
+	}
 
 	var ref types.Ref = "ab"
 	same[types.Cond](` + "`" + `{"o":"y","d":"z","v":"go","r":"` + "`" + ` + string(ref) + ` + "`" + `"}` + "`" + `)

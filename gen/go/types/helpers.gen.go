@@ -24,3 +24,18 @@ func decodeStrict(b []byte, v any) error {
 	}
 	return nil
 }
+
+// ReasonCheck decides whether a reason code may be read (writing false:
+// registered) or written (writing true: registered and not deprecated). The
+// vocabulary installs it; until then every reason is refused.
+var ReasonCheck func(code string, writing bool) error
+
+func checkReason(code string, writing bool) error {
+	if code == "" {
+		return errors.New("an empty reason code is never valid")
+	}
+	if ReasonCheck == nil {
+		return errors.New("no reason vocabulary is loaded")
+	}
+	return ReasonCheck(code, writing)
+}

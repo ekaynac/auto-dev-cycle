@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 )
 
 func mustLoad(t *testing.T) *Registry {
@@ -59,12 +61,12 @@ func TestCheck(t *testing.T) {
 		r    Result
 		want string // "" = accepted
 	}{
-		{"valid could_not_run", Result{CouldNotRun, "quota_exhausted", "429 from source"}, ""},
-		{"valid empty without detail", Result{Empty, "completed_clean", ""}, ""},
-		{"unregistered reason", Result{Failed, "oops", "x"}, "unregistered reason"},
-		{"reason with the wrong outcome", Result{Empty, "quota_exhausted", ""}, "does not accompany"},
-		{"non-empty result with empty detail", Result{Failed, "stale_attempt", ""}, "non-empty detail"},
-		{"unknown outcome", Result{"ok", "completed_clean", ""}, "unknown outcome"},
+		{"valid could_not_run", Result{CouldNotRun, r("quota_exhausted"), "429 from source"}, ""},
+		{"valid empty without detail", Result{Empty, r("completed_clean"), ""}, ""},
+		{"unregistered reason", Result{Failed, r("oops"), "x"}, "unregistered reason"},
+		{"reason with the wrong outcome", Result{Empty, r("quota_exhausted"), ""}, "does not accompany"},
+		{"non-empty result with empty detail", Result{Failed, r("stale_attempt"), ""}, "non-empty detail"},
+		{"unknown outcome", Result{"ok", r("completed_clean"), ""}, "unknown outcome"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -83,11 +85,11 @@ func TestCheck(t *testing.T) {
 }
 
 func TestRequireEmptyNeverAcceptsCouldNotRun(t *testing.T) {
-	if err := RequireEmpty(Result{Empty, "completed_clean", ""}); err != nil {
+	if err := RequireEmpty(Result{Empty, r("completed_clean"), ""}); err != nil {
 		t.Fatalf("empty refused: %v", err)
 	}
 	for _, o := range []Outcome{CouldNotRun, Found, Failed} {
-		if err := RequireEmpty(Result{o, "x", "d"}); !errors.Is(err, ErrNotEmpty) {
+		if err := RequireEmpty(Result{o, r("x"), "d"}); !errors.Is(err, ErrNotEmpty) {
 			t.Errorf("%s accepted as empty", o)
 		}
 	}
@@ -95,11 +97,11 @@ func TestRequireEmptyNeverAcceptsCouldNotRun(t *testing.T) {
 
 func TestHoldFor(t *testing.T) {
 	reg := mustLoad(t)
-	h, ok := reg.HoldFor("broker_credit_exhausted")
+	h, ok := reg.HoldFor(r("broker_credit_exhausted"))
 	if !ok || h.Hold != "broker_credit_exhausted" || string(h.Signal) == "time" {
 		t.Fatalf("broker_credit_exhausted → %+v, %v (signal must never be time)", h, ok)
 	}
-	if _, ok := reg.HoldFor("routing_violation"); ok {
+	if _, ok := reg.HoldFor(r("routing_violation")); ok {
 		t.Error("routing_violation should not lead to a hold")
 	}
 }
@@ -199,10 +201,10 @@ func TestCheckRefusesDeprecatedReasons(t *testing.T) {
 	if _, ok := reg.Reasons["old"]; !ok {
 		t.Fatal("a deprecated code is not readable")
 	}
-	if err := reg.Check(Result{Failed, "r1", "x"}); err != nil {
+	if err := reg.Check(Result{Failed, r("r1"), "x"}); err != nil {
 		t.Fatalf("a current code refused: %v", err)
 	}
-	if err := reg.Check(Result{Failed, "old", "x"}); err == nil || !strings.Contains(err.Error(), "deprecated") {
+	if err := reg.Check(Result{Failed, r("old"), "x"}); err == nil || !strings.Contains(err.Error(), "deprecated") {
 		t.Fatalf("a deprecated code was accepted for writing: %v", err)
 	}
 }
@@ -224,7 +226,7 @@ func TestCheckNeedsDetailForEveryNonEmptyOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range []Result{{Found, "gate_test_failed", ""}, {CouldNotRun, "quota_exhausted", ""}, {Failed, "stale_attempt", ""}} {
+	for _, r := range []Result{{Found, r("gate_test_failed"), ""}, {CouldNotRun, r("quota_exhausted"), ""}, {Failed, r("stale_attempt"), ""}} {
 		if err := reg.Check(r); err == nil || !strings.Contains(err.Error(), "non-empty detail") {
 			t.Errorf("%s/%s with an empty detail: got %v", r.Outcome, r.Reason, err)
 		}
@@ -277,3 +279,7 @@ func TestHoldsMatchNote02(t *testing.T) {
 		}
 	}
 }
+
+// r builds a reason from any code, unchecked: tests build malformed results
+// on purpose (test files are not scanned by adc dev vocab check).
+func r(code string) Reason { return types.ReasonCodeOf(code) }

@@ -383,6 +383,21 @@ func decodeStrict(b []byte, v any) error {
 	}
 	return nil
 }
+
+// ReasonCheck decides whether a reason code may be read (writing false:
+// registered) or written (writing true: registered and not deprecated). The
+// vocabulary installs it; until then every reason is refused.
+var ReasonCheck func(code string, writing bool) error
+
+func checkReason(code string, writing bool) error {
+	if code == "" {
+		return errors.New("an empty reason code is never valid")
+	}
+	if ReasonCheck == nil {
+		return errors.New("no reason vocabulary is loaded")
+	}
+	return ReasonCheck(code, writing)
+}
 `
 
 // declare emits the named type for a top-level schema or $defs entry.
@@ -398,6 +413,8 @@ func (g *gen) declare(name string, n *Node) {
 			g.doc(n, name)
 			g.p("type %s = %s\n", name, t)
 		}
+	case isReasonString(n):
+		g.reasonType(name, n)
 	default:
 		t := g.typeOf(n, name+"Value", name)
 		g.emit(name, name)
@@ -411,6 +428,51 @@ func (g *gen) declare(name string, n *Node) {
 			g.p("type %s = %s\n", name, t)
 		}
 	}
+}
+
+// isReasonString: a string schema with format adc-reason (a reason code).
+func isReasonString(n *Node) bool {
+	t, f := n.Get("type"), n.Get("format")
+	return t != nil && t.Str == "string" && f != nil && f.Str == "adc-reason"
+}
+
+// reasonType emits a reason code as an opaque type: no string literal can
+// become one, and it is read and written only through ReasonCheck, however
+// it is (un)marshalled. NameOf wraps a code unchecked, for the vocabulary's
+// generated values alone.
+func (g *gen) reasonType(name string, n *Node) {
+	g.only(n, name, "string")
+	g.emit(name, name)
+	g.emit(name+"Of", name)
+	g.doc(n, name)
+	g.p(`// %[1]s is opaque: a zero value is never valid, and only the vocabulary's
+// generated values, its parser, or decoding produce one.
+type %[1]s struct{ code string }
+
+// %[1]sOf wraps code without checking it. Only the vocabulary package calls
+// it; adc dev vocab check refuses any other caller.
+func %[1]sOf(code string) %[1]s { return %[1]s{code: code} }
+
+// String returns the code.
+func (r %[1]s) String() string { return r.code }
+
+// MarshalText writes the code if the vocabulary accepts it for writing.
+func (r %[1]s) MarshalText() ([]byte, error) {
+	if err := checkReason(r.code, true); err != nil {
+		return nil, err
+	}
+	return []byte(r.code), nil
+}
+
+// UnmarshalText reads a code the vocabulary accepts for reading.
+func (r *%[1]s) UnmarshalText(b []byte) error {
+	if err := checkReason(string(b), false); err != nil {
+		return err
+	}
+	r.code = string(b)
+	return nil
+}
+`, name)
 }
 
 // typeOf returns the Go type for schema n, emitting any named declaration it

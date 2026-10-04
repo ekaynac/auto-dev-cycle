@@ -75,7 +75,10 @@ The Go toolchain is installed per user from the official tarball (`~/.local/go`)
     are accepted: a `$ref` to a plain string schema refined by `pattern`, `minLength`, `maxLength` or `format` (the
     entity-specific ids), and `if`/`then`/`else` conditions, on an object or in its `allOf`, that only constrain
     properties the object declares with `const`, `enum`, `not`, lengths, `pattern` or bounds (e.g. "non-empty detail
-    unless the outcome is `empty`"). Property names must be valid Go JSON tag names (no `,`, quotes or a lone `-`).
+    unless the outcome is `empty`"). Property names must be valid Go JSON tag names (no `,`, quotes or a lone `-`). A
+    string with format `adc-reason` (the reason code) is generated as an opaque type: no string can become one, and it
+    is read (registered) and written (registered, not deprecated) only through the vocabulary's check, however it is
+    marshalled.
     **Any other shape is refused** at generation time, so nothing degrades to
     `interface{}`. Both third-party Go generators tried fail this.
   - **Decoding and encoding:** `Decode` validates the bytes, then decodes the same bytes strictly (unknown fields

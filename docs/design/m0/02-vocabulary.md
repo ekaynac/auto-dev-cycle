@@ -48,7 +48,11 @@ Rules:
   observed **diff** (13 "Facts, not claims"). No changes plus incomplete execution is `could_not_run`, never `empty`. Adapter and harness exits only fill the **reason** field, through one
   table (`internal/vocab/exitmap`). A 402 mid-run with edits is a sealed patch with reason `broker_credit_exhausted`,
   never "no changes" (nöbetçi Δ§14).
-- `adc dev vocab check` scans the Go and TS code for reason literals and fails on unregistered ones.
+- `adc dev vocab check` scans the Go and TS code for reason literals and fails on unregistered ones. In Go the
+  reason type is opaque (generated from `format: adc-reason`, 01), so no literal can become a reason and reasons are
+  checked whenever they are read or written; the check reports the remaining ways source can go wrong (an unchecked
+  constructor outside the vocabulary package, parsing a constant instead of using the generated value, writing to a
+  generated value).
 
 ## Hold reasons and resume signals
 

@@ -34,11 +34,46 @@ const (
 	Failed      Outcome = "failed"
 )
 
-// Reason is a reason code. Code names reasons only through the generated
-// Reason* constants (vocab.gen.go); `adc dev vocab check` reports any other
-// constant expression of this type. A Reason built from a non-constant string
-// (e.g. one decoded from a record) is checked at runtime by Registry.Check.
-type Reason string
+// Reason is a reason code: the generated opaque types.ReasonCode, the type of
+// every reason field of the contract records. No string can become one; a
+// Reason comes from a generated Reason* value (vocab.gen.go), from
+// ParseReason, or from decoding, and it is written only if the vocabulary
+// accepts it (registered, not deprecated), however it is serialised.
+type Reason = types.ReasonCode
+
+// ParseReason returns the reason for a registered code (deprecated codes stay
+// readable). Code that knows its reason uses the generated value instead.
+func ParseReason(code string) (Reason, error) {
+	if err := checkReason(code, false); err != nil {
+		return Reason{}, err
+	}
+	return types.ReasonCodeOf(code), nil
+}
+
+// checkReason is the vocabulary's answer for readers (registered) and writers
+// (registered and not deprecated); it backs the generated types, the contract
+// runtime and ParseReason alike.
+func checkReason(code string, writing bool) error {
+	reg, err := Load()
+	if err != nil {
+		return fmt.Errorf("reason vocabulary: %w", err)
+	}
+	x, ok := reg.Reasons[code]
+	if !ok {
+		return fmt.Errorf("unregistered reason %q", code)
+	}
+	if writing && x.Deprecated != nil {
+		return fmt.Errorf("reason %q is deprecated since %s; writers may not emit it", code, *x.Deprecated)
+	}
+	return nil
+}
+
+// Every reason the contract runtime or the generated types read or write is
+// checked here; without this package imported, every reason is refused.
+func init() {
+	types.ReasonCheck = checkReason
+	contract.SetReasonCheck(checkReason)
+}
 
 // Registry is the loaded, cross-checked vocabulary.
 type Registry struct {
@@ -143,6 +178,40 @@ type Result struct {
 	Detail  string  `json:"detail"`
 }
 
+// MarshalJSON is the result's emission boundary: a result is written only if
+// Registry.Check accepts it (registered, non-deprecated reason allowed with the
+// outcome, non-empty detail), however it is marshalled.
+func (r Result) MarshalJSON() ([]byte, error) {
+	reg, err := Load()
+	if err != nil {
+		return nil, err
+	}
+	if err := reg.Check(r); err != nil {
+		return nil, err
+	}
+	type plain Result
+	return json.Marshal(plain(r))
+}
+
+// UnmarshalJSON reads a result: one of the four outcomes and a registered
+// reason (decoding the reason checks it).
+func (r *Result) UnmarshalJSON(b []byte) error {
+	type plain Result
+	var p plain
+	if err := contract.UnmarshalStrict(b, &p); err != nil {
+		return err
+	}
+	reg, err := Load()
+	if err != nil {
+		return err
+	}
+	if _, ok := reg.Outcomes[p.Outcome]; !ok {
+		return fmt.Errorf("%w: unknown outcome %q", ErrMalformed, p.Outcome)
+	}
+	*r = Result(p)
+	return nil
+}
+
 // ErrMalformed marks a result that breaks the vocabulary rules.
 var ErrMalformed = errors.New("malformed result")
 
@@ -153,7 +222,7 @@ func (reg *Registry) Check(r Result) error {
 	if _, ok := reg.Outcomes[r.Outcome]; !ok {
 		return fmt.Errorf("%w: unknown outcome %q", ErrMalformed, r.Outcome)
 	}
-	x, ok := reg.Reasons[string(r.Reason)]
+	x, ok := reg.Reasons[r.Reason.String()]
 	if !ok {
 		return fmt.Errorf("%w: unregistered reason %q", ErrMalformed, r.Reason)
 	}
@@ -187,7 +256,7 @@ func RequireEmpty(r Result) error {
 
 // HoldFor returns the hold a reason leads to when it stops work, if any.
 func (reg *Registry) HoldFor(reason Reason) (types.Hold, bool) {
-	x, ok := reg.Reasons[string(reason)]
+	x, ok := reg.Reasons[reason.String()]
 	if !ok || x.Hold == nil {
 		return types.Hold{}, false
 	}
