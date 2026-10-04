@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/view-fingerprint.json",
   "title": "ViewFingerprint",
-  "description": "What a derived view was rendered from (docs/design/m0/10). digest covers the renderer and the ordered identity digests of the inputs (not their content digests); internal/knowledge computes and checks it. A view is served only if its recomputed fingerprint matches. A fingerprint proves the view matches its inputs, nothing more: evidence applicability is checked separately (06).",
+  "description": "What a derived view was rendered from (docs/design/m0/10). digest is \"sha256:\" followed by the lowercase hex SHA-256 of the RFC 8785 (JCS) encoding of {\"renderer\": renderer, \"inputs\": [the identity_digest of each input, in order]}: the inputs' identities, not their content digests. A view is served only if its recomputed fingerprint matches. A fingerprint proves the view matches its inputs, nothing more: evidence applicability is checked separately (06).",
   "type": "object",
   "additionalProperties": false,
   "required": ["renderer", "inputs", "digest"],

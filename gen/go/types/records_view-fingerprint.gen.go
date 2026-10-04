@@ -10,7 +10,7 @@ type ViewFingerprintRenderer struct {
 	ConfigDigest Digest `json:"config_digest"`
 }
 
-// ViewFingerprint: What a derived view was rendered from (docs/design/m0/10). digest covers the renderer and the ordered identity digests of the inputs (not their content digests); internal/knowledge computes and checks it. A view is served only if its recomputed fingerprint matches. A fingerprint proves the view matches its inputs, nothing more: evidence applicability is checked separately (06).
+// ViewFingerprint: What a derived view was rendered from (docs/design/m0/10). digest is "sha256:" followed by the lowercase hex SHA-256 of the RFC 8785 (JCS) encoding of {"renderer": renderer, "inputs": [the identity_digest of each input, in order]}: the inputs' identities, not their content digests. A view is served only if its recomputed fingerprint matches. A fingerprint proves the view matches its inputs, nothing more: evidence applicability is checked separately (06).
 type ViewFingerprint struct {
 	Renderer ViewFingerprintRenderer `json:"renderer"`
 	// Ordered: tree or candidate snapshot, receipts, findings and dispositions, the adopted contract; for review packets also the reviewer's demands and the approvals that answered them.

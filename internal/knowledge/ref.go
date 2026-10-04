@@ -4,6 +4,10 @@
 // identity digests over everything that makes a ref what it is, and view
 // fingerprints over the ordered identities of a view's inputs. Assembly of
 // views arrives in M1.
+//
+// The digests are portable (K10): the preimages and canonical forms are
+// specified in schemas/records/ref.json and view-fingerprint.json, and the
+// golden vectors in the tests were computed independently of this code.
 package knowledge
 
 import (
@@ -20,6 +24,7 @@ import (
 	"github.com/gowebpki/jcs"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 )
 
 // ErrMismatch marks a ref or fingerprint whose recorded digest is not the
@@ -38,8 +43,9 @@ type identity struct {
 	ContentDigest types.Digest        `json:"content_digest"`
 }
 
-// digestOf is the sha256 of v's RFC 8785 (JCS) encoding. Invalid UTF-8 is
-// refused, never replaced, so two different values never share a digest.
+// digestOf is "sha256:" + the hex sha256 of v's RFC 8785 (JCS) encoding.
+// Invalid UTF-8 is refused, never replaced, so two different values never
+// share a digest.
 func digestOf(v any) (types.Digest, error) {
 	b, err := jsonv2.Marshal(v, json.DefaultOptionsV1(), jsontext.AllowInvalidUTF8(false))
 	if err != nil {
@@ -53,30 +59,45 @@ func digestOf(v any) (types.Digest, error) {
 	return types.Digest("sha256:" + hex.EncodeToString(sum[:])), nil
 }
 
-// compareRestrictions orders restrictions by project, then policy digest.
+// Strings in sets are ordered by Unicode code point, which for valid UTF-8
+// is the byte order Go's string comparison uses (not UTF-16 code units).
+
+// compareRestrictions is the total order of restrictions: project, policy
+// digest, floor, routing, then the (sorted) destinations.
 func compareRestrictions(a, b types.Restriction) int {
-	return cmp.Or(cmp.Compare(a.Project, b.Project), cmp.Compare(a.PolicyDigest, b.PolicyDigest))
+	return cmp.Or(
+		cmp.Compare(a.Project, b.Project),
+		cmp.Compare(a.PolicyDigest, b.PolicyDigest),
+		cmp.Compare(a.Floor, b.Floor),
+		cmp.Compare(a.Routing, b.Routing),
+		slices.Compare(a.AllowedDestinations, b.AllowedDestinations),
+	)
 }
 
-// Seal returns r in canonical form (lineage and restrictions sorted: they
-// are sets) with its identity digest set. r itself is not changed.
-func Seal(r types.Ref) (types.Ref, error) {
-	r.Lineage = orEmpty(slices.Sorted(slices.Values(r.Lineage)))
-	r.Restrictions = orEmpty(slices.SortedFunc(slices.Values(r.Restrictions), compareRestrictions))
-	d, err := identityDigest(r)
-	if err != nil {
-		return types.Ref{}, err
+// canonical returns a deep copy of r in canonical form: every set sorted
+// (lineage, restrictions, each restriction's destinations), absent sets
+// empty, no field shared with r.
+func canonical(r types.Ref) types.Ref {
+	if r.Revision != nil {
+		v := *r.Revision
+		r.Revision = &v
 	}
-	r.IdentityDigest = d
-	return r, nil
+	if r.Scope.Project != nil {
+		p := *r.Scope.Project
+		r.Scope.Project = &p
+	}
+	r.Lineage = orEmpty(slices.Sorted(slices.Values(r.Lineage)))
+	rs := make([]types.Restriction, len(r.Restrictions))
+	for i, x := range r.Restrictions {
+		x.AllowedDestinations = orEmpty(slices.Sorted(slices.Values(x.AllowedDestinations)))
+		rs[i] = x
+	}
+	slices.SortFunc(rs, compareRestrictions)
+	r.Restrictions = rs
+	return r
 }
 
-func identityDigest(r types.Ref) (types.Digest, error) {
-	return digestOf(identity{r.Type, r.ID, r.Revision, r.Scope, orEmpty(r.Lineage), orEmpty(r.Restrictions), r.ContentDigest})
-}
-
-// orEmpty: an absent set is the empty set ([] in the encoding, never null),
-// so nil and empty never give two identities.
+// orEmpty: an absent set is the empty set ([] in the encoding, never null).
 func orEmpty[T any](s []T) []T {
 	if s == nil {
 		return []T{}
@@ -84,11 +105,65 @@ func orEmpty[T any](s []T) []T {
 	return s
 }
 
-// CheckRef reports whether r is canonical and its identity digest is the
-// recomputed one.
+// isCanonical: r's sets are sorted, without duplicates, and present.
+func isCanonical(r types.Ref) error {
+	if r.Lineage == nil || r.Restrictions == nil {
+		return errors.New("absent sets are empty, never null")
+	}
+	if !strictlySorted(r.Lineage, cmp.Compare[string]) {
+		return errors.New("lineage must be sorted by code point, without duplicates")
+	}
+	if !strictlySorted(r.Restrictions, compareRestrictions) {
+		return errors.New("restrictions must be in canonical order, without duplicates")
+	}
+	for _, x := range r.Restrictions {
+		if x.AllowedDestinations == nil || !strictlySorted(x.AllowedDestinations, cmp.Compare[string]) {
+			return errors.New("each restriction's destinations must be present, sorted and without duplicates")
+		}
+	}
+	return nil
+}
+
+func strictlySorted[T any](s []T, c func(a, b T) int) bool {
+	for i := 1; i < len(s); i++ {
+		if c(s[i-1], s[i]) >= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// Seal returns a canonical deep copy of r with its identity digest set. A
+// set with duplicates is refused (they would collapse), and the result must
+// be a valid records/ref document.
+func Seal(r types.Ref) (types.Ref, error) {
+	c := canonical(r)
+	if err := isCanonical(c); err != nil {
+		return types.Ref{}, fmt.Errorf("knowledge: ref %s: %w", r.ID, err)
+	}
+	d, err := identityDigest(c)
+	if err != nil {
+		return types.Ref{}, fmt.Errorf("knowledge: ref %s: %w", r.ID, err)
+	}
+	c.IdentityDigest = d
+	if _, err := contract.Encode("records/ref", c); err != nil {
+		return types.Ref{}, fmt.Errorf("knowledge: ref %s: %w", r.ID, err)
+	}
+	return c, nil
+}
+
+func identityDigest(r types.Ref) (types.Digest, error) {
+	return digestOf(identity{r.Type, r.ID, r.Revision, r.Scope, r.Lineage, r.Restrictions, r.ContentDigest})
+}
+
+// CheckRef reports whether r is a checked ref: a valid records/ref document,
+// in canonical form, whose identity digest is the recomputed one.
 func CheckRef(r types.Ref) error {
-	if !slices.IsSorted(r.Lineage) || !slices.IsSortedFunc(r.Restrictions, compareRestrictions) {
-		return fmt.Errorf("knowledge: ref %s: lineage and restrictions must be sorted (use Seal)", r.ID)
+	if _, err := contract.Encode("records/ref", r); err != nil {
+		return fmt.Errorf("knowledge: ref %s: %w", r.ID, err)
+	}
+	if err := isCanonical(r); err != nil {
+		return fmt.Errorf("knowledge: ref %s: %w (use Seal)", r.ID, err)
 	}
 	d, err := identityDigest(r)
 	if err != nil {
@@ -122,19 +197,29 @@ func fingerprintDigest(renderer types.ViewFingerprintRenderer, inputs []types.Re
 }
 
 // Fingerprint returns the fingerprint of a view rendered by renderer from
-// the inputs, in order. Every input must be a checked ref.
+// the inputs, in order. Every input must be a checked ref; the fingerprint
+// holds deep copies, so the caller's refs cannot change it later.
 func Fingerprint(renderer types.ViewFingerprintRenderer, inputs []types.Ref) (types.ViewFingerprint, error) {
 	d, err := fingerprintDigest(renderer, inputs)
 	if err != nil {
 		return types.ViewFingerprint{}, err
 	}
-	return types.ViewFingerprint{Renderer: renderer, Inputs: slices.Clone(inputs), Digest: d}, nil
+	own := make([]types.Ref, len(inputs))
+	for i, in := range inputs {
+		own[i] = canonical(in) // a checked ref is canonical: this only copies
+		own[i].IdentityDigest = in.IdentityDigest
+	}
+	fp := types.ViewFingerprint{Renderer: renderer, Inputs: own, Digest: d}
+	if _, err := contract.Encode("records/view-fingerprint", fp); err != nil {
+		return types.ViewFingerprint{}, fmt.Errorf("knowledge: %w", err)
+	}
+	return fp, nil
 }
 
-// CheckFingerprint recomputes fp from its renderer and inputs. A mismatch
-// means the view must be regenerated, never served. It proves the view
-// matches its inputs, nothing more: evidence applicability is checked
-// separately (06).
+// CheckFingerprint checks fp's internal consistency only: its digest is the
+// one its own renderer and inputs give. It does not show that the view is
+// fresh (its inputs may have changed since) or where the inputs came from;
+// serving a view needs CheckServable.
 func CheckFingerprint(fp types.ViewFingerprint) error {
 	d, err := fingerprintDigest(fp.Renderer, fp.Inputs)
 	if err != nil {
@@ -142,6 +227,23 @@ func CheckFingerprint(fp types.ViewFingerprint) error {
 	}
 	if d != fp.Digest {
 		return fmt.Errorf("%w: view fingerprint is %s, recorded %s", ErrMismatch, d, fp.Digest)
+	}
+	return nil
+}
+
+// CheckServable decides whether a cached view may be served: the fingerprint
+// recorded with it must equal the one computed from the expected renderer
+// and the current inputs, which the caller resolves independently from the
+// controller's records (never from the cached fingerprint). Any difference,
+// a changed input, a changed renderer or another order, means regenerate.
+// Evidence applicability is checked separately (06).
+func CheckServable(recorded types.ViewFingerprint, renderer types.ViewFingerprintRenderer, current []types.Ref) error {
+	d, err := fingerprintDigest(renderer, current)
+	if err != nil {
+		return err
+	}
+	if d != recorded.Digest {
+		return fmt.Errorf("%w: the view was rendered from other inputs or another renderer (now %s, recorded %s)", ErrMismatch, d, recorded.Digest)
 	}
 	return nil
 }

@@ -25,7 +25,7 @@ type RefScope struct {
 	Framework bool `json:"framework"`
 }
 
-// Ref: An exact reference to an input (docs/design/m0/10 "Refs and fingerprints"). identity_digest is the JCS digest of every other field, so a change of revision, scope, lineage or restrictions changes the identity even when the bytes are identical; internal/knowledge computes and checks it. Content deduplication never merges restrictions.
+// Ref: An exact reference to an input (docs/design/m0/10 "Refs and fingerprints"). Canonical form: lineage, restrictions and each restriction's allowed_destinations are sets, written sorted (strings by Unicode code point; restrictions by project, policy_digest, floor, routing, then allowed_destinations compared element by element, a shorter prefix first), without duplicates, and an empty set is [] (never null or absent). identity_digest is "sha256:" followed by the lowercase hex SHA-256 of the RFC 8785 (JCS) encoding of the canonical ref without identity_digest, so a change of revision, scope, lineage or restrictions changes the identity even when the bytes are identical. Content deduplication never merges restrictions.
 type Ref struct {
 	Type RefType `json:"type"`
 	// A digest, a git id and path, or a controller id, by type.
@@ -35,7 +35,7 @@ type Ref struct {
 	Scope    RefScope `json:"scope"`
 	// The ids of the refs this one was derived from, recorded by the controller.
 	Lineage []string `json:"lineage"`
-	// Source restrictions inherited through lineage (KA1): one per contributing project, kept wherever the ref goes.
+	// Source restrictions inherited through lineage (KA1): every distinct snapshot of a contributing project's data policy is kept, several per project when the ref was derived from inputs under different policy revisions, wherever the ref goes. All apply together: a delivery must satisfy each one. They record lineage; they never replace the live checks at each delivery (initial, lookup, fallback) of the receiving project's policy, revocation and export approval.
 	Restrictions []Restriction `json:"restrictions"`
 	// Of the bytes.
 	ContentDigest  Digest `json:"content_digest"`
@@ -64,6 +64,6 @@ type Restriction struct {
 	PolicyDigest Digest             `json:"policy_digest"`
 	Floor        RestrictionFloor   `json:"floor"`
 	Routing      RestrictionRouting `json:"routing"`
-	// Resolved destinations (never empty-means-derived here: the controller resolves them when it records the restriction).
+	// Resolved destinations, recorded when the restriction is: here an empty set means no destination may receive the ref (never 'derived from the usage profile').
 	AllowedDestinations []string `json:"allowed_destinations"`
 }
