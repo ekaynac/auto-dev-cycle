@@ -143,6 +143,7 @@ func (u *AdapterEvent) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// AdapterTurn: 1 for the first turn, the same domain as the ContextManifest records the turn feeds (manifest-delivery, manifest-finalized).
 type AdapterTurn = int64
 
 // AdapterSubCall: The adapter's label for a model request within the call; not an authoritative id.
@@ -270,14 +271,18 @@ type CoverageEvent struct {
 	Unobservable []CoverageEventUnobservableItem `json:"unobservable"`
 }
 
-// UsageEvent: A usage delta for the call or a sub-call, numbered per call (05). Accepted even from a stale attempt: accounting is not fenced. The measurement's kind must be delta (internal/adapterhost checks it).
+// UsageEvent: A usage delta the adapter observed for the call or a sub-call, numbered per call from 0 (05). It is a report, not a record: the controller mints the measurement id, takes the lease and attempt from the envelope it fenced, records kind delta, and sets source_of_truth itself (gateway_count when its gateway counted the call, adapter_report otherwise). Accepted even from a stale attempt: accounting is not fenced.
 type UsageEvent struct {
-	Event        string           `json:"event"`
-	Attempt      AttemptID        `json:"attempt"`
-	FencingToken int64            `json:"fencing_token"`
-	Call         CallID           `json:"call"`
-	SubCall      *AdapterSubCall  `json:"sub_call"`
-	Measurement  UsageMeasurement `json:"measurement"`
+	Event        string                 `json:"event"`
+	Attempt      AttemptID              `json:"attempt"`
+	FencingToken int64                  `json:"fencing_token"`
+	Call         CallID                 `json:"call"`
+	SubCall      *AdapterSubCall        `json:"sub_call"`
+	Sequence     int64                  `json:"sequence"`
+	Tokens       UsageMeasurementTokens `json:"tokens"`
+	Turns        Amount                 `json:"turns"`
+	Milliseconds Amount                 `json:"milliseconds"`
+	Cost         UsageMeasurementCost   `json:"cost"`
 }
 
 // UpstreamEvent: The provider and model the harness reports; routing compares reported with verified.

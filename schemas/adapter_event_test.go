@@ -4,11 +4,13 @@ package schemas_test
 
 import (
 	"encoding/json"
+	"io/fs"
 	"reflect"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/schemas"
 )
 
 func handle(name string) map[string]any {
@@ -17,22 +19,22 @@ func handle(name string) map[string]any {
 
 // adapterEvents returns one valid notification of each kind (09).
 func adapterEvents() map[string]map[string]any {
-	usage := leaseDocs()["records/usage-measurement"]
+	m := leaseDocs()["records/usage-measurement"]
 	evs := map[string]map[string]any{
 		"call.sub":        {"sub_call": "s1", "model_requested": "claude-sonnet-5-5"},
-		"turn.start":      {"turn": 0, "sub_call": "s1", "reported_at": "2026-10-04T10:00:00Z"},
-		"turn.end":        {"turn": 0, "sub_call": "s1", "reported_at": "2026-10-04T10:00:09Z"},
-		"delta.text":      {"turn": 0, "bytes": 512},
-		"delta.thinking":  {"turn": 0, "bytes": 64},
-		"delta.tool_call": {"turn": 0, "bytes": 80},
-		"tool.request":    {"turn": 1, "tool": "run_test", "request": handle("req-1.json")},
-		"tool.result": {"turn": 1, "tool": "run_test", "mediated_by_controller": true, "delivered": handle("res-1.json"),
+		"turn.start":      {"turn": 1, "sub_call": "s1", "reported_at": "2026-10-04T10:00:00Z"},
+		"turn.end":        {"turn": 1, "sub_call": "s1", "reported_at": "2026-10-04T10:00:09Z"},
+		"delta.text":      {"turn": 1, "bytes": 512},
+		"delta.thinking":  {"turn": 1, "bytes": 64},
+		"delta.tool_call": {"turn": 1, "bytes": 80},
+		"tool.request":    {"turn": 2, "tool": "run_test", "request": handle("req-1.json")},
+		"tool.result": {"turn": 2, "tool": "run_test", "mediated_by_controller": true, "delivered": handle("res-1.json"),
 			"bytes": 120},
-		"coverage":   {"turn": 1, "observable": "partial", "unobservable": []any{"harness_tool"}},
-		"usage":      {"sub_call": "s1", "measurement": usage},
-		"upstream":   {"turn": 0, "sub_call": "s1", "provider": "anthropic", "model_reported": "claude-sonnet-5-5"},
-		"compaction": {"turn": 2, "before_tokens": 180000, "after_tokens": 40000},
-		"error":      {"turn": 2, "class_hint": "rate_limited", "raw_excerpt": handle("err-2.txt")},
+		"coverage":   {"turn": 2, "observable": "partial", "unobservable": []any{"harness_tool"}},
+		"usage":      {"sub_call": "s1", "sequence": 0, "tokens": m["tokens"], "turns": 1, "milliseconds": 9500, "cost": m["cost"]},
+		"upstream":   {"turn": 1, "sub_call": "s1", "provider": "anthropic", "model_reported": "claude-sonnet-5-5"},
+		"compaction": {"turn": 3, "before_tokens": 180000, "after_tokens": 40000},
+		"error":      {"turn": 3, "class_hint": "rate_limited", "raw_excerpt": handle("err-2.txt")},
 		"heartbeat":  {},
 	}
 	for kind, e := range evs {
@@ -63,21 +65,27 @@ func TestAdapterEvents(t *testing.T) {
 		kind   string
 		mutate func(e map[string]any)
 	}{
-		"unknown event":            {"heartbeat", func(e map[string]any) { e["event"] = "thought" }},
-		"no attempt":               {"heartbeat", func(e map[string]any) { delete(e, "attempt") }},
-		"no call":                  {"delta.text", func(e map[string]any) { delete(e, "call") }},
-		"token zero":               {"heartbeat", func(e map[string]any) { e["fencing_token"] = 0 }},
-		"an extra field":           {"heartbeat", func(e map[string]any) { e["note"] = "x" }},
-		"negative bytes":           {"delta.text", func(e map[string]any) { e["bytes"] = -1 }},
-		"a raw path handle":        {"tool.request", func(e map[string]any) { e["request"] = handle("../../etc/passwd") }},
-		"a handle without digest":  {"tool.request", func(e map[string]any) { delete(e["request"].(map[string]any), "digest") }},
-		"mediated without handle":  {"tool.result", func(e map[string]any) { e["delivered"] = nil }},
-		"declared with a handle":   {"tool.result", func(e map[string]any) { e["mediated_by_controller"] = false }},
-		"complete yet unobserved":  {"coverage", func(e map[string]any) { e["observable"] = "complete" }},
-		"unobservable kind":        {"coverage", func(e map[string]any) { e["unobservable"] = []any{"vibes"} }},
-		"error class":              {"error", func(e map[string]any) { e["class_hint"] = "teapot" }},
-		"a sub-call with a space":  {"call.sub", func(e map[string]any) { e["sub_call"] = "s 1" }},
-		"usage without its report": {"usage", func(e map[string]any) { delete(e, "measurement") }},
+		"unknown event":             {"heartbeat", func(e map[string]any) { e["event"] = "thought" }},
+		"no attempt":                {"heartbeat", func(e map[string]any) { delete(e, "attempt") }},
+		"no call":                   {"delta.text", func(e map[string]any) { delete(e, "call") }},
+		"token zero":                {"heartbeat", func(e map[string]any) { e["fencing_token"] = 0 }},
+		"an extra field":            {"heartbeat", func(e map[string]any) { e["note"] = "x" }},
+		"negative bytes":            {"delta.text", func(e map[string]any) { e["bytes"] = -1 }},
+		"a raw path handle":         {"tool.request", func(e map[string]any) { e["request"] = handle("../../etc/passwd") }},
+		"a handle without digest":   {"tool.request", func(e map[string]any) { delete(e["request"].(map[string]any), "digest") }},
+		"mediated without handle":   {"tool.result", func(e map[string]any) { e["delivered"] = nil }},
+		"declared with a handle":    {"tool.result", func(e map[string]any) { e["mediated_by_controller"] = false }},
+		"complete yet unobserved":   {"coverage", func(e map[string]any) { e["observable"] = "complete" }},
+		"unobservable kind":         {"coverage", func(e map[string]any) { e["unobservable"] = []any{"vibes"} }},
+		"error class":               {"error", func(e map[string]any) { e["class_hint"] = "teapot" }},
+		"a sub-call with a space":   {"call.sub", func(e map[string]any) { e["sub_call"] = "s 1" }},
+		"usage without its figures": {"usage", func(e map[string]any) { delete(e, "tokens") }},
+		// Astra #52: the controller owns the measurement's identity and kind.
+		"usage naming a measurement id": {"usage", func(e map[string]any) { e["id"] = "msr_01m3250vm7f6ktw39dszqnyddr" }},
+		"usage naming the lease":        {"usage", func(e map[string]any) { e["lease"] = "lea_01m3250v57fhm9v1z9xd1wk8gw" }},
+		"usage naming its kind":         {"usage", func(e map[string]any) { e["kind"] = "final" }},
+		"usage naming its source":       {"usage", func(e map[string]any) { e["source_of_truth"] = "provider_usage" }},
+		"a zero turn":                   {"turn.start", func(e map[string]any) { e["turn"] = 0 }},
 	}
 	for name, c := range cases {
 		e := adapterEvents()[c.kind]
@@ -113,5 +121,33 @@ func TestAdapterEventRoundTrip(t *testing.T) {
 		if !reflect.DeepEqual(a, b) {
 			t.Errorf("%s: round trip changed the event:\nin  %s\nout %s", kind, in, out)
 		}
+	}
+}
+
+// Astra #52: adapter turns are the turns the ContextManifest records count,
+// so a valid notification's turn is always valid manifest evidence.
+func TestAdapterTurnsMatchManifests(t *testing.T) {
+	bounds := func(path string, walk func(doc map[string]any) map[string]any) [2]float64 {
+		b, err := fs.ReadFile(schemas.FS(), path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(b, &doc); err != nil {
+			t.Fatal(err)
+		}
+		n := walk(doc)
+		return [2]float64{n["minimum"].(float64), n["maximum"].(float64)}
+	}
+	get := func(m map[string]any, keys ...string) map[string]any {
+		for _, k := range keys {
+			m = m[k].(map[string]any)
+		}
+		return m
+	}
+	adapter := bounds("adapter/event.json", func(d map[string]any) map[string]any { return get(d, "$defs", "AdapterTurn") })
+	delivery := bounds("records/manifest-delivery.json", func(d map[string]any) map[string]any { return get(d, "properties", "turn") })
+	if adapter != delivery || adapter[0] != 1 {
+		t.Fatalf("adapter turns %v, manifest delivery turns %v", adapter, delivery)
 	}
 }

@@ -12,31 +12,6 @@ const (
 	UsageMeasurementKindProviderReconciliation UsageMeasurementKind = "provider_reconciliation"
 )
 
-type UsageMeasurementTokens struct {
-	In         Amount `json:"in"`
-	Out        Amount `json:"out"`
-	CacheRead  Amount `json:"cache_read"`
-	CacheWrite Amount `json:"cache_write"`
-}
-
-type UsageMeasurementCostBasis string
-
-const (
-	UsageMeasurementCostBasisCash                   UsageMeasurementCostBasis = "cash"
-	UsageMeasurementCostBasisSubscriptionEquivalent UsageMeasurementCostBasis = "subscription_equivalent"
-	UsageMeasurementCostBasisFree                   UsageMeasurementCostBasis = "free"
-	UsageMeasurementCostBasisLocal                  UsageMeasurementCostBasis = "local"
-)
-
-type UsageMeasurementCost struct {
-	// Millionths of the currency unit.
-	AmountMicros Amount `json:"amount_micros"`
-	// ISO 4217.
-	Currency string                    `json:"currency"`
-	Basis    UsageMeasurementCostBasis `json:"basis"`
-	Estimate bool                      `json:"estimate"`
-}
-
 type UsageMeasurementSourceOfTruth string
 
 const (
@@ -61,4 +36,29 @@ type UsageMeasurement struct {
 	Milliseconds  Amount                        `json:"milliseconds"`
 	Cost          UsageMeasurementCost          `json:"cost"`
 	SourceOfTruth UsageMeasurementSourceOfTruth `json:"source_of_truth"`
+}
+
+type UsageMeasurementTokens struct {
+	In         Amount `json:"in"`
+	Out        Amount `json:"out"`
+	CacheRead  Amount `json:"cache_read"`
+	CacheWrite Amount `json:"cache_write"`
+}
+
+type UsageMeasurementCostBasis string
+
+const (
+	UsageMeasurementCostBasisCash                   UsageMeasurementCostBasis = "cash"
+	UsageMeasurementCostBasisSubscriptionEquivalent UsageMeasurementCostBasis = "subscription_equivalent"
+	UsageMeasurementCostBasisFree                   UsageMeasurementCostBasis = "free"
+	UsageMeasurementCostBasisLocal                  UsageMeasurementCostBasis = "local"
+)
+
+type UsageMeasurementCost struct {
+	// Millionths of the currency unit.
+	AmountMicros Amount `json:"amount_micros"`
+	// ISO 4217.
+	Currency string                    `json:"currency"`
+	Basis    UsageMeasurementCostBasis `json:"basis"`
+	Estimate bool                      `json:"estimate"`
 }

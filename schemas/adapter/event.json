@@ -20,7 +20,12 @@
     {"$ref": "#/$defs/HeartbeatEvent"}
   ],
   "$defs": {
-    "AdapterTurn": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "AdapterTurn": {
+      "description": "1 for the first turn, the same domain as the ContextManifest records the turn feeds (manifest-delivery, manifest-finalized).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
     "AdapterSubCall": {
       "description": "The adapter's label for a model request within the call; not an authoritative id.",
       "type": "string",
@@ -102,11 +107,11 @@
       "then": {"properties": {"unobservable": {"const": []}}}
     },
     "UsageEvent": {
-      "description": "A usage delta for the call or a sub-call, numbered per call (05). Accepted even from a stale attempt: accounting is not fenced. The measurement's kind must be delta (internal/adapterhost checks it).",
+      "description": "A usage delta the adapter observed for the call or a sub-call, numbered per call from 0 (05). It is a report, not a record: the controller mints the measurement id, takes the lease and attempt from the envelope it fenced, records kind delta, and sets source_of_truth itself (gateway_count when its gateway counted the call, adapter_report otherwise). Accepted even from a stale attempt: accounting is not fenced.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["event", "attempt", "fencing_token", "call", "sub_call", "measurement"],
-      "properties": {"event": {"const": "usage"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "sub_call": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/AdapterSubCall"}]}, "measurement": {"$ref": "../records/usage-measurement.json"}}
+      "required": ["event", "attempt", "fencing_token", "call", "sub_call", "sequence", "tokens", "turns", "milliseconds", "cost"],
+      "properties": {"event": {"const": "usage"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "sub_call": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/AdapterSubCall"}]}, "sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "tokens": {"$ref": "../records/usage-measurement.json#/$defs/UsageMeasurementTokens"}, "turns": {"$ref": "../records/resource-group.json#/$defs/Amount"}, "milliseconds": {"$ref": "../records/resource-group.json#/$defs/Amount"}, "cost": {"$ref": "../records/usage-measurement.json#/$defs/UsageMeasurementCost"}}
     },
     "UpstreamEvent": {
       "description": "The provider and model the harness reports; routing compares reported with verified.",
