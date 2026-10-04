@@ -4,18 +4,27 @@
 // ("What M0 delivers"): it grants leases over resource groups through the
 // lease state machine, all reservations or none, in a fixed order, so tests
 // can drive a lease population to its end and check the invariants. The
-// real scheduler's policy is M2.
+// real scheduler's policy is M2. Reservations return when a lease ends,
+// whatever the group's release rule (the rules are M7); evidence-target
+// groups, whose slot returns only on a verified restore (13), are refused.
 package fakesched
 
 import (
 	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+)
+
+// The holds a blocked lease waits on.
+const (
+	holdQuota  = "quota_reset"
+	holdBroker = "broker_credit_exhausted"
 )
 
 type group struct {
@@ -33,7 +42,12 @@ type Scheduler struct {
 // New checks the groups (capacity.CheckGroup) and returns an empty
 // scheduler over them.
 func New(groups []types.ResourceGroup, holds map[string]types.Hold) (*Scheduler, error) {
-	s := &Scheduler{groups: map[types.ResourceGroupID]*group{}, leases: map[types.LeaseID]types.Lease{}, holds: holds}
+	for _, h := range []string{holdQuota, holdBroker} {
+		if _, ok := holds[h]; !ok {
+			return nil, fmt.Errorf("fakesched: hold %s is not registered", h)
+		}
+	}
+	s := &Scheduler{groups: map[types.ResourceGroupID]*group{}, leases: map[types.LeaseID]types.Lease{}, holds: maps.Clone(holds)}
 	for _, g := range groups {
 		if err := capacity.CheckGroup(g); err != nil {
 			return nil, err
@@ -64,6 +78,10 @@ func (s *Scheduler) Request(l types.Lease) error {
 			return fmt.Errorf("fakesched: lease %s reserves unknown group %s", l.ID, r.Group)
 		case seen[r.Group]:
 			return fmt.Errorf("fakesched: lease %s reserves group %s twice", l.ID, r.Group)
+		case g.g.Kind == types.ResourceGroupKindEvidenceTarget:
+			return fmt.Errorf("fakesched: lease %s reserves evidence target %s, which settles only through a restore", l.ID, r.Group)
+		case r.Amount < 0:
+			return fmt.Errorf("fakesched: lease %s reserves a negative amount of group %s", l.ID, r.Group)
 		case r.Unit != g.g.CapacityModel.Unit:
 			return fmt.Errorf("fakesched: lease %s reserves %s of group %s, counted in %s", l.ID, r.Unit, r.Group, g.g.CapacityModel.Unit)
 		case g.g.CapacityModel.Limit == nil || int64(r.Amount) > int64(*g.g.CapacityModel.Limit):
@@ -81,7 +99,7 @@ func (s *Scheduler) Request(l types.Lease) error {
 func (s *Scheduler) fits(l types.Lease) (bool, types.ResourceGroupID) {
 	for _, r := range l.Reservations {
 		g := s.groups[r.Group]
-		if g.g.CapacityModel.Limit == nil || g.reserved+int64(r.Amount) > int64(*g.g.CapacityModel.Limit) {
+		if g.g.CapacityModel.Limit == nil || int64(r.Amount) > int64(*g.g.CapacityModel.Limit)-g.reserved {
 			return false, r.Group
 		}
 	}
@@ -126,10 +144,19 @@ func (s *Scheduler) Step() ([]types.LeaseID, error) {
 				s.groups[r.Group].reserved += int64(r.Amount)
 			}
 			granted = append(granted, id)
-		case l.State == types.LeaseStateRequested:
-			hold := "quota_reset"
+		default:
+			hold := holdQuota
 			if s.groups[blocking].g.Kind == types.ResourceGroupKindBrokerBalance {
-				hold = "broker_credit_exhausted"
+				hold = holdBroker
+			}
+			if l.State == types.LeaseStateWaiting {
+				if l.Hold != nil && l.Hold.Hold == hold && l.Hold.SignalInstance == string(blocking) {
+					break // still blocked on the same group
+				}
+				// Blocked on another group now: wait on its hold instead.
+				if l, err = s.apply(l, lease.LeaseEvent{Kind: lease.Requested}); err != nil {
+					return nil, err
+				}
 			}
 			if l, err = s.apply(l, lease.LeaseEvent{Kind: lease.Waiting, Hold: &types.LeaseHoldValue{Hold: hold, SignalInstance: string(blocking)}}); err != nil {
 				return nil, err
@@ -181,5 +208,10 @@ func (s *Scheduler) Lease(id types.LeaseID) (types.Lease, bool) {
 	return l, ok
 }
 
-// Reserved is what a group has reserved now.
-func (s *Scheduler) Reserved(id types.ResourceGroupID) int64 { return s.groups[id].reserved }
+// Reserved is what a group has reserved now (zero for an unknown group).
+func (s *Scheduler) Reserved(id types.ResourceGroupID) int64 {
+	if g, ok := s.groups[id]; ok {
+		return g.reserved
+	}
+	return 0
+}

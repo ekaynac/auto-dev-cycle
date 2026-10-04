@@ -4,6 +4,7 @@ package fakesched
 
 import (
 	"fmt"
+	"maps"
 	"math/rand"
 	"slices"
 	"testing"
@@ -211,8 +212,8 @@ func TestWaitsThenGrantsAtOnce(t *testing.T) {
 	if granted, _ := s.Step(); len(granted) != 0 {
 		t.Fatalf("granted without broker credit: %v", granted)
 	}
-	if w, _ := s.Lease(both.ID); w.State != types.LeaseStateWaiting {
-		t.Fatalf("lease %s", w.State)
+	if w, _ := s.Lease(both.ID); w.State != types.LeaseStateWaiting || w.Hold.Hold != "broker_credit_exhausted" || w.Hold.SignalInstance != string(gBroker) {
+		t.Fatalf("the lease now blocked on the broker: %s %+v", w.State, w.Hold)
 	}
 	// A lease blocked only by broker credit waits on the broker's hold.
 	poor := newLease(4, 0, res(gBroker, types.CapacityUnitUsdMicros, 4_999_990)) // fits beside both's 10
@@ -245,10 +246,11 @@ func TestRefusals(t *testing.T) {
 	twice := newLease(2, 0, res(gTokens, types.CapacityUnitTokens, 1), res(gTokens, types.CapacityUnitTokens, 1))
 	wrongUnit := newLease(3, 0, res(gTokens, types.CapacityUnitSlots, 1))
 	tooBig := newLease(4, 0, res(gTokens, types.CapacityUnitTokens, 1001))
+	negative := newLease(8, 0, res(gTokens, types.CapacityUnitTokens, -1))
 	notRequested := newLease(5, 0)
 	notRequested.State = types.LeaseStateGranted
 	for name, l := range map[string]types.Lease{"an unknown group": unknownGroup, "a group twice": twice, "another unit": wrongUnit,
-		"more than the group can hold": tooBig, "a lease not requested": notRequested} {
+		"more than the group can hold": tooBig, "a lease not requested": notRequested, "a negative amount": negative} {
 		if err := s.Request(l); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
@@ -279,6 +281,20 @@ func TestRefusals(t *testing.T) {
 	target[2].Kind = types.ResourceGroupKindEvidenceTarget // three slots: not a valid target
 	if _, err := New(target, holds(t)); err == nil {
 		t.Error("an invalid evidence-target group")
+	}
+	target[2].CapacityModel.Limit = n(1)
+	if s, err := New(target, holds(t)); err != nil {
+		t.Fatal(err)
+	} else if err := s.Request(newLease(9, 0, res(gSlots, types.CapacityUnitSlots, 1))); err == nil {
+		t.Error("a reservation on an evidence target, which settles only through a restore")
+	}
+	noHold := maps.Clone(holds(t))
+	delete(noHold, "broker_credit_exhausted")
+	if _, err := New(groups(), noHold); err == nil {
+		t.Error("a hold the scheduler waits on is not registered")
+	}
+	if s.Reserved("rg_01m3250v57ft7aehkqwq0yrq3n") != 0 {
+		t.Error("an unknown group reserves something")
 	}
 	if _, err := New(append(groups(), groups()[0]), holds(t)); err == nil {
 		t.Error("a group twice")
