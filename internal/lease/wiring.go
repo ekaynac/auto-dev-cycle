@@ -107,9 +107,12 @@ func reasonOf(s string) *string {
 // The command helpers below propose events; the projector, in the same
 // writer transaction, is the one place that accepts or refuses them.
 
-// RequestLease records a new lease (the projector refuses one that exists).
-// A waiting lease is re-requested through ChangeLease with its revision.
+// RequestLease records a new lease. A waiting lease is re-requested only
+// through ChangeLease, with its revision.
 func RequestLease(tx *eventstore.Tx, l types.Lease) ([]eventstore.Event, error) {
+	if _, _, ok, err := load[types.Lease](tx, LeaseProjection, string(l.ID)); err != nil || ok {
+		return nil, errors.Join(err, fmt.Errorf("lease: lease %s already exists", l.ID))
+	}
 	e, err := newEvent(string(l.ID), payload{Transition: Requested, Lease: &l})
 	return []eventstore.Event{e}, err
 }
@@ -235,6 +238,12 @@ func FenceOutput(tx *eventstore.Tx, unit types.UnitID, id types.AttemptID, token
 	return Fence(a, id, token)
 }
 
+// Units binds a unit to its project and task: authoritative state a seal's
+// AttemptRecord must match. Without it, no seal is admitted.
+type Units interface {
+	ProjectTask(tx *eventstore.Tx, unit types.UnitID) (types.ProjectID, types.TaskID, bool, error)
+}
+
 // Blobs is what the projector reads to check a seal's AttemptRecord.
 type Blobs interface {
 	Has(digest string) (bool, error)
@@ -250,9 +259,16 @@ type Blobs interface {
 // event as its predecessor's retirement; a lease leaves active only once its
 // attempt stopped publishing (completed: once it completed); a seal names a
 // valid AttemptRecord of its attempt.
+//
+// Admission checks that read state outside the log (the checkpoint blob and
+// its named blobs, the unit's project and task, the hold registry) run only
+// when an event is admitted, never on replay (Tx.Replaying), so purged blobs
+// or a retired hold never make recorded history unrebuildable; the fold
+// itself is deterministic from the log.
 type Projector struct {
 	Blobs Blobs
 	Holds map[string]types.Hold
+	Units Units
 }
 
 // Project is the event store's Project hook.
@@ -331,7 +347,24 @@ func (p Projector) changeLease(tx *eventstore.Tx, transition string, reason *str
 	if reason != nil {
 		e.Reason = *reason
 	}
-	want, err := ApplyLease(prev, e, false, p.Holds)
+	holds := p.Holds
+	if tx.Replaying() && n.Hold != nil {
+		// The hold was registered when admitted; replay does not re-ask a
+		// registry that may have changed since.
+		holds = map[string]types.Hold{n.Hold.Hold: {}}
+	}
+	// Restore obligations are known only for leases that cannot hold an
+	// evidence target: those groups count slots (12, 13), so a lease with a
+	// slot reservation settles only once the resource-group projection
+	// says whether it owes a restore.
+	if transition == Settled {
+		for _, r := range prev.Reservations {
+			if r.Unit == types.CapacityUnitSlots {
+				return fmt.Errorf("lease %s reserves slots, which may owe a restore; it settles once groups are known", n.ID)
+			}
+		}
+	}
+	want, err := ApplyLease(prev, e, false, holds)
 	if err != nil {
 		return err
 	}
@@ -421,20 +454,24 @@ func (p Projector) changeAttempt(tx *eventstore.Tx, transition string, n types.A
 	if err != nil || !same(want, n) {
 		return errors.Join(err, fmt.Errorf("attempt %s is not what %s derives", n.ID, transition))
 	}
-	if transition == Sealed {
-		if err := p.checkpoint(n); err != nil {
+	if transition == Sealed && !tx.Replaying() {
+		if err := p.checkpoint(tx, n); err != nil {
 			return err
 		}
 	}
 	return put(tx, AttemptProjection, string(n.ID), rev+1, n)
 }
 
-// checkpoint checks a seal's AttemptRecord: a valid record of this attempt,
-// its token and base, with every blob it names published. (Its project and
-// task bind to the unit's task when units are projected.)
-func (p Projector) checkpoint(a types.Attempt) error {
-	if p.Blobs == nil {
-		return errors.New("no blob store to check the checkpoint")
+// checkpoint admits a seal's AttemptRecord: a valid record of this attempt,
+// its token and base, of the unit's project and task, with every blob it
+// names published.
+func (p Projector) checkpoint(tx *eventstore.Tx, a types.Attempt) error {
+	if p.Blobs == nil || p.Units == nil {
+		return errors.New("a seal needs the blob store and the unit binding to check its checkpoint")
+	}
+	project, task, ok, err := p.Units.ProjectTask(tx, a.Unit)
+	if err != nil || !ok {
+		return errors.Join(err, fmt.Errorf("unit %s has no project and task to bind the checkpoint to", a.Unit))
 	}
 	rc, err := p.Blobs.Open(string(*a.Checkpoint))
 	if err != nil {
@@ -449,7 +486,8 @@ func (p Projector) checkpoint(a types.Attempt) error {
 	if err != nil {
 		return fmt.Errorf("checkpoint %s: %w", *a.Checkpoint, err)
 	}
-	if r.Attempt != a.ID || r.FencingToken != a.FencingToken || r.BaseTree != a.Base.Tree || r.ContractRevision != a.Base.ContractRevision {
+	if r.Attempt != a.ID || r.FencingToken != a.FencingToken || r.BaseTree != a.Base.Tree || r.ContractRevision != a.Base.ContractRevision ||
+		r.Project != project || r.Task != task {
 		return fmt.Errorf("checkpoint %s is not attempt %s's (token %d, base %s)", *a.Checkpoint, a.ID, a.FencingToken, a.Base.Tree)
 	}
 	named := []types.Digest{r.Trail, r.EvidenceManifest}
