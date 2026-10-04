@@ -84,17 +84,23 @@ func Derive(c types.InstrumentContract, r types.Receipt, blobs Blobs) (Derived, 
 		}
 		d.Verdict = &v
 	}
+	// The receipt as it would be recorded must be a valid envelope: this
+	// validates every producer-supplied field (subject, predicates,
+	// provenance) without reading the producer's derived fields.
+	e := r
+	e.Outcome, e.Reason, e.Detail, e.Verdict, e.ConclusionsDigest = types.Outcome(d.Outcome), d.Reason, d.Detail, d.Verdict, d.ConclusionsDigest
+	if _, err := docs.Encode("records/receipt", e); err != nil {
+		return Derived{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
 	return d, nil
 }
 
 // Check refuses a receipt whose recorded derived fields differ from the
 // derivation: they are never accepted from the producer.
 func Check(c types.InstrumentContract, r types.Receipt, blobs Blobs) error {
-	b, err := json.Marshal(r)
-	if err != nil {
-		return err
-	}
-	if err := docs.Validate("records/receipt", b); err != nil {
+	// Encode refuses invalid UTF-8 rather than repairing it, so what is
+	// validated is exactly what was supplied.
+	if _, err := docs.Encode("records/receipt", r); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	d, err := Derive(c, r, blobs)
@@ -116,11 +122,7 @@ func Check(c types.InstrumentContract, r types.Receipt, blobs Blobs) error {
 // the cross-field rule the schema leaves to this package: each predicate is
 // declared once, as required or as optional, never both.
 func checkContract(c types.InstrumentContract) error {
-	b, err := json.Marshal(c)
-	if err != nil {
-		return err
-	}
-	if err := docs.Validate("records/instrument-contract", b); err != nil {
+	if _, err := docs.Encode("records/instrument-contract", c); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	names := map[string]bool{}
@@ -320,19 +322,29 @@ func (refuseLoader) Load(url string) (any, error) {
 	return nil, fmt.Errorf("receipt: a payload schema may not reference %s", url)
 }
 
-// subjectType is the type of a typed subject.
+// subjectType is the type of a typed subject; a nil variant is none.
 func subjectType(s types.Subject) string {
-	switch s.Variant.(type) {
+	switch v := s.Variant.(type) {
 	case *types.TreeSubject:
-		return "tree"
+		if v != nil {
+			return "tree"
+		}
 	case *types.ProposalSubject:
-		return "proposal"
+		if v != nil {
+			return "proposal"
+		}
 	case *types.ObjectRevisionSubject:
-		return "object_revision"
+		if v != nil {
+			return "object_revision"
+		}
 	case *types.EnvironmentSubject:
-		return "environment"
+		if v != nil {
+			return "environment"
+		}
 	case *types.CallSubject:
-		return "call"
+		if v != nil {
+			return "call"
+		}
 	}
 	return "none"
 }

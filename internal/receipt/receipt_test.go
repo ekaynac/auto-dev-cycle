@@ -62,6 +62,9 @@ func pred(name string, o vocab.Outcome, reason vocab.Reason, detail string, ev .
 var junitEvidence = types.PredicateEvidenceItem{Blob: junit, MediaType: "application/junit+xml", Artifact: "junit"}
 
 func receipt(ps ...types.Predicate) types.Receipt {
+	if ps == nil {
+		ps = []types.Predicate{}
+	}
 	return types.Receipt{ID: "rcp_01m3250v57fhm9v1z9xd1wk8gw", Kind: types.ReceiptKindGate, Instrument: types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: dgA},
 		Subject: tree("c"), Provenance: types.ReceiptProvenance{Command: "cmd_01m3250vz2ezn81cgvbkcn17jd", Calls: []types.CallID{}, ModelFamilies: []string{}, Contributors: []types.ActorID{}}, ProducedAt: "2026-10-04T10:00:00Z", Predicates: ps}
 }
@@ -136,7 +139,7 @@ func TestReviewVerdictIsDerived(t *testing.T) {
 	if d := derive(t, r); d.Verdict == nil || *d.Verdict != types.ReceiptVerdictValueNoGo {
 		t.Fatalf("a review with a finding: %+v", d)
 	}
-	r.Predicates = nil
+	r.Predicates = []types.Predicate{}
 	if d := derive(t, r); d.Verdict == nil || *d.Verdict != types.ReceiptVerdictValueNoGo {
 		t.Fatalf("an incomplete review: %+v", d)
 	}
@@ -439,5 +442,34 @@ func TestKindMustMatch(t *testing.T) {
 	req.Kind = types.ReceiptKindReview
 	if got := refusal(t, Applies(r, req, now)); got != vocab.ReasonEvidenceInapplicable {
 		t.Fatalf("a gate receipt for a review requirement: %s", got.String())
+	}
+}
+
+// Astra #44 round 2: Derive validates every producer-supplied field, refuses
+// a nil subject, and never repairs invalid UTF-8.
+func TestDeriveValidatesProducerFields(t *testing.T) {
+	emptyTree := receipt(clean())
+	emptyTree.Subject = types.Subject{Variant: &types.TreeSubject{Type: "tree"}}
+	badDemand := receipt(clean())
+	badDemand.Subject = withDemand(tree("c"), "sha256:short")
+	noReason := receipt(pred("tests", vocab.Empty, vocab.Reason{}, "", junitEvidence))
+	nilTree := receipt(clean())
+	nilTree.Subject = types.Subject{Variant: (*types.TreeSubject)(nil)}
+	// A union's own encoding repairs invalid UTF-8 (a schemagen fix follows),
+	// so this case uses a plain field.
+	badUTF8 := receipt(pred("tests", vocab.Empty, vocab.ReasonCompletedClean, string([]byte{0xff}), junitEvidence))
+	for name, r := range map[string]types.Receipt{"an empty tree": emptyTree, "a malformed demand key": badDemand,
+		"no predicate reason": noReason, "a nil subject": nilTree, "invalid UTF-8": badUTF8} {
+		if _, err := Derive(contract(), r, blobs()); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	c := contract()
+	c.Version = string([]byte{0xff})
+	r := receipt(clean())
+	r.Instrument.Version = c.Version
+	// Refused as a contract, before the receipt's copy of the version is.
+	if _, err := Derive(c, r, blobs()); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "records/instrument-contract") {
+		t.Errorf("a contract with invalid UTF-8: %v", err)
 	}
 }
