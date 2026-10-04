@@ -214,7 +214,7 @@ func TestConclusionsDigest(t *testing.T) {
 }
 
 func requirement() Requirement {
-	return Requirement{Instrument: types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: dgA}, Subject: tree("c")}
+	return Requirement{Kind: types.ReceiptKindGate, Instrument: types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: dgA}, Subject: tree("c")}
 }
 
 var now = time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
@@ -280,6 +280,7 @@ func TestGOForAnotherProposal(t *testing.T) {
 	r.Kind = types.ReceiptKindReview
 	r.Subject = types.Subject{Variant: &types.ProposalSubject{Type: "proposal", Proposal: prpID, BindingDigest: dgA}}
 	req := requirement()
+	req.Kind = types.ReceiptKindReview
 	req.Subject = types.Subject{Variant: &types.ProposalSubject{Type: "proposal", Proposal: prpID, BindingDigest: dgA}}
 	if err := Applies(r, req, now); err != nil {
 		t.Fatalf("the bound proposal: %v", err)
@@ -300,10 +301,11 @@ func TestIndependence(t *testing.T) {
 	for name, c := range map[string]struct {
 		fams, excluded []string
 	}{
-		"shared family":    {[]string{"claude"}, []string{"claude"}},
-		"unknown reviewer": {[]string{"unknown"}, []string{"gpt"}},
-		"no family":        {[]string{}, []string{"gpt"}},
-		"unknown proposer": {[]string{"claude"}, []string{"unknown"}},
+		"shared family":      {[]string{"claude"}, []string{"claude"}},
+		"unknown reviewer":   {[]string{"unknown"}, []string{"gpt"}},
+		"no family":          {[]string{}, []string{"gpt"}},
+		"unknown proposer":   {[]string{"claude"}, []string{"unknown"}},
+		"nothing to compare": {[]string{"claude"}, nil},
 	} {
 		r.Provenance.ModelFamilies = c.fams
 		if got := refusal(t, Independent(r, c.excluded)); got != vocab.ReasonReviewerNotIndependent {
@@ -320,5 +322,38 @@ func TestCanTeardown(t *testing.T) {
 	missing := receipt(pred("tests", vocab.Empty, vocab.ReasonCompletedClean, "", types.PredicateEvidenceItem{Blob: dgB, MediaType: "application/junit+xml", Artifact: "junit"}))
 	if err := CanTeardown(missing, blobs()); err == nil {
 		t.Fatal("teardown with an artifact not in the blob store")
+	}
+}
+
+// Security review: the receipt's subject type must be the instrument's.
+func TestSubjectTypeMatchesTheContract(t *testing.T) {
+	r := receipt(clean())
+	r.Subject = types.Subject{Variant: &types.CallSubject{Type: "call", Call: "cal_01m3250v9xft08ssr4ygq6g2np"}}
+	if _, err := Derive(contract(), r, blobs()); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a call receipt from a tree instrument: %v", err)
+	}
+}
+
+// Security review: a payload schema cannot load anything by $ref.
+func TestPayloadSchemaRefsAreRefused(t *testing.T) {
+	b := blobs()
+	evil := types.Digest("sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+	b[string(evil)] = []byte(`{"$ref": "file:///etc/passwd"}`)
+	c := contract()
+	c.PayloadSchema = &evil
+	p := clean()
+	p.Payload = []byte(`{"passed": 1}`)
+	if _, err := Derive(c, receipt(p), b); err == nil || !strings.Contains(err.Error(), "may not reference") {
+		t.Fatalf("a schema $ref to a local file: %v", err)
+	}
+}
+
+// Security review: a receipt of another kind never applies.
+func TestKindMustMatch(t *testing.T) {
+	r := receipt(clean())
+	req := requirement()
+	req.Kind = types.ReceiptKindReview
+	if got := refusal(t, Applies(r, req, now)); got != vocab.ReasonEvidenceInapplicable {
+		t.Fatalf("a gate receipt for a review requirement: %s", got.String())
 	}
 }

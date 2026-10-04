@@ -25,6 +25,7 @@ func (r *Refusal) Error() string { return "receipt: " + r.Reason.String() + ": "
 // must have produced it (by digest), the typed subject it must be about,
 // and the demand it must answer, if the requirement names one.
 type Requirement struct {
+	Kind       types.ReceiptKind // a gate receipt never stands in for a review, and so on
 	Instrument types.InstrumentRef
 	Subject    types.Subject
 	DemandKey  *types.Digest
@@ -34,6 +35,9 @@ type Requirement struct {
 // now (rules 1, 2, 6): the same instrument digest, the same typed subject,
 // the same demand, and not past its validity. Anything else is a Refusal.
 func Applies(r types.Receipt, req Requirement, now time.Time) error {
+	if r.Kind != req.Kind {
+		return &Refusal{vocab.ReasonEvidenceInapplicable, fmt.Sprintf("a %s receipt, the requirement needs a %s receipt", r.Kind, req.Kind)}
+	}
 	if r.Instrument.Name != req.Instrument.Name {
 		return &Refusal{vocab.ReasonEvidenceInapplicable, fmt.Sprintf("produced by %s, the requirement names %s", r.Instrument.Name, req.Instrument.Name)}
 	}
@@ -109,8 +113,12 @@ func sameSubject(got, want types.Subject) error {
 // Independent decides whether a review receipt counts as independent of the
 // given model families (the proposer's and every contributor's): its
 // families must be known, recorded, and disjoint from them (rule 3). An
-// unknown family, or none recorded, is not independent.
+// unknown family, none recorded, or no families to compare against (the
+// proposer's are unknown) is not independent.
 func Independent(r types.Receipt, excluded []string) error {
+	if len(excluded) == 0 {
+		return &Refusal{vocab.ReasonReviewerNotIndependent, "the proposer's and contributors' families are not known"}
+	}
 	fams := r.Provenance.ModelFamilies
 	if len(fams) == 0 {
 		return &Refusal{vocab.ReasonReviewerNotIndependent, "no model family is recorded"}

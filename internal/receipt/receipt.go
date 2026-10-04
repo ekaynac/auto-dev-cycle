@@ -55,6 +55,9 @@ func Derive(c types.InstrumentContract, r types.Receipt, blobs Blobs) (Derived, 
 		return Derived{}, fmt.Errorf("%w: produced by %s %s (%s), the contract is %s %s (%s)", ErrInvalid,
 			r.Instrument.Name, r.Instrument.Version, r.Instrument.Digest, c.Name, c.Version, c.Digest)
 	}
+	if got := subjectType(r.Subject); got != string(c.SubjectType) {
+		return Derived{}, fmt.Errorf("%w: the receipt is about a %s, the instrument's subject type is %s", ErrInvalid, got, c.SubjectType)
+	}
 	if err := checkPredicates(c, r, blobs); err != nil {
 		return Derived{}, err
 	}
@@ -159,6 +162,9 @@ func loadSchema(digest string, blobs Blobs) (*jsonschema.Schema, error) {
 		return nil, fmt.Errorf("receipt: payload schema %s: %w", digest, err)
 	}
 	comp := jsonschema.NewCompiler()
+	// A payload schema is self-contained: no $ref may load anything (no file,
+	// no network), so a schema can never read the controller's files.
+	comp.UseLoader(refuseLoader{})
 	url := "urn:adc:payload-schema:" + digest
 	if err := comp.AddResource(url, doc); err != nil {
 		return nil, fmt.Errorf("receipt: payload schema %s: %w", digest, err)
@@ -260,6 +266,30 @@ func conclusionsDigest(r types.Receipt) (types.Digest, error) {
 	}
 	sum := sha256.Sum256(c)
 	return types.Digest("sha256:" + hex.EncodeToString(sum[:])), nil
+}
+
+// refuseLoader refuses every external schema reference.
+type refuseLoader struct{}
+
+func (refuseLoader) Load(url string) (any, error) {
+	return nil, fmt.Errorf("receipt: a payload schema may not reference %s", url)
+}
+
+// subjectType is the type of a typed subject.
+func subjectType(s types.Subject) string {
+	switch s.Variant.(type) {
+	case *types.TreeSubject:
+		return "tree"
+	case *types.ProposalSubject:
+		return "proposal"
+	case *types.ObjectRevisionSubject:
+		return "object_revision"
+	case *types.EnvironmentSubject:
+		return "environment"
+	case *types.CallSubject:
+		return "call"
+	}
+	return "none"
 }
 
 // demandOf is the subject's evidence demand, if any.
