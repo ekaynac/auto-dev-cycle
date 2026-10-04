@@ -360,3 +360,32 @@ func TestFlowStyleYAML(t *testing.T) {
 		t.Fatalf("a flow-style YAML profile: %v", err)
 	}
 }
+
+// Astra #33 round 2: the budget counts the bytes each segment comparison
+// costs, not only table cells: long character classes against long names
+// are refused quickly, through both coverage routes.
+func TestCoverageBudgetCountsBytes(t *testing.T) {
+	var prot, names []string
+	for i := 0; i < 120; i++ {
+		prot = append(prot, fmt.Sprintf("'*[%s]z%03d'", strings.Repeat("a", 238), i))
+		names = append(names, fmt.Sprintf("'%s%03d'", strings.Repeat("a", 250), i))
+	}
+	prot = append(prot, "'**'")
+	base := edit("protected_paths: [docs/decisions/**, deploy/*.yaml, CANON.md]", "protected_paths: ["+strings.Join(prot, ", ")+"]")
+	topology := strings.Replace(base, "    files: [deploy/compose.yaml]\n", "    files: ["+strings.Join(names, ", ")+"]\n", 1)
+	topology = strings.Replace(topology, "protected_documents: [docs/decisions/*.md]", "protected_documents: []", 1)
+	documents := strings.Replace(base, "protected_documents: [docs/decisions/*.md]", "protected_documents: ["+strings.Join(names, ", ")+"]", 1)
+	for name, doc := range map[string]string{"topology files": topology, "protected documents": documents} {
+		if len(doc) > MaxBytes {
+			t.Fatalf("%s: fixture is %d bytes", name, len(doc))
+		}
+		start := time.Now()
+		_, err := Load([]byte(doc))
+		if took := time.Since(start); took > 500*time.Millisecond {
+			t.Errorf("%s: validation took %v", name, took)
+		}
+		if err == nil || !strings.Contains(err.Error(), "steps") {
+			t.Errorf("%s: want the coverage budget refusal, got %v", name, err)
+		}
+	}
+}

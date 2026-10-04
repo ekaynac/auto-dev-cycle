@@ -10,12 +10,12 @@ import (
 )
 
 // Glob bounds: a protected glob is short, and the coverage checks of a whole
-// profile together examine at most maxCoverageWork pattern/path positions,
-// so validation stays fast whatever the profile.
+// profile together cost at most maxCoverageWork byte comparisons (see
+// matchWork), so validation stays fast whatever the profile.
 const (
 	maxGlobBytes    = 256
 	maxGlobSegments = 32
-	maxCoverageWork = 1 << 20
+	maxCoverageWork = 1 << 22
 )
 
 // checkRepoPath: a relative, slash-separated, clean path inside the
@@ -90,8 +90,20 @@ func match(g, s []string, one func(g, s string) bool) bool {
 	return at[0]
 }
 
-// matchWork is the number of positions match examines for g against s.
-func matchWork(g, s []string) int { return (len(g) + 1) * (len(s) + 1) }
+// matchWork bounds the cost of match(g, s) in byte comparisons. The table
+// has (len(g)+1)·(len(s)+1) cells, and the cell for g[i] against s[j] calls
+// path.Match, which never backtracks across stars and so costs at most
+// about (len(g[i])+1)·(len(s[j])+1). Summed over the table, that is at most
+// weight(g)·weight(s), where weight adds one per segment and per byte.
+func matchWork(g, s []string) int { return weight(g) * weight(s) }
+
+func weight(segs []string) int {
+	n := 1
+	for _, x := range segs {
+		n += len(x) + 1
+	}
+	return n
+}
 
 // matchesPath: the glob matches the literal repository path segments.
 func matchesPath(g, segs []string) bool {
