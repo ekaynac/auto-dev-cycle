@@ -114,8 +114,14 @@ type Store struct {
 	kinds     Kinds
 	blobs     BlobChecker
 
-	ops    sync.RWMutex // held for reading by each operation; Close takes it
-	closed bool
+	// Operation tracking: each operation is admitted while the store is
+	// open and counted; Close stops admissions and waits for the count to
+	// reach zero. Nothing blocks on admission, so an operation nested in
+	// another (a read inside a transaction) never deadlocks with Close.
+	mu      sync.Mutex
+	idle    *sync.Cond // signalled when active reaches zero
+	active  int
+	closing bool
 }
 
 // Config is what Open needs besides the lock.
@@ -175,6 +181,7 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (s *Store, err error) {
 		kinds[k] = Kind{Schema: v.Schema, BlobFields: slices.Clone(v.BlobFields)}
 	}
 	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs}
+	s.idle = sync.NewCond(&s.mu)
 	if s.genesis, err = s.ensureGenesis(ctx); err == nil {
 		err = checkDBFiles(file)
 	}

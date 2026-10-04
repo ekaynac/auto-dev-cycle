@@ -601,3 +601,85 @@ func TestStaleClaimIsIgnored(t *testing.T) {
 	}
 	e.lock.unclaim(second)
 }
+
+// Astra #25 round 3: a read inside a transaction while Close waits is
+// refused, never deadlocked, and Close then completes.
+func TestNestedReadDuringCloseDoesNotDeadlock(t *testing.T) {
+	e := openEnv(t, stateDir(t))
+	ctx := context.Background()
+	closed := make(chan error, 1)
+	nested := make(chan error, 1)
+	err := e.s.inTx(ctx, func(*sql.Tx) error {
+		go func() { closed <- e.s.Close() }()
+		for {
+			e.s.mu.Lock()
+			closing := e.s.closing
+			e.s.mu.Unlock()
+			if closing {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		go func() {
+			_, err := e.s.Head(ctx)
+			nested <- err
+		}()
+		select {
+		case err := <-nested:
+			if !errors.Is(err, ErrClosed) {
+				return fmt.Errorf("a nested read during Close: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			return errors.New("a nested read during Close blocked")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not complete after the transaction")
+	}
+	e.s = nil
+}
+
+// Astra #25 round 3: a panicking callback's transaction is rolled back
+// before the operation ends; the writer stays usable.
+func TestPanickingTransactionIsRolledBack(t *testing.T) {
+	e := openEnv(t, stateDir(t))
+	ctx := context.Background()
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the panic did not propagate")
+			}
+		}()
+		_ = e.s.inTx(ctx, func(tx *sql.Tx) error {
+			if _, err := e.s.append(ctx, tx, Event{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: testSubject, Actor: sysActor, Payload: []byte(`{}`)}); err != nil {
+				t.Fatal(err)
+			}
+			panic("callback failure")
+		})
+	}()
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.appendRaw(t, Event{Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(`{}`)})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the writer is still held by the panicked transaction")
+	}
+	if h, err := e.s.Head(ctx); err != nil || h.Seq != 1 {
+		t.Fatalf("head %+v, %v: the panicked append must not be committed", h, err)
+	}
+}

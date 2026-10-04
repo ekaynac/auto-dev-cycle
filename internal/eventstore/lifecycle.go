@@ -57,13 +57,24 @@ func checkMetaTable(ctx context.Context, db *sql.DB) error {
 }
 
 // do runs one operation while the store is open, on the database file it
-// opened; Close waits for it.
+// opened; Close waits for it. Once Close has begun, new operations, nested
+// ones included, are refused with ErrClosed rather than blocked. An
+// operation must not call Close.
 func (s *Store) do(fn func() error) error {
-	s.ops.RLock()
-	defer s.ops.RUnlock()
-	if s.closed {
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
 		return ErrClosed
 	}
+	s.active++
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.active--; s.active == 0 {
+			s.idle.Broadcast()
+		}
+		s.mu.Unlock()
+	}()
 	if err := checkDBFiles(s.file); err != nil {
 		return err
 	}
@@ -73,30 +84,44 @@ func (s *Store) do(fn func() error) error {
 	return fn()
 }
 
-// inTx runs fn in a writer transaction, committed when fn succeeds. A
-// transaction never outlives the store: Close waits for it.
+// inTx runs fn in a writer transaction, committed when fn succeeds and
+// rolled back otherwise, a panic included: the transaction is finished
+// before the operation ends, so it never outlives the store (Close waits
+// for the operation). fn must not start another writer transaction.
 func (s *Store) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	return s.do(func() error {
 		tx, err := s.w.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
-		if err := fn(tx); err != nil {
+		finished := false
+		defer func() {
+			if !finished {
+				_ = tx.Rollback() // only on a panic, which keeps unwinding
+			}
+		}()
+		err = fn(tx)
+		finished = true
+		if err != nil {
 			return errors.Join(err, tx.Rollback())
 		}
 		return tx.Commit()
 	})
 }
 
-// Close waits for running operations, closes both pools and ends this
-// store's claim on the lock, once; later calls do nothing.
+// Close stops new operations, waits for running ones, closes both pools and
+// ends this store's claim on the lock, once; later calls do nothing.
 func (s *Store) Close() error {
-	s.ops.Lock()
-	defer s.ops.Unlock()
-	if s.closed {
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
 		return nil
 	}
-	s.closed = true
+	s.closing = true
+	for s.active > 0 {
+		s.idle.Wait()
+	}
+	s.mu.Unlock()
 	err := errors.Join(s.w.Close(), s.r.Close())
 	s.lock.unclaim(s.claim)
 	return err
