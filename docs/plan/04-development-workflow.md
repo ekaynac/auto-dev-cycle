@@ -38,7 +38,7 @@ The attended session writes a handover comment when it hands back. This is the s
   - the design note(s) it implements (`docs/design/m0/…`);
   - for `fix(...)` PRs, the red-proof test (11-testing).
 - **CI must be green:** GitHub-hosted runners (amd64 + arm64). Tests run inside the sandbox; on hosted runners that
-  means the rootless-container fallback (11-testing).
+  is bubblewrap (11-testing; the rootless-container fallback is deferred to M3, D42).
 - **Split after 3 NO-GOs** on the same PR.
 
 ## 3. Review

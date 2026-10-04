@@ -14,8 +14,9 @@ sandbox in which the real home and state do not exist**:
   - `--unshare-pid --die-with-parent`;
   - `--clearenv` with an explicit allowlisted environment (no `*_TOKEN`, `*_KEY`, `ANTHROPIC_*`, `OPENAI_*`,
     `OPENROUTER_*`, `CODEX_HOME`, `CLAUDE_*`).
-- **Fallback:** a rootless container with the same mounts and policy, for hosts without bubblewrap (macOS developers,
-  CI runners without user namespaces).
+- **Fallback (deferred to M3, D42):** a rootless container with the same mounts and policy, for hosts without
+  bubblewrap (macOS developers, CI runners without user namespaces). Until it exists, bubblewrap is the only test
+  sandbox; building it is a security-posture change that waits for the operator.
 - **No sandbox, no tests:** `make test` refuses to run tests directly on the host. `ADC_TEST_UNSANDBOXED=1` exists only
   for the sandbox's own bootstrap tests.
 - **Red tests for the containment itself**, using **sacrificial sentinels**: the harness creates a decoy directory
