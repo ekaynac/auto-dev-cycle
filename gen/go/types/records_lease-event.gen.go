@@ -28,13 +28,15 @@ const (
 	LeaseEventTransitionAttemptSuperseded      LeaseEventTransition = "attempt.superseded"
 )
 
-// LeaseEvent: The payload of every lease and attempt transition event (docs/design/m0/05): <transition>/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*). attempt.started also changes the lease under the attempt's subject, so commands expect a record's projection revision (not its subject's last seq) for every record they act on.
+// LeaseEvent: The payload of every lease and attempt transition event (docs/design/m0/05): <transition>/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*). attempt.started and attempt.superseded also change the lease under the attempt's subject, so commands expect a record's projection revision (not its subject's last seq) for every record they act on. attempt.superseded is atomic: one event carries the retired attempt, its successor (with the next token) and the lease the successor runs under (05: supersession and the replacement's token in one transaction).
 type LeaseEvent struct {
 	Transition LeaseEventTransition `json:"transition"`
 	// Why: required for lease.revoked and lease.restore_failed (05), null otherwise. Attempt stop and loss reasons live in the attempt record.
 	Reason *string `json:"reason"`
 	// The lease after a lease transition, or after attempt.started (granted → active).
 	Lease *Lease `json:"lease"`
-	// The attempt after an attempt transition.
+	// The attempt after an attempt transition (for attempt.superseded, the retired one).
 	Attempt *Attempt `json:"attempt"`
+	// attempt.superseded only: the replacement attempt, started with the next token.
+	Successor *Attempt `json:"successor"`
 }

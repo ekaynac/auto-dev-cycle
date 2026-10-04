@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -21,8 +23,7 @@ const (
 	UnitProjection    = "unit_attempts"
 )
 
-// Stale refuses a command that expected another revision of a record: the
-// record changed since the caller read it (03 expected state).
+// StaleRecord refuses a command that expected another revision of a record.
 type StaleRecord struct{ Detail string }
 
 func (s *StaleRecord) Error() string {
@@ -54,7 +55,6 @@ func put[T any](tx *eventstore.Tx, projection, id string, revision int64, record
 	return tx.Put(projection, id, raw)
 }
 
-// current loads a record a command expects at a revision.
 func current[T any](tx *eventstore.Tx, projection, id string, expected int64) (T, error) {
 	rec, rev, ok, err := load[T](tx, projection, id)
 	switch {
@@ -68,70 +68,88 @@ func current[T any](tx *eventstore.Tx, projection, id string, expected int64) (T
 	return rec, nil
 }
 
-func newEvent(transition, subject, reason string, l *types.Lease, a *types.Attempt) (eventstore.Event, error) {
+func unitAttempt(tx *eventstore.Tx, unit types.UnitID) (types.AttemptID, bool, error) {
+	raw, ok, err := tx.Get(UnitProjection, string(unit))
+	if err != nil || !ok {
+		return "", false, err
+	}
+	var id types.AttemptID
+	return id, true, json.Unmarshal(raw, &id)
+}
+
+type payload struct {
+	Transition string         `json:"transition"`
+	Reason     *string        `json:"reason"`
+	Lease      *types.Lease   `json:"lease"`
+	Attempt    *types.Attempt `json:"attempt"`
+	Successor  *types.Attempt `json:"successor"`
+}
+
+func newEvent(subject string, p payload) (eventstore.Event, error) {
 	id, err := ids.New("evt")
 	if err != nil {
 		return eventstore.Event{}, err
 	}
-	var r *string
-	if reason != "" {
-		r = &reason
-	}
-	payload, err := json.Marshal(struct {
-		Transition string         `json:"transition"`
-		Reason     *string        `json:"reason"`
-		Lease      *types.Lease   `json:"lease"`
-		Attempt    *types.Attempt `json:"attempt"`
-	}{transition, r, l, a})
+	raw, err := json.Marshal(p)
 	if err != nil {
 		return eventstore.Event{}, err
 	}
-	return eventstore.Event{ID: id, Kind: transition + "/v1", Subject: subject, Payload: payload}, nil
+	return eventstore.Event{ID: id, Kind: p.Transition + "/v1", Subject: subject, Payload: raw}, nil
 }
 
-// RequestLease records a new lease, in the requested state. That the lease
-// is new and requested is the projector's check (and the schema's that a
-// requested lease carries nothing else), in one place.
+func reasonOf(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// The command helpers below propose events; the projector, in the same
+// writer transaction, is the one place that accepts or refuses them.
+
+// RequestLease records a new lease (the projector refuses one that exists).
+// A waiting lease is re-requested through ChangeLease with its revision.
 func RequestLease(tx *eventstore.Tx, l types.Lease) ([]eventstore.Event, error) {
-	e, err := newEvent(Requested, string(l.ID), "", &l, nil)
+	e, err := newEvent(string(l.ID), payload{Transition: Requested, Lease: &l})
 	return []eventstore.Event{e}, err
 }
 
 // ChangeLease applies one lease transition to the lease at the expected
-// revision; the new record is derived by the state machine from the
-// projection, never taken from the caller. (attempt.started goes through
-// StartAttempt: its payload must carry the attempt, which the schema
-// requires.)
-func ChangeLease(tx *eventstore.Tx, id types.LeaseID, expected int64, e LeaseEvent, evidenceTarget bool, holds map[string]types.Hold) ([]eventstore.Event, error) {
+// revision, deriving the record from the projection. Restore transitions
+// wait for the resource-group projection that says which leases hold an
+// evidence target, so none is accepted yet.
+func ChangeLease(tx *eventstore.Tx, id types.LeaseID, expected int64, e LeaseEvent, holds map[string]types.Hold) ([]eventstore.Event, error) {
 	l, err := current[types.Lease](tx, LeaseProjection, string(id), expected)
 	if err != nil {
 		return nil, err
 	}
-	n, err := ApplyLease(l, e, evidenceTarget, holds)
+	n, err := ApplyLease(l, e, false, holds)
 	if err != nil {
 		return nil, err
 	}
-	ev, err := newEvent(e.Kind, string(id), e.Reason, &n, nil)
+	ev, err := newEvent(string(id), payload{Transition: e.Kind, Reason: reasonOf(e.Reason), Lease: &n})
 	return []eventstore.Event{ev}, err
 }
 
 // StartAttempt starts a unit's first attempt (token 1) under a granted
-// lease: one attempt.started event carries the new attempt and the lease,
-// now active.
+// lease: one attempt.started event carries the attempt and the lease.
 func StartAttempt(tx *eventstore.Tx, leaseID types.LeaseID, expected int64, id types.AttemptID, base types.AttemptBase) ([]eventstore.Event, error) {
 	l, err := current[types.Lease](tx, LeaseProjection, string(leaseID), expected)
 	if err != nil {
 		return nil, err
 	}
-	if _, ok, err := tx.Get(UnitProjection, string(l.Unit)); err != nil || ok {
-		return nil, errors.Join(err, fmt.Errorf("lease: unit %s already has an attempt; supersede it", l.Unit))
+	a := Start(id, l.Unit, leaseID, base)
+	active, err := ApplyLease(l, LeaseEvent{Kind: AttemptStarted, Attempt: &a.ID}, false, nil)
+	if err != nil {
+		return nil, err
 	}
-	return started(l, Start(id, l.Unit, leaseID, base), nil)
+	e, err := newEvent(string(id), payload{Transition: AttemptStarted, Lease: &active, Attempt: &a})
+	return []eventstore.Event{e}, err
 }
 
 // SupersedeAttempt retires the unit's sealed attempt and starts its
-// replacement, with the next token, under a granted lease: attempt.superseded
-// and attempt.started in one command (05).
+// replacement with the next token under a granted lease for the same unit,
+// in one attempt.superseded event.
 func SupersedeAttempt(tx *eventstore.Tx, old types.AttemptID, oldExpected int64, leaseID types.LeaseID, leaseExpected int64, id types.AttemptID, base types.AttemptBase) ([]eventstore.Event, error) {
 	a, err := current[types.Attempt](tx, AttemptProjection, string(old), oldExpected)
 	if err != nil {
@@ -141,35 +159,21 @@ func SupersedeAttempt(tx *eventstore.Tx, old types.AttemptID, oldExpected int64,
 	if err != nil {
 		return nil, err
 	}
-	if l.Unit != a.Unit {
-		return nil, fmt.Errorf("lease: lease %s is for unit %s, the attempt for %s", leaseID, l.Unit, a.Unit)
-	}
 	retired, next, err := Supersede(a, id, leaseID, base)
 	if err != nil {
 		return nil, err
 	}
-	return started(l, next, &retired)
-}
-
-func started(l types.Lease, next types.Attempt, retired *types.Attempt) ([]eventstore.Event, error) {
 	active, err := ApplyLease(l, LeaseEvent{Kind: AttemptStarted, Attempt: &next.ID}, false, nil)
 	if err != nil {
 		return nil, err
 	}
-	var evs []eventstore.Event
-	if retired != nil {
-		e, err := newEvent(Superseded, string(retired.ID), "", nil, retired)
-		if err != nil {
-			return nil, err
-		}
-		evs = append(evs, e)
-	}
-	e, err := newEvent(AttemptStarted, string(next.ID), "", &active, &next)
-	return append(evs, e), err
+	e, err := newEvent(string(old), payload{Transition: Superseded, Lease: &active, Attempt: &retired, Successor: &next})
+	return []eventstore.Event{e}, err
 }
 
-// ChangeAttempt applies one attempt transition (not started or superseded)
-// to the attempt at the expected revision.
+// ChangeAttempt applies one attempt transition to the attempt at the
+// expected revision. A result submission waits for its companion result
+// record (the API's command input), so none is accepted yet.
 func ChangeAttempt(tx *eventstore.Tx, id types.AttemptID, expected int64, e AttemptEvent) ([]eventstore.Event, error) {
 	a, err := current[types.Attempt](tx, AttemptProjection, string(id), expected)
 	if err != nil {
@@ -179,22 +183,50 @@ func ChangeAttempt(tx *eventstore.Tx, id types.AttemptID, expected int64, e Atte
 	if err != nil {
 		return nil, err
 	}
-	ev, err := newEvent(e.Kind, string(id), "", nil, &n)
+	ev, err := newEvent(string(id), payload{Transition: e.Kind, Attempt: &n})
 	return []eventstore.Event{ev}, err
+}
+
+// RecoverAfterRestart is the first step after a controller restart: every
+// unit's running attempt becomes lost/controller_restart (publication
+// closed) before anything else runs (05). The startup integration calls it
+// in its own command; replay never synthesizes it.
+func RecoverAfterRestart(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	units, err := tx.Keys(UnitProjection, "")
+	if err != nil {
+		return nil, err
+	}
+	var evs []eventstore.Event
+	for _, u := range units {
+		id, _, err := unitAttempt(tx, types.UnitID(u))
+		if err != nil {
+			return nil, err
+		}
+		a, _, ok, err := load[types.Attempt](tx, AttemptProjection, string(id))
+		if err != nil || !ok {
+			return nil, errors.Join(err, fmt.Errorf("lease: unit %s's attempt %s is missing", u, id))
+		}
+		if a.Status != types.AttemptStatusRunning {
+			continue
+		}
+		lost := LoseOnRestart(a)
+		e, err := newEvent(string(id), payload{Transition: Lost, Attempt: &lost})
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, e)
+	}
+	return evs, nil
 }
 
 // FenceOutput fences an output against the unit's current attempt (05).
 func FenceOutput(tx *eventstore.Tx, unit types.UnitID, id types.AttemptID, token int64) error {
-	raw, ok, err := tx.Get(UnitProjection, string(unit))
+	cur, ok, err := unitAttempt(tx, unit)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return &Stale{fmt.Sprintf("unit %s has no attempt", unit)}
-	}
-	var cur types.AttemptID
-	if err := json.Unmarshal(raw, &cur); err != nil {
-		return err
 	}
 	a, _, ok, err := load[types.Attempt](tx, AttemptProjection, string(cur))
 	if err != nil || !ok {
@@ -203,45 +235,38 @@ func FenceOutput(tx *eventstore.Tx, unit types.UnitID, id types.AttemptID, token
 	return Fence(a, id, token)
 }
 
-// Project folds lease and attempt events into the projections. It checks
-// each event on its own (so a rebuild replays it the same way): the kind is
-// its payload's transition, the subject is its record, and the record's
-// state follows from the previous one by the state machines. A command can
-// therefore not write an arbitrary record by appending raw events.
-func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
+// Blobs is what the projector reads to check a seal's AttemptRecord.
+type Blobs interface {
+	Has(digest string) (bool, error)
+	Open(digest string) (io.ReadCloser, error)
+}
+
+// Projector folds lease and attempt events into the projections, and is the
+// one place that accepts them. Each event is checked on its own, so a rebuild
+// replays it the same way: its kind is its payload's transition and its
+// subject its record; every record it carries is exactly what the state
+// machines derive from the projected one; a first attempt is the unit's
+// token-1 attempt under its lease, a successor the next token in the same
+// event as its predecessor's retirement; a lease leaves active only once its
+// attempt stopped publishing (completed: once it completed); a seal names a
+// valid AttemptRecord of its attempt.
+type Projector struct {
+	Blobs Blobs
+	Holds map[string]types.Hold
+}
+
+// Project is the event store's Project hook.
+func (p Projector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
-		var p struct {
-			Transition string         `json:"transition"`
-			Lease      *types.Lease   `json:"lease"`
-			Attempt    *types.Attempt `json:"attempt"`
-		}
 		if !isLeaseKind(ev.Kind) {
 			continue
 		}
-		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+		var pl payload
+		if err := json.Unmarshal(ev.Payload, &pl); err != nil {
 			return fmt.Errorf("lease: event %s: %w", ev.ID, err)
 		}
-		if ev.Kind != p.Transition+"/v1" {
-			return fmt.Errorf("lease: event %s is a %s carrying %s", ev.ID, ev.Kind, p.Transition)
-		}
-		subject := ""
-		if p.Attempt != nil {
-			subject = string(p.Attempt.ID)
-		} else if p.Lease != nil {
-			subject = string(p.Lease.ID)
-		}
-		if ev.Subject != subject {
-			return fmt.Errorf("lease: event %s's subject %s is not its record %s", ev.ID, ev.Subject, subject)
-		}
-		if p.Lease != nil {
-			if err := projectLease(tx, p.Transition, *p.Lease); err != nil {
-				return fmt.Errorf("lease: event %s: %w", ev.ID, err)
-			}
-		}
-		if p.Attempt != nil {
-			if err := projectAttempt(tx, p.Transition, *p.Attempt); err != nil {
-				return fmt.Errorf("lease: event %s: %w", ev.ID, err)
-			}
+		if err := p.apply(tx, ev, pl); err != nil {
+			return fmt.Errorf("lease: event %s: %w", ev.ID, err)
 		}
 	}
 	return nil
@@ -256,59 +281,187 @@ func isLeaseKind(kind string) bool {
 	return false
 }
 
-func projectLease(tx *eventstore.Tx, transition string, n types.Lease) error {
+func (p Projector) apply(tx *eventstore.Tx, ev eventstore.Event, pl payload) error {
+	if ev.Kind != pl.Transition+"/v1" {
+		return fmt.Errorf("a %s carrying %s", ev.Kind, pl.Transition)
+	}
+	subject := ""
+	if pl.Attempt != nil {
+		subject = string(pl.Attempt.ID)
+	} else if pl.Lease != nil {
+		subject = string(pl.Lease.ID)
+	}
+	if ev.Subject != subject {
+		return fmt.Errorf("subject %s is not its record %s", ev.Subject, subject)
+	}
+	switch pl.Transition {
+	case ResultSubmitted:
+		return errors.New("a result submission waits for its companion result record")
+	case AttemptStarted:
+		return p.start(tx, *pl.Lease, *pl.Attempt, nil)
+	case Superseded:
+		return p.start(tx, *pl.Lease, *pl.Successor, pl.Attempt)
+	case StopRequested, Lost, Sealed, AttemptDone:
+		return p.changeAttempt(tx, pl.Transition, *pl.Attempt)
+	}
+	return p.changeLease(tx, pl.Transition, pl.Reason, *pl.Lease)
+}
+
+// same compares two records by their canonical JSON.
+func same(a, b any) bool {
+	x, err1 := json.Marshal(a)
+	y, err2 := json.Marshal(b)
+	return err1 == nil && err2 == nil && string(x) == string(y)
+}
+
+func (p Projector) changeLease(tx *eventstore.Tx, transition string, reason *string, n types.Lease) error {
 	prev, rev, ok, err := load[types.Lease](tx, LeaseProjection, string(n.ID))
 	if err != nil {
 		return err
 	}
-	switch {
-	case !ok && (transition != Requested || n.State != types.LeaseStateRequested):
-		return fmt.Errorf("lease %s does not exist", n.ID)
-	case ok && transition == Requested && prev.State != types.LeaseStateWaiting:
-		return fmt.Errorf("lease %s already exists", n.ID)
-	case ok:
-		step := leaseStep{prev.State, transition}
-		want, okTable := leaseTable[step]
-		if !okTable {
-			if want, okTable = plainSettle[step]; !okTable {
-				want, okTable = restoreTable[step]
-			}
+	if !ok {
+		fresh := n
+		fresh.State, fresh.Hold, fresh.Attempt, fresh.RestoreReceipt, fresh.Settlement = types.LeaseStateRequested, nil, nil, nil, nil
+		if transition != Requested || !same(fresh, n) {
+			return fmt.Errorf("lease %s does not exist", n.ID)
 		}
-		if !okTable || want != n.State || prev.Unit != n.Unit || prev.Executor != n.Executor {
-			return fmt.Errorf("lease %s cannot go from %s by %s to %s", n.ID, prev.State, transition, n.State)
+		return put(tx, LeaseProjection, string(n.ID), 1, n)
+	}
+	e := LeaseEvent{Kind: transition, Hold: n.Hold, Receipt: n.RestoreReceipt, Settlement: n.Settlement}
+	if reason != nil {
+		e.Reason = *reason
+	}
+	want, err := ApplyLease(prev, e, false, p.Holds)
+	if err != nil {
+		return err
+	}
+	if !same(want, n) {
+		return fmt.Errorf("lease %s is not what %s derives", n.ID, transition)
+	}
+	if prev.State == types.LeaseStateActive && prev.Attempt != nil {
+		a, _, ok, err := load[types.Attempt](tx, AttemptProjection, string(*prev.Attempt))
+		switch {
+		case err != nil:
+			return err
+		case !ok:
+			return fmt.Errorf("lease %s's attempt is missing", n.ID)
+		case transition == Completed && a.Status != types.AttemptStatusCompleted:
+			return fmt.Errorf("lease %s completes before its attempt (%s)", n.ID, a.Status)
+		case a.Publication == types.AttemptPublicationOpen:
+			return fmt.Errorf("lease %s leaves active while its attempt still publishes; stop it first", n.ID)
 		}
 	}
 	return put(tx, LeaseProjection, string(n.ID), rev+1, n)
 }
 
-func projectAttempt(tx *eventstore.Tx, transition string, n types.Attempt) error {
-	prev, rev, ok, err := load[types.Attempt](tx, AttemptProjection, string(n.ID))
+// start accepts a first attempt (retired nil) or a successor with its
+// predecessor's retirement, and the lease it runs under.
+func (p Projector) start(tx *eventstore.Tx, l types.Lease, next types.Attempt, retired *types.Attempt) error {
+	prevLease, leaseRev, ok, err := load[types.Lease](tx, LeaseProjection, string(l.ID))
+	if err != nil || !ok {
+		return errors.Join(err, fmt.Errorf("lease %s does not exist", l.ID))
+	}
+	active, err := ApplyLease(prevLease, LeaseEvent{Kind: AttemptStarted, Attempt: &next.ID}, false, nil)
+	if err != nil || !same(active, l) {
+		return errors.Join(err, fmt.Errorf("lease %s is not what attempt.started derives", l.ID))
+	}
+	if _, _, exists, err := load[types.Attempt](tx, AttemptProjection, string(next.ID)); err != nil || exists {
+		return errors.Join(err, fmt.Errorf("attempt %s already exists", next.ID))
+	}
+	cur, hasCur, err := unitAttempt(tx, l.Unit)
 	if err != nil {
 		return err
 	}
-	switch {
-	case transition == AttemptStarted:
-		if ok || n.Status != types.AttemptStatusRunning || n.Publication != types.AttemptPublicationOpen {
-			return fmt.Errorf("attempt %s cannot start as %s", n.ID, n.Status)
+	if retired == nil {
+		if hasCur || !same(Start(next.ID, l.Unit, l.ID, next.Base), next) {
+			return fmt.Errorf("attempt %s is not unit %s's first, token-1 attempt", next.ID, l.Unit)
 		}
-		raw, err := json.Marshal(n.ID)
-		if err != nil {
+	} else {
+		prev, rev, ok, err := load[types.Attempt](tx, AttemptProjection, string(retired.ID))
+		if err != nil || !ok || !hasCur || cur != retired.ID {
+			return errors.Join(err, fmt.Errorf("attempt %s is not unit %s's current attempt", retired.ID, l.Unit))
+		}
+		wantOld, wantNext, err := Supersede(prev, next.ID, l.ID, next.Base)
+		if err != nil || !same(wantOld, *retired) || !same(wantNext, next) {
+			return errors.Join(err, fmt.Errorf("supersession of %s is not what the state machine derives", retired.ID))
+		}
+		if err := put(tx, AttemptProjection, string(retired.ID), rev+1, *retired); err != nil {
 			return err
 		}
-		if err := tx.Put(UnitProjection, string(n.Unit), raw); err != nil {
+	}
+	if err := put(tx, LeaseProjection, string(l.ID), leaseRev+1, l); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(next.ID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Put(UnitProjection, string(l.Unit), raw); err != nil {
+		return err
+	}
+	return put(tx, AttemptProjection, string(next.ID), 1, next)
+}
+
+func (p Projector) changeAttempt(tx *eventstore.Tx, transition string, n types.Attempt) error {
+	prev, rev, ok, err := load[types.Attempt](tx, AttemptProjection, string(n.ID))
+	if err != nil || !ok {
+		return errors.Join(err, fmt.Errorf("attempt %s does not exist", n.ID))
+	}
+	e := AttemptEvent{Kind: transition, Completion: n.Completion}
+	if n.StopReason != nil {
+		e.StopReason = *n.StopReason
+	}
+	if n.LostReason != nil {
+		e.LostReason = *n.LostReason
+	}
+	if n.Checkpoint != nil {
+		e.Checkpoint = *n.Checkpoint
+	}
+	want, err := ApplyAttempt(prev, e)
+	if err != nil || !same(want, n) {
+		return errors.Join(err, fmt.Errorf("attempt %s is not what %s derives", n.ID, transition))
+	}
+	if transition == Sealed {
+		if err := p.checkpoint(n); err != nil {
 			return err
-		}
-	case !ok:
-		return fmt.Errorf("attempt %s does not exist", n.ID)
-	case transition == Superseded:
-		if prev.Status != types.AttemptStatusSealed || n.Status != types.AttemptStatusSuperseded {
-			return fmt.Errorf("attempt %s cannot be superseded from %s", n.ID, prev.Status)
-		}
-	default:
-		want, okTable := attemptTable[attemptStep{prev.Status, transition}]
-		if !okTable || want != n.Status || n.FencingToken != prev.FencingToken || n.Unit != prev.Unit {
-			return fmt.Errorf("attempt %s cannot go from %s by %s to %s", n.ID, prev.Status, transition, n.Status)
 		}
 	}
 	return put(tx, AttemptProjection, string(n.ID), rev+1, n)
+}
+
+// checkpoint checks a seal's AttemptRecord: a valid record of this attempt,
+// its token and base, with every blob it names published. (Its project and
+// task bind to the unit's task when units are projected.)
+func (p Projector) checkpoint(a types.Attempt) error {
+	if p.Blobs == nil {
+		return errors.New("no blob store to check the checkpoint")
+	}
+	rc, err := p.Blobs.Open(string(*a.Checkpoint))
+	if err != nil {
+		return fmt.Errorf("checkpoint %s: %w", *a.Checkpoint, err)
+	}
+	defer rc.Close()
+	raw, err := io.ReadAll(rc)
+	if err != nil {
+		return err
+	}
+	r, err := contract.Decode[types.AttemptRecord]("records/attempt-record", raw)
+	if err != nil {
+		return fmt.Errorf("checkpoint %s: %w", *a.Checkpoint, err)
+	}
+	if r.Attempt != a.ID || r.FencingToken != a.FencingToken || r.BaseTree != a.Base.Tree || r.ContractRevision != a.Base.ContractRevision {
+		return fmt.Errorf("checkpoint %s is not attempt %s's (token %d, base %s)", *a.Checkpoint, a.ID, a.FencingToken, a.Base.Tree)
+	}
+	named := []types.Digest{r.Trail, r.EvidenceManifest}
+	for _, d := range []*types.Digest{r.PartialDiff, r.BuilderNotes} {
+		if d != nil {
+			named = append(named, *d)
+		}
+	}
+	for _, d := range named {
+		if has, err := p.Blobs.Has(string(d)); err != nil || !has {
+			return errors.Join(err, fmt.Errorf("checkpoint %s names unpublished blob %s", *a.Checkpoint, d))
+		}
+	}
+	return nil
 }
