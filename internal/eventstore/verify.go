@@ -42,33 +42,34 @@ func (s *Store) Head(ctx context.Context) (h Head, err error) {
 func (s *Store) Verify(ctx context.Context, trusted *Head) (h Head, err error) {
 	err = s.do(func() error {
 		var err error
-		h, err = s.verify(ctx, trusted)
+		h, err = s.verify(ctx, s.r, trusted)
 		return err
 	})
 	return h, err
 }
 
-func (s *Store) verify(ctx context.Context, trusted *Head) (Head, error) {
+// verify reads through q: the reader pool, or a rebuild's transaction.
+func (s *Store) verify(ctx context.Context, q querier, trusted *Head) (Head, error) {
 	// meta holds exactly the format and the genesis record and hash.
 	var n int
 	var format string
-	if err := s.r.QueryRowContext(ctx, `SELECT count(*) FROM meta`).Scan(&n); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM meta`).Scan(&n); err != nil {
 		return Head{}, err
 	}
-	if err := s.r.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'format'`).Scan(&format); err != nil || n != 3 || format != Format {
+	if err := q.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'format'`).Scan(&format); err != nil || n != 3 || format != Format {
 		return Head{}, fmt.Errorf("%w: meta holds %d keys, format %q", ErrChainBroken, n, format)
 	}
 	var record, genesisHash string
-	if err := s.r.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'genesis_record'`).Scan(&record); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'genesis_record'`).Scan(&record); err != nil {
 		return Head{}, fmt.Errorf("%w: genesis record: %v", ErrChainBroken, err)
 	}
-	if err := s.r.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'genesis_hash'`).Scan(&genesisHash); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'genesis_hash'`).Scan(&genesisHash); err != nil {
 		return Head{}, fmt.Errorf("%w: genesis hash: %v", ErrChainBroken, err)
 	}
 	if got, err := digest([]byte(record)); err != nil || got != genesisHash || genesisHash != s.genesis {
 		return Head{}, fmt.Errorf("%w: the genesis record does not match its hash", ErrChainBroken)
 	}
-	rows, err := s.r.QueryContext(ctx, `SELECT seq, id, at, kind, subject, project, actor, command, causation, schema_set, payload, prev_hash, hash FROM events ORDER BY seq`)
+	rows, err := q.QueryContext(ctx, `SELECT seq, id, at, kind, subject, project, actor, command, causation, schema_set, payload, prev_hash, hash FROM events ORDER BY seq`)
 	if err != nil {
 		return Head{}, err
 	}

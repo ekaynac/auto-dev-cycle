@@ -27,14 +27,11 @@ var rebuildBatch = 512
 // back. An empty result means the live projections are exactly what the log
 // derives.
 //
-// The fresh tables are a TEMP proj_kv, which shadows the live one for the
-// unqualified statements Tx issues, so the hook runs unchanged. A projector
-// must derive its records from the events it is given and the projections
-// alone; it is replayed one event at a time, in log order.
+// The fresh table is a TEMP proj_rebuild, which the hook's Tx reads and
+// writes in place of the live proj_kv. The hook is replayed one event at a
+// time, in log order: a projector that is not a fold (see Hooks.Project)
+// shows up as drift.
 func (s *Store) RebuildProjections(ctx context.Context) ([]ProjectionDiff, error) {
-	if _, err := s.Verify(ctx, nil); err != nil {
-		return nil, err
-	}
 	var diffs []ProjectionDiff
 	err := s.do(func() error {
 		tx, err := s.w.BeginTx(ctx, nil)
@@ -59,18 +56,27 @@ func (s *Store) RebuildProjections(ctx context.Context) ([]ProjectionDiff, error
 }
 
 func (s *Store) rebuild(ctx context.Context, tx *sql.Tx) ([]ProjectionDiff, error) {
-	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE proj_kv (
+	// The chain is verified inside this transaction, so the log replayed is
+	// exactly the log verified (03 rule 3).
+	if _, err := s.verify(ctx, tx, nil); err != nil {
+		return nil, err
+	}
+	// A fresh scratch table; one left by a failed rollback is dropped first.
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+rebuildProjections); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE proj_rebuild (
 		projection TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (projection, key)) WITHOUT ROWID`); err != nil {
 		return nil, err
 	}
 	if err := s.replay(ctx, tx); err != nil {
 		return nil, err
 	}
-	live, err := projections(ctx, tx, `SELECT projection, key, value FROM main.proj_kv`)
+	live, err := projections(ctx, tx, `SELECT projection, key, value FROM `+liveProjections)
 	if err != nil {
 		return nil, err
 	}
-	rebuilt, err := projections(ctx, tx, `SELECT projection, key, value FROM temp.proj_kv`)
+	rebuilt, err := projections(ctx, tx, `SELECT projection, key, value FROM `+rebuildProjections)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +98,7 @@ func (s *Store) replay(ctx context.Context, tx *sql.Tx) error {
 			return nil
 		}
 		for _, e := range batch {
-			if err := s.hooks.Project(&Tx{ctx: ctx, tx: tx}, []Event{e}); err != nil {
+			if err := s.hooks.Project(&Tx{ctx: ctx, tx: tx, rebuild: true}, []Event{e}); err != nil {
 				return fmt.Errorf("eventstore: rebuild: projecting seq %d: %w", e.Seq, err)
 			}
 		}

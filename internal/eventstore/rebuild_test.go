@@ -32,6 +32,20 @@ func counting(fail *bool) func(*Tx, []Event) error {
 			if err := tx.Put("subjects", ev.Subject, json.RawMessage(strconv.FormatInt(ev.Seq, 10))); err != nil {
 				return err
 			}
+			// recent keeps the last two events by zero-padded seq, through
+			// Keys and Delete.
+			if err := tx.Put("recent", fmt.Sprintf("%08d", ev.Seq), json.RawMessage(strconv.Quote(ev.Kind))); err != nil {
+				return err
+			}
+			keys, err := tx.Keys("recent", "")
+			if err != nil {
+				return err
+			}
+			for _, k := range keys[:max(0, len(keys)-2)] {
+				if err := tx.Delete("recent", k); err != nil {
+					return err
+				}
+			}
 		}
 		if fail != nil && *fail {
 			return errors.New("projection failed")
@@ -123,6 +137,32 @@ func TestRebuildMatchesLive(t *testing.T) {
 	if fmt.Sprint(before) != fmt.Sprint(after) {
 		t.Fatalf("the rebuild changed the live projections:\n%v\n%v", before, after)
 	}
+	if n := len(filter(after, "recent/")); n != 2 {
+		t.Fatalf("recent holds %d records", n)
+	}
+	// Live writes after a rebuild still reach the live table.
+	_, err := e.s.Submit(context.Background(), command(t, "after-rebuild", `{}`), func(*Tx) ([]Event, json.RawMessage, error) {
+		return []Event{{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if liveRows(t, dir)["kinds/test.appended/v1"] != "4" {
+		t.Fatalf("a submit after the rebuild missed the live table: %v", liveRows(t, dir))
+	}
+	if diffs, err := e.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("after a further submit: %v, %+v", err, diffs)
+	}
+}
+
+func filter(rows map[string]string, prefix string) map[string]string {
+	out := map[string]string{}
+	for k, v := range rows {
+		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // A tampered, missing or extra live record is reported, sorted, with both
