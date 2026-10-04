@@ -79,6 +79,19 @@ CREATE TABLE IF NOT EXISTS proj_kv (
   value      TEXT NOT NULL,
   PRIMARY KEY (projection, key)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS effects (
+  id               TEXT PRIMARY KEY,
+  kind             TEXT NOT NULL,
+  command          TEXT NOT NULL,
+  target           TEXT NOT NULL,
+  request_digest   TEXT NOT NULL,
+  state            TEXT NOT NULL,
+  attempts         INTEGER NOT NULL,
+  last_observation TEXT NOT NULL,
+  result_ref       TEXT
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS effects_command ON effects(command);
+CREATE INDEX IF NOT EXISTS effects_state ON effects(state);
 CREATE TABLE IF NOT EXISTS commands (
   id              TEXT PRIMARY KEY,
   actor           TEXT NOT NULL,
@@ -138,6 +151,7 @@ type Store struct {
 	kinds     Kinds
 	blobs     BlobChecker
 	hooks     Hooks
+	effects   EffectKinds
 
 	// Operation tracking: each operation is admitted while the store is
 	// open and counted; Close stops admissions and waits for the count to
@@ -151,9 +165,10 @@ type Store struct {
 
 // Config is what Open needs besides the lock.
 type Config struct {
-	Kinds Kinds       // event kinds the controller may write
-	Blobs BlobChecker // required: referenced blobs must be published first
-	Hooks Hooks       // the writer's in-transaction decisions (writer.go)
+	Kinds   Kinds       // event kinds the controller may write
+	Blobs   BlobChecker // required: referenced blobs must be published first
+	Hooks   Hooks       // the writer's in-transaction decisions (writer.go)
+	Effects EffectKinds // the external effects commands may intend (effects.go)
 }
 
 // Open opens (creating on first use) the store in the lock's state
@@ -206,7 +221,25 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (s *Store, err error) {
 	for k, v := range cfg.Kinds {
 		kinds[k] = Kind{Schema: v.Schema, BlobFields: slices.Clone(v.BlobFields)}
 	}
-	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs, hooks: cfg.Hooks}
+	// The effect event kinds are the store's own.
+	for _, k := range effectEventKinds {
+		if _, taken := kinds[k]; taken {
+			w.Close()
+			r.Close()
+			return nil, fmt.Errorf("eventstore: event kind %s is the store's own", k)
+		}
+		kinds[k] = Kind{Schema: effectSchema, BlobFields: []string{"result_ref"}}
+	}
+	effects := EffectKinds{}
+	for k, v := range cfg.Effects {
+		if !projectionName.MatchString(k) {
+			w.Close()
+			r.Close()
+			return nil, fmt.Errorf("eventstore: effect kind name %q", k)
+		}
+		effects[k] = v
+	}
+	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs, hooks: cfg.Hooks, effects: effects}
 	s.idle = sync.NewCond(&s.mu)
 	if s.genesis, err = s.ensureGenesis(ctx); err == nil {
 		err = checkDBFiles(file)

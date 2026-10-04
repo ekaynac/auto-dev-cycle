@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/effect-event.json",
+  "title": "EffectEvent",
+  "description": "The payload of every effect transition event (docs/design/m0/03 \"External effects\"): effect.intent/v1, effect.observed/v1, effect.failed/v1, effect.uncertain/v1, effect.retried/v1 and effect.reconciled/v1. The event's subject is the effect id. The state machine: an intent makes the effect pending; from pending, observed makes it completed, failed (before send proven) failed_confirmed, uncertain uncertain; from uncertain, reconciled makes it completed, failed_confirmed or (still_uncertain) leaves it uncertain, and retried (only for a kind idempotent at its target) makes it pending again. internal/eventstore enforces it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["effect", "transition", "kind", "target", "request_digest", "outcome", "observation", "result_ref"],
+  "properties": {
+    "effect": {"$ref": "../common/defs.json#/$defs/EffectID"},
+    "transition": {"enum": ["intent", "observed", "failed", "uncertain", "retried", "reconciled"]},
+    "kind": {
+      "description": "The effect kind; set on intent, null otherwise.",
+      "oneOf": [{"type": "null"}, {"$ref": "receipt.json#/$defs/Name"}]
+    },
+    "target": {
+      "description": "What the effect acts on (a provider, a remote ref, a deploy target); set on intent, null otherwise.",
+      "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 1024}]
+    },
+    "request_digest": {
+      "description": "Digest of the canonical request; set on intent, null otherwise.",
+      "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]
+    },
+    "outcome": {
+      "description": "The reconciliation outcome; set on reconciled, null otherwise.",
+      "oneOf": [{"type": "null"}, {"enum": ["completed", "failed_confirmed", "still_uncertain"]}]
+    },
+    "observation": {"description": "What was observed (empty on intent and retry).", "type": "string", "maxLength": 4096},
+    "result_ref": {
+      "description": "A blob holding the effect's result, when there is one.",
+      "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"transition": {"const": "intent"}}}, "then": {"properties": {"kind": {"not": {"const": null}}, "target": {"not": {"const": null}}, "request_digest": {"not": {"const": null}}}}, "else": {"properties": {"kind": {"const": null}, "target": {"const": null}, "request_digest": {"const": null}}}},
+    {"if": {"properties": {"transition": {"const": "reconciled"}}}, "then": {"properties": {"outcome": {"not": {"const": null}}}}, "else": {"properties": {"outcome": {"const": null}}}}
+  ]
+}
