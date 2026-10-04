@@ -9,6 +9,15 @@ import (
 	"errors"
 )
 
+// ManifestFinalizedCoveragePrompt: The controller's evidence of the initial prompt's egress.
+type ManifestFinalizedCoveragePrompt string
+
+const (
+	ManifestFinalizedCoveragePromptDelivered ManifestFinalizedCoveragePrompt = "delivered"
+	ManifestFinalizedCoveragePromptNotSent   ManifestFinalizedCoveragePrompt = "not_sent"
+	ManifestFinalizedCoveragePromptUncertain ManifestFinalizedCoveragePrompt = "uncertain"
+)
+
 type ManifestFinalizedCoverageDeclaredOnlyItem struct {
 	Turn int64  `json:"turn"`
 	What string `json:"what"`
@@ -38,9 +47,13 @@ const (
 
 type ManifestFinalizedCoverage struct {
 	Assembled string `json:"assembled"`
+	// The controller's evidence of the initial prompt's egress.
+	Prompt ManifestFinalizedCoveragePrompt `json:"prompt"`
 	// How many turns the call had; null when the adapter could not tell.
 	Turns         *int64   `json:"turns"`
 	DeliveredRefs []Digest `json:"delivered_refs"`
+	// Refs whose delivery is uncertain: neither confirmed nor ruled out.
+	PossiblyDeliveredRefs []Digest `json:"possibly_delivered_refs"`
 	// Adapter declarations no controller evidence backs.
 	DeclaredOnly []ManifestFinalizedCoverageDeclaredOnlyItem `json:"declared_only"`
 	// Context outside the controller's guarantee: harness instructions, compaction, harness tools.
@@ -71,7 +84,7 @@ func (x *ManifestFinalizedDelivery) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// ManifestFinalized: The third ContextManifest event (docs/design/m0/10), on call end. coverage.status is derived from evidence, never from declarations alone (E0): complete only when the number of turns is known, every turn 1..turns has its delivery event, and nothing is declared-only or unobservable; unknown when the number of turns is unknown; partial otherwise. delivered_refs are the identity digests of the included inputs and of every delivered tool result. internal/knowledge derives and checks both.
+// ManifestFinalized: The third ContextManifest event (docs/design/m0/10), on call end. Coverage is derived from evidence, never from declarations alone (E0), and internal/knowledge derives and checks it: (1) prompt is the controller's own evidence of the initial prompt's egress: delivered, not_sent (refused or failed before egress: no turns, no delivery events) or uncertain. (2) delivered_refs are the identity digests of the included inputs when the prompt was delivered, plus every tool result of every delivery event; possibly_delivered_refs are the included inputs when the prompt is uncertain (never confirmed exposure). (3) Every compaction mark of a delivery event appears in unobservable as {turn, compaction}, and every adapter declaration appears in declared_only as {turn, what}: declarations are never evidence. Either list may name more, which only lowers the status. (4) When turns is known, every turn named anywhere is within 1..turns. (5) status is unknown when turns is unknown or the prompt is uncertain; otherwise complete only when every turn 1..turns has exactly one delivery event and both lists are empty; partial otherwise.
 type ManifestFinalized struct {
 	Manifest ManifestID                `json:"manifest"`
 	Coverage ManifestFinalizedCoverage `json:"coverage"`

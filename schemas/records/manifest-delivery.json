@@ -17,12 +17,15 @@
         "required": ["handle", "ref"],
         "properties": {
           "handle": {"description": "The handle the core supplied for this result.", "type": "string", "minLength": 1},
-          "ref": {"$ref": "ref.json"}
+          "ref": {
+            "description": "A declared input of the intent, or a ref derived only from declared inputs: its lineage is non-empty, names only declared inputs, and it keeps every restriction they carry.",
+            "$ref": "ref.json"
+          }
         }
       }
     },
     "declarations": {
-      "description": "What the adapter says it delivered in this turn, unverified.",
+      "description": "What the adapter says it delivered in this turn. Never evidence: each one is declared-only in the finalized coverage.",
       "type": "array",
       "items": {"type": "string", "minLength": 1}
     },

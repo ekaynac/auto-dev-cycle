@@ -7,7 +7,8 @@ package types
 type ManifestDeliveryToolResultsItem struct {
 	// The handle the core supplied for this result.
 	Handle string `json:"handle"`
-	Ref    Ref    `json:"ref"`
+	// A declared input of the intent, or a ref derived only from declared inputs: its lineage is non-empty, names only declared inputs, and it keeps every restriction they carry.
+	Ref Ref `json:"ref"`
 }
 
 // ManifestDelivery: The second ContextManifest event (docs/design/m0/10), appended once per turn as the adapter streams. It evidences that turn: the controller-mediated tool results with the exact handles the core supplied, the adapter's coverage declarations, and compaction marks. Every delivered ref passed the restriction check again before it was supplied (KA1).
@@ -16,7 +17,7 @@ type ManifestDelivery struct {
 	// 1 for the first turn.
 	Turn        int64                             `json:"turn"`
 	ToolResults []ManifestDeliveryToolResultsItem `json:"tool_results"`
-	// What the adapter says it delivered in this turn, unverified.
+	// What the adapter says it delivered in this turn. Never evidence: each one is declared-only in the finalized coverage.
 	Declarations []string `json:"declarations"`
 	// The harness compacted its context in this turn.
 	Compacted bool `json:"compacted"`
