@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS events (
   hash       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_subject ON events(subject, seq);
+CREATE TABLE IF NOT EXISTS proj_kv (
+  projection TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  value      TEXT NOT NULL,
+  PRIMARY KEY (projection, key)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS commands (
   id              TEXT PRIMARY KEY,
   actor           TEXT NOT NULL,

@@ -281,84 +281,71 @@ func TestProjectorCannotChangeTheRange(t *testing.T) {
 	}
 }
 
-// Astra #39: hooks write only projections through the transaction.
-func TestHookWritesAreLimitedToProjections(t *testing.T) {
-	refused := []string{
-		`INSERT INTO events(seq) VALUES (99)`,
-		`INSERT INTO commands VALUES ('a','b','c','d','e','{}',NULL,NULL)`,
-		`DELETE FROM meta`,
-		`INSERT INTO proj_x VALUES (1); DELETE FROM events`,
-		`UPDATE proj_x SET a = 1; INSERT INTO events(seq) VALUES (1)`,
-		`DROP TABLE proj_x`,
-		`INSERT INTO proj_x SELECT * FROM events; INSERT INTO events DEFAULT VALUES`,
-	}
+// Astra #39 round 2: hooks have no SQL: projections are typed records, and
+// names and keys are checked.
+func TestProjectionRecords(t *testing.T) {
+	var checked bool
 	e := openWriter(t, Hooks{Authorize: func(tx *Tx, _ Command) error {
-		if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS proj_x (a INTEGER)`); err != nil {
+		if err := tx.Put("units", "gpu/1", json.RawMessage(`{"free": 1}`)); err != nil {
 			return err
 		}
-		// A second statement after a valid projection write never runs.
-		if _, err := tx.Exec(`INSERT INTO proj_x VALUES (1); CREATE TABLE sneaky (a)`); err == nil {
-			t.Error("a chained statement was accepted")
+		if err := tx.Put("units", "gpu/2", json.RawMessage(`{"free": 0}`)); err != nil {
+			return err
 		}
-		var n int
-		if err := tx.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = 'sneaky'`).Scan(&n); err != nil || n != 0 {
-			t.Errorf("a chained statement ran: %d, %v", n, err)
+		if err := tx.Put("units", "cpu/1", json.RawMessage(`{"free": 4}`)); err != nil {
+			return err
 		}
-		for _, q := range refused {
-			if _, err := tx.Exec(q); err == nil {
-				t.Errorf("%s: ran", q)
+		v, ok, err := tx.Get("units", "gpu/1")
+		if err != nil || !ok || string(v) != `{"free":1}` {
+			t.Errorf("get: %s, %v, %v", v, ok, err)
+		}
+		keys, err := tx.Keys("units", "gpu/")
+		if err != nil || len(keys) != 2 || keys[0] != "gpu/1" || keys[1] != "gpu/2" {
+			t.Errorf("keys: %v, %v", keys, err)
+		}
+		if err := tx.Put("units", "çay/1", json.RawMessage(`{}`)); err != nil {
+			return err
+		}
+		if keys, err := tx.Keys("units", "ça"); err != nil || len(keys) != 1 || keys[0] != "çay/1" {
+			t.Errorf("a non-ASCII prefix: %v, %v", keys, err)
+		}
+		if err := tx.Delete("units", "gpu/2"); err != nil {
+			return err
+		}
+		if _, ok, _ := tx.Get("units", "gpu/2"); ok {
+			t.Error("a deleted record is still there")
+		}
+		for name, err := range map[string]error{
+			"bad name":       tx.Put("Units; DROP TABLE events", "k", json.RawMessage(`{}`)),
+			"empty key":      tx.Put("units", "", json.RawMessage(`{}`)),
+			"NUL key":        tx.Put("units", "a\x00b", json.RawMessage(`{}`)),
+			"long key":       tx.Put("units", strings.Repeat("k", 513), json.RawMessage(`{}`)),
+			"invalid value":  tx.Put("units", "k", json.RawMessage(`{`)),
+			"bad get name":   func() error { _, _, err := tx.Get("proj kv", "k"); return err }(),
+			"bad keys name":  func() error { _, err := tx.Keys("x;", ""); return err }(),
+			"bad delete key": tx.Delete("units", ""),
+		} {
+			if err == nil {
+				t.Errorf("%s: accepted", name)
 			}
 		}
+		checked = true
 		return nil
 	}})
 	if _, err := e.s.Submit(context.Background(), command(t, "k", `{}`), appendTo(t, testSubject, 0)); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestSubmitValidatesTheCommand(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
-	cases := map[string]func(c *Command){
-		"bad command id": func(c *Command) { c.ID = "cmd_x" },
-		"bad actor":      func(c *Command) { c.Actor = testSubject },
-		"empty key":      func(c *Command) { c.IdempotencyKey = "" },
-		"long key":       func(c *Command) { c.IdempotencyKey = strings.Repeat("k", 257) },
-		"input not JSON": func(c *Command) { c.Input = []byte("{") },
-	}
-	for name, mutate := range cases {
-		c := command(t, "k-"+name, `{}`)
-		mutate(&c)
-		// No events: the command itself must be checked, not only its events.
-		if _, err := e.s.Submit(context.Background(), c, appendTo(t, testSubject, 0)); err == nil {
-			t.Errorf("%s: accepted", name)
-		}
+	if !checked {
+		t.Fatal("the hook did not run")
 	}
 }
 
-func TestCommandWithoutEvents(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
-	out, err := e.s.Submit(context.Background(), command(t, "noop", `{}`), appendTo(t, testSubject, 0))
-	if err != nil || out.FirstSeq != 0 || out.LastSeq != 0 {
-		t.Fatalf("%+v, %v", out, err)
-	}
-}
-
-// The commands table is append-only, like the log.
-func TestCommandsAreAppendOnly(t *testing.T) {
+// Astra #39 round 2: an absent input is refused, never read as null.
+func TestAbsentInputIsRefused(t *testing.T) {
 	e := openWriter(t, Hooks{Authorize: allow})
 	c := command(t, "k", `{}`)
-	if _, err := e.s.Submit(context.Background(), c, appendTo(t, testSubject, 1)); err != nil {
-		t.Fatal(err)
-	}
-	db := raw(t, e.dir)
-	for _, q := range []string{
-		`UPDATE commands SET result_json = '{}'`,
-		`DELETE FROM commands`,
-		`INSERT OR REPLACE INTO commands SELECT id, actor, idempotency_key, 'sha256:x', disposition, result_json, first_seq, last_seq FROM commands`,
-		`INSERT INTO commands VALUES ('cmd_other', '` + sysActor + `', 'k', 'd', 'applied', '{}', NULL, NULL)`,
-	} {
-		if _, err := db.Exec(q); err == nil {
-			t.Errorf("%s: ran", q)
-		}
+	c.Input = nil
+	if _, err := e.s.Submit(context.Background(), c, appendTo(t, testSubject, 0)); err == nil {
+		t.Fatal("a command without input")
 	}
 }

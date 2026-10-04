@@ -39,33 +39,36 @@ func TestHooksShareTheWriterTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	fail := false
+	free := func(tx *eventstore.Tx) (int, error) {
+		v, ok, err := tx.Get("units", "gpu")
+		if err != nil || !ok {
+			return 1, err // one unit until the first reservation
+		}
+		var u struct{ Free int }
+		return u.Free, json.Unmarshal(v, &u)
+	}
 	hooks := eventstore.Hooks{
 		Authorize: func(tx *eventstore.Tx, c eventstore.Command) error {
-			if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS proj_units (name TEXT PRIMARY KEY, free INTEGER NOT NULL)`); err != nil {
+			n, err := free(tx)
+			if err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`INSERT OR IGNORE INTO proj_units VALUES ('gpu', 1)`); err != nil {
-				return err
-			}
-			var free int
-			if err := tx.QueryRow(`SELECT free FROM proj_units WHERE name = 'gpu'`).Scan(&free); err != nil {
-				return err
-			}
-			if free < 1 {
+			if n < 1 {
 				return errors.New("no capacity")
 			}
 			return nil
 		},
 		Reserve: func(tx *eventstore.Tx, c eventstore.Command) error {
-			_, err := tx.Exec(`UPDATE proj_units SET free = free - 1 WHERE name = 'gpu'`)
-			return err
-		},
-		Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
-			if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS proj_seen (seq INTEGER PRIMARY KEY)`); err != nil {
+			n, err := free(tx)
+			if err != nil {
 				return err
 			}
+			b, _ := json.Marshal(map[string]int{"free": n - 1})
+			return tx.Put("units", "gpu", b)
+		},
+		Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
 			for _, e := range evs {
-				if _, err := tx.Exec(`INSERT INTO proj_seen VALUES (?)`, e.Seq); err != nil {
+				if err := tx.Put("seen", e.ID, json.RawMessage(`{}`)); err != nil {
 					return err
 				}
 			}

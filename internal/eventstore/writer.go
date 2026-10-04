@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 )
@@ -45,36 +47,93 @@ type Expectation struct {
 }
 
 // Tx is the writer transaction as the hooks and the command's logic see it.
-// They read anything through it and write projections (proj_* tables)
-// through it; commit and rollback stay with Submit. Events are appended only
-// by Submit, through the checked append path.
+// It offers no SQL: every statement is the store's own. Hooks read subject
+// versions and read and write projections, all inside the transaction;
+// commit and rollback stay with Submit, and events are appended only by
+// Submit, through the checked path.
 type Tx struct {
 	ctx context.Context
 	tx  *sql.Tx
 }
 
-// QueryRow runs a read in the writer transaction.
-func (t *Tx) QueryRow(query string, args ...any) *sql.Row {
-	return t.tx.QueryRowContext(t.ctx, query, args...)
-}
+// Projections are derived, rebuildable records (docs/design/m0/03): JSON
+// values under a key, grouped by projection name, in the store-owned proj_kv
+// table. They change only inside the writer transaction.
+var projectionName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 
-// Query runs a read in the writer transaction.
-func (t *Tx) Query(query string, args ...any) (*sql.Rows, error) {
-	return t.tx.QueryContext(t.ctx, query, args...)
-}
+// maxProjectionKey bounds a projection key.
+const maxProjectionKey = 512
 
-// projectionWrite: one statement that creates, inserts into, updates or
-// deletes from a proj_* table.
-var projectionWrite = regexp.MustCompile(`(?is)^\s*(CREATE\s+(TABLE|INDEX|UNIQUE\s+INDEX)\s+(IF\s+NOT\s+EXISTS\s+)?(\w+\s+ON\s+)?|INSERT\s+(OR\s+\w+\s+)?INTO\s+|UPDATE\s+|DELETE\s+FROM\s+)proj_\w+\b[^;]*;?\s*$`)
-
-// Exec writes a projection in the writer transaction: one statement on a
-// proj_* table. Anything else (the log, commands, meta, several statements)
-// is refused.
-func (t *Tx) Exec(query string, args ...any) (sql.Result, error) {
-	if !projectionWrite.MatchString(query) {
-		return nil, fmt.Errorf("eventstore: hooks write only projections (one statement on a proj_* table): %.60q", query)
+func checkProjection(projection, key string) error {
+	if !projectionName.MatchString(projection) {
+		return fmt.Errorf("eventstore: projection name %q (lowercase letters, digits and _, starting with a letter)", projection)
 	}
-	return t.tx.ExecContext(t.ctx, query, args...)
+	if key == "" || len(key) > maxProjectionKey || !utf8.ValidString(key) || strings.ContainsRune(key, 0) {
+		return fmt.Errorf("eventstore: projection key: 1 to %d bytes of UTF-8 without NUL", maxProjectionKey)
+	}
+	return nil
+}
+
+// Get returns the projection record under key, if any.
+func (t *Tx) Get(projection, key string) (json.RawMessage, bool, error) {
+	if err := checkProjection(projection, key); err != nil {
+		return nil, false, err
+	}
+	var v string
+	err := t.tx.QueryRowContext(t.ctx, `SELECT value FROM proj_kv WHERE projection = ? AND key = ?`, projection, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return json.RawMessage(v), true, nil
+}
+
+// Put sets the projection record under key to value (stored canonical).
+func (t *Tx) Put(projection, key string, value json.RawMessage) error {
+	if err := checkProjection(projection, key); err != nil {
+		return err
+	}
+	c, err := canonical(value)
+	if err != nil {
+		return fmt.Errorf("eventstore: projection %s value: %w", projection, err)
+	}
+	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO proj_kv(projection, key, value) VALUES (?, ?, ?)
+		ON CONFLICT(projection, key) DO UPDATE SET value = excluded.value`, projection, key, string(c))
+	return err
+}
+
+// Delete removes the projection record under key, if any.
+func (t *Tx) Delete(projection, key string) error {
+	if err := checkProjection(projection, key); err != nil {
+		return err
+	}
+	_, err := t.tx.ExecContext(t.ctx, `DELETE FROM proj_kv WHERE projection = ? AND key = ?`, projection, key)
+	return err
+}
+
+// Keys lists the projection's keys that start with prefix, sorted.
+func (t *Tx) Keys(projection, prefix string) ([]string, error) {
+	if !projectionName.MatchString(projection) {
+		return nil, fmt.Errorf("eventstore: projection name %q", projection)
+	}
+	rows, err := t.tx.QueryContext(t.ctx, `SELECT key FROM proj_kv WHERE projection = ? ORDER BY key`, projection)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(k, prefix) { // bytes, as Go compares them
+			keys = append(keys, k)
+		}
+	}
+	return keys, rows.Err()
 }
 
 // SubjectVersion is the seq of the subject's last event, or 0.
@@ -119,7 +178,11 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 		return Outcome{}, fmt.Errorf("eventstore: an idempotency key is 1 to %d bytes", maxIdempotencyKey)
 	}
 	// The request is the input and the expectations together: a repeat with
-	// other expectations is another request.
+	// other expectations is another request. The input itself must be JSON
+	// (an absent input is refused, never read as null).
+	if _, err := canonical(c.Input); err != nil {
+		return Outcome{}, fmt.Errorf("eventstore: command input: %w", err)
+	}
 	expected := c.Expected
 	if expected == nil {
 		expected = []Expectation{}
