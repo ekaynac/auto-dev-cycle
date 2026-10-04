@@ -421,10 +421,11 @@ func TestCoverageBudgetIsLinear(t *testing.T) {
 	}
 	list := "[" + strings.Join(names, ", ") + "]"
 	doc := edit("protected_paths: [docs/decisions/**, deploy/*.yaml, CANON.md]", "protected_paths: "+list)
-	// One protected document no pattern covers: if any coverage check ran
-	// before the budget refused, its "not covered" refusal would show.
+	// One protected document and one topology file no pattern covers: if
+	// either coverage check ran before the budget refused, its "not covered"
+	// refusal would show.
 	doc = strings.Replace(doc, "protected_documents: [docs/decisions/*.md]", "protected_documents: [uncovered/x.md, "+list[1:], 1)
-	doc = strings.Replace(doc, "    files: [deploy/compose.yaml]\n", "    files: [p0]\n", 1)
+	doc = strings.Replace(doc, "    files: [deploy/compose.yaml]\n", "    files: [uncovered/y.yaml]\n", 1)
 	if len(doc) > MaxBytes {
 		t.Fatalf("fixture is %d bytes", len(doc))
 	}
