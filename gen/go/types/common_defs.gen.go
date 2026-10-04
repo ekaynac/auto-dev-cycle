@@ -4,6 +4,11 @@
 
 package types
 
+import (
+	"encoding/json"
+	"errors"
+)
+
 // Outcome: The four outcomes. There is no boolean ok.
 type Outcome string
 
@@ -14,8 +19,47 @@ const (
 	OutcomeFailed      Outcome = "failed"
 )
 
-// ReasonCode: Lexical form of a reason code. Registration (schemas/vocab/reasons.yaml) is checked by internal/vocab, not here.
-type ReasonCode = string
+// ReasonCode: A registered reason code (schemas/vocab/reasons.yaml). adc-reason asks internal/vocab, which readers and writers share; a document with an unregistered code is invalid.
+// ReasonCode is opaque: a zero value is never valid, and only the vocabulary's
+// generated values, its parser, or decoding produce one.
+type ReasonCode struct{ code string }
+
+// ReasonCodeOf wraps code without checking it. Only the vocabulary package calls
+// it; adc dev vocab check refuses any other caller.
+func ReasonCodeOf(code string) ReasonCode { return ReasonCode{code: code} }
+
+// String returns the code.
+func (r ReasonCode) String() string { return r.code }
+
+// MarshalText writes the code if the vocabulary accepts it for writing.
+func (r ReasonCode) MarshalText() ([]byte, error) {
+	if err := checkReason(r.code, true); err != nil {
+		return nil, err
+	}
+	return []byte(r.code), nil
+}
+
+// UnmarshalText reads a code the vocabulary accepts for reading.
+func (r *ReasonCode) UnmarshalText(b []byte) error {
+	if err := checkReason(string(b), false); err != nil {
+		return err
+	}
+	r.code = string(b)
+	return nil
+}
+
+// UnmarshalJSON reads a JSON string through UnmarshalText; null is never a
+// reason (encoding/json would otherwise skip UnmarshalText for it).
+func (r *ReasonCode) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return errors.New("a reason code cannot be null")
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	return r.UnmarshalText([]byte(s))
+}
 
 // Digest: Content digest: sha256 over the bytes, lowercase hex.
 type Digest = string

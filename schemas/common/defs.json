@@ -9,8 +9,9 @@
       "enum": ["found", "empty", "could_not_run", "failed"]
     },
     "ReasonCode": {
-      "description": "Lexical form of a reason code. Registration (schemas/vocab/reasons.yaml) is checked by internal/vocab, not here.",
+      "description": "A registered reason code (schemas/vocab/reasons.yaml). adc-reason asks internal/vocab, which readers and writers share; a document with an unregistered code is invalid.",
       "type": "string",
+      "format": "adc-reason",
       "pattern": "^[a-z][a-z0-9_]*$"
     },
     "Digest": {

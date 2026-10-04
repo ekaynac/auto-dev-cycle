@@ -26,14 +26,29 @@ import (
 
 const maxSafeInt = 9007199254740991 // 2^53-1: integers stay exact in JavaScript
 
+// VocabPackage is the import path of the only package that may install the
+// reason check in this module's generated code.
+const VocabPackage = "github.com/ekaynac/auto-dev-cycle/internal/vocab"
+
+// ReasonTypeName is the one name a reason code declaration may have, so the
+// generated unchecked constructor is always ReasonCodeOf (which the
+// vocabulary check guards).
+const ReasonTypeName = "ReasonCode"
+
 // Generate returns one Go source file per schema file (keyed by output file
-// name) in package pkg. files maps schema paths ("records/receipt.json") to
-// their bytes.
+// name) in package pkg, for this module (GenerateFor with VocabPackage).
+// files maps schema paths ("records/receipt.json") to their bytes.
 func Generate(files map[string][]byte, pkg string) (map[string][]byte, error) {
+	return GenerateFor(files, pkg, VocabPackage)
+}
+
+// GenerateFor is Generate for a module whose vocabulary package (the only
+// installer of the reason check) has the import path vocabPkg.
+func GenerateFor(files map[string][]byte, pkg, vocabPkg string) (map[string][]byte, error) {
 	g := &gen{
 		roots: map[string]*Node{}, names: map[string]string{}, taken: map[string]string{},
 		envelopes: map[string]bool{}, isRoot: map[*Node]bool{},
-		emitted: map[string]string{"decodeStrict": "helpers.gen.go"},
+		emitted: map[string]string{"decodeStrict": "helpers.gen.go", "SetReasonCheck": "helpers.gen.go"},
 	}
 	paths := make([]string, 0, len(files))
 	for p, b := range files {
@@ -48,6 +63,15 @@ func Generate(files map[string][]byte, pkg string) (map[string][]byte, error) {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
+	// A reason code is checked only through its opaque type, so the format
+	// may appear in exactly one place: the $defs/ReasonCode string
+	// declaration. Anywhere else (inline, an enum, a map key, an item, a
+	// refinement) it would generate an unchecked string.
+	for _, p := range paths {
+		if err := reasonFormatOnlyDeclared(g.roots[p], ""); err != nil {
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+	}
 	// Pass 1: name every top-level type and $defs entry, refusing collisions.
 	for _, p := range paths {
 		root := g.roots[p]
@@ -108,7 +132,7 @@ func Generate(files map[string][]byte, pkg string) (map[string][]byte, error) {
 		}
 		out[name] = src
 	}
-	helpers, err := format.Source([]byte(fmt.Sprintf(helpersSrc, pkg)))
+	helpers, err := format.Source([]byte(fmt.Sprintf(helpersSrc, pkg, vocabPkg)))
 	if err != nil {
 		return nil, err
 	}
@@ -368,6 +392,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"runtime"
+	"strings"
+	"sync/atomic"
 )
 
 // decodeStrict decodes exactly one document, refusing unknown fields and
@@ -382,6 +409,56 @@ func decodeStrict(b []byte, v any) error {
 		return errors.New("trailing data after the document")
 	}
 	return nil
+}
+
+// reasonCheck decides whether a reason code may be read (writing false:
+// registered) or written (writing true: registered and not deprecated).
+var reasonCheck atomic.Pointer[func(code string, writing bool) error]
+
+// reasonCheckOwner is the import path of the only package that may install
+// the reason check.
+const reasonCheckOwner = %[2]q
+
+// SetReasonCheck installs the reason check. Only the vocabulary package (an
+// import path ending in /internal/vocab) may call it, once; any other caller,
+// direct or indirect, and a second installation are refused. Until it is
+// installed every reason is refused.
+func SetReasonCheck(check func(code string, writing bool) error) error {
+	pc, _, _, ok := runtime.Caller(1)
+	fn := runtime.FuncForPC(pc)
+	if !ok || fn == nil || !ownsReasonCheck(fn.Name()) {
+		return errors.New("only the vocabulary package installs the reason check")
+	}
+	if check == nil || !reasonCheck.CompareAndSwap(nil, &check) {
+		return errors.New("the reason check is installed once")
+	}
+	return nil
+}
+
+// ownsReasonCheck reports whether the runtime function name belongs to
+// exactly the reason check's owner package (never a package elsewhere with
+// the same name or suffix).
+func ownsReasonCheck(fn string) bool { return funcPackage(fn) == reasonCheckOwner }
+
+// funcPackage is the import path of a runtime function name
+// (example.com/x/internal/vocab.init.0 → example.com/x/internal/vocab).
+func funcPackage(name string) string {
+	slash := strings.LastIndexByte(name, '/')
+	if dot := strings.IndexByte(name[slash+1:], '.'); dot >= 0 {
+		return name[:slash+1+dot]
+	}
+	return name
+}
+
+func checkReason(code string, writing bool) error {
+	if code == "" {
+		return errors.New("an empty reason code is never valid")
+	}
+	check := reasonCheck.Load()
+	if check == nil {
+		return errors.New("no reason vocabulary is loaded")
+	}
+	return (*check)(code, writing)
 }
 `
 
@@ -398,6 +475,8 @@ func (g *gen) declare(name string, n *Node) {
 			g.doc(n, name)
 			g.p("type %s = %s\n", name, t)
 		}
+	case isReasonString(n):
+		g.reasonType(name, n)
 	default:
 		t := g.typeOf(n, name+"Value", name)
 		g.emit(name, name)
@@ -411,6 +490,65 @@ func (g *gen) declare(name string, n *Node) {
 			g.p("type %s = %s\n", name, t)
 		}
 	}
+}
+
+// isReasonString: a string schema with format adc-reason (a reason code).
+func isReasonString(n *Node) bool {
+	t, f := n.Get("type"), n.Get("format")
+	return t != nil && t.Str == "string" && f != nil && f.Str == "adc-reason"
+}
+
+// reasonType emits a reason code as an opaque type: no string literal can
+// become one, and it is read and written only through the installed check, however
+// it is (un)marshalled. NameOf wraps a code unchecked, for the vocabulary's
+// generated values alone.
+func (g *gen) reasonType(name string, n *Node) {
+	g.only(n, name, "string")
+	g.emit(name, name)
+	g.emit(name+"Of", name)
+	g.doc(n, name)
+	g.p(`// %[1]s is opaque: a zero value is never valid, and only the vocabulary's
+// generated values, its parser, or decoding produce one.
+type %[1]s struct{ code string }
+
+// %[1]sOf wraps code without checking it. Only the vocabulary package calls
+// it; adc dev vocab check refuses any other caller.
+func %[1]sOf(code string) %[1]s { return %[1]s{code: code} }
+
+// String returns the code.
+func (r %[1]s) String() string { return r.code }
+
+// MarshalText writes the code if the vocabulary accepts it for writing.
+func (r %[1]s) MarshalText() ([]byte, error) {
+	if err := checkReason(r.code, true); err != nil {
+		return nil, err
+	}
+	return []byte(r.code), nil
+}
+
+// UnmarshalText reads a code the vocabulary accepts for reading.
+func (r *%[1]s) UnmarshalText(b []byte) error {
+	if err := checkReason(string(b), false); err != nil {
+		return err
+	}
+	r.code = string(b)
+	return nil
+}
+
+// UnmarshalJSON reads a JSON string through UnmarshalText; null is never a
+// reason (encoding/json would otherwise skip UnmarshalText for it).
+func (r *%[1]s) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return errors.New("a reason code cannot be null")
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	return r.UnmarshalText([]byte(s))
+}
+`, name)
+	g.needs["encoding/json"], g.needs["errors"] = true, true
 }
 
 // typeOf returns the Go type for schema n, emitting any named declaration it
@@ -543,6 +681,8 @@ func (g *gen) keyNames(n *Node, where string) {
 	}
 	t, e := n.Get("type"), n.Get("enum")
 	switch {
+	case isReasonString(n): // n is already resolved through any $ref chain
+		g.fail(where, "a reason code cannot be a map key (its keys would be unchecked strings)")
 	case t != nil && t.Str != "string", e != nil && !isStringEnum(n), t == nil && e == nil:
 		g.fail(where, "propertyNames must be a string schema")
 	}
@@ -729,4 +869,33 @@ func (g *gen) structType(n *Node, name, where string) {
 	if all := n.Get("allOf"); all != nil {
 		g.accessors(all, props, required, names, name, where)
 	}
+}
+
+// reasonFormatOnlyDeclared refuses format adc-reason anywhere in n except a
+// $defs/ReasonCode declaration of type string.
+func reasonFormatOnlyDeclared(n *Node, at string) error {
+	if n == nil {
+		return nil
+	}
+	switch n.Kind {
+	case Object:
+		if f := n.Fields["format"]; f != nil && f.Kind == String && f.Str == "adc-reason" {
+			t := n.Fields["type"]
+			if at != "/$defs/"+ReasonTypeName || t == nil || t.Str != "string" {
+				return fmt.Errorf("%s: format adc-reason is allowed only on $defs/%s (type string); refer to it with $ref", at, ReasonTypeName)
+			}
+		}
+		for _, k := range n.Keys {
+			if err := reasonFormatOnlyDeclared(n.Fields[k], at+"/"+k); err != nil {
+				return err
+			}
+		}
+	case Array:
+		for i, it := range n.Items {
+			if err := reasonFormatOnlyDeclared(it, fmt.Sprintf("%s/%d", at, i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

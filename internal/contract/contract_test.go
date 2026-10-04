@@ -5,6 +5,7 @@ package contract
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math/big"
 	"strings"
@@ -35,7 +36,8 @@ const docSchema = `{
       "minProperties": 1,
       "maxProperties": 1
     },
-    "scope": {"type": "object"}
+    "scope": {"type": "object"},
+    "why": {"$ref": "../common/defs.json#/$defs/ReasonCode"}
   }
 }`
 
@@ -49,7 +51,7 @@ func testRegistry(t *testing.T) registry {
 	r, err := compile(fstest.MapFS{
 		"common/defs.json": {Data: defs},
 		"test/doc.json":    {Data: []byte(docSchema)},
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -109,7 +111,7 @@ func contractError(t *testing.T, err error, want string) {
 }
 
 func TestEmbeddedSchemasCompile(t *testing.T) {
-	r, err := load()
+	r, err := load(false)
 	if err != nil {
 		t.Fatalf("embedded schemas: %v", err)
 	}
@@ -343,5 +345,60 @@ func TestEncodeChecksWhatTheEncoderWrites(t *testing.T) {
 	n.Parent = n
 	if _, err := r.encode("test/doc", n); err != nil {
 		t.Fatalf("ignored fields were checked or followed: %v", err)
+	}
+}
+
+// Reason fields are checked by the installed vocabulary; with none
+// installed, every reason is refused (fail closed).
+func TestReasonFieldsNeedTheVocabulary(t *testing.T) {
+	r := testRegistry(t)
+	doc := func(why string) []byte {
+		return []byte(strings.Replace(valid(), `"note":"r"`, `"note":"r","why":"`+why+`"`, 1))
+	}
+	t.Cleanup(func() { reasonCheck.Store(nil) })
+	reasonCheck.Store(nil)
+	contractError(t, r.validate("test/doc", doc("known")), "no reason vocabulary is loaded")
+	stub := func(code string, writing bool) error {
+		if code != "known" {
+			return fmt.Errorf("unregistered reason %q", code)
+		}
+		return nil
+	}
+	reasonCheck.Store(&stub)
+	if err := r.validate("test/doc", doc("known")); err != nil {
+		t.Fatalf("a registered reason: %v", err)
+	}
+	contractError(t, r.validate("test/doc", doc("typo")), `unregistered reason "typo"`)
+}
+
+// Only the vocabulary package installs the reason check: a caller here (the
+// contract package's own test) is refused, and nothing is installed.
+func TestSetReasonCheckRefusesOtherCallers(t *testing.T) {
+	t.Cleanup(func() { reasonCheck.Store(nil) })
+	reasonCheck.Store(nil)
+	if err := SetReasonCheck(func(string, bool) error { return nil }); err == nil {
+		t.Fatal("a caller outside the vocabulary installed the reason check")
+	}
+	if reasonCheck.Load() != nil {
+		t.Fatal("a refused installation left a check behind")
+	}
+}
+
+// Astra #28 round 2: only exactly the vocabulary package owns the reason
+// check; the same suffix elsewhere does not.
+func TestOwnsReasonCheck(t *testing.T) {
+	for name, want := range map[string]bool{
+		"github.com/ekaynac/auto-dev-cycle/internal/vocab.init.0":                 true,
+		"github.com/ekaynac/auto-dev-cycle/internal/vocab.init.0.func1":           true,
+		"github.com/ekaynac/auto-dev-cycle/internal/vocab.(*Registry).Check":      true,
+		"github.com/ekaynac/auto-dev-cycle/tools/hookprobe/internal/vocab.init.0": false,
+		"github.com/ekaynac/auto-dev-cycle/internal/vocab/sub.init.0":             false,
+		"example.com/other/internal/vocab.init.0":                                 false,
+		"github.com/ekaynac/auto-dev-cycle/internal/vocabulary.init.0":            false,
+		"main.main": false,
+	} {
+		if got := ownsReasonCheck(name); got != want {
+			t.Errorf("ownsReasonCheck(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
