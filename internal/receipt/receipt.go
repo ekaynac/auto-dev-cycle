@@ -22,6 +22,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	docs "github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -51,6 +52,9 @@ type Derived struct {
 // conclusions digest under its instrument contract (06 "Derivation"):
 // completeness first, then aggregation.
 func Derive(c types.InstrumentContract, r types.Receipt, blobs Blobs) (Derived, error) {
+	if err := checkContract(c); err != nil {
+		return Derived{}, err
+	}
 	if r.Instrument.Name != c.Name || r.Instrument.Version != c.Version || r.Instrument.Digest != c.Digest {
 		return Derived{}, fmt.Errorf("%w: produced by %s %s (%s), the contract is %s %s (%s)", ErrInvalid,
 			r.Instrument.Name, r.Instrument.Version, r.Instrument.Digest, c.Name, c.Version, c.Digest)
@@ -86,6 +90,13 @@ func Derive(c types.InstrumentContract, r types.Receipt, blobs Blobs) (Derived, 
 // Check refuses a receipt whose recorded derived fields differ from the
 // derivation: they are never accepted from the producer.
 func Check(c types.InstrumentContract, r types.Receipt, blobs Blobs) error {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	if err := docs.Validate("records/receipt", b); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
 	d, err := Derive(c, r, blobs)
 	if err != nil {
 		return err
@@ -101,7 +112,39 @@ func Check(c types.InstrumentContract, r types.Receipt, blobs Blobs) error {
 	return nil
 }
 
-// checkPredicates: each predicate is named once, declared by the contract,
+// checkContract validates an instrument contract against its schema, then
+// the cross-field rule the schema leaves to this package: each predicate is
+// declared once, as required or as optional, never both.
+func checkContract(c types.InstrumentContract) error {
+	b, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	if err := docs.Validate("records/instrument-contract", b); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	names := map[string]bool{}
+	for _, p := range c.RequiredPredicates {
+		if names[p.Name] {
+			return fmt.Errorf("%w: the instrument declares predicate %s twice", ErrInvalid, p.Name)
+		}
+		names[p.Name] = true
+	}
+	for _, n := range c.OptionalPredicates {
+		if names[n] {
+			return fmt.Errorf("%w: the instrument declares predicate %s twice", ErrInvalid, n)
+		}
+		names[n] = true
+	}
+	return nil
+}
+
+// outcomes are the four predicate outcomes; anything else is invalid, never
+// clean.
+var outcomes = []vocab.Outcome{vocab.Found, vocab.Empty, vocab.CouldNotRun, vocab.Failed}
+
+// checkPredicates: each predicate is named once, has one of the four
+// outcomes, declared by the contract,
 // cites only declared artifacts, and carries a payload only under a payload
 // schema, which it then satisfies (rule 7).
 func checkPredicates(c types.InstrumentContract, r types.Receipt, blobs Blobs) error {
@@ -120,6 +163,8 @@ func checkPredicates(c types.InstrumentContract, r types.Receipt, blobs Blobs) e
 			return fmt.Errorf("%w: predicate %s appears twice", ErrInvalid, p.Name)
 		case !declared[p.Name]:
 			return fmt.Errorf("%w: predicate %s is not in the instrument contract", ErrInvalid, p.Name)
+		case !slices.Contains(outcomes, vocab.Outcome(p.Outcome)):
+			return fmt.Errorf("%w: predicate %s has outcome %q", ErrInvalid, p.Name, p.Outcome)
 		}
 		seen[p.Name] = true
 		for _, e := range p.Evidence {

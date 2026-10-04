@@ -62,8 +62,8 @@ func pred(name string, o vocab.Outcome, reason vocab.Reason, detail string, ev .
 var junitEvidence = types.PredicateEvidenceItem{Blob: junit, MediaType: "application/junit+xml", Artifact: "junit"}
 
 func receipt(ps ...types.Predicate) types.Receipt {
-	return types.Receipt{Kind: types.ReceiptKindGate, Instrument: types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: dgA},
-		Subject: tree("c"), Provenance: types.ReceiptProvenance{ModelFamilies: []string{}}, ProducedAt: "2026-10-04T10:00:00Z", Predicates: ps}
+	return types.Receipt{ID: "rcp_01m3250v57fhm9v1z9xd1wk8gw", Kind: types.ReceiptKindGate, Instrument: types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: dgA},
+		Subject: tree("c"), Provenance: types.ReceiptProvenance{Command: "cmd_01m3250vz2ezn81cgvbkcn17jd", Calls: []types.CallID{}, ModelFamilies: []string{}, Contributors: []types.ActorID{}}, ProducedAt: "2026-10-04T10:00:00Z", Predicates: ps}
 }
 
 func clean() types.Predicate {
@@ -204,12 +204,85 @@ func TestConclusionsDigest(t *testing.T) {
 	if c.ConclusionsDigest == a.ConclusionsDigest {
 		t.Fatal("a changed outcome kept the conclusions")
 	}
-	withDemand := receipt(clean())
-	sub := tree("c")
-	sub.Variant.(*types.TreeSubject).Demand = &types.DemandValue{Key: dgB, Run: "run_01m3250v03fpq92bcrrpmkpsj9"}
-	withDemand.Subject = sub
-	if derive(t, withDemand).ConclusionsDigest == derive(t, receipt(clean())).ConclusionsDigest {
+	demanded := receipt(clean())
+	demanded.Subject = withDemand(tree("c"), dgB)
+	if derive(t, demanded).ConclusionsDigest == derive(t, receipt(clean())).ConclusionsDigest {
 		t.Fatal("the demand is not in the conclusions")
+	}
+}
+
+func withDemand(s types.Subject, key types.Digest) types.Subject {
+	s.Variant.(*types.TreeSubject).Demand = &types.DemandValue{Key: key, Run: "run_01m3250v03fpq92bcrrpmkpsj9"}
+	return s
+}
+
+// Astra #44: each part of rule 2a moves the digest on its own, and the
+// digest is pinned to a fixed vector.
+func TestConclusionsDigestParts(t *testing.T) {
+	base := receipt(pred("tests", vocab.Found, vocab.ReasonGateTestFailed, "x", junitEvidence))
+	digest := func(r types.Receipt) types.Digest { return derive(t, r).ConclusionsDigest }
+	b := digest(base)
+	if want := types.Digest("sha256:55b7e7c9c5b34d712a63947b7e2fd5e2c329d4f831e15504bef747dc58489ba8"); b != want {
+		t.Fatalf("the conclusions digest is %s, pinned %s", b, want)
+	}
+	name := receipt(pred("reported_status", vocab.Found, vocab.ReasonGateTestFailed, "x"))
+	outcome := receipt(pred("tests", vocab.Failed, vocab.ReasonGateTestFailed, "x", junitEvidence))
+	reason := receipt(pred("tests", vocab.Found, vocab.ReasonCompletedClean, "x", junitEvidence))
+	demand := base
+	demand.Subject = withDemand(tree("c"), dgB)
+	for part, r := range map[string]types.Receipt{"name": name, "outcome": outcome, "reason": reason, "demand": demand} {
+		if digest(r) == b {
+			t.Errorf("changing the %s kept the digest", part)
+		}
+	}
+}
+
+// A clean review recorded as no_go fits the envelope schema; only the
+// derivation refuses it.
+func TestCheckRefusesRecordedVerdict(t *testing.T) {
+	r := receipt(clean())
+	r.Kind = types.ReceiptKindReview
+	d := derive(t, r)
+	r.Outcome, r.Reason, r.Detail, r.Verdict, r.ConclusionsDigest = types.Outcome(d.Outcome), d.Reason, d.Detail, d.Verdict, d.ConclusionsDigest
+	if err := Check(contract(), r, blobs()); err != nil {
+		t.Fatalf("the derived fields: %v", err)
+	}
+	noGo := types.ReceiptVerdictValueNoGo
+	r.Verdict = &noGo
+	if err := Check(contract(), r, blobs()); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a clean review recorded as no_go: %v", err)
+	}
+}
+
+// Astra #44: invalid inputs are refused, never derived clean.
+func TestInvalidInputsNeverDeriveClean(t *testing.T) {
+	for _, o := range []string{"", "stale", "ok"} {
+		p := clean()
+		p.Outcome = types.Outcome(o)
+		if _, err := Derive(contract(), receipt(p), blobs()); !errors.Is(err, ErrInvalid) {
+			t.Errorf("outcome %q: %v", o, err)
+		}
+	}
+	none := contract()
+	none.RequiredPredicates = []types.InstrumentContractRequiredPredicatesItem{}
+	if _, err := Derive(none, receipt(), blobs()); !errors.Is(err, ErrInvalid) {
+		t.Errorf("an empty receipt under no required predicates: %v", err)
+	}
+	overlap := contract()
+	overlap.OptionalPredicates = []string{"tests"}
+	twice := contract()
+	twice.RequiredPredicates = append(twice.RequiredPredicates, twice.RequiredPredicates[0])
+	for name, c := range map[string]types.InstrumentContract{"required and optional": overlap, "required twice": twice} {
+		if _, err := Derive(c, receipt(clean()), blobs()); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	r := receipt(clean())
+	d := derive(t, r)
+	r.Outcome, r.Reason, r.Detail, r.ConclusionsDigest = types.Outcome(d.Outcome), d.Reason, d.Detail, d.ConclusionsDigest
+	r.ID = "not-an-id"
+	if err := Check(contract(), r, blobs()); !errors.Is(err, ErrInvalid) {
+		t.Errorf("an envelope failing its schema: %v", err)
 	}
 }
 
@@ -261,10 +334,21 @@ func TestApplicability(t *testing.T) {
 		t.Errorf("another contract revision: %s", got.String())
 	}
 	demand := requirement()
-	k := dgB
-	demand.DemandKey = &k
+	demand.Subject = withDemand(tree("c"), dgB)
 	if got := refusal(t, Applies(r, demand, now)); got != vocab.ReasonEvidenceInapplicable {
 		t.Errorf("a receipt for no demand against a demand: %s", got.String())
+	}
+	// Astra #44: the requirement's subject demand is the one demand.
+	answersA := r
+	answersA.Subject = withDemand(tree("c"), dgA)
+	if got := refusal(t, Applies(answersA, demand, now)); got != vocab.ReasonEvidenceInapplicable {
+		t.Errorf("a receipt for demand A against demand B: %s", got.String())
+	}
+	answersB := r
+	answersB.Subject = withDemand(tree("c"), dgB)
+	answersB.Subject.Variant.(*types.TreeSubject).Demand.Run = "run_01m3250v57ft7aehkqwq0yrq3n"
+	if err := Applies(answersB, demand, now); err != nil {
+		t.Errorf("a receipt for demand B, from another run: %v", err)
 	}
 	expiring := r
 	until := types.Time("2026-10-04T11:00:00Z")

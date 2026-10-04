@@ -21,14 +21,14 @@ type Refusal struct {
 
 func (r *Refusal) Error() string { return "receipt: " + r.Reason.String() + ": " + r.Detail }
 
-// Requirement is what a decision needs from a receipt: the instrument that
-// must have produced it (by digest), the typed subject it must be about,
-// and the demand it must answer, if the requirement names one.
+// Requirement is what a decision needs from a receipt: its kind, the
+// instrument that must have produced it (by digest), and the typed subject
+// it must be about. The subject's demand, if it names one, is the demand the
+// receipt must answer (by key; the run that answered it may differ).
 type Requirement struct {
 	Kind       types.ReceiptKind // a gate receipt never stands in for a review, and so on
 	Instrument types.InstrumentRef
 	Subject    types.Subject
-	DemandKey  *types.Digest
 }
 
 // Applies decides whether a valid receipt applies to a requirement at time
@@ -47,9 +47,9 @@ func Applies(r types.Receipt, req Requirement, now time.Time) error {
 	if err := sameSubject(r.Subject, req.Subject); err != nil {
 		return &Refusal{vocab.ReasonEvidenceInapplicable, err.Error()}
 	}
-	if req.DemandKey != nil {
+	if want := demandOf(req.Subject); want != nil {
 		d := demandOf(r.Subject)
-		if d == nil || d.Key != *req.DemandKey {
+		if d == nil || d.Key != want.Key {
 			return &Refusal{vocab.ReasonEvidenceInapplicable, "the receipt answers another demand"}
 		}
 	}
