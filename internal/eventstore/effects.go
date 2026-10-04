@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 )
@@ -56,6 +58,9 @@ const effectSchema = "records/effect-event"
 
 var effectEventKinds = []string{"effect.intent/v1", "effect.observed/v1", "effect.failed/v1", "effect.uncertain/v1", "effect.retried/v1", "effect.reconciled/v1"}
 
+// isEffectKind reports a store-owned effect event kind.
+func isEffectKind(kind string) bool { return slices.Contains(effectEventKinds, kind) }
+
 // ErrEffectTransition: the effect is not in a state that allows the change.
 var ErrEffectTransition = errors.New("eventstore: effect transition not allowed")
 
@@ -77,8 +82,8 @@ func (t *Tx) IntendEffect(id, kind, target string, request json.RawMessage) erro
 	if _, ok := t.store.effects[kind]; !ok {
 		return fmt.Errorf("eventstore: unregistered effect kind %q", kind)
 	}
-	if target == "" {
-		return errors.New("eventstore: an effect names its target")
+	if target == "" || !utf8.ValidString(target) {
+		return errors.New("eventstore: an effect names its target (valid UTF-8)")
 	}
 	d, err := digest(request)
 	if err != nil {
@@ -168,6 +173,9 @@ func (s *Store) RecordEffect(ctx context.Context, actor, id string, tr Transitio
 	if err := ids.Check(actor, "act"); err != nil {
 		return Effect{}, fmt.Errorf("eventstore: actor: %w", err)
 	}
+	if !utf8.ValidString(tr.Observation) {
+		return Effect{}, errors.New("eventstore: an observation is valid UTF-8")
+	}
 	var out Effect
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -198,8 +206,15 @@ func (s *Store) transition(ctx context.Context, tx *sql.Tx, actor, id string, tr
 	if err != nil {
 		return Effect{}, err
 	}
-	if _, err := s.append(ctx, tx, Event{ID: evID, Kind: "effect." + tr.Kind + "/v1", Subject: id, Actor: actor, Payload: p}); err != nil {
+	appended, err := s.append(ctx, tx, Event{ID: evID, Kind: "effect." + tr.Kind + "/v1", Subject: id, Actor: actor, Payload: p})
+	if err != nil {
 		return Effect{}, err
+	}
+	// Projections change with every event, in the same transaction.
+	if s.hooks.Project != nil {
+		if err := s.hooks.Project(&Tx{ctx: ctx, tx: tx}, []Event{appended}); err != nil {
+			return Effect{}, err
+		}
 	}
 	attempts := e.Attempts
 	if tr.Kind == "retried" {

@@ -259,6 +259,11 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 		}
 		appended := make([]Event, 0, len(events))
 		for _, e := range events {
+			// Effect events are the store's own: only IntendEffect and the
+			// transitions write them, so the effects table always agrees.
+			if isEffectKind(e.Kind) {
+				return fmt.Errorf("eventstore: %s is written only by the store's effect operations", e.Kind)
+			}
 			if e.Actor == "" {
 				e.Actor = c.Actor
 			}

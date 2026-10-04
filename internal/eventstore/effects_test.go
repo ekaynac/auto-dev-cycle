@@ -284,3 +284,130 @@ func TestCrashFixtures(t *testing.T) {
 		}
 	})
 }
+
+// Astra #41: effect events come only from the store's effect operations; a
+// command returning one is refused and nothing persists.
+func TestCallerEffectEventsAreRefused(t *testing.T) {
+	ctx := context.Background()
+	e := openEffectsAt(t, stateDir(t))
+	id := intend(t, e, "model_call")
+	before := head(t, e)
+	for _, kind := range effectEventKinds {
+		// A schema-valid payload, so the store's ownership is what refuses it.
+		tr := strings.TrimSuffix(strings.TrimPrefix(kind, "effect."), "/v1")
+		var k, target, dg, outcome *string
+		if tr == "intent" {
+			k, target, dg = ptr("model_call"), ptr("provider-a"), ptr("sha256:"+strings.Repeat("a", 64))
+		}
+		if tr == "reconciled" {
+			outcome = ptr("completed")
+		}
+		p, err := effectPayload(id, tr, k, target, dg, outcome, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = e.s.Submit(ctx, command(t, "forge-"+kind, `{}`), func(*Tx) ([]Event, json.RawMessage, error) {
+			return []Event{{ID: newID(t, "evt"), Kind: kind, Subject: id, Payload: p}}, json.RawMessage(`{}`), nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "written only by the store") {
+			t.Errorf("%s from a command: %v", kind, err)
+		}
+	}
+	if head(t, e) != before || state(t, e, id) != EffectPending {
+		t.Fatal("a refused effect event changed the log or the effect")
+	}
+	var n int
+	if err := raw(t, e.dir).QueryRow(`SELECT count(*) FROM commands`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("command rows %d, %v", n, err)
+	}
+}
+
+// Astra #41: every effect transition is projected in its transaction; a
+// failing projection rolls the transition back, the restart batch included.
+func TestTransitionsAreProjected(t *testing.T) {
+	ctx := context.Background()
+	dir := stateDir(t)
+	failing := false
+	open := func() *env {
+		lock, err := AcquireLock(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blobs, err := blobstore.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := Open(ctx, lock, Config{Kinds: testKinds, Blobs: blobs, Effects: testEffects, Hooks: Hooks{Authorize: allow,
+			Project: func(tx *Tx, evs []Event) error {
+				for _, ev := range evs {
+					if err := tx.Put("effect_log", ev.ID, json.RawMessage(`{"kind": "`+ev.Kind+`"}`)); err != nil {
+						return err
+					}
+				}
+				if failing {
+					return errors.New("projection failed")
+				}
+				return nil
+			}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		en := &env{dir: dir, s: s, lock: lock, blobs: blobs}
+		t.Cleanup(en.close)
+		return en
+	}
+	e := open()
+	projected := func() int {
+		var n int
+		if err := raw(t, dir).QueryRow(`SELECT count(*) FROM proj_kv WHERE projection = 'effect_log'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	id := intend(t, e, "model_call")
+	if projected() != 1 {
+		t.Fatalf("the intent was not projected: %d", projected())
+	}
+	failing = true
+	if _, err := e.s.RecordEffect(ctx, sysActor, id, Transition{Kind: "observed"}); err == nil {
+		t.Fatal("a transition completed although its projection failed")
+	}
+	if state(t, e, id) != EffectPending || projected() != 1 {
+		t.Fatal("a failed projection left the transition behind")
+	}
+	if _, err := e.s.MarkPendingUncertain(ctx, sysActor); err == nil {
+		t.Fatal("the restart batch completed although its projection failed")
+	}
+	if state(t, e, id) != EffectPending {
+		t.Fatal("a failed restart batch changed an effect")
+	}
+	failing = false
+	if n, err := e.s.MarkPendingUncertain(ctx, sysActor); err != nil || n != 1 || projected() != 2 {
+		t.Fatalf("restart: %d, %v, projected %d", n, err, projected())
+	}
+	if _, err := e.s.RecordEffect(ctx, sysActor, id, Transition{Kind: "reconciled", Outcome: "completed"}); err != nil || projected() != 3 {
+		t.Fatalf("reconcile: %v, projected %d", err, projected())
+	}
+}
+
+// Astra #41: invalid UTF-8 never reaches the log or the table.
+func TestEffectStringsAreValidUTF8(t *testing.T) {
+	ctx := context.Background()
+	e := openEffectsAt(t, stateDir(t))
+	_, err := e.s.Submit(ctx, command(t, "bad-target", `{}`), func(tx *Tx) ([]Event, json.RawMessage, error) {
+		return nil, json.RawMessage(`{}`), tx.IntendEffect(newID(t, "eff"), "model_call", "provider-\xff", json.RawMessage(`{}`))
+	})
+	if err == nil {
+		t.Fatal("an invalid UTF-8 target was accepted")
+	}
+	id := intend(t, e, "model_call")
+	before := head(t, e)
+	if _, err := e.s.RecordEffect(ctx, sysActor, id, Transition{Kind: "observed", Observation: "ok\xff"}); err == nil {
+		t.Fatal("an invalid UTF-8 observation was accepted")
+	}
+	if head(t, e) != before || state(t, e, id) != EffectPending {
+		t.Fatal("a refused observation left a change")
+	}
+}
+
+func ptr(s string) *string { return &s }
