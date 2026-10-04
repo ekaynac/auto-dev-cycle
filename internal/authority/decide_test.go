@@ -134,8 +134,11 @@ func TestSupervisorGrants(t *testing.T) {
 	expect(t, "a tightening override", Decide(reg, supRequest("task.create", nil, tight)), Propose, IndependentReview, vocab.Reason{})
 	loose := g
 	loose.ConfirmationOverrides = map[string]types.GrantConfirmationOverridesValue{"profile.adopt": "independent_review"}
+	// Astra #54: a weaker override is refused, never ignored.
 	expect(t, "an override weaker than the default", Decide(reg, supRequest("profile.adopt", []string{"policy.widen_data"}, loose)),
-		Propose, Human, vocab.Reason{})
+		Refuse, None, vocab.ReasonGrantOverrideWeaker)
+	expect(t, "the same override on an unclassified change", Decide(reg, supRequest("profile.adopt", nil, loose)),
+		Propose, IndependentReview, vocab.Reason{})
 	expect(t, "two classes, the strongest", Decide(reg, supRequest("profile.adopt", []string{"install.self", "agent.enrol"}, g)),
 		Propose, Human, vocab.Reason{})
 	expect(t, "two classes, strongest first", Decide(reg, supRequest("profile.adopt", []string{"agent.enrol", "install.self"}, g)),
@@ -147,6 +150,17 @@ func TestSupervisorGrants(t *testing.T) {
 	expect(t, "the strictest grant", d, Propose, Human, vocab.Reason{})
 	if d.Grant == nil || *d.Grant != grtB {
 		t.Errorf("the strictest grant: acts under %v", d.Grant)
+	}
+	// The strictest wins whatever the order: a human override on the first
+	// grant beats an independent_review override on the second.
+	first := grant(grtA, on(prjA), "task.create")
+	first.ConfirmationOverrides = map[string]types.GrantConfirmationOverridesValue{"task.create": "human"}
+	second := grant(grtB, on(prjA), "task.create")
+	second.ConfirmationOverrides = map[string]types.GrantConfirmationOverridesValue{"task.create": "independent_review"}
+	d = Decide(reg, supRequest("task.create", nil, second, first))
+	expect(t, "the strictest grant first", d, Propose, Human, vocab.Reason{})
+	if d.Grant == nil || *d.Grant != grtA {
+		t.Errorf("the strictest grant first: acts under %v", d.Grant)
 	}
 }
 
@@ -182,4 +196,23 @@ func TestClassesCannotBeOmitted(t *testing.T) {
 	expect(t, "extending its own grant through a profile", Decide(reg, self), Refuse, None, vocab.ReasonSelfGrantRefused)
 	unnamed := supRequest("profile.adopt", []string{"grant.create"}, g)
 	expect(t, "a grant change naming no grantee", Decide(reg, unnamed), Refuse, None, vocab.ReasonSelfGrantRefused)
+}
+
+// Astra #54: a protected change never widens authority or data policy, for
+// any actor kind and under any confirmation.
+func TestProtectedChangesNeverWiden(t *testing.T) {
+	reg := registry(t)
+	g := grant(grtA, on(prjA), "knowledge.change_protected_document", "integration.change_topology")
+	for _, action := range protectedChanges {
+		for _, widening := range []string{"policy.widen_data", "policy.weaken_protection", "grant.create", "agent.enrol"} {
+			for _, kind := range []types.ActorKind{types.ActorKindOperator, types.ActorKindSystem, types.ActorKindSupervisor} {
+				r := supRequest(action, []string{action, widening}, g)
+				r.Actor = actor(supID, kind)
+				r.Grantee = ptr(sup2ID)
+				expect(t, string(kind)+" "+action+" with "+widening, Decide(reg, r), Refuse, None, vocab.ReasonProtectedChangeWidens)
+			}
+		}
+		expect(t, action+" alone", Decide(reg, supRequest(action, []string{action}, g)), Propose, IndependentReview, vocab.Reason{})
+		expect(t, action+" with no classes given", Decide(reg, supRequest(action, nil, g)), Propose, IndependentReview, vocab.Reason{})
+	}
 }

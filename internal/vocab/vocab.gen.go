@@ -47,6 +47,8 @@ var (
 	ReasonFallbackScope = types.ReasonCodeOf("fallback_scope")
 	// ReasonGateTestFailed: A test failed relative to the measured baseline.
 	ReasonGateTestFailed = types.ReasonCodeOf("gate_test_failed")
+	// ReasonGrantOverrideWeaker: A covering grant overrides the action's confirmation with a policy weaker than the change's default; refused, never silently ignored.
+	ReasonGrantOverrideWeaker = types.ReasonCodeOf("grant_override_weaker")
 	// ReasonIdempotencyKeyReused: A command repeats an idempotency key with a different input.
 	ReasonIdempotencyKeyReused = types.ReasonCodeOf("idempotency_key_reused")
 	// ReasonInconsistentUsage: A final usage report is lower than the sum of its deltas; the larger figure is kept until reconciled.
@@ -59,6 +61,8 @@ var (
 	ReasonPreconditionFailed = types.ReasonCodeOf("precondition_failed")
 	// ReasonProjectUnconfigured: The project has no valid adopted profile; refuse to run.
 	ReasonProjectUnconfigured = types.ReasonCodeOf("project_unconfigured")
+	// ReasonProtectedChangeWidens: A protected document or topology change whose effective change also widens authority or data policy; refused for every actor, and the widening goes through its dedicated action.
+	ReasonProtectedChangeWidens = types.ReasonCodeOf("protected_change_widens")
 	// ReasonProtectedPath: The patch touches a protected path outside the protected-document operation.
 	ReasonProtectedPath = types.ReasonCodeOf("protected_path")
 	// ReasonQuotaExhausted: The leased source reported its quota as exhausted.

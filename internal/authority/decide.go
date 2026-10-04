@@ -82,6 +82,10 @@ func refuse(reason vocab.Reason, format string, args ...any) Decision {
 	return Decision{Disposition: Refuse, Reason: reason, Detail: fmt.Sprintf(format, args...)}
 }
 
+// protectedChanges are the two narrow actions that may change only their
+// own protected paths (04 "Protected changes").
+var protectedChanges = []string{"knowledge.change_protected_document", "integration.change_topology"}
+
 // Decide applies note 04 to one command. Every unknown is a refusal.
 func Decide(reg *vocab.Registry, r Request) Decision {
 	if r.Actor.RevokedAt != nil {
@@ -112,6 +116,17 @@ func Decide(reg *vocab.Registry, r Request) Decision {
 		p, _ := policyOf(string(d.Confirmation))
 		policy = max(policy, p)
 		everyActor = everyActor || d.EveryActorKind
+	}
+	// A protected change (a document, the topology) can never widen
+	// authority or data policy, for any actor and under any confirmation:
+	// its effective change may hold no class but its own (04 "Protected
+	// changes"). Anything more goes through the dedicated widening action.
+	if slices.Contains(protectedChanges, r.Action) {
+		for _, c := range classes {
+			if c != r.Action {
+				return refuse(vocab.ReasonProtectedChangeWidens, "%s also changes %s; use the dedicated action", r.Action, c)
+			}
+		}
 	}
 	switch r.Actor.Kind {
 	case types.ActorKindOperator, types.ActorKindSystem:
@@ -148,13 +163,22 @@ func supervisor(r Request, classes []string, policy Policy) Decision {
 	}
 	// Several grants in force: the strictest override wins (a narrower
 	// policy always beats a wider one).
+	// An override weaker than the change's default is refused, never
+	// silently ignored (it would mean the grant was issued for a weaker
+	// change than this one).
 	slices.SortFunc(covering, func(a, b types.Grant) int { return compareIDs(a.ID, b.ID) })
-	chosen := covering[0].ID
+	chosen, base := covering[0].ID, policy
 	for _, g := range covering {
-		if o, ok := g.ConfirmationOverrides[r.Action]; ok {
-			if p, ok := policyOf(string(o)); ok && p > policy {
-				policy, chosen = p, g.ID
-			}
+		o, ok := g.ConfirmationOverrides[r.Action]
+		if !ok {
+			continue
+		}
+		p, ok := policyOf(string(o))
+		switch {
+		case !ok || p < base:
+			return refuse(vocab.ReasonGrantOverrideWeaker, "grant %s overrides %s with %s, weaker than the change's %s", g.ID, r.Action, o, base)
+		case p > policy:
+			policy, chosen = p, g.ID
 		}
 	}
 	d := Decision{Disposition: Allow, Grant: &chosen}
