@@ -52,8 +52,10 @@ type Expectation struct {
 // commit and rollback stay with Submit, and events are appended only by
 // Submit, through the checked path.
 type Tx struct {
-	ctx context.Context
-	tx  *sql.Tx
+	ctx     context.Context
+	tx      *sql.Tx
+	store   *Store   // set for a command's transaction
+	intents []intent // effects the command intends
 }
 
 // Projections are derived, rebuildable records (docs/design/m0/03): JSON
@@ -163,7 +165,8 @@ type Outcome struct {
 	CommandID         string
 	Replayed          bool // a repeat of an accepted command: nothing was run again
 	Result            json.RawMessage
-	FirstSeq, LastSeq int64 // 0 when the command appended no event
+	FirstSeq, LastSeq int64    // 0 when the command appended no event
+	Effects           []Effect // the command's effects, in their current states (on a replay too)
 }
 
 // Submit runs c through the writer transaction.
@@ -200,7 +203,7 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 	}
 	var out Outcome
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
-		t := &Tx{ctx: ctx, tx: tx}
+		t := &Tx{ctx: ctx, tx: tx, store: s}
 		// 1. Idempotency.
 		var prev struct {
 			id, digest, result string
@@ -212,7 +215,11 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 		case err == nil && prev.digest != inputDigest:
 			return fmt.Errorf("eventstore: %w: key %q of %s was used for another input", ErrIdempotencyKeyReused, c.IdempotencyKey, c.Actor)
 		case err == nil:
-			out = Outcome{CommandID: prev.id, Replayed: true, Result: json.RawMessage(prev.result), FirstSeq: prev.first.Int64, LastSeq: prev.last.Int64}
+			effs, err := commandEffects(ctx, tx, prev.id)
+			if err != nil {
+				return err
+			}
+			out = Outcome{CommandID: prev.id, Replayed: true, Result: json.RawMessage(prev.result), FirstSeq: prev.first.Int64, LastSeq: prev.last.Int64, Effects: effs}
 			return nil
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
@@ -252,6 +259,11 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 		}
 		appended := make([]Event, 0, len(events))
 		for _, e := range events {
+			// Effect events are the store's own: only IntendEffect and the
+			// transitions write them, so the effects table always agrees.
+			if isEffectKind(e.Kind) {
+				return fmt.Errorf("eventstore: %s is written only by the store's effect operations", e.Kind)
+			}
 			if e.Actor == "" {
 				e.Actor = c.Actor
 			}
@@ -263,6 +275,12 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 			}
 			appended = append(appended, a)
 		}
+		// Effect intents follow the command's events, in the same transaction.
+		intents, err := s.appendIntents(ctx, tx, c, t.intents)
+		if err != nil {
+			return err
+		}
+		appended = append(appended, intents...)
 		var first, last sql.NullInt64
 		if len(appended) > 0 {
 			first = sql.NullInt64{Int64: appended[0].Seq, Valid: true}
@@ -279,7 +297,11 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 			VALUES (?, ?, ?, ?, 'applied', ?, ?, ?)`, c.ID, c.Actor, c.IdempotencyKey, inputDigest, string(canonResult), first, last); err != nil {
 			return err
 		}
-		out = Outcome{CommandID: c.ID, Result: canonResult, FirstSeq: first.Int64, LastSeq: last.Int64}
+		effs, err := commandEffects(ctx, tx, c.ID)
+		if err != nil {
+			return err
+		}
+		out = Outcome{CommandID: c.ID, Result: canonResult, FirstSeq: first.Int64, LastSeq: last.Int64, Effects: effs}
 		return nil
 	})
 	if err != nil {
