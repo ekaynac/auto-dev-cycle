@@ -53,8 +53,9 @@ Rules:
   checked whenever they are read or written; the check reports the remaining ways source can go wrong outside the
   vocabulary package, identified by its exact import path in the scanned module: any reference to the unchecked
   constructor or to a check installer, parsing a constant or using the parser as a function value, and writing to a
-  generated value (assignment, a range target, its address, or a pointer method). The registry that backs every
-  decision is private; `Load` returns a copy.
+  generated value (assignment, a range target, its address, or a pointer method). It checks every release
+  configuration (linux for all binaries; darwin and windows for the agent's packages). The registry that backs
+  every decision is private; `Load` returns a copy.
 
 ## Hold reasons and resume signals
 

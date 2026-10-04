@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -49,9 +50,12 @@ type Finding struct {
 	Problem string `json:"problem"`
 }
 
-// skipDirs are never scanned: generated code, fixture repositories, VCS and
-// dependency trees. They are still loaded and type-checked.
-var skipDirs = map[string]bool{".git": true, "gen": true, "fixtures": true, "node_modules": true, "testdata": true, ".claude": true}
+// skipPaths are the root-relative directories never scanned: the generated
+// contract code and the fixture repositories. They are exact paths, so a
+// product package elsewhere with the same name is scanned. They are still
+// loaded and type-checked. (go list itself leaves out testdata and
+// directories starting with '.' or '_'.)
+var skipPaths = []string{"gen/go", "fixtures"}
 
 // CheckSource is `adc dev vocab check` (docs/design/m0/02 "Reason codes").
 //
@@ -87,18 +91,83 @@ func (reg *Registry) CheckSource(root string) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
+	seen := map[string]bool{}
+	var found []located
+	for _, pl := range Platforms {
+		fs, err := checkPlatform(absRoot, root, pl)
+		if err != nil {
+			return nil, fmt.Errorf("%s/%s: %w", pl.GOOS, pl.GOARCH, err)
+		}
+		for _, f := range fs {
+			if k := f.Pos + "\x00" + f.Problem; !seen[k] {
+				seen[k] = true
+				found = append(found, f)
+			}
+		}
+	}
+	sort.Slice(found, func(i, j int) bool {
+		a, b := found[i], found[j]
+		if a.file != b.file {
+			return a.file < b.file
+		}
+		if a.line != b.line {
+			return a.line < b.line
+		}
+		if a.col != b.col {
+			return a.col < b.col
+		}
+		return a.Problem < b.Problem
+	})
+	out := []Finding{}
+	for _, f := range found {
+		out = append(out, f.Finding)
+	}
+	return out, nil
+}
+
+// Platform is a release configuration: the packages its binaries are built
+// from (go list patterns, relative to the module root) for GOOS/GOARCH.
+type Platform struct {
+	GOOS, GOARCH string
+	Patterns     []string
+}
+
+// Platforms are the release configurations (docs/design/m0/01 "Build and
+// CI"): adcd and adc ship for linux; adc-agent ships for linux, darwin and
+// windows. Files built for any of them are product code, so each
+// configuration is type-checked and scanned: on linux every package, on the
+// others the module's packages in the agent's import graph.
+var Platforms = []Platform{
+	{"linux", "amd64", []string{"./..."}}, {"linux", "arm64", []string{"./..."}},
+	{"darwin", "amd64", agentOnly}, {"darwin", "arm64", agentOnly},
+	{"windows", "amd64", agentOnly}, {"windows", "arm64", agentOnly},
+}
+
+var agentOnly = []string{"./cmd/adc-agent"}
+
+// checkPlatform type-checks the module for one platform and scans it.
+func checkPlatform(absRoot, root string, pl Platform) ([]located, error) {
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
-			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports | packages.NeedModule,
+			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports | packages.NeedModule | packages.NeedDeps,
 		Dir: absRoot,
+		Env: append(os.Environ(), "GOOS="+pl.GOOS, "GOARCH="+pl.GOARCH, "CGO_ENABLED=0"),
 	}
-	pkgs, err := packages.Load(cfg, "./...")
+	roots, err := packages.Load(cfg, pl.Patterns...)
 	if err != nil {
 		return nil, fmt.Errorf("load packages under %s: %w", root, err)
 	}
-	if len(pkgs) == 0 {
+	if len(roots) == 0 {
 		return nil, fmt.Errorf("no Go packages under %s", root)
 	}
+	// The packages the configuration builds: the roots and, through the
+	// import graph, every package of the main module they reach.
+	var pkgs []*packages.Package
+	packages.Visit(roots, nil, func(p *packages.Package) {
+		if p.Module != nil && p.Module.Main {
+			pkgs = append(pkgs, p)
+		}
+	})
 	var loadErrs []string
 	for _, pkg := range pkgs {
 		for _, e := range pkg.Errors {
@@ -134,21 +203,7 @@ func (reg *Registry) CheckSource(root string) ([]Finding, error) {
 			}
 		}
 	}
-	sort.Slice(found, func(i, j int) bool {
-		a, b := found[i], found[j]
-		if a.file != b.file {
-			return a.file < b.file
-		}
-		if a.line != b.line {
-			return a.line < b.line
-		}
-		return a.col < b.col
-	})
-	out := []Finding{}
-	for _, f := range found {
-		out = append(out, f.Finding)
-	}
-	return out, nil
+	return found, nil
 }
 
 type raw struct {
@@ -291,7 +346,7 @@ func generatedValue(mp modPaths, info *types.Info, e ast.Expr) *types.Var {
 	return v
 }
 
-// skipped reports a package that lives under one of skipDirs.
+// skipped reports a package that lives under one of skipPaths.
 func skipped(absRoot string, pkg *packages.Package) bool {
 	if len(pkg.GoFiles) == 0 {
 		return false
@@ -300,8 +355,9 @@ func skipped(absRoot string, pkg *packages.Package) bool {
 	if err != nil {
 		return false
 	}
-	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
-		if skipDirs[part] {
+	rel = filepath.ToSlash(rel)
+	for _, p := range skipPaths {
+		if rel == p || strings.HasPrefix(rel, p+"/") {
 			return true
 		}
 	}

@@ -70,6 +70,7 @@ func TestVocabCheckCommand(t *testing.T) {
 		dir := t.TempDir()
 		files := map[string]string{
 			"go.mod":                      "module example.com/x\n\ngo 1.22\n",
+			"cmd/adc-agent/main.go":       "package main\n\nfunc main() {}\n",
 			"gen/go/types/types.go":       "package types\n\ntype ReasonCode struct{ code string }\n\nfunc ReasonCodeOf(c string) ReasonCode { return ReasonCode{c} }\n",
 			"internal/vocab/vocab.go":     "package vocab\n\nimport \"example.com/x/gen/go/types\"\n\ntype Reason = types.ReasonCode\n",
 			"internal/vocab/vocab.gen.go": "package vocab\n\nimport \"example.com/x/gen/go/types\"\n\nvar ReasonStaleAttempt = types.ReasonCodeOf(\"stale_attempt\")\n",
@@ -91,11 +92,16 @@ func TestVocabCheckCommand(t *testing.T) {
 	if code := Main("adc", []string{"dev", "vocab", "check", "--root", clean, "--json"}, &out, &errOut); code != ExitOK {
 		t.Fatalf("clean module: exit %d: %s", code, errOut.String())
 	}
+	// Astra #34: the JSON report is a full result beside the findings.
 	var report struct {
-		Reasons  int   `json:"reasons"`
-		Findings []any `json:"findings"`
+		Outcome  string `json:"outcome"`
+		Reason   string `json:"reason"`
+		Detail   string `json:"detail"`
+		Reasons  int    `json:"reasons"`
+		Findings []any  `json:"findings"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.Reasons == 0 || len(report.Findings) != 0 {
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil || report.Reasons == 0 || len(report.Findings) != 0 ||
+		report.Outcome != "empty" || report.Reason != "completed_clean" {
 		t.Fatalf("clean report %s (%v)", out.String(), err)
 	}
 	out.Reset()
@@ -106,6 +112,22 @@ func TestVocabCheckCommand(t *testing.T) {
 	if !strings.Contains(out.String(), "use/use.go") || !strings.Contains(out.String(), "1 finding") {
 		t.Fatalf("raw literal report does not name it: %s", out.String())
 	}
+	out.Reset()
+	if code := Main("adc", []string{"dev", "vocab", "check", "--root", raw, "--json"}, &out, &errOut); code != ExitRefused {
+		t.Fatalf("raw literal, JSON: exit %d, want %d: %s", code, ExitRefused, errOut.String())
+	}
+	report = struct {
+		Outcome  string `json:"outcome"`
+		Reason   string `json:"reason"`
+		Detail   string `json:"detail"`
+		Reasons  int    `json:"reasons"`
+		Findings []any  `json:"findings"`
+	}{}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil || len(report.Findings) != 1 ||
+		report.Outcome != "found" || report.Reason != "completed_with_findings" || report.Detail == "" {
+		t.Fatalf("findings report %s (%v)", out.String(), err)
+	}
+	out.Reset()
 	if code := Main("adcd", []string{"dev", "vocab", "check"}, &out, &errOut); code != ExitUsage {
 		t.Fatalf("adcd dev: exit %d, want usage", code)
 	}

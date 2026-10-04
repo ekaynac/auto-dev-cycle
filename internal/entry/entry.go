@@ -117,7 +117,24 @@ func vocabCheck(args []string, stdout, stderr io.Writer) int {
 		if findings == nil {
 			findings = []vocab.Finding{}
 		}
-		if err := json.NewEncoder(stdout).Encode(map[string]any{"reasons": len(reg.Reasons), "holds": len(reg.Holds), "findings": findings}); err != nil {
+		// The report is a vocab.Result (marshalled through the registry's
+		// writer check) with the counts and findings beside it.
+		res := vocab.Result{Outcome: vocab.Empty, Reason: vocab.ReasonCompletedClean, Detail: ""}
+		if len(findings) > 0 {
+			res = vocab.Result{Outcome: vocab.Found, Reason: vocab.ReasonCompletedWithFindings, Detail: fmt.Sprintf("%d finding(s)", len(findings))}
+		}
+		rb, err := json.Marshal(res)
+		if err != nil {
+			fmt.Fprintf(stderr, "adc dev vocab check: could_not_run: %v\n", err)
+			return ExitCouldNotRun
+		}
+		var report map[string]any
+		if err := json.Unmarshal(rb, &report); err != nil {
+			fmt.Fprintf(stderr, "adc dev vocab check: could_not_run: %v\n", err)
+			return ExitCouldNotRun
+		}
+		report["reasons"], report["holds"], report["findings"] = len(reg.Reasons), len(reg.Holds), findings
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
 			fmt.Fprintf(stderr, "adc dev vocab check: could_not_run: %v\n", err)
 			return ExitCouldNotRun
 		}

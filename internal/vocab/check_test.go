@@ -32,6 +32,8 @@ func synthetic(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	write(t, root, "go.mod", "module example.com/x\n\ngo 1.22\n")
+	// The agent: the darwin and windows configurations check its graph.
+	write(t, root, "cmd/adc-agent/main.go", "package main\n\nfunc main() {}\n")
 	write(t, root, "gen/go/types/types.go", `package types
 
 type ReasonCode struct{ code string }
@@ -320,5 +322,58 @@ func mutate() {
 	// foreign contract namesake is not the installer.
 	if n := strings.Count(got, "\n") + 1; n != 10 {
 		t.Errorf("want 10 findings, got %d:\n%s", n, got)
+	}
+}
+
+// Astra #34: exclusions are exact root-relative paths, so a product package
+// under a directory named gen is scanned.
+func TestNamesakeDirectoriesAreScanned(t *testing.T) {
+	reg := mustLoad(t)
+	root := synthetic(t)
+	write(t, root, "internal/service/gen/gen.go", `package gen
+
+import (
+	"example.com/x/gen/go/types"
+	"example.com/x/internal/vocab"
+)
+
+var Smuggled = types.ReasonCodeOf("typo_in_namesake")
+
+func init() { vocab.ReasonStaleAttempt = vocab.ReasonQuotaExhausted }
+`)
+	got := findings(t, reg, root)
+	for _, want := range []string{
+		"internal/service/gen/gen.go:8:22: types.ReasonCodeOf builds an unchecked reason",
+		"internal/service/gen/gen.go:10:15: assignment to the generated reason ReasonStaleAttempt",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// Astra #34: files for another release platform are product code: a
+// windows-only file in a package the agent imports is checked from any host,
+// and a package that fails to build for a release platform fails the check.
+func TestOtherPlatformsAreChecked(t *testing.T) {
+	reg := mustLoad(t)
+	root := synthetic(t)
+	write(t, root, "cmd/adc-agent/main.go", "package main\n\nimport _ \"example.com/x/agentdep\"\n\nfunc main() {}\n")
+	write(t, root, "agentdep/dep.go", "package agentdep\n")
+	write(t, root, "agentdep/bad_windows.go", `package agentdep
+
+import "example.com/x/gen/go/types"
+
+var Smuggled = types.ReasonCodeOf("typo_windows_only")
+`)
+	if got := findings(t, reg, root); !strings.Contains(got, "agentdep/bad_windows.go:5:22: types.ReasonCodeOf builds an unchecked reason") {
+		t.Fatalf("a windows-only violation was not reported:\n%s", got)
+	}
+	broken := synthetic(t)
+	write(t, broken, "cmd/adc-agent/main.go", "package main\n\nimport _ \"example.com/x/agentdep\"\n\nfunc main() {}\n")
+	write(t, broken, "agentdep/dep_darwin.go", "package agentdep\n\nvar _ = undefinedOnDarwin\n")
+	write(t, broken, "agentdep/dep_other.go", "//go:build !darwin\n\npackage agentdep\n")
+	if _, err := reg.CheckSource(broken); err == nil || !strings.Contains(err.Error(), "darwin") {
+		t.Fatalf("a package that does not build for darwin: %v", err)
 	}
 }
