@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // The adapter conformance kit (docs/design/m0/09 "Conformance kit"): the
-// round-trip, the controller-mediated tool round-trip and a cancel during a
-// tool call. It runs an adapter as the core does, one process per case
+// round-trip, the controller-mediated tool round-trip, a cancel during a tool
+// call and an oversize message. It runs an adapter as the core does, one process per case
 // over stdio, and treats its output as untrusted: every message is checked as a
 // JSON-RPC envelope and against the generated validators (never trusting the
 // adapter's SDK), replies are correlated with requests, and resources are
@@ -19,7 +19,7 @@ import { spawn } from "node:child_process";
 import { randomBytes, randomInt } from "node:crypto";
 import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
-import { frame, lines, parseStrict } from "@adc/contract";
+import { frame, lines, maxMessageBytes, parseStrict } from "@adc/contract";
 
 type Validator = ((doc: unknown) => boolean) & { errors?: unknown };
 const validators: Record<string, Validator> = createRequire(import.meta.url)("@adc/contract-gen/validators.cjs");
@@ -56,6 +56,9 @@ export const attempt = "att_01m3250vnfeyrv67x6w0ddqr6a";
 export const call = "cal_01m3250v9xft08ssr4ygq6g2np";
 const token = 3;
 const maxFindings = 100;
+/** The values the kit builds from one message: far above any contract
+ *  message, far below what exhausts its heap. */
+const maxValues = 100_000;
 const stderrTail = 64 << 10;
 /** The period of the kit's own stall watch during the run. */
 const stallTickMs = 10;
@@ -240,7 +243,7 @@ class Session {
   private accept(line: string) {
     let m: unknown;
     try {
-      m = parseStrict(line);
+      m = parseStrict(line, maxValues);
     } catch (e) {
       return this.find("framing", `a line that is not strict JSON: ${(e as Error).message}`);
     }
@@ -252,12 +255,19 @@ class Session {
       const now = performance.now();
       if (typeof msg.params !== "object" || msg.params === null || Array.isArray(msg.params)) return this.find("envelope", `an adapter.event without object params: ${show(msg)}`);
       if (!this.runWindow || this.runWindow.to !== null) return this.find("run-boundary", `an event outside the run: ${show(msg.params)}`);
+      // Only a valid event is kept: an invalid one is a finding, never retained.
+      if (!validators["adapter/event"](msg.params)) return this.find("event", `an event that does not match adapter/event: ${show(msg.params)}`);
       this.events.push({ at: now, e: msg.params });
       this.onEvent?.(msg.params);
       return;
     }
     const isResponse = typeof msg.id === "number" && !("method" in msg) && ("result" in msg) !== ("error" in msg);
     if (!isResponse) return this.find("envelope", `neither a response nor an adapter.event notification: ${line.slice(0, 200)}`);
+    // An error is a JSON-RPC error object, or it is no answer at all.
+    const err = msg.error;
+    if ("error" in msg && (typeof err !== "object" || err === null || Array.isArray(err) || !Number.isInteger(err.code) || typeof err.message !== "string")) {
+      return this.find("envelope", `an error that is not a JSON-RPC error object: ${line.slice(0, 200)}`);
+    }
     const id = msg.id as number;
     if (this.answered.has(id)) return this.find("correlation", `a second reply for request ${id}`);
     if (!this.pending.has(id)) return this.find("correlation", `a reply for request ${id}, which was not asked`);
@@ -275,8 +285,9 @@ class Session {
   }
 
   /** request sends one request and waits for its reply (null if the session
-   *  ended first). */
-  async request(method: string, params?: unknown): Promise<Msg | null> {
+   *  ended first). padTo pads the line with whitespace inside the JSON to
+   *  exactly that many bytes, so its size is its only difference. */
+  async request(method: string, params?: unknown, padTo?: number): Promise<Msg | null> {
     if (this.stopped || this.inputDone) return null;
     const id = this.next++;
     this.pending.set(id, method);
@@ -284,7 +295,9 @@ class Session {
       this.runWindow = { from: performance.now(), to: null };
       this.stalls.start();
     }
-    this.child.stdin.write(frame({ jsonrpc: "2.0", id, method, params }));
+    const msg = { jsonrpc: "2.0", id, method, params };
+    const body = padTo === undefined ? "" : JSON.stringify(msg);
+    this.child.stdin.write(padTo === undefined ? frame(msg) : `${body.slice(0, -1)}${" ".repeat(padTo - Buffer.byteLength(body))}}\n`);
     for (;;) {
       const i = this.queue.findIndex((m) => m.id === id);
       if (i >= 0) {
@@ -343,10 +356,6 @@ function checkEvents(s: Session) {
   const turns = new Map<number, { ended: boolean; coverage: { observable: string; unobservable: string[] }[]; compaction: boolean; harnessTool: boolean }>();
   let sequence = 0;
   for (const { e } of s.events) {
-    if (!validators["adapter/event"](e)) {
-      s.find("event", `an event that does not match adapter/event: ${show(e)}`);
-      continue;
-    }
     if (e.attempt !== attempt || e.fencing_token !== token || e.call !== call) s.find("envelope", `a ${e.event} event not stamped for this call`);
     if (e.event === "call.sub") announced.add(e.sub_call);
     else if (typeof e.sub_call === "string" && !announced.has(e.sub_call)) s.find("sub-call", `${e.event} names sub-call ${e.sub_call} before call.sub announced it`);
@@ -556,3 +565,39 @@ export const toolRoundTrip = (a: AdapterUnderTest, tool: string, limits: Partial
  *  its reply, the cancel's reply and the whole session must be valid, and no
  *  mediated result may claim a delivery that never came. */
 export const cancelDuringTool = (a: AdapterUnderTest, tool: string, limits: Partial<Limits> = {}) => runCase(a, limits, { mediated: [tool], onToolRequest: "cancel" });
+
+/** within resolves with the promise's value, or "late" after ms. */
+async function within<T>(p: Promise<T>, ms: number): Promise<T | "late"> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<"late">((r) => (timer = setTimeout(() => r("late"), ms)));
+  try {
+    return await Promise.race([p, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** oversize: a request of exactly the framing bound (09: 16 MiB) is served;
+ *  the same request one byte over is rejected observably, by an error reply
+ *  to it or by the process ending, never served and never ignored. The two
+ *  differ only in whitespace inside the JSON. */
+export async function oversize(a: AdapterUnderTest, limits: Partial<Limits> = {}, graceMs = 5_000): Promise<Finding[]> {
+  const s = new Session(a, { ...defaultLimits, ...limits });
+  try {
+    result(s, "describe", await s.request("describe"), "adapter/describe-result");
+    result(s, "describe", await s.request("describe", undefined, maxMessageBytes), "adapter/describe-result");
+    const reply = await within(s.request("describe", undefined, maxMessageBytes + 1), graceMs);
+    if (reply === "late") return s.find("oversize", `no observable rejection within ${graceMs} ms of a ${maxMessageBytes + 1}-byte message: neither an error reply nor the process ending`), s.finish();
+    if (reply && "result" in reply) return s.find("oversize", `a ${maxMessageBytes + 1}-byte message was served`), s.finish();
+    // No reply: the output ended, which happens only once bubblewrap (which
+    // holds it too) has exited with everything in its PID namespace, so the
+    // process ended, whatever its code. An adapter that merely closes its
+    // output is still running, and shows as no rejection.
+    if (!reply) return s.finish();
+    result(s, "shutdown", await s.request("shutdown"), "adapter/outcome");
+    await s.end(graceMs);
+  } finally {
+    s.stop();
+  }
+  return s.finish();
+}

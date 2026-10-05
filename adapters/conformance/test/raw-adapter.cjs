@@ -34,6 +34,14 @@ const event = (e) => out({ jsonrpc: "2.0", method: "adapter.event", params: { ..
 
 async function doRun(m) {
   run = m;
+  // Large invalid events: parsing them must not amplify the kit's heap.
+  // RAW_PAD picks the padding: plain, escapes only, the two alternating, or
+  // dense containers (32768 strings, each in 100 nested arrays).
+  const nest = (v, n) => (n ? [nest(v, n - 1)] : v);
+  const pads = { plain: () => "x".repeat(4 << 20), escapes: () => "\n".repeat(4 << 20), alternating: () => "x\n".repeat(2 << 20),
+    dense: () => Array.from({ length: 32768 }, () => nest("xx", 100)) };
+  const pad = mode === "big-strings" ? pads[process.env.RAW_PAD || "plain"]() : null;
+  if (mode === "big-strings") for (let i = 0; i < 4; i++) event({ event: "delta.text", turn: 1, bytes: 1, pad });
   if (mode === "flood") {
     for (let i = 0; i < 200000; i++) event({ event: "heartbeat" });
   }
@@ -98,8 +106,28 @@ process.stdin.on("data", (chunk) => {
   buf += chunk;
   let i;
   while ((i = buf.indexOf("\n")) >= 0) {
-    const m = JSON.parse(buf.slice(0, i));
+    const line = buf.slice(0, i);
     buf = buf.slice(i + 1);
+    // The size modes: the framing bound is 16 MiB a line (09); "clean" is size-blind.
+    const big = Buffer.byteLength(line) > (16 << 20) - (mode === "size-off-by-one" ? 1 : 0);
+    if (big && (mode === "size-exits" || mode === "size-off-by-one")) process.exit(3);
+    if (big && mode === "size-ignores") continue;
+    if (big && mode === "size-closes") {
+      require("node:fs").closeSync(1); // ends its output, but lingers
+      setInterval(() => {}, 1000);
+      return;
+    }
+    const m = JSON.parse(line);
+    if (big && mode === "size-errors") {
+      out({ jsonrpc: "2.0", id: m.id, error: { code: -32600, message: "message too large" } });
+      continue;
+    }
+    // Malformed error values, which are no rejection.
+    const malformed = { "size-error-null": null, "size-error-false": false, "size-error-empty": {}, "size-error-types": { code: "bad", message: 42 } };
+    if (big && mode in malformed) {
+      out({ jsonrpc: "2.0", id: m.id, error: malformed[mode] });
+      continue;
+    }
     if (m.method === "describe") {
       if (mode === "no-params-outside") out({ jsonrpc: "2.0", method: "adapter.event" });
       if (mode === "bad-jsonrpc") out({ jsonrpc: "WRONG", id: m.id, result: {} });
