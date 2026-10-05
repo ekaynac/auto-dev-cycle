@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// The adapter conformance kit (docs/design/m0/09 "Conformance kit"), part 1:
-// the round-trip. It runs an adapter as the core does, one process per case
+// The adapter conformance kit (docs/design/m0/09 "Conformance kit"): the
+// round-trip, the controller-mediated tool round-trip and a cancel during a
+// tool call. It runs an adapter as the core does, one process per case
 // over stdio, and treats its output as untrusted: every message is checked as a
 // JSON-RPC envelope and against the generated validators (never trusting the
 // adapter's SDK), replies are correlated with requests, and resources are
@@ -9,10 +10,13 @@
 // drained). Beyond the schemas it checks per-turn lifecycles, sub-calls
 // announced before use, call-wide usage numbering, one coverage per completed
 // turn (partial for compaction and harness tools), the heartbeat interval and
-// the contract's major version. A case returns findings; none means the
-// adapter conforms on that case.
+// the contract's major version. Mediated tools are checked from the kit's own
+// side of the exchange: each delivery carries a handle no adapter can guess,
+// and must be reported once, for its turn and tool, after it was supplied.
+// A case returns findings; none means the adapter conforms on that case.
 
 import { spawn } from "node:child_process";
+import { randomBytes, randomInt } from "node:crypto";
 import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 import { frame, lines, parseStrict } from "@adc/contract";
@@ -111,7 +115,9 @@ class Session {
   readonly events: { at: number; e: any }[] = [];
   stderr = "";
   private queue: Msg[] = [];
-  private waiting: (() => void) | null = null;
+  private readonly waiters = new Set<() => void>();
+  /** onEvent sees each event of the run as it arrives (the tool exchange). */
+  onEvent: ((e: any) => void) | null = null;
   /** inputDone: the adapter's output ended; stopped: cleanup ran. */
   private inputDone = false;
   private stopped = false;
@@ -184,7 +190,7 @@ class Session {
     this.child.stdout.destroy();
     this.child.stderr.destroy();
     this.child.stdin.destroy();
-    this.waiting?.();
+    this.wake();
     this.markStopped();
   }
 
@@ -227,7 +233,7 @@ class Session {
       }
     }
     this.inputDone = true;
-    this.waiting?.();
+    this.wake();
   }
 
   /** accept checks one line's envelope and routes it. */
@@ -247,6 +253,7 @@ class Session {
       if (typeof msg.params !== "object" || msg.params === null || Array.isArray(msg.params)) return this.find("envelope", `an adapter.event without object params: ${show(msg)}`);
       if (!this.runWindow || this.runWindow.to !== null) return this.find("run-boundary", `an event outside the run: ${show(msg.params)}`);
       this.events.push({ at: now, e: msg.params });
+      this.onEvent?.(msg.params);
       return;
     }
     const isResponse = typeof msg.id === "number" && !("method" in msg) && ("result" in msg) !== ("error" in msg);
@@ -258,7 +265,13 @@ class Session {
     this.answered.add(id);
     this.replied = true;
     this.queue.push(msg);
-    this.waiting?.();
+    this.wake();
+  }
+
+  /** wake settles every request waiting for a reply or the session's end. */
+  private wake() {
+    for (const w of this.waiters) w();
+    this.waiters.clear();
   }
 
   /** request sends one request and waits for its reply (null if the session
@@ -283,7 +296,7 @@ class Session {
         return m;
       }
       if (this.stopped || this.inputDone) return null;
-      await new Promise<void>((r) => (this.waiting = r));
+      await new Promise<void>((r) => this.waiters.add(r));
     }
   }
 
@@ -308,9 +321,9 @@ class Session {
 }
 
 const handleOf = (name: string) => ({ attempt, handle: name, digest: "sha256:" + "0".repeat(64), size: 0 });
-const prepareParams = { attempt, fencing_token: token, role: "builder", executor: "exe_01m3250vnfeyrv67x6w0ddqr6a", model: "m",
+const prepareParams = (mediated: string[]) => ({ attempt, fencing_token: token, role: "builder", executor: "exe_01m3250vnfeyrv67x6w0ddqr6a", model: "m",
   workspace: { path: "/workspace", writable: true }, inputs: [], limits: { max_turns: 8, max_output_tokens: 8000, wall_seconds: 600 },
-  tool_policy: { allowed: [], mediated: [] }, gateway: null, native_login: null };
+  tool_policy: { allowed: mediated, mediated }, gateway: null, native_login: null });
 const runParams = { attempt, fencing_token: token, call, prompt: handleOf("prompt.md"), response_schema: null };
 
 /** result checks a reply: a result (not an error) valid against schema. */
@@ -393,24 +406,103 @@ function checkHeartbeats(s: Session) {
   }
 }
 
-/** roundTrip: describe, prepare, run and shutdown, one after another; every
- *  reply correlated and valid; the run's events kept to the contract; the
- *  process exits 0 after shutdown. */
-export async function roundTrip(a: AdapterUnderTest, limits: Partial<Limits> = {}): Promise<Finding[]> {
+type Handle = { attempt: string; handle: string; digest: string; size: number };
+/** sameHandle compares handles field by field, whatever their key order. */
+const sameHandle = (a: Handle, b: Handle | null) => !!b && a.attempt === b.attempt && a.handle === b.handle && a.digest === b.digest && a.size === b.size;
+
+/** Tools is the kit's side of the controller-mediated tool exchange (09). A
+ *  tool.request outside the policy, or with a handle of another attempt, is a
+ *  finding that ends the case. In "answer" mode each request gets a delivery
+ *  under a fresh, unguessable handle; in "cancel" mode the first request is
+ *  answered by a cancel instead, and its response stays pending. */
+class Tools {
+  readonly deliveries: { turn: number; tool: string; handle: Handle; at: number; reported: boolean }[] = [];
+  private readonly seen = new Set<string>();
+  cancelled = false;
+  private readonly s: Session;
+  private readonly mediated: string[];
+  private readonly mode: "answer" | "cancel";
+
+  constructor(s: Session, mediated: string[], mode: "answer" | "cancel") {
+    this.s = s;
+    this.mediated = mediated;
+    this.mode = mode;
+    s.onEvent = (e) => this.requested(e);
+  }
+
+  get requests() {
+    return this.seen.size;
+  }
+
+  private requested(e: any) {
+    if (e?.event !== "tool.request" || !validators["adapter/event"](e)) return; // checkEvents reports an invalid one
+    const s = this.s;
+    if (!this.mediated.includes(e.tool)) return s.find("tool-policy", `a tool.request for ${e.tool}, which the tool policy does not mediate`), s.stop();
+    if (e.request.attempt !== attempt) return s.find("tool", `a tool.request handle of another attempt: ${show(e.request)}`), s.stop();
+    if (this.seen.has(e.request.handle)) return s.find("tool", `a second tool.request with handle ${e.request.handle}`);
+    this.seen.add(e.request.handle);
+    if (this.mode === "answer") void this.answer(e);
+    else if (!this.cancelled) void this.cancel();
+  }
+
+  private async answer(e: any) {
+    const handle = { attempt, handle: `delivered-${this.deliveries.length + 1}`, digest: "sha256:" + randomBytes(32).toString("hex"), size: 1 + randomInt(1 << 20) };
+    this.deliveries.push({ turn: e.turn, tool: e.tool, handle, at: performance.now(), reported: false });
+    const reply = await this.s.request("tool.response", { attempt, fencing_token: token, call, turn: e.turn, tool: e.tool, request: e.request,
+      outcome: "empty", reason: "completed_clean", detail: "", delivered: handle });
+    const empty = reply && "result" in reply && typeof reply.result === "object" && reply.result !== null && !Array.isArray(reply.result) && !Object.keys(reply.result).length;
+    if (reply && !empty) this.s.find("tool", `tool.response answered ${show(reply)}, want an empty result`);
+  }
+
+  private async cancel() {
+    this.cancelled = true;
+    result(this.s, "cancel", await this.s.request("cancel", { attempt, fencing_token: token }), "adapter/outcome");
+  }
+}
+
+/** checkTools: each mediated tool.result reports one delivery the kit
+ *  supplied, for its turn and tool, once, after it was supplied; a completed
+ *  run has reported every delivery. */
+function checkTools(s: Session, t: Tools, completed: boolean) {
+  for (const { at, e } of s.events) {
+    if (e?.event !== "tool.result" || e.mediated_by_controller !== true) continue;
+    const d = t.deliveries.find((x) => !x.reported && x.turn === e.turn && x.tool === e.tool && x.at < at && sameHandle(x.handle, e.delivered));
+    if (d) d.reported = true;
+    else s.find("tool", `a mediated tool.result that reports no delivery the kit supplied for turn ${e.turn} and ${e.tool} (or reports one twice, or before it was supplied): ${show(e.delivered)}`);
+  }
+  if (!completed) return;
+  for (const d of t.deliveries) if (!d.reported) s.find("tool", `the delivery ${d.handle.handle} for turn ${d.turn} and ${d.tool} was never reported by a mediated tool.result`);
+}
+
+interface Case {
+  /** The tools the policy mediates; a case with a tool requires its request. */
+  mediated: string[];
+  onToolRequest: "answer" | "cancel";
+}
+
+/** runCase: describe, prepare, run and shutdown; every reply correlated and
+ *  valid; the run's events kept to the contract; the process exits 0 after
+ *  shutdown. Tool responses and a cancel are sent while the run is open. */
+async function runCase(a: AdapterUnderTest, limits: Partial<Limits>, c: Case): Promise<Finding[]> {
   const s = new Session(a, { ...defaultLimits, ...limits });
+  const tools = new Tools(s, c.mediated, c.onToolRequest);
   try {
     const d = result(s, "describe", await s.request("describe"), "adapter/describe-result");
     if (d && Number(String(d.contract_version).split(".")[0]) !== contractMajor) s.find("version", `contract version ${d.contract_version}, this kit checks major ${contractMajor}`);
-    const p = result(s, "prepare", await s.request("prepare", prepareParams), "adapter/outcome");
+    const p = result(s, "prepare", await s.request("prepare", prepareParams(c.mediated)), "adapter/outcome");
     if (p && p.outcome !== "empty" && p.outcome !== "found") s.find("prepare", `prepare refused the kit's ordinary attempt: ${p.outcome}/${p.reason}`);
+    let completed = false;
     if (d && p) {
       const reply = await s.request("run", runParams);
-      result(s, "run", reply, "adapter/run-result");
+      const r = result(s, "run", reply, "adapter/run-result");
+      completed = r?.outcome === "empty" || r?.outcome === "found";
       if (!reply) s.stop(); // no answer: the run window closes at termination
     }
     if (s.runWindow) {
       checkEvents(s);
       checkHeartbeats(s);
+      checkTools(s, tools, completed);
+      if (c.mediated.length && !tools.requests) s.find("tool", `the run never requested ${c.mediated.join(", ")}, so the case was not exercised`);
     }
     result(s, "shutdown", await s.request("shutdown"), "adapter/outcome");
     await s.end(5_000);
@@ -419,3 +511,17 @@ export async function roundTrip(a: AdapterUnderTest, limits: Partial<Limits> = {
   }
   return s.finish();
 }
+
+/** roundTrip: the plain case, with no tool mediated. */
+export const roundTrip = (a: AdapterUnderTest, limits: Partial<Limits> = {}) => runCase(a, limits, { mediated: [], onToolRequest: "answer" });
+
+/** toolRoundTrip: the run requests the mediated tool, the kit delivers, and
+ *  the run reports exactly that delivery (09 "controller-mediated tool
+ *  round-trip"). */
+export const toolRoundTrip = (a: AdapterUnderTest, tool: string, limits: Partial<Limits> = {}) => runCase(a, limits, { mediated: [tool], onToolRequest: "answer" });
+
+/** cancelDuringTool: the kit cancels while the tool's response is pending.
+ *  Cancel is best effort (09, A4): the run may still complete or stop, but
+ *  its reply, the cancel's reply and the whole session must be valid, and no
+ *  mediated result may claim a delivery that never came. */
+export const cancelDuringTool = (a: AdapterUnderTest, tool: string, limits: Partial<Limits> = {}) => runCase(a, limits, { mediated: [tool], onToolRequest: "cancel" });
