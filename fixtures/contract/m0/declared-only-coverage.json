@@ -1,0 +1,11 @@
+{
+  "name": "declared-only-coverage",
+  "invariant": "Coverage is derived from evidence, never from an adapter's declaration: a turn that only declares reading a file is recorded as declared-only, the file is not delivered, and a record claiming complete coverage is refused while partial is accepted (10; spec/knowledge invariant 9).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "coverage_claim_contradicted"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "knowledge.coverage-trusts-declarations"
+}
