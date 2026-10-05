@@ -4,11 +4,12 @@
 package main
 
 import (
+	"context"
 	"os"
 
-	"github.com/ekaynac/auto-dev-cycle/internal/entry"
+	"github.com/ekaynac/auto-dev-cycle/internal/cli"
 )
 
 func main() {
-	os.Exit(entry.Main("adc", os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(cli.Main(context.Background(), os.Args[1:], os.Stdout, os.Stderr, cli.NoTransport{}))
 }

@@ -224,6 +224,16 @@ func TestCheckRefusesDeprecatedReasons(t *testing.T) {
 	if err := reg.Check(Result{Failed, r("old"), "x"}); err == nil || !strings.Contains(err.Error(), "deprecated") {
 		t.Fatalf("a deprecated code was accepted for writing: %v", err)
 	}
+	// A reader accepts it, and still applies every other rule.
+	if err := reg.CheckRead(Result{Failed, r("old"), "x"}); err != nil {
+		t.Fatalf("a deprecated code refused for reading: %v", err)
+	}
+	if err := reg.CheckRead(Result{Failed, r("old"), ""}); err == nil || !strings.Contains(err.Error(), "non-empty detail") {
+		t.Fatalf("an empty detail was accepted for reading: %v", err)
+	}
+	if err := reg.CheckRead(Result{Failed, r("unregistered"), "x"}); err == nil {
+		t.Fatal("an unregistered code was accepted for reading")
+	}
 }
 
 func TestLoaderRefusesDuplicateHold(t *testing.T) {

@@ -303,7 +303,13 @@ var ErrMalformed = errors.New("malformed result")
 // Check decides whether a writer may emit r: the reason is registered, not
 // deprecated, allowed with this outcome, and every non-empty result carries
 // a non-empty detail (nöbetçi lesson 1.1: empty error text read as success).
-func (reg *Registry) Check(r Result) error {
+func (reg *Registry) Check(r Result) error { return reg.check(r, true) }
+
+// CheckRead decides whether a reader accepts r: the same rules, except that a
+// deprecated reason is accepted (readers accept every code ever registered).
+func (reg *Registry) CheckRead(r Result) error { return reg.check(r, false) }
+
+func (reg *Registry) check(r Result, writing bool) error {
 	if _, ok := reg.Outcomes[r.Outcome]; !ok {
 		return fmt.Errorf("%w: unknown outcome %q", ErrMalformed, r.Outcome)
 	}
@@ -311,7 +317,7 @@ func (reg *Registry) Check(r Result) error {
 	if !ok {
 		return fmt.Errorf("%w: unregistered reason %q", ErrMalformed, r.Reason)
 	}
-	if x.Deprecated != nil {
+	if writing && x.Deprecated != nil {
 		return fmt.Errorf("%w: reason %q is deprecated since %s; writers may not emit it", ErrMalformed, r.Reason, *x.Deprecated)
 	}
 	allowed := false
