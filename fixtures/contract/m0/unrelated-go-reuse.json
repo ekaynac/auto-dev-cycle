@@ -1,0 +1,11 @@
+{
+  "name": "unrelated-go-reuse",
+  "invariant": "A GO applies only to the proposal and binding digest it names: reused for another proposal, or for the same proposal bound to another change, it never applies (06 rule 4).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "could_not_run", "reason": "evidence_inapplicable"},
+    {"outcome": "could_not_run", "reason": "evidence_inapplicable"}
+  ],
+  "mutation": "receipt.binding-digest-ignored"
+}

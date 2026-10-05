@@ -27,8 +27,22 @@ const (
 	// CoverageTrustsDeclarations lets adapter declarations count as
 	// evidence, so a declared-only turn no longer lowers coverage.
 	CoverageTrustsDeclarations = "knowledge.coverage-trusts-declarations"
+	// OuterStatusTrusted lets the producer's own ok (an empty
+	// reported_status predicate) make the receipt clean, over the inner
+	// predicates.
+	OuterStatusTrusted = "receipt.outer-status-trusted"
+	// AbsentPredicateUnchecked checks the evidence of the required
+	// predicates present but not that each is present.
+	AbsentPredicateUnchecked = "receipt.absent-predicate-unchecked"
+	// UnknownFamilyIndependent compares "unknown" as one more family name,
+	// so an unknown reviewer or proposer family no longer blocks.
+	UnknownFamilyIndependent = "receipt.unknown-family-independent"
+	// BindingDigestIgnored matches a review to a proposal by id alone, not
+	// by the binding digest it names.
+	BindingDigestIgnored = "receipt.binding-digest-ignored"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
 var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExclusive, FenceIgnoresClosedPublication,
-	IdentityIgnoresLineage, CoverageTrustsDeclarations}
+	IdentityIgnoresLineage, CoverageTrustsDeclarations,
+	OuterStatusTrusted, AbsentPredicateUnchecked, UnknownFamilyIndependent, BindingDigestIgnored}

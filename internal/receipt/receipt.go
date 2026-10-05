@@ -23,6 +23,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	docs "github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -234,6 +235,9 @@ func incomplete(c types.InstrumentContract, r types.Receipt, blobs Blobs) (strin
 	var missing []string
 	for _, req := range c.RequiredPredicates {
 		p, ok := byName[req.Name]
+		if !ok && mutation.Is(mutation.AbsentPredicateUnchecked) {
+			continue
+		}
 		if !ok {
 			missing = append(missing, "predicate "+req.Name)
 			continue
@@ -270,6 +274,13 @@ func incomplete(c types.InstrumentContract, r types.Receipt, blobs Blobs) (strin
 // detail of the first predicate with the deciding outcome; an empty receipt
 // is completed_clean.
 func aggregate(ps []types.Predicate) (vocab.Outcome, vocab.Reason, string) {
+	if mutation.Is(mutation.OuterStatusTrusted) {
+		for _, p := range ps {
+			if p.Name == "reported_status" && vocab.Outcome(p.Outcome) == vocab.Empty {
+				return vocab.Empty, vocab.ReasonCompletedClean, ""
+			}
+		}
+	}
 	for _, o := range []vocab.Outcome{vocab.Failed, vocab.CouldNotRun, vocab.Found} {
 		for _, p := range ps {
 			if vocab.Outcome(p.Outcome) == o {

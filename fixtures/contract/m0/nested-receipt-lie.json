@@ -1,0 +1,9 @@
+{
+  "name": "nested-receipt-lie",
+  "invariant": "A producer's own outer status is a predicate, never trusted alone: with the inner tests predicate finding a failed test the receipt derives that finding, and a receipt recorded clean over it is refused (06 \"Derivation\" 2 and 3).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "found", "reason": "gate_test_failed"}
+  ],
+  "mutation": "receipt.outer-status-trusted"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "omitted-required-predicate",
+  "invariant": "Completeness comes first: a receipt without a required predicate, or with no predicates at all, derives could_not_run/receipt_incomplete, never empty (06 \"Derivation\" 1).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "could_not_run", "reason": "receipt_incomplete"},
+    {"outcome": "could_not_run", "reason": "receipt_incomplete"}
+  ],
+  "mutation": "receipt.absent-predicate-unchecked"
+}

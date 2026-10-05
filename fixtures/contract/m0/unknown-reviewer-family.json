@@ -1,0 +1,10 @@
+{
+  "name": "unknown-reviewer-family",
+  "invariant": "Independence is mechanical: a review counts only when its known model families are disjoint from the proposer's; an unknown family on either side means not independent and blocks (06 rule 3).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "could_not_run", "reason": "reviewer_not_independent"},
+    {"outcome": "could_not_run", "reason": "reviewer_not_independent"}
+  ],
+  "mutation": "receipt.unknown-family-independent"
+}

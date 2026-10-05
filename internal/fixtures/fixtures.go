@@ -55,6 +55,10 @@ var runners = map[string]runner{
 	"revoked-attempt-late-result":  revokedAttemptLateResult,
 	"same-bytes-different-lineage": sameBytesDifferentLineage,
 	"declared-only-coverage":       declaredOnlyCoverage,
+	"nested-receipt-lie":           nestedReceiptLie,
+	"omitted-required-predicate":   omittedRequiredPredicate,
+	"unknown-reviewer-family":      unknownReviewerFamily,
+	"unrelated-go-reuse":           unrelatedGOReuse,
 }
 
 // Goldens loads and validates every golden, checking that each has a
