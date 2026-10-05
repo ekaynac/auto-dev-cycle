@@ -19,13 +19,15 @@ GO         := $(GOROOT_PIN)/bin/go
 # Never let `go` fetch a different toolchain: go.mod's toolchain line is the pin.
 export GOTOOLCHAIN := local
 export CGO_ENABLED := 0
-# The caller's Go settings never leak into builds, persisted ones (go env -w)
-# included: a persisted -tags=adcmutation would put live mutation sites into
-# a release binary.
-export GOENV := off
-export GOFLAGS :=
-export GOEXPERIMENT :=
-CHECK_RELEASE := scripts/check-release-binary.sh $(GOROOT_PIN)/bin/go
+# The caller's Go settings never leak into builds: not persisted ones (go env
+# -w), not the environment, not a make command line (override). A
+# -tags=adcmutation would put live mutation sites into a release binary.
+override export GOENV := off
+override export GOFLAGS :=
+override export GOEXPERIMENT :=
+# Every release binary is checked for build tags, decoded from its recorded
+# build settings, whatever set them.
+CHECK_RELEASE := $(GO) run ./tools/releasecheck
 
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT     ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
@@ -156,17 +158,26 @@ fixtures-contract: build ## Run the M0 contract fixtures, and check each fixture
 	  echo "fixtures-contract: $$mut turns $$name red"; \
 	done
 
-# The release-build guard's regression: a build under a hostile persisted Go
-# configuration (GOFLAGS=-tags=adcmutation in a go env file) still yields
-# binaries without the tag (build runs the guard), and the guard refuses the
-# mutation build.
+# The release-build guard's regression: builds under a hostile persisted Go
+# configuration (GOFLAGS=-tags=adcmutation in a go env file) and under a
+# command-line GOFLAGS whose tag list Go records quoted still yield binaries
+# without tags (build runs the guard), and the guard refuses the mutation
+# build and a binary built directly with that quoted tag list.
 release-guard: fixtures-contract ## Prove release builds ignore a persisted mutation tag
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 	  printf 'GOFLAGS=-tags=adcmutation\n' >"$$tmp/goenv"; \
 	  GOENV="$$tmp/goenv" $(MAKE) --no-print-directory build BIN_DIR="$$tmp/bin" >/dev/null; \
 	  $(CHECK_RELEASE) $(addprefix "$$tmp/bin/,$(addsuffix ",$(BINARIES))); \
-	  if $(CHECK_RELEASE) $(BIN_DIR)/adc-mutation 2>/dev/null; then echo "release-guard: the guard accepted the mutation build" >&2; exit 1; fi; \
-	  echo "release-guard: a hostile go env file left no mutation tag; the guard refuses the mutation build"
+	  $(MAKE) --no-print-directory build BIN_DIR="$$tmp/cli" 'GOFLAGS=-tags=adcmutation,x"' >/dev/null; \
+	  $(CHECK_RELEASE) $(addprefix "$$tmp/cli/,$(addsuffix ",$(BINARIES))); \
+	  if $(MAKE) --no-print-directory build BIN_DIR="$$tmp/gobuild" GOBUILD="$(GO) build -trimpath -tags adcmutation" >/dev/null 2>&1; then \
+	    echo "release-guard: make build accepted binaries built with a tag" >&2; exit 1; \
+	  fi; \
+	  $(GO) build -tags 'adcmutation,x"' -o "$$tmp/quoted" ./cmd/adc; \
+	  for f in $(BIN_DIR)/adc-mutation "$$tmp/quoted"; do \
+	    if $(CHECK_RELEASE) "$$f" 2>/dev/null; then echo "release-guard: the guard accepted $$f" >&2; exit 1; fi; \
+	  done; \
+	  echo "release-guard: hostile go env and command-line GOFLAGS left no tags; the guard refuses tagged builds, quoted ones included"
 
 test-sandbox-selftest: go-check ## Prove the test sandbox contains writes, credentials and network
 	@scripts/test-sandbox-selftest.sh

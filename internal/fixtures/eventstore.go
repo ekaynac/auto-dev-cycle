@@ -44,6 +44,10 @@ type fixtureStore struct {
 	actor   string
 	subject string
 	applied int // apply callbacks run
+	// The last command submitted and the result its apply produced: what
+	// the store must answer with, held apart from what it answers.
+	lastCmd    string
+	lastResult string
 }
 
 func open(ctx context.Context, dir string) (*fixtureStore, func(), error) {
@@ -74,10 +78,12 @@ func (f *fixtureStore) submit(key, input string, expected ...eventstore.Expectat
 	if err != nil {
 		return eventstore.Outcome{}, err
 	}
+	f.lastCmd = cmd
 	return f.s.Submit(f.ctx, eventstore.Command{ID: cmd, Actor: f.actor, IdempotencyKey: key, Input: []byte(input), Expected: expected},
 		func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			f.applied++
-			return []eventstore.Event{{ID: ev, Kind: "fixture.appended/v1", Subject: f.subject, Payload: []byte(`{}`)}}, json.RawMessage(`{"event":"` + ev + `"}`), nil
+			f.lastResult = `{"event":"` + ev + `"}`
+			return []eventstore.Event{{ID: ev, Kind: "fixture.appended/v1", Subject: f.subject, Payload: []byte(`{}`)}}, json.RawMessage(f.lastResult), nil
 		})
 }
 
@@ -138,6 +144,11 @@ func idempotencyKeyReuse(ctx context.Context, dir string) ([]Step, []string, err
 		return nil, nil, err
 	}
 	o.check(!first.Replayed && first.FirstSeq == 1, "the first command was not applied as seq 1")
+	// The first answer is checked against what the fixture submitted and
+	// its apply produced, so a replay cannot agree with an equally wrong one.
+	cmd, result := f.lastCmd, f.lastResult
+	o.check(first.CommandID == cmd, "the first command's outcome names %s, want %s", first.CommandID, cmd)
+	o.check(string(first.Result) == result, "the first command's result is %s, want %s", first.Result, result)
 	if err := o.committed(f, 1, 1); err != nil {
 		return nil, nil, err
 	}
@@ -146,8 +157,8 @@ func idempotencyKeyReuse(ctx context.Context, dir string) ([]Step, []string, err
 		return nil, nil, err
 	}
 	o.check(again.Replayed, "the repeat was not a replay")
-	o.check(again.CommandID == first.CommandID, "the replay names command %s, want %s", again.CommandID, first.CommandID)
-	o.check(string(again.Result) == string(first.Result), "the replay's result %s differs from the stored %s", again.Result, first.Result)
+	o.check(again.CommandID == cmd, "the replay names command %s, want %s", again.CommandID, cmd)
+	o.check(string(again.Result) == result, "the replay's result %s differs from the stored %s", again.Result, result)
 	if err := o.committed(f, 1, 1); err != nil {
 		return nil, nil, err
 	}
