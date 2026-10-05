@@ -116,9 +116,10 @@ func gateRun(dir string) (*blobstore.Store, types.PredicateEvidenceItem, types.S
 }
 
 // nestedReceiptLie: the producer's own status says ok while the inner
-// tests predicate found a failing test; the receipt derives the finding,
-// and one recorded clean over it is refused (11 "nested receipt lie"; 06
-// "Derivation" 2 and 3).
+// tests predicate found a failing test, could not run, or failed; the
+// receipt derives the inner result, the correctly recorded receipt is
+// accepted, and one recorded clean over it is invalid (11 "nested receipt
+// lie"; 06 "Derivation" 2 and 3).
 func nestedReceiptLie(_ context.Context, dir string) (steps []Step, violations []string, err error) {
 	blobs, junit, tree, err := gateRun(dir)
 	if err != nil {
@@ -126,7 +127,12 @@ func nestedReceiptLie(_ context.Context, dir string) (steps []Step, violations [
 	}
 	ok := pred("reported_status", vocab.Empty, vocab.ReasonCompletedClean)
 	var o observe
-	for _, tests := range []types.Predicate{pred("tests", vocab.Empty, vocab.ReasonCompletedClean, junit), pred("tests", vocab.Found, vocab.ReasonGateTestFailed, junit)} {
+	for _, tests := range []types.Predicate{
+		pred("tests", vocab.Empty, vocab.ReasonCompletedClean, junit),
+		pred("tests", vocab.Found, vocab.ReasonGateTestFailed, junit),
+		pred("tests", vocab.CouldNotRun, vocab.ReasonRunnerFault, junit),
+		pred("tests", vocab.Failed, vocab.ReasonTestIntegrityViolation, junit),
+	} {
 		r, err := newReceipt(types.ReceiptKindGate, goTest(), tree, []string{}, ok, tests)
 		if err != nil {
 			return nil, nil, err
@@ -134,14 +140,19 @@ func nestedReceiptLie(_ context.Context, dir string) (steps []Step, violations [
 		if err := o.derived(receipt.Derive(goTest(), r, blobs)); err != nil {
 			return nil, nil, err
 		}
-		// The producer records its outer status as the receipt's.
-		lie, err := recorded(goTest(), r, blobs)
+		r, err = recorded(goTest(), r, blobs)
 		if err != nil {
 			return nil, nil, err
 		}
-		lie.Outcome, lie.Reason, lie.Detail = types.Outcome(vocab.Empty), vocab.ReasonCompletedClean, ""
-		err = receipt.Check(goTest(), lie, blobs)
-		o.check((err == nil) == (tests.Outcome == types.Outcome(vocab.Empty)), "a receipt recorded clean over a %s inner predicate: %v", tests.Outcome, err)
+		err = receipt.Check(goTest(), r, blobs)
+		o.check(err == nil, "the correctly recorded receipt is refused: %v", err)
+		if tests.Outcome == types.Outcome(vocab.Empty) {
+			continue
+		}
+		// The producer records its outer status as the receipt's.
+		r.Outcome, r.Reason, r.Detail = types.Outcome(vocab.Empty), vocab.ReasonCompletedClean, ""
+		err = receipt.Check(goTest(), r, blobs)
+		o.check(errors.Is(err, receipt.ErrInvalid), "a receipt recorded clean over a %s inner predicate: %v", tests.Outcome, err)
 	}
 	return o.steps, o.violations, nil
 }
@@ -179,16 +190,24 @@ func proposalSubject(p types.ProposalID, binding types.Digest) types.Subject {
 }
 
 // unknownReviewerFamily: a reviewer counts as independent only with known
-// families disjoint from the proposer's; an unknown family on either side
-// blocks (11 "unknown reviewer family"; 06 rule 3).
+// families, recorded, disjoint from the proposer's known families; an
+// unknown or missing family on either side, or a shared one, blocks (11
+// "unknown reviewer family"; 06 rule 3).
 func unknownReviewerFamily(context.Context, string) (steps []Step, violations []string, err error) {
 	prp, err := ids.New("prp")
 	if err != nil {
 		return nil, nil, err
 	}
 	var o observe
-	for _, c := range []struct{ reviewer, proposer string }{{"claude", "gpt"}, {"unknown", "gpt"}, {"claude", "unknown"}} {
-		r, err := newReceipt(types.ReceiptKindReview, reviewPanel(), proposalSubject(types.ProposalID(prp), instrumentDigest), []string{c.reviewer},
+	for _, c := range []struct{ reviewer, proposer []string }{
+		{[]string{"claude"}, []string{"gpt"}},
+		{[]string{"unknown"}, []string{"gpt"}},
+		{[]string{"claude"}, []string{"unknown"}},
+		{[]string{}, []string{"gpt"}},
+		{[]string{"claude"}, []string{}},
+		{[]string{"claude"}, []string{"claude"}},
+	} {
+		r, err := newReceipt(types.ReceiptKindReview, reviewPanel(), proposalSubject(types.ProposalID(prp), instrumentDigest), c.reviewer,
 			pred("findings", vocab.Empty, vocab.ReasonCompletedClean))
 		if err == nil {
 			r, err = recorded(reviewPanel(), r, nil)
@@ -196,7 +215,7 @@ func unknownReviewerFamily(context.Context, string) (steps []Step, violations []
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := o.refused(receipt.Independent(r, []string{c.proposer})); err != nil {
+		if err := o.refused(receipt.Independent(r, c.proposer)); err != nil {
 			return nil, nil, err
 		}
 	}
