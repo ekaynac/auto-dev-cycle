@@ -41,9 +41,9 @@ async function doRun(m) {
   const start = (turn) => event({ event: "turn.start", turn, sub_call: mode === "unannounced" ? "s9" : "s1", reported_at: "2026-10-05T00:00:00Z" });
   const end = (turn) => event({ event: "turn.end", turn, sub_call: "s1", reported_at: "2026-10-05T00:00:01Z" });
   start(1);
-  // RAW_SHELL: a harness-internal tool the kit's policy does not allow.
-  const shell = process.env.RAW_SHELL === "1";
-  if (shell) event({ event: "tool.result", turn: 1, tool: "Shell", mediated_by_controller: false, delivered: null, bytes: 1 });
+  // RAW_HARNESS_TOOL: a harness-internal tool the kit's policy does not allow.
+  const shell = process.env.RAW_HARNESS_TOOL;
+  if (shell) event({ event: "tool.result", turn: 1, tool: shell, mediated_by_controller: false, delivered: null, bytes: 1 });
   if (mode === "dup-turn-start") start(1);
   event({ event: "delta.text", turn: 1, bytes: 4 });
   if (mode === "bad-event") event({ event: "delta.text", turn: 1 });

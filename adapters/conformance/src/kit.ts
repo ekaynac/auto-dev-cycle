@@ -321,11 +321,12 @@ class Session {
 }
 
 const handleOf = (name: string) => ({ attempt, handle: name, digest: "sha256:" + "0".repeat(64), size: 0 });
-/** The harness-internal tools the kit's policy allows, besides the mediated ones. */
+/** The harness-internal tools the kit's policy allows (tool_policy.allowed),
+ *  less any the case mediates: a tool is the harness's own or mediated, never both. */
 const harnessTools = ["Edit"];
-const prepareParams = (mediated: string[]) => ({ attempt, fencing_token: token, role: "builder", executor: "exe_01m3250vnfeyrv67x6w0ddqr6a", model: "m",
+const prepareParams = (allowed: string[], mediated: string[]) => ({ attempt, fencing_token: token, role: "builder", executor: "exe_01m3250vnfeyrv67x6w0ddqr6a", model: "m",
   workspace: { path: "/workspace", writable: true }, inputs: [], limits: { max_turns: 8, max_output_tokens: 8000, wall_seconds: 600 },
-  tool_policy: { allowed: [...harnessTools, ...mediated], mediated }, gateway: null, native_login: null });
+  tool_policy: { allowed, mediated }, gateway: null, native_login: null });
 const runParams = { attempt, fencing_token: token, call, prompt: handleOf("prompt.md"), response_schema: null };
 
 /** result checks a reply: a result (not an error) valid against schema. */
@@ -425,11 +426,14 @@ class Tools {
   cancelled = false;
   private readonly s: Session;
   private readonly mediated: string[];
+  /** allowed: the harness-internal tools of the policy the kit sends. */
+  readonly allowed: string[];
   private readonly mode: "answer" | "cancel";
 
   constructor(s: Session, mediated: string[], mode: "answer" | "cancel") {
     this.s = s;
     this.mediated = mediated;
+    this.allowed = harnessTools.filter((t) => !mediated.includes(t));
     this.mode = mode;
     s.onEvent = (e) => this.requested(e);
   }
@@ -488,7 +492,7 @@ class Tools {
 function checkTools(s: Session, t: Tools, completed: boolean) {
   for (const { at, e } of s.events) {
     if (e?.event !== "tool.result") continue;
-    if (e.mediated_by_controller === false && typeof e.tool === "string" && !harnessTools.includes(e.tool)) {
+    if (e.mediated_by_controller === false && typeof e.tool === "string" && !t.allowed.includes(e.tool)) {
       s.find("tool-policy", `a harness tool.result for ${e.tool}, which the tool policy does not allow`);
     }
     if (e.mediated_by_controller !== true) continue;
@@ -515,7 +519,7 @@ async function runCase(a: AdapterUnderTest, limits: Partial<Limits>, c: Case): P
   try {
     const d = result(s, "describe", await s.request("describe"), "adapter/describe-result");
     if (d && Number(String(d.contract_version).split(".")[0]) !== contractMajor) s.find("version", `contract version ${d.contract_version}, this kit checks major ${contractMajor}`);
-    const p = result(s, "prepare", await s.request("prepare", prepareParams(c.mediated)), "adapter/outcome");
+    const p = result(s, "prepare", await s.request("prepare", prepareParams(tools.allowed, c.mediated)), "adapter/outcome");
     if (p && p.outcome !== "empty" && p.outcome !== "found") s.find("prepare", `prepare refused the kit's ordinary attempt: ${p.outcome}/${p.reason}`);
     let completed = false;
     if (d && p) {

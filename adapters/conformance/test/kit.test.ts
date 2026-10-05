@@ -221,8 +221,13 @@ test("cancel during a tool call: best effort, but exercised and valid", async ()
 });
 
 test("a harness-internal tool outside the policy is red in every case", async () => {
-  const shell = (mode: string): AdapterUnderTest => ({ command: [process.execPath, rawMain], env: { RAW_MODE: mode, RAW_SHELL: "1" } });
+  const shell = (mode: string, tool = "Shell"): AdapterUnderTest => ({ command: [process.execPath, rawMain], env: { RAW_MODE: mode, RAW_HARNESS_TOOL: tool } });
   assert.deepEqual(checks(await roundTrip(shell("clean"))), ["tool-policy"]);
   assert.deepEqual(checks(await toolRoundTrip(shell("tool-clean"), "RunTest")), ["tool-policy"]);
   assert.deepEqual(checks(await cancelDuringTool(shell("cancel-stops"), "RunTest")), ["tool-policy"]);
+  // A mediated tool is never also the harness's own.
+  assert.deepEqual(checks(await toolRoundTrip(shell("tool-clean", "RunTest"), "RunTest")), ["tool-policy"]);
+  // Mediating the kit's harness tool keeps the policy valid: the SDK validates prepare.
+  const edit = await toolRoundTrip(fake("patch"), "Edit");
+  assert.ok(!checks(edit).includes("prepare") && checks(edit).includes("tool-policy"), JSON.stringify(edit));
 });
