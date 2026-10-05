@@ -58,8 +58,9 @@ cosmetics, refactors with no contract change.
 **Brief format** for both: the PR diff (`git diff main...HEAD`), the design note it implements, the acceptance
 criteria. A contract-PR brief also states the threat model (D43): honest use and adversarial behaviour by any party
 without elevated privileges are in scope (malicious API clients, forged adapter messages, hostile repositories, sandbox
-escape attempts, processes ignoring a cooperative lock); attacks needing privileges held before the exploit, including
-the operator deliberately overriding the build system, are Low at most. D43 never relaxes an existing contract or
+escape attempts, processes ignoring a cooperative lock, attacks starting from ordinary credentials or a limited grant);
+attacks requiring pre-existing elevated privileges, and the operator deliberately overriding the build system, are
+Low at most. D43 never relaxes an existing contract or
 §4's operator gate. Output: GO / GO with changes / NO-GO, and findings by severity. Block only on Critical/High. Reviews are saved
 to `docs/reviews/<date>-pr<N>-<reviewer>.md` in the PR itself.
 
