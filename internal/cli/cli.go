@@ -110,6 +110,16 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return couldNotRun("the controller's response is invalid: %v", err)
 	}
+	// The schema cannot say which outcomes a reason accompanies; the registry can.
+	if v, ok := resp.Variant.(*types.CommandRefused); ok {
+		reg, err := vocab.Load()
+		if err != nil {
+			return couldNotRun("the vocabulary: %v", err)
+		}
+		if err := reg.CheckRead(vocab.Result{Outcome: vocab.Outcome(v.Outcome), Reason: v.Reason, Detail: v.Detail}); err != nil {
+			return couldNotRun("the controller's refusal is invalid: %v", err)
+		}
+	}
 	if *asJSON {
 		_, err = fmt.Fprintf(stdout, "%s\n", raw)
 	} else {

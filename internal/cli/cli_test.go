@@ -22,7 +22,7 @@ const (
 	applied  = `{"disposition":"applied","command":"cmd_01m3250vz2ezn81cgvbkcn17jd","replayed":false,"approval":null,"first_seq":4,"last_seq":4,"effects":[],"result":{}}`
 	human    = `{"disposition":"proposed","proposal":"prp_01m3250vm7f6ktw39dszqnyddr","policy":"human","binding_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
 	review   = `{"disposition":"proposed","proposal":"prp_01m3250vm7f6ktw39dszqnyddr","policy":"independent_review","binding_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
-	notFound = `{"disposition":"refused","outcome":"failed","reason":"seat_not_held","detail":""}`
+	notFound = `{"disposition":"refused","outcome":"failed","reason":"seat_not_held","detail":"held by another supervisor"}`
 )
 
 func refused(outcome, reason string) string {
@@ -152,17 +152,19 @@ func TestExitCodes(t *testing.T) {
 		err  error
 		want int
 	}{
-		"applied":                {resp: applied, want: entry.ExitOK},
-		"proposed (human)":       {resp: human, want: entry.ExitProposed},
-		"proposed (review)":      {resp: review, want: entry.ExitProposed},
-		"refused":                {resp: notFound, want: entry.ExitRefused},
-		"stale expected state":   {resp: refused("failed", "stale_expected_state"), want: entry.ExitStale},
-		"stale attempt":          {resp: refused("failed", "stale_attempt"), want: entry.ExitStale},
-		"idempotency key reused": {resp: refused("failed", "idempotency_key_reused"), want: entry.ExitStale},
-		"could not run":          {resp: refused("could_not_run", "ambiguous_state"), want: entry.ExitCouldNotRun},
-		"transport error":        {err: errors.New("connection refused"), want: entry.ExitCouldNotRun},
-		"invalid response":       {resp: refused("found", "stale_attempt"), want: entry.ExitCouldNotRun},
-		"not JSON":               {resp: "<html>", want: entry.ExitCouldNotRun},
+		"applied":                                {resp: applied, want: entry.ExitOK},
+		"proposed (human)":                       {resp: human, want: entry.ExitProposed},
+		"proposed (review)":                      {resp: review, want: entry.ExitProposed},
+		"refused":                                {resp: notFound, want: entry.ExitRefused},
+		"stale expected state":                   {resp: refused("failed", "stale_expected_state"), want: entry.ExitStale},
+		"stale attempt":                          {resp: refused("failed", "stale_attempt"), want: entry.ExitStale},
+		"idempotency key reused":                 {resp: refused("failed", "idempotency_key_reused"), want: entry.ExitStale},
+		"could not run":                          {resp: refused("could_not_run", "ambiguous_state"), want: entry.ExitCouldNotRun},
+		"transport error":                        {err: errors.New("connection refused"), want: entry.ExitCouldNotRun},
+		"invalid response":                       {resp: refused("found", "stale_attempt"), want: entry.ExitCouldNotRun},
+		"not JSON":                               {resp: "<html>", want: entry.ExitCouldNotRun},
+		"an applied response missing its fields": {resp: `{"disposition":"applied","command":"cmd_01m3250vz2ezn81cgvbkcn17jd"}`, want: entry.ExitCouldNotRun},
+		"a reason with the wrong outcome":        {resp: refused("failed", "ambiguous_state"), want: entry.ExitCouldNotRun},
 	} {
 		code, _, errs := adc(&fake{resp: c.resp, err: c.err}, "seat", "take", "--expect", "3", "--reason", "r")
 		if code != c.want || (c.err != nil && !strings.Contains(errs, c.err.Error())) ||
