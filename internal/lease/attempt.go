@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -145,7 +146,7 @@ func Fence(current types.Attempt, id types.AttemptID, token int64) error {
 		return &Stale{fmt.Sprintf("attempt %s is not the unit's current attempt %s", id, current.ID)}
 	case token != current.FencingToken:
 		return &Stale{fmt.Sprintf("token %d is not the current token %d", token, current.FencingToken)}
-	case current.Publication != types.AttemptPublicationOpen: // open exactly while running (the schema's rule)
+	case current.Publication != types.AttemptPublicationOpen && !mutation.Is(mutation.FenceIgnoresClosedPublication): // open exactly while running (the schema's rule)
 		return &Stale{fmt.Sprintf("attempt %s is %s; its publication is closed", id, current.Status)}
 	}
 	return nil
