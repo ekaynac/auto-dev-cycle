@@ -3,4 +3,5 @@
 packages:
   - contract
   - fake
+  - conformance
   - ../gen/ts # the generated types and validators (make gen)
