@@ -15,6 +15,7 @@ import (
 	"github.com/gowebpki/jcs"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority/webauthn"
 	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -180,30 +181,38 @@ func IssueChallenge(id types.ChallengeID, p types.Proposal, confirmers []types.A
 		AllowedConfirmers: allowed, ExpiresAt: types.Time(now.Add(ChallengeTTL).UTC().Format(time.RFC3339))}, nil
 }
 
-// Assertion is a WebAuthn assertion the dashboard verified (D37): RP ID and
-// origin, challenge equality over nonce ‖ binding_digest, the signature,
-// user presence and verification, the counter, and that the credential is
-// the confirmer's. Only that verifier constructs one.
-type Assertion struct {
-	Challenge types.ChallengeID
-	Confirmer types.ActorID
-}
-
 // ConfirmHuman confirms an open, unexpired human-policy proposal with a
-// verified assertion for its challenge: the challenge is consumed and the
-// proposal confirmed together, for the writer to persist in one transaction.
-func ConfirmHuman(p types.Proposal, c types.Challenge, confirmer types.Actor, a Assertion, now time.Time) (types.Proposal, types.Challenge, error) {
-	if p.Policy != types.ProposalPolicyHuman {
-		return types.Proposal{}, types.Challenge{}, refusal(vocab.ReasonConfirmationRefused, "proposal %s is confirmed by %s, not a human", p.ID, p.Policy)
+// WebAuthn assertion for its challenge (04, D37): the assertion is verified
+// against the confirmer's registered credential and rp over the challenge's
+// nonce ‖ binding_digest, then the challenge is consumed, the proposal
+// confirmed and the credential's signature counter advanced together, for
+// the writer to persist in one transaction.
+func ConfirmHuman(p types.Proposal, c types.Challenge, confirmer types.Actor, cred webauthn.Credential, rp webauthn.RelyingParty,
+	a webauthn.Assertion, now time.Time) (types.Proposal, types.Challenge, webauthn.Credential, error) {
+	none := func(err error) (types.Proposal, types.Challenge, webauthn.Credential, error) {
+		return types.Proposal{}, types.Challenge{}, webauthn.Credential{}, err
 	}
-	if a.Challenge != c.ID || a.Confirmer != confirmer.ID {
-		return types.Proposal{}, types.Challenge{}, refusal(vocab.ReasonConfirmationRefused, "the assertion is not for challenge %s by %s", c.ID, confirmer.ID)
+	if p.Policy != types.ProposalPolicyHuman {
+		return none(refusal(vocab.ReasonConfirmationRefused, "proposal %s is confirmed by %s, not a human", p.ID, p.Policy))
+	}
+	if cred.Actor != confirmer.ID {
+		return none(refusal(vocab.ReasonConfirmationRefused, "the credential is not %s's", confirmer.ID))
+	}
+	challenge, err := webauthn.Challenge(c.Nonce, c.BindingDigest)
+	if err != nil {
+		return none(refusal(vocab.ReasonConfirmationRefused, "challenge %s: %v", c.ID, err))
+	}
+	count, err := webauthn.Verify(rp, cred, challenge, a)
+	if err != nil {
+		return none(refusal(vocab.ReasonConfirmationRefused, "challenge %s: %v", c.ID, err))
 	}
 	used, err := consumeChallenge(c, p, confirmer, now)
 	if err != nil {
-		return types.Proposal{}, types.Challenge{}, err
+		return none(err)
 	}
-	return confirmed(p), used, nil
+	n := cred
+	n.SignCount = count
+	return confirmed(p), used, n, nil
 }
 
 // consumeChallenge uses a challenge once, for the proposal it was issued

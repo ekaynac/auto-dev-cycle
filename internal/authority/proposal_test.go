@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority/fakeauthn"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority/webauthn"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -157,6 +159,31 @@ func challenge(t *testing.T, p types.Proposal) types.Challenge {
 	return c
 }
 
+var rp = webauthn.RelyingParty{ID: "adc.example", Origin: "https://adc.example"}
+
+func authenticator(t *testing.T, actor types.ActorID) *fakeauthn.Authenticator {
+	t.Helper()
+	a, err := fakeauthn.New(actor, rp, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// assert signs an assertion over c's nonce ‖ binding.
+func assert(t *testing.T, a *fakeauthn.Authenticator, c types.Challenge, binding types.Digest) webauthn.Assertion {
+	t.Helper()
+	ch, err := webauthn.Challenge(c.Nonce, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	as, err := a.Assert(ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return as
+}
+
 func TestChallenges(t *testing.T) {
 	p := proposal(t, Human)
 	c := challenge(t, p)
@@ -198,22 +225,38 @@ func TestChallenges(t *testing.T) {
 		t.Error("a nonce from a short random source")
 	}
 
+	// consume answers c with a fresh assertion from a's own authenticator.
 	consume := func(c types.Challenge, p types.Proposal, a types.Actor, at time.Time) error {
-		_, _, err := ConfirmHuman(p, c, a, Assertion{Challenge: c.ID, Confirmer: a.ID}, at)
+		auth := authenticator(t, a.ID)
+		_, _, _, err := ConfirmHuman(p, c, a, auth.Credential(), rp, assert(t, auth, c, c.BindingDigest), at)
 		return err
 	}
-	done, used, err := ConfirmHuman(p, c, operator, Assertion{Challenge: c.ID, Confirmer: opID}, now)
-	if err != nil || used.UsedAt == nil || c.UsedAt != nil || done.Status != types.ProposalStatusConfirmed || p.Status != types.ProposalStatusOpen {
+	auth := authenticator(t, opID)
+	done, used, cred, err := ConfirmHuman(p, c, operator, auth.Credential(), rp, assert(t, auth, c, c.BindingDigest), now)
+	if err != nil || used.UsedAt == nil || c.UsedAt != nil || done.Status != types.ProposalStatusConfirmed || p.Status != types.ProposalStatusOpen ||
+		cred.SignCount != 1 || auth.Credential().SignCount != 0 {
 		t.Fatalf("confirm: %v", err)
 	}
-	for name, a := range map[string]Assertion{"another challenge": {Challenge: "chl_01m3250v57fhm9v1z9xd1wk8gw", Confirmer: opID},
-		"another confirmer": {Challenge: c.ID, Confirmer: sup2ID}} {
-		if _, _, err := ConfirmHuman(p, c, operator, a, now); err == nil {
-			t.Errorf("an assertion for %s", name)
+	another := c
+	another.Nonce = strings.Repeat("08", 32)
+	for name, try := range map[string]func() error{
+		"another challenge": func() error {
+			_, _, _, err := ConfirmHuman(p, c, operator, auth.Credential(), rp, assert(t, auth, another, c.BindingDigest), now)
+			return err
+		},
+		"another actor's credential": func() error {
+			other := authenticator(t, sup2ID)
+			_, _, _, err := ConfirmHuman(p, c, operator, other.Credential(), rp, assert(t, other, c, c.BindingDigest), now)
+			return err
+		},
+		"a review proposal": func() error {
+			_, _, _, err := ConfirmHuman(proposal(t, IndependentReview), c, operator, auth.Credential(), rp, assert(t, auth, c, c.BindingDigest), now)
+			return err
+		},
+	} {
+		if got := refusalOf(t, try()); got != vocab.ReasonConfirmationRefused {
+			t.Errorf("an assertion for %s: %s", name, got.String())
 		}
-	}
-	if _, _, err := ConfirmHuman(proposal(t, IndependentReview), c, operator, Assertion{Challenge: c.ID, Confirmer: opID}, now); err == nil {
-		t.Error("a human confirmation of a review proposal")
 	}
 	expiredP := p
 	expiredP.ExpiresAt = "2026-10-05T11:59:59Z"

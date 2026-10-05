@@ -1,0 +1,20 @@
+{
+  "name": "replayed-expired-challenge",
+  "invariant": "A human confirmation counts only for a WebAuthn assertion verified against the confirmer's credential over an unused, unexpired challenge's nonce and this proposal's binding digest, from the dashboard's RP ID and origin, user present and verified, counter advancing (a counterless 0/0 credential is accepted; the challenge's single use stops its replay). Anything else is refused and changes no proposal, challenge or credential (04, D37).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "confirmation_refused"},
+    {"outcome": "failed", "reason": "confirmation_refused"},
+    {"outcome": "failed", "reason": "confirmation_refused"},
+    {"outcome": "failed", "reason": "confirmation_refused"},
+    {"outcome": "failed", "reason": "confirmation_refused"},
+    {"outcome": "failed", "reason": "confirmation_refused"},
+    {"outcome": "failed", "reason": "confirmation_refused"},
+    {"outcome": "failed", "reason": "confirmation_refused"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "proposal_not_open"},
+    {"outcome": "failed", "reason": "confirmation_refused"}
+  ],
+  "mutation": "webauthn.signature-unchecked"
+}
