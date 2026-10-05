@@ -125,13 +125,34 @@ it deploys:
   change recomputes the comparison, and an answer whose binding no longer matches does not apply. The merge
   effect revalidates it at commit time, like carry-over (13), under the mechanism adopted at that moment.
 - **Never found after deploy.** A post-deploy verifier that discovers a missing key is too late; the diff is the rule.
-- **Reading the declaration is specified apart.** Its own change (intake B2, part 2) specifies:
-  - the file's identity in each pinned tree;
-  - the entry types and the content shape it accepts;
-  - how a declaration is first introduced.
+- **Reading the declaration.** Whatever is not accepted below is `could_not_run` and keeps the merge held, never an
+  empty list. It resumes when a later generation reads a declaration that is accepted.
+  - **From the tree, by exact path.** `file` is an exact, repository-relative path. The declaration is the bytes of
+    the **regular blob** at that path in each pinned Git tree, read from the object store, never from a working
+    tree. It is read in the base and in the prospective tree.
+  - **Entries.** Each parent component must be a directory (a Git tree entry), and the final entry a regular-file
+    blob. A symlink or a submodule (gitlink) in either position is not accepted, so a reader never follows a link to
+    an unprotected file. Attributes and filters (text conversion, LFS) are never applied: the committed blob is the
+    declaration.
+  - **One identity, case-sensitive.** The path compares byte for byte with no case folding, exactly as the
+    protected-path matcher compares it, so the object read and the object protected are the same. A tree that also
+    holds a path differing only by case from the declaration, or from one of its parents, is not accepted, because
+    a case-insensitive checkout could resolve either.
+  - **Shape, within bounds.** Accepted content is UTF-8 JSON: an array of unique, non-empty strings, each a
+    configuration key. `null`, an object, a scalar, a non-string element and a duplicate are not accepted. The
+    reader is bounded before it decodes:
+    - at most 64 KiB of blob, checked from the object's size before reading;
+    - no value nested inside the array;
+    - at most 1,024 keys of at most 256 bytes each.
 
-  Until that lands the check is not enabled. Whatever it does not accept is `could_not_run` and keeps the merge held,
-  never an empty list.
+    Exceeding a bound is not accepted, without exhausting the reader. Only an accepted array reaches the comparison.
+  - **First introduction.** A profile may name a declaration only if the file already exists, accepted, at the base
+    branch's head. So a product introduces an empty or current declaration first, then adopts it.
+    - Adoption validation records the base commit it read and the declaration's blob identity as preconditions of
+      the adoption. Applying the adoption re-checks them, serialized with the merge queue of that base branch.
+    - If the head moved, the declaration is revalidated at the new head, and adoption is refused if it no longer
+      exists, accepted.
+    - A pinned base that lacks a named declaration afterwards is unexpected and is not accepted.
 - **Weakening the mechanism is weakening protection.** A profile adoption that disables the check (`source: none`),
   points it at another file or removes the file from the protected paths is classified `policy.weaken_protection`
   (04), so it needs a presence-verified human whoever proposes it. Its approval accepts the new mechanism, and it

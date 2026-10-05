@@ -198,7 +198,18 @@ golden file names:
     - a profile adoption that sets `source: none` or repoints the file is `policy.weaken_protection` and needs a
       human, and it does not answer a pending configuration question; a candidate merged across a mechanism change
       is checked under the mechanism adopted at commit;
-    - an unreadable declaration keeps the merge held (`could_not_run`) and resumes when a later generation reads it.
+    - an unreadable declaration keeps the merge held (`could_not_run`) and resumes when a later generation reads it;
+    - reading the declaration (B2 part 2), each case not accepted being `could_not_run` with the merge held:
+      - symlinks: a declaration that is a symlink, a change to its symlink target alone, and a parent replaced by a
+        symlink only in the prospective tree are not accepted;
+      - a nested declaration under ordinary directories is accepted;
+      - a case alias of the path or of a parent is not accepted; an NFC/NFD spelling is a different path;
+      - shapes: `null`, `{}`, `"KEY"`, `["KEY", null]`, a duplicate key, nesting, an oversized blob and too many or
+        too long keys are not accepted;
+      - a change to attributes alone changes nothing read;
+      - adoption: a profile naming a declaration absent at the base head is refused at adoption; a base that moves
+        between validation and adoption, removing the declaration, refuses the adoption;
+      - after the declaration lands and is adopted, a candidate adding a key reaches the operator's question.
   - a call killed mid-stream, on a single-call lease (its stream captured with no terminal result, with the
     controller's stop request, observed statuses and recorded end of stream linked; `completed: false` and the reason
     asserted through the real derivation):
