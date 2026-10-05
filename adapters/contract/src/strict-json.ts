@@ -9,6 +9,10 @@
 export class StrictJSONError extends Error {}
 
 const maxDepth = 128;
+/** A plain run at least this long is appended as one slice; shorter runs and
+ *  escapes collect as char codes, decoded in batches of codeBatch. */
+const longRun = 64;
+const codeBatch = 4096;
 const integer = /^-?(0|[1-9][0-9]*)/;
 
 export function parseStrict(text: string): unknown {
@@ -28,33 +32,47 @@ export function parseStrict(text: string): unknown {
   };
   const str = (): string => {
     i++; // the opening quote
+    // Building a string one piece at a time costs a heap node per piece, so
+    // long plain runs are appended as slices and everything else collects as
+    // char codes, decoded a batch at a time.
     let out = "";
+    let codes: number[] = [];
+    const flush = () => {
+      if (codes.length) out += String.fromCharCode(...codes);
+      codes = [];
+    };
+    const push = (...cs: number[]) => {
+      codes.push(...cs);
+      if (codes.length >= codeBatch) flush();
+    };
     for (;;) {
       if (i >= text.length) return fail("unterminated string");
       const c = text.charCodeAt(i);
       if (c === 0x22) {
         i++;
+        flush();
         return out;
       }
       if (c < 0x20) return fail("raw control character in a string");
       if (c !== 0x5c) {
-        // A run of plain characters is copied at once: building a string one
-        // character at a time costs a heap node per character. A raw lone
-        // surrogate cannot come from strictly decoded UTF-8.
+        // A raw lone surrogate cannot come from strictly decoded UTF-8.
         const from = i;
         while (i < text.length) {
           const d = text.charCodeAt(i);
           if (d === 0x22 || d === 0x5c || d < 0x20) break;
           i++;
         }
-        out += text.slice(from, i);
+        if (i - from >= longRun) {
+          flush();
+          out += text.slice(from, i);
+        } else for (let k = from; k < i; k++) push(text.charCodeAt(k));
         continue;
       }
       const e = text[i + 1];
       i += 2;
       const simple: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
       if (e in simple) {
-        out += simple[e];
+        push(simple[e].charCodeAt(0));
         continue;
       }
       if (e !== "u") return fail("invalid escape");
@@ -70,10 +88,10 @@ export function parseStrict(text: string): unknown {
         const lo = unit(i + 2);
         if (lo < 0xdc00 || lo > 0xdfff) return fail("lone high surrogate");
         i += 6;
-        out += String.fromCharCode(u, lo);
+        push(u, lo);
         continue;
       }
-      out += String.fromCharCode(u);
+      push(u);
     }
   };
   const num = (): number => {

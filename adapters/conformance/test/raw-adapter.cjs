@@ -35,7 +35,9 @@ const event = (e) => out({ jsonrpc: "2.0", method: "adapter.event", params: { ..
 async function doRun(m) {
   run = m;
   // Large invalid events: parsing them must not amplify the kit's heap.
-  if (mode === "big-strings") for (let i = 0; i < 4; i++) event({ event: "delta.text", turn: 1, bytes: 1, pad: "x".repeat(4 << 20) });
+  // RAW_PAD picks the padding: plain, escapes only, or the two alternating.
+  const pad = { plain: "x".repeat(4 << 20), escapes: "\n".repeat(4 << 20), alternating: "x\n".repeat(2 << 20) }[process.env.RAW_PAD || "plain"];
+  if (mode === "big-strings") for (let i = 0; i < 4; i++) event({ event: "delta.text", turn: 1, bytes: 1, pad });
   if (mode === "flood") {
     for (let i = 0; i < 200000; i++) event({ event: "heartbeat" });
   }
@@ -114,6 +116,12 @@ process.stdin.on("data", (chunk) => {
     const m = JSON.parse(line);
     if (big && mode === "size-errors") {
       out({ jsonrpc: "2.0", id: m.id, error: { code: -32600, message: "message too large" } });
+      continue;
+    }
+    // Malformed error values, which are no rejection.
+    const malformed = { "size-error-null": null, "size-error-false": false, "size-error-empty": {}, "size-error-types": { code: "bad", message: 42 } };
+    if (big && mode in malformed) {
+      out({ jsonrpc: "2.0", id: m.id, error: malformed[mode] });
       continue;
     }
     if (m.method === "describe") {

@@ -240,18 +240,25 @@ test("oversize: served at the bound, rejected one byte over", async () => {
   // Size-blind (serves it), ignoring it, and rejecting at the bound itself are red.
   assert.deepEqual(checks(await oversize(raw("clean"))), ["oversize"]);
   assert.deepEqual(checks(await oversize(raw("size-ignores"), {}, 1_000)), ["oversize"]);
+  // An error value that is not a JSON-RPC error object is no rejection.
+  for (const mode of ["size-error-null", "size-error-false", "size-error-empty", "size-error-types"]) {
+    assert.deepEqual(checks(await oversize(raw(mode))), ["envelope", "oversize"], mode);
+  }
   assert.ok(checks(await oversize(raw("size-off-by-one"))).includes("describe"));
   // Ending its output is not ending: the process must exit.
   assert.deepEqual(checks(await oversize(raw("size-closes"), {}, 1_000)), ["oversize"]);
 });
 
 test("large invalid events do not exhaust a bounded heap", () => {
-  // Four 4 MiB strings under a 96 MiB heap: findings, not an out-of-memory abort.
+  // Four 4 MiB strings under a 96 MiB heap, plain, escaped or alternating:
+  // findings, not an out-of-memory abort.
   const kit = new URL("../src/kit.ts", import.meta.url).href;
-  const code = `const k = await import(${JSON.stringify(kit)});
-    const fs = await k.roundTrip({ command: [process.execPath, ${JSON.stringify(rawMain)}], env: { RAW_MODE: "big-strings" } });
-    console.log(JSON.stringify([...new Set(fs.map((f) => f.check))]));`;
-  const r = spawnSync(process.execPath, ["--max-old-space-size=96", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 60_000 });
-  assert.equal(r.status, 0, r.stderr.slice(-2000));
-  assert.deepEqual(JSON.parse(r.stdout.trim().split("\n").pop()!), ["event"]);
+  for (const pad of ["plain", "escapes", "alternating"]) {
+    const code = `const k = await import(${JSON.stringify(kit)});
+      const fs = await k.roundTrip({ command: [process.execPath, ${JSON.stringify(rawMain)}], env: { RAW_MODE: "big-strings", RAW_PAD: "${pad}" } });
+      console.log(JSON.stringify([...new Set(fs.map((f) => f.check))]));`;
+    const r = spawnSync(process.execPath, ["--max-old-space-size=96", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 60_000 });
+    assert.equal(r.status, 0, `${pad}: ${r.stderr.slice(-2000)}`);
+    assert.deepEqual(JSON.parse(r.stdout.trim().split("\n").pop()!), ["event"], pad);
+  }
 });

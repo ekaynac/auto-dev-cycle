@@ -260,6 +260,11 @@ class Session {
     }
     const isResponse = typeof msg.id === "number" && !("method" in msg) && ("result" in msg) !== ("error" in msg);
     if (!isResponse) return this.find("envelope", `neither a response nor an adapter.event notification: ${line.slice(0, 200)}`);
+    // An error is a JSON-RPC error object, or it is no answer at all.
+    const err = msg.error;
+    if ("error" in msg && (typeof err !== "object" || err === null || Array.isArray(err) || !Number.isInteger(err.code) || typeof err.message !== "string")) {
+      return this.find("envelope", `an error that is not a JSON-RPC error object: ${line.slice(0, 200)}`);
+    }
     const id = msg.id as number;
     if (this.answered.has(id)) return this.find("correlation", `a second reply for request ${id}`);
     if (!this.pending.has(id)) return this.find("correlation", `a reply for request ${id}, which was not asked`);
