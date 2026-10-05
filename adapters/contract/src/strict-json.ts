@@ -15,8 +15,13 @@ const longRun = 64;
 const codeBatch = 4096;
 const integer = /^-?(0|[1-9][0-9]*)/;
 
-export function parseStrict(text: string): unknown {
+/** parseStrict reads one JSON text. maxValues, when given, bounds how many
+ *  values (containers and scalars) it builds, so a reader that must survive
+ *  hostile input (the conformance kit) fails before allocating them; the
+ *  default accepts any count, as the Go reader does. */
+export function parseStrict(text: string, maxValues = Infinity): unknown {
   let i = 0;
+  let values = 0;
   const fail = (why: string): never => {
     throw new StrictJSONError(`${why} at offset ${i}`);
   };
@@ -109,6 +114,7 @@ export function parseStrict(text: string): unknown {
   };
   const value = (depth: number): unknown => {
     if (depth >= maxDepth) return fail("nesting too deep"); // at most maxDepth levels
+    if (++values > maxValues) return fail(`more than ${maxValues} values`);
     ws();
     const c = text[i];
     if (c === "{") {

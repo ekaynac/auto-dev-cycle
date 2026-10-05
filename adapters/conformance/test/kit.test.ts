@@ -250,15 +250,15 @@ test("oversize: served at the bound, rejected one byte over", async () => {
 });
 
 test("large invalid events do not exhaust a bounded heap", () => {
-  // Four 4 MiB strings under a 96 MiB heap, plain, escaped or alternating:
-  // findings, not an out-of-memory abort.
+  // Four 4 MiB strings under a 96 MiB heap, plain, escaped or alternating,
+  // or millions of nested arrays: findings, not an out-of-memory abort.
   const kit = new URL("../src/kit.ts", import.meta.url).href;
-  for (const pad of ["plain", "escapes", "alternating"]) {
+  for (const [pad, want] of [["plain", "event"], ["escapes", "event"], ["alternating", "event"], ["dense", "framing"]]) {
     const code = `const k = await import(${JSON.stringify(kit)});
       const fs = await k.roundTrip({ command: [process.execPath, ${JSON.stringify(rawMain)}], env: { RAW_MODE: "big-strings", RAW_PAD: "${pad}" } });
       console.log(JSON.stringify([...new Set(fs.map((f) => f.check))]));`;
     const r = spawnSync(process.execPath, ["--max-old-space-size=96", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 60_000 });
     assert.equal(r.status, 0, `${pad}: ${r.stderr.slice(-2000)}`);
-    assert.deepEqual(JSON.parse(r.stdout.trim().split("\n").pop()!), ["event"], pad);
+    assert.deepEqual(JSON.parse(r.stdout.trim().split("\n").pop()!), [want], pad);
   }
 });

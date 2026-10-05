@@ -56,6 +56,9 @@ export const attempt = "att_01m3250vnfeyrv67x6w0ddqr6a";
 export const call = "cal_01m3250v9xft08ssr4ygq6g2np";
 const token = 3;
 const maxFindings = 100;
+/** The values the kit builds from one message: far above any contract
+ *  message, far below what exhausts its heap. */
+const maxValues = 100_000;
 const stderrTail = 64 << 10;
 /** The period of the kit's own stall watch during the run. */
 const stallTickMs = 10;
@@ -240,7 +243,7 @@ class Session {
   private accept(line: string) {
     let m: unknown;
     try {
-      m = parseStrict(line);
+      m = parseStrict(line, maxValues);
     } catch (e) {
       return this.find("framing", `a line that is not strict JSON: ${(e as Error).message}`);
     }

@@ -35,8 +35,12 @@ const event = (e) => out({ jsonrpc: "2.0", method: "adapter.event", params: { ..
 async function doRun(m) {
   run = m;
   // Large invalid events: parsing them must not amplify the kit's heap.
-  // RAW_PAD picks the padding: plain, escapes only, or the two alternating.
-  const pad = { plain: "x".repeat(4 << 20), escapes: "\n".repeat(4 << 20), alternating: "x\n".repeat(2 << 20) }[process.env.RAW_PAD || "plain"];
+  // RAW_PAD picks the padding: plain, escapes only, the two alternating, or
+  // dense containers (32768 strings, each in 100 nested arrays).
+  const nest = (v, n) => (n ? [nest(v, n - 1)] : v);
+  const pads = { plain: () => "x".repeat(4 << 20), escapes: () => "\n".repeat(4 << 20), alternating: () => "x\n".repeat(2 << 20),
+    dense: () => Array.from({ length: 32768 }, () => nest("xx", 100)) };
+  const pad = mode === "big-strings" ? pads[process.env.RAW_PAD || "plain"]() : null;
   if (mode === "big-strings") for (let i = 0; i < 4; i++) event({ event: "delta.text", turn: 1, bytes: 1, pad });
   if (mode === "flood") {
     for (let i = 0; i < 200000; i++) event({ event: "heartbeat" });
