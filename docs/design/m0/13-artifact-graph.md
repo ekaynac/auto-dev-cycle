@@ -5,6 +5,7 @@ Status: revision 2, 2026-10-03.
   architectural choices that remove their failure classes".
 - Revision 2 applies Astra's review of revision 1 (`docs/reviews/2026-10-03-pr5-d40-astra.md`, cited `[G#]`). That
   review found several "by construction" claims overstated; they are corrected or narrowed here.
+- 2026-10-05: the reviewer roster joins a review's identity (intake B1, `docs/research/2026-10-05-nobetci-phase1-close-intake.md`).
 
 ## Why
 
@@ -51,6 +52,13 @@ Result:                            # what was computed: immutable  [G1]
   - Each key has one **selected result** at a time. An explicit invalidation (an operator action, or a definition or
     instrument version change) bumps the generation, so the key changes, a new result is produced, and dependants
     re-key. No artifact is ever overwritten.
+- **The reviewer roster is part of a review's identity** (intake B1). A review node's `params` carry its roster: for
+  each member, the executor and its model family (05 `independence`). The roster is in the params digest, so it is in
+  the computation key. Changing who reviews makes a **new review node**, never a hand-over inside an existing one: a
+  result produced by the old roster cannot satisfy the new key. Conclusions-only equivalence (below) applies to a
+  review's inputs (review←evidence, review←gate), never to a review result itself, so it cannot carry a review across
+  rosters. A hold that waits on a removed member belongs to the old node and
+  is retired with it, explicitly, when the new node is instantiated.
 - **Reuse decisions use typed conclusions.** For the declared edges below, a consumer may treat a new result as
   equivalent to one it already used if their `conclusions` projections are equal **and** the subject, demand,
   instrument digest and restrictions are identical. Equivalence decides only whether to re-run. Manifests still list
@@ -207,6 +215,8 @@ Fixtures, each tied to the class it addresses:
 - an undeclared ruling never enters a review's controller context;
 - an answer reaches only the successor review;
 - equal conclusions reuse a review; a changed step outcome re-runs it;
+- a review whose roster changes is a new node: the old roster's result never satisfies it, and the old node's hold is
+  retired;
 - a review cannot start with another tree's gate result;
 - a 402 **before** the first edit is `could_not_run`, never `empty`;
 - a 402 **after** edits is a sealed `partial_patch`;
