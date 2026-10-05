@@ -40,9 +40,16 @@ const (
 	// BindingDigestIgnored matches a review to a proposal by id alone, not
 	// by the binding digest it names.
 	BindingDigestIgnored = "receipt.binding-digest-ignored"
+	// InheritedUsageNarrows reads dropping a usage override (inheriting the
+	// installation's, which may be anything) as no widening.
+	InheritedUsageNarrows = "authority.inherited-usage-narrows"
+	// ProtectedCheckSupervisorsOnly refuses a widening protected change only
+	// for supervisors, as if operators and the system were exempt.
+	ProtectedCheckSupervisorsOnly = "authority.protected-check-supervisors-only"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
 var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExclusive, FenceIgnoresClosedPublication,
 	IdentityIgnoresLineage, CoverageTrustsDeclarations,
-	OuterStatusTrusted, AbsentPredicateUnchecked, UnknownFamilyIndependent, BindingDigestIgnored}
+	OuterStatusTrusted, AbsentPredicateUnchecked, UnknownFamilyIndependent, BindingDigestIgnored,
+	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly}

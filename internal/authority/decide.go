@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -122,7 +123,7 @@ func Decide(reg *vocab.Registry, r Request) Decision {
 	// authority or data policy, for any actor and under any confirmation:
 	// its effective change may hold no class but its own (04 "Protected
 	// changes"). Anything more goes through the dedicated widening action.
-	if slices.Contains(protectedChanges, r.Action) {
+	if slices.Contains(protectedChanges, r.Action) && (r.Actor.Kind == types.ActorKindSupervisor || !mutation.Is(mutation.ProtectedCheckSupervisorsOnly)) {
 		for _, c := range classes {
 			if c != r.Action {
 				return refuse(vocab.ReasonProtectedChangeWidens, "%s also changes %s; use the dedicated action", r.Action, c)

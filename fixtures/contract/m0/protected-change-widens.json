@@ -1,0 +1,11 @@
+{
+  "name": "protected-change-widens",
+  "invariant": "A protected-document change can never widen authority or data policy: one whose new content widens destinations, removes protection or loosens routing is refused for every actor kind, operator and system included, while one that widens nothing is allowed for an operator and proposed for independent review for a supervisor (04 \"Protected changes\").",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "protected_change_widens"},
+    {"outcome": "failed", "reason": "protected_change_widens"},
+    {"outcome": "failed", "reason": "protected_change_widens"}
+  ],
+  "mutation": "authority.protected-check-supervisors-only"
+}
