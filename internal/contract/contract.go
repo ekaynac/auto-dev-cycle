@@ -236,29 +236,62 @@ func (r registry) validate(schema string, data []byte) error {
 	if !ok {
 		return &Error{Schema: schema, Detail: "unknown schema"}
 	}
-	if !utf8.Valid(data) {
-		return &Error{Schema: schema, Detail: "not JSON: invalid UTF-8"}
-	}
-	if err := checkEscapes(data); err != nil {
-		return &Error{Schema: schema, Detail: err.Error()}
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	doc, err := readValue(dec)
+	doc, err := parse(data, false)
 	if err != nil {
-		var se *strictError
-		if errors.As(err, &se) {
-			return &Error{Schema: schema, Detail: se.msg}
-		}
-		return &Error{Schema: schema, Detail: "not JSON: " + err.Error()}
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return &Error{Schema: schema, Detail: "trailing data after the document"}
+		return &Error{Schema: schema, Detail: err.Error()}
 	}
 	if err := s.Validate(doc); err != nil {
 		return &Error{Schema: schema, Detail: err.Error()}
 	}
 	return nil
+}
+
+// Wire limits: the adapter protocol's strict reader (ReadStrict) bounds what
+// Validate does not, as the TypeScript reader (adapters/contract
+// strict-json.ts) does.
+const (
+	// MaxDepth is the most values on any path from the root: the root is at
+	// level 1, so 128 nested arrays are read and 129 are refused.
+	MaxDepth = 128
+	// MaxSafeInteger is the largest integer magnitude both readers represent
+	// exactly (2^53−1, Number.MAX_SAFE_INTEGER).
+	MaxSafeInteger = 1<<53 - 1
+)
+
+// ReadStrict reads one JSON text by the adapter wire's rules (docs/design/m0/09
+// "Process model"): Validate's byte-level rules (valid UTF-8, no unpaired
+// surrogate escape, no duplicate key, integer spellings only, no -0, no
+// trailing data) plus at most MaxDepth levels and integers within
+// ±MaxSafeInteger. Objects are map[string]any, numbers json.Number.
+func ReadStrict(data []byte) (any, error) { return parse(data, true) }
+
+// parse is the strict reader behind Validate and ReadStrict; wire adds the
+// depth and integer-range bounds.
+func parse(data []byte, wire bool) (any, error) {
+	if !utf8.Valid(data) {
+		return nil, errors.New("not JSON: invalid UTF-8")
+	}
+	if err := checkEscapes(data); err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	depth := 0
+	if !wire {
+		depth = -1 // unbounded here; the decoder bounds nesting (10000 levels)
+	}
+	doc, err := readValue(dec, depth)
+	if err != nil {
+		var se *strictError
+		if errors.As(err, &se) {
+			return nil, se
+		}
+		return nil, errors.New("not JSON: " + err.Error())
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("trailing data after the document")
+	}
+	return doc, nil
 }
 
 // checkEscapes walks the \u escapes inside string literals and refuses an
@@ -309,9 +342,19 @@ type strictError struct{ msg string }
 func (e *strictError) Error() string { return e.msg }
 
 // readValue builds the generic value from the token stream, refusing duplicate
-// object keys at any depth and numbers not spelled as integers. The decoder
-// bounds nesting (10000 levels), which bounds the recursion.
-func readValue(dec *json.Decoder) (any, error) {
+// object keys at any depth and numbers not spelled as integers. depth is the
+// number of values above this one, or negative for no wire bounds; with wire
+// bounds it refuses a value deeper than MaxDepth and an integer outside
+// ±MaxSafeInteger. The decoder bounds nesting (10000 levels), which bounds
+// the recursion.
+func readValue(dec *json.Decoder, depth int) (any, error) {
+	if depth >= MaxDepth {
+		return nil, &strictError{fmt.Sprintf("nesting deeper than %d levels", MaxDepth)}
+	}
+	next := depth
+	if depth >= 0 {
+		next = depth + 1
+	}
 	tok, err := dec.Token()
 	if err != nil {
 		if errors.Is(err, io.EOF) {
@@ -324,13 +367,16 @@ func readValue(dec *json.Decoder) (any, error) {
 		if !integer.MatchString(string(t)) {
 			return nil, &strictError{"number " + string(t) + " is not spelled as an integer"}
 		}
+		if n, err := strconv.ParseInt(string(t), 10, 64); depth >= 0 && (err != nil || n > MaxSafeInteger || n < -MaxSafeInteger) {
+			return nil, &strictError{"integer " + string(t) + " is outside ±(2^53−1)"}
+		}
 		return t, nil
 	case json.Delim:
 		switch t {
 		case '[':
 			arr := []any{}
 			for dec.More() {
-				v, err := readValue(dec)
+				v, err := readValue(dec, next)
 				if err != nil {
 					return nil, err
 				}
@@ -349,7 +395,7 @@ func readValue(dec *json.Decoder) (any, error) {
 				if _, dup := obj[k]; dup {
 					return nil, &strictError{fmt.Sprintf("duplicate object key %q", k)}
 				}
-				v, err := readValue(dec)
+				v, err := readValue(dec, next)
 				if err != nil {
 					return nil, err
 				}

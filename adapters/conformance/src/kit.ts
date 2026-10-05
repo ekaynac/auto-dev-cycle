@@ -19,7 +19,7 @@ import { spawn } from "node:child_process";
 import { randomBytes, randomInt } from "node:crypto";
 import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
-import { frame, lines, maxMessageBytes, parseStrict } from "@adc/contract";
+import { classify, frame, lines, maxMessageBytes, parseStrict } from "@adc/contract";
 
 type Validator = ((doc: unknown) => boolean) & { errors?: unknown };
 const validators: Record<string, Validator> = createRequire(import.meta.url)("@adc/contract-gen/validators.cjs");
@@ -247,27 +247,21 @@ class Session {
     } catch (e) {
       return this.find("framing", `a line that is not strict JSON: ${(e as Error).message}`);
     }
-    if (typeof m !== "object" || m === null || Array.isArray(m) || (m as Msg).jsonrpc !== "2.0") {
-      return this.find("envelope", `not a JSON-RPC 2.0 message: ${line.slice(0, 200)}`);
+    const c = classify(m);
+    if (c.kind === "invalid") {
+      const what = c.why === "an adapter.event without object params" ? show(m) : line.slice(0, 200);
+      return this.find("envelope", `${c.why}: ${what}`);
     }
-    const msg = m as Msg;
-    if (msg.method === "adapter.event" && !("id" in msg)) {
+    if (c.kind === "event") {
       const now = performance.now();
-      if (typeof msg.params !== "object" || msg.params === null || Array.isArray(msg.params)) return this.find("envelope", `an adapter.event without object params: ${show(msg)}`);
-      if (!this.runWindow || this.runWindow.to !== null) return this.find("run-boundary", `an event outside the run: ${show(msg.params)}`);
+      if (!this.runWindow || this.runWindow.to !== null) return this.find("run-boundary", `an event outside the run: ${show(c.params)}`);
       // Only a valid event is kept: an invalid one is a finding, never retained.
-      if (!validators["adapter/event"](msg.params)) return this.find("event", `an event that does not match adapter/event: ${show(msg.params)}`);
-      this.events.push({ at: now, e: msg.params });
-      this.onEvent?.(msg.params);
+      if (!validators["adapter/event"](c.params)) return this.find("event", `an event that does not match adapter/event: ${show(c.params)}`);
+      this.events.push({ at: now, e: c.params });
+      this.onEvent?.(c.params);
       return;
     }
-    const isResponse = typeof msg.id === "number" && !("method" in msg) && ("result" in msg) !== ("error" in msg);
-    if (!isResponse) return this.find("envelope", `neither a response nor an adapter.event notification: ${line.slice(0, 200)}`);
-    // An error is a JSON-RPC error object, or it is no answer at all.
-    const err = msg.error;
-    if ("error" in msg && (typeof err !== "object" || err === null || Array.isArray(err) || !Number.isInteger(err.code) || typeof err.message !== "string")) {
-      return this.find("envelope", `an error that is not a JSON-RPC error object: ${line.slice(0, 200)}`);
-    }
+    const msg = c.reply as Msg;
     const id = msg.id as number;
     if (this.answered.has(id)) return this.find("correlation", `a second reply for request ${id}`);
     if (!this.pending.has(id)) return this.find("correlation", `a reply for request ${id}, which was not asked`);
