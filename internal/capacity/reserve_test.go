@@ -8,6 +8,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -40,16 +41,34 @@ type world struct {
 	t     *testing.T
 	s     *eventstore.Store
 	holds map[string]types.Hold
+	close func()
 }
+
+// How a store composes capacity.
+type wiring int
+
+const (
+	hooked    wiring = iota // capacity.Hook
+	unwired                 // capacity after the lease projector, which does not ask it
+	noneAtAll               // the lease projector alone
+)
 
 func open(t *testing.T, groups ...types.ResourceGroup) *world {
 	t.Helper()
 	return openWith(t, true, groups...)
 }
 
-// openWith composes the capacity hook after the lease projector; wired
-// says whether the lease projector asks it which leases owe no restore.
 func openWith(t *testing.T, wired bool, groups ...types.ResourceGroup) *world {
+	t.Helper()
+	how := hooked
+	if !wired {
+		how = unwired
+	}
+	return openAt(t, filepath.Join(t.TempDir(), "state"), how, groups...)
+}
+
+// openAt opens the store in dir, composing capacity over groups as how says.
+func openAt(t *testing.T, dir string, how wiring, groups ...types.ResourceGroup) *world {
 	t.Helper()
 	reg, err := vocab.Load()
 	if err != nil {
@@ -59,7 +78,6 @@ func openWith(t *testing.T, wired bool, groups ...types.ResourceGroup) *world {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(t.TempDir(), "state")
 	lock, err := eventstore.AcquireLock(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -69,19 +87,24 @@ func openWith(t *testing.T, wired bool, groups ...types.ResourceGroup) *world {
 		t.Fatal(err)
 	}
 	lp := lease.Projector{Blobs: blobs, Holds: reg.Holds}
-	if wired {
-		lp.Groups = r
+	project := capacity.Hook(lp, r)
+	switch how {
+	case noneAtAll:
+		project = lp.Project
+	case unwired:
+		project = func(tx *eventstore.Tx, evs []eventstore.Event) error {
+			return errors.Join(lp.Project(tx, evs), r.Project(tx, evs))
+		}
 	}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: lease.Kinds(), Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
-			Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
-				return errors.Join(lp.Project(tx, evs), r.Project(tx, evs))
-			}}})
+		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: project}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close(); lock.Release() })
-	return &world{t: t, s: s, holds: reg.Holds}
+	var once sync.Once
+	done := func() { once.Do(func() { s.Close(); lock.Release() }) }
+	t.Cleanup(done)
+	return &world{t: t, s: s, holds: reg.Holds, close: done}
 }
 
 func (w *world) do(fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) error {
@@ -295,5 +318,151 @@ func TestNewReservationsRefusesUnwiredGroups(t *testing.T) {
 		if _, err := capacity.NewReservations(gs); err == nil {
 			t.Errorf("%s was accepted", name)
 		}
+	}
+}
+
+// A command's events project exactly as they would one at a time: a slot
+// lease's grant, start, stop, revocation and settlement in one command
+// settle and return its slots, as the same events in five commands do.
+func TestBatchProjectsLikeSingleEvents(t *testing.T) {
+	slots := grp(gpu, types.ResourceGroupKindConcurrency, types.CapacityUnitSlots, lim(4))
+	single := open(t, slots)
+	var all []eventstore.Event
+	record := func(fn func(*eventstore.Tx) ([]eventstore.Event, error)) {
+		t.Helper()
+		if err := single.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			evs, err := fn(tx)
+			all = append(all, evs...)
+			return evs, err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := single.requested(reserve(gpu, 4, types.CapacityUnitSlots))
+	att := types.AttemptID("att_01m3250vkwffc979nzjw0g2sf9")
+	for _, fn := range lifecycle(single, id, att) {
+		record(fn)
+	}
+	if n := single.outstanding(gpu); n != 0 {
+		t.Fatalf("one event per command: outstanding %d, want 0", n)
+	}
+	// The same lifecycle in one command, on a fresh store with the same
+	// requested lease.
+	batch := open(t, slots)
+	l := leaseOf(t, single, id)
+	l.State, l.Hold, l.Attempt, l.Settlement = types.LeaseStateRequested, nil, nil, nil
+	if err := batch.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := batch.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return all, nil }); err != nil {
+		t.Fatalf("the batch was refused: %v", err)
+	}
+	if n := batch.outstanding(gpu); n != 0 {
+		t.Fatalf("one command: outstanding %d, want 0", n)
+	}
+	if diffs, err := batch.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %v", diffs, err)
+	}
+}
+
+// lifecycle is a requested lease's grant, attempt start and stop,
+// revocation and settlement, one command each.
+func lifecycle(w *world, id types.LeaseID, att types.AttemptID) []func(*eventstore.Tx) ([]eventstore.Event, error) {
+	return []func(*eventstore.Tx) ([]eventstore.Event, error){
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.ChangeLease(tx, id, 1, granted, w.holds)
+		},
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.StartAttempt(tx, id, 2, att, types.AttemptBase{Tree: "git:cccccccccccccccccccccccccccccccccccccccc", ContractRevision: "7"})
+		},
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.ChangeAttempt(tx, att, 1, lease.AttemptEvent{Kind: lease.StopRequested, StopReason: types.AttemptStopReasonValueRevoke})
+		},
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.ChangeLease(tx, id, 3, lease.LeaseEvent{Kind: lease.Revoked, Reason: "test"}, w.holds)
+		},
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.ChangeLease(tx, id, 4, lease.LeaseEvent{Kind: lease.Settled,
+				Settlement: &types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: []types.CallID{}}}, w.holds)
+		},
+	}
+}
+
+func leaseOf(t *testing.T, w *world, id types.LeaseID) (l types.Lease) {
+	t.Helper()
+	if err := w.s.View(context.Background(), func(tx *eventstore.Tx) error {
+		raw, ok, err := tx.Get(lease.LeaseProjection, string(id))
+		if err != nil || !ok {
+			return errors.Join(err, errors.New("no lease"))
+		}
+		var rec struct {
+			Record types.Lease `json:"record"`
+		}
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			return err
+		}
+		l = rec.Record
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// A lease granted before capacity was wired is never read as one capacity
+// granted: CheckHistory refuses the history, RestoreFree stays false live
+// and after a rebuild (which reports the difference rather than adopting
+// it), and capacity refuses to return what it never reserved.
+func TestGrantBeforeWiring(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	tokens := grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(10))
+	before := openAt(t, dir, noneAtAll, tokens)
+	id := before.requested(reserve(quota, 4, types.CapacityUnitTokens))
+	if err := before.change(id, 1, granted); err != nil {
+		t.Fatal(err)
+	}
+	before.close()
+	w := openAt(t, dir, hooked, tokens)
+	r, err := capacity.NewReservations([]types.ResourceGroup{tokens})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(when string) {
+		t.Helper()
+		if err := w.s.View(context.Background(), func(tx *eventstore.Tx) error {
+			if err := capacity.CheckHistory(tx); err == nil || !strings.Contains(err.Error(), "before capacity was wired") {
+				t.Errorf("%s: CheckHistory accepted a grant from before the wiring: %v", when, err)
+			}
+			free, err := r.RestoreFree(tx, id)
+			if free {
+				t.Errorf("%s: a grant from before the wiring reads as restore-free", when)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check("live")
+	if diffs, err := w.s.RebuildProjections(context.Background()); err != nil || len(diffs) == 0 {
+		t.Fatalf("the rebuild adopted the pre-wiring grant silently: %v %v", diffs, err)
+	}
+	check("after the rebuild")
+	for i, e := range []lease.LeaseEvent{{Kind: lease.Expired}, {Kind: lease.Released}} {
+		err := w.change(id, int64(2+i), e)
+		if e.Kind == lease.Released {
+			if err == nil || !strings.Contains(err.Error(), "not granted by capacity") {
+				t.Fatalf("capacity returned a reservation it never made: %v", err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A history capacity projected from its first grant passes.
+	fresh := open(t, tokens)
+	if err := fresh.change(fresh.requested(reserve(quota, 1, types.CapacityUnitTokens)), 1, granted); err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.s.View(context.Background(), capacity.CheckHistory); err != nil {
+		t.Fatal(err)
 	}
 }

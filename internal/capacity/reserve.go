@@ -4,6 +4,7 @@ package capacity
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -17,7 +18,8 @@ import (
 
 // Projections: each resource group's outstanding reservations (what
 // granted leases reserved and have not yet returned) with its capacity
-// revision, and the leases capacity granted that have not yet ended.
+// revision, and every lease capacity granted (kept once the lease ends,
+// so CheckHistory can tell a store whose grants it all projected).
 const (
 	ReservedProjection = "capacity_reserved"
 	GrantedProjection  = "capacity_granted"
@@ -53,8 +55,9 @@ func (e *Exhausted) Error() string {
 // for the ledger's affordability rule, window resets and evidence-target
 // restores for their events, and an uncertain liability for its amount on
 // the group's ledger; until then such a group or settlement is refused.
-// Capacity must be wired from a store's first grant: a lease it granted
-// holds no evidence target, which RestoreFree tells the lease projector.
+// Capacity must be wired from a store's first grant (CheckHistory): a
+// lease it granted holds no evidence target, which RestoreFree tells the
+// lease projector. Compose it with Hook.
 type Reservations struct {
 	groups map[types.ResourceGroupID]types.ResourceGroup
 }
@@ -82,11 +85,64 @@ func NewReservations(groups []types.ResourceGroup) (Reservations, error) {
 
 // RestoreFree reports whether capacity granted the lease, which therefore
 // holds no evidence target and owes no restore (lease.Groups). The record
-// is a fold over the log, written at the grant and dropped when the lease
-// ends.
+// is a fold over the log, written at the grant.
 func (r Reservations) RestoreFree(tx *eventstore.Tx, id types.LeaseID) (bool, error) {
 	_, ok, err := tx.Get(GrantedProjection, string(id))
 	return ok, err
+}
+
+// Hook composes the lease projector and r into one Project hook, event by
+// event: the lease projector accepts each event, then r folds it, so a
+// command's events project exactly as they would one at a time (a rebuild
+// replays them singly). The lease projector asks r which leases owe no
+// restore.
+func Hook(p lease.Projector, r Reservations) func(*eventstore.Tx, []eventstore.Event) error {
+	p.Groups = r
+	return func(tx *eventstore.Tx, evs []eventstore.Event) error {
+		for i := range evs {
+			one := evs[i : i+1]
+			if err := p.Project(tx, one); err != nil {
+				return err
+			}
+			if err := r.Project(tx, one); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// CheckHistory refuses to run capacity over a store with a lease granted
+// before capacity was wired: the log cannot say that capacity admitted
+// that grant, so a rebuild would read it as one capacity granted. Call it
+// on the store's projections (a View) before admitting commands. A lease
+// still requested or waiting was never granted.
+func CheckHistory(tx *eventstore.Tx) error {
+	keys, err := tx.Keys(lease.LeaseProjection, "")
+	if err != nil {
+		return err
+	}
+	for _, id := range keys {
+		raw, _, err := tx.Get(lease.LeaseProjection, id)
+		if err != nil {
+			return err
+		}
+		var rec struct {
+			Record struct {
+				State types.LeaseState `json:"state"`
+			} `json:"record"`
+		}
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			return fmt.Errorf("capacity: lease %s: %w", id, err)
+		}
+		if s := rec.Record.State; s == types.LeaseStateRequested || s == types.LeaseStateWaiting {
+			continue
+		}
+		if _, ok, err := tx.Get(GrantedProjection, id); err != nil || !ok {
+			return errors.Join(err, fmt.Errorf("capacity: lease %s was granted before capacity was wired; capacity runs only from a store's first grant", id))
+		}
+	}
+	return nil
 }
 
 // leaseEvent is the part of a lease event's payload the fold reads.
@@ -184,6 +240,9 @@ func (r Reservations) release(tx *eventstore.Tx, l types.Lease) error {
 	if len(l.Reservations) > 0 && l.Settlement != nil && len(l.Settlement.Liabilities) > 0 {
 		return fmt.Errorf("lease %s settles with uncertain liabilities, which the group ledger cannot hold yet", l.ID)
 	}
+	if _, ok, err := tx.Get(GrantedProjection, string(l.ID)); err != nil || !ok {
+		return errors.Join(err, fmt.Errorf("lease %s was not granted by capacity", l.ID))
+	}
 	next := map[types.ResourceGroupID]tally{}
 	for _, res := range l.Reservations {
 		cur, err := load(tx, res.Group)
@@ -194,9 +253,6 @@ func (r Reservations) release(tx *eventstore.Tx, l types.Lease) error {
 			return fmt.Errorf("lease %s returns more of group %s than is outstanding", l.ID, res.Group)
 		}
 		next[res.Group] = tally{cur.Reserved - int64(res.Amount), cur.Revision + 1}
-	}
-	if err := tx.Delete(GrantedProjection, string(l.ID)); err != nil {
-		return err
 	}
 	return putAll(tx, next)
 }

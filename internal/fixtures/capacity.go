@@ -40,13 +40,7 @@ func concurrentLastUnitReservation(ctx context.Context, dir string) (steps []Ste
 	if err != nil {
 		return nil, nil, err
 	}
-	lp := lease.Projector{Holds: reg.Holds, Groups: r}
-	s, done, err := storeWith(ctx, dir, lease.Kinds(), func(tx *eventstore.Tx, evs []eventstore.Event) error {
-		if err := lp.Project(tx, evs); err != nil {
-			return err
-		}
-		return r.Project(tx, evs)
-	})
+	s, done, err := storeWith(ctx, dir, lease.Kinds(), capacity.Hook(lease.Projector{Holds: reg.Holds}, r))
 	if err != nil {
 		return nil, nil, err
 	}
