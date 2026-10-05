@@ -29,16 +29,18 @@ The attended session writes a handover comment when it hands back. This is the s
 
 - **Branch per PR from `main`:** `feature/<scope>/<desc>`, `fix/<scope>/<desc>`, `chore/<desc>`. Conventional commits.
   Nothing is committed to `main` directly. The shell guard blocks pushing `main`, and that is intended.
-- **Size:** ≤ ~400 hand-written lines of non-test code. Tests, generated code, fixtures and vendored schemas don't
-  count. A larger piece is split, unless it is one cohesive package that splitting would only fill with temporary
+- **Size:** ≤ ~400 added plus deleted lines (`git diff --numstat main...HEAD`) of hand-written non-test code;
+  project-authored schemas under `schemas/` count (D44). Tests, test fixtures, generated code and unchanged vendored
+  schemas don't count. A larger piece is split, unless it is one cohesive package that splitting would only fill with temporary
   scaffolding; then it ships as one PR with the reason stated in the description (D41).
 - **The PR description states, before review:**
   - acceptance criteria;
   - the smoke check (exact commands);
   - the design note(s) it implements (`docs/design/m0/…`);
   - for `fix(...)` PRs, the red-proof test (11-testing).
-- **CI must be green:** GitHub-hosted runners (amd64 + arm64). Tests run inside the sandbox; on hosted runners that
-  is bubblewrap (11-testing; the rootless-container fallback is deferred to M3, D42).
+- **CI must be green:** `make ci` and the T0 fixtures check run on the self-hosted homelab runner (amd64, #75). The
+  workflow has no arm64 job: the lead must run `make ci` locally on the controller host (arm64) before every push. Tests run inside the sandbox, which is bubblewrap (11-testing; the
+  rootless-container fallback is deferred to M3, D42).
 - **Split after 3 NO-GOs** on the same PR.
 
 ## 3. Review
@@ -54,7 +56,12 @@ The attended session writes a handover comment when it hands back. This is the s
 cosmetics, refactors with no contract change.
 
 **Brief format** for both: the PR diff (`git diff main...HEAD`), the design note it implements, the acceptance
-criteria. Output: GO / GO with changes / NO-GO, and findings by severity. Block only on Critical/High. Reviews are saved
+criteria. A contract-PR brief also states the threat model (D43): honest use and adversarial behaviour by any party
+without elevated privileges are in scope (malicious API clients, forged adapter messages, hostile repositories, sandbox
+escape attempts, processes ignoring a cooperative lock, attacks starting from ordinary credentials or a limited grant);
+attacks requiring pre-existing elevated privileges, and the operator deliberately overriding the build system, are
+Low at most. D43 never relaxes an existing contract or
+§4's operator gate. Output: GO / GO with changes / NO-GO, and findings by severity. Block only on Critical/High. Reviews are saved
 to `docs/reviews/<date>-pr<N>-<reviewer>.md` in the PR itself.
 
 **When Codex credits run out:**
@@ -124,7 +131,8 @@ These PRs **wait for the operator**:
 - Go is installed per user from the official tarball into `~/.local/go`, with the version pinned by `go.mod`'s
   `toolchain` directive.
 - Node 22 and pnpm are present.
-- bubblewrap is used for local test sandboxing where available; otherwise Docker (present) is the fallback.
+- bubblewrap is the test sandbox; where it is unavailable `make test` refuses to run (the rootless-container
+  fallback is deferred to M3, D42).
 
 ## 9. Order of work (M0)
 
