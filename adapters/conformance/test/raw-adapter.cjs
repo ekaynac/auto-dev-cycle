@@ -41,6 +41,9 @@ async function doRun(m) {
   const start = (turn) => event({ event: "turn.start", turn, sub_call: mode === "unannounced" ? "s9" : "s1", reported_at: "2026-10-05T00:00:00Z" });
   const end = (turn) => event({ event: "turn.end", turn, sub_call: "s1", reported_at: "2026-10-05T00:00:01Z" });
   start(1);
+  // RAW_SHELL: a harness-internal tool the kit's policy does not allow.
+  const shell = process.env.RAW_SHELL === "1";
+  if (shell) event({ event: "tool.result", turn: 1, tool: "Shell", mediated_by_controller: false, delivered: null, bytes: 1 });
   if (mode === "dup-turn-start") start(1);
   event({ event: "delta.text", turn: 1, bytes: 4 });
   if (mode === "bad-event") event({ event: "delta.text", turn: 1 });
@@ -56,6 +59,8 @@ async function doRun(m) {
     event({ event: "tool.request", turn: 1, tool, request: handle(mode === "tool-foreign" ? "att_01m3250vnfeyrv67x6w0ddqr6b" : own, "req-1", "1") });
     if (mode === "tool-dup-request") event({ event: "tool.request", turn: 1, tool, request: handle(own, "req-1", "1") });
     if (mode === "tool-unmediated" || mode === "tool-foreign") return;
+    // Stop at once: the request was made, but no exchange completes.
+    if (mode === "tool-stops") return reply(m.id, { outcome: "could_not_run", reason: "attempt_stopped", detail: "stopped", result: null, usage_final: null });
     const r = await toolResponse();
     if (r === "stop") return reply(m.id, mode === "cancel-forged" ? { outcome: "empty", result: { kind: "text", handle: handle(own, "r", "2") } }
       : { outcome: "could_not_run", reason: "attempt_stopped", detail: "cancelled during the tool call", result: null, usage_final: null });
@@ -77,7 +82,7 @@ async function doRun(m) {
   usage(mode === "null-sub-call" ? null : "s1", 0);
   if (mode === "bad-sequence") usage("s1", 2);
   const none = { "compaction-none": ["compaction"], "harness-tool-none": ["harness_tool"] }[mode];
-  event({ event: "coverage", turn: 1, observable: none ? "none" : "complete", unobservable: none || [] });
+  event({ event: "coverage", turn: 1, observable: none ? "none" : shell ? "partial" : "complete", unobservable: none || (shell ? ["harness_tool"] : []) });
   if (mode === "two-coverage") event({ event: "coverage", turn: 1, observable: "complete", unobservable: [] });
   end(1);
   if (mode === "dup-turn-end") end(1);
@@ -106,7 +111,7 @@ process.stdin.on("data", (chunk) => {
     if (m.method === "prepare" && mode !== "no-prepare") reply(m.id, clean);
     if (m.method === "run") doRun(m);
     if (m.method === "tool.response") {
-      reply(m.id, mode === "tool-bad-ack" ? { ok: true } : {});
+      if (!mode.startsWith("tool-no-ack")) reply(m.id, mode === "tool-bad-ack" ? { ok: true } : {});
       answered?.(m.params);
     }
     if (m.method === "cancel") {
@@ -118,6 +123,7 @@ process.stdin.on("data", (chunk) => {
       process.stdout.write("x".repeat((16 << 20) + 1));
       setInterval(() => {}, 1000);
     }
+    if (m.method === "shutdown" && mode === "tool-no-ack-stays") continue; // never answers, never exits
     if (m.method === "shutdown") {
       reply(m.id, mode === "bad-shutdown" ? { outcome: "done" } : clean);
       if (mode === "stays-alive") {

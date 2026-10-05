@@ -321,9 +321,11 @@ class Session {
 }
 
 const handleOf = (name: string) => ({ attempt, handle: name, digest: "sha256:" + "0".repeat(64), size: 0 });
+/** The harness-internal tools the kit's policy allows, besides the mediated ones. */
+const harnessTools = ["Edit"];
 const prepareParams = (mediated: string[]) => ({ attempt, fencing_token: token, role: "builder", executor: "exe_01m3250vnfeyrv67x6w0ddqr6a", model: "m",
   workspace: { path: "/workspace", writable: true }, inputs: [], limits: { max_turns: 8, max_output_tokens: 8000, wall_seconds: 600 },
-  tool_policy: { allowed: mediated, mediated }, gateway: null, native_login: null });
+  tool_policy: { allowed: [...harnessTools, ...mediated], mediated }, gateway: null, native_login: null });
 const runParams = { attempt, fencing_token: token, call, prompt: handleOf("prompt.md"), response_schema: null };
 
 /** result checks a reply: a result (not an error) valid against schema. */
@@ -413,11 +415,13 @@ const sameHandle = (a: Handle, b: Handle | null) => !!b && a.attempt === b.attem
 /** Tools is the kit's side of the controller-mediated tool exchange (09). A
  *  tool.request outside the policy, or with a handle of another attempt, is a
  *  finding that ends the case. In "answer" mode each request gets a delivery
- *  under a fresh, unguessable handle; in "cancel" mode the first request is
- *  answered by a cancel instead, and its response stays pending. */
+ *  under a fresh, unguessable handle, which the adapter must acknowledge; in
+ *  "cancel" mode the first request is answered by a cancel instead, and its
+ *  response stays pending. Every exchange settles before the case returns. */
 class Tools {
-  readonly deliveries: { turn: number; tool: string; handle: Handle; at: number; reported: boolean }[] = [];
+  readonly deliveries: { turn: number; tool: string; handle: Handle; at: number; acked: boolean; reported: boolean }[] = [];
   private readonly seen = new Set<string>();
+  private readonly exchanges: Promise<void>[] = [];
   cancelled = false;
   private readonly s: Session;
   private readonly mediated: string[];
@@ -441,17 +445,34 @@ class Tools {
     if (e.request.attempt !== attempt) return s.find("tool", `a tool.request handle of another attempt: ${show(e.request)}`), s.stop();
     if (this.seen.has(e.request.handle)) return s.find("tool", `a second tool.request with handle ${e.request.handle}`);
     this.seen.add(e.request.handle);
-    if (this.mode === "answer") void this.answer(e);
-    else if (!this.cancelled) void this.cancel();
+    if (this.mode === "answer") this.exchanges.push(this.answer(e));
+    else if (!this.cancelled) this.exchanges.push(this.cancel());
+  }
+
+  /** settle waits for every exchange the kit started; run it after stop. */
+  async settle() {
+    await Promise.all(this.exchanges);
+  }
+
+  /** exercised: a tool case needs its request, and in "answer" mode one
+   *  complete exchange, a delivery acknowledged and reported, whatever the
+   *  run's outcome. */
+  exercised() {
+    if (!this.mediated.length) return;
+    if (!this.requests) return this.s.find("tool", `the run never requested ${this.mediated.join(", ")}, so the case was not exercised`);
+    if (this.mode === "answer" && !this.deliveries.some((d) => d.acked && d.reported)) this.s.find("tool", "no tool exchange completed: no delivery was both acknowledged and reported");
   }
 
   private async answer(e: any) {
     const handle = { attempt, handle: `delivered-${this.deliveries.length + 1}`, digest: "sha256:" + randomBytes(32).toString("hex"), size: 1 + randomInt(1 << 20) };
-    this.deliveries.push({ turn: e.turn, tool: e.tool, handle, at: performance.now(), reported: false });
+    const d = { turn: e.turn, tool: e.tool, handle, at: performance.now(), acked: false, reported: false };
+    this.deliveries.push(d);
     const reply = await this.s.request("tool.response", { attempt, fencing_token: token, call, turn: e.turn, tool: e.tool, request: e.request,
       outcome: "empty", reason: "completed_clean", detail: "", delivered: handle });
     const empty = reply && "result" in reply && typeof reply.result === "object" && reply.result !== null && !Array.isArray(reply.result) && !Object.keys(reply.result).length;
-    if (reply && !empty) this.s.find("tool", `tool.response answered ${show(reply)}, want an empty result`);
+    if (!reply) this.s.find("tool", `no acknowledgement of the tool.response to ${e.request.handle}`);
+    else if (!empty) this.s.find("tool", `tool.response answered ${show(reply)}, want an empty result`);
+    else d.acked = true;
   }
 
   private async cancel() {
@@ -460,12 +481,17 @@ class Tools {
   }
 }
 
-/** checkTools: each mediated tool.result reports one delivery the kit
- *  supplied, for its turn and tool, once, after it was supplied; a completed
- *  run has reported every delivery. */
+/** checkTools: a harness-internal tool.result names a tool the policy
+ *  allows; each mediated one reports one delivery the kit supplied, for its
+ *  turn and tool, once, after it was supplied; a completed run has reported
+ *  every delivery. */
 function checkTools(s: Session, t: Tools, completed: boolean) {
   for (const { at, e } of s.events) {
-    if (e?.event !== "tool.result" || e.mediated_by_controller !== true) continue;
+    if (e?.event !== "tool.result") continue;
+    if (e.mediated_by_controller === false && typeof e.tool === "string" && !harnessTools.includes(e.tool)) {
+      s.find("tool-policy", `a harness tool.result for ${e.tool}, which the tool policy does not allow`);
+    }
+    if (e.mediated_by_controller !== true) continue;
     const d = t.deliveries.find((x) => !x.reported && x.turn === e.turn && x.tool === e.tool && x.at < at && sameHandle(x.handle, e.delivered));
     if (d) d.reported = true;
     else s.find("tool", `a mediated tool.result that reports no delivery the kit supplied for turn ${e.turn} and ${e.tool} (or reports one twice, or before it was supplied): ${show(e.delivered)}`);
@@ -502,13 +528,14 @@ async function runCase(a: AdapterUnderTest, limits: Partial<Limits>, c: Case): P
       checkEvents(s);
       checkHeartbeats(s);
       checkTools(s, tools, completed);
-      if (c.mediated.length && !tools.requests) s.find("tool", `the run never requested ${c.mediated.join(", ")}, so the case was not exercised`);
     }
     result(s, "shutdown", await s.request("shutdown"), "adapter/outcome");
     await s.end(5_000);
   } finally {
     s.stop();
+    await tools.settle();
   }
+  if (s.runWindow) tools.exercised();
   return s.finish();
 }
 

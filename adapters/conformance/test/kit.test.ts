@@ -182,14 +182,23 @@ test("each broken tool exchange is red with its finding", async () => {
     ["tool-twice", ["tool"]],
     ["tool-unreported", ["tool"]],
     ["tool-bad-ack", ["tool"]],
+    ["tool-no-ack", ["tool"]],
+    ["tool-stops", ["tool"]],
   ] as [string, string[]][]) {
     const fs = await toolRoundTrip(raw(mode), "RunTest");
     assert.deepEqual(checks(fs), want, `${mode}: ${JSON.stringify(fs)}`);
   }
   assert.ok((await toolRoundTrip(raw("tool-dup-request"), "RunTest")).some((f) => /a second tool.request/.test(f.detail)));
+  // A completed run with an unreported delivery, a missing acknowledgement, and a
+  // request with no completed exchange, are each named.
+  assert.ok((await toolRoundTrip(raw("tool-unreported"), "RunTest")).some((f) => /was never reported/.test(f.detail)));
+  assert.ok((await toolRoundTrip(raw("tool-no-ack"), "RunTest")).some((f) => /no acknowledgement of the tool.response/.test(f.detail)));
+  assert.ok((await toolRoundTrip(raw("tool-stops"), "RunTest")).some((f) => /no tool exchange completed/.test(f.detail)));
+  // An exchange still pending when the kit ends the session settles into a finding.
+  assert.ok((await toolRoundTrip(raw("tool-no-ack-stays"), "RunTest", { deadlineMs: 2_000 })).some((f) => /no acknowledgement of the tool.response/.test(f.detail)));
   // A request outside the policy, or naming another attempt, ends the case.
   assert.ok(checks(await toolRoundTrip(raw("tool-unmediated"), "RunTest", { deadlineMs: 3_000 })).includes("tool-policy"));
-  assert.ok(checks(await toolRoundTrip(raw("tool-foreign"), "RunTest", { deadlineMs: 3_000 })).includes("tool"));
+  assert.ok((await toolRoundTrip(raw("tool-foreign"), "RunTest", { deadlineMs: 3_000 })).some((f) => /handle of another attempt/.test(f.detail)));
   assert.ok(checks(await roundTrip(raw("tool-clean"))).includes("tool-policy"), "the plain case mediates nothing");
   // A run that never requests the tool has not exercised the case.
   assert.deepEqual(checks(await toolRoundTrip(raw("clean"), "RunTest")), ["tool"]);
@@ -209,4 +218,11 @@ test("cancel during a tool call: best effort, but exercised and valid", async ()
     assert.deepEqual(checks(fs), want, `${mode}: ${JSON.stringify(fs)}`);
   }
   assert.deepEqual(checks(await cancelDuringTool(fake("patch"), "RunTest")), ["tool"], "no tool request: not exercised");
+});
+
+test("a harness-internal tool outside the policy is red in every case", async () => {
+  const shell = (mode: string): AdapterUnderTest => ({ command: [process.execPath, rawMain], env: { RAW_MODE: mode, RAW_SHELL: "1" } });
+  assert.deepEqual(checks(await roundTrip(shell("clean"))), ["tool-policy"]);
+  assert.deepEqual(checks(await toolRoundTrip(shell("tool-clean"), "RunTest")), ["tool-policy"]);
+  assert.deepEqual(checks(await cancelDuringTool(shell("cancel-stops"), "RunTest")), ["tool-policy"]);
 });
