@@ -175,12 +175,14 @@ Challenge:                          # human policy only
 
 - **Human confirmation is WebAuthn on the dashboard only** (operator ruling D37). The pager sends a notification and
   a link; it carries no confirmation code. The dashboard shows the proposal's human-readable effective change, then
-  requests a WebAuthn assertion whose challenge is `nonce ‖ binding_digest`. The server verifies, per the WebAuthn spec:
+  requests a WebAuthn assertion whose challenge is `nonce ‖ binding_digest`: the 32 nonce bytes followed by the 32 raw
+  bytes of the digest (64 bytes, never its `sha256:` text). The server verifies, per the WebAuthn spec:
   - RP ID and origin;
   - challenge equality;
   - signature over authenticatorData + clientDataHash;
   - the user-presence flag (user verification required);
-  - signature counter monotonicity;
+  - signature counter monotonicity (an authenticator without a counter, always 0, is accepted per the spec; the
+    challenge's single use then stops a replay);
   - the credential belongs to an operator actor that is not revoked.
 
   The challenge is consumed atomically.
