@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { roundTrip, type AdapterUnderTest, type Finding } from "../src/kit.ts";
+import { roundTrip, StallWatch, type AdapterUnderTest, type Finding } from "../src/kit.ts";
 
 const fakeMain = fileURLToPath(new URL("../../fake/src/main.ts", import.meta.url));
 const rawMain = fileURLToPath(new URL("./raw-adapter.cjs", import.meta.url));
@@ -147,6 +147,17 @@ test("a short stall in the kit does not excuse a longer silence of the adapter",
   }, 300);
   const fs = await roundTrip(raw("no-heartbeat"), { heartbeatMs: 100, toleranceMs: 50 });
   assert.deepEqual(checks(fs), ["heartbeat"], JSON.stringify(fs));
+});
+
+test("a stall still pending when the watch closes is kept", () => {
+  // The run's reply can be handled before the overdue tick: closing samples it.
+  const w = new StallWatch();
+  w.start();
+  const until = performance.now() + 100;
+  while (performance.now() < until);
+  w.stop();
+  assert.equal(w.stalls.length, 1, JSON.stringify(w.stalls));
+  assert.ok(w.stalls[0][1] - w.stalls[0][0] >= 80, JSON.stringify(w.stalls));
 });
 
 test("output after the last reply is still checked", async () => {

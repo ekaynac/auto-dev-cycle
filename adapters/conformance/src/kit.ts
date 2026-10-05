@@ -77,6 +77,34 @@ const show = (v: unknown, n = 200) => {
  *  outside the namespace to start work. Containing that is a separate change. */
 const contain = (command: string[]) => ["bwrap", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc", "--", ...command];
 
+/** StallWatch records the kit's own event-loop stalls: a tick that comes
+ *  late marks time the kit could not observe arrivals. stop() samples once
+ *  more, so a stall still pending when the watch closes is kept. */
+export class StallWatch {
+  readonly stalls: [number, number][] = [];
+  private timer: NodeJS.Timeout | null = null;
+  private last = 0;
+
+  start() {
+    this.stop();
+    this.last = performance.now();
+    this.timer = setInterval(() => this.sample(), stallTickMs);
+  }
+
+  stop() {
+    if (!this.timer) return;
+    this.sample();
+    clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  private sample() {
+    const now = performance.now();
+    if (now - this.last > 2 * stallTickMs) this.stalls.push([this.last + stallTickMs, now]);
+    this.last = now;
+  }
+}
+
 /** Session is one adapter process under the kit's control. */
 class Session {
   readonly findings: Finding[] = [];
@@ -97,9 +125,11 @@ class Session {
   replied = false;
   /** readDone settles when the reader has taken all of the adapter's output. */
   private readonly readDone: Promise<void>;
-  /** stalls: the kit's own event-loop stalls during the run, as [from, to]. */
-  readonly stalls: [number, number][] = [];
-  private stallWatch: NodeJS.Timeout | null = null;
+  /** stalls: the kit's own event-loop stalls during the run. */
+  readonly stalls = new StallWatch();
+  private markStopped!: () => void;
+  /** whenStopped settles when stop() runs. */
+  private readonly whenStopped = new Promise<"stopped">((r) => (this.markStopped = () => r("stopped")));
   /** run: from the run request to its answer; events outside it are findings. */
   runWindow: { from: number; to: number | null } | null = null;
 
@@ -130,19 +160,6 @@ class Session {
     this.readDone = this.read();
   }
 
-  /** watchStalls starts or stops recording the kit's own stalls: a tick that
-   *  comes late marks the time the kit could not observe arrivals. */
-  watchStalls(on: boolean) {
-    if (this.stallWatch) clearInterval(this.stallWatch);
-    this.stallWatch = null;
-    if (!on) return;
-    let last = performance.now();
-    this.stallWatch = setInterval(() => {
-      const now = performance.now();
-      if (now - last > 2 * stallTickMs) this.stalls.push([last + stallTickMs, now]);
-      last = now;
-    }, stallTickMs);
-  }
 
   find(check: string, detail: string) {
     if (!this.frozen && this.findings.length < maxFindings) this.findings.push({ check, detail: detail.slice(0, 500) });
@@ -155,7 +172,7 @@ class Session {
     if (this.stopped) return;
     this.stopped = true;
     if (this.runWindow && this.runWindow.to === null) this.runWindow.to = performance.now();
-    this.watchStalls(false);
+    this.stalls.stop();
     clearTimeout(this.timer);
     for (const target of [this.child.pid, this.child.pid && -this.child.pid]) {
       try {
@@ -168,6 +185,7 @@ class Session {
     this.child.stderr.destroy();
     this.child.stdin.destroy();
     this.waiting?.();
+    this.markStopped();
   }
 
   /** finish stops the session and returns its findings, fixed: nothing
@@ -251,7 +269,7 @@ class Session {
     this.pending.set(id, method);
     if (method === "run") {
       this.runWindow = { from: performance.now(), to: null };
-      this.watchStalls(true);
+      this.stalls.start();
     }
     this.child.stdin.write(frame({ jsonrpc: "2.0", id, method, params }));
     for (;;) {
@@ -260,7 +278,7 @@ class Session {
         const [m] = this.queue.splice(i, 1);
         if (method === "run" && this.runWindow) {
           this.runWindow.to = performance.now();
-          this.watchStalls(false);
+          this.stalls.stop();
         }
         return m;
       }
@@ -277,15 +295,12 @@ class Session {
     if (this.stopped) return; // the kit ended it: its exit is no verdict
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<"late">((r) => (timer = setTimeout(() => r("late"), graceMs)));
-    const stopped = new Promise<"stopped">((r) => {
-      const poll = setInterval(() => this.stopped && (clearInterval(poll), r("stopped")), 20);
-      late.then(() => clearInterval(poll));
-      this.exited.then(() => clearInterval(poll));
-    });
+    let exited = false;
+    void this.exited.then(() => (exited = true));
     const done = Promise.all([this.exited, this.readDone]).then(([e]) => e);
-    const exit = await Promise.race([done, late, stopped]);
+    const exit = await Promise.race([done, late, this.whenStopped]);
     clearTimeout(timer);
-    if (exit === "late") this.find("exit", `the process did not exit within ${graceMs} ms of shutdown`);
+    if (exit === "late") this.find("exit", exited ? `the process exited, but its output did not end within ${graceMs} ms of shutdown` : `the process did not exit within ${graceMs} ms of shutdown`);
     else if (exit !== "stopped" && exit !== null && !this.stopped && (exit.code !== 0 || exit.signal !== null)) {
       this.find("exit", `the process ended ${exit.signal ? `by signal ${exit.signal}` : `with code ${exit.code}`} after shutdown, want exit 0`);
     }
@@ -368,7 +383,7 @@ function checkHeartbeats(s: Session) {
   const bound = s.limits.heartbeatMs + s.limits.toleranceMs;
   // Arrival times include the kit's own scheduling: the part of a gap the
   // kit itself was stalled is no verdict on the adapter, the rest is.
-  const stalled = (a: number, b: number) => s.stalls.reduce((t, [f, u]) => t + Math.max(0, Math.min(b, u) - Math.max(a, f)), 0);
+  const stalled = (a: number, b: number) => s.stalls.stalls.reduce((t, [f, u]) => t + Math.max(0, Math.min(b, u) - Math.max(a, f)), 0);
   for (let i = 1; i < marks.length; i++) {
     const gap = Math.round(marks[i] - marks[i - 1]);
     if (gap <= bound) continue;
