@@ -129,12 +129,23 @@ parameters. Names compare as written, so one spelling per name keeps instrument 
      `could_not_run`. Concrete citations differ from the test-id *patterns* a producer declares for its own tests (13).
    - **Environments.** A citation must hold in every gate environment the claim covers, by default every declared
      environment. One environment's result never satisfies another's.
-   - **Outcomes.**
-     - A completed, passing result qualifies.
-     - Absent, skipped, collection-only and incomplete results are `could_not_run`.
-     - A failed result fails the row, even when the baseline-relative gate passes.
-     - Results the controller cannot read are `could_not_run/runner_fault`, on the `wrong_owner` hold for the runner's
-       owner. This is not the structural wait for a gate result that does not exist yet (13).
+   - **Adapter capability.** The result adapter must establish every fact eligibility needs: the case's full
+     identity (parameters included), whether it executed, and every attempt's status. A fact the adapter cannot
+     report is never synthesized from aggregate success: the citation is `could_not_run`. The rule applies by
+     capability, not by adapter name; with `none` there are no per-test results at all.
+   - **Outcomes** (`outcome/reason → recovery`). The citation reasons are registered with the gate's implementation
+     (M5), before anything emits them.
+     - A completed, ordinary pass with no failed attempt in the gate run is **eligible evidence**. This is not
+       acceptance: the claim still needs its review, which inspects what the test asserts (§2.6).
+     - Absent, skipped, collection-only, incomplete or ambiguous citations, an expected failure (`xfail`) or an
+       unexpected pass of one, and missing facts are `could_not_run/citation_unqualified`. The recovery is a
+       candidate repair: write, fix or cite the right test.
+     - A cited case that failed in the gate run, on any attempt (pass-on-retry included), or that is in the baseline's
+       known failures is a blocking `found/cited_test_failed` on the row, even when the baseline-relative gate passes.
+       The recovery is a candidate repair.
+     - Results the controller cannot read are `could_not_run/runner_fault` on the `wrong_owner` hold. Its signal is
+       the runner owner's act (02), and fresh readable results then re-evaluate the citation. This is not the
+       structural wait for a gate result that does not exist yet (13).
    - **Reuse.** A reused or carried review keeps its pass only while its cited evidence still qualifies on the
      refreshed receipts for the prospective tree (13).
 

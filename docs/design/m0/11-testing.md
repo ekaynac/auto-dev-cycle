@@ -174,7 +174,13 @@ golden file names:
     - a citation the gate run never collected is `could_not_run`;
     - a skipped, collection-only or incomplete citation is `could_not_run`;
     - a failed citation fails the row while the baseline-relative gate passes;
-    - unreadable results are `could_not_run/runner_fault` on `wrong_owner`;
+    - unreadable results are `could_not_run/runner_fault` on `wrong_owner`, naming the runner's owner and its act as
+      the signal, and recover when fresh readable results qualify; a gate result that does not exist yet is a
+      structural wait, not that hold;
+    - an expected failure (`xfail`), its unexpected pass, and a case that failed then passed on retry do not qualify;
+    - adapters that cannot report per-test results (`none`), parameter identity or skips leave the citation
+      `could_not_run`;
+    - a passing test with an empty body is eligible evidence, and its claim is refused by the review;
     - a name shared by two files, or a parametrised case cited without its parameters, is ambiguous and
       `could_not_run`;
     - a citation passing in one environment and absent in another covered one is `could_not_run`;

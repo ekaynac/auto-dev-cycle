@@ -334,9 +334,11 @@ receipts can expire between claim and commit), and semantic acceptance review st
    - **cited tests ran and passed** (intake B3): every test a claim or an acceptance row cites must have a completed,
      passing result in this tree's gate results, in every environment the claim covers (`m0/06` rule 8a). A test
      never collected (one nobody wrote, a renamed file), skipped, only collected, or not run to completion makes the
-     row `could_not_run`, never a pass. A cited test that failed is a fail, even when the baseline-relative gate
-     passes. Results the controller cannot read are `could_not_run/runner_fault`, routed to the runner's owner. A
-     pass row is computed from those results, so a placeholder has nothing to pass on.
+     row `could_not_run`, never a pass. So does an expected failure, or a fact the result adapter cannot report.
+     A cited test that failed on any attempt is a blocking finding, even when the baseline-relative gate passes.
+     Results the controller cannot read are `could_not_run/runner_fault`, routed to the runner's owner. The
+     mechanical check establishes evidence eligibility only; whether the test proves the claim stays the review's
+     job (step 3).
 
    Evidence is controller-produced. Missing evidence never passes.
 3. One independent reviewer proves claims with test id + output + code lines. It **inspects assertions and mocks**
