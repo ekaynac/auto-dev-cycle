@@ -120,6 +120,34 @@ parameters. Names compare as written, so one spelling per name keeps instrument 
    Delivery restrictions are enforced at assembly (10) by artifact class.
 8. **Missing evidence never passes.** A required receipt that is absent, stale, incomplete, inapplicable or
    `could_not_run` blocks the dependent decision.
+8a. **Cited tests must have run and passed** (intake B3). This is the one gate path: no profile lets an unqualified
+   citation pass, whatever the reviewer's text says.
+   - **What is checked.** A claim or acceptance row that cites tests is checked against the per-test results of the
+     applicable gate receipts for the same tree (rule 2).
+   - **Identity.** A citation names a concrete case by the result adapter's fully qualified id: file or package,
+     suite, case and parameters. It matches exactly. A citation that matches no case, or more than one, is
+     `could_not_run`. Concrete citations differ from the test-id *patterns* a producer declares for its own tests (13).
+   - **Environments.** A citation must hold in every gate environment the claim covers, by default every declared
+     environment. One environment's result never satisfies another's.
+   - **Adapter capability.** The result adapter must establish every fact eligibility needs: the case's full
+     identity (parameters included), whether it executed, and every attempt's status. A fact the adapter cannot
+     report is never synthesized from aggregate success: the citation is `could_not_run`. The rule applies by
+     capability, not by adapter name; with `none` there are no per-test results at all.
+   - **Outcomes** (`outcome/reason → recovery`). The citation reasons are registered with the gate's implementation
+     (M5), before anything emits them.
+     - A completed, ordinary pass with no failed attempt in the gate run is **eligible evidence**. This is not
+       acceptance: the claim still needs its review, which inspects what the test asserts (§2.6).
+     - Absent, skipped, collection-only, incomplete or ambiguous citations, an expected failure (`xfail`) or an
+       unexpected pass of one, and missing facts are `could_not_run/citation_unqualified`. The recovery is a
+       candidate repair: write, fix or cite the right test.
+     - A cited case that failed in the gate run, on any attempt (pass-on-retry included), or that is in the baseline's
+       known failures is a blocking `found/cited_test_failed` on the row, even when the baseline-relative gate passes.
+       The recovery is a candidate repair.
+     - Results the controller cannot read are `could_not_run/runner_fault` on the `wrong_owner` hold. Its signal is
+       the runner owner's act (02), and fresh readable results then re-evaluate the citation. This is not the
+       structural wait for a gate result that does not exist yet (13).
+   - **Reuse.** A reused or carried review keeps its pass only while its cited evidence still qualifies on the
+     refreshed receipts for the prospective tree (13).
 
 ## What M0 delivers
 

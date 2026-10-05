@@ -330,7 +330,15 @@ receipts can expire between claim and commit), and semantic acceptance review st
 2. Deterministic checks first:
    - the full gate on every target environment;
    - the integrity guard;
-   - required receipts present, current for the final tree, and passing on their **inner predicate**.
+   - required receipts present, current for the final tree, and passing on their **inner predicate**;
+   - **cited tests ran and passed** (intake B3): every test a claim or an acceptance row cites must have a completed,
+     passing result in this tree's gate results, in every environment the claim covers (`m0/06` rule 8a). A test
+     never collected (one nobody wrote, a renamed file), skipped, only collected, or not run to completion makes the
+     row `could_not_run`, never a pass. So does an expected failure, or a fact the result adapter cannot report.
+     A cited test that failed on any attempt is a blocking finding, even when the baseline-relative gate passes.
+     Results the controller cannot read are `could_not_run/runner_fault`, routed to the runner's owner. The
+     mechanical check establishes evidence eligibility only; whether the test proves the claim stays the review's
+     job (step 3).
 
    Evidence is controller-produced. Missing evidence never passes.
 3. One independent reviewer proves claims with test id + output + code lines. It **inspects assertions and mocks**
@@ -363,8 +371,8 @@ per phase:
 
   - **Receipt-only claims** (`proof_receipts`) pass only on their applicable receipt. Reviewers can block them
     but cannot pass them without it.
-- **`test_ids` required:** every pass row names test ids, checked by the controller against the per-test results
-  for this tree. Unknown or failed → missing; unreadable results → hold.
+- **`test_ids` required:** every pass row must name test ids. Whatever a row cites is checked against the collected
+  results on every gate (step 2), with or without this option; the option only makes citing mandatory.
 - **`proof_receipts`:** a claim provable only by a receipt declares it, so it can pass on that receipt.
 - **Dispositions:** an operator-owned, schema-validated file of deferrals (`moved_to_later_phase` with triggers,
   `substituted`, `unperformed_pending_authority`, `transition_condition`, `recorded_only`), each with an owner
