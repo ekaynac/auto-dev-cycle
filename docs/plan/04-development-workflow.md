@@ -29,16 +29,17 @@ The attended session writes a handover comment when it hands back. This is the s
 
 - **Branch per PR from `main`:** `feature/<scope>/<desc>`, `fix/<scope>/<desc>`, `chore/<desc>`. Conventional commits.
   Nothing is committed to `main` directly. The shell guard blocks pushing `main`, and that is intended.
-- **Size:** ≤ ~400 hand-written lines of non-test code. Tests, generated code, fixtures and vendored schemas don't
-  count. A larger piece is split, unless it is one cohesive package that splitting would only fill with temporary
+- **Size:** ≤ ~400 hand-written lines of non-test code; hand-written schema JSON counts (D44). Tests, generated code,
+  fixtures and vendored schemas don't count. A larger piece is split, unless it is one cohesive package that splitting would only fill with temporary
   scaffolding; then it ships as one PR with the reason stated in the description (D41).
 - **The PR description states, before review:**
   - acceptance criteria;
   - the smoke check (exact commands);
   - the design note(s) it implements (`docs/design/m0/…`);
   - for `fix(...)` PRs, the red-proof test (11-testing).
-- **CI must be green:** GitHub-hosted runners (amd64 + arm64). Tests run inside the sandbox; on hosted runners that
-  is bubblewrap (11-testing; the rootless-container fallback is deferred to M3, D42).
+- **CI must be green:** the self-hosted homelab runner (amd64, #75); arm64 is covered by the lead's local `make ci` on
+  the controller host before every push. Tests run inside the sandbox, which is bubblewrap (11-testing; the
+  rootless-container fallback is deferred to M3, D42).
 - **Split after 3 NO-GOs** on the same PR.
 
 ## 3. Review
@@ -54,7 +55,9 @@ The attended session writes a handover comment when it hands back. This is the s
 cosmetics, refactors with no contract change.
 
 **Brief format** for both: the PR diff (`git diff main...HEAD`), the design note it implements, the acceptance
-criteria. Output: GO / GO with changes / NO-GO, and findings by severity. Block only on Critical/High. Reviews are saved
+criteria. A contract-PR brief also states the threat model (D43): blocking findings are failures reachable by honest
+use or by an unprivileged process that ignores a cooperative lock; deliberate overrides of the build system by the
+operator and attacks needing elevated privileges are Low at most; a non-cooperating writer is detected, not prevented. Output: GO / GO with changes / NO-GO, and findings by severity. Block only on Critical/High. Reviews are saved
 to `docs/reviews/<date>-pr<N>-<reviewer>.md` in the PR itself.
 
 **When Codex credits run out:**
