@@ -5,6 +5,7 @@ Status: revision 2, 2026-10-03.
   architectural choices that remove their failure classes".
 - Revision 2 applies Astra's review of revision 1 (`docs/reviews/2026-10-03-pr5-d40-astra.md`, cited `[G#]`). That
   review found several "by construction" claims overstated; they are corrected or narrowed here.
+- 2026-10-05: the reviewer roster joins a review's identity (intake B1, `docs/research/2026-10-05-nobetci-phase1-close-intake.md`).
 
 ## Why
 
@@ -51,9 +52,45 @@ Result:                            # what was computed: immutable  [G1]
   - Each key has one **selected result** at a time. An explicit invalidation (an operator action, or a definition or
     instrument version change) bumps the generation, so the key changes, a new result is produced, and dependants
     re-key. No artifact is ever overwritten.
+- **The reviewer roster is part of a review's identity** (intake B1).
+  - **In the key.** A review node's `params` carry its roster: for each member, the executor id and its model family.
+    The family is derived from the controller's executor registry, never asserted by a caller (06 independence). The
+    roster is in the params digest, so it is in the computation key, and a result produced by one roster can never
+    satisfy another roster's key.
+  - **Placement is bound to it** (05). A review member's lease must place on exactly the pinned executor. A fallback
+    that would change a member does not run under the old key: the replacement node is instantiated first, and the
+    lease belongs to it.
+  - **The required review is a graph input.** For each subject, the controller selects an immutable
+    **review-requirement** result: `{subject, roster, definition_version, revision}`. A review node is made for the
+    selected requirement. Base moves do not change it, so a valid carry-over survives them. Comparisons are on the
+    requirement's revision (roster and definition), never on a rebased review's computation key.
+  - **Replacement is a recorded supersession.** A roster change, decided by placement (05) or by an authority action
+    (04), is **one writer transaction** (03). It selects the new requirement revision and records
+    `review.superseded{predecessor, replacement, transferred_holds, retired_holds}`, together with the attempt
+    transitions it needs:
+    - **Attempts.** The predecessor's `running` attempts get `attempt.stop_requested{preempt}` (05). Attempts already
+      `finishing`, `stopping`, `lost` or `sealed` keep their state and settle normally with their accounting. No
+      predecessor result is ever selected for the replacement, not even one submitted just before. A submission that
+      races the supersession is ordered by the writer transaction, and replay after a restart reaches the same
+      outcome, never a second supersession. This graph supersession is distinct from 05's sealed-attempt
+      supersession and its fencing-token allocation.
+    - **Inputs and obligations.** The replacement keeps the predecessor's round and its declared inputs, unchanged, with
+      the new roster. The lineage of owed inputs and demands persists, and cumulative rails carry over; nothing resets.
+      Answers and evidence that become available later enter a declared successor review at round *n+1* (as for any
+      review), never the replacement.
+    - **Holds.**
+      - A hold whose wait the replacement still has is **transferred**: a recorded reassociation that keeps its hold
+        id, concrete signal, owner and paging history (02), so escalation does not restart.
+      - A hold is **retired** only if the replacement's actual dependencies no longer include its wait (e.g. waiting for
+        a removed member's executor), with the reason recorded.
+      - Resource and settlement obligations stay on their owning leases. Internal artifact waits stay structural.
+  - **Nothing reuses a review across rosters.** The reuse rule below compares only reviews with an identical non-input
+    identity. Carry-over in a merge-queue generation binds the requirement revision it was attested under, and the
+    merge's commit-time re-validation ([G4]) compares it with the currently selected revision.
 - **Reuse decisions use typed conclusions.** For the declared edges below, a consumer may treat a new result as
   equivalent to one it already used if their `conclusions` projections are equal **and** the subject, demand,
-  instrument digest and restrictions are identical. Equivalence decides only whether to re-run. Manifests still list
+  instrument digest and restrictions are identical, **and** the consumer's non-input identity (kind, definition
+  version, params including a review's roster, generation) is identical: only the declared input edges may differ. Equivalence decides only whether to re-run. Manifests still list
   the exact result ids.
 
 ## What is cached, and what is retried [G2]
@@ -152,7 +189,7 @@ The merge queue is serialized per project and base branch. Each attempt to merge
 | Node in the generation | Inputs | Result |
 |---|---|---|
 | `rebase` | candidate result, pinned base head | prospective tree (+ conflict flag) |
-| `carry_over` | the reviewed candidate's review/closure results, the prospective tree | a **carry-over attestation** if the rebased change has the same patch identity and no conflict resolution (06 applicability is satisfied by the attestation, which binds the old review to the new tree); otherwise a demand for a **delta review** |
+| `carry_over` | the reviewed candidate's review/closure results, the prospective tree, the selected review-requirement result | a **carry-over attestation** if the rebased change has the same patch identity, no conflict resolution, **and** the carried review was made under the selected requirement revision (06 applicability is satisfied by the attestation, which binds the old review to the new tree); otherwise a demand for a **delta review**, or for the replacement review after a roster change |
 | `gate`, `runtime_verify`, required evidence | the prospective tree / package | refreshed receipts for the prospective tree |
 | `merge` (effect) | all of the above + the expected base head | merge result, by expected-base compare-and-swap |
 
@@ -207,6 +244,13 @@ Fixtures, each tied to the class it addresses:
 - an undeclared ruling never enters a review's controller context;
 - an answer reaches only the successor review;
 - equal conclusions reuse a review; a changed step outcome re-runs it;
+- a roster change is one recorded supersession: the old roster's result never satisfies the replacement; a running
+  attempt is stopped, and a finishing or sealed one settles without its result being selected; a submission racing
+  the supersession and a restart each reach one outcome; an owed input still outstanding carries to the replacement
+  with its hold (same id and paging history), while an answer arriving later enters the round *n+1* successor;
+- equal gate or evidence conclusions never reuse a review across a roster change: the replacement runs;
+- a roster change after carry-over was selected, but before the merge commits, makes the merge wait for the
+  replacement review;
 - a review cannot start with another tree's gate result;
 - a 402 **before** the first edit is `could_not_run`, never `empty`;
 - a 402 **after** edits is a sealed `partial_patch`;
