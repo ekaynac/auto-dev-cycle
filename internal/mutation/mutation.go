@@ -15,7 +15,10 @@ const (
 	IdempotencyIgnoresInput = "eventstore.idempotency-ignores-input"
 	// ExpectedStateUnchecked makes the writer skip the expected-state check.
 	ExpectedStateUnchecked = "eventstore.expected-state-unchecked"
+	// LockNotExclusive makes the state directory lock ignore a failed
+	// exclusive flock, so a second controller could start.
+	LockNotExclusive = "eventstore.lock-not-exclusive"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
-var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked}
+var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExclusive}

@@ -5,7 +5,9 @@ package fixtures
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
@@ -196,6 +198,51 @@ func staleExpectedState(ctx context.Context, dir string) ([]Step, []string, erro
 		if err := o.committed(f, c.head, c.applied); err != nil {
 			return nil, nil, err
 		}
+	}
+	return o.steps, o.violations, nil
+}
+
+// secondDaemon: a controller takes the state directory, a second one is
+// refused while it holds it, and one starts after it releases (11: "a
+// second daemon"). The refusal leaves the holder's lock record exactly as
+// it was: the fixture gives the holder a record no acquire of this process
+// would write, so any write shows. A failed release is an error, not a step.
+func secondDaemon(_ context.Context, dir string) ([]Step, []string, error) {
+	state := filepath.Join(dir, "state")
+	file := filepath.Join(state, eventstore.LockFile)
+	const held = "pid 1\nprocess_start_ticks 1\n"
+	var o observe
+	// acquire takes the lock as one step and releases at once whatever it got.
+	acquire := func() error {
+		l, err := eventstore.AcquireLock(state)
+		if err = o.step(err); err != nil || l == nil {
+			return err
+		}
+		return l.Release()
+	}
+	first, err := eventstore.AcquireLock(state)
+	if err = o.step(err); err != nil {
+		return nil, nil, err
+	}
+	if first == nil {
+		return nil, nil, errors.New("the first controller was refused")
+	}
+	if err := os.WriteFile(file, []byte(held), 0o600); err != nil {
+		return nil, nil, errors.Join(err, first.Release())
+	}
+	if err := acquire(); err != nil {
+		return nil, nil, errors.Join(err, first.Release())
+	}
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return nil, nil, errors.Join(err, first.Release())
+	}
+	o.check(string(b) == held, "the refused controller changed the holder's lock record to %q", b)
+	if err := first.Release(); err != nil {
+		return nil, nil, err
+	}
+	if err := acquire(); err != nil {
+		return nil, nil, err
 	}
 	return o.steps, o.violations, nil
 }

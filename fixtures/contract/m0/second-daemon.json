@@ -1,0 +1,10 @@
+{
+  "name": "second-daemon",
+  "invariant": "Only one controller holds a state directory: a second is refused while the first runs, and one can start after it stops (03 \"Lock\").",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "could_not_run", "reason": "controller_already_running"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "eventstore.lock-not-exclusive"
+}
