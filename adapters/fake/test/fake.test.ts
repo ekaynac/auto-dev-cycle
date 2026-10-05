@@ -10,7 +10,7 @@ import { FakeAdapter, handle, scenarios, type Scenario } from "../src/fake.ts";
 const att = "att_01m3250vnfeyrv67x6w0ddqr6a";
 const cal = "cal_01m3250v9xft08ssr4ygq6g2np";
 const prepare = (mediated: string[] = ["RunTest"]) => ({ attempt: att, fencing_token: 3, role: "builder", executor: "exe_01m3250vnfeyrv67x6w0ddqr6a",
-  model: "m", workspace: { path: "/workspace", writable: true }, inputs: [], limits: { max_turns: 4, max_output_tokens: 1000, wall_seconds: 60 },
+  model: "m", workspace: { path: "/workspace", writable: true }, exchange: { in: "/exchange/in", out: "/exchange/out" }, inputs: [], limits: { max_turns: 4, max_output_tokens: 1000, wall_seconds: 60 },
   tool_policy: { allowed: [], mediated }, gateway: null, native_login: null });
 const runParams = { attempt: att, fencing_token: 3, call: cal, prompt: handle(att, "p.md", "do it"), response_schema: null };
 const req = (id: number, method: string, params?: unknown) => ({ jsonrpc: "2.0", id, method, params });

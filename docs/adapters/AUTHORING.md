@@ -75,10 +75,11 @@ Your own mistakes **fail the whole run** with an internal error, and the offendi
 
 ## 4. Files and handles
 
-- Inputs arrive as **attempt-scoped handles** in `in/`. Write outputs as regular files in `out/` and return their
-  handles with digests.
-- The controller ingests `out/` once, safely: no symlinks, FIFOs, devices or hard links; size bounds; digest checked
-  while copying. Anything else is rejected as `unsafe_output` and marks the attempt untrustworthy.
+- `prepare` passes the exchange root as `exchange: {in, out}`. Inputs arrive as **attempt-scoped handles** in `in/`.
+  Write each output as one regular file directly in `out/`, named exactly by its handle, and return the handle with
+  its digest and size.
+- The controller ingests `out/` once, after your process tree has exited, safely: no symlinks, FIFOs, devices or hard
+  links; size bounds; digest checked while copying. Anything else is rejected as `unsafe_output` and marks the attempt untrustworthy.
 - Never reference another attempt's handle.
 
 ## 4a. Results

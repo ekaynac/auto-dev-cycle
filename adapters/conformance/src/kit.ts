@@ -338,7 +338,7 @@ const handleOf = (name: string) => ({ attempt, handle: name, digest: "sha256:" +
  *  less any the case mediates: a tool is the harness's own or mediated, never both. */
 const harnessTools = ["Edit"];
 const prepareParams = (allowed: string[], mediated: string[]) => ({ attempt, fencing_token: token, role: "builder", executor: "exe_01m3250vnfeyrv67x6w0ddqr6a", model: "m",
-  workspace: { path: "/workspace", writable: true }, inputs: [], limits: { max_turns: 8, max_output_tokens: 8000, wall_seconds: 600 },
+  workspace: { path: "/workspace", writable: true }, exchange: { in: "/exchange/in", out: "/exchange/out" }, inputs: [], limits: { max_turns: 8, max_output_tokens: 8000, wall_seconds: 600 },
   tool_policy: { allowed, mediated }, gateway: null, native_login: null });
 const runParams = { attempt, fencing_token: token, call, prompt: handleOf("prompt.md"), response_schema: null };
 

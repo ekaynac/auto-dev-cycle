@@ -154,7 +154,7 @@ Attempt:
 Fencing rules:
 - An output (result, patch, checkpoint contribution) is accepted only if **its attempt id and token exactly match** the
   unit's current attempt **and** that attempt's publication is `open` (finishing accepts only the one submitted result).
-  Anything else is refused with `failed/stale_attempt` and recorded.
+  Anything else is refused with `failed/stale_attempt` and recorded as `attempt.output_refused` (09).
 - Stopping closes publication in the same transaction as the stop event, so a revoked or interrupted attempt can never
   publish, even before a replacement starts.
 - Supersession and allocation of the replacement's token happen in **one transaction**: `attempt.superseded` for the

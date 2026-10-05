@@ -45,6 +45,8 @@ func leaseDocs() map[string]map[string]any {
 		"records/attempt-record": {"attempt": attID, "project": prjID, "task": tskID, "contract_revision": "7", "fencing_token": 3,
 			"base_tree": git, "partial_diff": dgA, "failing_tests": []any{"TestLeaseGrant"}, "trail": dgB, "builder_notes": nil,
 			"evidence_manifest": dgA, "seal": map[string]any{"reason": "drain", "at": "2026-10-04T13:00:00Z", "sealed_by": actID}, "pinned": true},
+		"records/attempt-output-refusal": {"attempt": attID, "handle": handle("patch.diff"), "reason": "unsafe_output",
+			"check": "digest", "detail": "copied sha256 differs from the declared digest"},
 		"records/usage-measurement": {"id": msrID, "call": calID, "attempt": attID, "lease": leaID, "kind": "delta", "sequence": 0,
 			"tokens": map[string]any{"in": 5000, "out": 800, "cache_read": 40000, "cache_write": 0}, "turns": 1, "milliseconds": 9500,
 			"cost": map[string]any{"amount_micros": 31500, "currency": "USD", "basis": "cash", "estimate": true}, "source_of_truth": "adapter_report"},
@@ -88,6 +90,12 @@ func TestLeaseRecords(t *testing.T) {
 	blocked["placement_checks"].(map[string]any)["budget"] = map[string]any{"outcome": "could_not_run", "reason": "quota_unknown", "detail": "no probe yet"}
 	sealed := leaseDocs()["records/attempt"]
 	sealed["status"], sealed["publication"], sealed["stop_reason"], sealed["checkpoint"] = "sealed", "closed", "revoke", dgA
+	stale := leaseDocs()["records/attempt-output-refusal"]
+	stale["reason"], stale["check"] = "stale_attempt", "stale_attempt"
+	foreign := leaseDocs()["records/attempt-output-refusal"]
+	foreign["check"], foreign["handle"].(map[string]any)["attempt"] = "foreign_handle", attNew
+	badName := leaseDocs()["records/attempt-output-refusal"]
+	badName["check"], badName["handle"].(map[string]any)["handle"] = "path", "../x"
 	superseded := leaseDocs()["records/attempt"]
 	superseded["status"], superseded["publication"], superseded["checkpoint"], superseded["superseded_by"] = "superseded", "closed", dgA, attNew
 	for name, c := range map[string]struct {
@@ -96,7 +104,9 @@ func TestLeaseRecords(t *testing.T) {
 	}{"waiting": {"records/lease", waiting}, "settled": {"records/lease", settled}, "restore verified": {"records/lease", verified}, "evidence target": {"records/resource-group", target},
 		"sealed": {"records/attempt", sealed}, "superseded": {"records/attempt", superseded},
 		"restore failed with its hold": {"records/lease", failed}, "sealed after a loss": {"records/attempt", sealedLost},
-		"a blocking check with its detail": {"records/lease", blocked}} {
+		"a blocking check with its detail": {"records/lease", blocked},
+		"a stale refusal":                  {"records/attempt-output-refusal", stale}, "a foreign handle": {"records/attempt-output-refusal", foreign},
+		"a bad handle name": {"records/attempt-output-refusal", badName}} {
 		if err := valid(t, c.schema, c.doc); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -169,6 +179,14 @@ func TestLeaseRecords(t *testing.T) {
 		}},
 		"seal reason":                          {"records/attempt-record", func(d map[string]any) { d["seal"].(map[string]any)["reason"] = "gave_up" }},
 		"record without a trail":               {"records/attempt-record", func(d map[string]any) { delete(d, "trail") }},
+		"refusal check":                        {"records/attempt-output-refusal", func(d map[string]any) { d["check"] = "too_big" }},
+		"refusal reason":                       {"records/attempt-output-refusal", func(d map[string]any) { d["reason"] = "runner_fault" }},
+		"a stale check as unsafe":              {"records/attempt-output-refusal", func(d map[string]any) { d["check"] = "stale_attempt" }},
+		"a file check as stale":                {"records/attempt-output-refusal", func(d map[string]any) { d["reason"] = "stale_attempt" }},
+		"a refusal without detail":             {"records/attempt-output-refusal", func(d map[string]any) { d["detail"] = "" }},
+		"a refusal of a raw path":              {"records/attempt-output-refusal", func(d map[string]any) { d["handle"] = "/etc/passwd" }},
+		"a refusal with an extra handle field": {"records/attempt-output-refusal", func(d map[string]any) { d["handle"].(map[string]any)["path"] = "/x" }},
+		"a refusal without its attempt":        {"records/attempt-output-refusal", func(d map[string]any) { delete(d, "attempt") }},
 		"usage kind":                           {"records/usage-measurement", func(d map[string]any) { d["kind"] = "session_total" }},
 		"fractional cost":                      {"records/usage-measurement", func(d map[string]any) { d["cost"].(map[string]any)["amount_micros"] = 0.5 }},
 		"currency":                             {"records/usage-measurement", func(d map[string]any) { d["cost"].(map[string]any)["currency"] = "usd" }},
@@ -202,6 +220,8 @@ func TestLeaseRoundTrip(t *testing.T) {
 			v, err = contract.Decode[types.AttemptRecord](schema, in)
 		case "records/usage-measurement":
 			v, err = contract.Decode[types.UsageMeasurement](schema, in)
+		case "records/attempt-output-refusal":
+			v, err = contract.Decode[types.AttemptOutputRefusal](schema, in)
 		}
 		if err != nil {
 			t.Fatalf("%s: %v", schema, err)

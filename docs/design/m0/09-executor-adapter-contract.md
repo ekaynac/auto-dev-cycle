@@ -13,32 +13,48 @@ M0 review [M9][M11][M13]. `docs/adapters/AUTHORING.md` is the author-facing guid
 
 ## Blob exchange: the ingestion boundary [M9]
 
-- Per attempt, the core creates an exchange root owned by the controller:
+- Per attempt, the core creates an exchange root owned by the controller and passes it in `prepare` as
+  `exchange: {in, out}`, absolute paths inside the attempt's confinement:
   - `in/`: files the core wrote, read-only to the adapter;
   - `out/`: a directory the adapter may write.
 
   For sandboxed roles these live inside the sandbox mount. For host-side roles they sit inside the confinement (§2.4).
+  In M0 `in/` is read-only by file mode only; stronger enforcement waits for hostile-adapter containment.
 - Payloads are passed as **attempt-scoped handles** `{attempt, handle, digest, size}`, never as raw paths. Handles are
-  valid only for their attempt. A handle naming another attempt is refused.
-- **Ingestion of `out/` by the controller:**
-  1. resolve the path with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS)`, or an equivalent
-     component-by-component walk on systems without it;
-  2. accept regular files only (no symlinks, devices, FIFOs, sockets, hard links to outside files: link count 1);
-  3. enforce size bounds per media type;
-  4. stream-copy into the controller's blob store while hashing;
-  5. compare with the declared digest;
-  6. publish (03).
+  valid only for their attempt. A handle the adapter returns names exactly `out/<handle>`: one file directly in `out/`,
+  never a subdirectory or a path.
+- **Ingestion of `out/` by the controller** runs only after the adapter's process tree has exited, never while any of
+  its processes can still write. For each handle, in this order, the first failing check refuses it:
+  1. **fence** (05): attempt id and token are current and publication is open; otherwise `stale_attempt`;
+  2. **foreign handle**: the handle's attempt is the submitting attempt;
+  3. **file checks**: the handle is one file name (not empty, no `/`, not `.` or `..`, the handle pattern), else `path`;
+     open `out/<handle>` with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS |
+     RESOLVE_NO_XDEV)` and `O_NOFOLLOW`, or an equivalent component-by-component `openat` walk where `openat2` is
+     missing; then `fstat` the open descriptor: a regular file (`symlink`, `special_file` for devices, FIFOs and
+     sockets), link count 1 (`hard_link`), size within the bound and equal to the declared size (`size`);
+  4. **bounded copy-and-hash**: stream from that descriptor into the blob store while hashing, reading at most the bound
+     plus one byte; a read error is `unreadable`, a different digest or length `digest`;
+  5. **post-copy `fstat`**: device, inode, size and change time unchanged (`replaced`);
+  6. **publish** (03) in one writer transaction that checks the fence again and appends the output's events.
 
   The controller never reads an adapter file in place twice. It reads it once, copying, so a concurrent replacement
   cannot change what was verified.
-- Any violation rejects the output with `failed/unsafe_output` and records the attempt as untrustworthy.
+- **Size bounds** are M0 constants in `internal/adapterhost`, by result kind: `patch` 64 MiB, `text` 16 MiB,
+  `decision` 1 MiB; any other handle an event references (transcripts, tool requests, error excerpts) 16 MiB. Profile
+  values replace them later.
+- **Each refusal is recorded** as an `attempt.output_refused/v1` event (`schemas/records/attempt-output-refusal.json`,
+  subject the attempt): `{attempt, handle, reason, check, detail}`, where `check` names the failing step above and
+  `reason` is `stale_attempt` for the fence and `unsafe_output` for every other check. The output is rejected with
+  `failed/<reason>`. The event is not a transition and leaves the attempt record unchanged (terminal attempts are
+  immutable, and a stale refusal may follow one). An attempt with any such event is **untrustworthy**; M0 derives that
+  at read time from its events.
 
 ## Methods (core → adapter)
 
 | Method | Params | Result (discriminated by `outcome`) [M13] |
 |---|---|---|
 | `describe` | — | `{harness, harness_version, adapter_version, contract_version, capabilities, session_semantics, tool_surface, telemetry: {usage, upstream, stream_deltas, per_turn_coverage: bool}, host_side: bool, needs_native_login: bool}` |
-| `prepare` | `{attempt, fencing_token, role, executor, model, workspace, inputs: [handle], limits, tool_policy, gateway: {base_url, token}|null, native_login: {credential_ref, scope}|null}` | `{outcome, reason, detail}` |
+| `prepare` | `{attempt, fencing_token, role, executor, model, workspace, exchange: {in, out}, inputs: [handle], limits, tool_policy, gateway: {base_url, token}|null, native_login: {credential_ref, scope}|null}` | `{outcome, reason, detail}` |
 | `run` | `{attempt, fencing_token, call: cal_…, prompt: handle, response_schema: handle|null}` | streams notifications, then `{outcome, reason, detail, result: {kind: patch|text|decision, handle}|null, usage_final: measurement}`. `result` is **null** whenever `outcome` is `could_not_run` or `failed` |
 | `cancel` | `{attempt, fencing_token}` | `{outcome, reason}`; best effort, never relied on (A4) |
 | `shutdown` | — | `{outcome, reason}` |

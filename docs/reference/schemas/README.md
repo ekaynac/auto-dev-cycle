@@ -20,6 +20,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`config/project-profile.json`](config-project-profile.md) | ProjectProfile |
 | [`records/actor.json`](records-actor.md) | Actor |
 | [`records/approval.json`](records-approval.md) | Approval |
+| [`records/attempt-output-refusal.json`](records-attempt-output-refusal.md) | AttemptOutputRefusal |
 | [`records/attempt-record.json`](records-attempt-record.md) | AttemptRecord |
 | [`records/attempt.json`](records-attempt.md) | Attempt |
 | [`records/challenge.json`](records-challenge.md) | Challenge |
