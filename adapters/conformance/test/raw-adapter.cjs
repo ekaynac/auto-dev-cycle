@@ -26,6 +26,10 @@ if (mode === "stays-alive") {
 }
 
 let run = null;
+// The pending tool.response: resolved with its params, or with a cancel.
+let answered = null;
+const toolResponse = () => new Promise((r) => (answered = r));
+const handle = (attempt, name, digit) => ({ attempt, handle: name, digest: "sha256:" + digit.repeat(64), size: 1 });
 const event = (e) => out({ jsonrpc: "2.0", method: "adapter.event", params: { ...e, attempt: run.params.attempt, fencing_token: run.params.fencing_token, call: run.params.call } });
 
 async function doRun(m) {
@@ -37,6 +41,9 @@ async function doRun(m) {
   const start = (turn) => event({ event: "turn.start", turn, sub_call: mode === "unannounced" ? "s9" : "s1", reported_at: "2026-10-05T00:00:00Z" });
   const end = (turn) => event({ event: "turn.end", turn, sub_call: "s1", reported_at: "2026-10-05T00:00:01Z" });
   start(1);
+  // RAW_HARNESS_TOOL: a harness-internal tool the kit's policy does not allow.
+  const shell = process.env.RAW_HARNESS_TOOL;
+  if (shell) event({ event: "tool.result", turn: 1, tool: shell, mediated_by_controller: false, delivered: null, bytes: 1 });
   if (mode === "dup-turn-start") start(1);
   event({ event: "delta.text", turn: 1, bytes: 4 });
   if (mode === "bad-event") event({ event: "delta.text", turn: 1 });
@@ -44,6 +51,30 @@ async function doRun(m) {
   if (mode === "compaction-complete" || mode === "compaction-none") event({ event: "compaction", turn: 1, before_tokens: 9, after_tokens: 3 });
   if (mode === "harness-tool-complete" || mode === "harness-tool-none") event({ event: "tool.result", turn: 1, tool: "Edit", mediated_by_controller: false, delivered: null, bytes: 1 });
   if (mode === "no-params") out({ jsonrpc: "2.0", method: "adapter.event" });
+  if (mode.startsWith("tool") || mode.startsWith("cancel")) {
+    const tool = mode === "tool-unmediated" ? "Shell" : "RunTest";
+    const own = run.params.attempt;
+    // A guess at the kit's first delivery, reported before anything was supplied.
+    if (mode === "tool-early") event({ event: "tool.result", turn: 1, tool, mediated_by_controller: true, delivered: handle(own, "delivered-1", "0"), bytes: 1 });
+    event({ event: "tool.request", turn: 1, tool, request: handle(mode === "tool-foreign" ? "att_01m3250vnfeyrv67x6w0ddqr6b" : own, "req-1", "1") });
+    if (mode === "tool-dup-request") event({ event: "tool.request", turn: 1, tool, request: handle(own, "req-1", "1") });
+    if (mode === "tool-unmediated" || mode === "tool-foreign") return;
+    // Stop at once: the request was made, but no exchange completes.
+    if (mode === "tool-stops") return reply(m.id, { outcome: "could_not_run", reason: "attempt_stopped", detail: "stopped", result: null, usage_final: null });
+    const r = await toolResponse();
+    if (r === "stop") return reply(m.id, mode === "cancel-forged" ? { outcome: "empty", result: { kind: "text", handle: handle(own, "r", "2") } }
+      : { outcome: "could_not_run", reason: "attempt_stopped", detail: "cancelled during the tool call", result: null, usage_final: null });
+    if (r === "claim") event({ event: "tool.result", turn: 1, tool, mediated_by_controller: true, delivered: handle(own, "delivered-1", "0"), bytes: 1 });
+    if (r !== "claim" && r !== "complete" && mode !== "tool-unreported") {
+      const { size, digest, handle: name, attempt } = r.delivered; // the same handle, its keys in another order
+      const turn = mode === "tool-wrong-turn" ? 2 : 1;
+      if (turn === 2) event({ event: "turn.start", turn, sub_call: "s1", reported_at: "2026-10-05T00:00:00Z" });
+      const reported = { size, digest: mode === "tool-wrong-digest" ? "sha256:" + "3".repeat(64) : digest, handle: name, attempt };
+      const report = () => event({ event: "tool.result", turn, tool: mode === "tool-wrong-tool" ? "Other" : tool, mediated_by_controller: true, delivered: reported, bytes: size });
+      report();
+      if (mode === "tool-twice") report();
+    }
+  }
   if (mode === "unanswered-run") return; // never answers the run, no heartbeats
   if (mode === "fast-heartbeats") for (let i = 0; i < 40; i++) { event({ event: "heartbeat" }); await sleep(30); }
   const usage = (sub_call, sequence) => event({ event: "usage", sub_call, sequence, tokens: { in: 1, out: 1, cache_read: 0, cache_write: 0 }, turns: 1, milliseconds: 1,
@@ -51,7 +82,7 @@ async function doRun(m) {
   usage(mode === "null-sub-call" ? null : "s1", 0);
   if (mode === "bad-sequence") usage("s1", 2);
   const none = { "compaction-none": ["compaction"], "harness-tool-none": ["harness_tool"] }[mode];
-  event({ event: "coverage", turn: 1, observable: none ? "none" : "complete", unobservable: none || [] });
+  event({ event: "coverage", turn: 1, observable: none ? "none" : shell ? "partial" : "complete", unobservable: none || (shell ? ["harness_tool"] : []) });
   if (mode === "two-coverage") event({ event: "coverage", turn: 1, observable: "complete", unobservable: [] });
   end(1);
   if (mode === "dup-turn-end") end(1);
@@ -79,10 +110,20 @@ process.stdin.on("data", (chunk) => {
     }
     if (m.method === "prepare" && mode !== "no-prepare") reply(m.id, clean);
     if (m.method === "run") doRun(m);
+    if (m.method === "tool.response") {
+      if (!mode.startsWith("tool-no-ack")) reply(m.id, mode === "tool-bad-ack" ? { ok: true } : {});
+      answered?.(m.params);
+    }
+    if (m.method === "cancel") {
+      reply(m.id, mode === "cancel-bad-reply" ? { outcome: "done" } : clean);
+      // Best effort: a run may stop, or still complete; a broken one claims a delivery.
+      answered?.({ "cancel-completes": "complete", "cancel-claims": "claim" }[mode] || "stop");
+    }
     if (mode === "framing-flood" && m.method === "describe") {
       process.stdout.write("x".repeat((16 << 20) + 1));
       setInterval(() => {}, 1000);
     }
+    if (m.method === "shutdown" && mode === "tool-no-ack-stays") continue; // never answers, never exits
     if (m.method === "shutdown") {
       reply(m.id, mode === "bad-shutdown" ? { outcome: "done" } : clean);
       if (mode === "stays-alive") {
