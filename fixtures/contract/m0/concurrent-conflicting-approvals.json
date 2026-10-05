@@ -1,6 +1,6 @@
 {
   "name": "concurrent-conflicting-approvals",
-  "invariant": "Of concurrent conflicting approvals of one proposal exactly one applies, the others stale in the writer; independently, authority refuses to confirm a proposal no longer open, directly and through commands decided against its new version (03 \"The writer\"; 04 \"Proposals and confirmation\"). M0 has no proposal.confirm command wired to the writer: the fixture's command calls authority's confirm and close in the transaction.",
+  "invariant": "Of concurrent confirmations, rejections and expiries of one proposal exactly one applies, the others stale in the writer; independently, authority refuses a proposal no longer open, directly and through commands at its new version, and a confirmation at expiry, writing nothing (03 \"The writer\"; 04 \"Proposals and confirmation\"). M0 has no proposal.confirm command wired to the writer: the fixture's command calls authority in the transaction.",
   "expected": [
     {"outcome": "empty", "reason": "completed_clean"},
     {"outcome": "failed", "reason": "stale_expected_state"},
@@ -12,7 +12,8 @@
     {"outcome": "failed", "reason": "stale_expected_state"},
     {"outcome": "failed", "reason": "proposal_not_open"},
     {"outcome": "failed", "reason": "proposal_not_open"},
-    {"outcome": "failed", "reason": "proposal_not_open"}
+    {"outcome": "failed", "reason": "proposal_not_open"},
+    {"outcome": "failed", "reason": "proposal_expired"}
   ],
   "mutation": "authority.confirm-ignores-status"
 }
