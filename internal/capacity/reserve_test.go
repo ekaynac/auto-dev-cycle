@@ -44,6 +44,13 @@ type world struct {
 
 func open(t *testing.T, groups ...types.ResourceGroup) *world {
 	t.Helper()
+	return openWith(t, true, groups...)
+}
+
+// openWith composes the capacity hook after the lease projector; wired
+// says whether the lease projector asks it which leases owe no restore.
+func openWith(t *testing.T, wired bool, groups ...types.ResourceGroup) *world {
+	t.Helper()
 	reg, err := vocab.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +69,9 @@ func open(t *testing.T, groups ...types.ResourceGroup) *world {
 		t.Fatal(err)
 	}
 	lp := lease.Projector{Blobs: blobs, Holds: reg.Holds}
+	if wired {
+		lp.Groups = r
+	}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: lease.Kinds(), Blobs: blobs,
 		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
@@ -149,7 +159,13 @@ func TestGrantReservesAllOrNothing(t *testing.T) {
 	}
 	// b fits the quota but not the GPU: neither is reserved.
 	b := w.requested(reserve(quota, 2, types.CapacityUnitRequests), reserve(gpu, 5, types.CapacityUnitGpuSeconds))
-	exhausted(t, w.change(b, 1, granted), vocab.ReasonQuotaExhausted)
+	exhausted(t, w.change(b, 1, granted), vocab.ReasonCapacityReservedFull)
+	// The refusal names the GPU group's capacity revision it read (one
+	// grant so far), which a release advances (capacity_released).
+	var e *capacity.Exhausted
+	if err := w.change(b, 1, granted); !errors.As(err, &e) || e.Group != gpu || e.Revision != 1 {
+		t.Fatalf("the refusal %v does not name group %s at revision 1", err, gpu)
+	}
 	if g, q := w.outstanding(gpu), w.outstanding(quota); g != 6 || q != 1 {
 		t.Fatalf("outstanding gpu %d, quota %d after a refused grant; want 6 and 1", g, q)
 	}
@@ -184,7 +200,7 @@ func TestGrantRefusals(t *testing.T) {
 		"another unit":     {[]types.LeaseReservationsItem{reserve(gpu, 1, types.CapacityUnitTokens)}, "counted in"},
 		"a group twice": {[]types.LeaseReservationsItem{reserve(gpu, 1, types.CapacityUnitGpuSeconds),
 			reserve(gpu, 1, types.CapacityUnitGpuSeconds)}, "twice"},
-		"over the limit": {[]types.LeaseReservationsItem{reserve(gpu, 11, types.CapacityUnitGpuSeconds)}, "quota_exhausted"},
+		"over the limit": {[]types.LeaseReservationsItem{reserve(gpu, 11, types.CapacityUnitGpuSeconds)}, "capacity_reserved_full"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := w.change(w.requested(c.res...), 1, granted)
@@ -198,45 +214,74 @@ func TestGrantRefusals(t *testing.T) {
 	}
 }
 
-// Settlement returns the reservations, except while an uncertain
-// liability would have to stay on the group's ledger.
+// Settlement after a started attempt returns the reservations, except
+// while an uncertain liability would have to stay on the group's ledger.
+// Slots settle too once the lease projector knows from capacity that the
+// lease holds no evidence target; without that, a slot never settles
+// plainly and stays reserved.
 func TestSettlementReturns(t *testing.T) {
-	w := open(t, grp(gpu, types.ResourceGroupKindGpu, types.CapacityUnitGpuSeconds, lim(4)))
-	id := w.requested(reserve(gpu, 4, types.CapacityUnitGpuSeconds))
-	att := types.AttemptID("att_01m3250vkwffc979nzjw0g2sf9")
-	steps := []func(*eventstore.Tx) ([]eventstore.Event, error){
-		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return lease.ChangeLease(tx, id, 1, granted, w.holds)
-		},
-		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return lease.StartAttempt(tx, id, 2, att, types.AttemptBase{Tree: "git:cccccccccccccccccccccccccccccccccccccccc", ContractRevision: "7"})
-		},
-		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return lease.ChangeAttempt(tx, att, 1, lease.AttemptEvent{Kind: lease.StopRequested, StopReason: types.AttemptStopReasonValueRevoke})
-		},
-		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return lease.ChangeLease(tx, id, 3, lease.LeaseEvent{Kind: lease.Revoked, Reason: "test"}, w.holds)
-		},
-	}
-	for _, s := range steps {
-		if err := w.do(s); err != nil {
-			t.Fatal(err)
-		}
-	}
-	settle := func(liabilities []types.CallID) error {
-		return w.change(id, 4, lease.LeaseEvent{Kind: lease.Settled, Settlement: &types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: liabilities}})
-	}
-	if err := settle([]types.CallID{"cal_01m3250vkwffc979nzjw0g2sf9"}); err == nil || !strings.Contains(err.Error(), "uncertain liabilities") {
-		t.Fatalf("a settlement with an uncertain liability: %v", err)
-	}
-	if n := w.outstanding(gpu); n != 4 {
-		t.Fatalf("outstanding %d after the refused settlement, want 4", n)
-	}
-	if err := settle([]types.CallID{}); err != nil {
-		t.Fatal(err)
-	}
-	if n := w.outstanding(gpu); n != 0 {
-		t.Fatalf("outstanding %d after settlement, want 0", n)
+	for name, c := range map[string]struct {
+		g      types.ResourceGroup
+		unit   types.CapacityUnit
+		wired  bool
+		settle bool
+	}{
+		"gpu seconds":           {grp(gpu, types.ResourceGroupKindGpu, types.CapacityUnitGpuSeconds, lim(4)), types.CapacityUnitGpuSeconds, true, true},
+		"concurrency slots":     {grp(gpu, types.ResourceGroupKindConcurrency, types.CapacityUnitSlots, lim(4)), types.CapacityUnitSlots, true, true},
+		"slots, groups unwired": {grp(gpu, types.ResourceGroupKindConcurrency, types.CapacityUnitSlots, lim(4)), types.CapacityUnitSlots, false, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := openWith(t, c.wired, c.g)
+			id := w.requested(reserve(gpu, 4, c.unit))
+			att := types.AttemptID("att_01m3250vkwffc979nzjw0g2sf9")
+			steps := []func(*eventstore.Tx) ([]eventstore.Event, error){
+				func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+					return lease.ChangeLease(tx, id, 1, granted, w.holds)
+				},
+				func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+					return lease.StartAttempt(tx, id, 2, att, types.AttemptBase{Tree: "git:cccccccccccccccccccccccccccccccccccccccc", ContractRevision: "7"})
+				},
+				func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+					return lease.ChangeAttempt(tx, att, 1, lease.AttemptEvent{Kind: lease.StopRequested, StopReason: types.AttemptStopReasonValueRevoke})
+				},
+				func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+					return lease.ChangeLease(tx, id, 3, lease.LeaseEvent{Kind: lease.Revoked, Reason: "test"}, w.holds)
+				},
+			}
+			for _, s := range steps {
+				if err := w.do(s); err != nil {
+					t.Fatal(err)
+				}
+			}
+			settle := func(liabilities []types.CallID) error {
+				return w.change(id, 4, lease.LeaseEvent{Kind: lease.Settled, Settlement: &types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: liabilities}})
+			}
+			if err := settle([]types.CallID{"cal_01m3250vkwffc979nzjw0g2sf9"}); err == nil {
+				t.Fatal("a settlement with an uncertain liability applied")
+			}
+			if n := w.outstanding(gpu); n != 4 {
+				t.Fatalf("outstanding %d after the refused settlement, want 4", n)
+			}
+			err := settle([]types.CallID{})
+			if !c.settle {
+				if err == nil || !strings.Contains(err.Error(), "may owe a restore") {
+					t.Fatalf("an unclassified slot lease settled: %v", err)
+				}
+				if n := w.outstanding(gpu); n != 4 {
+					t.Fatalf("outstanding %d after the refused settlement, want 4", n)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := w.outstanding(gpu); n != 0 {
+				t.Fatalf("outstanding %d after settlement, want 0", n)
+			}
+			if diffs, err := w.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+				t.Fatalf("rebuild: %v %v", diffs, err)
+			}
+		})
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
@@ -266,9 +267,16 @@ type Blobs interface {
 // or a retired hold never make recorded history unrebuildable; the fold
 // itself is deterministic from the log.
 type Projector struct {
-	Blobs Blobs
-	Holds map[string]types.Hold
-	Units Units
+	Blobs  Blobs
+	Holds  map[string]types.Hold
+	Units  Units
+	Groups Groups // optional: without it, no lease reserving slots settles
+}
+
+// Groups says, from projections the log derives, whether a lease is known
+// to hold no evidence target, so it owes no restore (internal/capacity).
+type Groups interface {
+	RestoreFree(tx *eventstore.Tx, id types.LeaseID) (bool, error)
 }
 
 // Project is the event store's Project hook.
@@ -353,15 +361,12 @@ func (p Projector) changeLease(tx *eventstore.Tx, transition string, reason *str
 		// registry that may have changed since.
 		holds = map[string]types.Hold{n.Hold.Hold: {}}
 	}
-	// Restore obligations are known only for leases that cannot hold an
-	// evidence target: those groups count slots (12, 13), so a lease with a
-	// slot reservation settles only once the resource-group projection
-	// says whether it owes a restore.
+	// Evidence targets count slots (12, 13), so a lease with a slot
+	// reservation may owe a restore: it settles plainly only once Groups
+	// says it holds no evidence target.
 	if transition == Settled {
-		for _, r := range prev.Reservations {
-			if r.Unit == types.CapacityUnitSlots {
-				return fmt.Errorf("lease %s reserves slots, which may owe a restore; it settles once groups are known", n.ID)
-			}
+		if err := p.restoreFree(tx, prev); err != nil {
+			return err
 		}
 	}
 	want, err := ApplyLease(prev, e, false, holds)
@@ -385,6 +390,25 @@ func (p Projector) changeLease(tx *eventstore.Tx, transition string, reason *str
 		}
 	}
 	return put(tx, LeaseProjection, string(n.ID), rev+1, n)
+}
+
+// restoreFree refuses a plain settlement of a lease with a slot
+// reservation unless Groups knows it holds no evidence target.
+func (p Projector) restoreFree(tx *eventstore.Tx, l types.Lease) error {
+	if !slices.ContainsFunc(l.Reservations, func(r types.LeaseReservationsItem) bool { return r.Unit == types.CapacityUnitSlots }) {
+		return nil
+	}
+	free := false
+	if p.Groups != nil {
+		var err error
+		if free, err = p.Groups.RestoreFree(tx, l.ID); err != nil {
+			return err
+		}
+	}
+	if !free {
+		return fmt.Errorf("lease %s reserves slots, which may owe a restore; it settles once groups are known", l.ID)
+	}
+	return nil
 }
 
 // start accepts a first attempt (retired nil) or a successor with its

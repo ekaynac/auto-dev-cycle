@@ -15,22 +15,28 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// ReservedProjection holds each resource group's outstanding reservations:
-// what granted leases reserved and have not yet returned.
-const ReservedProjection = "capacity_reserved"
+// Projections: each resource group's outstanding reservations (what
+// granted leases reserved and have not yet returned) with its capacity
+// revision, and the leases capacity granted that have not yet ended.
+const (
+	ReservedProjection = "capacity_reserved"
+	GrantedProjection  = "capacity_granted"
+)
 
 // Exhausted refuses a grant one of whose groups cannot hold its reservation
-// now: quota_exhausted when the known limit, less what is outstanding, is
-// below it; quota_unknown when the group's limit is unknown (unknown
-// capacity is never assumed). Both wait on quota_reset (02).
+// now: capacity_reserved_full when the known limit, less what is
+// outstanding, is below it (the lease waits on capacity_released for a
+// revision after Revision); quota_unknown when the group's limit is unknown
+// (unknown capacity is never assumed).
 type Exhausted struct {
-	Lease  types.LeaseID
-	Group  types.ResourceGroupID
-	Reason vocab.Reason
+	Lease    types.LeaseID
+	Group    types.ResourceGroupID
+	Revision int64 // the group's capacity revision the refusal read
+	Reason   vocab.Reason
 }
 
 func (e *Exhausted) Error() string {
-	return fmt.Sprintf("capacity: %s: lease %s does not fit group %s", e.Reason, e.Lease, e.Group)
+	return fmt.Sprintf("capacity: %s: lease %s does not fit group %s at capacity revision %d", e.Reason, e.Lease, e.Group, e.Revision)
 }
 
 // Reservations makes and returns a lease's reservations inside the writer
@@ -47,6 +53,8 @@ func (e *Exhausted) Error() string {
 // for the ledger's affordability rule, window resets and evidence-target
 // restores for their events, and an uncertain liability for its amount on
 // the group's ledger; until then such a group or settlement is refused.
+// Capacity must be wired from a store's first grant: a lease it granted
+// holds no evidence target, which RestoreFree tells the lease projector.
 type Reservations struct {
 	groups map[types.ResourceGroupID]types.ResourceGroup
 }
@@ -62,6 +70,7 @@ func NewReservations(groups []types.ResourceGroup) (Reservations, error) {
 		case g.Kind == types.ResourceGroupKindBrokerBalance:
 			return Reservations{}, fmt.Errorf("capacity: broker balance %s is admitted by the ledger's affordability rule, which is not wired yet", g.ID)
 		case g.ReleaseRule != types.ResourceGroupReleaseRuleOnSettle:
+			// Evidence targets among them: on_restore_verified (13).
 			return Reservations{}, fmt.Errorf("capacity: group %s returns %s, which is not wired yet", g.ID, g.ReleaseRule)
 		case r.groups[g.ID].ID != "":
 			return Reservations{}, fmt.Errorf("capacity: group %s twice", g.ID)
@@ -69,6 +78,15 @@ func NewReservations(groups []types.ResourceGroup) (Reservations, error) {
 		r.groups[g.ID] = g
 	}
 	return r, nil
+}
+
+// RestoreFree reports whether capacity granted the lease, which therefore
+// holds no evidence target and owes no restore (lease.Groups). The record
+// is a fold over the log, written at the grant and dropped when the lease
+// ends.
+func (r Reservations) RestoreFree(tx *eventstore.Tx, id types.LeaseID) (bool, error) {
+	_, ok, err := tx.Get(GrantedProjection, string(id))
+	return ok, err
 }
 
 // leaseEvent is the part of a lease event's payload the fold reads.
@@ -103,21 +121,26 @@ func (r Reservations) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	return nil
 }
 
+// tally is a group's record: what is outstanding, and its capacity
+// revision, which every grant and return advances.
+type tally struct {
+	Reserved int64 `json:"reserved"`
+	Revision int64 `json:"revision"`
+}
+
 // reserve admits every reservation of l against its group, then records
 // them all: a refusal rolls back the whole command.
 func (r Reservations) reserve(tx *eventstore.Tx, l types.Lease) error {
-	seen := map[types.ResourceGroupID]bool{}
-	next := map[types.ResourceGroupID]int64{}
+	next := map[types.ResourceGroupID]tally{}
 	for _, res := range l.Reservations {
-		if seen[res.Group] {
+		if _, dup := next[res.Group]; dup {
 			return fmt.Errorf("lease %s reserves group %s twice", l.ID, res.Group)
 		}
-		seen[res.Group] = true
-		cur, err := Outstanding(tx, res.Group)
+		cur, err := load(tx, res.Group)
 		if err != nil {
 			return err
 		}
-		if int64(res.Amount) > maxAmount-cur {
+		if int64(res.Amount) > maxAmount-cur.Reserved {
 			return fmt.Errorf("group %s's reservations overflow", res.Group)
 		}
 		if !tx.Replaying() {
@@ -125,13 +148,16 @@ func (r Reservations) reserve(tx *eventstore.Tx, l types.Lease) error {
 				return err
 			}
 		}
-		next[res.Group] = cur + int64(res.Amount)
+		next[res.Group] = tally{cur.Reserved + int64(res.Amount), cur.Revision + 1}
+	}
+	if err := tx.Put(GrantedProjection, string(l.ID), json.RawMessage(`{}`)); err != nil {
+		return err
 	}
 	return putAll(tx, next)
 }
 
 // admit refuses a reservation its group cannot hold with cur outstanding.
-func (r Reservations) admit(id types.LeaseID, res types.LeaseReservationsItem, cur int64) error {
+func (r Reservations) admit(id types.LeaseID, res types.LeaseReservationsItem, cur tally) error {
 	g, ok := r.groups[res.Group]
 	switch {
 	case !ok:
@@ -139,13 +165,14 @@ func (r Reservations) admit(id types.LeaseID, res types.LeaseReservationsItem, c
 	case res.Unit != g.CapacityModel.Unit:
 		return fmt.Errorf("lease %s reserves %s of group %s, counted in %s", id, res.Unit, res.Group, g.CapacityModel.Unit)
 	case g.CapacityModel.Limit == nil:
-		return &Exhausted{Lease: id, Group: res.Group, Reason: vocab.ReasonQuotaUnknown}
+		return &Exhausted{Lease: id, Group: res.Group, Revision: cur.Revision, Reason: vocab.ReasonQuotaUnknown}
 	}
+	held := cur.Reserved
 	if mutation.Is(mutation.ReservationsUncounted) {
-		cur = 0
+		held = 0
 	}
-	if int64(res.Amount) > int64(*g.CapacityModel.Limit)-cur {
-		return &Exhausted{Lease: id, Group: res.Group, Reason: vocab.ReasonQuotaExhausted}
+	if int64(res.Amount) > int64(*g.CapacityModel.Limit)-held {
+		return &Exhausted{Lease: id, Group: res.Group, Revision: cur.Revision, Reason: vocab.ReasonCapacityReservedFull}
 	}
 	return nil
 }
@@ -157,36 +184,44 @@ func (r Reservations) release(tx *eventstore.Tx, l types.Lease) error {
 	if len(l.Reservations) > 0 && l.Settlement != nil && len(l.Settlement.Liabilities) > 0 {
 		return fmt.Errorf("lease %s settles with uncertain liabilities, which the group ledger cannot hold yet", l.ID)
 	}
-	next := map[types.ResourceGroupID]int64{}
+	next := map[types.ResourceGroupID]tally{}
 	for _, res := range l.Reservations {
-		cur, err := Outstanding(tx, res.Group)
+		cur, err := load(tx, res.Group)
 		if err != nil {
 			return err
 		}
-		if cur < int64(res.Amount) {
+		if cur.Reserved < int64(res.Amount) {
 			return fmt.Errorf("lease %s returns more of group %s than is outstanding", l.ID, res.Group)
 		}
-		next[res.Group] = cur - int64(res.Amount)
+		next[res.Group] = tally{cur.Reserved - int64(res.Amount), cur.Revision + 1}
+	}
+	if err := tx.Delete(GrantedProjection, string(l.ID)); err != nil {
+		return err
 	}
 	return putAll(tx, next)
 }
 
 const maxAmount = 9007199254740991
 
-// Outstanding is what the group has reserved and not yet returned.
-func Outstanding(tx *eventstore.Tx, group types.ResourceGroupID) (int64, error) {
+func load(tx *eventstore.Tx, group types.ResourceGroupID) (tally, error) {
+	var t tally
 	raw, ok, err := tx.Get(ReservedProjection, string(group))
 	if err != nil || !ok {
-		return 0, err
+		return t, err
 	}
-	var n int64
-	if err := json.Unmarshal(raw, &n); err != nil {
-		return 0, fmt.Errorf("capacity: group %s's reservations: %w", group, err)
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return t, fmt.Errorf("capacity: group %s's reservations: %w", group, err)
 	}
-	return n, nil
+	return t, nil
 }
 
-func putAll(tx *eventstore.Tx, next map[types.ResourceGroupID]int64) error {
+// Outstanding is what the group has reserved and not yet returned.
+func Outstanding(tx *eventstore.Tx, group types.ResourceGroupID) (int64, error) {
+	t, err := load(tx, group)
+	return t.Reserved, err
+}
+
+func putAll(tx *eventstore.Tx, next map[types.ResourceGroupID]tally) error {
 	for _, g := range slices.Sorted(maps.Keys(next)) {
 		raw, err := json.Marshal(next[g])
 		if err != nil {

@@ -116,6 +116,10 @@ For a lease that holds an `evidence_target` group, settlement carries a **restor
 - **Restart:** a lease found in `active`, `settling`, `restoring` or `restore_failed` stays in that state, and the
   target stays excluded. The recovery owner is `internal/evidence`, which resumes restore as an effect (03).
 
+- **A refused grant leaves the lease `requested`.** When a group cannot hold its reservation, the grant is refused
+  with `could_not_run/capacity_reserved_full` (`quota_unknown` for an unknown limit) and nothing is reserved; the M2
+  scheduler then moves the lease to `waiting` on the hold `capacity_released`, whose signal is a new capacity revision
+  of the blocking group (a settlement or release returning reservations to it).
 - **Reservations return** per their group's `release_rule` at `settled`/`released`. A provider charge still uncertain at
   settlement becomes an **uncertain liability** on the group's ledger. Liabilities reduce available budget until
   reconciled, so a lease can settle without waiting forever on billing [M7].

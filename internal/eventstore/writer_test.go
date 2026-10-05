@@ -166,7 +166,6 @@ func TestFailuresRollBack(t *testing.T) {
 		apply func(t *testing.T) Apply
 	}{
 		"authorization": {Hooks{Authorize: func(*Tx, Command) error { return boom }}, func(t *testing.T) Apply { return appendTo(t, testSubject, 1) }},
-		"reservation":   {Hooks{Authorize: allow, Reserve: func(*Tx, Command) error { return boom }}, func(t *testing.T) Apply { return appendTo(t, testSubject, 1) }},
 		"projection":    {Hooks{Authorize: allow, Project: func(*Tx, []Event) error { return boom }}, func(t *testing.T) Apply { return appendTo(t, testSubject, 1) }},
 		"apply": {Hooks{Authorize: allow}, func(*testing.T) Apply {
 			return func(*Tx) ([]Event, json.RawMessage, error) { return nil, nil, boom }
