@@ -130,19 +130,6 @@
   "valid": false
  },
  {
-  "name": "actor: April 31",
-  "schema": "records/actor",
-  "doc": {
-   "id": "act_01m3250v0aer9ss2097svmefj8",
-   "kind": "supervisor",
-   "name": "astra",
-   "declared_agent": null,
-   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
-   "revoked_at": "2026-04-31T00:00:00Z"
-  },
-  "valid": false
- },
- {
   "name": "actor: minute 60",
   "schema": "records/actor",
   "doc": {
@@ -993,5 +980,109 @@
    "revoked_at": "2026-12-31T00:00:00Z"
   },
   "valid": true
+ },
+ {
+  "name": "actor: 01-32 does not exist",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-01-32T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: 03-32 does not exist",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-03-32T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: 05-32 does not exist",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-05-32T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: 07-32 does not exist",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-07-32T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: 08-32 does not exist",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-08-32T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: 10-32 does not exist",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-10-32T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: 12-32 does not exist",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-12-32T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: Feb 30 in a leap year",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2028-02-30T00:00:00Z"
+  },
+  "valid": false
  }
 ]
