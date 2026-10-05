@@ -1,8 +1,9 @@
 {
   "name": "widened-profile-edit",
-  "invariant": "Authority classifies a profile edit by its effective change, never by the action's name: a narrowing edit is allowed, while one that widens data (explicitly or disguised as dropping the usage override), widens destinations (adding one or emptying the list) or removes a protected document is proposed for a presence-verified human, so a review GO for it is refused (04 \"Action registry and effective-change classification\").",
+  "invariant": "Authority classifies a profile edit by its effective change, never by the action's name: a narrowing edit is allowed, while one that widens data (explicitly or disguised as dropping the usage override), widens destinations (adding one or emptying the list) removes a protected document, or bundles a widening with a topology change is proposed for a presence-verified human, so a review GO for it is refused (04 \"Action registry and effective-change classification\").",
   "expected": [
     {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "confirmation_refused"},
     {"outcome": "failed", "reason": "confirmation_refused"},
     {"outcome": "failed", "reason": "confirmation_refused"},
     {"outcome": "failed", "reason": "confirmation_refused"},

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -71,7 +72,8 @@ func actors(actions ...types.ActionKind) (sup, op, sys types.Actor, g types.Gran
 // never by its name. A narrowing edit is allowed; one that widens data
 // (explicitly, or disguised as dropping the usage override, inheriting the
 // installation's usage, which may be anything), widens destinations
-// (adding one, or emptying the list) or removes a protected document is
+// (adding one, or emptying the list), removes a protected document, or
+// bundles a widening with a topology change is
 // proposed for a presence-verified human, so a review GO for it is refused (11 "an effective-change widening
 // disguised as a profile edit"; 04 "Action registry and effective-change
 // classification").
@@ -86,20 +88,27 @@ func widenedProfileEdit(context.Context, string) (steps []Step, violations []str
 	}
 	cur, project := adopted(), projectA
 	var o observe
-	// Each edit with the class its effective change must carry (none for
-	// the narrowing one).
+	// Each edit with the classes its effective change must carry (none for
+	// the narrowing one). The last bundles a wider floor with a topology
+	// change, which must not hide the widening.
+	topology := &types.ProjectProfileIntegrationTopologyValue{Files: []types.RepoPath{"compose.yaml"},
+		AdoptedRevision: types.GitID("git:" + strings.Repeat("c", 40)), Digest: types.Digest("sha256:" + strings.Repeat("a", 64))}
 	for _, c := range []struct {
-		edit  func(*types.ProjectProfile)
-		class string
+		edit    func(*types.ProjectProfile)
+		classes []string
 	}{
-		{func(p *types.ProjectProfile) { p.DataPolicy.AllowedDestinations = []types.Slug{"anthropic"} }, ""},
-		{func(p *types.ProjectProfile) { p.DataPolicy.Floor = types.ProjectProfileDataPolicyFloorFreeUnknown }, authority.WidenData},
-		{func(p *types.ProjectProfile) { p.UsageProfileOverride = nil }, authority.WidenData},
+		{func(p *types.ProjectProfile) { p.DataPolicy.AllowedDestinations = []types.Slug{"anthropic"} }, nil},
+		{func(p *types.ProjectProfile) { p.DataPolicy.Floor = types.ProjectProfileDataPolicyFloorFreeUnknown }, []string{authority.WidenData}},
+		{func(p *types.ProjectProfile) { p.UsageProfileOverride = nil }, []string{authority.WidenData}},
 		{func(p *types.ProjectProfile) {
 			p.DataPolicy.AllowedDestinations = append(p.DataPolicy.AllowedDestinations, "deepseek")
-		}, authority.WidenDestinations},
-		{func(p *types.ProjectProfile) { p.DataPolicy.AllowedDestinations = []types.Slug{} }, authority.WidenDestinations},
-		{func(p *types.ProjectProfile) { p.ProtectedDocuments = []types.Glob{} }, authority.WeakenProtection},
+		}, []string{authority.WidenDestinations}},
+		{func(p *types.ProjectProfile) { p.DataPolicy.AllowedDestinations = []types.Slug{} }, []string{authority.WidenDestinations}},
+		{func(p *types.ProjectProfile) { p.ProtectedDocuments = []types.Glob{} }, []string{authority.WeakenProtection}},
+		{func(p *types.ProjectProfile) {
+			p.Integration.Topology = topology
+			p.DataPolicy.Floor = types.ProjectProfileDataPolicyFloorFreeUnknown
+		}, []string{authority.ChangeTopology, authority.WidenData}},
 	} {
 		d := authority.Decide(reg, authority.Request{Actor: sup, Action: "profile.adopt", Project: &project,
 			Classes: authority.ClassifyProfile(&cur, edited(c.edit)), Grants: []types.Grant{g}, Now: receiptsAt})
@@ -107,8 +116,8 @@ func widenedProfileEdit(context.Context, string) (steps []Step, violations []str
 			o.decided(d)
 			continue
 		}
-		o.check(d.Policy == authority.Human && slices.Contains(d.Classes, c.class),
-			"the next edit is proposed under %s for %v, want human for %s", d.Policy, d.Classes, c.class)
+		o.check(d.Policy == authority.Human && !slices.ContainsFunc(c.classes, func(k string) bool { return !slices.Contains(d.Classes, k) }),
+			"the next edit is proposed under %s for %v, want human for %v", d.Policy, d.Classes, c.classes)
 		prp, err := ids.New("prp")
 		if err != nil {
 			return nil, nil, err
