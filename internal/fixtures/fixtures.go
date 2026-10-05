@@ -66,6 +66,7 @@ var runners = map[string]runner{
 	"hash-chain-edit-truncation":       hashChainEditAndTruncation,
 	"concurrent-conflicting-approvals": concurrentConflictingApprovals,
 	"concurrent-last-unit-reservation": concurrentLastUnitReservation,
+	"replayed-expired-challenge":       replayedExpiredChallenge,
 }
 
 // Goldens loads and validates every golden, checking that each has a
