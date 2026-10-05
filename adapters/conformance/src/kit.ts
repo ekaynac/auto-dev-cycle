@@ -14,7 +14,7 @@
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { performance } from "node:perf_hooks";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { frame, lines, parseStrict } from "@adc/contract";
 
 type Validator = ((doc: unknown) => boolean) & { errors?: unknown };
@@ -56,6 +56,23 @@ const stderrTail = 64 << 10;
 
 type Msg = Record<string, unknown> & { id?: unknown; result?: any; error?: any; method?: unknown; params?: any };
 
+/** show formats any value for a finding, whatever the adapter sent. */
+const show = (v: unknown, n = 200) => {
+  let t: string;
+  try {
+    t = JSON.stringify(v) ?? String(v);
+  } catch {
+    t = String(v);
+  }
+  return t.slice(0, n);
+};
+
+/** contain runs the command in a new PID namespace (bubblewrap), so killing
+ *  it ends every process the adapter started, whatever sessions or groups
+ *  they made. Only the PID namespace is new: files and network are the
+ *  caller's. */
+const contain = (command: string[]) => ["bwrap", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc", "--", ...command];
+
 /** Session is one adapter process under the kit's control. */
 class Session {
   readonly findings: Finding[] = [];
@@ -63,13 +80,18 @@ class Session {
   stderr = "";
   private queue: Msg[] = [];
   private waiting: (() => void) | null = null;
-  private closed = false;
+  /** inputDone: the adapter's output ended; stopped: cleanup ran. */
+  private inputDone = false;
+  private stopped = false;
+  private frozen = false;
   private readonly pending = new Map<number, string>();
   private readonly answered = new Set<number>();
   private next = 1;
   private readonly child;
   private readonly timer;
-  readonly exited: Promise<number | null>;
+  readonly exited: Promise<{ code: number | null; signal: string | null } | null>;
+  replied = false;
+  private readonly loopDelay = monitorEventLoopDelay({ resolution: 10 });
   /** run: from the run request to its answer; events outside it are findings. */
   runWindow: { from: number; to: number | null } | null = null;
 
@@ -77,11 +99,15 @@ class Session {
 
   constructor(a: AdapterUnderTest, limits: Limits) {
     this.limits = limits;
-    this.child = spawn(a.command[0], a.command.slice(1), { env: { ...process.env, ...a.env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    const [cmd, ...args] = contain(a.command);
+    this.child = spawn(cmd, args, { env: { ...process.env, ...a.env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.exited = new Promise((r) => {
-      this.child.on("exit", (code) => r(code));
+      this.child.on("exit", (code, signal) => {
+        if (!this.replied && !this.stopped) this.find("spawn", `the adapter ended before answering anything (${signal ?? `exit ${code}`}): ${this.stderr.slice(-300)}`);
+        r({ code, signal });
+      });
       this.child.on("error", (e) => {
-        this.find("spawn", `the adapter could not run: ${e.message}`);
+        this.find("spawn", `the adapter could not run under its PID namespace (bubblewrap): ${e.message}`);
         r(null);
       });
     });
@@ -97,23 +123,42 @@ class Session {
   }
 
   find(check: string, detail: string) {
-    if (this.findings.length < maxFindings) this.findings.push({ check, detail: detail.slice(0, 500) });
+    if (!this.frozen && this.findings.length < maxFindings) this.findings.push({ check, detail: detail.slice(0, 500) });
   }
 
-  /** stop kills the process tree and settles every wait. */
+  /** stop is the one cleanup path, idempotent: it ends the run window,
+   *  cancels the deadline, kills the PID namespace (and the process group),
+   *  destroys the streams and settles every wait. */
   stop() {
-    if (this.closed) return;
-    this.closed = true;
+    if (this.stopped) return;
+    this.stopped = true;
+    if (this.runWindow && this.runWindow.to === null) this.runWindow.to = performance.now();
+    this.loopDelay.disable();
     clearTimeout(this.timer);
-    try {
-      if (this.child.pid) process.kill(-this.child.pid, "SIGKILL");
-    } catch {
-      // already gone
+    for (const target of [this.child.pid, this.child.pid && -this.child.pid]) {
+      try {
+        if (target) process.kill(target, "SIGKILL");
+      } catch {
+        // already gone
+      }
     }
     this.child.stdout.destroy();
     this.child.stderr.destroy();
     this.child.stdin.destroy();
     this.waiting?.();
+  }
+
+  /** finish stops the session and returns its findings, fixed: nothing
+   *  added after the case returns. */
+  finish(): Finding[] {
+    this.stop();
+    this.frozen = true;
+    return [...this.findings];
+  }
+
+  /** loopStalledMs is the kit's own worst event-loop delay during the run. */
+  loopStalledMs() {
+    return this.loopDelay.max / 1e6;
   }
 
   private async read() {
@@ -141,9 +186,12 @@ class Session {
         this.accept(line);
       }
     } catch (e) {
-      if (!this.closed) this.find("framing", `the output stream broke: ${(e as Error).message}`);
+      if (!this.stopped) {
+        this.find("framing", `the output stream broke: ${(e as Error).message}`);
+        this.stop();
+      }
     }
-    this.closed = true;
+    this.inputDone = true;
     this.waiting?.();
   }
 
@@ -161,7 +209,8 @@ class Session {
     const msg = m as Msg;
     if (msg.method === "adapter.event" && !("id" in msg)) {
       const now = performance.now();
-      if (!this.runWindow || this.runWindow.to !== null) return this.find("run-boundary", `an event outside the run: ${JSON.stringify(msg.params).slice(0, 200)}`);
+      if (typeof msg.params !== "object" || msg.params === null || Array.isArray(msg.params)) return this.find("envelope", `an adapter.event without object params: ${show(msg)}`);
+      if (!this.runWindow || this.runWindow.to !== null) return this.find("run-boundary", `an event outside the run: ${show(msg.params)}`);
       this.events.push({ at: now, e: msg.params });
       return;
     }
@@ -172,6 +221,7 @@ class Session {
     if (!this.pending.has(id)) return this.find("correlation", `a reply for request ${id}, which was not asked`);
     this.pending.delete(id);
     this.answered.add(id);
+    this.replied = true;
     this.queue.push(msg);
     this.waiting?.();
   }
@@ -179,28 +229,46 @@ class Session {
   /** request sends one request and waits for its reply (null if the session
    *  ended first). */
   async request(method: string, params?: unknown): Promise<Msg | null> {
-    if (this.closed) return null;
+    if (this.stopped || this.inputDone) return null;
     const id = this.next++;
     this.pending.set(id, method);
-    if (method === "run") this.runWindow = { from: performance.now(), to: null };
+    if (method === "run") {
+      this.runWindow = { from: performance.now(), to: null };
+      this.loopDelay.enable();
+    }
     this.child.stdin.write(frame({ jsonrpc: "2.0", id, method, params }));
     for (;;) {
       const i = this.queue.findIndex((m) => m.id === id);
       if (i >= 0) {
         const [m] = this.queue.splice(i, 1);
-        if (method === "run" && this.runWindow) this.runWindow.to = performance.now();
+        if (method === "run" && this.runWindow) {
+          this.runWindow.to = performance.now();
+          this.loopDelay.disable();
+        }
         return m;
       }
-      if (this.closed) return null;
+      if (this.stopped || this.inputDone) return null;
       await new Promise<void>((r) => (this.waiting = r));
     }
   }
 
-  /** end waits for the process to exit, up to graceMs, then stops it. */
-  async end(graceMs: number): Promise<number | null> {
-    const code = await Promise.race([this.exited, new Promise<"late">((r) => setTimeout(() => r("late"), graceMs))]);
-    this.stop();
-    return code === "late" ? (this.find("exit", `the process did not exit within ${graceMs} ms of shutdown`), null) : code;
+  /** end waits for the process to exit after shutdown, within graceMs and
+   *  the session's deadline; only a normal exit 0 passes. */
+  async end(graceMs: number) {
+    if (this.stopped) return; // the kit ended it: its exit is no verdict
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<"late">((r) => (timer = setTimeout(() => r("late"), graceMs)));
+    const stopped = new Promise<"stopped">((r) => {
+      const poll = setInterval(() => this.stopped && (clearInterval(poll), r("stopped")), 20);
+      late.then(() => clearInterval(poll));
+      this.exited.then(() => clearInterval(poll));
+    });
+    const exit = await Promise.race([this.exited, late, stopped]);
+    clearTimeout(timer);
+    if (exit === "late") this.find("exit", `the process did not exit within ${graceMs} ms of shutdown`);
+    else if (exit !== "stopped" && exit !== null && !this.stopped && (exit.code !== 0 || exit.signal !== null)) {
+      this.find("exit", `the process ended ${exit.signal ? `by signal ${exit.signal}` : `with code ${exit.code}`} after shutdown, want exit 0`);
+    }
   }
 }
 
@@ -213,8 +281,8 @@ const runParams = { attempt, fencing_token: token, call, prompt: handleOf("promp
 /** result checks a reply: a result (not an error) valid against schema. */
 function result(s: Session, method: string, reply: Msg | null, schema: string): any {
   if (!reply) return s.find(method, `no reply to ${method}`), null;
-  if ("error" in reply) return s.find(method, `${method} failed: ${JSON.stringify(reply.error).slice(0, 300)}`), null;
-  if (!validators[schema](reply.result)) return s.find(method, `the ${method} result does not match ${schema}: ${JSON.stringify(validators[schema].errors).slice(0, 300)}`), null;
+  if ("error" in reply) return s.find(method, `${method} failed: ${show(reply.error, 300)}`), null;
+  if (!validators[schema](reply.result)) return s.find(method, `the ${method} result does not match ${schema}: ${show(validators[schema].errors, 300)}`), null;
   return reply.result;
 }
 
@@ -225,7 +293,7 @@ function checkEvents(s: Session) {
   let sequence = 0;
   for (const { e } of s.events) {
     if (!validators["adapter/event"](e)) {
-      s.find("event", `an event that does not match adapter/event: ${JSON.stringify(e).slice(0, 200)}`);
+      s.find("event", `an event that does not match adapter/event: ${show(e)}`);
       continue;
     }
     if (e.attempt !== attempt || e.fencing_token !== token || e.call !== call) s.find("envelope", `a ${e.event} event not stamped for this call`);
@@ -266,7 +334,7 @@ function checkEvents(s: Session) {
     }
     const c = t.coverage[0];
     for (const [seen, cause] of [[t.compaction, "compaction"], [t.harnessTool, "harness_tool"]] as [boolean, string][]) {
-      if (seen && (c.observable === "complete" || !c.unobservable.includes(cause))) s.find("coverage", `turn ${n} had ${cause} but declared ${c.observable} ${JSON.stringify(c.unobservable)}`);
+      if (seen && (c.observable !== "partial" || !c.unobservable.includes(cause))) s.find("coverage", `turn ${n} had ${cause} but declared ${c.observable} ${JSON.stringify(c.unobservable)}`);
     }
   }
 }
@@ -278,10 +346,15 @@ function checkHeartbeats(s: Session) {
   if (!w || w.to === null) return;
   const marks = [w.from, ...s.events.filter((x) => x.e?.event === "heartbeat").map((x) => x.at), w.to];
   const bound = s.limits.heartbeatMs + s.limits.toleranceMs;
-  for (let i = 1; i < marks.length; i++) {
-    const gap = Math.round(marks[i] - marks[i - 1]);
-    if (gap > bound) s.find("heartbeat", `${gap} ms between heartbeats during the run (09: every ≤ ${s.limits.heartbeatMs} ms)`);
+  const gaps = marks.slice(1).map((m, i) => Math.round(m - marks[i])).filter((g) => g > bound);
+  if (!gaps.length) return;
+  // Arrival times include the kit's own scheduling: when its event loop
+  // stalled beyond the tolerance, a gap is no verdict on the adapter.
+  if (s.loopStalledMs() > s.limits.toleranceMs) {
+    s.find("inconclusive", `heartbeat gaps of ${gaps.join(", ")} ms, but the kit itself stalled ${Math.round(s.loopStalledMs())} ms`);
+    return;
   }
+  for (const gap of gaps) s.find("heartbeat", `${gap} ms between heartbeats during the run (09: every ≤ ${s.limits.heartbeatMs} ms)`);
 }
 
 /** roundTrip: describe, prepare, run and shutdown, one after another; every
@@ -295,15 +368,18 @@ export async function roundTrip(a: AdapterUnderTest, limits: Partial<Limits> = {
     const p = result(s, "prepare", await s.request("prepare", prepareParams), "adapter/outcome");
     if (p && p.outcome !== "empty" && p.outcome !== "found") s.find("prepare", `prepare refused the kit's ordinary attempt: ${p.outcome}/${p.reason}`);
     if (d && p) {
-      result(s, "run", await s.request("run", runParams), "adapter/run-result");
+      const reply = await s.request("run", runParams);
+      result(s, "run", reply, "adapter/run-result");
+      if (!reply) s.stop(); // no answer: the run window closes at termination
+    }
+    if (s.runWindow) {
       checkEvents(s);
       checkHeartbeats(s);
     }
     result(s, "shutdown", await s.request("shutdown"), "adapter/outcome");
-    const code = await s.end(5_000);
-    if (code !== null && code !== 0) s.find("exit", `the process exited ${code} after shutdown`);
+    await s.end(5_000);
   } finally {
     s.stop();
   }
-  return s.findings;
+  return s.finish();
 }

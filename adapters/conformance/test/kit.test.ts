@@ -4,9 +4,8 @@
 // broken, while the kit itself never crashes, hangs or floods.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { roundTrip, type AdapterUnderTest, type Finding } from "../src/kit.ts";
 
@@ -64,23 +63,78 @@ test("silence between heartbeats over the interval is red", async () => {
   assert.deepEqual(checks(fs), ["heartbeat"], JSON.stringify(fs));
 });
 
+/** alive reports whether a sleep process with the marker argument runs
+ *  (matching only sleep processes, never a command line quoting the marker). */
+const alive = (marker: string) => {
+  const pids = spawnSync("pgrep", ["-x", "sleep"], { encoding: "utf8" }).stdout.split("\n").filter(Boolean);
+  return pids.some((pid) => {
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes(marker);
+    } catch {
+      return false;
+    }
+  });
+};
+
 test("an adapter cannot crash, hang or flood the kit", async () => {
   const quick = { deadlineMs: 3_000 };
   // No reply to prepare: the deadline settles the session.
   assert.ok(checks(await roundTrip(raw("no-prepare"), quick)).includes("deadline"));
   // A closed stdin (writes get EPIPE): no crash; the missing replies are findings.
   assert.ok(checks(await roundTrip(raw("closes-stdin"), quick)).includes("describe"));
-  // A descendant holding stdout open after the adapter exits: the process
-  // group is killed and the session ends at the deadline, not at end of output.
-  const pidfile = join(mkdtempSync(join(tmpdir(), "kit-")), "pid");
-  const started = Date.now();
-  assert.ok(checks(await roundTrip({ ...raw("descendant"), env: { RAW_MODE: "descendant", RAW_PIDFILE: pidfile } }, quick)).includes("deadline"));
-  assert.ok(Date.now() - started < 10_000, "settled at the deadline");
-  const pid = Number(readFileSync(pidfile, "utf8"));
-  await new Promise((r) => setTimeout(r, 100));
-  assert.throws(() => process.kill(pid, 0), "the descendant was killed with the process group");
+  // Descendants holding stdout after the adapter exits, in its process group
+  // or in a session of their own: the PID namespace ends them all, promptly.
+  for (const mode of ["descendant", "detached-descendant"]) {
+    const marker = `${60 + Math.floor(Math.random() * 1000) / 1000}`;
+    const started = Date.now();
+    const fs = await roundTrip({ command: [process.execPath, rawMain], env: { RAW_MODE: mode, RAW_MARKER: marker } }, quick);
+    assert.ok(checks(fs).includes("describe"), `${mode}: ${JSON.stringify(fs)}`);
+    assert.ok(Date.now() - started < 10_000, `${mode}: settled`);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(alive(marker), false, `${mode}: no descendant survives`);
+  }
+  // An adapter that answers, closes stdout and lingers is ended within the deadline.
+  const lingering = Date.now();
+  assert.ok(checks(await roundTrip(raw("stays-alive"), { deadlineMs: 2_000 })).includes("deadline"));
+  assert.ok(Date.now() - lingering < 8_000, "a lingering adapter is ended");
+  // 16 MiB + 1 byte without a newline: a framing finding, the adapter ended.
+  const framing = Date.now();
+  assert.ok(checks(await roundTrip(raw("framing-flood"), quick)).includes("framing"));
+  assert.ok(Date.now() - framing < 2_000, "a framing failure ends the session at once, not at the deadline");
   // A flood is cut at the output bound.
   assert.ok((await roundTrip(raw("flood"), { maxOutputBytes: 1 << 20 })).some((f) => f.check === "output-bound" && /bytes of output/.test(f.detail)));
   // A command that cannot run is a finding, not an exception.
   assert.ok(checks(await roundTrip({ command: ["/nonexistent/adapter"] }, quick)).includes("spawn"));
+});
+
+test("the findings a case returns never change afterwards", async () => {
+  const fs = await roundTrip(raw("clean"), { deadlineMs: 2_000 });
+  const copy = JSON.stringify(fs);
+  await new Promise((r) => setTimeout(r, 2_500));
+  assert.equal(JSON.stringify(fs), copy);
+});
+
+test("missing params, a signal exit, and coverage none where partial is due are red; an unanswered run's silence is checked", async () => {
+  for (const [mode, want] of [
+    ["no-params", "envelope"],
+    ["no-params-outside", "envelope"],
+    ["signal-exit", "exit"],
+    ["compaction-none", "coverage"],
+    ["harness-tool-none", "coverage"],
+  ]) {
+    const fs = await roundTrip(raw(mode));
+    assert.ok(checks(fs).includes(want), `${mode}: ${JSON.stringify(fs)}`);
+  }
+  const silent = await roundTrip(raw("unanswered-run"), { deadlineMs: 3_000, heartbeatMs: 1_000, toleranceMs: 200 });
+  assert.ok(checks(silent).includes("heartbeat"), JSON.stringify(silent));
+});
+
+test("a stall in the kit itself makes heartbeat gaps inconclusive, not the adapter's fault", async () => {
+  // Block the kit's event loop for 400 ms while the adapter beats every 30 ms.
+  setTimeout(() => {
+    const until = Date.now() + 400;
+    while (Date.now() < until);
+  }, 300);
+  const fs = await roundTrip(raw("fast-heartbeats"), { heartbeatMs: 100, toleranceMs: 50 });
+  assert.deepEqual(checks(fs), ["inconclusive"], JSON.stringify(fs));
 });

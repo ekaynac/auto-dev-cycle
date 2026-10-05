@@ -14,11 +14,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // A synchronous write blocks once the stderr pipe is full, unless the host drains it.
 if (mode === "stderr-flood") require("node:fs").writeSync(2, "x".repeat(1 << 20));
 if (mode === "closes-stdin") process.stdin.destroy();
-if (mode === "descendant") {
-  // Exit at once, answering nothing, while a descendant keeps stdout open.
-  const child = spawn("sleep", ["60"], { stdio: ["ignore", "inherit", "ignore"] });
-  if (process.env.RAW_PIDFILE) require("node:fs").writeFileSync(process.env.RAW_PIDFILE, String(child.pid));
+if (mode === "descendant" || mode === "detached-descendant") {
+  // Exit at once, answering nothing, while a descendant keeps stdout open;
+  // the detached one starts its own session, out of the process group.
+  spawn("sleep", [process.env.RAW_MARKER || "60"], { stdio: ["ignore", "inherit", "ignore"], detached: mode === "detached-descendant" }).unref();
   process.exit(0);
+}
+if (mode === "stays-alive") {
+  // Answer everything, close stdout, then linger instead of exiting.
+  process.stdin.on("end", () => {});
 }
 
 let run = null;
@@ -37,13 +41,17 @@ async function doRun(m) {
   event({ event: "delta.text", turn: 1, bytes: 4 });
   if (mode === "bad-event") event({ event: "delta.text", turn: 1 });
   if (mode === "no-heartbeat") for (let i = 0; i < 6; i++) { await sleep(500); event({ event: "delta.text", turn: 1, bytes: 1 }); }
-  if (mode === "compaction-complete") event({ event: "compaction", turn: 1, before_tokens: 9, after_tokens: 3 });
-  if (mode === "harness-tool-complete") event({ event: "tool.result", turn: 1, tool: "Edit", mediated_by_controller: false, delivered: null, bytes: 1 });
+  if (mode === "compaction-complete" || mode === "compaction-none") event({ event: "compaction", turn: 1, before_tokens: 9, after_tokens: 3 });
+  if (mode === "harness-tool-complete" || mode === "harness-tool-none") event({ event: "tool.result", turn: 1, tool: "Edit", mediated_by_controller: false, delivered: null, bytes: 1 });
+  if (mode === "no-params") out({ jsonrpc: "2.0", method: "adapter.event" });
+  if (mode === "unanswered-run") return; // never answers the run, no heartbeats
+  if (mode === "fast-heartbeats") for (let i = 0; i < 40; i++) { event({ event: "heartbeat" }); await sleep(30); }
   const usage = (sub_call, sequence) => event({ event: "usage", sub_call, sequence, tokens: { in: 1, out: 1, cache_read: 0, cache_write: 0 }, turns: 1, milliseconds: 1,
     cost: { amount_micros: 0, currency: "USD", basis: "cash", estimate: true } });
   usage(mode === "null-sub-call" ? null : "s1", 0);
   if (mode === "bad-sequence") usage("s1", 2);
-  event({ event: "coverage", turn: 1, observable: "complete", unobservable: [] });
+  const none = { "compaction-none": ["compaction"], "harness-tool-none": ["harness_tool"] }[mode];
+  event({ event: "coverage", turn: 1, observable: none ? "none" : "complete", unobservable: none || [] });
   if (mode === "two-coverage") event({ event: "coverage", turn: 1, observable: "complete", unobservable: [] });
   end(1);
   if (mode === "dup-turn-end") end(1);
@@ -62,6 +70,7 @@ process.stdin.on("data", (chunk) => {
     const m = JSON.parse(buf.slice(0, i));
     buf = buf.slice(i + 1);
     if (m.method === "describe") {
+      if (mode === "no-params-outside") out({ jsonrpc: "2.0", method: "adapter.event" });
       if (mode === "bad-jsonrpc") out({ jsonrpc: "WRONG", id: m.id, result: {} });
       if (mode === "unasked-reply") out({ jsonrpc: "2.0", id: 99, result: clean });
       reply(m.id, { harness: "raw", harness_version: "1", adapter_version: "0.1.0", contract_version: mode === "wrong-major" ? "2.0.0" : "1.0.0",
@@ -70,8 +79,18 @@ process.stdin.on("data", (chunk) => {
     }
     if (m.method === "prepare" && mode !== "no-prepare") reply(m.id, clean);
     if (m.method === "run") doRun(m);
+    if (mode === "framing-flood" && m.method === "describe") {
+      process.stdout.write("x".repeat((16 << 20) + 1));
+      setInterval(() => {}, 1000);
+    }
     if (m.method === "shutdown") {
       reply(m.id, mode === "bad-shutdown" ? { outcome: "done" } : clean);
+      if (mode === "stays-alive") {
+        require("node:fs").closeSync(1);
+        setInterval(() => {}, 1000);
+        return;
+      }
+      if (mode === "signal-exit") return process.kill(process.pid, "SIGTERM");
       process.exit(mode === "exit-nonzero" ? 3 : 0);
     }
   }
