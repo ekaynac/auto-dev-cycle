@@ -44,6 +44,34 @@ Lease:
   (latest probed balance − outstanding reservations − uncertain liabilities) ≥ the reservation, with the probe within
   its TTL. A stale or unknown balance means wait (`broker_credit_exhausted` with a probe signal), never "assume
   affordable".
+- **Exclusions hold on every path, up to launch** (04 "Source exclusions", intake B4).
+  - The `destinations` check refuses any source, executor or family in the effective exclusion set.
+  - Every launch is a lease through placement: a first placement, a retry, a recovery after a restart or a provider
+    limit's reset, and every fallback step. So an exclusion binds all of them, and none needs to remember it.
+  - **The launch boundary is the start of an attempt.** The transaction that records `attempt.started` re-reads the
+    exclusion set and refuses to start on an excluded executor. That transaction is the launch authorization, and
+    nothing is dispatched to an executor before it commits. A placement that passed is therefore not enough.
+  - A lease granted but not yet started whose executor becomes excluded is refused at that boundary:
+    `lease.start_refused{reason}` moves it to `releasing`, its unused reservations return at `released`, and no
+    attempt exists. The controller then requests a replacement lease, which goes through placement. The event joins
+    `schemas/records/lease-event.json` and `internal/lease` with the boundary's implementation, like the hold below.
+    Restart recovery starts nothing without passing the same boundary.
+  - An attempt that has **started** before the exclusion is not cut by placement. Stopping it is a separate
+    operator action (`attempt.stop_requested`).
+- **No authorised route waits, never falls back.** When exclusions, the data floor, destinations or the fallback scope
+  leave no admissible placement, the lease waits on the hold `no_authorised_route`. It never widens its own route: a
+  wider route only comes from `capacity.include_source` or a destination change, each confirmed as 04 requires. The
+  hold joins the registry (02) with its implementation, with these semantics:
+  - **Signal.** The hold persists the revisions it was decided on: the exclusion set's, the source registry's, the
+    installation's usage policy (its active usage profile and overrides) and the project profile's. A change to any
+    of them re-runs the full placement. A source merely becoming healthy does not
+    lift the hold while it stays excluded.
+  - **Identity.** While still blocked after a re-run, the lease keeps the same hold, with its paging history.
+  - **Owner and paging.** The operator owns it; it pages after 30 minutes and escalates like other operator-owned
+    holds (02).
+  - **Precedence.** The hold applies only when no route is admissible under policy. If an admissible route exists
+    but is blocked by capacity (`quota_reset`, `broker_credit_exhausted`) or by `reviewer_unavailable`, that hold
+    applies instead.
 - **`fallback_scope`** (nöbetçi Δ§4): a fallback step is allowed only if the role's chain entry is authorised for this
   **role and mode** (e.g. "learning digest" ≠ "phase review"). The check runs in the placement path, not only in a
   record. Moving to another family re-runs `independence`.
@@ -64,6 +92,7 @@ Complete state machine. Every transition is an event, and terminal states are im
 | requested | `lease.granted` (all reservations made atomically) | granted |
 | granted | `attempt.started` | active |
 | granted | `lease.expired` (deadline, no attempt) | releasing |
+| granted | `lease.start_refused{reason}` (the start boundary refused, no attempt) | releasing |
 | active | `lease.completed` (attempt reached a terminal state) | settling |
 | active | `lease.revoked{reason}` · `lease.preempted` · `lease.expired` | settling (the attempt is stopped first, see fencing) |
 | settling | `lease.settled{usage_summary, liabilities}` | settled ✱ |

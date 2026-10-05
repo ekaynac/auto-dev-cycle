@@ -180,6 +180,13 @@ golden file names:
       a conflicting repeat keeps the maxima and flags `inconsistent_usage`), or its positive reservation when no
       delta was reported, which moves from reservation to liability at settlement. Available capacity drops by that
       amount exactly once (B5).
+  - after `capacity.exclude_source` for X, no launch path starts on X: a first placement, a retry, a recovery after a
+    restart, a recovery at a provider limit's reset, and a fallback step. This holds whether the exclusion commits
+    before the lease's grant or between the grant and the attempt's start. In the second case the lease goes
+    `granted` → `releasing` by `lease.start_refused`, its reservations return, no attempt exists on X, and a
+    replacement lease is placed. With no other admissible source, the lease waits on `no_authorised_route`, keeping
+    its hold and paging history across re-runs that stay blocked. A change to the installation's usage policy alone
+    re-runs placement and can lift it. A supervisor's lift waits for a human confirmation (B4).
 
 ## Red-proof rule [M15]
 
