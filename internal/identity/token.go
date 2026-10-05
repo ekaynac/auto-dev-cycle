@@ -111,27 +111,53 @@ func parse(bearer string) (types.TokenID, string, bool) {
 	return types.TokenID(id), secret, true
 }
 
-// verify reports whether secret matches the PHC argon2id hash, in constant
-// time for a given hash. The whole hash must be the canonical form, its
-// cost within the bounds and RFC 9106's m >= 8p, before any hashing.
-func verify(hash, secret string) bool {
+// idKey is the argon2id function; tests count its calls.
+var idKey = argon2.IDKey
+
+// phcHash is a parsed hash of the supported form.
+type phcHash struct {
+	memory, passes uint32
+	threads        uint8
+	salt, key      []byte
+}
+
+// parsePHC accepts only the canonical form, with its cost within the
+// bounds and RFC 9106's m >= 8p.
+func parsePHC(hash string) (phcHash, bool) {
 	m := phcForm.FindStringSubmatch(hash)
 	if m == nil {
-		return false
+		return phcHash{}, false
 	}
 	memory, errM := strconv.ParseUint(m[1], 10, 32)
 	passes, errT := strconv.ParseUint(m[2], 10, 32)
 	threads, errP := strconv.ParseUint(m[3], 10, 8)
 	if errM != nil || errT != nil || errP != nil ||
 		memory > maxArgonMemory || passes > maxArgonTime || threads > maxArgonThreads || memory < 8*threads {
-		return false
+		return phcHash{}, false
 	}
 	// The canonical form fixes the decoded sizes: saltBytes and keyBytes.
 	salt, errS := base64.RawStdEncoding.Strict().DecodeString(m[4])
 	key, errK := base64.RawStdEncoding.Strict().DecodeString(m[5])
 	if errS != nil || errK != nil {
+		return phcHash{}, false
+	}
+	return phcHash{uint32(memory), uint32(passes), uint8(threads), salt, key}, true
+}
+
+// verify reports whether secret matches the PHC argon2id hash, in constant
+// time for a given hash; a hash of another form is refused before hashing.
+func verify(hash, secret string) bool {
+	h, ok := parsePHC(hash)
+	if !ok {
 		return false
 	}
-	got := argon2.IDKey([]byte(secret), salt, uint32(passes), uint32(memory), uint8(threads), keyBytes)
-	return subtle.ConstantTimeCompare(got, key) == 1
+	got := idKey([]byte(secret), h.salt, h.passes, h.memory, h.threads, keyBytes)
+	return subtle.ConstantTimeCompare(got, h.key) == 1
+}
+
+// issuedProfile reports whether hash is of the cost new tokens are issued
+// with; issuance admits no other.
+func issuedProfile(hash string) bool {
+	h, ok := parsePHC(hash)
+	return ok && h.memory == argonMemory && h.passes == argonTime && h.threads == argonThreads
 }

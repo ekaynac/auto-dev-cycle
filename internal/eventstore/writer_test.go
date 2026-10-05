@@ -396,3 +396,24 @@ func TestCommandsAreAppendOnly(t *testing.T) {
 		}
 	}
 }
+
+// A command's events are its actor's: an event naming another actor is
+// refused, and one naming none gets the command's.
+func TestCommandEventsAreTheCommandActors(t *testing.T) {
+	e := openWriter(t, Hooks{Authorize: allow})
+	other := newID(t, "act")
+	_, err := e.s.Submit(context.Background(), command(t, "k1", `{}`), func(*Tx) ([]Event, json.RawMessage, error) {
+		return []Event{{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: testSubject, Actor: other, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
+	})
+	if err == nil {
+		t.Fatal("an event naming another actor was appended")
+	}
+	var seen string
+	e2 := openWriter(t, Hooks{Authorize: allow, Project: func(_ *Tx, evs []Event) error {
+		seen = evs[0].Actor
+		return nil
+	}})
+	if _, err := e2.s.Submit(context.Background(), command(t, "k2", `{}`), appendTo(t, testSubject, 1)); err != nil || seen != sysActor {
+		t.Fatalf("actor %q, %v", seen, err)
+	}
+}

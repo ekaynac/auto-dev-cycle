@@ -303,9 +303,12 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 			if isEffectKind(e.Kind) {
 				return fmt.Errorf("eventstore: %s is written only by the store's effect operations", e.Kind)
 			}
-			if e.Actor == "" {
-				e.Actor = c.Actor
+			// A command's events are its actor's: authority decided for
+			// that actor, and projectors take the event's actor as who did it.
+			if e.Actor != "" && e.Actor != c.Actor {
+				return fmt.Errorf("eventstore: event %s names actor %s, not the command's %s", e.ID, e.Actor, c.Actor)
 			}
+			e.Actor = c.Actor
 			cmd := c.ID
 			e.Command = &cmd
 			a, err := s.append(ctx, tx, e)
