@@ -1,0 +1,20 @@
+{
+  "name": "@adc/contract",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "auto-dev-cycle contract types and validators, generated from schemas/ (docs/design/m0/01).",
+  "type": "module",
+  "scripts": {
+    "gen": "node scripts/gen.mjs",
+    "test": "node --test 'test/*.test.mjs' && tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "ajv": "8.20.0"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "16.0.0",
+    "typescript": "7.0.2",
+    "yaml": "2.9.1"
+  }
+}
