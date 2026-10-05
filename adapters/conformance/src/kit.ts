@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // The adapter conformance kit (docs/design/m0/09 "Conformance kit"), part 1:
 // the round-trip. It runs an adapter as the core does, one process per case
-// over stdio, and treats it as untrusted: every message is checked as a
+// over stdio, and treats its output as untrusted: every message is checked as a
 // JSON-RPC envelope and against the generated validators (never trusting the
 // adapter's SDK), replies are correlated with requests, and resources are
 // bounded (a deadline that kills the process tree and settles the session
@@ -14,7 +14,7 @@
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { monitorEventLoopDelay, performance } from "node:perf_hooks";
+import { performance } from "node:perf_hooks";
 import { frame, lines, parseStrict } from "@adc/contract";
 
 type Validator = ((doc: unknown) => boolean) & { errors?: unknown };
@@ -53,6 +53,8 @@ export const call = "cal_01m3250v9xft08ssr4ygq6g2np";
 const token = 3;
 const maxFindings = 100;
 const stderrTail = 64 << 10;
+/** The period of the kit's own stall watch during the run. */
+const stallTickMs = 10;
 
 type Msg = Record<string, unknown> & { id?: unknown; result?: any; error?: any; method?: unknown; params?: any };
 
@@ -70,7 +72,9 @@ const show = (v: unknown, n = 200) => {
 /** contain runs the command in a new PID namespace (bubblewrap), so killing
  *  it ends every process the adapter started, whatever sessions or groups
  *  they made. Only the PID namespace is new: files and network are the
- *  caller's. */
+ *  caller's. It bounds the lifetime of what the adapter starts itself; it is
+ *  not a boundary against a hostile adapter, which can still ask a service
+ *  outside the namespace to start work. Containing that is a separate change. */
 const contain = (command: string[]) => ["bwrap", "--unshare-pid", "--die-with-parent", "--dev-bind", "/", "/", "--proc", "/proc", "--", ...command];
 
 /** Session is one adapter process under the kit's control. */
@@ -91,7 +95,11 @@ class Session {
   private readonly timer;
   readonly exited: Promise<{ code: number | null; signal: string | null } | null>;
   replied = false;
-  private readonly loopDelay = monitorEventLoopDelay({ resolution: 10 });
+  /** readDone settles when the reader has taken all of the adapter's output. */
+  private readonly readDone: Promise<void>;
+  /** stalls: the kit's own event-loop stalls during the run, as [from, to]. */
+  readonly stalls: [number, number][] = [];
+  private stallWatch: NodeJS.Timeout | null = null;
   /** run: from the run request to its answer; events outside it are findings. */
   runWindow: { from: number; to: number | null } | null = null;
 
@@ -119,7 +127,21 @@ class Session {
       this.find("deadline", `the session did not finish within ${limits.deadlineMs} ms`);
       this.stop();
     }, limits.deadlineMs);
-    void this.read();
+    this.readDone = this.read();
+  }
+
+  /** watchStalls starts or stops recording the kit's own stalls: a tick that
+   *  comes late marks the time the kit could not observe arrivals. */
+  watchStalls(on: boolean) {
+    if (this.stallWatch) clearInterval(this.stallWatch);
+    this.stallWatch = null;
+    if (!on) return;
+    let last = performance.now();
+    this.stallWatch = setInterval(() => {
+      const now = performance.now();
+      if (now - last > 2 * stallTickMs) this.stalls.push([last + stallTickMs, now]);
+      last = now;
+    }, stallTickMs);
   }
 
   find(check: string, detail: string) {
@@ -133,7 +155,7 @@ class Session {
     if (this.stopped) return;
     this.stopped = true;
     if (this.runWindow && this.runWindow.to === null) this.runWindow.to = performance.now();
-    this.loopDelay.disable();
+    this.watchStalls(false);
     clearTimeout(this.timer);
     for (const target of [this.child.pid, this.child.pid && -this.child.pid]) {
       try {
@@ -154,11 +176,6 @@ class Session {
     this.stop();
     this.frozen = true;
     return [...this.findings];
-  }
-
-  /** loopStalledMs is the kit's own worst event-loop delay during the run. */
-  loopStalledMs() {
-    return this.loopDelay.max / 1e6;
   }
 
   private async read() {
@@ -234,7 +251,7 @@ class Session {
     this.pending.set(id, method);
     if (method === "run") {
       this.runWindow = { from: performance.now(), to: null };
-      this.loopDelay.enable();
+      this.watchStalls(true);
     }
     this.child.stdin.write(frame({ jsonrpc: "2.0", id, method, params }));
     for (;;) {
@@ -243,7 +260,7 @@ class Session {
         const [m] = this.queue.splice(i, 1);
         if (method === "run" && this.runWindow) {
           this.runWindow.to = performance.now();
-          this.loopDelay.disable();
+          this.watchStalls(false);
         }
         return m;
       }
@@ -252,8 +269,10 @@ class Session {
     }
   }
 
-  /** end waits for the process to exit after shutdown, within graceMs and
-   *  the session's deadline; only a normal exit 0 passes. */
+  /** end waits for the process to exit and the reader to take all of its
+   *  output after shutdown, within graceMs and the session's deadline, so
+   *  output after the last reply is still checked; only a normal exit 0
+   *  passes. */
   async end(graceMs: number) {
     if (this.stopped) return; // the kit ended it: its exit is no verdict
     let timer: NodeJS.Timeout | undefined;
@@ -263,7 +282,8 @@ class Session {
       late.then(() => clearInterval(poll));
       this.exited.then(() => clearInterval(poll));
     });
-    const exit = await Promise.race([this.exited, late, stopped]);
+    const done = Promise.all([this.exited, this.readDone]).then(([e]) => e);
+    const exit = await Promise.race([done, late, stopped]);
     clearTimeout(timer);
     if (exit === "late") this.find("exit", `the process did not exit within ${graceMs} ms of shutdown`);
     else if (exit !== "stopped" && exit !== null && !this.stopped && (exit.code !== 0 || exit.signal !== null)) {
@@ -346,15 +366,16 @@ function checkHeartbeats(s: Session) {
   if (!w || w.to === null) return;
   const marks = [w.from, ...s.events.filter((x) => x.e?.event === "heartbeat").map((x) => x.at), w.to];
   const bound = s.limits.heartbeatMs + s.limits.toleranceMs;
-  const gaps = marks.slice(1).map((m, i) => Math.round(m - marks[i])).filter((g) => g > bound);
-  if (!gaps.length) return;
-  // Arrival times include the kit's own scheduling: when its event loop
-  // stalled beyond the tolerance, a gap is no verdict on the adapter.
-  if (s.loopStalledMs() > s.limits.toleranceMs) {
-    s.find("inconclusive", `heartbeat gaps of ${gaps.join(", ")} ms, but the kit itself stalled ${Math.round(s.loopStalledMs())} ms`);
-    return;
+  // Arrival times include the kit's own scheduling: the part of a gap the
+  // kit itself was stalled is no verdict on the adapter, the rest is.
+  const stalled = (a: number, b: number) => s.stalls.reduce((t, [f, u]) => t + Math.max(0, Math.min(b, u) - Math.max(a, f)), 0);
+  for (let i = 1; i < marks.length; i++) {
+    const gap = Math.round(marks[i] - marks[i - 1]);
+    if (gap <= bound) continue;
+    const own = Math.round(stalled(marks[i - 1], marks[i]));
+    if (gap - own > bound) s.find("heartbeat", `${gap} ms between heartbeats during the run, ${own} ms of it the kit's own stall (09: every ≤ ${s.limits.heartbeatMs} ms)`);
+    else s.find("inconclusive", `a heartbeat gap of ${gap} ms, ${own} ms of it the kit's own stall`);
   }
-  for (const gap of gaps) s.find("heartbeat", `${gap} ms between heartbeats during the run (09: every ≤ ${s.limits.heartbeatMs} ms)`);
 }
 
 /** roundTrip: describe, prepare, run and shutdown, one after another; every

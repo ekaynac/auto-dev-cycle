@@ -91,6 +91,8 @@ process.stdin.on("data", (chunk) => {
         return;
       }
       if (mode === "signal-exit") return process.kill(process.pid, "SIGTERM");
+      // A broken line after the last reply, then a clean exit.
+      if (mode === "trailing-junk") return process.stdout.write("{", () => process.exit(0));
       process.exit(mode === "exit-nonzero" ? 3 : 0);
     }
   }

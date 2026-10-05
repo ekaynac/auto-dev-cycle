@@ -138,3 +138,20 @@ test("a stall in the kit itself makes heartbeat gaps inconclusive, not the adapt
   const fs = await roundTrip(raw("fast-heartbeats"), { heartbeatMs: 100, toleranceMs: 50 });
   assert.deepEqual(checks(fs), ["inconclusive"], JSON.stringify(fs));
 });
+
+test("a short stall in the kit does not excuse a longer silence of the adapter", async () => {
+  // The adapter is silent for seconds; the kit stalls 150 ms of it.
+  setTimeout(() => {
+    const until = Date.now() + 150;
+    while (Date.now() < until);
+  }, 300);
+  const fs = await roundTrip(raw("no-heartbeat"), { heartbeatMs: 100, toleranceMs: 50 });
+  assert.deepEqual(checks(fs), ["heartbeat"], JSON.stringify(fs));
+});
+
+test("output after the last reply is still checked", async () => {
+  for (let i = 0; i < 10; i++) {
+    const fs = await roundTrip(raw("trailing-junk"));
+    assert.deepEqual(checks(fs), ["framing"], `run ${i}: ${JSON.stringify(fs)}`);
+  }
+});
