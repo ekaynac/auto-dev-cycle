@@ -65,6 +65,7 @@ var runners = map[string]runner{
 	"duplicate-usage-deltas":           duplicateUsageDeltas,
 	"hash-chain-edit-truncation":       hashChainEditAndTruncation,
 	"concurrent-conflicting-approvals": concurrentConflictingApprovals,
+	"concurrent-last-unit-reservation": concurrentLastUnitReservation,
 }
 
 // Goldens loads and validates every golden, checking that each has a

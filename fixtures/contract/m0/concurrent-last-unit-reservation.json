@@ -1,0 +1,17 @@
+{
+  "name": "concurrent-last-unit-reservation",
+  "invariant": "Of concurrent grants racing for the last unit of a resource group through the writer, exactly one is granted and the rest are refused quota_exhausted, reserving nothing; a release returns the unit, so a later grant is admitted and the next refused again (03 \"The writer\"; 05 \"Lease\"). The grants are the fixture's commands calling lease.ChangeLease, with capacity.Reservations composed after lease.Projector.",
+  "expected": [
+    {"outcome": "could_not_run", "reason": "quota_exhausted"},
+    {"outcome": "could_not_run", "reason": "quota_exhausted"},
+    {"outcome": "could_not_run", "reason": "quota_exhausted"},
+    {"outcome": "could_not_run", "reason": "quota_exhausted"},
+    {"outcome": "could_not_run", "reason": "quota_exhausted"},
+    {"outcome": "could_not_run", "reason": "quota_exhausted"},
+    {"outcome": "could_not_run", "reason": "quota_exhausted"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "could_not_run", "reason": "quota_exhausted"}
+  ],
+  "mutation": "capacity.reservations-uncounted"
+}

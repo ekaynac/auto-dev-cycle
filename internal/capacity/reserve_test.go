@@ -205,7 +205,9 @@ func TestSettlementReturns(t *testing.T) {
 	id := w.requested(reserve(gpu, 4, types.CapacityUnitGpuSeconds))
 	att := types.AttemptID("att_01m3250vkwffc979nzjw0g2sf9")
 	steps := []func(*eventstore.Tx) ([]eventstore.Event, error){
-		func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.ChangeLease(tx, id, 1, granted, w.holds) },
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.ChangeLease(tx, id, 1, granted, w.holds)
+		},
 		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return lease.StartAttempt(tx, id, 2, att, types.AttemptBase{Tree: "git:cccccccccccccccccccccccccccccccccccccccc", ContractRevision: "7"})
 		},
