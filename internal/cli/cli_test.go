@@ -37,9 +37,12 @@ type fake struct {
 	req    types.CommandRequest
 }
 
-func (f *fake) Command(_ context.Context, action string, req types.CommandRequest) ([]byte, error) {
+func (f *fake) Command(_ context.Context, action string, body []byte) ([]byte, error) {
 	f.calls++
-	f.action, f.req = action, req
+	f.action, f.req = action, types.CommandRequest{}
+	if err := json.Unmarshal(body, &f.req); err != nil {
+		return nil, err
+	}
 	return []byte(f.resp), f.err
 }
 
@@ -75,6 +78,24 @@ func TestEveryActionHasOneCommand(t *testing.T) {
 	}
 }
 
+// Each command reaches the action it names (the table pinned by meaning).
+func TestCommandsReachTheirActions(t *testing.T) {
+	for cmd, action := range map[string]string{
+		"project create": "project.create", "project adopt-profile": "profile.adopt",
+		"project change-protected-document": "knowledge.change_protected_document", "project change-topology": "integration.change_topology",
+		"task create": "task.create", "task request-review": "review.request", "holds answer": "input.answer",
+		"approve confirm": "proposal.confirm", "propose withdraw": "proposal.withdraw",
+		"grant create": "grant.create", "grant extend": "grant.extend", "grant revoke": "grant.revoke",
+		"admin enrol-agent": "agent.enrol", "admin revoke-actor": "actor.revoke",
+		"seat take": "seat.take", "seat release": "seat.release", "notes add": "note.add",
+	} {
+		f := &fake{resp: applied}
+		if code, _, _ := adc(f, append(strings.Fields(cmd), "--expect", "1", "--reason", "r")...); code != entry.ExitOK || f.action != action {
+			t.Errorf("adc %s: exit %d, action %q, want %q", cmd, code, f.action, action)
+		}
+	}
+}
+
 func TestEnvelope(t *testing.T) {
 	f := &fake{resp: applied}
 	code, out, _ := adc(f, "grant", "extend", "--expect", "12", "--reason", "runs past expiry", "--scope", `{"grant":"grt_01m3250vkwffc979nzjw0g2sf9"}`)
@@ -106,6 +127,7 @@ func TestUsage(t *testing.T) {
 		"a word for --expect":    {"grant", "revoke", "--expect", "latest", "--reason", "r"},
 		"a malformed digest":     {"grant", "revoke", "--expect", "sha256:zz", "--reason", "r"},
 		"no reason":              {"grant", "revoke", "--expect", "1"},
+		"a reason not UTF-8":     {"grant", "revoke", "--expect", "1", "--reason", "bad\xff"},
 		"scope not JSON":         append([]string{"grant", "revoke", "--scope", "{"}, ok...),
 		"scope not an object":    append([]string{"grant", "revoke", "--scope", "[]"}, ok...),
 		"a spaced key":           append([]string{"grant", "revoke", "--idempotency-key", "a b"}, ok...),
@@ -143,7 +165,8 @@ func TestExitCodes(t *testing.T) {
 		"not JSON":               {resp: "<html>", want: entry.ExitCouldNotRun},
 	} {
 		code, _, errs := adc(&fake{resp: c.resp, err: c.err}, "seat", "take", "--expect", "3", "--reason", "r")
-		if code != c.want || (c.err != nil && !strings.Contains(errs, c.err.Error())) {
+		if code != c.want || (c.err != nil && !strings.Contains(errs, c.err.Error())) ||
+			(c.want == entry.ExitCouldNotRun && c.resp != refused("could_not_run", "ambiguous_state") && !strings.Contains(errs, "--idempotency-key cli-")) {
 			t.Errorf("%s: exit %d, want %d (%s)", name, code, c.want, errs)
 		}
 	}
@@ -162,6 +185,9 @@ func TestOutput(t *testing.T) {
 	}
 	if _, out, errs := adc(&fake{err: errors.New("down")}, "seat", "take", "--expect", "3", "--reason", "r", "--json"); out != "" || !strings.Contains(errs, "could_not_run") {
 		t.Errorf("a transport failure: stdout %q, stderr %q", out, errs)
+	}
+	if code, _, _ := adc(&fake{}, "seat", "take", "-h"); code != entry.ExitOK {
+		t.Errorf("help on an action: exit %d", code)
 	}
 	// Anything that is not an action command is entry's.
 	if code, out, _ := adc(&fake{}, "version"); code != entry.ExitOK || out == "" {

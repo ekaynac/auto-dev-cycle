@@ -25,11 +25,11 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// Client sends one command to the controller and returns its raw response
-// body. The transport (the Unix socket or HTTPS, 08 "Transport") is the
-// caller's.
+// Client sends one command body (validated CommandRequest JSON, sent as
+// is) to the controller and returns its raw response body. The transport
+// (the Unix socket or HTTPS, 08 "Transport") is the caller's.
 type Client interface {
-	Command(ctx context.Context, action string, req types.CommandRequest) ([]byte, error)
+	Command(ctx context.Context, action string, body []byte) ([]byte, error)
 }
 
 // ErrNoTransport: this build has no controller transport yet.
@@ -60,7 +60,9 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	scope := fs.String("scope", "{}", "the action's parameters, a JSON object")
 	key := fs.String("idempotency-key", "", "repeat a command safely with the same key (default: a new key)")
 	asJSON := fs.Bool("json", false, "print the response as one JSON document")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
+		return entry.ExitOK
+	} else if err != nil {
 		return entry.ExitUsage // the flag package printed why
 	}
 	usage := func(format string, a ...any) int {
@@ -87,26 +89,26 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 		*key = "cli-" + hex.EncodeToString(b)
 	}
 	req := types.CommandRequest{IdempotencyKey: *key, Expected: expected, Scope: json.RawMessage(*scope), Reason: *reason}
-	body, err := json.Marshal(req)
+	// The bytes validated are the bytes sent.
+	body, err := contract.Encode("api/command-request", req)
 	if err != nil {
-		return usage("--scope: %v", err)
-	}
-	if err := contract.Validate("api/command-request", body); err != nil {
 		return usage("invalid command: %v", err)
 	}
-	raw, err := c.Command(ctx, action, req)
-	if err != nil {
-		fmt.Fprintf(stderr, "%s: could_not_run: %v\n", name, err)
+	// Once sent, the command may have run: a retry must reuse its key.
+	couldNotRun := func(format string, a ...any) int {
+		fmt.Fprintf(stderr, "%s: could_not_run: %s; to retry safely, repeat it with --idempotency-key %s\n", name, fmt.Sprintf(format, a...), *key)
 		return entry.ExitCouldNotRun
+	}
+	raw, err := c.Command(ctx, action, body)
+	if err != nil {
+		return couldNotRun("%v", err)
 	}
 	var resp types.CommandResponse
 	if err := contract.Validate("api/command-response", raw); err != nil {
-		fmt.Fprintf(stderr, "%s: could_not_run: the controller's response is invalid: %v\n", name, err)
-		return entry.ExitCouldNotRun
+		return couldNotRun("the controller's response is invalid: %v", err)
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		fmt.Fprintf(stderr, "%s: could_not_run: the controller's response is invalid: %v\n", name, err)
-		return entry.ExitCouldNotRun
+		return couldNotRun("the controller's response is invalid: %v", err)
 	}
 	if *asJSON {
 		_, err = fmt.Fprintf(stdout, "%s\n", raw)
@@ -176,6 +178,6 @@ func describe(r types.CommandResponse) string {
 type NoTransport struct{}
 
 // Command always fails with ErrNoTransport.
-func (NoTransport) Command(context.Context, string, types.CommandRequest) ([]byte, error) {
+func (NoTransport) Command(context.Context, string, []byte) ([]byte, error) {
 	return nil, ErrNoTransport
 }
