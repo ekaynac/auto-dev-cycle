@@ -153,3 +153,7 @@ Type: [TypeID](#typeid) (pattern `^res_`)
 ### CommandID
 
 Type: [TypeID](#typeid) (pattern `^cmd_`)
+
+### TokenID
+
+Type: [TypeID](#typeid) (pattern `^tok_`)

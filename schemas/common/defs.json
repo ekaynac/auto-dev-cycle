@@ -66,6 +66,7 @@
     "MeasurementID": {"$ref": "#/$defs/TypeID", "pattern": "^msr_"},
     "NodeID": {"$ref": "#/$defs/TypeID", "pattern": "^nod_"},
     "ResultID": {"$ref": "#/$defs/TypeID", "pattern": "^res_"},
-    "CommandID": {"$ref": "#/$defs/TypeID", "pattern": "^cmd_"}
+    "CommandID": {"$ref": "#/$defs/TypeID", "pattern": "^cmd_"},
+    "TokenID": {"$ref": "#/$defs/TypeID", "pattern": "^tok_"}
   }
 }

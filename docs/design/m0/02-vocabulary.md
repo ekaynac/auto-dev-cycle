@@ -145,6 +145,7 @@ roughly time-sortable, but the event store's `seq` is the authoritative order. E
 | `nod` | graph node (13) |
 | `res` | graph result (13) |
 | `cmd` | accepted command (03 `commands`) |
+| `tok` | bearer token (04 "Actors and tokens"; the secret is never stored) |
 
 Ids are minted by the controller only. Adapters and agents never mint authoritative ids.
 

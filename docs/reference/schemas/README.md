@@ -29,6 +29,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/receipt.json`](records-receipt.md) | Receipt |
 | [`records/ref.json`](records-ref.md) | Ref |
 | [`records/resource-group.json`](records-resource-group.md) | ResourceGroup |
+| [`records/token.json`](records-token.md) | Token |
 | [`records/usage-measurement.json`](records-usage-measurement.md) | UsageMeasurement |
 | [`records/view-fingerprint.json`](records-view-fingerprint.md) | ViewFingerprint |
 | [`vocab/registry.json`](vocab-registry.md) | VocabRegistry |

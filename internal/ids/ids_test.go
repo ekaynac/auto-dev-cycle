@@ -16,7 +16,7 @@ import (
 
 // The prefix table of docs/design/m0/02 "Identifiers".
 var note02 = []string{"act", "apr", "att", "cal", "chl", "cmd", "cmf", "eff", "ejb", "evt", "exe", "grt", "lea",
-	"msr", "nod", "own", "prj", "prp", "rcp", "res", "rg", "run", "src", "tgt", "tsk", "unt"}
+	"msr", "nod", "own", "prj", "prp", "rcp", "res", "rg", "run", "src", "tgt", "tok", "tsk", "unt"}
 
 func TestRegistryMatchesNote02(t *testing.T) {
 	got, err := Prefixes()

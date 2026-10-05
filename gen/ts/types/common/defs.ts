@@ -231,6 +231,13 @@ export type ResultID = string;
  * via the `definition` "CommandID".
  */
 export type CommandID = string;
+/**
+ * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+ *
+ * This interface was referenced by `CommonDefinitions`'s JSON-Schema
+ * via the `definition` "TokenID".
+ */
+export type TokenID = string;
 
 /**
  * Shared scalar shapes (docs/design/m0/02). Formats prefixed adc- are asserted by internal/contract, which defines them.

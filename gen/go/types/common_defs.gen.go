@@ -127,3 +127,5 @@ type NodeID = TypeID
 type ResultID = TypeID
 
 type CommandID = TypeID
+
+type TokenID = TypeID
