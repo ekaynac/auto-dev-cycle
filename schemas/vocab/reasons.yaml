@@ -63,7 +63,8 @@ reasons:
   - {code: proposal_invalidated, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "04", description: "At apply, the confirmed proposal no longer holds: its grant, policy, confirmer or request changed; it is invalidated, never applied."}
 
   # --- knowledge --------------------------------------------------------------
-  - {code: restriction_dropped, outcomes: [failed], domain: knowledge, introduced: 0.1.0, deprecated: null, source: "10", description: "A delivered ref is not a declared input of the manifest, or does not keep every restriction its lineage inherits."}
+  - {code: restriction_dropped, outcomes: [failed], domain: knowledge, introduced: 0.1.0, deprecated: null, source: "10", description: "A ref derived from the manifest's declared inputs does not keep every restriction its lineage inherits."}
+  - {code: lineage_undeclared, outcomes: [failed], domain: knowledge, introduced: 0.1.0, deprecated: null, source: "10", description: "A delivered tool result is not a declared input and names no lineage, or lineage outside the manifest's declared inputs."}
   - {code: view_stale, outcomes: [could_not_run], domain: knowledge, introduced: 0.1.0, deprecated: null, source: "10", description: "A cached view's recorded fingerprint differs from the one recomputed over its current inputs, so it is not served but regenerated."}
   - {code: coverage_claim_contradicted, outcomes: [failed], domain: knowledge, introduced: 0.1.0, deprecated: null, source: "10", description: "A finalized manifest's coverage differs from what its delivery evidence derives; a declaration alone never makes it complete."}
 

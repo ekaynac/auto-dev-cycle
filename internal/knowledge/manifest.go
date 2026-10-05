@@ -106,8 +106,8 @@ func CheckDelivery(in types.ManifestIntent, d types.ManifestDelivery) error {
 		if byIdentity[t.Ref.IdentityDigest] {
 			continue
 		}
-		if err := derivedFrom(t.Ref, byID); err != nil {
-			return refuse(vocab.Failed, vocab.ReasonRestrictionDropped,
+		if reason, err := derivedFrom(t.Ref, byID); err != nil {
+			return refuse(vocab.Failed, reason,
 				fmt.Errorf("knowledge: manifest %s turn %d: tool result %s: %w", in.ID, d.Turn, t.Ref.ID, err))
 		}
 	}
@@ -115,30 +115,31 @@ func CheckDelivery(in types.ManifestIntent, d types.ManifestDelivery) error {
 }
 
 // derivedFrom: r was derived only from the inputs (its lineage is non-empty
-// and names only them) and keeps every restriction of every input each
-// lineage id names.
-func derivedFrom(r types.Ref, inputs map[string][]types.Ref) error {
+// and names only them; else lineage_undeclared) and keeps every restriction
+// of every input each lineage id names (else restriction_dropped).
+func derivedFrom(r types.Ref, inputs map[string][]types.Ref) (vocab.Reason, error) {
 	if len(r.Lineage) == 0 {
-		return fmt.Errorf("is neither a declared input nor derived from one")
+		return vocab.ReasonLineageUndeclared, fmt.Errorf("is neither a declared input nor derived from one")
 	}
 	kept := map[string]bool{}
 	for _, x := range r.Restrictions {
 		kept[restrictionKey(x)] = true
 	}
 	for _, id := range r.Lineage {
-		srcs, ok := inputs[id]
-		if !ok {
-			return fmt.Errorf("is derived from %s, which is not a declared input", id)
+		if _, ok := inputs[id]; !ok {
+			return vocab.ReasonLineageUndeclared, fmt.Errorf("is derived from %s, which is not a declared input", id)
 		}
-		for _, src := range srcs {
+	}
+	for _, id := range r.Lineage {
+		for _, src := range inputs[id] {
 			for _, x := range src.Restrictions {
 				if !kept[restrictionKey(x)] {
-					return fmt.Errorf("drops a restriction of %s (project %s)", id, x.Project)
+					return vocab.ReasonRestrictionDropped, fmt.Errorf("drops a restriction of %s (project %s)", id, x.Project)
 				}
 			}
 		}
 	}
-	return nil
+	return vocab.Reason{}, nil
 }
 
 func restrictionKey(x types.Restriction) string {

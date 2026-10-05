@@ -360,6 +360,8 @@ func TestConfirmedDeliveryLeavesPossible(t *testing.T) {
 func TestRefusalsCarryTheirReason(t *testing.T) {
 	f := fixture(t)
 	stripped := seal(t, types.Ref{Type: types.RefTypeGitPath, ID: "git:" + strings.Repeat("c", 40) + ":x.go", ContentDigest: dgC, Lineage: []string{f.tree.ID}})
+	orphan := seal(t, types.Ref{Type: types.RefTypeBlob, ID: "orphan", ContentDigest: dgC})
+	foreign := seal(t, types.Ref{Type: types.RefTypeBlob, ID: "foreign", ContentDigest: dgC, Lineage: []string{"undeclared"}})
 	declaring := f.turn(1)
 	declaring.Declarations = []string{"read docs"}
 	view, err := Fingerprint(renderer(), []types.Ref{f.tree})
@@ -371,6 +373,8 @@ func TestRefusalsCarryTheirReason(t *testing.T) {
 		reason vocab.Reason
 	}{
 		"a dropped restriction": {CheckDelivery(f.intent, f.turn(1, stripped)), vocab.ReasonRestrictionDropped},
+		"no lineage":            {CheckDelivery(f.intent, f.turn(1, orphan)), vocab.ReasonLineageUndeclared},
+		"foreign lineage":       {CheckDelivery(f.intent, f.turn(1, foreign)), vocab.ReasonLineageUndeclared},
 		"a stale view":          {CheckServable(view, renderer(), []types.Ref{f.spec}), vocab.ReasonViewStale},
 		"a declaration left out": {func() error {
 			_, err := Coverage(f.intent, []types.ManifestDelivery{declaring}, coverage(delivered, n64(1), ""))

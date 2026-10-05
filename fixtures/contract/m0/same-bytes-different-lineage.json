@@ -5,6 +5,7 @@
     {"outcome": "empty", "reason": "completed_clean"},
     {"outcome": "could_not_run", "reason": "view_stale"},
     {"outcome": "failed", "reason": "restriction_dropped"},
+    {"outcome": "failed", "reason": "restriction_dropped"},
     {"outcome": "empty", "reason": "completed_clean"}
   ],
   "mutation": "knowledge.identity-ignores-lineage"

@@ -137,7 +137,8 @@ func sameBytesDifferentLineage(_ context.Context, dir string) (steps []Step, vio
 		return knowledge.Seal(types.Ref{Type: types.RefTypeBlob, ID: "derived", Scope: types.RefScope{Framework: true},
 			Lineage: []string{dg[0]}, Restrictions: rs, ContentDigest: types.Digest("sha256:" + strings.Repeat("c", 64))})
 	}
-	for _, rs := range [][]types.Restriction{{restrictedTo(projectA)}, {restrictedTo(projectA), restrictedTo(projectB)}} {
+	// Keeping either source's restriction alone is not enough; both are.
+	for _, rs := range [][]types.Restriction{{restrictedTo(projectA)}, {restrictedTo(projectB)}, {restrictedTo(projectA), restrictedTo(projectB)}} {
 		r, err := derived(rs...)
 		if err != nil {
 			return nil, nil, err

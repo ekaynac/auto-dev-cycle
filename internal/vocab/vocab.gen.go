@@ -67,6 +67,8 @@ var (
 	ReasonInconsistentUsage = types.ReasonCodeOf("inconsistent_usage")
 	// ReasonInstrumentChanged: The instrument digest changed; dependent requirements must be re-run.
 	ReasonInstrumentChanged = types.ReasonCodeOf("instrument_changed")
+	// ReasonLineageUndeclared: A delivered tool result is not a declared input and names no lineage, or lineage outside the manifest's declared inputs.
+	ReasonLineageUndeclared = types.ReasonCodeOf("lineage_undeclared")
 	// ReasonLogIntegrityBroken: The event log fails verification: a gap, a broken hash link, an edited event, or (against a trusted head) truncation or a rewritten tail.
 	ReasonLogIntegrityBroken = types.ReasonCodeOf("log_integrity_broken")
 	// ReasonP3Banked: A P3 finding banked as background work (plan §2.5).
@@ -95,7 +97,7 @@ var (
 	ReasonQuotaUnknown = types.ReasonCodeOf("quota_unknown")
 	// ReasonReceiptIncomplete: A required predicate or its evidence media is missing; never derives empty.
 	ReasonReceiptIncomplete = types.ReasonCodeOf("receipt_incomplete")
-	// ReasonRestrictionDropped: A delivered ref is not a declared input of the manifest, or does not keep every restriction its lineage inherits.
+	// ReasonRestrictionDropped: A ref derived from the manifest's declared inputs does not keep every restriction its lineage inherits.
 	ReasonRestrictionDropped = types.ReasonCodeOf("restriction_dropped")
 	// ReasonReviewInputChanged: A review input changed (new answer, new demand, changed conclusions), so a successor review is required.
 	ReasonReviewInputChanged = types.ReasonCodeOf("review_input_changed")
