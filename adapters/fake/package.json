@@ -1,0 +1,25 @@
+{
+  "name": "@adc/fake",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "auto-dev-cycle's contract-faithful fake adapter (docs/design/m0/09 \"Fakes\").",
+  "type": "module",
+  "exports": {
+    ".": "./src/fake.ts"
+  },
+  "bin": {
+    "adc-fake-adapter": "./src/main.ts"
+  },
+  "scripts": {
+    "test": "node --test 'test/*.test.ts' && tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adc/contract": "workspace:*",
+    "@adc/contract-gen": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "7.0.2"
+  }
+}
