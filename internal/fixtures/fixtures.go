@@ -61,6 +61,9 @@ var runners = map[string]runner{
 	"unrelated-go-reuse":           unrelatedGOReuse,
 	"widened-profile-edit":         widenedProfileEdit,
 	"protected-change-widens":      protectedChangeWidens,
+	"stale-attempt-usage-counted":  staleAttemptUsageCounted,
+	"duplicate-usage-deltas":       duplicateUsageDeltas,
+	"hash-chain-edit-truncation":   hashChainEditAndTruncation,
 }
 
 // Goldens loads and validates every golden, checking that each has a
