@@ -65,7 +65,7 @@ reasons:
   # Executor exits (13 "Facts, not claims"): an executor that did not complete is could_not_run, with the reason
   # internal/vocab/exitmap derives from what the controller observed; rate limits and credit exhaustion reuse
   # quota_exhausted and broker_credit_exhausted.
-  - {code: attempt_stopped, outcomes: [could_not_run], domain: adapter, introduced: 0.1.0, deprecated: null, source: "05", description: "The controller stopped the attempt (revoke, preempt, expire, drain or cancel) before the executor completed."}
+  - {code: attempt_stopped, outcomes: [could_not_run], domain: adapter, introduced: 0.1.0, deprecated: null, source: "05", description: "The controller requested the attempt's stop (revoke, preempt, expire, drain or cancel; 05 stop_requested) before the executor completed. It does not mean execution or billing ended."}
   - {code: adapter_protocol_error, outcomes: [could_not_run], domain: adapter, introduced: 0.1.0, deprecated: null, source: "09", description: "The adapter broke the contract (an invalid or unexpected message) or its process ended without a result."}
   - {code: provider_request_refused, outcomes: [could_not_run], domain: adapter, introduced: 0.1.0, deprecated: null, source: "09", description: "The model provider refused the request (an HTTP 4xx other than a rate limit or credit exhaustion)."}
   - {code: provider_unavailable, outcomes: [could_not_run], domain: adapter, introduced: 0.1.0, deprecated: null, source: "09", description: "The model provider failed to serve the request (an HTTP 5xx)."}

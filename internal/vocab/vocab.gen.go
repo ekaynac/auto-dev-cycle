@@ -19,7 +19,7 @@ var (
 	ReasonAdapterProtocolError = types.ReasonCodeOf("adapter_protocol_error")
 	// ReasonAmbiguousState: A projection found two live records where one is allowed; fails closed.
 	ReasonAmbiguousState = types.ReasonCodeOf("ambiguous_state")
-	// ReasonAttemptStopped: The controller stopped the attempt (revoke, preempt, expire, drain or cancel) before the executor completed.
+	// ReasonAttemptStopped: The controller requested the attempt's stop (revoke, preempt, expire, drain or cancel; 05 stop_requested) before the executor completed. It does not mean execution or billing ended.
 	ReasonAttemptStopped = types.ReasonCodeOf("attempt_stopped")
 	// ReasonAuthorityRevoked: The actor's grant was revoked, expired or narrowed; streams close with this reason.
 	ReasonAuthorityRevoked = types.ReasonCodeOf("authority_revoked")
