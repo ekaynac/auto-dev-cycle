@@ -43,6 +43,8 @@ var (
 	ReasonConfirmationRefused = types.ReasonCodeOf("confirmation_refused")
 	// ReasonControllerAlreadyRunning: Another adcd holds the state directory lock.
 	ReasonControllerAlreadyRunning = types.ReasonCodeOf("controller_already_running")
+	// ReasonCoverageClaimContradicted: A finalized manifest's coverage differs from what its delivery evidence derives; a declaration alone never makes it complete.
+	ReasonCoverageClaimContradicted = types.ReasonCodeOf("coverage_claim_contradicted")
 	// ReasonDegenerateOutput: The model's output degenerated (repetition, truncation or garbage) and the run was abandoned.
 	ReasonDegenerateOutput = types.ReasonCodeOf("degenerate_output")
 	// ReasonEvidenceCapExhausted: Attempts for this subject reached the total cap across demands.
@@ -65,6 +67,8 @@ var (
 	ReasonInconsistentUsage = types.ReasonCodeOf("inconsistent_usage")
 	// ReasonInstrumentChanged: The instrument digest changed; dependent requirements must be re-run.
 	ReasonInstrumentChanged = types.ReasonCodeOf("instrument_changed")
+	// ReasonLineageUndeclared: A delivered tool result is not a declared input and names no lineage, or lineage outside the manifest's declared inputs.
+	ReasonLineageUndeclared = types.ReasonCodeOf("lineage_undeclared")
 	// ReasonLogIntegrityBroken: The event log fails verification: a gap, a broken hash link, an edited event, or (against a trusted head) truncation or a rewritten tail.
 	ReasonLogIntegrityBroken = types.ReasonCodeOf("log_integrity_broken")
 	// ReasonP3Banked: A P3 finding banked as background work (plan §2.5).
@@ -93,6 +97,8 @@ var (
 	ReasonQuotaUnknown = types.ReasonCodeOf("quota_unknown")
 	// ReasonReceiptIncomplete: A required predicate or its evidence media is missing; never derives empty.
 	ReasonReceiptIncomplete = types.ReasonCodeOf("receipt_incomplete")
+	// ReasonRestrictionDropped: A ref derived from the manifest's declared inputs does not keep every restriction its lineage inherits.
+	ReasonRestrictionDropped = types.ReasonCodeOf("restriction_dropped")
 	// ReasonReviewInputChanged: A review input changed (new answer, new demand, changed conclusions), so a successor review is required.
 	ReasonReviewInputChanged = types.ReasonCodeOf("review_input_changed")
 	// ReasonReviewerNotIndependent: No reviewer family disjoint from every contributor is available; unknown family counts as not independent.
@@ -117,6 +123,8 @@ var (
 	ReasonTestIntegrityViolation = types.ReasonCodeOf("test_integrity_violation")
 	// ReasonUnsafeOutput: An adapter output violated the ingestion boundary (symlink, special file, digest mismatch, foreign handle).
 	ReasonUnsafeOutput = types.ReasonCodeOf("unsafe_output")
+	// ReasonViewStale: A cached view's recorded fingerprint differs from the one recomputed over its current inputs, so it is not served but regenerated.
+	ReasonViewStale = types.ReasonCodeOf("view_stale")
 )
 
 // Registered hold reasons (schemas/vocab/holds.yaml).

@@ -21,7 +21,14 @@ const (
 	// FenceIgnoresClosedPublication lets output from an attempt whose
 	// publication is closed (stopped, lost, superseded) land.
 	FenceIgnoresClosedPublication = "lease.fence-ignores-closed-publication"
+	// IdentityIgnoresLineage leaves lineage and restrictions out of a ref's
+	// identity digest, so identical bytes with another history are one ref.
+	IdentityIgnoresLineage = "knowledge.identity-ignores-lineage"
+	// CoverageTrustsDeclarations lets adapter declarations count as
+	// evidence, so a declared-only turn no longer lowers coverage.
+	CoverageTrustsDeclarations = "knowledge.coverage-trusts-declarations"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
-var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExclusive, FenceIgnoresClosedPublication}
+var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExclusive, FenceIgnoresClosedPublication,
+	IdentityIgnoresLineage, CoverageTrustsDeclarations}

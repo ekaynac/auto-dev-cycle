@@ -62,6 +62,12 @@ reasons:
   - {code: confirmation_refused, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "04", description: "A confirmation did not count: a challenge used, expired, for another binding or by an actor who may not confirm, or a review that is not a GO for this proposal."}
   - {code: proposal_invalidated, outcomes: [failed], domain: authority, introduced: 0.1.0, deprecated: null, source: "04", description: "At apply, the confirmed proposal no longer holds: its grant, policy, confirmer or request changed; it is invalidated, never applied."}
 
+  # --- knowledge --------------------------------------------------------------
+  - {code: restriction_dropped, outcomes: [failed], domain: knowledge, introduced: 0.1.0, deprecated: null, source: "10", description: "A ref derived from the manifest's declared inputs does not keep every restriction its lineage inherits."}
+  - {code: lineage_undeclared, outcomes: [failed], domain: knowledge, introduced: 0.1.0, deprecated: null, source: "10", description: "A delivered tool result is not a declared input and names no lineage, or lineage outside the manifest's declared inputs."}
+  - {code: view_stale, outcomes: [could_not_run], domain: knowledge, introduced: 0.1.0, deprecated: null, source: "10", description: "A cached view's recorded fingerprint differs from the one recomputed over its current inputs, so it is not served but regenerated."}
+  - {code: coverage_claim_contradicted, outcomes: [failed], domain: knowledge, introduced: 0.1.0, deprecated: null, source: "10", description: "A finalized manifest's coverage differs from what its delivery evidence derives; a declaration alone never makes it complete."}
+
   # --- adapters, sandbox, config ---------------------------------------------
   - {code: unsafe_output, outcomes: [failed], domain: adapter, introduced: 0.1.0, deprecated: null, source: "09", description: "An adapter output violated the ingestion boundary (symlink, special file, digest mismatch, foreign handle)."}
   # Executor exits (13 "Facts, not claims"): an executor that did not complete is could_not_run, with the reason

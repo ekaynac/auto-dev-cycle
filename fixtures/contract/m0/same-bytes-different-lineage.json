@@ -1,0 +1,12 @@
+{
+  "name": "same-bytes-different-lineage",
+  "invariant": "Identical bytes with different lineage are two refs: the blob is shared, the identities and restrictions are not, so a view rendered from one is regenerated, never served, for the other, and a ref derived from their shared id keeps both restrictions (10; spec/knowledge invariants 5 and 6).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "could_not_run", "reason": "view_stale"},
+    {"outcome": "failed", "reason": "restriction_dropped"},
+    {"outcome": "failed", "reason": "restriction_dropped"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "knowledge.identity-ignores-lineage"
+}

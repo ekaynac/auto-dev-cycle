@@ -8,6 +8,8 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // A ContextManifest is three append-only events on one cmf_ id
@@ -104,38 +106,40 @@ func CheckDelivery(in types.ManifestIntent, d types.ManifestDelivery) error {
 		if byIdentity[t.Ref.IdentityDigest] {
 			continue
 		}
-		if err := derivedFrom(t.Ref, byID); err != nil {
-			return fmt.Errorf("knowledge: manifest %s turn %d: tool result %s: %w", in.ID, d.Turn, t.Ref.ID, err)
+		if reason, err := derivedFrom(t.Ref, byID); err != nil {
+			return refuse(vocab.Failed, reason,
+				fmt.Errorf("knowledge: manifest %s turn %d: tool result %s: %w", in.ID, d.Turn, t.Ref.ID, err))
 		}
 	}
 	return nil
 }
 
 // derivedFrom: r was derived only from the inputs (its lineage is non-empty
-// and names only them) and keeps every restriction of every input each
-// lineage id names.
-func derivedFrom(r types.Ref, inputs map[string][]types.Ref) error {
+// and names only them; else lineage_undeclared) and keeps every restriction
+// of every input each lineage id names (else restriction_dropped).
+func derivedFrom(r types.Ref, inputs map[string][]types.Ref) (vocab.Reason, error) {
 	if len(r.Lineage) == 0 {
-		return fmt.Errorf("is neither a declared input nor derived from one")
+		return vocab.ReasonLineageUndeclared, fmt.Errorf("is neither a declared input nor derived from one")
 	}
 	kept := map[string]bool{}
 	for _, x := range r.Restrictions {
 		kept[restrictionKey(x)] = true
 	}
 	for _, id := range r.Lineage {
-		srcs, ok := inputs[id]
-		if !ok {
-			return fmt.Errorf("is derived from %s, which is not a declared input", id)
+		if _, ok := inputs[id]; !ok {
+			return vocab.ReasonLineageUndeclared, fmt.Errorf("is derived from %s, which is not a declared input", id)
 		}
-		for _, src := range srcs {
+	}
+	for _, id := range r.Lineage {
+		for _, src := range inputs[id] {
 			for _, x := range src.Restrictions {
 				if !kept[restrictionKey(x)] {
-					return fmt.Errorf("drops a restriction of %s (project %s)", id, x.Project)
+					return vocab.ReasonRestrictionDropped, fmt.Errorf("drops a restriction of %s (project %s)", id, x.Project)
 				}
 			}
 		}
 	}
-	return nil
+	return vocab.Reason{}, nil
 }
 
 func restrictionKey(x types.Restriction) string {
@@ -202,11 +206,11 @@ func Coverage(in types.ManifestIntent, deliveries []types.ManifestDelivery, c ty
 			delivered[t.Ref.IdentityDigest] = true
 		}
 		if del.Compacted && !compacted[del.Turn] {
-			return Derived{}, fmt.Errorf("knowledge: manifest %s: the compaction in turn %d is missing from unobservable", in.ID, del.Turn)
+			return Derived{}, contradicted(fmt.Errorf("knowledge: manifest %s: the compaction in turn %d is missing from unobservable", in.ID, del.Turn))
 		}
 		for _, what := range del.Declarations {
 			if !declared[item{del.Turn, what}] {
-				return Derived{}, fmt.Errorf("knowledge: manifest %s: the declaration %q of turn %d is missing from declared_only", in.ID, what, del.Turn)
+				return Derived{}, contradicted(fmt.Errorf("knowledge: manifest %s: the declaration %q of turn %d is missing from declared_only", in.ID, what, del.Turn))
 			}
 		}
 	}
@@ -227,7 +231,7 @@ func Coverage(in types.ManifestIntent, deliveries []types.ManifestDelivery, c ty
 	switch {
 	case c.Turns == nil, c.Prompt == types.ManifestFinalizedCoveragePromptUncertain:
 		d.Status = types.ManifestFinalizedCoverageStatusUnknown
-	case len(c.DeclaredOnly) > 0, len(c.Unobservable) > 0, int64(len(evidenced)) != *c.Turns:
+	case len(c.DeclaredOnly) > 0 && !mutation.Is(mutation.CoverageTrustsDeclarations), len(c.Unobservable) > 0, int64(len(evidenced)) != *c.Turns:
 		d.Status = types.ManifestFinalizedCoverageStatusPartial
 	default:
 		d.Status = types.ManifestFinalizedCoverageStatusComplete
@@ -255,15 +259,20 @@ func CheckFinalized(in types.ManifestIntent, deliveries []types.ManifestDelivery
 	}
 	c := f.Coverage
 	if !slices.Equal(slices.Sorted(slices.Values(c.DeliveredRefs)), orNil(d.Delivered)) {
-		return fmt.Errorf("knowledge: manifest %s: delivered_refs differ from the evidenced prompt and tool results", in.ID)
+		return contradicted(fmt.Errorf("knowledge: manifest %s: delivered_refs differ from the evidenced prompt and tool results", in.ID))
 	}
 	if !slices.Equal(slices.Sorted(slices.Values(c.PossiblyDeliveredRefs)), orNil(d.PossiblyDelivered)) {
-		return fmt.Errorf("knowledge: manifest %s: possibly_delivered_refs differ from the uncertain prompt's inputs", in.ID)
+		return contradicted(fmt.Errorf("knowledge: manifest %s: possibly_delivered_refs differ from the uncertain prompt's inputs", in.ID))
 	}
 	if c.Status != d.Status {
-		return fmt.Errorf("knowledge: manifest %s: status %s, the evidence gives %s", in.ID, c.Status, d.Status)
+		return contradicted(fmt.Errorf("knowledge: manifest %s: status %s, the evidence gives %s", in.ID, c.Status, d.Status))
 	}
 	return nil
+}
+
+// contradicted: a coverage claim the evidence contradicts.
+func contradicted(err error) error {
+	return refuse(vocab.Failed, vocab.ReasonCoverageClaimContradicted, err)
 }
 
 func orNil(s []types.Digest) []types.Digest {

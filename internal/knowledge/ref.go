@@ -25,11 +25,29 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // ErrMismatch marks a ref or fingerprint whose recorded digest is not the
 // recomputed one: regenerate, never serve.
 var ErrMismatch = errors.New("knowledge: digest mismatch")
+
+// Refusal is a refusal a caller reports as a result, with its registered
+// outcome and reason: a dropped restriction, a stale view or a contradicted
+// coverage claim. Its text and wrapped error are the underlying error's.
+type Refusal struct {
+	Outcome vocab.Outcome
+	Reason  vocab.Reason
+	Err     error
+}
+
+func (r *Refusal) Error() string { return r.Err.Error() }
+func (r *Refusal) Unwrap() error { return r.Err }
+
+func refuse(o vocab.Outcome, reason vocab.Reason, err error) error {
+	return &Refusal{o, reason, err}
+}
 
 // identity is what a ref's identity digest covers: every field but the
 // digest itself.
@@ -153,6 +171,9 @@ func Seal(r types.Ref) (types.Ref, error) {
 }
 
 func identityDigest(r types.Ref) (types.Digest, error) {
+	if mutation.Is(mutation.IdentityIgnoresLineage) {
+		r.Lineage, r.Restrictions = []string{}, []types.Restriction{}
+	}
 	return digestOf(identity{r.Type, r.ID, r.Revision, r.Scope, r.Lineage, r.Restrictions, r.ContentDigest})
 }
 
@@ -254,7 +275,8 @@ func CheckServable(recorded types.ViewFingerprint, renderer types.ViewFingerprin
 		return err
 	}
 	if d != recorded.Digest {
-		return fmt.Errorf("%w: the view was rendered from other inputs or another renderer (now %s, recorded %s)", ErrMismatch, d, recorded.Digest)
+		return refuse(vocab.CouldNotRun, vocab.ReasonViewStale,
+			fmt.Errorf("%w: the view was rendered from other inputs or another renderer (now %s, recorded %s)", ErrMismatch, d, recorded.Digest))
 	}
 	return nil
 }

@@ -3,6 +3,7 @@
 package knowledge
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -351,5 +352,39 @@ func TestConfirmedDeliveryLeavesPossible(t *testing.T) {
 	c.PossiblyDeliveredRefs = []types.Digest{f.tree.IdentityDigest, f.spec.IdentityDigest}
 	if err := CheckFinalized(f.intent, deliveries, f.finalized(c)); err == nil {
 		t.Fatal("a confirmed ref also listed as possibly delivered")
+	}
+}
+
+// Each refusal a caller reports carries its registered outcome and reason,
+// and keeps the underlying error.
+func TestRefusalsCarryTheirReason(t *testing.T) {
+	f := fixture(t)
+	stripped := seal(t, types.Ref{Type: types.RefTypeGitPath, ID: "git:" + strings.Repeat("c", 40) + ":x.go", ContentDigest: dgC, Lineage: []string{f.tree.ID}})
+	orphan := seal(t, types.Ref{Type: types.RefTypeBlob, ID: "orphan", ContentDigest: dgC})
+	foreign := seal(t, types.Ref{Type: types.RefTypeBlob, ID: "foreign", ContentDigest: dgC, Lineage: []string{"undeclared"}})
+	declaring := f.turn(1)
+	declaring.Declarations = []string{"read docs"}
+	view, err := Fingerprint(renderer(), []types.Ref{f.tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		err    error
+		reason vocab.Reason
+	}{
+		"a dropped restriction": {CheckDelivery(f.intent, f.turn(1, stripped)), vocab.ReasonRestrictionDropped},
+		"no lineage":            {CheckDelivery(f.intent, f.turn(1, orphan)), vocab.ReasonLineageUndeclared},
+		"foreign lineage":       {CheckDelivery(f.intent, f.turn(1, foreign)), vocab.ReasonLineageUndeclared},
+		"a stale view":          {CheckServable(view, renderer(), []types.Ref{f.spec}), vocab.ReasonViewStale},
+		"a declaration left out": {func() error {
+			_, err := Coverage(f.intent, []types.ManifestDelivery{declaring}, coverage(delivered, n64(1), ""))
+			return err
+		}(), vocab.ReasonCoverageClaimContradicted},
+		"a status the evidence denies": {CheckFinalized(f.intent, []types.ManifestDelivery{f.turn(1)}, f.finalized(coverage(delivered, n64(2), complete, f.spec.IdentityDigest, f.tree.IdentityDigest))), vocab.ReasonCoverageClaimContradicted},
+	} {
+		var r *Refusal
+		if !errors.As(c.err, &r) || r.Reason != c.reason || r.Unwrap() == nil {
+			t.Errorf("%s: %v", name, c.err)
+		}
 	}
 }
