@@ -39,7 +39,8 @@ func TestView(t *testing.T) {
 		},
 	}
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{
-		Kinds: eventstore.Kinds{"test.appended/v1": {Schema: "common/defs"}}, Blobs: blobs, Hooks: hooks})
+		Kinds: eventstore.Kinds{"test.appended/v1": {Schema: "common/defs"}}, Blobs: blobs, Hooks: hooks,
+		Effects: eventstore.EffectKinds{"notification": {Idempotent: true}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,7 @@ func TestView(t *testing.T) {
 		if !errors.Is(tx.Put("seen", "x", json.RawMessage(`{}`)), eventstore.ErrReadOnly) || !errors.Is(tx.Delete("seen", first), eventstore.ErrReadOnly) {
 			t.Error("a view changed a projection")
 		}
-		if tx.IntendEffect(id(t, "eff"), "k", "t", json.RawMessage(`{}`)) == nil {
+		if tx.IntendEffect(id(t, "eff"), "notification", "t", json.RawMessage(`{}`)) == nil { // a registered kind
 			t.Error("a view intended an effect")
 		}
 		// A command committed meanwhile is not in this snapshot.
@@ -82,6 +83,18 @@ func TestView(t *testing.T) {
 		keys, err := tx.Keys("seen", "")
 		if len(keys) != 2 {
 			t.Errorf("a later view: %v", keys)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The snapshot is View's: a command committed before fn's first read is
+	// not in it either.
+	if err := s.View(ctx, func(tx *eventstore.Tx) error {
+		submit("three")
+		keys, err := tx.Keys("seen", "")
+		if len(keys) != 2 {
+			t.Errorf("a commit before the first read is visible: %v", keys)
 		}
 		return err
 	}); err != nil {
