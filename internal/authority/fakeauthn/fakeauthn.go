@@ -24,11 +24,13 @@ import (
 )
 
 // Authenticator is one fake credential. RPID, Origin and Flags are what
-// the next assertion carries; the counter advances on every assertion.
+// the next assertion carries; the counter advances on every assertion,
+// unless Static models an authenticator without one (always zero).
 type Authenticator struct {
 	RPID   string
 	Origin string
 	Flags  byte
+	Static bool
 	cred   webauthn.Credential
 	key    crypto.Signer
 	ed     bool
@@ -70,7 +72,9 @@ func (a *Authenticator) Assert(challenge []byte) (webauthn.Assertion, error) {
 	if err != nil {
 		return webauthn.Assertion{}, err
 	}
-	a.count++
+	if !a.Static {
+		a.count++
+	}
 	rpHash := sha256.Sum256([]byte(a.RPID))
 	auth := binary.BigEndian.AppendUint32(append(rpHash[:], a.Flags), a.count)
 	cdHash := sha256.Sum256(cd)
