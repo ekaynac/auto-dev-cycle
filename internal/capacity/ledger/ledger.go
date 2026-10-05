@@ -17,6 +17,7 @@ import (
 	"sort"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -95,6 +96,9 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 	conflict := map[types.CallID]bool{}
 	currency := map[types.CallID]string{}
 	for _, m := range ms {
+		if mutation.Is(mutation.StaleAttemptUsageDropped) && m.Attempt != ms[len(ms)-1].Attempt {
+			continue
+		}
 		if c, ok := currency[m.Call]; ok && c != m.Cost.Currency {
 			return nil, fmt.Errorf("ledger: call %s reports in %s and %s", m.Call, c, m.Cost.Currency)
 		}
@@ -103,7 +107,9 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 		case types.UsageMeasurementKindDelta:
 			k := key{m.Call, m.Sequence}
 			f := figureOf(m)
-			if prev, dup := deltas[k]; dup && prev != f {
+			if prev, dup := deltas[k]; dup && mutation.Is(mutation.DeltasNotDeduplicated) {
+				f, _ = add(prev, f)
+			} else if dup && prev != f {
 				// The same delta reported twice with different figures:
 				// keep the larger, never the smaller, and flag it.
 				f, _ = maxOf(prev, f)

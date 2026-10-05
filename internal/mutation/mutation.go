@@ -46,10 +46,19 @@ const (
 	// ProtectedCheckSupervisorsOnly refuses a widening protected change only
 	// for supervisors, as if operators and the system were exempt.
 	ProtectedCheckSupervisorsOnly = "authority.protected-check-supervisors-only"
+	// StaleAttemptUsageDropped fences usage like output: the ledger counts
+	// only the reports of the attempt that reported last.
+	StaleAttemptUsageDropped = "ledger.stale-attempt-usage-dropped"
+	// DeltasNotDeduplicated counts a repeated (call, sequence) delta again.
+	DeltasNotDeduplicated = "ledger.deltas-not-deduplicated"
+	// ChainHashUnchecked makes verification check each row's link to the
+	// previous hash but not the row's own recomputed hash.
+	ChainHashUnchecked = "eventstore.chain-hash-unchecked"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
 var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExclusive, FenceIgnoresClosedPublication,
 	IdentityIgnoresLineage, CoverageTrustsDeclarations,
 	OuterStatusTrusted, AbsentPredicateUnchecked, UnknownFamilyIndependent, BindingDigestIgnored,
-	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly}
+	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly,
+	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked}

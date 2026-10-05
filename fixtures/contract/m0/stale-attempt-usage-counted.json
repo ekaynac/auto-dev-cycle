@@ -1,0 +1,12 @@
+{
+  "name": "stale-attempt-usage-counted",
+  "invariant": "Outputs are fenced; accounting is not: a replaced attempt's output is refused, but its usage is still counted per call, whatever the arrival order and also on a call of its own (05 \"Usage and settlement\").",
+  "expected": [
+    {"outcome": "failed", "reason": "stale_attempt"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "ledger.stale-attempt-usage-dropped"
+}

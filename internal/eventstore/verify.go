@@ -15,6 +15,8 @@ import (
 	"syscall"
 
 	"modernc.org/sqlite"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 )
 
 // Head names the last event: the trusted head a backup carries outside the
@@ -477,7 +479,7 @@ func (s *Store) verify(ctx context.Context, q querier, trusted *Head) (Head, err
 		if err != nil {
 			return Head{}, fmt.Errorf("%w: seq %d cannot be re-encoded: %v", ErrChainBroken, e.Seq, err)
 		}
-		if got != e.Hash {
+		if got != e.Hash && !mutation.Is(mutation.ChainHashUnchecked) {
 			return Head{}, fmt.Errorf("%w: seq %d was edited (hash mismatch)", ErrChainBroken, e.Seq)
 		}
 		head = Head{Seq: e.Seq, Hash: e.Hash}
