@@ -54,6 +54,9 @@ const (
 	// ChainHashUnchecked makes verification check each row's link to the
 	// previous hash but not the row's own recomputed hash.
 	ChainHashUnchecked = "eventstore.chain-hash-unchecked"
+	// ConfirmIgnoresStatus lets a confirmation proceed on a proposal that
+	// is no longer open (already confirmed or rejected).
+	ConfirmIgnoresStatus = "authority.confirm-ignores-status"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -61,4 +64,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	IdentityIgnoresLineage, CoverageTrustsDeclarations,
 	OuterStatusTrusted, AbsentPredicateUnchecked, UnknownFamilyIndependent, BindingDigestIgnored,
 	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly,
-	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked}
+	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked, ConfirmIgnoresStatus}

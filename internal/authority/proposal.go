@@ -15,6 +15,7 @@ import (
 	"github.com/gowebpki/jcs"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -107,7 +108,7 @@ func NewProposal(id types.ProposalID, d Decision, b Bound, expires time.Time) (t
 
 // open refuses a proposal that is not open, or open but past its expiry.
 func open(p types.Proposal, now time.Time) error {
-	if p.Status != types.ProposalStatusOpen {
+	if p.Status != types.ProposalStatusOpen && !mutation.Is(mutation.ConfirmIgnoresStatus) {
 		return refusal(vocab.ReasonProposalNotOpen, "proposal %s is %s", p.ID, p.Status)
 	}
 	until, err := time.Parse(time.RFC3339Nano, string(p.ExpiresAt))

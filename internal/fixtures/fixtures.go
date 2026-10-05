@@ -49,21 +49,22 @@ type runner func(ctx context.Context, dir string) (steps []Step, violations []st
 
 // runners are the registered fixtures, by name.
 var runners = map[string]runner{
-	"idempotency-key-reuse":        idempotencyKeyReuse,
-	"stale-expected-state":         staleExpectedState,
-	"second-daemon":                secondDaemon,
-	"revoked-attempt-late-result":  revokedAttemptLateResult,
-	"same-bytes-different-lineage": sameBytesDifferentLineage,
-	"declared-only-coverage":       declaredOnlyCoverage,
-	"nested-receipt-lie":           nestedReceiptLie,
-	"omitted-required-predicate":   omittedRequiredPredicate,
-	"unknown-reviewer-family":      unknownReviewerFamily,
-	"unrelated-go-reuse":           unrelatedGOReuse,
-	"widened-profile-edit":         widenedProfileEdit,
-	"protected-change-widens":      protectedChangeWidens,
-	"stale-attempt-usage-counted":  staleAttemptUsageCounted,
-	"duplicate-usage-deltas":       duplicateUsageDeltas,
-	"hash-chain-edit-truncation":   hashChainEditAndTruncation,
+	"idempotency-key-reuse":            idempotencyKeyReuse,
+	"stale-expected-state":             staleExpectedState,
+	"second-daemon":                    secondDaemon,
+	"revoked-attempt-late-result":      revokedAttemptLateResult,
+	"same-bytes-different-lineage":     sameBytesDifferentLineage,
+	"declared-only-coverage":           declaredOnlyCoverage,
+	"nested-receipt-lie":               nestedReceiptLie,
+	"omitted-required-predicate":       omittedRequiredPredicate,
+	"unknown-reviewer-family":          unknownReviewerFamily,
+	"unrelated-go-reuse":               unrelatedGOReuse,
+	"widened-profile-edit":             widenedProfileEdit,
+	"protected-change-widens":          protectedChangeWidens,
+	"stale-attempt-usage-counted":      staleAttemptUsageCounted,
+	"duplicate-usage-deltas":           duplicateUsageDeltas,
+	"hash-chain-edit-truncation":       hashChainEditAndTruncation,
+	"concurrent-conflicting-approvals": concurrentConflictingApprovals,
 }
 
 // Goldens loads and validates every golden, checking that each has a
