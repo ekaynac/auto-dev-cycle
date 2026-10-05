@@ -161,8 +161,10 @@ fixtures-contract: build ## Run the M0 contract fixtures, and check each fixture
 # The release-build guard's regression: builds under a hostile persisted Go
 # configuration (GOFLAGS=-tags=adcmutation in a go env file) and under a
 # command-line GOFLAGS whose tag list Go records quoted still yield binaries
-# without tags (build runs the guard), and the guard refuses the mutation
-# build and a binary built directly with that quoted tag list.
+# without tags; make build and make dist (for this host) each refuse what
+# they built with a tag injected through GOBUILD, also with the build
+# information erased to hide it; and the guard refuses the mutation build
+# and a binary built directly with the quoted tag list.
 release-guard: fixtures-contract ## Prove release builds ignore a persisted mutation tag
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 	  printf 'GOFLAGS=-tags=adcmutation\n' >"$$tmp/goenv"; \
@@ -170,9 +172,15 @@ release-guard: fixtures-contract ## Prove release builds ignore a persisted muta
 	  $(CHECK_RELEASE) $(addprefix "$$tmp/bin/,$(addsuffix ",$(BINARIES))); \
 	  $(MAKE) --no-print-directory build BIN_DIR="$$tmp/cli" 'GOFLAGS=-tags=adcmutation,x"' >/dev/null; \
 	  $(CHECK_RELEASE) $(addprefix "$$tmp/cli/,$(addsuffix ",$(BINARIES))); \
-	  if $(MAKE) --no-print-directory build BIN_DIR="$$tmp/gobuild" GOBUILD="$(GO) build -trimpath -tags adcmutation" >/dev/null 2>&1; then \
-	    echo "release-guard: make build accepted binaries built with a tag" >&2; exit 1; \
-	  fi; \
+	  host="$$($(GO) env GOOS)/$$($(GO) env GOARCH)"; \
+	  for gb in "$(GO) build -trimpath -tags adcmutation" "$(GO) build -trimpath -tags adcmutation -ldflags=-X=runtime.modinfo="; do \
+	    if $(MAKE) --no-print-directory build BIN_DIR="$$tmp/gobuild" GOBUILD="$$gb" >/dev/null 2>&1; then \
+	      echo "release-guard: make build accepted binaries built with: $$gb" >&2; exit 1; \
+	    fi; \
+	    if $(MAKE) --no-print-directory dist DIST_DIR="$$tmp/godist" SERVER_PLATFORMS="$$host" AGENT_PLATFORMS="$$host" GOBUILD="$$gb" >/dev/null 2>&1; then \
+	      echo "release-guard: make dist accepted binaries built with: $$gb" >&2; exit 1; \
+	    fi; \
+	  done; \
 	  $(GO) build -tags 'adcmutation,x"' -o "$$tmp/quoted" ./cmd/adc; \
 	  for f in $(BIN_DIR)/adc-mutation "$$tmp/quoted"; do \
 	    if $(CHECK_RELEASE) "$$f" 2>/dev/null; then echo "release-guard: the guard accepted $$f" >&2; exit 1; fi; \
