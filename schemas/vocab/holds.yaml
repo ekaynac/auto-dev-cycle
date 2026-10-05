@@ -10,6 +10,12 @@ holds:
     owner: system
     page_after: PT30M # overdue by
     escalate_to: null
+  - hold: capacity_released
+    signal: revision
+    signal_detail: A new capacity revision of the blocking resource group, recorded when a lease's settlement or release returns reservations to it.
+    owner: system
+    page_after: PT30M
+    escalate_to: null
   - hold: source_invalid_config
     signal: config_change
     signal_detail: A config revision of the source.

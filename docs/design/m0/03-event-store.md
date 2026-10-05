@@ -44,12 +44,17 @@ All state-dependent decisions happen **inside one writer transaction**:
 1. idempotency lookup;
 2. authorization (`internal/authority`, against the current projections);
 3. expected-state check;
-4. resource reservations;
-5. event append;
-6. projection update;
-7. command-result row.
+4. event append;
+5. projection update, which includes resource reservations;
+6. command-result row.
 
 Validation that needs no state (schema, syntax) may run before, on the caller's goroutine.
+
+**Reservations are a projection** (05). The capacity projector runs after the lease projector in the same
+transaction. On `lease.granted` it checks every reservation the lease names against its group, counting outstanding
+reservations, and refuses the whole command if any lacks room (`could_not_run/capacity_reserved_full`). On `lease.settled` or `lease.released` it returns
+them. Reserving from the proposed events, rather than from the command, makes reserved totals a fold over the log:
+a rebuild recomputes them, and the limit check runs only when an event is admitted, never on replay.
 
 - **Idempotency.** `(actor, idempotency_key)` is unique. A repeat with the **same** `input_digest` returns the stored
   result. A repeat with a **different** input is refused with `failed/idempotency_key_reused`.
@@ -109,6 +114,7 @@ planned ──[effect.intent committed]──▶ pending ──[effect.observed{
 
 ## What M0 delivers
 
-The store, the single writer with in-transaction authorization and reservation hooks, the command and effect tables
+The store, the single writer with in-transaction authorization and projection hooks (reservations are a projection,
+above), the command and effect tables
 with the effect state machine (runtime reconciliation is M1), the blob store with publish-before-reference, the
 process lock, the hash chain with full verification, projection rebuild, and the tests above.

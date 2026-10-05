@@ -27,6 +27,8 @@ var (
 	ReasonBrokerCreditExhausted = types.ReasonCodeOf("broker_credit_exhausted")
 	// ReasonCandidateOwnedSetupError: A setup/teardown error in a test file the candidate added or changed, fully accounted; routed to a builder repair (07 ownership rules).
 	ReasonCandidateOwnedSetupError = types.ReasonCodeOf("candidate_owned_setup_error")
+	// ReasonCapacityReservedFull: Outstanding reservations fill the resource group's known limit, so the grant reserves nothing; the lease stays requested until a settlement or release returns capacity to the group.
+	ReasonCapacityReservedFull = types.ReasonCodeOf("capacity_reserved_full")
 	// ReasonChangeClassUnknown: The effective change named a class with no confirmation default; refused, never read as no confirmation.
 	ReasonChangeClassUnknown = types.ReasonCodeOf("change_class_unknown")
 	// ReasonCheckUnloadable: A source check could not load or type-check the code it checks; it never passes.
@@ -136,6 +138,7 @@ const (
 	HoldBaseMovedConflict      = "base_moved_conflict"
 	HoldBrokerCreditExhausted  = "broker_credit_exhausted"
 	HoldBudgetRail             = "budget_rail"
+	HoldCapacityReleased       = "capacity_released"
 	HoldEvidenceRestorePending = "evidence_restore_pending"
 	HoldMaintenanceBoundary    = "maintenance_boundary"
 	HoldPreconditionFailed     = "precondition_failed"

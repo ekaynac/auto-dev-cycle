@@ -280,6 +280,7 @@ func TestHoldsMatchNote02(t *testing.T) {
 		"awaiting_input":           {"approval", "grant_holder", "PT1H", ""},
 		"evidence_restore_pending": {"receipt", "system", "PT1H", "environment_owner"},
 		"precondition_failed":      {"probe", "environment_owner", "PT1H", ""},
+		"capacity_released":        {"revision", "system", "PT30M", ""},
 	}
 	reg, err := Load()
 	if err != nil {

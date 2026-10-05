@@ -90,6 +90,7 @@ Initial hold registry (M0 defines; later milestones add):
 | Hold | Signal | Owner |
 |---|---|---|
 | `quota_reset` | time / probe | system |
+| `capacity_released` | revision (a release or settlement returns capacity to the blocking group, 05) | system |
 | `source_invalid_config` | config_change | operator |
 | `awaiting_approval` | approval | operator or supervisor (per grant) |
 | `awaiting_confirmation` | approval (human or independent review per policy) | per confirmation policy |

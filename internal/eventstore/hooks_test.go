@@ -24,8 +24,9 @@ func id(t *testing.T, prefix string) string {
 }
 
 // A hook package (authority, capacity, projections) works through the
-// writer transaction: the authorizer reads a projection, the reservation and
-// the projector write projections, and a later failure rolls all of it back.
+// writer transaction: the authorizer reads a projection, the projector
+// writes projections (a reservation among them), and a failure rolls all of
+// it back.
 func TestHooksShareTheWriterTransaction(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")
 	ctx := context.Background()
@@ -58,15 +59,16 @@ func TestHooksShareTheWriterTransaction(t *testing.T) {
 			}
 			return nil
 		},
-		Reserve: func(tx *eventstore.Tx, c eventstore.Command) error {
+		Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
+			// The reservation is part of the projection (internal/capacity).
 			n, err := free(tx)
 			if err != nil {
 				return err
 			}
 			b, _ := json.Marshal(map[string]int{"free": n - 1})
-			return tx.Put("units", "gpu", b)
-		},
-		Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
+			if err := tx.Put("units", "gpu", b); err != nil {
+				return err
+			}
 			for _, e := range evs {
 				if err := tx.Put("seen", e.ID, json.RawMessage(`{}`)); err != nil {
 					return err

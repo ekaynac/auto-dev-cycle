@@ -20,8 +20,10 @@ import (
 // The writer is the serialization boundary (docs/design/m0/03 "The
 // writer"): every state-dependent decision of a command happens inside one
 // writer transaction, in this order: idempotency lookup, authorization,
-// expected-state check, reservations, event append, projection update, and
-// the command-result row. Anything that fails rolls all of it back.
+// expected-state check, event append, projection update (resource
+// reservations among them, made by the capacity projector from the
+// proposed lease events), and the command-result row. Anything that fails
+// rolls all of it back.
 
 // Refusals a command can meet (failed/<reason>).
 var (
@@ -184,10 +186,9 @@ func (t *Tx) SubjectVersion(subject string) (int64, error) {
 
 // Hooks are the decisions other packages make inside the writer
 // transaction. Authorize is required: with none, every command is refused
-// (fail closed). Reserve and Project may be nil.
+// (fail closed). Project may be nil.
 type Hooks struct {
 	Authorize func(t *Tx, c Command) error // internal/authority
-	Reserve   func(t *Tx, c Command) error // capacity reservations
 	// Project updates projections. It must be a fold: derive its records
 	// from the events it is given and the projections alone, whether it
 	// gets a command's events at once or one at a time (a rebuild replays
@@ -281,13 +282,7 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 				return fmt.Errorf("eventstore: %w: %s is at %d, the command expected %d", ErrStaleExpectedState, e.Subject, v, e.Version)
 			}
 		}
-		// 4. Reservations.
-		if s.hooks.Reserve != nil {
-			if err := s.hooks.Reserve(t, c); err != nil {
-				return err
-			}
-		}
-		// 5. Events.
+		// 4. Events.
 		events, result, err := apply(t)
 		if err != nil {
 			return err
@@ -328,13 +323,14 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 			first = sql.NullInt64{Int64: appended[0].Seq, Valid: true}
 			last = sql.NullInt64{Int64: appended[len(appended)-1].Seq, Valid: true}
 		}
-		// 6. Projections (on a copy: a hook cannot change what is recorded).
+		// 5. Projections, reservations among them (on a copy: a hook cannot
+		// change what is recorded).
 		if s.hooks.Project != nil && len(appended) > 0 {
 			if err := s.hooks.Project(t, slices.Clone(appended)); err != nil {
 				return err
 			}
 		}
-		// 7. The command-result row.
+		// 6. The command-result row.
 		if _, err := tx.ExecContext(ctx, `INSERT INTO commands(id, actor, idempotency_key, input_digest, disposition, result_json, first_seq, last_seq)
 			VALUES (?, ?, ?, ?, 'applied', ?, ?, ?)`, c.ID, c.Actor, c.IdempotencyKey, inputDigest, string(canonResult), first, last); err != nil {
 			return err
