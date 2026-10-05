@@ -19,6 +19,8 @@ const (
 	ExitOK          = 0
 	ExitRefused     = 1
 	ExitCouldNotRun = 2
+	ExitProposed    = 3 // waiting for confirmation
+	ExitStale       = 4 // stale_expected_state, stale_attempt, idempotency_key_reused
 	ExitUsage       = 64
 )
 
