@@ -109,6 +109,30 @@ func (s *Store) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	})
 }
 
+// View runs fn in one read transaction on the read-only pool: a snapshot of
+// the live projections and subject versions, taken when View begins, for
+// reads (docs/design/m0/08). fn's Tx refuses Put, Delete and effects, and
+// the transaction always rolls back. A view sees committed state only: a
+// decision that must hold when a command commits (authorization) runs on
+// the writer's Tx, never on a view. Keep views short: an open view pins the
+// log's write-ahead file and Close waits for it.
+func (s *Store) View(ctx context.Context, fn func(*Tx) error) error {
+	return s.do(func() error {
+		tx, err := s.r.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }() // a read changes nothing to keep
+		// SQLite takes a deferred transaction's snapshot at its first read:
+		// read now, so the snapshot is View's, not fn's first statement's.
+		var one int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM events LIMIT 1`).Scan(&one); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return fn(&Tx{ctx: ctx, tx: tx, readOnly: true})
+	})
+}
+
 // Close stops new operations, waits for running ones, closes both pools and
 // ends this store's claim on the lock, once; later calls do nothing.
 func (s *Store) Close() error {
