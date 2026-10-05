@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# The adapters workspace (docs/design/m0/01 "Repository layout"): Node 22 LTS, pnpm 10.
+packages:
+  - contract
+  - ../gen/ts # the generated types and validators (make gen)

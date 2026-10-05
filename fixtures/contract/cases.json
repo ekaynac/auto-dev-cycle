@@ -1,0 +1,789 @@
+[
+ {
+  "name": "actor: valid",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": null
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: revoked at a real time",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-10-05T01:02:03.5Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: a leap day",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2028-02-29T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: no such date (Feb 30)",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-02-30T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: no leap day in 2026",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-02-29T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: second 60",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-10-05T23:59:60Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: hour 24",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-10-05T24:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: month 13",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-13-01T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: month 00",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-00-01T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: day 00",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-10-00T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: April 31",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-04-31T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: minute 60",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-10-05T10:60:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: a leap day in year 2000",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2000-02-29T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: no leap day in 1900",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "1900-02-29T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: a leap day in year 0000",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "0000-02-29T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: a time with an offset",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-10-05T01:02:03+03:00"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: a UUIDv4 TypeID",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0a8r9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": null
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: a TypeID with a non-RFC variant",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9xs2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": null
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: a TypeID suffix over 128 bits",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_81m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": null
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: another entity's prefix",
+  "schema": "records/actor",
+  "doc": {
+   "id": "prj_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": null
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: an unknown field",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": null,
+   "role": "lead"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: an absent nullable field",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": null
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: an unknown kind",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "robot",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": null
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: an empty name",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": null
+  },
+  "valid": false
+ },
+ {
+  "name": "lease: valid",
+  "schema": "records/lease",
+  "doc": {
+   "id": "lea_01m3250v57fhm9v1z9xd1wk8gw",
+   "unit": "unt_01m3250vz2ezn81cgvbkcn17jd",
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "state": "requested",
+   "reservations": [
+    {
+     "group": "rg_01m3250vkwffc979nzjw0g2sf9",
+     "amount": 200000,
+     "unit": "tokens"
+    }
+   ],
+   "priority": 10,
+   "footprint": {
+    "context_tokens": 120000,
+    "expected_turns": 40,
+    "gpu_seconds": null
+   },
+   "deadline": "2026-10-04T14:00:00Z",
+   "fallback_step": 0,
+   "placement_checks": {
+    "data_floor": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "destinations": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "capability": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "independence": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "paid_authority": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "budget": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "fallback_scope": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    }
+   },
+   "hold": null,
+   "attempt": null,
+   "restore_receipt": null,
+   "settlement": null
+  },
+  "valid": true
+ },
+ {
+  "name": "lease: a registered reason",
+  "schema": "records/lease",
+  "doc": {
+   "id": "lea_01m3250v57fhm9v1z9xd1wk8gw",
+   "unit": "unt_01m3250vz2ezn81cgvbkcn17jd",
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "state": "requested",
+   "reservations": [
+    {
+     "group": "rg_01m3250vkwffc979nzjw0g2sf9",
+     "amount": 200000,
+     "unit": "tokens"
+    }
+   ],
+   "priority": 10,
+   "footprint": {
+    "context_tokens": 120000,
+    "expected_turns": 40,
+    "gpu_seconds": null
+   },
+   "deadline": "2026-10-04T14:00:00Z",
+   "fallback_step": 0,
+   "placement_checks": {
+    "data_floor": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "destinations": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "capability": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "independence": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "paid_authority": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "budget": {
+     "outcome": "found",
+     "reason": "completed_with_findings",
+     "detail": "over"
+    },
+    "fallback_scope": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    }
+   },
+   "hold": null,
+   "attempt": null,
+   "restore_receipt": null,
+   "settlement": null
+  },
+  "valid": true
+ },
+ {
+  "name": "lease: an unregistered reason",
+  "schema": "records/lease",
+  "doc": {
+   "id": "lea_01m3250v57fhm9v1z9xd1wk8gw",
+   "unit": "unt_01m3250vz2ezn81cgvbkcn17jd",
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "state": "requested",
+   "reservations": [
+    {
+     "group": "rg_01m3250vkwffc979nzjw0g2sf9",
+     "amount": 200000,
+     "unit": "tokens"
+    }
+   ],
+   "priority": 10,
+   "footprint": {
+    "context_tokens": 120000,
+    "expected_turns": 40,
+    "gpu_seconds": null
+   },
+   "deadline": "2026-10-04T14:00:00Z",
+   "fallback_step": 0,
+   "placement_checks": {
+    "data_floor": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "destinations": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "capability": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "independence": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "paid_authority": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "budget": {
+     "outcome": "empty",
+     "reason": "no_such_reason",
+     "detail": ""
+    },
+    "fallback_scope": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    }
+   },
+   "hold": null,
+   "attempt": null,
+   "restore_receipt": null,
+   "settlement": null
+  },
+  "valid": false
+ },
+ {
+  "name": "lease: an amount at 2^53-1",
+  "schema": "records/lease",
+  "doc": {
+   "id": "lea_01m3250v57fhm9v1z9xd1wk8gw",
+   "unit": "unt_01m3250vz2ezn81cgvbkcn17jd",
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "state": "requested",
+   "reservations": [
+    {
+     "group": "rg_01m3250vkwffc979nzjw0g2sf9",
+     "amount": 9007199254740991,
+     "unit": "tokens"
+    }
+   ],
+   "priority": 10,
+   "footprint": {
+    "context_tokens": 120000,
+    "expected_turns": 40,
+    "gpu_seconds": null
+   },
+   "deadline": "2026-10-04T14:00:00Z",
+   "fallback_step": 0,
+   "placement_checks": {
+    "data_floor": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "destinations": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "capability": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "independence": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "paid_authority": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "budget": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "fallback_scope": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    }
+   },
+   "hold": null,
+   "attempt": null,
+   "restore_receipt": null,
+   "settlement": null
+  },
+  "valid": true
+ },
+ {
+  "name": "lease: an amount above 2^53-1",
+  "schema": "records/lease",
+  "doc": {
+   "id": "lea_01m3250v57fhm9v1z9xd1wk8gw",
+   "unit": "unt_01m3250vz2ezn81cgvbkcn17jd",
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "state": "requested",
+   "reservations": [
+    {
+     "group": "rg_01m3250vkwffc979nzjw0g2sf9",
+     "amount": 9007199254740992,
+     "unit": "tokens"
+    }
+   ],
+   "priority": 10,
+   "footprint": {
+    "context_tokens": 120000,
+    "expected_turns": 40,
+    "gpu_seconds": null
+   },
+   "deadline": "2026-10-04T14:00:00Z",
+   "fallback_step": 0,
+   "placement_checks": {
+    "data_floor": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "destinations": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "capability": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "independence": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "paid_authority": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "budget": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "fallback_scope": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    }
+   },
+   "hold": null,
+   "attempt": null,
+   "restore_receipt": null,
+   "settlement": null
+  },
+  "valid": false
+ },
+ {
+  "name": "lease: a fractional integer",
+  "schema": "records/lease",
+  "doc": {
+   "id": "lea_01m3250v57fhm9v1z9xd1wk8gw",
+   "unit": "unt_01m3250vz2ezn81cgvbkcn17jd",
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "state": "requested",
+   "reservations": [
+    {
+     "group": "rg_01m3250vkwffc979nzjw0g2sf9",
+     "amount": 200000,
+     "unit": "tokens"
+    }
+   ],
+   "priority": 1.5,
+   "footprint": {
+    "context_tokens": 120000,
+    "expected_turns": 40,
+    "gpu_seconds": null
+   },
+   "deadline": "2026-10-04T14:00:00Z",
+   "fallback_step": 0,
+   "placement_checks": {
+    "data_floor": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "destinations": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "capability": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "independence": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "paid_authority": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "budget": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "fallback_scope": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    }
+   },
+   "hold": null,
+   "attempt": null,
+   "restore_receipt": null,
+   "settlement": null
+  },
+  "valid": false
+ },
+ {
+  "name": "lease: a missing required field",
+  "schema": "records/lease",
+  "doc": {
+   "id": "lea_01m3250v57fhm9v1z9xd1wk8gw",
+   "unit": "unt_01m3250vz2ezn81cgvbkcn17jd",
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "state": "requested",
+   "reservations": [
+    {
+     "group": "rg_01m3250vkwffc979nzjw0g2sf9",
+     "amount": 200000,
+     "unit": "tokens"
+    }
+   ],
+   "priority": 10,
+   "footprint": {
+    "context_tokens": 120000,
+    "expected_turns": 40,
+    "gpu_seconds": null
+   },
+   "fallback_step": 0,
+   "placement_checks": {
+    "data_floor": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "destinations": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "capability": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "independence": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "paid_authority": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "budget": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    },
+    "fallback_scope": {
+     "outcome": "empty",
+     "reason": "completed_clean",
+     "detail": ""
+    }
+   },
+   "hold": null,
+   "attempt": null,
+   "restore_receipt": null,
+   "settlement": null
+  },
+  "valid": false
+ }
+]

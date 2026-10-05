@@ -37,7 +37,7 @@ BINARIES   := adcd adc adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check gen gen-check vocab-check build dist lint test test-sandbox-selftest fixtures-check ci clean
+.PHONY: help toolchain go-check ts-deps gen gen-check vocab-check build dist lint test test-sandbox-selftest fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
@@ -74,18 +74,25 @@ dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go
+TS_GEN    := gen/ts
+TS_GEN_SCRIPT := adapters/contract/scripts/gen.mjs
 API_DOC   := schemas/openapi.yaml
 
-gen: go-check ## Regenerate the Go types (gen/go/types), vocabulary constants and openapi.yaml from schemas/
+ts-deps: ## Install the adapters workspace dependencies (pnpm, from the lockfile)
+	@pnpm --dir adapters install --frozen-lockfile --reporter=silent
+
+gen: go-check ts-deps ## Regenerate from schemas/: Go types (gen/go/types), vocabulary constants, openapi.yaml, TypeScript types and validators (gen/ts)
 	@$(GO) run ./tools/schemagen $(GEN_GO)
 	@$(GO) run ./tools/vocabgen $(VOCAB_GEN)
 	@$(GO) run ./tools/apigen $(API_DOC)
+	@node $(TS_GEN_SCRIPT) $(TS_GEN)
 
-gen-check: go-check ## Fail if the committed generated code differs from a fresh generation
+gen-check: go-check ts-deps ## Fail if the committed generated code differs from a fresh generation
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 	  $(GO) run ./tools/schemagen "$$tmp/types" && diff -r -x '*_test.go' "$$tmp/types" $(GEN_GO) \
 	  && $(GO) run ./tools/vocabgen "$$tmp/vocab.gen.go" && diff "$$tmp/vocab.gen.go" $(VOCAB_GEN) \
 	  && $(GO) run ./tools/apigen "$$tmp/openapi.yaml" && diff "$$tmp/openapi.yaml" $(API_DOC) \
+	  && node $(TS_GEN_SCRIPT) "$$tmp/ts" && diff -r -x node_modules "$$tmp/ts" $(TS_GEN) \
 	  || { echo "gen-check: generated code is stale; run 'make gen'" >&2; exit 1; }
 
 lint: go-check ## gofmt, go vet, go mod tidy check, SPDX headers, shell syntax (+ shellcheck where installed)
@@ -108,13 +115,14 @@ fixtures-check: ## Prove every T0 fixture task well-formed (needs docker, bubble
 # The second run discovers packages inside the sandbox (its Go environment),
 # excludes exactly the containment package, and refuses a failed or empty
 # discovery rather than testing less.
-test: go-check ## Run all tests inside the test sandbox (refuses to run unsandboxed)
+test: go-check ts-deps ## Run all tests inside the test sandbox (refuses to run unsandboxed)
 	@scripts/test-sandbox.sh -- go test -count=1 ./test/sandbox/
 	@scripts/test-sandbox.sh -- bash -c 'set -euo pipefail; \
 	  mod=$$(go list -m); listed=$$(go list ./...); others=(); \
 	  while IFS= read -r p; do [[ "$$p" == "$$mod/test/sandbox" ]] || others+=("$$p"); done <<<"$$listed"; \
 	  (( $${#others[@]} > 0 )) || { echo "make test: no packages besides test/sandbox" >&2; exit 1; }; \
 	  go test -count=1 "$${others[@]}"'
+	@scripts/test-sandbox.sh -- bash -c 'cd adapters/contract && node --test "test/*.test.mjs" && ./node_modules/.bin/tsc -p tsconfig.json'
 
 test-sandbox-selftest: go-check ## Prove the test sandbox contains writes, credentials and network
 	@scripts/test-sandbox-selftest.sh
