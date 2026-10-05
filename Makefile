@@ -79,7 +79,8 @@ TS_GEN_SCRIPT := adapters/contract/scripts/gen.mjs
 API_DOC   := schemas/openapi.yaml
 
 ts-deps: ## Install the adapters workspace dependencies (pnpm, from the lockfile)
-	@pnpm --dir adapters install --frozen-lockfile --reporter=silent
+	@# corepack picks the pnpm version from the current directory (adapters/package.json), not from --dir.
+	@cd adapters && pnpm install --frozen-lockfile
 
 gen: go-check ts-deps ## Regenerate from schemas/: Go types (gen/go/types), vocabulary constants, openapi.yaml, TypeScript types and validators (gen/ts)
 	@$(GO) run ./tools/schemagen $(GEN_GO)

@@ -19,7 +19,7 @@
         "base_ref": {
           "description": "The branch work lands on; parameterised, never assumed (A15). Full git ref syntax is checked by internal/profile.",
           "type": "string",
-          "pattern": "^refs/heads/\\S+$"
+          "pattern": "^refs/heads/[^\\t\\n\\f\\r ]+$"
         }
       }
     },
@@ -282,7 +282,7 @@
         "branch_prefix": {
           "description": "E.g. adc/ or team/adc/. Full git ref syntax is checked by internal/profile.",
           "type": "string",
-          "pattern": "^\\S+/$"
+          "pattern": "^[^\\t\\n\\f\\r ]+/$"
         },
         "language": {"description": "Product language(s); framework vocabulary stays English.", "type": "string", "minLength": 1}
       }
@@ -310,7 +310,7 @@
     "PinnedImage": {
       "description": "An image reference pinned by digest.",
       "type": "string",
-      "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"
+      "pattern": "^[^@\\t\\n\\f\\r ]+@sha256:[0-9a-f]{64}$"
     },
     "USD": {
       "description": "An amount in US dollars as a decimal string (no floating point), at most two decimals.",

@@ -3,6 +3,11 @@
 // codegen spike's TypeScript choice): json-schema-to-typescript types, one
 // module per schema, and Ajv 2020 standalone validators (CommonJS, compiled
 // strict) with the adc formats. Usage: node scripts/gen.mjs <out dir>.
+//
+// The validators check parsed values. The byte-level rules internal/contract
+// applies before decoding (integer spellings such as 10.0, 1e1 or -0,
+// duplicate keys, escapes) are the reader's: a TypeScript reader must parse
+// strictly before validating (the adapter SDK's job).
 import { compile } from "json-schema-to-typescript";
 import Ajv2020 from "ajv/dist/2020.js";
 import standalone from "ajv/dist/standalone/index.js";

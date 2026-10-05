@@ -785,5 +785,213 @@
    "settlement": null
   },
   "valid": false
+ },
+ {
+  "name": "actor: 01-31 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-01-31T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: 02-28 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-02-28T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: 03-31 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-03-31T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: 04-30 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-04-30T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: 04-31 does not",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-04-31T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: 05-31 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-05-31T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: 06-30 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-06-30T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: 06-31 does not",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-06-31T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: 07-31 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-07-31T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: 08-31 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-08-31T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: 09-30 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-09-30T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: 09-31 does not",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-09-31T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: 10-31 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-10-31T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: 11-30 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-11-30T00:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "actor: 11-31 does not",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-11-31T00:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "actor: 12-31 exists",
+  "schema": "records/actor",
+  "doc": {
+   "id": "act_01m3250v0aer9ss2097svmefj8",
+   "kind": "supervisor",
+   "name": "astra",
+   "declared_agent": null,
+   "created_by": "act_01m3250vm7f6ktw39dszqnyddr",
+   "revoked_at": "2026-12-31T00:00:00Z"
+  },
+  "valid": true
  }
 ]
