@@ -109,6 +109,21 @@ func (s *Store) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	})
 }
 
+// View runs fn in one read transaction on the read-only pool: a consistent
+// snapshot of the live projections and the log, for authentication and
+// reads (docs/design/m0/08). fn's Tx refuses Put, Delete and effects, and
+// the transaction always rolls back.
+func (s *Store) View(ctx context.Context, fn func(*Tx) error) error {
+	return s.do(func() error {
+		tx, err := s.r.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }() // a read changes nothing to keep
+		return fn(&Tx{ctx: ctx, tx: tx, readOnly: true})
+	})
+}
+
 // Close stops new operations, waits for running ones, closes both pools and
 // ends this store's claim on the lock, once; later calls do nothing.
 func (s *Store) Close() error {

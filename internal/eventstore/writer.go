@@ -50,7 +50,7 @@ type Expectation struct {
 // It offers no SQL: every statement is the store's own. Hooks read subject
 // versions and read and write projections, all inside the transaction;
 // commit and rollback stay with Submit, and events are appended only by
-// Submit, through the checked path.
+// Submit, through the checked path. A View's Tx reads only.
 type Tx struct {
 	ctx     context.Context
 	tx      *sql.Tx
@@ -59,7 +59,12 @@ type Tx struct {
 	// rebuild: projections go to the rebuild's scratch table instead of
 	// the live proj_kv (RebuildProjections).
 	rebuild bool
+	// readOnly: a View's transaction, on the read-only pool.
+	readOnly bool
 }
+
+// ErrReadOnly: a View's transaction cannot change projections.
+var ErrReadOnly = errors.New("eventstore: a view reads only; projections change inside the writer transaction")
 
 // Projection tables. Table names are never input: they are these constants.
 const (
@@ -117,6 +122,9 @@ func (t *Tx) Get(projection, key string) (json.RawMessage, bool, error) {
 
 // Put sets the projection record under key to value (stored canonical).
 func (t *Tx) Put(projection, key string, value json.RawMessage) error {
+	if t.readOnly {
+		return ErrReadOnly
+	}
 	if err := checkProjection(projection, key); err != nil {
 		return err
 	}
@@ -131,6 +139,9 @@ func (t *Tx) Put(projection, key string, value json.RawMessage) error {
 
 // Delete removes the projection record under key, if any.
 func (t *Tx) Delete(projection, key string) error {
+	if t.readOnly {
+		return ErrReadOnly
+	}
 	if err := checkProjection(projection, key); err != nil {
 		return err
 	}
