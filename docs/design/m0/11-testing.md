@@ -114,13 +114,29 @@ golden file names:
 - **Tests use the shape of the live record** (intake B5, `docs/research/2026-10-05-nobetci-phase1-close-intake.md`;
   nöbetçi L2). A fixture for code that reads a recorded thing is built from a captured instance of that record, never
   from the shape the last incident happened to have. That covers a usage report, a call's terminal record, an attempt
-  disposition and a receipt. Instances are anonymised into `fixtures/legacy/`, or captured from a run of the fake
-  adapter (`adapters/fake`). Each such record type keeps corpus cases for its **partial forms**, beside its complete
-  one. The canonical case is a call killed mid-stream: no terminal record, no final usage, `completed: false`.
-  - When the controller stopped the attempt, the exit map gives `could_not_run/attempt_stopped`; otherwise
-    `could_not_run/adapter_protocol_error` (`internal/vocab/exitmap`).
-  - Either way the call stays an uncertain liability at the sum of its usage deltas until reconciliation (05). It is
-    never read as finished, and never as free.
+  disposition and a receipt.
+  - **Capture.** An instance is captured at a stated boundary:
+    - the adapter's stream, for adapter messages;
+    - the controller's event log, for controller-owned records such as dispositions and receipts;
+    - the ledger, for liabilities.
+
+    The source is a real run, anonymised into `fixtures/legacy/` (whose README already records legacy sources), or a
+    run of the fake adapter (`adapters/fake`) under a named scenario that reproduces it.
+  - **Provenance.** Each capture carries metadata: the producer and its version, the source run or fake scenario, the
+    capture boundary, and every transformation applied (anonymisation, trimming). Transformations preserve missing
+    versus null fields, types, the relationships between records, and their order.
+  - **Partial forms.** Each record type keeps corpus cases for its partial forms beside its complete one. The canonical
+    case is a call killed mid-stream. Its stream is captured with the terminal result genuinely absent; `completed:
+    false` is the controller's derivation, not a field the adapter sent. A terminal result carrying `usage_final:
+    null` is a different case.
+    - **Reason.** It is `could_not_run` with the reason the exit map derives from everything observed
+      (`internal/vocab/exitmap`). A capacity cause from the call's error events or the controller's own observed
+      statuses comes first: credit (`broker_credit_exhausted`), then quota (`quota_exhausted`). Only without one is it
+      `attempt_stopped`, when the controller recorded `attempt.stop_requested` (a request, not confirmed termination),
+      or otherwise `adapter_protocol_error`.
+    - **Liability.** Until reconciliation it stays an **uncertain liability** (05) of its best estimate: the
+      deduplicated sum of its usage deltas when there are any, otherwise the call's reservation. That amount is
+      subtracted from available capacity. The call is never read as finished, and never as free.
 - **"Cannot occur" fixtures for the artifact graph** are listed in `13-artifact-graph.md` (D40). They take
   priority: each proves a nöbetçi failure class is structurally impossible.
 - **New contract fixtures from the intake:**
@@ -142,9 +158,12 @@ golden file names:
   - an import error outside the changed files that passes through a changed test file stays a runner fault;
   - a missing answer yields `awaiting_input` and recovers on the answering approval without a manual release; a precondition failure recovers on its probe;
   - an acceptance row not producible by its owner is refused by the plan validator (M5).
-  - a call killed mid-stream, with no terminal record and no final usage, is `could_not_run` with the exit map's reason
-    (`attempt_stopped` when the controller stopped it, otherwise `adapter_protocol_error`), and its call stays an
-    uncertain liability (B5).
+  - a call killed mid-stream (its stream captured with no terminal result; `completed: false` derived by the
+    controller): without a capacity cause it is `attempt_stopped` when a stop was requested, otherwise
+    `adapter_protocol_error`; with a `credit_exhausted` hint or an observed 402 it is `broker_credit_exhausted`, and
+    with a `rate_limited` hint or an observed 429 `quota_exhausted`, with or without a stop request. Its liability is
+    the deduplicated delta sum, or its positive reservation when no delta was reported, and available capacity drops
+    by that amount (B5).
 
 ## Red-proof rule [M15]
 
