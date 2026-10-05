@@ -38,8 +38,16 @@ export function parseStrict(text: string): unknown {
       }
       if (c < 0x20) return fail("raw control character in a string");
       if (c !== 0x5c) {
-        // A raw lone surrogate cannot come from strictly decoded UTF-8.
-        out += text[i++];
+        // A run of plain characters is copied at once: building a string one
+        // character at a time costs a heap node per character. A raw lone
+        // surrogate cannot come from strictly decoded UTF-8.
+        const from = i;
+        while (i < text.length) {
+          const d = text.charCodeAt(i);
+          if (d === 0x22 || d === 0x5c || d < 0x20) break;
+          i++;
+        }
+        out += text.slice(from, i);
         continue;
       }
       const e = text[i + 1];
