@@ -111,9 +111,9 @@ func TestIncompleteNeverDerivesEmpty(t *testing.T) {
 // says ok, an inner predicate failed; the receipt is failed.
 func TestOuterOKInnerFailedIsFailed(t *testing.T) {
 	r := receipt(pred("reported_status", vocab.Empty, vocab.ReasonCompletedClean, ""),
-		pred("tests", vocab.Failed, vocab.ReasonGateTestFailed, "TestParse failed", junitEvidence))
+		pred("tests", vocab.Failed, vocab.ReasonTestIntegrityViolation, "TestParse skipped", junitEvidence))
 	d := derive(t, r)
-	if d.Outcome != vocab.Failed || d.Reason != vocab.ReasonGateTestFailed || d.Detail != "tests: TestParse failed" {
+	if d.Outcome != vocab.Failed || d.Reason != vocab.ReasonTestIntegrityViolation || d.Detail != "tests: TestParse skipped" {
 		t.Fatalf("%+v", d)
 	}
 }
@@ -147,7 +147,7 @@ func TestReviewVerdictIsDerived(t *testing.T) {
 
 // Derived fields are never accepted from the producer.
 func TestCheckRefusesRecordedFields(t *testing.T) {
-	r := receipt(pred("tests", vocab.Failed, vocab.ReasonGateTestFailed, "x", junitEvidence))
+	r := receipt(pred("tests", vocab.Failed, vocab.ReasonTestIntegrityViolation, "x", junitEvidence))
 	d := derive(t, r)
 	r.Outcome, r.Reason, r.Detail, r.ConclusionsDigest = types.Outcome(d.Outcome), d.Reason, d.Detail, d.ConclusionsDigest
 	if err := Check(contract(), r, blobs()); err != nil {

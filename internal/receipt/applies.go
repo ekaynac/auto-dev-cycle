@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -86,7 +87,7 @@ func sameSubject(got, want types.Subject) error {
 		}
 	case *types.ProposalSubject:
 		g, ok := got.Variant.(*types.ProposalSubject)
-		if !ok || g.Proposal != w.Proposal || g.BindingDigest != w.BindingDigest {
+		if !ok || g.Proposal != w.Proposal || (g.BindingDigest != w.BindingDigest && !mutation.Is(mutation.BindingDigestIgnored)) {
 			return errors.New("about another proposal or binding digest; an unrelated GO never applies")
 		}
 	case *types.ObjectRevisionSubject:
@@ -125,14 +126,14 @@ func Independent(r types.Receipt, excluded []string) error {
 	}
 	for _, f := range fams {
 		switch {
-		case f == "unknown":
+		case f == "unknown" && !mutation.Is(mutation.UnknownFamilyIndependent):
 			return &Refusal{vocab.ReasonReviewerNotIndependent, "a contributing model family is unknown"}
 		case slices.Contains(excluded, f):
 			return &Refusal{vocab.ReasonReviewerNotIndependent, "model family " + f + " also produced or contributed to the subject"}
 		}
 	}
 	for _, f := range excluded {
-		if f == "unknown" {
+		if f == "unknown" && !mutation.Is(mutation.UnknownFamilyIndependent) {
 			return &Refusal{vocab.ReasonReviewerNotIndependent, "a proposer or contributor family is unknown"}
 		}
 	}
