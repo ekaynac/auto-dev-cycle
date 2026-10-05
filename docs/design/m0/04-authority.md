@@ -90,7 +90,7 @@ Sensitive change classes and their supervisor confirmation defaults (D32, plus t
 | Change class | Supervisor confirmation |
 |---|---|
 | `install.self` | `independent_review` |
-| `policy.widen_data` · `policy.widen_destinations` · `policy.weaken_protection` (removes protected paths, loosens routing) | `human` |
+| `policy.widen_data` · `policy.widen_destinations` · `policy.weaken_protection` (removes protected paths, loosens routing, disables or repoints the required-configuration check, 07) | `human` |
 | `capacity.allow_paid_fallback` | `human` |
 | `agent.enrol` | `human` |
 | `grant.create` · `grant.extend` | `human` (never by the grantee) |

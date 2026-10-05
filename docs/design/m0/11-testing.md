@@ -187,6 +187,18 @@ golden file names:
     - a carried review whose cited test stops qualifying on the refreshed prospective-tree receipts loses its pass;
     - a citation with a completed, passing result in every covered environment is eligible evidence; the claim
       still needs its review.
+  - required configuration (B2):
+    - a base declaring `OLD` and a candidate requiring `NEW` holds the merge on the operator's question (readiness
+      for `NEW`) and merges after an operator's answering approval; a supervisor's answer is refused;
+    - a candidate that empties, moves or deletes the declaration holds on the integrity part, whatever its list says;
+      a removed key needs the integrity answer only;
+    - an answer covering one of two target environments does not apply;
+    - an answer stops applying after the base, the declaration or the targets change; a key added, removed and
+      re-added across generations retires and then reopens its readiness question;
+    - a profile adoption that sets `source: none` or repoints the file is `policy.weaken_protection` and needs a
+      human, and it does not answer a pending configuration question; a candidate merged across a mechanism change
+      is checked under the mechanism adopted at commit;
+    - an unreadable declaration keeps the merge held (`could_not_run`) and resumes when a later generation reads it.
   - a call killed mid-stream, on a single-call lease (its stream captured with no terminal result, with the
     controller's stop request, observed statuses and recorded end of stream linked; `completed: false` and the reason
     asserted through the real derivation):
