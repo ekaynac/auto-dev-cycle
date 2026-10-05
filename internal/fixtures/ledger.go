@@ -35,11 +35,24 @@ func usage(att types.AttemptID, call types.CallID, kind types.UsageMeasurementKi
 		Cost: types.UsageMeasurementCost{AmountMicros: types.Amount(in * 3), Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true}}
 }
 
+// counted is what the ledger must give a call: its whole figure, and
+// whether it is still an uncertain liability (no final, no reconciliation).
+type counted struct {
+	usage     ledger.Figure
+	uncertain bool
+}
+
+// figure is the usage of reports of in tokens totalling turns turns, as
+// usage makes them (out, time and cost proportional to in).
+func figure(in, turns int64) ledger.Figure {
+	return ledger.Figure{In: in, Out: in / 10, Turns: turns, Milliseconds: in * 2, CostMicros: in * 3}
+}
+
 // reconciled records one step per call the ledger reconciles from ms, in
 // call order: empty/completed_clean, or found/inconsistent_usage when it
-// flags the call. Each call's tokens in must be want's, and no call may be
-// missing or extra.
-func (o *observe) reconciled(want map[types.CallID]int64, ms ...types.UsageMeasurement) error {
+// flags the call. Each call's figure and uncertainty must be want's, and no
+// call may be missing or extra.
+func (o *observe) reconciled(want map[types.CallID]counted, ms ...types.UsageMeasurement) error {
 	for _, m := range ms {
 		if _, err := contract.Encode("records/usage-measurement", m); err != nil {
 			return err
@@ -56,7 +69,10 @@ func (o *observe) reconciled(want map[types.CallID]int64, ms ...types.UsageMeasu
 			st = Step{vocab.Found, c.Reason.String()}
 		}
 		o.steps = append(o.steps, st)
-		o.check(c.Usage.In == want[call], "call %s counts %d tokens in, want %d", call, c.Usage.In, want[call])
+		w, ok := want[call]
+		o.check(ok, "call %s was counted but reported nothing", call)
+		o.check(c.Usage == w.usage, "call %s counts %+v, want %+v", call, c.Usage, w.usage)
+		o.check(c.Uncertain == w.uncertain, "call %s is uncertain %t, want %t", call, c.Uncertain, w.uncertain)
 	}
 	for call := range want {
 		_, ok := got[call]
@@ -75,13 +91,15 @@ func staleAttemptUsageCounted(context.Context, string) (steps []Step, violations
 		return nil, nil, err
 	}
 	stale, cur := usage(attStale, callA, delta, 0, 100), usage(attCurrent, callA, delta, 1, 40)
+	both := map[types.CallID]counted{callA: {figure(140, 2), true}}
 	for _, c := range []struct {
-		want map[types.CallID]int64
+		want map[types.CallID]counted
 		ms   []types.UsageMeasurement
 	}{
-		{map[types.CallID]int64{callA: 140}, []types.UsageMeasurement{stale, cur}},
-		{map[types.CallID]int64{callA: 140}, []types.UsageMeasurement{cur, stale}},
-		{map[types.CallID]int64{callA: 40, callB: 30}, []types.UsageMeasurement{usage(attStale, callB, final, 0, 30), usage(attCurrent, callA, delta, 0, 40)}},
+		{both, []types.UsageMeasurement{stale, cur}},
+		{both, []types.UsageMeasurement{cur, stale}},
+		{map[types.CallID]counted{callA: {figure(40, 1), true}, callB: {figure(30, 1), false}},
+			[]types.UsageMeasurement{usage(attStale, callB, final, 0, 30), usage(attCurrent, callA, delta, 0, 40)}},
 	} {
 		if err := o.reconciled(c.want, c.ms...); err != nil {
 			return nil, nil, err
@@ -91,26 +109,35 @@ func staleAttemptUsageCounted(context.Context, string) (steps []Step, violations
 }
 
 // duplicateUsageDeltas: a delta repeated for one (call, sequence) counts
-// once, also when it arrives after the call's final; equal figures at two
-// sequences both count; a repeat with another figure keeps the larger and
-// is flagged, whichever arrives first (11 "duplicate usage deltas"; 05
-// "Usage and settlement").
+// once, also when it arrives after the call's final, and one call's
+// sequence never deduplicates another's; equal figures at two sequences
+// both count, and a delta unseen until after the final raises the call
+// above it (flagged); a repeat with another figure keeps the larger and is
+// flagged, whichever arrives first (11 "duplicate usage deltas"; 05 "Usage
+// and settlement").
 func duplicateUsageDeltas(context.Context, string) (steps []Step, violations []string, err error) {
 	d := func(seq, in int64) types.UsageMeasurement { return usage(attCurrent, callA, delta, seq, in) }
-	fin := usage(attCurrent, callA, final, 0, 150)
-	fin.Turns = 2 // the final covers both deltas' turns
+	b := func(seq, in int64) types.UsageMeasurement { return usage(attCurrent, callB, delta, seq, in) }
+	covering := usage(attCurrent, callA, final, 0, 150)
+	covering.Turns = 2 // the final covers both deltas' turns
+	short := usage(attCurrent, callA, final, 0, 150)
+	one := func(c counted) map[types.CallID]counted { return map[types.CallID]counted{callA: c} }
 	var o observe
 	for _, c := range []struct {
-		want int64
+		want map[types.CallID]counted
 		ms   []types.UsageMeasurement
 	}{
-		{150, []types.UsageMeasurement{d(0, 100), d(1, 50), d(0, 100)}},
-		{200, []types.UsageMeasurement{d(0, 100), d(1, 100)}},
-		{150, []types.UsageMeasurement{d(0, 100), d(1, 50), fin, d(1, 50)}},
-		{100, []types.UsageMeasurement{d(0, 100), d(0, 90)}},
-		{100, []types.UsageMeasurement{d(0, 90), d(0, 100)}},
+		{one(counted{figure(150, 2), true}), []types.UsageMeasurement{d(0, 100), d(1, 50), d(0, 100)}},
+		{map[types.CallID]counted{callA: {figure(150, 2), true}, callB: {figure(70, 1), true}},
+			[]types.UsageMeasurement{d(0, 100), b(0, 70), d(1, 50), b(0, 70)}},
+		{one(counted{figure(200, 2), true}), []types.UsageMeasurement{d(0, 100), d(1, 100)}},
+		{one(counted{figure(150, 2), false}), []types.UsageMeasurement{d(0, 100), d(1, 50), covering, d(1, 50)}},
+		{one(counted{figure(200, 2), false}), []types.UsageMeasurement{d(0, 100), short, d(1, 100)}},
+		{one(counted{figure(200, 2), false}), []types.UsageMeasurement{d(1, 100), short, d(0, 100)}},
+		{one(counted{figure(100, 1), true}), []types.UsageMeasurement{d(0, 100), d(0, 90)}},
+		{one(counted{figure(100, 1), true}), []types.UsageMeasurement{d(0, 90), d(0, 100)}},
 	} {
-		if err := o.reconciled(map[types.CallID]int64{callA: c.want}, c.ms...); err != nil {
+		if err := o.reconciled(c.want, c.ms...); err != nil {
 			return nil, nil, err
 		}
 	}

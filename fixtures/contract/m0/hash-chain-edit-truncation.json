@@ -1,11 +1,15 @@
 {
   "name": "hash-chain-edit-truncation",
-  "invariant": "The verified log is the one written: against its trusted head, an event edited in the middle or at the tail, a middle event deleted, or a truncated tail fails verification (03 rule 3).",
+  "invariant": "The verified log is the one written: against its trusted head, an event edited in the middle or at the tail, a middle event deleted, a tail truncated (to two events, by the head row only, or to nothing), or a consistent rewrite from the middle fails verification; without the anchor a consistent prefix verifies clean by design (03 rule 3).",
   "expected": [
     {"outcome": "empty", "reason": "completed_clean"},
     {"outcome": "failed", "reason": "log_integrity_broken"},
     {"outcome": "failed", "reason": "log_integrity_broken"},
     {"outcome": "failed", "reason": "log_integrity_broken"},
+    {"outcome": "failed", "reason": "log_integrity_broken"},
+    {"outcome": "failed", "reason": "log_integrity_broken"},
+    {"outcome": "failed", "reason": "log_integrity_broken"},
+    {"outcome": "empty", "reason": "completed_clean"},
     {"outcome": "failed", "reason": "log_integrity_broken"}
   ],
   "mutation": "eventstore.chain-hash-unchecked"

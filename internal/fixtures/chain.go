@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -14,60 +15,128 @@ import (
 )
 
 // hashChainEditAndTruncation: a log of four events verifies against its
-// trusted head; one with an event edited (in the middle or at the tail),
-// a middle event deleted, or its tail truncated does not (11 "a hash-chain
-// edit and truncation"; 03 rule 3). Each log is written by the real store
-// and checked as `adc dev verify-log` checks it, read-only under a probe
-// lock; the tamper keeps the store's append-only triggers as they were.
+// trusted head; one with an event edited (in the middle or at the tail), a
+// middle event deleted, its tail truncated (to two events, by its head row
+// only, or to nothing), or rewritten from the middle on as a consistent
+// chain does not (11 "a hash-chain edit and truncation"; 03 rule 3).
+// Without the anchor, a consistent prefix verifies clean by design: only
+// the trusted head catches truncation and a consistent rewrite. Each log is
+// written by the real store and checked as `adc dev verify-log` checks it,
+// read-only under a probe lock; a tamper keeps the store's append-only
+// triggers as they were.
 func hashChainEditAndTruncation(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
 	var o observe
-	for i, tamper := range []string{
-		"",
-		`UPDATE events SET payload = '{"edited":true}' WHERE seq = 2`,
-		`UPDATE events SET payload = '{"edited":true}' WHERE seq = 4`,
-		`DELETE FROM events WHERE seq = 2`,
-		`DELETE FROM events WHERE seq >= 3`,
+	for i, c := range []struct {
+		tamper   string
+		anchored bool
+	}{
+		{"", true},
+		{`UPDATE events SET payload = '{"edited":true}' WHERE seq = 2`, true},
+		{`UPDATE events SET payload = '{"edited":true}' WHERE seq = 4`, true},
+		{`DELETE FROM events WHERE seq = 2`, true},
+		{`DELETE FROM events WHERE seq >= 3`, true},
+		{`DELETE FROM events WHERE seq = 4`, true},
+		{`DELETE FROM events`, true},
+		{`DELETE FROM events WHERE seq >= 3`, false},
 	} {
 		state := filepath.Join(dir, fmt.Sprint(i), "state")
-		trusted, err := fourEvents(ctx, filepath.Dir(state))
+		trusted, err := events(ctx, filepath.Dir(state), "k1", "k2", "k3", "k4")
 		if err != nil {
 			return nil, nil, err
 		}
-		if tamper != "" {
-			if err := rewrite(ctx, filepath.Join(state, eventstore.DBFile), tamper); err != nil {
+		if c.tamper != "" {
+			if err := rewrite(ctx, filepath.Join(state, eventstore.DBFile), c.tamper); err != nil {
 				return nil, nil, err
 			}
 		}
-		lock, err := eventstore.ProbeLock(state)
+		anchor, want := &trusted, trusted
+		if !c.anchored {
+			anchor, want = nil, eventstore.Head{Seq: 2}
+		}
+		h, err := o.verified(ctx, state, anchor)
 		if err != nil {
 			return nil, nil, err
 		}
-		h, err := eventstore.VerifyExisting(ctx, lock, &trusted)
-		if err = errors.Join(err, lock.Release()); errors.Is(err, eventstore.ErrChainBroken) {
-			o.steps = append(o.steps, Step{vocab.Failed, vocab.ReasonLogIntegrityBroken.String()})
-			continue
-		} else if err != nil {
+		o.check(h == nil || h.Seq == want.Seq && (!c.anchored || *h == want), "the verified head is %+v, want %+v", h, want)
+	}
+	// A consistent rewrite: a copy of the log after its first event, carried
+	// on by the real writer with other events, so seq 2 on are re-hashed and
+	// re-linked; it verifies by itself, and fails against the trusted head.
+	orig, fork := filepath.Join(dir, "orig"), filepath.Join(dir, "fork")
+	if _, err := events(ctx, orig, "k1"); err != nil {
+		return nil, nil, err
+	}
+	for _, f := range []string{eventstore.DBFile, eventstore.DBFile + "-wal"} {
+		if err := copyOver(filepath.Join(orig, "state", f), filepath.Join(fork, "state", f)); err != nil {
 			return nil, nil, err
 		}
-		o.steps = append(o.steps, Step{vocab.Empty, vocab.ReasonCompletedClean.String()})
-		o.check(h == trusted, "the verified head is %+v, want the trusted %+v", h, trusted)
+	}
+	trusted, err := events(ctx, orig, "k2", "k3", "k4")
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := events(ctx, fork, "x2", "x3", "x4"); err != nil {
+		return nil, nil, err
+	}
+	var free observe
+	h, err := free.verified(ctx, filepath.Join(fork, "state"), nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	o.check(h != nil && h.Seq == 4 && h.Hash != trusted.Hash, "the rewritten log does not verify by itself as another four-event chain: %+v", h)
+	if _, err := o.verified(ctx, filepath.Join(fork, "state"), &trusted); err != nil {
+		return nil, nil, err
 	}
 	return o.steps, o.violations, nil
 }
 
-// fourEvents writes a store of four events in dir and returns its head.
-func fourEvents(ctx context.Context, dir string) (eventstore.Head, error) {
+// verified checks the store in state against trusted (none: unanchored)
+// as one step, and returns the verified head, nil when it failed.
+func (o *observe) verified(ctx context.Context, state string, trusted *eventstore.Head) (*eventstore.Head, error) {
+	lock, err := eventstore.ProbeLock(state)
+	if err != nil {
+		return nil, err
+	}
+	h, err := eventstore.VerifyExisting(ctx, lock, trusted)
+	if err = errors.Join(err, lock.Release()); errors.Is(err, eventstore.ErrChainBroken) {
+		o.steps = append(o.steps, Step{vocab.Failed, vocab.ReasonLogIntegrityBroken.String()})
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	o.steps = append(o.steps, Step{vocab.Empty, vocab.ReasonCompletedClean.String()})
+	return &h, nil
+}
+
+// events appends one event per key to the store in dir (made if absent)
+// and returns its head.
+func events(ctx context.Context, dir string, keys ...string) (eventstore.Head, error) {
 	f, done, err := open(ctx, dir)
 	if err != nil {
 		return eventstore.Head{}, err
 	}
 	defer done()
-	for _, k := range []string{"k1", "k2", "k3", "k4"} {
+	for _, k := range keys {
 		if _, err := f.submit(k, `{}`); err != nil {
 			return eventstore.Head{}, err
 		}
 	}
 	return f.s.Head(ctx)
+}
+
+// copyOver copies src to dst, making dst's directory; a missing src is
+// skipped.
+func copyOver(src, dst string) error {
+	b, err := os.ReadFile(src)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, 0o600)
 }
 
 // rewrite runs stmt on the closed store's database, as someone with write

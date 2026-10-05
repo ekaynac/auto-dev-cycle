@@ -1,10 +1,14 @@
 {
   "name": "duplicate-usage-deltas",
-  "invariant": "Deltas are deduplicated by (call, sequence): a repeat counts once, also after the call's final; equal figures at two sequences both count; a repeat with another figure keeps the larger and is flagged inconsistent_usage, in either arrival order (05 \"Usage and settlement\").",
+  "invariant": "Deltas are deduplicated by (call, sequence): a repeat counts once, also after the call's final, and one call's sequence never deduplicates another's; equal figures at two sequences both count; a delta unseen until after a final raises the call above it and is flagged inconsistent_usage, in either arrival order; a conflicting repeat keeps the larger, flagged, in either order. Whole figures and uncertainty are asserted (05 \"Usage and settlement\").",
   "expected": [
     {"outcome": "empty", "reason": "completed_clean"},
     {"outcome": "empty", "reason": "completed_clean"},
     {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "found", "reason": "inconsistent_usage"},
+    {"outcome": "found", "reason": "inconsistent_usage"},
     {"outcome": "found", "reason": "inconsistent_usage"},
     {"outcome": "found", "reason": "inconsistent_usage"}
   ],
