@@ -18,6 +18,11 @@ import (
 // store opens a real event store in dir with one test event kind and an
 // authorizer that allows everything (authority is not under test here).
 func store(ctx context.Context, dir string) (*eventstore.Store, func(), error) {
+	return storeWith(ctx, dir, eventstore.Kinds{"fixture.appended/v1": {Schema: "common/defs"}}, nil)
+}
+
+// storeWith is store with the given event kinds and projector.
+func storeWith(ctx context.Context, dir string, kinds eventstore.Kinds, project func(*eventstore.Tx, []eventstore.Event) error) (*eventstore.Store, func(), error) {
 	state := filepath.Join(dir, "state")
 	lock, err := eventstore.AcquireLock(state)
 	if err != nil {
@@ -29,8 +34,8 @@ func store(ctx context.Context, dir string) (*eventstore.Store, func(), error) {
 		return nil, nil, err
 	}
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{
-		Kinds: eventstore.Kinds{"fixture.appended/v1": {Schema: "common/defs"}}, Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }}})
+		Kinds: kinds, Blobs: blobs,
+		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: project}})
 	if err != nil {
 		lock.Release()
 		return nil, nil, err
