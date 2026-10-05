@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 )
 
 // Change classes the profile classifier can find (04 "Action registry and
@@ -33,7 +34,7 @@ func usageMayWiden(current, next *types.ProjectProfileUsageProfileOverrideValue)
 	case current == nil && next == nil:
 		return false
 	case next == nil:
-		return true
+		return !mutation.Is(mutation.InheritedUsageNarrows)
 	case current == nil:
 		return usageRank(next) > 0
 	}

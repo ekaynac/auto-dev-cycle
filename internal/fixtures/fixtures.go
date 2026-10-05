@@ -59,6 +59,8 @@ var runners = map[string]runner{
 	"omitted-required-predicate":   omittedRequiredPredicate,
 	"unknown-reviewer-family":      unknownReviewerFamily,
 	"unrelated-go-reuse":           unrelatedGOReuse,
+	"widened-profile-edit":         widenedProfileEdit,
+	"protected-change-widens":      protectedChangeWidens,
 }
 
 // Goldens loads and validates every golden, checking that each has a
