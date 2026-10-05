@@ -32,4 +32,5 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/token.json`](records-token.md) | Token |
 | [`records/usage-measurement.json`](records-usage-measurement.md) | UsageMeasurement |
 | [`records/view-fingerprint.json`](records-view-fingerprint.md) | ViewFingerprint |
+| [`testing/contract-fixture.json`](testing-contract-fixture.md) | ContractFixture |
 | [`vocab/registry.json`](vocab-registry.md) | VocabRegistry |

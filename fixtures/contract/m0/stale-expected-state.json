@@ -1,0 +1,10 @@
+{
+  "name": "stale-expected-state",
+  "invariant": "A command decided against a subject version that is no longer current is refused in the writer transaction; one against the current version applies (03 \"The writer\").",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "stale_expected_state"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "eventstore.expected-state-unchecked"
+}

@@ -37,6 +37,9 @@ var ErrNoTransport = errors.New("no controller transport in this build")
 
 // Main runs adc's command line and returns the exit code.
 func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client) int {
+	if len(args) >= 2 && args[0] == "dev" && args[1] == "fixtures" {
+		return devFixtures(ctx, args[2:], stdout, stderr)
+	}
 	if len(args) == 0 || !isNoun(args[0]) {
 		return entry.Main("adc", args, stdout, stderr)
 	}

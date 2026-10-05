@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 )
 
 // The writer is the serialization boundary (docs/design/m0/03 "The
@@ -250,7 +251,7 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 		err := tx.QueryRowContext(ctx, `SELECT id, input_digest, result_json, first_seq, last_seq FROM commands WHERE actor = ? AND idempotency_key = ?`,
 			c.Actor, c.IdempotencyKey).Scan(&prev.id, &prev.digest, &prev.result, &prev.first, &prev.last)
 		switch {
-		case err == nil && prev.digest != inputDigest:
+		case err == nil && prev.digest != inputDigest && !mutation.Is(mutation.IdempotencyIgnoresInput):
 			return fmt.Errorf("eventstore: %w: key %q of %s was used for another input", ErrIdempotencyKeyReused, c.IdempotencyKey, c.Actor)
 		case err == nil:
 			effs, err := commandEffects(ctx, tx, prev.id)
@@ -276,7 +277,7 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 			if err != nil {
 				return err
 			}
-			if v != e.Version {
+			if v != e.Version && !mutation.Is(mutation.ExpectedStateUnchecked) {
 				return fmt.Errorf("eventstore: %w: %s is at %d, the command expected %d", ErrStaleExpectedState, e.Subject, v, e.Version)
 			}
 		}

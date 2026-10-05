@@ -19,9 +19,15 @@ GO         := $(GOROOT_PIN)/bin/go
 # Never let `go` fetch a different toolchain: go.mod's toolchain line is the pin.
 export GOTOOLCHAIN := local
 export CGO_ENABLED := 0
-# The caller's Go settings never leak into builds.
-export GOFLAGS :=
-export GOEXPERIMENT :=
+# The caller's Go settings never leak into builds: not persisted ones (go env
+# -w), not the environment, not a make command line (override). A
+# -tags=adcmutation would put live mutation sites into a release binary.
+override export GOENV := off
+override export GOFLAGS :=
+override export GOEXPERIMENT :=
+# Every release binary is checked for build tags, decoded from its recorded
+# build settings, whatever set them.
+CHECK_RELEASE := $(GO) run ./tools/releasecheck
 
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT     ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
@@ -37,7 +43,7 @@ BINARIES   := adcd adc adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check vocab-check build dist install-check lint test test-sandbox-selftest fixtures-check ci clean
+.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check vocab-check build dist install-check fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
@@ -57,6 +63,7 @@ go-check:
 build: go-check ## Build the binaries for this host into bin/
 	@mkdir -p $(BIN_DIR)
 	@for b in $(BINARIES); do $(GOBUILD) -o $(BIN_DIR)/$$b ./cmd/$$b; done
+	@$(CHECK_RELEASE) $(addprefix $(BIN_DIR)/,$(BINARIES))
 	@$(BIN_DIR)/adc version
 
 dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
@@ -70,11 +77,13 @@ dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 	  ext=""; [[ $${p%/*} == windows ]] && ext=.exe; \
 	  GOOS=$${p%/*} GOARCH=$${p#*/} $(GOBUILD) -o $(DIST_DIR)/$${p%/*}-$${p#*/}/adc-agent$$ext ./cmd/adc-agent; \
 	done
+	@$(CHECK_RELEASE) $$(find $(DIST_DIR) -type f | sort)
 	@find $(DIST_DIR) -type f | sort
 
-install-check: dist build ## Install the dist build into an empty prefix and check what the installed binaries report (00 exit check)
+install-check: dist build ## Install the dist build into an empty prefix, check what the installed binaries report and run their contract fixtures in isolation (00 exit check)
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
-	  scripts/install-check.sh --expect "$$($(BIN_DIR)/adc version --json | sed -n 's/.*"schema_set":"\([^"]*\)".*/\1/p')" "$$tmp/prefix"
+	  scripts/install-check.sh --expect "$$($(BIN_DIR)/adc version --json | sed -n 's/.*"schema_set":"\([^"]*\)".*/\1/p')" "$$tmp/prefix" \
+	  && scripts/installed-fixtures.sh "$$tmp/prefix"
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go
@@ -107,7 +116,7 @@ gen-check: go-check ts-deps ## Fail if the committed generated code differs from
 	  || { echo "gen-check: generated code is stale; run 'make gen'" >&2; exit 1; }
 
 lint: go-check ## gofmt, go vet, go mod tidy check, SPDX headers, shell syntax (+ shellcheck where installed)
-	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal schemas test tools gen)"; \
+	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal schemas test tools gen fixtures/contract)"; \
 	  if [[ -n "$$unformatted" ]]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	@$(GO) vet ./...
 	@$(GO) mod tidy -diff
@@ -135,6 +144,49 @@ test: go-check ts-deps ## Run all tests inside the test sandbox (refuses to run 
 	  go test -count=1 "$${others[@]}"'
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/contract && node --test "test/*.test.mjs" && ./node_modules/.bin/tsc -p tsconfig.json'
 
+# The contract fixtures (00 "M0 exit check"): green through the real
+# components with the ordinary adc, and each red under its named mutation
+# with a separate build that alone can switch mutations on; both runs in the
+# test sandbox. The mutation build never goes into dist.
+fixtures-contract: build ## Run the M0 contract fixtures, and check each fixture's mutation turns it red
+	@scripts/test-sandbox.sh -- $(BIN_DIR)/adc dev fixtures --contract
+	@$(GOBUILD) -tags adcmutation -o $(BIN_DIR)/adc-mutation ./cmd/adc
+	@scripts/test-sandbox.sh -- go test -count=1 -tags adcmutation ./internal/fixtures
+	@$(BIN_DIR)/adc dev fixtures --contract --list | while read -r name mut; do \
+	  rc=0; scripts/test-sandbox.sh -- env ADC_MUTATION="$$mut" $(BIN_DIR)/adc-mutation dev fixtures --contract --only "$$name" >/dev/null || rc=$$?; \
+	  [[ $$rc -eq 1 ]] || { echo "fixtures-contract: mutation $$mut gave exit $$rc on $$name, want 1 (red)" >&2; exit 1; }; \
+	  echo "fixtures-contract: $$mut turns $$name red"; \
+	done
+
+# The release-build guard's regression: builds under a hostile persisted Go
+# configuration (GOFLAGS=-tags=adcmutation in a go env file) and under a
+# command-line GOFLAGS whose tag list Go records quoted still yield binaries
+# without tags; make build and make dist (for this host) each refuse what
+# they built with a tag injected through GOBUILD, also with the build
+# information erased to hide it; and the guard refuses the mutation build
+# and a binary built directly with the quoted tag list.
+release-guard: fixtures-contract ## Prove release builds ignore a persisted mutation tag
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	  printf 'GOFLAGS=-tags=adcmutation\n' >"$$tmp/goenv"; \
+	  GOENV="$$tmp/goenv" $(MAKE) --no-print-directory build BIN_DIR="$$tmp/bin" >/dev/null; \
+	  $(CHECK_RELEASE) $(addprefix "$$tmp/bin/,$(addsuffix ",$(BINARIES))); \
+	  $(MAKE) --no-print-directory build BIN_DIR="$$tmp/cli" 'GOFLAGS=-tags=adcmutation,x"' >/dev/null; \
+	  $(CHECK_RELEASE) $(addprefix "$$tmp/cli/,$(addsuffix ",$(BINARIES))); \
+	  host="$$($(GO) env GOOS)/$$($(GO) env GOARCH)"; \
+	  for gb in "$(GO) build -trimpath -tags adcmutation" "$(GO) build -trimpath -tags adcmutation -ldflags=-X=runtime.modinfo="; do \
+	    if $(MAKE) --no-print-directory build BIN_DIR="$$tmp/gobuild" GOBUILD="$$gb" >/dev/null 2>&1; then \
+	      echo "release-guard: make build accepted binaries built with: $$gb" >&2; exit 1; \
+	    fi; \
+	    if $(MAKE) --no-print-directory dist DIST_DIR="$$tmp/godist" SERVER_PLATFORMS="$$host" AGENT_PLATFORMS="$$host" GOBUILD="$$gb" >/dev/null 2>&1; then \
+	      echo "release-guard: make dist accepted binaries built with: $$gb" >&2; exit 1; \
+	    fi; \
+	  done; \
+	  $(GO) build -tags 'adcmutation,x"' -o "$$tmp/quoted" ./cmd/adc; \
+	  for f in $(BIN_DIR)/adc-mutation "$$tmp/quoted"; do \
+	    if $(CHECK_RELEASE) "$$f" 2>/dev/null; then echo "release-guard: the guard accepted $$f" >&2; exit 1; fi; \
+	  done; \
+	  echo "release-guard: hostile go env and command-line GOFLAGS left no tags; the guard refuses tagged builds, quoted ones included"
+
 test-sandbox-selftest: go-check ## Prove the test sandbox contains writes, credentials and network
 	@scripts/test-sandbox-selftest.sh
 
@@ -142,7 +194,7 @@ vocab-check: build ## Registries cross-check; reasons only through generated con
 	@# The check type-checks the module through go list, so the pinned go is put first on PATH.
 	@PATH="$(GOROOT_PIN)/bin:$$PATH" $(BIN_DIR)/adc dev vocab check --root .
 
-ci: lint gen-check build vocab-check test test-sandbox-selftest dist install-check ## Everything CI runs
+ci: lint gen-check build vocab-check test fixtures-contract release-guard test-sandbox-selftest dist install-check ## Everything CI runs
 
 clean: ## Remove build outputs
 	@rm -rf $(BIN_DIR) $(DIST_DIR)
