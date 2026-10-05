@@ -31,13 +31,38 @@ import { Adapter, run } from "@adc/contract";
 class MyHarness extends Adapter {
   async describe() { /* harness, versions, capabilities, telemetry, host_side */ }
   async prepare(p) { /* set up workspace, tool policy, gateway endpoint */ }
-  async *run(p) { /* spawn the harness, translate its stream into events, yield them */ }
+  async *run(p, signal, tools) { /* spawn the harness, translate its stream into events, yield them */ }
   async cancel(p) { /* best effort */ }
 }
 run(new MyHarness());
 ```
 
-The SDK handles framing, fencing-token stamping, heartbeats and blob exchange.
+The SDK handles framing, strict parsing, validation of everything sent and received, fencing-token stamping and
+heartbeats. `run` also receives an `AbortSignal`, aborted on cancel, shutdown or a broken input: stop the harness and
+return. Blob-exchange helpers are not in the SDK yet.
+
+A **controller-mediated tool** (a test run in the sandbox) is a round-trip:
+
+1. Yield `tool.request` with its request handle.
+2. `await tools.response(handle)` for the core's `tool.response`. Its `delivered` handle is the tool's output, or the
+   core's diagnostic when the tool failed or could not run.
+3. Hand that content to the harness, and yield `tool.result` with `mediated_by_controller: true` and exactly that
+   `delivered` handle.
+
+The SDK answers the core with an error for a `tool.response` that is outside the fence or the active call, that
+names no request this run yielded (the whole request handle must match), that answers one twice, that names another
+turn or tool, or whose `delivered` handle belongs to another attempt.
+
+Your own mistakes **fail the whole run** with an internal error, and the offending event is not sent:
+- a request handle used twice, or one naming another attempt;
+- a mediated `tool.result` that does not report a handle the core delivered for that turn and tool;
+- reporting one delivery twice.
+
+`tools.response` rejects in four cases:
+- the handle was not yielded first;
+- it is already being awaited;
+- the run is aborted;
+- the run ends while you still wait.
 
 ## 3. Translate the stream honestly
 
