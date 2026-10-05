@@ -44,12 +44,17 @@ All state-dependent decisions happen **inside one writer transaction**:
 1. idempotency lookup;
 2. authorization (`internal/authority`, against the current projections);
 3. expected-state check;
-4. resource reservations;
-5. event append;
-6. projection update;
-7. command-result row.
+4. event append;
+5. projection update, which includes resource reservations;
+6. command-result row.
 
 Validation that needs no state (schema, syntax) may run before, on the caller's goroutine.
+
+**Reservations are a projection** (05). The capacity projector runs after the lease projector in the same
+transaction. On `lease.granted` it checks every reservation the lease names against its group, counting outstanding
+reservations, and refuses the whole command if any lacks room. On `lease.settled` or `lease.released` it returns
+them. Reserving from the proposed events, rather than from the command, makes reserved totals a fold over the log:
+a rebuild recomputes them, and the limit check runs only when an event is admitted, never on replay.
 
 - **Idempotency.** `(actor, idempotency_key)` is unique. A repeat with the **same** `input_digest` returns the stored
   result. A repeat with a **different** input is refused with `failed/idempotency_key_reused`.

@@ -11,7 +11,7 @@ reasons:
   - {code: completed_clean, outcomes: [empty], domain: cycle, introduced: 0.1.0, deprecated: null, source: "02", description: "The check ran completely and found nothing."}
 
   # --- capacity --------------------------------------------------------------
-  - {code: quota_exhausted, outcomes: [could_not_run], domain: capacity, hold: quota_reset, introduced: 0.1.0, deprecated: null, source: "02", description: "The leased source reported its quota as exhausted."}
+  - {code: quota_exhausted, outcomes: [could_not_run], domain: capacity, hold: quota_reset, introduced: 0.1.0, deprecated: null, source: "02", description: "A resource group's quota is exhausted: the source reported it, or outstanding reservations fill its known limit."}
   - {code: quota_unknown, outcomes: [could_not_run], domain: capacity, hold: quota_reset, introduced: 0.1.0, deprecated: null, source: "02", description: "The source's remaining quota cannot be determined; the probe schedule applies."}
   - {code: broker_credit_exhausted, outcomes: [could_not_run], domain: capacity, hold: broker_credit_exhausted, introduced: 0.1.0, deprecated: null, source: "05", description: "The broker balance cannot cover the reservation (402, or stale/unknown balance). Partial work is sealed, never read as no changes."}
   - {code: routing_violation, outcomes: [failed], domain: capacity, introduced: 0.1.0, deprecated: null, source: "02", description: "The destination is outside the project's allowed set; refused before egress."}

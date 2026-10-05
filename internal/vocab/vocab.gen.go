@@ -91,7 +91,7 @@ var (
 	ReasonProviderRequestRefused = types.ReasonCodeOf("provider_request_refused")
 	// ReasonProviderUnavailable: The model provider failed to serve the request (an HTTP 5xx).
 	ReasonProviderUnavailable = types.ReasonCodeOf("provider_unavailable")
-	// ReasonQuotaExhausted: The leased source reported its quota as exhausted.
+	// ReasonQuotaExhausted: A resource group's quota is exhausted: the source reported it, or outstanding reservations fill its known limit.
 	ReasonQuotaExhausted = types.ReasonCodeOf("quota_exhausted")
 	// ReasonQuotaUnknown: The source's remaining quota cannot be determined; the probe schedule applies.
 	ReasonQuotaUnknown = types.ReasonCodeOf("quota_unknown")
