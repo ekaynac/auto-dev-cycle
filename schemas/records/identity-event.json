@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/identity-event.json",
+  "title": "IdentityEvent",
+  "description": "The payload of every actor and token event (docs/design/m0/04 \"Actors and tokens\"): <transition>/v1, e.g. actor.created/v1 or token.revoked/v1. Each carries its record as it is after the transition, so a projection is the latest record and a rebuild is a fold. The event's subject is the actor (actor.*) or the token (token.*). internal/identity checks every transition against the current record in the writer transaction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["transition", "actor", "token"],
+  "properties": {
+    "transition": {"enum": ["actor.created", "actor.revoked", "token.issued", "token.revoked"]},
+    "actor": {"oneOf": [{"type": "null"}, {"$ref": "actor.json"}]},
+    "token": {"oneOf": [{"type": "null"}, {"$ref": "token.json"}]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"transition": {"enum": ["actor.created", "actor.revoked"]}}},
+      "then": {"properties": {"actor": {"not": {"const": null}}, "token": {"const": null}}},
+      "else": {"properties": {"actor": {"const": null}, "token": {"not": {"const": null}}}}
+    }
+  ]
+}

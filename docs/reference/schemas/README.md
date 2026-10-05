@@ -25,6 +25,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/challenge.json`](records-challenge.md) | Challenge |
 | [`records/effect-event.json`](records-effect-event.md) | EffectEvent |
 | [`records/grant.json`](records-grant.md) | Grant |
+| [`records/identity-event.json`](records-identity-event.md) | IdentityEvent |
 | [`records/instrument-contract.json`](records-instrument-contract.md) | InstrumentContract |
 | [`records/lease-event.json`](records-lease-event.md) | LeaseEvent |
 | [`records/lease.json`](records-lease.md) | Lease |
