@@ -120,6 +120,10 @@ parameters. Names compare as written, so one spelling per name keeps instrument 
    Delivery restrictions are enforced at assembly (10) by artifact class.
 8. **Missing evidence never passes.** A required receipt that is absent, stale, incomplete, inapplicable or
    `could_not_run` blocks the dependent decision.
+8a. **Cited tests must have run** (intake B3). A claim or acceptance row that cites test ids is checked against the
+   per-test results of the applicable gate receipt for the same tree (rule 2). An id absent from those results makes
+   the row `could_not_run`, whatever the reviewer's text says. A failed id makes it fail, and results the controller
+   cannot read make it a hold. This is the one gate path: there is no profile in which an uncollected citation passes.
 
 ## What M0 delivers
 

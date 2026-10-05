@@ -330,7 +330,11 @@ receipts can expire between claim and commit), and semantic acceptance review st
 2. Deterministic checks first:
    - the full gate on every target environment;
    - the integrity guard;
-   - required receipts present, current for the final tree, and passing on their **inner predicate**.
+   - required receipts present, current for the final tree, and passing on their **inner predicate**;
+   - **cited tests were collected** (intake B3): every test id a claim or an acceptance row cites must appear in this
+     tree's collected gate results. An id never collected (a test nobody wrote, a renamed file) makes that row
+     `could_not_run`, never a pass. A cited test that failed is a fail; unreadable results are a hold. A pass row is
+     computed from collected results, so a placeholder has nothing to pass on.
 
    Evidence is controller-produced. Missing evidence never passes.
 3. One independent reviewer proves claims with test id + output + code lines. It **inspects assertions and mocks**
@@ -363,8 +367,8 @@ per phase:
 
   - **Receipt-only claims** (`proof_receipts`) pass only on their applicable receipt. Reviewers can block them
     but cannot pass them without it.
-- **`test_ids` required:** every pass row names test ids, checked by the controller against the per-test results
-  for this tree. Unknown or failed → missing; unreadable results → hold.
+- **`test_ids` required:** every pass row must name test ids. Whatever a row cites is checked against the collected
+  results on every gate (step 2), with or without this option; the option only makes citing mandatory.
 - **`proof_receipts`:** a claim provable only by a receipt declares it, so it can pass on that receipt.
 - **Dispositions:** an operator-owned, schema-validated file of deferrals (`moved_to_later_phase` with triggers,
   `substituted`, `unperformed_pending_authority`, `transition_condition`, `recorded_only`), each with an owner

@@ -170,6 +170,8 @@ golden file names:
   - an import error outside the changed files that passes through a changed test file stays a runner fault;
   - a missing answer yields `awaiting_input` and recovers on the answering approval without a manual release; a precondition failure recovers on its probe;
   - an acceptance row not producible by its owner is refused by the plan validator (M5).
+  - a claim citing a test id that the tree's gate run never collected is `could_not_run`, never a pass, with the
+    strict options off; the same claim citing a collected, passing test passes (B3).
   - a call killed mid-stream, on a single-call lease (its stream captured with no terminal result, with the
     controller's stop request, observed statuses and recorded end of stream linked; `completed: false` and the reason
     asserted through the real derivation):
