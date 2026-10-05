@@ -60,6 +60,7 @@ That state covers:
 - data floor;
 - routing requirement;
 - allowed destinations;
+- source exclusions (below);
 - usage profile;
 - protected paths and documents;
 - paid-fallback flags;
@@ -69,6 +70,20 @@ That state covers:
 
 It then classifies the command by the most sensitive change it contains. A profile adoption that widens destinations is
 treated as `policy.widen_destinations`, whatever it was called.
+
+**Source exclusions are bound policy, not memory** (intake B4, `docs/research/2026-10-05-nobetci-phase1-close-intake.md`;
+nöbetçi L1: a recovery path launched on a provider the operator had just excluded, because the exclusion was a
+preference, not a switch).
+- **Exclusions.** The installation keeps an **exclusion set** in its policy-relevant state: sources, executors or model
+  families that no placement may use, each with the recorded action that set it.
+- **Adding one** (`capacity.exclude_source`) only narrows routing. It needs a grant scoped to the installation (a
+  project-only grant never suffices, because the set is installation-wide) and no further confirmation, so an
+  exclusion takes effect at once.
+- **Lifting one** (`capacity.include_source`) widens routing. The effective-change classification makes it
+  `policy.widen_destinations`, with that class's D32 semantics: a supervisor's lift waits for a human confirmation,
+  and an operator's own lift is that human decision.
+- **One reader.** Placement (05) reads the effective exclusion set; no launch path has another source of routing
+  truth.
 
 Sensitive change classes and their supervisor confirmation defaults (D32, plus the knowledge actions from K5/KA1):
 
