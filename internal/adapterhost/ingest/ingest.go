@@ -31,7 +31,8 @@ import (
 
 // The checks an unsafe output can fail (Unsafe.Check).
 const (
-	CheckSymlink     = "symlink"      // a symlink, or a name that would leave out/
+	CheckPath        = "path"         // the handle is not one plain path component
+	CheckSymlink     = "symlink"      // a symlink
 	CheckSpecialFile = "special_file" // a FIFO, socket, device or directory, or a file on another mount
 	CheckHardLink    = "hard_link"    // link count is not 1
 	CheckSize        = "size"         // not the declared size, or over the bound
@@ -128,9 +129,14 @@ func inspect(st *unix.Stat_t, dirDev uint64, size, bound int64) error {
 // digest, size its declared size and bound the largest size this kind of
 // output may have. Any boundary violation is an *Unsafe and publishes
 // nothing; other errors (the blob store's own) are returned as they are.
+//
+// Change detection by mtime and ctime is only as fine as the filesystem
+// clock: on tmpfs and other coarse-clock filesystems a same-size in-place
+// write right after the inspection can leave both unchanged. The declared
+// digest is the backstop for that case: the bytes read must still hash to it.
 func Ingest(outDir *os.File, name, declared string, size, bound int64, store *blobstore.Store) (string, error) {
 	if !handleRe.MatchString(name) {
-		return "", unsafeErr(CheckSymlink, "handle %q is not one plain path component", name)
+		return "", unsafeErr(CheckPath, "handle %q is not one plain path component", name)
 	}
 	if !digestRe.MatchString(declared) {
 		return "", unsafeErr(CheckDigest, "malformed declared digest %q", declared)

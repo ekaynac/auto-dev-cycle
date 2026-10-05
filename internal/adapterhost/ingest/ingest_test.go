@@ -192,12 +192,13 @@ func cases() []ingestCase {
 		{name: "slash in name", handle: ptr("sub/res"), setup: func(e *env) {
 			must(e.t, os.Mkdir(filepath.Join(e.out, "sub"), 0o700))
 			e.write(filepath.Join(e.out, "sub", "res"), content)
-		}, want: CheckSymlink},
-		{name: "dot-dot", handle: ptr(".."), setup: plain, want: CheckSymlink},
+		}, want: CheckPath},
+		{name: "dot-dot", handle: ptr(".."), setup: plain, want: CheckPath},
 		{name: "dot-dot path", handle: ptr("../outside/secret"), setup: func(e *env) {
 			e.write(filepath.Join(e.outside, "secret"), content)
-		}, want: CheckSymlink},
-		{name: "empty name", handle: ptr(""), setup: plain, want: CheckSymlink},
+		}, want: CheckPath},
+		{name: "empty name", handle: ptr(""), setup: plain, want: CheckPath},
+		{name: "pattern mismatch", handle: ptr(".hidden"), setup: plain, want: CheckPath},
 	}
 }
 
