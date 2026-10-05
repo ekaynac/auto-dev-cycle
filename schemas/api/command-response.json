@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/command-response.json",
+  "title": "CommandResponse",
+  "description": "The response to a command, a union on disposition [M13] (docs/design/m0/08): applied, proposed (waiting for a confirmation) or refused. The CLI's exit code follows it: 0 applied, 3 proposed, 1 refused, 2 could_not_run, 4 a stale refusal.",
+  "oneOf": [
+    {"$ref": "#/$defs/CommandApplied"},
+    {"$ref": "#/$defs/CommandProposed"},
+    {"$ref": "#/$defs/CommandRefused"}
+  ],
+  "$defs": {
+    "CommandApplied": {
+      "description": "The command ran: its events, the approval it made (an authority-gated action) and its effects in their current states. A replay of an accepted command returns the same, with replayed set.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "command", "replayed", "approval", "first_seq", "last_seq", "effects", "result"],
+      "properties": {
+        "disposition": {"const": "applied"},
+        "command": {"$ref": "../common/defs.json#/$defs/CommandID"},
+        "replayed": {"type": "boolean"},
+        "approval": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ApprovalID"}]},
+        "first_seq": {"description": "The command's first event; 0 when it appended none.", "type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "last_seq": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "effects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "state"],
+            "properties": {
+              "id": {"$ref": "../common/defs.json#/$defs/EffectID"},
+              "state": {"enum": ["pending", "completed", "failed_confirmed", "uncertain"]}
+            }
+          }
+        },
+        "result": {"description": "The action's result; one schema per action.", "type": "object", "x-adc-open-payload": "action"}
+      }
+    },
+    "CommandProposed": {
+      "description": "The command needs a confirmation (04 \"Proposals\"): nothing was applied. A human policy is confirmed only on the dashboard (D37).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "proposal", "policy", "binding_digest"],
+      "properties": {
+        "disposition": {"const": "proposed"},
+        "proposal": {"$ref": "../common/defs.json#/$defs/ProposalID"},
+        "policy": {"enum": ["independent_review", "human"]},
+        "binding_digest": {"$ref": "../common/defs.json#/$defs/Digest"}
+      }
+    },
+    "CommandRefused": {
+      "description": "Nothing was applied: failed (the command was decided and refused) or could_not_run (the controller or a dependency could not run it).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "outcome", "reason", "detail"],
+      "properties": {
+        "disposition": {"const": "refused"},
+        "outcome": {"enum": ["failed", "could_not_run"]},
+        "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
+        "detail": {"description": "Never empty for these outcomes (02). Whether the reason is registered for the outcome is the vocabulary's check (internal/vocab Registry.Check), run where the response is written and where it is read.", "type": "string", "minLength": 1, "maxLength": 4096}
+      }
+    }
+  }
+}

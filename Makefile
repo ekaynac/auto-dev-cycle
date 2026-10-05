@@ -74,15 +74,18 @@ dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go
+API_DOC   := schemas/openapi.yaml
 
-gen: go-check ## Regenerate the Go types (gen/go/types) and vocabulary constants from schemas/
+gen: go-check ## Regenerate the Go types (gen/go/types), vocabulary constants and openapi.yaml from schemas/
 	@$(GO) run ./tools/schemagen $(GEN_GO)
 	@$(GO) run ./tools/vocabgen $(VOCAB_GEN)
+	@$(GO) run ./tools/apigen $(API_DOC)
 
 gen-check: go-check ## Fail if the committed generated code differs from a fresh generation
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 	  $(GO) run ./tools/schemagen "$$tmp/types" && diff -r -x '*_test.go' "$$tmp/types" $(GEN_GO) \
 	  && $(GO) run ./tools/vocabgen "$$tmp/vocab.gen.go" && diff "$$tmp/vocab.gen.go" $(VOCAB_GEN) \
+	  && $(GO) run ./tools/apigen "$$tmp/openapi.yaml" && diff "$$tmp/openapi.yaml" $(API_DOC) \
 	  || { echo "gen-check: generated code is stale; run 'make gen'" >&2; exit 1; }
 
 lint: go-check ## gofmt, go vet, go mod tidy check, SPDX headers, shell syntax (+ shellcheck where installed)
