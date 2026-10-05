@@ -111,6 +111,44 @@ golden file names:
 - The nöbetçi incident→test index (`/home/mega/nobetci-dev/docs/handoff/2026-10-03/08-incident-test-index.md`, 206
   verified test names) is the checklist of behaviours T0 must reproduce. Each row maps to a T0 fixture, or to a
   documented reason it does not apply.
+- **Tests use the shape of the live record** (intake B5, `docs/research/2026-10-05-nobetci-phase1-close-intake.md`;
+  nöbetçi L2). A fixture for code that reads a recorded thing is built from a captured instance of that record, never
+  from the shape the last incident happened to have. That covers a usage report, a call's terminal record, an attempt
+  disposition and a receipt.
+  - **Capture.** An instance is captured at a stated boundary:
+    - the adapter's stream, for adapter messages;
+    - the controller's event log, for controller-owned records such as dispositions and receipts;
+    - the ledger, for liabilities.
+
+    The source is a real run, anonymised into `fixtures/legacy/` (whose README already records legacy sources), or a
+    run of the fake adapter (`adapters/fake`) under a named scenario that reproduces it.
+  - **Provenance.** Each capture carries metadata: the producer and its version, the source run or fake scenario (with
+    its inputs and, for an interruption, its trigger), the capture boundary, and every transformation applied
+    (anonymisation, trimming). Transformations preserve missing versus null fields, types, the relationships between
+    records, and their order.
+  - **Linked evidence.** A capture that a decision depends on carries the controller's own observations with it: a
+    stop request, an observed status, and how the capture ended (the controller-recorded process exit or end of
+    stream). An adapter stream alone cannot show those, nor tell a terminated call from a truncated capture.
+  - **The fixture loader validates** the metadata, the record identities and the relevant ordering. It refuses a
+    capture whose trimming removed a terminal result or any decision input.
+  - **Partial forms.** Each record type keeps corpus cases for its partial forms beside its complete one. The canonical
+    case is a call killed mid-stream. Its stream is captured with the terminal result genuinely absent; `completed:
+    false` is the controller's derivation, not a field the adapter sent. A terminal result carrying `usage_final:
+    null` is a different case.
+    - **Reason.** It is `could_not_run` with the reason the exit map derives from everything observed
+      (`internal/vocab/exitmap`). A capacity cause from the call's error events or the controller's own observed
+      statuses comes first: credit (`broker_credit_exhausted`), then quota (`quota_exhausted`). Only without one is it
+      `attempt_stopped`, when the controller recorded `attempt.stop_requested` (a request, not confirmed termination),
+      or otherwise `adapter_protocol_error`.
+    - **Liability.** Until reconciliation it stays an **uncertain liability** (05) of its best estimate, and that
+      amount is subtracted from available capacity. The call is never read as finished, and never as free.
+      - With deltas, the estimate is their sum deduplicated by `(call, sequence)`. Equal values at different
+        sequences both count; conflicting reports for one key keep component-wise maxima and flag
+        `inconsistent_usage` (05, `internal/capacity/ledger`).
+      - With no delta, the estimate is the call's reservation. Reservations are per lease and resource group (05),
+        so this fixture uses a single-call lease, whose reservation is the call's. The reservation becomes the
+        liability at the lease's settlement, so the amount is counted once, never as both a reservation and a
+        liability.
 - **"Cannot occur" fixtures for the artifact graph** are listed in `13-artifact-graph.md` (D40). They take
   priority: each proves a nöbetçi failure class is structurally impossible.
 - **New contract fixtures from the intake:**
@@ -132,6 +170,16 @@ golden file names:
   - an import error outside the changed files that passes through a changed test file stays a runner fault;
   - a missing answer yields `awaiting_input` and recovers on the answering approval without a manual release; a precondition failure recovers on its probe;
   - an acceptance row not producible by its owner is refused by the plan validator (M5).
+  - a call killed mid-stream, on a single-call lease (its stream captured with no terminal result, with the
+    controller's stop request, observed statuses and recorded end of stream linked; `completed: false` and the reason
+    asserted through the real derivation):
+    - without a capacity cause it is `attempt_stopped` when a stop was requested, otherwise `adapter_protocol_error`;
+    - with a `credit_exhausted` hint or an observed 402 it is `broker_credit_exhausted`, and with a `rate_limited`
+      hint or an observed 429 `quota_exhausted`, with or without a stop request;
+    - its liability is the delta sum deduplicated by `(call, sequence)` (equal values at two sequences both count;
+      a conflicting repeat keeps the maxima and flags `inconsistent_usage`), or its positive reservation when no
+      delta was reported, which moves from reservation to liability at settlement. Available capacity drops by that
+      amount exactly once (B5).
 
 ## Red-proof rule [M15]
 
