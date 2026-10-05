@@ -50,6 +50,7 @@ type runner func(ctx context.Context, dir string) (steps []Step, violations []st
 var runners = map[string]runner{
 	"idempotency-key-reuse": idempotencyKeyReuse,
 	"stale-expected-state":  staleExpectedState,
+	"second-daemon":         secondDaemon,
 }
 
 // Goldens loads and validates every golden, checking that each has a
@@ -159,6 +160,8 @@ func commandStep(err error) (Step, error) {
 		return Step{vocab.Failed, vocab.ReasonIdempotencyKeyReused.String()}, nil
 	case errors.Is(err, eventstore.ErrStaleExpectedState):
 		return Step{vocab.Failed, vocab.ReasonStaleExpectedState.String()}, nil
+	case errors.Is(err, eventstore.ErrAlreadyRunning):
+		return Step{vocab.CouldNotRun, vocab.ReasonControllerAlreadyRunning.String()}, nil
 	}
 	return Step{}, err
 }

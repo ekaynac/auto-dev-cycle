@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 )
 
 // LockFile is the process-exclusivity lock in the state directory (03
@@ -68,7 +70,7 @@ func AcquireLock(stateDir string) (*Lock, error) {
 		f.Close()
 		return nil, fmt.Errorf("eventstore: %s must be a private regular file owned by this user with one link; refused", path)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil && !mutation.Is(mutation.LockNotExclusive) {
 		f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, fmt.Errorf("%w: %s is locked by another process", ErrAlreadyRunning, dir)
