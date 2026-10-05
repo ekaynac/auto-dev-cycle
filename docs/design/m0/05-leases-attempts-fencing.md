@@ -47,6 +47,9 @@ Lease:
 - **`fallback_scope`** (nöbetçi Δ§4): a fallback step is allowed only if the role's chain entry is authorised for this
   **role and mode** (e.g. "learning digest" ≠ "phase review"). The check runs in the placement path, not only in a
   record. Moving to another family re-runs `independence`.
+- **A review member places only on its pinned executor** (13, intake B1). A review node's roster is in its key, so
+  placement for a member must select exactly the executor the roster pins. A fallback that would change a member
+  does not place under the old node: the controller records the supersession and leases for the replacement node.
 - **Footprint is learned per executor**, not per role. On an identical review packet, nöbetçi measured 9× the input
   tokens for one reviewer family versus another. `footprint` starts from priors (the nöbetçi measurement export,
   intake A12) and is updated from settled usage.

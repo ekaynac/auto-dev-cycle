@@ -52,16 +52,31 @@ Result:                            # what was computed: immutable  [G1]
   - Each key has one **selected result** at a time. An explicit invalidation (an operator action, or a definition or
     instrument version change) bumps the generation, so the key changes, a new result is produced, and dependants
     re-key. No artifact is ever overwritten.
-- **The reviewer roster is part of a review's identity** (intake B1). A review node's `params` carry its roster: for
-  each member, the executor and its model family (05 `independence`). The roster is in the params digest, so it is in
-  the computation key. Changing who reviews makes a **new review node**, never a hand-over inside an existing one: a
-  result produced by the old roster cannot satisfy the new key. Conclusions-only equivalence (below) applies to a
-  review's inputs (review←evidence, review←gate), never to a review result itself, so it cannot carry a review across
-  rosters. A hold that waits on a removed member belongs to the old node and
-  is retired with it, explicitly, when the new node is instantiated.
+- **The reviewer roster is part of a review's identity** (intake B1).
+  - **In the key.** A review node's `params` carry its roster: for each member, the executor id and its model family.
+    The family is derived from the controller's executor registry, never asserted by a caller (06 independence). The
+    roster is in the params digest, so it is in the computation key, and a result produced by one roster can never
+    satisfy another roster's key.
+  - **Placement is bound to it** (05). A review member's lease must place on exactly the pinned executor. A fallback
+    that would change a member does not run under the old key: the replacement node is instantiated first, and the
+    lease belongs to it.
+  - **Replacement is a recorded supersession.** A roster change, whether decided by placement (05) or by an authority
+    action (04), is one controller event in the writer transaction (03): `review.superseded{predecessor,
+    replacement, retired_holds}`.
+    - The replacement takes the predecessor's round and inputs, unchanged, with the new roster. Owed inputs, demands
+      and their answers, and cumulative rails carry over; nothing resets.
+    - The predecessor's in-flight attempts get `attempt.stop_requested{preempt}` (05). They are fenced, their late
+      output is refused, and they settle normally with their accounting.
+    - Only holds that the membership change made obsolete are retired, and they are named in the event. A hold for an
+      outstanding obligation moves to the replacement.
+    - Replay after a restart reaches the same supersession, never a second one.
+  - **Nothing reuses a review across rosters.** The reuse rule below compares only reviews with an identical non-input
+    identity. Carry-over in a merge-queue generation is bound to the **currently required** roster, and the merge's
+    commit-time re-validation ([G4]) checks that binding.
 - **Reuse decisions use typed conclusions.** For the declared edges below, a consumer may treat a new result as
   equivalent to one it already used if their `conclusions` projections are equal **and** the subject, demand,
-  instrument digest and restrictions are identical. Equivalence decides only whether to re-run. Manifests still list
+  instrument digest and restrictions are identical, **and** the consumer's non-input identity (kind, definition
+  version, params including a review's roster, generation) is identical: only the declared input edges may differ. Equivalence decides only whether to re-run. Manifests still list
   the exact result ids.
 
 ## What is cached, and what is retried [G2]
@@ -160,7 +175,7 @@ The merge queue is serialized per project and base branch. Each attempt to merge
 | Node in the generation | Inputs | Result |
 |---|---|---|
 | `rebase` | candidate result, pinned base head | prospective tree (+ conflict flag) |
-| `carry_over` | the reviewed candidate's review/closure results, the prospective tree | a **carry-over attestation** if the rebased change has the same patch identity and no conflict resolution (06 applicability is satisfied by the attestation, which binds the old review to the new tree); otherwise a demand for a **delta review** |
+| `carry_over` | the reviewed candidate's review/closure results, the prospective tree, the currently required review identity (roster included) | a **carry-over attestation** if the rebased change has the same patch identity, no conflict resolution, **and** the carried review's identity equals the currently required one (06 applicability is satisfied by the attestation, which binds the old review to the new tree); otherwise a demand for a **delta review**, or for the replacement review after a roster change |
 | `gate`, `runtime_verify`, required evidence | the prospective tree / package | refreshed receipts for the prospective tree |
 | `merge` (effect) | all of the above + the expected base head | merge result, by expected-base compare-and-swap |
 
@@ -215,8 +230,12 @@ Fixtures, each tied to the class it addresses:
 - an undeclared ruling never enters a review's controller context;
 - an answer reaches only the successor review;
 - equal conclusions reuse a review; a changed step outcome re-runs it;
-- a review whose roster changes is a new node: the old roster's result never satisfies it, and the old node's hold is
-  retired;
+- a roster change is a recorded supersession: the old roster's result never satisfies the replacement, the old
+  attempt's late output is refused, a replay after restart reaches the same supersession, and an owed input still
+  outstanding carries to the replacement;
+- equal gate or evidence conclusions never reuse a review across a roster change: the replacement runs;
+- a roster change after carry-over was selected, but before the merge commits, makes the merge wait for the
+  replacement review;
 - a review cannot start with another tree's gate result;
 - a 402 **before** the first edit is `could_not_run`, never `empty`;
 - a 402 **after** edits is a sealed `partial_patch`;
