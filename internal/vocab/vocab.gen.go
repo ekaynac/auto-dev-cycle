@@ -15,8 +15,12 @@ var (
 	ReasonActionUnregistered = types.ReasonCodeOf("action_unregistered")
 	// ReasonActorRevoked: The acting actor is revoked; nothing it asks is allowed.
 	ReasonActorRevoked = types.ReasonCodeOf("actor_revoked")
+	// ReasonAdapterProtocolError: The adapter broke the contract (an invalid or unexpected message) or its process ended without a result.
+	ReasonAdapterProtocolError = types.ReasonCodeOf("adapter_protocol_error")
 	// ReasonAmbiguousState: A projection found two live records where one is allowed; fails closed.
 	ReasonAmbiguousState = types.ReasonCodeOf("ambiguous_state")
+	// ReasonAttemptStopped: The controller stopped the attempt (revoke, preempt, expire, drain or cancel) before the executor completed.
+	ReasonAttemptStopped = types.ReasonCodeOf("attempt_stopped")
 	// ReasonAuthorityRevoked: The actor's grant was revoked, expired or narrowed; streams close with this reason.
 	ReasonAuthorityRevoked = types.ReasonCodeOf("authority_revoked")
 	// ReasonBrokerCreditExhausted: The broker balance cannot cover the reservation (402, or stale/unknown balance). Partial work is sealed, never read as no changes.
@@ -39,12 +43,16 @@ var (
 	ReasonConfirmationRefused = types.ReasonCodeOf("confirmation_refused")
 	// ReasonControllerAlreadyRunning: Another adcd holds the state directory lock.
 	ReasonControllerAlreadyRunning = types.ReasonCodeOf("controller_already_running")
+	// ReasonDegenerateOutput: The model's output degenerated (repetition, truncation or garbage) and the run was abandoned.
+	ReasonDegenerateOutput = types.ReasonCodeOf("degenerate_output")
 	// ReasonEvidenceCapExhausted: Attempts for this subject reached the total cap across demands.
 	ReasonEvidenceCapExhausted = types.ReasonCodeOf("evidence_cap_exhausted")
 	// ReasonEvidenceInapplicable: A valid receipt does not apply (other subject, tree, environment, contract revision or demand).
 	ReasonEvidenceInapplicable = types.ReasonCodeOf("evidence_inapplicable")
 	// ReasonEvidenceObserved: An evidence run for this demand produced its receipt.
 	ReasonEvidenceObserved = types.ReasonCodeOf("evidence_observed")
+	// ReasonExecutorIncomplete: The executor did not complete and nothing observed names a more specific cause.
+	ReasonExecutorIncomplete = types.ReasonCodeOf("executor_incomplete")
 	// ReasonFallbackScope: The fallback chain entry is not authorised for this role and mode; refused in the placement path.
 	ReasonFallbackScope = types.ReasonCodeOf("fallback_scope")
 	// ReasonGateTestFailed: A test failed relative to the measured baseline.
@@ -73,6 +81,10 @@ var (
 	ReasonProtectedChangeWidens = types.ReasonCodeOf("protected_change_widens")
 	// ReasonProtectedPath: The patch touches a protected path outside the protected-document operation.
 	ReasonProtectedPath = types.ReasonCodeOf("protected_path")
+	// ReasonProviderRequestRefused: The model provider refused the request (an HTTP 4xx other than a rate limit or credit exhaustion).
+	ReasonProviderRequestRefused = types.ReasonCodeOf("provider_request_refused")
+	// ReasonProviderUnavailable: The model provider failed to serve the request (an HTTP 5xx).
+	ReasonProviderUnavailable = types.ReasonCodeOf("provider_unavailable")
 	// ReasonQuotaExhausted: The leased source reported its quota as exhausted.
 	ReasonQuotaExhausted = types.ReasonCodeOf("quota_exhausted")
 	// ReasonQuotaUnknown: The source's remaining quota cannot be determined; the probe schedule applies.
@@ -95,6 +107,8 @@ var (
 	ReasonStaleAttempt = types.ReasonCodeOf("stale_attempt")
 	// ReasonStaleExpectedState: The command's expected object version or digest is not current.
 	ReasonStaleExpectedState = types.ReasonCodeOf("stale_expected_state")
+	// ReasonStreamIdleCut: The response stream went idle and was cut before it finished.
+	ReasonStreamIdleCut = types.ReasonCodeOf("stream_idle_cut")
 	// ReasonTestIntegrityViolation: A test was deleted or skipped, or an assertion removed, without an approved row (conclusive).
 	ReasonTestIntegrityViolation = types.ReasonCodeOf("test_integrity_violation")
 	// ReasonUnsafeOutput: An adapter output violated the ingestion boundary (symlink, special file, digest mismatch, foreign handle).
