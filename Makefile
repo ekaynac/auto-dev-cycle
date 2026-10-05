@@ -37,7 +37,7 @@ BINARIES   := adcd adc adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check ts-deps gen gen-check vocab-check build dist install-check lint test test-sandbox-selftest fixtures-check ci clean
+.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check vocab-check build dist install-check lint test test-sandbox-selftest fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
@@ -81,6 +81,10 @@ VOCAB_GEN := internal/vocab/vocab.gen.go
 TS_GEN    := gen/ts
 TS_GEN_SCRIPT := adapters/contract/scripts/gen.mjs
 API_DOC   := schemas/openapi.yaml
+SCHEMA_DOCS := docs/reference/schemas
+
+schema-docs: go-check ## Regenerate docs/reference/schemas from schemas/ (also part of make gen)
+	@$(GO) run ./tools/schemadoc $(SCHEMA_DOCS)
 
 ts-deps: ## Install the adapters workspace dependencies (pnpm, from the lockfile)
 	@# corepack picks the pnpm version from the current directory (adapters/package.json), not from --dir.
@@ -90,6 +94,7 @@ gen: go-check ts-deps ## Regenerate from schemas/: Go types (gen/go/types), voca
 	@$(GO) run ./tools/schemagen $(GEN_GO)
 	@$(GO) run ./tools/vocabgen $(VOCAB_GEN)
 	@$(GO) run ./tools/apigen $(API_DOC)
+	@$(GO) run ./tools/schemadoc $(SCHEMA_DOCS)
 	@node $(TS_GEN_SCRIPT) $(TS_GEN)
 
 gen-check: go-check ts-deps ## Fail if the committed generated code differs from a fresh generation
@@ -97,6 +102,7 @@ gen-check: go-check ts-deps ## Fail if the committed generated code differs from
 	  $(GO) run ./tools/schemagen "$$tmp/types" && diff -r -x '*_test.go' "$$tmp/types" $(GEN_GO) \
 	  && $(GO) run ./tools/vocabgen "$$tmp/vocab.gen.go" && diff "$$tmp/vocab.gen.go" $(VOCAB_GEN) \
 	  && $(GO) run ./tools/apigen "$$tmp/openapi.yaml" && diff "$$tmp/openapi.yaml" $(API_DOC) \
+	  && $(GO) run ./tools/schemadoc "$$tmp/schema-docs" && diff -r "$$tmp/schema-docs" $(SCHEMA_DOCS) \
 	  && node $(TS_GEN_SCRIPT) "$$tmp/ts" && diff -r -x node_modules "$$tmp/ts" $(TS_GEN) \
 	  || { echo "gen-check: generated code is stale; run 'make gen'" >&2; exit 1; }
 
