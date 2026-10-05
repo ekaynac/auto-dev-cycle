@@ -9,6 +9,7 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.jetify.com/typeid v1.3.0
 	go.yaml.in/yaml/v3 v3.0.5
+	golang.org/x/crypto v0.57.0
 	golang.org/x/tools v0.50.0
 	modernc.org/sqlite v1.60.1
 )

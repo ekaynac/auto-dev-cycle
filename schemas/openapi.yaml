@@ -642,6 +642,9 @@ components:
         CommandID:
           $ref: '#/$defs/TypeID'
           pattern: ^cmd_
+        TokenID:
+          $ref: '#/$defs/TypeID'
+          pattern: ^tok_
     records.approval:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/records/approval.json
