@@ -24,7 +24,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -32,17 +31,23 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 )
 
-// Authenticator data flags (§6.1).
+// Authenticator data flags (§6.1; BE and BS from Level 3).
 const (
 	FlagUP = 0x01 // user present
 	FlagUV = 0x04 // user verified
+	FlagBE = 0x08 // backup eligible
+	FlagBS = 0x10 // backed up
+	FlagAT = 0x40 // attested credential data (registration only)
+	FlagED = 0x80 // extension data
 )
 
 // TypeGet is the client data type of an assertion.
 const TypeGet = "webauthn.get"
 
-// authDataMin is the RP ID hash (32), the flags (1) and the counter (4).
-const authDataMin = 37
+// authDataLen is the RP ID hash (32), the flags (1) and the counter (4):
+// the whole of an M0 assertion's authenticator data, since an assertion
+// carries no attested credential data and M0 supports no extensions.
+const authDataLen = 37
 
 // RelyingParty is the dashboard's RP ID and the exact origin it serves.
 type RelyingParty struct {
@@ -51,13 +56,17 @@ type RelyingParty struct {
 }
 
 // Credential is an operator's registered public-key credential: its id,
-// its actor, its DER SubjectPublicKeyInfo and the last signature counter
-// a verified assertion carried.
+// its actor, its DER SubjectPublicKeyInfo, the last signature counter a
+// verified assertion carried, and the user handle registered with it.
+// Until M0 has a credential record mapping handles to accounts, the handle
+// stands for that mapping: an assertion's user handle, when present, must
+// equal it (§7.2 step 6).
 type Credential struct {
-	ID        []byte
-	Actor     types.ActorID
-	PublicKey []byte
-	SignCount uint32
+	ID         []byte
+	Actor      types.ActorID
+	PublicKey  []byte
+	SignCount  uint32
+	UserHandle []byte
 }
 
 // Assertion is a raw assertion as the dashboard receives it from
@@ -67,6 +76,7 @@ type Assertion struct {
 	ClientDataJSON    []byte
 	AuthenticatorData []byte
 	Signature         []byte
+	UserHandle        []byte // optional
 }
 
 // Error is a check an assertion failed.
@@ -99,29 +109,26 @@ func Verify(rp RelyingParty, cred Credential, challenge []byte, a Assertion) (ui
 	if !bytes.Equal(a.CredentialID, cred.ID) {
 		return 0, fail("the assertion is from another credential")
 	}
-	var cd struct {
-		Type        string `json:"type"`
-		Challenge   string `json:"challenge"`
-		Origin      string `json:"origin"`
-		CrossOrigin bool   `json:"crossOrigin"`
+	if len(a.UserHandle) > 0 && !bytes.Equal(a.UserHandle, cred.UserHandle) {
+		return 0, fail("the user handle is not the credential's")
 	}
-	if err := json.Unmarshal(a.ClientDataJSON, &cd); err != nil {
-		return 0, fail("client data: %v", err)
+	cd, err := parseClientData(a.ClientDataJSON)
+	if err != nil {
+		return 0, fail("%v", err)
 	}
-	got, err := base64.RawURLEncoding.DecodeString(cd.Challenge)
 	switch {
 	case cd.Type != TypeGet:
 		return 0, fail("client data type is %q, not %s", cd.Type, TypeGet)
-	case err != nil || subtle.ConstantTimeCompare(got, challenge) != 1:
+	case subtle.ConstantTimeCompare([]byte(cd.Challenge), []byte(base64.RawURLEncoding.EncodeToString(challenge))) != 1:
 		return 0, fail("the assertion answers another challenge")
 	case cd.Origin != rp.Origin || cd.CrossOrigin:
 		return 0, fail("origin %q is not %s", cd.Origin, rp.Origin)
-	case len(a.AuthenticatorData) < authDataMin:
-		return 0, fail("authenticator data is %d bytes", len(a.AuthenticatorData))
+	case len(a.AuthenticatorData) < authDataLen:
+		return 0, fail("authenticator data is %d bytes, not %d", len(a.AuthenticatorData), authDataLen)
 	}
 	rpHash := sha256.Sum256([]byte(rp.ID))
 	flags := a.AuthenticatorData[32]
-	count := binary.BigEndian.Uint32(a.AuthenticatorData[33:authDataMin])
+	count := binary.BigEndian.Uint32(a.AuthenticatorData[33:authDataLen])
 	switch {
 	case subtle.ConstantTimeCompare(a.AuthenticatorData[:32], rpHash[:]) != 1:
 		return 0, fail("the RP ID hash is not for %s", rp.ID)
@@ -129,6 +136,14 @@ func Verify(rp RelyingParty, cred Credential, challenge []byte, a Assertion) (ui
 		return 0, fail("the user was not present")
 	case flags&FlagUV == 0:
 		return 0, fail("the user was not verified")
+	case flags&FlagAT != 0:
+		return 0, fail("an assertion carries attested credential data")
+	case flags&FlagED != 0:
+		return 0, fail("extension data: M0 supports no extensions")
+	case flags&FlagBS != 0 && flags&FlagBE == 0:
+		return 0, fail("backed up but not backup eligible")
+	case len(a.AuthenticatorData) != authDataLen:
+		return 0, fail("authenticator data is %d bytes, not %d", len(a.AuthenticatorData), authDataLen)
 	}
 	if err := verifySignature(cred.PublicKey, a); err != nil {
 		return 0, err

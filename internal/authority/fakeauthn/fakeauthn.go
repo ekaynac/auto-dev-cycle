@@ -23,18 +23,34 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/authority/webauthn"
 )
 
-// Authenticator is one fake credential. RPID, Origin and Flags are what
-// the next assertion carries; the counter advances on every assertion,
-// unless Static models an authenticator without one (always zero).
+// Counter is how the fake's signature counter behaves.
+type Counter int
+
+const (
+	// Counting advances the counter on every assertion.
+	Counting Counter = iota
+	// Counterless models an authenticator without a counter: always 0.
+	Counterless
+	// Frozen repeats the last counter, as a cloned authenticator would.
+	Frozen
+)
+
+// Authenticator is one fake credential. RPID, Origin, Flags, UserHandle
+// and Counter shape the next assertion; ClientData, when set, is signed
+// verbatim in place of the client data the fake builds, and Extra is
+// appended to the authenticator data.
 type Authenticator struct {
-	RPID   string
-	Origin string
-	Flags  byte
-	Static bool
-	cred   webauthn.Credential
-	key    crypto.Signer
-	ed     bool
-	count  uint32
+	RPID       string
+	Origin     string
+	Flags      byte
+	UserHandle []byte
+	Counter    Counter
+	ClientData []byte
+	Extra      []byte
+	cred       webauthn.Credential
+	key        crypto.Signer
+	ed         bool
+	count      uint32
 }
 
 // New registers a fake credential for actor with rp: ES256, or Ed25519
@@ -54,12 +70,14 @@ func New(actor types.ActorID, rp webauthn.RelyingParty, ed bool) (*Authenticator
 	if err != nil {
 		return nil, err
 	}
-	id := make([]byte, 16)
-	if _, err := rand.Read(id); err != nil {
-		return nil, err
+	id, handle := make([]byte, 16), make([]byte, 16)
+	for _, b := range [][]byte{id, handle} {
+		if _, err := rand.Read(b); err != nil {
+			return nil, err
+		}
 	}
-	return &Authenticator{RPID: rp.ID, Origin: rp.Origin, Flags: webauthn.FlagUP | webauthn.FlagUV,
-		cred: webauthn.Credential{ID: id, Actor: actor, PublicKey: spki}, key: key, ed: ed}, nil
+	return &Authenticator{RPID: rp.ID, Origin: rp.Origin, Flags: webauthn.FlagUP | webauthn.FlagUV, UserHandle: handle,
+		cred: webauthn.Credential{ID: id, Actor: actor, PublicKey: spki, UserHandle: handle}, key: key, ed: ed}, nil
 }
 
 // Credential is the credential as registered.
@@ -72,11 +90,17 @@ func (a *Authenticator) Assert(challenge []byte) (webauthn.Assertion, error) {
 	if err != nil {
 		return webauthn.Assertion{}, err
 	}
-	if !a.Static {
+	if a.ClientData != nil {
+		cd = a.ClientData
+	}
+	switch a.Counter {
+	case Counting:
 		a.count++
+	case Counterless:
+		a.count = 0
 	}
 	rpHash := sha256.Sum256([]byte(a.RPID))
-	auth := binary.BigEndian.AppendUint32(append(rpHash[:], a.Flags), a.count)
+	auth := append(binary.BigEndian.AppendUint32(append(rpHash[:], a.Flags), a.count), a.Extra...)
 	cdHash := sha256.Sum256(cd)
 	signed := append(append([]byte{}, auth...), cdHash[:]...)
 	var sig []byte
@@ -89,5 +113,6 @@ func (a *Authenticator) Assert(challenge []byte) (webauthn.Assertion, error) {
 	if err != nil {
 		return webauthn.Assertion{}, err
 	}
-	return webauthn.Assertion{CredentialID: a.cred.ID, ClientDataJSON: cd, AuthenticatorData: auth, Signature: sig}, nil
+	return webauthn.Assertion{CredentialID: a.cred.ID, ClientDataJSON: cd, AuthenticatorData: auth, Signature: sig,
+		UserHandle: a.UserHandle}, nil
 }

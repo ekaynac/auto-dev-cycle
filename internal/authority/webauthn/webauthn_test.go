@@ -4,6 +4,7 @@ package webauthn_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -40,22 +41,72 @@ func TestChallenge(t *testing.T) {
 	}
 }
 
-// refusedBy is the check each faulty assertion must fail.
-var refusedBy = map[string]string{
-	"replayed": "counter", "another challenge": "another challenge", "another credential": "another credential",
-	"a bad signature": "signature", "a wrong rp id": "RP ID", "a wrong origin": "origin", "no user presence": "not present",
-	"no user verification": "not verified", "a create type": "type", "cross-origin": "origin",
-	"short authenticator data": "authenticator data", "bad client data": "client data",
+// signed is client data with b64 as its challenge and extra fields, for a
+// signed probe.
+func signed(b64, fields string) []byte {
+	return []byte(`{"type":"webauthn.get","challenge":"` + b64 + `","origin":"https://adc.example"` + fields + `}`)
+}
+
+// nonCanonical re-encodes b64's last character with nonzero padding bits,
+// so it decodes to the same bytes under a lenient decoder.
+func nonCanonical(b64 string) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	last := strings.IndexByte(alphabet, b64[len(b64)-1])
+	return b64[:len(b64)-1] + string(alphabet[last|1])
 }
 
 func TestVerify(t *testing.T) {
+	ch := challenge(t)
+	b64 := base64.RawURLEncoding.EncodeToString(ch)
+	cd := func(json string) func(*fakeauthn.Authenticator) {
+		return func(f *fakeauthn.Authenticator) { f.ClientData = []byte(json) }
+	}
+	flags := func(fl byte) func(*fakeauthn.Authenticator) {
+		return func(f *fakeauthn.Authenticator) { f.Flags = fl }
+	}
+	const upuv = webauthn.FlagUP | webauthn.FlagUV
+	// Each fault with the check it must fail; "" is an assertion that
+	// verifies.
+	faults := []struct {
+		name, want string
+		edit       func(*fakeauthn.Authenticator)
+		tamper     func(*webauthn.Assertion)
+	}{
+		{"an honest assertion", "", func(*fakeauthn.Authenticator) {}, nil},
+		{"an extension field", "", cd(string(signed(b64, `,"other_keys_can_be_added_here":"x","crossOrigin":false`))), nil},
+		{"no user handle", "", func(f *fakeauthn.Authenticator) { f.UserHandle = nil }, nil},
+		{"backed up and eligible", "", flags(upuv | webauthn.FlagBE | webauthn.FlagBS), nil},
+		{"another credential", "another credential", nil, func(a *webauthn.Assertion) { a.CredentialID = []byte("x") }},
+		{"a bad signature", "signature", nil, func(a *webauthn.Assertion) { a.Signature[len(a.Signature)/2] ^= 1 }},
+		{"another user handle", "user handle", func(f *fakeauthn.Authenticator) { f.UserHandle = []byte("someone") }, nil},
+		{"a wrong rp id", "RP ID", func(f *fakeauthn.Authenticator) { f.RPID = "evil.example" }, nil},
+		{"a wrong origin", "origin", func(f *fakeauthn.Authenticator) { f.Origin = "https://evil.example" }, nil},
+		{"no user presence", "not present", flags(webauthn.FlagUV), nil},
+		{"no user verification", "not verified", flags(webauthn.FlagUP), nil},
+		{"attested credential data", "attested", flags(upuv | webauthn.FlagAT), nil},
+		{"extension data", "extension", func(f *fakeauthn.Authenticator) { f.Flags, f.Extra = upuv|webauthn.FlagED, []byte{0xa0} }, nil},
+		{"trailing bytes", "authenticator data", func(f *fakeauthn.Authenticator) { f.Extra = []byte{0} }, nil},
+		{"backed up, not eligible", "backup", flags(upuv | webauthn.FlagBS), nil},
+		{"a create type", "type", cd(strings.Replace(string(signed(b64, "")), "webauthn.get", "webauthn.create", 1)), nil},
+		{"an uppercase TYPE", "no type", cd(strings.Replace(string(signed(b64, "")), `"type"`, `"TYPE"`, 1)), nil},
+		{"a repeated type", "repeats type", cd(string(signed(b64, `,"type":null`))), nil},
+		{"a null type", "not a string", cd(strings.Replace(string(signed(b64, "")), `"webauthn.get"`, "null", 1)), nil},
+		{"a null crossOrigin", "crossOrigin", cd(string(signed(b64, `,"crossOrigin":null`))), nil},
+		{"cross-origin", "origin", cd(string(signed(b64, `,"crossOrigin":true`))), nil},
+		{"a top origin", "top origin", cd(string(signed(b64, `,"topOrigin":"https://adc.example"`))), nil},
+		{"no origin", "no origin", cd(`{"type":"webauthn.get","challenge":"` + b64 + `"}`), nil},
+		{"trailing content", "trailing", cd(string(signed(b64, "")) + "{}"), nil},
+		{"not an object", "not a JSON object", cd(`["webauthn.get"]`), nil},
+		{"a challenge with a newline", "another challenge", cd(string(signed(b64[:10]+`\n`+b64[10:], ""))), nil},
+		{"a non-canonical challenge", "another challenge", cd(string(signed(nonCanonical(b64), ""))), nil},
+		{"another challenge", "another challenge", cd(string(signed(base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 64)), ""))), nil},
+	}
 	for _, ed := range []bool{false, true} {
 		auth, err := fakeauthn.New("act_01m3250vm7f6ktw39dszqnyddr", rp, ed)
 		if err != nil {
 			t.Fatal(err)
 		}
 		cred := auth.Credential()
-		ch := challenge(t)
 		a, err := auth.Assert(ch)
 		if err != nil {
 			t.Fatal(err)
@@ -65,71 +116,75 @@ func TestVerify(t *testing.T) {
 			t.Fatalf("ed25519 %t: a fresh assertion: %d %v", ed, count, err)
 		}
 		cred.SignCount = count
-		fault := func(edit func(*fakeauthn.Authenticator), after func(*webauthn.Assertion)) error {
+		if _, err := webauthn.Verify(rp, cred, ch, a); err == nil || !strings.Contains(err.Error(), "counter") {
+			t.Errorf("ed25519 %t: a replay: %v", ed, err)
+		}
+		for _, c := range faults {
 			f := *auth
-			edit(&f)
+			if c.edit != nil {
+				c.edit(&f)
+			}
 			a, err := f.Assert(ch)
 			if err != nil {
 				t.Fatal(err)
 			}
-			after(&a)
+			if c.tamper != nil {
+				c.tamper(&a)
+			}
 			_, err = webauthn.Verify(rp, cred, ch, a)
-			return err
-		}
-		none := func(*fakeauthn.Authenticator) {}
-		keep := func(*webauthn.Assertion) {}
-		for name, err := range map[string]error{
-			"replayed":             func() error { _, err := webauthn.Verify(rp, cred, ch, a); return err }(),
-			"another challenge":    func() error { _, err := webauthn.Verify(rp, cred, bytes.Repeat([]byte{1}, 64), a); return err }(),
-			"another credential":   fault(none, func(a *webauthn.Assertion) { a.CredentialID = []byte("x") }),
-			"a bad signature":      fault(none, func(a *webauthn.Assertion) { a.Signature[len(a.Signature)/2] ^= 1 }),
-			"a wrong rp id":        fault(func(f *fakeauthn.Authenticator) { f.RPID = "evil.example" }, keep),
-			"a wrong origin":       fault(func(f *fakeauthn.Authenticator) { f.Origin = "https://evil.example" }, keep),
-			"no user presence":     fault(func(f *fakeauthn.Authenticator) { f.Flags = webauthn.FlagUV }, keep),
-			"no user verification": fault(func(f *fakeauthn.Authenticator) { f.Flags = webauthn.FlagUP }, keep),
-			"a create type": fault(none, func(a *webauthn.Assertion) {
-				a.ClientDataJSON = bytes.Replace(a.ClientDataJSON, []byte(webauthn.TypeGet), []byte("webauthn.create"), 1)
-			}),
-			"cross-origin": fault(none, func(a *webauthn.Assertion) {
-				a.ClientDataJSON = bytes.Replace(a.ClientDataJSON, []byte(`"crossOrigin":false`), []byte(`"crossOrigin":true`), 1)
-			}),
-			"short authenticator data": fault(none, func(a *webauthn.Assertion) { a.AuthenticatorData = a.AuthenticatorData[:36] }),
-			"bad client data":          fault(none, func(a *webauthn.Assertion) { a.ClientDataJSON = []byte("{") }),
-		} {
 			var e *webauthn.Error
-			if !errors.As(err, &e) || !strings.Contains(e.Detail, refusedBy[name]) {
-				t.Errorf("ed25519 %t: %s: %v, want %q", ed, name, err, refusedBy[name])
+			switch {
+			case c.want == "" && err != nil:
+				t.Errorf("ed25519 %t: %s: %v", ed, c.name, err)
+			case c.want != "" && (!errors.As(err, &e) || !strings.Contains(e.Detail, c.want)):
+				t.Errorf("ed25519 %t: %s: %v, want %q", ed, c.name, err, c.want)
 			}
 		}
 	}
 }
 
-// An authenticator without a counter reports zero every time: that is
-// accepted while the stored counter is zero too, and refused once it is
-// not (§7.2 step 21).
-func TestZeroCounter(t *testing.T) {
+// A counterless authenticator reports 0 every time, even after counting:
+// accepted while the stored counter is 0 too, refused once it is not; a
+// frozen counter repeats its last value and is refused (§7.2 step 21).
+func TestCounterModes(t *testing.T) {
 	auth, err := fakeauthn.New("act_01m3250vm7f6ktw39dszqnyddr", rp, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth.Static = true
 	ch := challenge(t)
 	cred := auth.Credential()
-	for range 2 {
+	assert := func() webauthn.Assertion {
 		a, err := auth.Assert(ch)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if count, err := webauthn.Verify(rp, cred, ch, a); err != nil || count != 0 {
+		return a
+	}
+	if count, err := webauthn.Verify(rp, cred, ch, assert()); err != nil || count != 1 {
+		t.Fatalf("a counting assertion: %d %v", count, err)
+	}
+	auth.Counter = fakeauthn.Counterless
+	for range 2 {
+		if count, err := webauthn.Verify(rp, cred, ch, assert()); err != nil || count != 0 {
 			t.Fatalf("a zero counter: %d %v", count, err)
 		}
 	}
-	a, err := auth.Assert(ch)
-	if err != nil {
-		t.Fatal(err)
-	}
 	cred.SignCount = 1
-	if _, err := webauthn.Verify(rp, cred, ch, a); err == nil {
+	if _, err := webauthn.Verify(rp, cred, ch, assert()); err == nil {
 		t.Error("a zero counter after 1")
+	}
+	cred.SignCount = 0
+	auth.Counter = fakeauthn.Counting
+	if count, err := webauthn.Verify(rp, cred, ch, assert()); err != nil || count != 1 {
+		t.Fatalf("counting again from 0: %d %v", count, err)
+	}
+	cred.SignCount = 0
+	auth.Counter = fakeauthn.Frozen
+	for _, want := range []bool{true, false} {
+		count, err := webauthn.Verify(rp, cred, ch, assert())
+		if (err == nil) != want || (want && count != 1) {
+			t.Fatalf("a frozen counter at 1 after %d: %d %v", cred.SignCount, count, err)
+		}
+		cred.SignCount = count
 	}
 }
