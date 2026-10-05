@@ -38,9 +38,20 @@ type Lock struct {
 // detectable). The state directory must be private (0700); the lock file is
 // opened without following symlinks and without truncation, so a failed
 // attempt never damages the holder's record.
-func AcquireLock(stateDir string) (*Lock, error) {
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return nil, err
+func AcquireLock(stateDir string) (*Lock, error) { return acquire(stateDir, false) }
+
+// ProbeLock takes the same exclusive lock for a probe, such as log
+// verification, that must change nothing (03 "Process exclusivity"): the
+// state directory and its lock file must already exist, and the lock file
+// is opened read-only, never created, truncated or rewritten, so it keeps
+// the last holder's record.
+func ProbeLock(stateDir string) (*Lock, error) { return acquire(stateDir, true) }
+
+func acquire(stateDir string, probe bool) (*Lock, error) {
+	if !probe {
+		if err := os.MkdirAll(stateDir, 0o700); err != nil {
+			return nil, err
+		}
 	}
 	dir, err := filepath.Abs(stateDir)
 	if err != nil {
@@ -54,7 +65,11 @@ func AcquireLock(stateDir string) (*Lock, error) {
 		return nil, fmt.Errorf("eventstore: state directory %s is accessible to group or others (%v); it must be 0700", dir, fi.Mode().Perm())
 	}
 	path := filepath.Join(dir, LockFile)
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	flags := os.O_RDWR | os.O_CREATE | syscall.O_NOFOLLOW
+	if probe {
+		flags = os.O_RDONLY | syscall.O_NOFOLLOW
+	}
+	f, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -76,6 +91,9 @@ func AcquireLock(stateDir string) (*Lock, error) {
 			return nil, fmt.Errorf("%w: %s is locked by another process", ErrAlreadyRunning, dir)
 		}
 		return nil, err
+	}
+	if probe {
+		return &Lock{f: f, dir: dir}, nil
 	}
 	record := "pid " + strconv.Itoa(os.Getpid()) + "\nprocess_start_ticks " + processStart() + "\n"
 	for _, step := range []func() error{

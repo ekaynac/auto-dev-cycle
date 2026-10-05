@@ -65,6 +65,8 @@ var (
 	ReasonInconsistentUsage = types.ReasonCodeOf("inconsistent_usage")
 	// ReasonInstrumentChanged: The instrument digest changed; dependent requirements must be re-run.
 	ReasonInstrumentChanged = types.ReasonCodeOf("instrument_changed")
+	// ReasonLogIntegrityBroken: The event log fails verification: a gap, a broken hash link, an edited event, or (against a trusted head) truncation or a rewritten tail.
+	ReasonLogIntegrityBroken = types.ReasonCodeOf("log_integrity_broken")
 	// ReasonP3Banked: A P3 finding banked as background work (plan §2.5).
 	ReasonP3Banked = types.ReasonCodeOf("p3_banked")
 	// ReasonPreconditionFailed: An instrument precondition failed before the run; no attempt is spent.
@@ -107,6 +109,8 @@ var (
 	ReasonStaleAttempt = types.ReasonCodeOf("stale_attempt")
 	// ReasonStaleExpectedState: The command's expected object version or digest is not current.
 	ReasonStaleExpectedState = types.ReasonCodeOf("stale_expected_state")
+	// ReasonStoreUnreadable: The event store or its lock cannot be opened or read, so the log was not checked; never read as intact.
+	ReasonStoreUnreadable = types.ReasonCodeOf("store_unreadable")
 	// ReasonStreamIdleCut: The response stream went idle and was cut before it finished.
 	ReasonStreamIdleCut = types.ReasonCodeOf("stream_idle_cut")
 	// ReasonTestIntegrityViolation: A test was deleted or skipped, or an assertion removed, without an approved row (conclusive).
