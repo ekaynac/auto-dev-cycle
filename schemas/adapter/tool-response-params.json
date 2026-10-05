@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/adapter/tool-response-params.json",
+  "title": "AdapterToolResponseParams",
+  "description": "tool.response: the core's answer to a tool.request for a controller-mediated tool (docs/design/m0/09 \"Notifications\"). It names the request it answers (the request handle the adapter sent) and carries the result triple and the delivered content handle (the output, or the core's diagnostic for a failure) that the adapter then reports in tool.result, which is what makes that turn's delivered coverage evidence rather than declaration. The adapter answers with an empty result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["attempt", "fencing_token", "call", "turn", "tool", "request", "outcome", "reason", "detail", "delivered"],
+  "properties": {
+    "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"},
+    "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "call": {"$ref": "../common/defs.json#/$defs/CallID"},
+    "turn": {"$ref": "event.json#/$defs/AdapterTurn"},
+    "tool": {"$ref": "event.json#/$defs/AdapterLabel"},
+    "request": {"$ref": "event.json#/$defs/AdapterHandle"},
+    "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
+    "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
+    "detail": {"type": "string", "maxLength": 4096},
+    "delivered": {"description": "The content the core delivers to the harness: the tool's output, or the core's own diagnostic when the tool failed or could not run. The adapter reports this exact handle in tool.result, which is what makes the turn's delivered coverage evidence.", "$ref": "event.json#/$defs/AdapterHandle"}
+  },
+  "allOf": [
+    {"if": {"properties": {"outcome": {"enum": ["found", "could_not_run", "failed"]}}}, "then": {"properties": {"detail": {"minLength": 1}}}}
+  ]
+}

@@ -26,6 +26,10 @@ export type AdapterSubCall = string;
  * 1 for the first turn, the same domain as the ContextManifest records the turn feeds (manifest-delivery, manifest-finalized).
  */
 export type AdapterTurn = number;
+/**
+ * A short adapter-chosen label: a harness, a capability, a tool, a model id as the source serves it (the method schemas use it).
+ */
+export type AdapterLabel = string;
 
 /**
  * A model request inside the run, so usage and coverage attach to an identified call (call ledger).
@@ -152,10 +156,7 @@ export interface ToolRequestEvent {
    */
   call: string;
   turn: AdapterTurn;
-  /**
-   * Instrument, predicate, artifact, precondition and model-family names: lowercase letters and digits, then also '.', '_' and '-' (06 "Names and media types").
-   */
-  tool: string;
+  tool: AdapterLabel;
   request: AdapterHandle;
 }
 /**
@@ -188,10 +189,7 @@ export interface ToolResultEvent {
    */
   call: string;
   turn: AdapterTurn;
-  /**
-   * Instrument, predicate, artifact, precondition and model-family names: lowercase letters and digits, then also '.', '_' and '-' (06 "Names and media types").
-   */
-  tool: string;
+  tool: AdapterLabel;
   mediated_by_controller: boolean;
   delivered: null | AdapterHandle;
   bytes: number;

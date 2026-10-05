@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/adapter/fenced-params.json",
+  "title": "AdapterFencedParams",
+  "description": "cancel's params: the attempt and its token. Cancel is best effort, never relied on (A4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attempt",
+    "fencing_token"
+  ],
+  "properties": {
+    "attempt": {
+      "$ref": "../common/defs.json#/$defs/AttemptID"
+    },
+    "fencing_token": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  }
+}

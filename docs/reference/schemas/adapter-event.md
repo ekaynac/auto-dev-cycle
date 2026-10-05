@@ -22,6 +22,18 @@ The adapter's label for a model request within the call; not an authoritative id
 
 Type: string (pattern `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
+### AdapterVersion
+
+A semantic version (semver 2.0.0): major.minor.patch without leading zeros, optional prerelease and build metadata. The core compares the contract version's major (09 "Versioning").
+
+Type: string (pattern `^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)([.](0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?([+][0-9A-Za-z-]+([.][0-9A-Za-z-]+)*)?$`, maxLength `128`)
+
+### AdapterLabel
+
+A short adapter-chosen label: a harness, a capability, a tool, a model id as the source serves it (the method schemas use it).
+
+Type: string (pattern `^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$`)
+
 ### AdapterHandle
 
 An attempt-scoped blob handle (M9), never a raw path. A handle naming another attempt than its event's is refused (internal/adapterhost).
@@ -154,7 +166,7 @@ A controller-mediated tool request (e.g. run test X in the sandbox); the core ex
 | `fencing_token` | yes | integer (minimum `1`, maximum `9007199254740991`) |  |
 | `call` | yes | [CallID](common-defs.md#callid) |  |
 | `turn` | yes | [AdapterTurn](#adapterturn) |  |
-| `tool` | yes | [Name](records-receipt.md#name) |  |
+| `tool` | yes | [AdapterLabel](#adapterlabel) |  |
 | `request` | yes | [AdapterHandle](#adapterhandle) |  |
 
 No other fields are allowed.
@@ -172,7 +184,7 @@ A tool result. A controller-mediated one references the exact content handle the
 | `fencing_token` | yes | integer (minimum `1`, maximum `9007199254740991`) |  |
 | `call` | yes | [CallID](common-defs.md#callid) |  |
 | `turn` | yes | [AdapterTurn](#adapterturn) |  |
-| `tool` | yes | [Name](records-receipt.md#name) |  |
+| `tool` | yes | [AdapterLabel](#adapterlabel) |  |
 | `mediated_by_controller` | yes | boolean |  |
 | `delivered` | yes | null or [AdapterHandle](#adapterhandle) |  |
 | `bytes` | yes | [Amount](records-resource-group.md#amount) |  |

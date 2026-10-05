@@ -159,6 +159,12 @@ type AdapterTurn = int64
 // AdapterSubCall: The adapter's label for a model request within the call; not an authoritative id.
 type AdapterSubCall = string
 
+// AdapterVersion: A semantic version (semver 2.0.0): major.minor.patch without leading zeros, optional prerelease and build metadata. The core compares the contract version's major (09 "Versioning").
+type AdapterVersion = string
+
+// AdapterLabel: A short adapter-chosen label: a harness, a capability, a tool, a model id as the source serves it (the method schemas use it).
+type AdapterLabel = string
+
 // AdapterHandle: An attempt-scoped blob handle (M9), never a raw path. A handle naming another attempt than its event's is refused (internal/adapterhost).
 type AdapterHandle struct {
 	Attempt AttemptID `json:"attempt"`
@@ -236,7 +242,7 @@ type ToolRequestEvent struct {
 	FencingToken int64         `json:"fencing_token"`
 	Call         CallID        `json:"call"`
 	Turn         AdapterTurn   `json:"turn"`
-	Tool         Name          `json:"tool"`
+	Tool         AdapterLabel  `json:"tool"`
 	Request      AdapterHandle `json:"request"`
 }
 
@@ -247,7 +253,7 @@ type ToolResultEvent struct {
 	FencingToken         int64          `json:"fencing_token"`
 	Call                 CallID         `json:"call"`
 	Turn                 AdapterTurn    `json:"turn"`
-	Tool                 Name           `json:"tool"`
+	Tool                 AdapterLabel   `json:"tool"`
 	MediatedByController bool           `json:"mediated_by_controller"`
 	Delivered            *AdapterHandle `json:"delivered"`
 	Bytes                Amount         `json:"bytes"`

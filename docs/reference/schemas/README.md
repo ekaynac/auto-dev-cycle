@@ -6,7 +6,14 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 
 | Schema | Title |
 |---|---|
+| [`adapter/describe-result.json`](adapter-describe-result.md) | AdapterDescribeResult |
 | [`adapter/event.json`](adapter-event.md) | AdapterEvent |
+| [`adapter/fenced-params.json`](adapter-fenced-params.md) | AdapterFencedParams |
+| [`adapter/outcome.json`](adapter-outcome.md) | AdapterOutcome |
+| [`adapter/prepare-params.json`](adapter-prepare-params.md) | AdapterPrepareParams |
+| [`adapter/run-params.json`](adapter-run-params.md) | AdapterRunParams |
+| [`adapter/run-result.json`](adapter-run-result.md) | AdapterRunResult |
+| [`adapter/tool-response-params.json`](adapter-tool-response-params.md) | AdapterToolResponseParams |
 | [`api/command-request.json`](api-command-request.md) | CommandRequest |
 | [`api/command-response.json`](api-command-response.md) | CommandResponse |
 | [`common/defs.json`](common-defs.md) | Common definitions |

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/adapter/describe-result.json",
+  "title": "AdapterDescribeResult",
+  "description": "What the adapter and its harness are (01-first-release-plan \"describe()\"). The core refuses a different contract major version (09 \"Versioning\").",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "harness",
+    "harness_version",
+    "adapter_version",
+    "contract_version",
+    "capabilities",
+    "session_semantics",
+    "tool_surface",
+    "telemetry",
+    "host_side",
+    "needs_native_login"
+  ],
+  "properties": {
+    "harness": {
+      "$ref": "event.json#/$defs/AdapterLabel"
+    },
+    "harness_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "adapter_version": {
+      "$ref": "event.json#/$defs/AdapterVersion"
+    },
+    "contract_version": {
+      "$ref": "event.json#/$defs/AdapterVersion"
+    },
+    "capabilities": {
+      "description": "Declared capabilities; routing measures them before trusting them.",
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 64,
+      "items": {
+        "$ref": "event.json#/$defs/AdapterLabel"
+      }
+    },
+    "session_semantics": {
+      "description": "What the harness supports: fresh_process starts clean each time; reusable_process could serve several sessions. The controller still runs one adapter process per attempt with a fresh session (09 \"Process model\"); reuse never overrides that.",
+      "enum": [
+        "fresh_process",
+        "reusable_process"
+      ]
+    },
+    "tool_surface": {
+      "description": "The harness's own tools, which the controller cannot observe or mediate (a turn using one is partial coverage).",
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 256,
+      "items": {
+        "$ref": "event.json#/$defs/AdapterLabel"
+      }
+    },
+    "telemetry": {
+      "description": "Which notifications the adapter emits.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "usage",
+        "upstream",
+        "stream_deltas",
+        "per_turn_coverage"
+      ],
+      "properties": {
+        "usage": {
+          "type": "boolean"
+        },
+        "upstream": {
+          "type": "boolean"
+        },
+        "stream_deltas": {
+          "type": "boolean"
+        },
+        "per_turn_coverage": {
+          "type": "boolean"
+        }
+      }
+    },
+    "host_side": {
+      "type": "boolean"
+    },
+    "needs_native_login": {
+      "type": "boolean"
+    }
+  }
+}

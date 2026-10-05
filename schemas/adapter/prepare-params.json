@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/adapter/prepare-params.json",
+  "title": "AdapterPrepareParams",
+  "description": "Prepare one attempt (09 \"Methods\", \"Host-side harness rules\").",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attempt",
+    "fencing_token",
+    "role",
+    "executor",
+    "model",
+    "workspace",
+    "inputs",
+    "limits",
+    "tool_policy",
+    "gateway",
+    "native_login"
+  ],
+  "properties": {
+    "attempt": {
+      "$ref": "../common/defs.json#/$defs/AttemptID"
+    },
+    "fencing_token": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "role": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,31}$"
+    },
+    "executor": {
+      "$ref": "../common/defs.json#/$defs/ExecutorID"
+    },
+    "model": {
+      "$ref": "event.json#/$defs/AdapterLabel"
+    },
+    "workspace": {
+      "description": "The working tree inside the attempt's confinement: its absolute path there, and whether the attempt may write it (host-side roles work on a read-only snapshot).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "writable"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/[^\\x00]*$",
+          "maxLength": 1024
+        },
+        "writable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "$ref": "event.json#/$defs/AdapterHandle"
+      }
+    },
+    "limits": {
+      "description": "The attempt's limits; the controller enforces them too and never relies on the adapter.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_turns",
+        "max_output_tokens",
+        "wall_seconds"
+      ],
+      "properties": {
+        "max_turns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "wall_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 604800
+        }
+      }
+    },
+    "tool_policy": {
+      "description": "The only tools the harness may expose: its own (allowed) and the controller-mediated ones it requests with tool.request (mediated).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed",
+        "mediated"
+      ],
+      "properties": {
+        "allowed": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 256,
+          "items": {
+            "$ref": "event.json#/$defs/AdapterLabel"
+          }
+        },
+        "mediated": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 256,
+          "items": {
+            "$ref": "event.json#/$defs/AdapterLabel"
+          }
+        }
+      }
+    },
+    "gateway": {
+      "description": "The controller's model gateway for this attempt, or null. The token is a secret scoped to the attempt.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "base_url",
+            "token"
+          ],
+          "properties": {
+            "base_url": {
+              "description": "An http(s) URL the harness can call: a host, an optional port 1-65535 and an optional path. The host is a DNS name (labels of up to 63 letters, digits and inner hyphens, the last starting with a letter, an optional trailing root dot), a dotted IPv4 address, or a bracketed IPv6 address in RFC 3986 form (IPv4-mapped included, no zone). No userinfo, control characters, spaces or fragment.",
+              "type": "string",
+              "pattern": "^https?://(([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?[.])*[A-Za-z]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?[.]?|(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}|\\[(([0-9A-Fa-f]{1,4}:){6}([0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|::([0-9A-Fa-f]{1,4}:){5}([0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|([0-9A-Fa-f]{1,4})?::([0-9A-Fa-f]{1,4}:){4}([0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|(([0-9A-Fa-f]{1,4}:){0,1}[0-9A-Fa-f]{1,4})?::([0-9A-Fa-f]{1,4}:){3}([0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|(([0-9A-Fa-f]{1,4}:){0,2}[0-9A-Fa-f]{1,4})?::([0-9A-Fa-f]{1,4}:){2}([0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|(([0-9A-Fa-f]{1,4}:){0,3}[0-9A-Fa-f]{1,4})?::[0-9A-Fa-f]{1,4}:([0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|(([0-9A-Fa-f]{1,4}:){0,4}[0-9A-Fa-f]{1,4})?::([0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])([.](25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3})|(([0-9A-Fa-f]{1,4}:){0,5}[0-9A-Fa-f]{1,4})?::[0-9A-Fa-f]{1,4}|(([0-9A-Fa-f]{1,4}:){0,6}[0-9A-Fa-f]{1,4})?::)\\])(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?(/[^\\x00-\\x20\\x7f#]*)?$",
+              "maxLength": 2048
+            },
+            "token": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 512
+            }
+          }
+        }
+      ]
+    },
+    "native_login": {
+      "description": "A narrowly scoped copy of the credential files a host-side harness needs (M11), or null; never the operator's home.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "credential_ref",
+            "scope"
+          ],
+          "properties": {
+            "credential_ref": {
+              "$ref": "event.json#/$defs/AdapterLabel"
+            },
+            "scope": {
+              "type": "array",
+              "uniqueItems": true,
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "$ref": "event.json#/$defs/AdapterLabel"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

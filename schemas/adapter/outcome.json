@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/adapter/outcome.json",
+  "title": "AdapterOutcome",
+  "description": "prepare's, cancel's and shutdown's result: a result triple (02); detail is non-empty unless the outcome is empty.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "outcome",
+    "reason",
+    "detail"
+  ],
+  "properties": {
+    "outcome": {
+      "$ref": "../common/defs.json#/$defs/Outcome"
+    },
+    "reason": {
+      "$ref": "../common/defs.json#/$defs/ReasonCode"
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 4096
+    }
+  },
+  "if": {
+    "properties": {
+      "outcome": {
+        "enum": [
+          "found",
+          "could_not_run",
+          "failed"
+        ]
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "detail": {
+        "minLength": 1
+      }
+    }
+  }
+}

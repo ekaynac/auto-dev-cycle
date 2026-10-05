@@ -115,9 +115,10 @@ func TestLinksResolve(t *testing.T) {
 		}
 	}
 	link := regexp.MustCompile(`\]\(([^)#]*)(?:#([^)]*))?\)`)
+	code := regexp.MustCompile("`[^`]*`") // a pattern in a code span is not a link
 	n := 0
 	for _, p := range pages {
-		for _, m := range link.FindAllStringSubmatch(p.Content, -1) {
+		for _, m := range link.FindAllStringSubmatch(code.ReplaceAllString(p.Content, ""), -1) {
 			n++
 			target := m[1]
 			if target == "" {

@@ -31,6 +31,17 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
     },
+    "AdapterVersion": {
+      "description": "A semantic version (semver 2.0.0): major.minor.patch without leading zeros, optional prerelease and build metadata. The core compares the contract version's major (09 \"Versioning\").",
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)([.](0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?([+][0-9A-Za-z-]+([.][0-9A-Za-z-]+)*)?$"
+    },
+    "AdapterLabel": {
+      "description": "A short adapter-chosen label: a harness, a capability, a tool, a model id as the source serves it (the method schemas use it).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$"
+    },
     "AdapterHandle": {
       "description": "An attempt-scoped blob handle (M9), never a raw path. A handle naming another attempt than its event's is refused (internal/adapterhost).",
       "type": "object",
@@ -85,14 +96,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["event", "attempt", "fencing_token", "call", "turn", "tool", "request"],
-      "properties": {"event": {"const": "tool.request"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "tool": {"$ref": "../records/receipt.json#/$defs/Name"}, "request": {"$ref": "#/$defs/AdapterHandle"}}
+      "properties": {"event": {"const": "tool.request"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "tool": {"$ref": "#/$defs/AdapterLabel"}, "request": {"$ref": "#/$defs/AdapterHandle"}}
     },
     "ToolResultEvent": {
       "description": "A tool result. A controller-mediated one references the exact content handle the core supplied (delivered coverage); any other is only declared and names none.",
       "type": "object",
       "additionalProperties": false,
       "required": ["event", "attempt", "fencing_token", "call", "turn", "tool", "mediated_by_controller", "delivered", "bytes"],
-      "properties": {"event": {"const": "tool.result"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "tool": {"$ref": "../records/receipt.json#/$defs/Name"}, "mediated_by_controller": {"type": "boolean"}, "delivered": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/AdapterHandle"}]}, "bytes": {"$ref": "../records/resource-group.json#/$defs/Amount"}},
+      "properties": {"event": {"const": "tool.result"}, "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"}, "fencing_token": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}, "call": {"$ref": "../common/defs.json#/$defs/CallID"}, "turn": {"$ref": "#/$defs/AdapterTurn"}, "tool": {"$ref": "#/$defs/AdapterLabel"}, "mediated_by_controller": {"type": "boolean"}, "delivered": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/AdapterHandle"}]}, "bytes": {"$ref": "../records/resource-group.json#/$defs/Amount"}},
       "if": {"properties": {"mediated_by_controller": {"const": true}}},
       "then": {"properties": {"delivered": {"not": {"const": null}}}},
       "else": {"properties": {"delivered": {"const": null}}}
