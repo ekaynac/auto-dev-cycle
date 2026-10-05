@@ -170,8 +170,17 @@ golden file names:
   - an import error outside the changed files that passes through a changed test file stays a runner fault;
   - a missing answer yields `awaiting_input` and recovers on the answering approval without a manual release; a precondition failure recovers on its probe;
   - an acceptance row not producible by its owner is refused by the plan validator (M5).
-  - a claim citing a test id that the tree's gate run never collected is `could_not_run`, never a pass, with the
-    strict options off; the same claim citing a collected, passing test passes (B3).
+  - cited tests (B3), with the strict options off and on, for a claim and an acceptance row:
+    - a citation the gate run never collected is `could_not_run`;
+    - a skipped, collection-only or incomplete citation is `could_not_run`;
+    - a failed citation fails the row while the baseline-relative gate passes;
+    - unreadable results are `could_not_run/runner_fault` on `wrong_owner`;
+    - a name shared by two files, or a parametrised case cited without its parameters, is ambiguous and
+      `could_not_run`;
+    - a citation passing in one environment and absent in another covered one is `could_not_run`;
+    - a carried review whose cited test stops qualifying on the refreshed prospective-tree receipts loses its pass;
+    - a citation with a completed, passing result in every covered environment is eligible evidence; the claim
+      still needs its review.
   - a call killed mid-stream, on a single-call lease (its stream captured with no terminal result, with the
     controller's stop request, observed statuses and recorded end of stream linked; `completed: false` and the reason
     asserted through the real derivation):

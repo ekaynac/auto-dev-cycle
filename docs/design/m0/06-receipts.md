@@ -120,10 +120,23 @@ parameters. Names compare as written, so one spelling per name keeps instrument 
    Delivery restrictions are enforced at assembly (10) by artifact class.
 8. **Missing evidence never passes.** A required receipt that is absent, stale, incomplete, inapplicable or
    `could_not_run` blocks the dependent decision.
-8a. **Cited tests must have run** (intake B3). A claim or acceptance row that cites test ids is checked against the
-   per-test results of the applicable gate receipt for the same tree (rule 2). An id absent from those results makes
-   the row `could_not_run`, whatever the reviewer's text says. A failed id makes it fail, and results the controller
-   cannot read make it a hold. This is the one gate path: there is no profile in which an uncollected citation passes.
+8a. **Cited tests must have run and passed** (intake B3). This is the one gate path: no profile lets an unqualified
+   citation pass, whatever the reviewer's text says.
+   - **What is checked.** A claim or acceptance row that cites tests is checked against the per-test results of the
+     applicable gate receipts for the same tree (rule 2).
+   - **Identity.** A citation names a concrete case by the result adapter's fully qualified id: file or package,
+     suite, case and parameters. It matches exactly. A citation that matches no case, or more than one, is
+     `could_not_run`. Concrete citations differ from the test-id *patterns* a producer declares for its own tests (13).
+   - **Environments.** A citation must hold in every gate environment the claim covers, by default every declared
+     environment. One environment's result never satisfies another's.
+   - **Outcomes.**
+     - A completed, passing result qualifies.
+     - Absent, skipped, collection-only and incomplete results are `could_not_run`.
+     - A failed result fails the row, even when the baseline-relative gate passes.
+     - Results the controller cannot read are `could_not_run/runner_fault`, on the `wrong_owner` hold for the runner's
+       owner. This is not the structural wait for a gate result that does not exist yet (13).
+   - **Reuse.** A reused or carried review keeps its pass only while its cited evidence still qualifies on the
+     refreshed receipts for the prospective tree (13).
 
 ## What M0 delivers
 

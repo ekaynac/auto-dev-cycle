@@ -331,10 +331,12 @@ receipts can expire between claim and commit), and semantic acceptance review st
    - the full gate on every target environment;
    - the integrity guard;
    - required receipts present, current for the final tree, and passing on their **inner predicate**;
-   - **cited tests were collected** (intake B3): every test id a claim or an acceptance row cites must appear in this
-     tree's collected gate results. An id never collected (a test nobody wrote, a renamed file) makes that row
-     `could_not_run`, never a pass. A cited test that failed is a fail; unreadable results are a hold. A pass row is
-     computed from collected results, so a placeholder has nothing to pass on.
+   - **cited tests ran and passed** (intake B3): every test a claim or an acceptance row cites must have a completed,
+     passing result in this tree's gate results, in every environment the claim covers (`m0/06` rule 8a). A test
+     never collected (one nobody wrote, a renamed file), skipped, only collected, or not run to completion makes the
+     row `could_not_run`, never a pass. A cited test that failed is a fail, even when the baseline-relative gate
+     passes. Results the controller cannot read are `could_not_run/runner_fault`, routed to the runner's owner. A
+     pass row is computed from those results, so a placeholder has nothing to pass on.
 
    Evidence is controller-produced. Missing evidence never passes.
 3. One independent reviewer proves claims with test id + output + code lines. It **inspects assertions and mocks**
