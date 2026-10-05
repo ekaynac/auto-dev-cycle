@@ -1,0 +1,10 @@
+{
+  "name": "idempotency-key-reuse",
+  "invariant": "A repeated idempotency key with the same input replays the stored result; with a different input it is refused, and nothing runs again (03 \"Idempotency\").",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "idempotency_key_reused"}
+  ],
+  "mutation": "eventstore.idempotency-ignores-input"
+}

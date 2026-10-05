@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/testing/contract-fixture.json",
+  "title": "ContractFixture",
+  "description": "An M0 contract fixture's golden (docs/design/m0/11 \"M0 exercises real validators\"): the invariant it targets, the (outcome, reason) sequence its steps must yield through the real components, and the named mutation that must turn it red. adc dev fixtures --contract runs it; make fixtures-contract checks the mutation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "invariant", "expected", "mutation"],
+  "properties": {
+    "name": {"description": "The fixture's name: its golden file's name and its registered runner.", "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "invariant": {"description": "The invariant the fixture targets, in one sentence.", "type": "string", "minLength": 1, "maxLength": 500},
+    "expected": {
+      "description": "One (outcome, reason) per step, in order, each a pair a writer may emit (02). A command the component admits, applied or replayed, is empty/completed_clean; a component that returns its own result triple is expected with that triple's outcome and reason.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["outcome", "reason"],
+        "properties": {
+          "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
+          "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"}
+        }
+      }
+    },
+    "mutation": {"description": "The named mutation (internal/mutation) that must turn the fixture red.", "type": "string", "pattern": "^[a-z][a-z0-9.-]{0,127}$"}
+  }
+}
