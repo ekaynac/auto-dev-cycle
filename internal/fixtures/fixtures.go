@@ -21,6 +21,7 @@ import (
 	goldens "github.com/ekaynac/auto-dev-cycle/fixtures/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -48,9 +49,10 @@ type runner func(ctx context.Context, dir string) (steps []Step, violations []st
 
 // runners are the registered fixtures, by name.
 var runners = map[string]runner{
-	"idempotency-key-reuse": idempotencyKeyReuse,
-	"stale-expected-state":  staleExpectedState,
-	"second-daemon":         secondDaemon,
+	"idempotency-key-reuse":       idempotencyKeyReuse,
+	"stale-expected-state":        staleExpectedState,
+	"second-daemon":               secondDaemon,
+	"revoked-attempt-late-result": revokedAttemptLateResult,
 }
 
 // Goldens loads and validates every golden, checking that each has a
@@ -160,6 +162,8 @@ func commandStep(err error) (Step, error) {
 		return Step{vocab.Failed, vocab.ReasonIdempotencyKeyReused.String()}, nil
 	case errors.Is(err, eventstore.ErrStaleExpectedState):
 		return Step{vocab.Failed, vocab.ReasonStaleExpectedState.String()}, nil
+	case errors.As(err, new(*lease.Stale)):
+		return Step{vocab.Failed, vocab.ReasonStaleAttempt.String()}, nil
 	case errors.Is(err, eventstore.ErrAlreadyRunning):
 		return Step{vocab.CouldNotRun, vocab.ReasonControllerAlreadyRunning.String()}, nil
 	}

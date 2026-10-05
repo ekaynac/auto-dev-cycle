@@ -1,0 +1,9 @@
+{
+  "name": "revoked-attempt-late-result",
+  "invariant": "Output lands only from the unit's current attempt with its exact token and open publication; once the attempt is stopped (revoked), its late output is refused (05 \"Fencing\").",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "stale_attempt"}
+  ],
+  "mutation": "lease.fence-ignores-closed-publication"
+}

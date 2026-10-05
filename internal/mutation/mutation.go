@@ -18,7 +18,10 @@ const (
 	// LockNotExclusive makes the state directory lock ignore a failed
 	// exclusive flock, so a second controller could start.
 	LockNotExclusive = "eventstore.lock-not-exclusive"
+	// FenceIgnoresClosedPublication lets output from an attempt whose
+	// publication is closed (stopped, lost, superseded) land.
+	FenceIgnoresClosedPublication = "lease.fence-ignores-closed-publication"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
-var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExclusive}
+var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExclusive, FenceIgnoresClosedPublication}
