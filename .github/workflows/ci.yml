@@ -15,12 +15,10 @@ concurrency:
 
 jobs:
   ci:
-    name: make ci (${{ matrix.runner }})
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.runner }}
+    name: make ci
+    # Self-hosted x86 runner in the homelab (ekaynac/homelab docs/services/ci-runner.md):
+    # GitHub-hosted minutes ran out. Ubuntu 24.04, same as the ubuntu-24.04 image.
+    runs-on: [self-hosted, homelab]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,7 +44,7 @@ jobs:
 
   fixtures:
     name: T0 fixtures well-formed
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, homelab]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
