@@ -4,12 +4,17 @@ package apidoc
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"io/fs"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"go.yaml.in/yaml/v3"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -26,9 +31,22 @@ func registry(t *testing.T) map[string]types.Action {
 	return reg.Actions
 }
 
-func parse(t *testing.T, b []byte) document {
+// parsed is the document as a consumer reads it, strictly (unknown fields
+// refused); the embedded schemas stay generic.
+type parsed struct {
+	OpenAPI    string                          `yaml:"openapi"`
+	Info       map[string]string               `yaml:"info"`
+	Security   []map[string][]string           `yaml:"security"`
+	Paths      map[string]map[string]operation `yaml:"paths"`
+	Components struct {
+		SecuritySchemes map[string]map[string]string `yaml:"securitySchemes"`
+		Schemas         map[string]any               `yaml:"schemas"`
+	} `yaml:"components"`
+}
+
+func parse(t *testing.T, b []byte) parsed {
 	t.Helper()
-	var d document
+	var d parsed
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(&d); err != nil {
@@ -40,7 +58,7 @@ func parse(t *testing.T, b []byte) document {
 // Every action has exactly one command endpoint, and nothing else is one.
 func TestOneEndpointPerAction(t *testing.T) {
 	actions := registry(t)
-	b, err := Generate(actions)
+	b, err := Generate(actions, schemas.FS())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,23 +77,107 @@ func TestOneEndpointPerAction(t *testing.T) {
 			op.Deprecated != (a.Deprecated != nil) || !op.RequestBody.Required {
 			t.Errorf("%s: %+v", name, op)
 		}
-		if op.RequestBody.Content["application/json"].Schema.Ref != "#/components/schemas/CommandRequest" ||
-			op.Responses["200"].Content["application/json"].Schema.Ref != "#/components/schemas/CommandResponse" {
+		if op.RequestBody.Content["application/json"].Schema.Ref != "#/components/schemas/api.command-request" ||
+			op.Responses["200"].Content["application/json"].Schema.Ref != "#/components/schemas/api.command-response" {
 			t.Errorf("%s: bodies %+v %+v", name, op.RequestBody, op.Responses)
 		}
 	}
 }
 
-// The document's schema references name embedded schema files.
-func TestReferencesResolve(t *testing.T) {
-	b, err := Generate(registry(t))
+// offline refuses every URL: a reference that leaves the document fails.
+type offline struct{}
+
+func (offline) Load(url string) (any, error) { return nil, fmt.Errorf("fetched %s", url) }
+
+// embedded decodes the generated document's embedded schemas.
+func embedded(t *testing.T) map[string]any {
+	t.Helper()
+	b, err := Generate(registry(t), schemas.FS())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, r := range parse(t, b).Components.Schemas {
-		if _, err := fs.Stat(schemas.FS(), r.Ref); err != nil {
+	var doc struct {
+		Components struct {
+			Schemas map[string]any `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	return doc.Components.Schemas
+}
+
+// Each component is its schema file exactly (the YAML says the same JSON
+// values), under the file's own $id.
+func TestComponentsAreTheSchemaFiles(t *testing.T) {
+	for name, s := range embedded(t) {
+		file := strings.ReplaceAll(name, ".", "/") + ".json"
+		src, err := fs.ReadFile(schemas.FS(), file)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var want any
+		if err := json.Unmarshal(src, &want); err != nil {
+			t.Fatal(err)
+		}
+		got, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var gotv any
+		if err := json.Unmarshal(got, &gotv); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(gotv, want) {
+			t.Errorf("%s differs from %s", name, file)
+		}
+	}
+}
+
+// The document is self-contained: a resolver that knows only its components
+// (each under its own $id, a JSON Schema compound document) compiles every
+// one, so every relative $ref, fragments included, resolves inside it.
+func TestReferencesResolveOffline(t *testing.T) {
+	comps := embedded(t)
+	compiler := func(skip string) (*jsonschema.Compiler, map[string]string) {
+		c := jsonschema.NewCompiler()
+		c.UseLoader(offline{})
+		ids := map[string]string{}
+		for name, s := range comps {
+			id, _ := s.(map[string]any)["$id"].(string)
+			ids[name] = id
+			if name == skip {
+				continue
+			}
+			j, err := json.Marshal(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := jsonschema.UnmarshalJSON(bytes.NewReader(j))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := c.AddResource(id, res); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return c, ids
+	}
+	c, ids := compiler("")
+	for _, want := range []string{"api.command-request", "api.command-response", "records.approval", "common.defs"} {
+		if ids[want] != schemas.Base+strings.ReplaceAll(want, ".", "/")+".json" {
+			t.Errorf("component %s: $id %q", want, ids[want])
+		}
+	}
+	for name, id := range ids {
+		if _, err := c.Compile(id); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+	// The control: with a referenced file left out, compiling fails.
+	c, ids = compiler("common.defs")
+	if _, err := c.Compile(ids["api.command-response"]); err == nil {
+		t.Error("compiled with common/defs.json missing")
 	}
 }
 
@@ -85,12 +187,12 @@ func TestDeterministicAndDeprecated(t *testing.T) {
 	a := actions["note.add"]
 	a.Deprecated = &v
 	actions["note.add"] = a
-	first, err := Generate(actions)
+	first, err := Generate(actions, schemas.FS())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range 20 {
-		if again, _ := Generate(actions); !bytes.Equal(again, first) {
+		if again, _ := Generate(actions, schemas.FS()); !bytes.Equal(again, first) {
 			t.Fatal("two generations differ")
 		}
 	}
@@ -102,7 +204,27 @@ func TestDeterministicAndDeprecated(t *testing.T) {
 func TestMisregisteredAction(t *testing.T) {
 	actions := maps.Clone(registry(t))
 	actions["note.remove"] = actions["note.add"]
-	if _, err := Generate(actions); err == nil || !strings.Contains(err.Error(), "note.remove") {
+	if _, err := Generate(actions, schemas.FS()); err == nil || !strings.Contains(err.Error(), "note.remove") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// bundle follows every reference, inside arrays and fragments included,
+// relative to the referring file.
+func TestBundleFollowsEveryReference(t *testing.T) {
+	got, err := bundle(fstest.MapFS{
+		"a/root.json":   {Data: []byte(`{"oneOf": [{"$ref": "../b/x.json#/$defs/X"}], "items": {"$ref": "y.json"}, "not": {"$ref": "#/$defs/Z"}}`)},
+		"b/x.json":      {Data: []byte(`{"$defs": {"X": {"$ref": "../a/y.json"}}}`)},
+		"a/y.json":      {Data: []byte(`{}`)},
+		"c/unused.json": {Data: []byte(`{}`)},
+	}, "a/root.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := slices.Sorted(maps.Keys(got)); !slices.Equal(names, []string{"a.root", "a.y", "b.x"}) {
+		t.Fatalf("bundled %v", names)
+	}
+	if _, err := bundle(fstest.MapFS{"a.json": {Data: []byte(`{"$ref": "missing.json"}`)}}, "a.json"); err == nil {
+		t.Error("a reference to a missing file was bundled")
 	}
 }

@@ -57,7 +57,7 @@
         "disposition": {"const": "refused"},
         "outcome": {"enum": ["failed", "could_not_run"]},
         "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
-        "detail": {"type": "string", "maxLength": 4096}
+        "detail": {"description": "Never empty for these outcomes (02). Whether the reason is registered for the outcome is the vocabulary's check (internal/vocab Registry.Check), run where the response is written and where it is read.", "type": "string", "minLength": 1, "maxLength": 4096}
       }
     }
   }

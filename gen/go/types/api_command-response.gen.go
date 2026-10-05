@@ -132,7 +132,8 @@ type CommandRefused struct {
 	Disposition string                `json:"disposition"`
 	Outcome     CommandRefusedOutcome `json:"outcome"`
 	Reason      ReasonCode            `json:"reason"`
-	Detail      string                `json:"detail"`
+	// Never empty for these outcomes (02). Whether the reason is registered for the outcome is the vocabulary's check (internal/vocab Registry.Check), run where the response is written and where it is read.
+	Detail string `json:"detail"`
 }
 
 // UnmarshalJSON decodes CommandRefused and refuses an omitted reason code.

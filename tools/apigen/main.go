@@ -10,6 +10,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/internal/apidoc"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
+	"github.com/ekaynac/auto-dev-cycle/schemas"
 )
 
 func main() {
@@ -28,7 +29,7 @@ func run(out string) error {
 	if err != nil {
 		return err
 	}
-	b, err := apidoc.Generate(reg.Actions)
+	b, err := apidoc.Generate(reg.Actions, schemas.FS())
 	if err != nil {
 		return err
 	}

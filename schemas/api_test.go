@@ -5,10 +5,12 @@ package schemas_test
 import (
 	"encoding/json"
 	"maps"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 )
 
 const effID = "eff_01m3250v03fpq92bcrrpmkpsj9"
@@ -24,6 +26,10 @@ func commandResponses() map[string]map[string]any {
 			"effects": []any{map[string]any{"id": effID, "state": "uncertain"}}, "result": map[string]any{}},
 		"proposed": {"disposition": "proposed", "proposal": prpID, "policy": "human", "binding_digest": dgA},
 		"refused":  {"disposition": "refused", "outcome": "failed", "reason": "stale_expected_state", "detail": "version 12, current 13"},
+		"applied with nothing to show": {"disposition": "applied", "command": cmdID, "replayed": true, "approval": nil, "first_seq": 0, "last_seq": 0,
+			"effects": []any{}, "result": map[string]any{}},
+		"proposed for review": {"disposition": "proposed", "proposal": prpID, "policy": "independent_review", "binding_digest": dgA},
+		"could not run":       {"disposition": "refused", "outcome": "could_not_run", "reason": "ambiguous_state", "detail": "two projections disagree"},
 	}
 }
 
@@ -69,11 +75,33 @@ func TestCommandResponse(t *testing.T) {
 		if err := valid(t, schema, d); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
-		// Each branch round-trips through the generated union.
+		// Each document decodes to its variant and encodes back to the same JSON.
 		b, _ := json.Marshal(d)
-		var u types.CommandResponse
-		if err := json.Unmarshal(b, &u); err != nil {
+		u, err := contract.Decode[types.CommandResponse](schema, b)
+		if err != nil {
 			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		var variant bool
+		switch d["disposition"] {
+		case "applied":
+			_, variant = u.Variant.(*types.CommandApplied)
+		case "proposed":
+			_, variant = u.Variant.(*types.CommandProposed)
+		case "refused":
+			_, variant = u.Variant.(*types.CommandRefused)
+		}
+		if !variant {
+			t.Errorf("%s: decoded as %T", name, u.Variant)
+		}
+		out, err := contract.Encode(schema, u)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		var got, want any
+		if json.Unmarshal(out, &got) != nil || json.Unmarshal(b, &want) != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: re-encoded as %s", name, out)
 		}
 	}
 	r := commandResponses()
@@ -86,6 +114,7 @@ func TestCommandResponse(t *testing.T) {
 		"an unknown effect state":             with(r["applied"], "effects", []any{map[string]any{"id": effID, "state": "done"}}),
 		"no disposition":                      without(r["proposed"], "disposition"),
 		"an unknown disposition":              with(r["proposed"], "disposition", "deferred"),
+		"a refusal with no detail":            with(r["refused"], "detail", ""),
 	} {
 		if valid(t, schema, d) == nil {
 			t.Errorf("%s: accepted", name)
