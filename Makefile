@@ -37,7 +37,7 @@ BINARIES   := adcd adc adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check ts-deps gen gen-check vocab-check build dist lint test test-sandbox-selftest fixtures-check ci clean
+.PHONY: help toolchain go-check ts-deps gen gen-check vocab-check build dist install-check lint test test-sandbox-selftest fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
@@ -71,6 +71,10 @@ dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 	  GOOS=$${p%/*} GOARCH=$${p#*/} $(GOBUILD) -o $(DIST_DIR)/$${p%/*}-$${p#*/}/adc-agent$$ext ./cmd/adc-agent; \
 	done
 	@find $(DIST_DIR) -type f | sort
+
+install-check: dist build ## Install the dist build into an empty prefix and check what the installed binaries report (00 exit check)
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	  scripts/install-check.sh --expect "$$($(BIN_DIR)/adc version --json | sed -n 's/.*"schema_set":"\([^"]*\)".*/\1/p')" "$$tmp/prefix"
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go
@@ -132,7 +136,7 @@ vocab-check: build ## Registries cross-check; reasons only through generated con
 	@# The check type-checks the module through go list, so the pinned go is put first on PATH.
 	@PATH="$(GOROOT_PIN)/bin:$$PATH" $(BIN_DIR)/adc dev vocab check --root .
 
-ci: lint gen-check build vocab-check test test-sandbox-selftest dist ## Everything CI runs
+ci: lint gen-check build vocab-check test test-sandbox-selftest dist install-check ## Everything CI runs
 
 clean: ## Remove build outputs
 	@rm -rf $(BIN_DIR) $(DIST_DIR)
