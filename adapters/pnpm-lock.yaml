@@ -14,6 +14,25 @@ importers:
         specifier: 8.20.0
         version: 8.20.0
 
+  conformance:
+    dependencies:
+      '@adc/contract':
+        specifier: workspace:*
+        version: link:../contract
+      '@adc/contract-gen':
+        specifier: workspace:*
+        version: link:../../gen/ts
+    devDependencies:
+      '@adc/fake':
+        specifier: workspace:*
+        version: link:../fake
+      '@types/node':
+        specifier: 22.20.5
+        version: 22.20.5
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
   contract:
     dependencies:
       '@adc/contract-gen':
