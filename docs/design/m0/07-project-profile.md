@@ -71,6 +71,9 @@ integration:                        # phase 3; topology is controller-owned (A2)
 plugins:
   deploy: none | script | docker-compose
   records: none | markdown_table | json_ledger   # delivery record format plugin
+required_config:                    # (with the merge gate; not in the schema yet) intake B2; keys only, never values
+  source: none | file               # a generated or command source is v1.x: its dependency closure cannot yet be confined
+  file: path|null                   # file: a repo file listing the required keys (a JSON array of strings); protected
 protected_paths: [glob]             # canon/topology/knowledge docs; changed only via the protected-document operation
 protected_documents: [glob]         # subset that holds decisions/conventions (03-knowledge-layer K8)
 data_policy:
@@ -90,6 +93,73 @@ vocabulary:
   branch_prefix: string             # e.g. "adc/"
   language: string                  # product language(s); framework vocabulary stays English
 ```
+
+## Required configuration (intake B2)
+
+A product that needs new deploy-time configuration says so in its own tree, and the merge asks the operator before
+it deploys:
+- **Declared, product-neutral, static.** `required_config` names a file in which the product lists its required
+  keys. It is read as data, never executed, so nothing outside the file can change the list. Only key names are
+  read, never values. A source computed by a command is deferred to v1.x, until its whole dependency closure can be
+  confined.
+- **The mechanism is trusted, the content is diffed.** The declaration mechanism (the field above) is the adopted
+  profile's at the merge's commit, never the candidate's, and it is applied to both the pinned base and the
+  prospective merge tree. Its `file` is a **protected path**, so a candidate cannot shrink its own inventory
+  silently: any change to it (adding, removing, moving or deleting) is a **declaration change** that the operator
+  answers (below).
+- **Completeness is a review obligation.** No list proves that it names every key the code reads. The independent
+  review of a candidate must check that configuration the diff newly reads appears in the candidate's declaration;
+  an undeclared read is a blocking finding.
+- **One operator question per generation.** A declaration change holds the merge on a hold **owned by the
+  operator**, resumed by an approval. Only an **operator** actor's answering approval resolves it; a supervisor's
+  `input.answer` grant does not discharge it. The question carries two parts:
+  - **readiness**, for each added key: the operator states that every target environment provides it;
+  - **integrity**, for the change itself, including removed keys: the operator accepts the new declaration.
+
+  Removed keys need no readiness answer but are still part of the integrity answer. When a later generation's
+  recomputation no longer has a key or change, the obsolete part of the question is retired, and the rest remains.
+  The hold joins the registry (02) with the gate's implementation.
+- **A merge input, bound and revalidated.** The comparison and its answer are inputs of the merge node in the queue
+  generation (13). The answer binds the pinned base, the prospective tree, the declaration mechanism and its digest,
+  the added-key set and the target environments. A new generation (base moved), a profile adoption or a target
+  change recomputes the comparison, and an answer whose binding no longer matches does not apply. The merge
+  effect revalidates it at commit time, like carry-over (13), under the mechanism adopted at that moment.
+- **Never found after deploy.** A post-deploy verifier that discovers a missing key is too late; the diff is the rule.
+- **Reading the declaration.** Whatever is not accepted below is `could_not_run` and keeps the merge held, never an
+  empty list. It resumes when a later generation reads a declaration that is accepted.
+  - **From the tree, by exact path.** `file` is an exact, repository-relative path. The declaration is the bytes of
+    the **regular blob** at that path in each pinned Git tree, read from the object store, never from a working
+    tree. It is read in the base and in the prospective tree.
+  - **Entries.** Each parent component must be a directory (a Git tree entry), and the final entry a regular-file
+    blob. A symlink or a submodule (gitlink) in either position is not accepted, so a reader never follows a link to
+    an unprotected file. Attributes and filters (text conversion, LFS) are never applied: the committed blob is the
+    declaration.
+  - **One identity, case-sensitive.** The path compares byte for byte with no case folding, exactly as the
+    protected-path matcher compares it, so the object read and the object protected are the same. A tree that also
+    holds a path differing only by case from the declaration, or from one of its parents, is not accepted, because
+    a case-insensitive checkout could resolve either.
+  - **Shape, within bounds.** Accepted content is UTF-8 JSON: an array of unique, non-empty strings, each a
+    configuration key. `null`, an object, a scalar, a non-string element and a duplicate are not accepted. The
+    reader is bounded before it decodes:
+    - at most 64 KiB of blob, checked from the object's size before reading;
+    - no value nested inside the array;
+    - at most 1,024 keys of at most 256 bytes each.
+
+    Exceeding a bound is not accepted, without exhausting the reader. Only an accepted array reaches the comparison.
+  - **First introduction.** A profile may name a declaration only if the file already exists, accepted, at the base
+    branch's head. So a product introduces an empty or current declaration first, then adopts it.
+    - Adoption validation records the base commit it read and the declaration's blob identity as preconditions of
+      the adoption. Applying the adoption re-checks them, serialized with the merge queue of that base branch.
+    - If the head moved, the declaration is revalidated at the new head, and adoption is refused if it no longer
+      exists, accepted.
+    - A pinned base that lacks a named declaration afterwards is unexpected and is not accepted.
+- **Weakening the mechanism is weakening protection.** A profile adoption that disables the check (`source: none`),
+  points it at another file or removes the file from the protected paths is classified `policy.weaken_protection`
+  (04), so it needs a presence-verified human whoever proposes it. Its approval accepts the new mechanism, and it
+  never substitutes for a pending configuration answer. A candidate merged while the mechanism changes is checked
+  under the mechanism adopted at commit, applied to both trees: a stricter new mechanism can only add questions.
+
+The profile field, the hold and the gate check land together, with the merge gate.
 
 ## Reserved schemas (defined in M0, filled in M2)
 

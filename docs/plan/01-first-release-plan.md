@@ -540,6 +540,11 @@ proven on a small multi-service T0 fixture in **M1**, before anything depends on
 - **Deploy/evidence plugins:** evidence jobs (`m0/12`) producing receipts with inner predicates. v1 has `none`,
   `script` and `docker-compose`. `ssh` is v1.x (D25). Drift found before apply is recorded and routed to its owner,
   never charged to the candidate.
+- **New required configuration is a question before merge** (intake B2). The profile's `required_config` names
+  the protected file in which the product declares its required deploy-time keys. The merge gate applies the
+  adopted declaration to base and prospective tree, and any change to it (a new key, or a removed one) holds the
+  merge on an operator-owned question, answerable only by an operator (`m0/07`). Disabling or repointing the check
+  is a protection weakening. It is never left to a post-deploy verifier to discover.
 - **Pager:** webhook in v1. Telegram and email in v1.x (D25). Durable outbox. Pages only on real blockers.
 
 ### 2.14 Operations
