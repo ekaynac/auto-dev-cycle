@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/adapter/run-params.json",
+  "title": "AdapterRunParams",
+  "description": "Run one call (09 \"Methods\"). The core records the call's intent before sending it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attempt",
+    "fencing_token",
+    "call",
+    "prompt",
+    "response_schema"
+  ],
+  "properties": {
+    "attempt": {
+      "$ref": "../common/defs.json#/$defs/AttemptID"
+    },
+    "fencing_token": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "call": {
+      "$ref": "../common/defs.json#/$defs/CallID"
+    },
+    "prompt": {
+      "$ref": "event.json#/$defs/AdapterHandle"
+    },
+    "response_schema": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "event.json#/$defs/AdapterHandle"
+        }
+      ]
+    }
+  }
+}

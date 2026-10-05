@@ -1084,5 +1084,2571 @@
    "revoked_at": "2028-02-30T00:00:00Z"
   },
   "valid": false
+ },
+ {
+  "name": "prepare: valid",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "model": "claude-sonnet-5-5",
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "handle": "context.json",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_turns": 40,
+    "max_output_tokens": 64000,
+    "wall_seconds": 3600
+   },
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "run_test"
+    ]
+   },
+   "gateway": null,
+   "native_login": null
+  },
+  "valid": true
+ },
+ {
+  "name": "prepare: a NUL in the workspace path",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "model": "claude-sonnet-5-5",
+   "workspace": {
+    "path": "/w\u0000x",
+    "writable": false
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "handle": "context.json",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_turns": 40,
+    "max_output_tokens": 64000,
+    "wall_seconds": 3600
+   },
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "run_test"
+    ]
+   },
+   "gateway": null,
+   "native_login": null
+  },
+  "valid": false
+ },
+ {
+  "name": "prepare: a gateway that is not http",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "model": "claude-sonnet-5-5",
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "handle": "context.json",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_turns": 40,
+    "max_output_tokens": 64000,
+    "wall_seconds": 3600
+   },
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "run_test"
+    ]
+   },
+   "gateway": {
+    "base_url": "file:///x",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "native_login": null
+  },
+  "valid": false
+ },
+ {
+  "name": "prepare: a gateway URL with a space",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "model": "claude-sonnet-5-5",
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "handle": "context.json",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_turns": 40,
+    "max_output_tokens": 64000,
+    "wall_seconds": 3600
+   },
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "run_test"
+    ]
+   },
+   "gateway": {
+    "base_url": "http://a b",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "native_login": null
+  },
+  "valid": false
+ },
+ {
+  "name": "run: failed without a result",
+  "schema": "adapter/run-result",
+  "doc": {
+   "outcome": "failed",
+   "reason": "unsafe_output",
+   "detail": "x",
+   "result": null,
+   "usage_final": {
+    "tokens": {
+     "in": 1,
+     "out": 1,
+     "cache_read": 0,
+     "cache_write": 0
+    },
+    "turns": 1,
+    "milliseconds": 10,
+    "cost": {
+     "amount_micros": 0,
+     "currency": "USD",
+     "basis": "cash",
+     "estimate": true
+    }
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "run: failed with a result",
+  "schema": "adapter/run-result",
+  "doc": {
+   "outcome": "failed",
+   "reason": "gate_test_failed",
+   "detail": "x",
+   "result": {
+    "kind": "patch",
+    "handle": {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "handle": "context.json",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "size": 120
+    }
+   },
+   "usage_final": {
+    "tokens": {
+     "in": 1,
+     "out": 1,
+     "cache_read": 0,
+     "cache_write": 0
+    },
+    "turns": 1,
+    "milliseconds": 10,
+    "cost": {
+     "amount_micros": 0,
+     "currency": "USD",
+     "basis": "cash",
+     "estimate": true
+    }
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "run: failed without detail",
+  "schema": "adapter/run-result",
+  "doc": {
+   "outcome": "failed",
+   "reason": "unsafe_output",
+   "detail": "",
+   "result": null,
+   "usage_final": {
+    "tokens": {
+     "in": 1,
+     "out": 1,
+     "cache_read": 0,
+     "cache_write": 0
+    },
+    "turns": 1,
+    "milliseconds": 10,
+    "cost": {
+     "amount_micros": 0,
+     "currency": "USD",
+     "basis": "cash",
+     "estimate": true
+    }
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: describe-result valid",
+  "schema": "adapter/describe-result",
+  "doc": {
+   "adapter_version": "0.1.0-rc.1+build.7",
+   "capabilities": [
+    "patch",
+    "tool_use"
+   ],
+   "contract_version": "1.0.0",
+   "harness": "claude-code",
+   "harness_version": "2.3.1",
+   "host_side": true,
+   "needs_native_login": true,
+   "session_semantics": "fresh_process",
+   "telemetry": {
+    "per_turn_coverage": false,
+    "stream_deltas": true,
+    "upstream": true,
+    "usage": true
+   },
+   "tool_surface": [
+    "Read",
+    "Edit"
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: fenced-params valid",
+  "schema": "adapter/fenced-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: outcome valid",
+  "schema": "adapter/outcome",
+  "doc": {
+   "detail": "",
+   "outcome": "empty",
+   "reason": "completed_clean"
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: prepare-params valid",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://127.0.0.1:7801/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: run-params valid",
+  "schema": "adapter/run-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "call": "cal_01m3250v9xft08ssr4ygq6g2np",
+   "fencing_token": 3,
+   "prompt": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "prompt.md",
+    "size": 120
+   },
+   "response_schema": null
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: run-result valid",
+  "schema": "adapter/run-result",
+  "doc": {
+   "detail": "a patch",
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "result": {
+    "handle": {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "patch.diff",
+     "size": 120
+    },
+    "kind": "patch"
+   },
+   "usage_final": {
+    "cost": {
+     "amount_micros": 31500,
+     "basis": "cash",
+     "currency": "USD",
+     "estimate": true
+    },
+    "milliseconds": 9000,
+    "tokens": {
+     "cache_read": 40000,
+     "cache_write": 0,
+     "in": 5000,
+     "out": 800
+    },
+    "turns": 3
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: tool-response-params valid",
+  "schema": "adapter/tool-response-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "call": "cal_01m3250v9xft08ssr4ygq6g2np",
+   "delivered": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "result-1.json",
+    "size": 120
+   },
+   "detail": "2 failures",
+   "fencing_token": 3,
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "request": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "req-1.json",
+    "size": 120
+   },
+   "tool": "RunTest",
+   "turn": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a clean tool result",
+  "schema": "adapter/tool-response-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "call": "cal_01m3250v9xft08ssr4ygq6g2np",
+   "delivered": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "result-1.json",
+    "size": 120
+   },
+   "detail": "",
+   "fencing_token": 3,
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "request": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "req-1.json",
+    "size": 120
+   },
+   "tool": "RunTest",
+   "turn": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a could_not_run outcome",
+  "schema": "adapter/outcome",
+  "doc": {
+   "detail": "x",
+   "outcome": "could_not_run",
+   "reason": "ambiguous_state"
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a failed run, no result",
+  "schema": "adapter/run-result",
+  "doc": {
+   "detail": "x",
+   "outcome": "failed",
+   "reason": "unsafe_output",
+   "result": null,
+   "usage_final": {
+    "cost": {
+     "amount_micros": 31500,
+     "basis": "cash",
+     "currency": "USD",
+     "estimate": true
+    },
+    "milliseconds": 9000,
+    "tokens": {
+     "cache_read": 40000,
+     "cache_write": 0,
+     "in": 5000,
+     "out": 800
+    },
+    "turns": 3
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a failed tool with its diagnostic",
+  "schema": "adapter/tool-response-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "call": "cal_01m3250v9xft08ssr4ygq6g2np",
+   "delivered": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "result-1.json",
+    "size": 120
+   },
+   "detail": "x",
+   "fencing_token": 3,
+   "outcome": "failed",
+   "reason": "unsafe_output",
+   "request": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "req-1.json",
+    "size": 120
+   },
+   "tool": "RunTest",
+   "turn": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a gateway by name and port",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "https://gateway.internal:8443/v1/models",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a gateway on IPv6",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://[::1]:7801",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a plain semver",
+  "schema": "adapter/describe-result",
+  "doc": {
+   "adapter_version": "0.1.0-rc.1+build.7",
+   "capabilities": [
+    "patch",
+    "tool_use"
+   ],
+   "contract_version": "10.20.30",
+   "harness": "claude-code",
+   "harness_version": "2.3.1",
+   "host_side": true,
+   "needs_native_login": true,
+   "session_semantics": "fresh_process",
+   "telemetry": {
+    "per_turn_coverage": false,
+    "stream_deltas": true,
+    "upstream": true,
+    "usage": true
+   },
+   "tool_surface": [
+    "Read",
+    "Edit"
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a response schema handle",
+  "schema": "adapter/run-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "call": "cal_01m3250v9xft08ssr4ygq6g2np",
+   "fencing_token": 3,
+   "prompt": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "prompt.md",
+    "size": 120
+   },
+   "response_schema": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "schema.json",
+    "size": 120
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a reusable process",
+  "schema": "adapter/describe-result",
+  "doc": {
+   "adapter_version": "0.1.0-rc.1+build.7",
+   "capabilities": [
+    "patch",
+    "tool_use"
+   ],
+   "contract_version": "1.0.0",
+   "harness": "claude-code",
+   "harness_version": "2.3.1",
+   "host_side": true,
+   "needs_native_login": true,
+   "session_semantics": "reusable_process",
+   "telemetry": {
+    "per_turn_coverage": false,
+    "stream_deltas": true,
+    "upstream": true,
+    "usage": true
+   },
+   "tool_surface": [
+    "Read",
+    "Edit"
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a tool that could not run",
+  "schema": "adapter/tool-response-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "call": "cal_01m3250v9xft08ssr4ygq6g2np",
+   "delivered": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "result-1.json",
+    "size": 120
+   },
+   "detail": "the sandbox is down",
+   "fencing_token": 3,
+   "outcome": "could_not_run",
+   "reason": "runner_fault",
+   "request": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "req-1.json",
+    "size": 120
+   },
+   "tool": "RunTest",
+   "turn": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: no gateway and no login",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": null,
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": null,
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: unavailable final usage",
+  "schema": "adapter/run-result",
+  "doc": {
+   "detail": "a patch",
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "result": {
+    "handle": {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "patch.diff",
+     "size": 120
+    },
+    "kind": "patch"
+   },
+   "usage_final": null
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a NUL in the workspace path",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://127.0.0.1:7801/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/w\u0000x",
+    "writable": true
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a capability with a space",
+  "schema": "adapter/describe-result",
+  "doc": {
+   "adapter_version": "0.1.0-rc.1+build.7",
+   "capabilities": [
+    "tool use"
+   ],
+   "contract_version": "1.0.0",
+   "harness": "claude-code",
+   "harness_version": "2.3.1",
+   "host_side": true,
+   "needs_native_login": true,
+   "session_semantics": "fresh_process",
+   "telemetry": {
+    "per_turn_coverage": false,
+    "stream_deltas": true,
+    "upstream": true,
+    "usage": true
+   },
+   "tool_surface": [
+    "Read",
+    "Edit"
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a contract version that is not semver",
+  "schema": "adapter/describe-result",
+  "doc": {
+   "adapter_version": "0.1.0-rc.1+build.7",
+   "capabilities": [
+    "patch",
+    "tool_use"
+   ],
+   "contract_version": "1",
+   "harness": "claude-code",
+   "harness_version": "2.3.1",
+   "host_side": true,
+   "needs_native_login": true,
+   "session_semantics": "fresh_process",
+   "telemetry": {
+    "per_turn_coverage": false,
+    "stream_deltas": true,
+    "upstream": true,
+    "usage": true
+   },
+   "tool_surface": [
+    "Read",
+    "Edit"
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a could_not_run run with a result",
+  "schema": "adapter/run-result",
+  "doc": {
+   "detail": "a patch",
+   "outcome": "could_not_run",
+   "reason": "ambiguous_state",
+   "result": {
+    "handle": {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "patch.diff",
+     "size": 120
+    },
+    "kind": "patch"
+   },
+   "usage_final": {
+    "cost": {
+     "amount_micros": 31500,
+     "basis": "cash",
+     "currency": "USD",
+     "estimate": true
+    },
+    "milliseconds": 9000,
+    "tokens": {
+     "cache_read": 40000,
+     "cache_write": 0,
+     "in": 5000,
+     "out": 800
+    },
+    "turns": 3
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a failed outcome with no detail",
+  "schema": "adapter/outcome",
+  "doc": {
+   "detail": "",
+   "outcome": "failed",
+   "reason": "unsafe_output"
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a failed run with a result",
+  "schema": "adapter/run-result",
+  "doc": {
+   "detail": "x",
+   "outcome": "failed",
+   "reason": "unsafe_output",
+   "result": {
+    "handle": {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "patch.diff",
+     "size": 120
+    },
+    "kind": "patch"
+   },
+   "usage_final": {
+    "cost": {
+     "amount_micros": 31500,
+     "basis": "cash",
+     "currency": "USD",
+     "estimate": true
+    },
+    "milliseconds": 9000,
+    "tokens": {
+     "cache_read": 40000,
+     "cache_write": 0,
+     "in": 5000,
+     "out": 800
+    },
+    "turns": 3
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a found run with no detail",
+  "schema": "adapter/run-result",
+  "doc": {
+   "detail": "",
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "result": {
+    "handle": {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "patch.diff",
+     "size": 120
+    },
+    "kind": "patch"
+   },
+   "usage_final": {
+    "cost": {
+     "amount_micros": 31500,
+     "basis": "cash",
+     "currency": "USD",
+     "estimate": true
+    },
+    "milliseconds": 9000,
+    "tokens": {
+     "cache_read": 40000,
+     "cache_write": 0,
+     "in": 5000,
+     "out": 800
+    },
+    "turns": 3
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a found tool result with no detail",
+  "schema": "adapter/tool-response-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "call": "cal_01m3250v9xft08ssr4ygq6g2np",
+   "delivered": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "result-1.json",
+    "size": 120
+   },
+   "detail": "",
+   "fencing_token": 3,
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "request": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "req-1.json",
+    "size": 120
+   },
+   "tool": "RunTest",
+   "turn": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway that is not http",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "file:///x",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway that is only a fragment",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://#fragment",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway with a NUL",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://h/a\u0000b",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway with a fragment",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://h/a#frag",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway over ftp",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "ftp://h/x",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway with a space",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://h/a b",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway with no host",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http:///path",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a login with no scope",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://127.0.0.1:7801/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "c",
+    "scope": []
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a raw path as an input",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://127.0.0.1:7801/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    "/etc/passwd"
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a relative workspace",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://127.0.0.1:7801/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "workspace",
+    "writable": true
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a run with no prompt",
+  "schema": "adapter/run-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "call": "cal_01m3250v9xft08ssr4ygq6g2np",
+   "fencing_token": 3,
+   "response_schema": null
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a short gateway token",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://x",
+    "token": "short"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a tool response delivering nothing",
+  "schema": "adapter/tool-response-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "call": "cal_01m3250v9xft08ssr4ygq6g2np",
+   "delivered": null,
+   "detail": "2 failures",
+   "fencing_token": 3,
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "request": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "req-1.json",
+    "size": 120
+   },
+   "tool": "RunTest",
+   "turn": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a tool response with no request",
+  "schema": "adapter/tool-response-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "call": "cal_01m3250v9xft08ssr4ygq6g2np",
+   "delivered": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handle": "result-1.json",
+    "size": 120
+   },
+   "detail": "2 failures",
+   "fencing_token": 3,
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "tool": "RunTest",
+   "turn": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a version with a leading zero",
+  "schema": "adapter/describe-result",
+  "doc": {
+   "adapter_version": "0.1.0-rc.1+build.7",
+   "capabilities": [
+    "patch",
+    "tool_use"
+   ],
+   "contract_version": "01.0.0",
+   "harness": "claude-code",
+   "harness_version": "2.3.1",
+   "host_side": true,
+   "needs_native_login": true,
+   "session_semantics": "fresh_process",
+   "telemetry": {
+    "per_turn_coverage": false,
+    "stream_deltas": true,
+    "upstream": true,
+    "usage": true
+   },
+   "tool_surface": [
+    "Read",
+    "Edit"
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a week and a second",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://127.0.0.1:7801/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 1,
+    "max_turns": 1,
+    "wall_seconds": 604801
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a zero fencing token",
+  "schema": "adapter/fenced-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 0
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: an empty prerelease",
+  "schema": "adapter/describe-result",
+  "doc": {
+   "adapter_version": "1.0.0-",
+   "capabilities": [
+    "patch",
+    "tool_use"
+   ],
+   "contract_version": "1.0.0",
+   "harness": "claude-code",
+   "harness_version": "2.3.1",
+   "host_side": true,
+   "needs_native_login": true,
+   "session_semantics": "fresh_process",
+   "telemetry": {
+    "per_turn_coverage": false,
+    "stream_deltas": true,
+    "upstream": true,
+    "usage": true
+   },
+   "tool_surface": [
+    "Read",
+    "Edit"
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: an unknown prepare field",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://127.0.0.1:7801/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "home": "/home/op",
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: an unknown result kind",
+  "schema": "adapter/run-result",
+  "doc": {
+   "detail": "a patch",
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "result": {
+    "handle": {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "x",
+     "size": 120
+    },
+    "kind": "binary"
+   },
+   "usage_final": {
+    "cost": {
+     "amount_micros": 31500,
+     "basis": "cash",
+     "currency": "USD",
+     "estimate": true
+    },
+    "milliseconds": 9000,
+    "tokens": {
+     "cache_read": 40000,
+     "cache_write": 0,
+     "in": 5000,
+     "out": 800
+    },
+    "turns": 3
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: an unregistered reason",
+  "schema": "adapter/outcome",
+  "doc": {
+   "detail": "",
+   "outcome": "empty",
+   "reason": "nope"
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: another session semantics",
+  "schema": "adapter/describe-result",
+  "doc": {
+   "adapter_version": "0.1.0-rc.1+build.7",
+   "capabilities": [
+    "patch",
+    "tool_use"
+   ],
+   "contract_version": "1.0.0",
+   "harness": "claude-code",
+   "harness_version": "2.3.1",
+   "host_side": true,
+   "needs_native_login": true,
+   "session_semantics": "persistent",
+   "telemetry": {
+    "per_turn_coverage": false,
+    "stream_deltas": true,
+    "upstream": true,
+    "usage": true
+   },
+   "tool_surface": [
+    "Read",
+    "Edit"
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: half a usage report",
+  "schema": "adapter/run-result",
+  "doc": {
+   "detail": "a patch",
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "result": {
+    "handle": {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "patch.diff",
+     "size": 120
+    },
+    "kind": "patch"
+   },
+   "usage_final": {
+    "turns": 3
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: telemetry missing a field",
+  "schema": "adapter/describe-result",
+  "doc": {
+   "adapter_version": "0.1.0-rc.1+build.7",
+   "capabilities": [
+    "patch",
+    "tool_use"
+   ],
+   "contract_version": "1.0.0",
+   "harness": "claude-code",
+   "harness_version": "2.3.1",
+   "host_side": true,
+   "needs_native_login": true,
+   "session_semantics": "fresh_process",
+   "telemetry": {
+    "usage": true
+   },
+   "tool_surface": [
+    "Read",
+    "Edit"
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: zero turns",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://127.0.0.1:7801/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 1,
+    "max_turns": 0,
+    "wall_seconds": 1
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway name with the root dot",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "https://gateway.internal./v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a gateway on IPv4-mapped IPv6",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://[::ffff:127.0.0.1]:7801/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a gateway on the highest port",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://localhost:65535",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "methods: a gateway label ending in a hyphen",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://h-/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway label of 64 characters",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.x/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway on a short IPv6 literal",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://[abcd]/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway on a triple colon",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://[:::]/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway on an out-of-range IPv4",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://999.1.1.1/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway on port zero",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://h:0/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway on two double colons",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://[1::2::3]/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway past the last port",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://h:99999/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway with a zone",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://[fe80::1%25eth0]/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway with an empty label",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://h..i/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "methods: a gateway with userinfo",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "gateway": {
+    "base_url": "http://u:p@h/v1",
+    "token": "gggggggggggggggggggggggggggggggg"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "handle": "context.json",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_output_tokens": 64000,
+    "max_turns": 40,
+    "wall_seconds": 3600
+   },
+   "model": "claude-sonnet-5-5",
+   "native_login": {
+    "credential_ref": "claude-code",
+    "scope": [
+     "inference"
+    ]
+   },
+   "role": "builder",
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "RunTest"
+    ]
+   },
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   }
+  },
+  "valid": false
  }
 ]

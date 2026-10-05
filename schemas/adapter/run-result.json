@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/adapter/run-result.json",
+  "title": "AdapterRunResult",
+  "description": "run's result, after its notifications: the result triple, the produced result (null whenever the outcome is could_not_run or failed) and the final usage report.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "outcome",
+    "reason",
+    "detail",
+    "result",
+    "usage_final"
+  ],
+  "properties": {
+    "outcome": {
+      "$ref": "../common/defs.json#/$defs/Outcome"
+    },
+    "reason": {
+      "$ref": "../common/defs.json#/$defs/ReasonCode"
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "result": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "handle"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "patch",
+                "text",
+                "decision"
+              ]
+            },
+            "handle": {
+              "$ref": "event.json#/$defs/AdapterHandle"
+            }
+          }
+        }
+      ]
+    },
+    "usage_final": {
+      "description": "The call's final usage as the adapter reports it, or null when the adapter cannot know it (describe().telemetry.usage false, an interrupted run). Never invented. Null creates no final measurement: the controller keeps the call recorded with its best available liability estimate (the sum of its usage deltas, held uncertain, or its reservation when there are none) until a provider reconciliation resolves it (05; internal/capacity/ledger). The controller builds the measurement.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tokens",
+            "turns",
+            "milliseconds",
+            "cost"
+          ],
+          "properties": {
+            "tokens": {
+              "$ref": "../records/usage-measurement.json#/$defs/UsageMeasurementTokens"
+            },
+            "turns": {
+              "$ref": "../records/resource-group.json#/$defs/Amount"
+            },
+            "milliseconds": {
+              "$ref": "../records/resource-group.json#/$defs/Amount"
+            },
+            "cost": {
+              "$ref": "../records/usage-measurement.json#/$defs/UsageMeasurementCost"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "could_not_run",
+              "failed"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "found",
+              "could_not_run",
+              "failed"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "detail": {
+            "minLength": 1
+          }
+        }
+      }
+    }
+  ]
+}
