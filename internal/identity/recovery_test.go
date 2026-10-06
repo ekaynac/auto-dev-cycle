@@ -5,11 +5,13 @@ package identity_test
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 )
@@ -112,6 +114,17 @@ func TestRecoverToken(t *testing.T) {
 	if !sameMap(actors, f.snapshot(identity.ActorProjection)) || !sameMap(boot, f.snapshot(identity.BootstrapProjection)) {
 		t.Error("recovery changed an actor or the bootstrap")
 	}
+	// A revocation is stamped with the recovered token's created_at, exactly.
+	var third identity.Secret
+	f.must(f.op.ID, issue(f.op.ID, f.op.ID, &third))
+	fixed, err := identity.Mint(f.op.ID, f.sys.ID, time.Date(2026, 10, 6, 12, 0, 0, 5, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.must(f.sys.ID, recoverApply(fixed, tokenID(third)))
+	if at := liveRecord(f, tokenID(third)).RevokedAt; at == nil || *at != "2026-10-06T12:00:00.000000005Z" {
+		t.Errorf("revoked_at = %s, want the recovered token's created_at", json.RawMessage(mustJSON(t, at)))
+	}
 	if err := f.submit(f.sys.ID, issue(f.op.ID, f.sys.ID, nil)); err == nil {
 		t.Error("an ordinary system issuance after recovery: accepted")
 	}
@@ -167,6 +180,23 @@ func TestRecoverTokenRefuses(t *testing.T) {
 	} {
 		if err := f.submit(c.by, c.apply); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+	// A new token that is already revoked, in an otherwise valid recovery,
+	// is refused and changes nothing.
+	before := map[string]map[string]string{}
+	for _, p := range []string{identity.ActorProjection, identity.TokenProjection, identity.BootstrapProjection} {
+		before[p] = f.snapshot(p)
+	}
+	bornRevoked := mintFor(t, f.op.ID, f.sys.ID)
+	at := bornRevoked.Token.CreatedAt
+	bornRevoked.Token.RevokedAt = &at
+	if err := f.submit(f.sys.ID, recoverApply(bornRevoked, live)); err == nil {
+		t.Error("a recovered token issued revoked: accepted")
+	}
+	for p, snap := range before {
+		if !sameMap(snap, f.snapshot(p)) {
+			t.Errorf("a refused recovery changed %s", p)
 		}
 	}
 	for name, s := range map[string]identity.Secret{"operator": f.token, "supervisor": supTok} {
@@ -236,4 +266,90 @@ func TestRenewBootstrap(t *testing.T) {
 		t.Error("an operator's renewal: accepted")
 	}
 	f.rebuildsSame()
+}
+
+// seededKind is a test-only kind whose payload is put straight into the
+// actor projection, so a projector test can start from a state the
+// identity transitions alone would not reach.
+const seededKind = "test.seeded/v1"
+
+// isolated starts a store whose projector first applies seeded actors and,
+// when *at is set, records every event at *at; it is never rebuilt.
+func isolated(t *testing.T, at *string) *fixture {
+	dir := filepath.Join(t.TempDir(), "state")
+	lock, err := eventstore.AcquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { lock.Release() })
+	blobs, err := blobstore.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := identity.Kinds()
+	kinds[seededKind] = eventstore.Kind{Schema: "records/actor"}
+	project := func(tx *eventstore.Tx, evs []eventstore.Event) error {
+		for i, ev := range evs {
+			if ev.Kind == seededKind {
+				if err := tx.Put(identity.ActorProjection, ev.Subject, ev.Payload); err != nil {
+					return err
+				}
+			}
+			if *at != "" {
+				evs[i].At = *at
+			}
+		}
+		return identity.Projector{}.Project(tx, evs)
+	}
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: project}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return &fixture{t: t, s: s, dir: dir}
+}
+
+// Only the system actor renews: a live supervisor, before any bootstrap,
+// renewing under its own subject with an admissible payload is refused.
+// The renewal is accepted while the event is recorded before the expiry
+// and from the moment the secret is made, and refused exactly at expiry.
+func TestRenewBootstrapIssuerAndExpiry(t *testing.T) {
+	var at string
+	f := isolated(t, &at)
+	sys := actor(t, types.ActorKindSystem, "")
+	sup := actor(t, types.ActorKindSupervisor, sys.ID)
+	for _, a := range []types.Actor{sys, sup} {
+		f.must(a.ID, rawEvent(t, seededKind, string(a.ID), a))
+	}
+	made := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	hash := mintFor(t, sys.ID, sys.ID).Token.Hash
+	renewal := func(by types.ActorID) applyFn {
+		return func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.RenewBootstrap(by, hash, made) }
+	}
+	for _, c := range []struct {
+		by     types.ActorID
+		at     time.Time
+		accept bool
+	}{
+		{sup.ID, made, false},
+		{sys.ID, made.Add(-time.Nanosecond), false},
+		{sys.ID, made, true},
+		{sys.ID, made.Add(identity.BootstrapSecretExpiry - time.Nanosecond), true},
+		{sys.ID, made.Add(identity.BootstrapSecretExpiry), false},
+	} {
+		at = c.at.Format(time.RFC3339Nano)
+		if err := f.submit(c.by, renewal(c.by)); (err == nil) != c.accept {
+			t.Errorf("a renewal by %s recorded at %s: accepted %v, want %v (%v)", c.by, at, err == nil, c.accept, err)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
