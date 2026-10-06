@@ -27,6 +27,20 @@ the CLI is a superset.
 - **Events:** `GET /v1/events?after=<seq>&kinds=…&project=…` as Server-Sent Events, resumable by `seq`, filtered
   server-side by read scope. The stream is closed with `failed/authority_revoked` when the actor's grant changes in a
   way that removes access [M5]. `adc events --follow --json` is this stream.
+  - **Read scope.** An event's resource kind, matched against a grant's `reads.kinds`, is its kind's first segment
+    (`lease.granted/v1` is `lease`); an event outside any project is read only under an every-project read. Empty
+    kinds or projects read nothing.
+  - **Re-check.** M0 re-checks on a timed poll, at most one second apart, in the same read snapshot as the events it
+    loads, and again before each frame it sends; each check is due one bound after the previous one, whatever writing
+    took. Every frame is written and flushed under a deadline at the next due check, cleared once the frame is out
+    (an idle stream holds no deadline), so a client that stalls longer is cut off and no frame is sent after a change
+    of authority. On HTTP/1.1 the cutoff closes the connection hard, beneath TLS (servers register connections with
+    `api.ConnContext`); on HTTP/2 it resets only that stream. The client resumes by `seq`. A store that cannot be read closes the stream with
+    `could_not_run/store_unreadable`, never as a revocation. The stream closes with `failed/authority_revoked` when any grant it opened under is revoked, expires or is
+    narrowed (a narrowing is a revocation and a new grant), and when the caller's token or actor is revoked. A
+    supervisor with no grant in force is refused with `failed/action_not_granted`; a read-specific reason may follow.
+  - **No credentials.** The stream never carries credential material. Each streamed kind has an explicit allow-list
+    of payload paths (`internal/api`); a kind without one streams with its payload withheld.
 
 ## CLI rules
 
