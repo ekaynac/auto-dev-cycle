@@ -55,7 +55,8 @@ func parse(t *testing.T, b []byte) parsed {
 	return d
 }
 
-// Every action has exactly one command endpoint, and nothing else is one.
+// Every action has exactly one command endpoint; besides them there is
+// only the bootstrap, which takes no bearer.
 func TestOneEndpointPerAction(t *testing.T) {
 	actions := registry(t)
 	b, err := Generate(actions, schemas.FS())
@@ -63,7 +64,12 @@ func TestOneEndpointPerAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := parse(t, b)
-	if len(d.Paths) != len(actions) {
+	if b := d.Paths[BootstrapPath]["post"]; b.OperationID != "bootstrap" || b.Action != "" ||
+		b.RequestBody.Content["application/json"].Schema.Ref != "#/components/schemas/api.bootstrap-request" ||
+		b.Responses["200"].Content["application/json"].Schema.Ref != "#/components/schemas/api.bootstrap-response" {
+		t.Errorf("bootstrap: %+v", b)
+	}
+	if len(d.Paths) != len(actions)+1 {
 		t.Fatalf("%d paths for %d actions", len(d.Paths), len(actions))
 	}
 	for name, a := range actions {

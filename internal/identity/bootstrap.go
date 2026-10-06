@@ -5,8 +5,8 @@ package identity
 // The one-time bootstrap (04 "Bootstrap", 14 R4): the first start records
 // the hash of a fresh setup secret and its fixed expiry; the secret, once,
 // creates the first operator and its first token. Consumption is the
-// projector's one-time first-operator rule, so there is no separate
-// "bootstrapped" truth.
+// projector's one-time first-operator and first-token rule, so there is no
+// separate "bootstrapped" truth.
 
 import (
 	"crypto/rand"
@@ -25,6 +25,11 @@ const BootstrapFile = "bootstrap.secret"
 // BootstrapRenewed); only a renewal replaces it.
 const BootstrapIssuedKind = "identity.bootstrap_issued/v1"
 
+// ErrBootstrapRefused is every bootstrap refusal: a wrong or expired
+// secret, none issued, or a bootstrap already consumed. One error, so a
+// caller learns nothing about which.
+var ErrBootstrapRefused = errors.New("identity: the bootstrap secret is not live")
+
 // NewBootstrapSecret makes a setup secret and its hash of the issuance
 // profile. The secret prints as a placeholder; only Reveal gives it.
 func NewBootstrapSecret() (Secret, string, error) {
@@ -35,6 +40,15 @@ func NewBootstrapSecret() (Secret, string, error) {
 	s := base64.RawURLEncoding.EncodeToString(raw)
 	hash, err := hashOf(s)
 	return Secret{func() string { return s }}, hash, err
+}
+
+// ParseBootstrapSecret holds a setup secret a client read; the error never
+// quotes it.
+func ParseBootstrapSecret(s string) (Secret, error) {
+	if !secretForm.MatchString(s) {
+		return Secret{}, errors.New("identity: the bootstrap secret is not in the issued form")
+	}
+	return Secret{func() string { return s }}, nil
 }
 
 // IssueBootstrap records hash, of the first secret made at now, expiring
@@ -68,4 +82,24 @@ func (s BootstrapState) Live(now time.Time) bool {
 	}
 	expires, err := time.Parse(time.RFC3339Nano, string(s.Secret.ExpiresAt))
 	return err == nil && now.Before(expires)
+}
+
+// ConsumeBootstrap decides a bootstrap inside the writer transaction: the
+// secret must match the live, unconsumed, unexpired record; then the
+// events are op's creation and i's issuance, both by the system actor,
+// which the projector admits only once. Any refusal is ErrBootstrapRefused.
+func ConsumeBootstrap(tx *eventstore.Tx, secret Secret, op types.Actor, i Issued, now time.Time) ([]eventstore.Event, error) {
+	st, err := BootstrapOf(tx)
+	if err != nil {
+		return nil, err
+	}
+	if !st.Live(now) || !verify(st.Secret.Hash, secret.Reveal()) {
+		return nil, ErrBootstrapRefused
+	}
+	a, err := CreateActor(op)
+	if err != nil {
+		return nil, err
+	}
+	t, err := i.Events()
+	return append(a, t...), err
 }

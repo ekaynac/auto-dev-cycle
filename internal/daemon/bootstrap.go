@@ -5,19 +5,26 @@ package daemon
 // The one-time bootstrap (04 "Bootstrap", 14 R4). The first start of a
 // store without an operator writes a fresh setup secret to
 // <state_dir>/bootstrap.secret and records only its hash and its expiry,
-// fixed then. (Spending it, POST /v1/bootstrap, comes next.)
+// fixed then. POST /v1/bootstrap, on the private socket only, spends it:
+// one writer transaction checks it and creates the first operator and its
+// first token; the file is deleted after the commit.
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/api"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
@@ -27,8 +34,9 @@ import (
 // The secret's file, and the system actor's own actions, outside the
 // action registry: no bearer can send them (authorizeSystem).
 const (
-	bootstrapFile = identity.BootstrapFile
-	issueAction   = "identity.bootstrap_issue"
+	bootstrapFile   = identity.BootstrapFile
+	bootstrapAction = "identity.bootstrap"
+	issueAction     = "identity.bootstrap_issue"
 )
 
 // The fixed-text startup notes; none names a path or the secret.
@@ -143,4 +151,102 @@ func (b *bootstrapper) issue(ctx context.Context) error {
 			return evs, json.RawMessage(`{}`), nil
 		}))
 	return err
+}
+
+// bootstrapResult is the stored result: ids only, never the secret.
+type bootstrapResult struct {
+	Operator types.ActorID `json:"operator"`
+	Token    types.TokenID `json:"token"`
+}
+
+// The refusal of a wrong, expired, missing or spent secret, one for all.
+var spentRefusal = types.BootstrapRefused{Disposition: "refused", Outcome: "failed", Reason: vocab.ReasonConfirmationRefused,
+	Detail: "the bootstrap secret is wrong, expired or already used"}
+
+// handler serves POST /v1/bootstrap with gate's verification slots. The
+// listener that admitted the connection decides where it is served, never
+// a header.
+func (b *bootstrapper) handler(gate *api.Slots) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		peer, ok := api.PeerOf(r.Context())
+		if !ok || peer.Via != identity.PrivateSocket {
+			http.Error(w, "bootstrap is served only on the private socket", http.StatusForbidden)
+			return
+		}
+		release, ok := gate.Take(peer.UID)
+		if !ok {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "too many authentications in progress; retry", http.StatusServiceUnavailable)
+			return
+		}
+		defer release()
+		raw, err := io.ReadAll(r.Body)
+		req, derr := contract.Decode[types.BootstrapRequest]("api/bootstrap-request", raw)
+		secret, perr := identity.ParseBootstrapSecret(req.Secret)
+		if errors.Join(err, derr, perr) != nil {
+			http.Error(w, "the bootstrap request is not a valid BootstrapRequest", http.StatusBadRequest)
+			return
+		}
+		status, v := b.consume(r.Context(), req, secret)
+		out, err := contract.Encode("api/bootstrap-response", types.BootstrapResponse{Variant: v})
+		if err != nil {
+			http.Error(w, "the bootstrap response cannot be encoded", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(out) // the commit stands either way
+	}
+}
+
+// consume submits the bootstrap as the system actor. The token is minted
+// before, outside the transaction, and goes to the response only from the
+// commit that applied it (14 N3). The input binds the secret's digest, so
+// the same key with another secret is another request.
+func (b *bootstrapper) consume(ctx context.Context, req types.BootstrapRequest, secret identity.Secret) (int, types.BootstrapResponseVariant) {
+	now := b.now()
+	op, err := ids.New("act")
+	cmd, cerr := ids.New("cmd")
+	issued, merr := identity.Mint(types.ActorID(op), b.system.Actor(), now)
+	sum := sha256.Sum256([]byte(secret.Reveal()))
+	input, ierr := json.Marshal(map[string]string{"name": req.Name, "secret_sha256": hex.EncodeToString(sum[:])})
+	var c eventstore.Committed
+	if err = errors.Join(err, cerr, merr, ierr); err == nil {
+		actor := types.Actor{ID: types.ActorID(op), Kind: types.ActorKindOperator, Name: req.Name, CreatedBy: b.system.Actor()}
+		c, err = b.store.Submit(ctx, b.system.Command(cmd, bootstrapAction, "bootstrap/"+req.IdempotencyKey, input, nil),
+			func(t *eventstore.Tx) (eventstore.Decision, error) {
+				evs, err := identity.ConsumeBootstrap(t, secret, actor, issued, now)
+				if errors.Is(err, identity.ErrBootstrapRefused) {
+					res, err := json.Marshal(spentRefusal)
+					return eventstore.Decision{Disposition: eventstore.DispositionRefused, Result: res}, err
+				}
+				res, merr := json.Marshal(bootstrapResult{actor.ID, issued.Token.ID})
+				return eventstore.Decision{Disposition: eventstore.DispositionApplied, Events: evs, Result: res}, errors.Join(err, merr)
+			})
+	}
+	switch {
+	case errors.Is(err, eventstore.ErrIdempotencyKeyReused):
+		return http.StatusConflict, &types.BootstrapRefused{Disposition: "refused", Outcome: "failed", Reason: vocab.ReasonIdempotencyKeyReused,
+			Detail: "the idempotency key was used for another bootstrap request"}
+	case err != nil:
+		return http.StatusServiceUnavailable, &types.BootstrapRefused{Disposition: "refused", Outcome: "could_not_run", Reason: vocab.ReasonStoreUnreadable,
+			Detail: "the bootstrap could not be recorded"}
+	case c.Disposition != eventstore.DispositionApplied:
+		var r types.BootstrapRefused
+		if json.Unmarshal(c.Result, &r) != nil {
+			r = spentRefusal
+		}
+		return http.StatusOK, &r
+	}
+	// The commit came first: a file left by a failed removal is spent, and
+	// the next start removes it.
+	_ = b.remove()
+	var res bootstrapResult
+	_ = json.Unmarshal(c.Result, &res) // the store's own canonical result
+	out := &types.BootstrapApplied{Disposition: "applied", Command: types.CommandID(c.CommandID), Replayed: c.Replayed, Operator: res.Operator, Token: res.Token}
+	if s, ok := issued.Deliver(c); ok {
+		v := s.Reveal()
+		out.IssuedCredential = &v
+	}
+	return http.StatusOK, out
 }

@@ -3,16 +3,27 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/apidoc"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 func bootState(t *testing.T, d *Daemon) identity.BootstrapState {
@@ -132,5 +143,196 @@ func TestBootstrapReplacesUnrecordedFile(t *testing.T) {
 				t.Fatalf("the link target changed: %v", err)
 			}
 		})
+	}
+}
+
+// running is a daemon serving its sockets.
+type running struct {
+	dir    string
+	d      *Daemon
+	logs   *logBuffer
+	stop   func()
+	shared string
+}
+
+func runBootstrap(t *testing.T) *running {
+	t.Helper()
+	r := &running{dir: shortDir(t), logs: &logBuffer{}}
+	run := runDir(t, 0o750)
+	r.shared = filepath.Join(run, sharedSocket)
+	ctx, cancel := context.WithCancel(context.Background())
+	done, ready := make(chan error, 1), make(chan *Daemon, 1)
+	go func() {
+		done <- Run(ctx, Config{StateDir: r.dir, Shared: &SharedSocket{RunDir: run, Group: egid()}}, r.logs, func(d *Daemon) { ready <- d })
+	}()
+	select {
+	case r.d = <-ready:
+	case err := <-done:
+		t.Fatalf("the daemon did not start: %v", err)
+	}
+	var once sync.Once
+	r.stop = func() {
+		once.Do(func() {
+			cancel()
+			if err := <-done; err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	t.Cleanup(r.stop)
+	return r
+}
+
+func (r *running) post(t *testing.T, sock, key, secret string) (int, types.BootstrapResponseVariant) {
+	t.Helper()
+	body, err := json.Marshal(types.BootstrapRequest{IdempotencyKey: key, Secret: secret, Name: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := unixClient(sock).Post("http://adcd"+apidoc.BootstrapPath, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := contract.Decode[types.BootstrapResponse]("api/bootstrap-response", raw)
+	if err != nil {
+		return resp.StatusCode, nil
+	}
+	return resp.StatusCode, out.Variant
+}
+
+func (r *running) private() string { return filepath.Join(r.dir, privateSocket) }
+
+func refusedWith(t *testing.T, v types.BootstrapResponseVariant, reason vocab.Reason) {
+	t.Helper()
+	if f, ok := v.(*types.BootstrapRefused); !ok || f.Reason != reason {
+		t.Fatalf("want refused %s, got %+v", reason, v)
+	}
+}
+
+// A wrong secret, an expired one and the shared socket are refused; the
+// right one creates the first operator and its token, delivered once, and
+// deletes the file; a replay delivers nothing; a leftover file (a crash
+// after the commit) never bootstraps again, and the next start removes it.
+// No secret reaches the log or the state directory.
+func TestBootstrapEndpoint(t *testing.T) {
+	r := runBootstrap(t)
+	secret := readSecret(t, r.dir)
+	wrong, _, err := identity.NewBootstrapSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, v := r.post(t, r.shared, "k-shared", secret); code != http.StatusForbidden || v != nil {
+		t.Fatalf("shared socket: %d %+v", code, v)
+	}
+	if code, _ := r.post(t, r.private(), "k-bad", "not a secret"); code != http.StatusBadRequest {
+		t.Fatalf("malformed: %d", code)
+	}
+	_, v := r.post(t, r.private(), "k-wrong", wrong.Reveal())
+	refusedWith(t, v, vocab.ReasonConfirmationRefused)
+	r.d.boot.now = func() time.Time { return time.Now().Add(25 * time.Hour) }
+	_, v = r.post(t, r.private(), "k-late", secret)
+	refusedWith(t, v, vocab.ReasonConfirmationRefused)
+	r.d.boot.now = time.Now
+	// The same key with another secret is another request.
+	if code, v := r.post(t, r.private(), "k-wrong", secret); code != http.StatusConflict {
+		t.Fatalf("reused key: %d %+v", code, v)
+	}
+	_, v = r.post(t, r.private(), "k-ok", secret)
+	ok, isApplied := v.(*types.BootstrapApplied)
+	if !isApplied || ok.Replayed || ok.IssuedCredential == nil {
+		t.Fatalf("bootstrap: %+v", v)
+	}
+	bearer := *ok.IssuedCredential
+	gone(t, filepath.Join(r.dir, bootstrapFile))
+	if err := r.d.store.View(context.Background(), func(tx *eventstore.Tx) error {
+		a, err := identity.Authenticate(tx, bearer)
+		if err == nil && (a.ID != ok.Operator || a.Kind != types.ActorKindOperator || !bootState(t, r.d).Consumed) {
+			t.Errorf("the token is %+v's", a)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The system actions are the system principal's alone, an operator's
+	// included.
+	var p identity.Principal
+	if err := r.d.store.View(context.Background(), func(tx *eventstore.Tx) (err error) {
+		p, err = identity.Authenticated(tx, bearer, identity.PrivateSocket)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.d.store.Submit(context.Background(), p.Command(newID(t, "cmd"), issueAction, "k", []byte(`{}`), nil), nil); !errors.Is(err, identity.ErrUnauthenticated) {
+		t.Errorf("an operator's system action: %v", err)
+	}
+	_, v = r.post(t, r.private(), "k-ok", secret)
+	if again, isApplied := v.(*types.BootstrapApplied); !isApplied || !again.Replayed || again.IssuedCredential != nil || again.Token != ok.Token {
+		t.Fatalf("replay: %+v", v)
+	}
+	if err := os.WriteFile(filepath.Join(r.dir, bootstrapFile), []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, v = r.post(t, r.private(), "k-after", secret)
+	refusedWith(t, v, vocab.ReasonConfirmationRefused)
+	_, bearerSecret, _ := strings.Cut(bearer, ".")
+	secretsAbsent(t, r, secret, bearerSecret)
+	r.stop()
+	secretsAbsent(t, r, secret, bearerSecret)
+	d := restart(t, r.dir)
+	defer d.Close()
+	gone(t, filepath.Join(r.dir, bootstrapFile))
+}
+
+// secretsAbsent: neither secret is in the log or in any file of the state
+// directory (the database, its WAL), the leftover secret file aside.
+func secretsAbsent(t *testing.T, r *running, secrets ...string) {
+	t.Helper()
+	err := filepath.WalkDir(r.dir, func(p string, e fs.DirEntry, err error) error {
+		if err != nil || !e.Type().IsRegular() || e.Name() == bootstrapFile {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		for _, s := range secrets {
+			if bytes.Contains(b, []byte(s)) {
+				t.Errorf("%s holds a secret", e.Name())
+			}
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range secrets {
+		if strings.Contains(r.logs.String(), s) {
+			t.Error("the log holds a secret")
+		}
+	}
+}
+
+// Two clients racing with different keys: exactly one bootstraps.
+func TestBootstrapRace(t *testing.T) {
+	r := runBootstrap(t)
+	secret := readSecret(t, r.dir)
+	var wg sync.WaitGroup
+	results := make([]types.BootstrapResponseVariant, 2)
+	for i := range results {
+		wg.Go(func() { _, results[i] = r.post(t, r.private(), "race-"+string(rune('a'+i)), secret) })
+	}
+	wg.Wait()
+	applied := 0
+	for _, v := range results {
+		if a, ok := v.(*types.BootstrapApplied); ok && a.IssuedCredential != nil {
+			applied++
+		} else {
+			refusedWith(t, v, vocab.ReasonConfirmationRefused)
+		}
+	}
+	if applied != 1 {
+		t.Fatalf("%d bootstraps", applied)
 	}
 }
