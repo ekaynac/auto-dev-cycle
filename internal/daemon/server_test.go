@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,7 +33,7 @@ type served struct {
 	tok identity.Secret
 }
 
-func serveStore(t *testing.T, lim limits, gate api.AuthGate, shared *SharedSocket) *served {
+func serveStore(t *testing.T, lim limits, shared *SharedSocket) *served {
 	t.Helper()
 	s := &served{dir: shortDir(t)}
 	s.w = seed(t, s.dir, daemonProjection(t))
@@ -49,7 +50,7 @@ func serveStore(t *testing.T, lim limits, gate api.AuthGate, shared *SharedSocke
 		return evs, err
 	})
 	var err error
-	if s.srv, err = listen(s.w.s, s.dir, shared, lim, gate); err != nil {
+	if s.srv, err = listen(s.w.s, s.dir, shared, lim); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.srv.close() })
@@ -146,7 +147,7 @@ func TestStreamThroughServer(t *testing.T) {
 	lim := defaultLimits
 	lim.poll, lim.writeTimeout = 100*time.Millisecond, 200*time.Millisecond
 	t.Run("revocation", func(t *testing.T) {
-		s := serveStore(t, lim, nil, nil)
+		s := serveStore(t, lim, nil)
 		stream := frames(s.get(t, s.client(), api.EventsPath, s.tok.Reveal()))
 		time.Sleep(3 * lim.writeTimeout) // an idle stream is not cut by the server's write timeout
 		s.w.do(s.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
@@ -155,7 +156,7 @@ func TestStreamThroughServer(t *testing.T) {
 		closedWith(t, stream, vocab.Failed, vocab.ReasonAuthorityRevoked)
 	})
 	t.Run("an unreadable store", func(t *testing.T) {
-		s := serveStore(t, lim, nil, nil)
+		s := serveStore(t, lim, nil)
 		stream := frames(s.get(t, s.client(), api.EventsPath, s.tok.Reveal()))
 		s.w.do(s.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return nil, tx.Put(identity.TokenProjection, s.tokenID(), json.RawMessage(`[]`))
@@ -169,7 +170,7 @@ func TestStreamThroughServer(t *testing.T) {
 func TestStalledReaderCutOff(t *testing.T) {
 	lim := defaultLimits
 	lim.poll = 200 * time.Millisecond
-	s := serveStore(t, lim, nil, nil)
+	s := serveStore(t, lim, nil)
 	const total = 3000
 	for range total / 500 {
 		s.w.do(s.op, func(*eventstore.Tx) ([]eventstore.Event, error) {
@@ -200,7 +201,7 @@ func TestStalledReaderCutOff(t *testing.T) {
 }
 
 func TestVersionEndpoint(t *testing.T) {
-	s := serveStore(t, defaultLimits, nil, nil)
+	s := serveStore(t, defaultLimits, nil)
 	resp := s.get(t, s.client(), api.VersionPath, "")
 	var got buildinfo.Info
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || resp.StatusCode != 200 || got != buildinfo.Get("adcd") || got.SchemaSet == "" {
@@ -215,7 +216,7 @@ func TestVersionEndpoint(t *testing.T) {
 // made; the directory then takes a new server.
 func TestShutdownRemovesSockets(t *testing.T) {
 	run := runDir(t, 0o750)
-	s := serveStore(t, defaultLimits, nil, &SharedSocket{RunDir: run, Group: egid()})
+	s := serveStore(t, defaultLimits, &SharedSocket{RunDir: run, Group: egid()})
 	stream := frames(s.get(t, s.client(), api.EventsPath, s.tok.Reveal()))
 	start := time.Now()
 	if err := s.srv.close(); err != nil {
@@ -228,7 +229,7 @@ func TestShutdownRemovesSockets(t *testing.T) {
 	}
 	gone(t, filepath.Join(s.dir, privateSocket))
 	gone(t, filepath.Join(run, sharedSocket))
-	again, err := listen(s.w.s, s.dir, nil, defaultLimits, nil)
+	again, err := listen(s.w.s, s.dir, nil, defaultLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +240,7 @@ func TestShutdownRemovesSockets(t *testing.T) {
 func TestRequestLimits(t *testing.T) {
 	lim := defaultLimits
 	lim.headerTimeout = 200 * time.Millisecond
-	s := serveStore(t, lim, nil, nil)
+	s := serveStore(t, lim, nil)
 	req, _ := http.NewRequest(http.MethodGet, "http://adcd"+api.VersionPath, nil)
 	req.Header.Set("X-Big", strings.Repeat("a", 64<<10))
 	if resp, err := s.client().Do(req); err != nil || resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
@@ -264,22 +265,112 @@ func TestRequestLimits(t *testing.T) {
 	}
 }
 
-// Concurrent bearer verifications are capped: a request that finds the
-// gate full is refused at once with fixed text.
+// Bearer verifications are capped per listener and, on the shared socket,
+// per peer: a full shared gate refuses at once with fixed text and never
+// delays or refuses the private socket; the private socket has its own cap.
 func TestVerificationGate(t *testing.T) {
-	gate := api.NewAuthGate(1)
-	s := serveStore(t, defaultLimits, gate, nil)
-	gate <- struct{}{} // the one slot is taken
-	resp := s.get(t, s.client(), api.EventsPath, s.tok.Reveal())
+	s := serveStore(t, defaultLimits, &SharedSocket{RunDir: runDir(t, 0o750), Group: egid()})
+	private, shared := s.srv.sockets[0], s.srv.sockets[1]
+	sharedClient := unixClient(filepath.Join(shared.dir.Name(), sharedSocket))
+	uid := os.Geteuid()
+	// The shared flood: this peer's one slot, and another peer's.
+	r1, ok1 := shared.verify.Take(uid)
+	r2, ok2 := shared.verify.Take(uid + 1)
+	if !ok1 || !ok2 {
+		t.Fatal("the shared gate has fewer than two peers' slots")
+	}
+	resp := s.get(t, sharedClient, api.EventsPath, s.tok.Reveal())
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" || strings.Contains(string(b), s.tok.Reveal()) {
-		t.Fatalf("a full gate: %s %q", resp.Status, b)
+		t.Fatalf("a full shared gate: %s %q", resp.Status, b)
 	}
-	<-gate
-	if resp := s.get(t, s.client(), api.EventsPath, s.tok.Reveal()); resp.StatusCode != http.StatusOK {
-		t.Fatalf("a free gate: %s", resp.Status)
+	start := time.Now()
+	if resp := s.get(t, s.client(), api.EventsPath, s.tok.Reveal()); resp.StatusCode != http.StatusOK || time.Since(start) > 5*time.Second {
+		t.Fatalf("the private socket under a shared flood: %s after %s", resp.Status, time.Since(start))
 	}
-	if len(gate) != 0 {
-		t.Errorf("the gate holds %d slots after authentication", len(gate))
+	r1()
+	r1() // a release counts once
+	r2()
+	if resp := s.get(t, sharedClient, api.EventsPath, s.tok.Reveal()); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a free shared gate: %s", resp.Status)
+	}
+	for range defaultLimits.private.verify {
+		if _, ok := private.verify.Take(uid); !ok {
+			t.Fatal("the private gate is smaller than its quota")
+		}
+	}
+	if resp := s.get(t, s.client(), api.EventsPath, s.tok.Reveal()); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a full private gate: %s", resp.Status)
+	}
+}
+
+// One peer cannot take every slot: it is held to its own share, and other
+// peers take the rest up to the total.
+func TestSlotsPerPeer(t *testing.T) {
+	sl := api.NewSlots(4, 2)
+	for _, c := range []struct {
+		peer int
+		ok   bool
+	}{{1, true}, {1, true}, {1, false}, {2, true}, {2, true}, {3, false}} {
+		if _, ok := sl.Take(c.peer); ok != c.ok {
+			t.Fatalf("peer %d took a slot: %v", c.peer, ok)
+		}
+	}
+}
+
+// rawGet sends GET path on a new connection to sock and returns the
+// status line, keeping the connection open until the test ends.
+func rawGet(t *testing.T, sock, path string) string {
+	t.Helper()
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	if _, err := io.WriteString(c, "GET "+path+" HTTP/1.1\r\nHost: adcd\r\n\r\n"); err != nil {
+		return err.Error()
+	}
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	line, err := bufio.NewReader(c).ReadString('\n')
+	if err != nil {
+		return err.Error()
+	}
+	return strings.TrimSpace(line)
+}
+
+// Connections, and so open streams, are capped per listener and per peer
+// on the shared socket; one past the cap is refused at once with fixed
+// text, and a closed connection frees its slot. The shared socket's
+// connections never take the private socket's.
+func TestConnectionQuota(t *testing.T) {
+	lim := defaultLimits
+	lim.private = slotQuota{conns: 2, verify: 2}
+	lim.shared = slotQuota{conns: 4, connsPerPeer: 2, verify: 2, verifyPerPeer: 1}
+	run := runDir(t, 0o750)
+	s := serveStore(t, lim, &SharedSocket{RunDir: run, Group: egid()})
+	sharedSock, privateSock := filepath.Join(run, sharedSocket), filepath.Join(s.dir, privateSocket)
+	// One peer's two streams fill its share of the shared socket.
+	var streams []*http.Response
+	for range 2 {
+		streams = append(streams, s.get(t, unixClient(sharedSock), api.EventsPath, s.tok.Reveal()))
+	}
+	if got := rawGet(t, sharedSock, api.VersionPath); got != "HTTP/1.1 503 Service Unavailable" {
+		t.Fatalf("a third stream's connection: %q", got)
+	}
+	for range 2 {
+		if got := rawGet(t, privateSock, api.VersionPath); got != "HTTP/1.1 200 OK" {
+			t.Fatalf("the private socket beside a full shared peer: %q", got)
+		}
+	}
+	if got := rawGet(t, privateSock, api.VersionPath); got != "HTTP/1.1 503 Service Unavailable" {
+		t.Fatalf("one past the private cap: %q", got)
+	}
+	streams[0].Body.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for rawGet(t, sharedSock, api.VersionPath) != "HTTP/1.1 200 OK" {
+		if time.Now().After(deadline) {
+			t.Fatal("a closed stream did not free its slot")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

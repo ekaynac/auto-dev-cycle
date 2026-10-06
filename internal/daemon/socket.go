@@ -34,6 +34,7 @@ type socket struct {
 	dev     uint64
 	ino     uint64
 	ln      net.Listener
+	verify  *api.Slots // bearer verifications on this socket
 	removed sync.Once
 }
 
@@ -50,9 +51,9 @@ func procPath(dir *os.File, name string) string {
 // bind binds name in dir with perm set at creation by the umask, gives it
 // group gid (when gid >= 0) before it listens, and listens on it for via.
 // It takes ownership of dir. An existing path is replaced only if it is a
-// stale socket of this daemon's uid (clearStale).
-func bind(dir *os.File, name string, perm uint32, gid int, via identity.Listener) (_ *socket, err error) {
-	s := &socket{dir: dir, name: name}
+// stale socket of this daemon's uid (clearStale). q is its own quota.
+func bind(dir *os.File, name string, perm uint32, gid int, via identity.Listener, q slotQuota) (_ *socket, err error) {
+	s := &socket{dir: dir, name: name, verify: api.NewSlots(q.verify, q.verifyPerPeer)}
 	defer func() {
 		if err != nil {
 			_ = s.close() // a refused bind removes what it made; the refusal says why
@@ -90,7 +91,7 @@ func bind(dir *os.File, name string, perm uint32, gid int, via identity.Listener
 	if err != nil {
 		return nil, configError("the socket cannot listen")
 	}
-	s.ln = peerListener{Listener: ln, via: via, daemon: os.Geteuid()}
+	s.ln = peerListener{Listener: ln, via: via, daemon: os.Geteuid(), conns: api.NewSlots(q.conns, q.connsPerPeer)}
 	return s, nil
 }
 
@@ -145,13 +146,18 @@ func (s *socket) close() error {
 
 // peerListener admits a connection only if its peer credentials (taken by
 // the kernel at connect, SO_PEERCRED) pass admits; any other is closed
-// before a byte is read. The connection carries the listener and the
+// before a byte is read. One past the connection quota is refused with
+// fixed text and closed. The connection carries the listener and the
 // peer's uid to the request context (connContext).
 type peerListener struct {
 	net.Listener
 	via    identity.Listener
-	daemon int // the daemon's uid
+	daemon int        // the daemon's uid
+	conns  *api.Slots // released when the connection closes
 }
+
+// busy is the fixed-text refusal of a connection past the quota.
+const busy = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 21\r\n\r\ntoo many connections\n"
 
 func (l peerListener) Accept() (net.Conn, error) {
 	for {
@@ -162,7 +168,11 @@ func (l peerListener) Accept() (net.Conn, error) {
 		uc, ok := c.(*net.UnixConn)
 		if ok {
 			if uid, err := peerUID(uc); err == nil && admits(l.via, uid, l.daemon) {
-				return &peerConn{UnixConn: uc, peer: api.Peer{Via: l.via, UID: uid}}, nil
+				if release, ok := l.conns.Take(uid); ok {
+					return &peerConn{UnixConn: uc, peer: api.Peer{Via: l.via, UID: uid}, release: release}, nil
+				}
+				_ = uc.SetWriteDeadline(time.Now().Add(time.Second))
+				_, _ = uc.Write([]byte(busy)) // refused either way
 			}
 		}
 		_ = c.Close() // refused: the client sees the connection close
@@ -201,5 +211,11 @@ func peerUID(c *net.UnixConn) (int, error) {
 // peerConn is an admitted connection and who it came from.
 type peerConn struct {
 	*net.UnixConn
-	peer api.Peer
+	peer    api.Peer
+	release func() // its connection slot
+}
+
+func (c *peerConn) Close() error {
+	c.release()
+	return c.UnixConn.Close()
 }

@@ -67,7 +67,7 @@ func gone(t *testing.T, p string) {
 // The private socket is 0600 and this user's; the shared socket is off by
 // default and, when configured, 0660 with the configured group.
 func TestSocketModes(t *testing.T) {
-	s := serveStore(t, defaultLimits, nil, nil)
+	s := serveStore(t, defaultLimits, nil)
 	st := lstat(t, filepath.Join(s.dir, privateSocket))
 	if st.Mode&syscall.S_IFMT != syscall.S_IFSOCK || st.Mode&0o777 != 0o600 || int(st.Uid) != os.Geteuid() {
 		t.Errorf("private socket mode %o uid %d", st.Mode, st.Uid)
@@ -80,7 +80,7 @@ func TestSocketModes(t *testing.T) {
 	}
 
 	run := runDir(t, 0o750)
-	s = serveStore(t, defaultLimits, nil, &SharedSocket{RunDir: run, Group: egid()})
+	s = serveStore(t, defaultLimits, &SharedSocket{RunDir: run, Group: egid()})
 	st = lstat(t, filepath.Join(run, sharedSocket))
 	if st.Mode&syscall.S_IFMT != syscall.S_IFSOCK || st.Mode&0o777 != 0o660 || int(st.Gid) != os.Getegid() || int(st.Uid) != os.Geteuid() {
 		t.Errorf("shared socket mode %o uid %d gid %d", st.Mode, st.Uid, st.Gid)
@@ -112,7 +112,7 @@ func TestRunDirRefused(t *testing.T) {
 	} {
 		dir := shortDir(t)
 		w := seed(t, dir, daemonProjection(t))
-		srv, err := listen(w.s, dir, &sh, defaultLimits, nil)
+		srv, err := listen(w.s, dir, &sh, defaultLimits)
 		if !errors.Is(err, ErrConfig) {
 			t.Errorf("%s: accepted: %v", name, err)
 			srv.close()
@@ -161,14 +161,14 @@ func TestStaleSocket(t *testing.T) {
 	w := seed(t, dir, daemonProjection(t))
 	defer w.done()
 	// Live: someone answers on it.
-	if _, err := listen(w.s, dir, nil, defaultLimits, nil); !errors.Is(err, ErrConfig) {
+	if _, err := listen(w.s, dir, nil, defaultLimits); !errors.Is(err, ErrConfig) {
 		t.Fatalf("a live socket was replaced: %v", err)
 	}
 	if err := os.Chmod(path, 0o640); err != nil { // marks the stale socket (an inode number may be reused)
 		t.Fatal(err)
 	}
 	ln.Close()
-	srv, err := listen(w.s, dir, nil, defaultLimits, nil)
+	srv, err := listen(w.s, dir, nil, defaultLimits)
 	if err != nil {
 		t.Fatalf("a stale socket was not replaced: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestStaleSocket(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := lstat(t, path)
-		if srv, err := listen(w.s, dir, nil, defaultLimits, nil); !errors.Is(err, ErrConfig) {
+		if srv, err := listen(w.s, dir, nil, defaultLimits); !errors.Is(err, ErrConfig) {
 			t.Errorf("%s at the path: %v", name, err)
 			srv.close()
 		}

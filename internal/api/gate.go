@@ -2,29 +2,61 @@
 
 package api
 
-import "net/http"
+import (
+	"net/http"
+	"sync"
+)
 
-// AuthGate caps concurrent bearer verifications: each costs an Argon2id
-// hash (64 MiB, identity), so unbounded concurrency is a memory exhaustion
-// any client could cause. A request that finds every slot taken is refused
-// at once, never queued.
-type AuthGate chan struct{}
+// Slots caps concurrent holders in total and per peer uid, so no one peer
+// takes them all. Each listener has its own, so one listener's clients
+// never starve another's. A taker that finds no slot is refused at once,
+// never queued. Bearer verifications (an Argon2id hash, 64 MiB, each) and
+// connections are capped this way.
+type Slots struct {
+	mu             sync.Mutex
+	total, perPeer int // perPeer 0: no per-peer cap
+	used           int
+	byPeer         map[int]int
+}
 
-// NewAuthGate is a gate of n slots (at least one).
-func NewAuthGate(n int) AuthGate { return make(AuthGate, max(n, 1)) }
+// NewSlots is total slots (at least one), at most perPeer per peer uid.
+func NewSlots(total, perPeer int) *Slots {
+	return &Slots{total: max(total, 1), perPeer: perPeer, byPeer: map[int]int{}}
+}
 
-// enter takes a slot without waiting: false when none is free. A nil gate
-// caps nothing.
-func (g AuthGate) enter() (leave func(), ok bool) {
-	if g == nil {
+// Take takes a slot for peer: release gives it back (once, whatever the
+// number of calls); false when none is free. Nil Slots caps nothing.
+func (s *Slots) Take(peer int) (release func(), ok bool) {
+	if s == nil {
 		return func() {}, true
 	}
-	select {
-	case g <- struct{}{}:
-		return func() { <-g }, true
-	default:
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.used >= s.total || (s.perPeer > 0 && s.byPeer[peer] >= s.perPeer) {
 		return nil, false
 	}
+	s.used++
+	s.byPeer[peer]++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.used--
+			if s.byPeer[peer]--; s.byPeer[peer] == 0 {
+				delete(s.byPeer, peer)
+			}
+		})
+	}, true
+}
+
+// enter takes a verification slot for r's peer (-1 when none is recorded).
+func (s *Slots) enter(r *http.Request) (func(), bool) {
+	p, ok := PeerOf(r.Context())
+	if !ok {
+		p.UID = -1
+	}
+	return s.Take(p.UID)
 }
 
 // refuseBusy is the fixed-text refusal of a full gate.

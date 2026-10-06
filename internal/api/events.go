@@ -40,7 +40,7 @@ type Events struct {
 	Store *eventstore.Store
 	Now   func() time.Time
 	Poll  time.Duration // how long an idle stream waits before reading again (at most MaxPoll)
-	Gate  AuthGate      // caps concurrent bearer verifications; nil caps nothing
+	Gate  *Slots        // caps concurrent bearer verifications; nil caps nothing
 }
 
 // MaxPoll bounds how long a stream goes without a re-check (08).
@@ -121,7 +121,7 @@ func (h Events) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var scope authority.ReadScope
 	var authErr error
 	var actor types.ActorID
-	leave, ok := h.Gate.enter()
+	leave, ok := h.Gate.enter(r)
 	if !ok {
 		refuseBusy(w)
 		return

@@ -25,13 +25,20 @@ type limits struct {
 	idleTimeout   time.Duration // a kept-alive connection between requests
 	headerBytes   int           // request line and headers
 	bodyBytes     int64         // a request body
-	verifications int           // concurrent bearer verifications (Argon2id, 64 MiB each)
+	private       slotQuota     // the private socket's own slots: the shared one never starves it
+	shared        slotQuota
 	poll          time.Duration // the event stream's re-check bound; zero is api.MaxPoll
 	shutdown      time.Duration // what a graceful stop waits before closing connections
 }
 
 var defaultLimits = limits{headerTimeout: 5 * time.Second, writeTimeout: 30 * time.Second, idleTimeout: time.Minute,
-	headerBytes: 16 << 10, bodyBytes: 1 << 20, verifications: 4, shutdown: 5 * time.Second}
+	headerBytes: 16 << 10, bodyBytes: 1 << 20, shutdown: 5 * time.Second,
+	private: slotQuota{conns: 64, verify: 2}, shared: slotQuota{conns: 32, connsPerPeer: 8, verify: 2, verifyPerPeer: 1}}
+
+// slotQuota is one listener's concurrent connections (so open streams too:
+// each holds one) and bearer verifications (Argon2id, 64 MiB each), in
+// total and per peer uid (0: no per-peer cap).
+type slotQuota struct{ conns, connsPerPeer, verify, verifyPerPeer int }
 
 // server is the API served on the daemon's sockets.
 type server struct {
@@ -45,12 +52,8 @@ type server struct {
 
 // listen binds the private socket in stateDir and, when configured, the
 // shared one, and serves the API over store on both. It runs at the
-// readiness point only (Run). gate caps bearer verifications; nil makes
-// one of lim.verifications.
-func listen(store *eventstore.Store, stateDir string, shared *SharedSocket, lim limits, gate api.AuthGate) (_ *server, err error) {
-	if gate == nil {
-		gate = api.NewAuthGate(lim.verifications)
-	}
+// readiness point only (Run).
+func listen(store *eventstore.Store, stateDir string, shared *SharedSocket, lim limits) (_ *server, err error) {
 	s := &server{lim: lim, failed: make(chan error, 2)}
 	defer func() {
 		if err != nil {
@@ -61,7 +64,7 @@ func listen(store *eventstore.Store, stateDir string, shared *SharedSocket, lim 
 	if err != nil {
 		return nil, configError("the state directory must be a directory owned by this user with mode 0700")
 	}
-	if err := s.add(bind(dir, privateSocket, 0o600, -1, identity.PrivateSocket)); err != nil {
+	if err := s.add(bind(dir, privateSocket, 0o600, -1, identity.PrivateSocket, lim.private)); err != nil {
 		return nil, err
 	}
 	if shared != nil {
@@ -75,15 +78,14 @@ func listen(store *eventstore.Store, stateDir string, shared *SharedSocket, lim 
 		if err != nil {
 			return nil, configError("the shared run directory must be a directory owned by this user, of the shared group, group-searchable and writable by no one else")
 		}
-		if err := s.add(bind(dir, sharedSocket, 0o660, gid, identity.SharedSocket)); err != nil {
+		if err := s.add(bind(dir, sharedSocket, 0o660, gid, identity.SharedSocket, lim.shared)); err != nil {
 			return nil, err
 		}
 	}
 	base, stop := context.WithCancel(context.Background())
 	s.stop = stop
-	h := handler(store, lim, gate)
 	for _, sk := range s.sockets {
-		hs := &http.Server{Handler: h, ReadHeaderTimeout: lim.headerTimeout, WriteTimeout: lim.writeTimeout,
+		hs := &http.Server{Handler: handler(store, lim, sk.verify), ReadHeaderTimeout: lim.headerTimeout, WriteTimeout: lim.writeTimeout,
 			IdleTimeout: lim.idleTimeout, MaxHeaderBytes: lim.headerBytes,
 			BaseContext: func(net.Listener) context.Context { return base }, ConnContext: connContext}
 		s.https = append(s.https, hs)
@@ -131,7 +133,7 @@ func connContext(ctx context.Context, c net.Conn) context.Context {
 
 // handler is the API's routes, every request body bounded. Command routes
 // join with their handlers.
-func handler(store *eventstore.Store, lim limits, gate api.AuthGate) http.Handler {
+func handler(store *eventstore.Store, lim limits, gate *api.Slots) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET "+api.EventsPath, api.Events{Store: store, Poll: lim.poll, Gate: gate})
 	mux.HandleFunc("GET "+api.VersionPath, api.Version)
