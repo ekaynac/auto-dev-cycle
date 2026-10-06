@@ -209,6 +209,12 @@ func TestParse(t *testing.T) {
 		if _, _, ok := parse(bearer); ok {
 			t.Errorf("%s: parsed", name)
 		}
+		if _, err := ParseSecret(bearer); err == nil || (bearer != "" && strings.Contains(err.Error(), bearer)) {
+			t.Errorf("%s: ParseSecret: %v", name, err)
+		}
+	}
+	if got, err := ParseSecret(b); err != nil || got.Reveal() != b {
+		t.Fatalf("ParseSecret: %v", err)
 	}
 }
 

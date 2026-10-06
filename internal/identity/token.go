@@ -78,6 +78,15 @@ func (s Secret) Reveal() string {
 	return s.value()
 }
 
+// ParseSecret holds a bearer string a client read (ADC_TOKEN, the token
+// file) as a Secret, if it has the issued form; the error never quotes it.
+func ParseSecret(bearer string) (Secret, error) {
+	if _, _, ok := parse(bearer); !ok {
+		return Secret{}, errors.New("identity: the token is not in the issued form")
+	}
+	return Secret{func() string { return bearer }}, nil
+}
+
 // mint makes a token for actor: its record (with the hash) and its secret.
 func mint(actor, createdBy types.ActorID, now time.Time) (types.Token, Secret, error) {
 	id, err := ids.New("tok")
