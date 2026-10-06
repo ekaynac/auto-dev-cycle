@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -26,6 +27,32 @@ type Config struct {
 	StateDir    string                // required: absolute and clean; the private state directory (03)
 	Groups      []types.ResourceGroup // what capacity reserves from; none by default
 	TrustedHead *eventstore.Head      // optional: the log must reach it and carry its hash (03 rule 3)
+	Shared      *SharedSocket         // optional, off by default (14 R2)
+}
+
+// SharedSocket enables the shared socket, <RunDir>/adcd-shared.sock, mode
+// 0660 with group Group, for supervisors under other OS users (08). The
+// run directory is the daemon's: owned by its uid, of Group, searchable
+// by the group and writable by no one else, so no supervisor can replace
+// the socket.
+type SharedSocket struct {
+	RunDir string // absolute and clean, outside the state directory
+	Group  string // a group name or numeric gid
+}
+
+// gid resolves the group: a numeric gid as it is, else a group name.
+func (s SharedSocket) gid() (int, error) {
+	if n, err := strconv.Atoi(s.Group); err == nil && n >= 0 {
+		return n, nil
+	}
+	g, err := user.LookupGroup(s.Group)
+	if err == nil {
+		var n int
+		if n, err = strconv.Atoi(g.Gid); err == nil {
+			return n, nil
+		}
+	}
+	return -1, configError("the shared group does not exist")
 }
 
 // ErrConfig marks a refused configuration. Its messages are fixed text:
@@ -35,7 +62,7 @@ var ErrConfig = errors.New("adcd: configuration")
 const (
 	maxGroupsFile = 1 << 20 // bytes
 	groupSchema   = "records/resource-group"
-	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX]"
+	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP]"
 )
 
 var headHash = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -47,10 +74,14 @@ func LoadConfig(args []string) (Config, error) {
 	fs := flag.NewFlagSet("adcd run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	state, groupsFile, trusted := fs.String("state-dir", "", ""), fs.String("resource-groups", "", ""), fs.String("trusted-head", "", "")
+	runDir, group := fs.String("shared-run-dir", "", ""), fs.String("shared-group", "", "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return Config{}, configError("unknown flag, missing value or extra argument; " + usage)
 	}
 	cfg := Config{StateDir: *state, Groups: []types.ResourceGroup{}}
+	if *runDir != "" || *group != "" {
+		cfg.Shared = &SharedSocket{RunDir: *runDir, Group: *group}
+	}
 	if *trusted != "" {
 		seq, hash, _ := strings.Cut(*trusted, ":")
 		n, err := strconv.ParseInt(seq, 10, 64)
@@ -81,6 +112,15 @@ func (c Config) Validate() error {
 		return configError("the state directory must be an absolute, clean path")
 	case c.TrustedHead != nil && (c.TrustedHead.Seq < 0 || !headHash.MatchString(c.TrustedHead.Hash)):
 		return configError("the trusted head is not a non-negative seq and a sha256:HEX hash")
+	case c.Shared != nil && (c.Shared.RunDir == "" || c.Shared.Group == ""):
+		return configError("the shared socket needs both --shared-run-dir and --shared-group")
+	case c.Shared != nil && (!absClean(c.Shared.RunDir) || c.Shared.RunDir == c.StateDir || strings.HasPrefix(c.Shared.RunDir, c.StateDir+"/")):
+		return configError("the shared run directory must be an absolute, clean path apart from the state directory")
+	}
+	if c.Shared != nil {
+		if _, err := c.Shared.gid(); err != nil {
+			return err
+		}
 	}
 	for i, g := range c.Groups {
 		if _, err := contract.Encode(groupSchema, g); err != nil {

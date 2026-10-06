@@ -40,6 +40,7 @@ type Events struct {
 	Store *eventstore.Store
 	Now   func() time.Time
 	Poll  time.Duration // how long an idle stream waits before reading again (at most MaxPoll)
+	Gate  *Slots        // caps concurrent bearer verifications; nil admits no one (Unlimited caps nothing)
 }
 
 // MaxPoll bounds how long a stream goes without a re-check (08).
@@ -120,16 +121,24 @@ func (h Events) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var scope authority.ReadScope
 	var authErr error
 	var actor types.ActorID
-	err = h.Store.View(r.Context(), func(tx *eventstore.Tx) error {
-		a, err := identity.Authenticate(tx, bearer)
-		if err != nil {
-			authErr = err
-			return nil
-		}
-		actor = a.ID
-		scope, err = authority.ReadScopeOf(tx, a, h.now())
-		return err
-	})
+	leave, ok := h.Gate.enter(r)
+	if !ok {
+		refuseBusy(w)
+		return
+	}
+	err = func() error {
+		defer leave()
+		return h.Store.View(r.Context(), func(tx *eventstore.Tx) error {
+			a, err := identity.Authenticate(tx, bearer)
+			if err != nil {
+				authErr = err
+				return nil
+			}
+			actor = a.ID
+			scope, err = authority.ReadScopeOf(tx, a, h.now())
+			return err
+		})
+	}()
 	switch {
 	case errors.Is(authErr, identity.ErrUnauthenticated):
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)

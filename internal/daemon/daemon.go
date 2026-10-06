@@ -2,8 +2,9 @@
 
 // Package daemon assembles the controller daemon, adcd (docs/design/m0/03,
 // 08): the state-directory lock, the blob and event stores, the writer's
-// hooks and the startup checks, in the order the design requires. It opens
-// no listener yet, and the writer refuses every new command.
+// hooks and the startup checks, in the order the design requires; then,
+// at the readiness point, the API's Unix sockets. The writer refuses every
+// new command.
 package daemon
 
 import (
@@ -133,22 +134,38 @@ func (d *Daemon) Close() error {
 	return d.closeErr
 }
 
-// Run starts the daemon and blocks until ctx is done, then closes it.
-// ready is the readiness point: it is called once every startup check has
-// passed, and a listener starts from it, never before. logw
-// never receives a path or a secret.
+// Run starts the daemon, then at its readiness point (every startup check
+// passed) opens the listeners: the private socket and, when configured,
+// the shared one. ready is called once they listen. Run blocks until ctx is
+// done or a listener fails, then stops the server (streams closed, sockets
+// removed) before the store closes. logw never receives a path or a secret.
 func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) error {
 	d, err := Start(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(logw, "adcd: started; event log verified to seq %d; no listener in this build\n", d.head.Seq)
+	srv, err := listen(d.store, d.lock.Dir(), cfg.Shared, defaultLimits)
+	if err != nil {
+		if cerr := d.Close(); cerr != nil {
+			return couldNotRun(vocab.ReasonStoreUnreadable, "the event store did not close cleanly", errors.Join(err, cerr))
+		}
+		return err
+	}
+	fmt.Fprintf(logw, "adcd: started; event log verified to seq %d; listening on %d socket(s)\n", d.head.Seq, len(srv.sockets))
 	if ready != nil {
 		ready(d)
 	}
-	<-ctx.Done()
+	var failed error
+	select {
+	case <-ctx.Done():
+	case failed = <-srv.failed:
+	}
+	serr := srv.close()
 	if err := d.Close(); err != nil {
 		return couldNotRun(vocab.ReasonStoreUnreadable, "the event store did not close cleanly", err)
+	}
+	if err := errors.Join(failed, serr); err != nil {
+		return fmt.Errorf("adcd: the server stopped on an error: %w", err)
 	}
 	fmt.Fprintln(logw, "adcd: stopped")
 	return nil
