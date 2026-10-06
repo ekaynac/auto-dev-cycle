@@ -40,7 +40,7 @@ type Events struct {
 	Store *eventstore.Store
 	Now   func() time.Time
 	Poll  time.Duration // how long an idle stream waits before reading again (at most MaxPoll)
-	Gate  *Slots        // caps concurrent bearer verifications; nil caps nothing
+	Gate  *Slots        // caps concurrent bearer verifications; nil admits no one (Unlimited caps nothing)
 }
 
 // MaxPoll bounds how long a stream goes without a re-check (08).

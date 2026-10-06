@@ -207,6 +207,143 @@ func TestStaleSocket(t *testing.T) {
 	}
 }
 
+// A stale socket is removed only on a refused connect; a live stream
+// socket with a full backlog and a live datagram socket are not stale and
+// are left in place (Astra M1).
+func TestStaleNeedsARefusedConnect(t *testing.T) {
+	for name, live := range map[string]func(t *testing.T, path string) func(){
+		"a full backlog": func(t *testing.T, path string) func() {
+			fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+			if err != nil || unix.Bind(fd, &unix.SockaddrUnix{Name: path}) != nil || unix.Listen(fd, 0) != nil {
+				t.Fatal("a listening socket cannot be made", err)
+			}
+			var held []net.Conn
+			for {
+				c, err := net.DialTimeout("unix", path, 100*time.Millisecond)
+				if err != nil {
+					break
+				}
+				if held = append(held, c); len(held) > 64 {
+					t.Fatal("the backlog never filled")
+				}
+			}
+			return func() {
+				for _, c := range held {
+					c.Close()
+				}
+				unix.Close(fd)
+			}
+		},
+		"a datagram socket": func(t *testing.T, path string) func() {
+			c, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return func() { c.Close() }
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := shortDir(t)
+			path := filepath.Join(dir, privateSocket)
+			defer live(t, path)()
+			before := lstat(t, path)
+			w := seed(t, dir, daemonProjection(t))
+			defer w.done()
+			if srv, err := listen(w.s, dir, nil, defaultLimits); !errors.Is(err, ErrConfig) {
+				t.Errorf("a live socket was replaced: %v", err)
+				srv.close()
+			}
+			if after := lstat(t, path); after.Ino != before.Ino || after.Mode != before.Mode {
+				t.Error("the live socket was touched")
+			}
+		})
+	}
+}
+
+// The cleanup path itself checks the owner: with another expected daemon
+// uid, a stale socket is refused and kept; with this one it is removed
+// (Astra M3).
+func TestCleanupChecksTheOwner(t *testing.T) {
+	dir := shortDir(t)
+	path := filepath.Join(dir, privateSocket)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	ln.Close()
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	before := lstat(t, path)
+	if err := clearStale(f, privateSocket, os.Geteuid()+1); !errors.Is(err, ErrConfig) {
+		t.Fatalf("another owner's socket was cleared: %v", err)
+	}
+	if after := lstat(t, path); after.Ino != before.Ino {
+		t.Fatal("another owner's socket was touched")
+	}
+	if err := clearStale(f, privateSocket, os.Geteuid()); err != nil {
+		t.Fatalf("our stale socket: %v", err)
+	}
+	gone(t, path)
+}
+
+// posixACL encodes a POSIX ACL extended attribute: (tag, perm, id) entries.
+func posixACL(entries ...[3]uint32) []byte {
+	b := []byte{2, 0, 0, 0}
+	for _, e := range entries {
+		b = append(b, byte(e[0]), byte(e[0]>>8), byte(e[1]), byte(e[1]>>8), byte(e[2]), byte(e[2]>>8), byte(e[2]>>16), byte(e[2]>>24))
+	}
+	return b
+}
+
+// An ACL could widen the shared socket past its 0660 mode: a run
+// directory with a default ACL is refused, and so is a socket that ends
+// up with an access ACL beyond its mode bits (Astra M2).
+func TestACLRefused(t *testing.T) {
+	const none = 0xffffffff
+	named := posixACL([3]uint32{0x01, 7, none}, [3]uint32{0x02, 6, uint32(os.Geteuid() + 1)}, [3]uint32{0x04, 5, none},
+		[3]uint32{0x10, 7, none}, [3]uint32{0x20, 0, none})
+	try := func(t *testing.T, run string) error {
+		dir := shortDir(t)
+		w := seed(t, dir, daemonProjection(t))
+		defer w.done()
+		srv, err := listen(w.s, dir, &SharedSocket{RunDir: run, Group: egid()}, defaultLimits)
+		if err == nil {
+			srv.close()
+		}
+		return err
+	}
+	t.Run("a real default ACL", func(t *testing.T) {
+		run := runDir(t, 0o750)
+		if err := unix.Setxattr(run, aclDefault, named, 0); err != nil {
+			t.Skipf("this filesystem takes no ACL: %v", err)
+		}
+		if err := try(t, run); !errors.Is(err, ErrConfig) {
+			t.Fatalf("a run dir with a default ACL: %v", err)
+		}
+	})
+	for attr, onSocket := range map[string]bool{aclDefault: false, aclAccess: true} {
+		t.Run(attr, func(t *testing.T) {
+			real := aclAttr
+			t.Cleanup(func() { aclAttr = real })
+			run := runDir(t, 0o750)
+			aclAttr = func(dir *os.File, name, a string) ([]byte, error) {
+				if a == attr && ((onSocket && name == sharedSocket) || (!onSocket && name == "" && dir.Name() == run)) {
+					return named, nil
+				}
+				return real(dir, name, a)
+			}
+			if err := try(t, run); !errors.Is(err, ErrConfig) {
+				t.Fatalf("an injected %s: %v", attr, err)
+			}
+			gone(t, filepath.Join(run, sharedSocket))
+		})
+	}
+}
+
 // M3: the private socket admits only the daemon's uid; a refused peer's
 // connection is closed before a request is read. The admitted connection
 // carries its listener and uid to the request context.
@@ -227,7 +364,7 @@ func TestPeerCredentials(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pl := peerListener{Listener: ln, via: identity.PrivateSocket, daemon: daemon}
+		pl := peerListener{Listener: ln, via: identity.PrivateSocket, daemon: daemon, conns: api.Unlimited()}
 		accepted := make(chan net.Conn, 1)
 		go func() {
 			c, err := pl.Accept()

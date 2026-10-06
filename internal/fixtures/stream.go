@@ -134,7 +134,7 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 	}
 	// Over HTTP/2 with TLS, and idling several polls before each change:
 	// an idle stream holds no write deadline that could reset it.
-	handler := api.Events{Store: s, Now: clock, Poll: 100 * time.Millisecond}
+	handler := api.Events{Store: s, Now: clock, Poll: 100 * time.Millisecond, Gate: api.Unlimited()}
 	idle := func() { time.Sleep(5 * handler.Poll) }
 	srv := httptest.NewUnstartedServer(handler)
 	srv.EnableHTTP2 = true

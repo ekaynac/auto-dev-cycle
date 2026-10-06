@@ -142,7 +142,7 @@ func open(t *testing.T) *fixture {
 }
 
 func (f *fixture) handler(poll time.Duration) api.Events {
-	return api.Events{Store: f.s, Poll: poll, Now: func() time.Time { return time.Unix(0, f.now.Load()) }}
+	return api.Events{Store: f.s, Poll: poll, Gate: api.Unlimited(), Now: func() time.Time { return time.Unix(0, f.now.Load()) }}
 }
 
 func (f *fixture) grantFor(kinds ...types.Name) types.Grant {

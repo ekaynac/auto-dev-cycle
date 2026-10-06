@@ -23,7 +23,7 @@ type limits struct {
 	headerTimeout time.Duration // to read a request's headers
 	writeTimeout  time.Duration // to write a response; the event stream replaces it per frame (api.Events)
 	idleTimeout   time.Duration // a kept-alive connection between requests
-	headerBytes   int           // request line and headers
+	headerBytes   int           // request line and headers, exactly (net/http adds 4096 to MaxHeaderBytes)
 	bodyBytes     int64         // a request body
 	private       slotQuota     // the private socket's own slots: the shared one never starves it
 	shared        slotQuota
@@ -86,7 +86,7 @@ func listen(store *eventstore.Store, stateDir string, shared *SharedSocket, lim 
 	s.stop = stop
 	for _, sk := range s.sockets {
 		hs := &http.Server{Handler: handler(store, lim, sk.verify), ReadHeaderTimeout: lim.headerTimeout, WriteTimeout: lim.writeTimeout,
-			IdleTimeout: lim.idleTimeout, MaxHeaderBytes: lim.headerBytes,
+			IdleTimeout: lim.idleTimeout, MaxHeaderBytes: lim.headerBytes - 4096,
 			BaseContext: func(net.Listener) context.Context { return base }, ConnContext: connContext}
 		s.https = append(s.https, hs)
 		s.wg.Go(func() {
@@ -106,7 +106,8 @@ func (s *server) add(sk *socket, err error) error {
 }
 
 // openDir opens path as a directory (no link followed) that this user
-// owns and that ok accepts, checked on the opened descriptor.
+// owns, that carries no default ACL and that ok accepts, checked on the
+// opened descriptor.
 func openDir(path string, ok func(unix.Stat_t) bool) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -114,7 +115,8 @@ func openDir(path string, ok func(unix.Stat_t) bool) (*os.File, error) {
 	}
 	f := os.NewFile(uintptr(fd), path)
 	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil || int(st.Uid) != os.Geteuid() || !ok(st) {
+	acl, aerr := aclAttr(f, "", aclDefault) // a default ACL would widen what is created in it
+	if err := unix.Fstat(fd, &st); err != nil || aerr != nil || len(acl) > 0 || int(st.Uid) != os.Geteuid() || !ok(st) {
 		f.Close()
 		return nil, errors.New("daemon: directory refused")
 	}

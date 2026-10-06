@@ -17,6 +17,7 @@ type Slots struct {
 	total, perPeer int // perPeer 0: no per-peer cap
 	used           int
 	byPeer         map[int]int
+	unlimited      bool
 }
 
 // NewSlots is total slots (at least one), at most perPeer per peer uid.
@@ -24,10 +25,17 @@ func NewSlots(total, perPeer int) *Slots {
 	return &Slots{total: max(total, 1), perPeer: perPeer, byPeer: map[int]int{}}
 }
 
+// Unlimited is Slots that cap nothing, for callers that bound load
+// elsewhere (tests, the fixtures' in-process server).
+func Unlimited() *Slots { return &Slots{unlimited: true} }
+
 // Take takes a slot for peer: release gives it back (once, whatever the
-// number of calls); false when none is free. Nil Slots caps nothing.
+// number of calls); false when none is free. Nil Slots admit no one.
 func (s *Slots) Take(peer int) (release func(), ok bool) {
-	if s == nil {
+	switch {
+	case s == nil:
+		return nil, false
+	case s.unlimited:
 		return func() {}, true
 	}
 	s.mu.Lock()

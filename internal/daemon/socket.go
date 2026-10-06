@@ -59,7 +59,7 @@ func bind(dir *os.File, name string, perm uint32, gid int, via identity.Listener
 			_ = s.close() // a refused bind removes what it made; the refusal says why
 		}
 	}()
-	if err := clearStale(dir, name); err != nil {
+	if err := clearStale(dir, name, os.Geteuid()); err != nil {
 		return nil, err
 	}
 	fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
@@ -81,6 +81,10 @@ func bind(dir *os.File, name string, perm uint32, gid int, via identity.Listener
 		return nil, configError("the bound socket cannot be inspected")
 	}
 	s.dev, s.ino = st.Dev, st.Ino
+	// An ACL inherited from the directory would widen the mode (14 R2).
+	if acl, err := aclAttr(dir, name, aclAccess); err != nil || len(acl) > minimalACL {
+		return nil, configError("the socket carries an ACL beyond its mode bits")
+	}
 	if gid >= 0 && unix.Fchownat(int(dir.Fd()), name, -1, gid, unix.AT_SYMLINK_NOFOLLOW) != nil {
 		return nil, configError("the shared socket cannot be given its group; the daemon must be a member of it")
 	}
@@ -96,26 +100,62 @@ func bind(dir *os.File, name string, perm uint32, gid int, via identity.Listener
 }
 
 // clearStale makes way for a socket at name in dir. Nothing there: done.
-// A socket of this daemon's uid that no one answers on is stale and is
-// removed. Anything else (another type, another owner, a link, a socket
-// a live server answers on) is refused and left untouched.
-func clearStale(dir *os.File, name string) error {
+// A stream socket of the daemon's uid on which a connect is refused
+// (ECONNREFUSED: no one listens) is stale and is removed, after its type,
+// owner and inode are checked again. Anything else (another type, another
+// owner, a link, a live server, a full backlog, a datagram socket, any
+// other dial error) is refused and left untouched.
+func clearStale(dir *os.File, name string, daemon int) error {
 	var st unix.Stat_t
 	err := unix.Fstatat(int(dir.Fd()), name, &st, unix.AT_SYMLINK_NOFOLLOW)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	if err != nil || !staleCandidate(st, os.Geteuid()) {
+	if err != nil || !staleCandidate(st, daemon) {
 		return configError("the socket path holds something that is not a socket of this user's; it is left in place")
 	}
-	if c, err := net.DialTimeout("unix", procPath(dir, name), time.Second); err == nil {
+	c, err := net.DialTimeout("unix", procPath(dir, name), time.Second)
+	if err == nil {
 		_ = c.Close()
-		return configError("a server already answers on the socket path")
 	}
-	if unix.Unlinkat(int(dir.Fd()), name, 0) != nil {
+	if !errors.Is(err, unix.ECONNREFUSED) {
+		return configError("the socket path is not provably stale (a server answers, or the connect failed otherwise); it is left in place")
+	}
+	var again unix.Stat_t
+	if unix.Fstatat(int(dir.Fd()), name, &again, unix.AT_SYMLINK_NOFOLLOW) != nil || !staleCandidate(again, daemon) ||
+		again.Dev != st.Dev || again.Ino != st.Ino || unix.Unlinkat(int(dir.Fd()), name, 0) != nil {
 		return configError("a stale socket cannot be removed")
 	}
 	return nil
+}
+
+// The ACL extended attributes, and the size of an ACL that only mirrors
+// the mode bits: a 4-byte header and three 8-byte entries (owner, group,
+// other).
+const (
+	aclAccess  = "system.posix_acl_access"
+	aclDefault = "system.posix_acl_default"
+	minimalACL = 4 + 3*8
+)
+
+// aclAttr reads attr of dir itself (name "") or of name in it; none is
+// empty. A test replaces it.
+var aclAttr = func(dir *os.File, name, attr string) ([]byte, error) {
+	buf := make([]byte, 4096)
+	var n int
+	var err error
+	if name == "" {
+		n, err = unix.Fgetxattr(int(dir.Fd()), attr, buf)
+	} else {
+		n, err = unix.Lgetxattr(procPath(dir, name), attr, buf)
+	}
+	if errors.Is(err, unix.ENODATA) || errors.Is(err, unix.ENOTSUP) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return buf[:n], nil
 }
 
 // staleCandidate: only a socket owned by uid may be replaced.

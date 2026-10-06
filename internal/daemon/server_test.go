@@ -241,12 +241,19 @@ func TestRequestLimits(t *testing.T) {
 	lim := defaultLimits
 	lim.headerTimeout = 200 * time.Millisecond
 	s := serveStore(t, lim, nil)
-	req, _ := http.NewRequest(http.MethodGet, "http://adcd"+api.VersionPath, nil)
-	req.Header.Set("X-Big", strings.Repeat("a", 64<<10))
-	if resp, err := s.client().Do(req); err != nil || resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
-		t.Errorf("a 64 KiB header: %v %v", resp, err)
+	// The header bound is lim.headerBytes exactly (request line and
+	// headers), not net/http's MaxHeaderBytes plus its 4096-byte slop.
+	for _, c := range []struct {
+		size   int
+		status int
+	}{{lim.headerBytes - 512, http.StatusOK}, {lim.headerBytes + 512, http.StatusRequestHeaderFieldsTooLarge}, {64 << 10, http.StatusRequestHeaderFieldsTooLarge}} {
+		req, _ := http.NewRequest(http.MethodGet, "http://adcd"+api.VersionPath, nil)
+		req.Header.Set("X-Big", strings.Repeat("a", c.size))
+		if resp, err := s.client().Do(req); err != nil || resp.StatusCode != c.status {
+			t.Errorf("a %d-byte header: %v %v", c.size, resp, err)
+		}
 	}
-	req, _ = http.NewRequest(http.MethodGet, "http://adcd"+api.VersionPath, strings.NewReader(strings.Repeat("a", int(lim.bodyBytes)+1)))
+	req, _ := http.NewRequest(http.MethodGet, "http://adcd"+api.VersionPath, strings.NewReader(strings.Repeat("a", int(lim.bodyBytes)+1)))
 	if resp, err := s.client().Do(req); err != nil || resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Errorf("a body over the limit: %v %v", resp, err)
 	}
@@ -307,6 +314,10 @@ func TestVerificationGate(t *testing.T) {
 // One peer cannot take every slot: it is held to its own share, and other
 // peers take the rest up to the total.
 func TestSlotsPerPeer(t *testing.T) {
+	var unset *api.Slots
+	if _, ok := unset.Take(1); ok {
+		t.Fatal("nil Slots admitted a taker")
+	}
 	sl := api.NewSlots(4, 2)
 	for _, c := range []struct {
 		peer int
