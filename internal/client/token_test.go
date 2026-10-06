@@ -5,12 +5,16 @@ package client
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 )
 
 // home makes ~/.config/adc (0700) in a temp home, with a token file of mode
@@ -82,8 +86,38 @@ func TestLoadTokenRefusals(t *testing.T) {
 			if !errors.Is(err, c.want) {
 				t.Fatalf("got %v, want %v", err, c.want)
 			}
+			if !strings.Contains(err.Error(), "~/.config/adc") {
+				t.Fatalf("the refusal names no file: %v", err)
+			}
 			noSecret(t, err)
 		})
+	}
+}
+
+// A huge token file is refused without being read whole.
+func TestLoadTokenReadsBounded(t *testing.T) {
+	f, path := home(t, fakeToken(t).Reveal())
+	must(t, os.Truncate(path, 64<<20)) // sparse
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := f.Load()
+	runtime.ReadMemStats(&after)
+	if !errors.Is(err, ErrTokenMalformed) {
+		t.Fatalf("got %v", err)
+	}
+	if n := after.TotalAlloc - before.TotalAlloc; n > 1<<20 {
+		t.Fatalf("read %d bytes", n)
+	}
+}
+
+// Write refuses a token not in the issued form and writes nothing.
+func TestWriteTokenRefusesMalformed(t *testing.T) {
+	f := Files{Home: t.TempDir(), UID: os.Getuid()}
+	if err := f.Write(identity.Secret{}); !errors.Is(err, ErrTokenMalformed) {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(f.Home, ".config")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("wrote: %v", err)
 	}
 }
 
@@ -170,32 +204,117 @@ func TestWriteTokenReplacesSymlinkAtTarget(t *testing.T) {
 	}
 }
 
-// A path planted at the temporary name is never followed or reused.
+// A path planted at the temporary name is never followed, reused or
+// overwritten: the new file is created exclusively.
 func TestWriteTokenRefusesPlantedTemp(t *testing.T) {
 	tok := fakeToken(t)
 	defer func(old func() string) { tempName = old }(tempName)
 	tempName = func() string { return "token.tmp-planted" }
-	for name, existing := range map[string]bool{"dangling": false, "existing": true} {
-		t.Run(name, func(t *testing.T) {
+	for _, plant := range []string{"a dangling symlink", "a symlink", "a regular file"} {
+		t.Run(plant, func(t *testing.T) {
 			f, path := home(t, "")
+			planted := filepath.Join(f.dir(), tempName())
 			victim := filepath.Join(t.TempDir(), "victim")
-			if existing {
+			switch plant {
+			case "a regular file":
+				victim = planted
+				must(t, os.WriteFile(victim, []byte("victim"), 0o600))
+			case "a symlink":
 				must(t, os.WriteFile(victim, []byte("victim"), 0o644))
+				fallthrough
+			default:
+				must(t, os.Symlink(victim, planted))
 			}
-			must(t, os.Symlink(victim, filepath.Join(f.dir(), tempName())))
 			err := f.Write(tok)
 			if err == nil {
 				t.Fatal("wrote through a planted temp path")
 			}
 			noSecret(t, err)
 			b, rerr := os.ReadFile(victim)
-			if existing && string(b) != "victim" || !existing && !errors.Is(rerr, os.ErrNotExist) {
+			if plant == "a dangling symlink" && !errors.Is(rerr, os.ErrNotExist) || plant != "a dangling symlink" && string(b) != "victim" {
 				t.Fatalf("victim: %q %v", b, rerr)
 			}
 			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("token written: %v", err)
 			}
 		})
+	}
+}
+
+// Under a umask that takes the owner's write bit, the token is still 0600:
+// Write sets the mode explicitly. A subprocess, since the umask is the
+// process's.
+func TestWriteTokenUnderRestrictiveUmask(t *testing.T) {
+	if home := os.Getenv("ADC_TEST_UMASK_HOME"); home != "" {
+		unix.Umask(0o277)
+		if err := (Files{Home: home, UID: os.Getuid()}).Write(fakeToken(t)); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	f, path := home(t, "")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWriteTokenUnderRestrictiveUmask$", "-test.count=1")
+	cmd.Env = append(os.Environ(), "ADC_TEST_UMASK_HOME="+f.Home)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if st, err := os.Lstat(path); err != nil || st.Mode() != 0o600 {
+		t.Fatalf("token: %v %v", st.Mode(), err)
+	}
+	if _, err := f.Load(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The new file is synced before the rename and the directory after it; a
+// failed step fails the write, and a failure before the rename leaves the
+// old token in place and no temporary file.
+func TestWriteTokenSyncs(t *testing.T) {
+	old, tok := fakeToken(t), fakeToken(t)
+	defer func(f func(*os.File) error, r func(int, string, int, string) error, d func(int) error) {
+		syncFile, renameAt, syncDir = f, r, d
+	}(syncFile, renameAt, syncDir)
+	var steps []string
+	fail := ""
+	step := func(name string) error {
+		steps = append(steps, name)
+		if name == fail {
+			return errors.New(name + " failed")
+		}
+		return nil
+	}
+	syncFile = func(f *os.File) error { must(t, f.Sync()); return step("sync file") }
+	renameAt = func(a int, b string, c int, d string) error {
+		if err := step("rename"); err != nil {
+			return err
+		}
+		return unix.Renameat(a, b, c, d)
+	}
+	syncDir = func(fd int) error { must(t, unix.Fsync(fd)); return step("sync dir") }
+
+	f, _ := home(t, "")
+	must(t, f.Write(old))
+	if want := []string{"sync file", "rename", "sync dir"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps %v, want %v", steps, want)
+	}
+	for _, fail = range []string{"sync file", "rename", "sync dir"} {
+		steps = nil
+		err := f.Write(tok)
+		if err == nil || !strings.Contains(err.Error(), fail) {
+			t.Fatalf("%s: got %v", fail, err)
+		}
+		noSecret(t, err)
+		got, lerr := f.Load()
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		if fail != "sync dir" && got.Reveal() != old.Reveal() {
+			t.Fatalf("%s: the token was replaced", fail)
+		}
+		entries, _ := os.ReadDir(f.dir())
+		if !slices.Equal(names(entries), []string{tokenName}) {
+			t.Fatalf("%s: leftovers %v", fail, names(entries))
+		}
 	}
 }
 

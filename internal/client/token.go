@@ -91,7 +91,7 @@ func (f Files) openDir() (int, error) {
 		unix.Close(fd)
 		return -1, fmt.Errorf("checking ~/.config/adc: %w", err)
 	}
-	if st.Mode&unix.S_IFMT != unix.S_IFDIR || int(st.Uid) != f.UID || st.Mode&0o022 != 0 {
+	if int(st.Uid) != f.UID || st.Mode&0o022 != 0 {
 		unix.Close(fd)
 		return -1, ErrTokenDir
 	}
@@ -129,15 +129,21 @@ func (f Files) Load() (identity.Secret, error) {
 	case st.Mode&0o7777 != 0o600:
 		return identity.Secret{}, ErrTokenMode
 	}
+	// A longer file reads as one byte too many, which no token parses.
 	b, err := io.ReadAll(io.LimitReader(file, maxTokenBytes+1))
 	if err != nil {
 		return identity.Secret{}, fmt.Errorf("reading ~/.config/adc/token: %w", err)
 	}
-	if len(b) > maxTokenBytes {
-		return identity.Secret{}, ErrTokenMalformed
+	tok, err := parseToken(strings.TrimSuffix(string(b), "\n"))
+	if err != nil {
+		return identity.Secret{}, errTokenFile
 	}
-	return parseToken(strings.TrimSuffix(string(b), "\n"))
+	return tok, nil
 }
+
+// errTokenFile is ErrTokenMalformed for the file's content, naming the
+// file and never the content.
+var errTokenFile = fmt.Errorf("~/.config/adc/token: %w", ErrTokenMalformed)
 
 // fileOwner is the token file's owner; a test replaces it, since it cannot
 // chown.
@@ -146,6 +152,14 @@ var fileOwner = func(st *unix.Stat_t) int { return int(st.Uid) }
 // tempName names the file a token is written to before its rename; tests
 // replace it.
 var tempName = func() string { return tokenName + ".tmp-" + rand.Text() }
+
+// The durability steps of Write, in order: sync the new file, rename it,
+// sync the directory; tests replace them to fail one or record the order.
+var (
+	syncFile = (*os.File).Sync
+	renameAt = unix.Renameat
+	syncDir  = unix.Fsync
+)
 
 // Write stores a token for bootstrap (4b): it creates ~/.config/adc 0700
 // if absent (and checks it either way), writes a new file opened
@@ -176,11 +190,11 @@ func (f Files) Write(tok identity.Secret) error {
 		_ = unix.Unlinkat(dfd, tmp, 0)
 		return err
 	}
-	if err := unix.Renameat(dfd, tmp, dfd, tokenName); err != nil {
+	if err := renameAt(dfd, tmp, dfd, tokenName); err != nil {
 		_ = unix.Unlinkat(dfd, tmp, 0)
 		return fmt.Errorf("replacing ~/.config/adc/token: %w", err)
 	}
-	if err := unix.Fsync(dfd); err != nil {
+	if err := syncDir(dfd); err != nil {
 		return fmt.Errorf("syncing ~/.config/adc: %w", err)
 	}
 	return nil
@@ -194,7 +208,7 @@ func writeSynced(file *os.File, tok identity.Secret) error {
 		_, err = file.WriteString(tok.Reveal() + "\n")
 	}
 	if err == nil {
-		err = file.Sync()
+		err = syncFile(file)
 	}
 	if cerr := file.Close(); err == nil {
 		err = cerr
