@@ -19,6 +19,12 @@
 //     it has already repaired. Generated unions implement MarshalJSONTo. Its bytes are
 //     not a canonical form (key order follows the Go struct): every digest is
 //     taken over the JCS canonicalisation, never over Encode output;
+//   - Validate does not bound nesting (beyond encoding/json's 10000 levels)
+//     or integer magnitude; ReadStrict, the adapter wire's reader, adds both
+//     (128 levels, ±(2^53−1)) as the TypeScript reader applies them. Go/TS
+//     parity is tested for the wire reader (fixtures/contract/wire-cases.json)
+//     and for schema verdicts (fixtures/contract/cases.json); no wider parity
+//     between Validate and the TypeScript side is claimed;
 //   - the adc-time, adc-typeid and adc-reason formats (schemas/common/defs.json)
 //     are asserted: a calendar-valid UTC time, a TypeID over a UUIDv7, and a
 //     reason code registered in the vocabulary (SetReasonCheck).
@@ -248,7 +254,9 @@ func (r registry) validate(schema string, data []byte) error {
 
 // Wire limits: the adapter protocol's strict reader (ReadStrict) bounds what
 // Validate does not, as the TypeScript reader (adapters/contract
-// strict-json.ts) does.
+// strict-json.ts) does. Validate and ReadStrict therefore differ on exactly
+// these two: a document deeper than MaxDepth or with an integer beyond
+// ±MaxSafeInteger can pass Validate and is refused by ReadStrict.
 const (
 	// MaxDepth is the most values on any path from the root: the root is at
 	// level 1, so 128 nested arrays are read and 129 are refused.

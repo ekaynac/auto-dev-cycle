@@ -2,9 +2,11 @@
 
 // Package wire is the adapter protocol's framing and envelope on the core's
 // side (docs/design/m0/09 "Process model"): newline-delimited JSON-RPC 2.0
-// over stdio, one message per line, UTF-8, at most 16 MiB. It matches the
-// TypeScript SDK (adapters/contract framing.ts, strict-json.ts, envelope.ts)
-// byte for byte; fixtures/contract/wire-cases.json is the corpus both run.
+// over stdio, one message per line, UTF-8, at most 16 MiB. It is meant to
+// give the same verdict on every byte stream as the TypeScript SDK
+// (adapters/contract framing.ts, strict-json.ts, envelope.ts):
+// fixtures/contract/wire-cases.json is the corpus both run, comparing
+// verdicts and decoded values; it is evidence of parity, not a proof.
 package wire
 
 import (
@@ -20,7 +22,7 @@ import (
 const MaxMessageBytes = 16 << 20
 
 // readChunk is the reader's buffer: a line longer than this is gathered in
-// pieces, never beyond the bound.
+// pieces, and gathering stops as soon as the bound is passed.
 const readChunk = 64 << 10
 
 // ErrFraming is wrapped by every framing error. A framing error ends the
@@ -46,7 +48,11 @@ func NewReader(r io.Reader) *Reader {
 // Next returns the next line without its newline. It returns io.EOF at a
 // clean end of input, and an error wrapping ErrFraming for a line over the
 // bound, a line that is not valid UTF-8, or input that ends inside a line
-// (a truncated message). Memory is bounded by the bound plus one chunk.
+// (a truncated message). Its storage is proportional to the message bound:
+// a line is refused once it passes the bound, but append growth may reserve
+// more than the bound, and briefly hold the old and new arrays together.
+// Decoding a line (Classify) allocates further, in proportion to its
+// structure; no tighter budget is claimed or measured here.
 func (r *Reader) Next() ([]byte, error) {
 	if r.err != nil {
 		return nil, r.err
