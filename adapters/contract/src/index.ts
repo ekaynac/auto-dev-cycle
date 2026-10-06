@@ -7,3 +7,4 @@ export { classify } from "./envelope.ts";
 export type { Classified, Reply } from "./envelope.ts";
 export { frame, lines, maxMessageBytes, FramingError } from "./framing.ts";
 export { parseStrict, StrictJSONError } from "./strict-json.ts";
+export { writeOutput, digestOf, handlePattern } from "./exchange.ts";

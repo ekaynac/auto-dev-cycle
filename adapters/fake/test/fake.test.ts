@@ -3,14 +3,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { lstatSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eventMethod, InternalError, serve } from "@adc/contract";
-import { FakeAdapter, handle, scenarios, type Scenario } from "../src/fake.ts";
+import { FakeAdapter, foreignAttempt, handle, outputName, replacement, scenarios, type Scenario } from "../src/fake.ts";
 
 const att = "att_01m3250vnfeyrv67x6w0ddqr6a";
 const cal = "cal_01m3250v9xft08ssr4ygq6g2np";
-const prepare = (mediated: string[] = ["RunTest"]) => ({ attempt: att, fencing_token: 3, role: "builder", executor: "exe_01m3250vnfeyrv67x6w0ddqr6a",
-  model: "m", workspace: { path: "/workspace", writable: true }, exchange: { in: "/exchange/in", out: "/exchange/out" }, inputs: [], limits: { max_turns: 4, max_output_tokens: 1000, wall_seconds: 60 },
+const prepare = (mediated: string[] = ["RunTest"], out = "/exchange/out") => ({ attempt: att, fencing_token: 3, role: "builder", executor: "exe_01m3250vnfeyrv67x6w0ddqr6a",
+  model: "m", workspace: { path: "/workspace", writable: true }, exchange: { in: "/exchange/in", out }, inputs: [], limits: { max_turns: 4, max_output_tokens: 1000, wall_seconds: 60 },
   tool_policy: { allowed: [], mediated }, gateway: null, native_login: null });
 const runParams = { attempt: att, fencing_token: 3, call: cal, prompt: handle(att, "p.md", "do it"), response_schema: null };
 const req = (id: number, method: string, params?: unknown) => ({ jsonrpc: "2.0", id, method, params });
@@ -19,7 +22,7 @@ type Msg = { id?: unknown; result?: any; error?: { code: number; message: string
 
 /** session drives serve; react may send more requests as messages arrive.
  *  It ends at shutdown, sent once the run answers. */
-async function session(adapter: FakeAdapter, react: (m: Msg, send: (r: unknown) => void) => void = () => {}, mediated?: string[]): Promise<Msg[]> {
+async function session(adapter: FakeAdapter, react: (m: Msg, send: (r: unknown) => void) => void = () => {}, mediated?: string[], exchangeOut?: string): Promise<Msg[]> {
   const queue: string[] = [];
   let wake: (() => void) | null = null;
   const send = (r: unknown) => {
@@ -35,7 +38,7 @@ async function session(adapter: FakeAdapter, react: (m: Msg, send: (r: unknown) 
   })();
   const out: Msg[] = [];
   send(req(1, "describe"));
-  send(req(2, "prepare", prepare(mediated)));
+  send(req(2, "prepare", prepare(mediated, exchangeOut)));
   send(req(3, "run", runParams));
   await serve(adapter, {
     input,
@@ -69,11 +72,16 @@ const total = (msgs: Msg[]) => {
   };
 };
 const change = (n: number) => `--- a/file${n}.go\n+++ b/file${n}.go\n@@ -1 +1 @@\n-old\n+new\n`;
-const digest = (s: string) => "sha256:" + createHash("sha256").update(s).digest("hex");
+const digest = (s: string | Buffer) => "sha256:" + createHash("sha256").update(s).digest("hex");
+const scratch = (t: { after: (f: () => void) => void }) => {
+  const d = mkdtempSync(join(tmpdir(), "adc-fake-out-"));
+  t.after(() => rmSync(d, { recursive: true, force: true }));
+  return d;
+};
 
-test("every scenario a host can complete runs a valid session, the envelope stamped", async () => {
+test("every scenario a host can complete runs a valid session, the envelope stamped", async (t) => {
   for (const s of scenarios.filter((s) => !["broken-event", "hang", "tool"].includes(s))) {
-    const msgs = await session(new FakeAdapter({ scenario: s, gapMs: 100 }));
+    const msgs = await session(new FakeAdapter({ scenario: s, gapMs: 100 }), undefined, undefined, scratch(t));
     result(msgs);
     assert.ok(events(msgs).every((e) => e.attempt === att && e.fencing_token === 3 && e.call === cal), `${s}: envelope`);
   }
@@ -225,4 +233,88 @@ test("the process refuses a bad environment with exit 2 before reading input", (
     assert.equal(r.status, 2, JSON.stringify(env));
     assert.match(r.stderr, /adc fake adapter:/);
   }
+});
+
+/** exchange runs an exchange scenario into a fresh out/ and returns the
+ *  declared handle, the output's path and its lstat when the run answered. */
+async function exchange(t: { after: (f: () => void) => void }, s: Scenario) {
+  const out = scratch(t);
+  const path = join(out, outputName);
+  let atResult: ReturnType<typeof lstatSync> | undefined;
+  const msgs = await session(new FakeAdapter({ scenario: s }), (m) => {
+    if (m.id === 3) atResult = lstatSync(path);
+  }, undefined, out);
+  const r = result(msgs);
+  assert.deepEqual([r.outcome, r.result.kind], ["found", "patch"], s);
+  return { out, path, declared: r.result.handle, atResult: atResult!, patch: change(1) };
+}
+
+test("safe-output: one fresh regular file, link count 1, the declared digest and size", async (t) => {
+  const { out, path, declared, patch } = await exchange(t, "safe-output");
+  const st = lstatSync(path);
+  assert.ok(st.isFile() && st.nlink === 1);
+  assert.deepEqual(readdirSync(out), [outputName]);
+  assert.deepEqual(declared, { attempt: att, handle: outputName, digest: digest(readFileSync(path)), size: st.size });
+  assert.equal(readFileSync(path, "utf8"), patch);
+});
+
+test("unsafe-symlink: a symlink out of out/ to a regular file whose bytes match the declared digest", async (t) => {
+  const { out, path, declared } = await exchange(t, "unsafe-symlink");
+  assert.ok(lstatSync(path).isSymbolicLink());
+  const target = readlinkSync(path);
+  t.after(() => rmSync(dirname(target), { recursive: true, force: true }));
+  assert.ok(!target.startsWith(out + "/"), "the target is outside out/");
+  assert.ok(lstatSync(target).isFile());
+  assert.deepEqual([declared.attempt, declared.digest, declared.size], [att, digest(readFileSync(target)), statSync(target).size]);
+});
+
+test("unsafe-fifo: a FIFO declared with the patch's digest and size", async (t) => {
+  const { path, declared, patch } = await exchange(t, "unsafe-fifo");
+  assert.ok(lstatSync(path).isFIFO());
+  assert.deepEqual(declared, { attempt: att, handle: outputName, digest: digest(patch), size: patch.length });
+});
+
+test("unsafe-hardlink: the declared bytes, but link count 2", async (t) => {
+  const { out, path, declared } = await exchange(t, "unsafe-hardlink");
+  const st = lstatSync(path);
+  assert.ok(st.isFile());
+  assert.equal(st.nlink, 2);
+  assert.equal(lstatSync(join(out, outputName + ".link")).ino, st.ino);
+  assert.deepEqual(declared, { attempt: att, handle: outputName, digest: digest(readFileSync(path)), size: st.size });
+});
+
+test("unsafe-digest: a safe file, its size declared right and its digest wrong", async (t) => {
+  const { path, declared } = await exchange(t, "unsafe-digest");
+  const st = lstatSync(path);
+  assert.ok(st.isFile() && st.nlink === 1);
+  assert.equal(declared.size, st.size);
+  assert.notEqual(declared.digest, digest(readFileSync(path)));
+});
+
+test("unsafe-replaced: declared over one inode, replaced at shutdown by another with other bytes of the same size", async (t) => {
+  const { path, declared, atResult, patch } = await exchange(t, "unsafe-replaced");
+  assert.deepEqual([atResult.isFile(), declared.digest, declared.size], [true, digest(patch), patch.length], "as declared when the result was sent");
+  const st = lstatSync(path);
+  assert.ok(st.isFile() && st.nlink === 1);
+  assert.notEqual(st.ino, atResult.ino);
+  assert.equal(st.size, declared.size);
+  assert.equal(readFileSync(path, "utf8"), replacement(patch));
+  assert.notEqual(digest(readFileSync(path)), declared.digest);
+});
+
+test("foreign-handle: a safe file whose handle names another attempt", async (t) => {
+  const { path, declared } = await exchange(t, "foreign-handle");
+  assert.equal(declared.attempt, foreignAttempt(att));
+  assert.notEqual(declared.attempt, att);
+  assert.match(declared.attempt, /^att_[0-7][0-9a-hjkmnp-tv-z]{25}$/);
+  assert.deepEqual([declared.digest, declared.size], [digest(readFileSync(path)), lstatSync(path).size]);
+});
+
+test("the process runs an exchange scenario named by ADC_FAKE_SCENARIO", (t) => {
+  const out = scratch(t);
+  const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+  const input = [req(2, "prepare", prepare([], out)), req(3, "run", runParams), req(9, "shutdown")].map((r) => JSON.stringify(r) + "\n").join("");
+  const r = spawnSync(process.execPath, [main], { env: { ...process.env, ADC_FAKE_SCENARIO: "unsafe-hardlink" }, input, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(lstatSync(join(out, outputName)).nlink, 2);
 });

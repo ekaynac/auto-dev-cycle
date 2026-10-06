@@ -7,14 +7,22 @@
 // cancellation. An executor that does not complete reports could_not_run
 // with the reason the exit map gives for its cause (internal/vocab/exitmap),
 // and no final usage: an interrupted run cannot know it (run-result.json).
+// The exchange scenarios write their patch into the prepared exchange.out:
+// one through the SDK's writeOutput, the others unsafe in one way each, for
+// the core's ingestion (09 "Blob exchange") to refuse. The other scenarios
+// only declare handles; they write no files.
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { link, mkdtemp, rename, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AdapterDescribeResult } from "@adc/contract-gen/types/adapter/describe-result.ts";
 import type { AdapterOutcome } from "@adc/contract-gen/types/adapter/outcome.ts";
 import type { AdapterPrepareParams } from "@adc/contract-gen/types/adapter/prepare-params.ts";
 import type { AdapterRunParams } from "@adc/contract-gen/types/adapter/run-params.ts";
 import type { AdapterRunResult } from "@adc/contract-gen/types/adapter/run-result.ts";
-import { Adapter, type EventBody, type Handle, type RunTools } from "@adc/contract";
+import { Adapter, digestOf, type EventBody, type Handle, type RunTools, writeOutput } from "@adc/contract";
 
 /** The scenarios, one per process. */
 export const scenarios = [
@@ -41,6 +49,14 @@ export const scenarios = [
   "bad-sequence", // usage sequence skips a number
   "unannounced-sub-call", // turns name a sub-call never announced by call.sub
   "non-cumulative", // the patch result holds only the last turn's change
+  // The exchange: a patch written to out/patch.diff, safely or not.
+  "safe-output", // through writeOutput: one fresh regular file, the declared digest
+  "unsafe-symlink", // a symlink to a file outside out/ whose bytes match the declared digest
+  "unsafe-fifo", // a FIFO, declared with the patch's digest and size
+  "unsafe-hardlink", // the right bytes, but a second link to the file in out/ (link count 2)
+  "unsafe-digest", // the right file, a wrong declared digest (size unchanged)
+  "unsafe-replaced", // replaced at shutdown, after the result was sent: another inode, other bytes of the same size
+  "foreign-handle", // a safe file, its handle naming another attempt
 ] as const;
 export type Scenario = (typeof scenarios)[number];
 
@@ -59,6 +75,20 @@ const errorScenarios: Partial<Record<Scenario, { hints: ClassHint[]; reason: str
   "other-error": { hints: ["other"], reason: "executor_incomplete" },
   "two-errors": { hints: ["http_5xx", "credit_exhausted"], reason: "broker_credit_exhausted" },
 };
+
+const exchanges: readonly Scenario[] = ["safe-output", "unsafe-symlink", "unsafe-fifo", "unsafe-hardlink", "unsafe-digest", "unsafe-replaced", "foreign-handle"];
+/** The exchange scenarios' output name. */
+export const outputName = "patch.diff";
+
+/** foreignAttempt is a valid attempt id that is not attempt. */
+export function foreignAttempt(attempt: string): string {
+  return attempt.slice(0, -1) + (attempt.endsWith("0") ? "1" : "0");
+}
+
+/** replacement is other bytes of the same length: what unsafe-replaced puts in place. */
+export function replacement(content: string): string {
+  return content.replaceAll("+new", "+NEW");
+}
 
 const twoTurns: readonly Scenario[] = ["patch", "sub-calls", "bad-sequence", "unannounced-sub-call", "non-cumulative"];
 const maxGapMs = 2_147_483_647; // setTimeout's bound
@@ -107,6 +137,8 @@ export class FakeAdapter extends Adapter {
   readonly gapMs: number;
   readonly tool: string;
   prepared: AdapterPrepareParams | null = null;
+  /** unsafe-replaced: the declared output and its bytes, replaced at shutdown. */
+  private toReplace: { path: string; content: string } | null = null;
 
   constructor(opts: FakeOptions) {
     super();
@@ -137,6 +169,52 @@ export class FakeAdapter extends Adapter {
   async prepare(p: AdapterPrepareParams): Promise<AdapterOutcome> {
     this.prepared = p;
     return clean;
+  }
+
+  /** unsafe-replaced replaces its output once the result is sent, before the
+   *  process exits: a fresh inode renamed over the declared one. Ingestion
+   *  runs only after exit, so the core sees one stable file whose bytes no
+   *  longer match the declared digest. */
+  override async shutdown(): Promise<AdapterOutcome> {
+    const r = this.toReplace;
+    if (r) {
+      this.toReplace = null;
+      await writeFile(r.path + ".next", replacement(r.content), { flag: "wx" });
+      await rename(r.path + ".next", r.path);
+    }
+    return clean;
+  }
+
+  /** output writes the exchange scenarios' patch into out/ and returns the
+   *  handle the run declares. */
+  private async output(attempt: string, content: string): Promise<Handle> {
+    const out = this.prepared!.exchange.out; // serve runs only a prepared attempt
+    const path = join(out, outputName);
+    switch (this.scenario) {
+      case "unsafe-symlink": {
+        const target = join(await mkdtemp(join(tmpdir(), "adc-fake-outside-")), outputName);
+        await writeFile(target, content, { flag: "wx" });
+        await symlink(target, path);
+        return handle(attempt, outputName, content);
+      }
+      case "unsafe-fifo":
+        execFileSync("mkfifo", ["-m", "0644", "--", path]);
+        return handle(attempt, outputName, content);
+      case "unsafe-hardlink": {
+        const h = await writeOutput(out, attempt, outputName, content);
+        await link(path, path + ".link");
+        return h;
+      }
+      case "unsafe-digest":
+        return { ...(await writeOutput(out, attempt, outputName, content)), digest: digestOf(Buffer.from(replacement(content))) };
+      case "unsafe-replaced":
+        this.toReplace = { path, content };
+        return writeOutput(out, attempt, outputName, content);
+      case "foreign-handle":
+        return writeOutput(out, foreignAttempt(attempt), outputName, content);
+      default:
+        return writeOutput(out, attempt, outputName, content);
+    }
   }
 
   async *run(p: AdapterRunParams, signal: AbortSignal, tools: RunTools): AsyncGenerator<EventBody, AdapterRunResult> {
@@ -218,6 +296,7 @@ export class FakeAdapter extends Adapter {
     if (s === "no-change") return { outcome: "empty", reason: "completed_clean", detail: "", result: null, usage_final: final };
     if (s === "text") return { outcome: "found", reason: "completed_with_findings", detail: "the fake's text", result: { kind: "text", handle: h("answer.md", "the answer\n") }, usage_final: final };
     const content = s === "non-cumulative" ? lastChange : patch;
-    return { outcome: "found", reason: "completed_with_findings", detail: "the fake's patch", result: { kind: "patch", handle: h("patch.diff", content) }, usage_final: final };
+    const declared = exchanges.includes(s) ? await this.output(p.attempt, content) : h(outputName, content);
+    return { outcome: "found", reason: "completed_with_findings", detail: "the fake's patch", result: { kind: "patch", handle: declared }, usage_final: final };
   }
 }
