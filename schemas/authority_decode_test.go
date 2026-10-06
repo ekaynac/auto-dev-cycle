@@ -16,6 +16,8 @@ func decodeAny(schema string, b []byte) (any, error) {
 		return contract.Decode[types.Actor](schema, b)
 	case "records/grant":
 		return contract.Decode[types.Grant](schema, b)
+	case "records/grant-event":
+		return contract.Decode[types.GrantEvent](schema, b)
 	case "records/approval":
 		return contract.Decode[types.Approval](schema, b)
 	case "records/proposal":

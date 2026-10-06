@@ -67,6 +67,7 @@ var runners = map[string]runner{
 	"concurrent-conflicting-approvals": concurrentConflictingApprovals,
 	"concurrent-last-unit-reservation": concurrentLastUnitReservation,
 	"replayed-expired-challenge":       replayedExpiredChallenge,
+	"stream-after-grant-revocation":    streamAfterGrantRevocation,
 }
 
 // Goldens loads and validates every golden, checking that each has a

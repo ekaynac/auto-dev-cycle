@@ -371,3 +371,30 @@ func Authenticate(tx *eventstore.Tx, bearer string) (types.Actor, error) {
 	}
 	return a, nil
 }
+
+// StillLive re-checks, without hashing again, that a bearer Authenticate
+// already accepted for actor is still live: its token is not revoked and
+// its actor exists and is not revoked. Long-lived streams call it on every
+// change (04 "Read authorization"). ErrUnauthenticated means authority was
+// lost; any other error is the store's (reading or decoding a record).
+func StillLive(tx *eventstore.Tx, bearer string, actor types.ActorID) error {
+	id, _, ok := parse(bearer)
+	if !ok {
+		return ErrUnauthenticated
+	}
+	t, found, err := load[types.Token](tx, TokenProjection, string(id))
+	if err != nil {
+		return err
+	}
+	if !found || t.RevokedAt != nil || t.Actor != actor {
+		return ErrUnauthenticated
+	}
+	a, found, err := load[types.Actor](tx, ActorProjection, string(actor))
+	if err != nil {
+		return err
+	}
+	if !found || a.RevokedAt != nil {
+		return ErrUnauthenticated
+	}
+	return nil
+}

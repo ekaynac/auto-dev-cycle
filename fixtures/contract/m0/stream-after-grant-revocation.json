@@ -1,0 +1,16 @@
+{
+  "name": "stream-after-grant-revocation",
+  "invariant": "An event stream is re-authorized on every change and before every frame, with checks never more than the poll bound apart and every write bounded by the next check: once the reader's grant is revoked or expires, even after idling over HTTP/2, mid-delivery, across a slow write or behind a stalled client, the stream closes with failed/authority_revoked before any later frame, and it cannot be reopened (04 \"Read authorization\"; 08 \"Reads, commands, events\").",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "authority_revoked"},
+    {"outcome": "failed", "reason": "action_not_granted"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "authority_revoked"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "authority_revoked"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "authority_revoked"}
+  ],
+  "mutation": "api.stream-checked-at-open-only"
+}
