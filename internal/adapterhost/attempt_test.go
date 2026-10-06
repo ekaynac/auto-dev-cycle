@@ -286,16 +286,14 @@ func TestUnsafeOutputsAreRefused(t *testing.T) {
 
 // An attempt stopped after its adapter exited is refused at the first fence,
 // before any output is read (even an unsafe one: the fence comes first);
-// one stopped after ingestion at the transaction's own fence (its copy
-// already published: staging is a stacked change). Either way nothing is
-// submitted, nothing stays in the blob store's tmp/, and its usage is
-// counted.
+// one stopped after ingestion at the transaction's own fence, its staged
+// copy discarded. Either way nothing is published, nothing stays staged,
+// and its usage is counted.
 func TestStaleAttemptIsRefusedButCounted(t *testing.T) {
 	for _, tc := range []struct {
 		stage, scenario string
-		read            int
-		published       bool
-	}{{"exited", "safe-output", 0, false}, {"exited", "unsafe-symlink", 0, false}, {"ingested", "safe-output", 1, true}} {
+		staged          int
+	}{{"exited", "safe-output", 0}, {"exited", "unsafe-symlink", 0}, {"ingested", "safe-output", 1}} {
 		t.Run(tc.stage+"/"+tc.scenario, func(t *testing.T) {
 			w := newWorld(t)
 			testHook = func(s string) {
@@ -305,12 +303,12 @@ func TestStaleAttemptIsRefusedButCounted(t *testing.T) {
 					})
 				}
 			}
-			read := 0
-			ingestFile = func(dir *os.File, name, declared string, size, bound int64, store *blobstore.Store) (string, error) {
-				read++
-				return ingest.Ingest(dir, name, declared, size, bound, store)
+			staged := 0
+			stage = func(dir *os.File, name, declared string, size, bound int64, store *blobstore.Store) (*blobstore.Staged, error) {
+				staged++
+				return ingest.Stage(dir, name, declared, size, bound, store)
 			}
-			t.Cleanup(func() { testHook, ingestFile = nil, ingest.Ingest })
+			t.Cleanup(func() { testHook, stage = nil, ingest.Stage })
 			out, err := w.host.Run(context.Background(), spec(fake(t, tc.scenario)))
 			if err != nil {
 				t.Fatal(err)
@@ -319,8 +317,8 @@ func TestStaleAttemptIsRefusedButCounted(t *testing.T) {
 			if a := w.attempt(); a.Status != types.AttemptStatusStopping {
 				t.Fatalf("attempt %s, want stopping", a.Status)
 			}
-			if read != tc.read || w.published(patch) != tc.published || w.tmpFiles() != 0 {
-				t.Fatalf("read %d (want %d), published %v, %d temp files", read, tc.read, w.published(patch), w.tmpFiles())
+			if staged != tc.staged || w.published(patch) || w.tmpFiles() != 0 {
+				t.Fatalf("staged %d (want %d), published %v, %d temp files", staged, tc.staged, w.published(patch), w.tmpFiles())
 			}
 		})
 	}

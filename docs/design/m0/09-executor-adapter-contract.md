@@ -38,7 +38,10 @@ M0 review [M9][M11][M13]. `docs/adapters/AUTHORING.md` is the author-facing guid
   6. **bounded copy-and-hash**: stream from the reopened descriptor into the blob store while hashing, reading at most
      the bound plus one byte; a read error is `unreadable`, a different digest or length `digest`;
   7. **post-copy `statx`**: device, inode, mount id, link count, size and change time unchanged (`replaced`);
-  8. **publish** (03) in one writer transaction that checks the fence again and appends the output's events.
+  8. **publish** (03) in one writer transaction that checks the fence again and appends the output's events. Steps 6–7
+     stage the verified copy; it is published only once that fence passed, and discarded on any refusal. Publication
+     is a rename that cannot roll back with the transaction: a transaction failing after it leaves an unreferenced
+     blob, never a reference to a missing one.
 
   Without `openat2`, the fallback walks component by component with `openat(O_PATH | O_NOFOLLOW)` and checks each
   component's mount id against the exchange root's; steps 4–8 are unchanged. It must be equivalent or fail closed.

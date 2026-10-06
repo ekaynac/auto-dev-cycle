@@ -67,8 +67,8 @@ func TestEventDeclaredOutputsAreChecked(t *testing.T) {
 	}
 	onlyRefusal(t, w, out, "excerpt.txt", types.AttemptOutputRefusalCheckSymlink)
 	ended(t, w, 2)
-	if w.tmpFiles() != 0 {
-		t.Fatal("a temporary copy stayed beside a refused excerpt")
+	if w.published(patch) || w.tmpFiles() != 0 {
+		t.Fatal("the result was published, or a staged copy stayed, beside a refused excerpt")
 	}
 }
 
@@ -271,8 +271,10 @@ func TestHostFaultsHaveFixedTexts(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
-			ingestFile = func(*os.File, string, string, int64, int64, *blobstore.Store) (string, error) { return "", fault }
-			t.Cleanup(func() { ingestFile = ingest.Ingest })
+			stage = func(*os.File, string, string, int64, int64, *blobstore.Store) (*blobstore.Staged, error) {
+				return nil, fault
+			}
+			t.Cleanup(func() { stage = ingest.Stage })
 			out, err := w.host.Run(context.Background(), spec(fake(t, "safe-output")))
 			if !errors.Is(err, ErrIngest) || strings.Contains(err.Error(), secret) || strings.Contains(fmt.Sprint(out.Session), secret) {
 				t.Fatalf("run error %q, session %v", err, out.Session)
@@ -393,5 +395,65 @@ func TestAFailedShutdownOutcomeRefusesTheResult(t *testing.T) {
 	}
 	if a := ended(t, w, 2); a.Status != types.AttemptStatusLost {
 		t.Fatalf("attempt %s", a.Status)
+	}
+}
+
+// Astra #109 round 2: a staged copy that cannot be removed is reported
+// (ErrCleanup), never dropped silently; nothing is published.
+func TestAFailedDiscardIsReported(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permissions do not bind root")
+	}
+	w := newWorld(t)
+	stuckAfterIngestion(t, w)
+	out, err := w.host.Run(context.Background(), spec(fake(t, "safe-output")))
+	if !errors.Is(err, ErrCleanup) || strings.Contains(err.Error(), w.dir) || out.Submitted != nil {
+		t.Fatalf("run: %v, submitted %v", err, out.Submitted)
+	}
+	if w.published(patch) || w.tmpFiles() != 1 {
+		t.Fatalf("published %v, %d temp files; want the one leftover reported", w.published(patch), w.tmpFiles())
+	}
+}
+
+// stuckAfterIngestion stops the attempt once its outputs are staged (so the
+// transaction's fence refuses them) and makes the staging directory
+// unwritable, so their copies cannot be removed.
+func stuckAfterIngestion(t *testing.T, w *world) {
+	t.Helper()
+	tmp := filepath.Join(w.dir, "blobs", "tmp")
+	testHook = func(s string) {
+		if s == "ingested" {
+			w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return lease.ChangeAttempt(tx, attID, 1, lease.AttemptEvent{Kind: lease.StopRequested, StopReason: types.AttemptStopReasonValueRevoke})
+			})
+			if err := os.Chmod(tmp, 0o500); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	t.Cleanup(func() { testHook = nil; _ = os.Chmod(tmp, 0o700) })
+}
+
+// Astra #109 round 3: a refused output whose staging could not remove its
+// temporary file is still refused, and Host.Run reports the cleanup failure
+// (ErrCleanup) apart from it: a digest mismatch, and a post-copy refusal.
+func TestARefusalWithACleanupFailure(t *testing.T) {
+	for name, check := range map[string]string{"digest": ingest.CheckDigest, "replaced": ingest.CheckReplaced} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			stage = func(*os.File, string, string, int64, int64, *blobstore.Store) (*blobstore.Staged, error) {
+				return nil, errors.Join(&ingest.Unsafe{Check: check, Detail: "refused"}, blobstore.ErrTempLeft)
+			}
+			t.Cleanup(func() { stage = ingest.Stage })
+			out, err := w.host.Run(context.Background(), spec(fake(t, "safe-output")))
+			if !errors.Is(err, ErrCleanup) || errors.Is(err, blobstore.ErrTempLeft) || out.Submitted != nil {
+				t.Fatalf("run: %v, submitted %v", err, out.Submitted)
+			}
+			onlyRefusal(t, w, out, "patch.diff", types.AttemptOutputRefusalCheck(check))
+			if w.published(patch) {
+				t.Fatal("published")
+			}
+			ended(t, w, 2)
+		})
 	}
 }

@@ -45,10 +45,7 @@ func TestAdmissionFailsClosed(t *testing.T) {
 		wait  error
 		plan  func(*stubPlan) // edits the run's plan
 		late  bool            // the run outlasts the finalisation timeout and is cancelled late
-		// published: the result's copy is in the store although nothing
-		// was submitted; only until staging (the stacked change) withholds
-		// it past the second fence.
-		published bool
+		stuck bool            // refused at the transaction's fence, its staged copies not removable
 	}{
 		"the fence fails (a store or decode error)": {fence: func(*eventstore.Tx, types.AttemptID, int64) error { return errors.New("decode: bad record") }},
 		"the attempt is unknown":                    {fence: func(*eventstore.Tx, types.AttemptID, int64) error { return &lease.Stale{Detail: "no such attempt"} }},
@@ -56,7 +53,7 @@ func TestAdmissionFailsClosed(t *testing.T) {
 		"an excerpt is skipped, without error":      {copy: only("excerpt.txt", errSkip)},
 		"an ingestion I/O fault":                    {copy: only("patch.diff", errors.New("read: input/output error"))},
 		"the host cannot verify (ErrUnsupported)":   {copy: only("excerpt.txt", fmt.Errorf("%w: statx", ingest.ErrUnsupported))},
-		"a refusal its record cannot hold":          {copy: only("excerpt.txt", &ingest.Unsafe{Check: "not-a-check", Detail: "x"}), published: true},
+		"a refusal its record cannot hold":          {copy: only("excerpt.txt", &ingest.Unsafe{Check: "not-a-check", Detail: "x"})},
 		"the tree was not seen to exit":             {wait: session.ErrUnverified},
 		"a malformed shutdown reply":                {plan: func(p *stubPlan) { p.Shutdown = `{"outcome":"bogus"}` }},
 		"an unsuccessful shutdown outcome": {plan: func(p *stubPlan) {
@@ -64,6 +61,7 @@ func TestAdmissionFailsClosed(t *testing.T) {
 		}},
 		"a run outlasting the finalisation timeout, cancelled late": {late: true,
 			plan: func(p *stubPlan) { p.HeartbeatMs = 800 }},
+		"a staged copy that cannot be removed": {stuck: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
@@ -71,21 +69,21 @@ func TestAdmissionFailsClosed(t *testing.T) {
 				fenceAttempt = tc.fence
 			}
 			if tc.copy != nil {
-				ingestFile = func(dir *os.File, n, declared string, size, bound int64, store *blobstore.Store) (string, error) {
+				stage = func(dir *os.File, n, declared string, size, bound int64, store *blobstore.Store) (*blobstore.Staged, error) {
 					switch err := tc.copy(n); {
 					case errors.Is(err, errSkip):
-						return "", nil
+						return nil, nil
 					case err != nil:
-						return "", err
+						return nil, err
 					}
-					return ingest.Ingest(dir, n, declared, size, bound, store)
+					return ingest.Stage(dir, n, declared, size, bound, store)
 				}
 			}
 			if tc.wait != nil {
 				waitTree = func(s *session.Session) error { _ = s.Wait(); return tc.wait }
 			}
 			t.Cleanup(func() {
-				fenceAttempt, ingestFile, waitTree = lease.FenceAttempt, ingest.Ingest, (*session.Session).Wait
+				fenceAttempt, stage, waitTree = lease.FenceAttempt, ingest.Stage, (*session.Session).Wait
 			})
 			p := plan
 			if tc.plan != nil {
@@ -103,14 +101,23 @@ func TestAdmissionFailsClosed(t *testing.T) {
 				}
 				t.Cleanup(func() { testHook, finalizeTimeout = nil, FinalizeTimeout })
 			}
-			out, _ := w.host.Run(ctx, spec(stub(t, p)))
+			if tc.stuck {
+				if os.Geteuid() == 0 {
+					t.Skip("permissions do not bind root")
+				}
+				stuckAfterIngestion(t, w)
+			}
+			out, err := w.host.Run(ctx, spec(stub(t, p)))
+			if tc.stuck != errors.Is(err, ErrCleanup) {
+				t.Fatalf("run: %v", err)
+			}
 			if out.Submitted != nil {
 				t.Fatalf("submitted %+v", out.Submitted)
 			}
 			if a := w.attempt(); a.Status == types.AttemptStatusFinishing || a.Status == types.AttemptStatusRunning {
 				t.Fatalf("attempt %s: submitted, or left running", a.Status)
 			}
-			if w.published(patch) != tc.published || w.tmpFiles() != 0 {
+			if left := w.tmpFiles(); w.published(patch) || (left != 0) != tc.stuck {
 				t.Fatalf("published %v, %d temp files", w.published(patch), w.tmpFiles())
 			}
 		})
