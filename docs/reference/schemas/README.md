@@ -23,6 +23,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/attempt-output-refusal.json`](records-attempt-output-refusal.md) | AttemptOutputRefusal |
 | [`records/attempt-record.json`](records-attempt-record.md) | AttemptRecord |
 | [`records/attempt.json`](records-attempt.md) | Attempt |
+| [`records/bootstrap-renewed.json`](records-bootstrap-renewed.md) | BootstrapRenewed |
 | [`records/challenge.json`](records-challenge.md) | Challenge |
 | [`records/effect-event.json`](records-effect-event.md) | EffectEvent |
 | [`records/grant-event.json`](records-grant-event.md) | GrantEvent |
@@ -39,6 +40,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/receipt.json`](records-receipt.md) | Receipt |
 | [`records/ref.json`](records-ref.md) | Ref |
 | [`records/resource-group.json`](records-resource-group.md) | ResourceGroup |
+| [`records/token-recovered.json`](records-token-recovered.md) | TokenRecovered |
 | [`records/token.json`](records-token.md) | Token |
 | [`records/usage-measurement.json`](records-usage-measurement.md) | UsageMeasurement |
 | [`records/view-fingerprint.json`](records-view-fingerprint.md) | ViewFingerprint |
