@@ -94,7 +94,7 @@ func seed(t *testing.T, dir string, project projectFor, extra ...string) *seeder
 		t.Fatal(err)
 	}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: project(blobs, reg.Holds)}})
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: project(blobs, reg.Holds)}})
 	if err != nil {
 		t.Fatal(err)
 	}

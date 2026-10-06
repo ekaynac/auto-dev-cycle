@@ -63,7 +63,7 @@ func head(t *testing.T, e *env) int64 {
 
 func TestSubmitAppliesAndReplays(t *testing.T) {
 	var projected []Event
-	e := openWriter(t, Hooks{Authorize: allow, Project: func(_ *Tx, evs []Event) error { projected = append(projected, evs...); return nil }})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow, Project: func(_ *Tx, evs []Event) error { projected = append(projected, evs...); return nil }})
 	ctx := context.Background()
 	c := command(t, "k1", `{"a": 1}`)
 	out, err := e.s.SubmitApplied(ctx, c, Applies(appendTo(t, testSubject, 2)))
@@ -95,7 +95,7 @@ func TestSubmitAppliesAndReplays(t *testing.T) {
 }
 
 func TestIdempotencyKeyReuseIsRefused(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	ctx := context.Background()
 	if _, err := e.s.SubmitApplied(ctx, command(t, "k", `{"a": 1}`), Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func TestIdempotencyKeyReuseIsRefused(t *testing.T) {
 }
 
 func TestStaleExpectedStateIsRefused(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	ctx := context.Background()
 	if _, err := e.s.SubmitApplied(ctx, command(t, "a", `{}`, Expectation{testSubject, 0}), Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestStaleExpectedStateIsRefused(t *testing.T) {
 
 // Concurrent conflicting commands: exactly one applies.
 func TestConcurrentConflictingCommands(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	ctx := context.Background()
 	const n = 8
 	var wg sync.WaitGroup
@@ -165,17 +165,17 @@ func TestFailuresRollBack(t *testing.T) {
 		hooks Hooks
 		apply func(t *testing.T) Apply
 	}{
-		"authorization": {Hooks{Authorize: func(*Tx, Command) error { return boom }}, func(t *testing.T) Apply { return appendTo(t, testSubject, 1) }},
-		"projection":    {Hooks{Authorize: allow, Project: func(*Tx, []Event) error { return boom }}, func(t *testing.T) Apply { return appendTo(t, testSubject, 1) }},
-		"apply": {Hooks{Authorize: allow}, func(*testing.T) Apply {
+		"authorization": {Hooks{Identify: allow, Authorize: func(*Tx, Command) error { return boom }}, func(t *testing.T) Apply { return appendTo(t, testSubject, 1) }},
+		"projection":    {Hooks{Identify: allow, Authorize: allow, Project: func(*Tx, []Event) error { return boom }}, func(t *testing.T) Apply { return appendTo(t, testSubject, 1) }},
+		"apply": {Hooks{Identify: allow, Authorize: allow}, func(*testing.T) Apply {
 			return func(*Tx) ([]Event, json.RawMessage, error) { return nil, nil, boom }
 		}},
-		"invalid event": {Hooks{Authorize: allow}, func(t *testing.T) Apply {
+		"invalid event": {Hooks{Identify: allow, Authorize: allow}, func(t *testing.T) Apply {
 			return func(*Tx) ([]Event, json.RawMessage, error) {
 				return []Event{{ID: newID(t, "evt"), Kind: "unregistered/v1", Subject: testSubject, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
 			}
 		}},
-		"invalid result": {Hooks{Authorize: allow}, func(t *testing.T) Apply {
+		"invalid result": {Hooks{Identify: allow, Authorize: allow}, func(t *testing.T) Apply {
 			return func(*Tx) ([]Event, json.RawMessage, error) { return nil, json.RawMessage(`not json`), nil }
 		}},
 	}
@@ -198,7 +198,7 @@ func TestFailuresRollBack(t *testing.T) {
 }
 
 func TestNoAuthorizerFailsClosed(t *testing.T) {
-	e := openWriter(t, Hooks{})
+	e := openWriter(t, Hooks{Identify: allow})
 	if _, err := e.s.SubmitApplied(context.Background(), command(t, "k", `{}`), Applies(appendTo(t, testSubject, 1))); err == nil || !strings.Contains(err.Error(), "authorizer") {
 		t.Fatalf("a command without an authorizer: %v", err)
 	}
@@ -225,14 +225,14 @@ func TestReplayPrecedesTheAuthorizerCheck(t *testing.T) {
 		}
 		return s, lock
 	}
-	s, lock := open(Hooks{Authorize: allow})
+	s, lock := open(Hooks{Identify: allow, Authorize: allow})
 	c := command(t, "k", `{"a": 1}`)
 	if _, err := s.SubmitApplied(ctx, c, Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
 	lock.Release()
-	s, lock = open(Hooks{})
+	s, lock = open(Hooks{Identify: allow})
 	defer func() { s.Close(); lock.Release() }()
 	if out, err := s.SubmitApplied(ctx, command(t, "k", `{"a": 1}`), Applies(appendTo(t, testSubject, 1))); err != nil || !out.Replayed {
 		t.Fatalf("a replay without an authorizer: %+v, %v", out, err)
@@ -247,7 +247,7 @@ func TestReplayPrecedesTheAuthorizerCheck(t *testing.T) {
 
 // Astra #39: the expectations are part of the request.
 func TestExpectationsArePartOfTheRequest(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	ctx := context.Background()
 	if _, err := e.s.SubmitApplied(ctx, command(t, "k", `{}`, Expectation{testSubject, 0}), Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ func TestExpectationsArePartOfTheRequest(t *testing.T) {
 // Astra #39: a projector that reorders its events cannot change the
 // recorded range.
 func TestProjectorCannotChangeTheRange(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow, Project: func(_ *Tx, evs []Event) error {
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow, Project: func(_ *Tx, evs []Event) error {
 		evs[0], evs[1] = evs[1], evs[0]
 		return nil
 	}})
@@ -284,7 +284,7 @@ func TestProjectorCannotChangeTheRange(t *testing.T) {
 // names and keys are checked.
 func TestProjectionRecords(t *testing.T) {
 	var checked bool
-	e := openWriter(t, Hooks{Authorize: func(tx *Tx, _ Command) error {
+	e := openWriter(t, Hooks{Identify: allow, Authorize: func(tx *Tx, _ Command) error {
 		if err := tx.Put("units", "gpu/1", json.RawMessage(`{"free": 1}`)); err != nil {
 			return err
 		}
@@ -341,7 +341,7 @@ func TestProjectionRecords(t *testing.T) {
 
 // Astra #39 round 2: an absent input is refused, never read as null.
 func TestAbsentInputIsRefused(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	c := command(t, "k", `{}`)
 	c.Input = nil
 	if _, err := e.s.SubmitApplied(context.Background(), c, Applies(appendTo(t, testSubject, 0))); err == nil {
@@ -350,7 +350,7 @@ func TestAbsentInputIsRefused(t *testing.T) {
 }
 
 func TestSubmitValidatesTheCommand(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	cases := map[string]func(c *Command){
 		"bad command id": func(c *Command) { c.ID = "cmd_x" },
 		"bad actor":      func(c *Command) { c.Actor = testSubject },
@@ -369,7 +369,7 @@ func TestSubmitValidatesTheCommand(t *testing.T) {
 }
 
 func TestCommandWithoutEvents(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	out, err := e.s.SubmitApplied(context.Background(), command(t, "noop", `{}`), Applies(appendTo(t, testSubject, 0)))
 	if err != nil || out.FirstSeq != 0 || out.LastSeq != 0 {
 		t.Fatalf("%+v, %v", out, err)
@@ -378,7 +378,7 @@ func TestCommandWithoutEvents(t *testing.T) {
 
 // The commands table is append-only, like the log.
 func TestCommandsAreAppendOnly(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	c := command(t, "k", `{}`)
 	if _, err := e.s.SubmitApplied(context.Background(), c, Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatal(err)
@@ -399,7 +399,7 @@ func TestCommandsAreAppendOnly(t *testing.T) {
 // A command's events are its actor's: an event naming another actor is
 // refused, and one naming none gets the command's.
 func TestCommandEventsAreTheCommandActors(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	other := newID(t, "act")
 	_, err := e.s.SubmitApplied(context.Background(), command(t, "k1", `{}`), Applies(func(*Tx) ([]Event, json.RawMessage, error) {
 		return []Event{{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: testSubject, Actor: other, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
@@ -408,7 +408,7 @@ func TestCommandEventsAreTheCommandActors(t *testing.T) {
 		t.Fatal("an event naming another actor was appended")
 	}
 	var seen string
-	e2 := openWriter(t, Hooks{Authorize: allow, Project: func(_ *Tx, evs []Event) error {
+	e2 := openWriter(t, Hooks{Identify: allow, Authorize: allow, Project: func(_ *Tx, evs []Event) error {
 		seen = evs[0].Actor
 		return nil
 	}})

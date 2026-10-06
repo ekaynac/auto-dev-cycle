@@ -31,7 +31,7 @@ func openLedger(t *testing.T) *ledgerStore {
 		t.Fatal(err)
 	}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: Kinds(), Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: Project}})
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: Project}})
 	if err != nil {
 		t.Fatal(err)
 	}

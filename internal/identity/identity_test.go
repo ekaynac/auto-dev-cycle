@@ -138,7 +138,7 @@ func empty(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: identity.Kinds(), Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: identity.Projector{}.Project}})
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: identity.Projector{}.Project}})
 	if err != nil {
 		t.Fatal(err)
 	}

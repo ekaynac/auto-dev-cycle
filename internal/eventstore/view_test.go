@@ -28,6 +28,7 @@ func TestView(t *testing.T) {
 		t.Fatal(err)
 	}
 	hooks := eventstore.Hooks{
+		Identify:  func(*eventstore.Tx, eventstore.Command) error { return nil },
 		Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 		Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
 			for _, e := range evs {

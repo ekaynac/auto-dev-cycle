@@ -25,7 +25,7 @@ func openEffectsAt(t *testing.T, dir string) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := Open(context.Background(), lock, Config{Kinds: testKinds, Blobs: blobs, Hooks: Hooks{Authorize: allow}, Effects: testEffects})
+	s, err := Open(context.Background(), lock, Config{Kinds: testKinds, Blobs: blobs, Hooks: Hooks{Identify: allow, Authorize: allow}, Effects: testEffects})
 	if err != nil {
 		lock.Release()
 		t.Fatal(err)
@@ -337,7 +337,7 @@ func TestTransitionsAreProjected(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s, err := Open(ctx, lock, Config{Kinds: testKinds, Blobs: blobs, Effects: testEffects, Hooks: Hooks{Authorize: allow,
+		s, err := Open(ctx, lock, Config{Kinds: testKinds, Blobs: blobs, Effects: testEffects, Hooks: Hooks{Identify: allow, Authorize: allow,
 			Project: func(tx *Tx, evs []Event) error {
 				for _, ev := range evs {
 					if err := tx.Put("effect_log", ev.ID, json.RawMessage(`{"kind": "`+ev.Kind+`"}`)); err != nil {

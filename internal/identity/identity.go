@@ -383,13 +383,19 @@ const decoy = "$argon2id$v=19$m=65536,t=3,p=4$Gf44i/lNBEgRytid3+XXjQ$I0iFpDw4ZkD
 // decoy's when the token is unknown or its stored hash unusable. The
 // token's state is consulted only after that.
 func Authenticate(tx *eventstore.Tx, bearer string) (types.Actor, error) {
+	a, _, err := authenticate(tx, bearer)
+	return a, err
+}
+
+// authenticate is Authenticate also returning the token's id.
+func authenticate(tx *eventstore.Tx, bearer string) (types.Actor, types.TokenID, error) {
 	id, secret, ok := parse(bearer)
 	if !ok {
-		return types.Actor{}, ErrUnauthenticated
+		return types.Actor{}, "", ErrUnauthenticated
 	}
 	t, found, err := load[types.Token](tx, TokenProjection, string(id))
 	if err != nil {
-		return types.Actor{}, err
+		return types.Actor{}, "", err
 	}
 	_, usable := parsePHC(t.Hash)
 	hash := t.Hash
@@ -397,13 +403,13 @@ func Authenticate(tx *eventstore.Tx, bearer string) (types.Actor, error) {
 		hash = decoy
 	}
 	if !verify(hash, secret) || !found || !usable || t.RevokedAt != nil {
-		return types.Actor{}, ErrUnauthenticated
+		return types.Actor{}, "", ErrUnauthenticated
 	}
 	a, err := liveActor(tx, t.Actor)
 	if err != nil {
-		return types.Actor{}, ErrUnauthenticated
+		return types.Actor{}, "", ErrUnauthenticated
 	}
-	return a, nil
+	return a, id, nil
 }
 
 // StillLive re-checks, without hashing again, that a bearer Authenticate
@@ -416,18 +422,26 @@ func StillLive(tx *eventstore.Tx, bearer string, actor types.ActorID) error {
 	if !ok {
 		return ErrUnauthenticated
 	}
-	t, found, err := load[types.Token](tx, TokenProjection, string(id))
-	if err != nil {
+	if err := tokenLive(tx, id, actor); err != nil {
 		return err
-	}
-	if !found || t.RevokedAt != nil || t.Actor != actor {
-		return ErrUnauthenticated
 	}
 	a, found, err := load[types.Actor](tx, ActorProjection, string(actor))
 	if err != nil {
 		return err
 	}
 	if !found || a.RevokedAt != nil {
+		return ErrUnauthenticated
+	}
+	return nil
+}
+
+// tokenLive: token id exists, is not revoked and is actor's.
+func tokenLive(tx *eventstore.Tx, id types.TokenID, actor types.ActorID) error {
+	t, found, err := load[types.Token](tx, TokenProjection, string(id))
+	if err != nil {
+		return err
+	}
+	if !found || t.RevokedAt != nil || t.Actor != actor {
 		return ErrUnauthenticated
 	}
 	return nil

@@ -16,6 +16,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -23,7 +24,8 @@ import (
 type Daemon struct {
 	lock     *eventstore.Lock
 	store    *eventstore.Store
-	head     eventstore.Head // verified at start
+	head     eventstore.Head    // verified at start
+	system   identity.Principal // the system actor's, held only here
 	once     sync.Once
 	closeErr error
 }
@@ -72,7 +74,7 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the blob store cannot be opened", err)
 	}
 	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: refuseAll, Project: projector(blobs, reg.Holds, reservations)}})
+		Hooks: hooks(reg, projector(blobs, reg.Holds, reservations))})
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the event store cannot be opened", err)
 	}
@@ -106,7 +108,14 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 			return nil, couldNotRun(vocab.ReasonStoreUnreadable, "pending effects cannot be marked uncertain", err)
 		}
 	}
-	return &Daemon{lock: lock, store: store, head: head}, nil
+	var system identity.Principal
+	if err := store.View(ctx, func(tx *eventstore.Tx) (err error) {
+		system, err = identity.SystemPrincipal(tx, sys)
+		return err
+	}); err != nil {
+		return nil, couldNotRun(vocab.ReasonAmbiguousState, "the system actor is not live", err)
+	}
+	return &Daemon{lock: lock, store: store, head: head, system: system}, nil
 }
 
 // Head is the event log's head verified at start.

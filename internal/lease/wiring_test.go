@@ -56,7 +56,7 @@ func (w *world) open() {
 		w.t.Fatal(err)
 	}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: Kinds(), Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: Projector{Blobs: blobs, Holds: w.h, Units: w.units}.Project}})
 	if err != nil {
 		w.t.Fatal(err)

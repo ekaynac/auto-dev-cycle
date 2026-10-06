@@ -49,6 +49,7 @@ func TestHooksShareTheWriterTransaction(t *testing.T) {
 		return u.Free, json.Unmarshal(v, &u)
 	}
 	hooks := eventstore.Hooks{
+		Identify: func(*eventstore.Tx, eventstore.Command) error { return nil },
 		Authorize: func(tx *eventstore.Tx, c eventstore.Command) error {
 			n, err := free(tx)
 			if err != nil {

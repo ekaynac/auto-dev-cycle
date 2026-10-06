@@ -151,7 +151,7 @@ func TestSealNeedsItsPublishedRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: Kinds(), Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }}})
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }}})
 	if err != nil {
 		t.Fatal(err)
 	}

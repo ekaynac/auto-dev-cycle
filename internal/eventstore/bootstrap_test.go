@@ -17,7 +17,8 @@ import (
 
 var errRefused = errors.New("refused")
 
-// bootstrapStore is a store whose Authorize hook refuses everything.
+// bootstrapStore is a store whose Identify and Authorize hooks refuse
+// everything: Bootstrap is exempt from both.
 func bootstrapStore(t *testing.T) *eventstore.Store {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "state")
@@ -30,7 +31,7 @@ func bootstrapStore(t *testing.T) *eventstore.Store {
 		t.Fatal(err)
 	}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: identity.Kinds(), Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return errRefused },
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return errRefused }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return errRefused },
 			Project: identity.Projector{}.Project}})
 	if err != nil {
 		t.Fatal(err)

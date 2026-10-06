@@ -182,7 +182,7 @@ func unsafeAdapterOutputs(ctx context.Context, dir string) (steps []Step, violat
 	project := lease.Projector{Blobs: blobs, Holds: reg.Holds, Units: oneTask{}}.Project
 	refusals := map[string]types.AttemptOutputRefusal{} // the attempt.output_refused events appended, by event id
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
 				for _, ev := range evs {
 					if ev.Kind == lease.OutputRefused {

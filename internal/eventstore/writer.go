@@ -19,10 +19,10 @@ import (
 
 // The writer is the serialization boundary (docs/design/m0/03 "The
 // writer"): every state-dependent decision of a command happens inside one
-// writer transaction, in this order: idempotency lookup, authorization,
-// expected-state check, event append, projection update (resource
-// reservations among them, made by the capacity projector from the
-// proposed lease events), and the command-result row. Anything that fails
+// writer transaction, in this order: the identity recheck, idempotency
+// lookup, authorization, expected-state check, event append, projection
+// update (resource reservations among them, made by the capacity projector
+// from the proposed lease events), and the command-result row. Anything that fails
 // rolls all of it back.
 
 // Refusals a command can meet (failed/<reason>).
@@ -48,7 +48,15 @@ type Command struct {
 	IdempotencyKey string        // unique per actor; a repeat replays or is refused
 	Input          []byte        // the request as JSON
 	Expected       []Expectation // object versions the command was decided against
+	// Principal is who sent the command, as its transport authenticated
+	// it; Hooks.Identify rechecks it before anything else.
+	Principal Principal
 }
+
+// Principal is a command's authenticated sender. Only internal/identity
+// makes one the daemon's Identify hook accepts; the store itself never
+// trusts it.
+type Principal interface{ PrincipalActor() string }
 
 // Expectation: the subject's last event is seq Version (0: it has none).
 type Expectation struct {
@@ -203,9 +211,14 @@ func (t *Tx) SubjectVersion(subject string) (int64, error) {
 }
 
 // Hooks are the decisions other packages make inside the writer
-// transaction. Authorize is required: with none, every command is refused
-// (fail closed). Project may be nil.
+// transaction. Identify and Authorize are required: with either missing,
+// every command is refused (fail closed); Identify's refusal covers a
+// replay too. Project may be nil.
 type Hooks struct {
+	// Identify rechecks the command's principal (internal/identity): its
+	// token and actor still live and its actor the command's, so a stored
+	// result is replayed only to its own, still-authenticated actor.
+	Identify  func(t *Tx, c Command) error
 	Authorize func(t *Tx, c Command) error // internal/authority
 	// Project updates projections. It must be a fold: derive its records
 	// from the events it is given and the projections alone, whether it
@@ -324,10 +337,18 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
 		t := &Tx{ctx: ctx, tx: tx, store: s}
 		// 0. The writer-boundary identity recheck (14 "Replay
-		// authentication", PR 2b) goes here, before the idempotency lookup,
-		// so it covers new commands, reused keys and replays alike.
-		// Bootstrap (authorize false) is exempt: it runs only on an empty
-		// store, before any identity exists.
+		// authentication"), before the idempotency lookup, so it covers new
+		// commands, reused keys and replays alike. Bootstrap (authorize
+		// false) is exempt: it runs only on an empty store, before any
+		// identity exists.
+		if authorize && s.hooks.Identify == nil {
+			return errors.New("eventstore: no identity check is configured; every command is refused")
+		}
+		if authorize {
+			if err := s.hooks.Identify(t, c); err != nil {
+				return err
+			}
+		}
 		// 1. Idempotency.
 		var prev struct {
 			id, digest, disposition, result string

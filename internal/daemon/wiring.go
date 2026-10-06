@@ -3,9 +3,9 @@
 package daemon
 
 import (
-	"errors"
 	"fmt"
 	"maps"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
@@ -14,15 +14,23 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // ErrCommandsRefused is the writer's answer to every new command until
-// command dispatch is wired: it fails closed. (A repeat of a stored command,
-// same actor, key and input, still replays its stored result: the writer's
-// idempotency lookup precedes authorization, 03.)
-var ErrCommandsRefused = errors.New("adcd: command dispatch is not wired in this build; every new command is refused")
+// actions are wired: the Authorize hook rechecks the principal and asks the
+// action's handler for its derivation, and no action has one yet, so it
+// fails closed. (A repeat of a stored command, by the same live actor with
+// the same key and input, still replays its stored result: the identity
+// recheck, then the idempotency lookup, precede authorization, 03.)
+var ErrCommandsRefused = authority.ErrActionNotWired
 
-func refuseAll(*eventstore.Tx, eventstore.Command) error { return ErrCommandsRefused }
+// hooks are the writer's hooks: the identity recheck, the authorizer over
+// the wired handlers (none in this build) and the projector.
+func hooks(reg *vocab.Registry, project func(*eventstore.Tx, []eventstore.Event) error) eventstore.Hooks {
+	az := authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{}, Now: time.Now}
+	return eventstore.Hooks{Identify: identity.Recheck, Authorize: az.Authorize, Project: project}
+}
 
 // eventKinds merges the event kinds of every package the writer projects;
 // a kind registered twice is refused rather than silently overwritten.
