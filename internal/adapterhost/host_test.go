@@ -374,3 +374,24 @@ func TestABrokenShutdownRefusesTheResult(t *testing.T) {
 		t.Fatalf("attempt %s", a.Status)
 	}
 }
+
+// Astra #108 round 3: a schema-valid but unsuccessful shutdown outcome is a
+// session failure: nothing is submitted or published, accounting is kept.
+func TestAFailedShutdownOutcomeRefusesTheResult(t *testing.T) {
+	w := newWorld(t)
+	out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{
+		Files:    map[string]string{"patch.diff": patch},
+		Events:   []string{usageEvent(10)},
+		Result:   resultJSON("patch", handleJSON(att, "patch.diff", patch), 10),
+		Shutdown: `{"outcome":"failed","reason":"unsafe_output","detail":"shutdown failed"}`,
+	})))
+	if err != nil || out.Submitted != nil || !errors.Is(out.Session, ErrShutdownFailed) {
+		t.Fatalf("run: %v, submitted %v, session %v", err, out.Submitted, out.Session)
+	}
+	if w.published(patch) {
+		t.Fatal("published after a failed shutdown")
+	}
+	if a := ended(t, w, 2); a.Status != types.AttemptStatusLost {
+		t.Fatalf("attempt %s", a.Status)
+	}
+}

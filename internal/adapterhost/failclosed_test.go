@@ -59,6 +59,9 @@ func TestAdmissionFailsClosed(t *testing.T) {
 		"a refusal its record cannot hold":          {copy: only("excerpt.txt", &ingest.Unsafe{Check: "not-a-check", Detail: "x"}), published: true},
 		"the tree was not seen to exit":             {wait: session.ErrUnverified},
 		"a malformed shutdown reply":                {plan: func(p *stubPlan) { p.Shutdown = `{"outcome":"bogus"}` }},
+		"an unsuccessful shutdown outcome": {plan: func(p *stubPlan) {
+			p.Shutdown = `{"outcome":"failed","reason":"unsafe_output","detail":"shutdown failed"}`
+		}},
 		"a run outlasting the finalisation timeout, cancelled late": {late: true,
 			plan: func(p *stubPlan) { p.HeartbeatMs = 800 }},
 	} {

@@ -56,6 +56,11 @@ var finalizeTimeout = FinalizeTimeout
 // PromptName is the prompt's handle in in/.
 const PromptName = "prompt.md"
 
+// ErrShutdownFailed: the adapter answered shutdown with an unsuccessful
+// outcome (could_not_run or failed). Like a broken session, it refuses the
+// submission; the run's accounting is still recorded.
+var ErrShutdownFailed = errors.New("adapterhost: the adapter reported an unsuccessful shutdown; the run is refused")
+
 // ErrUnservedEvent: the run sent a notification this host does not serve
 // (a mediated tool request, or a delivered tool result); the run is refused.
 var ErrUnservedEvent = errors.New("adapterhost: the run sent a tool notification this host does not serve; the run is refused")
@@ -221,15 +226,20 @@ func (r *attemptRun) finalizing(ctx context.Context) (context.Context, context.C
 }
 
 // shutdown shuts the session down within shutdownTimeout, killing the
-// namespace otherwise, and returns the shutdown's error.
+// namespace otherwise, and returns the shutdown's error; an outcome other
+// than empty or found is ErrShutdownFailed.
 func (r *attemptRun) shutdown(ctx context.Context, s *session.Session) error {
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancel()
-	_, err := s.Shutdown(sctx)
+	o, err := s.Shutdown(sctx)
 	if err != nil {
 		_ = s.Close()
+		return err
 	}
-	return err
+	if o.Outcome != types.OutcomeEmpty && o.Outcome != types.OutcomeFound {
+		return ErrShutdownFailed
+	}
+	return nil
 }
 
 // sessionEnd is why the session did not end cleanly, once its process tree is
