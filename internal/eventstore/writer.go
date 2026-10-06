@@ -250,7 +250,7 @@ var ErrNotBootstrap = errors.New("eventstore: bootstrap writes only an empty sto
 // Bootstrap appends the first event of an empty store without the
 // Authorize hook: the controller's own initialization (the system actor
 // creating itself, before any request can reach the writer). It is refused
-// unless the store holds no event and no command, and e's subject is the
+// unless the store holds no event, command or effect, and e's subject is the
 // command's actor. Validation, the append and the projections run as in
 // Submit, so the projectors still decide whether the event is admissible.
 func (s *Store) Bootstrap(ctx context.Context, c Command, e Event) (Outcome, error) {
@@ -259,7 +259,7 @@ func (s *Store) Bootstrap(ctx context.Context, c Command, e Event) (Outcome, err
 	}
 	return s.submit(ctx, c, func(t *Tx) ([]Event, json.RawMessage, error) {
 		var used bool
-		if err := t.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events) OR EXISTS(SELECT 1 FROM commands)`).Scan(&used); err != nil {
+		if err := t.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events) OR EXISTS(SELECT 1 FROM commands) OR EXISTS(SELECT 1 FROM effects)`).Scan(&used); err != nil {
 			return nil, nil, err
 		}
 		if used || len(t.intents) > 0 {

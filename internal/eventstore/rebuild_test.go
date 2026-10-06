@@ -273,3 +273,31 @@ func TestRebuildStorageFaultIsNotRefusal(t *testing.T) {
 		t.Fatalf("a storage fault: %v", err)
 	}
 }
+
+// A storage error that is not a cancellation (here the scratch table gone
+// mid-replay) stays an operational error, even when the projector replaces
+// the error it met with its own.
+func TestRebuildStorageErrorIsNotRefusal(t *testing.T) {
+	for _, translate := range []bool{false, true} {
+		inner := counting(nil)
+		broken := false
+		e := openProjected(t, stateDir(t), func(tx *Tx, evs []Event) error {
+			if broken && tx.Replaying() {
+				if _, err := tx.tx.ExecContext(tx.ctx, `DROP TABLE `+rebuildProjections); err != nil {
+					return err
+				}
+			}
+			if err := inner(tx, evs); err != nil && translate {
+				return errors.New("projector: cannot read its records")
+			} else if err != nil {
+				return err
+			}
+			return nil
+		})
+		populate(t, e)
+		broken = true
+		if _, err := e.s.RebuildProjections(context.Background()); err == nil || errors.Is(err, ErrReplayRefused) {
+			t.Fatalf("translate %v: a storage error: %v", translate, err)
+		}
+	}
+}

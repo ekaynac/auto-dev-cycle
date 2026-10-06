@@ -114,6 +114,19 @@ func TestEventsWithoutActorRefused(t *testing.T) {
 	refused(t, dir, Config{StateDir: dir}, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "no actor")
 }
 
+// An otherwise empty store holding an orphan effect gets no system actor:
+// Bootstrap refuses it, and the refused start appends nothing.
+func TestOrphanEffectRefused(t *testing.T) {
+	dir := stateDir(t)
+	seed(t, dir, daemonProjection(t)).done()
+	execSQL(t, dir, `INSERT INTO effects(id, kind, command, target, request_digest, state, attempts, last_observation)
+		VALUES ('eff_orphan', 'model_call', 'cmd_orphan', 'target', 'sha256:x', 'pending', 0, '')`)
+	refused(t, dir, Config{StateDir: dir}, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "no actor")
+	if lastSeq(t, dir) != 0 {
+		t.Fatal("a refused start appended to the log")
+	}
+}
+
 func TestTrustedHeadChecked(t *testing.T) {
 	dir, cfg := leaseStore(t)
 	d, err := Start(context.Background(), cfg)
