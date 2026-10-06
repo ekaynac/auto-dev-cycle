@@ -395,6 +395,10 @@ func TestRefuseAllAfterSystemActor(t *testing.T) {
 			t.Fatalf("a submission as %s without a principal was not refused: %v", actor, err)
 		}
 	}
+	// Startup took the store's one system claim: nothing after it can.
+	if _, err := d.store.ClaimSystem(); !errors.Is(err, eventstore.ErrSystemClaimed) {
+		t.Fatalf("the system claim is still free after start: %v", err)
+	}
 	if d.system.Actor() != types.ActorID(sys) {
 		t.Fatalf("the daemon holds %s's principal, not the system actor's", d.system.Actor())
 	}

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -60,7 +61,7 @@ func (a Authorizer) Authorize(t *eventstore.Tx, c eventstore.Command) error {
 		return err
 	}
 	h, ok := a.Handlers[c.Action]
-	if !ok || h == nil || a.Registry == nil || a.Now == nil {
+	if !ok || isNil(h) || a.Registry == nil || a.Now == nil {
 		return fmt.Errorf("%w: %s", ErrActionNotWired, c.Action)
 	}
 	d, err := h.Derive(t, actor, c.Input)
@@ -83,4 +84,16 @@ func (a Authorizer) Authorize(t *eventstore.Tx, c eventstore.Command) error {
 		return fmt.Errorf("%w (%s)", ErrProposalsNotWired, dec.Policy)
 	}
 	return &Refusal{Reason: dec.Reason, Detail: dec.Detail}
+}
+
+// isNil: no handler, or a typed nil one (which would panic, not refuse).
+func isNil(h Handler) bool {
+	if h == nil {
+		return true
+	}
+	switch v := reflect.ValueOf(h); v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return v.IsNil()
+	}
+	return false
 }

@@ -83,6 +83,12 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 			err = errors.Join(err, store.Close())
 		}
 	}()
+	// The system claim is taken first, before the store reaches anyone
+	// else: only this start ever holds it (14 N4).
+	claim, err := store.ClaimSystem()
+	if err != nil {
+		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the system claim cannot be taken", err)
+	}
 	head, err := store.Verify(ctx, cfg.TrustedHead)
 	if errors.Is(err, eventstore.ErrChainBroken) {
 		return nil, &StartError{Outcome: vocab.Failed, Reason: vocab.ReasonLogIntegrityBroken, Detail: "the event log fails verification; adc dev verify-log reports the finding", cause: err}
@@ -110,7 +116,7 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 	}
 	var system identity.Principal
 	if err := store.View(ctx, func(tx *eventstore.Tx) (err error) {
-		system, err = identity.SystemPrincipal(tx, sys)
+		system, err = identity.SystemPrincipal(tx, claim, sys)
 		return err
 	}); err != nil {
 		return nil, couldNotRun(vocab.ReasonAmbiguousState, "the system actor is not live", err)

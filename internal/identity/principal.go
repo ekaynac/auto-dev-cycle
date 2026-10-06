@@ -6,8 +6,8 @@ package identity
 // (docs/design/m0/14 "Replay authentication"): the actor a bearer token
 // resolved to and the listener the request came through. Only
 // Authenticated makes one from a token, and it never makes the system
-// actor's; only SystemPrincipal, which the daemon's private startup path
-// alone calls, makes that. A command's actor is the principal's, never the
+// actor's; only SystemPrincipal makes that, from the store's system claim,
+// which the daemon takes at startup (eventstore.ClaimSystem). A command's actor is the principal's, never the
 // caller's choice, and the writer rechecks the principal (Recheck) inside
 // its transaction before anything else, a replay included.
 
@@ -37,7 +37,7 @@ type Principal struct {
 	actor  types.ActorID
 	token  types.TokenID // empty only for the system principal
 	via    Listener
-	system bool
+	system eventstore.SystemClaim // held only by the system principal
 }
 
 // Actor is the principal's actor.
@@ -66,15 +66,18 @@ func Authenticated(tx *eventstore.Tx, bearer string, via Listener) (Principal, e
 	return Principal{actor: a.ID, token: tok, via: via}, nil
 }
 
-// SystemPrincipal is the system actor's principal, on the private socket.
-// Only the daemon's startup path calls it (a source test enforces that), for
-// the live system actor id it loaded or created.
-func SystemPrincipal(tx *eventstore.Tx, id types.ActorID) (Principal, error) {
+// SystemPrincipal is the system actor's principal, on the private socket:
+// only from the store's system claim (which the daemon takes at startup),
+// for the store's live system actor. It acts only on that store.
+func SystemPrincipal(tx *eventstore.Tx, claim eventstore.SystemClaim, id types.ActorID) (Principal, error) {
+	if !claim.Holds(tx) {
+		return Principal{}, fmt.Errorf("identity: no system claim on this store: %w", ErrUnauthenticated)
+	}
 	a, err := liveActor(tx, id)
 	if err != nil || a.Kind != types.ActorKindSystem {
 		return Principal{}, fmt.Errorf("identity: %s is not the live system actor: %w", id, ErrUnauthenticated)
 	}
-	return Principal{actor: id, via: PrivateSocket, system: true}, nil
+	return Principal{actor: id, via: PrivateSocket, system: claim}, nil
 }
 
 // Command is a command of this principal: its actor is the principal's.
@@ -99,7 +102,11 @@ func ActorOf(tx *eventstore.Tx, c eventstore.Command) (types.Actor, error) {
 	if !ok || !p.via.valid() || p.actor == "" || string(p.actor) != c.Actor {
 		return types.Actor{}, ErrUnauthenticated
 	}
-	if !p.system {
+	system := p.system != eventstore.SystemClaim{}
+	switch {
+	case system && !p.system.Holds(tx):
+		return types.Actor{}, ErrUnauthenticated
+	case !system:
 		if err := tokenLive(tx, p.token, p.actor); err != nil {
 			return types.Actor{}, err
 		}
@@ -108,7 +115,7 @@ func ActorOf(tx *eventstore.Tx, c eventstore.Command) (types.Actor, error) {
 	switch {
 	case err != nil:
 		return types.Actor{}, err
-	case !found || a.RevokedAt != nil || (a.Kind == types.ActorKindSystem) != p.system:
+	case !found || a.RevokedAt != nil || (a.Kind == types.ActorKindSystem) != system:
 		return types.Actor{}, ErrUnauthenticated
 	}
 	return a, nil

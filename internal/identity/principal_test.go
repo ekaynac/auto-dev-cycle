@@ -8,12 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"io/fs"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +24,13 @@ func (f *fixture) principal(bearer string, via identity.Listener) (identity.Prin
 		return nil
 	})
 	return p, errors.Join(err, authErr)
+}
+
+func (f *fixture) view(fn func(*eventstore.Tx) error) {
+	f.t.Helper()
+	if err := f.s.View(context.Background(), fn); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 // A principal comes from a live bearer on a listener the server names: a
@@ -64,8 +65,9 @@ func TestAuthenticatedNeedsBearerAndListener(t *testing.T) {
 }
 
 // No token yields the system principal, even a token record forged for
-// the system actor that authenticates; SystemPrincipal makes it only for the
-// live system actor.
+// the system actor that authenticates; SystemPrincipal makes it only from
+// the store's one system claim, for its live system actor, and it acts on
+// that store only.
 func TestNoSystemPrincipalFromAToken(t *testing.T) {
 	f := open(t)
 	raw := make([]byte, 32)
@@ -91,14 +93,38 @@ func TestNoSystemPrincipalFromAToken(t *testing.T) {
 			t.Fatalf("a token gave the system principal on %d: %+v %v", via, p, err)
 		}
 	}
-	err := f.s.View(context.Background(), func(tx *eventstore.Tx) error {
-		if _, err := identity.SystemPrincipal(tx, f.op.ID); !errors.Is(err, identity.ErrUnauthenticated) {
-			t.Errorf("an operator's system principal: %v", err)
+	// The system principal comes only from the store's one system claim.
+	claim, err := f.s.ClaimSystem()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.ClaimSystem(); !errors.Is(err, eventstore.ErrSystemClaimed) {
+		t.Fatalf("a second system claim: %v", err)
+	}
+	other := empty(t)
+	otherClaim, err := other.s.ClaimSystem()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sysP identity.Principal
+	f.view(func(tx *eventstore.Tx) error {
+		for name, c := range map[string]struct {
+			claim eventstore.SystemClaim
+			actor types.ActorID
+		}{
+			"no claim":                  {eventstore.SystemClaim{}, f.sys.ID},
+			"another store's claim":     {otherClaim, f.sys.ID},
+			"the claim for an operator": {claim, f.op.ID},
+		} {
+			if _, err := identity.SystemPrincipal(tx, c.claim, c.actor); !errors.Is(err, identity.ErrUnauthenticated) {
+				t.Errorf("%s: %v", name, err)
+			}
 		}
-		p, err := identity.SystemPrincipal(tx, f.sys.ID)
+		p, err := identity.SystemPrincipal(tx, claim, f.sys.ID)
 		if err != nil {
 			return err
 		}
+		sysP = p
 		// Its commands are the system actor's, and nobody else's.
 		c := p.Command(id(t, "cmd"), "note.add", "k", []byte(`{}`), nil)
 		if err := identity.Recheck(tx, c); err != nil || c.Actor != string(f.sys.ID) {
@@ -110,56 +136,11 @@ func TestNoSystemPrincipalFromAToken(t *testing.T) {
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-// systemPrincipalCallers are the only packages whose non-test files may
-// call identity.SystemPrincipal: the daemon's private startup path.
-var systemPrincipalCallers = map[string]bool{"internal/daemon": true}
-
-// Only the daemon's startup holds the system principal: every non-test
-// .go file of the module is parsed for a reference to SystemPrincipal.
-func TestSystemPrincipalIsTheDaemonsOnly(t *testing.T) {
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := 0
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	// It acts on its own store only.
+	other.view(func(tx *eventstore.Tx) error {
+		if err := identity.Recheck(tx, sysP.Command(id(t, "cmd"), "note.add", "k", []byte(`{}`), nil)); !errors.Is(err, identity.ErrUnauthenticated) {
+			t.Errorf("the system principal on another store: %v", err)
 		}
-		if d.IsDir() {
-			if n := d.Name(); path != root && (strings.HasPrefix(n, ".") || n == "node_modules" || n == "testdata" || n == "vendor") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, filepath.Dir(path))
-		if err != nil {
-			return err
-		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "SystemPrincipal" {
-				found++
-				if !systemPrincipalCallers[filepath.ToSlash(rel)] {
-					t.Errorf("%s references SystemPrincipal", filepath.ToSlash(rel))
-				}
-			}
-			return true
-		})
 		return nil
 	})
-	if err != nil || found == 0 {
-		t.Fatalf("the walk found %d references: %v", found, err)
-	}
 }

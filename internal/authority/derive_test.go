@@ -21,18 +21,27 @@ import (
 )
 
 // noteHandler is the test-only handler: note.add on the project its input
-// names, its object the note it would add.
+// names, its object the note it would add, with the change classes and
+// grantee the input names (a stand-in for an effective-change computation).
 type noteHandler struct{}
 
-func (noteHandler) Derive(_ *eventstore.Tx, _ types.Actor, input json.RawMessage) (authority.Derived, error) {
+var errDerive = errors.New("the derivation failed")
+
+func (*noteHandler) Derive(_ *eventstore.Tx, _ types.Actor, input json.RawMessage) (authority.Derived, error) {
 	var in struct {
 		Project types.ProjectID `json:"project"`
 		Object  string          `json:"object"`
+		Classes []string        `json:"classes"`
+		Grantee *types.ActorID  `json:"grantee"`
+		Fail    bool            `json:"fail"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return authority.Derived{}, err
 	}
-	return authority.Derived{Object: in.Object, Project: &in.Project}, nil
+	if in.Fail {
+		return authority.Derived{}, errDerive
+	}
+	return authority.Derived{Object: in.Object, Project: &in.Project, Classes: in.Classes, Grantee: in.Grantee}, nil
 }
 
 // boundary is a store wired as the daemon wires it, the identity recheck
@@ -44,6 +53,7 @@ type boundary struct {
 	sys, op, sup  identity.Principal
 	opTok, supTok identity.Secret
 	supGrant      types.Grant
+	az            authority.Authorizer // what the store's Authorize hook runs
 }
 
 func openBoundary(t *testing.T) *boundary {
@@ -61,7 +71,7 @@ func openBoundary(t *testing.T) *boundary {
 	if err != nil {
 		t.Fatal(err)
 	}
-	az := authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{"note.add": noteHandler{}}, Now: func() time.Time { return t0 }}
+	b := &boundary{t: t, az: authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{"note.add": &noteHandler{}}, Now: func() time.Time { return t0 }}}
 	kinds := identity.Kinds()
 	maps.Copy(kinds, authority.GrantKinds())
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
@@ -70,13 +80,13 @@ func openBoundary(t *testing.T) *boundary {
 				if c.Action == "test.seed" {
 					return nil
 				}
-				return az.Authorize(tx, c)
+				return b.az.Authorize(tx, c)
 			}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	b := &boundary{t: t, s: s}
+	b.s = s
 	sys := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSystem, Name: "system"}
 	sys.CreatedBy = sys.ID
 	evs, err := identity.CreateActor(sys)
@@ -87,7 +97,14 @@ func openBoundary(t *testing.T) *boundary {
 	if _, err := s.Bootstrap(context.Background(), eventstore.Command{ID: cmd, Actor: string(sys.ID), Action: "test.seed", IdempotencyKey: cmd, Input: []byte(`{}`)}, evs[0]); err != nil {
 		t.Fatal(err)
 	}
-	b.view(func(tx *eventstore.Tx) (err error) { b.sys, err = identity.SystemPrincipal(tx, sys.ID); return err })
+	claim, err := s.ClaimSystem()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.view(func(tx *eventstore.Tx) (err error) {
+		b.sys, err = identity.SystemPrincipal(tx, claim, sys.ID)
+		return err
+	})
 	op := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindOperator, Name: "operator", CreatedBy: sys.ID}
 	sup := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "supervisor", CreatedBy: op.ID}
 	b.seed(b.sys, create(op))
@@ -213,7 +230,14 @@ func TestReplayAuthentication(t *testing.T) {
 	// Missing or invalid credentials make no principal; a command without one
 	// is refused, even naming the operator.
 	b.view(func(tx *eventstore.Tx) error {
-		for _, bearer := range []string{"", "tok_x.y", b.opTok.Reveal()[:len(b.opTok.Reveal())-2] + "AA"} {
+		// The wrong secret differs from the operator's in exactly its first
+		// character, changed to another valid one.
+		tokID, secret, _ := strings.Cut(b.opTok.Reveal(), ".")
+		other := "A"
+		if secret[0] == 'A' {
+			other = "B"
+		}
+		for _, bearer := range []string{"", "tok_x.y", tokID + "." + other + secret[1:]} {
 			if _, err := identity.Authenticated(tx, bearer, identity.PrivateSocket); !errors.Is(err, identity.ErrUnauthenticated) {
 				t.Errorf("a principal from a missing or invalid bearer: %v", err)
 			}
@@ -258,4 +282,75 @@ func TestRevokedActorIsRefused(t *testing.T) {
 			t.Errorf("key %s: %+v %v", key, out, err)
 		}
 	}
+}
+
+// derivedCmd is note.add on project A whose derivation names classes and
+// a grantee.
+func (b *boundary) derivedCmd(p identity.Principal, classes []string, grantee *types.ActorID, fail bool) eventstore.Command {
+	b.t.Helper()
+	in, err := json.Marshal(map[string]any{"project": prjA, "object": "note-1", "classes": classes, "grantee": grantee, "fail": fail})
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	key := newID(b.t, "cmd")
+	return p.Command(key, "note.add", key, in, nil)
+}
+
+// refusedUnrun submits c and requires err to be what check accepts, with
+// the command's logic never run and nothing appended.
+func (b *boundary) refusedUnrun(name string, c eventstore.Command, check func(error) bool) {
+	b.t.Helper()
+	h, ran := b.head(), false
+	_, err := b.s.Submit(context.Background(), c, eventstore.Applies(func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+		ran = true
+		return nil, json.RawMessage(`{}`), nil
+	}))
+	if !check(err) || ran || b.head() != h {
+		b.t.Errorf("%s: %v (logic ran: %t)", name, err, ran)
+	}
+}
+
+func isReason(r vocab.Reason) func(error) bool {
+	return func(err error) bool {
+		var refusal *authority.Refusal
+		return errors.As(err, &refusal) && refusal.Reason == r
+	}
+}
+
+func is(target error) func(error) bool { return func(err error) bool { return errors.Is(err, target) } }
+
+// The derived classes and grantee reach Decide, and a command Decide would
+// propose is refused, its logic never run, until proposals are persisted.
+func TestAuthorizerJudgesTheDerivedChange(t *testing.T) {
+	b := openBoundary(t)
+	self, other := b.sup.Actor(), b.op.Actor()
+	// The supervisor's grant covers note.add; the derived class makes it a
+	// grant change: to another actor it needs a human (a proposal), to
+	// itself it is refused.
+	b.refusedUnrun("a grant change for another", b.derivedCmd(b.sup, []string{"grant.create"}, &other, false), is(authority.ErrProposalsNotWired))
+	b.refusedUnrun("a grant change for itself", b.derivedCmd(b.sup, []string{"grant.create"}, &self, false), isReason(vocab.ReasonSelfGrantRefused))
+	// A class without a confirmation default is refused, for an operator too.
+	b.refusedUnrun("an unknown class", b.derivedCmd(b.op, []string{"no_such.class"}, nil, false), isReason(vocab.ReasonChangeClassUnknown))
+	// Without a sensitive class the same command applies.
+	if out, err := b.note(b.derivedCmd(b.sup, nil, nil, false)); err != nil || out.Disposition != eventstore.DispositionApplied {
+		t.Fatalf("the plain note: %+v %v", out, err)
+	}
+}
+
+// A missing registry, clock or handler, a typed nil handler and a failed
+// derivation each refuse, without a panic and without running the logic.
+func TestAuthorizerFailsClosed(t *testing.T) {
+	b := openBoundary(t)
+	full := b.az
+	for name, az := range map[string]authority.Authorizer{
+		"no registry":         {Handlers: full.Handlers, Now: full.Now},
+		"no clock":            {Registry: full.Registry, Handlers: full.Handlers},
+		"a nil handler":       {Registry: full.Registry, Now: full.Now, Handlers: map[string]authority.Handler{"note.add": nil}},
+		"a typed nil handler": {Registry: full.Registry, Now: full.Now, Handlers: map[string]authority.Handler{"note.add": (*noteHandler)(nil)}},
+	} {
+		b.az = az
+		b.refusedUnrun(name, b.derivedCmd(b.op, nil, nil, false), is(authority.ErrActionNotWired))
+	}
+	b.az = full
+	b.refusedUnrun("a failed derivation", b.derivedCmd(b.op, nil, nil, true), is(errDerive))
 }

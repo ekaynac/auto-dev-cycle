@@ -53,6 +53,27 @@ type Command struct {
 	Principal Principal
 }
 
+// ErrSystemClaimed: the store's system claim was already handed out.
+var ErrSystemClaimed = errors.New("eventstore: the system claim of this store is already held")
+
+// SystemClaim is the capability to act as the controller's own system
+// actor on one store (14 N4): identity makes the system principal only
+// from it. ClaimSystem hands it out once per opened store, and the daemon
+// claims it at startup, right after Open, so no later caller can. The zero
+// claim holds nothing.
+type SystemClaim struct{ s *Store }
+
+// ClaimSystem returns the store's system claim, the first time only.
+func (s *Store) ClaimSystem() (SystemClaim, error) {
+	if !s.systemClaimed.CompareAndSwap(false, true) {
+		return SystemClaim{}, ErrSystemClaimed
+	}
+	return SystemClaim{s}, nil
+}
+
+// Holds reports whether c is the claim of the store t is a transaction on.
+func (c SystemClaim) Holds(t *Tx) bool { return c.s != nil && t != nil && t.owner == c.s }
+
 // Principal is a command's authenticated sender. Only internal/identity
 // makes one the daemon's Identify hook accepts; the store itself never
 // trusts it.
@@ -73,6 +94,7 @@ type Tx struct {
 	ctx     context.Context
 	tx      *sql.Tx
 	store   *Store   // set for a command's transaction
+	owner   *Store   // the store a command's or a View's transaction is on
 	intents []intent // effects the command intends
 	// rebuild: projections go to the rebuild's scratch table instead of
 	// the live proj_kv (RebuildProjections).
@@ -335,7 +357,7 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 	}
 	var out Committed
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
-		t := &Tx{ctx: ctx, tx: tx, store: s}
+		t := &Tx{ctx: ctx, tx: tx, store: s, owner: s}
 		// 0. The writer-boundary identity recheck (14 "Replay
 		// authentication"), before the idempotency lookup, so it covers new
 		// commands, reused keys and replays alike. Bootstrap (authorize
