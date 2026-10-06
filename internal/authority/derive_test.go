@@ -78,7 +78,11 @@ type boundary struct {
 	az            authority.Authorizer // what the store's Authorize hook runs
 }
 
-func openBoundary(t *testing.T) *boundary {
+func openBoundary(t *testing.T) *boundary { return openBoundaryGrace(t, 0) }
+
+// openBoundaryGrace: with the seat projector's grace overridden when
+// positive. The supervisor holds the seat.
+func openBoundaryGrace(t *testing.T, grace time.Duration) *boundary {
 	dir := filepath.Join(t.TempDir(), "state")
 	lock, err := eventstore.AcquireLock(dir)
 	if err != nil {
@@ -96,10 +100,11 @@ func openBoundary(t *testing.T) *boundary {
 	b := &boundary{t: t, az: authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{"note.add": &noteHandler{}}, Now: func() time.Time { return t0 }}}
 	kinds := identity.Kinds()
 	maps.Copy(kinds, authority.GrantKinds())
+	maps.Copy(kinds, authority.SeatKinds())
 	kinds["test.noted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	kinds["test.unnoted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
-		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, notesProjection),
+		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, notesProjection),
 			Authorize: func(tx *eventstore.Tx, c eventstore.Command) error {
 				if c.Action == "test.seed" {
 					return nil
@@ -142,6 +147,7 @@ func openBoundary(t *testing.T) *boundary {
 		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID, Approval: types.ApprovalID(newID(t, "apr"))}
 	b.seed(b.op, createGrant(b.supGrant))
 	b.sup = b.login(b.supTok)
+	b.seed(b.sup, seat(types.SeatEventTransitionSeatTaken, nil, &sup.ID, nil))
 	return b
 }
 

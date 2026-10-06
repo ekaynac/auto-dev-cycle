@@ -98,6 +98,8 @@ type GrantID = TypeID
 
 type ProposalID = TypeID
 
+type SeatID = TypeID
+
 type ActorID = TypeID
 
 type ManifestID = TypeID

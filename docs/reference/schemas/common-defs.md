@@ -94,6 +94,10 @@ Type: [TypeID](#typeid) (pattern `^grt_`)
 
 Type: [TypeID](#typeid) (pattern `^prp_`)
 
+### SeatID
+
+Type: [TypeID](#typeid) (pattern `^sea_`)
+
 ### ActorID
 
 Type: [TypeID](#typeid) (pattern `^act_`)

@@ -597,6 +597,9 @@ components:
         ProposalID:
           $ref: '#/$defs/TypeID'
           pattern: ^prp_
+        SeatID:
+          $ref: '#/$defs/TypeID'
+          pattern: ^sea_
         ActorID:
           $ref: '#/$defs/TypeID'
           pattern: ^act_

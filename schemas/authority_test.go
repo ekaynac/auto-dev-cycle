@@ -49,6 +49,7 @@ func authorityDocs() map[string]map[string]any {
 			"status": "open", "expires_at": "2026-10-05T10:00:00Z"},
 		"records/challenge": {"id": chlID, "proposal": prpID, "binding_digest": dgB, "nonce": strings.Repeat("ab", 32),
 			"allowed_confirmers": []any{opID}, "expires_at": "2026-10-04T10:15:00Z", "used_at": nil},
+		"records/seat-event": {"transition": "seat.handover_requested", "from": opID, "to": actID, "force_after": "2026-10-05T00:15:00Z"},
 		"records/owed-input": {"id": ownID, "requested_by": actID, "kind": "ruling", "question": "Is the vendor licence compatible?",
 			"subject": object(), "revision": 1},
 	}
@@ -96,14 +97,19 @@ func TestAuthorityRecords(t *testing.T) {
 		"approval class enum": {"records/approval", func(d map[string]any) {
 			d["change_class"] = []any{"policy.anything"}
 		}},
-		"approval policy":         {"records/approval", func(d map[string]any) { d["confirmation"].(map[string]any)["policy"] = "maybe" }},
-		"approval without reason": {"records/approval", func(d map[string]any) { d["reason"] = "" }},
-		"approval object":         {"records/approval", func(d map[string]any) { d["object"].(map[string]any)["version"] = -1 }},
-		"proposal policy none":    {"records/proposal", func(d map[string]any) { d["policy"] = "none" }},
-		"proposal status":         {"records/proposal", func(d map[string]any) { d["status"] = "applied" }},
-		"challenge short nonce":   {"records/challenge", func(d map[string]any) { d["nonce"] = "abcd" }},
-		"challenge no confirmer":  {"records/challenge", func(d map[string]any) { d["allowed_confirmers"] = []any{} }},
-		"owed input kind":         {"records/owed-input", func(d map[string]any) { d["kind"] = "opinion" }},
+		"approval policy":          {"records/approval", func(d map[string]any) { d["confirmation"].(map[string]any)["policy"] = "maybe" }},
+		"approval without reason":  {"records/approval", func(d map[string]any) { d["reason"] = "" }},
+		"approval object":          {"records/approval", func(d map[string]any) { d["object"].(map[string]any)["version"] = -1 }},
+		"proposal policy none":     {"records/proposal", func(d map[string]any) { d["policy"] = "none" }},
+		"proposal status":          {"records/proposal", func(d map[string]any) { d["status"] = "applied" }},
+		"challenge short nonce":    {"records/challenge", func(d map[string]any) { d["nonce"] = "abcd" }},
+		"challenge no confirmer":   {"records/challenge", func(d map[string]any) { d["allowed_confirmers"] = []any{} }},
+		"owed input kind":          {"records/owed-input", func(d map[string]any) { d["kind"] = "opinion" }},
+		"seat taken from someone":  {"records/seat-event", func(d map[string]any) { d["transition"] = "seat.taken" }},
+		"seat released to someone": {"records/seat-event", func(d map[string]any) { d["transition"] = "seat.released" }},
+		"seat handed over, forced": {"records/seat-event", func(d map[string]any) { d["transition"] = "seat.handed_over" }},
+		"seat request to nobody":   {"records/seat-event", func(d map[string]any) { d["to"] = nil }},
+		"seat transition":          {"records/seat-event", func(d map[string]any) { d["transition"] = "seat.stolen" }},
 		// Astra #42: exact-state references bind some state.
 		"approval object binds nothing": {"records/approval", func(d map[string]any) {
 			d["object"] = map[string]any{"type": "profile", "id": prjID, "version": nil, "digest": nil}

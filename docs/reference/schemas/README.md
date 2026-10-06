@@ -40,6 +40,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/receipt.json`](records-receipt.md) | Receipt |
 | [`records/ref.json`](records-ref.md) | Ref |
 | [`records/resource-group.json`](records-resource-group.md) | ResourceGroup |
+| [`records/seat-event.json`](records-seat-event.md) | SeatEvent |
 | [`records/token-recovered.json`](records-token-recovered.md) | TokenRecovered |
 | [`records/token.json`](records-token.md) | Token |
 | [`records/usage-measurement.json`](records-usage-measurement.md) | UsageMeasurement |

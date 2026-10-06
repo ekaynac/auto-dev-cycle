@@ -34,6 +34,10 @@ type Derived struct {
 	// existence is the record's, and a digest expectation is checked
 	// against its canonical bytes. Nil: the action takes no expected state.
 	Record func(t *eventstore.Tx) (json.RawMessage, bool, error)
+	// SeatExempt marks an action a supervisor performs without holding the
+	// seat (taking or asking for it, 14 N4/P4). Unmarked, a supervisor's
+	// command is a supervisor write and needs the seat (fail closed).
+	SeatExempt bool
 }
 
 // Handler derives one action's Derived. It runs inside the writer
@@ -86,6 +90,13 @@ func (a Authorizer) Authorize(t *eventstore.Tx, c eventstore.Command) error {
 	}
 	dec := Decide(a.Registry, Request{Actor: actor, Action: c.Action, Project: d.Project, Classes: d.Classes,
 		Grants: grants, Revoked: revoked, Grantee: d.Grantee, Now: a.Now()})
+	// 08 "Supervisor seat": a supervisor write needs the seat, checked here,
+	// in the writer transaction; operators' and the system's commands do not.
+	if dec.Disposition != Refuse && actor.Kind == types.ActorKindSupervisor && !d.SeatExempt {
+		if err := holdsSeat(t, actor.ID); err != nil {
+			return err
+		}
+	}
 	switch dec.Disposition {
 	case Allow:
 		return nil

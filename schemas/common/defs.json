@@ -52,6 +52,7 @@
     "ApprovalID": {"$ref": "#/$defs/TypeID", "pattern": "^apr_"},
     "GrantID": {"$ref": "#/$defs/TypeID", "pattern": "^grt_"},
     "ProposalID": {"$ref": "#/$defs/TypeID", "pattern": "^prp_"},
+    "SeatID": {"$ref": "#/$defs/TypeID", "pattern": "^sea_"},
     "ActorID": {"$ref": "#/$defs/TypeID", "pattern": "^act_"},
     "ManifestID": {"$ref": "#/$defs/TypeID", "pattern": "^cmf_"},
     "EventID": {"$ref": "#/$defs/TypeID", "pattern": "^evt_"},

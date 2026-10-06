@@ -131,6 +131,7 @@ roughly time-sortable, but the event store's `seq` is the authoritative order. E
 | `apr` | approval record |
 | `grt` | grant |
 | `prp` | proposal |
+| `sea` | supervisor seat (one per controller, 08; minted by its first event) |
 | `act` | actor |
 | `cmf` | context manifest |
 | `evt` | event |
