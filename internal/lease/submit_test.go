@@ -4,7 +4,9 @@ package lease
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -136,5 +138,66 @@ func TestRefusalsMakeAnAttemptUntrustworthy(t *testing.T) {
 	}
 	if !untrusted() {
 		t.Fatal("not untrustworthy after the rebuild")
+	}
+}
+
+// The submission event carries exactly the admitted result, and the
+// finishing attempt.
+func TestSubmissionPayload(t *testing.T) {
+	w := openWorld(t)
+	w.granted(requested())
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return StartAttempt(tx, leaID, 2, attA, base) })
+	r := submitted
+	r.Blob = ptr(w.put([]byte("the patch")))
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		evs, err := SubmitResult(tx, attA, 1, r)
+		if err != nil || len(evs) != 1 {
+			return evs, errors.Join(err, errors.New("want one event"))
+		}
+		var p payload
+		if err := json.Unmarshal(evs[0].Payload, &p); err != nil {
+			return nil, err
+		}
+		if evs[0].Kind != ResultSubmitted+"/v1" || evs[0].Subject != string(attA) || p.Lease != nil || p.Successor != nil || p.Reason != nil ||
+			p.Result == nil || !reflect.DeepEqual(*p.Result, r) || p.Attempt == nil || p.Attempt.Status != types.AttemptStatusFinishing {
+			t.Errorf("submission event %s %s: %+v", evs[0].Kind, evs[0].Subject, p)
+		}
+		return evs, nil
+	})
+}
+
+// A refusal may follow a terminal attempt: the record stays completed and
+// the attempt becomes untrustworthy.
+func TestRefusalAfterACompletedAttempt(t *testing.T) {
+	w := openWorld(t)
+	w.granted(requested())
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return StartAttempt(tx, leaID, 2, attA, base) })
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return ChangeAttempt(tx, attA, 1, attemptEvent(StopRequested))
+	})
+	a, _ := get[types.Attempt](w, AttemptProjection, string(attA))
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return ChangeAttempt(tx, attA, 2, AttemptEvent{Kind: Sealed, Checkpoint: w.record(a, nil)})
+	})
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return ChangeAttempt(tx, attA, 3, attemptEvent(AttemptDone))
+	})
+	h := types.AttemptOutputRefusalHandle{Attempt: attA, Handle: "late.diff", Digest: dgA, Size: 1}
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		ev, _, err := Refusal(attA, h, types.AttemptOutputRefusalCheckStaleAttempt, "after completion")
+		return []eventstore.Event{ev}, err
+	})
+	done, rev := get[types.Attempt](w, AttemptProjection, string(attA))
+	if done.Status != types.AttemptStatusCompleted || rev != 4 {
+		t.Fatalf("after the refusal: %s at revision %d", done.Status, rev)
+	}
+	var u bool
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		var err error
+		u, err = Untrustworthy(tx, attA)
+		return nil, err
+	})
+	if !u {
+		t.Fatal("not untrustworthy")
 	}
 }
