@@ -6,6 +6,8 @@ package ingest
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -201,19 +203,27 @@ func bindChild(t *testing.T, root string) {
 // Corruption of an already stored blob is the store's fault: a store error,
 // never the adapter's unsafe_output.
 func TestCorruptStoredBlobIsStoreError(t *testing.T) {
-	e := newEnv(t)
-	e.write(filepath.Join(e.out, "res"), content)
-	d, err := e.store.Put(strings.NewReader(string(content)), "")
-	must(t, err)
-	hexsum := strings.TrimPrefix(d, "sha256:")
-	p := filepath.Join(e.stateDir, "blobs", "sha256", hexsum[:2], hexsum[2:4], hexsum)
-	must(t, os.Chmod(p, 0o600))
-	must(t, os.WriteFile(p, []byte("rot"), 0o600))
-	err = ingestContent(e)
-	var u *Unsafe
-	if errors.As(err, &u) || !errors.Is(err, blobstore.ErrDigestMismatch) {
-		t.Fatalf("Ingest onto a corrupt blob = %v, want a store ErrDigestMismatch", err)
-	}
+	withFallback(t, func(t *testing.T) {
+		e := newEnv(t)
+		e.write(filepath.Join(e.out, "res"), content)
+		d, err := e.store.Put(strings.NewReader(string(content)), "")
+		must(t, err)
+		hexsum := strings.TrimPrefix(d, "sha256:")
+		p := filepath.Join(e.stateDir, "blobs", "sha256", hexsum[:2], hexsum[2:4], hexsum)
+		must(t, os.Chmod(p, 0o600))
+		must(t, os.WriteFile(p, []byte("rot"), 0o600))
+		err = ingestContent(e)
+		var u *Unsafe
+		if errors.As(err, &u) || !errors.Is(err, blobstore.ErrDigestMismatch) || errors.Is(err, blobstore.ErrDeclaredDigest) {
+			t.Fatalf("Ingest onto a corrupt blob = %v, want a store ErrDigestMismatch", err)
+		}
+		if b, err := os.ReadFile(p); err != nil || string(b) != "rot" {
+			t.Fatalf("the corrupt blob was touched: %q, %v", b, err)
+		}
+		if left, _ := os.ReadDir(filepath.Join(e.stateDir, "blobs", "tmp")); len(left) != 0 {
+			t.Fatalf("temp files left behind: %v", left)
+		}
+	})
 }
 
 // A same-size in-place overwrite during the copy: refused as replaced where
@@ -236,6 +246,166 @@ func TestSameSizeOverwriteDuringCopy(t *testing.T) {
 		if err := ingestContent(e); !errors.As(err, &u) || (u.Check != CheckReplaced && u.Check != CheckDigest) {
 			t.Fatalf("Ingest = %v, want replaced or digest", err)
 		}
+		e.assertEmpty()
+	})
+}
+
+// failStatx makes the nth statx call (1: out/, 2: the O_PATH fd, 3: the
+// reopened fd, 4: after the copy) fail with err, or report mask without the
+// bits in strip.
+func failStatx(t *testing.T, nth int, err error, strip uint32) {
+	calls := 0
+	statx = func(fd int, p string, flags, mask int, x *unix.Statx_t) error {
+		calls++
+		serr := unix.Statx(fd, p, flags, mask, x)
+		if calls != nth {
+			return serr
+		}
+		if err != nil {
+			return err
+		}
+		x.Mask &^= strip
+		return serr
+	}
+	t.Cleanup(func() { statx = unix.Statx })
+}
+
+// A capability the kernel lacks is ErrUnsupported at every descriptor
+// check; a genuine I/O failure of the file stays unreadable.
+func TestStatxFailuresAtEachCheck(t *testing.T) {
+	for nth := 1; nth <= 4; nth++ {
+		for _, c := range []struct {
+			name        string
+			err         error
+			strip       uint32
+			unsupported bool
+		}{
+			{"ENOSYS", unix.ENOSYS, 0, true},
+			{"EOPNOTSUPP", unix.EOPNOTSUPP, 0, true},
+			{"no mount id", nil, unix.STATX_MNT_ID | unix.STATX_MNT_ID_UNIQUE, true},
+			{"no size", nil, unix.STATX_SIZE, true},
+			{"EIO", unix.EIO, 0, false},
+		} {
+			t.Run(fmt.Sprintf("call %d %s", nth, c.name), func(t *testing.T) {
+				withFallback(t, func(t *testing.T) {
+					e := newEnv(t)
+					e.write(filepath.Join(e.out, "res"), content)
+					failStatx(t, nth, c.err, c.strip)
+					err := ingestContent(e)
+					if c.unsupported {
+						wantUnsupported(t, err)
+					} else {
+						wantCheck(t, err, CheckUnreadable)
+					}
+					e.assertEmpty()
+				})
+			})
+		}
+	}
+}
+
+// A kernel with only the legacy mount id (no STATX_MNT_ID_UNIQUE) is
+// supported: the held descriptors pin their mounts, so ids are not reused.
+func TestLegacyMountID(t *testing.T) {
+	withFallback(t, func(t *testing.T) {
+		e := newEnv(t)
+		e.write(filepath.Join(e.out, "res"), content)
+		statx = func(fd int, p string, flags, mask int, x *unix.Statx_t) error {
+			return unix.Statx(fd, p, flags, mask&^unix.STATX_MNT_ID_UNIQUE, x)
+		}
+		t.Cleanup(func() { statx = unix.Statx })
+		must(t, ingestContent(e))
+	})
+}
+
+// openat2 filtered by seccomp (EPERM) falls back to openat.
+func TestEPERMFallback(t *testing.T) {
+	e := newEnv(t)
+	e.write(filepath.Join(e.out, "res"), content)
+	calls := 0
+	openat2 = func(int, string, *unix.OpenHow) (int, error) { calls++; return -1, unix.EPERM }
+	t.Cleanup(func() { openat2 = unix.Openat2 })
+	must(t, ingestContent(e))
+	if calls == 0 {
+		t.Fatal("openat2 was never tried")
+	}
+}
+
+func openFDs(t *testing.T) int {
+	ents, err := os.ReadDir("/proc/self/fd")
+	must(t, err)
+	return len(ents)
+}
+
+// Repeated refusals leak no descriptor.
+func TestNoFDLeak(t *testing.T) {
+	withFallback(t, func(t *testing.T) {
+		e := newEnv(t)
+		res := filepath.Join(e.out, "res")
+		states := []func(){
+			func() { must(t, os.Symlink("x", res)) },
+			func() { must(t, unix.Mkfifo(res, 0o600)) },
+			func() { e.write(res, content); must(t, os.Link(res, filepath.Join(e.out, "l"))) },
+			func() { e.write(res, content[1:]) },
+			func() { e.write(res, append([]byte{'X'}, content[1:]...)) },
+			func() {
+				e.write(res, content)
+				setHook(t, func(stage string) {
+					if stage == "copying" {
+						appendTo(t, res)
+					}
+				})
+			},
+		}
+		before := openFDs(t)
+		for i := 0; i < 5; i++ {
+			for _, st := range states {
+				st()
+				var u *Unsafe
+				if err := ingestContent(e); !errors.As(err, &u) {
+					t.Fatalf("want a refusal, got %v", err)
+				}
+				testHook = nil
+				must(t, os.RemoveAll(e.out+"/res"))
+				_ = os.Remove(filepath.Join(e.out, "l"))
+			}
+		}
+		if after := openFDs(t); after != before {
+			t.Fatalf("open descriptors %d before, %d after the refusals", before, after)
+		}
+	})
+}
+
+// Size edges: an empty file, a file of exactly the bound, the largest
+// bound (no overflow), and a file that grows past the bound while read.
+func TestBounds(t *testing.T) {
+	withFallback(t, func(t *testing.T) {
+		for _, c := range []struct {
+			name  string
+			data  []byte
+			bound int64
+		}{
+			{"empty", nil, bound},
+			{"exactly the bound", content, int64(len(content))},
+			{"maximum bound", []byte("small"), math.MaxInt64},
+		} {
+			e := newEnv(t)
+			e.write(filepath.Join(e.out, "res"), c.data)
+			got, err := Ingest(e.dir, "res", digestOf(c.data), int64(len(c.data)), c.bound, e.store)
+			if err != nil || got != digestOf(c.data) {
+				t.Fatalf("%s: Ingest = %q, %v", c.name, got, err)
+			}
+		}
+		e := newEnv(t)
+		res := filepath.Join(e.out, "res")
+		e.write(res, content)
+		setHook(t, func(stage string) {
+			if stage == "copying" {
+				appendTo(t, res)
+			}
+		})
+		_, err := Ingest(e.dir, "res", digestOf(content), int64(len(content)), int64(len(content))+2, e.store)
+		wantCheck(t, err, CheckReplaced)
 		e.assertEmpty()
 	})
 }

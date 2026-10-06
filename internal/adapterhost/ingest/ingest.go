@@ -5,8 +5,11 @@
 // Package ingest is the controller side of the blob-exchange ingestion
 // boundary (docs/design/m0/09 "Blob exchange: the ingestion boundary"): it
 // copies one adapter-written file out of an attempt's out/ directory into the
-// blob store, refusing anything but a plain regular file of the declared
-// size and digest that stayed the same while it was read.
+// blob store. It refuses anything but a plain regular file of the declared
+// size and digest whose sampled metadata (link count, mount, size, mtime,
+// ctime at inspection, reopen and end of copy) did not change. Those are
+// samples, not a snapshot: a change and its undoing within one clock tick,
+// or a same-tick rename out of out/, are not seen (see Ingest).
 //
 // The caller holds out/ as a directory fd opened O_DIRECTORY|O_NOFOLLOW and
 // calls Ingest only after the adapter's process tree has exited (09). The
@@ -21,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -128,7 +132,7 @@ func stat(fd int, what string) (meta, error) {
 	var x unix.Statx_t
 	err := statx(fd, "", unix.AT_EMPTY_PATH|unix.AT_SYMLINK_NOFOLLOW, statxWant|unix.STATX_MNT_ID|unix.STATX_MNT_ID_UNIQUE, &x)
 	if err != nil {
-		return meta{}, unsafeErr(CheckUnreadable, "stat %s: %v", what, err)
+		return meta{}, classifyErr(err, "stat "+what)
 	}
 	if x.Mask&statxWant != statxWant || x.Mask&(unix.STATX_MNT_ID|unix.STATX_MNT_ID_UNIQUE) == 0 {
 		return meta{}, fmt.Errorf("%w: stat %s: mount id or another field not reported (mask %#x)", ErrUnsupported, what, x.Mask)
@@ -159,6 +163,21 @@ func Supported() error {
 	return unix.Close(rfd)
 }
 
+// unavailable reports a syscall error that means the kernel or filesystem
+// lacks the capability, not that this file failed.
+func unavailable(err error) bool {
+	return errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP)
+}
+
+// classifyErr makes a syscall error ErrUnsupported where the capability is
+// unavailable, and unreadable (the file's failure) otherwise.
+func classifyErr(err error, what string) error {
+	if unavailable(err) {
+		return fmt.Errorf("%w: %s: %v", ErrUnsupported, what, err)
+	}
+	return unsafeErr(CheckUnreadable, "%s: %v", what, err)
+}
+
 // reopen opens the inode pinned by the O_PATH descriptor pfd for reading,
 // through its /proc/self/fd magic link, never through a name. A missing
 // /proc is ErrUnsupported; any other failure is the file's (unreadable).
@@ -168,7 +187,7 @@ func reopen(pfd, extra int) (int, error) {
 	case errors.Is(err, unix.ENOENT), errors.Is(err, unix.ENOTDIR):
 		return -1, fmt.Errorf("%w: reopen through %s: %v", ErrUnsupported, procFD, err)
 	case err != nil:
-		return -1, unsafeErr(CheckUnreadable, "reopening: %v", err)
+		return -1, classifyErr(err, "reopening")
 	}
 	return rfd, nil
 }
@@ -238,8 +257,8 @@ func unchanged(before, now meta) error {
 // inspection, at the reopen and at the end of the copy, and they hash to the
 // declared digest. What they do not prove: change detection by size, mtime
 // and ctime is only as fine as the filesystem clock, so a same-size
-// in-place write, or a rename of the file out of out/ and back, within one
-// clock tick is not seen. The digest is then the backstop for the content
+// in-place write, or a rename of the file out of out/ (which need not move
+// back), within one clock tick is not seen. The digest is then the backstop for the content
 // (the copied stream hashes to what the adapter declared), but it is not a
 // snapshot: it says nothing about the file's state between the reads.
 func Ingest(outDir *os.File, name, declared string, size, bound int64, store *blobstore.Store) (string, error) {
@@ -264,7 +283,7 @@ func Ingest(outDir *os.File, name, declared string, size, bound int64, store *bl
 	case errors.Is(err, unix.EXDEV): // a mount point: the name is one validated component, so never ".."
 		return "", unsafeErr(CheckSpecialFile, "resolving %q: %v", name, err)
 	case err != nil:
-		return "", unsafeErr(CheckUnreadable, "resolving %q: %v", name, err)
+		return "", classifyErr(err, fmt.Sprintf("resolving %q", name))
 	}
 	defer unix.Close(pfd)
 	before, err := stat(pfd, name)
@@ -303,7 +322,13 @@ func Ingest(outDir *os.File, name, declared string, size, bound int64, store *bl
 		return "", asReplaced(firstUnsafe(err))
 	}
 
-	r := &guard{r: io.LimitReader(f, bound+1), fd: rfd, before: before, size: size}
+	// Read at most one byte past the declared size (size <= bound), so
+	// growth is seen without copying more; no overflow at MaxInt64.
+	limit := size
+	if limit < math.MaxInt64 {
+		limit++
+	}
+	r := &guard{r: io.LimitReader(f, limit), fd: rfd, before: before, size: size}
 	got, err := store.Put(r, declared)
 	var u *Unsafe
 	switch {
