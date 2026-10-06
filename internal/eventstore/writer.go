@@ -49,7 +49,7 @@ type Command struct {
 	Input          []byte        // the request as JSON
 	Expected       []Expectation // object versions the command was decided against
 	// Expect is the request's expected state of the object its handler
-	// derives (Hooks.Object); nil: the request expects none.
+	// derives (Tx.BindObject); nil: the request expects none.
 	Expect *State
 	// Principal is who sent the command, as its transport authenticated
 	// it; Hooks.Identify rechecks it before anything else.
@@ -90,8 +90,8 @@ type Expectation struct {
 
 // State is what a request expects of the object its command changes
 // (CommandRequest.expected, 14 P3): its version (the seq of its last event;
-// 0: it does not exist yet), its content digest (ContentDigest of its
-// current record), or both. Every one supplied is enforced.
+// 0: it does not exist), its content digest (ContentDigest of its current
+// record), or both. Every one supplied is enforced.
 type State struct {
 	Version *int64  `json:"version"`
 	Digest  *string `json:"digest"`
@@ -100,10 +100,26 @@ type State struct {
 // Object is a command's authoritative object, as its handler derives it.
 type Object struct {
 	Subject string
-	// Record is the object's digest definition: its current record and
-	// whether it exists. Nil: the object has none, and a digest
-	// expectation of it is refused.
+	// Record is the object's current record and whether it exists: the
+	// authority on its existence, and its digest definition. Nil: the
+	// object has none, and any expected state of it is refused.
 	Record func(t *Tx) (json.RawMessage, bool, error)
+}
+
+// BindObject records the command's object, as its Authorize hook derived
+// it, for the writer's expected-state check: one derivation serves both.
+// A command binds at most one object.
+func (t *Tx) BindObject(o Object) error {
+	switch {
+	case t.store == nil || t.readOnly || t.rebuild:
+		return errors.New("eventstore: only a command's transaction binds an object")
+	case t.object != nil:
+		return errors.New("eventstore: the command's object is already bound")
+	case o.Subject == "":
+		return errors.New("eventstore: an object needs a subject")
+	}
+	t.object = &o
+	return nil
 }
 
 // ContentDigest is a record's content digest: sha256 of its canonical
@@ -121,6 +137,7 @@ type Tx struct {
 	store   *Store   // set for a command's transaction
 	owner   *Store   // the store a command's or a View's transaction is on
 	intents []intent // effects the command intends
+	object  *Object  // the command's object, as Authorize bound it
 	// rebuild: projections go to the rebuild's scratch table instead of
 	// the live proj_kv (RebuildProjections).
 	rebuild bool
@@ -267,11 +284,8 @@ type Hooks struct {
 	// result is replayed only to its own, still-authenticated actor.
 	Identify  func(t *Tx, c Command) error
 	Authorize func(t *Tx, c Command) error // internal/authority
-	// Object derives the command's authoritative object
-	// (internal/authority). It runs, after Authorize, only for a command
-	// that expects a state of its object; with it missing, such a command
-	// is refused.
-	Object func(t *Tx, c Command) (Object, error)
+	// (Authorize also binds the command's object, Tx.BindObject; a command
+	// expecting a state of an unbound object is refused.)
 	// Project updates projections. It must be a fold: derive its records
 	// from the events it is given and the projections alone, whether it
 	// gets a command's events at once or one at a time (a rebuild replays
@@ -451,7 +465,7 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 			}
 		}
 		if c.Expect != nil {
-			if err := s.checkExpect(t, c); err != nil {
+			if err := checkExpect(t, c.Expect); err != nil {
 				return err
 			}
 		}
@@ -529,49 +543,48 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 	return out, nil
 }
 
-// checkExpect enforces every state c expects of the object its handler
-// derives, before the command's logic runs. A missing object matches only
-// version 0: against anything else it is stale, not an error.
-func (s *Store) checkExpect(t *Tx, c Command) error {
-	if s.hooks.Object == nil {
-		return errors.New("eventstore: no object derivation is configured; a command with an expected state is refused")
+// checkExpect enforces every state x a command expects of the object its
+// Authorize hook bound, before the command's logic runs. Existence is the
+// object's record's: a missing record matches only version 0 without a
+// digest, a present one never version 0. Against anything else it is
+// stale, not an error.
+func checkExpect(t *Tx, x *State) error {
+	o := t.object
+	if o == nil {
+		return errors.New("eventstore: no object was bound for the command; its expected state is refused")
 	}
-	o, err := s.hooks.Object(t, c)
+	if o.Record == nil {
+		return fmt.Errorf("eventstore: %s has no record definition; an expected state of it is refused", o.Subject)
+	}
+	rec, exists, err := o.Record(t)
 	if err != nil {
 		return err
-	}
-	if o.Subject == "" {
-		return errors.New("eventstore: the command's handler derived no object for its expected state")
 	}
 	if mutation.Is(mutation.ExpectedStateUnchecked) {
 		return nil
 	}
-	if want := c.Expect.Version; want != nil {
+	if !exists {
+		if x.Version != nil && *x.Version == 0 && x.Digest == nil {
+			return nil
+		}
+		return fmt.Errorf("eventstore: %w: %s does not exist", ErrStaleExpectedState, o.Subject)
+	}
+	if x.Version != nil {
 		v, err := t.SubjectVersion(o.Subject)
 		if err != nil {
 			return err
 		}
-		if v != *want {
-			return fmt.Errorf("eventstore: %w: %s is at %d, the command expected %d", ErrStaleExpectedState, o.Subject, v, *want)
+		if *x.Version == 0 || v != *x.Version {
+			return fmt.Errorf("eventstore: %w: %s exists at %d, the command expected %d", ErrStaleExpectedState, o.Subject, v, *x.Version)
 		}
 	}
-	if want := c.Expect.Digest; want != nil {
-		if o.Record == nil {
-			return fmt.Errorf("eventstore: %s has no digest definition; a digest expectation of it is refused", o.Subject)
-		}
-		rec, ok, err := o.Record(t)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("eventstore: %w: %s does not exist, the command expected %s", ErrStaleExpectedState, o.Subject, *want)
-		}
+	if x.Digest != nil {
 		got, err := ContentDigest(rec)
 		if err != nil {
 			return fmt.Errorf("eventstore: %s record: %w", o.Subject, err)
 		}
-		if got != *want {
-			return fmt.Errorf("eventstore: %w: %s is at %s, the command expected %s", ErrStaleExpectedState, o.Subject, got, *want)
+		if got != *x.Digest {
+			return fmt.Errorf("eventstore: %w: %s is at %s, the command expected %s", ErrStaleExpectedState, o.Subject, got, *x.Digest)
 		}
 	}
 	return nil

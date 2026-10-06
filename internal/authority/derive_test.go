@@ -29,13 +29,18 @@ type noteHandler struct{}
 var errDerive = errors.New("the derivation failed")
 
 // notes is the test projection of the notes, test.noted/v1 setting a
-// note's record to the event's payload.
+// note's record to the event's payload, test.unnoted/v1 deleting it.
 const notes = "test_notes"
 
 func notesProjection(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, e := range evs {
 		if e.Kind == "test.noted/v1" {
 			if err := tx.Put(notes, e.Subject, e.Payload); err != nil {
+				return err
+			}
+		}
+		if e.Kind == "test.unnoted/v1" {
+			if err := tx.Delete(notes, e.Subject); err != nil {
 				return err
 			}
 		}
@@ -92,9 +97,9 @@ func openBoundary(t *testing.T) *boundary {
 	kinds := identity.Kinds()
 	maps.Copy(kinds, authority.GrantKinds())
 	kinds["test.noted/v1"] = eventstore.Kind{Schema: "common/defs"}
+	kinds["test.unnoted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
-		Hooks: eventstore.Hooks{Identify: identity.Recheck, Object: func(tx *eventstore.Tx, c eventstore.Command) (eventstore.Object, error) { return b.az.Object(tx, c) },
-			Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, notesProjection),
+		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, notesProjection),
 			Authorize: func(tx *eventstore.Tx, c eventstore.Command) error {
 				if c.Action == "test.seed" {
 					return nil

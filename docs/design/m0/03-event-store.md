@@ -69,10 +69,13 @@ a rebuild recomputes them, and the limit check runs only when an event is admitt
   `Replayed`. The plaintext goes to the live response only from a fresh applied commit (`identity.Issued.Deliver`).
   Otherwise it is dropped, so a replay neither delivers nor records a new secret.
 - **Expected state.** Commands acting on an object carry `expected` = the object's version (seq of its last event), its
-  content digest, or both (14 P3). The object is the one the action's handler derives, and the handler defines its
-  digest: sha256 of the canonical bytes of its current record (`eventstore.ContentDigest`). The writer enforces every
-  one supplied after authorization and before the command's logic runs. A mismatch, or any expectation but version 0
-  of a missing object, is refused with `failed/stale_expected_state` and commits nothing.
+  content digest, or both (14 P3). The object is the one the action's handler derives, once per command: the Authorize
+  hook binds that derivation to the transaction (`Tx.BindObject`), and the writer checks the same object. The handler
+  defines the object's record, which is required for any expectation. The record decides existence, and its canonical
+  bytes give the digest (`eventstore.ContentDigest`, sha256). A missing record matches only version 0 without a digest;
+  a present one never matches version 0; otherwise the version, and the digest when supplied, must match. The writer
+  enforces this after authorization and before the command's logic runs. A mismatch is refused with
+  `failed/stale_expected_state` and commits nothing.
 - **Process exclusivity.** `adcd` takes an exclusive advisory lock (`flock`) on `<state_dir>/adcd.lock`. It records its
   pid and process start time, and refuses to open the database without the lock. A second daemon exits with
   `could_not_run/controller_already_running`. The lock is acquired before the database is opened and never created or

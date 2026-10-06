@@ -10,25 +10,35 @@ import (
 	"testing"
 )
 
-// A command expecting a state of its object fails closed without an
-// object derivation, without a derived object, and, for a digest, without
-// a digest definition; none of those is stale, and none commits anything.
+// A command expecting a state of its object fails closed when Authorize
+// bound no object, or one without a record definition (for a version too),
+// or tried to bind twice; none of those is stale, and none commits anything.
 func TestExpectFailsClosed(t *testing.T) {
 	v := int64(0)
 	d := "sha256:" + strings.Repeat("0", 64)
-	object := func(o Object) func(*Tx, Command) (Object, error) {
-		return func(*Tx, Command) (Object, error) { return o, nil }
+	bind := func(objects ...Object) func(*Tx, Command) error {
+		return func(tx *Tx, _ Command) error {
+			for _, o := range objects {
+				if err := tx.BindObject(o); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
 	}
+	record := func(*Tx) (json.RawMessage, bool, error) { return nil, false, nil }
 	for name, tc := range map[string]struct {
-		hook   func(*Tx, Command) (Object, error)
-		expect State
-		want   string
+		authorize func(*Tx, Command) error
+		expect    State
+		want      string
 	}{
-		"no derivation":        {nil, State{Version: &v}, "no object derivation"},
-		"no object":            {object(Object{}), State{Version: &v}, "derived no object"},
-		"no digest definition": {object(Object{Subject: testSubject}), State{Digest: &d}, "no digest definition"},
+		"nothing bound":        {allow, State{Version: &v}, "no object was bound"},
+		"no subject":           {bind(Object{Record: record}), State{Version: &v}, "needs a subject"},
+		"no record, a version": {bind(Object{Subject: testSubject}), State{Version: &v}, "no record definition"},
+		"no record, a digest":  {bind(Object{Subject: testSubject}), State{Digest: &d}, "no record definition"},
+		"bound twice":          {bind(Object{Subject: testSubject, Record: record}, Object{Subject: testSubject, Record: record}), State{Version: &v}, "already bound"},
 	} {
-		e := openWriter(t, Hooks{Identify: allow, Authorize: allow, Object: tc.hook})
+		e := openWriter(t, Hooks{Identify: allow, Authorize: tc.authorize})
 		c := command(t, "k", `{}`)
 		c.Expect = &tc.expect
 		_, err := e.s.Submit(context.Background(), c, Applies(appendTo(t, testSubject, 1)))
@@ -38,6 +48,13 @@ func TestExpectFailsClosed(t *testing.T) {
 		if h := head(t, e); h != 0 {
 			t.Errorf("%s: head %d", name, h)
 		}
+	}
+	// Only a command's transaction binds.
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
+	if err := e.s.View(context.Background(), func(tx *Tx) error {
+		return tx.BindObject(Object{Subject: testSubject, Record: record})
+	}); err == nil || !strings.Contains(err.Error(), "only a command's transaction") {
+		t.Errorf("a view bound an object: %v", err)
 	}
 }
 
