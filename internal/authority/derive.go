@@ -30,6 +30,10 @@ type Derived struct {
 	Project *types.ProjectID // nil for an action outside any project
 	Grantee *types.ActorID   // the grantee of a change that creates or extends a grant
 	Classes []string         // the effective change's sensitive classes
+	// Record is the object's current record and whether it exists (14 P3):
+	// existence is the record's, and a digest expectation is checked
+	// against its canonical bytes. Nil: the action takes no expected state.
+	Record func(t *eventstore.Tx) (json.RawMessage, bool, error)
 }
 
 // Handler derives one action's Derived. It runs inside the writer
@@ -70,6 +74,11 @@ func (a Authorizer) Authorize(t *eventstore.Tx, c eventstore.Command) error {
 	}
 	if d.Object == "" {
 		return fmt.Errorf("authority: the %s handler derived no object", c.Action)
+	}
+	// The writer checks the expected state against this derivation: the
+	// handler runs once per command.
+	if err := t.BindObject(eventstore.Object{Subject: d.Object, Record: d.Record}); err != nil {
+		return err
 	}
 	grants, revoked, err := GrantsOf(t, actor.ID)
 	if err != nil {
