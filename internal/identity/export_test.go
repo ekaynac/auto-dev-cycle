@@ -20,3 +20,7 @@ func CountHashes() (count func() int64, restore func()) {
 var Hash = func(secret string, passes, memory uint32, threads uint8) string {
 	return phc(secret, make([]byte, saltBytes), passes, memory, threads, keyBytes)
 }
+
+// Plaintext is an issuance's minted secret, for tests that search the
+// store for it whatever the command's fate.
+func Plaintext(i Issued) string { return i.secret.Reveal() }
