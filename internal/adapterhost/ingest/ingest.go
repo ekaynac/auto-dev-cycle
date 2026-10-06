@@ -40,8 +40,15 @@ const (
 	CheckSize        = "size"         // not the declared size, or over the bound
 	CheckDigest      = "digest"       // the bytes do not hash to the declared digest
 	CheckReplaced    = "replaced"     // unlinked or changed between inspection and the end of the copy
-	CheckUnreadable  = "unreadable"   // missing, not readable, an I/O error, or a property that cannot be verified
+	CheckUnreadable  = "unreadable"   // missing, not readable, or an I/O error
 )
+
+// ErrUnsupported: this host cannot verify the boundary (statx reports no
+// mount id, or /proc/self/fd is unavailable). It is a host capability gap,
+// never the adapter's fault and never an *Unsafe: the host refuses to start
+// attempts (could_not_run) and does not mark one untrustworthy for it.
+// Supported probes for it before an attempt starts.
+var ErrUnsupported = errors.New("ingest: host cannot verify the output boundary")
 
 // Unsafe is the refusal of an adapter output: failed/unsafe_output. Nothing
 // is published when Ingest returns it.
@@ -116,7 +123,7 @@ type meta struct {
 }
 
 // stat reads fd's meta. A kernel or filesystem that does not report the
-// mount id (or any other compared field) fails closed: unreadable.
+// mount id (or any other compared field) fails closed with ErrUnsupported.
 func stat(fd int, what string) (meta, error) {
 	var x unix.Statx_t
 	err := statx(fd, "", unix.AT_EMPTY_PATH|unix.AT_SYMLINK_NOFOLLOW, statxWant|unix.STATX_MNT_ID|unix.STATX_MNT_ID_UNIQUE, &x)
@@ -124,10 +131,56 @@ func stat(fd int, what string) (meta, error) {
 		return meta{}, unsafeErr(CheckUnreadable, "stat %s: %v", what, err)
 	}
 	if x.Mask&statxWant != statxWant || x.Mask&(unix.STATX_MNT_ID|unix.STATX_MNT_ID_UNIQUE) == 0 {
-		return meta{}, unsafeErr(CheckUnreadable, "stat %s: mount id or another field not reported (mask %#x)", what, x.Mask)
+		return meta{}, fmt.Errorf("%w: stat %s: mount id or another field not reported (mask %#x)", ErrUnsupported, what, x.Mask)
 	}
 	return meta{mode: x.Mode, nlink: x.Nlink, size: int64(x.Size), dev: unix.Mkdev(x.Dev_major, x.Dev_minor),
 		ino: x.Ino, mnt: x.Mnt_id, mtime: x.Mtime, ctime: x.Ctime}, nil
+}
+
+// Supported reports whether this host can run Ingest's checks: statx
+// reports mount ids and /proc/self/fd reopens a pinned descriptor. It
+// returns an error wrapping ErrUnsupported when it cannot.
+func Supported() error {
+	fd, err := unix.Open("/", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("%w: open /: %v", ErrUnsupported, err)
+	}
+	defer unix.Close(fd)
+	if _, err := stat(fd, "/"); err != nil {
+		if errors.Is(err, ErrUnsupported) {
+			return err
+		}
+		return fmt.Errorf("%w: %v", ErrUnsupported, err)
+	}
+	rfd, err := reopen(fd, unix.O_DIRECTORY)
+	if err != nil {
+		return err
+	}
+	return unix.Close(rfd)
+}
+
+// reopen opens the inode pinned by the O_PATH descriptor pfd for reading,
+// through its /proc/self/fd magic link, never through a name. A missing
+// /proc is ErrUnsupported; any other failure is the file's (unreadable).
+func reopen(pfd, extra int) (int, error) {
+	rfd, err := unix.Open(procFD+strconv.Itoa(pfd), readFlags|extra, 0)
+	switch {
+	case errors.Is(err, unix.ENOENT), errors.Is(err, unix.ENOTDIR):
+		return -1, fmt.Errorf("%w: reopen through %s: %v", ErrUnsupported, procFD, err)
+	case err != nil:
+		return -1, unsafeErr(CheckUnreadable, "reopening: %v", err)
+	}
+	return rfd, nil
+}
+
+// asReplaced reports a check that held at inspection and fails later (on
+// the reopened descriptor or after the copy) as replaced.
+func asReplaced(err error) error {
+	var u *Unsafe
+	if errors.As(err, &u) && !skipped(CheckReplaced) {
+		return unsafeErr(CheckReplaced, "%s after inspection: %s", u.Check, u.Detail)
+	}
+	return err
 }
 
 // classify names the check a file mode fails, or "" for a regular file.
@@ -175,8 +228,10 @@ func unchanged(before, now meta) error {
 // store and returns its digest. declared is the adapter's "sha256:<hex>"
 // digest, size its declared size and bound the largest size this kind of
 // output may have. Any boundary violation is an *Unsafe and publishes
-// nothing; other errors (the blob store's own, including a corrupt stored
-// blob) are returned as they are.
+// nothing. A host that cannot verify the boundary gets ErrUnsupported (see
+// Supported). Other errors (the blob store's own, including a corrupt
+// stored blob) are returned as they are. A check that held at inspection and
+// fails on the reopened descriptor or after the copy is Check replaced.
 //
 // What the checks prove: the bytes published are the bytes of the one inode
 // the name resolved to, a regular file on out/'s mount with link count 1 at
@@ -231,9 +286,9 @@ func Ingest(outDir *os.File, name, declared string, size, bound int64, store *bl
 
 	// The pinned inode is a regular file, so this open cannot reach a FIFO
 	// or device whatever now sits at the name.
-	rfd, err := unix.Open(procFD+strconv.Itoa(pfd), readFlags, 0)
+	rfd, err := reopen(pfd, 0)
 	if err != nil {
-		return "", unsafeErr(CheckUnreadable, "reopening %q: %v", name, err)
+		return "", err
 	}
 	f := os.NewFile(uintptr(rfd), name)
 	defer f.Close()
@@ -245,7 +300,7 @@ func Ingest(outDir *os.File, name, declared string, size, bound int64, store *bl
 		return "", unsafeErr(CheckReplaced, "%q reopened as another file than the one inspected", name)
 	}
 	if err := errors.Join(links(opened), sameMount(opened, dirMeta.mnt, name+" (reopened)"), unchanged(before, opened)); err != nil {
-		return "", firstUnsafe(err)
+		return "", asReplaced(firstUnsafe(err))
 	}
 
 	r := &guard{r: io.LimitReader(f, bound+1), fd: rfd, before: before, size: size}
@@ -300,7 +355,7 @@ func (g *guard) Read(p []byte) (int, error) {
 		return n, serr
 	}
 	if cerr := errors.Join(links(after), unchanged(g.before, after)); cerr != nil {
-		return n, firstUnsafe(cerr)
+		return n, asReplaced(firstUnsafe(cerr))
 	}
 	if g.n != g.size {
 		return n, unsafeErr(CheckSize, "read %d bytes, declared %d", g.n, g.size)

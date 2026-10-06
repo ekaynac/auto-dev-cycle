@@ -183,14 +183,14 @@ func cases() []ingestCase {
 					must(e.t, os.Link(filepath.Join(e.out, "res"), filepath.Join(e.outside, "grabbed")))
 				}
 			}
-		}, want: CheckHardLink},
+		}, want: CheckReplaced},
 		{name: "outside hard link created during the copy", setup: plain, hook: func(e *env) func(string) {
 			return func(stage string) {
 				if stage == "copying" {
 					must(e.t, os.Link(filepath.Join(e.out, "res"), filepath.Join(e.outside, "grabbed")))
 				}
 			}
-		}, want: CheckHardLink},
+		}, want: CheckReplaced},
 		{name: "unlinked during the copy", setup: plain, hook: func(e *env) func(string) {
 			return func(stage string) {
 				if stage == "copying" {

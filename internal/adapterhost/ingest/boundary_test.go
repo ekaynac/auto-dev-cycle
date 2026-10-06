@@ -26,6 +26,20 @@ func wantCheck(t *testing.T, err error, check string) {
 	}
 }
 
+func wantUnsupported(t *testing.T, err error) {
+	t.Helper()
+	var u *Unsafe
+	if errors.As(err, &u) || !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("got %v, want ErrUnsupported and no *Unsafe", err)
+	}
+}
+
+func TestSupported(t *testing.T) {
+	if err := Supported(); err != nil {
+		t.Fatalf("Supported() = %v on this host", err)
+	}
+}
+
 func ingestContent(e *env) error {
 	_, err := Ingest(e.dir, "res", digestOf(content), int64(len(content)), bound, e.store)
 	return err
@@ -89,20 +103,22 @@ func TestUnreadableFile(t *testing.T) {
 	})
 }
 
-// Without /proc there is no trusted reopen of the pinned inode: fail closed.
+// Without /proc there is no trusted reopen of the pinned inode: a host gap,
+// ErrUnsupported, never the adapter's unsafe_output.
 func TestNoProcFailsClosed(t *testing.T) {
 	withFallback(t, func(t *testing.T) {
 		e := newEnv(t)
 		e.write(filepath.Join(e.out, "res"), content)
 		procFD = filepath.Join(e.root, "no-proc") + "/"
 		t.Cleanup(func() { procFD = "/proc/self/fd/" })
-		wantCheck(t, ingestContent(e), CheckUnreadable)
+		wantUnsupported(t, ingestContent(e))
+		wantUnsupported(t, Supported())
 		e.assertEmpty()
 	})
 }
 
 // A kernel that does not report the mount id cannot prove the mount
-// boundary: fail closed.
+// boundary: ErrUnsupported, never the adapter's unsafe_output.
 func TestNoMountIDFailsClosed(t *testing.T) {
 	withFallback(t, func(t *testing.T) {
 		e := newEnv(t)
@@ -113,7 +129,8 @@ func TestNoMountIDFailsClosed(t *testing.T) {
 			return err
 		}
 		t.Cleanup(func() { statx = unix.Statx })
-		wantCheck(t, ingestContent(e), CheckUnreadable)
+		wantUnsupported(t, ingestContent(e))
+		wantUnsupported(t, Supported())
 		e.assertEmpty()
 	})
 }
