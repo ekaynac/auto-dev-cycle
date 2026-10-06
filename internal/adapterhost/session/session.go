@@ -63,6 +63,9 @@ type Error struct {
 	Method string // the method concerned, if any
 	Detail string // a fixed text
 	Code   int64  // for KindRefused, the adapter's JSON-RPC error code if reserved (rpcCode), else 0; its message is dropped
+	// Check is the ingestion check that refused an output: CheckForeignHandle
+	// for KindForeignHandle, else empty.
+	Check types.AttemptOutputRefusalCheck
 }
 
 func (e *Error) Error() string {
@@ -74,11 +77,14 @@ func (e *Error) Error() string {
 }
 
 // Reason is the registered reason: the core's own stop (deadline, close) is
-// attempt_stopped; everything else is the adapter breaking the contract.
+// attempt_stopped, a foreign handle unsafe_output; everything else is the
+// adapter breaking the contract.
 func (e *Error) Reason() vocab.Reason {
 	switch e.Kind {
 	case KindDeadline, KindClosed:
 		return vocab.ReasonAttemptStopped
+	case KindForeignHandle:
+		return vocab.ReasonUnsafeOutput
 	}
 	return vocab.ReasonAdapterProtocolError
 }
@@ -147,6 +153,7 @@ type Session struct {
 	run     *run
 	shutID  int64 // the shutdown request
 	shut    bool  // shutdown answered: the output ending is the clean end
+	fence   fence // the session's one attempt (methods.go)
 	err     *Error
 	ended   chan struct{}
 }
