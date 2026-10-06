@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -391,5 +392,123 @@ func TestPeerCredentials(t *testing.T) {
 		}
 		c.Close()
 		ln.Close()
+	}
+}
+
+// tryShared starts a server on a fresh state dir with the shared socket in
+// run (none when run is empty), refused or not.
+func tryShared(t *testing.T, state, run string) error {
+	t.Helper()
+	if state == "" {
+		state = shortDir(t)
+	}
+	w := seed(t, state, daemonProjection(t))
+	defer w.done()
+	var sh *SharedSocket
+	if run != "" {
+		sh = &SharedSocket{RunDir: run, Group: egid()}
+	}
+	srv, err := listen(w.s, state, sh, defaultLimits)
+	if err == nil {
+		srv.close()
+	}
+	return err
+}
+
+// Only filesystems whose ACL semantics are known are accepted, for the
+// state dir and the run dir alike: NFS, which may enforce native ACLs the
+// POSIX queries cannot read, and an unknown type are refused (Astra r2 1).
+func TestFilesystemRefused(t *testing.T) {
+	if err := tryShared(t, "", runDir(t, 0o750)); err != nil {
+		t.Fatalf("this test filesystem is not on the allow-list: %v", err)
+	}
+	real := fsType
+	t.Cleanup(func() { fsType = real })
+	for name, magic := range map[string]int64{"nfs": unix.NFS_SUPER_MAGIC, "cifs": unix.CIFS_SUPER_MAGIC, "fuse": unix.FUSE_SUPER_MAGIC, "unknown": 0x12345678} {
+		for _, which := range []string{"state", "run"} {
+			state, run := shortDir(t), runDir(t, 0o750)
+			target := map[string]string{"state": state, "run": run}[which]
+			fsType = func(fd int) (int64, error) {
+				if p, _ := os.Readlink("/proc/self/fd/" + strconv.Itoa(fd)); p == target {
+					return magic, nil
+				}
+				return real(fd)
+			}
+			err := tryShared(t, state, run)
+			if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "ACL semantics are known") {
+				t.Errorf("%s %s dir: %v", name, which, err)
+			}
+			fsType = real
+		}
+	}
+}
+
+// A run dir whose g+x is an ACL mask (the owning group has no access, a
+// named user has r-x) is refused: any access ACL beyond the mode bits is
+// (Astra r2 3).
+func TestRunDirAccessACLRefused(t *testing.T) {
+	const none = 0xffffffff
+	run := runDir(t, 0o750)
+	acl := posixACL([3]uint32{0x01, 7, none}, [3]uint32{0x02, 5, uint32(os.Geteuid() + 1)}, [3]uint32{0x04, 0, none},
+		[3]uint32{0x10, 5, none}, [3]uint32{0x20, 0, none})
+	if err := unix.Setxattr(run, aclAccess, acl, 0); err != nil {
+		t.Skipf("this filesystem takes no ACL: %v", err)
+	}
+	if st := lstat(t, run); st.Mode&0o777 != 0o750 {
+		t.Fatalf("the ACL mask does not show as g+x: %o", st.Mode)
+	}
+	if err := tryShared(t, "", run); !errors.Is(err, ErrConfig) {
+		t.Fatalf("a run dir with an extended access ACL: %v", err)
+	}
+}
+
+// A minimal default ACL on the state dir is refused by the directory
+// check itself: the socket it would give no extended access ACL, so the
+// socket check cannot mask this one (Astra r2 4).
+func TestStateDirDefaultACLRefused(t *testing.T) {
+	const none = 0xffffffff
+	state := shortDir(t)
+	if err := unix.Setxattr(state, aclDefault, posixACL([3]uint32{0x01, 7, none}, [3]uint32{0x04, 0, none}, [3]uint32{0x20, 0, none}), 0); err != nil {
+		t.Skipf("this filesystem takes no ACL: %v", err)
+	}
+	if err := tryShared(t, state, ""); !errors.Is(err, ErrConfig) {
+		t.Fatalf("a state dir with a default ACL: %v", err)
+	}
+}
+
+// The final recheck before the unlink: a socket swapped in between the
+// dial and the recheck (another inode) is refused and left in place
+// (Astra r2 4).
+func TestStaleRecheckBeforeUnlink(t *testing.T) {
+	dir := shortDir(t)
+	path := filepath.Join(dir, privateSocket)
+	stale := func(p string) {
+		ln, err := net.Listen("unix", p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ln.(*net.UnixListener).SetUnlinkOnClose(false)
+		ln.Close()
+	}
+	stale(path)
+	var swapped uint64
+	t.Cleanup(func() { beforeRecheck = func() {} })
+	beforeRecheck = func() {
+		stale(path + ".new") // made while the old one exists: another inode
+		if err := os.Rename(path+".new", path); err != nil {
+			t.Fatal(err)
+		}
+		swapped = lstat(t, path).Ino
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := clearStale(f, privateSocket, os.Geteuid()); !errors.Is(err, ErrConfig) {
+		t.Fatalf("a socket swapped in before the recheck was removed: %v", err)
+	}
+	if lstat(t, path).Ino != swapped {
+		t.Fatal("the swapped-in socket was touched")
 	}
 }

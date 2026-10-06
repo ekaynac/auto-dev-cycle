@@ -121,6 +121,7 @@ func clearStale(dir *os.File, name string, daemon int) error {
 	if !errors.Is(err, unix.ECONNREFUSED) {
 		return configError("the socket path is not provably stale (a server answers, or the connect failed otherwise); it is left in place")
 	}
+	beforeRecheck()
 	var again unix.Stat_t
 	if unix.Fstatat(int(dir.Fd()), name, &again, unix.AT_SYMLINK_NOFOLLOW) != nil || !staleCandidate(again, daemon) ||
 		again.Dev != st.Dev || again.Ino != st.Ino || unix.Unlinkat(int(dir.Fd()), name, 0) != nil {
@@ -157,6 +158,10 @@ var aclAttr = func(dir *os.File, name, attr string) ([]byte, error) {
 	}
 	return buf[:n], nil
 }
+
+// beforeRecheck runs between the dial and the final recheck; a test
+// replaces the path there.
+var beforeRecheck = func() {}
 
 // staleCandidate: only a socket owned by uid may be replaced.
 func staleCandidate(st unix.Stat_t, uid int) bool {

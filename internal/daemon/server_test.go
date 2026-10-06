@@ -257,6 +257,28 @@ func TestRequestLimits(t *testing.T) {
 	if resp, err := s.client().Do(req); err != nil || resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Errorf("a body over the limit: %v %v", resp, err)
 	}
+	// Pipelined, a request is held to the documented effective bound,
+	// headerBytes + 4096 (see listen).
+	p, err := net.Dial("unix", filepath.Join(s.dir, privateSocket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	small := "GET /v1/version HTTP/1.1\r\nHost: adcd\r\n\r\n"
+	big := "GET /v1/version HTTP/1.1\r\nHost: adcd\r\nX-Big: " + strings.Repeat("a", lim.headerBytes+4096+512) + "\r\n\r\n"
+	if _, err := io.WriteString(p, small+big); err != nil {
+		t.Fatal(err)
+	}
+	p.SetReadDeadline(time.Now().Add(5 * time.Second))
+	br := bufio.NewReader(p)
+	for _, want := range []int{http.StatusOK, http.StatusRequestHeaderFieldsTooLarge} {
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil || resp.StatusCode != want {
+			t.Fatalf("pipelined: want %d, got %v %v", want, resp, err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
 	c, err := net.Dial("unix", filepath.Join(s.dir, privateSocket))
 	if err != nil {
 		t.Fatal(err)

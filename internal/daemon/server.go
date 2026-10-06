@@ -23,7 +23,7 @@ type limits struct {
 	headerTimeout time.Duration // to read a request's headers
 	writeTimeout  time.Duration // to write a response; the event stream replaces it per frame (api.Events)
 	idleTimeout   time.Duration // a kept-alive connection between requests
-	headerBytes   int           // request line and headers, exactly (net/http adds 4096 to MaxHeaderBytes)
+	headerBytes   int           // request line and headers; see the header bound at listen
 	bodyBytes     int64         // a request body
 	private       slotQuota     // the private socket's own slots: the shared one never starves it
 	shared        slotQuota
@@ -61,7 +61,9 @@ func listen(store *eventstore.Store, stateDir string, shared *SharedSocket, lim 
 		}
 	}()
 	dir, err := openDir(stateDir, func(st unix.Stat_t) bool { return st.Mode&0o777 == 0o700 })
-	if err != nil {
+	if errors.Is(err, errUnknownFS) {
+		return nil, configError(fsRefusal)
+	} else if err != nil {
 		return nil, configError("the state directory must be a directory owned by this user with mode 0700")
 	}
 	if err := s.add(bind(dir, privateSocket, 0o600, -1, identity.PrivateSocket, lim.private)); err != nil {
@@ -75,7 +77,9 @@ func listen(store *eventstore.Store, stateDir string, shared *SharedSocket, lim 
 		dir, err := openDir(shared.RunDir, func(st unix.Stat_t) bool {
 			return st.Mode&0o022 == 0 && st.Mode&0o010 != 0 && int(st.Gid) == gid
 		})
-		if err != nil {
+		if errors.Is(err, errUnknownFS) {
+			return nil, configError(fsRefusal)
+		} else if err != nil {
 			return nil, configError("the shared run directory must be a directory owned by this user, of the shared group, group-searchable and writable by no one else")
 		}
 		if err := s.add(bind(dir, sharedSocket, 0o660, gid, identity.SharedSocket, lim.shared)); err != nil {
@@ -84,6 +88,12 @@ func listen(store *eventstore.Store, stateDir string, shared *SharedSocket, lim 
 	}
 	base, stop := context.WithCancel(context.Background())
 	s.stop = stop
+	// The header bound: MaxHeaderBytes is headerBytes less net/http's
+	// 4096-byte allowance, so a request on a fresh connection, or the first
+	// of a pipeline, is held to headerBytes. A pipelined request can also
+	// arrive partly in the 4096-byte read buffer already filled, so its
+	// effective bound is headerBytes + 4096 (20 KiB by default); memory
+	// stays bounded either way.
 	for _, sk := range s.sockets {
 		hs := &http.Server{Handler: handler(store, lim, sk.verify), ReadHeaderTimeout: lim.headerTimeout, WriteTimeout: lim.writeTimeout,
 			IdleTimeout: lim.idleTimeout, MaxHeaderBytes: lim.headerBytes - 4096,
@@ -105,18 +115,48 @@ func (s *server) add(sk *socket, err error) error {
 	return err
 }
 
+// aclFilesystems are the filesystems whose ACL semantics are known: POSIX
+// ACLs only, readable as the system.posix_acl_* attributes, so a missing
+// attribute (ENODATA, ENOTSUP) means mode bits alone decide. Any other
+// (NFS, CIFS/SMB, FUSE, overlay, unknown) may enforce ACLs these checks
+// cannot read, and is refused (14 R2).
+var aclFilesystems = map[int64]string{
+	unix.EXT4_SUPER_MAGIC:  "ext2/ext3/ext4",
+	unix.XFS_SUPER_MAGIC:   "xfs",
+	unix.BTRFS_SUPER_MAGIC: "btrfs",
+	unix.TMPFS_MAGIC:       "tmpfs",
+}
+
+const fsRefusal = "the state and run directories must be on ext2/ext3/ext4, xfs, btrfs or tmpfs, whose ACL semantics are known"
+
+var errUnknownFS = errors.New("daemon: a filesystem whose ACL semantics are unknown")
+
+// fsType is the filesystem type of fd (statfs f_type); a test replaces it.
+var fsType = func(fd int) (int64, error) {
+	var st unix.Statfs_t
+	err := unix.Fstatfs(fd, &st)
+	return int64(st.Type), err
+}
+
 // openDir opens path as a directory (no link followed) that this user
-// owns, that carries no default ACL and that ok accepts, checked on the
-// opened descriptor.
+// owns, on a filesystem in aclFilesystems, with no default ACL and no
+// access ACL beyond its mode bits (so g+x is the group's, not an ACL
+// mask), and that ok accepts, all checked on the opened descriptor.
 func openDir(path string, ok func(unix.Stat_t) bool) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(fd), path)
+	if t, err := fsType(fd); err != nil || aclFilesystems[t] == "" {
+		f.Close()
+		return nil, errUnknownFS
+	}
 	var st unix.Stat_t
-	acl, aerr := aclAttr(f, "", aclDefault) // a default ACL would widen what is created in it
-	if err := unix.Fstat(fd, &st); err != nil || aerr != nil || len(acl) > 0 || int(st.Uid) != os.Geteuid() || !ok(st) {
+	def, derr := aclAttr(f, "", aclDefault) // a default ACL would widen what is created in it
+	acc, aerr := aclAttr(f, "", aclAccess)
+	if err := unix.Fstat(fd, &st); err != nil || derr != nil || aerr != nil || len(def) > 0 || len(acc) > minimalACL ||
+		int(st.Uid) != os.Geteuid() || !ok(st) {
 		f.Close()
 		return nil, errors.New("daemon: directory refused")
 	}

@@ -26,7 +26,9 @@ func NewSlots(total, perPeer int) *Slots {
 }
 
 // Unlimited is Slots that cap nothing, for callers that bound load
-// elsewhere (tests, the fixtures' in-process server).
+// elsewhere: tests, and the temporary loopback fixture server that `adc
+// dev fixtures --contract` starts (internal/fixtures). No daemon listener
+// uses it.
 func Unlimited() *Slots { return &Slots{unlimited: true} }
 
 // Take takes a slot for peer: release gives it back (once, whatever the
