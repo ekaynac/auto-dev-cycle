@@ -13,6 +13,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -66,7 +67,9 @@ func leasesOnly(blobs lease.Blobs, holds map[string]types.Hold) func(*eventstore
 	return lease.Projector{Blobs: blobs, Holds: holds}.Project
 }
 
-func seed(t *testing.T, dir string, project projectFor) *seeder {
+// seed opens the seeder; extra registers more identity-schema kinds, which
+// the daemon does not read.
+func seed(t *testing.T, dir string, project projectFor, extra ...string) *seeder {
 	t.Helper()
 	reg, err := vocab.Load()
 	if err != nil {
@@ -75,6 +78,9 @@ func seed(t *testing.T, dir string, project projectFor) *seeder {
 	kinds, err := eventKinds()
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, k := range extra {
+		kinds[k] = eventstore.Kind{Schema: identity.EventSchema}
 	}
 	lock, err := eventstore.AcquireLock(dir)
 	if err != nil {

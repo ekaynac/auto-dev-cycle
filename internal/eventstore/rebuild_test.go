@@ -224,3 +224,32 @@ func TestRebuildRefusals(t *testing.T) {
 		t.Fatalf("a broken chain: %v", err)
 	}
 }
+
+// UnreadKinds names the persisted kinds the store was not opened with; the
+// store's own effect kinds are always read.
+func TestUnreadKinds(t *testing.T) {
+	dir := stateDir(t)
+	e := openProjected(t, dir, counting(nil))
+	populate(t, e)
+	if unread, err := e.s.UnreadKinds(context.Background()); err != nil || len(unread) != 0 {
+		t.Fatalf("every kind is registered: %v, %v", err, unread)
+	}
+	e.close()
+	lock, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	blobs, err := blobstore.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(context.Background(), lock, Config{Kinds: Kinds{"test.typed/v1": testKinds["test.typed/v1"]}, Blobs: blobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if unread, err := s.UnreadKinds(context.Background()); err != nil || fmt.Sprint(unread) != "[test.appended/v1]" {
+		t.Fatalf("an unregistered kind: %v, %v", err, unread)
+	}
+}

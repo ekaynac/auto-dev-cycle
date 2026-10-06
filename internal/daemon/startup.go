@@ -48,6 +48,38 @@ func checkCapacityHistory(ctx context.Context, s *eventstore.Store) error {
 	return nil
 }
 
+// checkKinds refuses a log holding an event kind or version this build does
+// not read: a projector would skip the event, which is never safe (03 rule
+// 4). Nothing is ignored and nothing is repaired.
+func checkKinds(ctx context.Context, s *eventstore.Store) error {
+	unread, err := s.UnreadKinds(ctx)
+	if err != nil {
+		return couldNotRun(vocab.ReasonStoreUnreadable, "the event log cannot be read for its event kinds", err)
+	}
+	if len(unread) > 0 {
+		return couldNotRun(vocab.ReasonStoreUnreadable, "the event log holds an event kind or version this build does not read", nil)
+	}
+	return nil
+}
+
+// checkProjections replays the log through the production projector into
+// scratch tables and compares them with the persisted projections
+// (eventstore.RebuildProjections, which always rolls back). Any difference,
+// or a replay the projector refuses, is refused: startup never repairs a
+// projection, and a projection it has not matched is never trusted.
+func checkProjections(ctx context.Context, s *eventstore.Store) error {
+	diffs, err := s.RebuildProjections(ctx)
+	if errors.Is(err, eventstore.ErrChainBroken) {
+		return &StartError{Outcome: vocab.Failed, Reason: vocab.ReasonLogIntegrityBroken, Detail: "the event log fails verification; adc dev verify-log reports the finding", cause: err}
+	} else if err != nil {
+		return couldNotRun(vocab.ReasonAmbiguousState, "the event log does not replay into the projections", err)
+	}
+	if len(diffs) > 0 {
+		return couldNotRun(vocab.ReasonAmbiguousState, "the persisted projections differ from a replay of the event log", nil)
+	}
+	return nil
+}
+
 // markPending is the restart rule's transition; a test makes it fail.
 var markPending = (*eventstore.Store).MarkPendingUncertain
 

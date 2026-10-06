@@ -178,3 +178,29 @@ func compare(live, rebuilt map[projKey]string) []ProjectionDiff {
 func (t *Tx) EventsAfter(after int64, limit int) ([]Event, error) {
 	return eventsAfter(t.ctx, t.tx, after, limit)
 }
+
+// UnreadKinds lists, sorted, the kinds of persisted events this store was
+// not opened to read. A projector skips such an event, so a reader that does
+// not handle every version ever written (03 rule 4) must refuse the log,
+// never ignore the event.
+func (s *Store) UnreadKinds(ctx context.Context) ([]string, error) {
+	var out []string
+	err := s.View(ctx, func(t *Tx) error {
+		rows, err := t.tx.QueryContext(ctx, `SELECT DISTINCT kind FROM events ORDER BY kind`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var k string
+			if err := rows.Scan(&k); err != nil {
+				return err
+			}
+			if _, ok := s.kinds[k]; !ok {
+				out = append(out, k)
+			}
+		}
+		return rows.Err()
+	})
+	return out, err
+}

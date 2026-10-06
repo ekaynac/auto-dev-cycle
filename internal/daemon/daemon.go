@@ -31,7 +31,9 @@ type Daemon struct {
 // Start brings the daemon up (03): validate the configuration and the
 // state directory; take the lock before the store is opened; verify the
 // full hash chain, against the trusted head if one is given; run
-// capacity.CheckHistory on the existing projections; load or create the
+// capacity.CheckHistory on the existing projections; refuse event kinds
+// this build does not read; replay the log and refuse projections that
+// differ from the replay (nothing is repaired); load or create the
 // system actor; mark pending effects uncertain. A refusal releases what
 // was taken and is a *StartError (a configuration refusal, ErrConfig).
 func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
@@ -84,8 +86,12 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 	} else if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the event log cannot be read for verification", err)
 	}
-	if err := checkCapacityHistory(ctx, store); err != nil {
-		return nil, err
+	// Capacity history is checked on the existing projections before any
+	// replay could manufacture it; then the log's kinds and a full replay.
+	for _, check := range []func(context.Context, *eventstore.Store) error{checkCapacityHistory, checkKinds, checkProjections} {
+		if err := check(ctx, store); err != nil {
+			return nil, err
+		}
 	}
 	sys, err := systemActor(ctx, store)
 	if err != nil {

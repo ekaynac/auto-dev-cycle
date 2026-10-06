@@ -33,6 +33,20 @@ func refused(t *testing.T, dir string, cfg Config, outcome vocab.Outcome, reason
 	lockFree(t, dir)
 }
 
+// lastSeq is the closed store's last event seq.
+func lastSeq(t *testing.T, dir string) (seq int64) {
+	t.Helper()
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: filepath.Join(dir, eventstore.DBFile)}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM events`).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	return seq
+}
+
 func leaseStore(t *testing.T) (string, Config) {
 	dir := stateDir(t)
 	w := seed(t, dir, daemonProjection(t, tokens(10)))
@@ -116,6 +130,73 @@ func TestTrustedHeadChecked(t *testing.T) {
 	d.Close()
 	cfg.TrustedHead = &eventstore.Head{Seq: head.Seq + 5, Hash: head.Hash}
 	refused(t, dir, cfg, vocab.Failed, vocab.ReasonLogIntegrityBroken, "verification")
+}
+
+// A store whose projections match the log starts, and starts again.
+func TestCleanStoreStarts(t *testing.T) {
+	_, cfg := leaseStore(t)
+	for range 2 {
+		d, err := Start(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("a clean store was refused: %v", err)
+		}
+		if err := d.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A persisted projection that differs from a replay of the log, by a forged,
+// a changed or a missing record, is refused before the system actor is
+// recorded, and is not repaired.
+func TestProjectionDriftRefused(t *testing.T) {
+	for name, stmt := range map[string]string{
+		"forged":  `INSERT INTO proj_kv(projection, key, value) VALUES ('capacity_reserved', 'forged', '{}')`,
+		"changed": `UPDATE proj_kv SET value = '{}' WHERE projection = 'leases'`,
+		"missing": `DELETE FROM proj_kv WHERE projection = 'capacity_reserved'`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, cfg := leaseStore(t)
+			execSQL(t, dir, stmt)
+			head := lastSeq(t, dir)
+			for range 2 {
+				refused(t, dir, cfg, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "differ from a replay")
+			}
+			if lastSeq(t, dir) != head {
+				t.Fatal("a refused start appended to the log")
+			}
+		})
+	}
+}
+
+// A persisted event of a kind or version this build does not read is
+// refused, not skipped.
+func TestUnsupportedEventVersionRefused(t *testing.T) {
+	dir := stateDir(t)
+	w := seed(t, dir, daemonProjection(t), "actor.created/v9")
+	a := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSystem, Name: "system"}
+	a.CreatedBy = a.ID
+	w.do(a.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		evs, err := identity.CreateActor(a)
+		for i := range evs {
+			evs[i].Kind = "actor.created/v9"
+		}
+		return evs, err
+	})
+	w.done()
+	refused(t, dir, Config{StateDir: dir}, vocab.CouldNotRun, vocab.ReasonStoreUnreadable, "does not read")
+}
+
+// CheckHistory runs on the existing projections before any replay: on a
+// store with both a lease capacity never admitted and drifted projections,
+// its refusal is the one reported.
+func TestCapacityHistoryCheckedBeforeReplay(t *testing.T) {
+	dir := stateDir(t)
+	w := seed(t, dir, leasesOnly)
+	w.grantedLease(types.ActorID(newID(t, "act")), 4)
+	w.done()
+	execSQL(t, dir, `INSERT INTO proj_kv(projection, key, value) VALUES ('stray', 'forged', '{}')`)
+	refused(t, dir, Config{StateDir: dir, Groups: []types.ResourceGroup{tokens(10)}}, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "before capacity was wired")
 }
 
 func TestFailedRestartTransitionRefused(t *testing.T) {
