@@ -17,6 +17,10 @@ type ProjectionDiff struct {
 	Live, Rebuilt   *string
 }
 
+// ErrReplayRefused: the Project hook refused an event of the log on replay,
+// with no storage error behind it.
+var ErrReplayRefused = errors.New("eventstore: rebuild: the projector refused the log")
+
 // rebuildBatch bounds the events held in memory at once during a rebuild.
 var rebuildBatch = 512
 
@@ -30,7 +34,8 @@ var rebuildBatch = 512
 // The fresh table is a TEMP proj_rebuild, which the hook's Tx reads and
 // writes in place of the live proj_kv. The hook is replayed one event at a
 // time, in log order: a projector that is not a fold (see Hooks.Project)
-// shows up as drift.
+// shows up as drift. A projector's error with no storage error behind it is
+// ErrReplayRefused; a storage error or cancellation is returned as itself.
 func (s *Store) RebuildProjections(ctx context.Context) ([]ProjectionDiff, error) {
 	var diffs []ProjectionDiff
 	err := s.do(func() error {
@@ -98,8 +103,11 @@ func (s *Store) replay(ctx context.Context, tx *sql.Tx) error {
 			return nil
 		}
 		for _, e := range batch {
-			if err := s.hooks.Project(&Tx{ctx: ctx, tx: tx, rebuild: true}, []Event{e}); err != nil {
+			pt := &Tx{ctx: ctx, tx: tx, rebuild: true}
+			if err := s.hooks.Project(pt, []Event{e}); err != nil && (pt.fault != nil || ctx.Err() != nil) {
 				return fmt.Errorf("eventstore: rebuild: projecting seq %d: %w", e.Seq, err)
+			} else if err != nil {
+				return fmt.Errorf("%w: projecting seq %d: %w", ErrReplayRefused, e.Seq, err)
 			}
 		}
 		after = batch[len(batch)-1].Seq
@@ -176,7 +184,8 @@ func compare(live, rebuilt map[projKey]string) []ProjectionDiff {
 // snapshot: a reader that decides authority in the same view never sees an
 // event its decision did not see.
 func (t *Tx) EventsAfter(after int64, limit int) ([]Event, error) {
-	return eventsAfter(t.ctx, t.tx, after, limit)
+	evs, err := eventsAfter(t.ctx, t.tx, after, limit)
+	return evs, t.io(err)
 }
 
 // UnreadKinds lists, sorted, the kinds of persisted events this store was

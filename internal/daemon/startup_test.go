@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
@@ -199,11 +201,102 @@ func TestCapacityHistoryCheckedBeforeReplay(t *testing.T) {
 	refused(t, dir, Config{StateDir: dir, Groups: []types.ResourceGroup{tokens(10)}}, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "before capacity was wired")
 }
 
+// A failed restart transition refuses the start and appends nothing. A
+// fresh store, which this start bootstraps, has no effect to mark: the
+// transition is skipped rather than refused after the append.
 func TestFailedRestartTransitionRefused(t *testing.T) {
-	dir := stateDir(t)
 	markPending = func(*eventstore.Store, context.Context, string) (int, error) { return 0, errors.New("injected") }
 	t.Cleanup(func() { markPending = (*eventstore.Store).MarkPendingUncertain })
-	refused(t, dir, Config{StateDir: dir}, vocab.CouldNotRun, vocab.ReasonStoreUnreadable, "marked uncertain")
+	dir, cfg := leaseStore(t)
+	head := lastSeq(t, dir)
+	refused(t, dir, cfg, vocab.CouldNotRun, vocab.ReasonStoreUnreadable, "marked uncertain")
+	if lastSeq(t, dir) != head {
+		t.Fatal("a refused start appended to the log")
+	}
+	fresh := stateDir(t)
+	d, err := Start(context.Background(), Config{StateDir: fresh})
+	if err != nil {
+		if lastSeq(t, fresh) != 0 {
+			t.Fatalf("a refused fresh start appended to the log: %v", err)
+		}
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A replay the projector refuses is ambiguous_state; one that cannot run,
+// here on a cancelled context, is store_unreadable.
+func TestReplayErrorsClassified(t *testing.T) {
+	dir := stateDir(t)
+	refuse := false
+	w := seed(t, dir, func(blobs lease.Blobs, holds map[string]types.Hold) func(*eventstore.Tx, []eventstore.Event) error {
+		project := daemonProjection(t, tokens(10))(blobs, holds)
+		return func(tx *eventstore.Tx, evs []eventstore.Event) error {
+			if refuse {
+				return errors.New("injected refusal")
+			}
+			return project(tx, evs)
+		}
+	})
+	defer w.done()
+	fullHistory(t, w)
+	refuse = true
+	startErr(t, checkProjections(context.Background(), w.s), vocab.CouldNotRun, vocab.ReasonAmbiguousState)
+	refuse = false
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	startErr(t, checkProjections(ctx, w.s), vocab.CouldNotRun, vocab.ReasonStoreUnreadable)
+}
+
+// fullHistory leaves a record in every projection the daemon composes, the
+// waiting lease holding its hold; a change to any of them is drift.
+func TestFullHistoryProjected(t *testing.T) {
+	dir, _ := fullStore(t)
+	held := `(SELECT key FROM proj_kv WHERE projection = '` + lease.LeaseProjection + `' AND value LIKE '%"quota_reset"%')`
+	for projection, want := range map[string]int{identity.ActorProjection: 3, authority.GrantProjection: 1, lease.LeaseProjection: 2,
+		capacity.ReservedProjection: 1, capacity.GrantedProjection: 1, ledger.UsageProjection: 1, ledger.MeasurementProjection: 1, "held": 1} {
+		q := `SELECT count(*) FROM proj_kv WHERE projection = '` + projection + `'`
+		if projection == "held" {
+			q = `SELECT count(*) FROM ` + held + ``
+		}
+		if got := count(t, dir, q); got != want {
+			t.Errorf("%s: %d records, want %d", projection, got, want)
+		}
+	}
+	for _, projection := range []string{identity.ActorProjection, authority.GrantProjection, ledger.UsageProjection, "held"} {
+		t.Run(projection, func(t *testing.T) {
+			sub, cfg := fullStore(t)
+			key := `(SELECT min(key) FROM proj_kv WHERE projection = '` + projection + `')`
+			if projection == "held" {
+				projection, key = lease.LeaseProjection, held
+			}
+			execSQL(t, sub, `UPDATE proj_kv SET value = json_set(value, '$.forged', 1) WHERE projection = '`+projection+`' AND key = `+key)
+			refused(t, sub, cfg, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "differ from a replay")
+		})
+	}
+}
+
+func fullStore(t *testing.T) (string, Config) {
+	dir := stateDir(t)
+	w := seed(t, dir, daemonProjection(t, tokens(10)))
+	fullHistory(t, w)
+	w.done()
+	return dir, Config{StateDir: dir, Groups: []types.ResourceGroup{tokens(10)}}
+}
+
+func count(t *testing.T, dir, q string) (n int) {
+	t.Helper()
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: filepath.Join(dir, eventstore.DBFile)}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.QueryRow(q).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func TestStateDirPermissionsRefused(t *testing.T) {

@@ -203,8 +203,8 @@ func TestRebuildRefusals(t *testing.T) {
 	populate(t, e)
 	before := liveRows(t, dir)
 	fail = true
-	if _, err := e.s.RebuildProjections(context.Background()); err == nil {
-		t.Error("a failing projector")
+	if _, err := e.s.RebuildProjections(context.Background()); !errors.Is(err, ErrReplayRefused) {
+		t.Errorf("a failing projector: %v", err)
 	}
 	if fmt.Sprint(liveRows(t, dir)) != fmt.Sprint(before) {
 		t.Fatal("a failed rebuild changed the live projections")
@@ -251,5 +251,25 @@ func TestUnreadKinds(t *testing.T) {
 	defer s.Close()
 	if unread, err := s.UnreadKinds(context.Background()); err != nil || fmt.Sprint(unread) != "[test.appended/v1]" {
 		t.Fatalf("an unregistered kind: %v, %v", err, unread)
+	}
+}
+
+// A projector that fails on a storage error, here a context cancelled
+// mid-replay, has not refused the log: the error is not ErrReplayRefused.
+func TestRebuildStorageFaultIsNotRefusal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inner := counting(nil)
+	replaying := false
+	e := openProjected(t, stateDir(t), func(tx *Tx, evs []Event) error {
+		if replaying && tx.Replaying() {
+			cancel()
+		}
+		return inner(tx, evs)
+	})
+	populate(t, e)
+	replaying = true
+	if _, err := e.s.RebuildProjections(ctx); err == nil || errors.Is(err, ErrReplayRefused) {
+		t.Fatalf("a storage fault: %v", err)
 	}
 }

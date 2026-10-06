@@ -65,14 +65,18 @@ func checkKinds(ctx context.Context, s *eventstore.Store) error {
 // checkProjections replays the log through the production projector into
 // scratch tables and compares them with the persisted projections
 // (eventstore.RebuildProjections, which always rolls back). Any difference,
-// or a replay the projector refuses, is refused: startup never repairs a
-// projection, and a projection it has not matched is never trusted.
+// or a replay the projector refuses, is ambiguous_state; a replay that
+// cannot run (storage, cancellation) is store_unreadable. Startup never
+// repairs a projection, and one it has not matched is never trusted.
 func checkProjections(ctx context.Context, s *eventstore.Store) error {
 	diffs, err := s.RebuildProjections(ctx)
-	if errors.Is(err, eventstore.ErrChainBroken) {
+	switch {
+	case errors.Is(err, eventstore.ErrChainBroken):
 		return &StartError{Outcome: vocab.Failed, Reason: vocab.ReasonLogIntegrityBroken, Detail: "the event log fails verification; adc dev verify-log reports the finding", cause: err}
-	} else if err != nil {
+	case errors.Is(err, eventstore.ErrReplayRefused):
 		return couldNotRun(vocab.ReasonAmbiguousState, "the event log does not replay into the projections", err)
+	case err != nil:
+		return couldNotRun(vocab.ReasonStoreUnreadable, "the event log cannot be replayed", err)
 	}
 	if len(diffs) > 0 {
 		return couldNotRun(vocab.ReasonAmbiguousState, "the persisted projections differ from a replay of the event log", nil)
@@ -88,8 +92,8 @@ var markPending = (*eventstore.Store).MarkPendingUncertain
 // operation (Bootstrap), which only ever writes an empty log's first event.
 // No request reaches it and nothing outside Start names the identity. A
 // store with actors but not exactly one system actor, or with events but
-// no actor, is refused.
-func systemActor(ctx context.Context, s *eventstore.Store) (types.ActorID, error) {
+// no actor, is refused. created reports a store this start bootstrapped.
+func systemActor(ctx context.Context, s *eventstore.Store) (_ types.ActorID, created bool, err error) {
 	var system []types.ActorID
 	actors := 0
 	if err := s.View(ctx, func(tx *eventstore.Tx) error {
@@ -109,26 +113,26 @@ func systemActor(ctx context.Context, s *eventstore.Store) (types.ActorID, error
 		}
 		return err
 	}); err != nil {
-		return "", couldNotRun(vocab.ReasonStoreUnreadable, "the identity projection cannot be read", err)
+		return "", false, couldNotRun(vocab.ReasonStoreUnreadable, "the identity projection cannot be read", err)
 	}
 	switch {
 	case len(system) == 1:
-		return system[0], nil
+		return system[0], false, nil
 	case actors > 0:
-		return "", couldNotRun(vocab.ReasonAmbiguousState, "the store holds actors but not exactly one system actor", nil)
+		return "", false, couldNotRun(vocab.ReasonAmbiguousState, "the store holds actors but not exactly one system actor", nil)
 	}
-	id, err := ids.New("act")
+	id, ierr := ids.New("act")
 	cmd, cerr := ids.New("cmd")
 	a := types.Actor{ID: types.ActorID(id), Kind: types.ActorKindSystem, Name: "system", CreatedBy: types.ActorID(id)}
 	evs, eerr := identity.CreateActor(a)
-	if err = errors.Join(err, cerr, eerr); err == nil {
+	if err = errors.Join(ierr, cerr, eerr); err == nil {
 		_, err = s.Bootstrap(ctx, eventstore.Command{ID: cmd, Actor: id, IdempotencyKey: cmd, Input: []byte(`{}`)}, evs[0])
 	}
 	if errors.Is(err, eventstore.ErrNotBootstrap) {
-		return "", couldNotRun(vocab.ReasonAmbiguousState, "the log holds events but no actor", err)
+		return "", false, couldNotRun(vocab.ReasonAmbiguousState, "the log holds events but no actor", err)
 	}
 	if err != nil {
-		return "", couldNotRun(vocab.ReasonStoreUnreadable, "the system actor cannot be recorded", err)
+		return "", false, couldNotRun(vocab.ReasonStoreUnreadable, "the system actor cannot be recorded", err)
 	}
-	return a.ID, nil
+	return a.ID, true, nil
 }

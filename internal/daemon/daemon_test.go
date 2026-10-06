@@ -13,15 +13,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
-	"github.com/ekaynac/auto-dev-cycle/internal/authority"
-	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
-	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -97,43 +93,13 @@ func TestBrokenChainRefused(t *testing.T) {
 	lockFree(t, dir)
 }
 
-// A history written through the daemon's projector (a supervisor and its
-// grant in one command, a granted lease, a usage report) rebuilds to the
+// A history written through the daemon's projector (fullHistory) rebuilds
+// to the
 // same projections, and the daemon starts on it and refuses commands.
 func TestProjectorOrderMatchesRebuild(t *testing.T) {
 	dir := stateDir(t)
 	w := seed(t, dir, daemonProjection(t, tokens(10)))
-	sys := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSystem, Name: "system"}
-	sys.CreatedBy = sys.ID
-	op := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindOperator, Name: "operator", CreatedBy: sys.ID}
-	sup := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "supervisor", CreatedBy: op.ID}
-	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(sys) })
-	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(op) })
-	now := time.Now().UTC()
-	g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{"prj_01m3250vkwffc979nzjw0g2sa1"}},
-		Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{}},
-		ValidFrom: types.Time(now.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(now.Add(time.Hour).Format(time.RFC3339)),
-		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID, Approval: types.ApprovalID(newID(t, "apr"))}
-	// The grantee and its grant in one command: admitted only if each event
-	// is projected through every projector before the next one.
-	w.do(op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		a, err := identity.CreateActor(sup)
-		if err != nil {
-			return nil, err
-		}
-		gr, err := authority.CreateGrant(g)
-		return append(a, gr...), err
-	})
-	w.grantedLease(op.ID, 4)
-	m := types.UsageMeasurement{ID: types.MeasurementID(newID(t, "msr")), Call: types.CallID(newID(t, "cal")), Attempt: types.AttemptID(newID(t, "att")),
-		Lease: types.LeaseID(newID(t, "lea")), Kind: types.UsageMeasurementKindDelta, Sequence: 1,
-		Tokens: types.UsageMeasurementTokens{In: 10, Out: 1}, Turns: 1, Milliseconds: 20,
-		Cost:          types.UsageMeasurementCost{AmountMicros: 30, Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
-		SourceOfTruth: types.UsageMeasurementSourceOfTruthAdapterReport}
-	w.do(op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		e, err := ledger.Measure(m)
-		return []eventstore.Event{e}, err
-	})
+	op := fullHistory(t, w)
 	diffs, err := w.s.RebuildProjections(context.Background())
 	if err != nil || len(diffs) != 0 {
 		t.Fatalf("the daemon's projector does not rebuild: %v %v", diffs, err)
@@ -149,7 +115,7 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 		t.Fatal("the verified head is empty")
 	}
 	cmd := newID(t, "cmd")
-	_, err = d.store.Submit(context.Background(), eventstore.Command{ID: cmd, Actor: string(op.ID), IdempotencyKey: cmd, Input: []byte(`{}`)},
+	_, err = d.store.Submit(context.Background(), eventstore.Command{ID: cmd, Actor: string(op), IdempotencyKey: cmd, Input: []byte(`{}`)},
 		func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			return nil, json.RawMessage(`{}`), nil
 		})

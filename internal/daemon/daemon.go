@@ -34,7 +34,8 @@ type Daemon struct {
 // capacity.CheckHistory on the existing projections; refuse event kinds
 // this build does not read; replay the log and refuse projections that
 // differ from the replay (nothing is repaired); load or create the
-// system actor; mark pending effects uncertain. A refusal releases what
+// system actor; mark pending effects uncertain, unless this start created
+// the store. A refusal releases what
 // was taken and is a *StartError (a configuration refusal, ErrConfig).
 func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 	if err := cfg.Validate(); err != nil {
@@ -93,12 +94,17 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 			return nil, err
 		}
 	}
-	sys, err := systemActor(ctx, store)
+	sys, created, err := systemActor(ctx, store)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := markPending(store, ctx, string(sys)); err != nil {
-		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "pending effects cannot be marked uncertain", err)
+	// A store this start bootstrapped holds one event and no effect, so it
+	// skips the restart transition: a fresh start that appends is never
+	// refused after.
+	if !created {
+		if _, err := markPending(store, ctx, string(sys)); err != nil {
+			return nil, couldNotRun(vocab.ReasonStoreUnreadable, "pending effects cannot be marked uncertain", err)
+		}
 	}
 	return &Daemon{lock: lock, store: store, head: head}, nil
 }

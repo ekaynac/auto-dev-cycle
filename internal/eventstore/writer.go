@@ -64,6 +64,17 @@ type Tx struct {
 	rebuild bool
 	// readOnly: a View's transaction, on the read-only pool.
 	readOnly bool
+	// fault is the first storage error a read or write met: a projector
+	// that fails on it has not refused the log (RebuildProjections).
+	fault error
+}
+
+// io records a storage error as the transaction's fault and returns it.
+func (t *Tx) io(err error) error {
+	if err != nil && t.fault == nil {
+		t.fault = err
+	}
+	return err
 }
 
 // ErrReadOnly: a View's transaction cannot change projections.
@@ -118,7 +129,7 @@ func (t *Tx) Get(projection, key string) (json.RawMessage, bool, error) {
 		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, t.io(err)
 	}
 	return json.RawMessage(v), true, nil
 }
@@ -137,7 +148,7 @@ func (t *Tx) Put(projection, key string, value json.RawMessage) error {
 	}
 	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO `+t.table()+`(projection, key, value) VALUES (?, ?, ?)
 		ON CONFLICT(projection, key) DO UPDATE SET value = excluded.value`, projection, key, string(c))
-	return err
+	return t.io(err)
 }
 
 // Delete removes the projection record under key, if any.
@@ -149,7 +160,7 @@ func (t *Tx) Delete(projection, key string) error {
 		return err
 	}
 	_, err := t.tx.ExecContext(t.ctx, `DELETE FROM `+t.table()+` WHERE projection = ? AND key = ?`, projection, key)
-	return err
+	return t.io(err)
 }
 
 // Keys lists the projection's keys that start with prefix, sorted.
@@ -159,27 +170,27 @@ func (t *Tx) Keys(projection, prefix string) ([]string, error) {
 	}
 	rows, err := t.tx.QueryContext(t.ctx, `SELECT key FROM `+t.table()+` WHERE projection = ? ORDER BY key`, projection)
 	if err != nil {
-		return nil, err
+		return nil, t.io(err)
 	}
 	defer rows.Close()
 	var keys []string
 	for rows.Next() {
 		var k string
 		if err := rows.Scan(&k); err != nil {
-			return nil, err
+			return nil, t.io(err)
 		}
 		if strings.HasPrefix(k, prefix) { // bytes, as Go compares them
 			keys = append(keys, k)
 		}
 	}
-	return keys, rows.Err()
+	return keys, t.io(rows.Err())
 }
 
 // SubjectVersion is the seq of the subject's last event, or 0.
 func (t *Tx) SubjectVersion(subject string) (int64, error) {
 	var v sql.NullInt64
 	if err := t.tx.QueryRowContext(t.ctx, `SELECT max(seq) FROM events WHERE subject = ?`, subject).Scan(&v); err != nil {
-		return 0, err
+		return 0, t.io(err)
 	}
 	return v.Int64, nil
 }
