@@ -23,25 +23,41 @@ M0 review [M9][M11][M13]. `docs/adapters/AUTHORING.md` is the author-facing guid
 - Payloads are passed as **attempt-scoped handles** `{attempt, handle, digest, size}`, never as raw paths. Handles are
   valid only for their attempt. A handle the adapter returns names exactly `out/<handle>`: one file directly in `out/`,
   never a subdirectory or a path.
-- **Ingestion of `out/` by the controller** runs only after the adapter's process tree has exited, never while any of
-  its processes can still write. For each handle, in this order, the first failing check refuses it:
+- **Ingestion of `out/` by the controller** reads each handle with the same checks, in this order; the first failing
+  check refuses it:
   1. **fence** (05): attempt id and token are current and publication is open; otherwise `stale_attempt`;
   2. **foreign handle**: the handle's attempt is the submitting attempt;
-  3. **file checks**: the handle is one file name (not empty, no `/`, not `.` or `..`, the handle pattern), else `path`;
-     open `out/<handle>` with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS |
-     RESOLVE_NO_XDEV)` and `O_NOFOLLOW`, or an equivalent component-by-component `openat` walk where `openat2` is
-     missing; then `fstat` the open descriptor: a regular file (`symlink`, `special_file` for devices, FIFOs and
-     sockets), link count 1 (`hard_link`), size within the bound and equal to the declared size (`size`);
-  4. **bounded copy-and-hash**: stream from that descriptor into the blob store while hashing, reading at most the bound
-     plus one byte; a read error is `unreadable`, a different digest or length `digest`;
-  5. **post-copy `fstat`**: device, inode, size and change time unchanged (`replaced`);
-  6. **publish** (03) in one writer transaction that checks the fence again and appends the output's events.
+  3. **path**: the handle is one file name (not empty, no `/`, not `.` or `..`, the handle pattern);
+  4. **pin without reading**: resolve `out/<handle>` with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
+     RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV)` and `O_PATH | O_NOFOLLOW`. A symlink is refused (`symlink`). `statx`
+     the `O_PATH` descriptor and refuse, before any read-open, anything that is not a regular file (`special_file`
+     for devices, FIFOs and sockets, so a FIFO never blocks the controller), a link count other than 1 (`hard_link`),
+     and a size over the bound or unequal to the declared size (`size`);
+  5. **reopen the pinned inode**: open `/proc/self/fd/<n>` of that descriptor for reading (never the name again) and
+     `statx` it: the same device, inode and mount id, link count still 1 (`replaced`);
+  6. **bounded copy-and-hash**: stream from the reopened descriptor into the blob store while hashing, reading at most
+     the bound plus one byte; a read error is `unreadable`, a different digest or length `digest`;
+  7. **post-copy `statx`**: device, inode, mount id, link count, size and change time unchanged (`replaced`);
+  8. **publish** (03) in one writer transaction that checks the fence again and appends the output's events.
+
+  Without `openat2`, the fallback walks component by component with `openat(O_PATH | O_NOFOLLOW)` and checks each
+  component's mount id against the exchange root's; steps 4–8 are unchanged. It must be equivalent or fail closed:
+  a host that cannot give the mount id (`statx` `STATX_MNT_ID`) or `/proc/self/fd` reopening ingests nothing, and the
+  adapter host refuses to start the attempt (`could_not_run`) rather than weaken a check.
 
   The controller never reads an adapter file in place twice. It reads it once, copying, so a concurrent replacement
   cannot change what was verified.
+- **When**: **final outputs** (the run result and every handle it or the run's events declare: patches, transcripts,
+  error excerpts) are ingested only after the adapter's process tree has exited, never while any of its processes can
+  still write. **Controller-mediated tool requests** cannot wait: the adapter blocks on the `tool.response`, so the
+  request handle of a `tool.request` is ingested live, when the notification arrives, with the same steps and its own
+  bound. A live read cannot rely on process exit, so the pinned inode, the regular-file, link-count and mount checks,
+  the size and digest checks and the post-copy `statx` are its only guarantees. That is acceptable because the
+  request is the adapter's own input to the controller, not an output the controller publishes as the attempt's work.
+  A refused request is not executed.
 - **Size bounds** are M0 constants in `internal/adapterhost`, by result kind: `patch` 64 MiB, `text` 16 MiB,
-  `decision` 1 MiB; any other handle an event references (transcripts, tool requests, error excerpts) 16 MiB. Profile
-  values replace them later.
+  `decision` 1 MiB; a tool request 1 MiB; any other handle an event declares (transcripts, error excerpts) 16 MiB.
+  Profile values replace them later.
 - **Each refusal is recorded** as an `attempt.output_refused/v1` event (`schemas/records/attempt-output-refusal.json`,
   subject the attempt): `{attempt, handle, reason, check, detail}`, where `check` names the failing step above and
   `reason` is `stale_attempt` for the fence and `unsafe_output` for every other check. The output is rejected with
