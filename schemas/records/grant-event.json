@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/grant-event.json",
+  "title": "GrantEvent",
+  "description": "The payload of every grant event (docs/design/m0/04 \"Grants\", \"Read authorization\"): <transition>/v1, i.e. grant.created/v1 or grant.revoked/v1, with the grant as issued and, once revoked, when. The event's subject is the grant. A narrowing is a revocation and a new grant. internal/authority checks every transition against the current record in the writer transaction; long-lived streams re-check authority against these records.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["transition", "grant", "revoked_at"],
+  "properties": {
+    "transition": {"enum": ["grant.created", "grant.revoked"]},
+    "grant": {"$ref": "grant.json"},
+    "revoked_at": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"transition": {"const": "grant.created"}}},
+      "then": {"properties": {"revoked_at": {"const": null}}},
+      "else": {"properties": {"revoked_at": {"not": {"const": null}}}}
+    }
+  ]
+}

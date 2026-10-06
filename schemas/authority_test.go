@@ -33,6 +33,10 @@ func authorityDocs() map[string]map[string]any {
 			"reads":      map[string]any{"projects": "same", "kinds": []any{"task", "receipt"}},
 			"valid_from": "2026-10-04T00:00:00Z", "expires_at": "2026-10-11T00:00:00Z",
 			"confirmation_overrides": map[string]any{"task.create": "independent_review"}, "issued_by": opID, "approval": aprID},
+		"records/grant-event": {"transition": "grant.revoked", "grant": map[string]any{"id": grtID, "actor": actID, "projects": "*",
+			"actions": []any{}, "reads": map[string]any{"projects": "same", "kinds": []any{"task"}},
+			"valid_from": "2026-10-04T00:00:00Z", "expires_at": "2026-10-11T00:00:00Z",
+			"confirmation_overrides": map[string]any{}, "issued_by": opID, "approval": aprID}, "revoked_at": "2026-10-05T00:00:00Z"},
 		"records/approval": {"id": aprID, "actor": opID, "actor_kind": "operator", "action": "profile.adopt",
 			"change_class": []any{"policy.widen_destinations"}, "project": prjID, "object": object(),
 			"expected_state": map[string]any{"version": 4, "digest": nil}, "scope": map[string]any{"revision": 5},
@@ -81,9 +85,12 @@ func TestAuthorityRecords(t *testing.T) {
 		"grant override enum": {"records/grant", func(d map[string]any) {
 			d["confirmation_overrides"] = map[string]any{"task.create": "none"}
 		}},
-		"grant bad action":       {"records/grant", func(d map[string]any) { d["actions"] = []any{"Delete Everything"} }},
-		"grant bad project list": {"records/grant", func(d map[string]any) { d["projects"] = "all" }},
-		"grant read projects":    {"records/grant", func(d map[string]any) { d["reads"].(map[string]any)["projects"] = "everything" }},
+		"grant revoked without a time": {"records/grant-event", func(d map[string]any) { d["revoked_at"] = nil }},
+		"grant created revoked":        {"records/grant-event", func(d map[string]any) { d["transition"] = "grant.created" }},
+		"grant event transition":       {"records/grant-event", func(d map[string]any) { d["transition"] = "grant.extended" }},
+		"grant bad action":             {"records/grant", func(d map[string]any) { d["actions"] = []any{"Delete Everything"} }},
+		"grant bad project list":       {"records/grant", func(d map[string]any) { d["projects"] = "all" }},
+		"grant read projects":          {"records/grant", func(d map[string]any) { d["reads"].(map[string]any)["projects"] = "everything" }},
 		// The class enum is closed; computing the class (never trusting a
 		// supplied one) is internal/authority's check.
 		"approval class enum": {"records/approval", func(d map[string]any) {

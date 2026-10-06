@@ -196,6 +196,24 @@ type Hooks struct {
 	Project func(t *Tx, events []Event) error
 }
 
+// ProjectEach composes projectors as a rebuild runs them: each event goes
+// through every projector, in order, before the next event. Composing them
+// batch by batch instead would let a command admit an event against a
+// later event of its own batch (a grant before its grantee), which a
+// rebuild, replaying singly, would refuse.
+func ProjectEach(projectors ...func(t *Tx, events []Event) error) func(t *Tx, events []Event) error {
+	return func(t *Tx, events []Event) error {
+		for _, e := range events {
+			for _, p := range projectors {
+				if err := p(t, []Event{e}); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+}
+
 // Apply is the command's logic: from the current state (read through t) it
 // returns the events to append and the command's result (JSON).
 type Apply func(t *Tx) (events []Event, result json.RawMessage, err error)
