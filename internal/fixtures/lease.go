@@ -47,7 +47,7 @@ func revokedAttemptLateResult(ctx context.Context, dir string) (steps []Step, vi
 	kinds := lease.Kinds()
 	kinds[outputKind] = eventstore.Kind{Schema: "common/defs"}
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: lease.Projector{Blobs: blobs, Holds: reg.Holds, Units: oneTask{}}.Project}})
 	if err != nil {
 		return nil, nil, err

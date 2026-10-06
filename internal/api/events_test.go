@@ -114,7 +114,7 @@ func open(t *testing.T) *fixture {
 		kinds[k] = eventstore.Kind{Schema: "common/defs"}
 	}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project)}})
 	if err != nil {
 		t.Fatal(err)

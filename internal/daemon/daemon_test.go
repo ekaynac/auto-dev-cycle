@@ -18,6 +18,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -116,6 +117,13 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 	}
 	cmd := newID(t, "cmd")
 	_, err = d.store.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: string(op), Action: "test.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
+		func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+			return nil, json.RawMessage(`{}`), nil
+		}))
+	if !errors.Is(err, identity.ErrUnauthenticated) {
+		t.Fatalf("a command without a principal was not refused: %v", err)
+	}
+	_, err = d.store.SubmitApplied(context.Background(), d.system.Command(cmd, "note.add", cmd, []byte(`{}`), nil), eventstore.Applies(
 		func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			return nil, json.RawMessage(`{}`), nil
 		}))

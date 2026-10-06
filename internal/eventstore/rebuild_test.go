@@ -65,7 +65,7 @@ func openProjected(t *testing.T, dir string, project func(*Tx, []Event) error) *
 		t.Fatal(err)
 	}
 	s, err := Open(context.Background(), lock, Config{Kinds: testKinds, Blobs: blobs, Effects: testEffects,
-		Hooks: Hooks{Authorize: allow, Project: project}})
+		Hooks: Hooks{Identify: allow, Authorize: allow, Project: project}})
 	if err != nil {
 		lock.Release()
 		t.Fatal(err)

@@ -97,7 +97,7 @@ func openAt(t *testing.T, dir string, how wiring, groups ...types.ResourceGroup)
 		}
 	}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: lease.Kinds(), Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: project}})
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: project}})
 	if err != nil {
 		t.Fatal(err)
 	}

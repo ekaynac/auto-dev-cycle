@@ -383,14 +383,27 @@ func TestRefuseAllAfterSystemActor(t *testing.T) {
 	}); err != nil || sys == "" {
 		t.Fatalf("no system actor after start: %v", err)
 	}
+	// Without a principal nobody gets past the identity recheck; the
+	// system principal does, and no action is wired for it.
+	noop := eventstore.Applies(func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+		return nil, json.RawMessage(`{}`), nil
+	})
 	for _, actor := range []string{sys, newID(t, "act")} {
 		cmd := newID(t, "cmd")
-		_, err := d.store.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: actor, Action: "test.command", IdempotencyKey: "adcd-system-actor", Input: []byte(`{}`)}, eventstore.Applies(
-			func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
-				return nil, json.RawMessage(`{}`), nil
-			}))
-		if !errors.Is(err, ErrCommandsRefused) {
-			t.Fatalf("a submission as %s was not refused: %v", actor, err)
+		_, err := d.store.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: actor, Action: "test.command", IdempotencyKey: "adcd-system-actor", Input: []byte(`{}`)}, noop)
+		if !errors.Is(err, identity.ErrUnauthenticated) {
+			t.Fatalf("a submission as %s without a principal was not refused: %v", actor, err)
 		}
+	}
+	// Startup took the store's one system claim: nothing after it can.
+	if _, err := d.store.ClaimSystem(); !errors.Is(err, eventstore.ErrSystemClaimed) {
+		t.Fatalf("the system claim is still free after start: %v", err)
+	}
+	if d.system.Actor() != types.ActorID(sys) {
+		t.Fatalf("the daemon holds %s's principal, not the system actor's", d.system.Actor())
+	}
+	cmd := newID(t, "cmd")
+	if _, err := d.store.SubmitApplied(context.Background(), d.system.Command(cmd, "note.add", cmd, []byte(`{}`), nil), noop); !errors.Is(err, ErrCommandsRefused) {
+		t.Fatalf("the system principal's command was not refused: %v", err)
 	}
 }

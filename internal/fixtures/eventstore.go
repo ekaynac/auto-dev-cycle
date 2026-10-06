@@ -35,7 +35,7 @@ func storeWith(ctx context.Context, dir string, kinds eventstore.Kinds, project 
 	}
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{
 		Kinds: kinds, Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: project}})
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: project}})
 	if err != nil {
 		lock.Release()
 		return nil, nil, err

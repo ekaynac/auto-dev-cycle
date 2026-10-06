@@ -46,7 +46,7 @@ func fixtureStore(t *testing.T, n int) (string, eventstore.Head) {
 	defer lock.Release()
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{
 		Kinds: eventstore.Kinds{"test.appended/v1": {Schema: "common/defs"}}, Blobs: noBlobs{},
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }}})
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }}})
 	if err != nil {
 		t.Fatal(err)
 	}

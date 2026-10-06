@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gowebpki/jcs"
@@ -152,6 +153,8 @@ type Store struct {
 	blobs     BlobChecker
 	hooks     Hooks
 	effects   EffectKinds
+	// systemClaimed: ClaimSystem has handed out the system claim.
+	systemClaimed atomic.Bool
 
 	// Operation tracking: each operation is admitted while the store is
 	// open and counted; Close stops admissions and waits for the count to

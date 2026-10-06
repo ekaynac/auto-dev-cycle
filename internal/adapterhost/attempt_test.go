@@ -69,7 +69,7 @@ func newWorld(t *testing.T) *world {
 	maps.Copy(kinds, ledger.Kinds())
 	project := lease.Projector{Blobs: blobs, Holds: reg.Holds}.Project
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
-		Hooks: eventstore.Hooks{Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
+		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
 				return errors.Join(project(tx, evs), ledger.Project(tx, evs))
 			}}})

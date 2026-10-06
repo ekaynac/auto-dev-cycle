@@ -129,7 +129,7 @@ func (s *Store) View(ctx context.Context, fn func(*Tx) error) error {
 		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM events LIMIT 1`).Scan(&one); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		return fn(&Tx{ctx: ctx, tx: tx, readOnly: true})
+		return fn(&Tx{ctx: ctx, tx: tx, readOnly: true, owner: s})
 	})
 }
 

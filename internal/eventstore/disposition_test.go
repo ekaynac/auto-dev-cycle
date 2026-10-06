@@ -35,7 +35,7 @@ func storedDisposition(t *testing.T, e *env, id string) string {
 // The same actor and key with any of them changed is refused; the same
 // request replays.
 func TestIdempotencyCoversActionInputAndExpectations(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	ctx := context.Background()
 	first := command(t, "k", `{"a": 1}`, Expectation{testSubject, 0})
 	if _, err := e.s.SubmitApplied(ctx, first, Applies(appendTo(t, testSubject, 1))); err != nil {
@@ -70,7 +70,7 @@ func TestIdempotencyCoversActionInputAndExpectations(t *testing.T) {
 }
 
 func TestActionIsCanonical(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	for _, a := range []string{"", "grant", "Grant.create", "grant.", ".create", "grant create", "grant.create/v1", strings.Repeat("a.", 64) + "b"} {
 		c := command(t, "k", `{}`)
 		c.Action = a
@@ -85,7 +85,7 @@ func TestActionIsCanonical(t *testing.T) {
 func TestEveryDispositionIsCommitted(t *testing.T) {
 	for _, d := range []Disposition{DispositionApplied, DispositionProposed, DispositionInvalidated, DispositionRefused} {
 		t.Run(string(d), func(t *testing.T) {
-			e := openWriter(t, Hooks{Authorize: allow})
+			e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 			ctx := context.Background()
 			calls := 0
 			c := command(t, "k", `{}`)
@@ -150,7 +150,7 @@ func TestMalformedDecisionsCommitNothing(t *testing.T) {
 // A decision made over a storage fault is not committed, even when the
 // logic swallowed the error and decided a refusal.
 func TestDecisionOverAStorageFaultIsNotCommitted(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
+	e := openWriter(t, Hooks{Identify: allow, Authorize: allow})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_, err := e.s.Submit(ctx, command(t, "k", `{}`), func(tx *Tx) (Decision, error) {
