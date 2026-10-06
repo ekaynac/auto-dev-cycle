@@ -17,12 +17,17 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // eventBytes is a lease event's payload as the store would carry it.
 func eventBytes(t *testing.T, transition, reason string, l *types.Lease, a, successor *types.Attempt) []byte {
 	t.Helper()
-	b, err := json.Marshal(payload{Transition: transition, Reason: reasonOf(reason), Lease: l, Attempt: a, Successor: successor})
+	p := payload{Transition: transition, Reason: reasonOf(reason), Lease: l, Attempt: a, Successor: successor}
+	if transition == ResultSubmitted {
+		p.Result = &submitted
+	}
+	b, err := json.Marshal(p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,8 +38,8 @@ func eventBytes(t *testing.T, transition, reason string, l *types.Lease, a, succ
 // built from the state machine's own output, fits the schema.
 func TestEventKinds(t *testing.T) {
 	kinds := Kinds()
-	if len(kinds) != 20 {
-		t.Fatalf("%d kinds, want 20", len(kinds))
+	if len(kinds) != 21 {
+		t.Fatalf("%d kinds, want 21", len(kinds))
 	}
 	if kinds[OutputRefused].Schema != OutputRefusalSchema {
 		t.Errorf("%s has schema %q", OutputRefused, kinds[OutputRefused].Schema)
@@ -53,7 +58,7 @@ func TestEventKinds(t *testing.T) {
 			y := Start(attA, untID, leaID, base)
 			l, a = &x, &y
 		case strings.HasPrefix(tr, "lease."):
-			from := map[string]types.LeaseState{Requested: "requested", Waiting: "requested", Granted: "requested", Expired: "granted",
+			from := map[string]types.LeaseState{Requested: "requested", Waiting: "requested", Granted: "requested", StartRefused: "granted", Expired: "granted",
 				Completed: "active", Revoked: "active", Preempted: "active", Settled: "settling", Released: "releasing",
 				RestoreStarted: "settling", RestoreVerified: "restoring", RestoreFailed: "restoring"}[tr]
 			target := strings.HasPrefix(tr, "lease.restore")
@@ -89,6 +94,24 @@ func TestEventKinds(t *testing.T) {
 	}
 }
 
+// submitted is an admitted patch result.
+var (
+	patchKind = types.SubmittedResultKindValuePatch
+	submitted = types.SubmittedResult{Call: calA, Outcome: "found", Reason: vocab.ReasonCompletedWithFindings, Kind: &patchKind, Blob: ptr(dgA)}
+)
+
+func ptr[T any](v T) *T { return &v }
+
+// withResult is an attempt event's payload with the result r.
+func withResult(t *testing.T, transition string, a *types.Attempt, r *types.SubmittedResult) []byte {
+	t.Helper()
+	b, err := json.Marshal(payload{Transition: transition, Attempt: a, Result: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestEventPayloadRules(t *testing.T) {
 	active := reach(t, types.LeaseStateActive, false)
 	running := Start(attA, untID, leaID, base)
@@ -102,6 +125,10 @@ func TestEventPayloadRules(t *testing.T) {
 		"an attempt event without it":          eventBytes(t, Lost, "", nil, nil, nil),
 		"a supersession without its successor": eventBytes(t, Superseded, "", &active, &running, nil),
 		"a successor on another event":         eventBytes(t, StopRequested, "", nil, &running, &running),
+		"a refused start without its reason":   eventBytes(t, StartRefused, "", &active, nil, nil),
+		"a submission without its result":      withResult(t, ResultSubmitted, &running, nil),
+		"a result on another event":            withResult(t, StopRequested, &running, &submitted),
+		"a result's kind without its blob":     withResult(t, ResultSubmitted, &running, &types.SubmittedResult{Call: calA, Outcome: "found", Reason: vocab.ReasonCompletedWithFindings, Kind: &patchKind}),
 	} {
 		if err := contract.Validate(EventSchema, p); err == nil {
 			t.Errorf("%s: accepted", name)

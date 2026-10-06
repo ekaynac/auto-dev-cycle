@@ -151,9 +151,10 @@ type Session struct {
 	next    int64
 	pending map[int64]pending
 	run     *run
-	shutID  int64 // the shutdown request
-	shut    bool  // shutdown answered: the output ending is the clean end
-	fence   fence // the session's one attempt (methods.go)
+	shutID  int64                // the shutdown request
+	shut    bool                 // shutdown answered: the output ending is the clean end
+	fence   fence                // the session's one attempt (methods.go)
+	foreign *types.AdapterHandle // the first handle of another attempt refused (Foreign)
 	err     *Error
 	ended   chan struct{}
 }

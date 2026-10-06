@@ -132,14 +132,14 @@ func (s *Session) Prepare(ctx context.Context, p types.AdapterPrepareParams) (ty
 // an event or the result, ends the session (KindForeignHandle).
 func (s *Session) Run(ctx context.Context, p types.AdapterRunParams, onEvent func(Event)) (types.AdapterRunResult, error) {
 	r := &run{want: stamp{Attempt: p.Attempt, FencingToken: p.FencingToken, Call: p.Call}, onEvent: onEvent,
-		check: func(raw json.RawMessage) *Error { return foreignHandle(raw, p.Attempt) }}
+		check: func(raw json.RawMessage) *Error { return s.foreignHandle(raw, p.Attempt) }}
 	decode := result[types.AdapterRunResult]("run", "adapter/run-result")
 	return typed[types.AdapterRunResult](s.call(ctx, "run", "adapter/run-params", p, r, expect{
 		admit: s.fenced(p.Attempt, p.FencingToken, "", p),
 		check: func(raw json.RawMessage) (any, *Error) {
 			v, e := decode(raw)
 			if e == nil {
-				e = foreignHandle(raw, p.Attempt)
+				e = s.foreignHandle(raw, p.Attempt)
 			}
 			return v, e
 		},
@@ -199,11 +199,22 @@ func (s *Session) fenced(attempt string, token int64, call string, params any) f
 	}
 }
 
-// foreignHandle refuses a document holding a handle of another attempt.
-func foreignHandle(doc json.RawMessage, own string) *Error {
-	if !foreign(doc, own) {
+// foreignHandle refuses a document holding a handle of another attempt,
+// keeping the first such handle for Foreign.
+func (s *Session) foreignHandle(doc json.RawMessage, own string) *Error {
+	var v any
+	if json.Unmarshal(doc, &v) != nil {
+		return protocol("a document that is not JSON")
+	}
+	h, ok := foreignIn(v, own)
+	if !ok {
 		return nil
 	}
+	s.mu.Lock()
+	if s.foreign == nil {
+		s.foreign = &h
+	}
+	s.mu.Unlock()
 	return &Error{Kind: KindForeignHandle, Method: "run", Check: CheckForeignHandle, Detail: "a handle of another attempt than the session's"}
 }
 
@@ -216,29 +227,48 @@ func foreign(doc json.RawMessage, own string) bool {
 	if json.Unmarshal(doc, &v) != nil {
 		return true // never accepted unread
 	}
-	return foreignIn(v, own)
+	_, found := foreignIn(v, own)
+	return found
 }
 
-func foreignIn(v any, own string) bool {
+// foreignIn finds a handle of another attempt than own in v, decoded as far
+// as it is a handle.
+func foreignIn(v any, own string) (types.AdapterHandle, bool) {
 	switch x := v.(type) {
 	case map[string]any:
 		_, h := x["handle"]
 		_, d := x["digest"]
 		_, z := x["size"]
 		if a, ok := x["attempt"]; ok && h && d && z && a != own {
-			return true
+			var found types.AdapterHandle
+			if b, err := json.Marshal(x); err == nil {
+				_ = json.Unmarshal(b, &found)
+			}
+			return found, true
 		}
 		for _, e := range x {
-			if foreignIn(e, own) {
-				return true
+			if found, ok := foreignIn(e, own); ok {
+				return found, true
 			}
 		}
 	case []any:
 		for _, e := range x {
-			if foreignIn(e, own) {
-				return true
+			if found, ok := foreignIn(e, own); ok {
+				return found, true
 			}
 		}
 	}
-	return false
+	return types.AdapterHandle{}, false
+}
+
+// Foreign is the first handle of another attempt the run refused
+// (KindForeignHandle), as the adapter declared it: adapter data for the
+// refusal record, never for an error or a log.
+func (s *Session) Foreign() (types.AdapterHandle, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.foreign == nil {
+		return types.AdapterHandle{}, false
+	}
+	return *s.foreign, true
 }

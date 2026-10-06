@@ -79,11 +79,12 @@ func unitAttempt(tx *eventstore.Tx, unit types.UnitID) (types.AttemptID, bool, e
 }
 
 type payload struct {
-	Transition string         `json:"transition"`
-	Reason     *string        `json:"reason"`
-	Lease      *types.Lease   `json:"lease"`
-	Attempt    *types.Attempt `json:"attempt"`
-	Successor  *types.Attempt `json:"successor"`
+	Transition string                 `json:"transition"`
+	Reason     *string                `json:"reason"`
+	Lease      *types.Lease           `json:"lease"`
+	Attempt    *types.Attempt         `json:"attempt"`
+	Successor  *types.Attempt         `json:"successor"`
+	Result     *types.SubmittedResult `json:"result"`
 }
 
 func newEvent(subject string, p payload) (eventstore.Event, error) {
@@ -176,8 +177,9 @@ func SupersedeAttempt(tx *eventstore.Tx, old types.AttemptID, oldExpected int64,
 }
 
 // ChangeAttempt applies one attempt transition to the attempt at the
-// expected revision. A result submission waits for its companion result
-// record (the API's command input), so none is accepted yet.
+// expected revision. A result submission goes through SubmitResult, which
+// carries the result; this helper proposes one without it, which the
+// projector refuses.
 func ChangeAttempt(tx *eventstore.Tx, id types.AttemptID, expected int64, e AttemptEvent) ([]eventstore.Event, error) {
 	a, err := current[types.Attempt](tx, AttemptProjection, string(id), expected)
 	if err != nil {
@@ -282,6 +284,12 @@ type Groups interface {
 // Project is the event store's Project hook.
 func (p Projector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
+		if ev.Kind == OutputRefused {
+			if err := refused(tx, ev); err != nil {
+				return fmt.Errorf("lease: event %s: %w", ev.ID, err)
+			}
+			continue
+		}
 		if !isLeaseKind(ev.Kind) {
 			continue
 		}
@@ -320,7 +328,10 @@ func (p Projector) apply(tx *eventstore.Tx, ev eventstore.Event, pl payload) err
 	}
 	switch pl.Transition {
 	case ResultSubmitted:
-		return errors.New("a result submission waits for its companion result record")
+		if pl.Result == nil {
+			return errors.New("a result submission without its result")
+		}
+		return p.changeAttempt(tx, pl.Transition, *pl.Attempt)
 	case AttemptStarted:
 		return p.start(tx, *pl.Lease, *pl.Attempt, nil)
 	case Superseded:

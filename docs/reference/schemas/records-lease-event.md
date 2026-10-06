@@ -4,23 +4,47 @@
 
 `schemas/records/lease-event.json`
 
-The payload of every lease and attempt transition event (docs/design/m0/05): &lt;transition&gt;/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*). attempt.started and attempt.superseded also change the lease under the attempt's subject, so commands expect a record's projection revision (not its subject's last seq) for every record they act on. attempt.superseded is atomic: one event carries the retired attempt, its successor (with the next token) and the lease the successor runs under (05: supersession and the replacement's token in one transaction).
+The payload of every lease and attempt transition event (docs/design/m0/05): &lt;transition&gt;/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*). attempt.started and attempt.superseded also change the lease under the attempt's subject, so commands expect a record's projection revision (not its subject's last seq) for every record they act on. attempt.superseded is atomic: one event carries the retired attempt, its successor (with the next token) and the lease the successor runs under (05: supersession and the replacement's token in one transaction). lease.start_refused is the launch boundary's refusal of a granted lease before any attempt exists (granted → releasing; 05, 09 "Host capability check"). attempt.result_submitted carries the admitted result itself.
 
 ## Fields of the document
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `transition` | yes | one of `lease.requested`, `lease.waiting`, `lease.granted`, `lease.expired`, `lease.completed`, `lease.revoked`, `lease.preempted`, `lease.settled`, `lease.released`, `lease.restore_started`, `lease.restore_verified`, `lease.restore_failed`, `attempt.started`, `attempt.stop_requested`, `attempt.result_submitted`, `attempt.lost`, `attempt.sealed`, `attempt.completed`, `attempt.superseded` |  |
-| `reason` | yes | null or string (minLength `1`, maxLength `1024`) | Why: required for lease.revoked and lease.restore_failed (05), null otherwise. Attempt stop and loss reasons live in the attempt record. |
+| `transition` | yes | one of `lease.requested`, `lease.waiting`, `lease.granted`, `lease.start_refused`, `lease.expired`, `lease.completed`, `lease.revoked`, `lease.preempted`, `lease.settled`, `lease.released`, `lease.restore_started`, `lease.restore_verified`, `lease.restore_failed`, `attempt.started`, `attempt.stop_requested`, `attempt.result_submitted`, `attempt.lost`, `attempt.sealed`, `attempt.completed`, `attempt.superseded` |  |
+| `reason` | yes | null or string (minLength `1`, maxLength `1024`) | Why: required for lease.revoked, lease.start_refused and lease.restore_failed (05), null otherwise. Attempt stop and loss reasons live in the attempt record. |
 | `lease` | yes | null or [lease](records-lease.md) | The lease after a lease transition, or after attempt.started (granted → active). |
 | `attempt` | yes | null or [attempt](records-attempt.md) | The attempt after an attempt transition (for attempt.superseded, the retired one). |
 | `successor` | yes | null or [attempt](records-attempt.md) | attempt.superseded only: the replacement attempt, started with the next token. |
+| `result` | yes | null or [SubmittedResult](#submittedresult) | attempt.result_submitted only: the result the controller admitted, so the log itself identifies it. |
 
 No other fields are allowed.
 
-Conditional rules (4, `if`/`then`/`else` in the schema):
+Conditional rules (5, `if`/`then`/`else` in the schema):
 
-- when `transition` one of `lease.revoked`, `lease.restore_failed`, then `reason` any (not `null`); otherwise `reason` `null`
-- when `transition` one of `lease.requested`, `lease.waiting`, `lease.granted`, `lease.expired`, `lease.completed`, `lease.revoked`, `lease.preempted`, `lease.settled`, `lease.released`, `lease.restore_started`, `lease.restore_verified`, `lease.restore_failed`, `attempt.started`, `attempt.superseded`, then `lease` any (not `null`); otherwise `lease` `null`
+- when `transition` one of `lease.revoked`, `lease.start_refused`, `lease.restore_failed`, then `reason` any (not `null`); otherwise `reason` `null`
+- when `transition` one of `lease.requested`, `lease.waiting`, `lease.granted`, `lease.start_refused`, `lease.expired`, `lease.completed`, `lease.revoked`, `lease.preempted`, `lease.settled`, `lease.released`, `lease.restore_started`, `lease.restore_verified`, `lease.restore_failed`, `attempt.started`, `attempt.superseded`, then `lease` any (not `null`); otherwise `lease` `null`
 - when `transition` one of `attempt.started`, `attempt.stop_requested`, `attempt.result_submitted`, `attempt.lost`, `attempt.sealed`, `attempt.completed`, `attempt.superseded`, then `attempt` any (not `null`); otherwise `attempt` `null`
 - when `transition` `attempt.superseded`, then `successor` any (not `null`); otherwise `successor` `null`
+- when `transition` `attempt.result_submitted`, then `result` any (not `null`); otherwise `result` `null`
+
+## Definitions
+
+### SubmittedResult
+
+A run's result as the controller admitted it (09 "Blob exchange"): the call, the outcome and reason the adapter reported, and the result's kind and published blob, both null when the run produced no result. The blob was ingested and published before the event (03 publish-before-reference).
+
+#### Fields of SubmittedResult
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `call` | yes | [CallID](common-defs.md#callid) |  |
+| `outcome` | yes | [Outcome](common-defs.md#outcome) |  |
+| `reason` | yes | [ReasonCode](common-defs.md#reasoncode) |  |
+| `kind` | yes | null or one of `patch`, `text`, `decision` |  |
+| `blob` | yes | null or [Digest](common-defs.md#digest) |  |
+
+No other fields are allowed.
+
+Conditional rules (1, `if`/`then`/`else` in the schema):
+
+- when `kind` `null`, then `blob` `null`; otherwise `blob` any (not `null`)

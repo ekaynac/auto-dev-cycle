@@ -17,7 +17,7 @@ const (
 
 // transitions are the event names of note 05's tables, lease and attempt.
 var transitions = []string{
-	Requested, Waiting, Granted, Expired, Completed, Revoked, Preempted, Settled, Released,
+	Requested, Waiting, Granted, StartRefused, Expired, Completed, Revoked, Preempted, Settled, Released,
 	RestoreStarted, RestoreVerified, RestoreFailed,
 	AttemptStarted, StopRequested, ResultSubmitted, Lost, Sealed, AttemptDone, Superseded,
 }
@@ -31,7 +31,7 @@ var transitions = []string{
 func Kinds() eventstore.Kinds {
 	k := eventstore.Kinds{}
 	for _, t := range transitions {
-		k[t+"/v1"] = eventstore.Kind{Schema: EventSchema, BlobFields: []string{"checkpoint"}}
+		k[t+"/v1"] = eventstore.Kind{Schema: EventSchema, BlobFields: []string{"checkpoint", "blob"}}
 	}
 	k[OutputRefused] = eventstore.Kind{Schema: OutputRefusalSchema}
 	return k

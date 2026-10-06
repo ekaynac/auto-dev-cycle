@@ -211,6 +211,32 @@ func TestGrantReservesAllOrNothing(t *testing.T) {
 	}
 }
 
+// A start refused at the launch boundary (lease.start_refused) releases
+// the lease without an attempt: its reservations return at released.
+func TestRefusedStartReturnsItsReservations(t *testing.T) {
+	w := open(t, grp(gpu, types.ResourceGroupKindGpu, types.CapacityUnitGpuSeconds, lim(10)))
+	a := w.requested(reserve(gpu, 8, types.CapacityUnitGpuSeconds))
+	if err := w.change(a, 1, granted); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.change(a, 2, lease.LeaseEvent{Kind: lease.StartRefused, Reason: vocab.ReasonPreconditionFailed.String()}); err != nil {
+		t.Fatal(err)
+	}
+	if g := w.outstanding(gpu); g != 8 {
+		t.Fatalf("outstanding %d while releasing; want 8 until released", g)
+	}
+	if err := w.change(a, 3, lease.LeaseEvent{Kind: lease.Released}); err != nil {
+		t.Fatal(err)
+	}
+	if g := w.outstanding(gpu); g != 0 {
+		t.Fatalf("outstanding %d after the release; want 0", g)
+	}
+	b := w.requested(reserve(gpu, 8, types.CapacityUnitGpuSeconds))
+	if err := w.change(b, 1, granted); err != nil {
+		t.Fatalf("the returned room was not reusable: %v", err)
+	}
+}
+
 func TestGrantRefusals(t *testing.T) {
 	w := open(t, grp(gpu, types.ResourceGroupKindGpu, types.CapacityUnitGpuSeconds, lim(10)),
 		grp(dark, types.ResourceGroupKindAccountQuota, types.CapacityUnitRequests, nil))

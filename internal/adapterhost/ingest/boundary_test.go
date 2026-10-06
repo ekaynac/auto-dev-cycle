@@ -40,6 +40,21 @@ func TestSupported(t *testing.T) {
 	if err := Supported(); err != nil {
 		t.Fatalf("Supported() = %v on this host", err)
 	}
+	withFallback(t, func(t *testing.T) {
+		e := newEnv(t)
+		if err := SupportedIn(e.dir); err != nil {
+			t.Fatalf("SupportedIn(out/) = %v on this host", err)
+		}
+		probeGone(t, e)
+	})
+}
+
+// probeGone checks SupportedIn left nothing in out/.
+func probeGone(t *testing.T, e *env) {
+	t.Helper()
+	if _, err := os.Lstat(filepath.Join(e.out, probeName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the capability probe is still in out/: %v", err)
+	}
 }
 
 func ingestContent(e *env) error {
@@ -115,6 +130,8 @@ func TestNoProcFailsClosed(t *testing.T) {
 		t.Cleanup(func() { procFD = "/proc/self/fd/" })
 		wantUnsupported(t, ingestContent(e))
 		wantUnsupported(t, Supported())
+		wantUnsupported(t, SupportedIn(e.dir))
+		probeGone(t, e)
 		e.assertEmpty()
 	})
 }
@@ -133,6 +150,8 @@ func TestNoMountIDFailsClosed(t *testing.T) {
 		t.Cleanup(func() { statx = unix.Statx })
 		wantUnsupported(t, ingestContent(e))
 		wantUnsupported(t, Supported())
+		wantUnsupported(t, SupportedIn(e.dir))
+		probeGone(t, e)
 		e.assertEmpty()
 	})
 }
