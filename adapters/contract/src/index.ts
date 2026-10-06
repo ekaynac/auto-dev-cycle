@@ -5,3 +5,4 @@ export { Adapter, run, serve, heartbeatPeriod, eventMethod, ParseError, InvalidR
 export type { EventBody, Handle, RunTools, ServeOptions } from "./adapter.ts";
 export { frame, lines, maxMessageBytes, FramingError } from "./framing.ts";
 export { parseStrict, StrictJSONError } from "./strict-json.ts";
+export { writeOutput, digestOf, handlePattern } from "./exchange.ts";

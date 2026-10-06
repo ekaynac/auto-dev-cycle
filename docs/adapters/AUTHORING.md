@@ -39,7 +39,7 @@ run(new MyHarness());
 
 The SDK handles framing, strict parsing, validation of everything sent and received, fencing-token stamping and
 heartbeats. `run` also receives an `AbortSignal`, aborted on cancel, shutdown or a broken input: stop the harness and
-return. Blob-exchange helpers are not in the SDK yet.
+return. `writeOutput` writes an output for the blob exchange (§4).
 
 A **controller-mediated tool** (a test run in the sandbox) is a round-trip:
 
@@ -77,9 +77,20 @@ Your own mistakes **fail the whole run** with an internal error, and the offendi
 
 - `prepare` passes the exchange root as `exchange: {in, out}`. Inputs arrive as **attempt-scoped handles** in `in/`.
   Write each output as one regular file directly in `out/`, named exactly by its handle, and return the handle with
-  its digest and size.
-- The controller ingests `out/` once, after your process tree has exited, safely: no symlinks, FIFOs, devices or hard
-  links; size bounds; digest checked while copying. Anything else is rejected as `unsafe_output` and marks the attempt untrustworthy.
+  its digest and size. The SDK's `writeOutput(p.exchange.out, p.attempt, name, bytes)` does exactly that: it checks
+  the name against the handle pattern, creates the file exclusively (an existing name or symlink is refused, never
+  followed), writes it whole, fsyncs and closes it, and returns `{attempt, handle, digest, size}`. Write once and do
+  not touch the file again: the controller refuses a file whose bytes no longer match the returned digest.
+- The controller ingests each file once, copying it, safely: no symlinks, FIFOs, devices or hard links; size bounds;
+  digest checked while copying. Anything else is rejected as `unsafe_output` and marks the attempt untrustworthy.
+  When it does so depends on the file (09 "Blob exchange"):
+  - **final outputs** (the run result and every handle it or your events declare: patches, transcripts, error
+    excerpts) are ingested only after your process tree has exited;
+  - a **controller-mediated tool request** is ingested live, when its `tool.request` notification arrives, with a
+    1 MiB bound. The file must be complete (written, fsynced and closed, as `writeOutput` leaves it) before you yield
+    the `tool.request`. A refused request is not executed.
+- `tool.result.delivered` is the handle of the controller's delivery (from `tool.response`), not a file in your `out/`:
+  the controller checks it against its own record and never ingests it.
 - Never reference another attempt's handle.
 
 ## 4a. Results
