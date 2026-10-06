@@ -36,6 +36,9 @@ const SeatProjection = "seat"
 // SeatMinGrace is the least time a forced handover leaves the holder to
 // finish or park its action and write its handover note (02 §5). 08 lets
 // the requester choose force-after but sets no floor; this is that floor.
+// The /v1 seat events replay against it: a rebuild re-checks recorded
+// history with it, so it is never edited silently. Changing it needs a
+// versioned policy recorded with the events it applies to.
 const SeatMinGrace = 15 * time.Minute
 
 // seatRequest is a pending handover request and when it was recorded.
@@ -56,24 +59,30 @@ func SeatKinds() eventstore.Kinds {
 	return k
 }
 
+// NewSeatCandidate mints the id a command gives the seat if it has none
+// yet. Mint it once per command, before Submit, and pass the same value to
+// the derivation and to NewSeatEvent: on a fresh seat, the object a
+// command binds and the subject it writes are then one id.
+func NewSeatCandidate() (string, error) { return ids.New("sea") }
+
 // SeatID is the seat's id, the subject of its events: the recorded one,
-// or a fresh one before the seat's first event.
-func SeatID(tx *eventstore.Tx) (string, error) {
+// or candidate (a NewSeatCandidate id) before the seat's first event.
+func SeatID(tx *eventstore.Tx, candidate string) (string, error) {
 	id, ok, err := loadJSON[string](tx, SeatProjection, "id")
 	if err != nil || ok {
 		return id, err
 	}
-	return ids.New("sea")
+	return candidate, ids.Check(candidate, "sea")
 }
 
-// NewSeatEvent proposes the seat transition p; SeatProjector admits it or
-// refuses the command.
-func NewSeatEvent(tx *eventstore.Tx, p types.SeatEvent) ([]eventstore.Event, error) {
+// NewSeatEvent proposes the seat transition p, under SeatID(tx,
+// candidate); SeatProjector admits it or refuses the command.
+func NewSeatEvent(tx *eventstore.Tx, candidate string, p types.SeatEvent) ([]eventstore.Event, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return nil, err
 	}
-	seat, err := SeatID(tx)
+	seat, err := SeatID(tx, candidate)
 	if err != nil {
 		return nil, err
 	}

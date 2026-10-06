@@ -23,7 +23,11 @@ func seat(tr types.SeatEventTransition, from, to *types.ActorID, forceAfter *tim
 			at := types.Time(forceAfter.UTC().Format(time.RFC3339Nano))
 			p.ForceAfter = &at
 		}
-		return authority.NewSeatEvent(tx, p)
+		candidate, err := authority.NewSeatCandidate()
+		if err != nil {
+			return nil, err
+		}
+		return authority.NewSeatEvent(tx, candidate, p)
 	}
 }
 
@@ -178,7 +182,7 @@ func TestSeatForceAfterHasAFloor(t *testing.T) {
 // request) has passed: refused before, applied after.
 func TestSeatForcedHandover(t *testing.T) {
 	const grace = 300 * time.Millisecond
-	b := openBoundaryGrace(t, grace)
+	b := openBoundaryGrace(t, grace, true)
 	sup, sup2 := b.sup.Actor(), b.supervisor()
 	short := time.Now().Add(grace / 3)
 	if b.try(sup2, seat(types.SeatEventTransitionSeatHandoverRequested, ref(sup), ref(sup2.Actor()), &short)) == nil {
@@ -210,6 +214,9 @@ func TestSeatGuard(t *testing.T) {
 	}
 	b.seed(b.sup, seat(types.SeatEventTransitionSeatReleased, ref(sup), nil, nil))
 	b.refusedUnrun("a supervisor write without the seat", b.noteCmd(b.sup, "free", prjA), isReason(vocab.ReasonSeatNotHeld))
+	// The guard covers a command Decide would propose, not only an allowed one.
+	other := b.op.Actor()
+	b.refusedUnrun("a seatless supervisor's proposal", b.derivedCmd(b.sup, []string{"grant.create"}, &other, false), isReason(vocab.ReasonSeatNotHeld))
 	if out, err := b.note(b.noteCmd(b.op, "op", prjA)); err != nil || out.Disposition != eventstore.DispositionApplied {
 		t.Fatalf("an operator's write without the seat: %+v %v", out, err)
 	}
@@ -218,7 +225,7 @@ func TestSeatGuard(t *testing.T) {
 	g.ID, g.Projects, g.Actions = types.GrantID(newID(t, "grt")), types.ProjectScope{All: true}, []types.ActionKind{"seat.take"}
 	b.seed(b.op, createGrant(g))
 	take := func(p identity.Principal, exempt bool) eventstore.Command {
-		b.az.Handlers["seat.take"] = takeHandler{exempt: exempt}
+		b.az.Handlers["seat.take"] = &takeHandler{exempt: exempt, candidate: candidate(t)}
 		key := newID(t, "cmd")
 		return p.Command(key, "seat.take", key, []byte(`{}`), nil)
 	}
@@ -236,10 +243,120 @@ func TestSeatGuard(t *testing.T) {
 	b.rebuilds()
 }
 
-// takeHandler stands in for 6b's seat.take handler.
-type takeHandler struct{ exempt bool }
+// takeHandler stands in for 6b's seat.take handler: candidate is the
+// command's NewSeatCandidate, bound the object it derived.
+type takeHandler struct {
+	exempt           bool
+	candidate, bound string
+}
 
-func (h takeHandler) Derive(tx *eventstore.Tx, _ types.Actor, _ json.RawMessage) (authority.Derived, error) {
-	seat, err := authority.SeatID(tx)
+func (h *takeHandler) Derive(tx *eventstore.Tx, _ types.Actor, _ json.RawMessage) (authority.Derived, error) {
+	seat, err := authority.SeatID(tx, h.candidate)
+	h.bound = seat
 	return authority.Derived{Object: seat, SeatExempt: h.exempt}, err
+}
+
+func candidate(t *testing.T) string {
+	t.Helper()
+	c, err := authority.NewSeatCandidate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// The first seat event: the object the command binds and the subject it
+// writes are one id, which the seat keeps.
+func TestSeatFirstTake(t *testing.T) {
+	b := openBoundaryGrace(t, 0, false)
+	sup := b.sup.Actor()
+	// Before the first event, a candidate that is not a seat id is refused.
+	b.view(func(tx *eventstore.Tx) error {
+		if _, err := authority.SeatID(tx, newID(t, "evt")); err == nil {
+			t.Error("an evt_ id as the seat's")
+		}
+		return nil
+	})
+	g := b.supGrant
+	g.ID, g.Projects, g.Actions = types.GrantID(newID(t, "grt")), types.ProjectScope{All: true}, []types.ActionKind{"seat.take"}
+	b.seed(b.op, createGrant(g))
+	h := &takeHandler{exempt: true, candidate: candidate(t)}
+	b.az.Handlers["seat.take"] = h
+	key := newID(t, "cmd")
+	var subject string
+	out, err := b.s.Submit(context.Background(), b.sup.Command(key, "seat.take", key, []byte(`{}`), nil), eventstore.Applies(
+		func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+			evs, err := authority.NewSeatEvent(tx, h.candidate, types.SeatEvent{Transition: types.SeatEventTransitionSeatTaken, To: &sup})
+			if len(evs) == 1 {
+				subject = evs[0].Subject
+			}
+			return evs, json.RawMessage(`{}`), err
+		}))
+	if err != nil || out.Disposition != eventstore.DispositionApplied {
+		t.Fatalf("the first seat.take: %+v %v", out, err)
+	}
+	var recorded string
+	b.view(func(tx *eventstore.Tx) (err error) {
+		recorded, err = authority.SeatID(tx, candidate(t))
+		return err
+	})
+	if h.bound == "" || h.bound != subject || subject != recorded || recorded != h.candidate {
+		t.Errorf("bound %q, emitted %q, recorded %q, candidate %q", h.bound, subject, recorded, h.candidate)
+	}
+	b.rebuilds()
+}
+
+// pendingTo is the pending request's requester, if any.
+func (b *boundary) pendingTo() (types.ActorID, bool) {
+	b.t.Helper()
+	var req struct {
+		Event types.SeatEvent `json:"event"`
+	}
+	var pending bool
+	b.view(func(tx *eventstore.Tx) error {
+		raw, ok, err := tx.Get(authority.SeatProjection, "request")
+		pending = ok
+		if err != nil || !ok {
+			return err
+		}
+		return json.Unmarshal(raw, &req)
+	})
+	if !pending || req.Event.To == nil {
+		return "", false
+	}
+	return *req.Event.To, true
+}
+
+// A newer request replaces the older; only its own requester executes a
+// matured request; any change of holder clears it, so a later force on it
+// is stale and refused.
+func TestSeatRequestLifecycle(t *testing.T) {
+	const grace = 300 * time.Millisecond
+	b := openBoundaryGrace(t, grace, true)
+	sup, sup2, sup3 := b.sup.Actor(), b.supervisor(), b.supervisor()
+	s2, s3 := sup2.Actor(), sup3.Actor()
+	at := time.Now().Add(grace + 100*time.Millisecond)
+	b.seed(sup2, seat(types.SeatEventTransitionSeatHandoverRequested, ref(sup), &s2, &at))
+	b.seed(sup3, seat(types.SeatEventTransitionSeatHandoverRequested, ref(sup), &s3, &at))
+	if to, ok := b.pendingTo(); !ok || to != s3 {
+		t.Fatalf("the newer request does not replace the older: %s %t", to, ok)
+	}
+	time.Sleep(time.Until(at) + 50*time.Millisecond)
+	if b.try(sup2, seat(types.SeatEventTransitionSeatHandedOver, ref(sup), &s2, nil)) == nil {
+		t.Error("a replaced request forced")
+	}
+	if b.try(sup2, seat(types.SeatEventTransitionSeatHandedOver, ref(sup), &s3, nil)) == nil {
+		t.Error("a third supervisor executed another requester's matured handover")
+	}
+	b.seed(b.sup, seat(types.SeatEventTransitionSeatHandedOver, ref(sup), &s2, nil))
+	if to, ok := b.pendingTo(); ok {
+		t.Errorf("the request survives the handover: %s", to)
+	}
+	if b.try(sup3, seat(types.SeatEventTransitionSeatHandedOver, &s2, &s3, nil)) == nil {
+		t.Error("a stale force after the holder changed")
+	}
+	if h, _ := b.holder(); h != s2 {
+		t.Errorf("holder %s, want %s", h, s2)
+	}
+	b.rebuilds()
 }

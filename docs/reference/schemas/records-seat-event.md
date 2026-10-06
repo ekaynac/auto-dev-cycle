@@ -4,7 +4,7 @@
 
 `schemas/records/seat-event.json`
 
-The payload of every supervisor-seat event (docs/plan/02-supervisor-role §5, docs/design/m0/08 "Supervisor seat"): &lt;transition&gt;/v1. There is one seat per controller and the event's subject is always `seat`. `from` is the holder before the transition and `to` the holder after it; on seat.handover_requested `from` is the holder asked and `to` the requester, and `force_after` is when the request wins (null: it only asks). internal/authority checks every transition against the current seat in the writer transaction.
+The payload of every supervisor-seat event (docs/plan/02-supervisor-role §5, docs/design/m0/08 "Supervisor seat"): &lt;transition&gt;/v1. There is one seat per controller: the event's subject is its id, a sea_ TypeID minted by its first event and the same for every seat event after. `from` is the holder before the transition and `to` the holder after it; on seat.handover_requested `from` is the holder asked and `to` the requester, and `force_after` is when the request wins (null: it only asks). internal/authority checks every transition against the current seat in the writer transaction.
 
 ## Fields of the document
 

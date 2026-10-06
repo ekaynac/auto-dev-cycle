@@ -78,11 +78,11 @@ type boundary struct {
 	az            authority.Authorizer // what the store's Authorize hook runs
 }
 
-func openBoundary(t *testing.T) *boundary { return openBoundaryGrace(t, 0) }
+func openBoundary(t *testing.T) *boundary { return openBoundaryGrace(t, 0, true) }
 
 // openBoundaryGrace: with the seat projector's grace overridden when
-// positive. The supervisor holds the seat.
-func openBoundaryGrace(t *testing.T, grace time.Duration) *boundary {
+// positive; seated, the supervisor holds the seat.
+func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary {
 	dir := filepath.Join(t.TempDir(), "state")
 	lock, err := eventstore.AcquireLock(dir)
 	if err != nil {
@@ -147,7 +147,9 @@ func openBoundaryGrace(t *testing.T, grace time.Duration) *boundary {
 		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID, Approval: types.ApprovalID(newID(t, "apr"))}
 	b.seed(b.op, createGrant(b.supGrant))
 	b.sup = b.login(b.supTok)
-	b.seed(b.sup, seat(types.SeatEventTransitionSeatTaken, nil, &sup.ID, nil))
+	if seated {
+		b.seed(b.sup, seat(types.SeatEventTransitionSeatTaken, nil, &sup.ID, nil))
+	}
 	return b
 }
 
