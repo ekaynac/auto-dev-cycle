@@ -63,6 +63,9 @@ const (
 	// SignatureUnchecked accepts a WebAuthn assertion without verifying its
 	// signature over authenticatorData and the client data hash.
 	SignatureUnchecked = "webauthn.signature-unchecked"
+	// StreamCheckedAtOpenOnly authorizes an event stream when it opens and
+	// never again, so a revoked grant keeps reading.
+	StreamCheckedAtOpenOnly = "api.stream-checked-at-open-only"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -71,4 +74,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	OuterStatusTrusted, AbsentPredicateUnchecked, UnknownFamilyIndependent, BindingDigestIgnored,
 	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly,
 	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked, ConfirmIgnoresStatus, ReservationsUncounted,
-	SignatureUnchecked}
+	SignatureUnchecked, StreamCheckedAtOpenOnly}

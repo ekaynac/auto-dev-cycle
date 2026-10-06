@@ -171,3 +171,10 @@ func compare(live, rebuilt map[projKey]string) []ProjectionDiff {
 	})
 	return diffs
 }
+
+// EventsAfter reads up to limit events after seq, in order, in t's
+// snapshot: a reader that decides authority in the same view never sees an
+// event its decision did not see.
+func (t *Tx) EventsAfter(after int64, limit int) ([]Event, error) {
+	return eventsAfter(t.ctx, t.tx, after, limit)
+}
