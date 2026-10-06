@@ -29,7 +29,13 @@ var ErrCommandsRefused = authority.ErrActionNotWired
 // the wired handlers (none in this build) and the projector.
 func hooks(reg *vocab.Registry, project func(*eventstore.Tx, []eventstore.Event) error) eventstore.Hooks {
 	az := authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{}, Now: time.Now}
-	return eventstore.Hooks{Identify: identity.Recheck, Authorize: az.Authorize, Project: project}
+	authorize := func(t *eventstore.Tx, c eventstore.Command) error {
+		if c.Action == issueAction {
+			return authorizeSystem(t, c)
+		}
+		return az.Authorize(t, c)
+	}
+	return eventstore.Hooks{Identify: identity.Recheck, Authorize: authorize, Project: project}
 }
 
 // eventKinds merges the event kinds of every package the writer projects;

@@ -22,6 +22,16 @@ Actor:
     never written to logs or stdout; the log says only where the file is.
   - The secret creates the first operator actor exactly once. Consumption is an event, so it survives restarts, and the
     file is deleted. It expires after 24 h.
+  - Mechanics (14 R4): the file is created exclusively (`O_EXCL|O_NOFOLLOW`, 0600) through the held state-directory
+    descriptor, and only its hash and its expiry, fixed then, are recorded (`identity.bootstrap_issued/v1`). A restart
+    never renews or recreates a recorded secret. `POST /v1/bootstrap` is served only on the private socket, as its
+    listener says. One writer transaction checks the secret, creates the first operator and its first token, and
+    consumes the bootstrap; the file is deleted after the commit, and a leftover one never bootstraps again. A wrong,
+    expired or spent secret is `failed/confirmation_refused`. `adc admin bootstrap` reads the secret from the file or
+    stdin, never argv, and writes the token file.
+  - Recovery. An expired, unused secret (or a recorded one whose file is gone): `adcd bootstrap renew` (14 R8) writes a
+    new secret and expiry. A bootstrap committed but whose response or token-file write was lost: a retry replays without
+    the token, and `adcd recover operator-token` (14 R7) issues the operator a new one offline. Both are PR 4d.
   - All logs redact tokens, secrets and challenge values by type, not by pattern guessing.
 - `operator` tokens are unrestricted (D31).
 - `supervisor` tokens act only under grants.

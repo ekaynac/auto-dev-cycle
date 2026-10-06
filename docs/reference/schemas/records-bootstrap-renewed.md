@@ -4,7 +4,7 @@
 
 `schemas/records/bootstrap-renewed.json`
 
-The payload of identity.bootstrap_renewed/v1, renewal of an expired, unconsumed bootstrap (docs/design/m0/14 R8). The system actor replaces the bootstrap secret: the event carries the new secret's hash (never the secret), when it was made and its expiry, 24 h later. The projection keeps only the latest, so the previous secret no longer verifies. Valid only before the first operator exists; the event's subject is the system actor.
+The payload of identity.bootstrap_renewed/v1, renewal of an expired, unconsumed bootstrap (docs/design/m0/14 R8). The system actor replaces the bootstrap secret: the event carries the new secret's hash (never the secret), when it was made and its expiry, 24 h later. The projection keeps only the latest, so the previous secret no longer verifies. Valid only before the first operator exists; the event's subject is the system actor. It is also the payload of identity.bootstrap_issued/v1, the first secret, which the first start records once (14 R4).
 
 ## Fields of the document
 

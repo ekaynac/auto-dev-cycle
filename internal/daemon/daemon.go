@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
@@ -27,6 +28,8 @@ type Daemon struct {
 	store    *eventstore.Store
 	head     eventstore.Head    // verified at start
 	system   identity.Principal // the system actor's, held only here
+	boot     *bootstrapper
+	note     string // the bootstrap's startup note, fixed text
 	once     sync.Once
 	closeErr error
 }
@@ -122,7 +125,11 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 	}); err != nil {
 		return nil, couldNotRun(vocab.ReasonAmbiguousState, "the system actor is not live", err)
 	}
-	return &Daemon{lock: lock, store: store, head: head, system: system}, nil
+	boot, note, err := openBootstrap(ctx, store, system, lock.Dir(), time.Now)
+	if err != nil {
+		return nil, err
+	}
+	return &Daemon{lock: lock, store: store, head: head, system: system, boot: boot, note: note}, nil
 }
 
 // Head is the event log's head verified at start.
@@ -130,7 +137,7 @@ func (d *Daemon) Head() eventstore.Head { return d.head }
 
 // Close closes the event store and then releases the lock, once.
 func (d *Daemon) Close() error {
-	d.once.Do(func() { d.closeErr = errors.Join(d.store.Close(), d.lock.Release()) })
+	d.once.Do(func() { d.closeErr = errors.Join(d.boot.dir.Close(), d.store.Close(), d.lock.Release()) })
 	return d.closeErr
 }
 
@@ -152,6 +159,9 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 		return err
 	}
 	fmt.Fprintf(logw, "adcd: started; event log verified to seq %d; listening on %d socket(s)\n", d.head.Seq, len(srv.sockets))
+	if d.note != "" {
+		fmt.Fprintln(logw, d.note)
+	}
 	if ready != nil {
 		ready(d)
 	}

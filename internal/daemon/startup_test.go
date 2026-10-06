@@ -334,7 +334,8 @@ func TestStateDirPermissionsRefused(t *testing.T) {
 	}
 }
 
-// A fresh store gets one persisted system actor, which later starts load.
+// A fresh store gets one persisted system actor, which later starts load,
+// and its bootstrap secret's record (bootstrap_test.go).
 func TestSystemActorPersisted(t *testing.T) {
 	cfg := Config{StateDir: stateDir(t)}
 	var heads []int64
@@ -359,7 +360,7 @@ func TestSystemActorPersisted(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if heads[0] != 0 || heads[1] != 1 {
+	if heads[0] != 0 || heads[1] != 2 {
 		t.Fatalf("the system actor was not created once: heads %v", heads)
 	}
 }

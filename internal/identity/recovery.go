@@ -51,7 +51,11 @@ func RecoverToken(i Issued, revoke []types.TokenID) ([]eventstore.Event, error) 
 // the only one, expiring BootstrapSecretExpiry later. Its subject is the
 // system actor, who records it.
 func RenewBootstrap(system types.ActorID, hash string, now time.Time) ([]eventstore.Event, error) {
-	return recordEvent(BootstrapRenewedKind, string(system), types.BootstrapRenewed{Hash: hash,
+	return bootstrapSecret(BootstrapRenewedKind, system, hash, now)
+}
+
+func bootstrapSecret(kind string, system types.ActorID, hash string, now time.Time) ([]eventstore.Event, error) {
+	return recordEvent(kind, string(system), types.BootstrapRenewed{Hash: hash,
 		CreatedAt: types.Time(now.UTC().Format(time.RFC3339Nano)), ExpiresAt: types.Time(now.Add(BootstrapSecretExpiry).UTC().Format(time.RFC3339Nano))})
 }
 
@@ -64,7 +68,7 @@ func projectRecovery(tx *eventstore.Tx, ev eventstore.Event) (ok bool, err error
 			return true, err
 		}
 		return true, recoverToken(tx, ev.Subject, types.ActorID(ev.Actor), p)
-	case BootstrapRenewedKind:
+	case BootstrapRenewedKind, BootstrapIssuedKind:
 		var p types.BootstrapRenewed
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
 			return true, err
@@ -132,6 +136,9 @@ func renewBootstrap(tx *eventstore.Tx, ev eventstore.Event, p types.BootstrapRen
 		if _, done, err := bootstrapped(tx, key); err != nil || done {
 			return errors.Join(err, errors.New("the bootstrap is consumed; it is not renewed"))
 		}
+	}
+	if _, ok, err := load[types.BootstrapRenewed](tx, BootstrapProjection, BootstrapSecretKey); ev.Kind == BootstrapIssuedKind && (err != nil || ok) {
+		return errors.Join(err, errors.New("the first bootstrap secret is issued once; a later one is a renewal"))
 	}
 	if !issuedProfile(p.Hash) {
 		return fmt.Errorf("the bootstrap hash is not of the issuance profile")
