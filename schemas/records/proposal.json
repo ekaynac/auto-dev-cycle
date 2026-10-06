@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/proposal.json",
   "title": "Proposal",
-  "description": "A proposed action awaiting confirmation (docs/design/m0/04 \"Proposals and confirmation\"), recorded when the action's confirmation policy is not none. binding_digest is the JCS digest of {action, change_class, project, object, expected_state, scope, proposed_by}; a confirmation binds exactly that digest. At apply, authority revalidates the expected state, the proposer's grant, the policy and the confirmer, and otherwise invalidates the proposal.",
+  "description": "A proposed action awaiting confirmation (docs/design/m0/04 \"Proposals and confirmation\"), recorded when the action's confirmation policy is not none. binding_digest is the JCS digest of {action, change_class, project, object, expected_state, scope, proposed_by} and, when the change has one, its grantee; a confirmation binds exactly that digest. scope is the command's input; object, project, grantee, change_class and expected_state are derived server side. open is the pending state. At apply, authority revalidates the expected state, the proposer's grant, the policy and the confirmer, and otherwise invalidates the proposal; invalidated_reason is the registered reason, null in every other state.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "action", "change_class", "project", "object", "expected_state", "scope", "proposed_by", "grant", "policy", "binding_digest", "status", "expires_at"],
+  "required": ["id", "action", "change_class", "project", "object", "expected_state", "scope", "proposed_by", "grantee", "grant", "policy", "binding_digest", "status", "invalidated_reason", "created_at", "expires_at"],
   "properties": {
     "id": {"$ref": "../common/defs.json#/$defs/ProposalID"},
     "action": {"$ref": "grant.json#/$defs/ActionKind"},
@@ -15,10 +15,16 @@
     "expected_state": {"$ref": "approval.json#/$defs/ExpectedState"},
     "scope": {"type": "object", "x-adc-open-payload": "action"},
     "proposed_by": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "grantee": {"description": "The actor a grant change is for, as derived; null when the change creates or extends no grant.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ActorID"}]},
     "grant": {"description": "The grant the proposal was decided under (null for an operator's); at apply it must still be the one that covers it, never a substitute.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/GrantID"}]},
     "policy": {"enum": ["independent_review", "human"]},
     "binding_digest": {"$ref": "../common/defs.json#/$defs/Digest"},
-    "status": {"enum": ["open", "confirmed", "rejected", "expired", "superseded", "invalidated"]},
+    "status": {"enum": ["open", "confirmed", "applied", "rejected", "withdrawn", "expired", "superseded", "invalidated"]},
+    "invalidated_reason": {"oneOf": [{"type": "null"}, {"enum": ["stale_expected_state", "authority_revoked", "actor_revoked", "proposal_invalidated"]}]},
+    "created_at": {"$ref": "../common/defs.json#/$defs/Time"},
     "expires_at": {"$ref": "../common/defs.json#/$defs/Time"}
-  }
+  },
+  "if": {"properties": {"status": {"const": "invalidated"}}},
+  "then": {"properties": {"invalidated_reason": {"not": {"const": null}}}},
+  "else": {"properties": {"invalidated_reason": {"const": null}}}
 }

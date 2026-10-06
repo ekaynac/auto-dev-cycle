@@ -4,7 +4,7 @@
 
 `schemas/records/proposal.json`
 
-A proposed action awaiting confirmation (docs/design/m0/04 "Proposals and confirmation"), recorded when the action's confirmation policy is not none. binding_digest is the JCS digest of {action, change_class, project, object, expected_state, scope, proposed_by}; a confirmation binds exactly that digest. At apply, authority revalidates the expected state, the proposer's grant, the policy and the confirmer, and otherwise invalidates the proposal.
+A proposed action awaiting confirmation (docs/design/m0/04 "Proposals and confirmation"), recorded when the action's confirmation policy is not none. binding_digest is the JCS digest of {action, change_class, project, object, expected_state, scope, proposed_by} and, when the change has one, its grantee; a confirmation binds exactly that digest. scope is the command's input; object, project, grantee, change_class and expected_state are derived server side. open is the pending state. At apply, authority revalidates the expected state, the proposer's grant, the policy and the confirmer, and otherwise invalidates the proposal; invalidated_reason is the registered reason, null in every other state.
 
 ## Fields of the document
 
@@ -18,10 +18,17 @@ A proposed action awaiting confirmation (docs/design/m0/04 "Proposals and confir
 | `expected_state` | yes | [ExpectedState](records-approval.md#expectedstate) |  |
 | `scope` | yes | object (open payload) |  |
 | `proposed_by` | yes | [ActorID](common-defs.md#actorid) |  |
+| `grantee` | yes | null or [ActorID](common-defs.md#actorid) | The actor a grant change is for, as derived; null when the change creates or extends no grant. |
 | `grant` | yes | null or [GrantID](common-defs.md#grantid) | The grant the proposal was decided under (null for an operator's); at apply it must still be the one that covers it, never a substitute. |
 | `policy` | yes | one of `independent_review`, `human` |  |
 | `binding_digest` | yes | [Digest](common-defs.md#digest) |  |
-| `status` | yes | one of `open`, `confirmed`, `rejected`, `expired`, `superseded`, `invalidated` |  |
+| `status` | yes | one of `open`, `confirmed`, `applied`, `rejected`, `withdrawn`, `expired`, `superseded`, `invalidated` |  |
+| `invalidated_reason` | yes | null or one of `stale_expected_state`, `authority_revoked`, `actor_revoked`, `proposal_invalidated` |  |
+| `created_at` | yes | [Time](common-defs.md#time) |  |
 | `expires_at` | yes | [Time](common-defs.md#time) |  |
 
 No other fields are allowed.
+
+Conditional rules (1, `if`/`then`/`else` in the schema):
+
+- when `status` `invalidated`, then `invalidated_reason` any (not `null`); otherwise `invalidated_reason` `null`

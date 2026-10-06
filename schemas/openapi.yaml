@@ -657,6 +657,7 @@ components:
       additionalProperties: false
       required:
         - id
+        - proposal
         - actor
         - actor_kind
         - action
@@ -676,6 +677,11 @@ components:
       properties:
         id:
           $ref: ../common/defs.json#/$defs/ApprovalID
+        proposal:
+          description: The one proposal a confirmed approval answers (null only under policy none, which internal/authority does not persist in this build). Every field it shares with the proposal is copied from the proposal record, never supplied, and internal/authority admits it only while they match.
+          oneOf:
+            - type: "null"
+            - $ref: ../common/defs.json#/$defs/ProposalID
         actor:
           $ref: ../common/defs.json#/$defs/ActorID
         actor_kind:
