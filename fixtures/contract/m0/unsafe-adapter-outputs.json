@@ -1,0 +1,15 @@
+{
+  "name": "unsafe-adapter-outputs",
+  "invariant": "An adapter's output reaches the blob store only through the ingestion boundary: a symlink (even to bytes matching the declared digest), a FIFO, a hard link, a digest mismatch and a handle of another attempt are refused unsafe_output, an output of a stopped attempt stale_attempt, each leaving the attempt untrustworthy and nothing published, and the stale attempt's usage is still counted (09 \"Blob exchange: the ingestion boundary\"; 05).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "unsafe_output"},
+    {"outcome": "failed", "reason": "unsafe_output"},
+    {"outcome": "failed", "reason": "unsafe_output"},
+    {"outcome": "failed", "reason": "unsafe_output"},
+    {"outcome": "failed", "reason": "unsafe_output"},
+    {"outcome": "failed", "reason": "stale_attempt"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "adapterhost.ingest-follows-links"
+}
