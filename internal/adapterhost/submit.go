@@ -209,7 +209,7 @@ func (r *attemptRun) finish(ctx context.Context, result *types.AdapterRunResult,
 		submitting, r.denied = false, true
 	}
 	var submitted *types.SubmittedResult
-	_, err := r.h.command(ctx, r.spec.Attempt, "finish", func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	_, err := r.h.command(ctx, r.spec.Attempt, "finish", applies(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		submitted, r.out.Refusals = nil, append([]types.AttemptOutputRefusal(nil), pending...)
 		var evs []eventstore.Event
 		for _, m := range usage {
@@ -249,7 +249,7 @@ func (r *attemptRun) finish(ctx context.Context, result *types.AdapterRunResult,
 		}
 		lost, err := lease.LoseRunning(tx, r.spec.Attempt, lostReason(cause))
 		return append(evs, lost...), err
-	})
+	}))
 	if err != nil {
 		r.out.Refusals = pending
 		if submitting {

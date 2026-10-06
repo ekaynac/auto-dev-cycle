@@ -93,7 +93,7 @@ func newWorld(t *testing.T) *world {
 
 func (w *world) do(apply func(*eventstore.Tx) ([]eventstore.Event, error)) {
 	w.t.Helper()
-	if _, err := w.host.command(context.Background(), attID, "test", apply); err != nil {
+	if _, err := w.host.command(context.Background(), attID, "test", applies(apply)); err != nil {
 		w.t.Fatal(err)
 	}
 }
@@ -361,5 +361,36 @@ func TestCapabilityCheckFailureLaunchesNothing(t *testing.T) {
 	entries, err := os.ReadDir(w.host.Root)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("the exchange root was left behind: %v %v", entries, err)
+	}
+}
+
+// A start the writer commits as refused (14 N2) launches nothing: only an
+// applied start advances the attempt.
+func TestACommittedRefusalBeforeStartLaunchesNothing(t *testing.T) {
+	w := newWorld(t)
+	decided := 0
+	decideStart = func(*eventstore.Tx, Spec) (eventstore.Decision, error) {
+		decided++
+		return eventstore.Decision{Disposition: eventstore.DispositionRefused,
+			Result: json.RawMessage(`{"outcome":"failed","reason":"precondition_failed","detail":"refused by the test"}`)}, nil
+	}
+	t.Cleanup(func() { decideStart = startAttempt })
+	marker := filepath.Join(t.TempDir(), "launched")
+	out, err := w.host.Run(context.Background(), spec(session.Config{Command: []string{"/bin/sh", "-c", "echo > " + marker},
+		Env: []string{"PATH=/usr/bin:/bin"}, Deadline: 10 * time.Second}))
+	if !errors.Is(err, eventstore.ErrNotApplied) || decided != 1 {
+		t.Fatalf("run: %v (decided %d)", err, decided)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the adapter was launched")
+	}
+	if _, ok := record[types.Attempt](w, lease.AttemptProjection, string(attID)); ok {
+		t.Fatal("an attempt exists")
+	}
+	if l, _ := record[types.Lease](w, lease.LeaseProjection, string(leaID)); l.State != types.LeaseStateGranted || l.Attempt != nil {
+		t.Fatalf("lease %s, attempt %v", l.State, l.Attempt)
+	}
+	if len(w.usage()) != 0 || out.Result != nil || out.Submitted != nil {
+		t.Fatal("something ran")
 	}
 }

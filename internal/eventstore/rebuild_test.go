@@ -81,9 +81,9 @@ func populate(t *testing.T, e *env) {
 	t.Helper()
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		_, err := e.s.Submit(ctx, command(t, fmt.Sprintf("p-%d", i), `{}`), func(*Tx) ([]Event, json.RawMessage, error) {
+		_, err := e.s.SubmitApplied(ctx, command(t, fmt.Sprintf("p-%d", i), `{}`), Applies(func(*Tx) ([]Event, json.RawMessage, error) {
 			return []Event{{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -141,9 +141,9 @@ func TestRebuildMatchesLive(t *testing.T) {
 		t.Fatalf("recent holds %d records", n)
 	}
 	// Live writes after a rebuild still reach the live table.
-	_, err := e.s.Submit(context.Background(), command(t, "after-rebuild", `{}`), func(*Tx) ([]Event, json.RawMessage, error) {
+	_, err := e.s.SubmitApplied(context.Background(), command(t, "after-rebuild", `{}`), Applies(func(*Tx) ([]Event, json.RawMessage, error) {
 		return []Event{{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

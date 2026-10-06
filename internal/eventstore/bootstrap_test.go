@@ -48,7 +48,7 @@ func selfCreated(t *testing.T, kind types.ActorKind) (eventstore.Command, events
 		t.Fatal(err)
 	}
 	cmd := id(t, "cmd")
-	return eventstore.Command{ID: cmd, Actor: string(a.ID), IdempotencyKey: cmd, Input: []byte(`{}`)}, evs[0]
+	return eventstore.Command{ID: cmd, Actor: string(a.ID), Action: "test.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, evs[0]
 }
 
 // Bootstrap writes an empty store's first event, by its own subject, past
@@ -78,10 +78,10 @@ func TestBootstrapOnlyFirstEvent(t *testing.T) {
 	}
 	// Ordinary submission still goes through the Authorize hook.
 	cmd := id(t, "cmd")
-	if _, err := s.Submit(ctx, eventstore.Command{ID: cmd, Actor: c.Actor, IdempotencyKey: cmd, Input: []byte(`{}`)},
+	if _, err := s.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: c.Actor, Action: "test.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
 		func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			return nil, json.RawMessage(`{}`), nil
-		}); !errors.Is(err, errRefused) {
+		})); !errors.Is(err, errRefused) {
 		t.Fatalf("Submit skipped the Authorize hook: %v", err)
 	}
 	if h, err := s.Head(ctx); err != nil || h.Seq != 1 {

@@ -118,7 +118,15 @@ var (
 	// fenceAttempt and waitTree are lease.FenceAttempt and Session.Wait.
 	fenceAttempt = lease.FenceAttempt
 	waitTree     = (*session.Session).Wait
+	// decideStart decides the start command (startAttempt).
+	decideStart = startAttempt
 )
+
+func startAttempt(tx *eventstore.Tx, spec Spec) (eventstore.Decision, error) {
+	return applies(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StartAttempt(tx, spec.Lease, spec.LeaseRevision, spec.Attempt, spec.Base)
+	})(tx)
+}
 
 func hook(stage string) {
 	if testHook != nil {
@@ -136,14 +144,15 @@ func (h *Host) Run(ctx context.Context, spec Spec) (out Outcome, err error) {
 	}
 	defer func() { err = errors.Join(err, x.remove()) }()
 	if perr := probe(x.outDir); perr != nil {
-		_, err := h.command(ctx, spec.Attempt, "start-refused", func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		_, err := h.command(ctx, spec.Attempt, "start_refused", applies(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return lease.ChangeLease(tx, spec.Lease, spec.LeaseRevision,
 				lease.LeaseEvent{Kind: lease.StartRefused, Reason: vocab.ReasonPreconditionFailed.String()}, nil)
-		})
+		}))
 		return Outcome{StartRefused: perr}, err
 	}
-	if _, err := h.command(ctx, spec.Attempt, "start", func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return lease.StartAttempt(tx, spec.Lease, spec.LeaseRevision, spec.Attempt, spec.Base)
+	// Only an applied start launches: any other disposition is an error.
+	if _, err := h.command(ctx, spec.Attempt, "start", func(tx *eventstore.Tx) (eventstore.Decision, error) {
+		return decideStart(tx, spec)
 	}); err != nil {
 		return Outcome{}, err
 	}
@@ -342,16 +351,21 @@ func (r *attemptRun) discard() error {
 	return nil
 }
 
-// command runs one writer command of the attempt.
-func (h *Host) command(ctx context.Context, attempt types.AttemptID, step string, apply func(*eventstore.Tx) ([]eventstore.Event, error)) (eventstore.Outcome, error) {
+// command runs one writer command of the attempt, action attempt.<step>.
+// It goes on only when the command applied (SubmitApplied).
+func (h *Host) command(ctx context.Context, attempt types.AttemptID, step string, decide eventstore.Decide) (eventstore.Outcome, error) {
 	id, err := newID("cmd")
 	if err != nil {
 		return eventstore.Outcome{}, err
 	}
-	return h.Store.Submit(ctx, eventstore.Command{ID: id, Actor: h.Actor, IdempotencyKey: id,
-		Input: []byte(`{"attempt":"` + string(attempt) + `","step":"` + step + `"}`)},
-		func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
-			evs, err := apply(tx)
-			return evs, json.RawMessage(`{}`), err
-		})
+	return h.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: h.Actor, Action: "attempt." + step, IdempotencyKey: id,
+		Input: []byte(`{"attempt":"` + string(attempt) + `","step":"` + step + `"}`)}, decide)
+}
+
+// applies is the Decide of an attempt step that only ever applies.
+func applies(apply func(*eventstore.Tx) ([]eventstore.Event, error)) eventstore.Decide {
+	return eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+		evs, err := apply(tx)
+		return evs, json.RawMessage(`{}`), err
+	})
 }

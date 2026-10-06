@@ -86,8 +86,9 @@ func concurrentConflictingApprovals(ctx context.Context, dir string) (steps []St
 			idv[i] = v
 		}
 		id := string(p.ID)
-		_, err := s.Submit(ctx, eventstore.Command{ID: idv[0], Actor: actor, IdempotencyKey: idv[0], Input: []byte(`{}`),
-			Expected: []eventstore.Expectation{{Subject: id, Version: version}}},
+		_, err := s.SubmitApplied(ctx, eventstore.Command{ID: idv[0], Actor: actor, Action: "fixture.command", IdempotencyKey: idv[0], Input: []byte(`{}`),
+			Expected: []eventstore.Expectation{{Subject: id, Version: version}}}, eventstore.Applies(
+
 			func(t *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 				cur := p
 				if raw, ok, err := t.Get("proposals", id); err != nil {
@@ -103,7 +104,7 @@ func concurrentConflictingApprovals(ctx context.Context, dir string) (steps []St
 				}
 				payload, err := contract.Encode("records/proposal", next)
 				return []eventstore.Event{{ID: idv[1], Kind: proposalKind, Subject: id, Payload: payload}}, json.RawMessage(`{}`), err
-			})
+			}))
 		return err
 	}
 	p, err := openProposal(reg, sup, g)

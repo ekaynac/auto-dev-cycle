@@ -115,10 +115,10 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 		t.Fatal("the verified head is empty")
 	}
 	cmd := newID(t, "cmd")
-	_, err = d.store.Submit(context.Background(), eventstore.Command{ID: cmd, Actor: string(op), IdempotencyKey: cmd, Input: []byte(`{}`)},
+	_, err = d.store.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: string(op), Action: "test.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
 		func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			return nil, json.RawMessage(`{}`), nil
-		})
+		}))
 	if !errors.Is(err, ErrCommandsRefused) {
 		t.Fatalf("a command was not refused: %v", err)
 	}

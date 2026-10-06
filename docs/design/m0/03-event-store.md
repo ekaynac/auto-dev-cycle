@@ -23,8 +23,9 @@ events (append-only)
   prev_hash    TEXT NOT NULL            -- hash of the previous row; genesis = sha256 of the store's creation record
   hash         TEXT NOT NULL            -- sha256 over the canonical encoding of every column above
 
-commands (one row per accepted command; idempotency + results) [M1]
+commands (one row per committed command; idempotency + results) [M1]
   id, actor, idempotency_key, input_digest, disposition, result_json, first_seq, last_seq
+  -- disposition: applied | proposed | invalidated | refused (14 N2)
   UNIQUE(actor, idempotency_key)
 
 effects (external side effects; durable identities) [M2]
@@ -56,8 +57,14 @@ reservations, and refuses the whole command if any lacks room (`could_not_run/ca
 them. Reserving from the proposed events, rather than from the command, makes reserved totals a fold over the log:
 a rebuild recomputes them, and the limit check runs only when an event is admitted, never on replay.
 
-- **Idempotency.** `(actor, idempotency_key)` is unique. A repeat with the **same** `input_digest` returns the stored
-  result. A repeat with a **different** input is refused with `failed/idempotency_key_reused`.
+- **Idempotency.** `(actor, idempotency_key)` is unique. `input_digest` covers the canonical action, the complete input
+  and the expectations (14 N1). A repeat with the **same** digest returns the stored result and disposition. A repeat
+  with a **different** action, input or expectation is refused with `failed/idempotency_key_reused`.
+- **Dispositions.** The command's logic decides applied, proposed, invalidated or refused, and each is committed with
+  its events (14 N2). Internal callers go on only through `SubmitApplied`, which turns any other disposition into an
+  error. What the writer cannot decide (a reused key, an authorization refusal, a stale expectation) commits nothing.
+- **Issued secrets.** The stored result is stable and free of secrets. A credential a command issues is returned only
+  by the call that committed it, never stored, and absent on a replay; a replay mints nothing (14 N3).
 - **Expected state.** Commands acting on an object carry `expected` = the object's version (seq of its last event) or
   content digest. A mismatch is refused with `failed/stale_expected_state`.
 - **Process exclusivity.** `adcd` takes an exclusive advisory lock (`flock`) on `<state_dir>/adcd.lock`. It records its

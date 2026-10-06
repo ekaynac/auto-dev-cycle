@@ -385,10 +385,10 @@ func TestRefuseAllAfterSystemActor(t *testing.T) {
 	}
 	for _, actor := range []string{sys, newID(t, "act")} {
 		cmd := newID(t, "cmd")
-		_, err := d.store.Submit(context.Background(), eventstore.Command{ID: cmd, Actor: actor, IdempotencyKey: "adcd-system-actor", Input: []byte(`{}`)},
+		_, err := d.store.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: actor, Action: "test.command", IdempotencyKey: "adcd-system-actor", Input: []byte(`{}`)}, eventstore.Applies(
 			func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 				return nil, json.RawMessage(`{}`), nil
-			})
+			}))
 		if !errors.Is(err, ErrCommandsRefused) {
 			t.Fatalf("a submission as %s was not refused: %v", actor, err)
 		}

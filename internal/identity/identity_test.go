@@ -39,11 +39,11 @@ func id(t *testing.T, prefix string) string {
 
 // submitKey runs one command by actor, under an idempotency key.
 func (f *fixture) submitKey(by types.ActorID, key string, apply applyFn) error {
-	_, err := f.s.Submit(context.Background(), eventstore.Command{ID: id(f.t, "cmd"), Actor: string(by), IdempotencyKey: key, Input: []byte(`{}`)},
+	_, err := f.s.SubmitApplied(context.Background(), eventstore.Command{ID: id(f.t, "cmd"), Actor: string(by), Action: "test.command", IdempotencyKey: key, Input: []byte(`{}`)}, eventstore.Applies(
 		func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, err := apply(tx)
 			return evs, json.RawMessage(`{}`), err
-		})
+		}))
 	return err
 }
 

@@ -109,11 +109,11 @@ func seed(t *testing.T, dir string, project projectFor, extra ...string) *seeder
 func (w *seeder) do(actor types.ActorID, fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) {
 	w.t.Helper()
 	cmd := newID(w.t, "cmd")
-	if _, err := w.s.Submit(context.Background(), eventstore.Command{ID: cmd, Actor: string(actor), IdempotencyKey: cmd, Input: []byte(`{}`)},
+	if _, err := w.s.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: string(actor), Action: "test.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
 		func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, err := fn(tx)
 			return evs, json.RawMessage(`{}`), err
-		}); err != nil {
+		})); err != nil {
 		w.t.Fatal(err)
 	}
 }
