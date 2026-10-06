@@ -108,14 +108,36 @@ func (s *Store) path(hexsum string) string {
 // the bytes must hash to it, or nothing is published. When Put returns, the
 // blob and every directory on its path are fsynced.
 func (s *Store) Put(r io.Reader, declared string) (string, error) {
-	if declared != "" && !digestRe.MatchString(declared) {
-		return "", fmt.Errorf("blobstore: malformed digest %q", declared)
-	}
-	tmp, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "put-*")
+	st, err := s.Stage(r, declared)
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(tmp.Name()) // no-op after a successful rename
+	defer st.Discard()
+	return st.Publish()
+}
+
+// Staged is a verified copy not yet published: its bytes are fsynced in the
+// store's tmp/, where nothing references them and Open removes them after
+// a crash. Publish or Discard it.
+type Staged struct {
+	s      *Store
+	tmp    string
+	digest string
+}
+
+// Digest is the staged bytes' digest.
+func (st *Staged) Digest() string { return st.digest }
+
+// Stage copies r's bytes into tmp/, fsyncs them and checks them against
+// declared (when non-empty), publishing nothing.
+func (s *Store) Stage(r io.Reader, declared string) (*Staged, error) {
+	if declared != "" && !digestRe.MatchString(declared) {
+		return nil, fmt.Errorf("blobstore: malformed digest %q", declared)
+	}
+	tmp, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "put-*")
+	if err != nil {
+		return nil, err
+	}
 	h := sha256.New()
 	_, err = io.Copy(io.MultiWriter(tmp, h), r)
 	if err == nil {
@@ -124,18 +146,45 @@ func (s *Store) Put(r io.Reader, declared string) (string, error) {
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
+	got := "sha256:" + hex.EncodeToString(h.Sum(nil))
+	if err == nil && declared != "" && declared != got {
+		err = fmt.Errorf("%w: %w: declared %s, got %s", ErrDigestMismatch, ErrDeclaredDigest, declared, got)
+	}
 	if err != nil {
-		return "", err
+		if rerr := removeMissing(tmp.Name()); rerr != nil {
+			// Kept apart from the copy's error: a refusal of the bytes is
+			// not a failure to clean up, nor the reverse.
+			err = errors.Join(err, fmt.Errorf("%w: %v", ErrTempLeft, rerr))
+		}
+		return nil, err
 	}
-	sum := hex.EncodeToString(h.Sum(nil))
-	got := "sha256:" + sum
-	if declared != "" && declared != got {
-		return "", fmt.Errorf("%w: %w: declared %s, got %s", ErrDigestMismatch, ErrDeclaredDigest, declared, got)
-	}
+	return &Staged{s: s, tmp: tmp.Name(), digest: got}, nil
+}
 
+// Discard removes the staged copy (nothing once it was published).
+func (st *Staged) Discard() error { return removeMissing(st.tmp) }
+
+// ErrTempLeft: a failed Stage could not remove its temporary file (Open
+// removes it after a restart).
+var ErrTempLeft = errors.New("blobstore: a temporary file could not be removed")
+
+// remove is os.Remove; a test makes it fail.
+var remove = os.Remove
+
+func removeMissing(p string) error {
+	if err := remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// Publish moves the staged copy into place and fsyncs its directory chain,
+// returning its digest. A blob already there is verified instead.
+func (st *Staged) Publish() (string, error) {
+	s, got := st.s, st.digest
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	dst := s.path(sum)
+	dst := s.path(strings.TrimPrefix(got, "sha256:"))
 	if present, err := regular(dst); err != nil {
 		return "", err
 	} else if present {
@@ -144,15 +193,15 @@ func (s *Store) Put(r io.Reader, declared string) (string, error) {
 		if err := s.Verify(got); err != nil {
 			return "", err
 		}
-		return got, s.syncChain(filepath.Dir(dst))
+		return got, errors.Join(s.syncChain(filepath.Dir(dst)), st.Discard())
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return "", err
 	}
-	if err := os.Chmod(tmp.Name(), 0o400); err != nil {
+	if err := os.Chmod(st.tmp, 0o400); err != nil {
 		return "", err
 	}
-	if err := os.Rename(tmp.Name(), dst); err != nil {
+	if err := os.Rename(st.tmp, dst); err != nil {
 		return "", err
 	}
 	return got, s.syncChain(filepath.Dir(dst))

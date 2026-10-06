@@ -32,6 +32,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -109,6 +110,9 @@ func skipped(check string) bool { return skipCheck != nil && skipCheck(check) }
 // openat2 is missing or filtered (ENOSYS, EPERM). The fallback's missing
 // RESOLVE_NO_XDEV is made up by the mount-id comparison.
 func openBeneath(dir int, name string) (int, error) {
+	if mutation.Is(mutation.IngestFollowsLinks) {
+		return unix.Openat(dir, name, unix.O_PATH|unix.O_CLOEXEC, 0)
+	}
 	fd, err := openat2(dir, name, &unix.OpenHow{Flags: pathFlags, Resolve: resolveFlags})
 	if errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EPERM) {
 		return unix.Openat(dir, name, pathFlags, 0)
@@ -317,42 +321,58 @@ func unchanged(before, now meta) error {
 // (the copied stream hashes to what the adapter declared), but it is not a
 // snapshot: it says nothing about the file's state between the reads.
 func Ingest(outDir *os.File, name, declared string, size, bound int64, store *blobstore.Store) (string, error) {
+	st, err := Stage(outDir, name, declared, size, bound, store)
+	if err != nil {
+		return "", err
+	}
+	defer st.Discard()
+	return st.Publish()
+}
+
+// ValidHandle reports whether name is one plain path component, as a
+// handle must be (the path check).
+func ValidHandle(name string) bool { return handleRe.MatchString(name) }
+
+// Stage is Ingest without the publication: the verified copy is staged in
+// the blob store, for the caller to publish once the output is admitted (or
+// discard). Every check and error is Ingest's.
+func Stage(outDir *os.File, name, declared string, size, bound int64, store *blobstore.Store) (*blobstore.Staged, error) {
 	if !handleRe.MatchString(name) {
-		return "", unsafeErr(CheckPath, "handle %q is not one plain path component", name)
+		return nil, unsafeErr(CheckPath, "handle %q is not one plain path component", name)
 	}
 	if !digestRe.MatchString(declared) {
-		return "", unsafeErr(CheckDigest, "malformed declared digest %q", declared)
+		return nil, unsafeErr(CheckDigest, "malformed declared digest %q", declared)
 	}
 	if size < 0 || size > bound {
-		return "", unsafeErr(CheckSize, "declared size %d outside [0, %d]", size, bound)
+		return nil, unsafeErr(CheckSize, "declared size %d outside [0, %d]", size, bound)
 	}
 	dirMeta, err := stat(int(outDir.Fd()), "out/")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	pfd, err := openBeneath(int(outDir.Fd()), name)
 	switch {
 	case errors.Is(err, unix.ELOOP):
-		return "", unsafeErr(CheckSymlink, "resolving %q: %v", name, err)
+		return nil, unsafeErr(CheckSymlink, "resolving %q: %v", name, err)
 	case errors.Is(err, unix.EXDEV): // a mount point: the name is one validated component, so never ".."
-		return "", unsafeErr(CheckSpecialFile, "resolving %q: %v", name, err)
+		return nil, unsafeErr(CheckSpecialFile, "resolving %q: %v", name, err)
 	case err != nil:
-		return "", classifyErr(err, fmt.Sprintf("resolving %q", name))
+		return nil, classifyErr(err, fmt.Sprintf("resolving %q", name))
 	}
 	defer unix.Close(pfd)
 	before, err := stat(pfd, name)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if c := classify(uint32(before.mode)); c != "" && !skipped(c) {
-		return "", unsafeErr(c, "mode %#o is not a regular file", before.mode&unix.S_IFMT)
+		return nil, unsafeErr(c, "mode %#o is not a regular file", before.mode&unix.S_IFMT)
 	}
 	if err := errors.Join(links(before), sameMount(before, dirMeta.mnt, name)); err != nil {
-		return "", firstUnsafe(err)
+		return nil, firstUnsafe(err)
 	}
 	if !skipped(CheckSize) && before.size != size {
-		return "", unsafeErr(CheckSize, "size %d, declared %d", before.size, size)
+		return nil, unsafeErr(CheckSize, "size %d, declared %d", before.size, size)
 	}
 	if testHook != nil {
 		testHook("checked")
@@ -362,19 +382,19 @@ func Ingest(outDir *os.File, name, declared string, size, bound int64, store *bl
 	// or device whatever now sits at the name.
 	rfd, err := reopen(pfd, 0)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	f := os.NewFile(uintptr(rfd), name)
 	defer f.Close()
 	opened, err := stat(rfd, name+" (reopened)")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if (opened.dev != before.dev || opened.ino != before.ino) && !skipped(CheckReplaced) {
-		return "", unsafeErr(CheckReplaced, "%q reopened as another file than the one inspected", name)
+		return nil, unsafeErr(CheckReplaced, "%q reopened as another file than the one inspected", name)
 	}
 	if err := errors.Join(links(opened), sameMount(opened, dirMeta.mnt, name+" (reopened)"), unchanged(before, opened)); err != nil {
-		return "", asReplaced(firstUnsafe(err))
+		return nil, asReplaced(firstUnsafe(err))
 	}
 
 	// Read at most one byte past the declared size (size <= bound), so
@@ -384,17 +404,25 @@ func Ingest(outDir *os.File, name, declared string, size, bound int64, store *bl
 		limit++
 	}
 	r := &guard{r: io.LimitReader(f, limit), fd: rfd, before: before, size: size}
-	got, err := store.Put(r, declared)
+	st, err := store.Stage(r, declared)
 	var u *Unsafe
+	var refusal error
 	switch {
 	case errors.As(err, &u):
-		return "", u
+		refusal = u
 	case errors.Is(err, blobstore.ErrDeclaredDigest):
-		return "", unsafeErr(CheckDigest, "%v", err)
+		refusal = unsafeErr(CheckDigest, "the copied bytes do not hash to the declared digest")
 	case err != nil:
-		return "", err
+		return nil, err
+	default:
+		return st, nil
 	}
-	return got, nil
+	// A temporary file left behind is the store's cleanup failure, kept
+	// beside the refusal (never in its detail) for the caller to report.
+	if errors.Is(err, blobstore.ErrTempLeft) {
+		return nil, errors.Join(refusal, blobstore.ErrTempLeft)
+	}
+	return nil, refusal
 }
 
 // firstUnsafe returns the first *Unsafe joined in err.

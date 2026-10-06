@@ -161,6 +161,9 @@ Fencing rules:
 - Supersession and allocation of the replacement's token happen in **one transaction**: `attempt.superseded` for the
   old, `attempt.started` for the new.
 - On controller restart, every `running` attempt becomes `lost` (publication closed) before anything else runs.
+- An attempt whose adapter exited without an admissible result also becomes `lost` (`agent_disconnect`, or
+  `stream_dead` after a heartbeat timeout; 09). `lost` is intermediate, not terminal: it closes publication and still
+  seals and completes. When outputs were refused, their `attempt.output_refused` events explain it, not the reason.
 
 ## AttemptRecord (the checkpoint schema; K2, KA6, KA8)
 

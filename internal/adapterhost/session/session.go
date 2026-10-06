@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session/inproc"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/wire"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -42,6 +43,11 @@ type Config struct {
 	// Heartbeat is the longest silence between heartbeats during a run
 	// (DefaultHeartbeat when zero).
 	Heartbeat time.Duration
+	// InProcess, when set, is the adapter in place of Command and Env: a
+	// function of this process over the session's pipes, never spawned nor
+	// contained. Only the fixture harness can make one (package inproc,
+	// whose importers a test restricts).
+	InProcess *inproc.Peer
 }
 
 // Kind is why a call failed or the session ended.
@@ -147,21 +153,28 @@ type Session struct {
 	wmu       sync.Mutex
 	w         *wire.Writer
 
-	mu      sync.Mutex
-	next    int64
-	pending map[int64]pending
-	run     *run
-	shutID  int64                // the shutdown request
-	shut    bool                 // shutdown answered: the output ending is the clean end
-	fence   fence                // the session's one attempt (methods.go)
-	foreign *types.AdapterHandle // the first handle of another attempt refused (Foreign)
-	err     *Error
-	ended   chan struct{}
+	mu       sync.Mutex
+	next     int64
+	pending  map[int64]pending
+	run      *run
+	shutID   int64                // the shutdown request
+	shut     bool                 // shutdown answered: the output ending is the clean end
+	fence    fence                // the session's one attempt (methods.go)
+	foreign  *types.AdapterHandle // the first handle of another attempt refused (Foreign)
+	declared *Declaration         // a refused run result's declaration (Declared)
+	err      *Error
+	ended    chan struct{}
 }
 
 // Open spawns the adapter and starts reading it.
 func Open(cfg Config) (*Session, error) {
-	p, err := Spawn(ProcessSpec{Command: cfg.Command, Env: cfg.Env, Deadline: cfg.Deadline})
+	var p *Process
+	var err error
+	if cfg.InProcess != nil {
+		p, err = startPeer(cfg.InProcess, cfg.Deadline)
+	} else {
+		p, err = Spawn(ProcessSpec{Command: cfg.Command, Env: cfg.Env, Deadline: cfg.Deadline})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -185,6 +198,9 @@ func (s *Session) end(e *Error) {
 	s.mu.Unlock()
 	s.p.Kill()
 }
+
+// Done is closed once the session has ended (Err is then set).
+func (s *Session) Done() <-chan struct{} { return s.ended }
 
 // Err is why the session ended, or nil while it is live.
 func (s *Session) Err() error {
@@ -348,6 +364,11 @@ func (s *Session) watch() {
 // its reply, which the reader has checked. A cancelled ctx abandons the
 // wait; the reply, when it comes, is still checked, then dropped.
 func (s *Session) call(ctx context.Context, method, schema string, params any, r *run, x expect) (any, error) {
+	// A caller that has already given up sends nothing: the request is
+	// never started rather than raced against its reply.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var raw json.RawMessage
 	if schema != "" {
 		b, err := contract.Encode(schema, params)
@@ -413,8 +434,16 @@ func (s *Session) call(ctx context.Context, method, schema string, params any, r
 
 // Wait returns once the adapter's process tree has exited (by itself, at
 // the deadline or by Close), with Process.Wait's error (ErrUnverified when it
-// was not seen to).
-func (s *Session) Wait() error { return s.p.Wait() }
+// was not seen to), and, when it was seen to exit, once the reader has seen
+// the output end: Err is then set. (A tree not seen to exit may still hold
+// the output open, so then Wait does not wait for the end.)
+func (s *Session) Wait() error {
+	err := s.p.Wait()
+	if !errors.Is(err, ErrUnverified) {
+		<-s.ended
+	}
+	return err
+}
 
 // Close ends the session now, kills the namespace and waits for it.
 func (s *Session) Close() error {

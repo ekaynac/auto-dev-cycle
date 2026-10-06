@@ -38,7 +38,10 @@ M0 review [M9][M11][M13]. `docs/adapters/AUTHORING.md` is the author-facing guid
   6. **bounded copy-and-hash**: stream from the reopened descriptor into the blob store while hashing, reading at most
      the bound plus one byte; a read error is `unreadable`, a different digest or length `digest`;
   7. **post-copy `statx`**: device, inode, mount id, link count, size and change time unchanged (`replaced`);
-  8. **publish** (03) in one writer transaction that checks the fence again and appends the output's events.
+  8. **publish** (03) in one writer transaction that checks the fence again and appends the output's events. Steps 6–7
+     stage the verified copy; it is published only once that fence passed, and discarded on any refusal. Publication
+     is a rename that cannot roll back with the transaction: a transaction failing after it leaves an unreferenced
+     blob, never a reference to a missing one.
 
   Without `openat2`, the fallback walks component by component with `openat(O_PATH | O_NOFOLLOW)` and checks each
   component's mount id against the exchange root's; steps 4–8 are unchanged. It must be equivalent or fail closed.
@@ -74,6 +77,14 @@ M0 review [M9][M11][M13]. `docs/adapters/AUTHORING.md` is the author-facing guid
   `failed/<reason>`. The event is not a transition and leaves the attempt record unchanged (terminal attempts are
   immutable, and a stale refusal may follow one). An attempt with any such event is **untrustworthy**; M0 derives that
   at read time from its events.
+- **An adapter that exited without an admissible result** (a refused output, a broken session, an unserved
+  notification) leaves its attempt, if still `running`, `attempt.lost{agent_disconnect}` (`stream_dead` after a
+  heartbeat timeout), in the same transaction as its refusals and its usage. That is 05's intermediate state that
+  closes publication and still seals and completes; it is not terminal, and the refusal events, not the lost reason,
+  are the authoritative explanation. Once `attempt.started` commits, the host finalises the attempt this way under a
+  bounded context of its own, whatever the caller does.
+- **Until the host serves controller-mediated tools**, a run that sends a `tool.request`, or a `tool.result` naming a
+  delivered handle (no delivery record can match it yet), is refused: it fails closed, never silently accepted.
 
 ## Methods (core → adapter)
 
