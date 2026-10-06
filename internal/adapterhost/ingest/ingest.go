@@ -32,6 +32,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -109,6 +110,9 @@ func skipped(check string) bool { return skipCheck != nil && skipCheck(check) }
 // openat2 is missing or filtered (ENOSYS, EPERM). The fallback's missing
 // RESOLVE_NO_XDEV is made up by the mount-id comparison.
 func openBeneath(dir int, name string) (int, error) {
+	if mutation.Is(mutation.IngestFollowsLinks) {
+		return unix.Openat(dir, name, unix.O_PATH|unix.O_CLOEXEC, 0)
+	}
 	fd, err := openat2(dir, name, &unix.OpenHow{Flags: pathFlags, Resolve: resolveFlags})
 	if errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EPERM) {
 		return unix.Openat(dir, name, pathFlags, 0)

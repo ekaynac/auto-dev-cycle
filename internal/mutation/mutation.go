@@ -66,6 +66,9 @@ const (
 	// StreamCheckedAtOpenOnly authorizes an event stream when it opens and
 	// never again, so a revoked grant keeps reading.
 	StreamCheckedAtOpenOnly = "api.stream-checked-at-open-only"
+	// IngestFollowsLinks resolves an adapter output's handle following a
+	// symlink, so a link out of out/ is ingested as the file it names.
+	IngestFollowsLinks = "adapterhost.ingest-follows-links"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -74,4 +77,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	OuterStatusTrusted, AbsentPredicateUnchecked, UnknownFamilyIndependent, BindingDigestIgnored,
 	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly,
 	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked, ConfirmIgnoresStatus, ReservationsUncounted,
-	SignatureUnchecked, StreamCheckedAtOpenOnly}
+	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks}

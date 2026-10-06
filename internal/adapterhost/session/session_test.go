@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session/inproc"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -384,4 +386,41 @@ func TestNoSecretLeaksIntoErrors(t *testing.T) {
 	s := open(t, scripted(t, script{}))
 	_, err := s.call(context.Background(), "prepare", "adapter/prepare-params", map[string]string{"token": secret}, nil, expect{check: object})
 	leaks(t, "params", err, secret)
+}
+
+// A peer in this process is a session's adapter over pipes: its replies are
+// checked like a spawned one's, and closing the session (or its deadline)
+// closes the peer's pipes, so Wait returns once the peer has returned.
+func TestAPeerIsTheAdapterUntilClosed(t *testing.T) {
+	for _, deadline := range []time.Duration{30 * time.Second, 50 * time.Millisecond} {
+		returned := make(chan struct{})
+		s := open(t, Config{Deadline: deadline, InProcess: inproc.New(func(in io.Reader, out io.Writer) {
+			defer close(returned)
+			r := bufio.NewScanner(in)
+			for r.Scan() { // answers one request, then only reads
+				var req struct{ ID int64 }
+				if json.Unmarshal(r.Bytes(), &req) != nil {
+					return
+				}
+				fmt.Fprintf(out, `{"jsonrpc":"2.0","id":%d,"result":%s}`+"\n", req.ID, fmt.Sprintf(describeResult, "1.0.0"))
+				_, _ = io.Copy(io.Discard, in)
+				return
+			}
+		})})
+		if _, err := s.Describe(context.Background()); err != nil {
+			t.Fatalf("describe: %v", err)
+		}
+		if deadline < time.Second {
+			<-s.ended
+			if e, ok := s.Err().(*Error); !ok || e.Kind != KindDeadline {
+				t.Fatalf("ended with %v, want the deadline", s.Err())
+			}
+		}
+		_ = s.Close()
+		select {
+		case <-returned:
+		default:
+			t.Fatal("Wait returned before the peer did")
+		}
+	}
 }

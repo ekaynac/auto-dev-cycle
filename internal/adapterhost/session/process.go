@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session/inproc"
 )
 
 // StderrTail is how much of an adapter's stderr a process keeps: the last
@@ -76,6 +78,39 @@ type Process struct {
 	// killed: Kill was asked (during startup, only by the deadline). The
 	// init's pidfd is published under mu: a Kill before it is repeated then.
 	killed bool
+	// stop, for a peer (startPeer), closes the peer's ends of the pipes.
+	stop func()
+}
+
+// startPeer runs peer in this process, on its own goroutine, as the adapter
+// of a session: in is what the core writes, out what it reads. Kill (the
+// deadline among its causes) closes the peer's ends, so its reads and writes
+// fail; Wait returns once peer has returned. Nothing contains it: only the
+// fixture harness can make a peer (package inproc).
+func startPeer(peer *inproc.Peer, deadline time.Duration) (*Process, error) {
+	if peer == nil || deadline <= 0 {
+		return nil, errors.New("adapterhost: a peer needs a function and a positive deadline")
+	}
+	var pipes [4]*os.File // stdin, stdout: read end, write end
+	for i := 0; i < 4; i += 2 {
+		var err error
+		if pipes[i], pipes[i+1], err = os.Pipe(); err != nil {
+			closeAll(pipes[:i]...)
+			return nil, fmt.Errorf("adapterhost: pipe: %w", err)
+		}
+	}
+	p := &Process{stdin: pipes[1], stdout: pipes[2], exited: make(chan struct{}), bwrapFD: -1, initFD: -1,
+		stop: func() { closeAll(pipes[0], pipes[3]) }}
+	p.timer = time.AfterFunc(deadline, func() {
+		p.expired.Store(true)
+		p.Kill()
+	})
+	go func() {
+		defer close(p.exited)
+		peer.Run(pipes[0], pipes[3])
+		p.stop()
+	}()
+	return p, nil
 }
 
 // contain is the bubblewrap command line: a new PID namespace, everything
@@ -294,6 +329,9 @@ func (p *Process) kill() int {
 	p.mu.Lock()
 	defer p.mu.Unlock() // the waiter closes the pidfds under mu
 	p.killed = true
+	if p.stop != nil {
+		p.stop()
+	}
 	return p.signal()
 }
 
