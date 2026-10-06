@@ -434,21 +434,11 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, c.ID, c.Actor, c.IdempotencyKey, inputDigest, string(d.Disposition), string(canonResult), first, last); err != nil {
 			return err
 		}
-		// 7. An issued secret is in none of it (14 N3).
-		if d.Credential != nil {
-			found, err := storesSecret(ctx, tx, c.ID, first.Int64, last.Int64, d.Credential.Reveal())
-			if err != nil {
-				return err
-			}
-			if found {
-				return errors.New("eventstore: an issued secret would be stored")
-			}
-		}
 		effs, err := commandEffects(ctx, tx, c.ID)
 		if err != nil {
 			return err
 		}
-		out = Committed{Disposition: d.Disposition, CommandID: c.ID, Result: canonResult, FirstSeq: first.Int64, LastSeq: last.Int64, Effects: effs, Credential: d.Credential}
+		out = Committed{Disposition: d.Disposition, CommandID: c.ID, Result: canonResult, FirstSeq: first.Int64, LastSeq: last.Int64, Effects: effs}
 		return nil
 	})
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -237,6 +238,61 @@ func TestTokenSchemaRefusesMalformedHashes(t *testing.T) {
 		b, _ := json.Marshal(bad)
 		if contract.Validate("records/token", b) == nil {
 			t.Errorf("%s: valid", name)
+		}
+	}
+}
+
+// reachable collects every string reflection can read from v, through
+// pointers, fields, slices and maps, as a diff library or a debugger dump
+// would (go-cmp with AllowUnexported walks the same way).
+func reachable(v reflect.Value, out *[]string, depth int) {
+	if depth > 16 || !v.IsValid() {
+		return
+	}
+	switch v.Kind() {
+	case reflect.String:
+		*out = append(*out, v.String())
+	case reflect.Pointer, reflect.Interface:
+		reachable(v.Elem(), out, depth+1)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			reachable(v.Field(i), out, depth+1)
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			reachable(v.Index(i), out, depth+1)
+		}
+	case reflect.Map:
+		for _, k := range v.MapKeys() {
+			reachable(k, out, depth+1)
+			reachable(v.MapIndex(k), out, depth+1)
+		}
+	}
+}
+
+// Reflection reaches no secret: two differing secrets, alone or inside
+// a record, show no plaintext to a diff.
+func TestSecretIsUnreachableByReflection(t *testing.T) {
+	_, a, errA := mint(actA, actA, time.Now())
+	_, b, errB := mint(actB, actB, time.Now())
+	if errA != nil || errB != nil || a.Reveal() == b.Reveal() {
+		t.Fatal(errA, errB)
+	}
+	type record struct {
+		Name   string
+		Secret Secret
+		Ptr    *Secret
+	}
+	var got []string
+	for _, v := range []any{a, &b, record{"x", a, &b}, []Secret{a, b}, map[string]Secret{"k": b}} {
+		reachable(reflect.ValueOf(v), &got, 0)
+	}
+	for _, s := range []Secret{a, b} {
+		_, part, _ := strings.Cut(s.Reveal(), ".")
+		for _, g := range got {
+			if strings.Contains(g, part) {
+				t.Fatalf("reflection reached a secret: %q", g)
+			}
 		}
 	}
 }

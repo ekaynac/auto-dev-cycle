@@ -22,6 +22,7 @@ type applyFn = func(*eventstore.Tx) ([]eventstore.Event, error)
 
 type fixture struct {
 	t     *testing.T
+	dir   string // the state directory
 	s     *eventstore.Store
 	sys   types.Actor
 	op    types.Actor // the first operator (bootstrap)
@@ -142,7 +143,7 @@ func empty(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return &fixture{t: t, s: s}
+	return &fixture{t: t, s: s, dir: dir}
 }
 
 // The bootstrap runs in its order only: the system actor first, by itself;

@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -133,21 +132,6 @@ func TestMalformedDecisionsCommitNothing(t *testing.T) {
 			}
 			return Decision{Disposition: DispositionProposed, Result: json.RawMessage(`{}`)}
 		},
-		"a credential when refused": func(*testing.T, *Tx) Decision {
-			return Decision{Disposition: DispositionRefused, Result: json.RawMessage(refusal), Credential: NewIssuedCredential("tok_x", testSecret)}
-		},
-		"a credential without a secret": func(*testing.T, *Tx) Decision {
-			return Decision{Disposition: DispositionApplied, Result: json.RawMessage(`{}`), Credential: &IssuedCredential{id: "tok_x"}}
-		},
-		"a credential without an id": func(*testing.T, *Tx) Decision {
-			return Decision{Disposition: DispositionApplied, Result: json.RawMessage(`{}`), Credential: NewIssuedCredential("", testSecret)}
-		},
-		"a short secret": func(*testing.T, *Tx) Decision {
-			return Decision{Disposition: DispositionApplied, Result: json.RawMessage(`{}`), Credential: NewIssuedCredential("tok_x", "short")}
-		},
-		"a secret that JSON would escape": func(*testing.T, *Tx) Decision {
-			return Decision{Disposition: DispositionApplied, Result: json.RawMessage(`{}`), Credential: NewIssuedCredential("tok_x", `0123456789abcdef"`)}
-		},
 	}
 	for name, d := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -160,119 +144,6 @@ func TestMalformedDecisionsCommitNothing(t *testing.T) {
 				t.Fatalf("committed: %d commands, head %d, %v", n, head(t, e), err)
 			}
 		})
-	}
-}
-
-const testSecret = "hunter2-0123456789abcdef"
-
-// N3: an issued secret reaches no stored row, whichever path writes it.
-// Each attempt is refused and commits nothing: no command, no event, no
-// effect, no projection.
-func TestIssuedSecretIsNeverStored(t *testing.T) {
-	escaped := `{"token":"\u0068unter2-0123456789abcdef"}` // decodes to the secret
-	cases := map[string]func(t *testing.T, tx *Tx) ([]Event, json.RawMessage){
-		"in the result": func(*testing.T, *Tx) ([]Event, json.RawMessage) {
-			return nil, json.RawMessage(`{"token":"` + testSecret + `"}`)
-		},
-		"in an event payload": func(t *testing.T, _ *Tx) ([]Event, json.RawMessage) {
-			return []Event{{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(`{"t":"` + testSecret + `"}`)}}, nil
-		},
-		"JSON-escaped in an event payload": func(t *testing.T, _ *Tx) ([]Event, json.RawMessage) {
-			return []Event{{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(escaped)}}, nil
-		},
-		"JSON-escaped in the result": func(*testing.T, *Tx) ([]Event, json.RawMessage) { return nil, json.RawMessage(escaped) },
-		"in an effect target": func(t *testing.T, tx *Tx) ([]Event, json.RawMessage) {
-			if err := tx.IntendEffect(newID(t, "eff"), "model_call", testSecret, json.RawMessage(`{}`)); err != nil {
-				t.Fatal(err)
-			}
-			return nil, nil
-		},
-		"in a projection value": func(t *testing.T, tx *Tx) ([]Event, json.RawMessage) {
-			if err := tx.Put("test_tokens", "tok_1", json.RawMessage(`{"s":"`+testSecret+`"}`)); err != nil {
-				t.Fatal(err)
-			}
-			return nil, nil
-		},
-		"JSON-escaped in a projection value": func(t *testing.T, tx *Tx) ([]Event, json.RawMessage) {
-			if err := tx.Put("test_tokens", "tok_1", json.RawMessage(escaped)); err != nil {
-				t.Fatal(err)
-			}
-			return nil, nil
-		},
-		"in a projection key": func(t *testing.T, tx *Tx) ([]Event, json.RawMessage) {
-			if err := tx.Put("test_tokens", testSecret, json.RawMessage(`{}`)); err != nil {
-				t.Fatal(err)
-			}
-			return nil, nil
-		},
-	}
-	for name, write := range cases {
-		t.Run(name, func(t *testing.T) {
-			e := openEffectsAt(t, stateDir(t))
-			_, err := e.s.Submit(context.Background(), command(t, "k", `{}`), func(tx *Tx) (Decision, error) {
-				evs, result := write(t, tx)
-				if result == nil {
-					result = json.RawMessage(`{}`)
-				}
-				return Decision{Disposition: DispositionApplied, Events: evs, Result: result, Credential: NewIssuedCredential("tok_1", testSecret)}, nil
-			})
-			if err == nil || !strings.Contains(err.Error(), "secret would be stored") {
-				t.Fatalf("got %v", err)
-			}
-			var n int
-			if err := raw(t, e.dir).QueryRow(`SELECT (SELECT count(*) FROM commands) + (SELECT count(*) FROM events) +
-				(SELECT count(*) FROM effects) + (SELECT count(*) FROM proj_kv)`).Scan(&n); err != nil || n != 0 {
-				t.Fatalf("%d rows committed, %v", n, err)
-			}
-		})
-	}
-}
-
-// N3: an issued credential is delivered once. The stored result is free of
-// it, and a replay returns none and mints nothing.
-func TestCredentialIsDeliveredOnce(t *testing.T) {
-	e := openWriter(t, Hooks{Authorize: allow})
-	ctx := context.Background()
-	minted := 0
-	issue := func(tx *Tx) (Decision, error) {
-		minted++
-		evs, _, err := appendTo(t, testSubject, 1)(tx)
-		return Decision{Disposition: DispositionApplied, Events: evs, Result: json.RawMessage(`{"token":"tok_1"}`),
-			Credential: NewIssuedCredential("tok_1", fmt.Sprintf("secret-%d-0123456789abcdef", minted))}, err
-	}
-	live, err := e.s.Submit(ctx, command(t, "k", `{}`), issue)
-	if err != nil || live.Credential == nil || live.Credential.Reveal() != "secret-1-0123456789abcdef" {
-		t.Fatalf("live: %+v %v", live, err)
-	}
-	var stored string
-	if err := raw(t, e.dir).QueryRow(`SELECT result_json FROM commands`).Scan(&stored); err != nil || strings.Contains(stored, "secret") {
-		t.Fatalf("stored result %q, %v", stored, err)
-	}
-	replay, err := e.s.Submit(ctx, command(t, "k", `{}`), issue)
-	if err != nil || !replay.Replayed || replay.Credential != nil || string(replay.Result) != string(live.Result) {
-		t.Fatalf("replay: %+v %v", replay, err)
-	}
-	if minted != 1 || head(t, e) != 1 {
-		t.Fatalf("minted %d, head %d", minted, head(t, e))
-	}
-}
-
-func TestIssuedCredentialFormattingWithholdsTheSecret(t *testing.T) {
-	c := NewIssuedCredential("tok_1", testSecret)
-	for _, f := range []string{"%v", "%+v", "%#v", "%s", "%q", "%d", "%x", "%X", "%p", "%T", "%c", "%U", "%t", "%8.3v"} {
-		for _, v := range []any{c, *c, Committed{Credential: c}, &Committed{Credential: c}} {
-			if s := fmt.Sprintf(f, v); strings.Contains(s, "hunter2") || strings.Contains(s, "68756e74657232") {
-				t.Errorf("%s of %T: %q", f, v, s)
-			}
-		}
-	}
-	for _, v := range []any{c, *c, Committed{Credential: c}, Decision{Credential: c}} {
-		if b, err := json.Marshal(v); err == nil || strings.Contains(string(b), "hunter2") {
-			t.Errorf("marshalled %T: %s, %v", v, b, err)
-		}
-	}
-	if c.Reveal() != testSecret || c.ID() != "tok_1" || (&IssuedCredential{}).Reveal() != "" {
-		t.Fatal("the accessors")
 	}
 }
 

@@ -63,8 +63,11 @@ a rebuild recomputes them, and the limit check runs only when an event is admitt
 - **Dispositions.** The command's logic decides applied, proposed, invalidated or refused, and each is committed with
   its events (14 N2). Internal callers go on only through `SubmitApplied`, which turns any other disposition into an
   error. What the writer cannot decide (a reused key, an authorization refusal, a stale expectation) commits nothing.
-- **Issued secrets.** The stored result is stable and free of secrets. A credential a command issues is returned only
-  by the call that committed it, never stored, and absent on a replay; a replay mints nothing (14 N3).
+- **Issued secrets.** A credential's plaintext never enters the store (14 N3). The request layer mints it before
+  `Submit`, outside the writer transaction (`identity.Mint`). The command's logic records only the public id and the
+  hash, and the stored result is stable and free of secrets. `Committed` reports its disposition and whether it was
+  `Replayed`. The plaintext goes to the live response only from a fresh applied commit (`identity.Issued.Deliver`).
+  Otherwise it is dropped, so a replay neither delivers nor records a new secret.
 - **Expected state.** Commands acting on an object carry `expected` = the object's version (seq of its last event) or
   content digest. A mismatch is refused with `failed/stale_expected_state`.
 - **Process exclusivity.** `adcd` takes an exclusive advisory lock (`flock`) on `<state_dir>/adcd.lock`. It records its
