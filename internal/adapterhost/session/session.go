@@ -364,6 +364,11 @@ func (s *Session) watch() {
 // its reply, which the reader has checked. A cancelled ctx abandons the
 // wait; the reply, when it comes, is still checked, then dropped.
 func (s *Session) call(ctx context.Context, method, schema string, params any, r *run, x expect) (any, error) {
+	// A caller that has already given up sends nothing: the request is
+	// never started rather than raced against its reply.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var raw json.RawMessage
 	if schema != "" {
 		b, err := contract.Encode(schema, params)
@@ -429,8 +434,16 @@ func (s *Session) call(ctx context.Context, method, schema string, params any, r
 
 // Wait returns once the adapter's process tree has exited (by itself, at
 // the deadline or by Close), with Process.Wait's error (ErrUnverified when it
-// was not seen to).
-func (s *Session) Wait() error { return s.p.Wait() }
+// was not seen to), and, when it was seen to exit, once the reader has seen
+// the output end: Err is then set. (A tree not seen to exit may still hold
+// the output open, so then Wait does not wait for the end.)
+func (s *Session) Wait() error {
+	err := s.p.Wait()
+	if !errors.Is(err, ErrUnverified) {
+		<-s.ended
+	}
+	return err
+}
 
 // Close ends the session now, kills the namespace and waits for it.
 func (s *Session) Close() error {

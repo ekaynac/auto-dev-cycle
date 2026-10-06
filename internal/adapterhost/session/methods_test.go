@@ -480,3 +480,22 @@ func TestARefusedResultIsDeclared(t *testing.T) {
 		}
 	}
 }
+
+// A call whose context is already cancelled sends nothing: it is not raced
+// against a reply. So a prepare cancelled before it starts leaves the
+// session unprepared, and the next prepare is the first the adapter sees.
+func TestACancelledCallSendsNothing(t *testing.T) {
+	s := open(t, adapter(t, script{}))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s.Describe(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("describe: %v", err)
+	}
+	if _, err := s.Prepare(ctx, prepareParams()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("prepare: %v", err)
+	}
+	if _, err := s.Run(ctx, runParams, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("run: %v", err)
+	}
+	prepared(t, s) // ErrSequence had the cancelled prepare been sent
+}
