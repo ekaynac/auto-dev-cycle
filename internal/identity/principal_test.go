@@ -101,7 +101,10 @@ func TestNoSystemPrincipalFromAToken(t *testing.T) {
 	if _, err := f.s.ClaimSystem(); !errors.Is(err, eventstore.ErrSystemClaimed) {
 		t.Fatalf("a second system claim: %v", err)
 	}
+	// Another store holding the same live system actor: only its own claim
+	// acts on it.
 	other := empty(t)
+	other.must(f.sys.ID, create(f.sys))
 	otherClaim, err := other.s.ClaimSystem()
 	if err != nil {
 		t.Fatal(err)
@@ -136,8 +139,16 @@ func TestNoSystemPrincipalFromAToken(t *testing.T) {
 		}
 		return nil
 	})
-	// It acts on its own store only.
+	// It acts on its own store only, though the other store holds the same
+	// live system actor and accepts that store's own system principal.
 	other.view(func(tx *eventstore.Tx) error {
+		own, err := identity.SystemPrincipal(tx, otherClaim, f.sys.ID)
+		if err != nil {
+			return err
+		}
+		if err := identity.Recheck(tx, own.Command(id(t, "cmd"), "note.add", "k", []byte(`{}`), nil)); err != nil {
+			t.Errorf("the other store's own system principal: %v", err)
+		}
 		if err := identity.Recheck(tx, sysP.Command(id(t, "cmd"), "note.add", "k", []byte(`{}`), nil)); !errors.Is(err, identity.ErrUnauthenticated) {
 			t.Errorf("the system principal on another store: %v", err)
 		}
