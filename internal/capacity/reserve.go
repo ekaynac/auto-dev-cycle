@@ -112,11 +112,15 @@ func Hook(p lease.Projector, r Reservations) func(*eventstore.Tx, []eventstore.E
 	}
 }
 
+// ErrGrantedBeforeWiring is CheckHistory's refusal of the history itself;
+// any other error from it means the projections could not be read.
+var ErrGrantedBeforeWiring = errors.New("capacity: a lease was granted before capacity was wired")
+
 // CheckHistory refuses to run capacity over a store with a lease granted
-// before capacity was wired: the log cannot say that capacity admitted
-// that grant, so a rebuild would read it as one capacity granted. Call it
-// on the store's projections (a View) before admitting commands. A lease
-// still requested or waiting was never granted.
+// before capacity was wired (ErrGrantedBeforeWiring): the log cannot say
+// that capacity admitted that grant, so a rebuild would read it as one
+// capacity granted. Call it on the store's projections (a View) before
+// admitting commands. A lease still requested or waiting was never granted.
 func CheckHistory(tx *eventstore.Tx) error {
 	keys, err := tx.Keys(lease.LeaseProjection, "")
 	if err != nil {
@@ -138,8 +142,12 @@ func CheckHistory(tx *eventstore.Tx) error {
 		if s := rec.Record.State; s == types.LeaseStateRequested || s == types.LeaseStateWaiting {
 			continue
 		}
-		if _, ok, err := tx.Get(GrantedProjection, id); err != nil || !ok {
-			return errors.Join(err, fmt.Errorf("capacity: lease %s was granted before capacity was wired; capacity runs only from a store's first grant", id))
+		_, ok, err := tx.Get(GrantedProjection, id)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: lease %s; capacity runs only from a store's first grant", ErrGrantedBeforeWiring, id)
 		}
 	}
 	return nil

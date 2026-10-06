@@ -456,7 +456,7 @@ func TestGrantBeforeWiring(t *testing.T) {
 	check := func(when string) {
 		t.Helper()
 		if err := w.s.View(context.Background(), func(tx *eventstore.Tx) error {
-			if err := capacity.CheckHistory(tx); err == nil || !strings.Contains(err.Error(), "before capacity was wired") {
+			if err := capacity.CheckHistory(tx); !errors.Is(err, capacity.ErrGrantedBeforeWiring) {
 				t.Errorf("%s: CheckHistory accepted a grant from before the wiring: %v", when, err)
 			}
 			free, err := r.RestoreFree(tx, id)

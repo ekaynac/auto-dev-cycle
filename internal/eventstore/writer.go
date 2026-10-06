@@ -64,6 +64,17 @@ type Tx struct {
 	rebuild bool
 	// readOnly: a View's transaction, on the read-only pool.
 	readOnly bool
+	// fault is the first storage error a read or write met: a projector
+	// that fails on it has not refused the log (RebuildProjections).
+	fault error
+}
+
+// io records a storage error as the transaction's fault and returns it.
+func (t *Tx) io(err error) error {
+	if err != nil && t.fault == nil {
+		t.fault = err
+	}
+	return err
 }
 
 // ErrReadOnly: a View's transaction cannot change projections.
@@ -118,7 +129,7 @@ func (t *Tx) Get(projection, key string) (json.RawMessage, bool, error) {
 		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, false, t.io(err)
 	}
 	return json.RawMessage(v), true, nil
 }
@@ -137,7 +148,7 @@ func (t *Tx) Put(projection, key string, value json.RawMessage) error {
 	}
 	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO `+t.table()+`(projection, key, value) VALUES (?, ?, ?)
 		ON CONFLICT(projection, key) DO UPDATE SET value = excluded.value`, projection, key, string(c))
-	return err
+	return t.io(err)
 }
 
 // Delete removes the projection record under key, if any.
@@ -149,7 +160,7 @@ func (t *Tx) Delete(projection, key string) error {
 		return err
 	}
 	_, err := t.tx.ExecContext(t.ctx, `DELETE FROM `+t.table()+` WHERE projection = ? AND key = ?`, projection, key)
-	return err
+	return t.io(err)
 }
 
 // Keys lists the projection's keys that start with prefix, sorted.
@@ -159,27 +170,27 @@ func (t *Tx) Keys(projection, prefix string) ([]string, error) {
 	}
 	rows, err := t.tx.QueryContext(t.ctx, `SELECT key FROM `+t.table()+` WHERE projection = ? ORDER BY key`, projection)
 	if err != nil {
-		return nil, err
+		return nil, t.io(err)
 	}
 	defer rows.Close()
 	var keys []string
 	for rows.Next() {
 		var k string
 		if err := rows.Scan(&k); err != nil {
-			return nil, err
+			return nil, t.io(err)
 		}
 		if strings.HasPrefix(k, prefix) { // bytes, as Go compares them
 			keys = append(keys, k)
 		}
 	}
-	return keys, rows.Err()
+	return keys, t.io(rows.Err())
 }
 
 // SubjectVersion is the seq of the subject's last event, or 0.
 func (t *Tx) SubjectVersion(subject string) (int64, error) {
 	var v sql.NullInt64
 	if err := t.tx.QueryRowContext(t.ctx, `SELECT max(seq) FROM events WHERE subject = ?`, subject).Scan(&v); err != nil {
-		return 0, err
+		return 0, t.io(err)
 	}
 	return v.Int64, nil
 }
@@ -229,6 +240,36 @@ type Outcome struct {
 
 // Submit runs c through the writer transaction.
 func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, error) {
+	return s.submit(ctx, c, apply, true)
+}
+
+// ErrNotBootstrap: Bootstrap was asked for anything but an empty store's
+// first event, written by the actor it creates.
+var ErrNotBootstrap = errors.New("eventstore: bootstrap writes only an empty store's first event, by its own subject")
+
+// Bootstrap appends the first event of an empty store without the
+// Authorize hook: the controller's own initialization (the system actor
+// creating itself, before any request can reach the writer). It is refused
+// unless the store holds no event, command or effect, and e's subject is the
+// command's actor. Validation, the append and the projections run as in
+// Submit, so the projectors still decide whether the event is admissible.
+func (s *Store) Bootstrap(ctx context.Context, c Command, e Event) (Outcome, error) {
+	if e.Subject != c.Actor {
+		return Outcome{}, ErrNotBootstrap
+	}
+	return s.submit(ctx, c, func(t *Tx) ([]Event, json.RawMessage, error) {
+		var used bool
+		if err := t.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events) OR EXISTS(SELECT 1 FROM commands) OR EXISTS(SELECT 1 FROM effects)`).Scan(&used); err != nil {
+			return nil, nil, err
+		}
+		if used || len(t.intents) > 0 {
+			return nil, nil, ErrNotBootstrap
+		}
+		return []Event{e}, json.RawMessage(`{}`), nil
+	}, false)
+}
+
+func (s *Store) submit(ctx context.Context, c Command, apply Apply, authorize bool) (Outcome, error) {
 	if err := ids.Check(c.ID, "cmd"); err != nil {
 		return Outcome{}, fmt.Errorf("eventstore: command: %w", err)
 	}
@@ -284,11 +325,13 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 		}
 		// 2. Authorization: without an authorizer every new command is
 		// refused (a stored result still replays above).
-		if s.hooks.Authorize == nil {
+		if authorize && s.hooks.Authorize == nil {
 			return errors.New("eventstore: no authorizer is configured; every command is refused")
 		}
-		if err := s.hooks.Authorize(t, c); err != nil {
-			return err
+		if authorize {
+			if err := s.hooks.Authorize(t, c); err != nil {
+				return err
+			}
 		}
 		// 3. Expected state.
 		for _, e := range c.Expected {
