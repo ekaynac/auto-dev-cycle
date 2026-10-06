@@ -39,7 +39,7 @@ reasons:
   - {code: evidence_inapplicable, outcomes: [could_not_run], domain: gate, hold: awaiting_receipt, introduced: 0.1.0, deprecated: null, source: "02", description: "A valid receipt does not apply (other subject, tree, environment, contract revision or demand)."}
   - {code: evidence_observed, outcomes: [found], domain: gate, introduced: 0.1.0, deprecated: null, source: "legacy:f16-walk-demand", description: "An evidence run for this demand produced its receipt."}
   - {code: evidence_cap_exhausted, outcomes: [could_not_run], domain: gate, hold: wrong_owner, introduced: 0.1.0, deprecated: null, source: "12", description: "Attempts for this subject reached the total cap across demands."}
-  - {code: precondition_failed, outcomes: [could_not_run], domain: gate, hold: precondition_failed, introduced: 0.1.0, deprecated: null, source: "12", description: "An instrument precondition failed before the run; no attempt is spent."}
+  - {code: precondition_failed, outcomes: [could_not_run], domain: gate, hold: precondition_failed, introduced: 0.1.0, deprecated: null, source: "12", description: "An environment precondition failed before the run: an instrument's (12), or the adapter host's ingestion capabilities (09); no attempt is spent."}
 
   # --- review and closure -----------------------------------------------------
   - {code: review_input_changed, outcomes: [found], domain: review, introduced: 0.1.0, deprecated: null, source: "legacy:f16-walk-demand", description: "A review input changed (new answer, new demand, changed conclusions), so a successor review is required."}

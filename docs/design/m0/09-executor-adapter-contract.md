@@ -41,15 +41,25 @@ M0 review [M9][M11][M13]. `docs/adapters/AUTHORING.md` is the author-facing guid
   8. **publish** (03) in one writer transaction that checks the fence again and appends the output's events.
 
   Without `openat2`, the fallback walks component by component with `openat(O_PATH | O_NOFOLLOW)` and checks each
-  component's mount id against the exchange root's; steps 4–8 are unchanged. It must be equivalent or fail closed:
-  a host that cannot give the mount id (`statx` `STATX_MNT_ID`) or `/proc/self/fd` reopening ingests nothing, and the
-  adapter host refuses to start the attempt (`could_not_run`) rather than weaken a check.
+  component's mount id against the exchange root's; steps 4–8 are unchanged. It must be equivalent or fail closed.
+- **Host capability check (prelaunch).** Before the transaction that records `attempt.started` (05 "The launch
+  boundary"), the adapter host creates the attempt's exchange root and probes it in the ingestion context itself: it
+  writes a regular file in `out/`, pins it with `O_PATH | O_NOFOLLOW`, requires the mask `statx` returns to contain
+  `STATX_MNT_ID` (a successful call alone is not enough), reopens it through `/proc/self/fd/<n>` and checks the same
+  device, inode and mount id, then removes it. If any part fails, nothing is weakened and the attempt is not started:
+  `lease.start_refused{reason: precondition_failed}` moves the granted lease to `releasing`, no attempt exists, no
+  adapter process is launched, and the unit waits on the `precondition_failed` hold (probe signal: the check passes;
+  owner: the environment owner). This is a host fault, separate from a file's `unreadable` refusal and never an
+  `attempt.output_refused` event.
 
   The controller never reads an adapter file in place twice. It reads it once, copying, so a concurrent replacement
   cannot change what was verified.
-- **When**: **final outputs** (the run result and every handle it or the run's events declare: patches, transcripts,
-  error excerpts) are ingested only after the adapter's process tree has exited, never while any of its processes can
-  still write. **Controller-mediated tool requests** cannot wait: the adapter blocks on the `tool.response`, so the
+- **What and when**: ingestion reads only adapter-produced blobs in `out/`. **Final outputs** (the run result and the
+  adapter-produced handles it or the run's events declare: patches, transcripts, error excerpts) are ingested only
+  after the adapter's process tree has exited, never while any of its processes can still write. A
+  `tool.result.delivered` handle is the controller's own delivery: it is resolved against the controller's recorded
+  delivery (its handle and digest must match that record) and never ingested. A handle already ingested live as a tool
+  request is not ingested again. **Controller-mediated tool requests** cannot wait: the adapter blocks on the `tool.response`, so the
   request handle of a `tool.request` is ingested live, when the notification arrives, with the same steps and its own
   bound. A live read cannot rely on process exit, so the pinned inode, the regular-file, link-count and mount checks,
   the size and digest checks and the post-copy `statx` are its only guarantees. That is acceptable because the
