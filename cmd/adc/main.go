@@ -11,5 +11,5 @@ import (
 )
 
 func main() {
-	os.Exit(cli.Main(context.Background(), os.Args[1:], os.Stdout, os.Stderr, cli.NoTransport{}))
+	os.Exit(cli.Main(context.Background(), os.Args[1:], os.Stdout, os.Stderr, cli.ClientFromEnv(os.Getenv)))
 }

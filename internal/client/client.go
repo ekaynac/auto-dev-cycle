@@ -2,7 +2,8 @@
 
 // Package client is adc's transport to the controller over its Unix socket
 // (docs/design/m0/08 "Transport"): HTTP/1.1 + JSON with a bearer token, sent
-// only on a connection whose peer runs as the daemon uid [M3].
+// only on a connection whose peer runs as the daemon uid [M3], with the token
+// read from ADC_TOKEN or a private token file [R5].
 package client
 
 import (
