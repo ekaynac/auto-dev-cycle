@@ -23,6 +23,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -184,6 +185,9 @@ func (st *streamState) nextCheck() time.Time { return st.lastCheck.Add(st.h.poll
 // revocation; a store that cannot be read is never read as either.
 func (st *streamState) authorize(tx *eventstore.Tx) *vocab.Result {
 	st.lastCheck = time.Now()
+	if mutation.Is(mutation.StreamCheckedAtOpenOnly) {
+		return nil
+	}
 	holds, err := st.scope.Holds(tx, st.h.now())
 	if err != nil {
 		return &unreadable
