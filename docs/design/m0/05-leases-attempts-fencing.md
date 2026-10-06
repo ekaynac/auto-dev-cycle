@@ -53,8 +53,9 @@ Lease:
     nothing is dispatched to an executor before it commits. A placement that passed is therefore not enough.
   - A lease granted but not yet started whose executor becomes excluded is refused at that boundary:
     `lease.start_refused{reason}` moves it to `releasing`, its unused reservations return at `released`, and no
-    attempt exists. The controller then requests a replacement lease, which goes through placement. The event joins
-    `schemas/records/lease-event.json` and `internal/lease` with the boundary's implementation, like the hold below.
+    attempt exists. The controller then requests a replacement lease, which goes through placement. The event is in
+    `schemas/records/lease-event.json` and `internal/lease`; the adapter host records it for a failed prelaunch
+    capability check (09).
     Restart recovery starts nothing without passing the same boundary.
   - An attempt that has **started** before the exclusion is not cut by placement. Stopping it is a separate
     operator action (`attempt.stop_requested`).
@@ -145,7 +146,7 @@ Attempt:
 |---|---|---|---|
 | — | `attempt.started` | running | open |
 | running | `attempt.stop_requested{reason: revoke|preempt|expire|drain|cancel}` | stopping | **closed atomically with the event** |
-| running | `attempt.result_submitted` (valid token, admissible) | finishing | closed |
+| running | `attempt.result_submitted{result}` (valid token, admissible; the event carries the admitted result) | finishing | closed |
 | running | `attempt.lost{reason: stream_dead|agent_disconnect|controller_restart}` | lost | closed |
 | stopping · finishing · lost | `attempt.sealed{AttemptRecord}` | sealed | closed |
 | sealed | `attempt.completed{outcome, reason}` | completed ✱ | closed |

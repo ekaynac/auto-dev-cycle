@@ -256,6 +256,9 @@ func TestAForeignHandleIsRefused(t *testing.T) {
 		if errors.As(err, &e); e.Check != CheckForeignHandle || len(seen) != 0 {
 			t.Fatalf("%s: check %q, events passed on %v", where, e.Check, seen)
 		}
+		if f, ok := s.Foreign(); !ok || f.Attempt != otherAttempt || f.Handle != "x" || f.Size != 1 {
+			t.Fatalf("%s: the refused handle kept: %+v %v", where, f, ok)
+		}
 	}
 }
 

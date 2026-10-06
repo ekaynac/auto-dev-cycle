@@ -50,6 +50,8 @@ func event(kind string) LeaseEvent {
 		e.Hold = &types.LeaseHoldValue{Hold: "quota_reset", SignalInstance: "2026-10-04T15:00:00Z"}
 	case Revoked:
 		e.Reason = "grant_revoked"
+	case StartRefused:
+		e.Reason = "precondition_failed"
 	case RestoreFailed:
 		e.Reason = "restore probe failed"
 		e.Hold = &types.LeaseHoldValue{Hold: RestoreHold, SignalInstance: "tgt_01m3250v57fhm9v1z9xd1wk8gw"}
@@ -63,7 +65,7 @@ func event(kind string) LeaseEvent {
 	return e
 }
 
-var leaseKinds = []string{Requested, Waiting, Granted, AttemptStarted, Expired, Completed, Revoked, Preempted,
+var leaseKinds = []string{Requested, Waiting, Granted, StartRefused, AttemptStarted, Expired, Completed, Revoked, Preempted,
 	Settled, Released, RestoreStarted, RestoreVerified, RestoreFailed}
 
 var leaseStates = []types.LeaseState{types.LeaseStateRequested, types.LeaseStateWaiting, types.LeaseStateGranted,
@@ -117,7 +119,7 @@ func TestLeaseTable(t *testing.T) {
 	type step = leaseStep
 	common := map[step]types.LeaseState{
 		{"requested", Waiting}: "waiting", {"waiting", Requested}: "requested", {"requested", Granted}: "granted",
-		{"granted", AttemptStarted}: "active", {"granted", Expired}: "releasing",
+		{"granted", AttemptStarted}: "active", {"granted", Expired}: "releasing", {"granted", StartRefused}: "releasing",
 		{"active", Completed}: "settling", {"active", Revoked}: "settling", {"active", Preempted}: "settling",
 		{"active", Expired}: "settling", {"releasing", Released}: "released",
 	}
@@ -218,6 +220,9 @@ func TestLeaseEventData(t *testing.T) {
 	// Astra #48: the reasons note 05 requires, and the restore hold.
 	if _, err := ApplyLease(reach(t, types.LeaseStateActive, false), LeaseEvent{Kind: Revoked}, false, h); err == nil {
 		t.Error("a revocation without its reason")
+	}
+	if _, err := ApplyLease(reach(t, types.LeaseStateGranted, false), LeaseEvent{Kind: StartRefused}, false, h); err == nil {
+		t.Error("a refused start without its reason")
 	}
 	restoring := reach(t, types.LeaseStateRestoring, true)
 	noReason := event(RestoreFailed)

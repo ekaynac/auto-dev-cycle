@@ -4,12 +4,18 @@
 
 package types
 
+import (
+	"encoding/json"
+	"errors"
+)
+
 type LeaseEventTransition string
 
 const (
 	LeaseEventTransitionLeaseRequested         LeaseEventTransition = "lease.requested"
 	LeaseEventTransitionLeaseWaiting           LeaseEventTransition = "lease.waiting"
 	LeaseEventTransitionLeaseGranted           LeaseEventTransition = "lease.granted"
+	LeaseEventTransitionLeaseStartRefused      LeaseEventTransition = "lease.start_refused"
 	LeaseEventTransitionLeaseExpired           LeaseEventTransition = "lease.expired"
 	LeaseEventTransitionLeaseCompleted         LeaseEventTransition = "lease.completed"
 	LeaseEventTransitionLeaseRevoked           LeaseEventTransition = "lease.revoked"
@@ -28,10 +34,10 @@ const (
 	LeaseEventTransitionAttemptSuperseded      LeaseEventTransition = "attempt.superseded"
 )
 
-// LeaseEvent: The payload of every lease and attempt transition event (docs/design/m0/05): <transition>/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*). attempt.started and attempt.superseded also change the lease under the attempt's subject, so commands expect a record's projection revision (not its subject's last seq) for every record they act on. attempt.superseded is atomic: one event carries the retired attempt, its successor (with the next token) and the lease the successor runs under (05: supersession and the replacement's token in one transaction).
+// LeaseEvent: The payload of every lease and attempt transition event (docs/design/m0/05): <transition>/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*). attempt.started and attempt.superseded also change the lease under the attempt's subject, so commands expect a record's projection revision (not its subject's last seq) for every record they act on. attempt.superseded is atomic: one event carries the retired attempt, its successor (with the next token) and the lease the successor runs under (05: supersession and the replacement's token in one transaction). lease.start_refused is the launch boundary's refusal of a granted lease before any attempt exists (granted → releasing; 05, 09 "Host capability check"). attempt.result_submitted carries the admitted result itself.
 type LeaseEvent struct {
 	Transition LeaseEventTransition `json:"transition"`
-	// Why: required for lease.revoked and lease.restore_failed (05), null otherwise. Attempt stop and loss reasons live in the attempt record.
+	// Why: required for lease.revoked, lease.start_refused and lease.restore_failed (05), null otherwise. Attempt stop and loss reasons live in the attempt record.
 	Reason *string `json:"reason"`
 	// The lease after a lease transition, or after attempt.started (granted → active).
 	Lease *Lease `json:"lease"`
@@ -39,4 +45,41 @@ type LeaseEvent struct {
 	Attempt *Attempt `json:"attempt"`
 	// attempt.superseded only: the replacement attempt, started with the next token.
 	Successor *Attempt `json:"successor"`
+	// attempt.result_submitted only: the result the controller admitted, so the log itself identifies it.
+	Result *SubmittedResult `json:"result"`
+}
+
+type SubmittedResultKindValue string
+
+const (
+	SubmittedResultKindValuePatch    SubmittedResultKindValue = "patch"
+	SubmittedResultKindValueText     SubmittedResultKindValue = "text"
+	SubmittedResultKindValueDecision SubmittedResultKindValue = "decision"
+)
+
+// SubmittedResult: A run's result as the controller admitted it (09 "Blob exchange"): the call, the outcome and reason the adapter reported, and the result's kind and published blob, both null when the run produced no result. The blob was ingested and published before the event (03 publish-before-reference).
+type SubmittedResult struct {
+	Call    CallID                    `json:"call"`
+	Outcome Outcome                   `json:"outcome"`
+	Reason  ReasonCode                `json:"reason"`
+	Kind    *SubmittedResultKindValue `json:"kind"`
+	Blob    *Digest                   `json:"blob"`
+}
+
+// UnmarshalJSON decodes SubmittedResult and refuses an omitted reason code.
+
+func (x *SubmittedResult) UnmarshalJSON(b []byte) error {
+	type plain SubmittedResult
+	var p plain
+
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+
+	if p.Reason.code == "" {
+		return errors.New("SubmittedResult: a reason code is required (Reason)")
+	}
+
+	*x = SubmittedResult(p)
+	return nil
 }

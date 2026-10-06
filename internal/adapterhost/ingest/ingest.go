@@ -163,6 +163,61 @@ func Supported() error {
 	return unix.Close(rfd)
 }
 
+// probeName is SupportedIn's file: it starts with a dot, so it can never be
+// a handle.
+const probeName = ".adc-capability-probe"
+
+// SupportedIn is Supported in the ingestion context itself (09 "Host
+// capability check"), dir being an exchange root's out/ before launch: it
+// writes a regular file there, pins it beneath dir with O_PATH|O_NOFOLLOW,
+// requires statx's mount id, reopens it through /proc/self/fd and checks the
+// same device, inode and mount, then removes it. Any failure wraps
+// ErrUnsupported.
+func SupportedIn(dir *os.File) (err error) {
+	dfd := int(dir.Fd())
+	fd, err := unix.Openat(dfd, probeName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return fmt.Errorf("%w: creating the probe: %v", ErrUnsupported, err)
+	}
+	unix.Close(fd)
+	defer func() {
+		if rerr := unix.Unlinkat(dfd, probeName, 0); rerr != nil && err == nil {
+			err = fmt.Errorf("%w: removing the probe: %v", ErrUnsupported, rerr)
+		}
+	}()
+	pfd, err := openBeneath(dfd, probeName)
+	if err != nil {
+		return fmt.Errorf("%w: pinning the probe: %v", ErrUnsupported, err)
+	}
+	defer unix.Close(pfd)
+	pinned, err := stat(pfd, "the probe")
+	if err != nil {
+		return asUnsupported(err)
+	}
+	rfd, err := reopen(pfd, 0)
+	if err != nil {
+		return asUnsupported(err)
+	}
+	defer unix.Close(rfd)
+	opened, err := stat(rfd, "the reopened probe")
+	if err != nil {
+		return asUnsupported(err)
+	}
+	if opened.dev != pinned.dev || opened.ino != pinned.ino || opened.mnt != pinned.mnt {
+		return fmt.Errorf("%w: the reopened probe is another file", ErrUnsupported)
+	}
+	return nil
+}
+
+// asUnsupported makes any probe failure ErrUnsupported: before launch,
+// nothing is the adapter's.
+func asUnsupported(err error) error {
+	if errors.Is(err, ErrUnsupported) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrUnsupported, err)
+}
+
 // unavailable reports a syscall error that means the kernel or filesystem
 // lacks the capability, not that this file failed.
 func unavailable(err error) bool {

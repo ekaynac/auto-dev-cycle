@@ -24,6 +24,7 @@ const (
 	Requested       = "lease.requested"
 	Waiting         = "lease.waiting"
 	Granted         = "lease.granted"
+	StartRefused    = "lease.start_refused"
 	AttemptStarted  = "attempt.started"
 	Expired         = "lease.expired"
 	Completed       = "lease.completed"
@@ -43,7 +44,7 @@ const RestoreHold = "evidence_restore_pending"
 // LeaseEvent is one lease transition with the data it carries.
 type LeaseEvent struct {
 	Kind       string
-	Reason     string                      // lease.revoked, lease.restore_failed: why (05)
+	Reason     string                      // lease.revoked, lease.start_refused, lease.restore_failed: why (05)
 	Hold       *types.LeaseHoldValue       // lease.waiting; lease.restore_failed (evidence_restore_pending)
 	Attempt    *types.AttemptID            // attempt.started
 	Receipt    *types.ReceiptID            // lease.restore_verified
@@ -63,6 +64,7 @@ var leaseTable = map[leaseStep]types.LeaseState{
 	{types.LeaseStateRequested, Granted}:      types.LeaseStateGranted,
 	{types.LeaseStateGranted, AttemptStarted}: types.LeaseStateActive,
 	{types.LeaseStateGranted, Expired}:        types.LeaseStateReleasing,
+	{types.LeaseStateGranted, StartRefused}:   types.LeaseStateReleasing,
 	{types.LeaseStateActive, Completed}:       types.LeaseStateSettling,
 	{types.LeaseStateActive, Revoked}:         types.LeaseStateSettling,
 	{types.LeaseStateActive, Preempted}:       types.LeaseStateSettling,
@@ -100,9 +102,9 @@ func ApplyLease(l types.Lease, e LeaseEvent, evidenceTarget bool, holds map[stri
 	n := l
 	n.State, n.Hold = to, nil // a hold lasts exactly as long as its state
 	switch e.Kind {
-	case Revoked:
+	case Revoked, StartRefused:
 		if e.Reason == "" {
-			return types.Lease{}, errors.New("lease: a revocation names its reason")
+			return types.Lease{}, fmt.Errorf("lease: %s names its reason", e.Kind)
 		}
 	case Waiting, RestoreFailed:
 		if e.Kind == RestoreFailed && e.Reason == "" {
