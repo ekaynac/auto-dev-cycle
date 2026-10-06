@@ -10,6 +10,12 @@ type AdapterPrepareParamsWorkspace struct {
 	Writable bool   `json:"writable"`
 }
 
+// AdapterPrepareParamsExchange: The attempt's exchange root (09 "Blob exchange"), as absolute paths inside its confinement: in/ holds the files the core wrote for the attempt, read-only to the adapter; out/ holds the files the adapter writes. A handle the adapter returns names exactly out/<handle>.
+type AdapterPrepareParamsExchange struct {
+	In  string `json:"in"`
+	Out string `json:"out"`
+}
+
 // AdapterPrepareParamsLimits: The attempt's limits; the controller enforces them too and never relies on the adapter.
 type AdapterPrepareParamsLimits struct {
 	MaxTurns        int64 `json:"max_turns"`
@@ -43,7 +49,9 @@ type AdapterPrepareParams struct {
 	Model        AdapterLabel `json:"model"`
 	// The working tree inside the attempt's confinement: its absolute path there, and whether the attempt may write it (host-side roles work on a read-only snapshot).
 	Workspace AdapterPrepareParamsWorkspace `json:"workspace"`
-	Inputs    []AdapterHandle               `json:"inputs"`
+	// The attempt's exchange root (09 "Blob exchange"), as absolute paths inside its confinement: in/ holds the files the core wrote for the attempt, read-only to the adapter; out/ holds the files the adapter writes. A handle the adapter returns names exactly out/<handle>.
+	Exchange AdapterPrepareParamsExchange `json:"exchange"`
+	Inputs   []AdapterHandle              `json:"inputs"`
 	// The attempt's limits; the controller enforces them too and never relies on the adapter.
 	Limits AdapterPrepareParamsLimits `json:"limits"`
 	// The only tools the harness may expose: its own (allowed) and the controller-mediated ones it requests with tool.request (mediated).

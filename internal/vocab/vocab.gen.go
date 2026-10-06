@@ -75,7 +75,7 @@ var (
 	ReasonLogIntegrityBroken = types.ReasonCodeOf("log_integrity_broken")
 	// ReasonP3Banked: A P3 finding banked as background work (plan §2.5).
 	ReasonP3Banked = types.ReasonCodeOf("p3_banked")
-	// ReasonPreconditionFailed: An instrument precondition failed before the run; no attempt is spent.
+	// ReasonPreconditionFailed: An environment precondition failed before the run: an instrument's (12), or the adapter host's ingestion capabilities (09); no attempt is spent.
 	ReasonPreconditionFailed = types.ReasonCodeOf("precondition_failed")
 	// ReasonProjectUnconfigured: The project has no valid adopted profile; refuse to run.
 	ReasonProjectUnconfigured = types.ReasonCodeOf("project_unconfigured")

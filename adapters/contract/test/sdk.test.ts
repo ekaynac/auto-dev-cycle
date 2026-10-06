@@ -17,7 +17,7 @@ const handle = (name: string) => ({ attempt: att, handle: name, digest: "sha256:
 const usage = { tokens: { in: 1, out: 1, cache_read: 0, cache_write: 0 }, turns: 1, milliseconds: 5,
   cost: { amount_micros: 0, currency: "USD", basis: "cash", estimate: true } };
 const prepareParams = { attempt: att, fencing_token: 3, role: "builder", executor: "exe_01m3250vnfeyrv67x6w0ddqr6a", model: "m",
-  workspace: { path: "/workspace", writable: true }, inputs: [], limits: { max_turns: 1, max_output_tokens: 10, wall_seconds: 60 },
+  workspace: { path: "/workspace", writable: true }, exchange: { in: "/exchange/in", out: "/exchange/out" }, inputs: [], limits: { max_turns: 1, max_output_tokens: 10, wall_seconds: 60 },
   tool_policy: { allowed: [], mediated: [] }, gateway: null, native_login: null };
 const runParams = { attempt: att, fencing_token: 3, call: cal, prompt: handle("p.md"), response_schema: null };
 const ok: AdapterOutcome = { outcome: "empty", reason: "completed_clean", detail: "" };

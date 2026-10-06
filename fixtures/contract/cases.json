@@ -1098,6 +1098,10 @@
     "path": "/workspace",
     "writable": false
    },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
+   },
    "inputs": [
     {
      "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
@@ -1125,6 +1129,88 @@
   "valid": true
  },
  {
+  "name": "prepare: a relative exchange path",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "model": "claude-sonnet-5-5",
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "exchange/out"
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "handle": "context.json",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_turns": 40,
+    "max_output_tokens": 64000,
+    "wall_seconds": 3600
+   },
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "run_test"
+    ]
+   },
+   "gateway": null,
+   "native_login": null
+  },
+  "valid": false
+ },
+ {
+  "name": "prepare: no exchange root",
+  "schema": "adapter/prepare-params",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "fencing_token": 3,
+   "role": "builder",
+   "executor": "exe_01m3250vnfeyrv67x6w0ddqr6a",
+   "model": "claude-sonnet-5-5",
+   "workspace": {
+    "path": "/workspace",
+    "writable": false
+   },
+   "inputs": [
+    {
+     "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+     "handle": "context.json",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "size": 120
+    }
+   ],
+   "limits": {
+    "max_turns": 40,
+    "max_output_tokens": 64000,
+    "wall_seconds": 3600
+   },
+   "tool_policy": {
+    "allowed": [
+     "Read"
+    ],
+    "mediated": [
+     "run_test"
+    ]
+   },
+   "gateway": null,
+   "native_login": null
+  },
+  "valid": false
+ },
+ {
   "name": "prepare: a NUL in the workspace path",
   "schema": "adapter/prepare-params",
   "doc": {
@@ -1136,6 +1222,10 @@
    "workspace": {
     "path": "/w\u0000x",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    },
    "inputs": [
     {
@@ -1175,6 +1265,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    },
    "inputs": [
     {
@@ -1217,6 +1311,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    },
    "inputs": [
     {
@@ -1426,6 +1524,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": true
@@ -1643,6 +1745,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": true
@@ -1690,6 +1796,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": true
@@ -1834,6 +1944,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": true
@@ -1901,6 +2015,10 @@
    "workspace": {
     "path": "/w\u0000x",
     "writable": true
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2145,6 +2263,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2192,6 +2314,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2239,6 +2365,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2286,6 +2416,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2333,6 +2467,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2380,6 +2518,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2427,6 +2569,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2472,6 +2618,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2514,6 +2664,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2561,6 +2715,10 @@
    "workspace": {
     "path": "workspace",
     "writable": true
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2619,6 +2777,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2737,6 +2899,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2822,6 +2988,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -2989,6 +3159,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -3036,6 +3210,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": true
@@ -3083,6 +3261,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": true
@@ -3130,6 +3312,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": true
@@ -3177,6 +3363,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -3224,6 +3414,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -3271,6 +3465,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -3318,6 +3516,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -3365,6 +3567,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -3412,6 +3618,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -3459,6 +3669,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -3506,6 +3720,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -3553,6 +3771,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -3600,6 +3822,10 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
   },
   "valid": false
@@ -3647,7 +3873,363 @@
    "workspace": {
     "path": "/workspace",
     "writable": false
+   },
+   "exchange": {
+    "in": "/exchange/in",
+    "out": "/exchange/out"
    }
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: a digest mismatch",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": true
+ },
+ {
+  "name": "output refusal: stale",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "stale_attempt",
+   "check": "stale_attempt",
+   "detail": "publication is closed"
+  },
+  "valid": true
+ },
+ {
+  "name": "output refusal: a foreign handle",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250v57ft7aehkqwq0yrq3n",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "foreign_handle",
+   "detail": "the handle names another attempt"
+  },
+  "valid": true
+ },
+ {
+  "name": "output refusal: a path, with the bad name recorded",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "../x",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "path",
+   "detail": "the name has a slash"
+  },
+  "valid": true
+ },
+ {
+  "name": "output refusal: a FIFO",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "special_file",
+   "detail": "a FIFO"
+  },
+  "valid": true
+ },
+ {
+  "name": "output refusal: a detail at its bound",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  "valid": true
+ },
+ {
+  "name": "output refusal: a stale check as unsafe",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "stale_attempt",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: a file check as stale",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "stale_attempt",
+   "check": "digest",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: a foreign handle as stale",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "stale_attempt",
+   "check": "foreign_handle",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: an unregistered check",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "too_big",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: another reason",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "runner_fault",
+   "check": "digest",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: an empty detail",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": ""
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: a detail past its bound",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: a name past its bound",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: a NUL in the name",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "a\u0000b",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: a raw path for the handle",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": "/etc/passwd",
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: a handle without its digest",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: an extra handle field",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120,
+    "path": "/x"
+   },
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: a negative size",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": -1
+   },
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: no attempt",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": "the copy's digest differs from the declared one"
+  },
+  "valid": false
+ },
+ {
+  "name": "output refusal: an unknown field",
+  "schema": "records/attempt-output-refusal",
+  "doc": {
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "handle": {
+    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "handle": "patch.diff",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 120
+   },
+   "reason": "unsafe_output",
+   "check": "digest",
+   "detail": "the copy's digest differs from the declared one",
+   "untrustworthy": true
   },
   "valid": false
  }

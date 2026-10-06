@@ -12,6 +12,7 @@
     "executor",
     "model",
     "workspace",
+    "exchange",
     "inputs",
     "limits",
     "tool_policy",
@@ -53,6 +54,27 @@
         },
         "writable": {
           "type": "boolean"
+        }
+      }
+    },
+    "exchange": {
+      "description": "The attempt's exchange root (09 \"Blob exchange\"), as absolute paths inside its confinement: in/ holds the files the core wrote for the attempt, read-only to the adapter; out/ holds the files the adapter writes. A handle the adapter returns names exactly out/<handle>.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "in",
+        "out"
+      ],
+      "properties": {
+        "in": {
+          "type": "string",
+          "pattern": "^/[^\\x00]*$",
+          "maxLength": 1024
+        },
+        "out": {
+          "type": "string",
+          "pattern": "^/[^\\x00]*$",
+          "maxLength": 1024
         }
       }
     },

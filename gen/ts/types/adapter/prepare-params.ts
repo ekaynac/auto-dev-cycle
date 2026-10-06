@@ -26,6 +26,13 @@ export interface AdapterPrepareParams {
     writable: boolean;
   };
   /**
+   * The attempt's exchange root (09 "Blob exchange"), as absolute paths inside its confinement: in/ holds the files the core wrote for the attempt, read-only to the adapter; out/ holds the files the adapter writes. A handle the adapter returns names exactly out/<handle>.
+   */
+  exchange: {
+    in: string;
+    out: string;
+  };
+  /**
    * @maxItems 1024
    */
   inputs: AdapterHandle[];

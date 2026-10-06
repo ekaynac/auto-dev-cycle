@@ -16,6 +16,7 @@ Prepare one attempt (09 "Methods", "Host-side harness rules").
 | `executor` | yes | [ExecutorID](common-defs.md#executorid) |  |
 | `model` | yes | [AdapterLabel](adapter-event.md#adapterlabel) |  |
 | `workspace` | yes | object ([fields](#fields-of-workspace)) | The working tree inside the attempt's confinement: its absolute path there, and whether the attempt may write it (host-side roles work on a read-only snapshot). |
+| `exchange` | yes | object ([fields](#fields-of-exchange)) | The attempt's exchange root (09 "Blob exchange"), as absolute paths inside its confinement: in/ holds the files the core wrote for the attempt, read-only to the adapter; out/ holds the files the adapter writes. A handle the adapter returns names exactly out/&lt;handle&gt;. |
 | `inputs` | yes | array of [AdapterHandle](adapter-event.md#adapterhandle) (maxItems `1024`) |  |
 | `limits` | yes | object ([fields](#fields-of-limits)) | The attempt's limits; the controller enforces them too and never relies on the adapter. |
 | `tool_policy` | yes | object ([fields](#fields-of-tool_policy)) | The only tools the harness may expose: its own (allowed) and the controller-mediated ones it requests with tool.request (mediated). |
@@ -30,6 +31,15 @@ No other fields are allowed.
 |---|---|---|---|
 | `path` | yes | string (pattern `^/[^\x00]*$`, maxLength `1024`) |  |
 | `writable` | yes | boolean |  |
+
+No other fields are allowed.
+
+## Fields of exchange
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `in` | yes | string (pattern `^/[^\x00]*$`, maxLength `1024`) |  |
+| `out` | yes | string (pattern `^/[^\x00]*$`, maxLength `1024`) |  |
 
 No other fields are allowed.
 

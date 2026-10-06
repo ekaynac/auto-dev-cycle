@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/attempt-output-refusal.json",
+  "title": "AttemptOutputRefusal",
+  "description": "The payload of attempt.output_refused/v1 (docs/design/m0/09 \"Blob exchange\"): the controller refused one adapter output. The event's subject is the attempt. It is not a transition: it leaves the attempt record unchanged and may follow any state, terminal ones included, so it is a record of its own rather than a lease-event transition. An attempt with at least one such event is untrustworthy; M0 derives that at read time. reason is stale_attempt exactly when check is (05 fencing), unsafe_output otherwise.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["attempt", "handle", "reason", "check", "detail"],
+  "properties": {
+    "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"},
+    "handle": {
+      "description": "The handle as the adapter declared it (adapter/event.json AdapterHandle), with its name unconstrained so that a path refusal can record it; for foreign_handle its attempt is not the event's.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "handle", "digest", "size"],
+      "properties": {
+        "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"},
+        "handle": {"type": "string", "pattern": "^[^\\x00]*$", "maxLength": 1024},
+        "digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+        "size": {"$ref": "resource-group.json#/$defs/Amount"}
+      }
+    },
+    "reason": {"enum": ["unsafe_output", "stale_attempt"]},
+    "check": {
+      "description": "The first check that refused the output, in 09's ingestion order.",
+      "enum": ["stale_attempt", "foreign_handle", "path", "symlink", "special_file", "hard_link", "size", "unreadable", "digest", "replaced"]
+    },
+    "detail": {"description": "What the check saw; never file contents.", "type": "string", "minLength": 1, "maxLength": 1024}
+  },
+  "allOf": [
+    {"if": {"properties": {"check": {"const": "stale_attempt"}}}, "then": {"properties": {"reason": {"const": "stale_attempt"}}}, "else": {"properties": {"reason": {"const": "unsafe_output"}}}}
+  ]
+}
