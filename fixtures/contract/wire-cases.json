@@ -1,0 +1,995 @@
+{
+ "_comment": "The adapter wire corpus (docs/design/m0/09 \"Process model\"): each case is a byte stream read by the Go host (internal/adapterhost/wire) and the TypeScript reader (adapters/contract), each read whole and in small pieces. want lists each line's verdict in order: event, response, json (not strict JSON) or envelope (strict JSON, not an acceptable message); framing ends the stream, and nothing after it is read. decoded lists the value of each line the strict reader accepts, in order; for nest cases each side checks its strict value against its platform's ordinary JSON parser instead. Bytes: hex, else nest (prefix, open times times, inner, close times times, suffix, then a newline), else text as UTF-8; pad_to N pads text's first line with spaces after its opening brace to exactly N bytes, its newline not counted.",
+ "cases": [
+  {
+   "name": "an event",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "adapter.event",
+     "params": {
+      "event": "heartbeat"
+     }
+    }
+   ],
+   "want": [
+    "event"
+   ]
+  },
+  {
+   "name": "a result",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "result": {}
+    }
+   ],
+   "want": [
+    "response"
+   ]
+  },
+  {
+   "name": "a null result",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "result": null
+    }
+   ],
+   "want": [
+    "response"
+   ]
+  },
+  {
+   "name": "an error with data",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"no method\",\"data\":{\"x\":[1]}}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "error": {
+      "code": -32601,
+      "message": "no method",
+      "data": {
+       "x": [
+        1
+       ]
+      }
+     }
+    }
+   ],
+   "want": [
+    "response"
+   ]
+  },
+  {
+   "name": "an event and a response, then end of input",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}}\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "adapter.event",
+     "params": {
+      "event": "heartbeat"
+     }
+    },
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "result": {}
+    }
+   ],
+   "want": [
+    "event",
+    "response"
+   ]
+  },
+  {
+   "name": "empty input",
+   "text": "",
+   "want": []
+  },
+  {
+   "name": "unknown members are allowed",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":1,\"extra\":true}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 2,
+     "result": 1,
+     "extra": true
+    }
+   ],
+   "want": [
+    "response"
+   ]
+  },
+  {
+   "name": "an empty line",
+   "text": "\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "a top-level array",
+   "text": "[]\n",
+   "decoded": [
+    []
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "jsonrpc 1.0",
+   "text": "{\"jsonrpc\":\"1.0\",\"id\":1,\"result\":{}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "1.0",
+     "id": 1,
+     "result": {}
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "no jsonrpc",
+   "text": "{\"id\":1,\"result\":{}}\n",
+   "decoded": [
+    {
+     "id": 1,
+     "result": {}
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "both result and error",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{},\"error\":{\"code\":1,\"message\":\"x\"}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "result": {},
+     "error": {
+      "code": 1,
+      "message": "x"
+     }
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "neither result nor error",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "a string id",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": "1",
+     "result": {}
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "a null id",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":null,\"result\":{}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": null,
+     "result": {}
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "a response with a method",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"run\",\"result\":{}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "method": "run",
+     "result": {}
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "an error that is a string",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":\"boom\"}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "error": "boom"
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "an error code that is a string",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":\"1\",\"message\":\"x\"}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "error": {
+      "code": "1",
+      "message": "x"
+     }
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "an error without a message",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "error": {
+      "code": 1
+     }
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "an error code with a fraction",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1.5,\"message\":\"x\"}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "another notification",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"other\",\"params\":{}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "other",
+     "params": {}
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "adapter.event with an id",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"adapter.event\",\"params\":{}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "method": "adapter.event",
+     "params": {}
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "adapter.event with array params",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":[]}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "adapter.event",
+     "params": []
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "adapter.event without params",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\"}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "adapter.event"
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "exactly 16 MiB",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}}\n",
+   "pad_to": 16777216,
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "adapter.event",
+     "params": {
+      "event": "heartbeat"
+     }
+    }
+   ],
+   "want": [
+    "event"
+   ]
+  },
+  {
+   "name": "16 MiB and one byte",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}}\n",
+   "pad_to": 16777217,
+   "want": [
+    "framing"
+   ]
+  },
+  {
+   "name": "invalid UTF-8",
+   "hex": "7b226a736f6e727063223a22322e30222c226d6574686f64223a22616461707465722e6576656e74222c22706172616d73223a7b226576656e74223a22686561727462656174222278223a22ff227d7d0a",
+   "want": [
+    "framing"
+   ]
+  },
+  {
+   "name": "an overlong UTF-8 encoding",
+   "hex": "c0af0a",
+   "want": [
+    "framing"
+   ]
+  },
+  {
+   "name": "a UTF-8 encoded surrogate",
+   "hex": "eda0800a",
+   "want": [
+    "framing"
+   ]
+  },
+  {
+   "name": "a valid line, then invalid UTF-8",
+   "hex": "7b226a736f6e727063223a22322e30222c226d6574686f64223a22616461707465722e6576656e74222c22706172616d73223a7b226576656e74223a22686561727462656174227d7d0aff0a",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "adapter.event",
+     "params": {
+      "event": "heartbeat"
+     }
+    }
+   ],
+   "want": [
+    "event",
+    "framing"
+   ]
+  },
+  {
+   "name": "missing trailing newline",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}}",
+   "want": [
+    "framing"
+   ]
+  },
+  {
+   "name": "a response, then a line without its newline",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}}",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "result": {}
+    }
+   ],
+   "want": [
+    "response",
+    "framing"
+   ]
+  },
+  {
+   "name": "a duplicate key",
+   "text": "{\"jsonrpc\":\"2.0\",\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "a nested duplicate key",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"a\":1,\"a\":1}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "a duplicate key spelled with an escape",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"a\":1,\"\\u0061\":1}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "number -0",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":-0,\"result\":{}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "number 1.0",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1.0,\"result\":{}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "number 1e3",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1e3,\"result\":{}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "number 1E3",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1E3,\"result\":{}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "number 01",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":01,\"result\":{}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "number -01",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":-01,\"result\":{}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "number 9007199254740992",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":9007199254740992,\"result\":{}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "number -9007199254740992",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":-9007199254740992,\"result\":{}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "number 1.5e0",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1.5e0,\"result\":{}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "the largest safe integer",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":9007199254740991,\"result\":{}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 9007199254740991,
+     "result": {}
+    }
+   ],
+   "want": [
+    "response"
+   ]
+  },
+  {
+   "name": "the most negative safe integer",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":-9007199254740991,\"result\":{}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": -9007199254740991,
+     "result": {}
+    }
+   ],
+   "want": [
+    "response"
+   ]
+  },
+  {
+   "name": "a zero id",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 0,
+     "result": {}
+    }
+   ],
+   "want": [
+    "response"
+   ]
+  },
+  {
+   "name": "a lone high surrogate",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"\\ud800\"}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "a lone low surrogate",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"\\udc00\"}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "a high surrogate before a non-surrogate",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"\\ud800\\u0041\"}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "a surrogate pair",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"\\ud83d\\ude00\"}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "result": "\ud83d\ude00"
+    }
+   ],
+   "want": [
+    "response"
+   ]
+  },
+  {
+   "name": "a lone surrogate in a key",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"\\udfff\":1}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "128 levels",
+   "nest": {
+    "open": "[",
+    "close": "]",
+    "times": 128
+   },
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "129 levels",
+   "nest": {
+    "open": "[",
+    "close": "]",
+    "times": 129
+   },
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "trailing data",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}} x\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "a second value",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}}{}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "trailing whitespace",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}} \t\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "adapter.event",
+     "params": {
+      "event": "heartbeat"
+     }
+    }
+   ],
+   "want": [
+    "event"
+   ]
+  },
+  {
+   "name": "a BOM before the message",
+   "hex": "efbbbf7b226a736f6e727063223a22322e30222c226d6574686f64223a22616461707465722e6576656e74222c22706172616d73223a7b226576656e74223a22686561727462656174227d7d0a",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "a BOM inside a string",
+   "hex": "7b226a736f6e727063223a22322e30222c226964223a312c22726573756c74223a227defbbbf227d0a",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "result": "}\ufeff"
+    }
+   ],
+   "want": [
+    "response"
+   ]
+  },
+  {
+   "name": "CRLF: the CR is trailing whitespace",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}}\r\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "adapter.event",
+     "params": {
+      "event": "heartbeat"
+     }
+    }
+   ],
+   "want": [
+    "event"
+   ]
+  },
+  {
+   "name": "a raw control character in a string",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"a\tb\"}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "an invalid escape",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"\\x\"}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "a refused line does not end the stream",
+   "text": "{\"a\":1,\"a\":2}\n{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "adapter.event",
+     "params": {
+      "event": "heartbeat"
+     }
+    }
+   ],
+   "want": [
+    "json",
+    "event"
+   ]
+  },
+  {
+   "name": "objects 127 deep around a scalar: 128 levels",
+   "nest": {
+    "open": "{\"a\":",
+    "close": "}",
+    "times": 127,
+    "inner": "1"
+   },
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "objects 128 deep around a scalar: 129 levels",
+   "nest": {
+    "open": "{\"a\":",
+    "close": "}",
+    "times": 128,
+    "inner": "1"
+   },
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "objects 127 deep around an empty object: 128 levels",
+   "nest": {
+    "open": "{\"a\":",
+    "close": "}",
+    "times": 127,
+    "inner": "{}"
+   },
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "objects 128 deep around an empty object: 129 levels",
+   "nest": {
+    "open": "{\"a\":",
+    "close": "}",
+    "times": 128,
+    "inner": "{}"
+   },
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "arrays 127 deep around a string: 128 levels",
+   "nest": {
+    "open": "[",
+    "close": "]",
+    "times": 127,
+    "inner": "\"s\""
+   },
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "arrays 128 deep around null: 129 levels",
+   "nest": {
+    "open": "[",
+    "close": "]",
+    "times": 128,
+    "inner": "null"
+   },
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "array/object pairs 63 deep around [1]: 128 levels",
+   "nest": {
+    "open": "[{\"a\":",
+    "close": "}]",
+    "times": 63,
+    "inner": "[1]"
+   },
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "array/object pairs 63 deep around [[1]]: 129 levels",
+   "nest": {
+    "open": "[{\"a\":",
+    "close": "}]",
+    "times": 63,
+    "inner": "[[1]]"
+   },
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "event params 126 deep around a scalar: 128 levels",
+   "nest": {
+    "prefix": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":",
+    "open": "{\"a\":",
+    "close": "}",
+    "times": 126,
+    "inner": "true",
+    "suffix": "}"
+   },
+   "want": [
+    "event"
+   ]
+  },
+  {
+   "name": "event params 127 deep around a scalar: 129 levels",
+   "nest": {
+    "prefix": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":",
+    "open": "{\"a\":",
+    "close": "}",
+    "times": 127,
+    "inner": "true",
+    "suffix": "}"
+   },
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "a deep value after a long sibling still counts levels",
+   "nest": {
+    "prefix": "[[0,1,2],",
+    "open": "[",
+    "close": "]",
+    "times": 128,
+    "inner": "",
+    "suffix": "]"
+   },
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "prototype-like keys in params",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"__proto__\":{\"polluted\":1},\"constructor\":{\"prototype\":1},\"toString\":\"s\",\"hasOwnProperty\":2}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "adapter.event",
+     "params": {
+      "__proto__": {
+       "polluted": 1
+      },
+      "constructor": {
+       "prototype": 1
+      },
+      "toString": "s",
+      "hasOwnProperty": 2
+     }
+    }
+   ],
+   "want": [
+    "event"
+   ]
+  },
+  {
+   "name": "a __proto__ member beside the envelope",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"__proto__\":null},\"__proto__\":{\"method\":\"x\"}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "result": {
+      "__proto__": null
+     },
+     "__proto__": {
+      "method": "x"
+     }
+    }
+   ],
+   "want": [
+    "response"
+   ]
+  },
+  {
+   "name": "envelope members only under __proto__",
+   "text": "{\"__proto__\":{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":1}}\n",
+   "decoded": [
+    {
+     "__proto__": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": 1
+     }
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "a duplicate __proto__",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"__proto__\":1,\"__proto__\":2}}\n",
+   "want": [
+    "json"
+   ]
+  },
+  {
+   "name": "an error whose code is only under __proto__",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"message\":\"x\",\"__proto__\":{\"code\":1}}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "error": {
+      "message": "x",
+      "__proto__": {
+       "code": 1
+      }
+     }
+    }
+   ],
+   "want": [
+    "envelope"
+   ]
+  },
+  {
+   "name": "two-, three- and four-byte UTF-8",
+   "text": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"\u00e9\u20ac\ud83d\ude00\u4e2d\"}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "result": "\u00e9\u20ac\ud83d\ude00\u4e2d"
+    }
+   ],
+   "want": [
+    "response"
+   ]
+  },
+  {
+   "name": "multibyte UTF-8 in a key and an escaped pair",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"\u00e7\u00f6\":\"\\ud83d\\ude00\u00e9\"}}\n",
+   "decoded": [
+    {
+     "jsonrpc": "2.0",
+     "method": "adapter.event",
+     "params": {
+      "\u00e7\u00f6": "\ud83d\ude00\u00e9"
+     }
+    }
+   ],
+   "want": [
+    "event"
+   ]
+  },
+  {
+   "name": "a four-byte sequence cut short by the newline",
+   "hex": "22f09f980a",
+   "want": [
+    "framing"
+   ]
+  },
+  {
+   "name": "16 MiB and one byte, then a valid line",
+   "text": "{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}}\n{\"jsonrpc\":\"2.0\",\"method\":\"adapter.event\",\"params\":{\"event\":\"heartbeat\"}}\n",
+   "pad_to": 16777217,
+   "want": [
+    "framing"
+   ]
+  },
+  {
+   "name": "invalid UTF-8, then a valid line",
+   "hex": "ff0a7b226a736f6e727063223a22322e30222c226d6574686f64223a22616461707465722e6576656e74222c22706172616d73223a7b226576656e74223a22686561727462656174227d7d0a",
+   "want": [
+    "framing"
+   ]
+  },
+  {
+   "name": "an overlong encoding, then a valid line",
+   "hex": "c0af0a7b226a736f6e727063223a22322e30222c226d6574686f64223a22616461707465722e6576656e74222c22706172616d73223a7b226576656e74223a22686561727462656174227d7d0a",
+   "want": [
+    "framing"
+   ]
+  }
+ ]
+}

@@ -402,3 +402,25 @@ func TestOwnsReasonCheck(t *testing.T) {
 		}
 	}
 }
+
+// ReadStrict adds the wire bounds (depth, safe integers) to the rules
+// Validate applies; Validate itself is unchanged by them.
+func TestReadStrictWireBounds(t *testing.T) {
+	nest := func(n int) []byte { return []byte(strings.Repeat("[", n) + strings.Repeat("]", n)) }
+	for _, ok := range [][]byte{nest(MaxDepth), []byte("9007199254740991"), []byte("-9007199254740991"), []byte(`{"a":[0]}`)} {
+		if _, err := ReadStrict(ok); err != nil {
+			t.Errorf("%.40s: %v", ok, err)
+		}
+	}
+	for _, bad := range [][]byte{nest(MaxDepth + 1), []byte("[" + strings.Repeat("[", MaxDepth-1) + "1" + strings.Repeat("]", MaxDepth)), []byte("9007199254740992"), []byte("-9007199254740992"), []byte("99999999999999999999"), []byte(`{"a":1,"a":1}`), []byte("-0"), []byte("1 2")} {
+		if _, err := ReadStrict(bad); err == nil {
+			t.Errorf("%.40s: accepted", bad)
+		}
+	}
+	if _, err := parse(nest(MaxDepth+1), false); err != nil {
+		t.Errorf("Validate's reader bounds depth: %v", err)
+	}
+	if _, err := parse([]byte("99999999999999999999"), false); err != nil {
+		t.Errorf("Validate's reader bounds integers: %v", err)
+	}
+}
