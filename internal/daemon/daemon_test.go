@@ -162,6 +162,10 @@ func TestCleanShutdownReleasesLock(t *testing.T) {
 	case err := <-done:
 		t.Fatalf("the daemon did not start: %v", err)
 	}
+	// The private socket listens from the readiness point.
+	if st := lstat(t, filepath.Join(dir, privateSocket)); st.Mode&0o777 != 0o600 {
+		t.Errorf("private socket mode %o", st.Mode)
+	}
 	// While it runs, a second daemon is refused.
 	_, err := Start(context.Background(), Config{StateDir: dir})
 	startErr(t, err, vocab.CouldNotRun, vocab.ReasonControllerAlreadyRunning)
@@ -170,6 +174,7 @@ func TestCleanShutdownReleasesLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockFree(t, dir)
+	gone(t, filepath.Join(dir, privateSocket))
 	if out := logs.String(); !strings.Contains(out, "adcd: stopped") || strings.Contains(out, dir) {
 		t.Fatalf("log: %q", out)
 	}

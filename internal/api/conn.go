@@ -7,6 +7,8 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 )
 
 type connKey struct{}
@@ -32,4 +34,24 @@ func hardAbort(r *http.Request) func() {
 		c = tc.NetConn()
 	}
 	return func() { _ = c.Close() } // the stream ends either way
+}
+
+// Peer is who a connection came from, as the listener that admitted it
+// says: the listener and, on a Unix socket, the peer's uid (SO_PEERCRED).
+type Peer struct {
+	Via identity.Listener
+	UID int
+}
+
+type peerKey struct{}
+
+// WithPeer records the connection's peer, for http.Server.ConnContext.
+func WithPeer(ctx context.Context, p Peer) context.Context {
+	return context.WithValue(ctx, peerKey{}, p)
+}
+
+// PeerOf is the peer WithPeer recorded; false when none was.
+func PeerOf(ctx context.Context) (Peer, bool) {
+	p, ok := ctx.Value(peerKey{}).(Peer)
+	return p, ok
 }

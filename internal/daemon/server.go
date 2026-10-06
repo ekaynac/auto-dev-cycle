@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package daemon
+
+import (
+	"context"
+	"errors"
+	"net"
+	"net/http"
+	"os"
+	"sync"
+	"time"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/api"
+	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+)
+
+// limits bound what one client can hold of the server.
+type limits struct {
+	headerTimeout time.Duration // to read a request's headers
+	writeTimeout  time.Duration // to write a response; the event stream replaces it per frame (api.Events)
+	idleTimeout   time.Duration // a kept-alive connection between requests
+	headerBytes   int           // request line and headers
+	bodyBytes     int64         // a request body
+	verifications int           // concurrent bearer verifications (Argon2id, 64 MiB each)
+	poll          time.Duration // the event stream's re-check bound; zero is api.MaxPoll
+	shutdown      time.Duration // what a graceful stop waits before closing connections
+}
+
+var defaultLimits = limits{headerTimeout: 5 * time.Second, writeTimeout: 30 * time.Second, idleTimeout: time.Minute,
+	headerBytes: 16 << 10, bodyBytes: 1 << 20, verifications: 4, shutdown: 5 * time.Second}
+
+// server is the API served on the daemon's sockets.
+type server struct {
+	sockets []*socket
+	https   []*http.Server
+	stop    context.CancelFunc // ends every request context: open streams return
+	lim     limits
+	wg      sync.WaitGroup
+	failed  chan error // a listener that stopped on its own
+}
+
+// listen binds the private socket in stateDir and, when configured, the
+// shared one, and serves the API over store on both. It runs at the
+// readiness point only (Run). gate caps bearer verifications; nil makes
+// one of lim.verifications.
+func listen(store *eventstore.Store, stateDir string, shared *SharedSocket, lim limits, gate api.AuthGate) (_ *server, err error) {
+	if gate == nil {
+		gate = api.NewAuthGate(lim.verifications)
+	}
+	s := &server{lim: lim, failed: make(chan error, 2)}
+	defer func() {
+		if err != nil {
+			_ = s.close() // the refusal is err
+		}
+	}()
+	dir, err := openDir(stateDir, func(st unix.Stat_t) bool { return st.Mode&0o777 == 0o700 })
+	if err != nil {
+		return nil, configError("the state directory must be a directory owned by this user with mode 0700")
+	}
+	if err := s.add(bind(dir, privateSocket, 0o600, -1, identity.PrivateSocket)); err != nil {
+		return nil, err
+	}
+	if shared != nil {
+		gid, err := shared.gid()
+		if err != nil {
+			return nil, err
+		}
+		dir, err := openDir(shared.RunDir, func(st unix.Stat_t) bool {
+			return st.Mode&0o022 == 0 && st.Mode&0o010 != 0 && int(st.Gid) == gid
+		})
+		if err != nil {
+			return nil, configError("the shared run directory must be a directory owned by this user, of the shared group, group-searchable and writable by no one else")
+		}
+		if err := s.add(bind(dir, sharedSocket, 0o660, gid, identity.SharedSocket)); err != nil {
+			return nil, err
+		}
+	}
+	base, stop := context.WithCancel(context.Background())
+	s.stop = stop
+	h := handler(store, lim, gate)
+	for _, sk := range s.sockets {
+		hs := &http.Server{Handler: h, ReadHeaderTimeout: lim.headerTimeout, WriteTimeout: lim.writeTimeout,
+			IdleTimeout: lim.idleTimeout, MaxHeaderBytes: lim.headerBytes,
+			BaseContext: func(net.Listener) context.Context { return base }, ConnContext: connContext}
+		s.https = append(s.https, hs)
+		s.wg.Go(func() {
+			if err := hs.Serve(sk.ln); !errors.Is(err, http.ErrServerClosed) {
+				s.failed <- err
+			}
+		})
+	}
+	return s, nil
+}
+
+func (s *server) add(sk *socket, err error) error {
+	if err == nil {
+		s.sockets = append(s.sockets, sk)
+	}
+	return err
+}
+
+// openDir opens path as a directory (no link followed) that this user
+// owns and that ok accepts, checked on the opened descriptor.
+func openDir(path string, ok func(unix.Stat_t) bool) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil || int(st.Uid) != os.Geteuid() || !ok(st) {
+		f.Close()
+		return nil, errors.New("daemon: directory refused")
+	}
+	return f, nil
+}
+
+// connContext registers the connection for api.Events' hard cutoff and
+// records which listener admitted it and the peer's uid.
+func connContext(ctx context.Context, c net.Conn) context.Context {
+	ctx = api.ConnContext(ctx, c)
+	if pc, ok := c.(*peerConn); ok {
+		ctx = api.WithPeer(ctx, pc.peer)
+	}
+	return ctx
+}
+
+// handler is the API's routes, every request body bounded. Command routes
+// join with their handlers.
+func handler(store *eventstore.Store, lim limits, gate api.AuthGate) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET "+api.EventsPath, api.Events{Store: store, Poll: lim.poll, Gate: gate})
+	mux.HandleFunc("GET "+api.VersionPath, api.Version)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > lim.bodyBytes {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, lim.bodyBytes)
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// close stops the server: request contexts end (streams return), the
+// servers stop accepting and drain within the shutdown bound, then
+// connections still open are closed, and the sockets are removed.
+func (s *server) close() error {
+	if s.stop != nil {
+		s.stop()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.lim.shutdown)
+	defer cancel()
+	var errs []error
+	for _, hs := range s.https {
+		if err := hs.Shutdown(ctx); err != nil {
+			errs = append(errs, hs.Close())
+		}
+	}
+	s.wg.Wait()
+	for _, sk := range s.sockets {
+		errs = append(errs, sk.close())
+	}
+	return errors.Join(errs...)
+}
