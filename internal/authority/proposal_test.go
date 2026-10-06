@@ -87,7 +87,7 @@ func proposalOf(t *testing.T, policy Policy, classes []string) types.Proposal {
 	t.Helper()
 	b := bound()
 	b.Classes = classes
-	p, err := NewProposal(prpID, Decision{Disposition: Propose, Policy: policy, Grant: ptr(grtA), Classes: classes}, b, now.Add(time.Hour))
+	p, err := NewProposal(prpID, Decision{Disposition: Propose, Policy: policy, Grant: ptr(grtA), Classes: classes}, b, now, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestNewProposalAndClose(t *testing.T) {
 	if p.BindingDigest != want || p.Status != types.ProposalStatusOpen || p.Policy != types.ProposalPolicyHuman {
 		t.Fatalf("%+v", p)
 	}
-	if _, err := NewProposal(prpID, Decision{Disposition: Allow}, bound(), now); err == nil {
+	if _, err := NewProposal(prpID, Decision{Disposition: Allow}, bound(), now, now); err == nil {
 		t.Error("a proposal from an allow")
 	}
 	rejected, err := Close(p, types.ProposalStatusRejected)
@@ -121,22 +121,22 @@ func TestNewProposalAndClose(t *testing.T) {
 	}
 	// Invalidation ends an open or confirmed proposal for good.
 	for _, from := range []types.Proposal{p, confirmed(p)} {
-		inv, err := Invalidate(from)
+		inv, err := Invalidate(from, invReason)
 		if err != nil || inv.Status != types.ProposalStatusInvalidated {
 			t.Errorf("invalidating a %s proposal: %v", from.Status, err)
 		}
-		if _, err := Invalidate(inv); err == nil {
+		if _, err := Invalidate(inv, invReason); err == nil {
 			t.Error("an invalidated proposal invalidated again")
 		}
 	}
-	if _, err := Invalidate(rejected); err == nil {
+	if _, err := Invalidate(rejected, invReason); err == nil {
 		t.Error("a rejected proposal invalidated")
 	}
 	// Astra #56: the record holds the canonical classes the digest hashed.
 	b := bound()
 	b.Classes = nil
 	dup, err := NewProposal(prpID, Decision{Disposition: Propose, Policy: Human, Grant: ptr(grtA),
-		Classes: []string{"policy.widen_destinations", "policy.widen_data", "policy.widen_data"}}, b, now.Add(time.Hour))
+		Classes: []string{"policy.widen_destinations", "policy.widen_data", "policy.widen_data"}}, b, now, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,6 +147,9 @@ func TestNewProposalAndClose(t *testing.T) {
 		t.Errorf("classes %v", dup.ChangeClass)
 	}
 }
+
+// invReason is the reason the unit tests invalidate for.
+const invReason = types.ProposalInvalidatedReasonValueProposalInvalidated
 
 var operator = actor(opID, types.ActorKindOperator)
 
@@ -409,7 +412,7 @@ func TestRevalidate(t *testing.T) {
 	// proposer was revoked) invalidates it all the same.
 	opBound := bound()
 	opBound.ProposedBy, opBound.Classes = opID, []string{"knowledge.export_framework_prose"}
-	opP, err := NewProposal(prpID, Decision{Disposition: Propose, Policy: Human, Classes: opBound.Classes}, opBound, now.Add(time.Hour))
+	opP, err := NewProposal(prpID, Decision{Disposition: Propose, Policy: Human, Classes: opBound.Classes}, opBound, now, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +469,7 @@ func TestRevalidate(t *testing.T) {
 		t.Errorf("a record's classes changed under its digest: %s", got.String())
 	}
 	// Once invalidated, restored authority never makes it applicable.
-	inv, _ := Invalidate(p)
+	inv, _ := Invalidate(p, invReason)
 	if got := refusalOf(t, Revalidate(reg, inv, &operator, req, bound(), state)); got != vocab.ReasonProposalNotOpen {
 		t.Errorf("an invalidated proposal at apply: %s", got.String())
 	}
@@ -474,6 +477,12 @@ func TestRevalidate(t *testing.T) {
 	reviewReq := supRequest("profile.adopt", []string{"install.self"}, g)
 	if err := Revalidate(reg, review, nil, reviewReq, bound(), state); err != nil {
 		t.Errorf("a review-confirmed proposal needs no human confirmer: %v", err)
+	}
+	// Separation of duties again at apply: the proposer as its review's
+	// confirmer invalidates it (02:45; 04:190).
+	self := actor(supID, types.ActorKindSupervisor)
+	if got := refusalOf(t, Revalidate(reg, review, &self, reviewReq, bound(), state)); got != vocab.ReasonProposalInvalidated {
+		t.Errorf("a self-confirmed review at apply: %s", got.String())
 	}
 	tight := supRequest("profile.adopt", []string{"install.self"}, tighter)
 	if got := refusalOf(t, Revalidate(reg, review, nil, tight, bound(), state)); got != vocab.ReasonProposalInvalidated {

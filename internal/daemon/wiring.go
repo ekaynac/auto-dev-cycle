@@ -36,7 +36,7 @@ func hooks(reg *vocab.Registry, project func(*eventstore.Tx, []eventstore.Event)
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {
 	all := eventstore.Kinds{}
-	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), lease.Kinds(), ledger.Kinds()} {
+	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), lease.Kinds(), ledger.Kinds()} {
 		for k := range ks {
 			if _, dup := all[k]; dup {
 				return nil, fmt.Errorf("daemon: event kind %s is registered twice", k)
@@ -48,7 +48,7 @@ func eventKinds() (eventstore.Kinds, error) {
 }
 
 // projector is the writer's Project hook, composed as a rebuild replays
-// it: each event goes through identity, then grants, the seat, leases with
+// it: each event goes through identity, then grants, the seat, proposals, leases with
 // their capacity reservations, then the usage ledger, before the next
 // event (eventstore.ProjectEach). A lease projector without Units admits
 // no seal until units are wired (fail closed).
@@ -58,6 +58,7 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		identity.Projector{}.Project,
 		authority.GrantProjector{}.Project,
 		authority.SeatProjector{}.Project,
+		authority.ProposalProjector{}.Project,
 		capacity.Hook(leases, r),
 		ledger.Project,
 	)

@@ -37,7 +37,7 @@ func authorityDocs() map[string]map[string]any {
 			"actions": []any{}, "reads": map[string]any{"projects": "same", "kinds": []any{"task"}},
 			"valid_from": "2026-10-04T00:00:00Z", "expires_at": "2026-10-11T00:00:00Z",
 			"confirmation_overrides": map[string]any{}, "issued_by": opID, "approval": aprID}, "revoked_at": "2026-10-05T00:00:00Z"},
-		"records/approval": {"id": aprID, "actor": opID, "actor_kind": "operator", "action": "profile.adopt",
+		"records/approval": {"id": aprID, "proposal": prpID, "actor": opID, "actor_kind": "operator", "action": "profile.adopt",
 			"change_class": []any{"policy.widen_destinations"}, "project": prjID, "object": object(),
 			"expected_state": map[string]any{"version": 4, "digest": nil}, "scope": map[string]any{"revision": 5},
 			"grant": nil, "confirmation": map[string]any{"policy": "human", "challenge": chlID, "satisfied_by": []any{evtID}},
@@ -45,8 +45,8 @@ func authorityDocs() map[string]map[string]any {
 			"reason": "adds the staging destination", "at": "2026-10-04T10:00:00Z"},
 		"records/proposal": {"id": prpID, "action": "profile.adopt", "change_class": []any{"policy.widen_destinations"},
 			"project": prjID, "object": object(), "expected_state": map[string]any{"version": 4, "digest": nil},
-			"scope": map[string]any{"revision": 5}, "proposed_by": actID, "grant": grtID, "policy": "human", "binding_digest": dgB,
-			"status": "open", "expires_at": "2026-10-05T10:00:00Z"},
+			"scope": map[string]any{"revision": 5}, "proposed_by": actID, "grantee": nil, "grant": grtID, "policy": "human", "binding_digest": dgB,
+			"status": "open", "invalidated_reason": nil, "created_at": "2026-10-04T10:00:00Z", "expires_at": "2026-10-05T10:00:00Z"},
 		"records/challenge": {"id": chlID, "proposal": prpID, "binding_digest": dgB, "nonce": strings.Repeat("ab", 32),
 			"allowed_confirmers": []any{opID}, "expires_at": "2026-10-04T10:15:00Z", "used_at": nil},
 		"records/seat-event": {"transition": "seat.handover_requested", "from": opID, "to": actID, "force_after": "2026-10-05T00:15:00Z"},
@@ -97,11 +97,16 @@ func TestAuthorityRecords(t *testing.T) {
 		"approval class enum": {"records/approval", func(d map[string]any) {
 			d["change_class"] = []any{"policy.anything"}
 		}},
-		"approval policy":          {"records/approval", func(d map[string]any) { d["confirmation"].(map[string]any)["policy"] = "maybe" }},
-		"approval without reason":  {"records/approval", func(d map[string]any) { d["reason"] = "" }},
-		"approval object":          {"records/approval", func(d map[string]any) { d["object"].(map[string]any)["version"] = -1 }},
-		"proposal policy none":     {"records/proposal", func(d map[string]any) { d["policy"] = "none" }},
-		"proposal status":          {"records/proposal", func(d map[string]any) { d["status"] = "applied" }},
+		"approval policy":            {"records/approval", func(d map[string]any) { d["confirmation"].(map[string]any)["policy"] = "maybe" }},
+		"approval without reason":    {"records/approval", func(d map[string]any) { d["reason"] = "" }},
+		"approval object":            {"records/approval", func(d map[string]any) { d["object"].(map[string]any)["version"] = -1 }},
+		"proposal policy none":       {"records/proposal", func(d map[string]any) { d["policy"] = "none" }},
+		"proposal status":            {"records/proposal", func(d map[string]any) { d["status"] = "pending" }},
+		"invalidated without reason": {"records/proposal", func(d map[string]any) { d["status"] = "invalidated" }},
+		"reason while open":          {"records/proposal", func(d map[string]any) { d["invalidated_reason"] = "actor_revoked" }},
+		"unregistered reason": {"records/proposal", func(d map[string]any) {
+			d["status"], d["invalidated_reason"] = "invalidated", "because"
+		}},
 		"challenge short nonce":    {"records/challenge", func(d map[string]any) { d["nonce"] = "abcd" }},
 		"challenge no confirmer":   {"records/challenge", func(d map[string]any) { d["allowed_confirmers"] = []any{} }},
 		"owed input kind":          {"records/owed-input", func(d map[string]any) { d["kind"] = "opinion" }},
@@ -190,6 +195,7 @@ func TestExactStateForms(t *testing.T) {
 		d := authorityDocs()["records/approval"]
 		d["object"] = obj
 		d["confirmation"] = map[string]any{"policy": "none", "challenge": nil, "satisfied_by": []any{}}
+		d["proposal"] = nil
 		b, _ := json.Marshal(d)
 		if err := contract.Validate("records/approval", b); err != nil {
 			t.Errorf("%s: %v", name, err)

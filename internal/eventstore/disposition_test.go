@@ -162,3 +162,41 @@ func TestDecisionOverAStorageFaultIsNotCommitted(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// 14 H2 item 4: the Authorize hook may decide a command itself (a
+// proposal): it commits with that disposition and its events, the logic
+// never runs. It never applies, and decides at most once.
+func TestAuthorizerDecides(t *testing.T) {
+	var d Decision
+	var second error
+	e := openWriter(t, Hooks{Identify: allow, Authorize: func(tx *Tx, c Command) error {
+		evs, _, err := appendTo(t, testSubject, 1)(tx)
+		if err != nil {
+			return err
+		}
+		d.Events = evs
+		if err := tx.Decided(d); err != nil {
+			return err
+		}
+		second = tx.Decided(d)
+		return nil
+	}})
+	ctx := context.Background()
+	calls := 0
+	logic := decided(t, DispositionApplied, 1, `{}`, &calls)
+	d = Decision{Disposition: DispositionProposed, Result: json.RawMessage(`{"proposal":"p"}`)}
+	out, err := e.s.Submit(ctx, command(t, "p", `{}`), logic)
+	if err != nil || out.Disposition != DispositionProposed || out.LastSeq != 1 || calls != 0 {
+		t.Fatalf("an authorizer's proposal: %+v %v (logic ran %d)", out, err, calls)
+	}
+	if second == nil {
+		t.Error("a command decided twice")
+	}
+	d = Decision{Disposition: DispositionApplied, Result: json.RawMessage(`{}`)}
+	if _, err := e.s.Submit(ctx, command(t, "a", `{}`), logic); err == nil || calls != 0 {
+		t.Errorf("an authorizer applied a command: %v (logic ran %d)", err, calls)
+	}
+	if err := e.s.View(ctx, func(tx *Tx) error { return tx.Decided(Decision{Disposition: DispositionProposed}) }); err == nil {
+		t.Error("a view decided a command")
+	}
+}

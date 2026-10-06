@@ -138,6 +138,8 @@ type Tx struct {
 	owner   *Store   // the store a command's or a View's transaction is on
 	intents []intent // effects the command intends
 	object  *Object  // the command's object, as Authorize bound it
+	// decided: the command's decision, when Authorize made it (Tx.Decided).
+	decided *Decision
 	// rebuild: projections go to the rebuild's scratch table instead of
 	// the live proj_kv (RebuildProjections).
 	rebuild bool
@@ -470,7 +472,7 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 			}
 		}
 		// 4. The decision and its events.
-		d, err := decide(t)
+		d, err := t.decision(decide)
 		if err != nil {
 			return err
 		}
