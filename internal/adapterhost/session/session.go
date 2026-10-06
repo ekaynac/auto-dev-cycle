@@ -147,16 +147,17 @@ type Session struct {
 	wmu       sync.Mutex
 	w         *wire.Writer
 
-	mu      sync.Mutex
-	next    int64
-	pending map[int64]pending
-	run     *run
-	shutID  int64                // the shutdown request
-	shut    bool                 // shutdown answered: the output ending is the clean end
-	fence   fence                // the session's one attempt (methods.go)
-	foreign *types.AdapterHandle // the first handle of another attempt refused (Foreign)
-	err     *Error
-	ended   chan struct{}
+	mu       sync.Mutex
+	next     int64
+	pending  map[int64]pending
+	run      *run
+	shutID   int64                // the shutdown request
+	shut     bool                 // shutdown answered: the output ending is the clean end
+	fence    fence                // the session's one attempt (methods.go)
+	foreign  *types.AdapterHandle // the first handle of another attempt refused (Foreign)
+	declared *Declaration         // a refused run result's declaration (Declared)
+	err      *Error
+	ended    chan struct{}
 }
 
 // Open spawns the adapter and starts reading it.

@@ -316,6 +316,10 @@ func unchanged(before, now meta) error {
 // back), within one clock tick is not seen. The digest is then the backstop for the content
 // (the copied stream hashes to what the adapter declared), but it is not a
 // snapshot: it says nothing about the file's state between the reads.
+// ValidHandle reports whether name is one plain path component, as a
+// handle must be (the path check).
+func ValidHandle(name string) bool { return handleRe.MatchString(name) }
+
 func Ingest(outDir *os.File, name, declared string, size, bound int64, store *blobstore.Store) (string, error) {
 	if !handleRe.MatchString(name) {
 		return "", unsafeErr(CheckPath, "handle %q is not one plain path component", name)

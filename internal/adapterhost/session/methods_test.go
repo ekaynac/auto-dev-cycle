@@ -455,3 +455,28 @@ func adapter(t *testing.T, sc script) Config {
 	}
 	return scripted(t, sc)
 }
+
+// A refused run result keeps its declaration: a handle with a name the
+// schema refuses (for a path refusal), and the final usage of a
+// schema-valid result refused for a foreign handle.
+func TestARefusedResultIsDeclared(t *testing.T) {
+	final := `{"tokens":{"in":9,"out":1,"cache_read":0,"cache_write":0},"turns":1,"milliseconds":5,"cost":{"amount_micros":10,"currency":"USD","basis":"cash","estimate":true}}`
+	own := `{"attempt":"` + attempt + `","handle":"../patch.diff","digest":"sha256:` + strings.Repeat("0", 64) + `","size":1}`
+	for name, tc := range map[string]struct {
+		result, handle string
+		final          bool
+	}{
+		"an invalid path":  {`{"outcome":"found","reason":"completed_with_findings","detail":"a patch","result":{"kind":"patch","handle":` + own + `},"usage_final":` + final + `}`, "../patch.diff", false},
+		"a foreign handle": {`{"outcome":"found","reason":"completed_with_findings","detail":"a patch","result":{"kind":"patch","handle":` + foreignHandleJSON + `},"usage_final":` + final + `}`, "x", true},
+	} {
+		s := open(t, adapter(t, script{"run": {{Lines: []string{resultLine(tc.result)}}}}))
+		prepared(t, s)
+		if _, err := s.Run(context.Background(), runParams, nil); err == nil {
+			t.Fatalf("%s: run accepted", name)
+		}
+		d, ok := s.Declared()
+		if !ok || d.Handle == nil || d.Handle.Handle != tc.handle || (d.UsageFinal != nil) != tc.final {
+			t.Fatalf("%s: declared %+v %v", name, d, ok)
+		}
+	}
+}

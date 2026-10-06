@@ -141,6 +141,9 @@ func (s *Session) Run(ctx context.Context, p types.AdapterRunParams, onEvent fun
 			if e == nil {
 				e = s.foreignHandle(raw, p.Attempt)
 			}
+			if e != nil {
+				s.declare(raw, v)
+			}
 			return v, e
 		},
 	}))
@@ -259,6 +262,50 @@ func foreignIn(v any, own string) (types.AdapterHandle, bool) {
 		}
 	}
 	return types.AdapterHandle{}, false
+}
+
+// Declaration is what a run result the session refused declared, kept for
+// the refusal record and the accounting, never admitted: its result handle
+// decoded structurally (any name up to 1024 bytes, so a path refusal can
+// be recorded), and its final usage when the result was schema-valid.
+type Declaration struct {
+	Handle     *types.AttemptOutputRefusalHandle
+	UsageFinal *types.AdapterRunResultUsageFinalValue
+}
+
+// maxDeclaredName bounds a declared handle name (attempt-output-refusal.json).
+const maxDeclaredName = 1024
+
+// declare keeps a refused result's declaration; v is the decoded result,
+// nil when it did not match its schema.
+func (s *Session) declare(raw json.RawMessage, v any) {
+	var d Declaration
+	var shape struct {
+		Result *struct {
+			Handle *types.AttemptOutputRefusalHandle `json:"handle"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &shape) == nil && shape.Result != nil && shape.Result.Handle != nil &&
+		len(shape.Result.Handle.Handle) <= maxDeclaredName && !strings.ContainsRune(shape.Result.Handle.Handle, 0) {
+		d.Handle = shape.Result.Handle
+	}
+	if r, ok := v.(types.AdapterRunResult); ok {
+		d.UsageFinal = r.UsageFinal
+	}
+	s.mu.Lock()
+	s.declared = &d
+	s.mu.Unlock()
+}
+
+// Declared is the refused run result's declaration (adapter data: never for
+// an error or a log).
+func (s *Session) Declared() (Declaration, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.declared == nil {
+		return Declaration{}, false
+	}
+	return *s.declared, true
 }
 
 // Foreign is the first handle of another attempt the run refused

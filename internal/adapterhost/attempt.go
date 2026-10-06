@@ -1,0 +1,276 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//go:build linux
+
+// Package adapterhost runs one attempt through an executor adapter
+// (docs/design/m0/09): the exchange root and its prelaunch capability check,
+// the launch boundary (attempt.started), the session, and, once the
+// adapter's process tree has exited, the fenced ingestion of every final
+// output it declared and their submission in one writer transaction. Usage
+// is recorded in that transaction whatever the fence says (05: accounting
+// is not fenced). Once attempt.started commits, every exit goes through that
+// finalisation, under a bounded context of the controller's own, whatever
+// the caller's context does.
+//
+// This increment serves no mediated tool: a tool.request, or a tool.result
+// naming a delivered handle (which no delivery record here can match),
+// refuses the run (fail closed) instead of being ignored.
+package adapterhost
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"sync"
+	"time"
+
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/ingest"
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session"
+	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
+)
+
+// Size bounds (09 "Size bounds"): M0 constants until profile values
+// replace them. BoundEventHandle is any other handle an event declares.
+const (
+	BoundPatch       int64 = 64 << 20
+	BoundText        int64 = 16 << 20
+	BoundDecision    int64 = 1 << 20
+	BoundEventHandle int64 = 16 << 20
+)
+
+// FinalizeTimeout bounds the finalisation after attempt.started (the
+// ingestion and the final transaction); shutdownTimeout bounds the polite
+// shutdown before the namespace is killed.
+const (
+	FinalizeTimeout = 2 * time.Minute
+	shutdownTimeout = 5 * time.Second
+)
+
+// PromptName is the prompt's handle in in/.
+const PromptName = "prompt.md"
+
+// ErrUnservedEvent: the run sent a notification this host does not serve
+// (a mediated tool request, or a delivered tool result); the run is refused.
+var ErrUnservedEvent = errors.New("adapterhost: the run sent a tool notification this host does not serve; the run is refused")
+
+// Host runs attempts against one event store and blob store.
+type Host struct {
+	Store *eventstore.Store
+	Blobs *blobstore.Store
+	Actor string // act_…: the controller actor whose commands record the attempt
+	Root  string // the directory each attempt's exchange root is made in
+}
+
+// Spec is one attempt to run under a granted lease.
+type Spec struct {
+	Lease         types.LeaseID
+	LeaseRevision int64           // the granted lease's projection revision
+	Attempt       types.AttemptID // a fresh id: the unit's first attempt, token 1
+	Base          types.AttemptBase
+	Call          types.CallID
+	Adapter       session.Config
+	// Prepare is prepare's params; attempt, fencing token, exchange and
+	// inputs are the host's.
+	Prepare types.AdapterPrepareParams
+	Prompt  []byte
+}
+
+// Outcome is what an attempt left.
+type Outcome struct {
+	// StartRefused: the prelaunch check failed (wrapping
+	// ingest.ErrUnsupported), lease.start_refused{precondition_failed} was
+	// recorded, no attempt exists and nothing was launched.
+	StartRefused error
+	// Result is the run's result as the adapter returned it; nil when the
+	// session ended without one.
+	Result *types.AdapterRunResult
+	// Session is why the run produced no admissible result: a
+	// *session.Error, ErrUnservedEvent, a context error, or Wait's error
+	// when the process tree was not seen to exit. Every text is fixed.
+	Session error
+	// Submitted is the result attempt.result_submitted recorded, or nil.
+	Submitted *types.SubmittedResult
+	Refusals  []types.AttemptOutputRefusal
+	Usage     []types.UsageMeasurement
+}
+
+// Seams for tests: the prelaunch check, the ingestion, and a hook at
+// "describe", "prepare" (before each call), "event:<name>" (each event),
+// "exited" (the process tree is gone) and "ingested" (before the final
+// transaction).
+var (
+	probe      = ingest.SupportedIn
+	ingestFile = ingest.Ingest
+	testHook   func(stage string)
+	// fenceAttempt and waitTree are lease.FenceAttempt and Session.Wait.
+	fenceAttempt = lease.FenceAttempt
+	waitTree     = (*session.Session).Wait
+)
+
+func hook(stage string) {
+	if testHook != nil {
+		testHook(stage)
+	}
+}
+
+// Run runs spec's attempt to its end. An error is the host's (the stores,
+// the exchange root, a spawn, an ingestion fault), with a fixed text; the
+// adapter's failures are in the Outcome.
+func (h *Host) Run(ctx context.Context, spec Spec) (out Outcome, err error) {
+	x, err := newExchange(h.Root, spec.Attempt, spec.Prompt)
+	if err != nil {
+		return Outcome{}, err
+	}
+	defer func() { err = errors.Join(err, x.remove()) }()
+	if perr := probe(x.outDir); perr != nil {
+		_, err := h.command(ctx, spec.Attempt, "start-refused", func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.ChangeLease(tx, spec.Lease, spec.LeaseRevision,
+				lease.LeaseEvent{Kind: lease.StartRefused, Reason: vocab.ReasonPreconditionFailed.String()}, nil)
+		})
+		return Outcome{StartRefused: perr}, err
+	}
+	if _, err := h.command(ctx, spec.Attempt, "start", func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StartAttempt(tx, spec.Lease, spec.LeaseRevision, spec.Attempt, spec.Base)
+	}); err != nil {
+		return Outcome{}, err
+	}
+	r := &attemptRun{h: h, spec: spec, token: 1, x: x} // lease.StartAttempt mints token 1
+	return r.run(ctx)
+}
+
+// attemptRun is one started attempt's state.
+type attemptRun struct {
+	h     *Host
+	spec  Spec
+	token int64
+	x     *exchange
+
+	mu        sync.Mutex // the session's reader adds to these
+	usage     []*types.UsageEvent
+	declared  []types.AdapterHandle // final outputs the events declared, deduplicated
+	unserved  bool
+	cancelRun context.CancelFunc
+
+	out           Outcome
+	blobs         map[types.AdapterHandle]types.Digest   // the outputs published
+	declaredFinal *types.AdapterRunResultUsageFinalValue // a refused result's final usage
+	measured      []types.UsageMeasurement
+	// admitted: every final output was checked and copied, none refused.
+	// denied: some output was refused, whether or not its record could be
+	// kept. Only admitted && !denied lets the result be submitted.
+	admitted, denied bool
+}
+
+// run launches the adapter, converses, ends the session, waits for the
+// process tree, then finalises under the controller's own context.
+func (r *attemptRun) run(ctx context.Context) (Outcome, error) {
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), FinalizeTimeout)
+	defer cancel()
+	s, err := session.Open(r.spec.Adapter)
+	if err != nil {
+		out, ferr := r.finish(fctx, nil, err, false)
+		return out, errors.Join(err, ferr)
+	}
+	result, runErr := r.converse(ctx, s)
+	sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	if _, err := s.Shutdown(sctx); err != nil {
+		_ = s.Close()
+	}
+	scancel()
+	waitErr := waitTree(s)
+	hook("exited")
+	r.mu.Lock()
+	unserved := r.unserved
+	r.mu.Unlock()
+	switch {
+	case errors.Is(waitErr, session.ErrUnverified):
+		return r.finish(fctx, nil, waitErr, false) // the tree may still write: nothing is ingested (09)
+	case unserved && runErr == nil:
+		return r.finish(fctx, &result, ErrUnservedEvent, false) // its final usage is still recorded
+	case unserved:
+		return r.finish(fctx, nil, ErrUnservedEvent, false)
+	case runErr != nil:
+		hostErr := r.refused(fctx, s)
+		out, ferr := r.finish(fctx, nil, runErr, false)
+		return out, errors.Join(hostErr, ferr)
+	}
+	hostErr := r.admit(fctx, result)
+	hook("ingested")
+	out, ferr := r.finish(fctx, &result, hostErr, hostErr == nil)
+	return out, errors.Join(hostErr, ferr)
+}
+
+// converse describes, prepares and runs the call under the caller's ctx.
+func (r *attemptRun) converse(ctx context.Context, s *session.Session) (types.AdapterRunResult, error) {
+	hook("describe")
+	if _, err := s.Describe(ctx); err != nil {
+		return types.AdapterRunResult{}, err
+	}
+	p := r.spec.Prepare
+	p.Attempt, p.FencingToken, p.Inputs = r.spec.Attempt, r.token, []types.AdapterHandle{r.x.prompt}
+	p.Exchange = types.AdapterPrepareParamsExchange{In: r.x.in, Out: r.x.out}
+	hook("prepare")
+	o, err := s.Prepare(ctx, p)
+	if err != nil {
+		return types.AdapterRunResult{}, err
+	}
+	if o.Outcome != types.OutcomeEmpty && o.Outcome != types.OutcomeFound {
+		return types.AdapterRunResult{}, errors.New("adapterhost: the adapter did not prepare the attempt")
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	r.mu.Lock()
+	r.cancelRun = cancel
+	r.mu.Unlock()
+	return s.Run(runCtx, types.AdapterRunParams{Attempt: r.spec.Attempt, FencingToken: r.token, Call: r.spec.Call, Prompt: r.x.prompt}, r.onEvent)
+}
+
+// onEvent keeps usage reports and the final outputs events declare, and
+// refuses the run on a tool notification this host does not serve.
+func (r *attemptRun) onEvent(e session.Event) {
+	hook("event:" + e.Name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch v := e.Value.Variant.(type) {
+	case *types.UsageEvent:
+		r.usage = append(r.usage, v)
+	case *types.ErrorEvent:
+		for _, h := range r.declared {
+			if h == v.RawExcerpt {
+				return
+			}
+		}
+		r.declared = append(r.declared, v.RawExcerpt)
+	case *types.ToolRequestEvent:
+		r.unserve()
+	case *types.ToolResultEvent:
+		if v.Delivered != nil {
+			r.unserve() // no delivery record in this increment can match it
+		}
+	}
+}
+
+func (r *attemptRun) unserve() {
+	r.unserved = true
+	if r.cancelRun != nil {
+		r.cancelRun()
+	}
+}
+
+// command runs one writer command of the attempt.
+func (h *Host) command(ctx context.Context, attempt types.AttemptID, step string, apply func(*eventstore.Tx) ([]eventstore.Event, error)) (eventstore.Outcome, error) {
+	id, err := newID("cmd")
+	if err != nil {
+		return eventstore.Outcome{}, err
+	}
+	return h.Store.Submit(ctx, eventstore.Command{ID: id, Actor: h.Actor, IdempotencyKey: id,
+		Input: []byte(`{"attempt":"` + string(attempt) + `","step":"` + step + `"}`)},
+		func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+			evs, err := apply(tx)
+			return evs, json.RawMessage(`{}`), err
+		})
+}
