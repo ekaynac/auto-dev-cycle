@@ -47,8 +47,8 @@ func TestDeclaredDigestMismatchPublishesNothing(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir)
 	wrong := "sha256:" + strings.Repeat("0", 64)
-	if _, err := s.Put(strings.NewReader("hello"), wrong); !errors.Is(err, ErrDigestMismatch) {
-		t.Fatalf("want ErrDigestMismatch, got %v", err)
+	if _, err := s.Put(strings.NewReader("hello"), wrong); !errors.Is(err, ErrDigestMismatch) || !errors.Is(err, ErrDeclaredDigest) {
+		t.Fatalf("want ErrDigestMismatch and ErrDeclaredDigest, got %v", err)
 	}
 	for _, d := range []string{wrong, helloDigest} {
 		if has, err := s.Has(d); has || err != nil {
@@ -71,8 +71,13 @@ func TestVerifyDetectsChangedBytes(t *testing.T) {
 	if err := os.WriteFile(p, []byte("HELLO"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Verify(d); !errors.Is(err, ErrDigestMismatch) {
-		t.Fatalf("want ErrDigestMismatch, got %v", err)
+	if err := s.Verify(d); !errors.Is(err, ErrDigestMismatch) || errors.Is(err, ErrDeclaredDigest) {
+		t.Fatalf("want ErrDigestMismatch without ErrDeclaredDigest, got %v", err)
+	}
+	// A Put of the right bytes onto the corrupt blob is the store's fault,
+	// never the supplier's.
+	if _, err := s.Put(strings.NewReader("hello"), d); !errors.Is(err, ErrDigestMismatch) || errors.Is(err, ErrDeclaredDigest) {
+		t.Fatalf("Put onto a corrupt blob: want ErrDigestMismatch without ErrDeclaredDigest, got %v", err)
 	}
 }
 

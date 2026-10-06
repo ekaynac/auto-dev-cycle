@@ -36,6 +36,12 @@ type Store struct {
 // stored blob no longer hashes to its own.
 var ErrDigestMismatch = errors.New("blob digest mismatch")
 
+// ErrDeclaredDigest: the incoming bytes do not hash to the digest the caller
+// declared (the supplier's fault). Put wraps it together with
+// ErrDigestMismatch; a stored blob that no longer hashes to its own digest
+// (the store's fault) is ErrDigestMismatch without it.
+var ErrDeclaredDigest = errors.New("incoming bytes do not match the declared digest")
+
 // ErrNotABlob: something other than a regular file sits at a blob's path.
 var ErrNotABlob = errors.New("not a regular blob file")
 
@@ -124,7 +130,7 @@ func (s *Store) Put(r io.Reader, declared string) (string, error) {
 	sum := hex.EncodeToString(h.Sum(nil))
 	got := "sha256:" + sum
 	if declared != "" && declared != got {
-		return "", fmt.Errorf("%w: declared %s, got %s", ErrDigestMismatch, declared, got)
+		return "", fmt.Errorf("%w: %w: declared %s, got %s", ErrDigestMismatch, ErrDeclaredDigest, declared, got)
 	}
 
 	s.mu.Lock()

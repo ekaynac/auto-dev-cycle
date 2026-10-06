@@ -104,7 +104,9 @@ func setHook(t *testing.T, h func(stage string)) {
 	t.Cleanup(func() { testHook = nil })
 }
 
-var content = bytes.Repeat([]byte("adapter output\n"), 1000)
+// content is several io.Copy buffers (32 KiB) long, so a "copying" hook
+// mutates the file between chunks of the copy.
+var content = bytes.Repeat([]byte("adapter output\n"), 14000)
 
 type ingestCase struct {
 	name    string
@@ -172,6 +174,27 @@ func cases() []ingestCase {
 			return func(stage string) {
 				if stage == "checked" {
 					appendTo(e.t, filepath.Join(e.out, "res"))
+				}
+			}
+		}, want: CheckReplaced},
+		{name: "outside hard link created between checks and read", setup: plain, hook: func(e *env) func(string) {
+			return func(stage string) {
+				if stage == "checked" {
+					must(e.t, os.Link(filepath.Join(e.out, "res"), filepath.Join(e.outside, "grabbed")))
+				}
+			}
+		}, want: CheckHardLink},
+		{name: "outside hard link created during the copy", setup: plain, hook: func(e *env) func(string) {
+			return func(stage string) {
+				if stage == "copying" {
+					must(e.t, os.Link(filepath.Join(e.out, "res"), filepath.Join(e.outside, "grabbed")))
+				}
+			}
+		}, want: CheckHardLink},
+		{name: "unlinked during the copy", setup: plain, hook: func(e *env) func(string) {
+			return func(stage string) {
+				if stage == "copying" {
+					must(e.t, os.Remove(filepath.Join(e.out, "res")))
 				}
 			}
 		}, want: CheckReplaced},
