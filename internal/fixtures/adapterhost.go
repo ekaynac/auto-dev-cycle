@@ -208,11 +208,11 @@ func unsafeAdapterOutputs(ctx context.Context, dir string) (steps []Step, violat
 		if err != nil {
 			return err
 		}
-		_, err = s.Submit(ctx, eventstore.Command{ID: cmd, Actor: actor, IdempotencyKey: cmd, Input: []byte(`{}`)},
+		_, err = s.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: actor, Action: "fixture.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
 			func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 				evs, err := fn(tx)
 				return evs, json.RawMessage(`{}`), err
-			})
+			}))
 		return err
 	}
 	staging := filepath.Join(state, "blobs", "tmp") // blobstore.Stage's directory

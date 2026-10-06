@@ -51,9 +51,10 @@ var (
 // Secret is a bearer token as issued: tok_<id>.<secret>. It is shown once and
 // never logged: printing or marshalling it gives a placeholder, and only
 // Reveal returns the value (04 "logs redact tokens by type").
-// The value sits behind a pointer: fmt prints %p of a non-pointer by
-// reflection, without Format, and a pointer field prints only as an address.
-type Secret struct{ value *string }
+// The value sits in a closure: fmt prints %p of a non-pointer by
+// reflection, without Format, and reflection (a go-cmp diff, a debugger
+// dump) cannot read a closure's variables.
+type Secret struct{ value func() string }
 
 const redacted = "[redacted token]"
 
@@ -74,7 +75,7 @@ func (s Secret) Reveal() string {
 	if s.value == nil {
 		return ""
 	}
-	return *s.value
+	return s.value()
 }
 
 // mint makes a token for actor: its record (with the hash) and its secret.
@@ -98,7 +99,7 @@ func mint(actor, createdBy types.ActorID, now time.Time) (types.Token, Secret, e
 	t := types.Token{ID: types.TokenID(id), Actor: actor, Hash: hash, CreatedBy: createdBy,
 		CreatedAt: now.UTC().Format(time.RFC3339Nano), RevokedAt: nil}
 	bearer := id + "." + secret
-	return t, Secret{&bearer}, nil
+	return t, Secret{func() string { return bearer }}, nil
 }
 
 // parse splits a bearer string into its token id and secret.

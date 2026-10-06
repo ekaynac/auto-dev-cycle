@@ -67,11 +67,11 @@ func newID(t *testing.T, prefix string) string {
 func (f *fixture) must(by types.ActorID, apply applyFn) {
 	f.t.Helper()
 	cmd := newID(f.t, "cmd")
-	if _, err := f.s.Submit(context.Background(), eventstore.Command{ID: cmd, Actor: string(by), IdempotencyKey: cmd, Input: []byte(`{}`)},
+	if _, err := f.s.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: string(by), Action: "test.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
 		func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, err := apply(tx)
 			return evs, json.RawMessage(`{}`), err
-		}); err != nil {
+		})); err != nil {
 		f.t.Fatal(err)
 	}
 }

@@ -38,7 +38,7 @@ func openWriter(t *testing.T, hooks Hooks) *env {
 }
 
 func command(t *testing.T, key, input string, expected ...Expectation) Command {
-	return Command{ID: newID(t, "cmd"), Actor: sysActor, IdempotencyKey: key, Input: []byte(input), Expected: expected}
+	return Command{ID: newID(t, "cmd"), Actor: sysActor, Action: "test.command", IdempotencyKey: key, Input: []byte(input), Expected: expected}
 }
 
 // appendTo returns an Apply that appends n events about subject.
@@ -66,7 +66,7 @@ func TestSubmitAppliesAndReplays(t *testing.T) {
 	e := openWriter(t, Hooks{Authorize: allow, Project: func(_ *Tx, evs []Event) error { projected = append(projected, evs...); return nil }})
 	ctx := context.Background()
 	c := command(t, "k1", `{"a": 1}`)
-	out, err := e.s.Submit(ctx, c, appendTo(t, testSubject, 2))
+	out, err := e.s.SubmitApplied(ctx, c, Applies(appendTo(t, testSubject, 2)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,10 +79,10 @@ func TestSubmitAppliesAndReplays(t *testing.T) {
 	// The same command again (same actor, key and input, even reformatted)
 	// replays the stored result and runs nothing.
 	again := command(t, "k1", `{ "a" : 1 }`)
-	out2, err := e.s.Submit(ctx, again, func(*Tx) ([]Event, json.RawMessage, error) {
+	out2, err := e.s.SubmitApplied(ctx, again, Applies(func(*Tx) ([]Event, json.RawMessage, error) {
 		t.Fatal("a replayed command ran again")
 		return nil, nil, nil
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,10 +97,10 @@ func TestSubmitAppliesAndReplays(t *testing.T) {
 func TestIdempotencyKeyReuseIsRefused(t *testing.T) {
 	e := openWriter(t, Hooks{Authorize: allow})
 	ctx := context.Background()
-	if _, err := e.s.Submit(ctx, command(t, "k", `{"a": 1}`), appendTo(t, testSubject, 1)); err != nil {
+	if _, err := e.s.SubmitApplied(ctx, command(t, "k", `{"a": 1}`), Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.s.Submit(ctx, command(t, "k", `{"a": 2}`), appendTo(t, testSubject, 1)); !errors.Is(err, ErrIdempotencyKeyReused) {
+	if _, err := e.s.SubmitApplied(ctx, command(t, "k", `{"a": 2}`), Applies(appendTo(t, testSubject, 1))); !errors.Is(err, ErrIdempotencyKeyReused) {
 		t.Fatalf("a reused key: %v", err)
 	}
 	if head(t, e) != 1 {
@@ -108,7 +108,7 @@ func TestIdempotencyKeyReuseIsRefused(t *testing.T) {
 	}
 	other := command(t, "k", `{"a": 2}`)
 	other.Actor = newID(t, "act")
-	if _, err := e.s.Submit(ctx, other, appendTo(t, testSubject, 1)); err != nil {
+	if _, err := e.s.SubmitApplied(ctx, other, Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatalf("the same key for another actor: %v", err)
 	}
 }
@@ -116,13 +116,13 @@ func TestIdempotencyKeyReuseIsRefused(t *testing.T) {
 func TestStaleExpectedStateIsRefused(t *testing.T) {
 	e := openWriter(t, Hooks{Authorize: allow})
 	ctx := context.Background()
-	if _, err := e.s.Submit(ctx, command(t, "a", `{}`, Expectation{testSubject, 0}), appendTo(t, testSubject, 1)); err != nil {
+	if _, err := e.s.SubmitApplied(ctx, command(t, "a", `{}`, Expectation{testSubject, 0}), Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.s.Submit(ctx, command(t, "b", `{}`, Expectation{testSubject, 0}), appendTo(t, testSubject, 1)); !errors.Is(err, ErrStaleExpectedState) {
+	if _, err := e.s.SubmitApplied(ctx, command(t, "b", `{}`, Expectation{testSubject, 0}), Applies(appendTo(t, testSubject, 1))); !errors.Is(err, ErrStaleExpectedState) {
 		t.Fatalf("a stale expectation: %v", err)
 	}
-	if _, err := e.s.Submit(ctx, command(t, "c", `{}`, Expectation{testSubject, 1}), appendTo(t, testSubject, 1)); err != nil {
+	if _, err := e.s.SubmitApplied(ctx, command(t, "c", `{}`, Expectation{testSubject, 1}), Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatalf("the current version: %v", err)
 	}
 }
@@ -139,7 +139,7 @@ func TestConcurrentConflictingCommands(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = e.s.Submit(ctx, c, appendTo(t, testSubject, 1))
+			_, errs[i] = e.s.SubmitApplied(ctx, c, Applies(appendTo(t, testSubject, 1)))
 		}(i)
 	}
 	wg.Wait()
@@ -183,7 +183,7 @@ func TestFailuresRollBack(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e := openWriter(t, c.hooks)
 			ctx := context.Background()
-			if _, err := e.s.Submit(ctx, command(t, "k", `{}`), c.apply(t)); err == nil {
+			if _, err := e.s.SubmitApplied(ctx, command(t, "k", `{}`), Applies(c.apply(t))); err == nil {
 				t.Fatal("the command applied")
 			}
 			if head(t, e) != 0 {
@@ -199,7 +199,7 @@ func TestFailuresRollBack(t *testing.T) {
 
 func TestNoAuthorizerFailsClosed(t *testing.T) {
 	e := openWriter(t, Hooks{})
-	if _, err := e.s.Submit(context.Background(), command(t, "k", `{}`), appendTo(t, testSubject, 1)); err == nil || !strings.Contains(err.Error(), "authorizer") {
+	if _, err := e.s.SubmitApplied(context.Background(), command(t, "k", `{}`), Applies(appendTo(t, testSubject, 1))); err == nil || !strings.Contains(err.Error(), "authorizer") {
 		t.Fatalf("a command without an authorizer: %v", err)
 	}
 }
@@ -227,20 +227,20 @@ func TestReplayPrecedesTheAuthorizerCheck(t *testing.T) {
 	}
 	s, lock := open(Hooks{Authorize: allow})
 	c := command(t, "k", `{"a": 1}`)
-	if _, err := s.Submit(ctx, c, appendTo(t, testSubject, 1)); err != nil {
+	if _, err := s.SubmitApplied(ctx, c, Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
 	lock.Release()
 	s, lock = open(Hooks{})
 	defer func() { s.Close(); lock.Release() }()
-	if out, err := s.Submit(ctx, command(t, "k", `{"a": 1}`), appendTo(t, testSubject, 1)); err != nil || !out.Replayed {
+	if out, err := s.SubmitApplied(ctx, command(t, "k", `{"a": 1}`), Applies(appendTo(t, testSubject, 1))); err != nil || !out.Replayed {
 		t.Fatalf("a replay without an authorizer: %+v, %v", out, err)
 	}
-	if _, err := s.Submit(ctx, command(t, "k", `{"a": 2}`), appendTo(t, testSubject, 1)); !errors.Is(err, ErrIdempotencyKeyReused) {
+	if _, err := s.SubmitApplied(ctx, command(t, "k", `{"a": 2}`), Applies(appendTo(t, testSubject, 1))); !errors.Is(err, ErrIdempotencyKeyReused) {
 		t.Fatalf("a changed input without an authorizer: %v", err)
 	}
-	if _, err := s.Submit(ctx, command(t, "new", `{}`), appendTo(t, testSubject, 1)); err == nil {
+	if _, err := s.SubmitApplied(ctx, command(t, "new", `{}`), Applies(appendTo(t, testSubject, 1))); err == nil {
 		t.Fatal("a new command without an authorizer")
 	}
 }
@@ -249,7 +249,7 @@ func TestReplayPrecedesTheAuthorizerCheck(t *testing.T) {
 func TestExpectationsArePartOfTheRequest(t *testing.T) {
 	e := openWriter(t, Hooks{Authorize: allow})
 	ctx := context.Background()
-	if _, err := e.s.Submit(ctx, command(t, "k", `{}`, Expectation{testSubject, 0}), appendTo(t, testSubject, 1)); err != nil {
+	if _, err := e.s.SubmitApplied(ctx, command(t, "k", `{}`, Expectation{testSubject, 0}), Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatal(err)
 	}
 	for name, exp := range map[string][]Expectation{
@@ -257,7 +257,7 @@ func TestExpectationsArePartOfTheRequest(t *testing.T) {
 		"another subject": {{"prj_01m3250vm7f6ktw39dszqnyddr", 0}},
 		"none":            nil,
 	} {
-		if _, err := e.s.Submit(ctx, command(t, "k", `{}`, exp...), appendTo(t, testSubject, 1)); !errors.Is(err, ErrIdempotencyKeyReused) {
+		if _, err := e.s.SubmitApplied(ctx, command(t, "k", `{}`, exp...), Applies(appendTo(t, testSubject, 1))); !errors.Is(err, ErrIdempotencyKeyReused) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -270,7 +270,7 @@ func TestProjectorCannotChangeTheRange(t *testing.T) {
 		evs[0], evs[1] = evs[1], evs[0]
 		return nil
 	}})
-	out, err := e.s.Submit(context.Background(), command(t, "k", `{}`), appendTo(t, testSubject, 2))
+	out, err := e.s.SubmitApplied(context.Background(), command(t, "k", `{}`), Applies(appendTo(t, testSubject, 2)))
 	if err != nil || out.FirstSeq != 1 || out.LastSeq != 2 {
 		t.Fatalf("%+v, %v", out, err)
 	}
@@ -331,7 +331,7 @@ func TestProjectionRecords(t *testing.T) {
 		checked = true
 		return nil
 	}})
-	if _, err := e.s.Submit(context.Background(), command(t, "k", `{}`), appendTo(t, testSubject, 0)); err != nil {
+	if _, err := e.s.SubmitApplied(context.Background(), command(t, "k", `{}`), Applies(appendTo(t, testSubject, 0))); err != nil {
 		t.Fatal(err)
 	}
 	if !checked {
@@ -344,7 +344,7 @@ func TestAbsentInputIsRefused(t *testing.T) {
 	e := openWriter(t, Hooks{Authorize: allow})
 	c := command(t, "k", `{}`)
 	c.Input = nil
-	if _, err := e.s.Submit(context.Background(), c, appendTo(t, testSubject, 0)); err == nil {
+	if _, err := e.s.SubmitApplied(context.Background(), c, Applies(appendTo(t, testSubject, 0))); err == nil {
 		t.Fatal("a command without input")
 	}
 }
@@ -362,7 +362,7 @@ func TestSubmitValidatesTheCommand(t *testing.T) {
 		c := command(t, "k-"+name, `{}`)
 		mutate(&c)
 		// No events: the command itself must be checked, not only its events.
-		if _, err := e.s.Submit(context.Background(), c, appendTo(t, testSubject, 0)); err == nil {
+		if _, err := e.s.SubmitApplied(context.Background(), c, Applies(appendTo(t, testSubject, 0))); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
@@ -370,7 +370,7 @@ func TestSubmitValidatesTheCommand(t *testing.T) {
 
 func TestCommandWithoutEvents(t *testing.T) {
 	e := openWriter(t, Hooks{Authorize: allow})
-	out, err := e.s.Submit(context.Background(), command(t, "noop", `{}`), appendTo(t, testSubject, 0))
+	out, err := e.s.SubmitApplied(context.Background(), command(t, "noop", `{}`), Applies(appendTo(t, testSubject, 0)))
 	if err != nil || out.FirstSeq != 0 || out.LastSeq != 0 {
 		t.Fatalf("%+v, %v", out, err)
 	}
@@ -380,7 +380,7 @@ func TestCommandWithoutEvents(t *testing.T) {
 func TestCommandsAreAppendOnly(t *testing.T) {
 	e := openWriter(t, Hooks{Authorize: allow})
 	c := command(t, "k", `{}`)
-	if _, err := e.s.Submit(context.Background(), c, appendTo(t, testSubject, 1)); err != nil {
+	if _, err := e.s.SubmitApplied(context.Background(), c, Applies(appendTo(t, testSubject, 1))); err != nil {
 		t.Fatal(err)
 	}
 	db := raw(t, e.dir)
@@ -401,9 +401,9 @@ func TestCommandsAreAppendOnly(t *testing.T) {
 func TestCommandEventsAreTheCommandActors(t *testing.T) {
 	e := openWriter(t, Hooks{Authorize: allow})
 	other := newID(t, "act")
-	_, err := e.s.Submit(context.Background(), command(t, "k1", `{}`), func(*Tx) ([]Event, json.RawMessage, error) {
+	_, err := e.s.SubmitApplied(context.Background(), command(t, "k1", `{}`), Applies(func(*Tx) ([]Event, json.RawMessage, error) {
 		return []Event{{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: testSubject, Actor: other, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
-	})
+	}))
 	if err == nil {
 		t.Fatal("an event naming another actor was appended")
 	}
@@ -412,7 +412,7 @@ func TestCommandEventsAreTheCommandActors(t *testing.T) {
 		seen = evs[0].Actor
 		return nil
 	}})
-	if _, err := e2.s.Submit(context.Background(), command(t, "k2", `{}`), appendTo(t, testSubject, 1)); err != nil || seen != sysActor {
+	if _, err := e2.s.SubmitApplied(context.Background(), command(t, "k2", `{}`), Applies(appendTo(t, testSubject, 1))); err != nil || seen != sysActor {
 		t.Fatalf("actor %q, %v", seen, err)
 	}
 }

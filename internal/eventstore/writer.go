@@ -34,12 +34,19 @@ var (
 // maxIdempotencyKey bounds an idempotency key.
 const maxIdempotencyKey = 256
 
+// actionName is a canonical action: lowercase dotted words, like grant.create.
+var actionName = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
+
+// maxAction bounds an action name.
+const maxAction = 128
+
 // Command is one request to change state.
 type Command struct {
 	ID             string        // cmd_…
 	Actor          string        // act_…
+	Action         string        // the canonical action, like grant.create
 	IdempotencyKey string        // unique per actor; a repeat replays or is refused
-	Input          []byte        // the request as JSON; its canonical digest identifies it
+	Input          []byte        // the request as JSON
 	Expected       []Expectation // object versions the command was decided against
 }
 
@@ -225,11 +232,13 @@ func ProjectEach(projectors ...func(t *Tx, events []Event) error) func(t *Tx, ev
 	}
 }
 
-// Apply is the command's logic: from the current state (read through t) it
-// returns the events to append and the command's result (JSON).
+// Apply is logic that only ever applies: from the current state (read
+// through t) it returns the events to append and the command's result
+// (JSON). Applies makes it a Decide.
 type Apply func(t *Tx) (events []Event, result json.RawMessage, err error)
 
-// Outcome is an accepted command: its result and the seqs of its events.
+// Outcome is an applied command: its result and the seqs of its events.
+// Only Committed.Applied makes one.
 type Outcome struct {
 	CommandID         string
 	Replayed          bool // a repeat of an accepted command: nothing was run again
@@ -238,9 +247,11 @@ type Outcome struct {
 	Effects           []Effect // the command's effects, in their current states (on a replay too)
 }
 
-// Submit runs c through the writer transaction.
-func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, error) {
-	return s.submit(ctx, c, apply, true)
+// Submit runs c through the writer transaction and returns what it
+// committed, whatever the disposition; SubmitApplied is for callers that go
+// on only when it applied.
+func (s *Store) Submit(ctx context.Context, c Command, decide Decide) (Committed, error) {
+	return s.submit(ctx, c, decide, true)
 }
 
 // ErrNotBootstrap: Bootstrap was asked for anything but an empty store's
@@ -257,7 +268,7 @@ func (s *Store) Bootstrap(ctx context.Context, c Command, e Event) (Outcome, err
 	if e.Subject != c.Actor {
 		return Outcome{}, ErrNotBootstrap
 	}
-	return s.submit(ctx, c, func(t *Tx) ([]Event, json.RawMessage, error) {
+	res, err := s.submit(ctx, c, Applies(func(t *Tx) ([]Event, json.RawMessage, error) {
 		var used bool
 		if err := t.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events) OR EXISTS(SELECT 1 FROM commands) OR EXISTS(SELECT 1 FROM effects)`).Scan(&used); err != nil {
 			return nil, nil, err
@@ -266,59 +277,78 @@ func (s *Store) Bootstrap(ctx context.Context, c Command, e Event) (Outcome, err
 			return nil, nil, ErrNotBootstrap
 		}
 		return []Event{e}, json.RawMessage(`{}`), nil
-	}, false)
+	}), false)
+	if err != nil {
+		return Outcome{}, err
+	}
+	return res.Applied()
 }
 
-func (s *Store) submit(ctx context.Context, c Command, apply Apply, authorize bool) (Outcome, error) {
+func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize bool) (Committed, error) {
 	if err := ids.Check(c.ID, "cmd"); err != nil {
-		return Outcome{}, fmt.Errorf("eventstore: command: %w", err)
+		return Committed{}, fmt.Errorf("eventstore: command: %w", err)
 	}
 	if err := ids.Check(c.Actor, "act"); err != nil {
-		return Outcome{}, fmt.Errorf("eventstore: command actor: %w", err)
+		return Committed{}, fmt.Errorf("eventstore: command actor: %w", err)
+	}
+	if len(c.Action) > maxAction || !actionName.MatchString(c.Action) {
+		return Committed{}, fmt.Errorf("eventstore: command action %q (lowercase dotted words, at most %d bytes)", c.Action, maxAction)
 	}
 	if c.IdempotencyKey == "" || len(c.IdempotencyKey) > maxIdempotencyKey {
-		return Outcome{}, fmt.Errorf("eventstore: an idempotency key is 1 to %d bytes", maxIdempotencyKey)
+		return Committed{}, fmt.Errorf("eventstore: an idempotency key is 1 to %d bytes", maxIdempotencyKey)
 	}
-	// The request is the input and the expectations together: a repeat with
-	// other expectations is another request. The input itself must be JSON
-	// (an absent input is refused, never read as null).
+	// The request is the action, the input and the expectations together
+	// (14 N1): a repeat of the key with another action, input or
+	// expectation is another request. The input itself must be JSON (an
+	// absent input is refused, never read as null).
 	if _, err := canonical(c.Input); err != nil {
-		return Outcome{}, fmt.Errorf("eventstore: command input: %w", err)
+		return Committed{}, fmt.Errorf("eventstore: command input: %w", err)
 	}
 	expected := c.Expected
 	if expected == nil {
 		expected = []Expectation{}
 	}
 	request, err := json.Marshal(struct {
+		Action   string          `json:"action"`
 		Input    json.RawMessage `json:"input"`
 		Expected []Expectation   `json:"expected"`
-	}{c.Input, expected})
+	}{c.Action, c.Input, expected})
 	if err != nil {
-		return Outcome{}, fmt.Errorf("eventstore: command request: %w", err)
+		return Committed{}, fmt.Errorf("eventstore: command request: %w", err)
 	}
 	inputDigest, err := digest(request)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("eventstore: command input: %w", err)
+		return Committed{}, fmt.Errorf("eventstore: command input: %w", err)
 	}
-	var out Outcome
+	var out Committed
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
 		t := &Tx{ctx: ctx, tx: tx, store: s}
+		// 0. The writer-boundary identity recheck (14 "Replay
+		// authentication", PR 2b) goes here, before the idempotency lookup,
+		// so it covers new commands, reused keys and replays alike.
+		// Bootstrap (authorize false) is exempt: it runs only on an empty
+		// store, before any identity exists.
 		// 1. Idempotency.
 		var prev struct {
-			id, digest, result string
-			first, last        sql.NullInt64
+			id, digest, disposition, result string
+			first, last                     sql.NullInt64
 		}
-		err := tx.QueryRowContext(ctx, `SELECT id, input_digest, result_json, first_seq, last_seq FROM commands WHERE actor = ? AND idempotency_key = ?`,
-			c.Actor, c.IdempotencyKey).Scan(&prev.id, &prev.digest, &prev.result, &prev.first, &prev.last)
+		err := tx.QueryRowContext(ctx, `SELECT id, input_digest, disposition, result_json, first_seq, last_seq FROM commands WHERE actor = ? AND idempotency_key = ?`,
+			c.Actor, c.IdempotencyKey).Scan(&prev.id, &prev.digest, &prev.disposition, &prev.result, &prev.first, &prev.last)
 		switch {
 		case err == nil && prev.digest != inputDigest && !mutation.Is(mutation.IdempotencyIgnoresInput):
-			return fmt.Errorf("eventstore: %w: key %q of %s was used for another input", ErrIdempotencyKeyReused, c.IdempotencyKey, c.Actor)
+			return fmt.Errorf("eventstore: %w: key %q of %s was used for another request", ErrIdempotencyKeyReused, c.IdempotencyKey, c.Actor)
 		case err == nil:
+			d := Disposition(prev.disposition)
+			if !d.known() {
+				return fmt.Errorf("eventstore: command %s has an unknown disposition %q", prev.id, prev.disposition)
+			}
 			effs, err := commandEffects(ctx, tx, prev.id)
 			if err != nil {
 				return err
 			}
-			out = Outcome{CommandID: prev.id, Replayed: true, Result: json.RawMessage(prev.result), FirstSeq: prev.first.Int64, LastSeq: prev.last.Int64, Effects: effs}
+			// A replay carries no credential: none is stored, none is minted.
+			out = Committed{Disposition: d, CommandID: prev.id, Replayed: true, Result: json.RawMessage(prev.result), FirstSeq: prev.first.Int64, LastSeq: prev.last.Int64, Effects: effs}
 			return nil
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
@@ -343,17 +373,25 @@ func (s *Store) submit(ctx context.Context, c Command, apply Apply, authorize bo
 				return fmt.Errorf("eventstore: %w: %s is at %d, the command expected %d", ErrStaleExpectedState, e.Subject, v, e.Version)
 			}
 		}
-		// 4. Events.
-		events, result, err := apply(t)
+		// 4. The decision and its events.
+		d, err := decide(t)
 		if err != nil {
 			return err
 		}
-		canonResult, err := canonical(result)
+		// A decision made over a storage fault is not committed, whatever
+		// its disposition.
+		if t.fault != nil {
+			return fmt.Errorf("eventstore: the command was decided over a storage fault: %w", t.fault)
+		}
+		canonResult, err := canonical(d.Result)
 		if err != nil {
 			return fmt.Errorf("eventstore: command result: %w", err)
 		}
-		appended := make([]Event, 0, len(events))
-		for _, e := range events {
+		if err := checkDecision(d, canonResult, len(t.intents)); err != nil {
+			return err
+		}
+		appended := make([]Event, 0, len(d.Events))
+		for _, e := range d.Events {
 			// Effect events are the store's own: only IntendEffect and the
 			// transitions write them, so the effects table always agrees.
 			if isEffectKind(e.Kind) {
@@ -393,18 +431,18 @@ func (s *Store) submit(ctx context.Context, c Command, apply Apply, authorize bo
 		}
 		// 6. The command-result row.
 		if _, err := tx.ExecContext(ctx, `INSERT INTO commands(id, actor, idempotency_key, input_digest, disposition, result_json, first_seq, last_seq)
-			VALUES (?, ?, ?, ?, 'applied', ?, ?, ?)`, c.ID, c.Actor, c.IdempotencyKey, inputDigest, string(canonResult), first, last); err != nil {
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, c.ID, c.Actor, c.IdempotencyKey, inputDigest, string(d.Disposition), string(canonResult), first, last); err != nil {
 			return err
 		}
 		effs, err := commandEffects(ctx, tx, c.ID)
 		if err != nil {
 			return err
 		}
-		out = Outcome{CommandID: c.ID, Result: canonResult, FirstSeq: first.Int64, LastSeq: last.Int64, Effects: effs}
+		out = Committed{Disposition: d.Disposition, CommandID: c.ID, Result: canonResult, FirstSeq: first.Int64, LastSeq: last.Int64, Effects: effs}
 		return nil
 	})
 	if err != nil {
-		return Outcome{}, err
+		return Committed{}, err
 	}
 	return out, nil
 }

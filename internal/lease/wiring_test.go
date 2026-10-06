@@ -79,11 +79,11 @@ func (w *world) do(fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) error
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	_, err = w.s.Submit(context.Background(), eventstore.Command{ID: cmd, Actor: "act_01m3250v0aer9ss2097svmefj8", IdempotencyKey: cmd, Input: []byte(`{}`)},
+	_, err = w.s.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: "act_01m3250v0aer9ss2097svmefj8", Action: "test.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
 		func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, err := fn(tx)
 			return evs, json.RawMessage(`{}`), err
-		})
+		}))
 	return err
 }
 

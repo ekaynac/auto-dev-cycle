@@ -39,9 +39,9 @@ func openEffectsAt(t *testing.T, dir string) *env {
 func intend(t *testing.T, e *env, kind string) string {
 	t.Helper()
 	id := newID(t, "eff")
-	_, err := e.s.Submit(context.Background(), command(t, "k-"+id, `{}`), func(tx *Tx) ([]Event, json.RawMessage, error) {
+	_, err := e.s.SubmitApplied(context.Background(), command(t, "k-"+id, `{}`), Applies(func(tx *Tx) ([]Event, json.RawMessage, error) {
 		return nil, json.RawMessage(`{}`), tx.IntendEffect(id, kind, "provider-a", json.RawMessage(`{"prompt": "x"}`))
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestIntentCommitsWithTheCommand(t *testing.T) {
 		}
 		return []Event{{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: testSubject, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
 	}
-	out, err := e.s.Submit(ctx, c, apply)
+	out, err := e.s.SubmitApplied(ctx, c, Applies(apply))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestIntentCommitsWithTheCommand(t *testing.T) {
 	if _, err := e.s.RecordEffect(ctx, sysActor, id, Transition{Kind: "observed", Observation: "200 OK"}); err != nil {
 		t.Fatal(err)
 	}
-	again, err := e.s.Submit(ctx, command(t, "k", `{}`), apply)
+	again, err := e.s.SubmitApplied(ctx, command(t, "k", `{}`), Applies(apply))
 	if err != nil || !again.Replayed || len(again.Effects) != 1 || again.Effects[0].State != EffectCompleted {
 		t.Fatalf("replay %+v, %v", again, err)
 	}
@@ -99,9 +99,9 @@ func TestIntendEffectRefusals(t *testing.T) {
 		},
 	}
 	for name, intendBad := range cases {
-		_, err := e.s.Submit(context.Background(), command(t, "k-"+name, `{}`), func(tx *Tx) ([]Event, json.RawMessage, error) {
+		_, err := e.s.SubmitApplied(context.Background(), command(t, "k-"+name, `{}`), Applies(func(tx *Tx) ([]Event, json.RawMessage, error) {
 			return nil, json.RawMessage(`{}`), intendBad(tx)
-		})
+		}))
 		if err == nil {
 			t.Errorf("%s: accepted", name)
 		}
@@ -306,9 +306,9 @@ func TestCallerEffectEventsAreRefused(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = e.s.Submit(ctx, command(t, "forge-"+kind, `{}`), func(*Tx) ([]Event, json.RawMessage, error) {
+		_, err = e.s.SubmitApplied(ctx, command(t, "forge-"+kind, `{}`), Applies(func(*Tx) ([]Event, json.RawMessage, error) {
 			return []Event{{ID: newID(t, "evt"), Kind: kind, Subject: id, Payload: p}}, json.RawMessage(`{}`), nil
-		})
+		}))
 		if err == nil || !strings.Contains(err.Error(), "written only by the store") {
 			t.Errorf("%s from a command: %v", kind, err)
 		}
@@ -394,9 +394,9 @@ func TestTransitionsAreProjected(t *testing.T) {
 func TestEffectStringsAreValidUTF8(t *testing.T) {
 	ctx := context.Background()
 	e := openEffectsAt(t, stateDir(t))
-	_, err := e.s.Submit(ctx, command(t, "bad-target", `{}`), func(tx *Tx) ([]Event, json.RawMessage, error) {
+	_, err := e.s.SubmitApplied(ctx, command(t, "bad-target", `{}`), Applies(func(tx *Tx) ([]Event, json.RawMessage, error) {
 		return nil, json.RawMessage(`{}`), tx.IntendEffect(newID(t, "eff"), "model_call", "provider-\xff", json.RawMessage(`{}`))
-	})
+	}))
 	if err == nil {
 		t.Fatal("an invalid UTF-8 target was accepted")
 	}

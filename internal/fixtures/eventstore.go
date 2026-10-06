@@ -86,12 +86,12 @@ func (f *fixtureStore) submit(key, input string, expected ...eventstore.Expectat
 		return eventstore.Outcome{}, err
 	}
 	f.lastCmd = cmd
-	return f.s.Submit(f.ctx, eventstore.Command{ID: cmd, Actor: f.actor, IdempotencyKey: key, Input: []byte(input), Expected: expected},
+	return f.s.SubmitApplied(f.ctx, eventstore.Command{ID: cmd, Actor: f.actor, Action: "fixture.command", IdempotencyKey: key, Input: []byte(input), Expected: expected}, eventstore.Applies(
 		func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			f.applied++
 			f.lastResult = `{"event":"` + ev + `"}`
 			return []eventstore.Event{{ID: ev, Kind: "fixture.appended/v1", Subject: f.subject, Payload: []byte(`{}`)}}, json.RawMessage(f.lastResult), nil
-		})
+		}))
 }
 
 // head is the log's last seq.

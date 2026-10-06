@@ -46,7 +46,7 @@ func (l *ledgerStore) record(ms ...types.UsageMeasurement) error {
 	if err != nil {
 		l.t.Fatal(err)
 	}
-	_, err = l.s.Submit(context.Background(), eventstore.Command{ID: cmd, Actor: "act_01m3250v0aer9ss2097svmefj8", IdempotencyKey: cmd, Input: []byte(`{}`)},
+	_, err = l.s.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: "act_01m3250v0aer9ss2097svmefj8", Action: "test.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
 		func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			var evs []eventstore.Event
 			for _, x := range ms {
@@ -57,7 +57,7 @@ func (l *ledgerStore) record(ms ...types.UsageMeasurement) error {
 				evs = append(evs, ev)
 			}
 			return evs, json.RawMessage(`{}`), nil
-		})
+		}))
 	return err
 }
 

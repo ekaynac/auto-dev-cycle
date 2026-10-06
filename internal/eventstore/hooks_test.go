@@ -92,7 +92,7 @@ func TestHooksShareTheWriterTransaction(t *testing.T) {
 	var check func(*eventstore.Tx) error
 	submit := func(key string) error {
 		lastEvent = id(t, "evt")
-		_, err := s.Submit(ctx, eventstore.Command{ID: id(t, "cmd"), Actor: actor, IdempotencyKey: key, Input: []byte(`{}`)},
+		_, err := s.SubmitApplied(ctx, eventstore.Command{ID: id(t, "cmd"), Actor: actor, Action: "test.command", IdempotencyKey: key, Input: []byte(`{}`)}, eventstore.Applies(
 			func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 				if check != nil {
 					if err := check(tx); err != nil {
@@ -100,7 +100,7 @@ func TestHooksShareTheWriterTransaction(t *testing.T) {
 					}
 				}
 				return []eventstore.Event{{ID: lastEvent, Kind: "test.appended/v1", Subject: subject, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
-			})
+			}))
 		return err
 	}
 	// A failing projection rolls back the reservation and the projection.

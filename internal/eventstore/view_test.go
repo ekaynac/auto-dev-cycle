@@ -47,10 +47,10 @@ func TestView(t *testing.T) {
 	actor, subject := id(t, "act"), id(t, "prj")
 	submit := func(key string) string {
 		ev := id(t, "evt")
-		if _, err := s.Submit(ctx, eventstore.Command{ID: id(t, "cmd"), Actor: actor, IdempotencyKey: key, Input: []byte(`{}`)},
+		if _, err := s.SubmitApplied(ctx, eventstore.Command{ID: id(t, "cmd"), Actor: actor, Action: "test.command", IdempotencyKey: key, Input: []byte(`{}`)}, eventstore.Applies(
 			func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 				return []eventstore.Event{{ID: ev, Kind: "test.appended/v1", Subject: subject, Payload: []byte(`{}`)}}, json.RawMessage(`{}`), nil
-			}); err != nil {
+			})); err != nil {
 			t.Fatal(err)
 		}
 		return ev

@@ -108,12 +108,46 @@ func RevokeActor(tx *eventstore.Tx, id types.ActorID, now time.Time) ([]eventsto
 // IssueToken proposes a new token for actor and returns its secret, which
 // exists only here: the event carries the hash.
 func IssueToken(actor, createdBy types.ActorID, now time.Time) ([]eventstore.Event, Secret, error) {
-	t, secret, err := mint(actor, createdBy, now)
+	i, err := Mint(actor, createdBy, now)
 	if err != nil {
 		return nil, Secret{}, err
 	}
+	evs, err := i.Events()
+	return evs, i.secret, err
+}
+
+// Issued is a token minted ahead of the command that records it (14 N3):
+// the request layer mints it outside the writer transaction, the command's
+// logic records only Token (its public id and hash, through Events), and
+// the plaintext goes to the live response only through Deliver. It never
+// enters the store, and a replay neither delivers nor records a new one.
+type Issued struct {
+	Token  types.Token
+	secret Secret
+}
+
+// Mint makes a token for actor, to be recorded by a command.
+func Mint(actor, createdBy types.ActorID, now time.Time) (Issued, error) {
+	t, secret, err := mint(actor, createdBy, now)
+	return Issued{Token: t, secret: secret}, err
+}
+
+// Events are the token's identity.token_issued event: the hash, never the
+// secret.
+func (i Issued) Events() ([]eventstore.Event, error) {
+	t := i.Token
 	e, err := newEvent(string(t.ID), types.IdentityEvent{Transition: types.IdentityEventTransitionTokenIssued, Token: &t})
-	return []eventstore.Event{e}, secret, err
+	return []eventstore.Event{e}, err
+}
+
+// Deliver returns the secret only for the call that freshly applied the
+// command. Any other result (a replay, proposed, invalidated, refused)
+// gets nothing, and the caller drops the secret.
+func (i Issued) Deliver(c eventstore.Committed) (Secret, bool) {
+	if c.Disposition != eventstore.DispositionApplied || c.Replayed {
+		return Secret{}, false
+	}
+	return i.secret, true
 }
 
 // RevokeToken proposes revoking a token.

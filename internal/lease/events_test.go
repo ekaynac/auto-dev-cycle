@@ -180,10 +180,10 @@ func TestSealNeedsItsPublishedRecord(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = s.Submit(ctx, eventstore.Command{ID: cmd, Actor: "act_01m3250v0aer9ss2097svmefj8", IdempotencyKey: key, Input: []byte(`{}`)},
+		_, err = s.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: "act_01m3250v0aer9ss2097svmefj8", Action: "test.command", IdempotencyKey: key, Input: []byte(`{}`)}, eventstore.Applies(
 			func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 				return []eventstore.Event{{ID: evt, Kind: Sealed + "/v1", Subject: string(sealed.ID), Payload: eventBytes(t, Sealed, "", nil, &sealed, nil)}}, json.RawMessage(`{}`), nil
-			})
+			}))
 		return err
 	}
 	if err := submit("seal-1"); err == nil {

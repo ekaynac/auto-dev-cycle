@@ -99,9 +99,11 @@ Scope: **step-9 completion** of 04 §9 — the daemon, local API, CLI transport,
   - Regression test: a refusal committed before start launches no adapter.
   - HTTP mapping: invalidated becomes refused with its registered reason, and the invalidation event is kept.
 - **N3. Credential delivery.**
-  - The persisted result is stable and free of secrets.
+  - The plaintext never enters the event store, whose persisted result is stable and free of secrets.
+  - The request layer mints the token before `Submit`, outside the transaction (`identity.Mint`). The handler records only its public id and hash (`Issued.Events`). The mint is not part of the command input, so a retry under the same key replays.
+  - After `Submit`, the caller gives the plaintext to the live response only when the disposition is applied and the result was not replayed (`Issued.Deliver`). Otherwise the plaintext is dropped.
   - The live response carries a typed `issued_credential` field only on first delivery; it is absent on replay. The schema, docs and CLI change together.
-  - Replay never mints a token.
+  - Replay never records or delivers a token.
   - Tests cover a lost response and a failed token-file write for bootstrap, enrolment and replacement.
 - **Replay authentication.** A cached result is returned only after HTTP authentication and a writer-boundary identity recheck, which runs before the replay branch (`writer.go:265`).
 

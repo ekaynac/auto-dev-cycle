@@ -52,10 +52,10 @@ func fixtureStore(t *testing.T, n int) (string, eventstore.Head) {
 	}
 	defer s.Close()
 	for i := range n {
-		_, err := s.Submit(context.Background(), eventstore.Command{ID: newID(t, "cmd"), Actor: newID(t, "act"), IdempotencyKey: fmt.Sprint(i), Input: []byte(`{}`)},
+		_, err := s.SubmitApplied(context.Background(), eventstore.Command{ID: newID(t, "cmd"), Actor: newID(t, "act"), Action: "test.command", IdempotencyKey: fmt.Sprint(i), Input: []byte(`{}`)}, eventstore.Applies(
 			func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 				return []eventstore.Event{{ID: newID(t, "evt"), Kind: "test.appended/v1", Subject: newID(t, "prj"), Payload: []byte(`{"n":1}`)}}, json.RawMessage(`{}`), nil
-			})
+			}))
 		if err != nil {
 			t.Fatal(err)
 		}

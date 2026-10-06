@@ -126,7 +126,7 @@ func systemActor(ctx context.Context, s *eventstore.Store) (_ types.ActorID, cre
 	a := types.Actor{ID: types.ActorID(id), Kind: types.ActorKindSystem, Name: "system", CreatedBy: types.ActorID(id)}
 	evs, eerr := identity.CreateActor(a)
 	if err = errors.Join(ierr, cerr, eerr); err == nil {
-		_, err = s.Bootstrap(ctx, eventstore.Command{ID: cmd, Actor: id, IdempotencyKey: cmd, Input: []byte(`{}`)}, evs[0])
+		_, err = s.Bootstrap(ctx, eventstore.Command{ID: cmd, Actor: id, Action: "actor.create_system", IdempotencyKey: cmd, Input: []byte(`{}`)}, evs[0])
 	}
 	if errors.Is(err, eventstore.ErrNotBootstrap) {
 		return "", false, couldNotRun(vocab.ReasonAmbiguousState, "the store holds events or effects but no actor", err)

@@ -77,11 +77,11 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 		if err != nil {
 			return err
 		}
-		_, err = s.Submit(ctx, eventstore.Command{ID: cmd, Actor: string(by), IdempotencyKey: cmd, Input: []byte(`{}`)},
+		_, err = s.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: string(by), Action: "fixture.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
 			func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 				evs, err := apply(tx)
 				return evs, json.RawMessage(`{}`), err
-			})
+			}))
 		return err
 	}
 	sup, op, sys, _, err := actors()
