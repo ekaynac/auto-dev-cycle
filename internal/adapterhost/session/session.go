@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session/inproc"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/wire"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -42,6 +43,11 @@ type Config struct {
 	// Heartbeat is the longest silence between heartbeats during a run
 	// (DefaultHeartbeat when zero).
 	Heartbeat time.Duration
+	// InProcess, when set, is the adapter in place of Command and Env: a
+	// function of this process over the session's pipes, never spawned nor
+	// contained. Only the fixture harness can make one (package inproc,
+	// whose importers a test restricts).
+	InProcess *inproc.Peer
 }
 
 // Kind is why a call failed or the session ended.
@@ -162,7 +168,13 @@ type Session struct {
 
 // Open spawns the adapter and starts reading it.
 func Open(cfg Config) (*Session, error) {
-	p, err := Spawn(ProcessSpec{Command: cfg.Command, Env: cfg.Env, Deadline: cfg.Deadline})
+	var p *Process
+	var err error
+	if cfg.InProcess != nil {
+		p, err = startPeer(cfg.InProcess, cfg.Deadline)
+	} else {
+		p, err = Spawn(ProcessSpec{Command: cfg.Command, Env: cfg.Env, Deadline: cfg.Deadline})
+	}
 	if err != nil {
 		return nil, err
 	}

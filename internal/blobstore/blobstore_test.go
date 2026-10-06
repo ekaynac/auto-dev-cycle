@@ -324,3 +324,56 @@ func equal(a, b []string) bool {
 	}
 	return true
 }
+
+// A staged copy is verified and durable in tmp/ but not published until
+// Publish; Discard leaves nothing.
+func TestStageThenPublishOrDiscard(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	tmpCount := func() int {
+		left, _ := os.ReadDir(filepath.Join(dir, "blobs", "tmp"))
+		return len(left)
+	}
+	st, err := s.Stage(strings.NewReader("hello"), helloDigest)
+	if err != nil || st.Digest() != helloDigest {
+		t.Fatalf("Stage = %v", err)
+	}
+	if has, _ := s.Has(helloDigest); has || tmpCount() != 1 {
+		t.Fatalf("staged: published %v, %d temp files", has, tmpCount())
+	}
+	if err := st.Discard(); err != nil || tmpCount() != 0 {
+		t.Fatalf("Discard: %v, %d temp files", err, tmpCount())
+	}
+	if has, _ := s.Has(helloDigest); has {
+		t.Fatal("a discarded copy was published")
+	}
+	st, err = s.Stage(strings.NewReader("hello"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, err := st.Publish(); err != nil || d != helloDigest {
+		t.Fatalf("Publish = %q, %v", d, err)
+	}
+	if has, _ := s.Has(helloDigest); !has || tmpCount() != 0 || st.Discard() != nil {
+		t.Fatalf("published: %v, %d temp files", has, tmpCount())
+	}
+	if _, err := s.Stage(strings.NewReader("hello"), "sha256:"+strings.Repeat("0", 64)); !errors.Is(err, ErrDeclaredDigest) || tmpCount() != 0 {
+		t.Fatalf("a mismatched Stage: %v, %d temp files", err, tmpCount())
+	}
+}
+
+// A failed Stage whose temporary file cannot be removed reports that apart
+// (ErrTempLeft), beside the copy's own error.
+func TestStageReportsATempLeftBehind(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	remove = func(string) error { return os.ErrPermission }
+	t.Cleanup(func() { remove = os.Remove })
+	_, err := s.Stage(strings.NewReader("hello"), "sha256:"+strings.Repeat("0", 64))
+	if !errors.Is(err, ErrDeclaredDigest) || !errors.Is(err, ErrTempLeft) {
+		t.Fatalf("Stage = %v; want the digest mismatch and ErrTempLeft", err)
+	}
+	if left, _ := os.ReadDir(filepath.Join(dir, "blobs", "tmp")); len(left) != 1 {
+		t.Fatalf("%d temp files; want the one left behind", len(left))
+	}
+}

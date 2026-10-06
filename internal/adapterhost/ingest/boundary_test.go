@@ -428,3 +428,51 @@ func TestBounds(t *testing.T) {
 		e.assertEmpty()
 	})
 }
+
+// Astra #109 round 2: a refusal whose staged temporary file cannot be
+// removed keeps its check (the removal never in its detail) and reports
+// blobstore.ErrTempLeft beside it: a digest mismatch, and a post-copy
+// refusal (the file grown during the copy).
+func TestARefusalKeepsItsCleanupFailureApart(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permissions do not bind root")
+	}
+	for name, tc := range map[string]struct {
+		declared string
+		grow     bool
+		check    string
+	}{
+		"digest mismatch":   {digestOf([]byte("other bytes")), false, CheckDigest},
+		"post-copy refusal": {digestOf(content), true, CheckReplaced},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			res := filepath.Join(e.out, "res")
+			e.write(res, content)
+			tmp := filepath.Join(e.stateDir, "blobs", "tmp")
+			setHook(t, func(stage string) {
+				if stage != "copying" {
+					return
+				}
+				must(t, os.Chmod(tmp, 0o500))
+				if tc.grow {
+					f, err := os.OpenFile(res, os.O_WRONLY|os.O_APPEND, 0)
+					must(t, err)
+					_, err = f.WriteString("more")
+					must(t, errors.Join(err, f.Close()))
+				}
+			})
+			t.Cleanup(func() { _ = os.Chmod(tmp, 0o700) })
+			_, err := Ingest(e.dir, "res", tc.declared, int64(len(content)), bound, e.store)
+			wantCheck(t, err, tc.check)
+			var u *Unsafe
+			errors.As(err, &u)
+			if !errors.Is(err, blobstore.ErrTempLeft) || strings.Contains(u.Detail, tmp) {
+				t.Fatalf("Ingest = %v; want ErrTempLeft apart from the refusal", err)
+			}
+			if left, _ := os.ReadDir(tmp); len(left) != 1 {
+				t.Fatalf("%d temp files; want the one left behind", len(left))
+			}
+		})
+	}
+}

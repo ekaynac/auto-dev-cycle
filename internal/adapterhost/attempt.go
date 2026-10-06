@@ -107,14 +107,14 @@ type Outcome struct {
 	Usage     []types.UsageMeasurement
 }
 
-// Seams for tests: the prelaunch check, the ingestion, and a hook at
+// Seams for tests: the prelaunch check, the staging copy, and a hook at
 // "describe", "prepare" (before each call), "event:<name>" (each event),
 // "exited" (the process tree is gone) and "ingested" (before the final
 // transaction).
 var (
-	probe      = ingest.SupportedIn
-	ingestFile = ingest.Ingest
-	testHook   func(stage string)
+	probe    = ingest.SupportedIn
+	stage    = ingest.Stage
+	testHook func(stage string)
 	// fenceAttempt and waitTree are lease.FenceAttempt and Session.Wait.
 	fenceAttempt = lease.FenceAttempt
 	waitTree     = (*session.Session).Wait
@@ -165,13 +165,14 @@ type attemptRun struct {
 	cancelRun context.CancelFunc
 
 	out           Outcome
-	blobs         map[types.AdapterHandle]types.Digest   // the outputs published
+	staged        map[types.AdapterHandle]*blobstore.Staged
 	declaredFinal *types.AdapterRunResultUsageFinalValue // a refused result's final usage
 	measured      []types.UsageMeasurement
 	// admitted: every final output was checked and copied, none refused.
 	// denied: some output was refused, whether or not its record could be
 	// kept. Only admitted && !denied lets the result be submitted.
 	admitted, denied bool
+	tempLeft         bool // a failed staging left its temporary file
 }
 
 // run launches the adapter, converses, ends the session, waits for the
@@ -179,7 +180,8 @@ type attemptRun struct {
 // controller's own starts only when finalisation does (after the session
 // and the process tree are gone, or at a failed spawn), so a long run never
 // eats into it; the caller's ctx bounds only the conversation.
-func (r *attemptRun) run(ctx context.Context) (Outcome, error) {
+func (r *attemptRun) run(ctx context.Context) (out Outcome, err error) {
+	defer func() { err = errors.Join(err, r.discard()) }()
 	s, err := session.Open(r.spec.Adapter)
 	if err != nil {
 		fctx, cancel := r.finalizing(ctx)
@@ -317,6 +319,27 @@ func (r *attemptRun) unserve() {
 	if r.cancelRun != nil {
 		r.cancelRun()
 	}
+}
+
+// ErrCleanup: a staged copy could not be removed (the blob store's Open
+// removes it after a restart). Its text is fixed.
+var ErrCleanup = errors.New("adapterhost: removing a staged copy of an adapter output failed")
+
+// discard removes every staged copy not published; a copy it could not
+// remove stays tracked and is reported (ErrCleanup).
+func (r *attemptRun) discard() error {
+	failed := r.tempLeft
+	for h, st := range r.staged {
+		if st.Discard() != nil {
+			failed = true // still tracked: the copy is still there
+			continue
+		}
+		delete(r.staged, h)
+	}
+	if failed {
+		return ErrCleanup
+	}
+	return nil
 }
 
 // command runs one writer command of the attempt.
