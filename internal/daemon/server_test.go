@@ -371,6 +371,23 @@ func rawGet(t *testing.T, sock, path string) string {
 	return strings.TrimSpace(line)
 }
 
+// refusedAtOnce dials sock and, without writing (the server refuses before
+// it reads a request, so a write races its close), asserts the connection
+// gets exactly the fixed 503 text and is then closed.
+func refusedAtOnce(t *testing.T, sock, what string) {
+	t.Helper()
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got, err := io.ReadAll(c) // up to the server's close
+	if err != nil || string(got) != busy {
+		t.Fatalf("%s: got %q, %v; want the fixed refusal and a close", what, got, err)
+	}
+}
+
 // Connections, and so open streams, are capped per listener and per peer
 // on the shared socket; one past the cap is refused at once with fixed
 // text, and a closed connection frees its slot. The shared socket's
@@ -387,17 +404,13 @@ func TestConnectionQuota(t *testing.T) {
 	for range 2 {
 		streams = append(streams, s.get(t, unixClient(sharedSock), api.EventsPath, s.tok.Reveal()))
 	}
-	if got := rawGet(t, sharedSock, api.VersionPath); got != "HTTP/1.1 503 Service Unavailable" {
-		t.Fatalf("a third stream's connection: %q", got)
-	}
+	refusedAtOnce(t, sharedSock, "a third stream's connection")
 	for range 2 {
 		if got := rawGet(t, privateSock, api.VersionPath); got != "HTTP/1.1 200 OK" {
 			t.Fatalf("the private socket beside a full shared peer: %q", got)
 		}
 	}
-	if got := rawGet(t, privateSock, api.VersionPath); got != "HTTP/1.1 503 Service Unavailable" {
-		t.Fatalf("one past the private cap: %q", got)
-	}
+	refusedAtOnce(t, privateSock, "one past the private cap")
 	streams[0].Body.Close()
 	deadline := time.Now().Add(5 * time.Second)
 	for rawGet(t, sharedSock, api.VersionPath) != "HTTP/1.1 200 OK" {
