@@ -69,13 +69,13 @@ Scope: **step-9 completion** of 04 §9 — the daemon, local API, CLI transport,
 
   It never confirms proposals, resurrects actors or resets bootstrap. The ordinary issuance restriction (`identity.go:309`) and the bootstrap-consumed projection are unchanged.
 
-**Pending operator approval:**
+**Approved by the operator on 2026-10-06, after the round-3 review:**
 - **R8. Renewal of an expired, unconsumed bootstrap (P2).** `adcd bootstrap renew`:
   - has the same offline conditions as R7 (daemon uid, lock held, trusted store);
   - succeeds only while bootstrap is unconsumed;
   - writes a new secret with a new 24 h expiry and records a `identity.bootstrap_renewed/v1` event that invalidates the old secret.
 
-  It is impossible after consumption, and an ordinary restart never renews the expiry. Step-9 completion requires an approved recovery path for both the lost-credential case (R7) and the expired-bootstrap case (R8 or an alternative).
+  It is impossible after consumption, and an ordinary restart never renews the expiry. Step-9 completion requires an approved recovery path for both the lost-credential case (R7) and the expired-bootstrap case (R8).
 
 ## 3. Lead decisions
 
