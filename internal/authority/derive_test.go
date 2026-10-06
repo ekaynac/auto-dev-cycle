@@ -62,7 +62,7 @@ func (*noteHandler) Derive(_ *eventstore.Tx, _ types.Actor, input json.RawMessag
 	if in.Fail {
 		return authority.Derived{}, errDerive
 	}
-	return authority.Derived{Object: in.Object, Project: &in.Project, Classes: in.Classes, Grantee: in.Grantee,
+	return authority.Derived{Object: in.Object, ObjectType: "note", Project: &in.Project, Classes: in.Classes, Grantee: in.Grantee,
 		Record: func(tx *eventstore.Tx) (json.RawMessage, bool, error) { return tx.Get(notes, in.Object) }}, nil
 }
 
@@ -78,7 +78,11 @@ type boundary struct {
 	az            authority.Authorizer // what the store's Authorize hook runs
 }
 
-func openBoundary(t *testing.T) *boundary {
+func openBoundary(t *testing.T) *boundary { return openBoundaryGrace(t, 0, true) }
+
+// openBoundaryGrace: with the seat projector's grace overridden when
+// positive; seated, the supervisor holds the seat.
+func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary {
 	dir := filepath.Join(t.TempDir(), "state")
 	lock, err := eventstore.AcquireLock(dir)
 	if err != nil {
@@ -96,10 +100,12 @@ func openBoundary(t *testing.T) *boundary {
 	b := &boundary{t: t, az: authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{"note.add": &noteHandler{}}, Now: func() time.Time { return t0 }}}
 	kinds := identity.Kinds()
 	maps.Copy(kinds, authority.GrantKinds())
+	maps.Copy(kinds, authority.SeatKinds())
+	maps.Copy(kinds, authority.ProposalKinds())
 	kinds["test.noted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	kinds["test.unnoted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
-		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, notesProjection),
+		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, authority.ProposalProjector{}.Project, notesProjection),
 			Authorize: func(tx *eventstore.Tx, c eventstore.Command) error {
 				if c.Action == "test.seed" {
 					return nil
@@ -142,6 +148,9 @@ func openBoundary(t *testing.T) *boundary {
 		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID, Approval: types.ApprovalID(newID(t, "apr"))}
 	b.seed(b.op, createGrant(b.supGrant))
 	b.sup = b.login(b.supTok)
+	if seated {
+		b.seed(b.sup, seat(types.SeatEventTransitionSeatTaken, nil, &sup.ID, nil))
+	}
 	return b
 }
 
@@ -344,14 +353,16 @@ func isReason(r vocab.Reason) func(error) bool {
 func is(target error) func(error) bool { return func(err error) bool { return errors.Is(err, target) } }
 
 // The derived classes and grantee reach Decide, and a command Decide would
-// propose is refused, its logic never run, until proposals are persisted.
+// propose commits a proposal, its logic never run (proposals_test.go).
 func TestAuthorizerJudgesTheDerivedChange(t *testing.T) {
 	b := openBoundary(t)
 	self, other := b.sup.Actor(), b.op.Actor()
 	// The supervisor's grant covers note.add; the derived class makes it a
 	// grant change: to another actor it needs a human (a proposal), to
 	// itself it is refused.
-	b.refusedUnrun("a grant change for another", b.derivedCmd(b.sup, []string{"grant.create"}, &other, false), is(authority.ErrProposalsNotWired))
+	if out, err := b.note(b.derivedCmd(b.sup, []string{"grant.create"}, &other, false)); err != nil || out.Disposition != eventstore.DispositionProposed {
+		t.Fatalf("a grant change for another: %+v %v", out, err)
+	}
 	b.refusedUnrun("a grant change for itself", b.derivedCmd(b.sup, []string{"grant.create"}, &self, false), isReason(vocab.ReasonSelfGrantRefused))
 	// A class without a confirmation default is refused, for an operator too.
 	b.refusedUnrun("an unknown class", b.derivedCmd(b.op, []string{"no_such.class"}, nil, false), isReason(vocab.ReasonChangeClassUnknown))

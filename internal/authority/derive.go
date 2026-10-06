@@ -34,6 +34,13 @@ type Derived struct {
 	// existence is the record's, and a digest expectation is checked
 	// against its canonical bytes. Nil: the action takes no expected state.
 	Record func(t *eventstore.Tx) (json.RawMessage, bool, error)
+	// SeatExempt marks an action a supervisor performs without holding the
+	// seat (taking or asking for it, 14 N4/P4). Unmarked, a supervisor's
+	// command is a supervisor write and needs the seat (fail closed).
+	SeatExempt bool
+	// ObjectType is the object's record type, which a proposal binds
+	// (types.ObjectRef); an action that may be proposed must set it.
+	ObjectType string
 }
 
 // Handler derives one action's Derived. It runs inside the writer
@@ -44,10 +51,6 @@ type Handler interface {
 
 // ErrActionNotWired refuses an action this build has no handler for.
 var ErrActionNotWired = errors.New("authority: the action has no handler in this build; it is refused")
-
-// ErrProposalsNotWired refuses a command authority would propose, until
-// proposals are persisted.
-var ErrProposalsNotWired = errors.New("authority: the command needs a confirmation; proposals are not persisted in this build")
 
 // Authorizer is the writer's Authorize hook over the wired handlers, by
 // action.
@@ -86,11 +89,20 @@ func (a Authorizer) Authorize(t *eventstore.Tx, c eventstore.Command) error {
 	}
 	dec := Decide(a.Registry, Request{Actor: actor, Action: c.Action, Project: d.Project, Classes: d.Classes,
 		Grants: grants, Revoked: revoked, Grantee: d.Grantee, Now: a.Now()})
+	// 08 "Supervisor seat": a supervisor write needs the seat, checked here,
+	// in the writer transaction; operators' and the system's commands do not.
+	if dec.Disposition != Refuse && actor.Kind == types.ActorKindSupervisor && !d.SeatExempt {
+		if err := holdsSeat(t, actor.ID); err != nil {
+			return err
+		}
+	}
 	switch dec.Disposition {
 	case Allow:
 		return nil
 	case Propose:
-		return fmt.Errorf("%w (%s)", ErrProposalsNotWired, dec.Policy)
+		// A proposal is committed, not an error (14 H2 item 4): the command
+		// records it with the proposed disposition and its logic never runs.
+		return a.propose(t, c, actor, d, dec)
 	}
 	return &Refusal{Reason: dec.Reason, Detail: dec.Detail}
 }

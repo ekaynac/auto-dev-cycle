@@ -105,6 +105,7 @@ Sensitive change classes and their supervisor confirmation defaults (D32, plus t
 ```yaml
 Approval:
   id: apr_…
+  proposal: prp_…|null              # the one proposal it confirms; its shared fields are copied from it, never supplied
   actor: act_…
   actor_kind: operator|supervisor|system
   action: action_kind
@@ -159,9 +160,12 @@ Proposal:
   action, change_class, project, object, expected_state, scope
   proposed_by: act_…
   policy: independent_review | human
-  binding_digest: sha256:…          # JCS digest of {action, change_class, project, object, expected_state, scope, proposed_by}
-  status: open | confirmed | rejected | expired | superseded | invalidated
-  expires_at: time
+  grantee: act_…|null               # a grant change's grantee, as derived
+  binding_digest: sha256:…          # JCS digest of {action, change_class, project, object, expected_state, scope, proposed_by[, grantee]}
+  status: open | confirmed | applied | rejected | withdrawn | expired | superseded | invalidated   # open = pending
+  invalidated_reason: reason|null   # registered: stale_expected_state, authority_revoked, actor_revoked, proposal_invalidated
+  created_at: time
+  expires_at: time                  # created_at + 72 h
 
 Challenge:                          # human policy only
   id: chl_…
@@ -197,6 +201,12 @@ Challenge:                          # human policy only
 
   Any change makes the proposal `invalidated`, never applied.
 - An open proposal is an `awaiting_confirmation` hold on the dependent work only.
+- **Persistence (14 PR 6a).** A command authority proposes commits `proposal.created/v1` with the `proposed`
+  disposition and no target effect. The same exact operation (same binding digest) while one is pending returns the
+  pending proposal, with no new event. The fold invalidates a pending proposal when its proposer's actor is revoked,
+  its grant is revoked, or its object has a new event. An approval (`approval.recorded/v1`) answers exactly one live
+  proposal, at most once, and is never by the proposer (except an operator's own presence check, KA1) or the grantee;
+  under `human`, it is an operator's.
 
 ## Protected changes: documents and topology [M3][M12]
 

@@ -24,6 +24,8 @@ func decodeAny(schema string, b []byte) (any, error) {
 		return contract.Decode[types.Proposal](schema, b)
 	case "records/challenge":
 		return contract.Decode[types.Challenge](schema, b)
+	case "records/seat-event":
+		return contract.Decode[types.SeatEvent](schema, b)
 	case "records/owed-input":
 		return contract.Decode[types.OwedInput](schema, b)
 	}

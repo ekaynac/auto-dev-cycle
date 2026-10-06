@@ -130,6 +130,13 @@ export type ProposalID = string;
  * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
  *
  * This interface was referenced by `CommonDefinitions`'s JSON-Schema
+ * via the `definition` "SeatID".
+ */
+export type SeatID = string;
+/**
+ * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+ *
+ * This interface was referenced by `CommonDefinitions`'s JSON-Schema
  * via the `definition` "ActorID".
  */
 export type ActorID = string;

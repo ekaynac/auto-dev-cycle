@@ -88,7 +88,7 @@ func humanProposal(op types.Actor, issued time.Time, cred *webauthn.Credential) 
 	}
 	p, err := authority.NewProposal(types.ProposalID(idv[0]), d, authority.Bound{Action: "profile.adopt", Project: &project,
 		Object: types.ObjectRef{Type: "profile", ID: string(project)}, Scope: json.RawMessage(`{"edit":"` + idv[0] + `"}`), ProposedBy: sup.ID},
-		issued.Add(time.Hour))
+		issued, issued.Add(time.Hour))
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/seat-event.json",
+  "title": "SeatEvent",
+  "description": "The payload of every supervisor-seat event (docs/plan/02-supervisor-role §5, docs/design/m0/08 \"Supervisor seat\"): <transition>/v1. There is one seat per controller: the event's subject is its id, a sea_ TypeID minted by its first event and the same for every seat event after. `from` is the holder before the transition and `to` the holder after it; on seat.handover_requested `from` is the holder asked and `to` the requester, and `force_after` is when the request wins (null: it only asks). internal/authority checks every transition against the current seat in the writer transaction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["transition", "from", "to", "force_after"],
+  "properties": {
+    "transition": {"enum": ["seat.taken", "seat.released", "seat.handover_requested", "seat.handed_over"]},
+    "from": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ActorID"}]},
+    "to": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ActorID"}]},
+    "force_after": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"transition": {"const": "seat.taken"}}},
+      "then": {"properties": {"from": {"const": null}, "to": {"not": {"const": null}}}}
+    },
+    {
+      "if": {"properties": {"transition": {"const": "seat.released"}}},
+      "then": {"properties": {"from": {"not": {"const": null}}, "to": {"const": null}}}
+    },
+    {
+      "if": {"properties": {"transition": {"enum": ["seat.handover_requested", "seat.handed_over"]}}},
+      "then": {"properties": {"from": {"not": {"const": null}}, "to": {"not": {"const": null}}}}
+    },
+    {
+      "if": {"properties": {"transition": {"not": {"const": "seat.handover_requested"}}}},
+      "then": {"properties": {"force_after": {"const": null}}}
+    }
+  ]
+}

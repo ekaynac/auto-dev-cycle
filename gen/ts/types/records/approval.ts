@@ -29,6 +29,10 @@ export interface Approval {
    */
   id: string;
   /**
+   * The one proposal a confirmed approval answers (null only under policy none, which internal/authority does not persist in this build). Every field it shares with the proposal is copied from the proposal record, never supplied, and internal/authority admits it only while they match.
+   */
+  proposal: null | string;
+  /**
    * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
    */
   actor: string;

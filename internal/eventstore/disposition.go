@@ -112,3 +112,30 @@ func checkDecision(d Decision, result []byte, intents int) error {
 	}
 	return nil
 }
+
+// Decided is the Authorize hook deciding the command itself, in place of
+// its logic (14 H2 item 4): a proposal, recorded with its events and the
+// proposed disposition, or an invalidation. The logic then never runs.
+// Authority never applies a command on its logic's behalf, so an applied
+// decision is refused here.
+func (t *Tx) Decided(d Decision) error {
+	switch {
+	case t.store == nil || t.readOnly || t.rebuild:
+		return errors.New("eventstore: only a command's transaction is decided by its authorizer")
+	case t.decided != nil:
+		return errors.New("eventstore: the command is already decided")
+	case d.Disposition == DispositionApplied || !d.Disposition.known():
+		return fmt.Errorf("eventstore: an authorizer does not decide a command %q", d.Disposition)
+	}
+	t.decided = &d
+	return nil
+}
+
+// decision is the Authorize hook's decision, if it made one, else the
+// command's logic's.
+func (t *Tx) decision(decide Decide) (Decision, error) {
+	if t.decided != nil {
+		return *t.decided, nil
+	}
+	return decide(t)
+}

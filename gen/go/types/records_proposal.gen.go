@@ -20,13 +20,24 @@ type ProposalStatus string
 const (
 	ProposalStatusOpen        ProposalStatus = "open"
 	ProposalStatusConfirmed   ProposalStatus = "confirmed"
+	ProposalStatusApplied     ProposalStatus = "applied"
 	ProposalStatusRejected    ProposalStatus = "rejected"
+	ProposalStatusWithdrawn   ProposalStatus = "withdrawn"
 	ProposalStatusExpired     ProposalStatus = "expired"
 	ProposalStatusSuperseded  ProposalStatus = "superseded"
 	ProposalStatusInvalidated ProposalStatus = "invalidated"
 )
 
-// Proposal: A proposed action awaiting confirmation (docs/design/m0/04 "Proposals and confirmation"), recorded when the action's confirmation policy is not none. binding_digest is the JCS digest of {action, change_class, project, object, expected_state, scope, proposed_by}; a confirmation binds exactly that digest. At apply, authority revalidates the expected state, the proposer's grant, the policy and the confirmer, and otherwise invalidates the proposal.
+type ProposalInvalidatedReasonValue string
+
+const (
+	ProposalInvalidatedReasonValueStaleExpectedState  ProposalInvalidatedReasonValue = "stale_expected_state"
+	ProposalInvalidatedReasonValueAuthorityRevoked    ProposalInvalidatedReasonValue = "authority_revoked"
+	ProposalInvalidatedReasonValueActorRevoked        ProposalInvalidatedReasonValue = "actor_revoked"
+	ProposalInvalidatedReasonValueProposalInvalidated ProposalInvalidatedReasonValue = "proposal_invalidated"
+)
+
+// Proposal: A proposed action awaiting confirmation (docs/design/m0/04 "Proposals and confirmation"), recorded when the action's confirmation policy is not none. binding_digest is the JCS digest of {action, change_class, project, object, expected_state, scope, proposed_by} and, when the change has one, its grantee; a confirmation binds exactly that digest. scope is the command's input; object, project, grantee, change_class and expected_state are derived server side. open is the pending state. At apply, authority revalidates the expected state, the proposer's grant, the policy and the confirmer, and otherwise invalidates the proposal; invalidated_reason is the registered reason, null in every other state.
 type Proposal struct {
 	ID            ProposalID      `json:"id"`
 	Action        ActionKind      `json:"action"`
@@ -36,10 +47,14 @@ type Proposal struct {
 	ExpectedState ExpectedState   `json:"expected_state"`
 	Scope         json.RawMessage `json:"scope"`
 	ProposedBy    ActorID         `json:"proposed_by"`
+	// The actor a grant change is for, as derived; null when the change creates or extends no grant.
+	Grantee *ActorID `json:"grantee"`
 	// The grant the proposal was decided under (null for an operator's); at apply it must still be the one that covers it, never a substitute.
-	Grant         *GrantID       `json:"grant"`
-	Policy        ProposalPolicy `json:"policy"`
-	BindingDigest Digest         `json:"binding_digest"`
-	Status        ProposalStatus `json:"status"`
-	ExpiresAt     Time           `json:"expires_at"`
+	Grant             *GrantID                        `json:"grant"`
+	Policy            ProposalPolicy                  `json:"policy"`
+	BindingDigest     Digest                          `json:"binding_digest"`
+	Status            ProposalStatus                  `json:"status"`
+	InvalidatedReason *ProposalInvalidatedReasonValue `json:"invalidated_reason"`
+	CreatedAt         Time                            `json:"created_at"`
+	ExpiresAt         Time                            `json:"expires_at"`
 }

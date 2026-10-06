@@ -251,7 +251,7 @@ func openProposal(reg *vocab.Registry, sup types.Actor, g types.Grant) (types.Pr
 	}
 	b := authority.Bound{Action: protectedDocument, Project: &project, Object: types.ObjectRef{Type: "document", ID: doc, Digest: &instrumentDigest},
 		ExpectedState: types.ExpectedState{Digest: &instrumentDigest}, Scope: json.RawMessage(`{"path":"` + doc + `"}`), ProposedBy: sup.ID}
-	p, err := authority.NewProposal(types.ProposalID(prp), d, b, receiptsAt.Add(time.Hour))
+	p, err := authority.NewProposal(types.ProposalID(prp), d, b, receiptsAt, receiptsAt.Add(time.Hour))
 	if err != nil {
 		return types.Proposal{}, fmt.Errorf("fixtures: proposal: %w", err)
 	}

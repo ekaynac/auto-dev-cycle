@@ -123,7 +123,7 @@ func widenedProfileEdit(context.Context, string) (steps []Step, violations []str
 			return nil, nil, err
 		}
 		p, err := authority.NewProposal(types.ProposalID(prp), d, authority.Bound{Action: "profile.adopt", Project: &project,
-			Object: types.ObjectRef{Type: "profile", ID: string(project)}, Scope: json.RawMessage(`{}`), ProposedBy: sup.ID}, receiptsAt.Add(time.Hour))
+			Object: types.ObjectRef{Type: "profile", ID: string(project)}, Scope: json.RawMessage(`{}`), ProposedBy: sup.ID}, receiptsAt, receiptsAt.Add(time.Hour))
 		if err != nil {
 			return nil, nil, err
 		}

@@ -38,7 +38,8 @@ func refusal(reason vocab.Reason, format string, args ...any) *Refusal {
 }
 
 // Bound is what a proposal binds: the exact action, its change, object,
-// expected state and scope, and who proposed it.
+// expected state and scope (the command's input), who proposed it and, for
+// a grant change, its grantee.
 type Bound struct {
 	Action        string
 	Classes       []string
@@ -47,11 +48,13 @@ type Bound struct {
 	ExpectedState types.ExpectedState
 	Scope         json.RawMessage
 	ProposedBy    types.ActorID
+	Grantee       *types.ActorID
 }
 
 // BindingDigest is the JCS digest of {action, change_class, project,
-// object, expected_state, scope, proposed_by} (04). Classes are sorted, so
-// their order never changes the digest.
+// object, expected_state, scope, proposed_by} (04), and the grantee when
+// there is one (absent otherwise, so a digest without one is unchanged).
+// Classes are sorted, so their order never changes the digest.
 func BindingDigest(b Bound) (types.Digest, error) {
 	classes := canonical(b.Classes)
 	if len(b.Scope) == 0 {
@@ -65,7 +68,8 @@ func BindingDigest(b Bound) (types.Digest, error) {
 		ExpectedState types.ExpectedState `json:"expected_state"`
 		Scope         json.RawMessage     `json:"scope"`
 		ProposedBy    types.ActorID       `json:"proposed_by"`
-	}{b.Action, classes, b.Project, b.Object, b.ExpectedState, b.Scope, b.ProposedBy})
+		Grantee       *types.ActorID      `json:"grantee,omitempty"`
+	}{b.Action, classes, b.Project, b.Object, b.ExpectedState, b.Scope, b.ProposedBy, b.Grantee})
 	if err != nil {
 		return "", err
 	}
@@ -88,8 +92,8 @@ func canonical(classes []string) []string {
 }
 
 // NewProposal records a Propose decision as an open proposal, bound to its
-// digest, expiring at expires.
-func NewProposal(id types.ProposalID, d Decision, b Bound, expires time.Time) (types.Proposal, error) {
+// digest, created at created and expiring at expires.
+func NewProposal(id types.ProposalID, d Decision, b Bound, created, expires time.Time) (types.Proposal, error) {
 	if d.Disposition != Propose || d.Policy == None {
 		return types.Proposal{}, errors.New("authority: only a decision to propose records a proposal")
 	}
@@ -103,8 +107,9 @@ func NewProposal(id types.ProposalID, d Decision, b Bound, expires time.Time) (t
 		classes = append(classes, types.ChangeClass(c))
 	}
 	return types.Proposal{ID: id, Action: types.ActionKind(b.Action), ChangeClass: classes, Project: b.Project, Object: b.Object,
-		ExpectedState: b.ExpectedState, Scope: b.Scope, ProposedBy: b.ProposedBy, Grant: d.Grant, Policy: types.ProposalPolicy(d.Policy.String()),
-		BindingDigest: digest, Status: types.ProposalStatusOpen, ExpiresAt: types.Time(expires.UTC().Format(time.RFC3339))}, nil
+		ExpectedState: b.ExpectedState, Scope: b.Scope, ProposedBy: b.ProposedBy, Grantee: b.Grantee, Grant: d.Grant,
+		Policy: types.ProposalPolicy(d.Policy.String()), BindingDigest: digest, Status: types.ProposalStatusOpen,
+		CreatedAt: types.Time(created.UTC().Format(time.RFC3339Nano)), ExpiresAt: types.Time(expires.UTC().Format(time.RFC3339Nano))}, nil
 }
 
 // open refuses a proposal that is not open, or open but past its expiry.
@@ -134,15 +139,15 @@ func Close(p types.Proposal, to types.ProposalStatus) (types.Proposal, error) {
 	return n, nil
 }
 
-// Invalidate ends an open or confirmed proposal for good: the writer
-// persists it whenever revalidation fails, so a later change (a restored
-// grant, say) can never make it applicable again.
-func Invalidate(p types.Proposal) (types.Proposal, error) {
+// Invalidate ends an open or confirmed proposal for good, for a registered
+// reason: the writer persists it whenever revalidation fails, so a later
+// change (a restored grant, say) can never make it applicable again.
+func Invalidate(p types.Proposal, reason types.ProposalInvalidatedReasonValue) (types.Proposal, error) {
 	if p.Status != types.ProposalStatusOpen && p.Status != types.ProposalStatusConfirmed {
 		return types.Proposal{}, refusal(vocab.ReasonProposalNotOpen, "proposal %s is %s", p.ID, p.Status)
 	}
 	n := p
-	n.Status = types.ProposalStatusInvalidated
+	n.Status, n.InvalidatedReason = types.ProposalStatusInvalidated, &reason
 	return n, nil
 }
 
@@ -282,7 +287,8 @@ func confirmReview(p types.Proposal, r types.Receipt, c types.InstrumentContract
 // same action, project and change must still be proposable under the same
 // policy and under the very grant the proposal records (never a substitute,
 // never one the caller names); and a human confirmer must still be an
-// unrevoked operator. Any change invalidates the proposal, never applies it.
+// unrevoked operator, and any confirmer still separate from the proposal
+// (Separate). Any change invalidates the proposal, never applies it.
 //
 // op is the operation being applied (its object and scope); with the
 // request's actor, action, project and re-decided classes it must hash to
@@ -297,17 +303,13 @@ func Revalidate(reg *vocab.Registry, p types.Proposal, confirmer *types.Actor, c
 	if !sameState(p.ExpectedState, state) {
 		return refusal(vocab.ReasonStaleExpectedState, "proposal %s was decided against another state", p.ID)
 	}
-	record := Bound{Action: string(p.Action), Project: p.Project, Object: p.Object, ExpectedState: p.ExpectedState, Scope: p.Scope, ProposedBy: p.ProposedBy}
-	for _, c := range p.ChangeClass {
-		record.Classes = append(record.Classes, string(c))
-	}
-	if got, err := BindingDigest(record); err != nil || got != p.BindingDigest {
+	if got, err := BindingDigest(boundOf(p)); err != nil || got != p.BindingDigest {
 		return refusal(vocab.ReasonProposalInvalidated, "proposal %s does not match its own binding digest", p.ID)
 	}
 	d := Decide(reg, current)
 	if d.Disposition != Refuse {
 		applied := Bound{Action: current.Action, Classes: d.Classes, Project: current.Project, Object: op.Object,
-			ExpectedState: p.ExpectedState, Scope: op.Scope, ProposedBy: current.Actor.ID}
+			ExpectedState: p.ExpectedState, Scope: op.Scope, ProposedBy: current.Actor.ID, Grantee: current.Grantee}
 		if got, err := BindingDigest(applied); err != nil || got != p.BindingDigest {
 			return refusal(vocab.ReasonProposalInvalidated, "proposal %s: the operation applied is not the one confirmed", p.ID)
 		}
@@ -325,7 +327,23 @@ func Revalidate(reg *vocab.Registry, p types.Proposal, confirmer *types.Actor, c
 	if p.Policy == types.ProposalPolicyHuman && (confirmer == nil || confirmer.Kind != types.ActorKindOperator || revoked(*confirmer, current.Now)) {
 		return refusal(vocab.ReasonProposalInvalidated, "proposal %s: its confirmer is no longer an operator in force", p.ID)
 	}
+	// Separation of duties again at apply, so no later change launders a
+	// self-approval; the caller passes the approval's actor whenever there is one.
+	if confirmer != nil {
+		if err := Separate(p, *confirmer); err != nil {
+			return refusal(vocab.ReasonProposalInvalidated, "proposal %s: %v", p.ID, err)
+		}
+	}
 	return nil
+}
+
+// boundOf is what the proposal record binds.
+func boundOf(p types.Proposal) Bound {
+	b := Bound{Action: string(p.Action), Project: p.Project, Object: p.Object, ExpectedState: p.ExpectedState, Scope: p.Scope, ProposedBy: p.ProposedBy, Grantee: p.Grantee}
+	for _, c := range p.ChangeClass {
+		b.Classes = append(b.Classes, string(c))
+	}
+	return b
 }
 
 func sameState(a, b types.ExpectedState) bool {
