@@ -187,6 +187,9 @@ func (s *Session) end(e *Error) {
 	s.p.Kill()
 }
 
+// Done is closed once the session has ended (Err is then set).
+func (s *Session) Done() <-chan struct{} { return s.ended }
+
 // Err is why the session ended, or nil while it is live.
 func (s *Session) Err() error {
 	s.mu.Lock()

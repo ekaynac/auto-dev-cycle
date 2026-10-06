@@ -50,6 +50,9 @@ const (
 	shutdownTimeout = 5 * time.Second
 )
 
+// finalizeTimeout is FinalizeTimeout; a test shortens it.
+var finalizeTimeout = FinalizeTimeout
+
 // PromptName is the prompt's handle in in/.
 const PromptName = "prompt.md"
 
@@ -89,7 +92,8 @@ type Outcome struct {
 	// session ended without one.
 	Result *types.AdapterRunResult
 	// Session is why the run produced no admissible result: a
-	// *session.Error, ErrUnservedEvent, a context error, or Wait's error
+	// *session.Error (a broken shutdown or session end included, after a
+	// valid result too), ErrUnservedEvent, a context error, or Wait's error
 	// when the process tree was not seen to exit. Every text is fixed.
 	Session error
 	// Submitted is the result attempt.result_submitted recorded, or nil.
@@ -166,23 +170,25 @@ type attemptRun struct {
 }
 
 // run launches the adapter, converses, ends the session, waits for the
-// process tree, then finalises under the controller's own context.
+// process tree, then finalises. The finalisation's bounded context of the
+// controller's own starts only when finalisation does (after the session
+// and the process tree are gone, or at a failed spawn), so a long run never
+// eats into it; the caller's ctx bounds only the conversation.
 func (r *attemptRun) run(ctx context.Context) (Outcome, error) {
-	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), FinalizeTimeout)
-	defer cancel()
 	s, err := session.Open(r.spec.Adapter)
 	if err != nil {
+		fctx, cancel := r.finalizing(ctx)
+		defer cancel()
 		out, ferr := r.finish(fctx, nil, err, false)
 		return out, errors.Join(err, ferr)
 	}
 	result, runErr := r.converse(ctx, s)
-	sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
-	if _, err := s.Shutdown(sctx); err != nil {
-		_ = s.Close()
-	}
-	scancel()
+	shutErr := r.shutdown(ctx, s)
 	waitErr := waitTree(s)
 	hook("exited")
+	fctx, cancel := r.finalizing(ctx)
+	defer cancel()
+	endErr := sessionEnd(fctx, s, shutErr)
 	r.mu.Lock()
 	unserved := r.unserved
 	r.mu.Unlock()
@@ -197,11 +203,53 @@ func (r *attemptRun) run(ctx context.Context) (Outcome, error) {
 		hostErr := r.refused(fctx, s)
 		out, ferr := r.finish(fctx, nil, runErr, false)
 		return out, errors.Join(hostErr, ferr)
+	case endErr != nil:
+		// A valid result, then a broken shutdown or session end: nothing is
+		// admitted, its accounting is recorded.
+		return r.finish(fctx, &result, endErr, false)
 	}
 	hostErr := r.admit(fctx, result)
 	hook("ingested")
 	out, ferr := r.finish(fctx, &result, hostErr, hostErr == nil)
 	return out, errors.Join(hostErr, ferr)
+}
+
+// finalizing is the finalisation's context: the caller's values, never its
+// cancellation, bounded by finalizeTimeout from now.
+func (r *attemptRun) finalizing(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), finalizeTimeout)
+}
+
+// shutdown shuts the session down within shutdownTimeout, killing the
+// namespace otherwise, and returns the shutdown's error.
+func (r *attemptRun) shutdown(ctx context.Context, s *session.Session) error {
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	defer cancel()
+	_, err := s.Shutdown(sctx)
+	if err != nil {
+		_ = s.Close()
+	}
+	return err
+}
+
+// sessionEnd is why the session did not end cleanly, once its process tree is
+// gone: the shutdown's error, or the session's own end when that was not
+// the clean close after shutdown (a line after the reply, say). A session
+// not seen to end within ctx is not clean either.
+func sessionEnd(ctx context.Context, s *session.Session, shutErr error) error {
+	if shutErr != nil {
+		return shutErr
+	}
+	select {
+	case <-s.Done():
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	var e *session.Error
+	if end := s.Err(); !errors.As(end, &e) || e.Kind != session.KindClosed {
+		return end
+	}
+	return nil
 }
 
 // converse describes, prepares and runs the call under the caller's ctx.

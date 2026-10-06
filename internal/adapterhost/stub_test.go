@@ -52,6 +52,10 @@ type stubPlan struct {
 	Result string            `json:"result,omitempty"` // the run's result; empty: never answered
 	Late   string            `json:"late,omitempty"`   // at shutdown, a descendant appends to out/<late>
 	Marker string            `json:"marker,omitempty"` // then creates this file
+	// HeartbeatMs: after the events, heartbeats every 20 ms for this long.
+	HeartbeatMs int `json:"heartbeat_ms,omitempty"`
+	// Shutdown is the shutdown reply (default a clean outcome).
+	Shutdown string `json:"shutdown,omitempty"`
 }
 
 const stubDescribe = `{"harness":"stub","harness_version":"1.0.0","adapter_version":"0.1.0","contract_version":"1.0.0",` +
@@ -106,6 +110,9 @@ func runStub(raw string) {
 			for _, body := range plan.Events {
 				send(`{"jsonrpc":"2.0","method":"adapter.event","params":{` + body + `,` + stamp + `}}`)
 			}
+			for end := time.Now().Add(time.Duration(plan.HeartbeatMs) * time.Millisecond); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+				send(`{"jsonrpc":"2.0","method":"adapter.event","params":{"event":"heartbeat",` + stamp + `}}`)
+			}
 			if plan.Result != "" {
 				reply(req.ID, plan.Result)
 			}
@@ -116,7 +123,11 @@ func runStub(raw string) {
 				child.Env = []string{lateEnv + "=" + filepath.Join(dir, plan.Late), "ADC_HOST_STUB_MARKER=" + plan.Marker}
 				_ = child.Start()
 			}
-			reply(req.ID, clean)
+			if plan.Shutdown != "" {
+				reply(req.ID, plan.Shutdown)
+			} else {
+				reply(req.ID, clean)
+			}
 			os.Exit(0)
 		default:
 			reply(req.ID, clean)

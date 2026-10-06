@@ -16,6 +16,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/ingest"
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -322,4 +323,54 @@ func openFDs(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return len(fds)
+}
+
+// Astra #108 round 2 (High): the finalisation's bound starts when
+// finalisation does. A run longer than it, cancelled late, still ends
+// closed with its usage durable.
+func TestALongRunStillFinalises(t *testing.T) {
+	w := newWorld(t)
+	finalizeTimeout = 200 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	began := time.Now()
+	testHook = func(s string) {
+		if s == "event:heartbeat" && time.Since(began) > 2*finalizeTimeout {
+			cancel()
+		}
+	}
+	t.Cleanup(func() { testHook, finalizeTimeout = nil, FinalizeTimeout })
+	out, err := w.host.Run(ctx, spec(stub(t, stubPlan{
+		Files:       map[string]string{"patch.diff": patch},
+		Events:      []string{usageEvent(10)},
+		HeartbeatMs: 800,
+		Result:      resultJSON("patch", handleJSON(att, "patch.diff", patch), 10),
+	})))
+	if err != nil || out.Submitted != nil || time.Since(began) < finalizeTimeout {
+		t.Fatalf("run: %v, submitted %v after %s", err, out.Submitted, time.Since(began))
+	}
+	ended(t, w, 1)
+}
+
+// Astra #108 round 2 (Medium): a valid result followed by a malformed
+// shutdown reply is a broken session: nothing is submitted or published,
+// and the result's accounting is still recorded.
+func TestABrokenShutdownRefusesTheResult(t *testing.T) {
+	w := newWorld(t)
+	out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{
+		Files:    map[string]string{"patch.diff": patch},
+		Events:   []string{usageEvent(10)},
+		Result:   resultJSON("patch", handleJSON(att, "patch.diff", patch), 10),
+		Shutdown: `{"outcome":"bogus"}`,
+	})))
+	var e *session.Error
+	if err != nil || out.Submitted != nil || !errors.As(out.Session, &e) || e.Kind != session.KindProtocol {
+		t.Fatalf("run: %v, submitted %v, session %v", err, out.Submitted, out.Session)
+	}
+	if w.published(patch) {
+		t.Fatal("published after a broken shutdown")
+	}
+	if a := ended(t, w, 2); a.Status != types.AttemptStatusLost {
+		t.Fatalf("attempt %s", a.Status)
+	}
 }

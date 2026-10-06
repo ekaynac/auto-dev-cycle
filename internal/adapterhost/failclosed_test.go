@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/ingest"
@@ -42,6 +43,8 @@ func TestAdmissionFailsClosed(t *testing.T) {
 		fence func(*eventstore.Tx, types.AttemptID, int64) error
 		copy  func(name string) error // nil: copy normally; errSkip: report no copy and no error
 		wait  error
+		plan  func(*stubPlan) // edits the run's plan
+		late  bool            // the run outlasts the finalisation timeout and is cancelled late
 		// published: the result's copy is in the store although nothing
 		// was submitted; only until staging (the stacked change) withholds
 		// it past the second fence.
@@ -55,6 +58,9 @@ func TestAdmissionFailsClosed(t *testing.T) {
 		"the host cannot verify (ErrUnsupported)":   {copy: only("excerpt.txt", fmt.Errorf("%w: statx", ingest.ErrUnsupported))},
 		"a refusal its record cannot hold":          {copy: only("excerpt.txt", &ingest.Unsafe{Check: "not-a-check", Detail: "x"}), published: true},
 		"the tree was not seen to exit":             {wait: session.ErrUnverified},
+		"a malformed shutdown reply":                {plan: func(p *stubPlan) { p.Shutdown = `{"outcome":"bogus"}` }},
+		"a run outlasting the finalisation timeout, cancelled late": {late: true,
+			plan: func(p *stubPlan) { p.HeartbeatMs = 800 }},
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
@@ -78,7 +84,23 @@ func TestAdmissionFailsClosed(t *testing.T) {
 			t.Cleanup(func() {
 				fenceAttempt, ingestFile, waitTree = lease.FenceAttempt, ingest.Ingest, (*session.Session).Wait
 			})
-			out, _ := w.host.Run(context.Background(), spec(stub(t, plan)))
+			p := plan
+			if tc.plan != nil {
+				tc.plan(&p)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.late {
+				began := time.Now()
+				finalizeTimeout = 200 * time.Millisecond
+				testHook = func(s string) {
+					if s == "event:heartbeat" && time.Since(began) > 2*finalizeTimeout {
+						cancel()
+					}
+				}
+				t.Cleanup(func() { testHook, finalizeTimeout = nil, FinalizeTimeout })
+			}
+			out, _ := w.host.Run(ctx, spec(stub(t, p)))
 			if out.Submitted != nil {
 				t.Fatalf("submitted %+v", out.Submitted)
 			}
