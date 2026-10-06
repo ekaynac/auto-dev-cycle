@@ -3,7 +3,7 @@
 // Package daemon assembles the controller daemon, adcd (docs/design/m0/03,
 // 08): the state-directory lock, the blob and event stores, the writer's
 // hooks and the startup checks, in the order the design requires. It opens
-// no listener yet, and the writer refuses every command.
+// no listener yet, and the writer refuses every new command.
 package daemon
 
 import (

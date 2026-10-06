@@ -232,12 +232,30 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 	return s.submit(ctx, c, apply, true)
 }
 
-// SubmitTrusted runs c through the writer transaction without the
-// Authorize hook: only for the controller's own startup operations (the
-// system actor), never for a request any client made. Everything else,
-// projections included, runs as in Submit.
-func (s *Store) SubmitTrusted(ctx context.Context, c Command, apply Apply) (Outcome, error) {
-	return s.submit(ctx, c, apply, false)
+// ErrNotBootstrap: Bootstrap was asked for anything but an empty store's
+// first event, written by the actor it creates.
+var ErrNotBootstrap = errors.New("eventstore: bootstrap writes only an empty store's first event, by its own subject")
+
+// Bootstrap appends the first event of an empty store without the
+// Authorize hook: the controller's own initialization (the system actor
+// creating itself, before any request can reach the writer). It is refused
+// unless the store holds no event and no command, and e's subject is the
+// command's actor. Validation, the append and the projections run as in
+// Submit, so the projectors still decide whether the event is admissible.
+func (s *Store) Bootstrap(ctx context.Context, c Command, e Event) (Outcome, error) {
+	if e.Subject != c.Actor {
+		return Outcome{}, ErrNotBootstrap
+	}
+	return s.submit(ctx, c, func(t *Tx) ([]Event, json.RawMessage, error) {
+		var used bool
+		if err := t.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events) OR EXISTS(SELECT 1 FROM commands)`).Scan(&used); err != nil {
+			return nil, nil, err
+		}
+		if used || len(t.intents) > 0 {
+			return nil, nil, ErrNotBootstrap
+		}
+		return []Event{e}, json.RawMessage(`{}`), nil
+	}, false)
 }
 
 func (s *Store) submit(ctx context.Context, c Command, apply Apply, authorize bool) (Outcome, error) {

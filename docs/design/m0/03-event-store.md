@@ -98,7 +98,9 @@ planned ──[effect.intent committed]──▶ pending ──[effect.observed{
 
 1. **Never update, never delete.** Corrections are new events. Counters, charges and attempts are never reset.
 2. **Ambiguity fails closed.** A projection that finds two live records where one is allowed raises
-   `could_not_run/ambiguous_state` rather than picking one.
+   `could_not_run/ambiguous_state` rather than picking one. `adcd` refuses to start with the same reason on a state it
+   cannot read as one history: a lease granted before capacity was wired, actors without exactly one system actor, or
+   events without any actor.
 3. **Hash chain [Q4].**
    - Canonical encoding (JCS) and a genesis record.
    - `adcd` verifies the **full chain** before building projections at startup (verification is linear; the cost is

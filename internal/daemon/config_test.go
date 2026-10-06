@@ -39,19 +39,18 @@ func TestLoadConfig(t *testing.T) {
 	}
 	dup, _ := json.Marshal([]types.ResourceGroup{tokens(1), tokens(2)})
 	for name, args := range map[string][]string{
-		"no state dir":       {},
-		"relative state":     {"--state-dir", "state"},
-		"unclean state":      {"--state-dir", state + "/../state"},
-		"run dir in state":   {"--state-dir", state, "--run-dir", filepath.Join(state, "run")},
-		"state in run dir":   {"--state-dir", state, "--run-dir", filepath.Dir(state)},
-		"unknown flag":       {"--state-dir", state, "--listen", "x"},
-		"extra argument":     {"--state-dir", state, "extra"},
-		"missing file":       {"--state-dir", state, "--resource-groups", filepath.Join(t.TempDir(), "absent.json")},
-		"not an array":       {"--state-dir", state, "--resource-groups", writeFile(t, `{"id":"x"}`)},
-		"schema-invalid":     {"--state-dir", state, "--resource-groups", writeFile(t, `[{"id":"sk-not-a-group"}]`)},
-		"capacity rule":      {"--state-dir", state, "--resource-groups", writeFile(t, string(dup))},
-		"null instead of []": {"--state-dir", state, "--resource-groups", writeFile(t, `null`)},
-		"bad trusted head":   {"--state-dir", state, "--trusted-head", "3:md5:abc"},
+		"no state dir":          {},
+		"relative state":        {"--state-dir", "state"},
+		"unclean state":         {"--state-dir", state + "/../state"},
+		"unknown flag":          {"--state-dir", state, "--listen", "x"},
+		"extra argument":        {"--state-dir", state, "extra"},
+		"missing file":          {"--state-dir", state, "--resource-groups", filepath.Join(t.TempDir(), "absent.json")},
+		"not an array":          {"--state-dir", state, "--resource-groups", writeFile(t, `{"id":"x"}`)},
+		"schema-invalid":        {"--state-dir", state, "--resource-groups", writeFile(t, `[{"id":"sk-not-a-group"}]`)},
+		"capacity rule":         {"--state-dir", state, "--resource-groups", writeFile(t, string(dup))},
+		"null instead of []":    {"--state-dir", state, "--resource-groups", writeFile(t, `null`)},
+		"negative trusted head": {"--state-dir", state, "--trusted-head", "-1:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+		"bad trusted head":      {"--state-dir", state, "--trusted-head", "3:md5:abc"},
 	} {
 		_, err := LoadConfig(args)
 		if !errors.Is(err, ErrConfig) {

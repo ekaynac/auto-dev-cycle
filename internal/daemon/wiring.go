@@ -16,9 +16,11 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 )
 
-// ErrCommandsRefused is the writer's answer to every command until command
-// dispatch is wired: it fails closed.
-var ErrCommandsRefused = errors.New("adcd: command dispatch is not wired in this build; every command is refused")
+// ErrCommandsRefused is the writer's answer to every new command until
+// command dispatch is wired: it fails closed. (A repeat of a stored command,
+// same actor, key and input, still replays its stored result: the writer's
+// idempotency lookup precedes authorization, 03.)
+var ErrCommandsRefused = errors.New("adcd: command dispatch is not wired in this build; every new command is refused")
 
 func refuseAll(*eventstore.Tx, eventstore.Command) error { return ErrCommandsRefused }
 

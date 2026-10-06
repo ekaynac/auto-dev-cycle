@@ -4,16 +4,20 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -32,9 +36,66 @@ func refused(t *testing.T, dir string, cfg Config, outcome vocab.Outcome, reason
 func leaseStore(t *testing.T) (string, Config) {
 	dir := stateDir(t)
 	w := seed(t, dir, daemonProjection(t, tokens(10)))
-	w.grantedLease(types.ActorID(newID(t, "act")), 4)
+	sys := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSystem, Name: "system"}
+	sys.CreatedBy = sys.ID
+	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(sys) })
+	w.grantedLease(sys.ID, 4)
 	w.done()
 	return dir, Config{StateDir: dir, Groups: []types.ResourceGroup{tokens(10)}}
+}
+
+// execSQL changes the closed store's database behind the store's back.
+func execSQL(t *testing.T, dir string, stmts ...string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: filepath.Join(dir, eventstore.DBFile)}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, q := range stmts {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A trusted head that is not a non-negative seq and a sha256 hash is
+// refused by a direct Start too, before the state directory is created.
+func TestStartValidatesTrustedHead(t *testing.T) {
+	for _, h := range []eventstore.Head{{Seq: -1, Hash: "sha256:" + strings.Repeat("a", 64)}, {Seq: 0, Hash: "invalid"}} {
+		dir := stateDir(t)
+		if _, err := Start(context.Background(), Config{StateDir: dir, TrustedHead: &h}); !errors.Is(err, ErrConfig) {
+			t.Fatalf("trusted head %+v accepted: %v", h, err)
+		}
+		if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the state directory was created: %v", err)
+		}
+	}
+}
+
+// A lease projection that cannot be decoded is store_unreadable, never
+// reported as a grant from before capacity was wired.
+func TestMalformedLeaseProjectionUnreadable(t *testing.T) {
+	dir, cfg := leaseStore(t)
+	execSQL(t, dir, `INSERT INTO proj_kv(projection, key, value) VALUES ('`+lease.LeaseProjection+`', 'lea_malformed', '{"record":1}')`)
+	refused(t, dir, cfg, vocab.CouldNotRun, vocab.ReasonStoreUnreadable, "projections cannot be read")
+}
+
+// A store with events but no actor gets no system actor: Bootstrap writes
+// only an empty store's first event.
+func TestEventsWithoutActorRefused(t *testing.T) {
+	dir := stateDir(t)
+	w := seed(t, dir, daemonProjection(t))
+	w.do(types.ActorID(newID(t, "act")), func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		e, err := ledger.Measure(types.UsageMeasurement{ID: types.MeasurementID(newID(t, "msr")), Call: types.CallID(newID(t, "cal")),
+			Attempt: types.AttemptID(newID(t, "att")), Lease: types.LeaseID(newID(t, "lea")), Kind: types.UsageMeasurementKindDelta, Sequence: 1,
+			Tokens: types.UsageMeasurementTokens{In: 1, Out: 1}, Turns: 1, Milliseconds: 1,
+			Cost:          types.UsageMeasurementCost{AmountMicros: 1, Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
+			SourceOfTruth: types.UsageMeasurementSourceOfTruthAdapterReport})
+		return []eventstore.Event{e}, err
+	})
+	w.done()
+	refused(t, dir, Config{StateDir: dir}, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "no actor")
 }
 
 func TestTrustedHeadChecked(t *testing.T) {

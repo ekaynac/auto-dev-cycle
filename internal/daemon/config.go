@@ -24,7 +24,6 @@ import (
 // Config is what the daemon runs with, validated at load and again by Start.
 type Config struct {
 	StateDir    string                // required: absolute and clean; the private state directory (03)
-	RunDir      string                // optional: absolute and clean, apart from the state directory (08)
 	Groups      []types.ResourceGroup // what capacity reserves from; none by default
 	TrustedHead *eventstore.Head      // optional: the log must reach it and carry its hash (03 rule 3)
 }
@@ -36,7 +35,7 @@ var ErrConfig = errors.New("adcd: configuration")
 const (
 	maxGroupsFile = 1 << 20 // bytes
 	groupSchema   = "records/resource-group"
-	usage         = "usage: adcd run --state-dir DIR [--run-dir DIR] [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX]"
+	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX]"
 )
 
 var headHash = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -47,16 +46,15 @@ func configError(detail string) error { return fmt.Errorf("%w: %s", ErrConfig, d
 func LoadConfig(args []string) (Config, error) {
 	fs := flag.NewFlagSet("adcd run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	state, run, groupsFile := fs.String("state-dir", "", ""), fs.String("run-dir", "", ""), fs.String("resource-groups", "", "")
-	trusted := fs.String("trusted-head", "", "")
+	state, groupsFile, trusted := fs.String("state-dir", "", ""), fs.String("resource-groups", "", ""), fs.String("trusted-head", "", "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return Config{}, configError("unknown flag, missing value or extra argument; " + usage)
 	}
-	cfg := Config{StateDir: *state, RunDir: *run, Groups: []types.ResourceGroup{}}
+	cfg := Config{StateDir: *state, Groups: []types.ResourceGroup{}}
 	if *trusted != "" {
 		seq, hash, _ := strings.Cut(*trusted, ":")
 		n, err := strconv.ParseInt(seq, 10, 64)
-		if err != nil || n < 0 || !headHash.MatchString(hash) {
+		if err != nil {
 			return Config{}, configError("--trusted-head is not SEQ:sha256:HEX")
 		}
 		cfg.TrustedHead = &eventstore.Head{Seq: n, Hash: hash}
@@ -70,21 +68,19 @@ func LoadConfig(args []string) (Config, error) {
 	return cfg, cfg.Validate()
 }
 
-// Validate checks the directories and the resource groups: each against
+// Validate checks the state directory, the trusted head's syntax, and the
+// resource groups: each against
 // its schema, then the capacity rules, which refuse any group whose
 // semantics are not wired yet rather than dropping them.
 func (c Config) Validate() error {
 	absClean := func(p string) bool { return filepath.IsAbs(p) && filepath.Clean(p) == p }
-	within := func(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+string(filepath.Separator)) }
 	switch {
 	case c.StateDir == "":
 		return configError("--state-dir is required")
 	case !absClean(c.StateDir):
 		return configError("the state directory must be an absolute, clean path")
-	case c.RunDir != "" && !absClean(c.RunDir):
-		return configError("the run directory must be an absolute, clean path")
-	case c.RunDir != "" && (within(c.RunDir, c.StateDir) || within(c.StateDir, c.RunDir)):
-		return configError("the run directory and the state directory must not contain each other")
+	case c.TrustedHead != nil && (c.TrustedHead.Seq < 0 || !headHash.MatchString(c.TrustedHead.Hash)):
+		return configError("the trusted head is not a non-negative seq and a sha256:HEX hash")
 	}
 	for i, g := range c.Groups {
 		if _, err := contract.Encode(groupSchema, g); err != nil {

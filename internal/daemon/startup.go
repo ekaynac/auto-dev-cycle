@@ -35,14 +35,15 @@ func checkStateDir(dir string, mayBeMissing bool) error {
 
 // checkCapacityHistory runs capacity.CheckHistory on the existing
 // projections, before anything is replayed: a lease granted before
-// capacity was wired is refused, never read as one capacity admitted.
+// capacity was wired is refused, never read as one capacity admitted; a
+// projection that cannot be read or decoded is store_unreadable.
 func checkCapacityHistory(ctx context.Context, s *eventstore.Store) error {
-	var refusal error
-	if err := s.View(ctx, func(tx *eventstore.Tx) error { refusal = capacity.CheckHistory(tx); return nil }); err != nil {
+	err := s.View(ctx, capacity.CheckHistory)
+	switch {
+	case errors.Is(err, capacity.ErrGrantedBeforeWiring):
+		return couldNotRun(vocab.ReasonAmbiguousState, "a lease was granted before capacity was wired; capacity cannot account for it", err)
+	case err != nil:
 		return couldNotRun(vocab.ReasonStoreUnreadable, "the projections cannot be read", err)
-	}
-	if refusal != nil {
-		return couldNotRun(vocab.ReasonAmbiguousState, "a lease was granted before capacity was wired; capacity cannot account for it", refusal)
 	}
 	return nil
 }
@@ -51,9 +52,11 @@ func checkCapacityHistory(ctx context.Context, s *eventstore.Store) error {
 var markPending = (*eventstore.Store).MarkPendingUncertain
 
 // systemActor loads the persisted system actor, or creates it in a store
-// with no actor yet, through the trusted startup path (SubmitTrusted): no
-// request reaches it and nothing outside Start names the identity. Actors
-// without exactly one system actor are refused.
+// whose log is still empty, through the store's one unauthorized
+// operation (Bootstrap), which only ever writes an empty log's first event.
+// No request reaches it and nothing outside Start names the identity. A
+// store with actors but not exactly one system actor, or with events but
+// no actor, is refused.
 func systemActor(ctx context.Context, s *eventstore.Store) (types.ActorID, error) {
 	var system []types.ActorID
 	actors := 0
@@ -85,12 +88,12 @@ func systemActor(ctx context.Context, s *eventstore.Store) (types.ActorID, error
 	id, err := ids.New("act")
 	cmd, cerr := ids.New("cmd")
 	a := types.Actor{ID: types.ActorID(id), Kind: types.ActorKindSystem, Name: "system", CreatedBy: types.ActorID(id)}
-	if err = errors.Join(err, cerr); err == nil {
-		_, err = s.SubmitTrusted(ctx, eventstore.Command{ID: cmd, Actor: id, IdempotencyKey: cmd, Input: []byte(`{}`)},
-			func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
-				evs, err := identity.CreateActor(a)
-				return evs, json.RawMessage(`{}`), err
-			})
+	evs, eerr := identity.CreateActor(a)
+	if err = errors.Join(err, cerr, eerr); err == nil {
+		_, err = s.Bootstrap(ctx, eventstore.Command{ID: cmd, Actor: id, IdempotencyKey: cmd, Input: []byte(`{}`)}, evs[0])
+	}
+	if errors.Is(err, eventstore.ErrNotBootstrap) {
+		return "", couldNotRun(vocab.ReasonAmbiguousState, "the log holds events but no actor", err)
 	}
 	if err != nil {
 		return "", couldNotRun(vocab.ReasonStoreUnreadable, "the system actor cannot be recorded", err)

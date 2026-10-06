@@ -17,7 +17,7 @@ var (
 	ReasonActorRevoked = types.ReasonCodeOf("actor_revoked")
 	// ReasonAdapterProtocolError: The adapter broke the contract (an invalid or unexpected message) or its process ended without a result.
 	ReasonAdapterProtocolError = types.ReasonCodeOf("adapter_protocol_error")
-	// ReasonAmbiguousState: A projection found two live records where one is allowed; fails closed.
+	// ReasonAmbiguousState: A projection found two live records where one is allowed, or the controller found at startup a state it cannot read as one history (a lease granted before capacity was wired, actors without exactly one system actor, events without any actor); fails closed.
 	ReasonAmbiguousState = types.ReasonCodeOf("ambiguous_state")
 	// ReasonAttemptStopped: The controller requested the attempt's stop (revoke, preempt, expire, drain or cancel; 05 stop_requested) before the executor completed. It does not mean execution or billing ended.
 	ReasonAttemptStopped = types.ReasonCodeOf("attempt_stopped")
@@ -31,7 +31,7 @@ var (
 	ReasonCapacityReservedFull = types.ReasonCodeOf("capacity_reserved_full")
 	// ReasonChangeClassUnknown: The effective change named a class with no confirmation default; refused, never read as no confirmation.
 	ReasonChangeClassUnknown = types.ReasonCodeOf("change_class_unknown")
-	// ReasonCheckUnloadable: A source check could not load or type-check the code it checks; it never passes.
+	// ReasonCheckUnloadable: A check could not load what it checks: the code a source check reads or type-checks, or, at controller startup, the vocabulary registry or the event-kind registrations; it never passes.
 	ReasonCheckUnloadable = types.ReasonCodeOf("check_unloadable")
 	// ReasonClosureRepair: A finding about the closing record; routed to a new closure step, never to the builder.
 	ReasonClosureRepair = types.ReasonCodeOf("closure_repair")
