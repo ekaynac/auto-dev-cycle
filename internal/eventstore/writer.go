@@ -48,6 +48,9 @@ type Command struct {
 	IdempotencyKey string        // unique per actor; a repeat replays or is refused
 	Input          []byte        // the request as JSON
 	Expected       []Expectation // object versions the command was decided against
+	// Expect is the request's expected state of the object its handler
+	// derives (Hooks.Object); nil: the request expects none.
+	Expect *State
 	// Principal is who sent the command, as its transport authenticated
 	// it; Hooks.Identify rechecks it before anything else.
 	Principal Principal
@@ -84,6 +87,28 @@ type Expectation struct {
 	Subject string `json:"subject"`
 	Version int64  `json:"version"`
 }
+
+// State is what a request expects of the object its command changes
+// (CommandRequest.expected, 14 P3): its version (the seq of its last event;
+// 0: it does not exist yet), its content digest (ContentDigest of its
+// current record), or both. Every one supplied is enforced.
+type State struct {
+	Version *int64  `json:"version"`
+	Digest  *string `json:"digest"`
+}
+
+// Object is a command's authoritative object, as its handler derives it.
+type Object struct {
+	Subject string
+	// Record is the object's digest definition: its current record and
+	// whether it exists. Nil: the object has none, and a digest
+	// expectation of it is refused.
+	Record func(t *Tx) (json.RawMessage, bool, error)
+}
+
+// ContentDigest is a record's content digest: sha256 of its canonical
+// (RFC 8785) bytes, so neither field order nor spacing changes it.
+func ContentDigest(record json.RawMessage) (string, error) { return digest(record) }
 
 // Tx is the writer transaction as the hooks and the command's logic see it.
 // It offers no SQL: every statement is the store's own. Hooks read subject
@@ -242,6 +267,11 @@ type Hooks struct {
 	// result is replayed only to its own, still-authenticated actor.
 	Identify  func(t *Tx, c Command) error
 	Authorize func(t *Tx, c Command) error // internal/authority
+	// Object derives the command's authoritative object
+	// (internal/authority). It runs, after Authorize, only for a command
+	// that expects a state of its object; with it missing, such a command
+	// is refused.
+	Object func(t *Tx, c Command) (Object, error)
 	// Project updates projections. It must be a fold: derive its records
 	// from the events it is given and the projections alone, whether it
 	// gets a command's events at once or one at a time (a rebuild replays
@@ -339,6 +369,9 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 	if _, err := canonical(c.Input); err != nil {
 		return Committed{}, fmt.Errorf("eventstore: command input: %w", err)
 	}
+	if x := c.Expect; x != nil && (x.Version == nil && x.Digest == nil || x.Version != nil && *x.Version < 0) {
+		return Committed{}, errors.New("eventstore: an expected state is a version (0 or more), a digest or both")
+	}
 	expected := c.Expected
 	if expected == nil {
 		expected = []Expectation{}
@@ -347,7 +380,8 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 		Action   string          `json:"action"`
 		Input    json.RawMessage `json:"input"`
 		Expected []Expectation   `json:"expected"`
-	}{c.Action, c.Input, expected})
+		Expect   *State          `json:"expect,omitempty"` // absent: a request without one keeps its digest
+	}{c.Action, c.Input, expected, c.Expect})
 	if err != nil {
 		return Committed{}, fmt.Errorf("eventstore: command request: %w", err)
 	}
@@ -414,6 +448,11 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 			}
 			if v != e.Version && !mutation.Is(mutation.ExpectedStateUnchecked) {
 				return fmt.Errorf("eventstore: %w: %s is at %d, the command expected %d", ErrStaleExpectedState, e.Subject, v, e.Version)
+			}
+		}
+		if c.Expect != nil {
+			if err := s.checkExpect(t, c); err != nil {
+				return err
 			}
 		}
 		// 4. The decision and its events.
@@ -488,4 +527,52 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 		return Committed{}, err
 	}
 	return out, nil
+}
+
+// checkExpect enforces every state c expects of the object its handler
+// derives, before the command's logic runs. A missing object matches only
+// version 0: against anything else it is stale, not an error.
+func (s *Store) checkExpect(t *Tx, c Command) error {
+	if s.hooks.Object == nil {
+		return errors.New("eventstore: no object derivation is configured; a command with an expected state is refused")
+	}
+	o, err := s.hooks.Object(t, c)
+	if err != nil {
+		return err
+	}
+	if o.Subject == "" {
+		return errors.New("eventstore: the command's handler derived no object for its expected state")
+	}
+	if mutation.Is(mutation.ExpectedStateUnchecked) {
+		return nil
+	}
+	if want := c.Expect.Version; want != nil {
+		v, err := t.SubjectVersion(o.Subject)
+		if err != nil {
+			return err
+		}
+		if v != *want {
+			return fmt.Errorf("eventstore: %w: %s is at %d, the command expected %d", ErrStaleExpectedState, o.Subject, v, *want)
+		}
+	}
+	if want := c.Expect.Digest; want != nil {
+		if o.Record == nil {
+			return fmt.Errorf("eventstore: %s has no digest definition; a digest expectation of it is refused", o.Subject)
+		}
+		rec, ok, err := o.Record(t)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("eventstore: %w: %s does not exist, the command expected %s", ErrStaleExpectedState, o.Subject, *want)
+		}
+		got, err := ContentDigest(rec)
+		if err != nil {
+			return fmt.Errorf("eventstore: %s record: %w", o.Subject, err)
+		}
+		if got != *want {
+			return fmt.Errorf("eventstore: %w: %s is at %s, the command expected %s", ErrStaleExpectedState, o.Subject, got, *want)
+		}
+	}
+	return nil
 }

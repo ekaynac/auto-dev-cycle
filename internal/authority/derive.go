@@ -30,6 +30,11 @@ type Derived struct {
 	Project *types.ProjectID // nil for an action outside any project
 	Grantee *types.ActorID   // the grantee of a change that creates or extends a grant
 	Classes []string         // the effective change's sensitive classes
+	// Record is the object's digest definition (14 P3): its current
+	// record, whose canonical bytes a digest expectation is checked
+	// against, and whether it exists. Nil: the action takes no digest
+	// expectation.
+	Record func(t *eventstore.Tx) (json.RawMessage, bool, error)
 }
 
 // Handler derives one action's Derived. It runs inside the writer
@@ -56,20 +61,9 @@ type Authorizer struct {
 // Authorize decides c for its principal's live actor: the handler's
 // derivation feeds Request, and only an allowed command passes.
 func (a Authorizer) Authorize(t *eventstore.Tx, c eventstore.Command) error {
-	actor, err := identity.ActorOf(t, c)
+	actor, d, err := a.derive(t, c)
 	if err != nil {
 		return err
-	}
-	h, ok := a.Handlers[c.Action]
-	if !ok || isNil(h) || a.Registry == nil || a.Now == nil {
-		return fmt.Errorf("%w: %s", ErrActionNotWired, c.Action)
-	}
-	d, err := h.Derive(t, actor, c.Input)
-	if err != nil {
-		return err
-	}
-	if d.Object == "" {
-		return fmt.Errorf("authority: the %s handler derived no object", c.Action)
 	}
 	grants, revoked, err := GrantsOf(t, actor.ID)
 	if err != nil {
@@ -96,4 +90,35 @@ func isNil(h Handler) bool {
 		return v.IsNil()
 	}
 	return false
+}
+
+// Object is the writer's Object hook: the object the action's handler
+// derives for c, with its digest definition, which the writer checks c's
+// expected state against before the command's logic runs.
+func (a Authorizer) Object(t *eventstore.Tx, c eventstore.Command) (eventstore.Object, error) {
+	_, d, err := a.derive(t, c)
+	if err != nil {
+		return eventstore.Object{}, err
+	}
+	return eventstore.Object{Subject: d.Object, Record: d.Record}, nil
+}
+
+// derive runs c's handler for its principal's live actor.
+func (a Authorizer) derive(t *eventstore.Tx, c eventstore.Command) (types.Actor, Derived, error) {
+	actor, err := identity.ActorOf(t, c)
+	if err != nil {
+		return types.Actor{}, Derived{}, err
+	}
+	h, ok := a.Handlers[c.Action]
+	if !ok || isNil(h) || a.Registry == nil || a.Now == nil {
+		return types.Actor{}, Derived{}, fmt.Errorf("%w: %s", ErrActionNotWired, c.Action)
+	}
+	d, err := h.Derive(t, actor, c.Input)
+	if err != nil {
+		return types.Actor{}, Derived{}, err
+	}
+	if d.Object == "" {
+		return types.Actor{}, Derived{}, fmt.Errorf("authority: the %s handler derived no object", c.Action)
+	}
+	return actor, d, nil
 }
