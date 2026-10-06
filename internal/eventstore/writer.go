@@ -229,6 +229,18 @@ type Outcome struct {
 
 // Submit runs c through the writer transaction.
 func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, error) {
+	return s.submit(ctx, c, apply, true)
+}
+
+// SubmitTrusted runs c through the writer transaction without the
+// Authorize hook: only for the controller's own startup operations (the
+// system actor), never for a request any client made. Everything else,
+// projections included, runs as in Submit.
+func (s *Store) SubmitTrusted(ctx context.Context, c Command, apply Apply) (Outcome, error) {
+	return s.submit(ctx, c, apply, false)
+}
+
+func (s *Store) submit(ctx context.Context, c Command, apply Apply, authorize bool) (Outcome, error) {
 	if err := ids.Check(c.ID, "cmd"); err != nil {
 		return Outcome{}, fmt.Errorf("eventstore: command: %w", err)
 	}
@@ -284,11 +296,13 @@ func (s *Store) Submit(ctx context.Context, c Command, apply Apply) (Outcome, er
 		}
 		// 2. Authorization: without an authorizer every new command is
 		// refused (a stored result still replays above).
-		if s.hooks.Authorize == nil {
+		if authorize && s.hooks.Authorize == nil {
 			return errors.New("eventstore: no authorizer is configured; every command is refused")
 		}
-		if err := s.hooks.Authorize(t, c); err != nil {
-			return err
+		if authorize {
+			if err := s.hooks.Authorize(t, c); err != nil {
+				return err
+			}
 		}
 		// 3. Expected state.
 		for _, e := range c.Expected {
