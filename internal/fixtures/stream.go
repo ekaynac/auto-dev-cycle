@@ -140,7 +140,9 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 	srv.EnableHTTP2 = true
 	srv.StartTLS()
 	defer srv.Close()
-	ctx, cancel := context.WithTimeout(ctx, 4*frameWait)
+	// Room for every wait to time out (a red run) without the fixture
+	// failing to run.
+	ctx, cancel := context.WithTimeout(ctx, 12*frameWait)
 	defer cancel()
 	get := func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+api.EventsPath, nil)
@@ -251,8 +253,9 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 		}
 		cl := &slowClient{stall: c.stall, delay: c.delay, before: c.end(g)}
 		started := time.Now()
-		cl.serve(ctx, handler, token.Reveal(), frameWait)
-		o.check(time.Since(started) < frameWait, "%s: the stream outlived the client by %s", c.name, time.Since(started))
+		bound := 2 * (handler.Poll + frameSlack) // a delivery, then a check
+		cl.serve(ctx, handler, token.Reveal(), 4*bound)
+		o.check(time.Since(started) < 4*bound, "%s: the stream outlived the client by %s", c.name, time.Since(started))
 		o.check(cl.maxDeadline <= handler.Poll, "%s: a write deadline of %s, past the poll bound", c.name, cl.maxDeadline)
 		if c.stall {
 			o.check(cl.written() == "", "%s: frames after the stall: %q", c.name, cl.written())
