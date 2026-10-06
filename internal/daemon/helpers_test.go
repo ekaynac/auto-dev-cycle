@@ -8,11 +8,15 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -66,7 +70,9 @@ func leasesOnly(blobs lease.Blobs, holds map[string]types.Hold) func(*eventstore
 	return lease.Projector{Blobs: blobs, Holds: holds}.Project
 }
 
-func seed(t *testing.T, dir string, project projectFor) *seeder {
+// seed opens the seeder; extra registers more identity-schema kinds, which
+// the daemon does not read.
+func seed(t *testing.T, dir string, project projectFor, extra ...string) *seeder {
 	t.Helper()
 	reg, err := vocab.Load()
 	if err != nil {
@@ -75,6 +81,9 @@ func seed(t *testing.T, dir string, project projectFor) *seeder {
 	kinds, err := eventKinds()
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, k := range extra {
+		kinds[k] = eventstore.Kind{Schema: identity.EventSchema}
 	}
 	lock, err := eventstore.AcquireLock(dir)
 	if err != nil {
@@ -113,6 +122,16 @@ func (w *seeder) do(actor types.ActorID, fn func(tx *eventstore.Tx) ([]eventstor
 // and grants it.
 func (w *seeder) grantedLease(actor types.ActorID, amount int64) types.LeaseID {
 	w.t.Helper()
+	l := w.lease(amount)
+	w.do(actor, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) })
+	w.do(actor, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, l.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, w.holds)
+	})
+	return l.ID
+}
+
+// lease is a requested lease reserving amount tokens of the quota group.
+func (w *seeder) lease(amount int64) types.Lease {
 	ok := types.PlacementCheck{Outcome: types.Outcome(vocab.Empty), Reason: vocab.ReasonCompletedClean}
 	l := types.Lease{ID: types.LeaseID(newID(w.t, "lea")), Unit: types.UnitID(newID(w.t, "unt")), Role: "builder",
 		Executor: types.ExecutorID(newID(w.t, "exe")), State: types.LeaseStateRequested,
@@ -120,11 +139,7 @@ func (w *seeder) grantedLease(actor types.ActorID, amount int64) types.LeaseID {
 		Footprint:    types.LeaseFootprint{ContextTokens: 1, ExpectedTurns: 1}, Deadline: "2026-10-04T14:00:00Z",
 		PlacementChecks: types.LeasePlacementChecks{DataFloor: ok, Destinations: ok, Capability: ok, Independence: ok,
 			PaidAuthority: ok, Budget: ok, FallbackScope: ok}}
-	w.do(actor, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) })
-	w.do(actor, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return lease.ChangeLease(tx, l.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, w.holds)
-	})
-	return l.ID
+	return l
 }
 
 // startErr asserts that err is a StartError with outcome and reason.
@@ -134,4 +149,56 @@ func startErr(t *testing.T, err error, outcome vocab.Outcome, reason vocab.Reaso
 	if !errors.As(err, &se) || se.Outcome != outcome || se.Reason != reason {
 		t.Fatalf("want %s/%s, got %v", outcome, reason, err)
 	}
+}
+
+// fullHistory writes, through w, a record for every projector the daemon
+// composes: actors, a supervisor and its grant in one command, a granted
+// lease, a lease waiting on a hold, and a usage report. It returns the
+// operator.
+func fullHistory(t *testing.T, w *seeder) types.ActorID {
+	t.Helper()
+	sys := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSystem, Name: "system"}
+	sys.CreatedBy = sys.ID
+	op := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindOperator, Name: "operator", CreatedBy: sys.ID}
+	sup := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "supervisor", CreatedBy: op.ID}
+	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(sys) })
+	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(op) })
+	now := time.Now().UTC()
+	g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{"prj_01m3250vkwffc979nzjw0g2sa1"}},
+		Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{}},
+		ValidFrom: types.Time(now.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(now.Add(time.Hour).Format(time.RFC3339)),
+		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID, Approval: types.ApprovalID(newID(t, "apr"))}
+	// The grantee and its grant in one command: admitted only if each event
+	// is projected through every projector before the next one.
+	w.do(op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		a, err := identity.CreateActor(sup)
+		if err != nil {
+			return nil, err
+		}
+		gr, err := authority.CreateGrant(g)
+		return append(a, gr...), err
+	})
+	w.grantedLease(op.ID, 4)
+	w.heldLease(op.ID)
+	m := types.UsageMeasurement{ID: types.MeasurementID(newID(t, "msr")), Call: types.CallID(newID(t, "cal")), Attempt: types.AttemptID(newID(t, "att")),
+		Lease: types.LeaseID(newID(t, "lea")), Kind: types.UsageMeasurementKindDelta, Sequence: 1,
+		Tokens: types.UsageMeasurementTokens{In: 10, Out: 1}, Turns: 1, Milliseconds: 20,
+		Cost:          types.UsageMeasurementCost{AmountMicros: 30, Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
+		SourceOfTruth: types.UsageMeasurementSourceOfTruthAdapterReport}
+	w.do(op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		e, err := ledger.Measure(m)
+		return []eventstore.Event{e}, err
+	})
+	return op.ID
+}
+
+// heldLease requests a lease and parks it waiting on the quota_reset hold.
+func (w *seeder) heldLease(actor types.ActorID) {
+	w.t.Helper()
+	l := w.lease(1)
+	w.do(actor, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) })
+	w.do(actor, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, l.ID, 1, lease.LeaseEvent{Kind: lease.Waiting,
+			Hold: &types.LeaseHoldValue{Hold: "quota_reset", SignalInstance: "2026-10-04T15:00:00Z"}}, w.holds)
+	})
 }

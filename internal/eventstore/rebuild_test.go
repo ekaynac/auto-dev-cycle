@@ -203,8 +203,8 @@ func TestRebuildRefusals(t *testing.T) {
 	populate(t, e)
 	before := liveRows(t, dir)
 	fail = true
-	if _, err := e.s.RebuildProjections(context.Background()); err == nil {
-		t.Error("a failing projector")
+	if _, err := e.s.RebuildProjections(context.Background()); !errors.Is(err, ErrReplayRefused) {
+		t.Errorf("a failing projector: %v", err)
 	}
 	if fmt.Sprint(liveRows(t, dir)) != fmt.Sprint(before) {
 		t.Fatal("a failed rebuild changed the live projections")
@@ -222,5 +222,82 @@ func TestRebuildRefusals(t *testing.T) {
 	mustExec(t, raw(t, dir), `DROP TRIGGER events_append_only_update`, `UPDATE events SET payload = '{"x":1}' WHERE seq = 1`)
 	if _, err := bare.s.RebuildProjections(context.Background()); !errors.Is(err, ErrChainBroken) {
 		t.Fatalf("a broken chain: %v", err)
+	}
+}
+
+// UnreadKinds names the persisted kinds the store was not opened with; the
+// store's own effect kinds are always read.
+func TestUnreadKinds(t *testing.T) {
+	dir := stateDir(t)
+	e := openProjected(t, dir, counting(nil))
+	populate(t, e)
+	if unread, err := e.s.UnreadKinds(context.Background()); err != nil || len(unread) != 0 {
+		t.Fatalf("every kind is registered: %v, %v", err, unread)
+	}
+	e.close()
+	lock, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	blobs, err := blobstore.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(context.Background(), lock, Config{Kinds: Kinds{"test.typed/v1": testKinds["test.typed/v1"]}, Blobs: blobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if unread, err := s.UnreadKinds(context.Background()); err != nil || fmt.Sprint(unread) != "[test.appended/v1]" {
+		t.Fatalf("an unregistered kind: %v, %v", err, unread)
+	}
+}
+
+// A projector that fails on a storage error, here a context cancelled
+// mid-replay, has not refused the log: the error is not ErrReplayRefused.
+func TestRebuildStorageFaultIsNotRefusal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inner := counting(nil)
+	replaying := false
+	e := openProjected(t, stateDir(t), func(tx *Tx, evs []Event) error {
+		if replaying && tx.Replaying() {
+			cancel()
+		}
+		return inner(tx, evs)
+	})
+	populate(t, e)
+	replaying = true
+	if _, err := e.s.RebuildProjections(ctx); err == nil || errors.Is(err, ErrReplayRefused) {
+		t.Fatalf("a storage fault: %v", err)
+	}
+}
+
+// A storage error that is not a cancellation (here the scratch table gone
+// mid-replay) stays an operational error, even when the projector replaces
+// the error it met with its own.
+func TestRebuildStorageErrorIsNotRefusal(t *testing.T) {
+	for _, translate := range []bool{false, true} {
+		inner := counting(nil)
+		broken := false
+		e := openProjected(t, stateDir(t), func(tx *Tx, evs []Event) error {
+			if broken && tx.Replaying() {
+				if _, err := tx.tx.ExecContext(tx.ctx, `DROP TABLE `+rebuildProjections); err != nil {
+					return err
+				}
+			}
+			if err := inner(tx, evs); err != nil && translate {
+				return errors.New("projector: cannot read its records")
+			} else if err != nil {
+				return err
+			}
+			return nil
+		})
+		populate(t, e)
+		broken = true
+		if _, err := e.s.RebuildProjections(context.Background()); err == nil || errors.Is(err, ErrReplayRefused) {
+			t.Fatalf("translate %v: a storage error: %v", translate, err)
+		}
 	}
 }
