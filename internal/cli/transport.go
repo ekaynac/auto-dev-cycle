@@ -44,3 +44,5 @@ func ClientFromEnv(getenv func(string) string) Client {
 type failing struct{ err error }
 
 func (f failing) Command(context.Context, string, []byte) ([]byte, error) { return nil, f.err }
+
+func (f failing) Bootstrap(context.Context, []byte) ([]byte, error) { return nil, f.err }
