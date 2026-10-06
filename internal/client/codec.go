@@ -3,8 +3,6 @@
 package client
 
 import (
-	"errors"
-
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 )
@@ -23,16 +21,8 @@ func checkRequest(body []byte) error {
 
 // DecodeResponse validates a response against
 // schemas/api/command-response.json and decodes it. It fails closed: a
-// disposition the schema does not name is refused, and so is a decoded
-// value of no known variant.
+// disposition the schema does not name is refused, and so is a known one
+// missing a required field.
 func DecodeResponse(raw []byte) (types.CommandResponse, error) {
-	r, err := contract.Decode[types.CommandResponse]("api/command-response", raw)
-	if err != nil {
-		return types.CommandResponse{}, err
-	}
-	switch r.Variant.(type) {
-	case *types.CommandApplied, *types.CommandProposed, *types.CommandRefused:
-		return r, nil
-	}
-	return types.CommandResponse{}, errors.New("the controller's response has no known disposition")
+	return contract.Decode[types.CommandResponse]("api/command-response", raw)
 }

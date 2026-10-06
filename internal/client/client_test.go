@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -15,8 +16,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	_ "github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -118,52 +121,120 @@ func TestCommand(t *testing.T) {
 	}
 }
 
-func TestCommandRefusals(t *testing.T) {
+func TestCommandResponses(t *testing.T) {
 	refused := `{"disposition":"refused","outcome":"failed","reason":"seat_not_held","detail":"d"}`
-	var redirected bool
+	bodyBound := map[string]bool{"oversized": true, "endless": true} // refused by the bound itself
+	with := func(status int, body string, header ...string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			for i := 0; i+1 < len(header); i += 2 {
+				w.Header().Set(header[i], header[i+1])
+			}
+			w.WriteHeader(status)
+			io.WriteString(w, body)
+		}
+	}
 	for name, c := range map[string]struct {
 		h  http.HandlerFunc
 		ok bool
 	}{
-		"a refusal with a status": {func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusConflict)
-			io.WriteString(w, refused)
-		}, true},
-		"an unknown disposition": {func(w http.ResponseWriter, _ *http.Request) {
-			io.WriteString(w, `{"disposition":"deferred"}`)
-		}, false},
-		"an error page": {func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "no", http.StatusInternalServerError)
-		}, false},
-		"oversized": {func(w http.ResponseWriter, _ *http.Request) {
-			io.WriteString(w, strings.Repeat(" ", maxResponseBytes)+applied)
-		}, false},
-		"a redirect": {func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/elsewhere" {
-				redirected = true
-				return
+		"a refusal with a status":           {with(http.StatusConflict, refused), true},
+		"a refusal with a 302 and Location": {with(http.StatusFound, refused, "Location", "/elsewhere"), true},
+		"a refusal with a 307 and Location": {with(http.StatusTemporaryRedirect, refused, "Location", "/elsewhere"), true},
+		"a bare redirect":                   {with(http.StatusTemporaryRedirect, "", "Location", "/elsewhere"), false},
+		"an unknown disposition":            {with(http.StatusOK, `{"disposition":"deferred"}`), false},
+		"a refusal without detail":          {with(http.StatusOK, `{"disposition":"refused","outcome":"failed","reason":"seat_not_held"}`), false},
+		"an application without its fields": {with(http.StatusOK, `{"disposition":"applied","command":"cmd_01m3250vz2ezn81cgvbkcn17jd"}`), false},
+		"an error page":                     {with(http.StatusInternalServerError, "no"), false},
+		"oversized":                         {with(http.StatusOK, strings.Repeat(" ", maxResponseBytes)+applied), false},
+		"endless": {func(w http.ResponseWriter, _ *http.Request) {
+			for chunk := []byte(strings.Repeat(" ", 64<<10)); ; {
+				if _, err := w.Write(chunk); err != nil {
+					return
+				}
 			}
-			http.Redirect(w, r, "/elsewhere", http.StatusTemporaryRedirect)
 		}, false},
+		"oversized headers": {with(http.StatusOK, applied, "X-Pad", strings.Repeat("a", maxHeaderBytes)), false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := transport(t, serve(t, c.h), os.Getuid()).Command(context.Background(), "task.create", request(t))
-			if (err == nil) != c.ok {
+			var mu sync.Mutex
+			hits := 0
+			socket := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				hits++
+				mu.Unlock()
+				c.h(w, r)
+			}))
+			// The body bound, not a timeout, ends an endless body.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := transport(t, socket, os.Getuid()).Command(ctx, "task.create", request(t))
+			if (err == nil) != c.ok || bodyBound[name] && !strings.Contains(fmt.Sprint(err), "exceeds") {
 				t.Fatalf("got %v", err)
 			}
 			noSecret(t, err)
+			mu.Lock()
+			defer mu.Unlock()
+			if hits != 1 {
+				t.Fatalf("%d requests: a redirect was followed", hits)
+			}
 		})
-	}
-	if redirected {
-		t.Fatal("a redirect was followed")
 	}
 }
 
-// An invalid request is refused before anything is dialled.
+// An invalid request is refused by the schema before anything is dialled
+// or the token is read.
 func TestCommandRefusesAnInvalidRequest(t *testing.T) {
-	tr := transport(t, "/nonexistent/adcd.sock", os.Getuid())
-	if _, err := tr.Command(context.Background(), "task.create", []byte(`{"reason":""}`)); err == nil || errors.Is(err, ErrPeerNotDaemon) {
+	path := socketPath(t)
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan struct{}, 1)
+	go func() {
+		if c, err := l.Accept(); err == nil {
+			accepted <- struct{}{}
+			c.Close()
+		}
+	}()
+	tokens := 0
+	tr := Transport{Socket: path, DaemonUID: os.Getuid(), Token: func() (identity.Secret, error) { tokens++; return fakeToken(t), nil }}
+	_, err = tr.Command(context.Background(), "task.create", []byte(`{"reason":""}`))
+	var cerr *contract.Error
+	if !errors.As(err, &cerr) || cerr.Schema != "api/command-request" {
 		t.Fatalf("got %v", err)
+	}
+	l.Close()
+	select {
+	case <-accepted:
+		t.Fatal("dialled")
+	default:
+	}
+	if tokens != 0 {
+		t.Fatal("the token was read")
+	}
+}
+
+// The connection policy: no proxy (the environment's is ignored), no
+// connection reuse, bounded headers, and timeouts on everything but a
+// stream's body.
+func TestConnectionPolicy(t *testing.T) {
+	tr := Transport{}
+	for _, stream := range []bool{false, true} {
+		c := tr.httpClient(stream)
+		ht := c.Transport.(*http.Transport)
+		if ht.Proxy != nil || !ht.DisableKeepAlives || ht.MaxResponseHeaderBytes != maxHeaderBytes || ht.ResponseHeaderTimeout != headerTimeout || ht.DialContext == nil {
+			t.Fatalf("stream %v: %+v", stream, ht)
+		}
+		if want := map[bool]time.Duration{false: commandTimeout, true: 0}[stream]; c.Timeout != want {
+			t.Fatalf("stream %v: timeout %v", stream, c.Timeout)
+		}
+	}
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("ALL_PROXY", "http://127.0.0.1:1")
+	socket := serve(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, applied) }))
+	if _, err := transport(t, socket, os.Getuid()).Command(context.Background(), "task.create", request(t)); err != nil {
+		t.Fatalf("under a proxy environment: %v", err)
 	}
 }
 
@@ -174,6 +245,8 @@ func TestDecodeResponseFailsClosed(t *testing.T) {
 	for _, raw := range []string{
 		`{"disposition":"deferred","outcome":"failed","reason":"seat_not_held","detail":"d"}`,
 		`{"disposition":"Applied","command":"cmd_01m3250vz2ezn81cgvbkcn17jd","replayed":false,"approval":null,"first_seq":4,"last_seq":4,"effects":[],"result":{}}`,
+		`{"disposition":"refused","outcome":"failed","reason":"seat_not_held"}`,
+		`{"disposition":"proposed","proposal":"prp_01m3250vm7f6ktw39dszqnyddr"}`,
 		`{}`,
 		`null`,
 	} {

@@ -32,9 +32,6 @@ const (
 // uid, so nothing was sent on it.
 var ErrPeerNotDaemon = errors.New("the controller socket is not served by the expected daemon user; no credential was sent")
 
-// errRedirect: a redirect is never followed, so a credential never follows one.
-var errRedirect = errors.New("the controller answered with a redirect, which is not followed")
-
 // Transport sends commands to the controller on Socket. Every connection is
 // checked against DaemonUID before a request is written on it; Token is
 // called once per request.
@@ -75,7 +72,9 @@ func (t Transport) httpClient(stream bool) *http.Client {
 			ResponseHeaderTimeout:  headerTimeout,
 			MaxResponseHeaderBytes: maxHeaderBytes,
 		},
-		CheckRedirect: func(*http.Request, []*http.Request) error { return errRedirect },
+		// A redirect is never followed, so a credential never follows one;
+		// the 3xx response itself goes through the same checks as any other.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	if !stream {
 		c.Timeout = commandTimeout
