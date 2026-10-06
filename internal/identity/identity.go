@@ -43,6 +43,8 @@ func Kinds() eventstore.Kinds {
 	for _, t := range transitions {
 		k[t+"/v1"] = eventstore.Kind{Schema: EventSchema}
 	}
+	k[TokenRecoveredKind] = eventstore.Kind{Schema: TokenRecoveredSchema}
+	k[BootstrapRenewedKind] = eventstore.Kind{Schema: BootstrapRenewSchema}
 	return k
 }
 
@@ -164,7 +166,7 @@ func RevokeToken(tx *eventstore.Tx, id types.TokenID, now time.Time) ([]eventsto
 // BootstrapProjection records the one-time bootstrap (04 "Bootstrap"):
 // under "operator" the first operator, which the system actor created, and
 // under "token" its first token, which the system actor issued. The system
-// actor does each once.
+// actor does each once. Under BootstrapSecretKey, the latest renewal (R8).
 const BootstrapProjection = "identity_bootstrap"
 
 // Projector accepts identity events and keeps the projections; other kinds
@@ -177,6 +179,12 @@ type Projector struct{}
 // of actor may do is checked here, from the projections alone.
 func (Projector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
+		if ok, err := projectRecovery(tx, ev); ok {
+			if err != nil {
+				return fmt.Errorf("identity: event %s: %w", ev.ID, err)
+			}
+			continue
+		}
 		var p types.IdentityEvent
 		if !isIdentityKind(ev.Kind) {
 			continue
