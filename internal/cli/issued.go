@@ -42,7 +42,7 @@ var (
 // reports an exit instead.
 func deliver(name string, resp types.CommandResponse, v *types.CommandApplied, out *client.TokenOut, recovery string, stderr io.Writer) (clean []byte, code int, done bool) {
 	fail := func(format string, a ...any) ([]byte, int, bool) {
-		fmt.Fprintf(stderr, "%s: could_not_run: %s\n", name, fmt.Sprintf(format, a...))
+		say(stderr, "%s: could_not_run: %s\n", name, fmt.Sprintf(format, a...))
 		return nil, entry.ExitCouldNotRun, true
 	}
 	credential := v.IssuedCredential
@@ -59,7 +59,7 @@ func deliver(name string, resp types.CommandResponse, v *types.CommandApplied, o
 		if err := json.Unmarshal(v.Result, &r); err != nil || r.Token == "" {
 			r.Token = "not in the result"
 		}
-		return fail("the command applied earlier (token %q) and a repeat delivers no token; %s", r.Token, recovery)
+		return fail("the command applied earlier (token %s) and a repeat delivers no token; %s", r.Token, recovery)
 	case credential == nil:
 		return fail("the command applied but no credential was returned; %s", recovery)
 	}

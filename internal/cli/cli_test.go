@@ -330,13 +330,13 @@ func TestTokenNotDelivered(t *testing.T) {
 		want      string
 	}{
 		"a lost enrolment":       {"enrol-agent", "", errors.New("connection reset"), entry.ExitCouldNotRun, "a repeat delivers no token: revoke the actor (adc admin revoke-actor) and enrol it again under a new actor id"},
-		"a repeated enrolment":   {"enrol-agent", replayed, nil, entry.ExitCouldNotRun, `applied earlier (token "tok_01m3250vkwffc979nzjw0g2sb2") and a repeat delivers no token; revoke the actor`},
+		"a repeated enrolment":   {"enrol-agent", replayed, nil, entry.ExitCouldNotRun, `applied earlier (token tok_01m3250vkwffc979nzjw0g2sb2) and a repeat delivers no token; revoke the actor`},
 		"a refused enrolment":    {"enrol-agent", notFound, nil, entry.ExitRefused, "refused"},
 		"an unwritable token":    {"enrol-agent", failing, nil, entry.ExitCouldNotRun, "could not be written (disk full) and is not delivered again; revoke the actor"},
 		"a non-issuing response": {"revoke-actor", issuedResp, nil, entry.ExitCouldNotRun, "discarded and nothing was written"},
 		"no credential returned": {"enrol-agent", applied, nil, entry.ExitCouldNotRun, "applied but no credential was returned; revoke the actor"},
 		"a lost rotation":        {"replace-token", "", errors.New("connection reset"), entry.ExitCouldNotRun, "a repeat delivers no token: the old token is revoked"},
-		"a repeated issue":       {"issue-token", replayed, nil, entry.ExitCouldNotRun, `applied earlier (token "tok_01m3250vkwffc979nzjw0g2sb2") and a repeat delivers no token; a repeat`},
+		"a repeated issue":       {"issue-token", replayed, nil, entry.ExitCouldNotRun, `applied earlier (token tok_01m3250vkwffc979nzjw0g2sb2) and a repeat delivers no token; a repeat`},
 		"an unwritable rotation": {"replace-token", failing, nil, entry.ExitCouldNotRun, "could not be written (disk full) and is not delivered again; the old token is revoked"},
 		"a revocation's token":   {"revoke-token", issuedResp, nil, entry.ExitCouldNotRun, "discarded and nothing was written"},
 	} {

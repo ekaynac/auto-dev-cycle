@@ -42,18 +42,15 @@ const recoverHint = "the bootstrap is spent; recover the operator's token offlin
 func adminBootstrap(ctx context.Context, args []string, stdout, stderr io.Writer, c Client) int {
 	const name = "adc admin bootstrap"
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	stateDir := fs.String("state-dir", "", "read the secret from bootstrap.secret in this state directory")
 	fromStdin := fs.Bool("secret-stdin", false, "read the secret from stdin instead")
 	opName := fs.String("name", "operator", "the first operator's display name")
 	key := fs.String("idempotency-key", "", "repeat the request safely with the same key (default: a new key)")
-	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
-		return entry.ExitOK
-	} else if err != nil {
-		return entry.ExitUsage
+	if code, ok := parse(fs, args, stderr); !ok {
+		return code
 	}
 	fail := func(code int, format string, a ...any) int {
-		fmt.Fprintf(stderr, name+": "+format+"\n", a...)
+		say(stderr, "%s: %s\n", name, fmt.Sprintf(format, a...))
 		return code
 	}
 	// Before the secret is read: the bootstrap is the private socket's [R4].
@@ -108,7 +105,7 @@ func adminBootstrap(ctx context.Context, args []string, stdout, stderr io.Writer
 		if err != nil {
 			return fail(entry.ExitCouldNotRun, "could_not_run: the token could not be written (%v); %s", err, recoverHint)
 		}
-		fmt.Fprintf(stdout, "bootstrapped: operator %s; token %s written to ~/.config/adc/token\n", v.Operator, v.Token)
+		say(stdout, "bootstrapped: operator %s; token %s written to ~/.config/adc/token\n", v.Operator, v.Token)
 		return entry.ExitOK
 	}
 	return fail(entry.ExitCouldNotRun, "could_not_run: the controller's response is invalid")
