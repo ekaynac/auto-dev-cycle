@@ -407,6 +407,7 @@ func TestRenewFailures(t *testing.T) {
 	renewRecord = func(system types.ActorID, hash string, now time.Time) ([]eventstore.Event, error) {
 		return identity.RenewBootstrap(system, hash, now.Add(-48*time.Hour)) // expired before it is recorded
 	}
+	t.Cleanup(func() { renewRecord = identity.RenewBootstrap })
 	code, msg := command(RenewCommand, "--state-dir", dir)
 	renewRecord = identity.RenewBootstrap
 	if code != entry.ExitCouldNotRun || msg != failed {

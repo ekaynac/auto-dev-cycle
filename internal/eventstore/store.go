@@ -148,6 +148,7 @@ type Store struct {
 	file      string // the database file
 	ident     fileID // its identity when opened
 	genesis   string
+	existing  bool // Config.Existing: never create a genesis
 	schemaSet string
 	clock     func() time.Time // stamps event times (Config.Now)
 	kinds     Kinds
@@ -177,7 +178,13 @@ type Config struct {
 	// time.Now. Folds read only those recorded times, so a test can run a
 	// history under a shifted clock.
 	Now func() time.Time
+	// Existing opens only a store that already exists: no database file,
+	// schema or genesis is ever created (an offline command's open).
+	Existing bool
 }
+
+// ErrNoStore: Config.Existing found no initialized store.
+var ErrNoStore = errors.New("eventstore: no initialized store; nothing was created")
 
 // Open opens (creating on first use) the store in the lock's state
 // directory. There is no other way to obtain a Store.
@@ -205,15 +212,23 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (s *Store, err error) {
 	if err := checkDBFiles(file); err != nil {
 		return nil, err
 	}
-	const pragmas = "_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	pragmas := "_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	if cfg.Existing {
+		if err := checkHeader(file); err != nil { // a missing file, or one a pragma would write
+			return nil, fmt.Errorf("%w: %v", ErrNoStore, err)
+		}
+		pragmas += "&mode=rw" // SQLite never creates the file
+	}
 	w, err := sql.Open("sqlite", fileURI(file, "_txlock=immediate&"+pragmas))
 	if err != nil {
 		return nil, err
 	}
 	w.SetMaxOpenConns(1)
-	if _, err := w.ExecContext(ctx, ddl); err != nil {
-		w.Close()
-		return nil, err
+	if !cfg.Existing {
+		if _, err := w.ExecContext(ctx, ddl); err != nil {
+			w.Close()
+			return nil, err
+		}
 	}
 	if err := checkMetaTable(ctx, w); err != nil {
 		w.Close()
@@ -247,7 +262,7 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (s *Store, err error) {
 		}
 		effects[k] = v
 	}
-	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs, hooks: cfg.Hooks, effects: effects, clock: cfg.Now}
+	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs, hooks: cfg.Hooks, effects: effects, existing: cfg.Existing, clock: cfg.Now}
 	if s.clock == nil {
 		s.clock = time.Now
 	}
@@ -287,6 +302,9 @@ func (s *Store) ensureGenesis(ctx context.Context) (string, error) {
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
+	}
+	if s.existing {
+		return "", ErrNoStore
 	}
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {

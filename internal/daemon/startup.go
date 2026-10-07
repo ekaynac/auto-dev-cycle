@@ -41,7 +41,11 @@ var errNoStore = couldNotRun(vocab.ReasonStoreUnreadable, "the state directory h
 // existingStore checks, under the lock and before anything is opened for
 // writing, that the state directory holds an initialized store, verified
 // read-only on a private copy: an offline command never creates the
-// database, its schema or genesis, or the blob directories.
+// database, its schema or genesis, or the blob directories. The store is
+// then opened with eventstore.Config.Existing, so a database removed in
+// between is refused, never recreated. One window remains: blobstore.Open
+// recreates, empty, a blob directory removed in between by a process of
+// the daemon uid, which can change the state directory at will anyway.
 func existingStore(ctx context.Context, lock *eventstore.Lock, trusted *eventstore.Head) error {
 	_, err := eventstore.VerifyExisting(ctx, lock, trusted)
 	switch {

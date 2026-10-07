@@ -683,3 +683,80 @@ func TestPanickingTransactionIsRolledBack(t *testing.T) {
 		t.Fatalf("head %+v, %v: the panicked append must not be committed", h, err)
 	}
 }
+
+// Config.Existing opens only an initialized store: with no database, or
+// with an empty one, it is ErrNoStore and creates no file, schema or
+// genesis; an existing store opens as usual.
+func TestOpenExistingCreatesNothing(t *testing.T) {
+	dir := stateDir(t)
+	lock, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs, err := blobstore.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := func() error {
+		s, err := Open(context.Background(), lock, Config{Kinds: testKinds, Blobs: blobs, Existing: true})
+		if err == nil {
+			err = s.Close()
+		}
+		return err
+	}
+	file := filepath.Join(dir, DBFile)
+	if err := open(); !errors.Is(err, ErrNoStore) {
+		t.Fatalf("no database: %v", err)
+	}
+	if _, err := os.Lstat(file); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a database was created: %v", err)
+	}
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := open(); err == nil {
+		t.Fatal("an empty database opened")
+	}
+	if st, err := os.Stat(file); err != nil || st.Size() != 0 {
+		t.Fatalf("the empty database was written: %v", err)
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	// An SQLite database without the store's schema gets none.
+	db := raw(t, dir)
+	mustExec(t, db, `PRAGMA journal_mode=WAL`, `CREATE TABLE other(x)`)
+	if err := open(); err == nil {
+		t.Fatal("a database without the schema opened")
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = 'events'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("the schema was created: %d %v", n, err)
+	}
+	// The store's schema without its genesis gets no genesis.
+	mustExec(t, db, ddl)
+	if err := open(); !errors.Is(err, ErrNoStore) {
+		t.Fatalf("a store without its genesis: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM meta`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("a genesis was created: %d %v", n, err)
+	}
+	db.Close()
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	for _, side := range []string{"-wal", "-shm"} {
+		if err := os.Remove(file + side); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	lock.Release()
+	openEnv(t, dir).close()
+	if lock, err = AcquireLock(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	if err := open(); err != nil {
+		t.Fatalf("an existing store: %v", err)
+	}
+}

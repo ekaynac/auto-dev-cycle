@@ -94,7 +94,7 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the blob store cannot be opened", err)
 	}
-	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Existing: offline,
 		Hooks: hooks(reg, projector(blobs, reg.Holds, reservations))})
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the event store cannot be opened", err)
