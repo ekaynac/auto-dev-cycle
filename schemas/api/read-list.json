@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/read-list.json",
+  "title": "ReadList",
+  "description": "A read of one resource, GET /v1/{resource} (docs/design/m0/08 \"Reads\"): the records the caller's read scope covers, each authorized against its domain and authoritative project in the same snapshot as the caller's scope, and each carrying only its resource's allow-listed fields. found when any record is returned, else empty.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["resource", "outcome", "items"],
+  "properties": {
+    "resource": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$", "maxLength": 64},
+    "outcome": {"enum": ["found", "empty"]},
+    "items": {
+      "type": "array",
+      "items": {"description": "One record, its fields the resource's allow-list; one schema per resource.", "type": "object", "x-adc-open-payload": "resource"}
+    }
+  }
+}

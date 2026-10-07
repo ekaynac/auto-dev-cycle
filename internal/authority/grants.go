@@ -240,27 +240,54 @@ func sameGrant(a, b types.Grant) bool {
 	return err1 == nil && err2 == nil && bytes.Equal(x, y)
 }
 
-// Reads reports whether the scope reads e: some grant's read projects cover
-// e's project (an event outside any project only under an every-project
-// read) and its read kinds name e's domain, the kind's first segment.
+// Reads reports whether the scope reads e, a record of e's domain (the
+// kind's first segment: lease.granted/v1 is lease) in e's project.
 func (s ReadScope) Reads(e eventstore.Event) bool {
+	domain, _, _ := strings.Cut(e.Kind, ".")
+	var project *types.ProjectID
+	if e.Project != nil {
+		p := types.ProjectID(*e.Project)
+		project = &p
+	}
+	return s.ReadsRecord(types.Name(domain), project)
+}
+
+// ReadsRecord reports whether the scope reads a record of domain in
+// project: some grant's read projects cover project (a record outside any
+// project, nil, only under an every-project read) and its read kinds name
+// domain. Operators and the system read everything.
+func (s ReadScope) ReadsRecord(domain types.Name, project *types.ProjectID) bool {
 	if s.all {
 		return true
 	}
-	domain, _, _ := strings.Cut(e.Kind, ".")
+	for _, r := range s.Reach() {
+		if covers(types.Grant{Projects: r.Projects}, project) && slices.Contains(r.Kinds, domain) {
+			return true
+		}
+	}
+	return false
+}
+
+// ReadReach is what one grant reads: its read projects (same as its
+// projects, resolved) and its read domains.
+type ReadReach struct {
+	Grant    types.GrantID
+	Projects types.ProjectScope
+	Kinds    []types.Name
+}
+
+// Everything reports a scope that reads everything (an operator or the system).
+func (s ReadScope) Everything() bool { return s.all }
+
+// Reach is the read reach of each grant the scope holds, in grant order.
+func (s ReadScope) Reach() []ReadReach {
+	out := make([]ReadReach, 0, len(s.grants))
 	for _, g := range s.grants {
 		projects := types.ProjectScope{List: g.Reads.Projects.List}
 		if g.Reads.Projects.Same {
 			projects = g.Projects
 		}
-		var project *types.ProjectID
-		if e.Project != nil {
-			p := types.ProjectID(*e.Project)
-			project = &p
-		}
-		if covers(types.Grant{Projects: projects}, project) && slices.Contains(g.Reads.Kinds, types.Name(domain)) {
-			return true
-		}
+		out = append(out, ReadReach{Grant: g.ID, Projects: projects, Kinds: g.Reads.Kinds})
 	}
-	return false
+	return out
 }

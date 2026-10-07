@@ -212,6 +212,28 @@ func TestVersionEndpoint(t *testing.T) {
 	}
 }
 
+// Reads through the assembled server: whoami names the listener that
+// admitted the caller, the shared socket's group membership is no
+// credential, and a resource no family registered is not found.
+func TestReadsThroughServer(t *testing.T) {
+	s := serveStore(t, defaultLimits, &SharedSocket{RunDir: runDir(t, 0o750), Group: egid()})
+	shared := unixClient(filepath.Join(s.srv.sockets[1].dir.Name(), sharedSocket))
+	if resp := s.get(t, shared, api.WhoamiPath, ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the shared socket without a bearer: %s", resp.Status)
+	}
+	for c, want := range map[*http.Client]types.WhoamiListener{s.client(): types.WhoamiListenerPrivateSocket, shared: types.WhoamiListenerSharedSocket} {
+		resp := s.get(t, c, api.WhoamiPath, s.tok.Reveal())
+		var got types.Whoami
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || resp.StatusCode != http.StatusOK || got.Actor != s.op ||
+			got.Listener != want || string(got.Token) != s.tokenID() || !got.Reads.Everything {
+			t.Errorf("whoami via %s: %s %+v %v", want, resp.Status, got, err)
+		}
+	}
+	if resp := s.get(t, s.client(), "/v1/grants", s.tok.Reveal()); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("an unregistered resource: %s", resp.Status)
+	}
+}
+
 // Shutdown ends open streams, stops accepting and removes the sockets it
 // made; the directory then takes a new server.
 func TestShutdownRemovesSockets(t *testing.T) {
@@ -418,5 +440,48 @@ func TestConnectionQuota(t *testing.T) {
 			t.Fatal("a closed stream did not free its slot")
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// Reads verify through their listener's own gate: a full shared gate
+// refuses shared reads at once and never private ones, and the private
+// gate is the private socket's alone.
+func TestReadVerificationGatePerListener(t *testing.T) {
+	s := serveStore(t, defaultLimits, &SharedSocket{RunDir: runDir(t, 0o750), Group: egid()})
+	private, shared := s.srv.sockets[0], s.srv.sockets[1]
+	sharedClient := unixClient(filepath.Join(shared.dir.Name(), sharedSocket))
+	uid := os.Geteuid()
+	r1, ok1 := shared.verify.Take(uid)
+	r2, ok2 := shared.verify.Take(uid + 1)
+	if !ok1 || !ok2 {
+		t.Fatal("the shared gate has fewer than two peers' slots")
+	}
+	if resp := s.get(t, sharedClient, api.WhoamiPath, s.tok.Reveal()); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("whoami through a full shared gate: %s", resp.Status)
+	}
+	if resp := s.get(t, s.client(), api.WhoamiPath, s.tok.Reveal()); resp.StatusCode != http.StatusOK {
+		t.Fatalf("whoami on the private socket under a shared flood: %s", resp.Status)
+	}
+	r1()
+	r2()
+	if resp := s.get(t, sharedClient, api.WhoamiPath, s.tok.Reveal()); resp.StatusCode != http.StatusOK {
+		t.Fatalf("whoami through a free shared gate: %s", resp.Status)
+	}
+	var held []func()
+	for range defaultLimits.private.verify {
+		release, ok := private.verify.Take(uid)
+		if !ok {
+			t.Fatal("the private gate is smaller than its quota")
+		}
+		held = append(held, release)
+	}
+	if resp := s.get(t, s.client(), api.WhoamiPath, s.tok.Reveal()); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("whoami through a full private gate: %s", resp.Status)
+	}
+	if resp := s.get(t, sharedClient, api.WhoamiPath, s.tok.Reveal()); resp.StatusCode != http.StatusOK {
+		t.Fatalf("whoami on the shared socket under a private flood: %s", resp.Status)
+	}
+	for _, release := range held {
+		release()
 	}
 }

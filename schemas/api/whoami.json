@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/whoami.json",
+  "title": "Whoami",
+  "description": "The authenticated caller, GET /v1/whoami (docs/design/m0/14 \"Read scope\"): its actor, the token it presented (its id, never its hash), the listener it came through and its effective read scope. Not a grant domain: every authenticated caller may read its own.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["actor", "kind", "token", "listener", "reads"],
+  "properties": {
+    "actor": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "kind": {"enum": ["operator", "supervisor"]},
+    "token": {"$ref": "../common/defs.json#/$defs/TokenID"},
+    "listener": {"enum": ["private_socket", "shared_socket", "https"]},
+    "reads": {
+      "description": "everything: an operator reads every record; otherwise the read reach of each grant in force, by grant.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["everything", "grants"],
+      "properties": {
+        "everything": {"type": "boolean"},
+        "grants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["grant", "projects", "kinds"],
+            "properties": {
+              "grant": {"$ref": "../common/defs.json#/$defs/GrantID"},
+              "projects": {"$ref": "../records/grant.json#/$defs/ProjectScope"},
+              "kinds": {"type": "array", "uniqueItems": true, "items": {"$ref": "../records/receipt.json#/$defs/Name"}}
+            }
+          }
+        }
+      }
+    }
+  }
+}

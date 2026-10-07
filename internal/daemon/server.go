@@ -183,6 +183,9 @@ func handler(store *eventstore.Store, boot *bootstrapper, lim limits, gate *api.
 	}
 	mux.Handle("GET "+api.EventsPath, api.Events{Store: store, Poll: lim.poll, Gate: gate})
 	mux.HandleFunc("GET "+api.VersionPath, api.Version)
+	reads := api.Reads{Store: store, Gate: gate, Resources: api.Registered()}
+	mux.HandleFunc("GET "+api.WhoamiPath, reads.Whoami)
+	mux.HandleFunc("GET "+api.ReadPath, reads.Resource)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength > lim.bodyBytes {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)

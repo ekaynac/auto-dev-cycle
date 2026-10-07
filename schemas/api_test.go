@@ -121,3 +121,31 @@ func TestCommandResponse(t *testing.T) {
 		}
 	}
 }
+
+func TestReadResponses(t *testing.T) {
+	list := map[string]any{"resource": "grants", "outcome": "found", "items": []any{map[string]any{"id": grtID}}}
+	who := map[string]any{"actor": actID, "kind": "supervisor", "token": "tok_01m3250vkwffc979nzjw0g2sf9", "listener": "shared_socket",
+		"reads": map[string]any{"everything": false, "grants": []any{map[string]any{"grant": grtID, "projects": []any{prjID}, "kinds": []any{"grant"}}}}}
+	for schema, d := range map[string]map[string]any{"api/read-list": list, "api/whoami": who} {
+		if err := valid(t, schema, d); err != nil {
+			t.Errorf("%s: %v", schema, err)
+		}
+	}
+	for name, c := range map[string]struct {
+		schema string
+		d      map[string]any
+	}{
+		"a failed read":           {"api/read-list", with(list, "outcome", "failed")},
+		"a resource path":         {"api/read-list", with(list, "resource", "v1/grants")},
+		"no items":                {"api/read-list", without(list, "items")},
+		"a scalar item":           {"api/read-list", with(list, "items", []any{"x"})},
+		"the system actor":        {"api/whoami", with(who, "kind", "system")},
+		"a token hash":            {"api/whoami", with(who, "token_hash", "$argon2id$")},
+		"an unknown listener":     {"api/whoami", with(who, "listener", "tcp")},
+		"reads without a summary": {"api/whoami", with(who, "reads", map[string]any{"everything": true})},
+	} {
+		if valid(t, c.schema, c.d) == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

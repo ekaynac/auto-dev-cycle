@@ -46,6 +46,16 @@ func (p Principal) Actor() types.ActorID { return p.actor }
 // Via is the listener the principal authenticated on.
 func (p Principal) Via() Listener { return p.via }
 
+// Token is the id of the token the principal presented (never its hash);
+// empty for the system principal.
+func (p Principal) Token() types.TokenID { return p.token }
+
+// Live is the principal's live actor record in tx, rechecked as Recheck
+// checks a command's principal.
+func (p Principal) Live(tx *eventstore.Tx) (types.Actor, error) {
+	return ActorOf(tx, p.Command("", "", "", nil, nil))
+}
+
 // PrincipalActor is the actor as the event store sees it.
 func (p Principal) PrincipalActor() string { return string(p.actor) }
 
