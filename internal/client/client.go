@@ -39,6 +39,14 @@ var ErrPeerNotDaemon = errors.New("the controller socket is not served by the ex
 // nothing was decided.
 var ErrUnauthenticated = errors.New("the controller refused the token (unauthenticated); nothing was decided")
 
+// ErrBadRequest: the controller refused the request as malformed (HTTP
+// 400); nothing was decided.
+var ErrBadRequest = errors.New("the controller refused the request as malformed; nothing was decided")
+
+// ErrInvalidResponse: the controller's answer is not a valid
+// CommandResponse; it is never quoted.
+var ErrInvalidResponse = errors.New("the controller's response is not a valid CommandResponse")
+
 // Transport sends commands to the controller on Socket. Every connection is
 // checked against DaemonUID before a request is written on it; Token is
 // called once per request.
@@ -114,11 +122,21 @@ func (t Transport) Command(ctx context.Context, action string, body []byte) ([]b
 		return nil, err
 	}
 	resp, err := t.do(ctx, http.MethodPost, "/v1/commands/"+url.PathEscape(action), bytes.NewReader(body), false)
-	if err == nil && resp.StatusCode == http.StatusUnauthorized {
+	if err == nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusBadRequest) {
 		resp.Body.Close()
+		if resp.StatusCode == http.StatusBadRequest {
+			return nil, ErrBadRequest
+		}
 		return nil, ErrUnauthenticated
 	}
-	return answer(resp, err, "a command response", func(raw []byte) error { _, err := DecodeResponse(raw); return err })
+	return answer(resp, err, "a command response", func(raw []byte) error {
+		// Fixed text: a validation error would quote the response, which
+		// may hold a credential.
+		if _, err := DecodeResponse(raw); err != nil {
+			return ErrInvalidResponse
+		}
+		return nil
+	})
 }
 
 // Bootstrap posts a BootstrapRequest to /v1/bootstrap on a verified

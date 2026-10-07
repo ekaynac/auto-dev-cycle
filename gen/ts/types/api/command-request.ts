@@ -13,7 +13,7 @@ export interface CommandRequest {
     [k: string]: unknown;
   };
   /**
-   * Why the caller asks, recorded with the command.
+   * Why the caller asks. Validated, but not yet recorded with the command (issue #147).
    */
   reason: string;
 }

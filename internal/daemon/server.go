@@ -17,7 +17,6 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/apidoc"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
-	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // limits bound what one client can hold of the server.
@@ -52,10 +51,10 @@ type server struct {
 	failed  chan error // a listener that stopped on its own
 }
 
-// listen binds the private socket in stateDir and, when configured, the
-// shared one, and serves the API over store on both. It runs at the
-// readiness point only (Run).
-func listen(store *eventstore.Store, boot *bootstrapper, stateDir string, shared *SharedSocket, lim limits) (_ *server, err error) {
+// serve binds the private socket in stateDir and, when configured, the
+// shared one, and serves the API over store on both, cmds answering
+// commands. It runs at the readiness point only (Run).
+func serve(store *eventstore.Store, boot *bootstrapper, stateDir string, shared *SharedSocket, lim limits, cmds commands) (_ *server, err error) {
 	s := &server{lim: lim, failed: make(chan error, 2)}
 	defer func() {
 		if err != nil {
@@ -88,10 +87,6 @@ func listen(store *eventstore.Store, boot *bootstrapper, stateDir string, shared
 			return nil, err
 		}
 	}
-	reg, err := vocab.Load()
-	if err != nil {
-		return nil, couldNotRun(vocab.ReasonCheckUnloadable, "the vocabulary cannot be loaded", err)
-	}
 	base, stop := context.WithCancel(context.Background())
 	s.stop = stop
 	// The header bound: MaxHeaderBytes is headerBytes less net/http's
@@ -101,7 +96,7 @@ func listen(store *eventstore.Store, boot *bootstrapper, stateDir string, shared
 	// effective bound is headerBytes + 4096 (20 KiB by default); memory
 	// stays bounded either way.
 	for _, sk := range s.sockets {
-		hs := &http.Server{Handler: handler(store, boot, lim, sk.verify, reg), ReadHeaderTimeout: lim.headerTimeout, WriteTimeout: lim.writeTimeout,
+		hs := &http.Server{Handler: handler(store, boot, lim, sk.verify, cmds), ReadHeaderTimeout: lim.headerTimeout, WriteTimeout: lim.writeTimeout,
 			IdleTimeout: lim.idleTimeout, MaxHeaderBytes: lim.headerBytes - 4096,
 			BaseContext: func(net.Listener) context.Context { return base }, ConnContext: connContext}
 		s.https = append(s.https, hs)
@@ -181,14 +176,15 @@ func connContext(ctx context.Context, c net.Conn) context.Context {
 
 // handler is the API's routes, every request body bounded. Commands
 // answer through the wired actions' logic.
-func handler(store *eventstore.Store, boot *bootstrapper, lim limits, gate *api.Slots, reg *vocab.Registry) http.Handler {
+func handler(store *eventstore.Store, boot *bootstrapper, lim limits, gate *api.Slots, cmds commands) http.Handler {
 	mux := http.NewServeMux()
 	if boot != nil {
 		mux.Handle("POST "+apidoc.BootstrapPath, boot.handler(gate))
 	}
 	mux.Handle("GET "+api.EventsPath, api.Events{Store: store, Poll: lim.poll, Gate: gate})
 	mux.HandleFunc("GET "+api.VersionPath, api.Version)
-	mux.Handle("POST "+CommandsPath, commands{store: store, gate: gate, reg: reg, logic: logics(reg)})
+	cmds.gate = gate
+	mux.Handle("POST "+CommandsPath, cmds)
 	reads := api.Reads{Store: store, Gate: gate, Resources: api.Registered()}
 	mux.HandleFunc("GET "+api.WhoamiPath, reads.Whoami)
 	mux.HandleFunc("GET "+api.ReadPath, reads.Resource)

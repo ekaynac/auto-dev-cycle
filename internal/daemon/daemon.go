@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -32,6 +33,7 @@ type Daemon struct {
 	boot     *bootstrapper
 	clock    func() time.Time // the store clock (eventstore.Config.Now), for what is made outside a command
 	note     string           // the bootstrap's startup note, fixed text
+	az       authority.Authorizer
 	once     sync.Once
 	closeErr error
 }
@@ -99,8 +101,9 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	if clock == nil {
 		clock = time.Now
 	}
+	az := authorizer(reg)
 	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Existing: offline, Now: clock,
-		Hooks: hooks(reg, projector(blobs, reg.Holds, reservations))})
+		Hooks: hooks(az, projector(blobs, reg.Holds, reservations))})
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the event store cannot be opened", err)
 	}
@@ -151,7 +154,7 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	if err != nil {
 		return nil, err
 	}
-	return &Daemon{lock: lock, store: store, head: head, system: system, boot: boot, clock: clock, note: note}, nil
+	return &Daemon{lock: lock, store: store, head: head, system: system, boot: boot, clock: clock, note: note, az: az}, nil
 }
 
 // Head is the event log's head verified at start.
@@ -173,7 +176,7 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	if err != nil {
 		return err
 	}
-	srv, err := listen(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits)
+	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), log: logw})
 	if err != nil {
 		if cerr := d.Close(); cerr != nil {
 			return couldNotRun(vocab.ReasonStoreUnreadable, "the event store did not close cleanly", errors.Join(err, cerr))

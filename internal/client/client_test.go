@@ -313,3 +313,28 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+// 401 and 400 are their own errors; an invalid response is a fixed text
+// that never quotes it (here a credential of the wrong form).
+func TestCommandStatusesAndFixedText(t *testing.T) {
+	const leak = "zzLEAKEDzzCREDENTIALzz"
+	bad := strings.TrimSuffix(applied, "}") + `,"issued_credential":"tok_` + leak + `"}`
+	for _, c := range []struct {
+		status int
+		body   string
+		want   error
+	}{
+		{http.StatusUnauthorized, "unauthenticated", ErrUnauthenticated},
+		{http.StatusBadRequest, "bad", ErrBadRequest},
+		{http.StatusOK, bad, ErrInvalidResponse},
+	} {
+		socket := serve(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(c.status)
+			io.WriteString(w, c.body)
+		}))
+		_, err := transport(t, socket, os.Getuid()).Command(context.Background(), "task.create", request(t))
+		if !errors.Is(err, c.want) || strings.Contains(err.Error(), leak) {
+			t.Errorf("HTTP %d: %v", c.status, err)
+		}
+	}
+}

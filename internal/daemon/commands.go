@@ -13,9 +13,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"sync/atomic"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
@@ -31,28 +32,39 @@ import (
 const CommandsPath = "/v1/commands/{action}"
 
 // commands serves CommandsPath over store, the listener's bearer
-// verifications held to gate.
+// verifications held to gate; a fault no refusal names goes to log, with
+// its detail, and the client gets a fixed text.
 type commands struct {
 	store *eventstore.Store
 	gate  *api.Slots
 	reg   *vocab.Registry
 	logic map[string]logic
+	log   io.Writer
 }
 
-// errUndecided: the command was refused before it was decided (a request or
-// scope its schema refuses, an input its handler cannot read).
-var errUndecided = errors.New("daemon: the command was not decided")
+// authenticated, when set, runs after a request is authenticated and
+// before its command is submitted: a test revokes the caller there.
+var authenticated atomic.Pointer[func(identity.Principal)]
 
 func (h commands) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	p, err := h.authenticate(r)
-	switch {
-	case errors.Is(err, errBusy):
-		w.Header().Set("Retry-After", "1")
-		http.Error(w, "too many authentications in progress; retry", http.StatusServiceUnavailable)
+	if r.URL.RawQuery != "" {
+		http.Error(w, "commands take no query parameters", http.StatusBadRequest)
 		return
-	case err != nil:
+	}
+	p, err := api.Authenticate(h.store, r, h.gate)
+	switch {
+	case errors.Is(err, api.ErrBusy):
+		api.RefuseBusy(w)
+		return
+	case errors.Is(err, identity.ErrUnauthenticated):
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
+	case err != nil:
+		h.fault(w, "authenticating", err)
+		return
+	}
+	if f := authenticated.Load(); f != nil {
+		(*f)(p)
 	}
 	raw, err := io.ReadAll(r.Body)
 	var tooLarge *http.MaxBytesError
@@ -70,15 +82,18 @@ func (h commands) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, identity.ErrUnauthenticated): // revoked since it was authenticated
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
-	case errors.Is(err, errUndecided):
-		http.Error(w, "the command's scope or input is not valid for the action; nothing was decided", http.StatusBadRequest)
+	case errors.Is(err, authority.ErrInvalidScope):
+		http.Error(w, "the scope is not valid for the action; nothing was decided", http.StatusBadRequest)
 		return
+	case errors.Is(err, eventstore.ErrClosed):
+		v = refusal(vocab.CouldNotRun, vocab.ReasonStoreUnreadable, "the event store is closed")
 	case err != nil:
-		v = refusal(vocab.CouldNotRun, vocab.ReasonStoreUnreadable, "the command could not be recorded")
+		h.fault(w, r.PathValue("action"), err)
+		return
 	}
 	out, err := contract.Encode("api/command-response", types.CommandResponse{Variant: v})
 	if err != nil {
-		http.Error(w, "the command response cannot be encoded", http.StatusInternalServerError)
+		h.fault(w, "encoding the response", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -86,27 +101,11 @@ func (h commands) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out) // the commit stands either way
 }
 
-var errBusy = errors.New("daemon: no verification slot")
-
-// authenticate verifies r's bearer through the listener's verification
-// slots, as the principal of the listener that admitted the connection.
-func (h commands) authenticate(r *http.Request) (identity.Principal, error) {
-	bearer, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	peer, ok := api.PeerOf(r.Context()) // none recorded: no listener, which authenticates nothing
-	if !ok {
-		peer.UID = -1
-	}
-	release, ok := h.gate.Take(peer.UID)
-	if !ok {
-		return identity.Principal{}, errBusy
-	}
-	defer release()
-	var p identity.Principal
-	err := h.store.View(r.Context(), func(tx *eventstore.Tx) (err error) {
-		p, err = identity.Authenticated(tx, bearer, peer.Via)
-		return err
-	})
-	return p, err
+// fault logs err with what was being done and answers 503 with a fixed
+// text: nothing the client sent or the store holds is echoed.
+func (h commands) fault(w http.ResponseWriter, what string, err error) {
+	fmt.Fprintf(h.log, "adcd: command %s: %v\n", what, err)
+	http.Error(w, "the command could not be decided; the controller log has the detail", http.StatusServiceUnavailable)
 }
 
 // decide submits the command and maps its committed disposition, or the
@@ -129,8 +128,13 @@ func (h commands) decide(ctx context.Context, p identity.Principal, action strin
 	// before Submit and outside the transaction, and passes it to applied
 	// through identity.Issued.Deliver (14 N3).
 	res, err := h.store.Submit(ctx, c, run(c))
+	return h.answer(res, err)
+}
+
+// answer maps a submission: its committed disposition, or the refusal
+// that kept it from committing; any other error is returned.
+func (h commands) answer(res eventstore.Committed, err error) (types.CommandResponseVariant, error) {
 	var ref *authority.Refusal
-	var bad *contract.Error
 	switch {
 	case errors.Is(err, eventstore.ErrIdempotencyKeyReused):
 		return refusal(vocab.Failed, vocab.ReasonIdempotencyKeyReused, "the idempotency key was used for another request"), nil
@@ -140,8 +144,6 @@ func (h commands) decide(ctx context.Context, p identity.Principal, action strin
 		return refusal(vocab.Failed, ref.Reason, ref.Detail), nil
 	case errors.Is(err, authority.ErrActionNotWired):
 		return refusal(vocab.CouldNotRun, vocab.ReasonActionDeferred, "the command's operation is not wired in this build"), nil
-	case errors.As(err, &bad):
-		return nil, errUndecided
 	case err != nil:
 		return nil, err
 	}

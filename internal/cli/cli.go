@@ -24,7 +24,6 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
-	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -110,18 +109,19 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 		return entry.ExitCouldNotRun
 	}
 	raw, err := c.Command(ctx, action, body)
-	if errors.Is(err, client.ErrUnauthenticated) {
+	switch {
+	case errors.Is(err, client.ErrUnauthenticated):
 		fmt.Fprintf(stderr, "%s: refused: %v\n", name, err)
 		return entry.ExitRefused
-	} else if err != nil {
+	case errors.Is(err, client.ErrBadRequest):
+		return usage("%v", err)
+	case err != nil:
 		return couldNotRun("%v", err)
 	}
-	var resp types.CommandResponse
-	if err := contract.Validate("api/command-response", raw); err != nil {
-		return couldNotRun("the controller's response is invalid: %v", err)
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return couldNotRun("the controller's response is invalid: %v", err)
+	// Fixed text: the response is never quoted (it may hold a credential).
+	resp, err := client.DecodeResponse(raw)
+	if err != nil {
+		return couldNotRun("%v", client.ErrInvalidResponse)
 	}
 	// The schema cannot say which outcomes a reason accompanies; the registry can.
 	if v, ok := resp.Variant.(*types.CommandRefused); ok {
@@ -133,17 +133,12 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 			return couldNotRun("the controller's refusal is invalid: %v", err)
 		}
 	}
-	// A credential the command issued goes to the token file, never to
-	// stdout; the response is printed without it.
+	// A credential the command issued is for another actor (agent.enrol);
+	// where it is stored is 14 7a/7b's to decide. Until then it is never
+	// written over the caller's own token, nor printed.
 	if v, ok := resp.Variant.(*types.CommandApplied); ok && v.IssuedCredential != nil {
-		if err := writeIssued(*v.IssuedCredential); err != nil {
-			return couldNotRun("the issued token could not be written (%v); a repeat does not deliver it again", err)
-		}
-		v.IssuedCredential = nil
-		if raw, err = contract.Encode("api/command-response", resp); err != nil {
-			return couldNotRun("%v", err)
-		}
-		fmt.Fprintf(stderr, "%s: the issued token was written to ~/.config/adc/token\n", name)
+		fmt.Fprintf(stderr, "%s: could_not_run: the command applied and issued a credential, which this build cannot store; it was discarded and nothing was written: revoke the issued token\n", name)
+		return entry.ExitCouldNotRun
 	}
 	if *asJSON {
 		_, err = fmt.Fprintf(stdout, "%s\n", bytes.TrimSpace(raw))
@@ -196,22 +191,6 @@ func ExitCode(r types.CommandResponse) int {
 	return entry.ExitCouldNotRun
 }
 
-// writeIssued writes an issued token with the token writer [R5]. For M0
-// that is the caller's own ~/.config/adc/token: no wired action issues a
-// credential yet, and the actions that will (14 7a, 7b) decide whose file
-// a credential for another actor goes to.
-func writeIssued(credential string) error {
-	tok, err := identity.ParseSecret(credential)
-	if err != nil {
-		return client.ErrTokenMalformed
-	}
-	files, err := client.DefaultFiles()
-	if err != nil {
-		return err
-	}
-	return files.Write(tok)
-}
-
 // DashboardProposal is where the dashboard shows a proposal: a path
 // placeholder until the dashboard ships (M5).
 const DashboardProposal = "/dashboard/proposals/"
@@ -227,7 +206,7 @@ func describe(r types.CommandResponse, action string, scope json.RawMessage) str
 	case *types.CommandProposed:
 		if v.Policy == types.CommandProposedPolicyHuman {
 			// A human confirmation cannot be completed from the CLI (D37).
-			return fmt.Sprintf("proposed: %s needs a human confirmation on the dashboard (binding %s)\n  change: %s %s\n  confirm at: %s%s",
+			return fmt.Sprintf("proposed: %s needs a human confirmation on the dashboard (binding %s)\n  requested: %s %s\n  confirm at: %s%s",
 				v.Proposal, v.BindingDigest, action, scope, DashboardProposal, v.Proposal)
 		}
 		return fmt.Sprintf("proposed: %s needs an independent review (binding %s)", v.Proposal, v.BindingDigest)

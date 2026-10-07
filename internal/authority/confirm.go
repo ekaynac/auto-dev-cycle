@@ -112,9 +112,12 @@ func confirmInputOf(raw json.RawMessage) (confirmInput, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
-		return in, fmt.Errorf("authority: %s input: %w", ConfirmAction, err)
+		return in, fmt.Errorf("%w: %s input: %w", ErrInvalidScope, ConfirmAction, err)
 	}
-	return in, errors.Join(ids.Check(string(in.Proposal), "prp"), ids.Check(string(in.Review), "rcp"))
+	if err := errors.Join(ids.Check(string(in.Proposal), "prp"), ids.Check(string(in.Review), "rcp")); err != nil {
+		return in, fmt.Errorf("%w: %w", ErrInvalidScope, err)
+	}
+	return in, nil
 }
 
 func storedProposal(t *eventstore.Tx, id types.ProposalID) (types.Proposal, error) {

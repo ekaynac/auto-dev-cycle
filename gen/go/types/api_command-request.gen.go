@@ -15,6 +15,6 @@ type CommandRequest struct {
 	Expected ExpectedState `json:"expected"`
 	// The action's parameters, including the object it applies to; one schema per action, from the action registry.
 	Scope json.RawMessage `json:"scope"`
-	// Why the caller asks, recorded with the command.
+	// Why the caller asks. Validated, but not yet recorded with the command (issue #147).
 	Reason string `json:"reason"`
 }

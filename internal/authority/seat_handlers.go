@@ -13,6 +13,7 @@ package authority
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -51,7 +52,7 @@ func (h SeatHandler) Derive(tx *eventstore.Tx, _ types.Actor, input json.RawMess
 		schema = SeatTakeScope
 	}
 	if err := contract.Validate(schema, input); err != nil {
-		return Derived{}, err
+		return Derived{}, fmt.Errorf("%w: %w", ErrInvalidScope, err)
 	}
 	candidate, err := NewSeatCandidate()
 	if err != nil {
