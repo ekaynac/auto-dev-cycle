@@ -29,9 +29,19 @@ Actor:
     consumes the bootstrap; the file is deleted after the commit, and a leftover one never bootstraps again. A wrong,
     expired or spent secret is `failed/confirmation_refused`. `adc admin bootstrap` reads the secret from the file or
     stdin, never argv, and writes the token file.
-  - Recovery. An expired, unused secret (or a recorded one whose file is gone): `adcd bootstrap renew` (14 R8) writes a
-    new secret and expiry. A bootstrap committed but whose response or token-file write was lost: a retry replays without
-    the token, and `adcd recover operator-token` (14 R7) issues the operator a new one offline. Both are PR 4d.
+  - Recovery: offline commands, run as the daemon uid while the daemon is stopped. Each takes `adcd.lock` before
+    the store opens and releases it after the store closes, so it is refused (`could_not_run/controller_already_running`)
+    while `adcd` runs. Each runs every startup trust check (the state directory, the hash chain and `--trusted-head` when
+    given, the capacity history, unread event kinds, the projection comparison), refuses on any failure as `adcd run`
+    does, and never creates a store. It commits one event as the system actor through its claim; no endpoint reaches it.
+    Exit codes are the single table's (08): 0, 1 refused, 2 could not run, 64 usage.
+    - `adcd bootstrap renew --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX]` (14 R8), for an
+      expired, unused secret or a recorded one whose file is gone. While the bootstrap is unconsumed it writes a fresh
+      secret every time (never the current one) through the held state-directory descriptor, replacing the old file,
+      and records `identity.bootstrap_renewed/v1` with a new 24 h expiry; the old secret no longer bootstraps. After
+      consumption it is `failed/confirmation_refused`. Startup never renews.
+    - A bootstrap committed but whose response or token-file write was lost: a retry replays without the token, and
+      `adcd recover operator-token` (14 R7, PR 4d-2) issues the operator a new one offline.
   - All logs redact tokens, secrets and challenge values by type, not by pattern guessing.
 - `operator` tokens are unrestricted (D31).
 - `supervisor` tokens act only under grants.
@@ -64,9 +74,10 @@ A supervisor cannot create, extend or widen grants (`human`, and never by the gr
 
 ## Action registry and effective-change classification [M3]
 
-`schemas/vocab/actions.yaml` lists every mutating action kind a request can name. The exceptions are the controller's two
-system-only actions: `identity.bootstrap_issue` (the first start records the bootstrap secret) and `identity.bootstrap`
-(`POST /v1/bootstrap` spends it, where the setup secret, not a bearer, is the credential). They are unregistered and have
+`schemas/vocab/actions.yaml` lists every mutating action kind a request can name. The exceptions are the controller's
+system-only actions: `identity.bootstrap_issue` (the first start records the bootstrap secret), `identity.bootstrap`
+(`POST /v1/bootstrap` spends it, where the setup secret, not a bearer, is the credential), and the offline
+`identity.bootstrap_renew` (`adcd bootstrap renew`). They are unregistered and have
 no command endpoint of their own. The daemon's Authorize hook admits them for the system principal alone, never for a
 bearer. Authority does **not** trust the endpoint name. For
 every command, it computes the **effective change**: the diff between the current and resulting policy-relevant state.

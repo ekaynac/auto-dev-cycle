@@ -37,6 +37,7 @@ const (
 	bootstrapFile   = identity.BootstrapFile
 	bootstrapAction = "identity.bootstrap"
 	issueAction     = "identity.bootstrap_issue"
+	renewAction     = "identity.bootstrap_renew" // adcd bootstrap renew (14 R8)
 )
 
 // The fixed-text startup notes; none names a path or the secret.
@@ -67,8 +68,9 @@ type bootstrapper struct {
 // openBootstrap runs at startup: with no operator and no secret recorded
 // it issues one; otherwise it only says what is pending. A restart never
 // renews or recreates a secret, and a consumed bootstrap's leftover file
-// (a crash after the commit) is removed.
-func openBootstrap(ctx context.Context, store *eventstore.Store, system identity.Principal, stateDir string, now func() time.Time) (_ *bootstrapper, note string, err error) {
+// (a crash after the commit) is removed. Unless issue (an offline
+// command), it only holds the state directory.
+func openBootstrap(ctx context.Context, store *eventstore.Store, system identity.Principal, stateDir string, now func() time.Time, issue bool) (_ *bootstrapper, note string, err error) {
 	dir, err := openDir(stateDir, func(st unix.Stat_t) bool { return st.Mode&0o777 == 0o700 })
 	if errors.Is(err, errUnknownFS) {
 		return nil, "", configError(fsRefusal)
@@ -82,6 +84,9 @@ func openBootstrap(ctx context.Context, store *eventstore.Store, system identity
 			dir.Close()
 		}
 	}()
+	if !issue {
+		return b, "", nil
+	}
 	var st identity.BootstrapState
 	if err := store.View(ctx, func(tx *eventstore.Tx) (err error) {
 		st, err = identity.BootstrapOf(tx)
@@ -98,7 +103,7 @@ func openBootstrap(ctx context.Context, store *eventstore.Store, system identity
 		}
 		return b, "", nil
 	case st.Secret == nil:
-		if err := b.issue(ctx); err != nil {
+		if err := b.issue(ctx, false); err != nil {
 			return nil, "", couldNotRun(vocab.ReasonStoreUnreadable, "the bootstrap secret cannot be issued", err)
 		}
 		return b, notePending, nil
@@ -119,9 +124,11 @@ func (b *bootstrapper) remove() error {
 }
 
 // issue writes a fresh secret, created exclusively 0600 without following
-// a link, and synced; then records its hash and expiry. A file without
-// its event (a crash in between) never verifies, so it is replaced.
-func (b *bootstrapper) issue(ctx context.Context) error {
+// a link, and synced; then records its hash and expiry, as the first
+// secret or, when renew, as a renewal (14 R8) whose fresh secret replaces
+// the old one, never reusing it. A file without its event (a crash in
+// between) never verifies, so it is replaced.
+func (b *bootstrapper) issue(ctx context.Context, renew bool) error {
 	secret, hash, err := identity.NewBootstrapSecret()
 	if err != nil {
 		return err
@@ -142,11 +149,15 @@ func (b *bootstrapper) issue(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	evs, err := identity.IssueBootstrap(b.system.Actor(), hash, b.now())
+	record, action := identity.IssueBootstrap, issueAction
+	if renew {
+		record, action = identity.RenewBootstrap, renewAction
+	}
+	evs, err := record(b.system.Actor(), hash, b.now())
 	if err != nil {
 		return err
 	}
-	_, err = b.store.SubmitApplied(ctx, b.system.Command(cmd, issueAction, cmd, []byte(`{}`), nil),
+	_, err = b.store.SubmitApplied(ctx, b.system.Command(cmd, action, cmd, []byte(`{}`), nil),
 		eventstore.Applies(func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			return evs, json.RawMessage(`{}`), nil
 		}))

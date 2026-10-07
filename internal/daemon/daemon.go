@@ -43,11 +43,16 @@ type Daemon struct {
 // system actor; mark pending effects uncertain, unless this start created
 // the store. A refusal releases what
 // was taken and is a *StartError (a configuration refusal, ErrConfig).
-func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
+func Start(ctx context.Context, cfg Config) (d *Daemon, err error) { return start(ctx, cfg, false) }
+
+// start is Start; offline (a recovery command, 14 R7, R8) runs every check
+// on an existing store and writes nothing of its own: no system actor is
+// created, no pending effect marked, no bootstrap secret issued.
+func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	if err := checkStateDir(cfg.StateDir, true); err != nil {
+	if err := checkStateDir(cfg.StateDir, !offline); err != nil {
 		return nil, err
 	}
 	reservations, err := capacity.NewReservations(cfg.Groups)
@@ -106,14 +111,14 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 			return nil, err
 		}
 	}
-	sys, created, err := systemActor(ctx, store)
+	sys, created, err := systemActor(ctx, store, !offline)
 	if err != nil {
 		return nil, err
 	}
 	// A store this start bootstrapped holds one event and no effect, so it
 	// skips the restart transition: a fresh start that appends is never
 	// refused after.
-	if !created {
+	if !created && !offline {
 		if _, err := markPending(store, ctx, string(sys)); err != nil {
 			return nil, couldNotRun(vocab.ReasonStoreUnreadable, "pending effects cannot be marked uncertain", err)
 		}
@@ -125,7 +130,7 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 	}); err != nil {
 		return nil, couldNotRun(vocab.ReasonAmbiguousState, "the system actor is not live", err)
 	}
-	boot, note, err := openBootstrap(ctx, store, system, lock.Dir(), time.Now)
+	boot, note, err := openBootstrap(ctx, store, system, lock.Dir(), time.Now, !offline)
 	if err != nil {
 		return nil, err
 	}

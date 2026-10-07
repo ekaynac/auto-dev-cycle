@@ -92,8 +92,9 @@ var markPending = (*eventstore.Store).MarkPendingUncertain
 // operation (Bootstrap), which only ever writes an empty log's first event.
 // No request reaches it and nothing outside Start names the identity. A
 // store with actors but not exactly one system actor, or with events but
-// no actor, is refused. created reports a store this start bootstrapped.
-func systemActor(ctx context.Context, s *eventstore.Store) (_ types.ActorID, created bool, err error) {
+// no actor, is refused, and so is an empty one unless create. created
+// reports a store this start bootstrapped.
+func systemActor(ctx context.Context, s *eventstore.Store, create bool) (_ types.ActorID, created bool, err error) {
 	var system []types.ActorID
 	actors := 0
 	if err := s.View(ctx, func(tx *eventstore.Tx) error {
@@ -120,6 +121,8 @@ func systemActor(ctx context.Context, s *eventstore.Store) (_ types.ActorID, cre
 		return system[0], false, nil
 	case actors > 0:
 		return "", false, couldNotRun(vocab.ReasonAmbiguousState, "the store holds actors but not exactly one system actor", nil)
+	case !create:
+		return "", false, couldNotRun(vocab.ReasonAmbiguousState, "the store has no system actor; an offline command runs only on an existing store", nil)
 	}
 	id, ierr := ids.New("act")
 	cmd, cerr := ids.New("cmd")

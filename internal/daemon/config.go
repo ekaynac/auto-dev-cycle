@@ -71,17 +71,28 @@ func configError(detail string) error { return fmt.Errorf("%w: %s", ErrConfig, d
 
 // LoadConfig parses the `adcd run` flags.
 func LoadConfig(args []string) (Config, error) {
-	fs := flag.NewFlagSet("adcd run", flag.ContinueOnError)
+	return loadConfig("adcd run", usage, args, func(fs *flag.FlagSet) func(*Config) {
+		runDir, group := fs.String("shared-run-dir", "", ""), fs.String("shared-group", "", "")
+		return func(cfg *Config) {
+			if *runDir != "" || *group != "" {
+				cfg.Shared = &SharedSocket{RunDir: *runDir, Group: *group}
+			}
+		}
+	})
+}
+
+// loadConfig parses the flags of every command that opens the store, and
+// those more registers; what more returns applies them.
+func loadConfig(name, usage string, args []string, more func(*flag.FlagSet) func(*Config)) (Config, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	state, groupsFile, trusted := fs.String("state-dir", "", ""), fs.String("resource-groups", "", ""), fs.String("trusted-head", "", "")
-	runDir, group := fs.String("shared-run-dir", "", ""), fs.String("shared-group", "", "")
+	apply := more(fs)
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		return Config{}, configError("unknown flag, missing value or extra argument; " + usage)
 	}
 	cfg := Config{StateDir: *state, Groups: []types.ResourceGroup{}}
-	if *runDir != "" || *group != "" {
-		cfg.Shared = &SharedSocket{RunDir: *runDir, Group: *group}
-	}
+	apply(&cfg)
 	if *trusted != "" {
 		seq, hash, _ := strings.Cut(*trusted, ":")
 		n, err := strconv.ParseInt(seq, 10, 64)

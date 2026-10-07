@@ -5,6 +5,7 @@ package daemon
 import (
 	"fmt"
 	"maps"
+	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
@@ -31,7 +32,7 @@ var ErrCommandsRefused = authority.ErrActionNotWired
 func hooks(reg *vocab.Registry, project func(*eventstore.Tx, []eventstore.Event) error) eventstore.Hooks {
 	az := authority.Authorizer{Registry: reg, Handlers: handlers()}
 	authorize := func(t *eventstore.Tx, c eventstore.Command) error {
-		if c.Action == bootstrapAction || c.Action == issueAction {
+		if slices.Contains([]string{bootstrapAction, issueAction, renewAction}, c.Action) {
 			return authorizeSystem(t, c)
 		}
 		return az.Authorize(t, c)
