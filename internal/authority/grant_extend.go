@@ -32,12 +32,17 @@ const (
 	// GrantReplaced is the lineage event kind; its subject is the old grant.
 	GrantReplaced = "grant.replaced/v1"
 	// GrantLineageProjection names, under each replaced grant's id, the
-	// grant that replaced it.
+	// grant that replaced it, and, under ReplacementKey of each replacing
+	// grant's id, the grant it replaced.
 	GrantLineageProjection = "grant_lineage"
 	// GrantCommandProjection records, under <transition>/<command>/<grant>,
 	// each command that created or revoked a grant.
 	GrantCommandProjection = "grant_commands"
 )
+
+// ReplacementKey is the grant_lineage key of a replacing grant: a grant id
+// begins "grt_", so it never collides with a replaced grant's key.
+func ReplacementKey(id types.GrantID) string { return "replacement/" + string(id) }
 
 func commandKey(t types.GrantEventTransition, command string, id types.GrantID) string {
 	return string(t) + "/" + command + "/" + string(id)
@@ -190,7 +195,8 @@ func revokedBy(tx *eventstore.Tx, id types.GrantID, ev eventstore.Event) (types.
 // applyLineage admits a grant.replaced/v1 by a live operator: its old
 // grant revoked and its new grant, exactly as recorded, created for the
 // same grantee by the same command, under an approval of this replacement
-// if any, once per grant.
+// if any, once per grant: each old grant is replaced, and each new grant
+// replaces, at most once.
 func applyLineage(tx *eventstore.Tx, ev eventstore.Event) error {
 	var l types.GrantReplaced
 	if err := json.Unmarshal(ev.Payload, &l); err != nil || ev.Subject != string(l.Replaces) {
@@ -216,5 +222,11 @@ func applyLineage(tx *eventstore.Tx, ev eventstore.Event) error {
 	if _, done, err := tx.Get(GrantLineageProjection, string(l.Replaces)); err != nil || done {
 		return errors.Join(err, errors.New("the grant is already replaced"))
 	}
-	return putJSON(tx, GrantLineageProjection, string(l.Replaces), l.Grant.ID)
+	if _, claimed, err := tx.Get(GrantLineageProjection, ReplacementKey(l.Grant.ID)); err != nil || claimed {
+		return errors.Join(err, errors.New("its new grant already replaces another grant"))
+	}
+	if err := putJSON(tx, GrantLineageProjection, string(l.Replaces), l.Grant.ID); err != nil {
+		return err
+	}
+	return putJSON(tx, GrantLineageProjection, ReplacementKey(l.Grant.ID), l.Replaces)
 }

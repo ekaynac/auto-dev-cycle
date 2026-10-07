@@ -103,10 +103,11 @@ func TestOperatorExtendsAGrant(t *testing.T) {
 	}
 	k.view(func(tx *eventstore.Tx) error {
 		raw, _, err := tx.Get(authority.GrantLineageProjection, string(k.creator))
-		if string(raw) != `"`+string(next)+`"` {
-			t.Errorf("the lineage: %s", raw)
+		back, _, err2 := tx.Get(authority.GrantLineageProjection, authority.ReplacementKey(next))
+		if string(raw) != `"`+string(next)+`"` || string(back) != `"`+string(k.creator)+`"` {
+			t.Errorf("the lineage: %s, back %s", raw, back)
 		}
-		return err
+		return errors.Join(err, err2)
 	})
 	if q := k.proposal(p.ID); q.Status != types.ProposalStatusInvalidated || *q.InvalidatedReason != types.ProposalInvalidatedReasonValueAuthorityRevoked {
 		t.Errorf("the proposal under the old grant: %+v", q)
@@ -258,9 +259,9 @@ func lineageOf(t *testing.T, old types.GrantID, g types.Grant) eventstore.Event 
 }
 
 // The fold admits a lineage only for the old grant revoked and the new one
-// created, for the same grantee, by the same command, once; and a grant
-// naming an extension's approval only with that extension's old grant
-// revoked by the same command.
+// created, for the same grantee, by the same command, once per old and per
+// new grant; and a grant naming an extension's approval only with that
+// extension's old grant revoked by the same command.
 func TestGrantLineageFold(t *testing.T) {
 	k := openGrantKit(t)
 	fresh := func(actor types.ActorID) types.Grant {
@@ -354,6 +355,19 @@ func TestGrantLineageFold(t *testing.T) {
 		}
 		return evs, err
 	})
+	// One new grant claimed by two lineages, each old grant revoked and the
+	// new grant created by the same command.
+	first, second := fresh(k.grantee.Actor()), fresh(k.grantee.Actor())
+	k.seed(k.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, first) })
+	k.seed(k.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, second) })
+	refused("one new grant claimed by two lineages", func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		r1, err1 := authority.RevokeGrant(tx, first.Actor, first.ID, tx.Now())
+		r2, err2 := authority.RevokeGrant(tx, second.Actor, second.ID, tx.Now())
+		n := fresh(k.grantee.Actor())
+		c, err3 := authority.CreateGrant(tx, n)
+		n.ValidFrom = types.Time(tx.Now().UTC().Format(time.RFC3339Nano))
+		return append(append(append(append(r1, r2...), c...), lineageOf(t, first.ID, n)), lineageOf(t, second.ID, n)), errors.Join(err1, err2, err3)
+	})
 	// A lineage by an actor no longer a live operator.
 	op2 := k.operator()
 	byOp2 := fresh(k.grantee.Actor())
@@ -383,12 +397,25 @@ func TestGrantLineageFold(t *testing.T) {
 		n.ValidFrom = types.Time(tx.Now().UTC().Format(time.RFC3339Nano))
 		return append(append(r, c...), lineageOf(t, byCreate.ID, n)), errors.Join(err, err2, err3)
 	})
+	// An extension's approval of a still-live old grant, for the case below.
+	freshOld := fresh(k.grantee.Actor())
+	k.seed(k.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, freshOld) })
+	_, pf := k.submitProposal(k.sup.Command(newID(t, "cmd"), authority.GrantExtendAction, "pf", []byte(extension(freshOld.ID, types.GrantID(newID(t, "grt")), onA(), `[]`)), nil))
+	aprF := k.approve(k.op, pf)
+	var gf types.Grant
+	if err := json.Unmarshal(pf.Scope, &gf); err != nil {
+		t.Fatal(err)
+	}
+	gf.Actor, gf.IssuedBy, gf.Approval = freshOld.Actor, k.op.Actor(), &aprF
 	// "The same command" is the command, not its time: with the clock
 	// trailing, consecutive commands share one recorded time.
 	storeShift = -time.Hour
 	defer func() { storeShift = 0 }()
+	k.seed(k.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return authority.RevokeGrant(tx, freshOld.Actor, freshOld.ID, tx.Now())
+	})
 	refused("an extension's approval, its old grant revoked by an earlier command", func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return authority.CreateGrant(tx, g)
+		return authority.CreateGrant(tx, gf)
 	})
 	early := fresh(k.grantee.Actor())
 	k.seed(k.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, early) })
