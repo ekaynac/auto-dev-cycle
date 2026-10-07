@@ -25,6 +25,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/scope/actor-revoke.json`](api-scope-actor-revoke.md) | ActorRevokeScope |
 | [`api/scope/agent-enrol.json`](api-scope-agent-enrol.md) | AgentEnrolScope |
 | [`api/scope/grant-create.json`](api-scope-grant-create.md) | GrantCreateScope |
+| [`api/scope/grant-extend.json`](api-scope-grant-extend.md) | GrantExtendScope |
 | [`api/scope/grant-revoke.json`](api-scope-grant-revoke.md) | GrantRevokeScope |
 | [`api/scope/note-add.json`](api-scope-note-add.md) | NoteAddScope |
 | [`api/scope/proposal-withdraw.json`](api-scope-proposal-withdraw.md) | ProposalWithdrawScope |
@@ -46,6 +47,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/challenge.json`](records-challenge.md) | Challenge |
 | [`records/effect-event.json`](records-effect-event.md) | EffectEvent |
 | [`records/grant-event.json`](records-grant-event.md) | GrantEvent |
+| [`records/grant-replaced.json`](records-grant-replaced.md) | GrantReplaced |
 | [`records/grant.json`](records-grant.md) | Grant |
 | [`records/identity-event.json`](records-identity-event.md) | IdentityEvent |
 | [`records/instrument-contract.json`](records-instrument-contract.md) | InstrumentContract |

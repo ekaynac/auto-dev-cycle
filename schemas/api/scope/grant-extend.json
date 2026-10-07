@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/grant-extend.json",
+  "title": "GrantExtendScope",
+  "description": "The scope of grant.extend (docs/design/m0/14 N6/P6; 04 \"Grants\"): an atomic replacement of the live grant replaces by a fresh grant, under an id the client mints (grt_…, which must not exist), for the same grantee. One command revokes the old grant, creates the new one and records grant.replaced/v1 binding the old id to the complete new grant (and so to its approval). The grantee, valid_from, issued_by and approval are never the caller's: the grantee is the old grant's, and the rest are set as for grant.create. A supervisor's grant.extend is a human-policy proposal bound to the old grant's state, never confirmed by its grantee.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["replaces", "id", "projects", "actions", "reads", "expires_at", "confirmation_overrides"],
+  "properties": {
+    "id": {"$ref": "../../common/defs.json#/$defs/GrantID"},
+    "replaces": {"description": "The live grant this one replaces.", "$ref": "../../common/defs.json#/$defs/GrantID"},
+    "projects": {"$ref": "../../records/grant.json#/$defs/ProjectScope"},
+    "actions": {"type": "array", "uniqueItems": true, "items": {"$ref": "../../records/grant.json#/$defs/ActionKind"}},
+    "reads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projects", "kinds"],
+      "properties": {
+        "projects": {"oneOf": [{"const": "same"}, {"type": "array", "uniqueItems": true, "items": {"$ref": "../../common/defs.json#/$defs/ProjectID"}}]},
+        "kinds": {"type": "array", "uniqueItems": true, "items": {"$ref": "../../records/receipt.json#/$defs/Name"}}
+      }
+    },
+    "expires_at": {"description": "Required: every grant expires, after the time it is applied.", "$ref": "../../common/defs.json#/$defs/Time"},
+    "confirmation_overrides": {
+      "type": "object",
+      "propertyNames": {"$ref": "../../records/grant.json#/$defs/ActionKind"},
+      "additionalProperties": {"enum": ["independent_review", "human"]}
+    }
+  }
+}

@@ -212,22 +212,39 @@ func (GrantRevokeHandler) Logic(c eventstore.Command) eventstore.Decide {
 	})
 }
 
-// approvedGrant: a grant naming an approval is exactly the grant that
-// approval's grant.create proposal asked for, issued by its approver.
-func approvedGrant(tx *eventstore.Tx, ev eventstore.Event, g types.Grant) error {
-	// A missing index entry or approval record leaves a zero approval,
-	// whose id never matches.
-	prp, _, err := loadJSON[types.ProposalID](tx, ProposalProjection, "approval_id/"+string(*g.Approval))
+// approvalOf is approval id's record. A missing index entry or approval
+// record leaves a zero approval, whose id never matches: an error.
+func approvalOf(tx *eventstore.Tx, id types.ApprovalID) (types.Approval, error) {
+	prp, _, err := loadJSON[types.ProposalID](tx, ProposalProjection, "approval_id/"+string(id))
 	var a types.Approval
 	if err == nil {
 		a, _, err = loadJSON[types.Approval](tx, ProposalProjection, "approval/"+string(prp))
 	}
-	if err != nil || a.ID != *g.Approval || a.Actor != types.ActorID(ev.Actor) || a.Action != GrantCreateAction {
-		return errors.Join(err, errors.New("its approval is not its issuer's approval of a grant.create"))
+	if err == nil && a.ID != id {
+		err = fmt.Errorf("approval %s is not recorded", id)
+	}
+	return a, err
+}
+
+// approvedGrant: a grant naming an approval is exactly the grant that
+// approval's grant.create (or grant.extend, whose old grant this command
+// revoked) proposal asked for, issued by its approver.
+func approvedGrant(tx *eventstore.Tx, ev eventstore.Event, g types.Grant) error {
+	a, err := approvalOf(tx, *g.Approval)
+	if err != nil || a.Actor != types.ActorID(ev.Actor) || (a.Action != GrantCreateAction && a.Action != GrantExtendAction) {
+		return errors.Join(err, errors.New("its approval is not its issuer's approval of a grant.create or grant.extend"))
+	}
+	var want types.Grant
+	if a.Action == GrantExtendAction {
+		in, err1 := extendScopeOf(a.Scope)
+		old, err2 := revokedBy(tx, in.Replaces, ev)
+		want, err = in.Grant, errors.Join(err1, err2)
+		want.Actor = old.Actor
+	} else {
+		want, err = grantOf(a.Scope, time.Time{}, "", nil)
 	}
 	// valid_from is the fold's to check (applyGrant), as for every grant.
-	want, err := grantOf(a.Scope, time.Time{}, g.IssuedBy, g.Approval)
-	want.ValidFrom = g.ValidFrom
+	want.ValidFrom, want.IssuedBy, want.Approval = g.ValidFrom, g.IssuedBy, g.Approval
 	if err != nil || !sameGrant(want, g) {
 		return errors.Join(err, errors.New("it is not the grant its approval approved"))
 	}

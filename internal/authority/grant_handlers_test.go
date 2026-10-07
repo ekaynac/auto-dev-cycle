@@ -35,6 +35,7 @@ func openGrantKit(t *testing.T) *grantKit {
 	b := openBoundary(t)
 	b.az.Handlers[authority.GrantCreateAction] = authority.GrantCreateHandler{}
 	b.az.Handlers[authority.GrantRevokeAction] = authority.GrantRevokeHandler{}
+	b.az.Handlers[authority.GrantExtendAction] = authority.GrantExtendHandler{}
 	b.az.Handlers[authority.ConfirmAction] = authority.ConfirmHandler{}
 	k := &grantKit{boundary: b, grantee: b.supervisor(), creator: types.GrantID(newID(t, "grt"))}
 	k.mustCreate(b.op, k.scope(k.creator, b.sup.Actor(), `["`+string(prjA)+`"]`, `["grant.create"]`))
@@ -60,7 +61,8 @@ func (k *grantKit) submit(p identity.Principal, action, key, input string, expec
 	c := p.Command(newID(k.t, "cmd"), action, key, []byte(input), nil)
 	c.Expect = expect
 	logic := map[string]func(eventstore.Command) eventstore.Decide{
-		authority.GrantCreateAction: authority.GrantCreateHandler{}.Logic, authority.GrantRevokeAction: authority.GrantRevokeHandler{}.Logic}
+		authority.GrantCreateAction: authority.GrantCreateHandler{}.Logic, authority.GrantRevokeAction: authority.GrantRevokeHandler{}.Logic,
+		authority.GrantExtendAction: authority.GrantExtendHandler{}.Logic}
 	return k.s.Submit(context.Background(), c, logic[action](c))
 }
 
@@ -486,14 +488,14 @@ func forge(p types.Proposal, by types.ActorID, approval types.ApprovalID, damage
 // approval of a grant.create, under an index that names that approval.
 func TestGrantFoldChecksItsApproval(t *testing.T) {
 	k := openGrantKit(t)
-	k.az.Handlers["grant.extend"] = authority.GrantCreateHandler{} // a proposal of another action, with a grant's scope
-	k.mustCreate(k.op, k.scope(types.GrantID(newID(t, "grt")), k.sup.Actor(), `["`+string(prjA)+`"]`, `["grant.extend"]`))
+	k.az.Handlers["agent.enrol"] = authority.GrantCreateHandler{} // a proposal of another action, with a grant's scope
+	k.mustCreate(k.op, k.scope(types.GrantID(newID(t, "grt")), k.sup.Actor(), `["`+string(prjA)+`"]`, `["agent.enrol"]`))
 	proposal := func(action string) types.Proposal {
 		_, p := k.submitProposal(k.sup.Command(newID(t, "cmd"), action, newID(t, "cmd"),
 			[]byte(k.scope(types.GrantID(newID(t, "grt")), k.grantee.Actor(), `["`+string(prjA)+`"]`, `[]`)), nil))
 		return p
 	}
-	create, extend := proposal(authority.GrantCreateAction), proposal("grant.extend")
+	create, extend := proposal(authority.GrantCreateAction), proposal("agent.enrol")
 	op2 := k.operator()
 	apr, other := k.approve(k.op, create), k.approve(k.op, extend)
 	refused := func(name string, by identity.Principal, f applyFn) {

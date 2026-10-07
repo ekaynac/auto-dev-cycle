@@ -144,6 +144,30 @@ A supervisor cannot create, extend or widen grants (`human`, and never by the gr
   (`authority_revoked`), and streams re-check it.
 - Neither action is seat-exempt. Each binds the grant (record and version) for `--expect`.
 
+**Replacement (14 PR 7d, N6/P6).** `grant.extend {replaces, id, projects, actions, reads, expires_at,
+confirmation_overrides}` replaces the live grant `replaces` by a fresh grant `id` for the same grantee, never named by
+the caller. One command commits `grant.revoked` (old id), `grant.created` (new id) and `grant.replaced/v1` (subject the
+old id: `{replaces, grant}`, the complete new grant and so its approval), so both ids' versions advance. Its object is
+the old grant: `--expect` and a proposal bind its state. The class is `grant.extend` and the grantee the old grant's, so a
+supervisor's own grant is refused (`self_grant_refused`) and any other is a `human` proposal; the project is the one
+both grants name, else installation-wide. Other kinds are refused (`operator_only`). The new grant's
+`grant_not_issuable` checks run only for an operator and at application, where a failure invalidates the proposal.
+What a supervisor learns about grant ids:
+- Not authorized for the project: nothing. A grant it cannot replace (absent or revoked) is refused as
+  `action_not_granted` with Decide's own detail ("no grant in force covers grant.extend for actor …"), identical by
+  design to the refusal of an existing grant outside its scope, though "covers" there names no grant.
+- Authorized to extend grants in a project: which grant ids there are live (a proposal, or the refusal above). That
+  is the reach its grant gives it (14 P3), and accepted.
+- Authorized but not holding the seat: an absent id is refused before Decide, a live one by the seat (`seat_not_held`)
+  after it. The ids are unguessable, and the supervisor is already authorized for the project.
+
+The fold admits a lineage only by a live operator, for the old grant revoked and the new grant created, for the same
+grantee, by the same command (each grant event's command is recorded, `grant_commands`; never the time, which
+consecutive commands may share), once per old grant (`grant_lineage`); a grant naming a `grant.extend` approval only
+with that extension's old grant revoked by the same command. Revoking the old grant invalidates a pending extension
+(its object moved) and the proposals made under the old grant, and closes the streams that hold it; a reader reconnects
+under the replacement.
+
 ## Read authorization [M5]
 
 - Every read (resources, blobs, notes, digests, events) is authorized server-side against the actor's grant read
