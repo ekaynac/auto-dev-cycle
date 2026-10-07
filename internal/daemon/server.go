@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -198,20 +199,54 @@ func connContext(ctx context.Context, c net.Conn) context.Context {
 	return ctx
 }
 
+// bootstrapRoute is served only where a bootstrapper is: the private socket.
+const bootstrapRoute = "POST " + apidoc.BootstrapPath
+
+// routeList is every pattern the daemon serves, in registration order.
+var routeList = []string{bootstrapRoute, "GET " + api.EventsPath, "GET " + api.VersionPath,
+	"POST " + CommandsPath, "GET " + api.WhoamiPath, "GET " + api.ReadPath}
+
+// Routes are the patterns the daemon serves (the parity harness,
+// internal/parity, checks each against the API description).
+func Routes() []string { return slices.Clone(routeList) }
+
+// routes is the API's mux over routeList: every pattern has exactly one
+// handler (the bootstrap's only with boot), and any mismatch is a
+// programming error.
+func routes(store *eventstore.Store, boot *bootstrapper, lim limits, gate *api.Slots, cmds commands) *http.ServeMux {
+	cmds.gate = gate
+	reads := api.Reads{Store: store, Gate: gate, Resources: api.Registered()}
+	served := map[string]http.Handler{
+		"GET " + api.EventsPath:  api.Events{Store: store, Poll: lim.poll, Gate: gate},
+		"GET " + api.VersionPath: http.HandlerFunc(api.Version),
+		"POST " + CommandsPath:   cmds,
+		"GET " + api.WhoamiPath:  http.HandlerFunc(reads.Whoami),
+		"GET " + api.ReadPath:    http.HandlerFunc(reads.Resource),
+	}
+	if boot != nil {
+		served[bootstrapRoute] = boot.handler(gate)
+	}
+	mux := http.NewServeMux()
+	for _, p := range routeList {
+		h, ok := served[p]
+		if !ok && p != bootstrapRoute {
+			panic("daemon: route " + p + " has no handler")
+		}
+		if ok {
+			mux.Handle(p, h)
+			delete(served, p)
+		}
+	}
+	if len(served) != 0 {
+		panic("daemon: a handler without a route in routeList")
+	}
+	return mux
+}
+
 // handler is the API's routes, every request body bounded. Commands
 // answer through the wired actions' logic.
 func handler(store *eventstore.Store, boot *bootstrapper, lim limits, gate *api.Slots, cmds commands) http.Handler {
-	mux := http.NewServeMux()
-	if boot != nil {
-		mux.Handle("POST "+apidoc.BootstrapPath, boot.handler(gate))
-	}
-	mux.Handle("GET "+api.EventsPath, api.Events{Store: store, Poll: lim.poll, Gate: gate})
-	mux.HandleFunc("GET "+api.VersionPath, api.Version)
-	cmds.gate = gate
-	mux.Handle("POST "+CommandsPath, cmds)
-	reads := api.Reads{Store: store, Gate: gate, Resources: api.Registered()}
-	mux.HandleFunc("GET "+api.WhoamiPath, reads.Whoami)
-	mux.HandleFunc("GET "+api.ReadPath, reads.Resource)
+	mux := routes(store, boot, lim, gate, cmds)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength > lim.bodyBytes {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
