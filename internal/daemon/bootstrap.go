@@ -38,6 +38,7 @@ const (
 	bootstrapAction = "identity.bootstrap"
 	issueAction     = "identity.bootstrap_issue"
 	renewAction     = "identity.bootstrap_renew" // adcd bootstrap renew (14 R8)
+	recoverAction   = "identity.token_recover"   // adcd recover operator-token (14 R7)
 )
 
 // The fixed-text startup notes; none names a path or the secret.

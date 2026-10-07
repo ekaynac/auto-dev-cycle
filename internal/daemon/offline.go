@@ -22,7 +22,8 @@ import (
 
 // Commands are adcd's offline commands, by their two words.
 var Commands = map[[2]string]func([]string, io.Writer) int{
-	{"bootstrap", "renew"}: RenewCommand,
+	{"bootstrap", "renew"}:        RenewCommand,
+	{"recover", "operator-token"}: RecoverCommand,
 }
 
 const renewUsage = "usage: adcd bootstrap renew --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX]"

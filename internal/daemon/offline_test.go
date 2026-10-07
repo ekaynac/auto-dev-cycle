@@ -108,7 +108,8 @@ func privateDir(t *testing.T) string {
 // offlineArgs are each offline command's arguments on p's store.
 func offlineArgs(p people, out string) map[[2]string][]string {
 	return map[[2]string][]string{
-		{"bootstrap", "renew"}: {"--state-dir", p.dir},
+		{"bootstrap", "renew"}:        {"--state-dir", p.dir},
+		{"recover", "operator-token"}: {"--state-dir", p.dir, "--actor", string(p.op), "--out", out},
 	}
 }
 
