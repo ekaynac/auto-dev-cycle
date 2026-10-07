@@ -29,7 +29,7 @@ Actor:
     consumes the bootstrap; the file is deleted after the commit, and a leftover one never bootstraps again. A wrong,
     expired or spent secret is `failed/confirmation_refused`. `adc admin bootstrap` reads the secret from the file or
     stdin, never argv, and writes the token file.
-  - Recovery: offline commands, run as the daemon uid while the daemon is stopped. Each takes `adcd.lock` before
+  - Recovery: two offline commands, run as the daemon uid while the daemon is stopped. Each takes `adcd.lock` before
     the store opens and releases it after the store closes, so it is refused (`could_not_run/controller_already_running`)
     while `adcd` runs. Each runs every startup trust check (the state directory, the hash chain and `--trusted-head` when
     given, the capacity history, unread event kinds, the projection comparison), refuses on any failure as `adcd run`
@@ -37,13 +37,23 @@ Actor:
     and blob directories must already exist, verified read-only under the lock before the store opens. It commits one
     event as the system actor through its claim; no endpoint reaches it.
     Exit codes are the single table's (08): 0, 1 refused, 2 could not run, 64 usage.
+    - `adcd recover operator-token --state-dir DIR --actor ID --out FILE [--revoke-others] [--force-overwrite]
+      [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX]` (14 R7), for a lost operator credential (or a
+      bootstrap whose response or token-file write was lost: a retry replays without the token). It mints the token
+      outside the transaction and records `identity.token_recovered/v1`, with `--revoke-others` revoking the operator's
+      other live tokens in the same event. A target that is missing, revoked or not an operator is
+      `failed/recipient_not_operator`. The secret goes only to `FILE`, written as the token file is (R5): its directory
+      is the user's, not group- or other-writable and not itself a symlink; a temporary file is created
+      `O_EXCL|O_NOFOLLOW` 0600, synced and renamed into place without replacing anything unless forced, so `FILE` is
+      never followed. Before anything is recorded, an existing `FILE` is refused (exit 64) unless `--force-overwrite`,
+      and one that is neither a regular file nor a symlink, or cannot be inspected, is refused even then. If the file
+      cannot be written after the commit, recovering again with `--revoke-others` retires the undelivered token. It
+      confirms no proposal, resurrects no actor and leaves the bootstrap alone.
     - `adcd bootstrap renew --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX]` (14 R8), for an
       expired, unused secret or a recorded one whose file is gone. While the bootstrap is unconsumed it writes a fresh
       secret every time (never the current one) through the held state-directory descriptor, replacing the old file,
       and records `identity.bootstrap_renewed/v1` with a new 24 h expiry; the old secret no longer bootstraps. After
       consumption it is `failed/confirmation_refused`. Startup never renews.
-    - A bootstrap committed but whose response or token-file write was lost: a retry replays without the token, and
-      `adcd recover operator-token` (14 R7, PR 4d-2) issues the operator a new one offline.
   - All logs redact tokens, secrets and challenge values by type, not by pattern guessing.
 - `operator` tokens are unrestricted (D31).
 - `supervisor` tokens act only under grants.
@@ -78,8 +88,8 @@ A supervisor cannot create, extend or widen grants (`human`, and never by the gr
 
 `schemas/vocab/actions.yaml` lists every mutating action kind a request can name. The exceptions are the controller's
 system-only actions: `identity.bootstrap_issue` (the first start records the bootstrap secret), `identity.bootstrap`
-(`POST /v1/bootstrap` spends it, where the setup secret, not a bearer, is the credential), and the offline
-`identity.bootstrap_renew` (`adcd bootstrap renew`). They are unregistered and have
+(`POST /v1/bootstrap` spends it, where the setup secret, not a bearer, is the credential), and the offline recovery
+commands' `identity.token_recover` and `identity.bootstrap_renew`. They are unregistered and have
 no command endpoint of their own. The daemon's Authorize hook admits them for the system principal alone, never for a
 bearer. Authority does **not** trust the endpoint name. For
 every command, it computes the **effective change**: the diff between the current and resulting policy-relevant state.
