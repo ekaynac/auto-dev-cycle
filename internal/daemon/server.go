@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
+	"github.com/ekaynac/auto-dev-cycle/internal/apidoc"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 )
@@ -53,7 +54,7 @@ type server struct {
 // listen binds the private socket in stateDir and, when configured, the
 // shared one, and serves the API over store on both. It runs at the
 // readiness point only (Run).
-func listen(store *eventstore.Store, stateDir string, shared *SharedSocket, lim limits) (_ *server, err error) {
+func listen(store *eventstore.Store, boot *bootstrapper, stateDir string, shared *SharedSocket, lim limits) (_ *server, err error) {
 	s := &server{lim: lim, failed: make(chan error, 2)}
 	defer func() {
 		if err != nil {
@@ -95,7 +96,7 @@ func listen(store *eventstore.Store, stateDir string, shared *SharedSocket, lim 
 	// effective bound is headerBytes + 4096 (20 KiB by default); memory
 	// stays bounded either way.
 	for _, sk := range s.sockets {
-		hs := &http.Server{Handler: handler(store, lim, sk.verify), ReadHeaderTimeout: lim.headerTimeout, WriteTimeout: lim.writeTimeout,
+		hs := &http.Server{Handler: handler(store, boot, lim, sk.verify), ReadHeaderTimeout: lim.headerTimeout, WriteTimeout: lim.writeTimeout,
 			IdleTimeout: lim.idleTimeout, MaxHeaderBytes: lim.headerBytes - 4096,
 			BaseContext: func(net.Listener) context.Context { return base }, ConnContext: connContext}
 		s.https = append(s.https, hs)
@@ -175,8 +176,11 @@ func connContext(ctx context.Context, c net.Conn) context.Context {
 
 // handler is the API's routes, every request body bounded. Command routes
 // join with their handlers.
-func handler(store *eventstore.Store, lim limits, gate *api.Slots) http.Handler {
+func handler(store *eventstore.Store, boot *bootstrapper, lim limits, gate *api.Slots) http.Handler {
 	mux := http.NewServeMux()
+	if boot != nil {
+		mux.Handle("POST "+apidoc.BootstrapPath, boot.handler(gate))
+	}
 	mux.Handle("GET "+api.EventsPath, api.Events{Store: store, Poll: lim.poll, Gate: gate})
 	mux.HandleFunc("GET "+api.VersionPath, api.Version)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

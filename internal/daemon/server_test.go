@@ -50,7 +50,7 @@ func serveStore(t *testing.T, lim limits, shared *SharedSocket) *served {
 		return evs, err
 	})
 	var err error
-	if s.srv, err = listen(s.w.s, s.dir, shared, lim); err != nil {
+	if s.srv, err = listen(s.w.s, nil, s.dir, shared, lim); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.srv.close() })
@@ -229,7 +229,7 @@ func TestShutdownRemovesSockets(t *testing.T) {
 	}
 	gone(t, filepath.Join(s.dir, privateSocket))
 	gone(t, filepath.Join(run, sharedSocket))
-	again, err := listen(s.w.s, s.dir, nil, defaultLimits)
+	again, err := listen(s.w.s, nil, s.dir, nil, defaultLimits)
 	if err != nil {
 		t.Fatal(err)
 	}

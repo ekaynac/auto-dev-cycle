@@ -50,6 +50,9 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 		fmt.Fprintf(stderr, "adc %s: missing verb\n", args[0])
 		return entry.ExitUsage
 	}
+	if args[0] == "admin" && args[1] == "bootstrap" {
+		return adminBootstrap(ctx, args[2:], stdout, stderr, c)
+	}
 	action, ok := actionFor(args[0], args[1])
 	if !ok {
 		fmt.Fprintf(stderr, "adc %s: unknown verb %q\n", args[0], args[1])
@@ -87,12 +90,10 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 		return usage("%v", err)
 	}
 	if *key == "" {
-		b := make([]byte, 16)
-		if _, err := rand.Read(b); err != nil {
+		if *key, err = newKey(); err != nil {
 			fmt.Fprintf(stderr, "%s: could_not_run: %v\n", name, err)
 			return entry.ExitCouldNotRun
 		}
-		*key = "cli-" + hex.EncodeToString(b)
 	}
 	req := types.CommandRequest{IdempotencyKey: *key, Expected: expected, Scope: json.RawMessage(*scope), Reason: *reason}
 	// The bytes validated are the bytes sent.
@@ -135,6 +136,13 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 		fmt.Fprintf(stderr, "%s: writing the result: %v\n", name, err)
 	}
 	return ExitCode(resp)
+}
+
+// newKey is a fresh idempotency key.
+func newKey() (string, error) {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	return "cli-" + hex.EncodeToString(b), err
 }
 
 // parseExpect reads --expect: a version or a digest, never neither; the

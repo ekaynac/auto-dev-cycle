@@ -45,6 +45,7 @@ func Kinds() eventstore.Kinds {
 	}
 	k[TokenRecoveredKind] = eventstore.Kind{Schema: TokenRecoveredSchema}
 	k[BootstrapRenewedKind] = eventstore.Kind{Schema: BootstrapRenewSchema}
+	k[BootstrapIssuedKind] = eventstore.Kind{Schema: BootstrapRenewSchema}
 	return k
 }
 

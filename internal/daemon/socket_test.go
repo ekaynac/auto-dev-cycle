@@ -113,7 +113,7 @@ func TestRunDirRefused(t *testing.T) {
 	} {
 		dir := shortDir(t)
 		w := seed(t, dir, daemonProjection(t))
-		srv, err := listen(w.s, dir, &sh, defaultLimits)
+		srv, err := listen(w.s, nil, dir, &sh, defaultLimits)
 		if !errors.Is(err, ErrConfig) {
 			t.Errorf("%s: accepted: %v", name, err)
 			srv.close()
@@ -162,14 +162,14 @@ func TestStaleSocket(t *testing.T) {
 	w := seed(t, dir, daemonProjection(t))
 	defer w.done()
 	// Live: someone answers on it.
-	if _, err := listen(w.s, dir, nil, defaultLimits); !errors.Is(err, ErrConfig) {
+	if _, err := listen(w.s, nil, dir, nil, defaultLimits); !errors.Is(err, ErrConfig) {
 		t.Fatalf("a live socket was replaced: %v", err)
 	}
 	if err := os.Chmod(path, 0o640); err != nil { // marks the stale socket (an inode number may be reused)
 		t.Fatal(err)
 	}
 	ln.Close()
-	srv, err := listen(w.s, dir, nil, defaultLimits)
+	srv, err := listen(w.s, nil, dir, nil, defaultLimits)
 	if err != nil {
 		t.Fatalf("a stale socket was not replaced: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestStaleSocket(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := lstat(t, path)
-		if srv, err := listen(w.s, dir, nil, defaultLimits); !errors.Is(err, ErrConfig) {
+		if srv, err := listen(w.s, nil, dir, nil, defaultLimits); !errors.Is(err, ErrConfig) {
 			t.Errorf("%s at the path: %v", name, err)
 			srv.close()
 		}
@@ -250,7 +250,7 @@ func TestStaleNeedsARefusedConnect(t *testing.T) {
 			before := lstat(t, path)
 			w := seed(t, dir, daemonProjection(t))
 			defer w.done()
-			if srv, err := listen(w.s, dir, nil, defaultLimits); !errors.Is(err, ErrConfig) {
+			if srv, err := listen(w.s, nil, dir, nil, defaultLimits); !errors.Is(err, ErrConfig) {
 				t.Errorf("a live socket was replaced: %v", err)
 				srv.close()
 			}
@@ -311,7 +311,7 @@ func TestACLRefused(t *testing.T) {
 		dir := shortDir(t)
 		w := seed(t, dir, daemonProjection(t))
 		defer w.done()
-		srv, err := listen(w.s, dir, &SharedSocket{RunDir: run, Group: egid()}, defaultLimits)
+		srv, err := listen(w.s, nil, dir, &SharedSocket{RunDir: run, Group: egid()}, defaultLimits)
 		if err == nil {
 			srv.close()
 		}
@@ -408,7 +408,7 @@ func tryShared(t *testing.T, state, run string) error {
 	if run != "" {
 		sh = &SharedSocket{RunDir: run, Group: egid()}
 	}
-	srv, err := listen(w.s, state, sh, defaultLimits)
+	srv, err := listen(w.s, nil, state, sh, defaultLimits)
 	if err == nil {
 		srv.close()
 	}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/bootstrap-request.json",
+  "title": "BootstrapRequest",
+  "description": "The body of POST /v1/bootstrap (docs/design/m0/04 \"Bootstrap\", 14 R4), served only on the private socket and without a bearer: the one-time setup secret from <state_dir>/bootstrap.secret creates the first operator and its first token. The writer runs it once per idempotency_key; a repeat with the same body replays the stored result without the token.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["idempotency_key", "secret", "name"],
+  "properties": {
+    "idempotency_key": {"type": "string", "maxLength": 200, "pattern": "^[\\x21-\\x7e]+$"},
+    "secret": {"description": "The setup secret: 32 bytes of base64url, never logged or stored.", "type": "string", "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"},
+    "name": {"description": "The first operator's display name.", "type": "string", "minLength": 1, "maxLength": 200}
+  }
+}

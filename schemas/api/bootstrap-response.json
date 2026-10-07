@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/bootstrap-response.json",
+  "title": "BootstrapResponse",
+  "description": "The response to POST /v1/bootstrap, a union on disposition: applied (the first operator and its first token exist) or refused (nothing was applied; a wrong, expired or consumed secret is failed/confirmation_refused).",
+  "oneOf": [
+    {"$ref": "#/$defs/BootstrapApplied"},
+    {"$ref": "#/$defs/BootstrapRefused"}
+  ],
+  "$defs": {
+    "BootstrapApplied": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "command", "replayed", "operator", "token"],
+      "properties": {
+        "disposition": {"const": "applied"},
+        "command": {"$ref": "../common/defs.json#/$defs/CommandID"},
+        "replayed": {"type": "boolean"},
+        "operator": {"$ref": "../common/defs.json#/$defs/ActorID"},
+        "token": {"$ref": "../common/defs.json#/$defs/TokenID"},
+        "issued_credential": {
+          "description": "The first token's bearer string, tok_<id>.<secret> (14 N3): present only on the response that applied the bootstrap, absent on a replay. It is never stored; a lost one is recovered offline (adcd recover operator-token).",
+          "type": "string",
+          "pattern": "^tok_[0-7][0-9a-hjkmnp-tv-z]{25}\\.[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+        }
+      }
+    },
+    "BootstrapRefused": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "outcome", "reason", "detail"],
+      "properties": {
+        "disposition": {"const": "refused"},
+        "outcome": {"enum": ["failed", "could_not_run"]},
+        "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
+        "detail": {"type": "string", "minLength": 1, "maxLength": 4096}
+      }
+    }
+  }
+}

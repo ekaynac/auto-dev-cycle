@@ -98,17 +98,25 @@ func mint(actor, createdBy types.ActorID, now time.Time) (types.Token, Secret, e
 		return types.Token{}, Secret{}, err
 	}
 	secret := base64.RawURLEncoding.EncodeToString(raw)
-	salt := make([]byte, saltBytes)
-	if _, err := rand.Read(salt); err != nil {
+	hash, err := hashOf(secret)
+	if err != nil {
 		return types.Token{}, Secret{}, err
 	}
-	key := argon2.IDKey([]byte(secret), salt, argonTime, argonMemory, argonThreads, keyBytes)
-	hash := fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, argonMemory, argonTime, argonThreads,
-		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key))
 	t := types.Token{ID: types.TokenID(id), Actor: actor, Hash: hash, CreatedBy: createdBy,
 		CreatedAt: now.UTC().Format(time.RFC3339Nano), RevokedAt: nil}
 	bearer := id + "." + secret
 	return t, Secret{func() string { return bearer }}, nil
+}
+
+// hashOf is the issuance profile's hash of secret, with a fresh salt.
+func hashOf(secret string) (string, error) {
+	salt := make([]byte, saltBytes)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+	key := argon2.IDKey([]byte(secret), salt, argonTime, argonMemory, argonThreads, keyBytes)
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, argonMemory, argonTime, argonThreads,
+		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key)), nil
 }
 
 // parse splits a bearer string into its token id and secret.
