@@ -71,6 +71,7 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	scope := fs.String("scope", "{}", "the action's parameters, a JSON object")
 	key := fs.String("idempotency-key", "", "repeat a command safely with the same key (default: a new key)")
 	asJSON := fs.Bool("json", false, "print the response as one JSON document")
+	tokenOut := fs.String("token-out", "", "a command that issues a token: the new file it is written to, 0600 (required; never an existing file)")
 	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
 		return entry.ExitOK
 	} else if err != nil {
@@ -82,6 +83,10 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	}
 	if fs.NArg() > 0 {
 		return usage("unexpected argument %q", fs.Arg(0))
+	}
+	recovery, issues := issuing[action]
+	if issues != (*tokenOut != "") {
+		return usage("--token-out FILE is required by a command that issues a token, and taken by no other")
 	}
 	// The revision is never fetched for the caller [M13].
 	if *expect == "" {
@@ -103,9 +108,20 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	if err != nil {
 		return usage("invalid command: %v", err)
 	}
+	var out *client.TokenOut
+	if issues {
+		if out, err = client.CreateTokenOut(*tokenOut); err != nil {
+			return usage("%v", err)
+		}
+		defer out.Discard()
+	}
 	// Once sent, the command may have run: a retry must reuse its key.
+	lost := ""
+	if issues {
+		lost = "; if it applied, a repeat delivers no token: " + recovery
+	}
 	couldNotRun := func(format string, a ...any) int {
-		fmt.Fprintf(stderr, "%s: could_not_run: %s; to retry safely, repeat it with --idempotency-key %s\n", name, fmt.Sprintf(format, a...), *key)
+		fmt.Fprintf(stderr, "%s: could_not_run: %s; to retry safely, repeat it with --idempotency-key %s%s\n", name, fmt.Sprintf(format, a...), *key, lost)
 		return entry.ExitCouldNotRun
 	}
 	raw, err := c.Command(ctx, action, body)
@@ -133,12 +149,17 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 			return couldNotRun("the controller's refusal is invalid: %v", err)
 		}
 	}
-	// A credential the command issued is for another actor (agent.enrol);
-	// where it is stored is 14 7a/7b's to decide. Until then it is never
-	// written over the caller's own token, nor printed.
-	if v, ok := resp.Variant.(*types.CommandApplied); ok && v.IssuedCredential != nil {
-		fmt.Fprintf(stderr, "%s: could_not_run: the command applied and issued a credential, which this build cannot store; it was discarded and nothing was written: revoke the issued token\n", name)
-		return entry.ExitCouldNotRun
+	// An issued token goes to --token-out alone, never to stdout.
+	if v, ok := resp.Variant.(*types.CommandApplied); ok {
+		if code, done := deliver(name, v, out, recovery, stderr); done {
+			return code
+		}
+		if issues {
+			if raw, err = contract.Encode("api/command-response", resp); err != nil {
+				return couldNotRun("%v", client.ErrInvalidResponse)
+			}
+			defer fmt.Fprintf(stderr, "%s: the issued token was written to %s\n", name, *tokenOut)
+		}
 	}
 	if *asJSON {
 		_, err = fmt.Fprintf(stdout, "%s\n", bytes.TrimSpace(raw))

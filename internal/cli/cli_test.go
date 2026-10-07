@@ -93,8 +93,11 @@ func TestCommandsReachTheirActions(t *testing.T) {
 		"admin enrol-agent": "agent.enrol", "admin revoke-actor": "actor.revoke",
 		"seat take": "seat.take", "seat release": "seat.release", "notes add": "note.add",
 	} {
-		f := &fake{resp: applied}
-		if code, _, _ := adc(f, append(strings.Fields(cmd), "--expect", "1", "--reason", "r")...); code != entry.ExitOK || f.action != action {
+		f, args := &fake{resp: applied}, append(strings.Fields(cmd), "--expect", "1", "--reason", "r")
+		if _, issues := issuing[action]; issues {
+			f.resp, args = issuedResp, append(args, "--token-out", filepath.Join(privateDir(t), "t"))
+		}
+		if code, _, _ := adc(f, args...); code != entry.ExitOK || f.action != action {
 			t.Errorf("adc %s: exit %d, action %q, want %q", cmd, code, f.action, action)
 		}
 	}
@@ -212,36 +215,143 @@ func TestHumanProposal(t *testing.T) {
 	}
 }
 
-// An issued credential is refused: nothing is printed, in either output
-// mode, and the token file is left byte for byte (it would be another
-// actor's credential over the caller's own).
-func TestIssuedCredentialRefused(t *testing.T) {
-	const tok = "tok_01m3250vkwffc979nzjw0g2sa1.zzFAKEzzSECRETzzRECOGNIZABLEzzQQQQQQQQQQQQA"
-	issued := strings.TrimSuffix(applied, "}") + `,"issued_credential":"` + tok + `"}`
+const issuedTok = "tok_01m3250vkwffc979nzjw0g2sa1.zzFAKEzzSECRETzzRECOGNIZABLEzzQQQQQQQQQQQQA"
+
+var issuedResp = strings.TrimSuffix(applied, "}") + `,"issued_credential":"` + issuedTok + `"}`
+
+// privateDir is a new directory of mode 0700, whatever the umask.
+func privateDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// ownToken writes the caller's own token file in a fresh HOME and returns
+// its path and bytes, to show they never change.
+func ownToken(t *testing.T) (string, []byte) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	files := client.Files{Home: home, UID: os.Getuid()}
 	own, err := identity.ParseSecret("tok_01m3250vkwffc979nzjw0g2sf9.ownOWNownOWNownOWNownOWNownOWNownOWNownOWNA")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := files.Write(own); err != nil {
-		t.Fatal(err)
+	if err == nil {
+		err = client.Files{Home: home, UID: os.Getuid()}.Write(own)
 	}
 	path := filepath.Join(home, ".config", "adc", "token")
-	before, err := os.ReadFile(path)
-	if err != nil {
+	before, rerr := os.ReadFile(path)
+	if err = errors.Join(err, rerr); err != nil {
 		t.Fatal(err)
 	}
+	return path, before
+}
+
+// An issuing command's token goes to --token-out alone (0600, the token
+// and a newline), in either output mode: never to stdout or stderr, and
+// never over the caller's own token file. --json prints the response
+// without it.
+func TestIssuedCredentialToTokenOut(t *testing.T) {
+	own, before := ownToken(t)
 	for _, mode := range [][]string{nil, {"--json"}} {
-		code, out, errs := adc(&fake{resp: issued}, append([]string{"admin", "enrol-agent", "--expect", "0", "--reason", "r"}, mode...)...)
-		if code != entry.ExitCouldNotRun || out != "" || strings.Contains(errs, "zzFAKEzz") || !strings.Contains(errs, "cannot store") {
+		path := filepath.Join(privateDir(t), "agent.token")
+		code, out, errs := adc(&fake{resp: issuedResp}, append([]string{"admin", "enrol-agent", "--expect", "0", "--reason", "r", "--token-out", path}, mode...)...)
+		if code != entry.ExitOK || strings.Contains(out+errs, "zzFAKEzz") || !strings.Contains(errs, path) {
 			t.Fatalf("%v: %d %q %q", mode, code, out, errs)
 		}
-		if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
-			t.Fatalf("%v: the token file changed (%v)", mode, err)
+		if mode != nil {
+			var v map[string]any
+			if err := json.Unmarshal([]byte(out), &v); err != nil || v["disposition"] != "applied" || v["issued_credential"] != nil {
+				t.Fatalf("--json: %q %v", out, err)
+			}
+		}
+		st, err := os.Stat(path)
+		got, rerr := os.ReadFile(path)
+		if err != nil || rerr != nil || st.Mode() != 0o600 || string(got) != issuedTok+"\n" {
+			t.Fatalf("%v: --token-out %v %v %v", mode, st, err, rerr)
+		}
+		if after, err := os.ReadFile(own); err != nil || !bytes.Equal(after, before) {
+			t.Fatalf("%v: the caller's token file changed (%v)", mode, err)
 		}
 	}
+}
+
+// --token-out is required by an issuing command and taken by no other,
+// and an existing file (the caller's own token among them) is refused:
+// each a usage error before anything is sent.
+func TestTokenOutUsage(t *testing.T) {
+	own, before := ownToken(t)
+	ok := []string{"--expect", "0", "--reason", "r"}
+	for name, args := range map[string][]string{
+		"none for enrol-agent":       append([]string{"admin", "enrol-agent"}, ok...),
+		"one for revoke-actor":       append([]string{"admin", "revoke-actor", "--token-out", filepath.Join(privateDir(t), "t")}, ok...),
+		"the caller's own token":     append([]string{"admin", "enrol-agent", "--token-out", own}, ok...),
+		"an unsafe directory":        append([]string{"admin", "enrol-agent", "--token-out", filepath.Join(t.TempDir(), "x", "t")}, ok...),
+		"one for a seat command too": append([]string{"seat", "take", "--token-out", filepath.Join(privateDir(t), "t")}, ok...),
+	} {
+		f := &fake{resp: issuedResp}
+		code, _, errs := adc(f, args...)
+		if code != entry.ExitUsage || f.calls != 0 || (strings.HasPrefix(name, "none") && !strings.Contains(errs, "--token-out FILE is required")) {
+			t.Errorf("%s: exit %d after %d calls (%s)", name, code, f.calls, errs)
+		}
+	}
+	if after, err := os.ReadFile(own); err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("the caller's token file changed (%v)", err)
+	}
+}
+
+// When no token arrives, the reserved --token-out is removed and the
+// recovery is named: a lost response, a repeat of an applied command
+// (whose token id it reports), a refusal, and a token that could not be
+// written; a credential a non-issuing command was sent is never written.
+func TestTokenNotDelivered(t *testing.T) {
+	own, before := ownToken(t)
+	replayed := strings.Replace(applied, `"replayed":false`, `"replayed":true`, 1)
+	replayed = strings.Replace(replayed, `"result":{}`, `"result":{"actor":"act_01m3250vkwffc979nzjw0g2sa1","token":"tok_01m3250vkwffc979nzjw0g2sb2"}`, 1)
+	defer func(old func(*client.TokenOut, identity.Secret) error) { writeToken = old }(writeToken)
+	writeToken = func(o *client.TokenOut, tok identity.Secret) error {
+		if strings.Contains(tok.Reveal(), "FAIL") {
+			o.Discard()
+			return errors.New("disk full")
+		}
+		return o.Write(tok)
+	}
+	failing := strings.Replace(issuedResp, "zzFAKEzz", "zzFAILzz", 1)
+	for name, c := range map[string]struct {
+		cmd, resp string
+		err       error
+		code      int
+		want      string
+	}{
+		"a lost enrolment":       {"enrol-agent", "", errors.New("connection reset"), entry.ExitCouldNotRun, "a repeat delivers no token: revoke the actor (adc admin revoke-actor) and enrol it again under a new actor id"},
+		"a repeated enrolment":   {"enrol-agent", replayed, nil, entry.ExitCouldNotRun, `applied earlier (token "tok_01m3250vkwffc979nzjw0g2sb2") and a repeat delivers no token; revoke the actor`},
+		"a refused enrolment":    {"enrol-agent", notFound, nil, entry.ExitRefused, "refused"},
+		"an unwritable token":    {"enrol-agent", failing, nil, entry.ExitCouldNotRun, "could not be written (disk full) and is not delivered again; revoke the actor"},
+		"a non-issuing response": {"revoke-actor", issuedResp, nil, entry.ExitCouldNotRun, "discarded and nothing was written"},
+	} {
+		dir := privateDir(t)
+		args := []string{"admin", c.cmd, "--expect", "1", "--reason", "r"}
+		if _, issues := issuing[commandAction(c.cmd)]; issues {
+			args = append(args, "--token-out", filepath.Join(dir, "t"))
+		}
+		code, out, errs := adc(&fake{resp: c.resp, err: c.err}, args...)
+		if code != c.code || !strings.Contains(out+errs, c.want) || strings.Contains(out+errs, "zzFA") {
+			t.Errorf("%s: %d %q %q", name, code, out, errs)
+		}
+		if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+			t.Errorf("%s: --token-out left behind (%v)", name, err)
+		}
+	}
+	if after, err := os.ReadFile(own); err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("the caller's token file changed (%v)", err)
+	}
+}
+
+func commandAction(verb string) string {
+	a, _ := actionFor("admin", verb)
+	return a
 }
 
 // A response that fails validation is never quoted.
