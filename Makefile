@@ -80,10 +80,11 @@ dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 	@$(CHECK_RELEASE) $$(find $(DIST_DIR) -type f | sort)
 	@find $(DIST_DIR) -type f | sort
 
-install-check: dist build ## Install the dist build into an empty prefix, check what the installed binaries report and run their contract fixtures in isolation (00 exit check)
+install-check: dist build ## Install the dist build into an empty prefix, check what the installed binaries report, run their contract fixtures and the installed smoke in isolation (00 exit check, 14 PR 12)
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 	  scripts/install-check.sh --expect "$$($(BIN_DIR)/adc version --json | sed -n 's/.*"schema_set":"\([^"]*\)".*/\1/p')" "$$tmp/prefix" \
-	  && scripts/installed-fixtures.sh "$$tmp/prefix"
+	  && scripts/installed-fixtures.sh "$$tmp/prefix" \
+	  && scripts/installed-smoke.sh "$$tmp/prefix"
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go

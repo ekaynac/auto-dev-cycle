@@ -27,9 +27,9 @@ jobs:
           persist-credentials: false
       - name: Install shellcheck
         run: command -v shellcheck || (sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck)
-      - name: Enable bubblewrap (the default test sandbox backend)
+      - name: Enable bubblewrap (the default test sandbox backend) and curl (the installed smoke)
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
+          sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap curl
           # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install the pinned Go toolchain (per user)
