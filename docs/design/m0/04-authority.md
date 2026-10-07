@@ -59,7 +59,8 @@ Actor:
   - `agent.enrol {actor, name, declared_agent}` creates a supervisor and its first token in one command. The client
     mints the actor id, so a retry under the same key replays and the same id under a new key is refused. The request
     layer mints the token outside the transaction; only its hash is recorded, and the secret reaches only the live
-    response of the call that applied it (14 N3).
+    response of the call that applied it (14 N3). If that response is lost after the commit, a repeat replays without
+    the token, so recovery is `actor.revoke` followed by enrolling under a new actor id.
   - A supervisor's `agent.enrol` is refused (`operator_only`), not proposed. Its `human` policy cannot be confirmed
     until the dashboard's WebAuthn is deployed (14 R6), so the proposal could only expire. Its token would also have
     no one to go to: at apply it would be minted by the confirming request and delivered only to the confirming

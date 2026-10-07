@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"sync"
 )
@@ -67,11 +68,18 @@ func (s *Slots) enter(r *http.Request) (func(), bool) {
 	if _, ok := principalOf(r); ok {
 		return func() {}, true
 	}
-	p, ok := PeerOf(r.Context())
+	return s.Take(SlotKey(r.Context()))
+}
+
+// SlotKey is the key ctx's peer takes slots under (Peer.Key), -1 when no
+// peer is recorded: never a real uid's, so a caller without one cannot
+// spend root's (uid 0) slots, nor root theirs.
+func SlotKey(ctx context.Context) any {
+	p, ok := PeerOf(ctx)
 	if !ok {
 		p.UID = -1
 	}
-	return s.Take(p.Key())
+	return p.Key()
 }
 
 // refuseBusy is the fixed-text refusal of a full gate.

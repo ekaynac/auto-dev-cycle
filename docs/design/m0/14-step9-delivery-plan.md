@@ -169,7 +169,10 @@ Each PR is at most about 400 hand-written non-test lines, counting added plus de
    - **6d. Withdraw** [~150].
 7. **Identity and grant handlers** (contract):
    - **7a. Enrolment and actor administration** [~300]: H1 and `actor.revoke`.
-   - **7b. Token administration** [~300]: M4.
+   - **7b. Token administration** [~300]: M4, and where the CLI puts an issued credential. Split in two:
+     - **7b-1.** The CLI's `--token-out` for an issued credential (08 "Issued credentials"), and the mint's slot key
+       without a recorded peer.
+     - **7b-2.** M4: token issue, revoke and replace.
    - **7c. Grant create and revoke** [~250].
    - **7d. Grant replacement** [~300]: N6 and P6.
 8. **Notes** [~150] (contract).

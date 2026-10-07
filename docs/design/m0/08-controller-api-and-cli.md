@@ -89,6 +89,29 @@ the HTTPS listener, `HOST` an IP literal or a DNS name). Setting both is refused
   the dashboard link.
 - Unknown flags are refused.
 
+## Issued credentials (14 N3, M4)
+
+A command that issues a token (`agent.enrol`; 14 M4 adds token issue and rotation) answers it once, in the fresh
+applied response's `issued_credential`. The token belongs to another actor, or replaces one, so the CLI never stores it
+as the caller's own (decided in 14 PR 7b):
+- Each such command requires `--token-out FILE`; no other command takes it. There is no default and no stdout mode.
+- Before anything is sent, `FILE` is created `O_CREAT|O_EXCL|O_NOFOLLOW`, mode 0600, in a directory opened without
+  following a symlink and checked on its descriptor: owned by the caller, not writable by group or others (R5). An
+  existing path, a symlink, an unsafe directory, or the caller's own `~/.config/adc/token` (recognised by its
+  directory's device and inode, even before it exists) is a usage error (exit 64), and nothing is sent. Any other
+  failure to create `FILE` (`ENOSPC`, `EROFS`, `EDQUOT`, …) is `could_not_run` (exit 2), and nothing is sent. Reserving
+  the file first means the commit never finds its destination taken.
+- After a fresh applied response, the response is re-encoded without its credential, then the token is written to
+  `FILE` and synced, with its directory; a failure at any step removes `FILE`, so a token reported undelivered is on no
+  disk. Without a token (a refusal, a proposal, a transport failure, an interrupt or termination, which cancels the
+  command), `FILE` is removed.
+- The token never reaches stdout, stderr or a log. `--json` prints the response without `issued_credential`.
+- A repeat of an applied command carries no token (the CLI names the token its result records), and neither does an
+  applied response that returned none or a write that failed after the commit: each is `could_not_run` (exit 2), with
+  the recovery for that action (04). For `agent.enrol` the recovery is `actor.revoke`
+  and then enrolling under a new actor id. A transport failure names the same recovery beside the retry key.
+- A credential in the response to any other command is never written: `could_not_run`.
+
 ## Dashboard parity (D23)
 
 - The dashboard is a static TS app served by `adcd`, using the generated API client.
