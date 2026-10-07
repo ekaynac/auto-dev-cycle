@@ -151,7 +151,7 @@ func (b *bootstrapper) issue(ctx context.Context, renew bool) error {
 	}
 	record, action := identity.IssueBootstrap, issueAction
 	if renew {
-		record, action = identity.RenewBootstrap, renewAction
+		record, action = renewRecord, renewAction
 	}
 	evs, err := record(b.system.Actor(), hash, b.now())
 	if err != nil {
@@ -163,6 +163,9 @@ func (b *bootstrapper) issue(ctx context.Context, renew bool) error {
 		}))
 	return err
 }
+
+// renewRecord makes a renewal's event; a test makes the commit fail.
+var renewRecord = identity.RenewBootstrap
 
 // bootstrapResult is the stored result: ids only, never the secret.
 type bootstrapResult struct {

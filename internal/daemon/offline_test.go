@@ -5,6 +5,8 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -258,22 +260,178 @@ func TestRenewBootstrap(t *testing.T) {
 	noSecret(t, dir, outputs, secrets...)
 }
 
-// An offline command never creates a store: a missing state directory is
-// refused, and so is an empty one, which keeps no system actor.
-func TestOfflineNeedsExistingStore(t *testing.T) {
-	dir := stateDir(t)
-	if code, msg := command(RenewCommand, "--state-dir", dir); code != entry.ExitCouldNotRun || !strings.Contains(msg, "the state directory must be") {
-		t.Fatalf("missing: %d %s", code, msg)
-	}
-	gone(t, dir)
-	if err := os.Mkdir(dir, 0o700); err != nil {
+// tree is every entry under dir with its type, mode and size.
+func tree(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	if err := filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := e.Info()
+		if err == nil {
+			out[p] = fmt.Sprintf("%v %d", info.Mode(), info.Size())
+		}
+		return err
+	}); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal(err)
 	}
+	return out
+}
+
+// An offline command never creates a store or any part of one: a missing
+// state directory, an empty one, one with only a lock file, one with an
+// uninitialized database, or a store without its blob directories is
+// refused and left exactly as it was; an
+// initialized store without a system actor is refused too.
+func TestOfflineNeedsExistingStore(t *testing.T) {
+	for name, c := range map[string]struct {
+		make func(t *testing.T, dir string)
+		want string
+	}{
+		"missing": {func(*testing.T, string) {}, "the state directory must be"},
+		"empty":   {func(t *testing.T, dir string) { mkdir(t, dir) }, "no initialized store"},
+		"lock only": {func(t *testing.T, dir string) {
+			mkdir(t, dir)
+			writeFile0600(t, filepath.Join(dir, eventstore.LockFile), "")
+		}, "no initialized store"},
+		"empty database": {func(t *testing.T, dir string) {
+			mkdir(t, dir)
+			writeFile0600(t, filepath.Join(dir, eventstore.LockFile), "")
+			writeFile0600(t, filepath.Join(dir, eventstore.DBFile), "")
+		}, "failed/log_integrity_broken"},
+		"no blob directories": {func(t *testing.T, dir string) {
+			restart(t, dir).Close()
+			if err := os.RemoveAll(filepath.Join(dir, "blobs")); err != nil {
+				t.Fatal(err)
+			}
+		}, "no initialized store"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := stateDir(t)
+			c.make(t, dir)
+			before := tree(t, filepath.Dir(dir))
+			if code, msg := command(RenewCommand, "--state-dir", dir); code == entry.ExitOK || !strings.Contains(msg, c.want) {
+				t.Fatalf("%d %s", code, msg)
+			}
+			if after := tree(t, filepath.Dir(dir)); fmt.Sprint(after) != fmt.Sprint(before) {
+				t.Fatalf("the filesystem changed:\nbefore %v\nafter  %v", before, after)
+			}
+		})
+	}
+	dir := stateDir(t)
+	seed(t, dir, daemonProjection(t)).done()
 	if code, msg := command(RenewCommand, "--state-dir", dir); code != entry.ExitCouldNotRun || !strings.Contains(msg, "no system actor") {
-		t.Fatalf("empty: %d %s", code, msg)
+		t.Fatalf("no system actor: %d %s", code, msg)
 	}
 	if lastSeq(t, dir) != 0 {
 		t.Fatal("an offline command recorded a system actor")
 	}
-	gone(t, filepath.Join(dir, bootstrapFile))
+}
+
+func mkdir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFile0600(t *testing.T, p, content string) {
+	t.Helper()
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The capacity history is checked offline on its own: a lease granted
+// before capacity was wired is refused as at startup.
+func TestOfflineChecksCapacityHistory(t *testing.T) {
+	dir := stateDir(t)
+	w := seed(t, dir, leasesOnly)
+	w.grantedLease(types.ActorID(newID(t, "act")), 4)
+	w.done()
+	if code, msg := command(RenewCommand, "--state-dir", dir); code != entry.ExitCouldNotRun || !strings.Contains(msg, "before capacity was wired") {
+		t.Fatalf("%d %s", code, msg)
+	}
+}
+
+// An offline command never runs the restart transition; adcd run does.
+func TestOfflineMarksNoPendingEffect(t *testing.T) {
+	dir := stateDir(t)
+	calls := 0
+	markPending = func(s *eventstore.Store, ctx context.Context, actor string) (int, error) {
+		calls++
+		return s.MarkPendingUncertain(ctx, actor)
+	}
+	t.Cleanup(func() { markPending = (*eventstore.Store).MarkPendingUncertain })
+	d := restart(t, dir) // created: no transition
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if code, msg := command(RenewCommand, "--state-dir", dir); code != entry.ExitOK || calls != 0 {
+		t.Fatalf("renew: %d %s, %d transition(s)", code, msg, calls)
+	}
+	d = restart(t, dir)
+	if err := d.Close(); err != nil || calls != 1 {
+		t.Fatalf("a restart ran %d transition(s): %v", calls, err)
+	}
+}
+
+// A renewal that fails leaves the recorded secret authoritative: a file
+// that cannot be replaced records nothing and is left in place; a commit
+// the projector refuses rolls back (the file then holds an unrecorded
+// secret that never bootstraps), and a retry renews with a fresh secret.
+// The diagnostics are fixed text.
+func TestRenewFailures(t *testing.T) {
+	const failed = "adcd: could_not_run/store_unreadable: the bootstrap secret cannot be renewed\n"
+	dir := stateDir(t)
+	d := restart(t, dir)
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	first, seq := bootRecord(t, dir)
+	p := filepath.Join(dir, bootstrapFile)
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	mkdir(t, p)
+	if code, msg := command(RenewCommand, "--state-dir", dir); code != entry.ExitCouldNotRun || msg != failed {
+		t.Fatalf("file failure: %d %q", code, msg)
+	}
+	if st, s := bootRecord(t, dir); st.Secret.Hash != first.Secret.Hash || s != seq || lstat(t, p).Mode&0o170000 != 0o040000 {
+		t.Fatal("a failed file replacement changed the state")
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	renewRecord = func(system types.ActorID, hash string, now time.Time) ([]eventstore.Event, error) {
+		return identity.RenewBootstrap(system, hash, now.Add(-48*time.Hour)) // expired before it is recorded
+	}
+	code, msg := command(RenewCommand, "--state-dir", dir)
+	renewRecord = identity.RenewBootstrap
+	if code != entry.ExitCouldNotRun || msg != failed {
+		t.Fatalf("rollback: %d %q", code, msg)
+	}
+	unrecorded := readSecret(t, dir)
+	if st, s := bootRecord(t, dir); st.Secret.Hash != first.Secret.Hash || s != seq {
+		t.Fatal("a rolled-back renewal changed the record")
+	}
+	if code, msg := command(RenewCommand, "--state-dir", dir); code != entry.ExitOK {
+		t.Fatalf("retry: %d %s", code, msg)
+	}
+	st, _ := bootRecord(t, dir)
+	if st.Secret.Hash == first.Secret.Hash || readSecret(t, dir) == unrecorded {
+		t.Fatal("the retry did not renew with a fresh secret")
+	}
+	d = restart(t, dir)
+	defer d.Close()
+	parsed, err := identity.ParseBootstrapSecret(unrecorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, v := d.boot.consume(context.Background(), types.BootstrapRequest{IdempotencyKey: "k", Secret: unrecorded, Name: "first"}, parsed); v == nil {
+		t.Fatal("no response")
+	} else if _, applied := v.(*types.BootstrapApplied); applied {
+		t.Fatal("an unrecorded secret bootstrapped")
+	}
 }

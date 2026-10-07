@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"sync"
 	"time"
 
@@ -64,9 +65,15 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	if err = errors.Join(err, kerr); err != nil {
 		return nil, couldNotRun(vocab.ReasonCheckUnloadable, "the vocabulary or the event kinds cannot be loaded", err)
 	}
-	lock, err := eventstore.AcquireLock(cfg.StateDir)
+	acquire := eventstore.AcquireLock
+	if offline {
+		acquire = eventstore.ProbeLock // creates no lock file
+	}
+	lock, err := acquire(cfg.StateDir)
 	if errors.Is(err, eventstore.ErrAlreadyRunning) {
 		return nil, couldNotRun(vocab.ReasonControllerAlreadyRunning, "another adcd holds the state directory lock", err)
+	} else if offline && errors.Is(err, fs.ErrNotExist) {
+		return nil, errNoStore
 	} else if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the state directory lock cannot be taken", err)
 	}
@@ -77,6 +84,11 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	}()
 	if err := checkStateDir(lock.Dir(), false); err != nil {
 		return nil, err
+	}
+	if offline {
+		if err := existingStore(ctx, lock, cfg.TrustedHead); err != nil {
+			return nil, err
+		}
 	}
 	blobs, err := blobstore.Open(lock.Dir())
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -29,6 +30,32 @@ func checkStateDir(dir string, mayBeMissing bool) error {
 	}
 	if err != nil || st.Mode&syscall.S_IFMT != syscall.S_IFDIR || int(st.Uid) != os.Geteuid() || st.Mode&0o777 != 0o700 {
 		return couldNotRun(vocab.ReasonStoreUnreadable, "the state directory must be a directory owned by this user with mode 0700", err)
+	}
+	return nil
+}
+
+// errNoStore refuses an offline command on a state directory without an
+// initialized store.
+var errNoStore = couldNotRun(vocab.ReasonStoreUnreadable, "the state directory holds no initialized store; an offline command never creates one", nil)
+
+// existingStore checks, under the lock and before anything is opened for
+// writing, that the state directory holds an initialized store, verified
+// read-only on a private copy: an offline command never creates the
+// database, its schema or genesis, or the blob directories.
+func existingStore(ctx context.Context, lock *eventstore.Lock, trusted *eventstore.Head) error {
+	_, err := eventstore.VerifyExisting(ctx, lock, trusted)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return errNoStore
+	case errors.Is(err, eventstore.ErrChainBroken):
+		return &StartError{Outcome: vocab.Failed, Reason: vocab.ReasonLogIntegrityBroken, Detail: "the event log fails verification; adc dev verify-log reports the finding", cause: err}
+	case err != nil:
+		return couldNotRun(vocab.ReasonStoreUnreadable, "the event log cannot be read for verification", err)
+	}
+	for _, d := range []string{"blobs", "blobs/sha256", "blobs/tmp"} {
+		if st, err := os.Lstat(filepath.Join(lock.Dir(), d)); err != nil || !st.IsDir() {
+			return errNoStore
+		}
 	}
 	return nil
 }

@@ -33,7 +33,9 @@ Actor:
     the store opens and releases it after the store closes, so it is refused (`could_not_run/controller_already_running`)
     while `adcd` runs. Each runs every startup trust check (the state directory, the hash chain and `--trusted-head` when
     given, the capacity history, unread event kinds, the projection comparison), refuses on any failure as `adcd run`
-    does, and never creates a store. It commits one event as the system actor through its claim; no endpoint reaches it.
+    does. It never creates a store or any part of one: the lock is taken without creating its file, and the database
+    and blob directories must already exist, verified read-only under the lock before the store opens. It commits one
+    event as the system actor through its claim; no endpoint reaches it.
     Exit codes are the single table's (08): 0, 1 refused, 2 could not run, 64 usage.
     - `adcd bootstrap renew --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX]` (14 R8), for an
       expired, unused secret or a recorded one whose file is gone. While the bootstrap is unconsumed it writes a fresh
