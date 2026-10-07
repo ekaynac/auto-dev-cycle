@@ -55,6 +55,9 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 	if args[0] == "admin" && args[1] == "bootstrap" {
 		return adminBootstrap(ctx, args[2:], stdout, stderr, c)
 	}
+	if resource, ok := reads[command{args[0], args[1]}]; ok {
+		return read(ctx, "adc "+args[0]+" "+args[1], resource, args[2:], stdout, stderr, c)
+	}
 	action, ok := actionFor(args[0], args[1])
 	if !ok {
 		fmt.Fprintf(stderr, "adc %s: unknown verb %q\n", args[0], args[1])
