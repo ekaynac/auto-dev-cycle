@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,8 +51,15 @@ var fixtures = api.Resource{
 // readServer serves the reads over f's store, every connection admitted
 // as via says (identity.Listener(0): no peer recorded).
 func (f *fixture) readServer(via identity.Listener) *httptest.Server {
-	h := api.Reads{Store: f.s, Gate: api.Unlimited(), Now: func() time.Time { return time.Unix(0, f.now.Load()) },
-		Resources: map[string]api.Resource{"fixtures": fixtures}}
+	return f.serveReads(via, api.Reads{Gate: api.Unlimited(), Resources: map[string]api.Resource{"fixtures": fixtures}})
+}
+
+// serveReads serves h over f's store (on f's clock unless h has one).
+func (f *fixture) serveReads(via identity.Listener, h api.Reads) *httptest.Server {
+	h.Store = f.s
+	if h.Now == nil {
+		h.Now = func() time.Time { return time.Unix(0, f.now.Load()) }
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+api.WhoamiPath, h.Whoami)
 	mux.HandleFunc("GET "+api.ReadPath, h.Resource)
@@ -68,6 +76,12 @@ func (f *fixture) readServer(via identity.Listener) *httptest.Server {
 
 func read(t *testing.T, srv *httptest.Server, path, bearer string) (int, []byte) {
 	t.Helper()
+	status, b, _ := readHeader(t, srv, path, bearer)
+	return status, b
+}
+
+func readHeader(t *testing.T, srv *httptest.Server, path, bearer string) (int, []byte, http.Header) {
+	t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+path, nil)
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
@@ -81,7 +95,7 @@ func read(t *testing.T, srv *httptest.Server, path, bearer string) (int, []byte)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return resp.StatusCode, b
+	return resp.StatusCode, b, resp.Header
 }
 
 // readList reads the fixtures as bearer: the ids returned, every item
@@ -239,5 +253,116 @@ func TestWhoami(t *testing.T) {
 	f.revokeGrant()
 	if sup, raw := whoami(t, f.readServer(identity.PrivateSocket), f.supTk.Reveal()); len(sup.Reads.Grants) != 0 || sup.Reads.Everything {
 		t.Fatalf("after the revocation: %s", raw)
+	}
+}
+
+// Reads take a verification slot of the listener's gate, the whole read
+// long, and give it back: a full gate refuses at once with Retry-After, a
+// nil gate admits no one, and a freed slot serves again.
+func TestReadVerificationGate(t *testing.T) {
+	f := open(t)
+	f.appendTo("fixture.appended", prjA)
+	gate := api.NewSlots(1, 0)
+	srv := f.serveReads(identity.PrivateSocket, api.Reads{Gate: gate, Resources: map[string]api.Resource{"fixtures": fixtures}})
+	closed := f.serveReads(identity.PrivateSocket, api.Reads{Resources: map[string]api.Resource{"fixtures": fixtures}})
+	for _, path := range []string{api.WhoamiPath, "/v1/fixtures"} {
+		release, ok := gate.Take(2000)
+		if !ok {
+			t.Fatal("the gate is not free")
+		}
+		if status, b, h := readHeader(t, srv, path, f.opTok.Reveal()); status != http.StatusServiceUnavailable || h.Get("Retry-After") == "" {
+			t.Errorf("%s through a full gate: %d %s", path, status, b)
+		}
+		release()
+		for i := range 2 { // the second read finds the first's slot given back
+			if status, b := read(t, srv, path, f.opTok.Reveal()); status != http.StatusOK {
+				t.Errorf("%s through a free gate, read %d: %d %s", path, i, status, b)
+			}
+		}
+		if release, ok := gate.Take(2000); !ok {
+			t.Errorf("%s kept its slot", path)
+		} else {
+			release()
+		}
+		if status, b := read(t, closed, path, f.opTok.Reveal()); status != http.StatusServiceUnavailable {
+			t.Errorf("%s through a nil gate: %d %s", path, status, b)
+		}
+	}
+}
+
+// A record that is no JSON object fails the read, and the response carries
+// none of the records before it.
+func TestReadRefusesANonObjectRecord(t *testing.T) {
+	f := open(t)
+	const good = "fixture-good-record"
+	for name, bad := range map[string]any{"null": nil, "a string": "x", "a number": 3, "an array": []any{map[string]any{"id": good}}} {
+		res := api.Resource{Domain: "fixture", Fields: []string{"id"},
+			List: func(*eventstore.Tx) ([]any, error) { return []any{map[string]any{"id": good}, bad}, nil },
+			Project: func(*eventstore.Tx, any) (*types.ProjectID, error) {
+				p := types.ProjectID(prjA)
+				return &p, nil
+			}}
+		srv := f.serveReads(identity.PrivateSocket, api.Reads{Gate: api.Unlimited(), Resources: map[string]api.Resource{"odd": res}})
+		if status, b := read(t, srv, "/v1/odd", f.opTok.Reveal()); status == http.StatusOK || strings.Contains(string(b), good) || strings.Contains(string(b), "items") {
+			t.Errorf("%s: %d %s", name, status, b)
+		}
+	}
+}
+
+// One request reads one snapshot: a write committed while the request is
+// in its view (at its clock read, between authentication and the scope)
+// changes nothing it sends, though it revokes the caller's token and grant,
+// adds a record and moves one to another project. The next request sees it.
+func TestReadIsOneSnapshot(t *testing.T) {
+	f := open(t)
+	f.appendTo("fixture.appended", prjA)
+	kept := f.fixtureIDs()[prjA]
+	// owned is fixtures with an authoritative owner: a lease.granted event
+	// whose subject is a record moves it to that event's project.
+	owned := fixtures
+	owned.Project = func(tx *eventstore.Tx, rec any) (*types.ProjectID, error) {
+		id := rec.(map[string]any)["id"].(string)
+		p, _ := rec.(map[string]any)["project"].(*string)
+		evs, err := tx.EventsAfter(0, 1000)
+		for _, e := range evs {
+			if e.Kind == "lease.granted/v1" && e.Subject == id {
+				p = e.Project
+			}
+		}
+		if p == nil {
+			return nil, err
+		}
+		owner := types.ProjectID(*p)
+		return &owner, err
+	}
+	var once sync.Once
+	write := func() {
+		tok, _, _ := strings.Cut(f.supTk.Reveal(), ".")
+		f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			evs, err := authority.RevokeGrant(tx, f.sup.ID, f.grant.ID, t0)
+			if err != nil {
+				return nil, err
+			}
+			more, err := identity.RevokeToken(tx, types.TokenID(tok), t0)
+			b := prjB
+			a := prjA
+			return append(append(evs, more...),
+				eventstore.Event{ID: newID(f.t, "evt"), Kind: "fixture.appended/v1", Subject: prjA, Project: &a, Payload: []byte(`{}`)},
+				eventstore.Event{ID: newID(f.t, "evt"), Kind: "lease.granted/v1", Subject: kept, Project: &b, Payload: []byte(`{}`)}), err
+		})
+	}
+	srv := f.serveReads(identity.PrivateSocket, api.Reads{Gate: api.Unlimited(), Resources: map[string]api.Resource{"fixtures": owned},
+		Now: func() time.Time {
+			once.Do(write) // the request's first clock read
+			return time.Unix(0, f.now.Load())
+		}})
+	if got := readList(t, srv, f.supTk.Reveal()); !slices.Equal(got, []string{kept}) {
+		t.Fatalf("the request in flight read %v, want only %s as its snapshot had it", got, kept)
+	}
+	if status, b := read(t, srv, "/v1/fixtures", f.supTk.Reveal()); status != http.StatusUnauthorized {
+		t.Fatalf("the next request: %d %s", status, b)
+	}
+	if got := readList(t, srv, f.opTok.Reveal()); len(got) != 2 {
+		t.Fatalf("the operator after the write: %v", got)
 	}
 }
