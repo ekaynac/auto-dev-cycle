@@ -179,6 +179,9 @@ func (h Reads) view(w http.ResponseWriter, r *http.Request,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
+		// A record may carry untrusted text (a note's body): it is JSON
+		// data, never a document a browser may sniff as another type.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		_, _ = w.Write(append(b, '\n'))
 	}
 }

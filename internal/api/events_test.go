@@ -111,6 +111,8 @@ func open(t *testing.T) *fixture {
 	kinds := identity.Kinds()
 	maps.Copy(kinds, authority.GrantKinds())
 	maps.Copy(kinds, authority.ProposalKinds())
+	maps.Copy(kinds, authority.SeatKinds())
+	maps.Copy(kinds, authority.NoteKinds())
 	for _, k := range []string{"fixture.appended/v1", "lease.granted/v1"} {
 		kinds[k] = eventstore.Kind{Schema: "common/defs"}
 	}
@@ -120,7 +122,8 @@ func open(t *testing.T) *fixture {
 	// event's time (authority.CreateGrant).
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: func() time.Time { return time.Unix(0, f.now.Load()).UTC() },
 		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
-			Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.ProposalProjector{}.Project)}})
+			Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.ProposalProjector{}.Project,
+				authority.SeatProjector{}.Project, authority.NoteProjector{}.Project)}})
 	if err != nil {
 		t.Fatal(err)
 	}

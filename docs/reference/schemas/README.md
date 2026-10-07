@@ -19,6 +19,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/command-request.json`](api-command-request.md) | CommandRequest |
 | [`api/command-response.json`](api-command-response.md) | CommandResponse |
 | [`api/grant.json`](api-grant.md) | GrantRead |
+| [`api/note.json`](api-note.md) | NoteRead |
 | [`api/proposal.json`](api-proposal.md) | ProposalRead |
 | [`api/read-list.json`](api-read-list.md) | ReadList |
 | [`api/scope/actor-revoke.json`](api-scope-actor-revoke.md) | ActorRevokeScope |
@@ -29,6 +30,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/scope/proposal-withdraw.json`](api-scope-proposal-withdraw.md) | ProposalWithdrawScope |
 | [`api/scope/seat-release.json`](api-scope-seat-release.md) | SeatReleaseScope |
 | [`api/scope/seat-take.json`](api-scope-seat-take.md) | SeatTakeScope |
+| [`api/seat.json`](api-seat.md) | SeatRead |
 | [`api/whoami.json`](api-whoami.md) | Whoami |
 | [`common/defs.json`](common-defs.md) | Common definitions |
 | [`config/project-profile.json`](config-project-profile.md) | ProjectProfile |
