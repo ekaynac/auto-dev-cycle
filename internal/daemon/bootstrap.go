@@ -108,6 +108,8 @@ func openBootstrap(ctx context.Context, store *eventstore.Store, system identity
 			return nil, "", couldNotRun(vocab.ReasonStoreUnreadable, "the bootstrap secret cannot be issued", err)
 		}
 		return b, notePending, nil
+	// A note only: the store clock, not clamped to the last event's time;
+	// a consume is judged at its command's time (Tx.Now), which is.
 	case !st.Live(now()):
 		return b, noteExpired, nil
 	case !present:

@@ -161,7 +161,11 @@ func restamp(t *testing.T, dir string, from int64, at ...string) {
 	db := raw(t, dir)
 	mustExec(t, db, `DROP TRIGGER IF EXISTS events_append_only_update`)
 	var prev string
-	if err := db.QueryRow(`SELECT hash FROM events WHERE seq = ?`, from-1).Scan(&prev); err != nil {
+	q, arg := `SELECT hash FROM events WHERE seq = ?`, any(from-1)
+	if from == 1 {
+		q, arg = `SELECT value FROM meta WHERE key = ?`, "genesis_hash"
+	}
+	if err := db.QueryRow(q, arg).Scan(&prev); err != nil {
 		t.Fatal(err)
 	}
 	for i, stamp := range at {
@@ -211,5 +215,12 @@ func TestVerifyRefusesDecreasingEventTimes(t *testing.T) {
 			}
 		}
 		e.close()
+	}
+	// The first event's time alone unreadable: nothing before it to compare.
+	e := openEnv(t, stateDir(t))
+	e.appendN(t, 2)
+	restamp(t, e.dir, 1, "never", "2031-01-01T00:00:00Z")
+	if _, err := e.s.Verify(ctx, nil); !errors.Is(err, ErrChainBroken) {
+		t.Errorf("an unreadable time at seq 1: %v", err)
 	}
 }

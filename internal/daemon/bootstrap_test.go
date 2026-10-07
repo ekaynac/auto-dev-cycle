@@ -389,7 +389,11 @@ func TestBootstrapExpiresWhileWaiting(t *testing.T) {
 		_, v := r.post(t, r.private(), "k-wait", secret)
 		result <- v
 	}()
-	<-arrived
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request never read the clock")
+	}
 	late.Store(true)
 	close(release)
 	if err := <-hold; err == nil {
