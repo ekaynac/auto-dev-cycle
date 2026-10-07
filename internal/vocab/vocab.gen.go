@@ -9,6 +9,8 @@ import "github.com/ekaynac/auto-dev-cycle/gen/go/types"
 // Registered reason codes (schemas/vocab/reasons.yaml). The values are
 // immutable; adc dev vocab check refuses writing to them.
 var (
+	// ReasonActionDeferred: The action is registered but not wired in this build: it is deferred to its owning milestone (14 D1), and nothing was applied.
+	ReasonActionDeferred = types.ReasonCodeOf("action_deferred")
 	// ReasonActionNotGranted: No grant in force (not revoked, within its validity) covers this action on this project for the supervisor.
 	ReasonActionNotGranted = types.ReasonCodeOf("action_not_granted")
 	// ReasonActionUnregistered: The action is not in the action registry, or is deprecated; authority classifies only registered, current actions.

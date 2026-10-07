@@ -112,9 +112,12 @@ func confirmInputOf(raw json.RawMessage) (confirmInput, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
-		return in, fmt.Errorf("authority: %s input: %w", ConfirmAction, err)
+		return in, fmt.Errorf("%w: %s input: %w", ErrInvalidScope, ConfirmAction, err)
 	}
-	return in, errors.Join(ids.Check(string(in.Proposal), "prp"), ids.Check(string(in.Review), "rcp"))
+	if err := errors.Join(ids.Check(string(in.Proposal), "prp"), ids.Check(string(in.Review), "rcp")); err != nil {
+		return in, fmt.Errorf("%w: %w", ErrInvalidScope, err)
+	}
+	return in, nil
 }
 
 func storedProposal(t *eventstore.Tx, id types.ProposalID) (types.Proposal, error) {
@@ -187,7 +190,9 @@ func (a Authorizer) apply(t *eventstore.Tx, p types.Proposal, by types.Actor, re
 		return none, fmt.Errorf("%w: %s", ErrActionNotWired, p.Action)
 	}
 	d, err := h.Derive(t, proposer, p.Scope)
-	if err != nil {
+	if errors.Is(err, ErrInvalidScope) { // the stored scope, not the confirmer's
+		return invalidated(t, p, types.ProposalInvalidatedReasonValueProposalInvalidated, "the proposal's scope no longer satisfies its action")
+	} else if err != nil {
 		return none, err
 	}
 	state, err := StateOf(t, d)

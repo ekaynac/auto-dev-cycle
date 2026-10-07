@@ -19,8 +19,8 @@ const (
 )
 
 // ClientFromEnv returns the Unix-socket transport to the socket ADC_SOCKET
-// names, or NoTransport when it is unset (the commands' integration is PR
-// 10a). The peer must run as ADC_DAEMON_UID, by default the caller's own
+// names, which every command is sent through, or NoTransport when it is
+// unset. The peer must run as ADC_DAEMON_UID, by default the caller's own
 // uid: the private socket admits only the daemon uid [M3]. The token comes
 // from ADC_TOKEN or ~/.config/adc/token [R5], read for each command.
 func ClientFromEnv(getenv func(string) string) Client {

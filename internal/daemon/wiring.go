@@ -29,8 +29,7 @@ var ErrCommandsRefused = authority.ErrActionNotWired
 // the wired handlers and the projector. proposal.confirm is wired without
 // a source of review receipts, so every confirmation is refused
 // (authority.NoReviewSource) until receipts are recorded.
-func hooks(reg *vocab.Registry, project func(*eventstore.Tx, []eventstore.Event) error) eventstore.Hooks {
-	az := authority.Authorizer{Registry: reg, Handlers: handlers()}
+func hooks(az authority.Authorizer, project func(*eventstore.Tx, []eventstore.Event) error) eventstore.Hooks {
 	authorize := func(t *eventstore.Tx, c eventstore.Command) error {
 		if slices.Contains([]string{bootstrapAction, issueAction, renewAction, recoverAction}, c.Action) {
 			return authorizeSystem(t, c)
@@ -40,12 +39,35 @@ func hooks(reg *vocab.Registry, project func(*eventstore.Tx, []eventstore.Event)
 	return eventstore.Hooks{Identify: identity.Recheck, Authorize: authorize, Project: project}
 }
 
+// authorizer is the one authorizer over the wired handlers: the writer's
+// Authorize hook and the request layer's logic (logics) share it.
+func authorizer(reg *vocab.Registry) authority.Authorizer {
+	return authority.Authorizer{Registry: reg, Handlers: handlers()}
+}
+
 // handlers are the wired actions' handlers: proposal.confirm and the
 // seat's. Every other registered action has none and is refused.
 func handlers() map[string]authority.Handler {
 	hs := authority.SeatHandlers(0)
 	hs[authority.ConfirmAction] = authority.ConfirmHandler{}
 	return hs
+}
+
+// logic is a wired action's command logic, which the request layer passes
+// to Submit with the command.
+type logic func(eventstore.Command) eventstore.Decide
+
+// logics are the wired actions' logic, by action: every action handlers
+// wires has one (a test checks), and an action without one is refused
+// before anything is submitted (14 D1).
+func logics(az authority.Authorizer) map[string]logic {
+	out := map[string]logic{authority.ConfirmAction: az.Confirm}
+	for action, h := range az.Handlers {
+		if s, ok := h.(authority.SeatHandler); ok {
+			out[action] = s.Logic
+		}
+	}
+	return out
 }
 
 // eventKinds merges the event kinds of every package the writer projects;

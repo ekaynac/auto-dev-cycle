@@ -8,6 +8,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -20,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -107,15 +109,19 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 		return entry.ExitCouldNotRun
 	}
 	raw, err := c.Command(ctx, action, body)
-	if err != nil {
+	switch {
+	case errors.Is(err, client.ErrUnauthenticated):
+		fmt.Fprintf(stderr, "%s: refused: %v\n", name, err)
+		return entry.ExitRefused
+	case errors.Is(err, client.ErrBadRequest):
+		return usage("%v", err)
+	case err != nil:
 		return couldNotRun("%v", err)
 	}
-	var resp types.CommandResponse
-	if err := contract.Validate("api/command-response", raw); err != nil {
-		return couldNotRun("the controller's response is invalid: %v", err)
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return couldNotRun("the controller's response is invalid: %v", err)
+	// Fixed text: the response is never quoted (it may hold a credential).
+	resp, err := client.DecodeResponse(raw)
+	if err != nil {
+		return couldNotRun("%v", client.ErrInvalidResponse)
 	}
 	// The schema cannot say which outcomes a reason accompanies; the registry can.
 	if v, ok := resp.Variant.(*types.CommandRefused); ok {
@@ -127,10 +133,17 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 			return couldNotRun("the controller's refusal is invalid: %v", err)
 		}
 	}
+	// A credential the command issued is for another actor (agent.enrol);
+	// where it is stored is 14 7a/7b's to decide. Until then it is never
+	// written over the caller's own token, nor printed.
+	if v, ok := resp.Variant.(*types.CommandApplied); ok && v.IssuedCredential != nil {
+		fmt.Fprintf(stderr, "%s: could_not_run: the command applied and issued a credential, which this build cannot store; it was discarded and nothing was written: revoke the issued token\n", name)
+		return entry.ExitCouldNotRun
+	}
 	if *asJSON {
-		_, err = fmt.Fprintf(stdout, "%s\n", raw)
+		_, err = fmt.Fprintf(stdout, "%s\n", bytes.TrimSpace(raw))
 	} else {
-		_, err = fmt.Fprintln(stdout, describe(resp))
+		_, err = fmt.Fprintln(stdout, describe(resp, action, req.Scope))
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: writing the result: %v\n", name, err)
@@ -178,7 +191,11 @@ func ExitCode(r types.CommandResponse) int {
 	return entry.ExitCouldNotRun
 }
 
-func describe(r types.CommandResponse) string {
+// DashboardProposal is where the dashboard shows a proposal: a path
+// placeholder until the dashboard ships (M5).
+const DashboardProposal = "/dashboard/proposals/"
+
+func describe(r types.CommandResponse, action string, scope json.RawMessage) string {
 	switch v := r.Variant.(type) {
 	case *types.CommandApplied:
 		s := fmt.Sprintf("applied: %s", v.Command)
@@ -189,7 +206,8 @@ func describe(r types.CommandResponse) string {
 	case *types.CommandProposed:
 		if v.Policy == types.CommandProposedPolicyHuman {
 			// A human confirmation cannot be completed from the CLI (D37).
-			return fmt.Sprintf("proposed: %s needs a human confirmation on the dashboard (binding %s)", v.Proposal, v.BindingDigest)
+			return fmt.Sprintf("proposed: %s needs a human confirmation on the dashboard (binding %s)\n  requested: %s %s\n  confirm at: %s%s",
+				v.Proposal, v.BindingDigest, action, scope, DashboardProposal, v.Proposal)
 		}
 		return fmt.Sprintf("proposed: %s needs an independent review (binding %s)", v.Proposal, v.BindingDigest)
 	case *types.CommandRefused:

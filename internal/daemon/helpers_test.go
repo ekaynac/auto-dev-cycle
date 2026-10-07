@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -201,4 +202,13 @@ func (w *seeder) heldLease(actor types.ActorID) {
 		return lease.ChangeLease(tx, l.ID, 1, lease.LeaseEvent{Kind: lease.Waiting,
 			Hold: &types.LeaseHoldValue{Hold: "quota_reset", SignalInstance: "2026-10-04T15:00:00Z"}}, w.holds)
 	})
+}
+
+// listen is serve with every command refused as not wired (tests).
+func listen(store *eventstore.Store, boot *bootstrapper, stateDir string, shared *SharedSocket, lim limits) (*server, error) {
+	reg, err := vocab.Load()
+	if err != nil {
+		return nil, err
+	}
+	return serve(store, boot, stateDir, shared, lim, commands{store: store, reg: reg, log: io.Discard})
 }

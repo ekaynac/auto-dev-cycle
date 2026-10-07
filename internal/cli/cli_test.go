@@ -8,13 +8,17 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -194,5 +198,73 @@ func TestOutput(t *testing.T) {
 	// Anything that is not an action command is entry's.
 	if code, out, _ := adc(&fake{}, "version"); code != entry.ExitOK || out == "" {
 		t.Errorf("version: %d %q", code, out)
+	}
+}
+
+// A human-policy proposal prints its id, the effective change and where
+// the dashboard confirms it.
+func TestHumanProposal(t *testing.T) {
+	_, out, _ := adc(&fake{resp: human}, "grant", "extend", "--expect", "5", "--reason", "r", "--scope", `{"grant":"grt_01m3250vkwffc979nzjw0g2sf9"}`)
+	for _, want := range []string{"prp_01m3250vm7f6ktw39dszqnyddr", `requested: grant.extend {"grant":"grt_01m3250vkwffc979nzjw0g2sf9"}`, DashboardProposal + "prp_01m3250vm7f6ktw39dszqnyddr"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in %q", want, out)
+		}
+	}
+}
+
+// An issued credential is refused: nothing is printed, in either output
+// mode, and the token file is left byte for byte (it would be another
+// actor's credential over the caller's own).
+func TestIssuedCredentialRefused(t *testing.T) {
+	const tok = "tok_01m3250vkwffc979nzjw0g2sa1.zzFAKEzzSECRETzzRECOGNIZABLEzzQQQQQQQQQQQQA"
+	issued := strings.TrimSuffix(applied, "}") + `,"issued_credential":"` + tok + `"}`
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	files := client.Files{Home: home, UID: os.Getuid()}
+	own, err := identity.ParseSecret("tok_01m3250vkwffc979nzjw0g2sf9.ownOWNownOWNownOWNownOWNownOWNownOWNownOWNA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := files.Write(own); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".config", "adc", "token")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range [][]string{nil, {"--json"}} {
+		code, out, errs := adc(&fake{resp: issued}, append([]string{"admin", "enrol-agent", "--expect", "0", "--reason", "r"}, mode...)...)
+		if code != entry.ExitCouldNotRun || out != "" || strings.Contains(errs, "zzFAKEzz") || !strings.Contains(errs, "cannot store") {
+			t.Fatalf("%v: %d %q %q", mode, code, out, errs)
+		}
+		if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) {
+			t.Fatalf("%v: the token file changed (%v)", mode, err)
+		}
+	}
+}
+
+// A response that fails validation is never quoted.
+func TestInvalidResponseNotQuoted(t *testing.T) {
+	bad := strings.TrimSuffix(applied, "}") + `,"issued_credential":"tok_zzLEAKEDzzCREDENTIALzz"}`
+	for _, mode := range [][]string{nil, {"--json"}} {
+		code, out, errs := adc(&fake{resp: bad}, append([]string{"seat", "take", "--expect", "0", "--reason", "r"}, mode...)...)
+		if code != entry.ExitCouldNotRun || out != "" || strings.Contains(errs, "zzLEAKEDzz") {
+			t.Fatalf("%v: %d %q %q", mode, code, out, errs)
+		}
+	}
+}
+
+// A malformed request the controller refuses is a usage error.
+func TestBadRequest(t *testing.T) {
+	if code, _, _ := adc(&fake{err: client.ErrBadRequest}, "seat", "take", "--expect", "0", "--reason", "r"); code != entry.ExitUsage {
+		t.Fatalf("exit %d", code)
+	}
+}
+
+// A refused token is a refusal, not a could_not_run.
+func TestUnauthenticated(t *testing.T) {
+	if code, out, errs := adc(&fake{err: client.ErrUnauthenticated}, "seat", "take", "--expect", "0", "--reason", "r", "--json"); code != entry.ExitRefused || out != "" || !strings.Contains(errs, "refused") {
+		t.Fatalf("%d %q %q", code, out, errs)
 	}
 }

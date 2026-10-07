@@ -17,6 +17,6 @@
       "type": "object",
       "x-adc-open-payload": "action"
     },
-    "reason": {"description": "Why the caller asks, recorded with the command.", "type": "string", "minLength": 1, "maxLength": 4096}
+    "reason": {"description": "Why the caller asks. Validated, but not yet recorded with the command (issue #147).", "type": "string", "minLength": 1, "maxLength": 4096}
   }
 }

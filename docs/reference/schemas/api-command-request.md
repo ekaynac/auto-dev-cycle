@@ -13,6 +13,6 @@ The body of POST /v1/commands/{action} (docs/design/m0/08 "Reads, commands, even
 | `idempotency_key` | yes | string (pattern `^[\x21-\x7e]+$`, maxLength `256`) |  |
 | `expected` | yes | [ExpectedState](records-approval.md#expectedstate) | The exact revision of the object the caller inspected (version 0: it does not exist yet). Never filled in by the client library on the caller's behalf [M13]; a mismatch is refused with failed/stale_expected_state. |
 | `scope` | yes | object (open payload) | The action's parameters, including the object it applies to; one schema per action, from the action registry. |
-| `reason` | yes | string (minLength `1`, maxLength `4096`) | Why the caller asks, recorded with the command. |
+| `reason` | yes | string (minLength `1`, maxLength `4096`) | Why the caller asks. Validated, but not yet recorded with the command (issue #147). |
 
 No other fields are allowed.

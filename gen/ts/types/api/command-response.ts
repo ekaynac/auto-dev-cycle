@@ -34,6 +34,10 @@ export interface CommandApplied {
   result: {
     [k: string]: unknown;
   };
+  /**
+   * A bearer string, tok_<id>.<secret>, that the command issued (14 N3): present only on the response that applied it, absent on a replay. It is never stored. Where the CLI keeps it is for 14 7a/7b to decide; until then the CLI refuses it (could_not_run) and never prints or writes it.
+   */
+  issued_credential?: string;
 }
 /**
  * The command needs a confirmation (04 "Proposals"): nothing was applied. A human policy is confirmed only on the dashboard (D37).
