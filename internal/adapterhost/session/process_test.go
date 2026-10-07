@@ -115,16 +115,26 @@ func stubSpec(t *testing.T, mode string, env ...string) ProcessSpec {
 
 func spawn(t *testing.T, spec ProcessSpec) *Process {
 	t.Helper()
-	p, err := Spawn(spec)
+	p, err := trySpawn(t, spec)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return p
+}
+
+// trySpawn is Spawn with the process tree's cleanup registered on success.
+func trySpawn(t *testing.T, spec ProcessSpec) (*Process, error) {
+	t.Helper()
+	p, err := Spawn(spec)
+	if err != nil {
+		return nil, err
 	}
 	t.Cleanup(func() {
 		p.Kill()
 		_ = p.Wait()
 		p.Stdout().Close()
 	})
-	return p
+	return p, nil
 }
 
 // waitWithin waits for the process tree within d.
@@ -171,10 +181,23 @@ func TestStderrKeepsOnlyTheTail(t *testing.T) {
 	}
 }
 
+// errCouldNotStart is Spawn's fixed text when the namespace's init was not
+// verified.
+const errCouldNotStart = "adapterhost: the adapter could not start in its PID namespace (bubblewrap)"
+
+// A command that cannot run never runs successfully. Its init may exit before
+// Spawn opens its pidfd (more likely under load), and Spawn then refuses with
+// its fixed start failure; otherwise the process tree exits non-zero.
 func TestACommandThatCannotRunExits(t *testing.T) {
 	spec := stubSpec(t, "echo")
 	spec.Command = []string{"/nonexistent/adapter"}
-	p := spawn(t, spec)
+	p, err := trySpawn(t, spec)
+	if err != nil {
+		if err.Error() != errCouldNotStart {
+			t.Fatalf("Spawn returned %q, want %q or a non-zero exit", err, errCouldNotStart)
+		}
+		return
+	}
 	if err := waitWithin(t, p, 10*time.Second); err == nil {
 		t.Fatal("a command that cannot run exited 0")
 	}
