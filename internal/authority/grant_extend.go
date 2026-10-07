@@ -193,8 +193,8 @@ func revokedBy(tx *eventstore.Tx, id types.GrantID, ev eventstore.Event) (types.
 }
 
 // applyLineage admits a grant.replaced/v1 by a live operator: its old
-// grant revoked and its new grant, exactly as recorded, created for the
-// same grantee by the same command, under an approval of this replacement
+// grant revoked and its new grant, another grant exactly as recorded and
+// still live, created for the same grantee by the same command, under an approval of this replacement
 // if any, once per grant: each old grant is replaced, and each new grant
 // replaces, at most once.
 func applyLineage(tx *eventstore.Tx, ev eventstore.Event) error {
@@ -205,14 +205,20 @@ func applyLineage(tx *eventstore.Tx, ev eventstore.Event) error {
 	if by, err := liveActor(tx, types.ActorID(ev.Actor)); err != nil || by.Kind != types.ActorKindOperator {
 		return errors.Join(err, errors.New("only a live operator records a lineage"))
 	}
+	if l.Grant.ID == l.Replaces {
+		return errors.New("a grant does not replace itself")
+	}
 	old, err := revokedBy(tx, l.Replaces, ev)
 	if err != nil {
 		return err
 	}
-	cur, _, err := liveGrant(tx, l.Grant.ID)
+	cur, live, err := liveGrant(tx, l.Grant.ID)
 	created, err2 := byCommand(tx, types.GrantEventTransitionGrantCreated, l.Grant.ID, ev)
 	if err = errors.Join(err, err2); err != nil || !sameGrant(cur.Grant, l.Grant) || l.Grant.Actor != old.Actor || !created {
 		return errors.Join(err, errors.New("its new grant is not created for the same grantee by this command"))
+	}
+	if !live {
+		return errors.New("its new grant is not live")
 	}
 	if l.Grant.Approval != nil {
 		if a, err := approvalOf(tx, *l.Grant.Approval); err != nil || a.Action != GrantExtendAction || a.Object.ID != string(l.Replaces) {

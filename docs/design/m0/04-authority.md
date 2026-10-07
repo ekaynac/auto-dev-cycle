@@ -161,8 +161,8 @@ What a supervisor learns about grant ids:
 - Authorized but not holding the seat: an absent id is refused before Decide, a live one by the seat (`seat_not_held`)
   after it. The ids are unguessable, and the supervisor is already authorized for the project.
 
-The fold admits a lineage only by a live operator, for the old grant revoked and the new grant created, for the same
-grantee, by the same command (each grant event's command is recorded, `grant_commands`; never the time, which
+The fold admits a lineage only by a live operator, for the old grant revoked and a different new grant created and still
+live, for the same grantee, by the same command (each grant event's command is recorded, `grant_commands`; never the time, which
 consecutive commands may share), once per old grant and once per new grant (`grant_lineage` indexes both ids); a grant
 naming a `grant.extend` approval only with that extension's old grant revoked by the same command. Revoking the old grant invalidates a pending extension
 (its object moved) and the proposals made under the old grant, and closes the streams that hold it; a reader reconnects
