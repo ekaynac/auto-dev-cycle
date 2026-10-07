@@ -470,6 +470,62 @@ paths:
           description: 'failed/action_not_granted: no grant in force grants reads.'
         "503":
           description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
+  /v1/grants:
+    get:
+      operationId: read.grants
+      tags:
+        - read
+      summary: The grant records the caller's read scope covers, each authorized in one snapshot.
+      responses:
+        "200":
+          description: The readable records.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/api.read-list'
+                  - properties:
+                      items:
+                        items:
+                          $ref: '#/components/schemas/api.grant'
+                      resource:
+                        const: grants
+        "400":
+          description: A query parameter the read does not take, or a malformed one.
+        "401":
+          description: No valid bearer token on this listener.
+        "403":
+          description: 'failed/action_not_granted: no grant in force grants reads.'
+        "503":
+          description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
+  /v1/proposals:
+    get:
+      operationId: read.proposals
+      tags:
+        - read
+      summary: The proposal records the caller's read scope covers, each authorized in one snapshot.
+      responses:
+        "200":
+          description: The readable records.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/api.read-list'
+                  - properties:
+                      items:
+                        items:
+                          $ref: '#/components/schemas/api.proposal'
+                      resource:
+                        const: proposals
+        "400":
+          description: A query parameter the read does not take, or a malformed one.
+        "401":
+          description: No valid bearer token on this listener.
+        "403":
+          description: 'failed/action_not_granted: no grant in force grants reads.'
+        "503":
+          description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
   /v1/whoami:
     get:
       operationId: read.whoami
@@ -710,6 +766,161 @@ components:
               type: string
               minLength: 1
               maxLength: 4096
+    api.grant:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/grant.json
+      title: GrantRead
+      description: 'One record of GET /v1/grants (docs/design/m0/04 "Grants", "Read authorization"): a grant as issued, revoked ones included with when. Its project is every project it names (projects and listed read projects): one named project is that project''s record; several, or every project, make it installation-wide, read only under an every-project read. Never the approval it was issued under, nor any credential.'
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - actor
+        - projects
+        - actions
+        - reads
+        - valid_from
+        - expires_at
+        - confirmation_overrides
+        - issued_by
+        - revoked_at
+      properties:
+        id:
+          $ref: ../common/defs.json#/$defs/GrantID
+        actor:
+          description: The grantee, a supervisor.
+          $ref: ../common/defs.json#/$defs/ActorID
+        projects:
+          $ref: ../records/grant.json#/$defs/ProjectScope
+        actions:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: ../records/grant.json#/$defs/ActionKind
+        reads:
+          type: object
+          additionalProperties: false
+          required:
+            - projects
+            - kinds
+          properties:
+            projects:
+              oneOf:
+                - const: same
+                - type: array
+                  uniqueItems: true
+                  items:
+                    $ref: ../common/defs.json#/$defs/ProjectID
+            kinds:
+              type: array
+              uniqueItems: true
+              items:
+                $ref: ../records/receipt.json#/$defs/Name
+        valid_from:
+          $ref: ../common/defs.json#/$defs/Time
+        expires_at:
+          $ref: ../common/defs.json#/$defs/Time
+        confirmation_overrides:
+          type: object
+          propertyNames:
+            $ref: ../records/grant.json#/$defs/ActionKind
+          additionalProperties:
+            enum:
+              - independent_review
+              - human
+        issued_by:
+          $ref: ../common/defs.json#/$defs/ActorID
+        revoked_at:
+          description: When it was revoked; null while it is not.
+          oneOf:
+            - type: "null"
+            - $ref: ../common/defs.json#/$defs/Time
+    api.proposal:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/proposal.json
+      title: ProposalRead
+      description: 'One record of GET /v1/proposals (docs/design/m0/04 "Proposals and confirmation"): what a proposal binds and where it stands, in every state. Its project is the one derived server side when it was proposed (null: installation-wide, read only under an every-project read). Never its scope, the command''s raw input, nor a digest that may depend on input it withholds: its binding digest, its expected state, or its object''s content digest (a proposal.confirm''s object is another proposal, scope and all).'
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - action
+        - change_class
+        - project
+        - object
+        - proposed_by
+        - grantee
+        - policy
+        - status
+        - invalidated_reason
+        - created_at
+        - expires_at
+      properties:
+        id:
+          $ref: ../common/defs.json#/$defs/ProposalID
+        action:
+          $ref: ../records/grant.json#/$defs/ActionKind
+        change_class:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: ../records/approval.json#/$defs/ChangeClass
+        project:
+          oneOf:
+            - type: "null"
+            - $ref: ../common/defs.json#/$defs/ProjectID
+        object:
+          description: 'The object it applies to: its type, id and version (null when it was bound by digest alone), never its content digest.'
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - id
+            - version
+          properties:
+            type:
+              $ref: ../records/receipt.json#/$defs/Name
+            id:
+              type: string
+              minLength: 1
+            version:
+              oneOf:
+                - type: "null"
+                - type: integer
+                  minimum: 0
+                  maximum: 9007199254740991
+        proposed_by:
+          $ref: ../common/defs.json#/$defs/ActorID
+        grantee:
+          oneOf:
+            - type: "null"
+            - $ref: ../common/defs.json#/$defs/ActorID
+        policy:
+          enum:
+            - independent_review
+            - human
+        status:
+          enum:
+            - open
+            - confirmed
+            - applied
+            - rejected
+            - withdrawn
+            - expired
+            - superseded
+            - invalidated
+        invalidated_reason:
+          oneOf:
+            - type: "null"
+            - enum:
+                - stale_expected_state
+                - authority_revoked
+                - actor_revoked
+                - proposal_invalidated
+        created_at:
+          $ref: ../common/defs.json#/$defs/Time
+        expires_at:
+          $ref: ../common/defs.json#/$defs/Time
     api.read-list:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/read-list.json

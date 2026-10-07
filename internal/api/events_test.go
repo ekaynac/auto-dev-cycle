@@ -110,12 +110,13 @@ func open(t *testing.T) *fixture {
 	}
 	kinds := identity.Kinds()
 	maps.Copy(kinds, authority.GrantKinds())
+	maps.Copy(kinds, authority.ProposalKinds())
 	for _, k := range []string{"fixture.appended/v1", "lease.granted/v1"} {
 		kinds[k] = eventstore.Kind{Schema: "common/defs"}
 	}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
 		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
-			Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project)}})
+			Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.ProposalProjector{}.Project)}})
 	if err != nil {
 		t.Fatal(err)
 	}

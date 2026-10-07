@@ -126,9 +126,19 @@ func TestReadResponses(t *testing.T) {
 	list := map[string]any{"resource": "grants", "outcome": "found", "items": []any{map[string]any{"id": grtID}}}
 	who := map[string]any{"actor": actID, "kind": "supervisor", "token": "tok_01m3250vkwffc979nzjw0g2sf9", "listener": "shared_socket",
 		"reads": map[string]any{"everything": false, "grants": []any{map[string]any{"grant": grtID, "projects": []any{prjID}, "kinds": []any{"grant"}}}}}
-	for schema, d := range map[string]map[string]any{"api/read-list": list, "api/whoami": who} {
-		if err := valid(t, schema, d); err != nil {
-			t.Errorf("%s: %v", schema, err)
+	grant := map[string]any{"id": grtID, "actor": actID, "projects": "*", "actions": []any{"task.create"},
+		"reads": map[string]any{"projects": "same", "kinds": []any{"grant"}}, "valid_from": "2026-10-07T00:00:00Z", "expires_at": "2026-10-08T00:00:00Z",
+		"confirmation_overrides": map[string]any{}, "issued_by": actID, "revoked_at": nil}
+	proposal := map[string]any{"id": prpID, "action": "grant.create", "change_class": []any{"grant.create"}, "project": prjID,
+		"object": map[string]any{"type": "grant", "id": grtID, "version": 0}, "proposed_by": actID, "grantee": nil,
+		"policy": "human", "status": "invalidated", "invalidated_reason": "authority_revoked", "created_at": "2026-10-07T00:00:00Z", "expires_at": "2026-10-10T00:00:00Z"}
+	for _, c := range []struct {
+		schema string
+		d      map[string]any
+	}{{"api/read-list", list}, {"api/whoami", who}, {"api/grant", grant}, {"api/grant", with(grant, "revoked_at", "2026-10-07T12:00:00Z")},
+		{"api/proposal", proposal}, {"api/proposal", with(proposal, "project", nil)}} {
+		if err := valid(t, c.schema, c.d); err != nil {
+			t.Errorf("%s: %v", c.schema, err)
 		}
 	}
 	for name, c := range map[string]struct {
@@ -143,6 +153,13 @@ func TestReadResponses(t *testing.T) {
 		"a token hash":            {"api/whoami", with(who, "token_hash", "$argon2id$")},
 		"an unknown listener":     {"api/whoami", with(who, "listener", "tcp")},
 		"reads without a summary": {"api/whoami", with(who, "reads", map[string]any{"everything": true})},
+		"a grant's approval":      {"api/grant", with(grant, "approval", aprID)},
+		"a grant never revoked":   {"api/grant", without(grant, "revoked_at")},
+		"a proposal's scope":      {"api/proposal", with(proposal, "scope", map[string]any{})},
+		"a binding digest":        {"api/proposal", with(proposal, "binding_digest", dgA)},
+		"an expected state":       {"api/proposal", with(proposal, "expected_state", map[string]any{"version": 0})},
+		"an unknown status":       {"api/proposal", with(proposal, "status", "pending")},
+		"an object digest":        {"api/proposal", with(proposal, "object", map[string]any{"type": "grant", "id": grtID, "version": 0, "digest": dgA})},
 	} {
 		if valid(t, c.schema, c.d) == nil {
 			t.Errorf("%s: accepted", name)

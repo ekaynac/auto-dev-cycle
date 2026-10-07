@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/proposal.json",
+  "title": "ProposalRead",
+  "description": "One record of GET /v1/proposals (docs/design/m0/04 \"Proposals and confirmation\"): what a proposal binds and where it stands, in every state. Its project is the one derived server side when it was proposed (null: installation-wide, read only under an every-project read). Never its scope, the command's raw input, nor a digest that may depend on input it withholds: its binding digest, its expected state, or its object's content digest (a proposal.confirm's object is another proposal, scope and all).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "action", "change_class", "project", "object", "proposed_by", "grantee", "policy", "status", "invalidated_reason", "created_at", "expires_at"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/ProposalID"},
+    "action": {"$ref": "../records/grant.json#/$defs/ActionKind"},
+    "change_class": {"type": "array", "uniqueItems": true, "items": {"$ref": "../records/approval.json#/$defs/ChangeClass"}},
+    "project": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ProjectID"}]},
+    "object": {
+      "description": "The object it applies to: its type, id and version (null when it was bound by digest alone), never its content digest.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "version"],
+      "properties": {
+        "type": {"$ref": "../records/receipt.json#/$defs/Name"},
+        "id": {"type": "string", "minLength": 1},
+        "version": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 9007199254740991}]}
+      }
+    },
+    "proposed_by": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "grantee": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ActorID"}]},
+    "policy": {"enum": ["independent_review", "human"]},
+    "status": {"enum": ["open", "confirmed", "applied", "rejected", "withdrawn", "expired", "superseded", "invalidated"]},
+    "invalidated_reason": {"oneOf": [{"type": "null"}, {"enum": ["stale_expected_state", "authority_revoked", "actor_revoked", "proposal_invalidated"]}]},
+    "created_at": {"$ref": "../common/defs.json#/$defs/Time"},
+    "expires_at": {"$ref": "../common/defs.json#/$defs/Time"}
+  }
+}
