@@ -311,14 +311,16 @@ func TestProposalObjectCarriesNoDigest(t *testing.T) {
 // its resource never sends, changes nothing that is sent.
 func TestReadsDecideFromTheProjection(t *testing.T) {
 	f := open(t)
-	f.grantOn([]string{prjA}, nil, "grant", "proposal")
+	f.grantOn([]string{prjA}, nil, "grant", "proposal", "note", "seat")
 	onB := f.grantOn([]string{prjB}, nil, "lease")
 	every := f.grantOn(nil, nil, "lease")
 	pB := f.propose(f.op.ID, prjB, `{}`)
+	nB := f.note(f.op.ID, prjB, "on B")
 	srv := f.registeredServer(func(_ string, rec map[string]any) {
 		rec["project"], rec["projects"], rec["added"] = prjA, []any{prjA}, "a-new-field"
 	})
-	for name, hidden := range map[string][]string{"grants": {string(onB.ID), string(every.ID)}, "proposals": {string(pB.ID)}} {
+	for name, hidden := range map[string][]string{"grants": {string(onB.ID), string(every.ID)}, "proposals": {string(pB.ID)},
+		"notes": {string(nB.ID)}, "seat": {authority.TheSeat}} {
 		got := items(t, srv, name, f.supTk.Reveal())
 		for _, id := range hidden {
 			if _, ok := got[id]; ok {

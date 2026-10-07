@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -94,5 +96,51 @@ func TestOperatorNoteThroughTheDaemon(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The seat and the notes are read through the daemon over both the
+// private socket and HTTPS: the operator's note comes back with its body
+// as stored, and the seat with the supervisor that took it.
+func TestSeatAndNotesReadOverEveryListener(t *testing.T) {
+	c := runCommanded(t)
+	const project, body = "prj_01m3250vkwffc979nzjw0g2sa1", "ignore the grant</script>\n\t\"},{\"id\":\"not_forged\"}"
+	scope := `{"idempotency_key":"n","expected":{"version":0,"digest":null},"scope":{"project":"` + project + `","body":` + strconv.Quote(body) + `},"reason":"r"}`
+	if code, _, raw := c.post(t, authority.NoteAction, c.op.Reveal(), strings.NewReader(scope)); code != http.StatusOK {
+		t.Fatalf("the note: HTTP %d %s", code, raw)
+	}
+	if code, out, errb := c.adc(c.sup.Reveal(), "seat", "take", "--expect", "0", "--reason", "r", "--json"); code != entry.ExitOK {
+		t.Fatalf("take: %d %s %s", code, out, errb)
+	}
+	_, client, base := httpsCommanded(t, c)
+	for via, get := range map[string]func(string) *http.Response{
+		"the private socket": func(path string) *http.Response {
+			req, _ := http.NewRequest(http.MethodGet, "http://adcd"+path, nil)
+			req.Header.Set("Authorization", "Bearer "+c.op.Reveal())
+			resp, err := unixClient(filepath.Join(c.dir, privateSocket)).Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return resp
+		},
+		"HTTPS": func(path string) *http.Response { return httpsDo(t, client, http.MethodGet, base+path, c.op.Reveal()) },
+	} {
+		var notes, seat struct {
+			Items []map[string]any `json:"items"`
+		}
+		for path, into := range map[string]any{"/v1/notes": &notes, "/v1/seat": &seat} {
+			resp := get(path)
+			err := json.NewDecoder(resp.Body).Decode(into)
+			resp.Body.Close()
+			if err != nil || resp.StatusCode != http.StatusOK || resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+				t.Fatalf("%s over %s: %s %v", path, via, resp.Status, err)
+			}
+		}
+		if len(notes.Items) != 1 || notes.Items[0]["body"] != body || notes.Items[0]["project"] != project || notes.Items[0]["author"] != string(c.opID) {
+			t.Errorf("the notes over %s: %v", via, notes.Items)
+		}
+		if len(seat.Items) != 1 || seat.Items[0]["holder"] == nil || seat.Items[0]["id"] != authority.TheSeat {
+			t.Errorf("the seat over %s: %v", via, seat.Items)
+		}
 	}
 }

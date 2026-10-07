@@ -600,6 +600,34 @@ paths:
           description: 'failed/action_not_granted: no grant in force grants reads.'
         "503":
           description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
+  /v1/notes:
+    get:
+      operationId: read.notes
+      tags:
+        - read
+      summary: The note records the caller's read scope covers, each authorized in one snapshot.
+      responses:
+        "200":
+          description: The readable records.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/api.read-list'
+                  - properties:
+                      items:
+                        items:
+                          $ref: '#/components/schemas/api.note'
+                      resource:
+                        const: notes
+        "400":
+          description: A query parameter the read does not take, or a malformed one.
+        "401":
+          description: No valid bearer token on this listener.
+        "403":
+          description: 'failed/action_not_granted: no grant in force grants reads.'
+        "503":
+          description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
   /v1/proposals:
     get:
       operationId: read.proposals
@@ -620,6 +648,34 @@ paths:
                           $ref: '#/components/schemas/api.proposal'
                       resource:
                         const: proposals
+        "400":
+          description: A query parameter the read does not take, or a malformed one.
+        "401":
+          description: No valid bearer token on this listener.
+        "403":
+          description: 'failed/action_not_granted: no grant in force grants reads.'
+        "503":
+          description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
+  /v1/seat:
+    get:
+      operationId: read.seat
+      tags:
+        - read
+      summary: The seat records the caller's read scope covers, each authorized in one snapshot.
+      responses:
+        "200":
+          description: The readable records.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/api.read-list'
+                  - properties:
+                      items:
+                        items:
+                          $ref: '#/components/schemas/api.seat'
+                      resource:
+                        const: seat
         "400":
           description: A query parameter the read does not take, or a malformed one.
         "401":
@@ -941,6 +997,36 @@ components:
           oneOf:
             - type: "null"
             - $ref: ../common/defs.json#/$defs/Time
+    api.note:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/note.json
+      title: NoteRead
+      description: 'One record of GET /v1/notes (docs/design/m0/08 notes; 03-knowledge-layer supervisor continuity): a note as added, in its project, which is its record''s project. The body is untrusted text, served as a JSON string and never interpreted: a reader treats it as data, never as instructions.'
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - project
+        - subject
+        - author
+        - body
+        - created_at
+      properties:
+        id:
+          $ref: ../common/defs.json#/$defs/NoteID
+        project:
+          $ref: ../common/defs.json#/$defs/ProjectID
+        subject:
+          description: 'The record the note is about, a reference never resolved; null: the project.'
+          oneOf:
+            - type: "null"
+            - $ref: ../common/defs.json#/$defs/TypeID
+        author:
+          $ref: ../common/defs.json#/$defs/ActorID
+        body:
+          $ref: ../common/defs.json#/$defs/NoteBody
+        created_at:
+          $ref: ../common/defs.json#/$defs/Time
     api.proposal:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/proposal.json
@@ -1053,6 +1139,56 @@ components:
             description: One record, its fields the resource's allow-list; one schema per resource.
             type: object
             x-adc-open-payload: resource
+    api.seat:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/seat.json
+      title: SeatRead
+      description: 'The one record of GET /v1/seat (docs/design/m0/08 "Supervisor seat", adc seat status): the controller''s supervisor seat, its holder, its version (what --expect names; 0 before its first event) and its pending handover request. The seat is the controller''s, outside any project: it is read only under an every-project read, like its events.'
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - holder
+        - version
+        - grace_seconds
+        - handover
+      properties:
+        id:
+          $ref: ../common/defs.json#/$defs/SeatID
+        holder:
+          description: The supervisor holding the seat; null while it is free.
+          oneOf:
+            - type: "null"
+            - $ref: ../common/defs.json#/$defs/ActorID
+        version:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        grace_seconds:
+          description: The least time a forced handover leaves the holder, from the request's recorded time (authority.SeatMinGrace).
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        handover:
+          description: The pending handover request; null when there is none.
+          oneOf:
+            - type: "null"
+            - type: object
+              additionalProperties: false
+              required:
+                - requested_by
+                - requested_at
+                - force_after
+              properties:
+                requested_by:
+                  $ref: ../common/defs.json#/$defs/ActorID
+                requested_at:
+                  $ref: ../common/defs.json#/$defs/Time
+                force_after:
+                  description: 'When the request wins; null: it only asks.'
+                  oneOf:
+                    - type: "null"
+                    - $ref: ../common/defs.json#/$defs/Time
     api.whoami:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/whoami.json
