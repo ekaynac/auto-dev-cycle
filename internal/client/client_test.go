@@ -268,7 +268,7 @@ func TestStream(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	tr := transport(t, socket, os.Getuid())
-	body, err := tr.Stream(context.Background(), "/v1/events")
+	body, err := tr.Follow(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestStream(t *testing.T) {
 	if err != nil || line != "id: 1\n" || !strings.HasPrefix(auth, "Bearer ") {
 		t.Fatalf("%q %v %q", line, err, auth)
 	}
-	if _, err := transport(t, socket, os.Getuid()+1).Stream(context.Background(), "/v1/events"); !errors.Is(err, ErrPeerNotDaemon) {
+	if _, err := transport(t, socket, os.Getuid()+1).Follow(context.Background(), 0); !errors.Is(err, ErrPeerNotDaemon) {
 		t.Fatalf("another uid: %v", err)
 	}
 }

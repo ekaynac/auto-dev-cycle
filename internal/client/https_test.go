@@ -199,7 +199,7 @@ func TestRemoteFailsClosed(t *testing.T) {
 		if err != tc.want {
 			t.Errorf("%s: %v", name, err)
 		}
-		if _, err := tc.tr.Stream(t.Context(), "/v1/events"); err != tc.want {
+		if _, err := tc.tr.Follow(t.Context(), 0); err != tc.want {
 			t.Errorf("%s, stream: %v", name, err)
 		}
 		if n := tc.s.asked.Load(); n != 0 {
@@ -225,7 +225,7 @@ func TestRemoteHeldOff(t *testing.T) {
 		if !errors.As(err, &h) || h.RetryAfter != want || !errors.Is(err, ErrHeldOff) || strings.Contains(err.Error(), "zzSERVERzz") {
 			t.Errorf("Retry-After %q: %v", value, err)
 		}
-		if _, err := tr.Stream(t.Context(), "/v1/events"); !errors.Is(err, ErrHeldOff) {
+		if _, err := tr.Follow(t.Context(), 0); !errors.Is(err, ErrHeldOff) {
 			t.Errorf("Retry-After %q, stream: %v", value, err)
 		}
 	}
@@ -275,7 +275,7 @@ func TestRemoteHandshakeRefusedAndBounded(t *testing.T) {
 	// A stream has no overall timeout: only the handshake bound ends it.
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	if _, err := remote(t, silent.Addr().String(), "", pinOf(der)).Stream(ctx, "/v1/events"); err != ErrHandshake || ctx.Err() != nil {
+	if _, err := remote(t, silent.Addr().String(), "", pinOf(der)).Follow(ctx, 0); err != ErrHandshake || ctx.Err() != nil {
 		t.Fatalf("a silent server: %v", err)
 	}
 }
@@ -324,7 +324,7 @@ func TestRemoteUnreadable(t *testing.T) {
 	if _, err := tr.Command(t.Context(), "task.create", request(t)); err != ErrUnreadable {
 		t.Fatalf("a malformed response: %v", err)
 	}
-	if _, err := tr.Stream(t.Context(), "/v1/events"); err != ErrUnreadable {
+	if _, err := tr.Follow(t.Context(), 0); err != ErrUnreadable {
 		t.Fatalf("a malformed response, stream: %v", err)
 	}
 }

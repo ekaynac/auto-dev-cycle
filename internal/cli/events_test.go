@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
@@ -22,8 +24,15 @@ func init() { resumeWait = 0 }
 // past them, a stream ends at once.
 type streamer struct {
 	reader
+	mu      sync.Mutex
 	streams []stream
 	afters  []int64
+}
+
+func (r *streamer) called() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.afters) > 0
 }
 
 type stream struct {
@@ -32,6 +41,8 @@ type stream struct {
 }
 
 func (r *streamer) Follow(_ context.Context, after int64) (io.ReadCloser, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.afters = append(r.afters, after)
 	if len(r.afters) > len(r.streams) {
 		return io.NopCloser(strings.NewReader("")), nil
@@ -134,7 +145,7 @@ func TestEventsMalformed(t *testing.T) {
 		"unknown line":   "id: 4\nevent: event\nretry: 1\ndata: " + data(4, "") + "\n\n",
 		"closed with id": "id: 4\n" + revokedFrame,
 		"closed empty":   closed("empty", "completed_clean"),
-		"too long":       "data: " + strings.Repeat("x", maxFrameBytes) + "\n\n",
+		"too long":       "id: 2\nevent: event\ndata: " + padded(2, maxFrameBytes) + "\n\n",
 	} {
 		r := &streamer{streams: []stream{{body: body}}}
 		if code, _, _ := run2(r, "events", "--follow", "--after", "1"); code != entry.ExitCouldNotRun || len(r.afters) != 1 {
@@ -176,4 +187,87 @@ func TestHostileEventFields(t *testing.T) {
 			t.Errorf("%s --json: %q", name, out)
 		}
 	}
+}
+
+// padded is event seq's data with its payload padded so that its line,
+// "data: " included, is n bytes.
+func padded(seq int64, n int) string {
+	d := data(seq, "")
+	pad := n - len("data: ") - len(d) - len(`,"pad":""`)
+	return strings.Replace(d, `{"grant":{}}`, `{"grant":{},"pad":"`+strings.Repeat("x", pad)+`"}`, 1)
+}
+
+// Review cases: a frame cut mid-way, the frame bound, the withheld
+// payload, whitespace in an event's data, and cancellation.
+func TestEventsEdges(t *testing.T) {
+	// A frame cut mid-way is dropped: event 1 is printed and the stream
+	// resumes after it.
+	r := &streamer{streams: []stream{{body: frame(1) + "id: 2\nevent: event\ndata: {\"seq\":2"}, {body: frame(2) + revokedFrame}}}
+	if code, out, _ := run2(r, "events", "--follow", "--json"); code != entry.ExitRefused || fmt.Sprint(r.afters) != "[0 1]" || out != data(1, "")+"\n"+data(2, "")+"\n" {
+		t.Errorf("cut: %d %v %q", code, r.afters, out)
+	}
+	// A line just under the bound passes; one over it is too long.
+	line := padded(1, maxFrameBytes-1)
+	if len("data: "+line) != maxFrameBytes-1 {
+		t.Fatalf("padded to %d", len("data: "+line))
+	}
+	r = &streamer{streams: []stream{{body: "id: 1\nevent: event\ndata: " + line + "\n\n" + revokedFrame}}}
+	if code, out, _ := run2(r, "events", "--follow", "--json"); code != entry.ExitRefused || len(out) != len(line)+1 {
+		t.Errorf("under the bound: %d %d", code, len(out))
+	}
+	r = &streamer{streams: []stream{{body: "id: 1\nevent: event\ndata: " + padded(1, maxFrameBytes+1) + "\n\n" + revokedFrame}}}
+	if code, out, errb := run2(r, "events", "--follow"); code != entry.ExitCouldNotRun || out != "" || !strings.Contains(errb, "malformed; resume with --after 0") {
+		t.Errorf("over the bound: %d %q", code, errb)
+	}
+	// The withheld marker.
+	withheld := "id: 1\nevent: event\ndata: " + strings.Replace(data(1, ""), `"payload":{"grant":{}},`, `"payload":null,`, 1) + "\n\n"
+	withheld = strings.Replace(withheld, `"payload_withheld":false`, `"payload_withheld":true`, 1)
+	r = &streamer{streams: []stream{{body: withheld + revokedFrame}}}
+	if _, out, _ := run2(r, "events", "--follow"); out != "1 grant.created/v1 grt_1 by act_1 in - (payload withheld)\n" {
+		t.Errorf("withheld: %q", out)
+	}
+	// Tabs between an event's tokens are compacted away.
+	r = &streamer{streams: []stream{{body: "id: 1\nevent: event\ndata: " + strings.Replace(data(1, ""), `"seq":1,`, "\t\"seq\" :\t1 ,", 1) + "\n\n" + revokedFrame}}}
+	if _, out, _ := run2(r, "events", "--follow", "--json"); out != data(1, "")+"\n" {
+		t.Errorf("tabs: %q", out)
+	}
+	// A closed store_unreadable says where to resume.
+	r = &streamer{streams: []stream{{body: frame(3) + closed("could_not_run", "store_unreadable")}}}
+	if _, _, errb := run2(r, "events", "--follow", "--after", "2"); !strings.Contains(errb, "resume with --after 3") {
+		t.Errorf("unreadable: %q", errb)
+	}
+	// A cancelled caller is not resumed.
+	ctx, cancel := context.WithCancel(context.Background())
+	r = &streamer{streams: []stream{{body: frame(1)}}}
+	cancelling := &cancelOnFollow{streamer: r, cancel: cancel}
+	var out, errb strings.Builder
+	if code := Main(ctx, []string{"events", "--follow"}, &out, &errb, cancelling); code != entry.ExitCouldNotRun || len(r.afters) != 1 ||
+		!strings.Contains(errb.String(), "cancelled: context canceled; resume with --after 1") {
+		t.Errorf("cancelled: %d %v %q", code, r.afters, errb.String())
+	}
+	// The same while waiting to resume.
+	ctx, cancel = context.WithCancel(context.Background())
+	resumeWait = time.Hour
+	defer func() { resumeWait = 0 }()
+	r = &streamer{}
+	go func() {
+		for !r.called() {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+	if code := Main(ctx, []string{"events", "--follow"}, &out, &errb, r); code != entry.ExitCouldNotRun || len(r.afters) != 1 {
+		t.Errorf("cancelled while waiting: %d %v", code, r.afters)
+	}
+}
+
+// cancelOnFollow cancels the caller's context once the stream it opens ends.
+type cancelOnFollow struct {
+	*streamer
+	cancel func()
+}
+
+func (c *cancelOnFollow) Follow(ctx context.Context, after int64) (io.ReadCloser, error) {
+	defer c.cancel()
+	return c.streamer.Follow(ctx, after)
 }

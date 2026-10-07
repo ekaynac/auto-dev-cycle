@@ -19,9 +19,16 @@ func TestFollow(t *testing.T) {
 		t.Fatalf("%v %s", err, path)
 	}
 	body.Close()
-	if _, err := answering(t, http.StatusOK, "application/json", "{}", &path, &auth).Follow(context.Background(), 0); err == nil {
-		t.Error("a JSON answer was taken for a stream")
+	for _, ctype := range []string{"application/json", "text/event-streamx", "text/event-stream-not", ""} {
+		if _, err := answering(t, http.StatusOK, ctype, "{}", &path, &auth).Follow(context.Background(), 0); err == nil {
+			t.Errorf("%q was taken for a stream", ctype)
+		}
 	}
+	body, err = answering(t, http.StatusOK, "text/event-stream; charset=utf-8", "", &path, &auth).Follow(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("with a parameter: %v", err)
+	}
+	body.Close()
 	var r *Refused
 	if _, err := answering(t, http.StatusServiceUnavailable, "application/json", `{"outcome":"could_not_run","reason":"store_unreadable","detail":"d"}`, &path, &auth).
 		Follow(context.Background(), 0); !errors.As(err, &r) || r.Result.Outcome != vocab.CouldNotRun {

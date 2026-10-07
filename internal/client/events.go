@@ -6,9 +6,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
 )
@@ -20,7 +20,7 @@ func (t Transport) Follow(ctx context.Context, after int64) (io.ReadCloser, erro
 	if err := refusal(resp, err); err != nil {
 		return nil, err
 	}
-	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+	if media, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err != nil || media != "text/event-stream" {
 		resp.Body.Close()
 		return nil, errors.New("the controller's answer is not an event stream")
 	}

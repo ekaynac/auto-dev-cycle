@@ -63,14 +63,11 @@ type streamed struct {
 func events(ctx context.Context, args []string, stdout, stderr io.Writer, c Client) int {
 	const name = "adc events"
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	follow := fs.Bool("follow", false, "follow the stream (required: it has no end)")
 	after := fs.Int64("after", 0, "resume after this seq")
 	asJSON := fs.Bool("json", false, "print one JSON event per line")
-	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
-		return entry.ExitOK
-	} else if err != nil {
-		return entry.ExitUsage
+	if code, ok := parse(fs, args, stderr); !ok {
+		return code
 	}
 	if fs.NArg() > 0 || !*follow || *after < 0 {
 		say(stderr, "%s: usage: adc events --follow [--after SEQ] [--json]\n", name)
@@ -93,12 +90,20 @@ func events(ctx context.Context, args []string, stdout, stderr io.Writer, c Clie
 			progressed, closed, err = relay(body, &last, stdout, *asJSON)
 			body.Close()
 			if closed != nil {
-				say(stderr, "%s: closed: %s/%s: %s\n", name, closed.Outcome, closed.Reason, closed.Detail)
+				hint := ""
+				if closed.Outcome == vocab.CouldNotRun {
+					hint = fmt.Sprintf("; resume with --after %d", last)
+				}
+				say(stderr, "%s: closed: %s/%s: %s%s\n", name, closed.Outcome, closed.Reason, closed.Detail, hint)
 				return resultCode(*closed)
 			}
 			if err != nil {
-				return failed(stderr, name, err)
+				return failed(stderr, name, fmt.Errorf("%w; resume with --after %d", err, last))
 			}
+		}
+		// A cancelled caller is never resumed.
+		if ctx.Err() != nil {
+			return failed(stderr, name, fmt.Errorf("cancelled: %w; resume with --after %d", ctx.Err(), last))
 		}
 		if progressed {
 			misses = 0
@@ -108,6 +113,7 @@ func events(ctx context.Context, args []string, stdout, stderr io.Writer, c Clie
 		}
 		select {
 		case <-ctx.Done():
+			return failed(stderr, name, fmt.Errorf("cancelled: %w; resume with --after %d", ctx.Err(), last))
 		case <-time.After(resumeWait):
 		}
 	}
@@ -124,6 +130,9 @@ func relay(body io.Reader, last *int64, out io.Writer, asJSON bool) (bool, *voca
 	frame := map[string]string{}
 	for sc.Scan() {
 		line := sc.Text()
+		// Only the fields the controller sends are taken: an SSE comment
+		// (a ": keepalive" line), retry, or CRLF line endings fail closed
+		// until a server or a proxy in front of it sends them.
 		if line != "" {
 			k, v, ok := strings.Cut(line, ": ")
 			if _, dup := frame[k]; !ok || dup || (k != "id" && k != "event" && k != "data") {

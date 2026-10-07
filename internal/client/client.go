@@ -213,17 +213,3 @@ func answer(resp *http.Response, err error, what string, check func([]byte) erro
 	}
 	return raw, nil
 }
-
-// Stream opens a long-lived GET (the event stream, 08 "Events") on a
-// verified connection and returns its body; the caller closes it.
-func (t Transport) Stream(ctx context.Context, path string) (io.ReadCloser, error) {
-	resp, err := t.do(ctx, http.MethodGet, path, nil, true)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return nil, fmt.Errorf("the controller answered HTTP %d to the stream", resp.StatusCode)
-	}
-	return resp.Body, nil
-}
