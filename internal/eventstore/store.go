@@ -530,13 +530,13 @@ func (s *Store) append(ctx context.Context, tx *sql.Tx, e Event) (Event, error) 
 	if err := tx.QueryRowContext(ctx, `SELECT seq, hash, at FROM events ORDER BY seq DESC LIMIT 1`).Scan(&last, &prev, &prevAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Event{}, err
 	}
-	at, err := s.eventTime(prevAt)
-	switch {
-	case err != nil:
-		return Event{}, err
-	case e.At == "": // an effect event: the clock, never before the previous event
+	if e.At == "" { // an effect transition: the clock, never before the previous event
+		at, err := s.eventTime(prevAt)
+		if err != nil {
+			return Event{}, err
+		}
 		e.At = at.Format(time.RFC3339Nano)
-	case !after(e.At, prevAt): // a command's event carries its Tx.Now
+	} else if !after(e.At, prevAt) { // a command's event carries its Tx.Now
 		return Event{}, fmt.Errorf("eventstore: event time %s is before the previous event's %s", e.At, prevAt.String)
 	}
 	e.Seq, e.PrevHash = last.Int64+1, s.genesis

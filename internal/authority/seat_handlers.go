@@ -42,8 +42,7 @@ func SeatHandlers(grace time.Duration) map[string]Handler {
 }
 
 // Derive checks the scope against the action's schema, then derives the
-// seat: its recorded id, or a candidate minted for this command, which
-// Logic writes under (Tx.Bound), its record and its version
+// seat (TheSeat), which Logic writes under (Tx.Bound), its record and its version
 // (SeatVersion, which revocations move too). The seat is in no project and
 // its transitions are in no change class.
 func (h SeatHandler) Derive(tx *eventstore.Tx, _ types.Actor, input json.RawMessage) (Derived, error) {

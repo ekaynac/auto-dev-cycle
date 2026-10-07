@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -29,8 +28,8 @@ const SeatEventSchema = "records/seat-event"
 
 // SeatProjection holds the seat's id (key "id"), its holder (key
 // "holder", an actor id), the pending handover request (key "request",
-// a seatRequest) and its version (key "version", SeatVersion). The controller has one seat: its first event mints its
-// id (sea_…), and every seat event after has that subject.
+// a seatRequest) and its version (key "version", SeatVersion). The controller has one seat, whose id is TheSeat:
+// every seat event has that subject.
 const SeatProjection = "seat"
 
 // SeatMinGrace is the least time a forced handover leaves the holder to
@@ -59,11 +58,15 @@ func SeatKinds() eventstore.Kinds {
 	return k
 }
 
-// NewSeatCandidate mints the id a command gives the seat if it has none
-// yet. Mint it once per command, before Submit, and pass the same value to
-// the derivation and to NewSeatEvent: on a fresh seat, the object a
-// command binds and the subject it writes are then one id.
-func NewSeatCandidate() (string, error) { return ids.New("sea") }
+// TheSeat is the seat's id, fixed: a controller has one seat, and its ids
+// are its store's, so a constant is a stable identity before the seat's
+// first event (a fresh seat is version 0 with no record). Every derivation
+// and every proposal of a fresh seat binds the same object, and its first
+// event moves it. Minting it at startup would add a write for nothing.
+const TheSeat = "sea_01m4ame0tze3g8sk4rt24b929a"
+
+// NewSeatCandidate is the id a command gives the seat: TheSeat.
+func NewSeatCandidate() (string, error) { return TheSeat, nil }
 
 // SeatID is the seat's id, the subject of its events: the recorded one,
 // or candidate (a NewSeatCandidate id) before the seat's first event.
@@ -202,7 +205,7 @@ func applySeat(tx *eventstore.Tx, ev eventstore.Event, p types.SeatEvent, grace 
 	if err != nil {
 		return err
 	}
-	if string(p.Transition)+"/v1" != ev.Kind || (known && ev.Subject != seat) || !strings.HasPrefix(ev.Subject, "sea_") {
+	if string(p.Transition)+"/v1" != ev.Kind || (known && ev.Subject != seat) || ev.Subject != TheSeat {
 		return fmt.Errorf("kind %s, subject %s carry %s", ev.Kind, ev.Subject, p.Transition)
 	}
 	if !known {

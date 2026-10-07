@@ -392,3 +392,58 @@ func TestSeatProposalInvalidatedByRevocation(t *testing.T) {
 	stale("after the holder's revocation", p)
 	b.rebuilds()
 }
+
+// A fresh seat has a stable identity (TheSeat): identical proposals under
+// different keys are one pending proposal, a re-derivation reproduces its
+// binding, and the seat's first event invalidates it as stale.
+func TestFreshSeatProposals(t *testing.T) {
+	b := openSeats(t, 0)
+	sup2 := b.supervisor()
+	g := b.supGrant
+	g.ID, g.Actor, g.Projects, g.Actions = types.GrantID(newID(t, "grt")), sup2.Actor(), types.ProjectScope{All: true}, []types.ActionKind{"seat.take"}
+	g.ConfirmationOverrides = map[string]types.GrantConfirmationOverridesValue{"seat.take": types.GrantConfirmationOverridesValueHuman}
+	b.seed(b.op, createGrant(g))
+	propose := func(key string) types.ProposalID {
+		t.Helper()
+		out, err := b.seatCmd(sup2, "seat.take", key, `{}`, nil)
+		var r struct {
+			Proposal types.ProposalID `json:"proposal"`
+		}
+		if err != nil || out.Disposition != eventstore.DispositionProposed || json.Unmarshal(out.Result, &r) != nil {
+			t.Fatalf("a tightened seat.take: %+v %v", out, err)
+		}
+		return r.Proposal
+	}
+	// No seat event has another subject, even on a fresh seat.
+	if b.try(sup2, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		to := sup2.Actor()
+		raw, err := json.Marshal(types.SeatEvent{Transition: types.SeatEventTransitionSeatTaken, To: &to})
+		return []eventstore.Event{{ID: newID(t, "evt"), Kind: "seat.taken/v1", Subject: newID(t, "sea"), Payload: raw}}, err
+	}) == nil {
+		t.Error("a seat event under another seat id")
+	}
+	first := propose("one")
+	if second := propose("two"); second != first {
+		t.Errorf("two identical fresh-seat proposals: %s and %s", first, second)
+	}
+	p := b.proposal(first)
+	if p.Object.ID != authority.TheSeat || *p.ExpectedState.Version != 0 || p.ExpectedState.Digest != nil {
+		t.Errorf("the fresh-seat binding: %+v", p)
+	}
+	b.view(func(tx *eventstore.Tx) error {
+		for range 2 {
+			d, err := authority.SeatHandlers(0)["seat.take"].Derive(tx, types.Actor{}, json.RawMessage(`{}`))
+			v, verr := d.Version(tx)
+			_, exists, rerr := d.Record(tx)
+			if errors.Join(err, verr, rerr) != nil || d.Object != p.Object.ID || v != *p.ExpectedState.Version || exists {
+				t.Errorf("a re-derivation: %+v %d %t", d, v, exists)
+			}
+		}
+		return nil
+	})
+	b.must(b.sup, "seat.take", "take", eventstore.DispositionApplied)
+	if got := b.proposal(first); got.Status != types.ProposalStatusInvalidated || *got.InvalidatedReason != types.ProposalInvalidatedReasonValueStaleExpectedState {
+		t.Errorf("after the seat's first event: %+v", got)
+	}
+	b.rebuilds()
+}

@@ -102,3 +102,53 @@ func TestEventTimeNeverDecreases(t *testing.T) {
 		t.Error("an event recorded before the previous one")
 	}
 }
+
+// A command reads the clock once: under a clock that advances an hour on
+// every read, its events and its effect intents all carry its Tx.Now.
+func TestCommandReadsTheClockOnce(t *testing.T) {
+	ctx := context.Background()
+	var mu sync.Mutex
+	reads, base := 0, time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	advancing := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		reads++
+		return base.Add(time.Duration(reads) * time.Hour)
+	}
+	dir := stateDir(t)
+	lock, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs, err := blobstore.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projected []Event
+	s, err := Open(ctx, lock, Config{Kinds: testKinds, Blobs: blobs, Effects: testEffects, Now: advancing,
+		Hooks: Hooks{Identify: allow, Authorize: allow, Project: func(_ *Tx, evs []Event) error { projected = append(projected, evs...); return nil }}})
+	if err != nil {
+		lock.Release()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close(); lock.Release() })
+	before := reads
+	var now time.Time
+	if _, err := s.SubmitApplied(ctx, command(t, "k", `{}`), Applies(func(tx *Tx) ([]Event, json.RawMessage, error) {
+		now = tx.Now()
+		if err := tx.IntendEffect(newID(t, "eff"), "model_call", "provider-a", json.RawMessage(`{}`)); err != nil {
+			return nil, nil, err
+		}
+		return appendTo(t, testSubject, 2)(tx)
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if len(projected) != 3 || reads-before != 1 {
+		t.Fatalf("%d events, %d clock reads", len(projected), reads-before)
+	}
+	for _, ev := range projected {
+		if at, err := time.Parse(time.RFC3339Nano, ev.At); err != nil || !at.Equal(now) {
+			t.Errorf("%s at %s, the command's time %s", ev.Kind, ev.At, now)
+		}
+	}
+}

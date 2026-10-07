@@ -540,7 +540,7 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 			appended = append(appended, a)
 		}
 		// Effect intents follow the command's events, in the same transaction.
-		intents, err := s.appendIntents(ctx, tx, c, t.intents)
+		intents, err := s.appendIntents(ctx, tx, c, t.at.Format(time.RFC3339Nano), t.intents)
 		if err != nil {
 			return err
 		}
