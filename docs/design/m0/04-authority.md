@@ -221,6 +221,17 @@ Challenge:                          # human policy only
   its grant is revoked, or its object has a new event. An approval (`approval.recorded/v1`) answers exactly one live
   proposal, at most once, and is never by the proposer (except an operator's own presence check, KA1) or the grantee;
   under `human`, it is an operator's.
+- **Confirmation and application (14 PR 6c).** `proposal.confirm {proposal, review}` confirms an open
+  `independent_review` proposal with a review receipt the controller holds (looked up server side, never a client's
+  GO). The confirmer's approval is built from the proposal record (`ApprovalOf`) and must be separate from it. In the
+  same writer transaction the exact operation is re-derived for its proposer as of now and revalidated (object state,
+  the proposal's own grant, proposer, policy, confirmer, the proposer's seat), then applied through its action's
+  handler. One command commits `approval.recorded`, `proposal.confirmed`, the operation's events and
+  `proposal.applied`; or `proposal.invalidated` with its registered reason (disposition invalidated); or, past its
+  expiry, `proposal.expired` (refused). The operation's events carry the confirming command's actor; the proposal
+  names the proposer. A `human` proposal, the KA1 presence check included, is refused (`confirmation_refused`) until
+  the dashboard's WebAuthn is deployed (14 R6). Until review receipts are recorded, the daemon has no review source and
+  refuses every confirmation.
 
 ## Protected changes: documents and topology [M3][M12]
 

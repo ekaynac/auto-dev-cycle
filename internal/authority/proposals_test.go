@@ -154,7 +154,7 @@ func TestProposalCreationGuards(t *testing.T) {
 			return []eventstore.Event{{ID: newID(t, "evt"), Kind: authority.ProposalCreated, Subject: string(p.ID), Payload: raw}}, nil
 		}
 	}
-	now := time.Now().UTC()
+	now := suiteNow().UTC()
 	at := func(d time.Duration) types.Time { return types.Time(now.Add(d).Format(time.RFC3339Nano)) }
 	fresh := func(change func(*types.Proposal)) types.Proposal {
 		n := p
@@ -390,7 +390,7 @@ func TestProposerRevocationInvalidates(t *testing.T) {
 	b := openBoundary(t)
 	_, p := b.submitProposal(b.proposeCmd(b.sup, newID(t, "prj"), b.op.Actor(), nil))
 	b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return identity.RevokeActor(tx, b.sup.Actor(), time.Now())
+		return identity.RevokeActor(tx, b.sup.Actor(), suiteNow())
 	})
 	if got := b.proposal(p.ID); got.InvalidatedReason == nil || *got.InvalidatedReason != types.ProposalInvalidatedReasonValueActorRevoked {
 		t.Errorf("a revoked proposer's proposal: %+v", got)

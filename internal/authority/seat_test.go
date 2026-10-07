@@ -139,16 +139,16 @@ func TestSeatHandover(t *testing.T) {
 func TestSeatRevocation(t *testing.T) {
 	b := openBoundary(t)
 	sup, sup2, sup3 := b.sup.Actor(), b.supervisor(), b.supervisor()
-	later := time.Now().Add(time.Hour)
+	later := suiteNow().Add(time.Hour)
 	b.seed(sup3, seat(types.SeatEventTransitionSeatHandoverRequested, ref(sup), ref(sup3.Actor()), &later))
-	b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return identity.RevokeActor(tx, sup, time.Now()) })
+	b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return identity.RevokeActor(tx, sup, suiteNow()) })
 	if _, held := b.holder(); held {
 		t.Fatal("a revoked holder keeps the seat")
 	}
 	b.seed(sup2, seat(types.SeatEventTransitionSeatTaken, nil, ref(sup2.Actor()), nil))
 	b.seed(sup3, seat(types.SeatEventTransitionSeatHandoverRequested, ref(sup2.Actor()), ref(sup3.Actor()), &later))
 	b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return identity.RevokeActor(tx, sup3.Actor(), time.Now())
+		return identity.RevokeActor(tx, sup3.Actor(), suiteNow())
 	})
 	b.view(func(tx *eventstore.Tx) error {
 		if _, pending, err := tx.Get(authority.SeatProjection, "request"); err != nil || pending {
@@ -165,12 +165,12 @@ func TestSeatForceAfterHasAFloor(t *testing.T) {
 	b := openBoundary(t)
 	sup, sup2 := b.sup.Actor(), b.supervisor()
 	for _, d := range []time.Duration{-time.Minute, 0, time.Minute, authority.SeatMinGrace - time.Second} {
-		at := time.Now().Add(d)
+		at := suiteNow().Add(d)
 		if b.try(sup2, seat(types.SeatEventTransitionSeatHandoverRequested, ref(sup), ref(sup2.Actor()), &at)) == nil {
 			t.Errorf("force_after now%+v accepted", d)
 		}
 	}
-	at := time.Now().Add(authority.SeatMinGrace + time.Minute)
+	at := suiteNow().Add(authority.SeatMinGrace + time.Minute)
 	b.seed(sup2, seat(types.SeatEventTransitionSeatHandoverRequested, ref(sup), ref(sup2.Actor()), &at))
 	if b.try(sup2, seat(types.SeatEventTransitionSeatHandedOver, ref(sup), ref(sup2.Actor()), nil)) == nil {
 		t.Error("forced before force_after")
@@ -184,17 +184,17 @@ func TestSeatForcedHandover(t *testing.T) {
 	const grace = 300 * time.Millisecond
 	b := openBoundaryGrace(t, grace, true)
 	sup, sup2 := b.sup.Actor(), b.supervisor()
-	short := time.Now().Add(grace / 3)
+	short := suiteNow().Add(grace / 3)
 	if b.try(sup2, seat(types.SeatEventTransitionSeatHandoverRequested, ref(sup), ref(sup2.Actor()), &short)) == nil {
 		t.Error("a force_after inside the grace")
 	}
-	at := time.Now().Add(grace + 100*time.Millisecond)
+	at := suiteNow().Add(grace + 100*time.Millisecond)
 	b.seed(sup2, seat(types.SeatEventTransitionSeatHandoverRequested, ref(sup), ref(sup2.Actor()), &at))
 	force := seat(types.SeatEventTransitionSeatHandedOver, ref(sup), ref(sup2.Actor()), nil)
 	if b.try(sup2, force) == nil {
 		t.Fatal("forced inside the grace")
 	}
-	time.Sleep(time.Until(at) + 50*time.Millisecond)
+	time.Sleep(at.Sub(suiteNow()) + 50*time.Millisecond)
 	if err := b.try(sup2, force); err != nil {
 		t.Fatalf("forced after force_after: %v", err)
 	}
@@ -335,13 +335,13 @@ func TestSeatRequestLifecycle(t *testing.T) {
 	b := openBoundaryGrace(t, grace, true)
 	sup, sup2, sup3 := b.sup.Actor(), b.supervisor(), b.supervisor()
 	s2, s3 := sup2.Actor(), sup3.Actor()
-	at := time.Now().Add(grace + 100*time.Millisecond)
+	at := suiteNow().Add(grace + 100*time.Millisecond)
 	b.seed(sup2, seat(types.SeatEventTransitionSeatHandoverRequested, ref(sup), &s2, &at))
 	b.seed(sup3, seat(types.SeatEventTransitionSeatHandoverRequested, ref(sup), &s3, &at))
 	if to, ok := b.pendingTo(); !ok || to != s3 {
 		t.Fatalf("the newer request does not replace the older: %s %t", to, ok)
 	}
-	time.Sleep(time.Until(at) + 50*time.Millisecond)
+	time.Sleep(at.Sub(suiteNow()) + 50*time.Millisecond)
 	if b.try(sup2, seat(types.SeatEventTransitionSeatHandedOver, ref(sup), &s2, nil)) == nil {
 		t.Error("a replaced request forced")
 	}

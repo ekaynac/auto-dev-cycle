@@ -13,7 +13,9 @@ package authority
 //     (authority_revoked) or its bound object has a new event
 //     (stale_expected_state);
 //   - an approval answers exactly one live proposal, every field it shares
-//     with it copied from the proposal record (ApprovalOf).
+//     with it copied from the proposal record (ApprovalOf);
+//   - a proposal moves open → confirmed → applied, or open → expired, one
+//     event each (confirm.go).
 
 import (
 	"encoding/json"
@@ -48,8 +50,11 @@ const (
 
 // ProposalKinds registers the proposal and approval event kinds.
 func ProposalKinds() eventstore.Kinds {
-	return eventstore.Kinds{ProposalCreated: {Schema: "records/proposal"}, ProposalInvalidated: {Schema: "records/proposal"},
-		ApprovalRecorded: {Schema: "records/approval"}}
+	k := eventstore.Kinds{ApprovalRecorded: {Schema: "records/approval"}}
+	for _, kind := range []string{ProposalCreated, ProposalInvalidated, ProposalConfirmed, ProposalApplied, ProposalExpired} {
+		k[kind] = eventstore.Kind{Schema: "records/proposal"}
+	}
+	return k
 }
 
 // propose commits dec, a decision to propose c's operation as d derived
@@ -112,7 +117,7 @@ func StateOf(t *eventstore.Tx, d Derived) (types.ExpectedState, error) {
 
 // InvalidateProposal is the proposal.invalidated event for the open or
 // confirmed proposal id, for a command that finds it no longer holds (at
-// apply, 6c) and commits it with the invalidated disposition.
+// apply, Authorizer.Confirm) and commits it with the invalidated disposition.
 func InvalidateProposal(t *eventstore.Tx, id types.ProposalID, reason types.ProposalInvalidatedReasonValue) ([]eventstore.Event, error) {
 	p, ok, err := loadJSON[types.Proposal](t, ProposalProjection, string(id))
 	if err != nil || !ok {
@@ -187,6 +192,8 @@ func (ProposalProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) erro
 			err = closeProposal(tx, ev)
 		case ApprovalRecorded:
 			err = recordApproval(tx, ev)
+		case ProposalConfirmed, ProposalApplied, ProposalExpired:
+			err = advanceProposal(tx, ev)
 		case string(types.GrantEventTransitionGrantRevoked) + "/v1":
 			var g types.GrantEvent
 			if err = json.Unmarshal(ev.Payload, &g); err == nil {

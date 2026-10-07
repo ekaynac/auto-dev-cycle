@@ -58,6 +58,9 @@ type Authorizer struct {
 	Registry *vocab.Registry
 	Handlers map[string]Handler
 	Now      func() time.Time
+	// Reviews is where proposal.confirm finds review receipts; nil: every
+	// confirmation is refused (NoReviewSource).
+	Reviews Reviews
 }
 
 // Authorize decides c for its principal's live actor: the handler's
