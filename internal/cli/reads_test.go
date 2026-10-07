@@ -96,6 +96,15 @@ func TestReadExitCodes(t *testing.T) {
 			t.Errorf("%v: %d", args, code)
 		}
 	}
+	// The flag package prints nothing itself: an unknown flag is reported
+	// escaped, and -h prints the command's own flags.
+	if code, out, errb := run2(&reader{}, "seat", "status", "--x\x1b[2J"); code != entry.ExitUsage || out != "" ||
+		errb != "adc seat status: flag provided but not defined: -x\\u{001B}[2J\n" {
+		t.Errorf("unknown flag: %d %q", code, errb)
+	}
+	if code, _, errb := run2(&reader{}, "seat", "status", "-h"); code != entry.ExitOK || !strings.Contains(errb, "-json") {
+		t.Errorf("-h: %d %q", code, errb)
+	}
 }
 
 // safe escapes every class of rune that could move, hide or restyle text.
@@ -111,6 +120,11 @@ func TestSafe(t *testing.T) {
 		"a\xffb":           `a\xffb`,
 		`a\u{202E}b`:       `a\\u{202E}b`,
 		"tab\there":        `tab\u{0009}here`,
+		"a\u009fb":         `a\u{009F}b`,          // the last C1 control
+		"a\ufe0fb\u180bc":  `a\u{FE0F}b\u{180B}c`, // variation selectors
+		"a\u2800b":         `a\u{2800}b`,          // blank braille
+		"\u0301x\u20dd":    "\\u{0301}x\u20dd",    // a leading combining mark, not a later one
+		"\u20ddx":          `\u{20DD}x`,           // a leading enclosing mark
 	} {
 		if got := safe(in); got != want {
 			t.Errorf("safe(%q) = %q, want %q", in, got, want)
@@ -121,11 +135,11 @@ func TestSafe(t *testing.T) {
 // hostile is one value of every kind the terminal must not take raw: a
 // CSI sequence, a C1 CSI, DEL, a bidi override and isolate, a zero-width
 // space, a line separator and an invalid byte.
-const hostile = "\x1b[2J\u009b31m\x7f‮⁦​ \xff"
+const hostile = "\x1b[2J\u009b31m\x7f\u202e\u2066\u200b\u2028\xff"
 
 // raw reports whether s carries any rune of hostile unescaped.
 func raw(s string) bool {
-	return strings.ContainsAny(s, "\x1b\u009b\x7f‮⁦​ ") || !utf8.ValidString(s)
+	return strings.ContainsAny(s, "\x1b\u009b\x7f\u202e\u2066\u200b\u2028") || !utf8.ValidString(s)
 }
 
 // A hostile value in every field the human output shows, read or refused,
@@ -135,7 +149,7 @@ func TestHostileReadFields(t *testing.T) {
 	for name, body := range map[string]string{
 		"id":        `{"resource":"notes","outcome":"found","items":[{"id":` + string(h) + `}]}`,
 		"value":     `{"resource":"notes","outcome":"found","items":[{"id":"n","body":` + string(h) + `}]}`,
-		"block":     `{"resource":"notes","outcome":"found","items":[{"id":"n","body":` + strings.Replace(string(h), ` `, `\n `, 1) + `}]}`,
+		"block":     `{"resource":"notes","outcome":"found","items":[{"id":"n","body":` + strings.Replace(string(h), `\u2028`, `\n\u2028`, 1) + `}]}`,
 		"block key": `{"resource":"notes","outcome":"found","items":[{"id":"n",` + string(h) + `:"a\nb"}]}`,
 		"key":       `{"resource":"notes","outcome":"found","items":[{"id":"n",` + string(h) + `:1}]}`,
 		"nested":    `{"resource":"notes","outcome":"found","items":[{"id":"n","object":{"id":` + string(h) + `}}]}`,
@@ -172,14 +186,20 @@ func TestHostileReadFields(t *testing.T) {
 // --json is the document as sent, a bidi rune included, but a DEL or C1
 // control or an invalid byte goes out as its \u escape (the same value).
 func TestJSONControls(t *testing.T) {
-	r := &reader{body: "{\"resource\":\"notes\",\"items\":[{\"body\":\"a‮\u009b\x7f\xffb\"}]}\n"}
+	r := &reader{body: "{\"resource\":\"notes\",\"items\":[{\"body\":\"a\u202e\u009b\x7f\xffb\"}]}\n"}
 	_, out, _ := run2(r, "notes", "list", "--json")
-	if out != "{\"resource\":\"notes\",\"items\":[{\"body\":\"a‮\\u009b\\u007f\\ufffdb\"}]}\n" {
+	if out != "{\"resource\":\"notes\",\"items\":[{\"body\":\"a\u202e\\u009b\\u007f\\ufffdb\"}]}\n" {
 		t.Fatalf("%q", out)
 	}
 	var doc struct{ Items []struct{ Body string } }
-	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Items[0].Body != "a‮\u009b\x7f�b" {
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Items[0].Body != "a\u202e\u009b\x7f\ufffdb" {
 		t.Fatalf("%v %q", err, doc)
+	}
+	// Whitespace between tokens (CR, LF, tab) is compacted away, and line
+	// and paragraph separators and the last C1 control are escaped.
+	r = &reader{body: "{\r\n\t\"resource\" :\t\"notes\",\r\"items\":\n[{\"body\":\"a\u2028b\u2029c\u009fd\"}]}\r\n"}
+	if _, out, _ := run2(r, "notes", "list", "--json"); out != `{"resource":"notes","items":[{"body":"a\u2028b\u2029c\u009fd"}]}`+"\n" {
+		t.Fatalf("whitespace: %q", out)
 	}
 	// encoding/json refuses a raw C0 control in a string: a valid document has none.
 	if json.Valid([]byte("\"a\x1bb\"")) {

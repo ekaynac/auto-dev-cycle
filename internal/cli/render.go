@@ -11,6 +11,8 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"slices"
@@ -19,13 +21,16 @@ import (
 	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/client"
+	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 )
 
 // safe escapes, visibly, every rune that is not plainly visible text:
 // controls (C0, DEL, C1: terminal escapes among them), format characters
 // (bidi overrides and isolates, zero-width ones: Cf is not graphic), line
-// and paragraph separators, other default-ignorable ones, invalid UTF-8,
-// and the backslash, so no escape can be forged.
+// and paragraph separators, other default-ignorable ones and variation
+// selectors, the blank braille pattern, a combining mark that would join
+// the text before the value, invalid UTF-8, and the backslash, so no
+// escape can be forged.
 func safe(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); {
@@ -35,7 +40,8 @@ func safe(s string) string {
 			fmt.Fprintf(&b, `\x%02x`, s[i])
 		case r == '\\':
 			b.WriteString(`\\`)
-		case !unicode.IsGraphic(r) || unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r):
+		case !unicode.IsGraphic(r) || unicode.In(r, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector) ||
+			r == brailleBlank || (i == 0 && unicode.In(r, unicode.Mn, unicode.Me)):
 			fmt.Fprintf(&b, `\u{%04X}`, r)
 		default:
 			b.WriteRune(r)
@@ -44,6 +50,9 @@ func safe(s string) string {
 	}
 	return b.String()
 }
+
+// brailleBlank is graphic, yet shows nothing.
+const brailleBlank = '\u2800'
 
 // say is the one writer of human output: format is the CLI's own (its
 // verbs %s), and every argument is escaped by safe.
@@ -57,19 +66,24 @@ func say(w io.Writer, format string, a ...any) error {
 }
 
 // sayJSON is the one writer of --json output: one validated JSON document
-// on a line, as sent, except that a DEL or C1 control (legal unescaped in
-// a JSON string, and a terminal control) or an invalid UTF-8 byte is
-// written as its \u escape, which leaves the document's value unchanged.
-// JSON itself admits no raw C0 control in a string.
-func sayJSON(w io.Writer, raw []byte) error {
-	raw = bytes.TrimSpace(raw)
+// on one line, compacted (no CR, LF or tab between its tokens, and JSON
+// admits no raw C0 control inside a string), with every DEL or C1 control
+// (legal unescaped in a JSON string, and a terminal control), line or
+// paragraph separator (a line break to some NDJSON readers) or invalid
+// UTF-8 byte written as its \u escape: the document's value is unchanged.
+func sayJSON(w io.Writer, doc []byte) error {
+	var c bytes.Buffer
+	if err := json.Compact(&c, doc); err != nil {
+		return errors.New("the controller's document is not JSON")
+	}
+	raw := c.Bytes()
 	var b bytes.Buffer
 	for i := 0; i < len(raw); {
 		r, n := utf8.DecodeRune(raw[i:])
 		switch {
 		case r == utf8.RuneError && n == 1:
 			b.WriteString(`\ufffd`)
-		case r >= 0x7f && r <= 0x9f:
+		case (r >= 0x7f && r <= 0x9f) || r == '\u2028' || r == '\u2029':
 			fmt.Fprintf(&b, `\u%04x`, r)
 		default:
 			b.Write(raw[i : i+n])
@@ -79,6 +93,24 @@ func sayJSON(w io.Writer, raw []byte) error {
 	b.WriteByte('\n')
 	_, err := w.Write(b.Bytes())
 	return err
+}
+
+// parse parses fs's flags from args with nothing printed by the flag
+// package: a usage error goes through say, and -h prints the CLI's own
+// defaults. ok is false when the command ends with code.
+func parse(fs *flag.FlagSet, args []string, stderr io.Writer) (code int, ok bool) {
+	fs.SetOutput(io.Discard)
+	err := fs.Parse(args)
+	switch {
+	case errors.Is(err, flag.ErrHelp):
+		fs.SetOutput(stderr)
+		fs.PrintDefaults()
+		return entry.ExitOK, false
+	case err != nil:
+		say(stderr, "%s: %s\n", fs.Name(), err)
+		return entry.ExitUsage, false
+	}
+	return 0, true
 }
 
 // render writes a validated read: each record under its resource and id,

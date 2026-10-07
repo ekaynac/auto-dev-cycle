@@ -34,12 +34,9 @@ var reads = map[command]string{
 
 func read(ctx context.Context, name, resource string, args []string, stdout, stderr io.Writer, c Client) int {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print the controller's response as one JSON document")
-	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
-		return entry.ExitOK
-	} else if err != nil {
-		return entry.ExitUsage
+	if code, ok := parse(fs, args, stderr); !ok {
+		return code
 	}
 	if fs.NArg() > 0 {
 		say(stderr, "%s: unexpected argument %s\n", name, fs.Arg(0))

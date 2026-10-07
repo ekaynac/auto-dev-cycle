@@ -85,6 +85,15 @@ func TestRead(t *testing.T) {
 	if _, err := answering(t, http.StatusForbidden, "application/json", refused, &path, &auth).Read(context.Background(), "seat"); !errors.As(err, &r) || r.Result.Reason != vocab.ReasonActionNotGranted {
 		t.Errorf("refused: %v", err)
 	}
+	// Error names the registered codes, never the detail.
+	if err := (&Refused{Result: vocab.Result{Outcome: vocab.Failed, Reason: vocab.ReasonActionNotGranted, Detail: "zzDETAILzz"}}); err.Error() != "the controller refused: failed/action_not_granted" {
+		t.Errorf("Error: %q", err.Error())
+	}
+	// A refusal body is read only to its bound: a valid one past it is cut, so it is no result.
+	long := strings.Replace(refused, "no grant", strings.Repeat("x", maxRefusalBytes), 1)
+	if _, err := answering(t, http.StatusForbidden, "application/json", long, &path, &auth).Read(context.Background(), "seat"); err == nil || errors.As(err, &r) {
+		t.Errorf("an oversized refusal: %v", err)
+	}
 	for _, body := range []string{"zzQUOTEDzz", strings.Replace(refused, "failed", "found", 1), `{"outcome":"empty","reason":"completed_clean","detail":"d"}`,
 		`{"outcome":"failed","reason":"store_unreadable","detail":"d"}`, `{"outcome":"failed","reason":"action_not_granted","detail":""}`} {
 		_, err := answering(t, http.StatusServiceUnavailable, "text/plain", body, &path, &auth).Read(context.Background(), "seat")

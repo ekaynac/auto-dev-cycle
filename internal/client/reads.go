@@ -37,8 +37,10 @@ var ErrInvalidRead = errors.New("the controller's read response does not validat
 // result (failed or could_not_run).
 type Refused struct{ Result vocab.Result }
 
+// Error names only the registered outcome and reason, never the
+// controller's free-text detail, which a caller shows escaped if at all.
 func (r *Refused) Error() string {
-	return fmt.Sprintf("%s/%s: %s", r.Result.Outcome, r.Result.Reason, r.Result.Detail)
+	return fmt.Sprintf("the controller refused: %s/%s", r.Result.Outcome, r.Result.Reason)
 }
 
 // DecodeResult reads a refusal or a stream's closing result: strict, a

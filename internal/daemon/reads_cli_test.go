@@ -40,7 +40,7 @@ func TestReadsThroughTheCLI(t *testing.T) {
 	if code, out := adc(op, "admin", "whoami", "--json"); code != entry.ExitOK || contract.Validate("api/whoami", []byte(out)) != nil || !strings.Contains(out, string(c.opID)) {
 		t.Fatalf("whoami: %d %s", code, out)
 	}
-	note := "hi‮evil​\nnotes forged"
+	note := "hi\u202eevil\u200b\nnotes forged"
 	scope, _ := json.Marshal(map[string]string{"project": "prj_01m3250vkwffc979nzjw0g2sa1", "body": note})
 	if code, out := adc(op, "notes", "add", "--expect", "0", "--reason", "r", "--scope", string(scope)); code != entry.ExitOK {
 		t.Fatalf("note: %d %s", code, out)
@@ -50,7 +50,7 @@ func TestReadsThroughTheCLI(t *testing.T) {
 	if code != entry.ExitOK || json.Unmarshal([]byte(out), &list) != nil || len(list.Items) != 1 || list.Items[0].Body != note {
 		t.Fatalf("notes --json: %d %s", code, out)
 	}
-	if code, out := adc(op, "notes", "list"); code != entry.ExitOK || strings.ContainsAny(out, "‮​") ||
+	if code, out := adc(op, "notes", "list"); code != entry.ExitOK || strings.ContainsAny(out, "\u202e\u200b") ||
 		!strings.Contains(out, "    | hi\\u{202E}evil\\u{200B}\n    | notes forged\n") {
 		t.Fatalf("notes: %d %s", code, out)
 	}
