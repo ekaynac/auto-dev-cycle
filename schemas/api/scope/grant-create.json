@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/grant-create.json",
+  "title": "GrantCreateScope",
+  "description": "The scope of grant.create (docs/design/m0/04 \"Grants\"): the grant to create, under an id the client mints (grt_…, which must not exist), for a live supervisor other than the caller. valid_from, issued_by and approval are never the caller's: the controller sets valid_from to the time the grant is applied, issued_by to the operator who applied it (the confirmer, for a confirmed proposal) and approval to the approval that confirmed it (null when an operator issued it directly). A supervisor's grant.create is a human-policy proposal, never confirmed by its grantee.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "actor", "projects", "actions", "reads", "expires_at", "confirmation_overrides"],
+  "properties": {
+    "id": {"$ref": "../../common/defs.json#/$defs/GrantID"},
+    "actor": {"description": "The grantee, a live supervisor.", "$ref": "../../common/defs.json#/$defs/ActorID"},
+    "projects": {"$ref": "../../records/grant.json#/$defs/ProjectScope"},
+    "actions": {"type": "array", "uniqueItems": true, "items": {"$ref": "../../records/grant.json#/$defs/ActionKind"}},
+    "reads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projects", "kinds"],
+      "properties": {
+        "projects": {"oneOf": [{"const": "same"}, {"type": "array", "uniqueItems": true, "items": {"$ref": "../../common/defs.json#/$defs/ProjectID"}}]},
+        "kinds": {"type": "array", "uniqueItems": true, "items": {"$ref": "../../records/receipt.json#/$defs/Name"}}
+      }
+    },
+    "expires_at": {"description": "Required: every grant expires, after the time it is applied.", "$ref": "../../common/defs.json#/$defs/Time"},
+    "confirmation_overrides": {
+      "type": "object",
+      "propertyNames": {"$ref": "../../records/grant.json#/$defs/ActionKind"},
+      "additionalProperties": {"enum": ["independent_review", "human"]}
+    }
+  }
+}

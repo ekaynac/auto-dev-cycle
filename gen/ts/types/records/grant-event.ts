@@ -66,7 +66,7 @@ export interface Grant {
    */
   issued_by: string;
   /**
-   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   * The approval that confirmed the grant's proposal, recorded in the same command, whose actor is issued_by; null when an operator issued the grant directly (D31: policy none, whose approvals this build does not persist).
    */
-  approval: string;
+  approval: null | string;
 }

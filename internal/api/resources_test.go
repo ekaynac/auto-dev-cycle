@@ -92,7 +92,7 @@ func (f *fixture) grantWith(edit func(*types.Grant), projects []string, reads []
 	if edit != nil {
 		edit(&g)
 	}
-	f.must(f.op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(g) })
+	f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, g) })
 	return g
 }
 
@@ -119,9 +119,12 @@ func TestGrantsRead(t *testing.T) {
 	readsA := f.grantOn([]string{prjA}, []string{prjA}, "lease")
 	everyReadsA := f.grantOn(nil, []string{prjA}, "lease")
 	revoked := f.grantOn([]string{prjA}, nil, "lease")
+	// A grant is valid from its creation: this one expires a second later,
+	// and the clock moves past it.
 	expired := f.grantWith(func(g *types.Grant) {
-		g.ValidFrom, g.ExpiresAt = types.Time(t0.Add(-2*time.Hour).Format(time.RFC3339)), types.Time(t0.Add(-time.Hour).Format(time.RFC3339))
+		g.ExpiresAt = types.Time(t0.Add(time.Second).Format(time.RFC3339))
 	}, []string{prjA}, nil, "lease")
+	f.now.Store(t0.Add(2 * time.Second).UnixNano())
 	other := f.supervisor()
 	othersOnA := f.grantWith(func(g *types.Grant) { g.Actor = other.ID }, []string{prjA}, nil, "lease")
 	othersOnB := f.grantWith(func(g *types.Grant) { g.Actor = other.ID }, []string{prjB}, nil, "lease")
@@ -151,7 +154,7 @@ func TestGrantsRead(t *testing.T) {
 // propose commits by's proposal on project (none when empty) with scope,
 // as the action handler would, and returns it.
 func (f *fixture) propose(by types.ActorID, project, scope string) types.Proposal {
-	return f.proposeWith(by, project, scope, time.Now().Add(-time.Minute), nil)
+	return f.proposeWith(by, project, scope, time.Unix(0, f.now.Load()).Add(-time.Minute), nil)
 }
 
 // proposeWith is propose, created at created and its binding changed by
@@ -251,7 +254,7 @@ func TestProposalsReadEveryState(t *testing.T) {
 	f.approve(applied)
 	f.moved(f.moved(applied, authority.ProposalConfirmed, types.ProposalStatusConfirmed), authority.ProposalApplied, types.ProposalStatusApplied)
 	want[string(applied.ID)] = "applied"
-	expired := f.proposeWith(f.sup.ID, prjA, `{"n":3}`, time.Now().Add(-200*time.Hour), nil)
+	expired := f.proposeWith(f.sup.ID, prjA, `{"n":3}`, time.Unix(0, f.now.Load()).Add(-200*time.Hour), nil)
 	f.moved(expired, authority.ProposalExpired, types.ProposalStatusExpired)
 	want[string(expired.ID)] = "expired"
 	stale := f.propose(f.sup.ID, prjA, `{"n":4}`)
@@ -285,7 +288,7 @@ func TestProposalObjectCarriesNoDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	version := int64(1)
-	confirm := f.proposeWith(f.sup.ID, prjA, `{"proposal":"`+string(target.ID)+`"}`, time.Now().Add(-time.Minute), func(b *authority.Bound) {
+	confirm := f.proposeWith(f.sup.ID, prjA, `{"proposal":"`+string(target.ID)+`"}`, time.Unix(0, f.now.Load()).Add(-time.Minute), func(b *authority.Bound) {
 		b.Action = "proposal.confirm"
 		b.Object = types.ObjectRef{Type: "proposal", ID: string(target.ID), Version: &version, Digest: (*types.Digest)(&digest)}
 		b.ExpectedState = types.ExpectedState{Version: &version, Digest: (*types.Digest)(&digest)}

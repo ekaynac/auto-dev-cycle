@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/grant-revoke.json",
+  "title": "GrantRevokeScope",
+  "description": "The scope of grant.revoke (docs/design/m0/04 \"Grants\"): the live grant to revoke, at once. The pending proposals made under it are invalidated (authority_revoked) and the streams read under it close in the same fold. Only an operator revokes a grant.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["grant"],
+  "properties": {
+    "grant": {"$ref": "../../common/defs.json#/$defs/GrantID"}
+  }
+}

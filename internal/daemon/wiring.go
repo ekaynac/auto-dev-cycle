@@ -48,13 +48,16 @@ func authorizer(reg *vocab.Registry) authority.Authorizer {
 
 // handlers are the wired actions' handlers: proposal.confirm,
 // proposal.withdraw, note.add, the seat's, agent.enrol and actor.revoke
-// (14 PR 7a). Every other registered action has none and is refused.
+// (14 PR 7a), grant.create and grant.revoke (14 PR 7c). Every other
+// registered action has none and is refused.
 func handlers() map[string]authority.Handler {
 	hs := authority.SeatHandlers(0)
 	maps.Copy(hs, authority.AdminHandlers())
 	hs[authority.ConfirmAction] = authority.ConfirmHandler{}
 	hs[authority.WithdrawAction] = authority.WithdrawHandler{}
 	hs[authority.NoteAction] = authority.NoteHandler{}
+	hs[authority.GrantCreateAction] = authority.GrantCreateHandler{}
+	hs[authority.GrantRevokeAction] = authority.GrantRevokeHandler{}
 	return hs
 }
 
@@ -76,7 +79,8 @@ func issuers(az authority.Authorizer) map[string]issuer {
 // wires has one, or an issuer (a test checks), and an action without
 // either is refused before anything is submitted (14 D1).
 func logics(az authority.Authorizer) map[string]logic {
-	out := map[string]logic{authority.ConfirmAction: az.Confirm, authority.WithdrawAction: az.Withdraw, authority.NoteAction: authority.AddNote, authority.RevokeActorAction: az.RevokeActor}
+	out := map[string]logic{authority.ConfirmAction: az.Confirm, authority.WithdrawAction: az.Withdraw, authority.NoteAction: authority.AddNote, authority.RevokeActorAction: az.RevokeActor,
+		authority.GrantCreateAction: authority.GrantCreateHandler{}.Logic, authority.GrantRevokeAction: authority.GrantRevokeHandler{}.Logic}
 	for action, h := range az.Handlers {
 		if s, ok := h.(authority.SeatHandler); ok {
 			out[action] = s.Logic

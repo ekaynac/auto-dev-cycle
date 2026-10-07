@@ -12,7 +12,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -54,26 +53,11 @@ var grants = Resource{
 		}, &e); err != nil {
 			return nil, err
 		}
-		return grantProject(e.Grant), nil
+		return authority.GrantProject(e.Grant), nil
 	},
 	// Never approval: the record a grant was issued under is the
 	// approvals' to show.
 	Fields: []string{"id", "actor", "projects", "actions", "reads", "valid_from", "expires_at", "confirmation_overrides", "issued_by", "revoked_at"},
-}
-
-// grantProject is a grant's project: the one project it names, in its
-// projects and its listed read projects; naming several, or every project,
-// makes it installation-wide (nil), for a reader of one project must not
-// learn of another's.
-func grantProject(g types.Grant) *types.ProjectID {
-	if g.Projects.All {
-		return nil
-	}
-	named := slices.Compact(slices.Sorted(slices.Values(slices.Concat(g.Projects.List, g.Reads.Projects.List))))
-	if len(named) != 1 {
-		return nil
-	}
-	return &named[0]
 }
 
 // proposals are every proposal, in any state. Never its scope, the

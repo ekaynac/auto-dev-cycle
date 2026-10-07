@@ -56,8 +56,10 @@ func grantEvent(p types.GrantEvent) ([]eventstore.Event, error) {
 	return []eventstore.Event{{ID: id, Kind: string(p.Transition) + "/v1", Subject: string(p.Grant.ID), Payload: b}}, nil
 }
 
-// CreateGrant proposes a new grant.
-func CreateGrant(g types.Grant) ([]eventstore.Event, error) {
+// CreateGrant proposes a new grant, valid from the command's time (Tx.Now),
+// whatever g says: the fold admits no other.
+func CreateGrant(tx *eventstore.Tx, g types.Grant) ([]eventstore.Event, error) {
+	g.ValidFrom = types.Time(tx.Now().UTC().Format(time.RFC3339Nano))
 	return grantEvent(types.GrantEvent{Transition: types.GrantEventTransitionGrantCreated, Grant: g})
 }
 
@@ -102,7 +104,8 @@ type GrantProjector struct{}
 
 // Project is the eventstore.Hooks.Project fold for grant events. The
 // event's actor is the command's: it must be a live operator, the grant's
-// issuer at creation.
+// issuer at creation, and a grant naming an approval must be the one it
+// approved (approvedGrant).
 func (GrantProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
 		if !slices.ContainsFunc(grantTransitions, func(t types.GrantEventTransition) bool { return ev.Kind == string(t)+"/v1" }) {
@@ -133,20 +136,33 @@ func applyGrant(tx *eventstore.Tx, ev eventstore.Event, p types.GrantEvent) erro
 	}
 	switch p.Transition {
 	case types.GrantEventTransitionGrantCreated:
-		if exists || g.IssuedBy != types.ActorID(ev.Actor) {
-			return errors.New("a grant is created once, by its issuer")
+		_, taken, err := grantKeyOf(tx, g.ID)
+		if err != nil || taken || g.IssuedBy != types.ActorID(ev.Actor) {
+			return errors.Join(err, errors.New("a grant is created once, under a fresh id, by its issuer"))
+		}
+		if g.Approval != nil {
+			if err := approvedGrant(tx, ev, g); err != nil {
+				return err
+			}
 		}
 		if a, err := liveActor(tx, g.Actor); err != nil || a.Kind != types.ActorKindSupervisor {
 			return errors.Join(err, errors.New("the grantee is not a live supervisor"))
 		}
+		// Valid from the command that issues it, never another time.
 		from, err1 := time.Parse(time.RFC3339Nano, string(g.ValidFrom))
 		until, err2 := time.Parse(time.RFC3339Nano, string(g.ExpiresAt))
-		if err1 != nil || err2 != nil || !from.Before(until) {
-			return errors.New("its validity is not a time range")
+		at, err3 := time.Parse(time.RFC3339Nano, ev.At)
+		if err1 != nil || err2 != nil || err3 != nil || !from.Equal(at) || !from.Before(until) {
+			return errors.New("its validity is not a time range from its issuing")
 		}
 	case types.GrantEventTransitionGrantRevoked:
 		if !exists || cur.Transition != types.GrantEventTransitionGrantCreated || cur.RevokedAt != nil || !sameGrant(cur.Grant, g) {
 			return errors.New("a revocation names a live grant as it was issued")
+		}
+	}
+	if p.Transition == types.GrantEventTransitionGrantCreated {
+		if err := putJSON(tx, GrantIDProjection, string(g.ID), g.Actor); err != nil {
+			return err
 		}
 	}
 	b, err := json.Marshal(p)

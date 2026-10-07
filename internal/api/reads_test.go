@@ -187,13 +187,13 @@ func TestReadAuthorizesEachRecord(t *testing.T) {
 	// Another domain's grant on every project reads none of them.
 	other := f.grantFor("lease")
 	other.Projects = types.ProjectScope{All: true}
-	f.must(f.op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(other) })
+	f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, other) })
 	if got := readList(t, srv, f.supTk.Reveal()); !slices.Equal(got, []string{ids[prjA]}) {
 		t.Fatalf("under another domain's grant: %v", got)
 	}
 	global := f.grantFor("fixture")
 	global.Projects = types.ProjectScope{All: true}
-	f.must(f.op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(global) })
+	f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, global) })
 	if got := readList(t, srv, f.supTk.Reveal()); len(got) != 3 {
 		t.Fatalf("under an every-project grant: %v", got)
 	}
@@ -214,7 +214,7 @@ func TestReadScopeIsTheSnapshots(t *testing.T) {
 	}
 	narrow := f.grantFor("fixture")
 	narrow.Projects = types.ProjectScope{List: []types.ProjectID{types.ProjectID(prjB)}}
-	f.must(f.op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(narrow) })
+	f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, narrow) })
 	if got := readList(t, srv, f.supTk.Reveal()); len(got) != 0 {
 		t.Fatalf("under a grant on another project: %v", got)
 	}

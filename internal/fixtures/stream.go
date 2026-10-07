@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -94,13 +93,13 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 	// The server's clock runs ahead of the wall clock by skew (an expiry).
 	var skew atomic.Int64
 	clock := func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
+	// A grant is valid from its creation (authority.CreateGrant).
 	newGrant := func() (types.Grant, error) {
-		apr, err1 := ids.New("apr")
-		grt, err2 := ids.New("grt")
+		grt, err := ids.New("grt")
 		return types.Grant{ID: types.GrantID(grt), Actor: sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{projectA}},
 			Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{"fixture"}},
-			ValidFrom: types.Time(now.Add(-time.Hour).Format(time.RFC3339Nano)), ExpiresAt: types.Time(clock().UTC().Add(time.Hour).Format(time.RFC3339Nano)),
-			ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID, Approval: types.ApprovalID(apr)}, errors.Join(err1, err2)
+			ExpiresAt:             types.Time(clock().UTC().Add(time.Hour).Format(time.RFC3339Nano)),
+			ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID}, err
 	}
 	g, err := newGrant()
 	if err != nil {
@@ -119,7 +118,7 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 			token = secret
 			return evs, err
 		}},
-		{op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(g) }},
+		{op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, g) }},
 	} {
 		if err := submit(c.by, c.apply); err != nil {
 			return nil, nil, err
@@ -243,7 +242,7 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 	} {
 		g, err := newGrant()
 		if err == nil {
-			err = submit(op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(g) })
+			err = submit(op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, g) })
 		}
 		for i := 0; i < c.events && err == nil; i++ {
 			err = appendEvent()

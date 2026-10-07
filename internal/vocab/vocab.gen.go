@@ -69,6 +69,8 @@ var (
 	ReasonFallbackScope = types.ReasonCodeOf("fallback_scope")
 	// ReasonGateTestFailed: A test failed relative to the measured baseline.
 	ReasonGateTestFailed = types.ReasonCodeOf("gate_test_failed")
+	// ReasonGrantNotIssuable: grant.create names a grant that cannot be issued now: its id is already taken, its expiry is not after the time it would be applied, or its grantee is not a live supervisor. At a proposal's application the proposal is invalidated instead (proposal_invalidated).
+	ReasonGrantNotIssuable = types.ReasonCodeOf("grant_not_issuable")
 	// ReasonGrantOverrideWeaker: A covering grant overrides the action's confirmation with a policy weaker than the change's default; refused, never silently ignored.
 	ReasonGrantOverrideWeaker = types.ReasonCodeOf("grant_override_weaker")
 	// ReasonIdempotencyKeyReused: A command repeats an idempotency key with a different input.

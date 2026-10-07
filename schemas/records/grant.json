@@ -35,7 +35,10 @@
       "additionalProperties": {"enum": ["independent_review", "human"]}
     },
     "issued_by": {"description": "An operator.", "$ref": "../common/defs.json#/$defs/ActorID"},
-    "approval": {"$ref": "../common/defs.json#/$defs/ApprovalID"}
+    "approval": {
+      "description": "The approval that confirmed the grant's proposal, recorded in the same command, whose actor is issued_by; null when an operator issued the grant directly (D31: policy none, whose approvals this build does not persist).",
+      "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ApprovalID"}]
+    }
   },
   "$defs": {
     "ActionKind": {
