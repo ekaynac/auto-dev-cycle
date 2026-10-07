@@ -104,14 +104,20 @@ func readPEM(path string, ok func(unix.Stat_t) bool) ([]byte, error) {
 	case !ok(st):
 		return nil, refusedMode
 	}
-	b, err := io.ReadAll(io.LimitReader(f, maxPEM+1))
+	// One buffer, never grown, so clearing what this returns clears the
+	// only copy of the key's bytes (a growing read leaves earlier ones on
+	// the heap); a refusal clears it here.
+	b := make([]byte, maxPEM+1)
+	n, err := io.ReadFull(f, b)
 	switch {
-	case err != nil:
-		return nil, refusedOpen
-	case len(b) > maxPEM:
+	case err == nil:
+		clear(b)
 		return nil, refusedSize
+	case !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF):
+		clear(b)
+		return nil, refusedOpen
 	}
-	return b, nil
+	return b[:n], nil
 }
 
 // listenHTTPS binds addr at the readiness point and serves the API on it

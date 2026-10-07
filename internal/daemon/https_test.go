@@ -228,6 +228,32 @@ func TestHTTPSConfigRefused(t *testing.T) {
 	}
 }
 
+// readPEM reads into one buffer it never grows, so the caller's clear
+// reaches the only copy of the key; a file of exactly 1 MiB is read whole
+// and one byte more is refused.
+func TestReadPEMOneBuffer(t *testing.T) {
+	dir := t.TempDir()
+	anyFile := func(unix.Stat_t) bool { return true }
+	for name, size := range map[string]int{"small": 300, "exactly 1 MiB": maxPEM, "empty": 0} {
+		path := filepath.Join(dir, strings.ReplaceAll(name, " ", "-"))
+		want := bytes.Repeat([]byte{'k'}, size)
+		if os.WriteFile(path, want, 0o600) != nil {
+			t.Fatal("fixture")
+		}
+		b, err := readPEM(path, anyFile)
+		if err != nil || !bytes.Equal(b, want) || cap(b) != maxPEM+1 {
+			t.Errorf("%s: err %v, %d bytes, equal %v, cap %d; want one buffer of %d", name, err, len(b), bytes.Equal(b, want), cap(b), maxPEM+1)
+		}
+	}
+	over := filepath.Join(dir, "over")
+	if os.WriteFile(over, make([]byte, maxPEM+1), 0o600) != nil {
+		t.Fatal("fixture")
+	}
+	if b, err := readPEM(over, anyFile); !errors.Is(err, refusedSize) || b != nil {
+		t.Errorf("1 MiB + 1: %v, %d bytes", err, len(b))
+	}
+}
+
 // An address that cannot be bound refuses the start after readiness, and
 // the store and the lock are released.
 func TestHTTPSBindRefused(t *testing.T) {
