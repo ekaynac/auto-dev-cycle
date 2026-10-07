@@ -44,6 +44,11 @@ func RunCommand(args []string, stderr io.Writer) int {
 		defer stop()
 		err = Run(ctx, cfg, stderr, nil)
 	}
+	return exitCode(err, stderr)
+}
+
+// exitCode prints err's fixed text and returns its exit code (08).
+func exitCode(err error, stderr io.Writer) int {
 	var se *StartError
 	switch {
 	case err == nil:

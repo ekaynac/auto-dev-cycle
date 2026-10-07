@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"sync"
 	"time"
 
@@ -43,11 +44,16 @@ type Daemon struct {
 // system actor; mark pending effects uncertain, unless this start created
 // the store. A refusal releases what
 // was taken and is a *StartError (a configuration refusal, ErrConfig).
-func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
+func Start(ctx context.Context, cfg Config) (d *Daemon, err error) { return start(ctx, cfg, false) }
+
+// start is Start; offline (a recovery command, 14 R7, R8) runs every check
+// on an existing store and writes nothing of its own: no system actor is
+// created, no pending effect marked, no bootstrap secret issued.
+func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	if err := checkStateDir(cfg.StateDir, true); err != nil {
+	if err := checkStateDir(cfg.StateDir, !offline); err != nil {
 		return nil, err
 	}
 	reservations, err := capacity.NewReservations(cfg.Groups)
@@ -59,9 +65,15 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 	if err = errors.Join(err, kerr); err != nil {
 		return nil, couldNotRun(vocab.ReasonCheckUnloadable, "the vocabulary or the event kinds cannot be loaded", err)
 	}
-	lock, err := eventstore.AcquireLock(cfg.StateDir)
+	acquire := eventstore.AcquireLock
+	if offline {
+		acquire = eventstore.ProbeLock // creates no lock file
+	}
+	lock, err := acquire(cfg.StateDir)
 	if errors.Is(err, eventstore.ErrAlreadyRunning) {
 		return nil, couldNotRun(vocab.ReasonControllerAlreadyRunning, "another adcd holds the state directory lock", err)
+	} else if offline && errors.Is(err, fs.ErrNotExist) {
+		return nil, errNoStore
 	} else if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the state directory lock cannot be taken", err)
 	}
@@ -73,11 +85,16 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 	if err := checkStateDir(lock.Dir(), false); err != nil {
 		return nil, err
 	}
+	if offline {
+		if err := existingStore(ctx, lock, cfg.TrustedHead); err != nil {
+			return nil, err
+		}
+	}
 	blobs, err := blobstore.Open(lock.Dir())
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the blob store cannot be opened", err)
 	}
-	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Existing: offline,
 		Hooks: hooks(reg, projector(blobs, reg.Holds, reservations))})
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the event store cannot be opened", err)
@@ -106,14 +123,14 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 			return nil, err
 		}
 	}
-	sys, created, err := systemActor(ctx, store)
+	sys, created, err := systemActor(ctx, store, !offline)
 	if err != nil {
 		return nil, err
 	}
 	// A store this start bootstrapped holds one event and no effect, so it
 	// skips the restart transition: a fresh start that appends is never
 	// refused after.
-	if !created {
+	if !created && !offline {
 		if _, err := markPending(store, ctx, string(sys)); err != nil {
 			return nil, couldNotRun(vocab.ReasonStoreUnreadable, "pending effects cannot be marked uncertain", err)
 		}
@@ -125,7 +142,7 @@ func Start(ctx context.Context, cfg Config) (d *Daemon, err error) {
 	}); err != nil {
 		return nil, couldNotRun(vocab.ReasonAmbiguousState, "the system actor is not live", err)
 	}
-	boot, note, err := openBootstrap(ctx, store, system, lock.Dir(), time.Now)
+	boot, note, err := openBootstrap(ctx, store, system, lock.Dir(), time.Now, !offline)
 	if err != nil {
 		return nil, err
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -29,6 +30,36 @@ func checkStateDir(dir string, mayBeMissing bool) error {
 	}
 	if err != nil || st.Mode&syscall.S_IFMT != syscall.S_IFDIR || int(st.Uid) != os.Geteuid() || st.Mode&0o777 != 0o700 {
 		return couldNotRun(vocab.ReasonStoreUnreadable, "the state directory must be a directory owned by this user with mode 0700", err)
+	}
+	return nil
+}
+
+// errNoStore refuses an offline command on a state directory without an
+// initialized store.
+var errNoStore = couldNotRun(vocab.ReasonStoreUnreadable, "the state directory holds no initialized store; an offline command never creates one", nil)
+
+// existingStore checks, under the lock and before anything is opened for
+// writing, that the state directory holds an initialized store, verified
+// read-only on a private copy: an offline command never creates the
+// database, its schema or genesis, or the blob directories. The store is
+// then opened with eventstore.Config.Existing, so a database removed in
+// between is refused, never recreated. One window remains: blobstore.Open
+// recreates, empty, a blob directory removed in between by a process of
+// the daemon uid, which can change the state directory at will anyway.
+func existingStore(ctx context.Context, lock *eventstore.Lock, trusted *eventstore.Head) error {
+	_, err := eventstore.VerifyExisting(ctx, lock, trusted)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return errNoStore
+	case errors.Is(err, eventstore.ErrChainBroken):
+		return &StartError{Outcome: vocab.Failed, Reason: vocab.ReasonLogIntegrityBroken, Detail: "the event log fails verification; adc dev verify-log reports the finding", cause: err}
+	case err != nil:
+		return couldNotRun(vocab.ReasonStoreUnreadable, "the event log cannot be read for verification", err)
+	}
+	for _, d := range []string{"blobs", "blobs/sha256", "blobs/tmp"} {
+		if st, err := os.Lstat(filepath.Join(lock.Dir(), d)); err != nil || !st.IsDir() {
+			return errNoStore
+		}
 	}
 	return nil
 }
@@ -92,8 +123,9 @@ var markPending = (*eventstore.Store).MarkPendingUncertain
 // operation (Bootstrap), which only ever writes an empty log's first event.
 // No request reaches it and nothing outside Start names the identity. A
 // store with actors but not exactly one system actor, or with events but
-// no actor, is refused. created reports a store this start bootstrapped.
-func systemActor(ctx context.Context, s *eventstore.Store) (_ types.ActorID, created bool, err error) {
+// no actor, is refused, and so is an empty one unless create. created
+// reports a store this start bootstrapped.
+func systemActor(ctx context.Context, s *eventstore.Store, create bool) (_ types.ActorID, created bool, err error) {
 	var system []types.ActorID
 	actors := 0
 	if err := s.View(ctx, func(tx *eventstore.Tx) error {
@@ -120,6 +152,8 @@ func systemActor(ctx context.Context, s *eventstore.Store) (_ types.ActorID, cre
 		return system[0], false, nil
 	case actors > 0:
 		return "", false, couldNotRun(vocab.ReasonAmbiguousState, "the store holds actors but not exactly one system actor", nil)
+	case !create:
+		return "", false, couldNotRun(vocab.ReasonAmbiguousState, "the store has no system actor; an offline command runs only on an existing store", nil)
 	}
 	id, ierr := ids.New("act")
 	cmd, cerr := ids.New("cmd")
