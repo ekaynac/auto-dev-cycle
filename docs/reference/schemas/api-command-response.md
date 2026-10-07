@@ -26,6 +26,7 @@ The command ran: its events, the approval it made (an authority-gated action) an
 | `last_seq` | yes | integer (minimum `0`, maximum `9007199254740991`) |  |
 | `effects` | yes | array of object ([fields](#fields-of-commandappliedeffects)) |  |
 | `result` | yes | object (open payload) | The action's result; one schema per action. |
+| `issued_credential` |  | string (pattern `^tok_[0-7][0-9a-hjkmnp-tv-z]{25}\.[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$`) | A bearer string, tok_&lt;id&gt;.&lt;secret&gt;, that the command issued (14 N3): present only on the response that applied it, absent on a replay. It is never stored; the CLI writes it to the token file and never prints it. |
 
 No other fields are allowed.
 

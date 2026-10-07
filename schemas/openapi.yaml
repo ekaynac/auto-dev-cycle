@@ -80,8 +80,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/agent.enrol:
     post:
       operationId: command.agent.enrol
@@ -102,8 +108,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/grant.create:
     post:
       operationId: command.grant.create
@@ -124,8 +136,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/grant.extend:
     post:
       operationId: command.grant.extend
@@ -146,8 +164,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/grant.revoke:
     post:
       operationId: command.grant.revoke
@@ -168,8 +192,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/input.answer:
     post:
       operationId: command.input.answer
@@ -190,8 +220,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/integration.change_topology:
     post:
       operationId: command.integration.change_topology
@@ -212,8 +248,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/knowledge.change_protected_document:
     post:
       operationId: command.knowledge.change_protected_document
@@ -234,8 +276,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/note.add:
     post:
       operationId: command.note.add
@@ -256,8 +304,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/profile.adopt:
     post:
       operationId: command.profile.adopt
@@ -278,8 +332,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/project.create:
     post:
       operationId: command.project.create
@@ -300,8 +360,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/proposal.confirm:
     post:
       operationId: command.proposal.confirm
@@ -322,8 +388,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/proposal.withdraw:
     post:
       operationId: command.proposal.withdraw
@@ -344,8 +416,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/review.request:
     post:
       operationId: command.review.request
@@ -366,8 +444,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/seat.release:
     post:
       operationId: command.seat.release
@@ -388,8 +472,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/seat.take:
     post:
       operationId: command.seat.take
@@ -410,8 +500,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/task.create:
     post:
       operationId: command.task.create
@@ -432,8 +528,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
         "401":
           description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/events:
     get:
       operationId: read.events
@@ -723,6 +825,10 @@ components:
               description: The action's result; one schema per action.
               type: object
               x-adc-open-payload: action
+            issued_credential:
+              description: 'A bearer string, tok_<id>.<secret>, that the command issued (14 N3): present only on the response that applied it, absent on a replay. It is never stored; the CLI writes it to the token file and never prints it.'
+              type: string
+              pattern: ^tok_[0-7][0-9a-hjkmnp-tv-z]{25}\.[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$
         CommandProposed:
           description: 'The command needs a confirmation (04 "Proposals"): nothing was applied. A human policy is confirmed only on the dashboard (D37).'
           type: object

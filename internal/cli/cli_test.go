@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -194,5 +196,50 @@ func TestOutput(t *testing.T) {
 	// Anything that is not an action command is entry's.
 	if code, out, _ := adc(&fake{}, "version"); code != entry.ExitOK || out == "" {
 		t.Errorf("version: %d %q", code, out)
+	}
+}
+
+// A human-policy proposal prints its id, the effective change and where
+// the dashboard confirms it.
+func TestHumanProposal(t *testing.T) {
+	_, out, _ := adc(&fake{resp: human}, "grant", "extend", "--expect", "5", "--reason", "r", "--scope", `{"grant":"grt_01m3250vkwffc979nzjw0g2sf9"}`)
+	for _, want := range []string{"prp_01m3250vm7f6ktw39dszqnyddr", `change: grant.extend {"grant":"grt_01m3250vkwffc979nzjw0g2sf9"}`, DashboardProposal + "prp_01m3250vm7f6ktw39dszqnyddr"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in %q", want, out)
+		}
+	}
+}
+
+// An issued credential goes to the token file, never to stdout or stderr,
+// in either output mode.
+func TestIssuedCredential(t *testing.T) {
+	const tok = "tok_01m3250vkwffc979nzjw0g2sa1.zzFAKEzzSECRETzzRECOGNIZABLEzzQQQQQQQQQQQQA"
+	issued := strings.TrimSuffix(applied, "}") + `,"issued_credential":"` + tok + `"}`
+	for _, mode := range [][]string{nil, {"--json"}} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		code, out, errs := adc(&fake{resp: issued}, append([]string{"admin", "enrol-agent", "--expect", "0", "--reason", "r"}, mode...)...)
+		if code != entry.ExitOK || strings.Contains(out+errs, "zzFAKEzz") || !strings.Contains(errs, "~/.config/adc/token") {
+			t.Fatalf("%v: %d %q %q", mode, code, out, errs)
+		}
+		if mode != nil && !json.Valid([]byte(out)) {
+			t.Errorf("--json: %q", out)
+		}
+		got, err := client.Files{Home: home, UID: os.Getuid()}.Load()
+		if err != nil || got.Reveal() != tok {
+			t.Fatalf("%v: the token file: %v", mode, err)
+		}
+	}
+	// A token file that cannot be written: could_not_run, and still not printed.
+	t.Setenv("HOME", "/nonexistent/adc-home")
+	if code, out, errs := adc(&fake{resp: issued}, "admin", "enrol-agent", "--expect", "0", "--reason", "r"); code != entry.ExitCouldNotRun || strings.Contains(out+errs, "zzFAKEzz") {
+		t.Fatalf("unwritable: %d %q %q", code, out, errs)
+	}
+}
+
+// A refused token is a refusal, not a could_not_run.
+func TestUnauthenticated(t *testing.T) {
+	if code, out, errs := adc(&fake{err: client.ErrUnauthenticated}, "seat", "take", "--expect", "0", "--reason", "r", "--json"); code != entry.ExitRefused || out != "" || !strings.Contains(errs, "refused") {
+		t.Fatalf("%d %q %q", code, out, errs)
 	}
 }

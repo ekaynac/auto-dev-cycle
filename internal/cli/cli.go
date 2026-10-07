@@ -8,6 +8,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -20,8 +21,10 @@ import (
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -107,7 +110,10 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 		return entry.ExitCouldNotRun
 	}
 	raw, err := c.Command(ctx, action, body)
-	if err != nil {
+	if errors.Is(err, client.ErrUnauthenticated) {
+		fmt.Fprintf(stderr, "%s: refused: %v\n", name, err)
+		return entry.ExitRefused
+	} else if err != nil {
 		return couldNotRun("%v", err)
 	}
 	var resp types.CommandResponse
@@ -127,10 +133,22 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 			return couldNotRun("the controller's refusal is invalid: %v", err)
 		}
 	}
+	// A credential the command issued goes to the token file, never to
+	// stdout; the response is printed without it.
+	if v, ok := resp.Variant.(*types.CommandApplied); ok && v.IssuedCredential != nil {
+		if err := writeIssued(*v.IssuedCredential); err != nil {
+			return couldNotRun("the issued token could not be written (%v); a repeat does not deliver it again", err)
+		}
+		v.IssuedCredential = nil
+		if raw, err = contract.Encode("api/command-response", resp); err != nil {
+			return couldNotRun("%v", err)
+		}
+		fmt.Fprintf(stderr, "%s: the issued token was written to ~/.config/adc/token\n", name)
+	}
 	if *asJSON {
-		_, err = fmt.Fprintf(stdout, "%s\n", raw)
+		_, err = fmt.Fprintf(stdout, "%s\n", bytes.TrimSpace(raw))
 	} else {
-		_, err = fmt.Fprintln(stdout, describe(resp))
+		_, err = fmt.Fprintln(stdout, describe(resp, action, req.Scope))
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: writing the result: %v\n", name, err)
@@ -178,7 +196,27 @@ func ExitCode(r types.CommandResponse) int {
 	return entry.ExitCouldNotRun
 }
 
-func describe(r types.CommandResponse) string {
+// writeIssued writes an issued token with the token writer [R5]. For M0
+// that is the caller's own ~/.config/adc/token: no wired action issues a
+// credential yet, and the actions that will (14 7a, 7b) decide whose file
+// a credential for another actor goes to.
+func writeIssued(credential string) error {
+	tok, err := identity.ParseSecret(credential)
+	if err != nil {
+		return client.ErrTokenMalformed
+	}
+	files, err := client.DefaultFiles()
+	if err != nil {
+		return err
+	}
+	return files.Write(tok)
+}
+
+// DashboardProposal is where the dashboard shows a proposal: a path
+// placeholder until the dashboard ships (M5).
+const DashboardProposal = "/dashboard/proposals/"
+
+func describe(r types.CommandResponse, action string, scope json.RawMessage) string {
 	switch v := r.Variant.(type) {
 	case *types.CommandApplied:
 		s := fmt.Sprintf("applied: %s", v.Command)
@@ -189,7 +227,8 @@ func describe(r types.CommandResponse) string {
 	case *types.CommandProposed:
 		if v.Policy == types.CommandProposedPolicyHuman {
 			// A human confirmation cannot be completed from the CLI (D37).
-			return fmt.Sprintf("proposed: %s needs a human confirmation on the dashboard (binding %s)", v.Proposal, v.BindingDigest)
+			return fmt.Sprintf("proposed: %s needs a human confirmation on the dashboard (binding %s)\n  change: %s %s\n  confirm at: %s%s",
+				v.Proposal, v.BindingDigest, action, scope, DashboardProposal, v.Proposal)
 		}
 		return fmt.Sprintf("proposed: %s needs an independent review (binding %s)", v.Proposal, v.BindingDigest)
 	case *types.CommandRefused:

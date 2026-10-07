@@ -48,6 +48,23 @@ func handlers() map[string]authority.Handler {
 	return hs
 }
 
+// logic is a wired action's command logic, which the request layer passes
+// to Submit with the command.
+type logic func(eventstore.Command) eventstore.Decide
+
+// logics are the wired actions' logic, by action: every action handlers
+// wires has one (a test checks), and an action without one is refused
+// before anything is submitted (14 D1).
+func logics(reg *vocab.Registry) map[string]logic {
+	out := map[string]logic{authority.ConfirmAction: authority.Authorizer{Registry: reg, Handlers: handlers()}.Confirm}
+	for action, h := range handlers() {
+		if s, ok := h.(authority.SeatHandler); ok {
+			out[action] = s.Logic
+		}
+	}
+	return out
+}
+
 // eventKinds merges the event kinds of every package the writer projects;
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {

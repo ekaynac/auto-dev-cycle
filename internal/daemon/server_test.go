@@ -207,7 +207,7 @@ func TestVersionEndpoint(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || resp.StatusCode != 200 || got != buildinfo.Get("adcd") || got.SchemaSet == "" {
 		t.Fatalf("%s %+v %v", resp.Status, got, err)
 	}
-	if resp := s.get(t, s.client(), "/v1/commands/task.create", ""); resp.StatusCode != http.StatusNotFound {
+	if resp := s.get(t, s.client(), "/v2/version", ""); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("an unmounted route: %s", resp.Status)
 	}
 }

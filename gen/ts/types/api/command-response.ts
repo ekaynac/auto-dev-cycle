@@ -34,6 +34,10 @@ export interface CommandApplied {
   result: {
     [k: string]: unknown;
   };
+  /**
+   * A bearer string, tok_<id>.<secret>, that the command issued (14 N3): present only on the response that applied it, absent on a replay. It is never stored; the CLI writes it to the token file and never prints it.
+   */
+  issued_credential?: string;
 }
 /**
  * The command needs a confirmation (04 "Proposals"): nothing was applied. A human policy is confirmed only on the dashboard (D37).

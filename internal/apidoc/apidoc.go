@@ -188,7 +188,10 @@ func Generate(actions map[string]types.Action, schemaFS fs.FS) ([]byte, error) {
 			RequestBody: &body{Required: true, Content: jsonOf(requestSchema)},
 			Responses: map[string]body{
 				"200": {Description: "The command was decided: applied, proposed or refused.", Content: jsonOf(responseSchema)},
+				"400": {Description: "Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided."},
 				"401": {Description: "No valid bearer token; nothing was decided."},
+				"413": {Description: "The request body is too large; nothing was decided."},
+				"503": {Description: "Too many authentications in progress (Retry-After); nothing was decided."},
 			},
 		}}
 	}

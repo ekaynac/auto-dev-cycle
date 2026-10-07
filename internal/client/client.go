@@ -35,6 +35,10 @@ const (
 // uid, so nothing was sent on it.
 var ErrPeerNotDaemon = errors.New("the controller socket is not served by the expected daemon user; no credential was sent")
 
+// ErrUnauthenticated: the controller refused the token (HTTP 401);
+// nothing was decided.
+var ErrUnauthenticated = errors.New("the controller refused the token (unauthenticated); nothing was decided")
+
 // Transport sends commands to the controller on Socket. Every connection is
 // checked against DaemonUID before a request is written on it; Token is
 // called once per request.
@@ -110,6 +114,10 @@ func (t Transport) Command(ctx context.Context, action string, body []byte) ([]b
 		return nil, err
 	}
 	resp, err := t.do(ctx, http.MethodPost, "/v1/commands/"+url.PathEscape(action), bytes.NewReader(body), false)
+	if err == nil && resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		return nil, ErrUnauthenticated
+	}
 	return answer(resp, err, "a command response", func(raw []byte) error { _, err := DecodeResponse(raw); return err })
 }
 
