@@ -33,6 +33,10 @@ var errDerive = errors.New("the derivation failed")
 const notes = "test_notes"
 
 func notesProjection(tx *eventstore.Tx, evs []eventstore.Event) error {
+	// The production notes fold runs beside the test one (notes_test.go).
+	if err := (authority.NoteProjector{}).Project(tx, evs); err != nil {
+		return err
+	}
 	for _, e := range evs {
 		if e.Kind == "test.noted/v1" {
 			if err := tx.Put(notes, e.Subject, e.Payload); err != nil {
@@ -110,6 +114,7 @@ func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary
 	maps.Copy(kinds, authority.GrantKinds())
 	maps.Copy(kinds, authority.SeatKinds())
 	maps.Copy(kinds, authority.ProposalKinds())
+	maps.Copy(kinds, authority.NoteKinds())
 	kinds["test.noted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	kinds["test.unnoted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: func() time.Time {

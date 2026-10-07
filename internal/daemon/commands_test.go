@@ -75,7 +75,7 @@ func runCommanded(t *testing.T) *commanded {
 	supervisor := func(override types.GrantConfirmationOverridesValue, grant bool) (types.ActorID, identity.Secret) {
 		a := actor(types.ActorKindSupervisor, op.ID)
 		g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: a.ID, Projects: types.ProjectScope{All: true},
-			Actions: []types.ActionKind{"seat.take", "seat.release", authority.WithdrawAction}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{}},
+			Actions: []types.ActionKind{"seat.take", "seat.release", authority.WithdrawAction, authority.NoteAction}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{}},
 			ValidFrom: types.Time(now.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(now.Add(time.Hour).Format(time.RFC3339)),
 			ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID, Approval: types.ApprovalID(newID(t, "apr"))}
 		if override != "" {
@@ -440,7 +440,7 @@ func TestEveryHandlerHasLogic(t *testing.T) {
 			t.Errorf("%s has a handler and not exactly one of a logic and an issuer", action)
 		}
 	}
-	if len(ls)+len(is) != len(handlers()) || is[authority.EnrolAction] == nil || ls[authority.RevokeActorAction] == nil || ls[authority.WithdrawAction] == nil {
+	if len(ls)+len(is) != len(handlers()) || is[authority.EnrolAction] == nil || ls[authority.RevokeActorAction] == nil || ls[authority.WithdrawAction] == nil || ls[authority.NoteAction] == nil {
 		t.Errorf("logics %d, issuers %d, handlers %d", len(ls), len(is), len(handlers()))
 	}
 }

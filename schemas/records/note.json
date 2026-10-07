@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/note.json",
+  "title": "Note",
+  "description": "A note (docs/design/m0/08 notes): the payload of note.added/v1 and the notes projection's record. internal/authority admits it only under its event's subject (id), actor (author) and time (created_at). Notes are never edited or deleted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "project", "subject", "author", "body", "created_at"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/NoteID"},
+    "project": {"$ref": "../common/defs.json#/$defs/ProjectID"},
+    "subject": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/TypeID"}]},
+    "author": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "body": {"$ref": "../common/defs.json#/$defs/NoteBody"},
+    "created_at": {"$ref": "../common/defs.json#/$defs/Time"}
+  }
+}

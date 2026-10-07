@@ -17,6 +17,8 @@ var (
 	ReasonActionNotProposable = types.ReasonCodeOf("action_not_proposable")
 	// ReasonActionUnregistered: The action is not in the action registry, or is deprecated; authority classifies only registered, current actions.
 	ReasonActionUnregistered = types.ReasonCodeOf("action_unregistered")
+	// ReasonActorKindRefused: The action is not one this kind of actor performs (note.add: operators and supervisors only).
+	ReasonActorKindRefused = types.ReasonCodeOf("actor_kind_refused")
 	// ReasonActorProtected: actor.revoke names the controller's system actor or the last live operator; refused, so the installation never loses its own actor or its last administrator.
 	ReasonActorProtected = types.ReasonCodeOf("actor_protected")
 	// ReasonActorRevoked: The acting actor is revoked; nothing it asks is allowed.

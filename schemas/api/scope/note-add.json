@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/note-add.json",
+  "title": "NoteAddScope",
+  "description": "The scope of note.add (docs/design/m0/08 notes): the project the note is bound to, an optional record it is about (unchecked: a reference, never resolved) and its body. The note's id, author and time are the controller's, never the request's.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project", "body"],
+  "properties": {
+    "project": {"$ref": "../../common/defs.json#/$defs/ProjectID"},
+    "subject": {"$ref": "../../common/defs.json#/$defs/TypeID"},
+    "body": {"$ref": "../../common/defs.json#/$defs/NoteBody"}
+  }
+}

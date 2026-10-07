@@ -124,7 +124,7 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 	if !errors.Is(err, identity.ErrUnauthenticated) {
 		t.Fatalf("a command without a principal was not refused: %v", err)
 	}
-	_, err = d.store.SubmitApplied(context.Background(), d.system.Command(cmd, "note.add", cmd, []byte(`{}`), nil), eventstore.Applies(
+	_, err = d.store.SubmitApplied(context.Background(), d.system.Command(cmd, "task.create", cmd, []byte(`{}`), nil), eventstore.Applies(
 		func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			return nil, json.RawMessage(`{}`), nil
 		}))
@@ -133,7 +133,7 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 	}
 	// The seat and admin actions are wired: seat.take reaches its logic, which
 	// refuses the system actor (not a supervisor) with a recorded reason.
-	if hs := handlers(); len(hs) != 6 || hs[authority.ConfirmAction] == nil || hs["seat.take"] == nil || hs["seat.release"] == nil || hs[authority.EnrolAction] == nil || hs[authority.RevokeActorAction] == nil || hs[authority.WithdrawAction] == nil {
+	if hs := handlers(); len(hs) != 7 || hs[authority.ConfirmAction] == nil || hs["seat.take"] == nil || hs["seat.release"] == nil || hs[authority.EnrolAction] == nil || hs[authority.RevokeActorAction] == nil || hs[authority.WithdrawAction] == nil || hs[authority.NoteAction] == nil {
 		t.Fatalf("the wired handlers: %v", hs)
 	}
 	take := newID(t, "cmd")

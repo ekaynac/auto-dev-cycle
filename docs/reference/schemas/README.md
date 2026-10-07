@@ -23,6 +23,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/read-list.json`](api-read-list.md) | ReadList |
 | [`api/scope/actor-revoke.json`](api-scope-actor-revoke.md) | ActorRevokeScope |
 | [`api/scope/agent-enrol.json`](api-scope-agent-enrol.md) | AgentEnrolScope |
+| [`api/scope/note-add.json`](api-scope-note-add.md) | NoteAddScope |
 | [`api/scope/proposal-withdraw.json`](api-scope-proposal-withdraw.md) | ProposalWithdrawScope |
 | [`api/scope/seat-release.json`](api-scope-seat-release.md) | SeatReleaseScope |
 | [`api/scope/seat-take.json`](api-scope-seat-take.md) | SeatTakeScope |
@@ -46,6 +47,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/manifest-delivery.json`](records-manifest-delivery.md) | ManifestDelivery |
 | [`records/manifest-finalized.json`](records-manifest-finalized.md) | ManifestFinalized |
 | [`records/manifest-intent.json`](records-manifest-intent.md) | ManifestIntent |
+| [`records/note.json`](records-note.md) | Note |
 | [`records/owed-input.json`](records-owed-input.md) | OwedInput |
 | [`records/proposal.json`](records-proposal.md) | Proposal |
 | [`records/receipt.json`](records-receipt.md) | Receipt |

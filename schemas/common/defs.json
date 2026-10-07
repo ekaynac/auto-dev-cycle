@@ -68,6 +68,14 @@
     "NodeID": {"$ref": "#/$defs/TypeID", "pattern": "^nod_"},
     "ResultID": {"$ref": "#/$defs/TypeID", "pattern": "^res_"},
     "CommandID": {"$ref": "#/$defs/TypeID", "pattern": "^cmd_"},
-    "TokenID": {"$ref": "#/$defs/TypeID", "pattern": "^tok_"}
+    "TokenID": {"$ref": "#/$defs/TypeID", "pattern": "^tok_"},
+    "NoteID": {"$ref": "#/$defs/TypeID", "pattern": "^not_"},
+    "NoteBody": {
+      "description": "A note's text (08 notes): untrusted data, stored and served as is and never interpreted (03-knowledge-layer supervisor continuity). 1 to 8192 characters, with no control character but tab and newline.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192,
+      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f]+$"
+    }
   }
 }
