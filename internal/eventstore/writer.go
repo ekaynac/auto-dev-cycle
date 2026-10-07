@@ -302,6 +302,17 @@ func (t *Tx) SubjectVersion(subject string) (int64, error) {
 	return v.Int64, nil
 }
 
+// HasCommand reports whether actor has a command stored under key, so a
+// request layer can skip work a replay would discard (14 N3). Advisory: the
+// writer's own lookup decides.
+func (t *Tx) HasCommand(actor, key string) (bool, error) {
+	var n int
+	if err := t.tx.QueryRowContext(t.ctx, `SELECT count(*) FROM commands WHERE actor = ? AND idempotency_key = ?`, actor, key).Scan(&n); err != nil {
+		return false, t.io(err)
+	}
+	return n > 0, nil
+}
+
 // Hooks are the decisions other packages make inside the writer
 // transaction. Identify and Authorize are required: with either missing,
 // every command is refused (fail closed); Identify's refusal covers a

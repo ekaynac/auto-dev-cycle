@@ -88,6 +88,7 @@ Scope: **step-9 completion** of 04 §9 — the daemon, local API, CLI transport,
   - `whoami` is defined separately.
   - Blobs are reachable only through readable records that reference them.
 - **H1. Enrolment.** An operator's enrolment is applied atomically (actor and token together). A supervisor's enrolment becomes a human-policy proposal. Remote agents are M3.
+  - **Interim rule (approved by the operator on 2026-10-07, PR 7a).** Until the dashboard's WebAuthn is deployed (R6), a supervisor's `agent.enrol` is refused with `operator_only` rather than proposed. Its `human` policy cannot be confirmed before then, and its token could be delivered only to the confirming operator's response, which does not exist yet. The proposal path, with its delivery, arrives with WebAuthn (04 "Enrolment and revocation").
 - **N1. Idempotency.**
   - Uniqueness stays `(actor, idempotency_key)`.
   - The stored input digest covers the canonical action, the complete request and the expectations.

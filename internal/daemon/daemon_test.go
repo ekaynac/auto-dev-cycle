@@ -131,9 +131,9 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 	if !errors.Is(err, ErrCommandsRefused) {
 		t.Fatalf("a command was not refused: %v", err)
 	}
-	// The seat actions are wired: seat.take reaches its logic, which
+	// The seat and admin actions are wired: seat.take reaches its logic, which
 	// refuses the system actor (not a supervisor) with a recorded reason.
-	if hs := handlers(); len(hs) != 3 || hs[authority.ConfirmAction] == nil || hs["seat.take"] == nil || hs["seat.release"] == nil {
+	if hs := handlers(); len(hs) != 5 || hs[authority.ConfirmAction] == nil || hs["seat.take"] == nil || hs["seat.release"] == nil || hs[authority.EnrolAction] == nil || hs[authority.RevokeActorAction] == nil {
 		t.Fatalf("the wired handlers: %v", hs)
 	}
 	take := newID(t, "cmd")

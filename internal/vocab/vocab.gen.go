@@ -15,6 +15,8 @@ var (
 	ReasonActionNotGranted = types.ReasonCodeOf("action_not_granted")
 	// ReasonActionUnregistered: The action is not in the action registry, or is deprecated; authority classifies only registered, current actions.
 	ReasonActionUnregistered = types.ReasonCodeOf("action_unregistered")
+	// ReasonActorProtected: actor.revoke names the controller's system actor or the last live operator; refused, so the installation never loses its own actor or its last administrator.
+	ReasonActorProtected = types.ReasonCodeOf("actor_protected")
 	// ReasonActorRevoked: The acting actor is revoked; nothing it asks is allowed.
 	ReasonActorRevoked = types.ReasonCodeOf("actor_revoked")
 	// ReasonAdapterProtocolError: The adapter broke the contract (an invalid or unexpected message) or its process ended without a result.
@@ -75,6 +77,8 @@ var (
 	ReasonLineageUndeclared = types.ReasonCodeOf("lineage_undeclared")
 	// ReasonLogIntegrityBroken: The event log fails verification: a gap, a broken hash link, an edited event, or (against a trusted head) truncation or a rewritten tail.
 	ReasonLogIntegrityBroken = types.ReasonCodeOf("log_integrity_broken")
+	// ReasonOperatorOnly: The action is an operator's alone in this build: only an operator revokes an actor, and a supervisor's agent.enrol would wait for a human confirmation this build cannot take (14 R6), so it is refused rather than proposed.
+	ReasonOperatorOnly = types.ReasonCodeOf("operator_only")
 	// ReasonP3Banked: A P3 finding banked as background work (plan §2.5).
 	ReasonP3Banked = types.ReasonCodeOf("p3_banked")
 	// ReasonPreconditionFailed: An environment precondition failed before the run: an instrument's (12), or the adapter host's ingestion capabilities (09); no attempt is spent.
