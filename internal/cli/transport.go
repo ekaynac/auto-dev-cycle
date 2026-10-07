@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 
@@ -66,3 +67,5 @@ func (f failing) Command(context.Context, string, []byte) ([]byte, error) { retu
 func (f failing) Bootstrap(context.Context, []byte) ([]byte, error) { return nil, f.err }
 
 func (f failing) Read(context.Context, string) ([]byte, error) { return nil, f.err }
+
+func (f failing) Follow(context.Context, int64) (io.ReadCloser, error) { return nil, f.err }

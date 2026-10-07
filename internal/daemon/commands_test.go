@@ -40,7 +40,7 @@ type commanded struct {
 	dir                   string
 	d                     *Daemon
 	logs                  *logBuffer
-	opID, supID           types.ActorID
+	opID, supID, bareID   types.ActorID
 	op, sup, bare, review identity.Secret
 	human, revokedTok     identity.Secret
 	gone                  identity.Secret
@@ -89,7 +89,7 @@ func runCommanded(t *testing.T) *commanded {
 	var supID, goneID types.ActorID
 	supID, c.sup = supervisor("", true)
 	c.supID = supID
-	_, c.bare = supervisor("", false)
+	c.bareID, c.bare = supervisor("", false)
 	_, c.review = supervisor(types.GrantConfirmationOverridesValueIndependentReview, true)
 	_, c.human = supervisor(types.GrantConfirmationOverridesValueHuman, true)
 	c.revokedTok = token(supID, op.ID)
