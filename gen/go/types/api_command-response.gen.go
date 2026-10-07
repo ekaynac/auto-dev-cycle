@@ -103,7 +103,7 @@ type CommandApplied struct {
 	Effects  []CommandAppliedEffectsItem `json:"effects"`
 	// The action's result; one schema per action.
 	Result json.RawMessage `json:"result"`
-	// A bearer string, tok_<id>.<secret>, that the command issued (14 N3): present only on the response that applied it, absent on a replay. It is never stored; the CLI writes it to the token file and never prints it.
+	// A bearer string, tok_<id>.<secret>, that the command issued (14 N3): present only on the response that applied it, absent on a replay. It is never stored. Where the CLI keeps it is for 14 7a/7b to decide; until then the CLI refuses it (could_not_run) and never prints or writes it.
 	IssuedCredential *string `json:"issued_credential,omitempty"`
 }
 

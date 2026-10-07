@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync/atomic"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
@@ -40,13 +39,13 @@ type commands struct {
 	reg   *vocab.Registry
 	logic map[string]logic
 	log   io.Writer
+	// authenticated, when set, runs after a request is authenticated and
+	// before its command is submitted: a test revokes the caller there.
+	authenticated func(identity.Principal)
 }
 
-// authenticated, when set, runs after a request is authenticated and
-// before its command is submitted: a test revokes the caller there.
-var authenticated atomic.Pointer[func(identity.Principal)]
-
 func (h commands) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	if r.URL.RawQuery != "" {
 		http.Error(w, "commands take no query parameters", http.StatusBadRequest)
 		return
@@ -63,8 +62,8 @@ func (h commands) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.fault(w, "authenticating", err)
 		return
 	}
-	if f := authenticated.Load(); f != nil {
-		(*f)(p)
+	if h.authenticated != nil {
+		h.authenticated(p)
 	}
 	raw, err := io.ReadAll(r.Body)
 	var tooLarge *http.MaxBytesError
@@ -91,13 +90,22 @@ func (h commands) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.fault(w, r.PathValue("action"), err)
 		return
 	}
+	h.respond(w, v)
+}
+
+// respond writes v once it satisfies the response schema. A fault's detail
+// is logged, unless v carries a credential, which the schema library's
+// error would quote.
+func (h commands) respond(w http.ResponseWriter, v types.CommandResponseVariant) {
 	out, err := contract.Encode("api/command-response", types.CommandResponse{Variant: v})
+	if a, ok := v.(*types.CommandApplied); err != nil && ok && a.IssuedCredential != nil {
+		err = errors.New("a response carrying a credential does not satisfy its schema; the detail is withheld")
+	}
 	if err != nil {
 		h.fault(w, "encoding the response", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(out) // the commit stands either way
 }
 
@@ -161,7 +169,13 @@ func (h commands) answer(res eventstore.Committed, err error) (types.CommandResp
 	var v types.CommandRefused
 	err = json.Unmarshal(res.Result, &v)
 	v.Disposition = "refused"
-	return &v, errors.Join(err, h.reg.Check(vocab.Result{Outcome: vocab.Outcome(v.Outcome), Reason: v.Reason, Detail: v.Detail}))
+	// A replayed result was stored under the registry of its time: a reason
+	// deprecated since still reads.
+	check := h.reg.Check
+	if res.Replayed {
+		check = h.reg.CheckRead
+	}
+	return &v, errors.Join(err, check(vocab.Result{Outcome: vocab.Outcome(v.Outcome), Reason: v.Reason, Detail: v.Detail}))
 }
 
 // applied is the response of an applied command, with credential only when
@@ -180,7 +194,11 @@ func applied(res eventstore.Committed, credential *identity.Secret) (types.Comma
 		v.Effects = append(v.Effects, types.CommandAppliedEffectsItem{ID: types.EffectID(e.ID), State: types.CommandAppliedEffectsItemState(e.State)})
 	}
 	if credential != nil {
+		// Checked here: a schema error would quote it into the log.
 		s := credential.Reveal()
+		if _, err := identity.ParseSecret(s); err != nil {
+			return nil, errors.New("daemon: the issued credential is not in the issued form")
+		}
 		v.IssuedCredential = &s
 	}
 	return v, nil

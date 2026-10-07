@@ -21,6 +21,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 )
 
 // Config is what the daemon runs with, validated at load and again by Start.
@@ -32,6 +33,8 @@ type Config struct {
 	// clock is the store clock (eventstore.Config.Now) that every command
 	// and the bootstrap decide by; nil is time.Now. Only tests set it.
 	clock func() time.Time
+	// authenticated is the command endpoint's test hook (commands).
+	authenticated func(identity.Principal)
 }
 
 // SharedSocket enables the shared socket, <RunDir>/adcd-shared.sock, mode

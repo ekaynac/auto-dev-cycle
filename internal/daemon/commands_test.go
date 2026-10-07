@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,6 +44,7 @@ type commanded struct {
 	op, sup, bare, review identity.Secret
 	human, revokedTok     identity.Secret
 	gone                  identity.Secret
+	hook                  atomic.Pointer[func(identity.Principal)] // the endpoint's hook, when set
 }
 
 func runCommanded(t *testing.T) *commanded {
@@ -99,7 +101,12 @@ func runCommanded(t *testing.T) *commanded {
 	w.done()
 	ctx, cancel := context.WithCancel(context.Background())
 	done, ready := make(chan error, 1), make(chan *Daemon, 1)
-	go func() { done <- Run(ctx, Config{StateDir: c.dir}, c.logs, func(d *Daemon) { ready <- d }) }()
+	cfg := Config{StateDir: c.dir, authenticated: func(p identity.Principal) {
+		if f := c.hook.Load(); f != nil {
+			(*f)(p)
+		}
+	}}
+	go func() { done <- Run(ctx, cfg, c.logs, func(d *Daemon) { ready <- d }) }()
 	select {
 	case c.d = <-ready:
 	case err := <-done:
@@ -274,9 +281,9 @@ func TestCommandsUndecided(t *testing.T) {
 		}
 	}
 	before := c.commandsOf(t)
-	authenticated.Store(&revoke)
+	c.hook.Store(&revoke)
 	code, _, _ := c.post(t, "seat.take", c.op.Reveal(), strings.NewReader(good))
-	authenticated.Store(nil)
+	c.hook.Store(nil)
 	if code != http.StatusUnauthorized {
 		t.Errorf("revoked between: HTTP %d", code)
 	}
@@ -373,7 +380,7 @@ func TestCommandsBusy(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	commands{gate: gate}.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/commands/seat.take", strings.NewReader(good)))
-	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" || rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("HTTP %d", rec.Code)
 	}
 }
@@ -427,6 +434,18 @@ func TestAnswer(t *testing.T) {
 	if _, err := h.answer(eventstore.Committed{Disposition: eventstore.DispositionRefused, Result: json.RawMessage(`{"outcome":"failed","reason":"ambiguous_state","detail":"d"}`)}, nil); err == nil {
 		t.Error("a reason the registry rejects for its outcome")
 	}
+	// A stored refusal whose reason was deprecated since still replays.
+	r := reg.Reasons[vocab.ReasonSeatNotHeld.String()]
+	since := "0.1.0"
+	r.Deprecated = &since
+	reg.Reasons[vocab.ReasonSeatNotHeld.String()] = r
+	stored := json.RawMessage(`{"outcome":"failed","reason":"seat_not_held","detail":"d"}`)
+	if _, err := h.answer(eventstore.Committed{Disposition: eventstore.DispositionRefused, Replayed: true, Result: stored}, nil); err != nil {
+		t.Errorf("a replayed refusal: %v", err)
+	}
+	if _, err := h.answer(eventstore.Committed{Disposition: eventstore.DispositionRefused, Result: stored}, nil); err == nil {
+		t.Error("a fresh refusal with a deprecated reason")
+	}
 	for err, want := range map[error]vocab.Reason{
 		fmt.Errorf("x: %w", eventstore.ErrIdempotencyKeyReused):          vocab.ReasonIdempotencyKeyReused,
 		fmt.Errorf("x: %w", eventstore.ErrStaleExpectedState):            vocab.ReasonStaleExpectedState,
@@ -440,6 +459,22 @@ func TestAnswer(t *testing.T) {
 	}
 	if v, err := h.answer(eventstore.Committed{}, errors.New("other")); v != nil || err == nil {
 		t.Errorf("an unmapped error: %+v %v", v, err)
+	}
+}
+
+// A credential not in the issued form is refused before it is set, and a
+// response carrying one that fails the schema is never logged with it.
+func TestCredentialNeverLogged(t *testing.T) {
+	if v, err := applied(eventstore.Committed{CommandID: newID(t, "cmd"), Result: json.RawMessage(`{}`)}, &identity.Secret{}); v != nil || err == nil {
+		t.Fatalf("an empty credential: %+v %v", v, err)
+	}
+	var logs bytes.Buffer
+	bad := "tok_zzLEAKEDzzCREDENTIALzz"
+	rec := httptest.NewRecorder()
+	commands{log: &logs}.respond(rec, &types.CommandApplied{Disposition: "applied", Command: types.CommandID(newID(t, "cmd")),
+		Effects: []types.CommandAppliedEffectsItem{}, Result: json.RawMessage(`{}`), IssuedCredential: &bad})
+	if rec.Code != http.StatusServiceUnavailable || logs.Len() == 0 || strings.Contains(logs.String()+rec.Body.String(), "zzLEAKEDzz") {
+		t.Fatalf("HTTP %d %q, log %q", rec.Code, rec.Body.String(), logs.String())
 	}
 }
 

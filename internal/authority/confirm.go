@@ -190,7 +190,9 @@ func (a Authorizer) apply(t *eventstore.Tx, p types.Proposal, by types.Actor, re
 		return none, fmt.Errorf("%w: %s", ErrActionNotWired, p.Action)
 	}
 	d, err := h.Derive(t, proposer, p.Scope)
-	if err != nil {
+	if errors.Is(err, ErrInvalidScope) { // the stored scope, not the confirmer's
+		return invalidated(t, p, types.ProposalInvalidatedReasonValueProposalInvalidated, "the proposal's scope no longer satisfies its action")
+	} else if err != nil {
 		return none, err
 	}
 	state, err := StateOf(t, d)

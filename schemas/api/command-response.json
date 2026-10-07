@@ -35,7 +35,7 @@
         },
         "result": {"description": "The action's result; one schema per action.", "type": "object", "x-adc-open-payload": "action"},
         "issued_credential": {
-          "description": "A bearer string, tok_<id>.<secret>, that the command issued (14 N3): present only on the response that applied it, absent on a replay. It is never stored; the CLI writes it to the token file and never prints it.",
+          "description": "A bearer string, tok_<id>.<secret>, that the command issued (14 N3): present only on the response that applied it, absent on a replay. It is never stored. Where the CLI keeps it is for 14 7a/7b to decide; until then the CLI refuses it (could_not_run) and never prints or writes it.",
           "type": "string",
           "pattern": "^tok_[0-7][0-9a-hjkmnp-tv-z]{25}\\.[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
         }
