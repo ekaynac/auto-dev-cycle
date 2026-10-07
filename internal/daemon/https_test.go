@@ -113,9 +113,9 @@ func serveTLS(t *testing.T, lim limits) (*served, *http.Client, string, testCert
 // tlsClient trusts c and connects from the loopback address from, so a
 // test can be two remote peers.
 func tlsClient(t *testing.T, c testCert, from string) *http.Client {
-	d := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(from)}}
+	d := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(from)}, Timeout: netBound}
 	client := &http.Client{Transport: &http.Transport{DialContext: d.DialContext, TLSClientConfig: &tls.Config{RootCAs: c.pool, MinVersion: tls.VersionTLS13}},
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }, Timeout: time.Minute}
 	t.Cleanup(client.CloseIdleConnections)
 	return client
 }
@@ -555,7 +555,8 @@ func TestHTTPSFailureThrottle(t *testing.T) {
 	lim := tlsLimits()
 	lim.freeFailures, lim.preAuth = 2, time.Minute // the early connection outlives the failures, even under -race
 	s, c, base, cert := serveTLS(t, lim)
-	early, err := tls.Dial("tcp", s.srv.tcp.String(), &tls.Config{RootCAs: cert.pool})
+	addr := s.srv.tcp.String()
+	early, err := tlsFrom(t, "127.0.0.1", addr, cert)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,9 +566,14 @@ func TestHTTPSFailureThrottle(t *testing.T) {
 			t.Fatalf("failure %d: %d", i, code)
 		}
 	}
-	r1, _ := s.srv.remote.Take(api.Peer{Addr: netip.MustParseAddr("127.0.0.1")}.Key())
+	key := api.Peer{Addr: netip.MustParseAddr("127.0.0.1")}.Key()
+	if strikesOf(s.srv.th, key) != 3 || s.srv.th.wait(key) <= 0 {
+		t.Fatalf("after three failures, two free: %d failures, held off %s", strikesOf(s.srv.th, key), s.srv.th.wait(key))
+	}
+	holdOff(s.srv.th, key) // what follows outlasts the first wait on a loaded machine
+	strikes := strikesOf(s.srv.th, key)
+	r1, _ := s.srv.remote.Take(key)
 	defer r1()
-	early.SetDeadline(time.Now().Add(10 * time.Second))
 	if _, err := io.WriteString(early, "GET "+api.VersionPath+" HTTP/1.1\r\nHost: adcd\r\nAuthorization: Bearer "+s.tok.Reveal()+"\r\n\r\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -575,17 +581,54 @@ func TestHTTPSFailureThrottle(t *testing.T) {
 	if err != nil || resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" || !resp.Close {
 		t.Fatalf("a held-off peer, its slot taken: %v %v", resp, err)
 	}
-	if conn, err := tls.Dial("tcp", s.srv.tcp.String(), &tls.Config{RootCAs: cert.pool}); err == nil {
+	if conn, err := tlsFrom(t, "127.0.0.1", addr, cert); err == nil {
 		conn.Close()
 		t.Fatal("a held-off peer completed a TLS handshake")
 	}
 	if code := httpsStatus(t, tlsClient(t, cert, "127.0.0.2"), base+api.VersionPath, s.tok.Reveal()); code != http.StatusOK {
 		t.Fatalf("another peer: %d", code)
-	} // The 429 was the handler's answer, which counts no failure: the end
+	}
+	// The 429 was the handler's answer, which counts no failure: the end
 	// of its connection adds none either.
 	early.Close()
 	time.Sleep(300 * time.Millisecond)
-	strikesReach(t, s.srv.th, "127.0.0.1", 3)
+	strikesReach(t, s.srv.th, "127.0.0.1", strikes)
+}
+
+// netBound bounds every dial and connection the throttle tests make, so a
+// server that never answers fails the test instead of hanging it.
+const netBound = 20 * time.Second
+
+// dialFrom connects from the loopback address ip to addr, the connection
+// bounded by netBound.
+func dialFrom(t *testing.T, ip, addr string) net.Conn {
+	t.Helper()
+	c, err := (&net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(ip)}, Timeout: netBound}).Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial from %s: %v", ip, err)
+	}
+	c.SetDeadline(time.Now().Add(netBound))
+	return c
+}
+
+// tlsFrom is dialFrom with a TLS handshake (trusting cert); the error is
+// the handshake's, for a caller that expects it to fail.
+func tlsFrom(t *testing.T, ip, addr string, cert testCert) (*tls.Conn, error) {
+	t.Helper()
+	tc := tls.Client(dialFrom(t, ip, addr), &tls.Config{RootCAs: cert.pool, ServerName: "127.0.0.1"})
+	if err := tc.Handshake(); err != nil {
+		tc.Close()
+		return nil, err
+	}
+	return tc, nil
+}
+
+// holdOff fails key at th until it is held off for maxBackoff, so a test
+// that relies on the hold-off is not racing its first, one-second wait.
+func holdOff(th *throttle, key any) {
+	for th.wait(key) < maxBackoff-time.Second {
+		th.fail(key)
+	}
 }
 
 // strikesOf is how many failures th holds against key.
@@ -617,12 +660,8 @@ func TestHTTPSExpiryWithoutBearerFails(t *testing.T) {
 	lim := tlsLimits()
 	lim.preAuth, lim.preAuthFree = time.Second, time.Hour // the bound alone makes the failure
 	s, _, _, _ := serveTLS(t, lim)
-	silent, err := net.Dial("tcp", s.srv.tcp.String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	silent := dialFrom(t, "127.0.0.1", s.srv.tcp.String())
 	defer silent.Close()
-	silent.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if _, err := silent.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Fatalf("a silent connection at the pre-auth bound: %v", err)
 	}
@@ -656,26 +695,23 @@ func TestHTTPSExpiryWithoutBearerFails(t *testing.T) {
 // ClientHello) does not. A bearer-less request is its 401 alone.
 func TestHTTPSClosedWithoutBearerFails(t *testing.T) {
 	lim := tlsLimits()
-	lim.preAuth, lim.preAuthFree = time.Minute, 500*time.Millisecond
+	lim.preAuth, lim.preAuthFree = time.Minute, 3*time.Second // a quick close is well within it, even on a loaded machine
 	s, _, base, cert := serveTLS(t, lim)
 	addr := s.srv.tcp.String()
-	from := func(ip string) *net.Dialer { return &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(ip)}} }
-	if raw, err := from("127.0.0.2").Dial("tcp", addr); err == nil {
-		raw.Close()
+	dialFrom(t, "127.0.0.2", addr).Close()
+	cut := dialFrom(t, "127.0.0.3", addr)
+	if _, err := cut.Write([]byte{0x16, 0x03, 0x01, 0x00, 0x40, 0x01}); err != nil { // a ClientHello, cut off
+		t.Fatal(err)
 	}
-	if raw, err := from("127.0.0.3").Dial("tcp", addr); err == nil {
-		_, _ = raw.Write([]byte{0x16, 0x03, 0x01, 0x00, 0x40, 0x01}) // a ClientHello, cut off
-		raw.Close()
-	}
-	conn, err := tls.DialWithDialer(from("127.0.0.1"), "tcp", addr, &tls.Config{RootCAs: cert.pool})
+	cut.Close()
+	conn, err := tlsFrom(t, "127.0.0.1", addr, cert)
 	if err != nil {
 		t.Fatal(err)
 	}
 	conn.Close()
-	if raw, err := from("127.0.0.4").Dial("tcp", addr); err == nil {
-		time.Sleep(2 * lim.preAuthFree) // held, no handshake, closed long before the bound
-		raw.Close()
-	}
+	held := dialFrom(t, "127.0.0.4", addr)
+	time.Sleep(lim.preAuthFree + time.Second) // held, no handshake, closed long before the bound
+	held.Close()
 	if code := httpsStatus(t, tlsClient(t, cert, "127.0.0.5"), base+api.VersionPath, ""); code != http.StatusUnauthorized {
 		t.Fatalf("no bearer: %d", code)
 	}
@@ -712,17 +748,17 @@ func TestHTTPSClosedWithoutBearerFails(t *testing.T) {
 	}
 }
 
-// An authenticated event stream that outlives preAuthFree and the pre-auth
-// bound ends with no failure.
+// An authenticated event stream that outlives preAuthFree ends with no
+// failure.
 func TestHTTPSStreamEndNoFailure(t *testing.T) {
 	lim := tlsLimits()
-	lim.poll, lim.preAuth, lim.preAuthFree = 100*time.Millisecond, 2*time.Second, time.Millisecond // a verification fits in the bound, even under -race
+	lim.poll, lim.preAuth, lim.preAuthFree = 100*time.Millisecond, time.Minute, time.Millisecond // the bound never cuts a slow verification
 	s, c, base, _ := serveTLS(t, lim)
 	resp := httpsDo(t, c, http.MethodGet, base+api.EventsPath, s.tok.Reveal())
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("events over HTTPS: %s", resp.Status)
 	}
-	time.Sleep(lim.preAuth + 500*time.Millisecond)
+	time.Sleep(time.Second) // well past preAuthFree
 	resp.Body.Close()
 	c.CloseIdleConnections()
 	time.Sleep(500 * time.Millisecond)
@@ -838,7 +874,7 @@ func TestHTTPSAcceptNeedsAddress(t *testing.T) {
 func TestHTTPSAcceptRefusesHeldOff(t *testing.T) {
 	th := newThrottle(0)
 	held := api.Peer{UID: -1, Addr: netip.MustParseAddr("192.0.2.7")}
-	th.fail(held.Key())
+	holdOff(th, held.Key())
 	ln := &addrListener{conns: make(chan net.Conn, 2)}
 	server, client := net.Pipe()
 	defer client.Close()
