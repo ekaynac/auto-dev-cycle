@@ -51,3 +51,25 @@ func isNoun(noun string) bool {
 	}
 	return false
 }
+
+// Commands maps every action the CLI carries to its command line,
+// "adc <noun> <verb>" (the parity harness, internal/parity, joins it with
+// the daemon's wiring and the API description).
+func Commands() map[string]string {
+	out := make(map[string]string, len(commands))
+	for action, c := range commands {
+		out[action] = "adc " + c.noun + " " + c.verb
+	}
+	return out
+}
+
+// ReadCommands maps every read the CLI carries to its command line, by
+// resource: those of reads.go, "adc <noun> <verb>", and the event stream
+// (events.go, which Main routes by its first word).
+func ReadCommands() map[string]string {
+	out := map[string]string{"events": "adc events --follow"}
+	for c, resource := range reads {
+		out[resource] = "adc " + c.noun + " " + c.verb
+	}
+	return out
+}

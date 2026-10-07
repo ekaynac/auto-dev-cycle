@@ -92,6 +92,7 @@ TS_GEN    := gen/ts
 TS_GEN_SCRIPT := adapters/contract/scripts/gen.mjs
 API_DOC   := schemas/openapi.yaml
 SCHEMA_DOCS := docs/reference/schemas
+PARITY_DOC := docs/reference/action-matrix.md
 
 schema-docs: go-check ## Regenerate docs/reference/schemas from schemas/ (also part of make gen)
 	@$(GO) run ./tools/schemadoc $(SCHEMA_DOCS)
@@ -100,10 +101,11 @@ ts-deps: ## Install the adapters workspace dependencies (pnpm, from the lockfile
 	@# corepack picks the pnpm version from the current directory (adapters/package.json), not from --dir.
 	@cd adapters && pnpm install --frozen-lockfile
 
-gen: go-check ts-deps ## Regenerate from schemas/: Go types (gen/go/types), vocabulary constants, openapi.yaml, TypeScript types and validators (gen/ts)
+gen: go-check ts-deps ## Regenerate from schemas/: Go types (gen/go/types), vocabulary constants, openapi.yaml, the action matrix, TypeScript types and validators (gen/ts)
 	@$(GO) run ./tools/schemagen $(GEN_GO)
 	@$(GO) run ./tools/vocabgen $(VOCAB_GEN)
 	@$(GO) run ./tools/apigen $(API_DOC)
+	@$(GO) run ./tools/paritygen $(PARITY_DOC)
 	@$(GO) run ./tools/schemadoc $(SCHEMA_DOCS)
 	@node $(TS_GEN_SCRIPT) $(TS_GEN)
 
@@ -112,6 +114,7 @@ gen-check: go-check ts-deps ## Fail if the committed generated code differs from
 	  $(GO) run ./tools/schemagen "$$tmp/types" && diff -r -x '*_test.go' "$$tmp/types" $(GEN_GO) \
 	  && $(GO) run ./tools/vocabgen "$$tmp/vocab.gen.go" && diff "$$tmp/vocab.gen.go" $(VOCAB_GEN) \
 	  && $(GO) run ./tools/apigen "$$tmp/openapi.yaml" && diff "$$tmp/openapi.yaml" $(API_DOC) \
+	  && $(GO) run ./tools/paritygen "$$tmp/action-matrix.md" && diff "$$tmp/action-matrix.md" $(PARITY_DOC) \
 	  && $(GO) run ./tools/schemadoc "$$tmp/schema-docs" && diff -r "$$tmp/schema-docs" $(SCHEMA_DOCS) \
 	  && node $(TS_GEN_SCRIPT) "$$tmp/ts" && diff -r -x node_modules "$$tmp/ts" $(TS_GEN) \
 	  || { echo "gen-check: generated code is stale; run 'make gen'" >&2; exit 1; }
