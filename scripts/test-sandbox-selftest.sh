@@ -74,17 +74,21 @@ host_dns=0 host_tcp=0
 if getent hosts example.com >/dev/null 2>&1; then host_dns=1; fi
 if timeout 3 bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null; then host_tcp=1; fi
 
-# run <label> <wrapper args...>: go test -json output, wrapper stderr, exit code.
+# run <label> <scratch> <wrapper args...>: go test -json output, wrapper
+# stderr, exit code. Every caller names its scratch area explicitly.
 # Each run used to compile the test's dependencies into an empty build cache,
 # ten cold builds per self-test at full parallelism; with two CI jobs on one
 # small VM, go's compiler got OOM-killed and runs reported nothing. Now the
-# bubblewrap runs share one fresh scratch area (the unsandboxed control keeps
-# its own, so it never writes a cache that sandboxed runs mount) and go builds
-# one action at a time (-p 1): a cold build holds one compiler, not one per CPU.
+# bubblewrap runs share one fresh scratch area ($sandboxed_scratch), and the
+# unsandboxed control gets its own ($control_scratch), so it never writes a
+# cache that sandboxed runs mount. Go also runs one build action at a time
+# (-p 1), so a cold build holds one compile process, not one per CPU. That
+# process still compiles functions concurrently in its backend: -p 1 bounds
+# the number of compile processes, not the threads inside each one.
+sandboxed_scratch="$out/scratch-bwrap"
+control_scratch="$out/scratch-control"
 run() {
-  local label="$1"; shift
-  local rc=0 scratch="$out/scratch-bwrap"
-  [[ "$label" == control ]] && scratch="$out/scratch-control"
+  local label="$1" scratch="$2" rc=0; shift 2
   env ANTHROPIC_API_KEY=decoy-not-a-key ADC_DECOY_TOKEN=decoy-not-a-token \
     FTP_PROXY=http://decoy:decoy@127.0.0.1:9 NO_PROXY=decoy.invalid \
     ADC_SELFTEST_LOOPBACK_PORT="$port" ADC_TEST_SCRATCH="$scratch" ADC_TEST_PROVISION="$out/provision" \
@@ -175,7 +179,7 @@ if stream_ok "$out/ev-failskip.json" fail; then echo "  FAIL  malformed stream '
 if stream_ok "$out/ev-good.json" pass; then echo "  ok    a complete stream accepted"; else echo "  FAIL  a complete stream was rejected"; fail=1; fi
 
 echo "sandboxed run (backend $backend): every check must pass"
-run sandboxed --backend "$backend"
+run sandboxed "$sandboxed_scratch" --backend "$backend"
 stream_ok "$out/sandboxed.json" pass || { echo "  FAIL  the sandboxed run's test stream is incomplete or ambiguous"; fail=1; }
 expect sandboxed pass "${checks[@]}" "${net_checks[@]}" "${mutation_checks[@]}"
 if [[ "$(cat "$out/sandboxed.rc")" != 0 ]]; then
@@ -183,7 +187,7 @@ if [[ "$(cat "$out/sandboxed.rc")" != 0 ]]; then
 fi
 
 echo "unsandboxed control: every check must fail (red-proof)"
-ADC_TEST_UNSANDBOXED=1 run control --backend none
+ADC_TEST_UNSANDBOXED=1 run control "$control_scratch" --backend none
 stream_ok "$out/control.json" fail || { echo "  FAIL  the control run's test stream is incomplete or inconsistent"; fail=1; }
 [[ "$(cat "$out/control.rc")" == 1 ]] || { echo "  FAIL  the control run exited $(cat "$out/control.rc"), want 1"; fail=1; }
 expect control fail "${checks[@]}"
@@ -208,7 +212,7 @@ if [[ "$backend" == auto || "$backend" == bwrap ]] && bwrap_starts; then
   for m in "${mutations[@]}"; do
     name="${m%%=*}"
     IFS=+ read -r -a red <<<"${m#*=}"
-    ADC_TEST_UNSANDBOXED=1 ADC_TEST_SANDBOX_MUTATION="$name" run "mut-$name" --backend bwrap
+    ADC_TEST_UNSANDBOXED=1 ADC_TEST_SANDBOX_MUTATION="$name" run "mut-$name" "$sandboxed_scratch" --backend bwrap
     echo "  [$name] must fail: ${red[*]}; everything else must pass"
     expect "mut-$name" fail "${red[@]}"
     green=()
@@ -216,11 +220,16 @@ if [[ "$backend" == auto || "$backend" == bwrap ]] && bwrap_starts; then
       [[ " ${red[*]} " == *" $c "* ]] || green+=("$c")
     done
     expect "mut-$name" pass "${green[@]}"
-    got_red="$(results "mut-$name" fail | { grep -v / || true; } | tr '\n' ' ')"
+    # grep exits 1 when no top-level test failed; any other non-zero status
+    # (2, an I/O error) is a failure of the self-test, not an empty set.
+    got_red="$(results "mut-$name" fail | { grep -v / || [[ $? == 1 ]]; } | tr '\n' ' ')" \
+      || { echo "  FAIL  [$name] could not read its failing tests"; fail=1; }
     want_red="$(printf '%s\n' "${red[@]}" | sort | tr '\n' ' ')"
     all_now="$( { results "mut-$name" pass; results "mut-$name" fail; results "mut-$name" skip; } | sort | tr '\n' ' ')"
     all_clean="$( { results sandboxed pass; results sandboxed fail; results sandboxed skip; } | sort | tr '\n' ' ')"
-    if ! stream_ok "$out/mut-$name.json" fail; then
+    if stream_ok "$out/mut-$name.json" pass; then
+      echo "  FAIL  [$name] the run passed: the mutation turned nothing red"; fail=1
+    elif ! stream_ok "$out/mut-$name.json" fail; then
       echo "  FAIL  [$name] the test stream is incomplete or ambiguous"; fail=1
     elif [[ "$got_red" != "$want_red" ]]; then
       echo "  FAIL  [$name] failing set is [$got_red], want exactly [$want_red]"; fail=1
