@@ -202,9 +202,11 @@ func (b *bootstrapper) handler(gate *api.Slots) http.HandlerFunc {
 // consume submits the bootstrap as the system actor. The token is minted
 // before, outside the transaction, and goes to the response only from the
 // commit that applied it (14 N3). The input binds the secret's digest, so
-// the same key with another secret is another request.
+// the same key with another secret is another request. Expiry is judged
+// by the clock inside the transaction, never by when the request arrived
+// (minting and the writer queue take time).
 func (b *bootstrapper) consume(ctx context.Context, req types.BootstrapRequest, secret identity.Secret) (int, types.BootstrapResponseVariant) {
-	now := b.now()
+	now := b.now() // the token's created_at only
 	op, err := ids.New("act")
 	cmd, cerr := ids.New("cmd")
 	issued, merr := identity.Mint(types.ActorID(op), b.system.Actor(), now)
@@ -215,7 +217,7 @@ func (b *bootstrapper) consume(ctx context.Context, req types.BootstrapRequest, 
 		actor := types.Actor{ID: types.ActorID(op), Kind: types.ActorKindOperator, Name: req.Name, CreatedBy: b.system.Actor()}
 		c, err = b.store.Submit(ctx, b.system.Command(cmd, bootstrapAction, "bootstrap/"+req.IdempotencyKey, input, nil),
 			func(t *eventstore.Tx) (eventstore.Decision, error) {
-				evs, err := identity.ConsumeBootstrap(t, secret, actor, issued, now)
+				evs, err := identity.ConsumeBootstrap(t, secret, actor, issued, b.now())
 				if errors.Is(err, identity.ErrBootstrapRefused) {
 					res, err := json.Marshal(spentRefusal)
 					return eventstore.Decision{Disposition: eventstore.DispositionRefused, Result: res}, err

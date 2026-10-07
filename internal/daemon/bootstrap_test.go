@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -334,5 +335,52 @@ func TestBootstrapRace(t *testing.T) {
 	}
 	if applied != 1 {
 		t.Fatalf("%d bootstraps", applied)
+	}
+}
+
+// A request that arrives while the secret is live but reaches the writer
+// after it expired is refused: expiry is judged inside the transaction.
+// The writer is held; the clock moves past the expiry once the request has
+// read it on arrival; then the writer is released.
+func TestBootstrapExpiresWhileWaiting(t *testing.T) {
+	r := runBootstrap(t)
+	secret := readSecret(t, r.dir)
+	var late atomic.Bool
+	arrived := make(chan struct{})
+	var once sync.Once
+	r.d.boot.now = func() time.Time {
+		if late.Load() {
+			return time.Now().Add(25 * time.Hour)
+		}
+		once.Do(func() { close(arrived) })
+		return time.Now()
+	}
+	held, release := make(chan struct{}), make(chan struct{})
+	hold := make(chan error, 1)
+	go func() {
+		cmd := newID(t, "cmd")
+		_, err := r.d.store.Submit(context.Background(), r.d.system.Command(cmd, issueAction, cmd, []byte(`{}`), nil),
+			func(*eventstore.Tx) (eventstore.Decision, error) {
+				close(held)
+				<-release
+				return eventstore.Decision{}, errors.New("rolled back")
+			})
+		hold <- err
+	}()
+	<-held
+	result := make(chan types.BootstrapResponseVariant, 1)
+	go func() {
+		_, v := r.post(t, r.private(), "k-wait", secret)
+		result <- v
+	}()
+	<-arrived
+	late.Store(true)
+	close(release)
+	if err := <-hold; err == nil {
+		t.Fatal("the held command committed")
+	}
+	refusedWith(t, <-result, vocab.ReasonConfirmationRefused)
+	if st := bootState(t, r.d); st.Consumed {
+		t.Fatal("bootstrapped after the expiry")
 	}
 }
