@@ -245,6 +245,20 @@ export type CommandID = string;
  * via the `definition` "TokenID".
  */
 export type TokenID = string;
+/**
+ * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+ *
+ * This interface was referenced by `CommonDefinitions`'s JSON-Schema
+ * via the `definition` "NoteID".
+ */
+export type NoteID = string;
+/**
+ * A note's text (08 notes): untrusted data, stored and served as is and never interpreted (03-knowledge-layer supervisor continuity). 1 to 8192 characters, with no control character but tab and newline.
+ *
+ * This interface was referenced by `CommonDefinitions`'s JSON-Schema
+ * via the `definition` "NoteBody".
+ */
+export type NoteBody = string;
 
 /**
  * Shared scalar shapes (docs/design/m0/02). Formats prefixed adc- are asserted by internal/contract, which defines them.

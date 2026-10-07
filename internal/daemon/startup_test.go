@@ -17,6 +17,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
@@ -404,7 +405,24 @@ func TestRefuseAllAfterSystemActor(t *testing.T) {
 		t.Fatalf("the daemon holds %s's principal, not the system actor's", d.system.Actor())
 	}
 	cmd := newID(t, "cmd")
-	if _, err := d.store.SubmitApplied(context.Background(), d.system.Command(cmd, "note.add", cmd, []byte(`{}`), nil), noop); !errors.Is(err, ErrCommandsRefused) {
+	if _, err := d.store.SubmitApplied(context.Background(), d.system.Command(cmd, "task.create", cmd, []byte(`{}`), nil), noop); !errors.Is(err, ErrCommandsRefused) {
 		t.Fatalf("the system principal's command was not refused: %v", err)
+	}
+	// note.add is wired: its handler checks the scope, and refuses a note
+	// by the system, which is no note author.
+	note := d.system.Command(cmd, authority.NoteAction, cmd, []byte(`{}`), nil)
+	var invalid *contract.Error
+	if _, err := d.store.Submit(context.Background(), note, authority.AddNote(note)); !errors.As(err, &invalid) {
+		t.Fatalf("note.add is not wired: %v", err)
+	}
+	before, err := d.store.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	note.Input = []byte(`{"project":"prj_01m3250vkwffc979nzjw0g2sa1","body":"x"}`)
+	_, err = d.store.Submit(context.Background(), note, authority.AddNote(note))
+	var r *authority.Refusal
+	if after, herr := d.store.Head(context.Background()); !errors.As(err, &r) || r.Reason != vocab.ReasonActorKindRefused || herr != nil || after != before {
+		t.Fatalf("the system's note: %v", err)
 	}
 }

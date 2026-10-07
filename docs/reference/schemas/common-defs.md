@@ -161,3 +161,13 @@ Type: [TypeID](#typeid) (pattern `^cmd_`)
 ### TokenID
 
 Type: [TypeID](#typeid) (pattern `^tok_`)
+
+### NoteID
+
+Type: [TypeID](#typeid) (pattern `^not_`)
+
+### NoteBody
+
+A note's text (08 notes): untrusted data, stored and served as is and never interpreted (03-knowledge-layer supervisor continuity). 1 to 8192 characters, with no control character but tab and newline.
+
+Type: string (pattern `^[^\x00-\x08\x0b-\x1f\x7f-\x9f]+$`, minLength `1`, maxLength `8192`)

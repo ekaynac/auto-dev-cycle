@@ -43,10 +43,17 @@ type Derived struct {
 	// ObjectType is the object's record type, which a proposal binds
 	// (types.ObjectRef); an action that may be proposed must set it.
 	ObjectType string
+	// Minted marks an object Derive minted (a new id): a confirmation's
+	// derivation would mint another, so the proposal could never be
+	// revalidated, and a command Decide would propose is refused instead
+	// (action_not_proposable).
+	Minted bool
 }
 
 // Handler derives one action's Derived. It runs inside the writer
 // transaction, for the authenticated actor; an error refuses the command.
+// It may mint the object's id only if it marks the derivation Minted, which
+// refuses proposals.
 type Handler interface {
 	Derive(t *eventstore.Tx, actor types.Actor, input json.RawMessage) (Derived, error)
 }
@@ -113,6 +120,9 @@ func (a Authorizer) Authorize(t *eventstore.Tx, c eventstore.Command) error {
 	case Allow:
 		return nil
 	case Propose:
+		if d.Minted {
+			return refusal(vocab.ReasonActionNotProposable, "%s mints its object, so a proposal of it could never be revalidated", c.Action)
+		}
 		// A proposal is committed, not an error (14 H2 item 4): the command
 		// records it with the proposed disposition and its logic never runs.
 		return a.propose(t, c, actor, d, dec)

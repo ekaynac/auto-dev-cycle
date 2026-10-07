@@ -81,6 +81,18 @@ the CLI is a superset.
   conflicting supervisor write is refused with `failed/seat_not_held`.
 - Taking a held seat emits `seat.handover_requested` to the holder's stream. After `force-after` the request wins.
 
+## Notes (02-supervisor-role §5)
+
+- `note.add` adds a note to a project, optionally about one record (a reference, never resolved). Notes are only added.
+  The id (`not_`), the author and `created_at` (the command's time) are the controller's.
+- The body is untrusted text, bounded by its schema (`NoteBody`: 1–8192 characters, no control character but tab and
+  newline), stored and served as is and never interpreted. Bidirectional and zero-width characters are allowed; how
+  they render is the reader's concern.
+- Only operators and supervisors write notes. A supervisor's note is a supervisor write: it needs the seat. A holder
+  asked for a handover writes its handover note before the request's `force_after`, after which the seat is lost.
+- `note.add` mints its note's id, so it is never proposed: a command authority would propose is refused
+  (`action_not_proposable`).
+
 ## What M0 delivers
 
 The OpenAPI document for the M0 resources and commands (projects, authority, holds, events, seat, notes), the two
