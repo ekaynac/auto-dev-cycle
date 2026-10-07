@@ -111,11 +111,12 @@ func adminBootstrap(ctx context.Context, args []string, stdout, stderr io.Writer
 }
 
 // readSecret reads the secret from dir's bootstrap.secret (no link
-// followed, a regular file) or, with dir empty, from stdin.
+// followed, never blocking on a FIFO or a terminal: a regular file, checked
+// on the descriptor) or, with dir empty, from stdin.
 func readSecret(dir string) (identity.Secret, error) {
 	r := stdin
 	if dir != "" {
-		fd, err := unix.Open(filepath.Join(dir, identity.BootstrapFile), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		fd, err := unix.Open(filepath.Join(dir, identity.BootstrapFile), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err != nil {
 			return identity.Secret{}, fmt.Errorf("the state directory's bootstrap.secret cannot be opened: %w", err)
 		}

@@ -5,11 +5,15 @@ package cli
 import (
 	"context"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/daemon"
@@ -110,5 +114,85 @@ func TestAdminBootstrapTokenWriteFails(t *testing.T) {
 	if code != entry.ExitCouldNotRun || !strings.Contains(out, "could not be written") || !strings.Contains(out, "recover operator-token") ||
 		regexp.MustCompile(`tok_[0-9a-z]{26}\.`).MatchString(out) {
 		t.Fatalf("a failed write: %d %s", code, out)
+	}
+}
+
+// A malformed bootstrap response that carries a credential never reaches
+// the terminal: the validation error is fixed text.
+func TestAdminBootstrapMalformedResponse(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir, err := os.MkdirTemp("", "adc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "adcd.sock")
+	l, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const secretPart = "zzFAKEzzSECRETzzRECOGNIZABLEzzQQQQQQQQQQQQA"
+	bearer := "tok_01m3250vkwffc979nzjw0g2sa1." + secretPart
+	body := `{"disposition":"applied","command":"cmd_01m3250vkwffc979nzjw0g2sa1","replayed":false,"operator":"act_01m3250vkwffc979nzjw0g2sa1","token":"tok_01m3250vkwffc979nzjw0g2sa1","issued_credential":"` + bearer + `!"}`
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, body) })}
+	go srv.Serve(l)
+	defer srv.Close()
+	env := map[string]string{SocketEnv: socket}
+	c := ClientFromEnv(func(k string) string { return env[k] })
+	s, _, err := identity.NewBootstrapSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, out := bootstrapCLI(t, c, s.Reveal(), "--secret-stdin")
+	if code != entry.ExitCouldNotRun || strings.Contains(out, secretPart) || strings.Contains(out, s.Reveal()) {
+		t.Fatalf("%d %s", code, out)
+	}
+}
+
+// The secret file must be a regular file: a FIFO is refused at once (never
+// waited on), and so are a symlink and a directory.
+func TestAdminBootstrapSecretFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// The link's target holds a valid secret: following it would get as
+	// far as the transport.
+	s, _, err := identity.NewBootstrapSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "real")
+	if err := os.WriteFile(target, []byte(s.Reveal()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		plant func(p string) error
+		says  string
+	}{
+		"a FIFO":      {func(p string) error { return syscall.Mkfifo(p, 0o600) }, "not a regular file"},
+		"a symlink":   {func(p string) error { return os.Symlink(target, p) }, "cannot be opened"},
+		"a directory": {func(p string) error { return os.Mkdir(p, 0o700) }, "not a regular file"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := c.plant(filepath.Join(dir, identity.BootstrapFile)); err != nil {
+				t.Fatal(err)
+			}
+			type result struct {
+				code int
+				out  string
+			}
+			done := make(chan result, 1)
+			go func() {
+				code, out := bootstrapCLI(t, NoTransport{}, "", "--state-dir", dir)
+				done <- result{code, out}
+			}()
+			select {
+			case r := <-done:
+				if r.code != entry.ExitUsage || !strings.Contains(r.out, c.says) {
+					t.Fatalf("exit %d: %s", r.code, r.out)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the reader blocked")
+			}
+		})
 	}
 }

@@ -127,7 +127,13 @@ func (t Transport) Bootstrap(ctx context.Context, body []byte) ([]byte, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := t.httpClient(false).Do(req)
-	return answer(resp, err, "a bootstrap response", func(raw []byte) error { return contract.Validate("api/bootstrap-response", raw) })
+	return answer(resp, err, "a bootstrap response", func(raw []byte) error {
+		// Fixed text: a validation error would quote the body, which may hold a credential.
+		if contract.Validate("api/bootstrap-response", raw) != nil {
+			return errors.New("the controller's bootstrap response is not a valid BootstrapResponse")
+		}
+		return nil
+	})
 }
 
 // answer reads a bounded response body and returns it once check accepts
