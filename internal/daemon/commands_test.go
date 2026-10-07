@@ -75,7 +75,7 @@ func runCommanded(t *testing.T) *commanded {
 	supervisor := func(override types.GrantConfirmationOverridesValue, grant bool) (types.ActorID, identity.Secret) {
 		a := actor(types.ActorKindSupervisor, op.ID)
 		g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: a.ID, Projects: types.ProjectScope{All: true},
-			Actions: []types.ActionKind{"seat.take", "seat.release"}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{}},
+			Actions: []types.ActionKind{"seat.take", "seat.release", authority.WithdrawAction}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{}},
 			ValidFrom: types.Time(now.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(now.Add(time.Hour).Format(time.RFC3339)),
 			ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID, Approval: types.ApprovalID(newID(t, "apr"))}
 		if override != "" {
@@ -355,6 +355,49 @@ func TestCommandsAuthority(t *testing.T) {
 	}
 }
 
+// proposal.withdraw through the endpoint: another supervisor, though its
+// grant covers the action, is refused action_not_granted with nothing
+// recorded; an invalid scope is a 400; the proposer's withdrawal applies.
+func TestWithdrawThroughTheEndpoint(t *testing.T) {
+	c := runCommanded(t)
+	code, out, _ := c.adc(c.review.Reveal(), "seat", "take", "--expect", "0", "--reason", "r", "--json")
+	p, ok := response(t, out).(*types.CommandProposed)
+	if code != entry.ExitProposed || !ok {
+		t.Fatalf("the proposal: %d %s", code, out)
+	}
+	version := strconv.Itoa(count(t, c.dir, `SELECT max(seq) FROM events WHERE subject = '`+string(p.Proposal)+`'`))
+	body := func(key string) io.Reader {
+		return strings.NewReader(`{"idempotency_key":"` + key + `","expected":{"version":` + version + `,"digest":null},"scope":{"proposal":"` + string(p.Proposal) + `"},"reason":"r"}`)
+	}
+	answer := func(code int, raw []byte) types.CommandResponseVariant {
+		t.Helper()
+		if code != http.StatusOK {
+			t.Fatalf("HTTP %d: %s", code, raw)
+		}
+		return response(t, string(raw))
+	}
+	events := func(kind string) int {
+		return count(t, c.dir, `SELECT count(*) FROM events WHERE subject = '`+string(p.Proposal)+`' AND kind LIKE '`+kind+`'`)
+	}
+	before, all := c.commandsOf(t), events("%")
+	bad := strings.NewReader(`{"idempotency_key":"w0","expected":{"version":0,"digest":null},"scope":{"proposal":"x"},"reason":"r"}`)
+	if code, _, raw := c.post(t, authority.WithdrawAction, c.review.Reveal(), bad); code != http.StatusBadRequest {
+		t.Errorf("an invalid scope: HTTP %d %s", code, raw)
+	}
+	code, _, raw := c.post(t, authority.WithdrawAction, c.sup.Reveal(), body("w1"))
+	refusedAs(t, answer(code, raw), vocab.Failed, vocab.ReasonActionNotGranted)
+	if c.commandsOf(t) != before || events("%") != all {
+		t.Fatal("the stranger's withdrawal recorded something")
+	}
+	code, _, raw = c.post(t, authority.WithdrawAction, c.review.Reveal(), body("w2"))
+	if a, ok := answer(code, raw).(*types.CommandApplied); !ok || a.Replayed {
+		t.Fatalf("the proposer's withdrawal: %s", raw)
+	}
+	if n := events(authority.ProposalWithdrawn); n != 1 {
+		t.Fatalf("proposal.withdrawn events: %d", n)
+	}
+}
+
 // A deprecated action is refused as unregistered, before anything else.
 func TestDeprecatedAction(t *testing.T) {
 	reg, err := vocab.Load()
@@ -397,7 +440,7 @@ func TestEveryHandlerHasLogic(t *testing.T) {
 			t.Errorf("%s has a handler and not exactly one of a logic and an issuer", action)
 		}
 	}
-	if len(ls)+len(is) != len(handlers()) || is[authority.EnrolAction] == nil || ls[authority.RevokeActorAction] == nil {
+	if len(ls)+len(is) != len(handlers()) || is[authority.EnrolAction] == nil || ls[authority.RevokeActorAction] == nil || ls[authority.WithdrawAction] == nil {
 		t.Errorf("logics %d, issuers %d, handlers %d", len(ls), len(is), len(handlers()))
 	}
 }

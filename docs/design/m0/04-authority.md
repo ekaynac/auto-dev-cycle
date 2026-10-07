@@ -277,6 +277,12 @@ Challenge:                          # human policy only
   names the proposer. A `human` proposal, the KA1 presence check included, is refused (`confirmation_refused`) until
   the dashboard's WebAuthn is deployed (14 R6). Until review receipts are recorded, the daemon has no review source and
   refuses every confirmation.
+- **Withdrawal (14 PR 6d).** `proposal.withdraw {proposal}` commits `proposal.withdrawn/v1` for an open, unexpired
+  proposal, by its proposer or an operator, under a grant covering the action in the proposal's project. Anyone else is
+  refused `action_not_granted` in the derivation, before authority decides, and again in the fold. A withdrawal is never
+  itself proposed: a policy that would make it one refuses it (`action_not_proposable`). It drops the proposal from the
+  pending indexes, so the same operation may be proposed again. At or past its expiry the proposal is closed as expired
+  (refused). It changes no target, so it needs no seat.
 
 ## Protected changes: documents and topology [M3][M12]
 

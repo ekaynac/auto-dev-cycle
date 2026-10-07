@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/proposal-withdraw.json",
+  "title": "ProposalWithdrawScope",
+  "description": "The scope of proposal.withdraw (docs/design/m0/04 \"Proposals and confirmation\"): the proposal to withdraw. Its project and object are the proposal's, derived server side. Only its proposer or an operator withdraws it, and only while it is open and unexpired.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["proposal"],
+  "properties": {
+    "proposal": {"$ref": "../../common/defs.json#/$defs/ProposalID"}
+  }
+}

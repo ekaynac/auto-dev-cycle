@@ -133,7 +133,7 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 	}
 	// The seat and admin actions are wired: seat.take reaches its logic, which
 	// refuses the system actor (not a supervisor) with a recorded reason.
-	if hs := handlers(); len(hs) != 5 || hs[authority.ConfirmAction] == nil || hs["seat.take"] == nil || hs["seat.release"] == nil || hs[authority.EnrolAction] == nil || hs[authority.RevokeActorAction] == nil {
+	if hs := handlers(); len(hs) != 6 || hs[authority.ConfirmAction] == nil || hs["seat.take"] == nil || hs["seat.release"] == nil || hs[authority.EnrolAction] == nil || hs[authority.RevokeActorAction] == nil || hs[authority.WithdrawAction] == nil {
 		t.Fatalf("the wired handlers: %v", hs)
 	}
 	take := newID(t, "cmd")
@@ -141,6 +141,15 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 	out, err := d.store.Submit(context.Background(), c, handlers()["seat.take"].(authority.SeatHandler).Logic(c))
 	if err != nil || out.Disposition != eventstore.DispositionRefused || !strings.Contains(string(out.Result), "seat_unavailable") {
 		t.Fatalf("seat.take is not wired: %+v %v", out, err)
+	}
+	// proposal.withdraw is wired: its handler derives the proposal, and an
+	// unknown one is refused as not open, not as an unwired action.
+	w2 := newID(t, "cmd")
+	c = d.system.Command(w2, authority.WithdrawAction, w2, []byte(`{"proposal":"`+newID(t, "prp")+`"}`), nil)
+	_, err = d.store.Submit(context.Background(), c, authority.Authorizer{}.Withdraw(c))
+	var r *authority.Refusal
+	if !errors.As(err, &r) || r.Reason != vocab.ReasonProposalNotOpen {
+		t.Fatalf("proposal.withdraw is not wired: %v", err)
 	}
 }
 

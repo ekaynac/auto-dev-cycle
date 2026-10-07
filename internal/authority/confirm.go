@@ -97,9 +97,7 @@ func (ConfirmHandler) Derive(t *eventstore.Tx, _ types.Actor, input json.RawMess
 		return Derived{}, err
 	}
 	p, err := storedProposal(t, in.Proposal)
-	return Derived{Object: string(p.ID), ObjectType: "proposal", Project: p.Project, Record: func(t *eventstore.Tx) (json.RawMessage, bool, error) {
-		return t.Get(ProposalProjection, string(p.ID))
-	}}, err
+	return Derived{Object: string(p.ID), ObjectType: "proposal", Project: p.Project, Record: ProposalRecord(p.ID)}, err
 }
 
 type confirmInput struct {

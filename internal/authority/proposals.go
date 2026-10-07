@@ -15,7 +15,7 @@ package authority
 //   - an approval answers exactly one live proposal, every field it shares
 //     with it copied from the proposal record (ApprovalOf);
 //   - a proposal moves open → confirmed → applied, or open → expired, one
-//     event each (confirm.go).
+//     event each (confirm.go), or open → withdrawn (withdraw.go).
 
 import (
 	"encoding/json"
@@ -51,7 +51,7 @@ const (
 // ProposalKinds registers the proposal and approval event kinds.
 func ProposalKinds() eventstore.Kinds {
 	k := eventstore.Kinds{ApprovalRecorded: {Schema: "records/approval"}}
-	for _, kind := range []string{ProposalCreated, ProposalInvalidated, ProposalConfirmed, ProposalApplied, ProposalExpired} {
+	for _, kind := range []string{ProposalCreated, ProposalInvalidated, ProposalConfirmed, ProposalApplied, ProposalExpired, ProposalWithdrawn} {
 		k[kind] = eventstore.Kind{Schema: "records/proposal"}
 	}
 	return k
@@ -63,6 +63,9 @@ func ProposalKinds() eventstore.Kinds {
 func (a Authorizer) propose(t *eventstore.Tx, c eventstore.Command, actor types.Actor, d Derived, dec Decision) error {
 	if d.ObjectType == "" {
 		return fmt.Errorf("authority: the %s handler derived no object type; a proposal binds one", c.Action)
+	}
+	if c.Action == WithdrawAction {
+		return refusal(vocab.ReasonActionNotProposable, "%s is never proposed; an operator withdraws directly", c.Action)
 	}
 	state, err := StateOf(t, d)
 	if err != nil {
@@ -194,6 +197,8 @@ func (ProposalProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) erro
 			err = recordApproval(tx, ev)
 		case ProposalConfirmed, ProposalApplied, ProposalExpired:
 			err = advanceProposal(tx, ev)
+		case ProposalWithdrawn:
+			err = withdrawProposal(tx, ev)
 		case string(types.GrantEventTransitionGrantRevoked) + "/v1":
 			var g types.GrantEvent
 			if err = json.Unmarshal(ev.Payload, &g); err == nil {

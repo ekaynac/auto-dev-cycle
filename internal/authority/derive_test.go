@@ -83,6 +83,9 @@ type boundary struct {
 // test sets it and resets it).
 var storeShift time.Duration
 
+// storeAt, when set, stops that clock there (a test at an exact instant).
+var storeAt time.Time
+
 func openBoundary(t *testing.T) *boundary { return openBoundaryGrace(t, 0, true) }
 
 // openBoundaryGrace: with the seat projector's grace overridden when
@@ -109,7 +112,12 @@ func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary
 	maps.Copy(kinds, authority.ProposalKinds())
 	kinds["test.noted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	kinds["test.unnoted/v1"] = eventstore.Kind{Schema: "common/defs"}
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: func() time.Time { return suiteNow().Add(storeShift) },
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: func() time.Time {
+		if !storeAt.IsZero() {
+			return storeAt
+		}
+		return suiteNow().Add(storeShift)
+	},
 		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, authority.ProposalProjector{}.Project, notesProjection, b.record),
 			Authorize: func(tx *eventstore.Tx, c eventstore.Command) error {
 				if c.Action == "test.seed" {
