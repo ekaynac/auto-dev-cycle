@@ -35,9 +35,12 @@ var (
 	ErrServerIdentity = errors.New("the controller's certificate does not verify against the configured CA or pin; no credential was sent")
 	// ErrHandshakeRefused: the controller closed the connection before
 	// the TLS handshake completed, as it does to an address it holds off.
-	ErrHandshakeRefused = errors.New("the controller closed the connection before the TLS handshake (it holds off an address after repeated failed authentications); no credential was sent; retry later")
+	ErrHandshakeRefused = errors.New("the controller closed the connection before the TLS handshake (possibly because it holds off this address after repeated failed authentications); no credential was sent; retry later")
 	// ErrHandshake: any other failed TLS handshake; nothing was sent.
 	ErrHandshake = errors.New("the TLS 1.3 handshake with the controller failed; no credential was sent")
+	// ErrUnreadable: any other failure once a verified connection was
+	// open; net/http's own text may quote the server, so it is dropped.
+	ErrUnreadable = errors.New("the controller's response could not be read")
 	// ErrHeldOff: the controller answered 429 (see HeldOff).
 	ErrHeldOff = errors.New("the controller is holding off this address after repeated failed authentications; nothing was decided")
 	// ErrRemoteBootstrap: the bootstrap is served only on the private
@@ -88,8 +91,8 @@ const PinPrefix = "sha256:"
 // a PEM file of CA certificates, or pin, a PinPrefix fingerprint.
 func NewRemote(addr, caFile, pin string) (Remote, error) {
 	host, port, err := net.SplitHostPort(addr)
-	if n, perr := strconv.Atoi(port); err != nil || perr != nil || host == "" || n < 1 || n > 65535 {
-		return Remote{}, errors.New("the HTTPS address is not HOST:PORT with a port from 1 to 65535")
+	if n, perr := strconv.Atoi(port); err != nil || perr != nil || !validHost(host) || n < 1 || n > 65535 {
+		return Remote{}, errors.New("the HTTPS address is not HOST:PORT with an IP or a DNS name and a port from 1 to 65535")
 	}
 	// No session cache: every connection verifies the certificate in full.
 	tc := &tls.Config{MinVersion: tls.VersionTLS13, ServerName: host}
@@ -113,6 +116,9 @@ func NewRemote(addr, caFile, pin string) (Remote, error) {
 		// is written; its validity dates still apply.
 		tc.InsecureSkipVerify = true
 		tc.VerifyConnection = func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return ErrServerIdentity
+			}
 			leaf := cs.PeerCertificates[0]
 			got := sha256.Sum256(leaf.Raw)
 			if subtle.ConstantTimeCompare(got[:], want) != 1 {
@@ -127,6 +133,28 @@ func NewRemote(addr, caFile, pin string) (Remote, error) {
 	return Remote{addr: addr, tls: tc}, nil
 }
 
+// validHost is an IP literal or a DNS name: dot-separated labels of 1 to
+// 63 letters, digits and inner hyphens, 253 bytes at most.
+func validHost(h string) bool {
+	if net.ParseIP(h) != nil {
+		return true
+	}
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	for _, l := range strings.Split(h, ".") {
+		if len(l) == 0 || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for _, r := range l {
+			if !(r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func parsePin(pin string) ([]byte, error) {
 	h, ok := strings.CutPrefix(pin, PinPrefix)
 	b, err := hex.DecodeString(h)
@@ -136,7 +164,8 @@ func parsePin(pin string) ([]byte, error) {
 	return b, nil
 }
 
-// readCA reads a PEM bundle of at most maxCABytes, never waiting on a FIFO.
+// readCA reads a PEM bundle of at most maxCABytes from a regular file,
+// never waiting on a FIFO.
 func readCA(path string) (*x509.CertPool, error) {
 	refused := errors.New("the HTTPS CA file cannot be read as a PEM certificate bundle of at most 1 MiB")
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
@@ -144,6 +173,9 @@ func readCA(path string) (*x509.CertPool, error) {
 		return nil, refused
 	}
 	defer f.Close()
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
+		return nil, errors.New("the HTTPS CA file is not a regular file")
+	}
 	raw, err := io.ReadAll(io.LimitReader(f, maxCABytes+1))
 	pool := x509.NewCertPool()
 	if err != nil || len(raw) > maxCABytes || !pool.AppendCertsFromPEM(raw) {
@@ -184,12 +216,18 @@ func handshakeError(err error) error {
 }
 
 // fixed returns the transport's own refusal inside err (net/http wraps
-// it with the URL), or err.
-func fixed(err error) error {
+// it with the URL). Over HTTPS, a dial error or the caller's context
+// passes through (it names only the configured address); any other error
+// is ErrUnreadable, since net/http's text may quote the server.
+func (t Transport) fixed(err error) error {
 	for _, f := range []error{ErrServerIdentity, ErrHandshakeRefused, ErrHandshake} {
 		if errors.Is(err, f) {
 			return f
 		}
 	}
-	return err
+	var op *net.OpError
+	if t.Remote == nil || errors.As(err, &op) && op.Op == "dial" || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return ErrUnreadable
 }

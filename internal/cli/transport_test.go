@@ -93,7 +93,16 @@ func TestClientFromEnvHTTPS(t *testing.T) {
 		t.Fatalf("both transports: %v", err)
 	}
 	delete(env, SocketEnv)
-	delete(env, HTTPSPinEnv)
+	delete(env, HTTPSAddrEnv)
+	for _, anchor := range []string{HTTPSPinEnv, HTTPSCAEnv} {
+		env[SocketEnv], env[anchor] = "/run/x/adcd.sock", "x"
+		if _, err := ClientFromEnv(getenv).Command(context.Background(), "task.create", nil); err == nil || !strings.Contains(err.Error(), "need "+HTTPSAddrEnv) {
+			t.Fatalf("%s without %s: %v", anchor, HTTPSAddrEnv, err)
+		}
+		delete(env, anchor)
+	}
+	delete(env, SocketEnv)
+	env[HTTPSAddrEnv] = "127.0.0.1:8443"
 	if _, err := ClientFromEnv(getenv).Command(context.Background(), "task.create", nil); err == nil || !strings.Contains(err.Error(), "trust anchor") {
 		t.Fatalf("no trust anchor: %v", err)
 	}
@@ -116,4 +125,16 @@ func TestBootstrapNotOverHTTPS(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, identity.BootstrapFile)); err != nil {
 		t.Fatalf("the bootstrap was consumed: %v", err)
 	}
+	// Refused before the secret is read: stdin is never touched.
+	read := &readCounter{}
+	stdin = read
+	t.Cleanup(func() { stdin = os.Stdin })
+	var errb strings.Builder
+	if code := Main(context.Background(), []string{"admin", "bootstrap", "--secret-stdin"}, io.Discard, &errb, ClientFromEnv(func(k string) string { return env[k] })); code != entry.ExitUsage || read.n != 0 || !strings.Contains(errb.String(), client.ErrRemoteBootstrap.Error()) {
+		t.Fatalf("%d, %d reads: %s", code, read.n, errb.String())
+	}
 }
+
+type readCounter struct{ n int }
+
+func (r *readCounter) Read([]byte) (int, error) { r.n++; return 0, io.EOF }

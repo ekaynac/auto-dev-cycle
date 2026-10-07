@@ -33,6 +33,8 @@ func ClientFromEnv(getenv func(string) string) Client {
 	token := func() (identity.Secret, error) { return client.Token(getenv) }
 	socket, addr := getenv(SocketEnv), getenv(HTTPSAddrEnv)
 	switch {
+	case addr == "" && (getenv(HTTPSCAEnv) != "" || getenv(HTTPSPinEnv) != ""):
+		return failing{fmt.Errorf("%s and %s need %s", HTTPSCAEnv, HTTPSPinEnv, HTTPSAddrEnv)}
 	case socket != "" && addr != "":
 		return failing{fmt.Errorf("set one of %s and %s, not both", SocketEnv, HTTPSAddrEnv)}
 	case addr != "":

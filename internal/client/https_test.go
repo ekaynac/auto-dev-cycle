@@ -120,23 +120,30 @@ func TestNewRemoteRefused(t *testing.T) {
 		"port zero":     {"127.0.0.1:0", ca, "", "HOST:PORT"},
 		"port 65536":    {"127.0.0.1:65536", ca, "", "HOST:PORT"},
 		"no host":       {":8443", ca, "", "HOST:PORT"},
+		"space in host": {"adcd example:8443", ca, "", "HOST:PORT"},
+		"slash in host": {"adcd/x:8443", ca, "", "HOST:PORT"},
+		"hyphen label":  {"-adcd.example:8443", ca, "", "HOST:PORT"},
+		"empty label":   {"adcd..example:8443", ca, "", "HOST:PORT"},
+		"long label":    {strings.Repeat("a", 64) + ".example:8443", ca, "", "HOST:PORT"},
 		"no anchor":     {"127.0.0.1:8443", "", "", "exactly one trust anchor"},
 		"both anchors":  {"127.0.0.1:8443", ca, pin, "exactly one trust anchor"},
 		"pin no prefix": {"127.0.0.1:8443", "", strings.TrimPrefix(pin, PinPrefix), "64 hex digits"},
 		"pin short":     {"127.0.0.1:8443", "", pin[:len(pin)-2], "64 hex digits"},
 		"pin not hex":   {"127.0.0.1:8443", "", PinPrefix + strings.Repeat("z", 64), "64 hex digits"},
 		"ca missing":    {"127.0.0.1:8443", ca + ".absent", "", "CA file"},
-		"ca directory":  {"127.0.0.1:8443", dir, "", "CA file"},
+		"ca directory":  {"127.0.0.1:8443", dir, "", "not a regular file"},
 		"ca garbage":    {"127.0.0.1:8443", garbage, "", "CA file"},
 		"ca over 1MiB":  {"127.0.0.1:8443", big, "", "CA file"},
-		"ca fifo":       {"127.0.0.1:8443", fifo, "", "CA file"}, // never waited on
+		"ca fifo":       {"127.0.0.1:8443", fifo, "", "not a regular file"}, // never waited on
 	} {
 		if _, err := NewRemote(tc.addr, tc.ca, tc.pin); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := NewRemote("adcd.example:8443", ca, ""); err != nil {
-		t.Fatalf("a host name: %v", err)
+	for _, addr := range []string{"adcd.example:8443", "[::1]:8443", "adcd-1:8443"} {
+		if _, err := NewRemote(addr, ca, ""); err != nil {
+			t.Fatalf("%s: %v", addr, err)
+		}
 	}
 }
 
@@ -167,6 +174,13 @@ func TestRemoteFailsClosed(t *testing.T) {
 	misnamed := newTLSServer(t, elsewhere, 0, answerApplied)
 	old := newTLSServer(t, cert, tls.VersionTLS12, answerApplied)
 	stale := newTLSServer(t, expired, 0, answerApplied)
+	future, futureDER := selfSigned(t, now.Add(time.Hour), now.Add(2*time.Hour))
+	early := newTLSServer(t, future, 0, answerApplied)
+	// An attacker's own leaf, with the pinned certificate behind it in
+	// the chain: the pin is the leaf's, never any certificate's.
+	attacker, _ := selfSigned(t, now.Add(-time.Hour), now.Add(time.Hour))
+	attacker.Certificate = append(attacker.Certificate, der)
+	chained := newTLSServer(t, attacker, 0, answerApplied)
 	for name, tc := range map[string]struct {
 		s    *tlsServer
 		tr   Transport
@@ -176,6 +190,8 @@ func TestRemoteFailsClosed(t *testing.T) {
 		"wrong pin":     {good, remote(t, good.addr(), "", pinOf(other)), ErrServerIdentity},
 		"wrong host":    {misnamed, remote(t, misnamed.addr(), caFile(t, elsewhereDER), ""), ErrServerIdentity},
 		"expired pin":   {stale, remote(t, stale.addr(), "", pinOf(expiredDER)), ErrServerIdentity},
+		"early pin":     {early, remote(t, early.addr(), "", pinOf(futureDER)), ErrServerIdentity},
+		"pin in chain":  {chained, remote(t, chained.addr(), "", pinOf(der)), ErrServerIdentity},
 		"tls 1.2 (ca)":  {old, remote(t, old.addr(), caFile(t, der), ""), ErrHandshake},
 		"tls 1.2 (pin)": {old, remote(t, old.addr(), "", pinOf(der)), ErrHandshake},
 	} {
@@ -202,7 +218,7 @@ func TestRemoteHeldOff(t *testing.T) {
 		http.Error(w, "zzSERVERzzTEXT", http.StatusTooManyRequests)
 	})
 	tr := remote(t, s.addr(), "", pinOf(der))
-	for value, want := range map[string]int{"7": 7, "3600": 3600, "0": 0, "3601": 0, "zzSERVERzz": 0, "": 0} {
+	for value, want := range map[string]int{"7": 7, "3600": 3600, "0": 0, "3601": 0, "zzSERVERzz": 0, "": 0, "-5": 0} {
 		retry.Store(value)
 		_, err := tr.Command(t.Context(), "task.create", request(t))
 		var h HeldOff
@@ -288,5 +304,68 @@ func TestRemoteBootstrapRefused(t *testing.T) {
 	ln.Close()
 	if n := accepted.Load(); n != 0 {
 		t.Fatalf("%d connections", n)
+	}
+}
+
+// A server whose answer net/http cannot parse is ErrUnreadable: net/http's
+// own error would quote it.
+func TestRemoteUnreadable(t *testing.T) {
+	cert, der := selfSigned(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	s := newTLSServer(t, cert, 0, func(w http.ResponseWriter, _ *http.Request) {
+		c, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		rw.WriteString("HTTP/1.1 200 OK\r\nzzSERVERzz no colon\r\n\r\n")
+		rw.Flush()
+	})
+	tr := remote(t, s.addr(), "", pinOf(der))
+	if _, err := tr.Command(t.Context(), "task.create", request(t)); err != ErrUnreadable {
+		t.Fatalf("a malformed response: %v", err)
+	}
+	if _, err := tr.Stream(t.Context(), "/v1/events"); err != ErrUnreadable {
+		t.Fatalf("a malformed response, stream: %v", err)
+	}
+}
+
+// A dial error names only the configured address and passes through.
+func TestRemoteDialErrorPassesThrough(t *testing.T) {
+	_, der := selfSigned(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond) // shorter than dialTimeout
+	defer cancel()
+	start := time.Now()
+	_, err := remote(t, "192.0.2.1:443", "", pinOf(der)).Command(ctx, "task.create", request(t))
+	var op *net.OpError
+	dialed := errors.As(err, &op) && op.Op == "dial" || errors.Is(err, context.DeadlineExceeded) // unroutable, or cut at the deadline
+	if !dialed || errors.Is(err, ErrUnreadable) || time.Since(start) > dialTimeout {
+		t.Fatalf("a dial that cannot complete: %v after %s", err, time.Since(start))
+	}
+}
+
+// The pin check refuses a handshake with no certificate (crypto/tls never
+// offers one; the check does not rely on that).
+func TestPinNeedsACertificate(t *testing.T) {
+	_, der := selfSigned(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	r, err := NewRemote("127.0.0.1:8443", "", pinOf(der))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.tls.VerifyConnection(tls.ConnectionState{}); err != ErrServerIdentity {
+		t.Fatalf("no certificate: %v", err)
+	}
+}
+
+// The HTTPS client's shape: only dialTLS connects, no proxy, TLS 1.3 at
+// least, no session cache, and the CA mode verifies.
+func TestRemoteTransportShape(t *testing.T) {
+	_, der := selfSigned(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	for name, tr := range map[string]Transport{"ca": remote(t, "127.0.0.1:8443", caFile(t, der), ""), "pin": remote(t, "127.0.0.1:8443", "", pinOf(der))} {
+		ht := tr.httpClient(true).Transport.(*http.Transport)
+		c := tr.Remote.tls
+		if ht.DialContext != nil || ht.DialTLSContext == nil || ht.Proxy != nil || ht.TLSClientConfig != nil ||
+			c.ClientSessionCache != nil || c.MinVersion != tls.VersionTLS13 || (name == "ca") == c.InsecureSkipVerify || c.ServerName != "127.0.0.1" {
+			t.Errorf("%s: %+v %+v", name, ht, c)
+		}
 	}
 }

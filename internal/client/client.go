@@ -99,7 +99,8 @@ func (t Transport) httpClient(stream bool) *http.Client {
 		MaxResponseHeaderBytes: maxHeaderBytes,
 	}
 	if t.Remote != nil {
-		tr.DialTLSContext = t.Remote.dialTLS // every request's URL is https
+		// Every request's URL is https: only dialTLS connects.
+		tr.DialContext, tr.DialTLSContext = nil, t.Remote.dialTLS
 	}
 	c := &http.Client{
 		Transport: tr,
@@ -129,7 +130,7 @@ func (t Transport) do(ctx context.Context, method, path string, body io.Reader, 
 	}
 	resp, err := t.httpClient(stream).Do(req)
 	if err != nil {
-		return nil, fixed(err)
+		return nil, t.fixed(err)
 	}
 	// The HTTPS listener's hold-off; its body is never read.
 	if resp.StatusCode == http.StatusTooManyRequests {
