@@ -68,9 +68,9 @@ the CLI is a superset.
 
 ## Issued credentials (14 N3, M4)
 
-A command that issues a token (`agent.enrol`; 14 M4 adds token issue and rotation) answers it once, in the fresh
-applied response's `issued_credential`. The token belongs to another actor, or replaces one, so the CLI never stores it
-as the caller's own (decided in 14 PR 7b):
+A command that issues a token (`agent.enrol`, `token.issue`, `token.replace`) answers it once, in the fresh applied
+response's `issued_credential`. The token belongs to another actor, or replaces one, so the CLI never stores it as the
+caller's own (decided in 14 PR 7b):
 - Each such command requires `--token-out FILE`; no other command takes it. There is no default and no stdout mode.
 - Before anything is sent, `FILE` is created `O_CREAT|O_EXCL|O_NOFOLLOW`, mode 0600, in a directory opened without
   following a symlink and checked on its descriptor: owned by the caller, not writable by group or others (R5). An
@@ -86,7 +86,8 @@ as the caller's own (decided in 14 PR 7b):
 - A repeat of an applied command carries no token (the CLI names the token its result records), and neither does an
   applied response that returned none or a write that failed after the commit: each is `could_not_run` (exit 2), with
   the recovery for that action (04). For `agent.enrol` the recovery is `actor.revoke`
-  and then enrolling under a new actor id. A transport failure names the same recovery beside the retry key.
+  and then enrolling under a new actor id. For the token actions, the repeat's result names the undelivered token,
+  which the operator revokes or rotates. A transport failure names the same recovery beside the retry key.
 - A credential in the response to any other command is never written: `could_not_run`.
 
 ## Dashboard parity (D23)

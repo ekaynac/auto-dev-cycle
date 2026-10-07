@@ -441,7 +441,7 @@ func TestEveryHandlerHasLogic(t *testing.T) {
 			t.Errorf("%s has a handler and not exactly one of a logic and an issuer", action)
 		}
 	}
-	if len(ls)+len(is) != len(handlers()) || is[authority.EnrolAction] == nil || ls[authority.RevokeActorAction] == nil || ls[authority.WithdrawAction] == nil || ls[authority.NoteAction] == nil ||
+	if len(ls)+len(is) != len(handlers()) || is[authority.EnrolAction] == nil || is[authority.TokenIssueAction] == nil || is[authority.TokenReplaceAction] == nil || ls[authority.TokenRevokeAction] == nil || ls[authority.RevokeActorAction] == nil || ls[authority.WithdrawAction] == nil || ls[authority.NoteAction] == nil ||
 		ls[authority.GrantCreateAction] == nil || ls[authority.GrantRevokeAction] == nil {
 		t.Errorf("logics %d, issuers %d, handlers %d", len(ls), len(is), len(handlers()))
 	}

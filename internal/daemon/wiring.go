@@ -48,11 +48,13 @@ func authorizer(reg *vocab.Registry) authority.Authorizer {
 
 // handlers are the wired actions' handlers: proposal.confirm,
 // proposal.withdraw, note.add, the seat's, agent.enrol and actor.revoke
-// (14 PR 7a), grant.create and grant.revoke (14 PR 7c). Every other
-// registered action has none and is refused.
+// (14 PR 7a), grant.create and grant.revoke (14 PR 7c), and token.issue,
+// token.revoke and token.replace (14 M4, PR 7b). Every other registered
+// action has none and is refused.
 func handlers() map[string]authority.Handler {
 	hs := authority.SeatHandlers(0)
 	maps.Copy(hs, authority.AdminHandlers())
+	maps.Copy(hs, authority.TokenHandlers())
 	hs[authority.ConfirmAction] = authority.ConfirmHandler{}
 	hs[authority.WithdrawAction] = authority.WithdrawHandler{}
 	hs[authority.NoteAction] = authority.NoteHandler{}
@@ -70,9 +72,11 @@ type logic func(eventstore.Command) eventstore.Decide
 // submit with the command and the delivery of what that commits.
 type issuer func(context.Context, *eventstore.Store, eventstore.Command) (eventstore.Decide, func(eventstore.Committed) (identity.Secret, bool), error)
 
-// issuers are the credential-issuing actions' request layers: agent.enrol.
+// issuers are the credential-issuing actions' request layers: agent.enrol,
+// token.issue and token.replace.
 func issuers(az authority.Authorizer) map[string]issuer {
-	return map[string]issuer{authority.EnrolAction: az.EnrolRequest}
+	return map[string]issuer{authority.EnrolAction: az.EnrolRequest, authority.TokenIssueAction: az.TokenIssueRequest,
+		authority.TokenReplaceAction: az.TokenReplaceRequest}
 }
 
 // logics are the wired actions' logic, by action: every action handlers
@@ -80,7 +84,8 @@ func issuers(az authority.Authorizer) map[string]issuer {
 // either is refused before anything is submitted (14 D1).
 func logics(az authority.Authorizer) map[string]logic {
 	out := map[string]logic{authority.ConfirmAction: az.Confirm, authority.WithdrawAction: az.Withdraw, authority.NoteAction: authority.AddNote, authority.RevokeActorAction: az.RevokeActor,
-		authority.GrantCreateAction: authority.GrantCreateHandler{}.Logic, authority.GrantRevokeAction: authority.GrantRevokeHandler{}.Logic}
+		authority.GrantCreateAction: authority.GrantCreateHandler{}.Logic, authority.GrantRevokeAction: authority.GrantRevokeHandler{}.Logic,
+		authority.TokenRevokeAction: az.RevokeToken}
 	for action, h := range az.Handlers {
 		if s, ok := h.(authority.SeatHandler); ok {
 			out[action] = s.Logic

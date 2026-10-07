@@ -78,6 +78,23 @@ Actor:
     each mint through the listener's Argon2 slots (`api.Slots`), like a bearer verification, and answers the
     credential only in a fresh applied response (`issued_credential`).
   - Neither action is seat-exempt (only taking or asking for the seat is, 14 N4/P4); operators never need the seat.
+- **Token administration (14 M4, PR 7b).** Three registered actions, each an operator's alone (`operator_only`, like
+  actor administration); a supervisor's own revocation waits for a later build.
+  - `token.issue {actor}` issues another token to a live operator or supervisor. `token.revoke {token}` revokes one
+    token. `token.replace {token}` rotates one: a single command revokes it and issues its holder a new token, so the
+    holder keeps its actor and grants (grants name the actor, never a token), the old bearer is refused, and its
+    streams close on their next recheck (`identity.StillLive`).
+  - Issuing works like enrolment (14 N3): the request layer mints the token outside the transaction, only its hash is
+    recorded, and the secret reaches only the live response of the call that applied it. The early read skips the mint
+    for a caller who is not a live operator, for a stored key and for a target that is not live; the writer rechecks
+    all three. The result names the token (`{actor, token}`, and `replaced` for a rotation), never its secret.
+  - A missing or revoked token, or a holder that is missing, revoked or the system actor, is a committed refusal
+    (`token_not_live`). Revoking an operator's last token is allowed: a live operator needs no live token (above), and
+    offline recovery (14 R7) issues it another.
+  - A lost response leaves a token nobody holds. A repeat under the same key replays the result, which names that
+    token without its secret, and the operator revokes or rotates it.
+  - The object is the actor for `token.issue` and the token for the other two, so `--expect` names the version the
+    caller inspected. No change class applies: operators are unrestricted (D31), and a supervisor is refused first.
 - `operator` tokens are unrestricted (D31).
 - `supervisor` tokens act only under grants.
 

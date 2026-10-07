@@ -50,7 +50,7 @@ func TestActionInventory(t *testing.T) {
 		"project.create": "project", "profile.adopt": "project", "task.create": "task", "review.request": "task",
 		"input.answer": "holds", "proposal.confirm": "approve", "proposal.withdraw": "propose",
 		"grant.create": "grant", "grant.extend": "grant", "grant.revoke": "grant",
-		"agent.enrol": "admin", "actor.revoke": "admin", "seat.take": "seat", "seat.release": "seat",
+		"agent.enrol": "admin", "actor.revoke": "admin", "token.issue": "admin", "token.revoke": "admin", "token.replace": "admin", "seat.take": "seat", "seat.release": "seat",
 		"knowledge.change_protected_document": "project", "integration.change_topology": "project",
 		"note.add": "notes",
 	}
