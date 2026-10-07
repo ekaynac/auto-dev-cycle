@@ -47,13 +47,24 @@ var ErrBadRequest = errors.New("the controller refused the request as malformed;
 // CommandResponse; it is never quoted.
 var ErrInvalidResponse = errors.New("the controller's response is not a valid CommandResponse")
 
-// Transport sends commands to the controller on Socket. Every connection is
-// checked against DaemonUID before a request is written on it; Token is
-// called once per request.
+// Transport sends commands to the controller on Socket, or on its HTTPS
+// listener when Remote is set. Every socket connection is checked against
+// DaemonUID, and every HTTPS one must complete a verified TLS 1.3
+// handshake, before a request is written on it; Token is called once per
+// request.
 type Transport struct {
 	Socket    string
 	DaemonUID int
+	Remote    *Remote
 	Token     func() (identity.Secret, error)
+}
+
+// base is the URL every path is sent under.
+func (t Transport) base() string {
+	if t.Remote != nil {
+		return "https://" + t.Remote.addr
+	}
+	return "http://adcd"
 }
 
 // dial connects to the socket and returns the connection only if its peer
@@ -79,14 +90,20 @@ func (t Transport) dial(ctx context.Context, _, _ string) (net.Conn, error) {
 
 // httpClient has no overall timeout when stream is set (an event stream
 // stays open); the response headers are bounded either way.
+// No proxy is ever used (Proxy is nil): the connection is the controller's.
 func (t Transport) httpClient(stream bool) *http.Client {
+	tr := &http.Transport{
+		DialContext:            t.dial,
+		DisableKeepAlives:      true,
+		ResponseHeaderTimeout:  headerTimeout,
+		MaxResponseHeaderBytes: maxHeaderBytes,
+	}
+	if t.Remote != nil {
+		// Every request's URL is https: only dialTLS connects.
+		tr.DialContext, tr.DialTLSContext = nil, t.Remote.dialTLS
+	}
 	c := &http.Client{
-		Transport: &http.Transport{
-			DialContext:            t.dial,
-			DisableKeepAlives:      true,
-			ResponseHeaderTimeout:  headerTimeout,
-			MaxResponseHeaderBytes: maxHeaderBytes,
-		},
+		Transport: tr,
 		// A redirect is never followed, so a credential never follows one;
 		// the 3xx response itself goes through the same checks as any other.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -103,7 +120,7 @@ func (t Transport) do(ctx context.Context, method, path string, body io.Reader, 
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, "http://adcd"+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, t.base()+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +128,16 @@ func (t Transport) do(ctx context.Context, method, path string, body io.Reader, 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return t.httpClient(stream).Do(req)
+	resp, err := t.httpClient(stream).Do(req)
+	if err != nil {
+		return nil, t.fixed(err)
+	}
+	// The HTTPS listener's hold-off; its body is never read.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		resp.Body.Close()
+		return nil, heldOff(resp.Header.Get("Retry-After"))
+	}
+	return resp, nil
 }
 
 // Command posts a validated CommandRequest to /v1/commands/{action} and
@@ -144,10 +170,13 @@ func (t Transport) Command(ctx context.Context, action string, body []byte) ([]b
 // returns the response body once it validates as a BootstrapResponse. No
 // error quotes the request.
 func (t Transport) Bootstrap(ctx context.Context, body []byte) ([]byte, error) {
+	if t.Remote != nil {
+		return nil, ErrRemoteBootstrap
+	}
 	if contract.Validate("api/bootstrap-request", body) != nil {
 		return nil, errors.New("the bootstrap request is not a valid BootstrapRequest")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://adcd"+apidoc.BootstrapPath, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.base()+apidoc.BootstrapPath, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

@@ -56,6 +56,10 @@ func adminBootstrap(ctx context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintf(stderr, name+": "+format+"\n", a...)
 		return code
 	}
+	// Before the secret is read: the bootstrap is the private socket's [R4].
+	if tr, ok := c.(client.Transport); ok && tr.Remote != nil {
+		return fail(entry.ExitUsage, "%v", client.ErrRemoteBootstrap)
+	}
 	if fs.NArg() > 0 || (*stateDir == "") == !*fromStdin {
 		return fail(entry.ExitUsage, "give exactly one of --state-dir DIR and --secret-stdin (never the secret as an argument)")
 	}
