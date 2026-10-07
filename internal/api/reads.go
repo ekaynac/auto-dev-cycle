@@ -143,7 +143,11 @@ func (h Reads) view(w http.ResponseWriter, r *http.Request,
 	err := func() error {
 		defer leave()
 		return h.Store.View(r.Context(), func(tx *eventstore.Tx) error {
-			p, err := identity.Authenticated(tx, bearer, peer.Via)
+			p, verified := principalOf(r)
+			var err error
+			if !verified {
+				p, err = identity.Authenticated(tx, bearer, peer.Via)
+			}
 			var a types.Actor
 			if err == nil {
 				a, err = p.Live(tx)

@@ -142,15 +142,20 @@ func (h commands) decide(ctx context.Context, p identity.Principal, action strin
 		return h.answer(res, err)
 	}
 	// An issuing action mints before Submit, outside the transaction, under
-	// one of the listener's Argon2 slots, and its credential reaches the
+	// one of the listener's Argon2 slots (the peer's key: its uid on a
+	// socket, its address over HTTPS), and its credential reaches the
 	// response only through the delivery (identity.Issued.Deliver, 14 N3).
+	// The slot is given back however the mint ends, a panic included: kept,
+	// it would lock the peer's key out for good.
 	peer, _ := api.PeerOf(ctx)
-	release, free := h.gate.Take(peer.UID)
+	release, free := h.gate.Take(peer.Key())
 	if !free {
 		return nil, api.ErrBusy
 	}
-	decide, deliver, err := issue(ctx, h.store, c)
-	release()
+	decide, deliver, err := func() (eventstore.Decide, func(eventstore.Committed) (identity.Secret, bool), error) {
+		defer release()
+		return issue(ctx, h.store, c)
+	}()
 	if err != nil {
 		return h.answer(eventstore.Committed{}, err)
 	}
