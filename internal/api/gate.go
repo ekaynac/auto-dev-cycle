@@ -61,8 +61,12 @@ func (s *Slots) Take(peer any) (release func(), ok bool) {
 	}, true
 }
 
-// enter takes a verification slot for r's peer (-1 when none is recorded).
+// enter takes a verification slot for r's peer (-1 when none is recorded);
+// none when the listener verified r's bearer (WithPrincipal).
 func (s *Slots) enter(r *http.Request) (func(), bool) {
+	if _, ok := principalOf(r); ok {
+		return func() {}, true
+	}
 	p, ok := PeerOf(r.Context())
 	if !ok {
 		p.UID = -1

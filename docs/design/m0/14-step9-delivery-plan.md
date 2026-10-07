@@ -34,6 +34,14 @@ Scope: **step-9 completion** of 04 §9 — the daemon, local API, CLI transport,
 - **R1. Private socket.** The private socket is 0600. The daemon refuses to start unless the state dir is 0700 and owned by the daemon uid.
 - **R2. Optional listeners.** The shared socket and the HTTPS listener are off by default. An invalid explicit configuration fails startup.
 - **R3. TLS.** Verified TLS only, from a configured CA or a pinned fingerprint. There is no insecure mode, no plaintext fallback and no credential-forwarding redirect.
+
+  **Residual risk (PR 3b).** Remote callers reach the bearer check before they are authenticated, and each wrong bearer costs one Argon2id verification. The listener bounds this cost in four ways:
+  - It has its own verification slots, capped in total and per remote address. Every limit counts one key: an IPv4 address (the same when IPv4-mapped or 6to4), or an IPv6 /56, a link-local one per interface. A connection without a remote address is refused.
+  - It holds off an address after repeated failures, with a doubling wait of up to 30 s.
+  - It closes the connection after every refusal.
+  - It never touches the sockets' slots.
+
+  A connection that has not verified a bearer within 5 s of its accept is closed, whatever stage it is at. Even so, an attacker can keep the HTTPS slots busy and deny HTTPS service to others; the sockets are unaffected. It takes few addresses: the connection total over the per-address share is four by default, and each of them only has to reconnect every 5 s without ever sending a bearer. Clients behind one NAT, one /56 or one link (over link-local addresses) share their limits and their hold-off. Failures are tracked for at most 4096 addresses at a time. Past that, the slots alone cap an untracked address, and a full table is swept for quiet addresses at most once a second. Deployments that expose the listener beyond a trusted network should put a rate-limiting proxy or firewall in front of it.
 - **R4. Bootstrap.**
   - Reachable only over the private socket, decided by listener context.
   - The 24 h expiry is fixed when the secret is created.

@@ -3,6 +3,8 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -131,7 +133,7 @@ func (s *server) listenHTTPS(store *eventstore.Store, addr string, tc *tls.Confi
 	s.tcp, s.remote = ln.Addr(), api.NewSlots(q.verify, q.verifyPerPeer)
 	tl := tls.NewListener(tcpListener{Listener: ln, conns: api.NewSlots(q.conns, q.connsPerPeer), preAuth: s.lim.preAuth}, tc)
 	// A failed handshake would log the remote address: nothing to log.
-	s.serve(tl, httpsHandler(store, s.lim, s.remote), log.New(io.Discard, "", 0))
+	s.serve(tl, httpsHandler(store, s.lim, s.remote, newThrottle(s.lim.freeFailures)), log.New(io.Discard, "", 0))
 	return nil
 }
 
@@ -172,16 +174,17 @@ func (l tcpListener) Accept() (net.Conn, error) {
 // httpsConn is an admitted TCP connection. Its first byte must open a TLS
 // handshake record; anything else (plaintext HTTP above all) fails the
 // read, so the connection closes with nothing written: net/http would
-// otherwise answer it with a plaintext 400. It records whether a bearer
-// has been verified on it.
+// otherwise answer it with a plaintext 400. It remembers the bearer it
+// verified (as a SHA-256 digest) and its principal.
 type httpsConn struct {
 	net.Conn
 	peer    api.Peer
 	release func() // its connection slot
 	started bool
 	mu      sync.Mutex
-	authed  bool        // a bearer has been verified on it
-	expiry  *time.Timer // the pre-auth bound: a no-op once a bearer is verified
+	digest  [sha256.Size]byte
+	who     identity.Principal // the zero Principal until a bearer is verified
+	expiry  *time.Timer        // the pre-auth bound: a no-op once a bearer is verified
 }
 
 const tlsHandshakeRecord = 0x16
@@ -211,72 +214,110 @@ func (c *httpsConn) Close() error {
 // expire closes the connection if no bearer has been verified on it.
 func (c *httpsConn) expire() {
 	c.mu.Lock()
-	authed := c.authed
+	authed := c.who.Actor() != ""
 	c.mu.Unlock()
 	if !authed {
 		_ = c.Close()
 	}
 }
 
-func (c *httpsConn) verifiedOne() {
+// verified is the principal whose bearer this connection verified, if
+// bearer is that one.
+func (c *httpsConn) verified(bearer string) (identity.Principal, bool) {
+	d := sha256.Sum256([]byte(bearer))
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.authed = true
+	return c.who, c.who.Actor() != "" && subtle.ConstantTimeCompare(d[:], c.digest[:]) == 1
+}
+
+func (c *httpsConn) remember(bearer string, who identity.Principal) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.digest, c.who = sha256.Sum256([]byte(bearer)), who
 }
 
 type httpsConnKey struct{}
 
 // httpsHandler is the API on the HTTPS listener. Every request's bearer is
-// verified (Argon2id, through gate) before any route, so nothing, not even
-// a 404, answers a caller without a valid one; the routes check it again
-// themselves. Bootstrap is not served. Responses go through guard: no
-// redirect, no caching, and a refusal closes the connection.
-func httpsHandler(store *eventstore.Store, lim limits, gate *api.Slots) http.Handler {
+// authenticated before any route (authenticate), so nothing, not even a
+// 404, answers a caller without one. A peer whose bearers keep failing is
+// held off (throttle) before any verification. The routes get the
+// verified principal (api.WithPrincipal), so they recheck it rather than
+// hash the bearer again. Bootstrap is not served.
+// Responses go through guard: no redirect, no caching, and a refusal
+// closes the connection.
+func httpsHandler(store *eventstore.Store, lim limits, gate *api.Slots, th *throttle) http.Handler {
 	routes := handler(store, nil, lim, gate)
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		w := &guard{ResponseWriter: rw}
 		w.Header().Set("Cache-Control", "no-store")
 		hc, _ := r.Context().Value(httpsConnKey{}).(*httpsConn)
+		if hc == nil { // not admitted by tcpListener: authenticates nothing
+			http.Error(w, "unauthenticated", http.StatusUnauthorized)
+			return
+		}
+		key := hc.peer.Key()
+		defer func() {
+			if w.status == http.StatusUnauthorized {
+				th.fail(key)
+			}
+		}()
+		if wait := th.wait(key); wait > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait/time.Second)+1))
+			http.Error(w, "too many failed authentications; retry later", http.StatusTooManyRequests)
+			return
+		}
 		bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		code := http.StatusUnauthorized
-		if hc != nil && ok && bearer != "" { // no hc: not admitted by tcpListener, which authenticates nothing
-			code = authenticate(r, hc, store, gate, bearer)
+		code, who := http.StatusUnauthorized, identity.Principal{}
+		if ok && bearer != "" {
+			who, code = authenticate(r, hc, store, gate, bearer)
 		}
 		if code != 0 {
 			http.Error(w, http.StatusText(code), code)
 			return
 		}
-		routes.ServeHTTP(w, r)
+		routes.ServeHTTP(w, r.WithContext(api.WithPrincipal(r.Context(), who)))
 	})
 }
 
-// authenticate verifies bearer on hc in full (Argon2id) through gate: 0
-// when it names a live actor, else the refusal's status; any store error
-// refuses.
-func authenticate(r *http.Request, hc *httpsConn, store *eventstore.Store, gate *api.Slots, bearer string) int {
-	release, ok := gate.Take(hc.peer.Key())
-	if !ok {
-		return http.StatusServiceUnavailable
+// authenticate checks bearer on hc: the bearer hc already verified is
+// rechecked for revocation without hashing (Principal.Live); any other is
+// verified in full (Argon2id) through gate. Its principal and 0 when it
+// names a live actor, else the refusal's status; any store error refuses.
+func authenticate(r *http.Request, hc *httpsConn, store *eventstore.Store, gate *api.Slots, bearer string) (identity.Principal, int) {
+	who, known := hc.verified(bearer)
+	release := func() {}
+	if !known {
+		var ok bool
+		if release, ok = gate.Take(hc.peer.Key()); !ok {
+			return who, http.StatusServiceUnavailable
+		}
 	}
 	defer release()
 	err := store.View(r.Context(), func(tx *eventstore.Tx) error {
-		_, err := identity.Authenticated(tx, bearer, hc.peer.Via) // a live token of a live actor
+		var err error
+		if !known {
+			who, err = identity.Authenticated(tx, bearer, hc.peer.Via)
+		}
+		if err == nil {
+			_, err = who.Live(tx)
+		}
 		return err
 	})
 	switch {
 	case err == nil:
-		hc.verifiedOne()
-		return 0
+		hc.remember(bearer, who)
+		return who, 0
 	case errors.Is(err, identity.ErrUnauthenticated):
-		return http.StatusUnauthorized
+		return who, http.StatusUnauthorized
 	}
-	return http.StatusServiceUnavailable
+	return who, http.StatusServiceUnavailable
 }
 
 // guard is every HTTPS response. A redirect (net/http's ServeMux issues
 // them to clean a path, and a client following one resends its bearer)
-// becomes a bare 404 with no Location and no body. A refusal (401, 503)
-// closes the connection.
+// becomes a bare 404 with no Location and no body. A refusal (401, 429,
+// 503) closes the connection, and a 401 names the Bearer scheme.
 type guard struct {
 	http.ResponseWriter
 	status  int
@@ -290,7 +331,11 @@ func (w *guard) WriteHeader(code int) {
 			h.Del("Location")
 			w.dropped, code = true, http.StatusNotFound
 		}
-		if code == http.StatusUnauthorized || code == http.StatusServiceUnavailable {
+		switch code {
+		case http.StatusUnauthorized:
+			h.Set("WWW-Authenticate", "Bearer")
+			h.Set("Connection", "close")
+		case http.StatusTooManyRequests, http.StatusServiceUnavailable:
 			h.Set("Connection", "close")
 		}
 		w.status = code

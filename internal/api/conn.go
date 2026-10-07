@@ -92,3 +92,20 @@ func PeerOf(ctx context.Context) (Peer, bool) {
 	p, ok := ctx.Value(peerKey{}).(Peer)
 	return p, ok
 }
+
+type principalKey struct{}
+
+// WithPrincipal records the principal a listener has already verified for
+// the request's own bearer, so the routes recheck it (Principal.Live:
+// its token and actor still live) instead of hashing the bearer again,
+// and take no verification slot. Only identity makes a Principal, and
+// only from a verified bearer (Authenticated), so a record cannot stand in
+// for a verification that never happened.
+func WithPrincipal(ctx context.Context, p identity.Principal) context.Context {
+	return context.WithValue(ctx, principalKey{}, p)
+}
+
+func principalOf(r *http.Request) (identity.Principal, bool) {
+	p, ok := r.Context().Value(principalKey{}).(identity.Principal)
+	return p, ok
+}

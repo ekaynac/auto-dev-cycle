@@ -87,8 +87,13 @@ func (c testCert) files(t *testing.T, keyMode os.FileMode) (cert, key string) {
 	return cert, key
 }
 
-// tlsLimits are the limits the HTTPS tests serve with.
-func tlsLimits() limits { return defaultLimits }
+// tlsLimits are the defaults with the failure throttle out of the way:
+// tests that are not about it send many unauthenticated requests.
+func tlsLimits() limits {
+	lim := defaultLimits
+	lim.freeFailures = 1 << 20
+	return lim
+}
 
 // serveTLS is the assembled server with the HTTPS listener on loopback.
 func serveTLS(t *testing.T, lim limits) (*served, *http.Client, string, testCert) {
@@ -356,8 +361,9 @@ func TestHTTPSRefusesOldTLSAndPlaintext(t *testing.T) {
 }
 
 // Every request's bearer is verified before any route: none, a malformed
-// one or a wrong one is 401 on every registered route, on bootstrap and on
-// an unknown path, and the refusal closes the connection. Nothing is
+// one or a wrong one is 401 naming the Bearer scheme on every registered
+// route, on bootstrap and on an unknown path, and the refusal closes the
+// connection. Nothing is
 // redirected or cacheable, and bootstrap is not served.
 func TestHTTPSBearerRequired(t *testing.T) {
 	s, c, base, _ := serveTLS(t, tlsLimits())
@@ -371,7 +377,8 @@ func TestHTTPSBearerRequired(t *testing.T) {
 	for path, method := range routes {
 		for _, bearer := range []string{"", "adc_malformed", wrong} {
 			resp := httpsDo(t, c, method, base+path, bearer)
-			if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("Cache-Control") != "no-store" || !resp.Close {
+			if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("Cache-Control") != "no-store" || !resp.Close ||
+				resp.Header.Get("WWW-Authenticate") != "Bearer" {
 				t.Errorf("%s %s with bearer %q: %s %v", method, path, bearer, resp.Status, resp.Header)
 			}
 		}
@@ -465,9 +472,61 @@ func TestHTTPSHandlerNeedsConnection(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, api.VersionPath, nil)
 	req.Header.Set("Authorization", "Bearer "+s.tok.Reveal())
-	httpsHandler(s.w.s, defaultLimits, api.NewSlots(2, 1)).ServeHTTP(rec, req)
+	httpsHandler(s.w.s, defaultLimits, api.NewSlots(2, 1), newThrottle(3)).ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("no connection: %d", rec.Code)
+	}
+}
+
+// A connection keeps the bearer it verified, rechecked without hashing:
+// a revoked token is refused on the very connection that verified it.
+func TestHTTPSVerifiedBearerRechecked(t *testing.T) {
+	s, c, base, _ := serveTLS(t, tlsLimits())
+	if code := httpsStatus(t, c, base+api.VersionPath, s.tok.Reveal()); code != http.StatusOK {
+		t.Fatalf("version: %d", code)
+	}
+	// The same token id with another secret is verified in full, and fails.
+	id, secret, _ := strings.Cut(s.tok.Reveal(), ".")
+	forged := id + "." + map[bool]string{true: "B", false: "A"}[secret[0] == 'A'] + secret[1:]
+	if code := httpsStatus(t, c, base+api.VersionPath, forged); code != http.StatusUnauthorized {
+		t.Fatalf("a forged secret on a verified connection: %d", code)
+	}
+	if code := httpsStatus(t, c, base+api.VersionPath, s.tok.Reveal()); code != http.StatusOK {
+		t.Fatalf("version again: %d", code)
+	}
+	s.w.do(s.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return identity.RevokeToken(tx, types.TokenID(s.tokenID()), time.Now())
+	})
+	if code := httpsStatus(t, c, base+api.VersionPath, s.tok.Reveal()); code != http.StatusUnauthorized {
+		t.Fatalf("a revoked token on its verified connection: %d", code)
+	}
+}
+
+// A route trusts the verification its connection already made for the
+// same bearer: a read on a verified connection takes no verification slot
+// (hashes nothing), while a new connection still needs one.
+func TestHTTPSRouteHashesOnce(t *testing.T) {
+	s, c, base, cert := serveTLS(t, tlsLimits())
+	if code := httpsStatus(t, c, base+api.VersionPath, s.tok.Reveal()); code != http.StatusOK {
+		t.Fatalf("version: %d", code)
+	}
+	r1, ok := s.srv.remote.Take(api.Peer{Addr: netip.MustParseAddr("127.0.0.1")}.Key())
+	if !ok {
+		t.Fatal("no slot")
+	}
+	defer r1()
+	for _, path := range []string{api.WhoamiPath, api.VersionPath} {
+		if code := httpsStatus(t, c, base+path, s.tok.Reveal()); code != http.StatusOK {
+			t.Errorf("%s on the verified connection, its address's slot taken: %d", path, code)
+		}
+	}
+	resp := httpsDo(t, c, http.MethodGet, base+api.EventsPath, s.tok.Reveal())
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("events on the verified connection, its address's slot taken: %s", resp.Status)
+	}
+	resp.Body.Close()
+	if code := httpsStatus(t, tlsClient(t, cert, "127.0.0.1"), base+api.WhoamiPath, s.tok.Reveal()); code != http.StatusServiceUnavailable {
+		t.Errorf("a new connection, its address's slot taken: %d", code)
 	}
 }
 
@@ -485,6 +544,50 @@ func TestHTTPSVersionFailsClosed(t *testing.T) {
 	})
 	if code := httpsStatus(t, c, base+api.VersionPath, s.tok.Reveal()); code != http.StatusServiceUnavailable {
 		t.Errorf("version over an unreadable store: %d", code)
+	}
+}
+
+// A peer whose bearers keep failing is held off before any verification,
+// with 429 and Retry-After; another peer is not.
+func TestHTTPSFailureThrottle(t *testing.T) {
+	lim := tlsLimits()
+	lim.freeFailures = 2
+	s, c, base, cert := serveTLS(t, lim)
+	for i := range 3 {
+		if code := httpsStatus(t, c, base+api.VersionPath, "adc_wrong.secret"); code != http.StatusUnauthorized {
+			t.Fatalf("failure %d: %d", i, code)
+		}
+	}
+	r1, _ := s.srv.remote.Take(api.Peer{Addr: netip.MustParseAddr("127.0.0.1")}.Key())
+	defer r1()
+	resp := httpsDo(t, c, http.MethodGet, base+api.VersionPath, s.tok.Reveal())
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" || !resp.Close {
+		t.Fatalf("a held-off peer, its slot taken: %s %v", resp.Status, resp.Header)
+	}
+	if code := httpsStatus(t, tlsClient(t, cert, "127.0.0.2"), base+api.VersionPath, s.tok.Reveal()); code != http.StatusOK {
+		t.Fatalf("another peer: %d", code)
+	}
+}
+
+// The throttle's wait doubles past the free failures, is capped, and is
+// forgotten after a quiet spell.
+func TestThrottleBackoff(t *testing.T) {
+	now := time.Unix(0, 0)
+	th := newThrottle(1)
+	th.now = func() time.Time { return now }
+	for i, want := range []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, maxBackoff, maxBackoff} {
+		th.fail("p")
+		if got := max(th.wait("p"), 0); got != want {
+			t.Fatalf("after failure %d: wait %s, want %s", i+1, got, want)
+		}
+	}
+	if th.wait("q") > 0 {
+		t.Fatal("another peer is held off")
+	}
+	now = now.Add(forgetAfter + maxBackoff + time.Second)
+	th.fail("p")
+	if th.wait("p") > 0 {
+		t.Fatal("a quiet peer was not forgotten")
 	}
 }
 
@@ -588,6 +691,38 @@ type addrConn struct {
 }
 
 func (c addrConn) RemoteAddr() net.Addr { return c.remote }
+
+// The throttle's table is bounded: a full one records no new peer, is
+// swept for quiet peers at most once per sweepEvery however many new
+// peers fail, and makes room once peers go quiet. A tracked peer is held
+// off throughout, and one peer's failures never hold off another.
+func TestThrottleBounded(t *testing.T) {
+	now := time.Unix(0, 0)
+	th := newThrottle(0)
+	th.now = func() time.Time { return now }
+	for i := range maxTracked {
+		th.fail(i)
+	}
+	for i := range 10 * maxTracked {
+		th.fail(maxTracked + i)
+	}
+	if len(th.peers) != maxTracked || th.sweeps != 1 {
+		t.Fatalf("a full table: %d peers, %d sweeps", len(th.peers), th.sweeps)
+	}
+	if th.wait(0) <= 0 || th.wait(maxTracked) > 0 {
+		t.Fatalf("held off: tracked %s, untracked %s", th.wait(0), th.wait(maxTracked))
+	}
+	now = now.Add(sweepEvery)
+	th.fail("late")
+	if th.sweeps != 2 || th.wait("late") > 0 {
+		t.Fatalf("a full table a sweep later: %d sweeps, late held off %s", th.sweeps, th.wait("late"))
+	}
+	now = now.Add(forgetAfter + time.Second)
+	th.fail("new")
+	if th.sweeps != 3 || len(th.peers) != 1 || th.wait("new") <= 0 {
+		t.Fatalf("after a quiet spell: %d sweeps, %d peers, new held off %s", th.sweeps, len(th.peers), th.wait("new"))
+	}
+}
 
 // The event stream over HTTPS: served through the response guard, closed
 // on revocation.
