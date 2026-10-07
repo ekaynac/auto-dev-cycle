@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -52,17 +53,17 @@ func (h HTTPSListener) validate(absClean func(string) bool) error {
 }
 
 // load reads the certificate and the key at startup, before the store
-// opens: each a regular file (no link followed, no FIFO waited on), the
-// key mode 0600 and owned by uid; the pair must match and the leaf be
-// valid at now. Its refusals are fixed text.
+// opens: each a regular file of at most 1 MiB (no link followed, no FIFO
+// waited on), the key mode 0600 and owned by uid; the pair must match and
+// the leaf be valid at now. Each refusal is its own fixed text.
 func (h HTTPSListener) load(now time.Time, uid int) (*tls.Config, error) {
 	certPEM, err := readPEM(h.CertFile, func(unix.Stat_t) bool { return true })
 	if err != nil {
-		return nil, configError("the HTTPS certificate is not a readable regular file of at most 1 MiB")
+		return nil, configError("the HTTPS certificate " + err.Error())
 	}
 	keyPEM, err := readPEM(h.KeyFile, func(st unix.Stat_t) bool { return st.Mode&0o777 == 0o600 && int(st.Uid) == uid })
 	if err != nil {
-		return nil, configError("the HTTPS key must be a readable regular file of at most 1 MiB, mode 0600, owned by the daemon's user")
+		return nil, configError("the HTTPS key " + err.Error())
 	}
 	pair, err := tls.X509KeyPair(certPEM, keyPEM)
 	clear(keyPEM)
@@ -75,21 +76,42 @@ func (h HTTPSListener) load(now time.Time, uid int) (*tls.Config, error) {
 	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{pair}, NextProtos: []string{"http/1.1"}}, nil
 }
 
+// fileRefusal is readPEM's refusal: fixed text, never the path or an OS
+// error that would name it.
+type fileRefusal string
+
+func (f fileRefusal) Error() string { return string(f) }
+
+const (
+	refusedOpen fileRefusal = "cannot be opened or read"
+	refusedType fileRefusal = "is not a regular file"
+	refusedSize fileRefusal = "is larger than 1 MiB"
+	refusedMode fileRefusal = "must be mode 0600 and owned by the daemon's user"
+)
+
 func readPEM(path string, ok func(unix.Stat_t) bool) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
-		return nil, err
+		return nil, refusedOpen
 	}
 	defer f.Close()
 	var st unix.Stat_t
-	if err := unix.Fstat(int(f.Fd()), &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || !ok(st) {
-		return nil, errors.New("daemon: file refused")
+	switch {
+	case unix.Fstat(int(f.Fd()), &st) != nil:
+		return nil, refusedOpen
+	case st.Mode&unix.S_IFMT != unix.S_IFREG:
+		return nil, refusedType
+	case !ok(st):
+		return nil, refusedMode
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxPEM+1))
-	if err == nil && len(b) > maxPEM {
-		err = errors.New("daemon: file too large")
+	switch {
+	case err != nil:
+		return nil, refusedOpen
+	case len(b) > maxPEM:
+		return nil, refusedSize
 	}
-	return b, err
+	return b, nil
 }
 
 // listenHTTPS binds addr at the readiness point and serves the API on it
@@ -101,17 +123,22 @@ func (s *server) listenHTTPS(store *eventstore.Store, addr string, tc *tls.Confi
 	}
 	q := s.lim.remote
 	s.tcp, s.remote = ln.Addr(), api.NewSlots(q.verify, q.verifyPerPeer)
-	tl := tls.NewListener(tcpListener{Listener: ln, conns: api.NewSlots(q.conns, q.connsPerPeer)}, tc)
+	tl := tls.NewListener(tcpListener{Listener: ln, conns: api.NewSlots(q.conns, q.connsPerPeer), preAuth: s.lim.preAuth}, tc)
 	// A failed handshake would log the remote address: nothing to log.
 	s.serve(tl, httpsHandler(store, s.lim, s.remote), log.New(io.Discard, "", 0))
 	return nil
 }
 
 // tcpListener admits a connection while its remote address has a slot; any
-// other is closed before a byte is read.
+// other is closed before a byte is read. An admitted connection that has
+// not verified a bearer within preAuth of its accept is closed, whatever
+// stage it is at (handshake, headers, verification): net/http resets its
+// own deadlines at each stage, so they alone would let a caller with no
+// bearer hold the slot for their sum.
 type tcpListener struct {
 	net.Listener
-	conns *api.Slots
+	conns   *api.Slots
+	preAuth time.Duration
 }
 
 func (l tcpListener) Accept() (net.Conn, error) {
@@ -120,10 +147,16 @@ func (l tcpListener) Accept() (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		// The peer's address, unmapped as Key would; none has no key but a
+		// shared one, so it is refused.
+		if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok && ta.AddrPort().Addr().IsValid() {
 			peer := api.Peer{Via: identity.HTTPS, UID: -1, Addr: ta.AddrPort().Addr().Unmap()}
 			if release, ok := l.conns.Take(peer.Key()); ok {
-				return &httpsConn{Conn: c, peer: peer, release: release}, nil
+				hc := &httpsConn{Conn: c, peer: peer, release: release}
+				hc.mu.Lock() // expire must see the timer it stops
+				hc.expiry = time.AfterFunc(l.preAuth, hc.expire)
+				hc.mu.Unlock()
+				return hc, nil
 			}
 		}
 		_ = c.Close()
@@ -133,12 +166,16 @@ func (l tcpListener) Accept() (net.Conn, error) {
 // httpsConn is an admitted TCP connection. Its first byte must open a TLS
 // handshake record; anything else (plaintext HTTP above all) fails the
 // read, so the connection closes with nothing written: net/http would
-// otherwise answer it with a plaintext 400.
+// otherwise answer it with a plaintext 400. It records whether a bearer
+// has been verified on it.
 type httpsConn struct {
 	net.Conn
 	peer    api.Peer
 	release func() // its connection slot
 	started bool
+	mu      sync.Mutex
+	authed  bool        // a bearer has been verified on it
+	expiry  *time.Timer // the pre-auth bound: a no-op once a bearer is verified
 }
 
 const tlsHandshakeRecord = 0x16
@@ -158,53 +195,71 @@ func (c *httpsConn) Read(b []byte) (int, error) {
 }
 
 func (c *httpsConn) Close() error {
+	c.mu.Lock()
+	c.expiry.Stop()
+	c.mu.Unlock()
 	c.release()
 	return c.Conn.Close()
 }
 
-// httpsHandler is the API on the HTTPS listener. Every request needs a
-// bearer: one without is refused before any route, and the version route
-// (unauthenticated on the sockets) verifies it here; the routes that read
-// verify it themselves. Bootstrap is not served. No response redirects (a
-// client following one would resend its bearer) and none may be cached.
+// expire closes the connection if no bearer has been verified on it.
+func (c *httpsConn) expire() {
+	c.mu.Lock()
+	authed := c.authed
+	c.mu.Unlock()
+	if !authed {
+		_ = c.Close()
+	}
+}
+
+func (c *httpsConn) verifiedOne() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.authed = true
+}
+
+type httpsConnKey struct{}
+
+// httpsHandler is the API on the HTTPS listener. Every request's bearer is
+// verified (Argon2id, through gate) before any route, so nothing, not even
+// a 404, answers a caller without a valid one; the routes check it again
+// themselves. Bootstrap is not served. Responses go through guard: no
+// redirect, no caching, and a refusal closes the connection.
 func httpsHandler(store *eventstore.Store, lim limits, gate *api.Slots) http.Handler {
 	routes := handler(store, nil, lim, gate)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		w := &guard{ResponseWriter: rw}
 		w.Header().Set("Cache-Control", "no-store")
+		hc, _ := r.Context().Value(httpsConnKey{}).(*httpsConn)
 		bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		code := http.StatusUnauthorized
-		if ok && bearer != "" {
-			code = 0
-			if r.URL.Path == api.VersionPath {
-				code = verifyBearer(r, store, gate, bearer)
-			}
+		if hc != nil && ok && bearer != "" { // no hc: not admitted by tcpListener, which authenticates nothing
+			code = authenticate(r, hc, store, gate, bearer)
 		}
 		if code != 0 {
 			http.Error(w, http.StatusText(code), code)
 			return
 		}
-		routes.ServeHTTP(&noRedirect{ResponseWriter: w}, r)
+		routes.ServeHTTP(w, r)
 	})
 }
 
-// verifyBearer authenticates bearer on r's listener through gate: 0 when it
-// names a live actor, else the refusal's status.
-func verifyBearer(r *http.Request, store *eventstore.Store, gate *api.Slots, bearer string) int {
-	peer, _ := api.PeerOf(r.Context()) // none recorded: no listener, which authenticates nothing
-	release, ok := gate.Take(peer.Key())
+// authenticate verifies bearer on hc in full (Argon2id) through gate: 0
+// when it names a live actor, else the refusal's status; any store error
+// refuses.
+func authenticate(r *http.Request, hc *httpsConn, store *eventstore.Store, gate *api.Slots, bearer string) int {
+	release, ok := gate.Take(hc.peer.Key())
 	if !ok {
 		return http.StatusServiceUnavailable
 	}
 	defer release()
 	err := store.View(r.Context(), func(tx *eventstore.Tx) error {
-		p, err := identity.Authenticated(tx, bearer, peer.Via)
-		if err == nil {
-			_, err = p.Live(tx)
-		}
+		_, err := identity.Authenticated(tx, bearer, hc.peer.Via) // a live token of a live actor
 		return err
 	})
 	switch {
 	case err == nil:
+		hc.verifiedOne()
 		return 0
 	case errors.Is(err, identity.ErrUnauthenticated):
 		return http.StatusUnauthorized
@@ -212,22 +267,35 @@ func verifyBearer(r *http.Request, store *eventstore.Store, gate *api.Slots, bea
 	return http.StatusServiceUnavailable
 }
 
-// noRedirect turns any redirect (net/http's ServeMux issues them to clean
-// a path) into a bare 404 with no Location and no body.
-type noRedirect struct {
+// guard is every HTTPS response. A redirect (net/http's ServeMux issues
+// them to clean a path, and a client following one resends its bearer)
+// becomes a bare 404 with no Location and no body. A refusal (401, 503)
+// closes the connection.
+type guard struct {
 	http.ResponseWriter
+	status  int
 	dropped bool
 }
 
-func (w *noRedirect) WriteHeader(code int) {
-	if code >= 300 && code < 400 {
-		w.Header().Del("Location")
-		w.dropped, code = true, http.StatusNotFound
+func (w *guard) WriteHeader(code int) {
+	if w.status == 0 {
+		h := w.Header()
+		if code >= 300 && code < 400 {
+			h.Del("Location")
+			w.dropped, code = true, http.StatusNotFound
+		}
+		if code == http.StatusUnauthorized || code == http.StatusServiceUnavailable {
+			h.Set("Connection", "close")
+		}
+		w.status = code
 	}
 	w.ResponseWriter.WriteHeader(code)
 }
 
-func (w *noRedirect) Write(b []byte) (int, error) {
+func (w *guard) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
 	if w.dropped {
 		return len(b), nil
 	}
@@ -235,4 +303,4 @@ func (w *noRedirect) Write(b []byte) (int, error) {
 }
 
 // Unwrap lets http.ResponseController reach the connection (api.Events).
-func (w *noRedirect) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *guard) Unwrap() http.ResponseWriter { return w.ResponseWriter }

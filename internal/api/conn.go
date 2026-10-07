@@ -46,18 +46,38 @@ type Peer struct {
 	Addr netip.Addr
 }
 
-// Key is what per-peer quotas count: the uid on a socket; over TCP the
-// remote IPv4 address, or the IPv6 /64 a host is commonly given, so one
-// host cannot multiply its share by rotating addresses within it.
+// Key is what every per-peer limit counts (connection and verification
+// slots, the HTTPS failure throttle), one normalised key for them all:
+// the uid on a socket; over TCP the address unmapped first, then grouped.
+// An IPv4 address counts as itself, and so does the IPv4 address a 6to4
+// address (2002::/16) embeds, since its holder has the whole /48. An IPv6
+// address counts by the /56 a site is commonly given, so a site cannot
+// multiply its share by rotating addresses within it; a scoped (link-local)
+// one by that /56 on its own interface, since a /56 drops the zone and
+// would merge every link.
 func (p Peer) Key() any {
-	switch a := p.Addr.Unmap(); {
+	a := p.Addr.Unmap()
+	switch {
 	case !a.IsValid():
 		return p.UID
-	case a.Is6():
-		return netip.PrefixFrom(a, 64).Masked()
-	default:
+	case a.Is4():
 		return a
 	}
+	b := a.As16()
+	if b[0] == 0x20 && b[1] == 0x02 {
+		return netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]})
+	}
+	prefix := netip.PrefixFrom(a, 56).Masked()
+	if zone := a.Zone(); zone != "" {
+		return scopedKey{prefix, zone}
+	}
+	return prefix
+}
+
+// scopedKey is a link-local /56 on one interface.
+type scopedKey struct {
+	prefix netip.Prefix
+	zone   string
 }
 
 type peerKey struct{}

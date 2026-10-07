@@ -174,6 +174,9 @@ func (d *Daemon) Close() error {
 func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) error {
 	var tc *tls.Config
 	if cfg.HTTPS != nil {
+		// The certificate and key are read before Start takes the lock, from
+		// paths Validate has checked; Start validates again for its own
+		// callers.
 		err := cfg.Validate()
 		if err == nil {
 			tc, err = cfg.HTTPS.load(time.Now(), os.Geteuid())

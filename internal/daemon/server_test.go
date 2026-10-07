@@ -165,13 +165,9 @@ func TestStreamThroughServer(t *testing.T) {
 	})
 }
 
-// A client that stops reading is cut off: the connection closes within the
-// poll bound once its socket buffers fill, and no closed frame is sent.
-func TestStalledReaderCutOff(t *testing.T) {
-	lim := defaultLimits
-	lim.poll = 200 * time.Millisecond
-	s := serveStore(t, lim, nil)
-	const total = 3000
+// fill appends total events (a multiple of 500), each about 200 bytes of name.
+func (s *served) fill(t *testing.T, total int) {
+	t.Helper()
 	for range total / 500 {
 		s.w.do(s.op, func(*eventstore.Tx) ([]eventstore.Event, error) {
 			var evs []eventstore.Event
@@ -186,6 +182,16 @@ func TestStalledReaderCutOff(t *testing.T) {
 			return evs, nil
 		})
 	}
+}
+
+// A client that stops reading is cut off: the connection closes within the
+// poll bound once its socket buffers fill, and no closed frame is sent.
+func TestStalledReaderCutOff(t *testing.T) {
+	lim := defaultLimits
+	lim.poll = 200 * time.Millisecond
+	s := serveStore(t, lim, nil)
+	const total = 3000
+	s.fill(t, total)
 	resp := s.get(t, s.client(), api.EventsPath, s.tok.Reveal())
 	time.Sleep(2 * time.Second) // stalled: nothing read
 	done := make(chan string, 1)
