@@ -330,6 +330,7 @@ func TestTokenNotDelivered(t *testing.T) {
 		"a refused enrolment":    {"enrol-agent", notFound, nil, entry.ExitRefused, "refused"},
 		"an unwritable token":    {"enrol-agent", failing, nil, entry.ExitCouldNotRun, "could not be written (disk full) and is not delivered again; revoke the actor"},
 		"a non-issuing response": {"revoke-actor", issuedResp, nil, entry.ExitCouldNotRun, "discarded and nothing was written"},
+		"no credential returned": {"enrol-agent", applied, nil, entry.ExitCouldNotRun, "applied but no credential was returned; revoke the actor"},
 	} {
 		dir := privateDir(t)
 		args := []string{"admin", c.cmd, "--expect", "1", "--reason", "r"}
@@ -376,5 +377,39 @@ func TestBadRequest(t *testing.T) {
 func TestUnauthenticated(t *testing.T) {
 	if code, out, errs := adc(&fake{err: client.ErrUnauthenticated}, "seat", "take", "--expect", "0", "--reason", "r", "--json"); code != entry.ExitRefused || out != "" || !strings.Contains(errs, "refused") {
 		t.Fatalf("%d %q %q", code, out, errs)
+	}
+}
+
+// The response is re-encoded without its credential before the token is
+// written: if that fails, nothing is written and the token is reported
+// undelivered, which is then true.
+func TestTokenOutUnencodableResponse(t *testing.T) {
+	defer func(old func(types.CommandResponse) ([]byte, error)) { encodeResponse = old }(encodeResponse)
+	encodeResponse = func(types.CommandResponse) ([]byte, error) { return nil, errors.New("no") }
+	dir := privateDir(t)
+	code, out, errs := adc(&fake{resp: issuedResp}, "admin", "enrol-agent", "--expect", "0", "--reason", "r", "--token-out", filepath.Join(dir, "t"))
+	if code != entry.ExitCouldNotRun || out != "" || strings.Contains(errs, "zzFAKEzz") || !strings.Contains(errs, "was not written and is not delivered again; revoke the actor") {
+		t.Fatalf("%d %q %q", code, out, errs)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("--token-out left behind (%v)", err)
+	}
+}
+
+// A --token-out the system cannot create (here in a directory the caller
+// cannot write) is could_not_run, not a usage error; nothing is sent.
+func TestTokenOutSystemErrorCouldNotRun(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root writes a 0500 directory")
+	}
+	dir := privateDir(t)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+	f := &fake{resp: issuedResp}
+	code, _, errs := adc(f, "admin", "enrol-agent", "--expect", "0", "--reason", "r", "--token-out", filepath.Join(dir, "t"))
+	if code != entry.ExitCouldNotRun || f.calls != 0 || !strings.Contains(errs, "nothing was sent") {
+		t.Fatalf("%d after %d calls: %q", code, f.calls, errs)
 	}
 }

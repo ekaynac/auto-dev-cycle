@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -27,6 +28,22 @@ func TestTokenOutWrites(t *testing.T) {
 	tok := fakeToken(t)
 	must(t, o.Write(tok))
 	o.Discard() // a no-op once written
+	// A second write touches nothing: not the descriptor number the first
+	// one closed, which a directory opened since most likely reuses.
+	other := privateDir(t)
+	must(t, os.WriteFile(filepath.Join(other, "agent.token"), []byte("keep"), 0o600))
+	d, err := os.Open(other)
+	must(t, err)
+	defer d.Close()
+	if err := o.Write(fakeToken(t)); err == nil {
+		t.Fatal("a second write was accepted")
+	}
+	if _, err := d.Stat(); err != nil {
+		t.Fatalf("a second write closed another descriptor: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(other, "agent.token")); err != nil {
+		t.Fatalf("a second write removed another file: %v", err)
+	}
 	got, err := os.ReadFile(path)
 	if err != nil || string(got) != tok.Reveal()+"\n" {
 		t.Fatalf("the file: %v", err)
@@ -38,7 +55,8 @@ func TestTokenOutWrites(t *testing.T) {
 // directory must be the caller's, not group or other writable, and not a
 // symlink. Each refusal leaves what was there.
 func TestTokenOutRefusals(t *testing.T) {
-	_, own := home(t, fakeToken(t).Reveal())
+	f, own := home(t, fakeToken(t).Reveal())
+	t.Setenv("HOME", f.Home)
 	before, err := os.ReadFile(own)
 	must(t, err)
 	dir := privateDir(t)
@@ -50,13 +68,14 @@ func TestTokenOutRefusals(t *testing.T) {
 	must(t, os.Chmod(open, 0o770))
 	must(t, os.Symlink(dir, filepath.Join(dir, "dirlink")))
 	for path, want := range map[string]error{
-		own:                                ErrTokenOutExists,
-		target:                             ErrTokenOutExists,
-		filepath.Join(dir, "link"):         ErrTokenOutExists,
-		filepath.Join(dir, "dangling"):     ErrTokenOutExists,
-		filepath.Join(open, "t"):           ErrTokenOutDir,
-		filepath.Join(dir, "dirlink", "t"): ErrTokenOutDir,
-		filepath.Join(dir, "missing", "t"): ErrTokenOutDir,
+		own:                                  ErrTokenOutOwn,
+		filepath.Join(f.dir(), ".", "token"): ErrTokenOutOwn,
+		target:                               ErrTokenOutExists,
+		filepath.Join(dir, "link"):           ErrTokenOutExists,
+		filepath.Join(dir, "dangling"):       ErrTokenOutExists,
+		filepath.Join(open, "t"):             ErrTokenOutDir,
+		filepath.Join(dir, "dirlink", "t"):   ErrTokenOutDir,
+		filepath.Join(dir, "missing", "t"):   ErrTokenOutDir,
 	} {
 		if _, err := CreateTokenOut(path); !errors.Is(err, want) {
 			t.Errorf("%s: got %v, want %v", path, err, want)
@@ -86,8 +105,44 @@ func TestTokenOutRefusesAnotherOwner(t *testing.T) {
 	}
 }
 
-// With no token to write, and after a failed write, the reserved file is
-// removed, and the error never quotes the token.
+// The caller's own token file is refused by its directory's identity, even
+// before it exists and when spelled through a symlinked parent.
+func TestTokenOutRefusesOwnTokenFileNotYetWritten(t *testing.T) {
+	f, _ := home(t, "")
+	t.Setenv("HOME", f.Home)
+	alias := filepath.Join(privateDir(t), "alias")
+	must(t, os.Symlink(filepath.Join(f.Home, ".config"), alias))
+	for _, path := range []string{filepath.Join(f.dir(), tokenName), filepath.Join(alias, "adc", tokenName)} {
+		if _, err := CreateTokenOut(path); !errors.Is(err, ErrTokenOutOwn) {
+			t.Errorf("%s: got %v", path, err)
+		}
+	}
+	if entries, _ := os.ReadDir(f.dir()); len(entries) != 0 {
+		t.Fatalf("wrote into the token directory: %v", names(entries))
+	}
+	o, err := CreateTokenOut(filepath.Join(f.dir(), "other"))
+	must(t, err)
+	o.Discard()
+}
+
+// A creation the system refuses (here a directory the caller cannot
+// write) is neither a refusal of the caller's path nor a reserved file.
+func TestTokenOutSystemError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root writes a 0500 directory")
+	}
+	dir := privateDir(t)
+	must(t, os.Chmod(dir, 0o500))
+	defer os.Chmod(dir, 0o700)
+	_, err := CreateTokenOut(filepath.Join(dir, "t"))
+	if err == nil || errors.Is(err, ErrTokenOutDir) || errors.Is(err, ErrTokenOutExists) || errors.Is(err, ErrTokenOutOwn) || !errors.Is(err, unix.EACCES) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// With no token to write, and after a failed write, its directory's sync
+// included, the reserved file is removed, and the error never quotes the
+// token; a second write is refused.
 func TestTokenOutRemovedWithoutToken(t *testing.T) {
 	dir := privateDir(t)
 	o, err := CreateTokenOut(filepath.Join(dir, "t"))
@@ -105,6 +160,22 @@ func TestTokenOutRemovedWithoutToken(t *testing.T) {
 	noSecret(t, err)
 	if entries, _ := os.ReadDir(dir); !slices.Equal(names(entries), nil) {
 		t.Fatalf("leftovers %v", names(entries))
+	}
+	syncFile = (*os.File).Sync
+	defer func(old func(int) error) { syncDir = old }(syncDir)
+	syncDir = func(int) error { return errors.New("io error") }
+	o, err = CreateTokenOut(filepath.Join(dir, "t"))
+	must(t, err)
+	err = o.Write(fakeToken(t))
+	if err == nil || !strings.Contains(err.Error(), "syncing the --token-out directory") {
+		t.Fatalf("a failed directory sync: %v", err)
+	}
+	noSecret(t, err)
+	if entries, _ := os.ReadDir(dir); !slices.Equal(names(entries), nil) {
+		t.Fatalf("a token reported unwritten is on disk: %v", names(entries))
+	}
+	if err := o.Write(fakeToken(t)); err == nil {
+		t.Fatal("a second write was accepted")
 	}
 }
 

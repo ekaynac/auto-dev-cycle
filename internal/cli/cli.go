@@ -111,7 +111,11 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	var out *client.TokenOut
 	if issues {
 		if out, err = client.CreateTokenOut(*tokenOut); err != nil {
-			return usage("%v", err)
+			if errors.Is(err, client.ErrTokenOutExists) || errors.Is(err, client.ErrTokenOutDir) || errors.Is(err, client.ErrTokenOutOwn) {
+				return usage("%v", err)
+			}
+			fmt.Fprintf(stderr, "%s: could_not_run: %v; nothing was sent\n", name, err)
+			return entry.ExitCouldNotRun
 		}
 		defer out.Discard()
 	}
@@ -151,13 +155,12 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	}
 	// An issued token goes to --token-out alone, never to stdout.
 	if v, ok := resp.Variant.(*types.CommandApplied); ok {
-		if code, done := deliver(name, v, out, recovery, stderr); done {
+		clean, code, done := deliver(name, resp, v, out, recovery, stderr)
+		if done {
 			return code
 		}
-		if issues {
-			if raw, err = contract.Encode("api/command-response", resp); err != nil {
-				return couldNotRun("%v", client.ErrInvalidResponse)
-			}
+		if clean != nil {
+			raw = clean
 			defer fmt.Fprintf(stderr, "%s: the issued token was written to %s\n", name, *tokenOut)
 		}
 	}
