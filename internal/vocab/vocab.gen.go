@@ -99,6 +99,8 @@ var (
 	ReasonQuotaUnknown = types.ReasonCodeOf("quota_unknown")
 	// ReasonReceiptIncomplete: A required predicate or its evidence media is missing; never derives empty.
 	ReasonReceiptIncomplete = types.ReasonCodeOf("receipt_incomplete")
+	// ReasonRecipientNotOperator: An offline operator-credential recovery named a recipient that is not a live operator (missing, revoked or of another kind); nothing is issued or revoked.
+	ReasonRecipientNotOperator = types.ReasonCodeOf("recipient_not_operator")
 	// ReasonRestrictionDropped: A ref derived from the manifest's declared inputs does not keep every restriction its lineage inherits.
 	ReasonRestrictionDropped = types.ReasonCodeOf("restriction_dropped")
 	// ReasonReviewInputChanged: A review input changed (new answer, new demand, changed conclusions), so a successor review is required.

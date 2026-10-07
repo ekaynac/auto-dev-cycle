@@ -29,7 +29,7 @@ import (
 
 const recoverUsage = "usage: adcd recover operator-token --state-dir DIR --actor ID --out FILE [--revoke-others] [--force-overwrite] [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX]"
 
-var errNotOperator = &StartError{Outcome: vocab.Failed, Reason: vocab.ReasonActorRevoked, Detail: "the target is not a live operator (missing, revoked or another kind)"}
+var errNotOperator = &StartError{Outcome: vocab.Failed, Reason: vocab.ReasonRecipientNotOperator, Detail: "the target is not a live operator (missing, revoked or another kind)"}
 
 // RecoverCommand is `adcd recover operator-token`.
 func RecoverCommand(args []string, stderr io.Writer) int {
@@ -129,8 +129,10 @@ type outFile struct {
 	force bool // replace an existing --out
 }
 
-// open opens --out's directory, checked on its descriptor, and refuses an
-// existing --out unless force.
+// open opens --out's directory, checked on its descriptor, and refuses,
+// before the store opens, an --out it cannot inspect or that is neither a
+// regular file nor a symlink; force waives only the refusal of an
+// existing one.
 func (o outFile) open() (*os.File, error) {
 	abs, err := filepath.Abs(o.path)
 	if err != nil {
@@ -141,9 +143,20 @@ func (o outFile) open() (*os.File, error) {
 		return nil, configError("the --out directory must be this user's, not writable by group or others (a symlink is refused)")
 	}
 	var st unix.Stat_t
-	if err := unix.Fstatat(int(dir.Fd()), filepath.Base(abs), &st, unix.AT_SYMLINK_NOFOLLOW); !errors.Is(err, unix.ENOENT) && !o.force {
+	err = unix.Fstatat(int(dir.Fd()), filepath.Base(abs), &st, unix.AT_SYMLINK_NOFOLLOW)
+	refusal := ""
+	switch {
+	case errors.Is(err, unix.ENOENT):
+	case err != nil:
+		refusal = "--out cannot be inspected"
+	case st.Mode&unix.S_IFMT != unix.S_IFREG && st.Mode&unix.S_IFMT != unix.S_IFLNK:
+		refusal = "--out is not a regular file or a symlink; it is never replaced"
+	case !o.force:
+		refusal = "--out exists; --force-overwrite replaces it"
+	}
+	if refusal != "" {
 		dir.Close()
-		return nil, configError("--out exists; --force-overwrite replaces it")
+		return nil, configError(refusal)
 	}
 	return dir, nil
 }

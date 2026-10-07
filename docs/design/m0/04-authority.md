@@ -42,10 +42,13 @@ Actor:
       bootstrap whose response or token-file write was lost: a retry replays without the token). It mints the token
       outside the transaction and records `identity.token_recovered/v1`, with `--revoke-others` revoking the operator's
       other live tokens in the same event. A target that is missing, revoked or not an operator is
-      `failed/actor_revoked`. The secret goes only to `FILE`, written as the token file is (R5): its directory is the
-      user's, not group- or other-writable and not itself a symlink; a temporary file is created `O_EXCL|O_NOFOLLOW`
-      0600, synced and renamed into place, so `FILE` is never followed. An existing `FILE` is refused (exit 64) before anything
-      is recorded unless `--force-overwrite`. It confirms no proposal, resurrects no actor and leaves the bootstrap alone.
+      `failed/recipient_not_operator`. The secret goes only to `FILE`, written as the token file is (R5): its directory
+      is the user's, not group- or other-writable and not itself a symlink; a temporary file is created
+      `O_EXCL|O_NOFOLLOW` 0600, synced and renamed into place without replacing anything unless forced, so `FILE` is
+      never followed. Before anything is recorded, an existing `FILE` is refused (exit 64) unless `--force-overwrite`,
+      and one that is neither a regular file nor a symlink, or cannot be inspected, is refused even then. If the file
+      cannot be written after the commit, recovering again with `--revoke-others` retires the undelivered token. It
+      confirms no proposal, resurrects no actor and leaves the bootstrap alone.
     - `adcd bootstrap renew --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX]` (14 R8), for an
       expired, unused secret or a recorded one whose file is gone. While the bootstrap is unconsumed it writes a fresh
       secret every time (never the current one) through the held state-directory descriptor, replacing the old file,
