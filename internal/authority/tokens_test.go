@@ -332,3 +332,84 @@ func TestTokenScopesAndActionsGuarded(t *testing.T) {
 		t.Errorf("a guarded call wrote or minted (%d)", *mints)
 	}
 }
+
+// A live token whose holder is revoked is not live either: neither revoked
+// nor rotated, each a committed token_not_live, with no mint. (The fold
+// gives the system actor no token, so its case is token.issue's.)
+func TestTokenOfARevokedHolderIsNotLive(t *testing.T) {
+	b := openTokens(t)
+	mints := authority.CountMints(t)
+	b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return identity.RevokeActor(tx, b.sup.Actor(), suiteNow())
+	})
+	if rec := recordOf[types.Token](b, identity.TokenProjection, tokenID(b.supTok)); rec.RevokedAt != nil {
+		t.Fatal("the fixture's token is revoked; it must be live under a revoked holder")
+	}
+	out, err := b.revokeToken(b.op, "r", tokenID(b.supTok), nil)
+	refusedAs(t, "revoking it", out, err, vocab.ReasonTokenNotLive)
+	out, _, ok, err := b.issue(b.op, authority.TokenReplaceAction, "p", tokenIn(tokenID(b.supTok)), nil)
+	refusedAs(t, "rotating it", out, err, vocab.ReasonTokenNotLive)
+	if ok || *mints != 0 {
+		t.Errorf("delivered (%t) or minted (%d)", ok, *mints)
+	}
+}
+
+// A target the request layer read as not live, so minted nothing for, but
+// which is live by the time the writer runs, is a committed token_not_live,
+// never a fault: for an actor enrolled meanwhile, and a token issued.
+func TestTargetLiveOnlyAfterTheReadIsRefused(t *testing.T) {
+	b := openTokens(t)
+	mints := authority.CountMints(t)
+	late := types.ActorID(newID(t, "act"))
+	issue := b.adminCmd(b.op, authority.TokenIssueAction, "i", actorIn(late), nil)
+	decide, deliver, err := b.az.TokenIssueRequest(context.Background(), b.s, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.seed(b.op, create(types.Actor{ID: late, Kind: types.ActorKindSupervisor, Name: "late", CreatedBy: b.op.Actor()}))
+	out, err := b.s.Submit(context.Background(), issue, decide)
+	refusedAs(t, "an actor enrolled after the read", out, err, vocab.ReasonTokenNotLive)
+	if _, ok := deliver(out); ok {
+		t.Error("delivered")
+	}
+	lateTok := newID(t, "tok")
+	replace := b.adminCmd(b.op, authority.TokenReplaceAction, "p", tokenIn(lateTok), nil)
+	decide, deliver, err = b.az.TokenReplaceRequest(context.Background(), b.s, replace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.seed(b.op, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		i, err := identity.Mint(b.sup.Actor(), b.op.Actor(), suiteNow())
+		i.Token.ID = types.TokenID(lateTok)
+		evs, err2 := i.Events()
+		return evs, errors.Join(err, err2)
+	})
+	out, err = b.s.Submit(context.Background(), replace, decide)
+	refusedAs(t, "a token issued after the read", out, err, vocab.ReasonTokenNotLive)
+	if _, ok := deliver(out); ok || *mints != 0 {
+		t.Errorf("delivered (%t) or minted (%d)", ok, *mints)
+	}
+}
+
+// A holder revoked after the request layer read it live (and minted) is
+// refused inside the writer: a committed token_not_live, the minted token
+// neither recorded nor delivered.
+func TestIssueRechecksInTheWriter(t *testing.T) {
+	b := openTokens(t)
+	c := b.adminCmd(b.op, authority.TokenIssueAction, "k", actorIn(b.sup.Actor()), nil)
+	decide, deliver, err := b.az.TokenIssueRequest(context.Background(), b.s, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := b.revoke(b.op, "gone", b.sup.Actor()); err != nil || out.Disposition != eventstore.DispositionApplied {
+		t.Fatal(out, err)
+	}
+	out, err := b.s.Submit(context.Background(), c, decide)
+	refusedAs(t, "the revoked holder", out, err, vocab.ReasonTokenNotLive)
+	if _, ok := deliver(out); ok {
+		t.Error("a refused issue delivered its token")
+	}
+	if n, _ := b.tokens(); n != 2 {
+		t.Errorf("%d tokens recorded, want the operator's and the supervisor's", n)
+	}
+}

@@ -89,12 +89,17 @@ Actor:
     for a caller who is not a live operator, for a stored key and for a target that is not live; the writer rechecks
     all three. The result names the token (`{actor, token}`, and `replaced` for a rotation), never its secret.
   - A missing or revoked token, or a holder that is missing, revoked or the system actor, is a committed refusal
-    (`token_not_live`). Revoking an operator's last token is allowed: a live operator needs no live token (above), and
+    (`token_not_live`), and so is a target that became live after the early read skipped the mint: nothing was minted
+    to record, and a new key retries. Revoking an operator's last token is allowed: a live operator needs no live token (above), and
     offline recovery (14 R7) issues it another.
   - A lost response leaves a token nobody holds. A repeat under the same key replays the result, which names that
     token without its secret, and the operator revokes or rotates it.
   - The object is the actor for `token.issue` and the token for the other two, so `--expect` names the version the
-    caller inspected. No change class applies: operators are unrestricted (D31), and a supervisor is refused first.
+    caller inspected. For `token.issue` that is the actor's version, which token events never advance: it binds the
+    holder's record, not its set of tokens, so it does not detect a concurrent issue or revocation for that holder. No
+    change class applies: operators are unrestricted (D31), and a supervisor is refused first.
+  - An operator may issue a token to another operator, as well as to a supervisor: that is intended (D31), and each
+    token's `created_by` records who issued it, for audit.
 - `operator` tokens are unrestricted (D31).
 - `supervisor` tokens act only under grants.
 

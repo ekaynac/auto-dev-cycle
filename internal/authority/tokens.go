@@ -119,6 +119,9 @@ func (Authorizer) TokenIssueRequest(ctx context.Context, s *eventstore.Store, c 
 			if _, err := liveHolder(tx, in.Actor); err != nil {
 				return committed(err)
 			}
+			if err := minted(issued, string(in.Actor)); err != nil {
+				return committed(err)
+			}
 			evs, err := recordIssued(tx, c, in.Actor, issued)
 			return appliedWith(evs, err, map[string]any{"actor": in.Actor, "token": issued.Token.ID})
 		}
@@ -143,6 +146,9 @@ func (Authorizer) TokenReplaceRequest(ctx context.Context, s *eventstore.Store, 
 	return issueRequest(ctx, s, c, tokenAdmin, holder, func(issued identity.Issued) eventstore.Decide {
 		return func(tx *eventstore.Tx) (eventstore.Decision, error) {
 			old, err := liveToken(tx, id)
+			if err == nil {
+				err = minted(issued, string(id))
+			}
 			if err != nil {
 				return committed(err)
 			}
@@ -209,6 +215,16 @@ func orNone(id types.ActorID, err error) (types.ActorID, error) {
 		return "", nil
 	}
 	return id, err
+}
+
+// minted refuses a command whose request layer minted nothing because it
+// read no live target, which has since become live (an enrolment, say):
+// the refusal is committed like any token_not_live, and a new key retries.
+func minted(issued identity.Issued, target string) error {
+	if issued.Token.ID == "" {
+		return refusal(vocab.ReasonTokenNotLive, "%s was not live when the command was read, so nothing was minted; retry under a new idempotency key", target)
+	}
+	return nil
 }
 
 // recordIssued is the token.issued event of a token minted for holder by
