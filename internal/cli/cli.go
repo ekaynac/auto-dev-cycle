@@ -8,7 +8,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -49,7 +48,7 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 		return entry.Main("adc", args, stdout, stderr)
 	}
 	if len(args) < 2 {
-		fmt.Fprintf(stderr, "adc %s: missing verb\n", args[0])
+		say(stderr, "adc %s: missing verb\n", args[0])
 		return entry.ExitUsage
 	}
 	if args[0] == "admin" && args[1] == "bootstrap" {
@@ -60,7 +59,7 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 	}
 	action, ok := actionFor(args[0], args[1])
 	if !ok {
-		fmt.Fprintf(stderr, "adc %s: unknown verb %q\n", args[0], args[1])
+		say(stderr, "adc %s: unknown verb %s\n", args[0], args[1])
 		return entry.ExitUsage
 	}
 	return run(ctx, "adc "+args[0]+" "+args[1], action, args[2:], stdout, stderr, c)
@@ -68,24 +67,21 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 
 func run(ctx context.Context, name, action string, args []string, stdout, stderr io.Writer, c Client) int {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	expect := fs.String("expect", "", "the exact revision inspected: a version (0: the object does not exist yet) or a sha256: digest (required)")
 	reason := fs.String("reason", "", "why (required)")
 	scope := fs.String("scope", "{}", "the action's parameters, a JSON object")
 	key := fs.String("idempotency-key", "", "repeat a command safely with the same key (default: a new key)")
 	asJSON := fs.Bool("json", false, "print the response as one JSON document")
 	tokenOut := fs.String("token-out", "", "a command that issues a token: the new file it is written to, 0600 (required; never an existing file)")
-	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
-		return entry.ExitOK
-	} else if err != nil {
-		return entry.ExitUsage // the flag package printed why
+	if code, ok := parse(fs, args, stderr); !ok {
+		return code
 	}
 	usage := func(format string, a ...any) int {
-		fmt.Fprintf(stderr, name+": "+format+"\n", a...)
+		say(stderr, "%s: %s\n", name, fmt.Sprintf(format, a...))
 		return entry.ExitUsage
 	}
 	if fs.NArg() > 0 {
-		return usage("unexpected argument %q", fs.Arg(0))
+		return usage("unexpected argument %s", fs.Arg(0))
 	}
 	recovery, issues := issuing[action]
 	if issues != (*tokenOut != "") {
@@ -101,7 +97,7 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	}
 	if *key == "" {
 		if *key, err = newKey(); err != nil {
-			fmt.Fprintf(stderr, "%s: could_not_run: %v\n", name, err)
+			say(stderr, "%s: could_not_run: %s\n", name, err)
 			return entry.ExitCouldNotRun
 		}
 	}
@@ -117,7 +113,7 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 			if errors.Is(err, client.ErrTokenOutExists) || errors.Is(err, client.ErrTokenOutDir) || errors.Is(err, client.ErrTokenOutOwn) {
 				return usage("%v", err)
 			}
-			fmt.Fprintf(stderr, "%s: could_not_run: %v; nothing was sent\n", name, err)
+			say(stderr, "%s: could_not_run: %s; nothing was sent\n", name, err)
 			return entry.ExitCouldNotRun
 		}
 		defer out.Discard()
@@ -128,13 +124,13 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 		lost = "; if it applied, a repeat delivers no token: " + recovery
 	}
 	couldNotRun := func(format string, a ...any) int {
-		fmt.Fprintf(stderr, "%s: could_not_run: %s; to retry safely, repeat it with --idempotency-key %s%s\n", name, fmt.Sprintf(format, a...), *key, lost)
+		say(stderr, "%s: could_not_run: %s; to retry safely, repeat it with --idempotency-key %s%s\n", name, fmt.Sprintf(format, a...), *key, lost)
 		return entry.ExitCouldNotRun
 	}
 	raw, err := c.Command(ctx, action, body)
 	switch {
 	case errors.Is(err, client.ErrUnauthenticated):
-		fmt.Fprintf(stderr, "%s: refused: %v\n", name, err)
+		say(stderr, "%s: refused: %s\n", name, err)
 		return entry.ExitRefused
 	case errors.Is(err, client.ErrBadRequest):
 		return usage("%v", err)
@@ -164,16 +160,16 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 		}
 		if clean != nil {
 			raw = clean
-			defer fmt.Fprintf(stderr, "%s: the issued token was written to %s\n", name, *tokenOut)
+			defer say(stderr, "%s: the issued token was written to %s\n", name, *tokenOut)
 		}
 	}
 	if *asJSON {
-		_, err = fmt.Fprintf(stdout, "%s\n", bytes.TrimSpace(raw))
+		err = sayJSON(stdout, raw)
 	} else {
-		_, err = fmt.Fprintln(stdout, describe(resp, action, req.Scope))
+		err = describe(stdout, resp, action, req.Scope)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "%s: writing the result: %v\n", name, err)
+		say(stderr, "%s: writing the result: %s\n", name, err)
 	}
 	return ExitCode(resp)
 }
@@ -222,25 +218,26 @@ func ExitCode(r types.CommandResponse) int {
 // placeholder until the dashboard ships (M5).
 const DashboardProposal = "/dashboard/proposals/"
 
-func describe(r types.CommandResponse, action string, scope json.RawMessage) string {
+// describe writes a response's human lines, every value through say.
+func describe(w io.Writer, r types.CommandResponse, action string, scope json.RawMessage) error {
 	switch v := r.Variant.(type) {
 	case *types.CommandApplied:
-		s := fmt.Sprintf("applied: %s", v.Command)
+		repeat := ""
 		if v.Replayed {
-			s += " (a repeat; nothing ran again)"
+			repeat = " (a repeat; nothing ran again)"
 		}
-		return s
+		return say(w, "applied: %s%s\n", v.Command, repeat)
 	case *types.CommandProposed:
 		if v.Policy == types.CommandProposedPolicyHuman {
 			// A human confirmation cannot be completed from the CLI (D37).
-			return fmt.Sprintf("proposed: %s needs a human confirmation on the dashboard (binding %s)\n  requested: %s %s\n  confirm at: %s%s",
+			return say(w, "proposed: %s needs a human confirmation on the dashboard (binding %s)\n  requested: %s %s\n  confirm at: %s%s\n",
 				v.Proposal, v.BindingDigest, action, scope, DashboardProposal, v.Proposal)
 		}
-		return fmt.Sprintf("proposed: %s needs an independent review (binding %s)", v.Proposal, v.BindingDigest)
+		return say(w, "proposed: %s needs an independent review (binding %s)\n", v.Proposal, v.BindingDigest)
 	case *types.CommandRefused:
-		return fmt.Sprintf("refused: %s/%s: %s", v.Outcome, v.Reason, v.Detail)
+		return say(w, "refused: %s/%s: %s\n", v.Outcome, v.Reason, v.Detail)
 	}
-	return "no response"
+	return say(w, "no response\n")
 }
 
 // NoTransport is the Client of a build with no controller transport yet.

@@ -42,7 +42,7 @@ var (
 // reports an exit instead.
 func deliver(name string, resp types.CommandResponse, v *types.CommandApplied, out *client.TokenOut, recovery string, stderr io.Writer) (clean []byte, code int, done bool) {
 	fail := func(format string, a ...any) ([]byte, int, bool) {
-		fmt.Fprintf(stderr, "%s: could_not_run: %s\n", name, fmt.Sprintf(format, a...))
+		say(stderr, "%s: could_not_run: %s\n", name, fmt.Sprintf(format, a...))
 		return nil, entry.ExitCouldNotRun, true
 	}
 	credential := v.IssuedCredential
