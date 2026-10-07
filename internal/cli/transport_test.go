@@ -15,6 +15,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 )
 
@@ -73,5 +74,46 @@ func TestCommandOverTheSocket(t *testing.T) {
 	env[DaemonUIDEnv] = strconv.Itoa(os.Getuid() + 1)
 	if code, out := run(); code != entry.ExitCouldNotRun || strings.Contains(out, "zzFAKEzz") {
 		t.Fatalf("%d %s", code, out)
+	}
+}
+
+// ADC_HTTPS_ADDR selects the HTTPS transport, with exactly one trust
+// anchor; it and ADC_SOCKET together are refused; a bad configuration
+// fails every command with its fixed text.
+func TestClientFromEnvHTTPS(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	pin := client.PinPrefix + strings.Repeat("ab", 32)
+	env := map[string]string{HTTPSAddrEnv: "127.0.0.1:8443", HTTPSPinEnv: pin}
+	getenv := func(k string) string { return env[k] }
+	if tr, ok := ClientFromEnv(getenv).(client.Transport); !ok || tr.Remote == nil || tr.Socket != "" {
+		t.Fatalf("https: %#v", tr)
+	}
+	env[SocketEnv] = "/run/x/adcd.sock"
+	if _, err := ClientFromEnv(getenv).Command(context.Background(), "task.create", nil); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("both transports: %v", err)
+	}
+	delete(env, SocketEnv)
+	delete(env, HTTPSPinEnv)
+	if _, err := ClientFromEnv(getenv).Command(context.Background(), "task.create", nil); err == nil || !strings.Contains(err.Error(), "trust anchor") {
+		t.Fatalf("no trust anchor: %v", err)
+	}
+}
+
+// adc admin bootstrap with the HTTPS transport is a usage error, and the
+// secret goes nowhere: the bootstrap stays unconsumed.
+func TestBootstrapNotOverHTTPS(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir, _ := adcd(t)
+	secret, err := os.ReadFile(filepath.Join(dir, identity.BootstrapFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{HTTPSAddrEnv: "127.0.0.1:8443", HTTPSPinEnv: client.PinPrefix + strings.Repeat("ab", 32)}
+	code, out := bootstrapCLI(t, ClientFromEnv(func(k string) string { return env[k] }), string(secret), "--secret-stdin")
+	if code != entry.ExitUsage || !strings.Contains(out, client.ErrRemoteBootstrap.Error()) {
+		t.Fatalf("%d %s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, identity.BootstrapFile)); err != nil {
+		t.Fatalf("the bootstrap was consumed: %v", err)
 	}
 }

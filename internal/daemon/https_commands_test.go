@@ -25,7 +25,12 @@ import (
 // with the daemon's command logic, and a client from 127.0.0.1.
 func httpsCommanded(t *testing.T, c *commanded) (*server, *http.Client, string) {
 	t.Helper()
-	cert := validCert(t)
+	return httpsCommandedWith(t, c, validCert(t))
+}
+
+// httpsCommandedWith is httpsCommanded serving cert.
+func httpsCommandedWith(t *testing.T, c *commanded, cert testCert) (*server, *http.Client, string) {
+	t.Helper()
 	certFile, keyFile := cert.files(t, 0o600)
 	tc, err := HTTPSListener{Addr: "127.0.0.1:1", CertFile: certFile, KeyFile: keyFile}.load(time.Now(), os.Geteuid())
 	if err != nil {

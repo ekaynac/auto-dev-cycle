@@ -14,6 +14,26 @@ the CLI is a superset.
 
 `schemas/openapi.yaml` is the single API description. Bodies are `$ref`s into `schemas/`.
 
+### Remote CLI over HTTPS (14 R3)
+
+The CLI picks its transport from the environment: `ADC_SOCKET` (a Unix socket) or `ADC_HTTPS_ADDR` (`HOST:PORT` of
+the HTTPS listener). Setting both is refused. The design left the following open; M0 settles it as below.
+- **Trust anchor.** Exactly one is required: `ADC_HTTPS_CA`, a PEM file of CA certificates (at most 1 MiB), or
+  `ADC_HTTPS_PIN`, `sha256:` and the 64 hex digits of the SHA-256 of the controller certificate's DER
+  encoding (`openssl x509 -in cert.pem -outform DER | sha256sum`). Neither or both is refused. The system roots are
+  never used.
+  - With a CA, the chain and the host name (`HOST`, an IP literal or a DNS name) are verified as usual.
+  - With a pin, the exact certificate is the anchor: no chain or host name is checked, but its validity dates are.
+    Replacing the certificate means replacing the pin.
+- **TLS 1.3 only.** The handshake has a 10 s deadline after a 5 s dial deadline. No session is resumed, no proxy is
+  used and no redirect is followed. A request, and so the bearer, is written only after a verified handshake.
+- **The bootstrap** is never sent over HTTPS (R4): `adc admin bootstrap` with the HTTPS transport is a usage error
+  (exit 64) and opens no connection.
+- **Refusals** are fixed text and never quote the server or the token. A certificate that does not verify, a
+  connection closed before the handshake (the listener's hold-off) and any other failed handshake are `could_not_run`
+  (exit 2), with nothing sent. So is a 429, whose `Retry-After` is reported only when it is a whole number of seconds
+  from 1 to 3600. A 401 is refused (exit 1), as on the socket.
+
 ## Reads, commands, events
 
 - **Reads** are resources (`GET /v1/projects`, `/v1/tasks/{id}`, `/v1/holds`, …). They are authorized server-side

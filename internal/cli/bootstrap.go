@@ -78,6 +78,9 @@ func adminBootstrap(ctx context.Context, args []string, stdout, stderr io.Writer
 		return fail(entry.ExitUsage, "the bootstrap request is invalid (check --name and --idempotency-key)")
 	}
 	raw, err := b.Bootstrap(ctx, body)
+	if errors.Is(err, client.ErrRemoteBootstrap) {
+		return fail(entry.ExitUsage, "%v", err)
+	}
 	if err != nil {
 		return fail(entry.ExitCouldNotRun, "could_not_run: %v; if it was applied, a repeat (--idempotency-key %s) delivers no token: %s", err, *key, recoverHint)
 	}
