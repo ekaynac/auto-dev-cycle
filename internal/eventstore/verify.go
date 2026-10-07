@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"modernc.org/sqlite"
 
@@ -459,6 +460,7 @@ func (s *Store) verify(ctx context.Context, q querier, trusted *Head) (Head, err
 	defer rows.Close()
 	head := Head{Hash: s.genesis}
 	var atTrusted string
+	var lastAt time.Time
 	for rows.Next() {
 		var e Event
 		var payload []byte
@@ -482,7 +484,12 @@ func (s *Store) verify(ctx context.Context, q querier, trusted *Head) (Head, err
 		if got != e.Hash && !mutation.Is(mutation.ChainHashUnchecked) {
 			return Head{}, fmt.Errorf("%w: seq %d was edited (hash mismatch)", ErrChainBroken, e.Seq)
 		}
-		head = Head{Seq: e.Seq, Hash: e.Hash}
+		// Event time never decreases (03 "Event time").
+		at, err := time.Parse(time.RFC3339Nano, e.At)
+		if err != nil || at.Before(lastAt) {
+			return Head{}, fmt.Errorf("%w: seq %d is recorded at %q, unreadable or before the previous event", ErrChainBroken, e.Seq, e.At)
+		}
+		lastAt, head = at, Head{Seq: e.Seq, Hash: e.Hash}
 		if trusted != nil && e.Seq == trusted.Seq {
 			atTrusted = e.Hash
 		}

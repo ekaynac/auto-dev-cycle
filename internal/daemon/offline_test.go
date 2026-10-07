@@ -5,10 +5,12 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -435,5 +437,49 @@ func TestRenewFailures(t *testing.T) {
 		t.Fatal("no response")
 	} else if _, applied := v.(*types.BootstrapApplied); applied {
 		t.Fatal("an unrecorded secret bootstrapped")
+	}
+}
+
+// lastOf is the time and payload of the last event of kind, read directly.
+func lastOf(t *testing.T, dir, kind string) (at string, payload []byte) {
+	t.Helper()
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: filepath.Join(dir, eventstore.DBFile), RawQuery: "mode=ro"}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.QueryRow(`SELECT at, payload FROM events WHERE kind = ? ORDER BY seq DESC LIMIT 1`, kind).Scan(&at, &payload); err != nil {
+		t.Fatal(err)
+	}
+	return at, payload
+}
+
+// The offline commands run on the daemon's one store clock. A renewal is
+// made and expires at its command's time (Tx.Now), so a clock that steps
+// back past the last event still records a live secret made at its event's
+// time; a recovered token is minted at the store clock's time.
+func TestOfflineOnTheStoreClock(t *testing.T) {
+	dir := stateDir(t)
+	if err := restart(t, dir).Close(); err != nil {
+		t.Fatal(err)
+	}
+	back := func() time.Time { return time.Now().Add(-48 * time.Hour) }
+	if err := renewBootstrap(context.Background(), Config{StateDir: dir, clock: back}); err != nil {
+		t.Fatalf("renew on a clock behind the log: %v", err)
+	}
+	st, _ := bootRecord(t, dir)
+	if at, _ := lastOf(t, dir, identity.BootstrapRenewedKind); st.Secret == nil || string(st.Secret.CreatedAt) != at || !st.Live(time.Now()) {
+		t.Errorf("the renewed secret %+v, recorded at %s", st.Secret, at)
+	}
+
+	p := recoveryStore(t)
+	fixed := time.Now().Add(time.Hour).UTC()
+	out := outFile{path: filepath.Join(privateDir(t), "token")}
+	if err := recoverToken(context.Background(), Config{StateDir: p.dir, clock: func() time.Time { return fixed }}, p.op, out, false); err != nil {
+		t.Fatal(err)
+	}
+	want := `"created_at":"` + fixed.Format(time.RFC3339Nano) + `"`
+	if _, payload := lastOf(t, p.dir, identity.TokenRecoveredKind); !bytes.Contains(payload, []byte(want)) {
+		t.Errorf("the recovered token %s, want %s", payload, want)
 	}
 }

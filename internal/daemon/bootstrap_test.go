@@ -5,11 +5,13 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/apidoc"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
@@ -154,6 +157,17 @@ type running struct {
 	logs   *logBuffer
 	stop   func()
 	shared string
+	clock  atomic.Pointer[func() time.Time] // the store clock, when set; else time.Now
+}
+
+// setClock sets the daemon's store clock (every command reads it, Tx.Now).
+func (r *running) setClock(f func() time.Time) { r.clock.Store(&f) }
+
+func (r *running) now() time.Time {
+	if f := r.clock.Load(); f != nil {
+		return (*f)()
+	}
+	return time.Now()
 }
 
 func runBootstrap(t *testing.T) *running {
@@ -164,7 +178,7 @@ func runBootstrap(t *testing.T) *running {
 	ctx, cancel := context.WithCancel(context.Background())
 	done, ready := make(chan error, 1), make(chan *Daemon, 1)
 	go func() {
-		done <- Run(ctx, Config{StateDir: r.dir, Shared: &SharedSocket{RunDir: run, Group: egid()}}, r.logs, func(d *Daemon) { ready <- d })
+		done <- Run(ctx, Config{StateDir: r.dir, Shared: &SharedSocket{RunDir: run, Group: egid()}, clock: r.now}, r.logs, func(d *Daemon) { ready <- d })
 	}()
 	select {
 	case r.d = <-ready:
@@ -235,10 +249,10 @@ func TestBootstrapEndpoint(t *testing.T) {
 	}
 	_, v := r.post(t, r.private(), "k-wrong", wrong.Reveal())
 	refusedWith(t, v, vocab.ReasonConfirmationRefused)
-	r.d.boot.now = func() time.Time { return time.Now().Add(25 * time.Hour) }
+	r.setClock(func() time.Time { return time.Now().Add(25 * time.Hour) }) // a refusal records no event: the clock may step back
 	_, v = r.post(t, r.private(), "k-late", secret)
 	refusedWith(t, v, vocab.ReasonConfirmationRefused)
-	r.d.boot.now = time.Now
+	r.setClock(time.Now)
 	// The same key with another secret is another request.
 	if code, v := r.post(t, r.private(), "k-wrong", secret); code != http.StatusConflict {
 		t.Fatalf("reused key: %d %+v", code, v)
@@ -348,13 +362,6 @@ func TestBootstrapExpiresWhileWaiting(t *testing.T) {
 	var late atomic.Bool
 	arrived := make(chan struct{})
 	var once sync.Once
-	r.d.boot.now = func() time.Time {
-		if late.Load() {
-			return time.Now().Add(25 * time.Hour)
-		}
-		once.Do(func() { close(arrived) })
-		return time.Now()
-	}
 	held, release := make(chan struct{}), make(chan struct{})
 	hold := make(chan error, 1)
 	go func() {
@@ -367,13 +374,26 @@ func TestBootstrapExpiresWhileWaiting(t *testing.T) {
 			})
 		hold <- err
 	}()
-	<-held
+	<-held // the held command has read the store clock
+	// The request arrives (its first clock read is the mint's, before the
+	// writer); by the time its transaction reads the clock, the secret expired.
+	r.setClock(func() time.Time {
+		if late.Load() {
+			return time.Now().Add(25 * time.Hour)
+		}
+		once.Do(func() { close(arrived) })
+		return time.Now()
+	})
 	result := make(chan types.BootstrapResponseVariant, 1)
 	go func() {
 		_, v := r.post(t, r.private(), "k-wait", secret)
 		result <- v
 	}()
-	<-arrived
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request never read the clock")
+	}
 	late.Store(true)
 	close(release)
 	if err := <-hold; err == nil {
@@ -382,5 +402,51 @@ func TestBootstrapExpiresWhileWaiting(t *testing.T) {
 	refusedWith(t, <-result, vocab.ReasonConfirmationRefused)
 	if st := bootState(t, r.d); st.Consumed {
 		t.Fatal("bootstrapped after the expiry")
+	}
+}
+
+// The secret is made and expires by its command's clock (Tx.Now): its
+// created_at is its event's recorded time.
+func TestBootstrapIssuedAtItsEventTime(t *testing.T) {
+	r := runBootstrap(t)
+	st := bootState(t, r.d)
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: filepath.Join(r.dir, eventstore.DBFile), RawQuery: "mode=ro"}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var at string
+	if err := db.QueryRow(`SELECT at FROM events WHERE kind = ?`, identity.BootstrapIssuedKind).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	if st.Secret == nil || string(st.Secret.CreatedAt) != at {
+		t.Errorf("the secret %+v, recorded at %s", st.Secret, at)
+	}
+}
+
+// Expiry is judged at the command's time (Tx.Now), which never goes back
+// past the last event: after an event recorded 25 h ahead, a consume is
+// refused though the clock is back.
+func TestBootstrapJudgedAtTheCommandTime(t *testing.T) {
+	r := runBootstrap(t)
+	secret := readSecret(t, r.dir)
+	r.setClock(func() time.Time { return time.Now().Add(25 * time.Hour) })
+	cmd := newID(t, "cmd")
+	if _, err := r.d.store.SubmitApplied(context.Background(), r.d.system.Command(cmd, issueAction, cmd, []byte(`{}`), nil),
+		eventstore.Applies(func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+			e, err := ledger.Measure(types.UsageMeasurement{ID: types.MeasurementID(newID(t, "msr")), Call: types.CallID(newID(t, "cal")), // any event, recorded 25 h ahead
+				Attempt: types.AttemptID(newID(t, "att")), Lease: types.LeaseID(newID(t, "lea")), Kind: types.UsageMeasurementKindDelta, Sequence: 1,
+				Tokens: types.UsageMeasurementTokens{In: 1, Out: 1}, Turns: 1, Milliseconds: 1,
+				Cost:          types.UsageMeasurementCost{AmountMicros: 1, Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
+				SourceOfTruth: types.UsageMeasurementSourceOfTruthAdapterReport})
+			return []eventstore.Event{e}, json.RawMessage(`{}`), err
+		})); err != nil {
+		t.Fatal(err)
+	}
+	r.setClock(time.Now)
+	_, v := r.post(t, r.private(), "k-after", secret)
+	refusedWith(t, v, vocab.ReasonConfirmationRefused)
+	if bootState(t, r.d).Consumed {
+		t.Fatal("bootstrapped after the recorded expiry")
 	}
 }

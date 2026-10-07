@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
@@ -28,6 +29,9 @@ type Config struct {
 	Groups      []types.ResourceGroup // what capacity reserves from; none by default
 	TrustedHead *eventstore.Head      // optional: the log must reach it and carry its hash (03 rule 3)
 	Shared      *SharedSocket         // optional, off by default (14 R2)
+	// clock is the store clock (eventstore.Config.Now) that every command
+	// and the bootstrap decide by; nil is time.Now. Only tests set it.
+	clock func() time.Time
 }
 
 // SharedSocket enables the shared socket, <RunDir>/adcd-shared.sock, mode
