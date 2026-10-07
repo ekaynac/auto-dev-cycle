@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"strconv"
@@ -82,7 +83,12 @@ func TestHTTPSCommands(t *testing.T) {
 	if code != http.StatusOK || !ok || a.IssuedCredential == nil {
 		t.Fatalf("the enrolment over HTTPS: HTTP %d %s", code, raw)
 	}
+	_, issued, _ := strings.Cut(*a.IssuedCredential, ".")
+	if strings.Contains(c.logs.String(), issued) {
+		t.Fatal("the issued credential is in the controller log")
+	}
 	key := api.Peer{Addr: netip.MustParseAddr("127.0.0.1")}.Key()
+	strikes := strikesOf(srv.th, key) // the 401 without a bearer
 	release, ok := srv.remote.Take(key)
 	if !ok {
 		t.Fatal("no verification slot for the peer")
@@ -94,11 +100,43 @@ func TestHTTPSCommands(t *testing.T) {
 	if code, raw := post(authority.EnrolAction, c.op.Reveal(), "e2", enrol("e2"), 0); code != http.StatusServiceUnavailable {
 		t.Fatalf("an enrolment, the peer's HTTPS slot taken: HTTP %d %s", code, raw)
 	}
+	if n := strikesOf(srv.th, key); n != strikes {
+		t.Fatalf("a busy mint's 503 counted: %d failures, was %d", n, strikes)
+	}
 	release()
 	code, raw = post(authority.EnrolAction, c.op.Reveal(), "e2", enrol("e2"), 0)
 	if a, ok := response(t, string(raw)).(*types.CommandApplied); code != http.StatusOK || !ok || a.IssuedCredential == nil {
 		t.Fatalf("the enrolment, the slot free again: HTTP %d %s", code, raw)
 	}
+}
+
+// A mint that panics gives its slot back: the peer's key is not locked out.
+func TestMintPanicReleasesSlot(t *testing.T) {
+	c := runCommanded(t)
+	gate := api.NewSlots(1, 1)
+	h := commands{store: c.d.store, gate: gate, reg: c.d.az.Registry, logic: logics(c.d.az), log: c.logs,
+		issue: map[string]issuer{authority.EnrolAction: func(context.Context, *eventstore.Store, eventstore.Command) (eventstore.Decide, func(eventstore.Committed) (identity.Secret, bool), error) {
+			panic("the issuer failed")
+		}}}
+	body := `{"idempotency_key":"e","expected":{"version":0,"digest":null},"scope":{"actor":"` + newID(t, "act") + `","name":"a","declared_agent":null},"reason":"r"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/commands/"+authority.EnrolAction, strings.NewReader(body))
+	req.SetPathValue("action", authority.EnrolAction)
+	req.Header.Set("Authorization", "Bearer "+c.op.Reveal())
+	peer := api.Peer{Via: identity.HTTPS, UID: -1, Addr: netip.MustParseAddr("192.0.2.7")}
+	req = req.WithContext(api.WithPeer(req.Context(), peer))
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the issuer's panic did not reach the server")
+			}
+		}()
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	release, ok := gate.Take(peer.Key())
+	if !ok {
+		t.Fatal("the slot was kept after the mint panicked")
+	}
+	release()
 }
 
 // A request whose bearer the listener verified (api.WithPrincipal) is
