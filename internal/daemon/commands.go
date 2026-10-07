@@ -142,10 +142,11 @@ func (h commands) decide(ctx context.Context, p identity.Principal, action strin
 		return h.answer(res, err)
 	}
 	// An issuing action mints before Submit, outside the transaction, under
-	// one of the listener's Argon2 slots, and its credential reaches the
+	// one of the listener's Argon2 slots (the peer's key: its uid on a
+	// socket, its address over HTTPS), and its credential reaches the
 	// response only through the delivery (identity.Issued.Deliver, 14 N3).
 	peer, _ := api.PeerOf(ctx)
-	release, free := h.gate.Take(peer.UID)
+	release, free := h.gate.Take(peer.Key())
 	if !free {
 		return nil, api.ErrBusy
 	}

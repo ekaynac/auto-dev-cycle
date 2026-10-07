@@ -129,7 +129,13 @@ func (h Events) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	err = func() error {
 		defer leave()
 		return h.Store.View(r.Context(), func(tx *eventstore.Tx) error {
-			a, err := identity.Authenticate(tx, bearer)
+			var a types.Actor
+			var err error
+			if p, verified := principalOf(r); verified {
+				a, err = p.Live(tx)
+			} else {
+				a, err = identity.Authenticate(tx, bearer)
+			}
 			if err != nil {
 				authErr = err
 				return nil

@@ -4,7 +4,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -28,24 +30,34 @@ type limits struct {
 	bodyBytes     int64         // a request body
 	private       slotQuota     // the private socket's own slots: the shared one never starves it
 	shared        slotQuota
+	remote        slotQuota     // the HTTPS listener's, per remote address (api.Peer.Key)
+	freeFailures  int           // failed HTTPS authentications a remote peer has before it is held off (throttle)
+	preAuth       time.Duration // an HTTPS connection's bound from accept to a verified bearer (tcpListener)
+	preAuthFree   time.Duration // a request-less HTTPS connection that ends sooner, no handshake done, is not a failure (httpsConn.ended)
 	poll          time.Duration // the event stream's re-check bound; zero is api.MaxPoll
 	shutdown      time.Duration // what a graceful stop waits before closing connections
 }
 
 var defaultLimits = limits{headerTimeout: 5 * time.Second, writeTimeout: 30 * time.Second, idleTimeout: time.Minute,
 	headerBytes: 16 << 10, bodyBytes: 1 << 20, shutdown: 5 * time.Second,
-	private: slotQuota{conns: 64, verify: 2}, shared: slotQuota{conns: 32, connsPerPeer: 8, verify: 2, verifyPerPeer: 1}}
+	private: slotQuota{conns: 64, verify: 2}, shared: slotQuota{conns: 32, connsPerPeer: 8, verify: 2, verifyPerPeer: 1},
+	remote: slotQuota{conns: 128, connsPerPeer: 4, verify: 2, verifyPerPeer: 1}, freeFailures: 3, preAuth: 5 * time.Second, preAuthFree: time.Second}
 
 // slotQuota is one listener's concurrent connections (so open streams too:
 // each holds one) and bearer verifications (Argon2id, 64 MiB each), in
-// total and per peer uid (0: no per-peer cap).
+// total and per peer (0: no per-peer cap).
 type slotQuota struct{ conns, connsPerPeer, verify, verifyPerPeer int }
 
 // server is the API served on the daemon's sockets.
 type server struct {
 	sockets []*socket
 	https   []*http.Server
+	base    context.Context    // every request's, until stop
 	stop    context.CancelFunc // ends every request context: open streams return
+	tcp     net.Addr           // the HTTPS listener's bound address; nil when off
+	remote  *api.Slots         // the HTTPS listener's bearer verifications
+	th      *throttle          // the HTTPS listener's failure throttle
+	cmds    commands           // the command endpoint, on every listener
 	lim     limits
 	wg      sync.WaitGroup
 	failed  chan error // a listener that stopped on its own
@@ -53,9 +65,10 @@ type server struct {
 
 // serve binds the private socket in stateDir and, when configured, the
 // shared one, and serves the API over store on both, cmds answering
-// commands. It runs at the readiness point only (Run).
+// commands (and on the HTTPS listener, listenHTTPS). It runs at the
+// readiness point only (Run).
 func serve(store *eventstore.Store, boot *bootstrapper, stateDir string, shared *SharedSocket, lim limits, cmds commands) (_ *server, err error) {
-	s := &server{lim: lim, failed: make(chan error, 2)}
+	s := &server{lim: lim, cmds: cmds, failed: make(chan error, 3)}
 	defer func() {
 		if err != nil {
 			_ = s.close() // the refusal is err
@@ -87,8 +100,7 @@ func serve(store *eventstore.Store, boot *bootstrapper, stateDir string, shared 
 			return nil, err
 		}
 	}
-	base, stop := context.WithCancel(context.Background())
-	s.stop = stop
+	s.base, s.stop = context.WithCancel(context.Background())
 	// The header bound: MaxHeaderBytes is headerBytes less net/http's
 	// 4096-byte allowance, so a request on a fresh connection, or the first
 	// of a pipeline, is held to headerBytes. A pipelined request can also
@@ -96,17 +108,22 @@ func serve(store *eventstore.Store, boot *bootstrapper, stateDir string, shared 
 	// effective bound is headerBytes + 4096 (20 KiB by default); memory
 	// stays bounded either way.
 	for _, sk := range s.sockets {
-		hs := &http.Server{Handler: handler(store, boot, lim, sk.verify, cmds), ReadHeaderTimeout: lim.headerTimeout, WriteTimeout: lim.writeTimeout,
-			IdleTimeout: lim.idleTimeout, MaxHeaderBytes: lim.headerBytes - 4096,
-			BaseContext: func(net.Listener) context.Context { return base }, ConnContext: connContext}
-		s.https = append(s.https, hs)
-		s.wg.Go(func() {
-			if err := hs.Serve(sk.ln); !errors.Is(err, http.ErrServerClosed) {
-				s.failed <- err
-			}
-		})
+		s.serveOn(sk.ln, handler(store, boot, lim, sk.verify, cmds), nil)
 	}
 	return s, nil
+}
+
+// serveOn serves h on ln until close, under the server's limits.
+func (s *server) serveOn(ln net.Listener, h http.Handler, errLog *log.Logger) {
+	hs := &http.Server{Handler: h, ReadHeaderTimeout: s.lim.headerTimeout, WriteTimeout: s.lim.writeTimeout,
+		IdleTimeout: s.lim.idleTimeout, MaxHeaderBytes: s.lim.headerBytes - 4096, ErrorLog: errLog,
+		BaseContext: func(net.Listener) context.Context { return s.base }, ConnContext: connContext, ConnState: connState}
+	s.https = append(s.https, hs)
+	s.wg.Go(func() {
+		if err := hs.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+			s.failed <- err
+		}
+	})
 }
 
 func (s *server) add(sk *socket, err error) error {
@@ -165,11 +182,18 @@ func openDir(path string, ok func(unix.Stat_t) bool) (*os.File, error) {
 }
 
 // connContext registers the connection for api.Events' hard cutoff and
-// records which listener admitted it and the peer's uid.
+// records which listener admitted it and the peer: its uid on a socket,
+// its address over HTTPS.
 func connContext(ctx context.Context, c net.Conn) context.Context {
 	ctx = api.ConnContext(ctx, c)
-	if pc, ok := c.(*peerConn); ok {
+	if tc, ok := c.(*tls.Conn); ok {
+		c = tc.NetConn()
+	}
+	switch pc := c.(type) {
+	case *peerConn:
 		ctx = api.WithPeer(ctx, pc.peer)
+	case *httpsConn:
+		ctx = context.WithValue(api.WithPeer(ctx, pc.peer), httpsConnKey{}, pc)
 	}
 	return ctx
 }

@@ -16,8 +16,10 @@ var ErrBusy = errors.New("api: too many authentications in progress")
 
 // Authenticate verifies r's bearer through gate's verification slots, as
 // a principal of the listener that admitted the connection (none recorded:
-// no listener, which authenticates nothing). An unknown, revoked or
-// malformed bearer is identity.ErrUnauthenticated.
+// no listener, which authenticates nothing). A bearer the listener already
+// verified (WithPrincipal) is only rechecked for revocation, with no slot
+// and no hash. An unknown, revoked or malformed bearer is
+// identity.ErrUnauthenticated.
 func Authenticate(store *eventstore.Store, r *http.Request, gate *Slots) (identity.Principal, error) {
 	leave, ok := gate.enter(r)
 	if !ok {
@@ -26,8 +28,12 @@ func Authenticate(store *eventstore.Store, r *http.Request, gate *Slots) (identi
 	defer leave()
 	bearer, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	peer, _ := PeerOf(r.Context())
-	var p identity.Principal
+	p, verified := principalOf(r)
 	err := store.View(r.Context(), func(tx *eventstore.Tx) (err error) {
+		if verified {
+			_, err = p.Live(tx)
+			return err
+		}
 		p, err = identity.Authenticated(tx, bearer, peer.Via)
 		return err
 	})

@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"net/netip"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 )
@@ -37,10 +38,46 @@ func hardAbort(r *http.Request) func() {
 }
 
 // Peer is who a connection came from, as the listener that admitted it
-// says: the listener and, on a Unix socket, the peer's uid (SO_PEERCRED).
+// says: the listener and, on a Unix socket, the peer's uid (SO_PEERCRED);
+// over TCP, the remote address (and UID -1).
 type Peer struct {
-	Via identity.Listener
-	UID int
+	Via  identity.Listener
+	UID  int
+	Addr netip.Addr
+}
+
+// Key is what every per-peer limit counts (connection and verification
+// slots, the HTTPS failure throttle), one normalised key for them all:
+// the uid on a socket; over TCP the address unmapped first, then grouped.
+// An IPv4 address counts as itself. An IPv6 address counts by the /56 a
+// site is commonly given, so a site cannot multiply its share by rotating
+// addresses within it; a scoped (link-local) one by that /56 on its own
+// interface, since a /56 drops the zone and would merge every link.
+// 6to4 (2002::/16, deprecated by RFC 7526) is not folded to the IPv4
+// address it embeds: a host on the daemon's link could claim any 2002:
+// address through NDP and so share a chosen IPv4 client's key; it counts
+// by its /56 like any IPv6 address. Nor are NAT64 (64:ff9b::/96) and
+// Teredo (2001::/32) folded: every IPv4 client behind one translator, or
+// one Teredo server, shares that translator's /56.
+func (p Peer) Key() any {
+	a := p.Addr.Unmap()
+	switch {
+	case !a.IsValid():
+		return p.UID
+	case a.Is4():
+		return a
+	}
+	prefix := netip.PrefixFrom(a, 56).Masked()
+	if zone := a.Zone(); zone != "" {
+		return scopedKey{prefix, zone}
+	}
+	return prefix
+}
+
+// scopedKey is a link-local /56 on one interface.
+type scopedKey struct {
+	prefix netip.Prefix
+	zone   string
 }
 
 type peerKey struct{}
@@ -53,5 +90,22 @@ func WithPeer(ctx context.Context, p Peer) context.Context {
 // PeerOf is the peer WithPeer recorded; false when none was.
 func PeerOf(ctx context.Context) (Peer, bool) {
 	p, ok := ctx.Value(peerKey{}).(Peer)
+	return p, ok
+}
+
+type principalKey struct{}
+
+// WithPrincipal records the principal a listener has already verified for
+// the request's own bearer, so the routes recheck it (Principal.Live:
+// its token and actor still live) instead of hashing the bearer again,
+// and take no verification slot. Only identity makes a Principal, and
+// only from a verified bearer (Authenticated), so a record cannot stand in
+// for a verification that never happened.
+func WithPrincipal(ctx context.Context, p identity.Principal) context.Context {
+	return context.WithValue(ctx, principalKey{}, p)
+}
+
+func principalOf(r *http.Request) (identity.Principal, bool) {
+	p, ok := r.Context().Value(principalKey{}).(identity.Principal)
 	return p, ok
 }
