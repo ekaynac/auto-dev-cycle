@@ -85,6 +85,8 @@ a rebuild recomputes them, and the limit check runs only when an event is admitt
   own times (a seat request's `force_after`). Every event the command appends carries that value as its time. An event
   that names a time before the previous event's is refused. The clock is the store's (`Config.Now`, `time.Now` by
   default); the authorizer has none of its own. Folds read only recorded times, never the clock.
+  Verification checks the rule: an unreadable or decreasing event time is a broken chain (`log_integrity_broken`).
+  The bootstrap issues and consumes its secret by the command's time too.
 - **Process exclusivity.** `adcd` takes an exclusive advisory lock (`flock`) on `<state_dir>/adcd.lock`. It records its
   pid and process start time, and refuses to open the database without the lock. A second daemon exits with
   `could_not_run/controller_already_running`. The lock is acquired before the database is opened and never created or

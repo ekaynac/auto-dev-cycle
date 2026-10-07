@@ -16,7 +16,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -62,7 +61,7 @@ func recoverToken(ctx context.Context, cfg Config, target types.ActorID, out out
 	}
 	defer dir.Close()
 	return offline(ctx, cfg, func(d *Daemon) error {
-		issued, err := identity.Mint(target, d.system.Actor(), time.Now())
+		issued, err := identity.Mint(target, d.system.Actor(), d.clock()) // the token's created_at only
 		cmd, cerr := ids.New("cmd")
 		input, ierr := json.Marshal(map[string]any{"actor": target, "revoke_others": revokeOthers})
 		if err := errors.Join(err, cerr, ierr); err != nil {

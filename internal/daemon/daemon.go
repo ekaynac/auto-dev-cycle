@@ -30,7 +30,8 @@ type Daemon struct {
 	head     eventstore.Head    // verified at start
 	system   identity.Principal // the system actor's, held only here
 	boot     *bootstrapper
-	note     string // the bootstrap's startup note, fixed text
+	clock    func() time.Time // the store clock (eventstore.Config.Now), for what is made outside a command
+	note     string           // the bootstrap's startup note, fixed text
 	once     sync.Once
 	closeErr error
 }
@@ -94,7 +95,11 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the blob store cannot be opened", err)
 	}
-	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Existing: offline,
+	clock := cfg.clock
+	if clock == nil {
+		clock = time.Now
+	}
+	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Existing: offline, Now: clock,
 		Hooks: hooks(reg, projector(blobs, reg.Holds, reservations))})
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the event store cannot be opened", err)
@@ -142,11 +147,11 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	}); err != nil {
 		return nil, couldNotRun(vocab.ReasonAmbiguousState, "the system actor is not live", err)
 	}
-	boot, note, err := openBootstrap(ctx, store, system, lock.Dir(), time.Now, !offline)
+	boot, note, err := openBootstrap(ctx, store, system, lock.Dir(), clock, !offline)
 	if err != nil {
 		return nil, err
 	}
-	return &Daemon{lock: lock, store: store, head: head, system: system, boot: boot, note: note}, nil
+	return &Daemon{lock: lock, store: store, head: head, system: system, boot: boot, clock: clock, note: note}, nil
 }
 
 // Head is the event log's head verified at start.

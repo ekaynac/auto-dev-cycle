@@ -5,6 +5,7 @@ package eventstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -150,5 +151,65 @@ func TestCommandReadsTheClockOnce(t *testing.T) {
 		if at, err := time.Parse(time.RFC3339Nano, ev.At); err != nil || !at.Equal(now) {
 			t.Errorf("%s at %s, the command's time %s", ev.Kind, ev.At, now)
 		}
+	}
+}
+
+// restamp rewrites the events from seq from on with the given times,
+// relinking their hashes, so the chain stays hash-consistent.
+func restamp(t *testing.T, dir string, from int64, at ...string) {
+	t.Helper()
+	db := raw(t, dir)
+	mustExec(t, db, `DROP TRIGGER IF EXISTS events_append_only_update`)
+	var prev string
+	if err := db.QueryRow(`SELECT hash FROM events WHERE seq = ?`, from-1).Scan(&prev); err != nil {
+		t.Fatal(err)
+	}
+	for i, stamp := range at {
+		var e Event
+		var payload []byte
+		if err := db.QueryRow(`SELECT seq, id, kind, subject, project, actor, command, causation, schema_set, payload FROM events WHERE seq = ?`, from+int64(i)).
+			Scan(&e.Seq, &e.ID, &e.Kind, &e.Subject, &e.Project, &e.Actor, &e.Command, &e.Causation, &e.SchemaSet, &payload); err != nil {
+			t.Fatal(err)
+		}
+		e.Payload, e.At, e.PrevHash = payload, stamp, prev
+		h, err := rowHash(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`UPDATE events SET at = ?, prev_hash = ?, hash = ? WHERE seq = ?`, e.At, e.PrevHash, h, e.Seq); err != nil {
+			t.Fatal(err)
+		}
+		prev = h
+	}
+}
+
+// Verify enforces 03 "Event time": a hash-consistent tail whose times
+// decrease, or are unreadable, is a broken chain, after a trusted head too.
+func TestVerifyRefusesDecreasingEventTimes(t *testing.T) {
+	ctx := context.Background()
+	for name, c := range map[string]struct {
+		at     []string
+		broken bool
+	}{
+		"increasing (the rewrite itself verifies)": {[]string{"2031-01-01T00:00:00Z", "2031-01-01T00:00:01Z"}, false},
+		"equal times":             {[]string{"2031-01-01T00:00:00Z", "2031-01-01T00:00:00Z"}, false},
+		"a decreasing tail":       {[]string{"2031-01-01T00:00:01Z", "2031-01-01T00:00:00.5Z"}, true},
+		"before the trusted head": {[]string{"2001-01-01T00:00:00Z", "2001-01-01T00:00:01Z"}, true},
+		"an unreadable time":      {[]string{"2031-01-01T00:00:00Z", "yesterday"}, true},
+	} {
+		e := openEnv(t, stateDir(t))
+		e.appendN(t, 2)
+		trusted, err := e.s.Head(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.appendN(t, 2)
+		restamp(t, e.dir, 3, c.at...)
+		for _, head := range []*Head{nil, &trusted} {
+			if _, err := e.s.Verify(ctx, head); errors.Is(err, ErrChainBroken) != c.broken || (!c.broken && err != nil) {
+				t.Errorf("%s (trusted head %v): %v", name, head != nil, err)
+			}
+		}
+		e.close()
 	}
 }
