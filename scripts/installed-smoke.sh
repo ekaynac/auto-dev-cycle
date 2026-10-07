@@ -23,7 +23,14 @@
 # Usage: scripts/installed-smoke.sh PREFIX
 set -euo pipefail
 
-die() { echo "installed-smoke: $*" >&2; exit 1; }
+# secrets is every form of every secret known so far; die never prints one.
+secrets=()
+die() {
+  local msg="$*" v
+  for v in "${secrets[@]}"; do msg="${msg//"$v"/[redacted]}"; done
+  echo "installed-smoke: $msg" >&2
+  exit 1
+}
 
 if [[ "${1:-}" != --inside ]]; then
   [[ $# -eq 1 ]] || die "usage: installed-smoke.sh PREFIX"
@@ -36,10 +43,12 @@ if [[ "${1:-}" != --inside ]]; then
     if [[ -L "/$d" ]]; then sys+=(--symlink "$(readlink "/$d")" "/$d")
     elif [[ -d "/$d" ]]; then sys+=(--ro-bind "/$d" "/$d"); fi
   done
-  exec env -i PATH=/usr/bin:/bin timeout --kill-after=10 300 bwrap --unshare-all --die-with-parent "${sys[@]}" \
+  exec env -i PATH=/usr/bin:/bin timeout --foreground --kill-after=10 300 bwrap --unshare-all --die-with-parent "${sys[@]}" \
     --ro-bind "$prefix" /p --ro-bind "$self" /smoke.sh --tmpfs /tmp --proc /proc --dev /dev \
-    --chdir /tmp --setenv HOME /tmp --setenv TMPDIR /tmp -- bash /smoke.sh --inside
+    --chdir /tmp --setenv HOME /tmp --setenv TMPDIR /tmp --setenv ADC_SMOKE_SANDBOX 1 -- bash /smoke.sh --inside
 fi
+# Only ever inside the sandbox: it would otherwise write to the real /tmp.
+[[ -e /smoke.sh && "${ADC_SMOKE_SANDBOX:-}" == 1 ]] || die "--inside runs only in the sandbox; run installed-smoke.sh PREFIX"
 
 # Inside the sandbox from here on.
 cd /tmp || die "no /tmp in the sandbox"
@@ -93,6 +102,34 @@ within() {
     sleep 0.1
   done
 }
+# forms SECRET: the forms a leak of SECRET (base64url, or a token
+# tok_ID.SECRET) may take: as is, its secret part, that in standard base64,
+# the hex of its bytes, its first and last 16 characters, and the base64
+# of the whole.
+forms() {
+  local s="${1#*.}" std pad
+  std="$(tr -- '-_' '+/' <<<"$s")"
+  pad="$std"
+  while ((${#pad} % 4)); do pad+="="; done
+  printf '%s\n' "$1" "$s" "$std" "${s:0:16}" "${s: -16}" "$(base64 -d <<<"$pad" | od -An -tx1 | tr -d ' \n')" \
+    "$(printf '%s' "$1" | base64 -w0)"
+}
+# known SECRET: every form of SECRET is redacted from now on.
+known() {
+  local f
+  while IFS= read -r f; do
+    [[ ${#f} -ge 16 ]] || die "a secret form is shorter than expected"
+    secrets+=("$f")
+  done < <(forms "$1")
+}
+# scan OWN SECRET: no form of SECRET in any file but OWN (none: "").
+scan() {
+  local own="$1" f leaks
+  while IFS= read -r f; do
+    leaks="$(grep -rlaF -- "$f" /tmp | grep -vxF -e "$own" || true)"
+    [[ -z "$leaks" ]] || die "a secret appears in: $leaks"
+  done < <(forms "$2")
+}
 alive() { kill -0 "$adcd" 2>/dev/null || die "adcd exited: $(head -c 400 "$out/adcd.log")"; }
 started() { alive && grep -q '^adcd: started' "$out/adcd.log"; }
 
@@ -108,6 +145,7 @@ fi
 
 step "bootstrapping the first operator, once"
 boot="$(<state/bootstrap.secret)"
+known "$boot"
 adc_as /tmp/op bootstrap admin bootstrap --state-dir /tmp/state
 want 0 bootstrap
 [[ ! -e state/bootstrap.secret && -f op/.config/adc/token ]] || die "the bootstrap left its secret or wrote no token"
@@ -124,6 +162,8 @@ adc_as /tmp/op enrol admin enrol-agent --expect 0 --reason smoke --token-out /tm
 want 0 enrol
 [[ "$(stat -c %a sup/.config/adc/token)" == 600 ]] || die "the supervisor's token file is not 0600"
 op_tok="$(<op/.config/adc/token)" sup_tok="$(<sup/.config/adc/token)"
+known "$op_tok"
+known "$sup_tok"
 
 step "granting the supervisor the seat and notes, and reads in one project"
 expires="$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)"
@@ -172,8 +212,10 @@ done
 
 step "releasing the seat, revoking the grant and the supervisor's token"
 get seat "$op_tok" /v1/seat
-seat_v="$(sed -n 's/.*"holder":"'"$sup"'".*"version":\([0-9]*\).*/\1/p' "$out/seat.out")"
-[[ $code == 200 && -n "$seat_v" ]] || die "the operator's seat read: HTTP $code, not held by the supervisor"
+seat_v="$(grep -o '"version":[0-9]*' "$out/seat.out" | cut -d: -f2)"
+if [[ $code != 200 || ! $seat_v =~ ^[0-9]+$ ]] || ! grep -q "\"holder\":\"$sup\"" "$out/seat.out"; then
+  die "the operator's seat read: HTTP $code, not held by the supervisor"
+fi
 adc_as /tmp/sup release seat release --expect "$seat_v" --reason smoke --json
 want 0 release
 adc_as /tmp/op revoke-grant grant revoke --expect "$(last_seq grant)" --reason smoke --json --scope "{\"grant\":\"$grant\"}"
@@ -184,6 +226,7 @@ get revoked "$sup_tok" /v1/whoami
 [[ $code == 401 ]] || die "the revoked bearer: HTTP $code, want 401"
 adc_as /tmp/sup revoked-cli seat take --expect 0 --reason smoke
 want 1 revoked-cli
+grep -q "unauthenticated" "$out/revoked-cli.err" || die "the revoked token's command is not refused unauthenticated"
 
 step "stopping adcd"
 kill -TERM "$adcd"
@@ -198,9 +241,7 @@ fi
 timeout 60 /p/bin/adc dev verify-log --state /tmp/state >"$out/verify.out" 2>&1 || die "the stopped adcd's log does not verify"
 
 step "no secret outside the token files"
-for s in "$boot" "$op_tok" "$sup_tok" "${op_tok#*.}" "${sup_tok#*.}"; do
-  [[ ${#s} -ge 16 ]] || die "a secret is shorter than expected"
-  leaks="$(grep -rlaF -- "$s" /tmp | grep -vxF -e /tmp/op/.config/adc/token -e /tmp/sup/.config/adc/token || true)"
-  [[ -z "$leaks" ]] || die "a secret appears in: $leaks"
-done
+scan "" "$boot"
+scan /tmp/op/.config/adc/token "$op_tok"
+scan /tmp/sup/.config/adc/token "$sup_tok"
 step "ok: bootstrap, enrolment, grant, seat, notes, reads, the event stream and revocation through the installed binaries"
