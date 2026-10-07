@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/actor-revoke.json",
+  "title": "ActorRevokeScope",
+  "description": "The scope of actor.revoke (docs/design/m0/04 \"Actors and tokens\"): the actor to revoke, with every live token it holds, in one command. Its pending proposals are invalidated and the seat it holds is freed in the same fold. The controller's system actor and the last live operator are never revoked (actor_protected). Only an operator revokes in this build.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["actor"],
+  "properties": {
+    "actor": {"$ref": "../../common/defs.json#/$defs/ActorID"}
+  }
+}

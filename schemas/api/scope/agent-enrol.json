@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/agent-enrol.json",
+  "title": "AgentEnrolScope",
+  "description": "The scope of agent.enrol (docs/design/m0/04 \"Actors and tokens\", 14 H1): the supervisor actor to create, under an id the client mints (act_…, which must not exist), with its first token. The token is minted by the request layer, never named here; its secret reaches only the live response of the call that applied the enrolment (14 N3). A client retry under the same idempotency key replays without it, and the same actor id under a new key is refused, so an enrolment never happens twice. Only an operator enrols in this build.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["actor", "name", "declared_agent"],
+  "properties": {
+    "actor": {"$ref": "../../common/defs.json#/$defs/ActorID"},
+    "name": {"description": "Display only.", "type": "string", "minLength": 1, "maxLength": 200},
+    "declared_agent": {
+      "description": "A self-declared label (e.g. a harness name); audit only, never enforcement.",
+      "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 200}]
+    }
+  }
+}

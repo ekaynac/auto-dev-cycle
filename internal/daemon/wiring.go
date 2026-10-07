@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -40,15 +41,17 @@ func hooks(az authority.Authorizer, project func(*eventstore.Tx, []eventstore.Ev
 }
 
 // authorizer is the one authorizer over the wired handlers: the writer's
-// Authorize hook and the request layer's logic (logics) share it.
+// Authorize hook and the request layer's logic (logics, issuers) share it.
 func authorizer(reg *vocab.Registry) authority.Authorizer {
 	return authority.Authorizer{Registry: reg, Handlers: handlers()}
 }
 
-// handlers are the wired actions' handlers: proposal.confirm and the
-// seat's. Every other registered action has none and is refused.
+// handlers are the wired actions' handlers: proposal.confirm, the seat's,
+// agent.enrol and actor.revoke (14 PR 7a). Every other registered action
+// has none and is refused.
 func handlers() map[string]authority.Handler {
 	hs := authority.SeatHandlers(0)
+	maps.Copy(hs, authority.AdminHandlers())
 	hs[authority.ConfirmAction] = authority.ConfirmHandler{}
 	return hs
 }
@@ -57,11 +60,21 @@ func handlers() map[string]authority.Handler {
 // to Submit with the command.
 type logic func(eventstore.Command) eventstore.Decide
 
+// issuer is the request layer of an action that issues a credential
+// (14 N3): it mints outside the transaction and returns the logic to
+// submit with the command and the delivery of what that commits.
+type issuer func(context.Context, *eventstore.Store, eventstore.Command) (eventstore.Decide, func(eventstore.Committed) (identity.Secret, bool), error)
+
+// issuers are the credential-issuing actions' request layers: agent.enrol.
+func issuers(az authority.Authorizer) map[string]issuer {
+	return map[string]issuer{authority.EnrolAction: az.EnrolRequest}
+}
+
 // logics are the wired actions' logic, by action: every action handlers
-// wires has one (a test checks), and an action without one is refused
-// before anything is submitted (14 D1).
+// wires has one, or an issuer (a test checks), and an action without
+// either is refused before anything is submitted (14 D1).
 func logics(az authority.Authorizer) map[string]logic {
-	out := map[string]logic{authority.ConfirmAction: az.Confirm}
+	out := map[string]logic{authority.ConfirmAction: az.Confirm, authority.RevokeActorAction: az.RevokeActor}
 	for action, h := range az.Handlers {
 		if s, ok := h.(authority.SeatHandler); ok {
 			out[action] = s.Logic

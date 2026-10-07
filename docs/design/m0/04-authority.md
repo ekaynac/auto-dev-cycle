@@ -55,6 +55,28 @@ Actor:
       and records `identity.bootstrap_renewed/v1` with a new 24 h expiry; the old secret no longer bootstraps. After
       consumption it is `failed/confirmation_refused`. Startup never renews.
   - All logs redact tokens, secrets and challenge values by type, not by pattern guessing.
+- **Enrolment and revocation (14 PR 7a).**
+  - `agent.enrol {actor, name, declared_agent}` creates a supervisor and its first token in one command. The client
+    mints the actor id, so a retry under the same key replays and the same id under a new key is refused. The request
+    layer mints the token outside the transaction; only its hash is recorded, and the secret reaches only the live
+    response of the call that applied it (14 N3).
+  - A supervisor's `agent.enrol` is refused (`operator_only`), not proposed. Its `human` policy cannot be confirmed
+    until the dashboard's WebAuthn is deployed (14 R6), so the proposal could only expire. Its token would also have
+    no one to go to: at apply it would be minted by the confirming request and delivered only to the confirming
+    operator's dashboard response, never to the proposer, since a supervisor holding a second identity defeats
+    separation of duties and the one seat. That delivery path, and an `Applier` that receives the confirmer, arrive
+    with WebAuthn.
+  - `actor.revoke {actor}` revokes every live token of the actor, then the actor. The fold invalidates its pending
+    proposals and frees its seat. Only an operator revokes (`operator_only`). The system actor and the last live
+    operator are refused (`actor_protected`), because bootstrap is spent once and offline recovery (14 R7) serves only
+    a live operator. A live operator is an unrevoked operator actor, whether or not it holds a live token: recovery
+    issues it one, so token administration (7b) must not tighten this rule. The refusal is committed, so it is final
+    under its idempotency key: a retry replays it, and the CLI (10a) uses a new key for a new attempt.
+  - Minting costs one Argon2id hash (64 MiB). `Authorizer.Enrol` reads first and skips the mint for a caller who is not
+    a live operator and for a stored key (a replay records no token). The command endpoint takes
+    each mint through the listener's Argon2 slots (`api.Slots`), like a bearer verification, and answers the
+    credential only in a fresh applied response (`issued_credential`).
+  - Neither action is seat-exempt (only taking or asking for the seat is, 14 N4/P4); operators never need the seat.
 - `operator` tokens are unrestricted (D31).
 - `supervisor` tokens act only under grants.
 

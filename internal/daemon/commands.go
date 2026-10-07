@@ -38,6 +38,7 @@ type commands struct {
 	gate  *api.Slots
 	reg   *vocab.Registry
 	logic map[string]logic
+	issue map[string]issuer // the credential-issuing actions'
 	log   io.Writer
 	// authenticated, when set, runs after a request is authenticated and
 	// before its command is submitted: a test revokes the caller there.
@@ -78,6 +79,9 @@ func (h commands) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	v, err := h.decide(r.Context(), p, r.PathValue("action"), req)
 	switch {
+	case errors.Is(err, api.ErrBusy): // no slot for an issuing action's mint
+		api.RefuseBusy(w)
+		return
 	case errors.Is(err, identity.ErrUnauthenticated): // revoked since it was authenticated
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
@@ -123,7 +127,8 @@ func (h commands) decide(ctx context.Context, p identity.Principal, action strin
 		return refusal(vocab.Failed, vocab.ReasonActionUnregistered, "the action is not in the action registry"), nil
 	}
 	run, ok := h.logic[action]
-	if !ok {
+	issue, issues := h.issue[action]
+	if !ok && !issues {
 		return refusal(vocab.CouldNotRun, vocab.ReasonActionDeferred, action+" is not wired in this build"), nil
 	}
 	id, err := ids.New("cmd")
@@ -132,10 +137,27 @@ func (h commands) decide(ctx context.Context, p identity.Principal, action strin
 	}
 	c := p.Command(id, action, req.IdempotencyKey, req.Scope, nil)
 	c.Expect = &eventstore.State{Version: req.Expected.Version, Digest: (*string)(req.Expected.Digest)}
-	// No wired action issues a credential yet. One that does mints it here,
-	// before Submit and outside the transaction, and passes it to applied
-	// through identity.Issued.Deliver (14 N3).
-	res, err := h.store.Submit(ctx, c, run(c))
+	if !issues {
+		res, err := h.store.Submit(ctx, c, run(c))
+		return h.answer(res, err)
+	}
+	// An issuing action mints before Submit, outside the transaction, under
+	// one of the listener's Argon2 slots, and its credential reaches the
+	// response only through the delivery (identity.Issued.Deliver, 14 N3).
+	peer, _ := api.PeerOf(ctx)
+	release, free := h.gate.Take(peer.UID)
+	if !free {
+		return nil, api.ErrBusy
+	}
+	decide, deliver, err := issue(ctx, h.store, c)
+	release()
+	if err != nil {
+		return h.answer(eventstore.Committed{}, err)
+	}
+	res, err := h.store.Submit(ctx, c, decide)
+	if secret, fresh := deliver(res); err == nil && fresh {
+		return applied(res, &secret)
+	}
 	return h.answer(res, err)
 }
 

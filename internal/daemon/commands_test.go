@@ -391,14 +391,14 @@ func TestEveryHandlerHasLogic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ls := logics(authorizer(reg))
+	ls, is := logics(authorizer(reg)), issuers(authorizer(reg))
 	for action := range handlers() {
-		if ls[action] == nil {
-			t.Errorf("%s has a handler and no logic", action)
+		if (ls[action] == nil) == (is[action] == nil) {
+			t.Errorf("%s has a handler and not exactly one of a logic and an issuer", action)
 		}
 	}
-	if len(ls) != len(handlers()) {
-		t.Errorf("logics %d, handlers %d", len(ls), len(handlers()))
+	if len(ls)+len(is) != len(handlers()) || is[authority.EnrolAction] == nil || ls[authority.RevokeActorAction] == nil {
+		t.Errorf("logics %d, issuers %d, handlers %d", len(ls), len(is), len(handlers()))
 	}
 }
 
