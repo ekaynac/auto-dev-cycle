@@ -144,10 +144,10 @@ func (s *server) listenHTTPS(store *eventstore.Store, addr string, tc *tls.Confi
 // is closed, whatever stage it is at (handshake, headers, verification):
 // net/http resets its own deadlines at each stage, so they alone would let
 // a caller with no bearer hold the slot for their sum. A connection that
-// ends without ever presenting a bearer, at that bound or by the peer
-// closing it once it has held its slot for preAuthFree, counts as a
-// failure (th), so a peer that only reconnects to hold slots is held off
-// like one that guesses, whether or not it waits for the bound.
+// ends without a request ever reaching the handler counts as a failure
+// (th) when it completed its TLS handshake, held its slot for preAuthFree
+// or reached that bound (httpsConn.ended), so a peer that only reconnects
+// to hold slots is held off like one that guesses.
 type tcpListener struct {
 	net.Listener
 	conns       *api.Slots
@@ -191,16 +191,16 @@ type httpsConn struct {
 	net.Conn
 	peer    api.Peer
 	release func()        // its connection slot
-	th      *throttle     // what an end with no bearer presented counts against
+	th      *throttle     // what an end with no request counts against
 	since   time.Time     // its accept
-	free    time.Duration // how long it may last bearer-less and end without a failure
+	free    time.Duration // how long it may hold its slot, no handshake done, and end without a failure
 	started bool
 	mu      sync.Mutex
 	digest  [sha256.Size]byte
 	who     identity.Principal // the zero Principal until a bearer is verified
-	offered bool               // a request on it presented a bearer
+	asked   bool               // a request on it reached the handler, whose answer counts any failure
 	expired bool               // it reached the pre-auth bound
-	ended   bool               // Close ran: its failure, if any, is counted
+	counted bool               // its end was judged (ended): a failure counts once
 	expiry  *time.Timer        // the pre-auth bound: a no-op once a bearer is verified
 }
 
@@ -220,22 +220,43 @@ func (c *httpsConn) Read(b []byte) (int, error) {
 	return n, err
 }
 
-// Close counts one failure for the peer, the first time, if no bearer was
-// presented (one still being verified is not the peer's fault) and the
-// connection reached the pre-auth bound or held its slot for free: a
-// peer cannot dodge the failure by closing just before the bound. A
-// shorter bearer-less connection (a failed handshake, a probe) is not one.
 func (c *httpsConn) Close() error {
 	c.mu.Lock()
 	c.expiry.Stop()
-	fail := !c.ended && c.who.Actor() == "" && !c.offered && (c.expired || time.Since(c.since) >= c.free)
-	c.ended = true
+	c.mu.Unlock()
+	c.release()
+	return c.Conn.Close()
+}
+
+// ended judges a connection that is over, once: if no request on it
+// reached the handler (which counts its own refusals, does not blame a
+// bearer still being verified, and verifies every bearer), and it completed its
+// TLS handshake or held its slot for free (or to the pre-auth bound), that
+// is a failure for its peer. Only a connection that closed within free
+// without completing a handshake (a TCP health check, a failed handshake)
+// is not.
+func (c *httpsConn) ended(handshook bool) {
+	c.mu.Lock()
+	fail := !c.counted && !c.asked && (handshook || c.expired || time.Since(c.since) >= c.free)
+	c.counted = true
 	c.mu.Unlock()
 	if fail {
 		c.th.fail(c.peer.Key())
 	}
-	c.release()
-	return c.Conn.Close()
+}
+
+// connState is for http.Server.ConnState: it judges each HTTPS connection
+// when net/http is done with it (httpsConn.ended). The handshake state is
+// read only then, on net/http's own goroutine, so no handshake can hold
+// it.
+func connState(c net.Conn, state http.ConnState) {
+	tc, ok := c.(*tls.Conn)
+	if !ok || state != http.StateClosed {
+		return
+	}
+	if hc, ok := tc.NetConn().(*httpsConn); ok {
+		hc.ended(tc.ConnectionState().HandshakeComplete)
+	}
 }
 
 // expire closes the connection if no bearer has been verified on it.
@@ -249,11 +270,11 @@ func (c *httpsConn) expire() {
 	}
 }
 
-// present records that a request on the connection presented a bearer.
-func (c *httpsConn) present() {
+// ask records that a request on the connection reached the handler.
+func (c *httpsConn) ask() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.offered = true
+	c.asked = true
 }
 
 // verified is the principal whose bearer this connection verified, if
@@ -276,8 +297,7 @@ type httpsConnKey struct{}
 // httpsHandler is the API on the HTTPS listener. Every request's bearer is
 // authenticated before any route (authenticate), so nothing, not even a
 // 404, answers a caller without one. A peer whose bearers keep failing is
-// held off (throttle) before any verification; a 200 clears its failures
-// once they are old (throttle.forgive). The routes get the verified
+// held off (throttle) before any verification. The routes get the verified
 // principal (api.WithPrincipal), so they recheck it rather than hash the
 // bearer again. Bootstrap is not served.
 // Responses go through guard: no redirect, no caching, and a refusal
@@ -292,13 +312,11 @@ func httpsHandler(store *eventstore.Store, lim limits, gate *api.Slots, th *thro
 			http.Error(w, "unauthenticated", http.StatusUnauthorized)
 			return
 		}
+		hc.ask()
 		key := hc.peer.Key()
 		defer func() {
-			switch w.status {
-			case http.StatusUnauthorized:
+			if w.status == http.StatusUnauthorized {
 				th.fail(key)
-			case http.StatusOK:
-				th.forgive(key)
 			}
 		}()
 		if wait := th.wait(key); wait > 0 {
@@ -309,7 +327,6 @@ func httpsHandler(store *eventstore.Store, lim limits, gate *api.Slots, th *thro
 		bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		code, who := http.StatusUnauthorized, identity.Principal{}
 		if ok && bearer != "" {
-			hc.present()
 			who, code = authenticate(r, hc, store, gate, bearer)
 		}
 		if code != 0 {

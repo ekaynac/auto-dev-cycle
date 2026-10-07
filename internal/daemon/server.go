@@ -33,7 +33,7 @@ type limits struct {
 	remote        slotQuota     // the HTTPS listener's, per remote address (api.Peer.Key)
 	freeFailures  int           // failed HTTPS authentications a remote peer has before it is held off (throttle)
 	preAuth       time.Duration // an HTTPS connection's bound from accept to a verified bearer (tcpListener)
-	preAuthFree   time.Duration // a bearer-less HTTPS connection that ends sooner is not a failure (httpsConn.Close)
+	preAuthFree   time.Duration // a request-less HTTPS connection that ends sooner, no handshake done, is not a failure (httpsConn.ended)
 	poll          time.Duration // the event stream's re-check bound; zero is api.MaxPoll
 	shutdown      time.Duration // what a graceful stop waits before closing connections
 }
@@ -115,7 +115,7 @@ func listen(store *eventstore.Store, boot *bootstrapper, stateDir string, shared
 func (s *server) serve(ln net.Listener, h http.Handler, errLog *log.Logger) {
 	hs := &http.Server{Handler: h, ReadHeaderTimeout: s.lim.headerTimeout, WriteTimeout: s.lim.writeTimeout,
 		IdleTimeout: s.lim.idleTimeout, MaxHeaderBytes: s.lim.headerBytes - 4096, ErrorLog: errLog,
-		BaseContext: func(net.Listener) context.Context { return s.base }, ConnContext: connContext}
+		BaseContext: func(net.Listener) context.Context { return s.base }, ConnContext: connContext, ConnState: connState}
 	s.https = append(s.https, hs)
 	s.wg.Go(func() {
 		if err := hs.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
