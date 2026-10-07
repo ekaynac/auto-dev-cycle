@@ -30,7 +30,7 @@ var ErrCommandsRefused = authority.ErrActionNotWired
 func hooks(reg *vocab.Registry, project func(*eventstore.Tx, []eventstore.Event) error) eventstore.Hooks {
 	az := authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{}, Now: time.Now}
 	authorize := func(t *eventstore.Tx, c eventstore.Command) error {
-		if c.Action == issueAction {
+		if c.Action == bootstrapAction || c.Action == issueAction {
 			return authorizeSystem(t, c)
 		}
 		return az.Authorize(t, c)

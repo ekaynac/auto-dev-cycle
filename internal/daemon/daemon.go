@@ -151,7 +151,7 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	if err != nil {
 		return err
 	}
-	srv, err := listen(d.store, d.lock.Dir(), cfg.Shared, defaultLimits)
+	srv, err := listen(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits)
 	if err != nil {
 		if cerr := d.Close(); cerr != nil {
 			return couldNotRun(vocab.ReasonStoreUnreadable, "the event store did not close cleanly", errors.Join(err, cerr))

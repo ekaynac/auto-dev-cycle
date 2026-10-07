@@ -41,7 +41,7 @@ var (
 	ReasonCompletedWithFindings = types.ReasonCodeOf("completed_with_findings")
 	// ReasonConclusionsUnchanged: A new receipt has the conclusions_digest the reviewer already saw; no new review is required.
 	ReasonConclusionsUnchanged = types.ReasonCodeOf("conclusions_unchanged")
-	// ReasonConfirmationRefused: A confirmation did not count: a challenge used, expired, for another binding or by an actor who may not confirm, or a review that is not a GO for this proposal.
+	// ReasonConfirmationRefused: A confirmation did not count: a challenge used, expired, for another binding or by an actor who may not confirm, or a review that is not a GO for this proposal; also a bootstrap setup secret that is wrong, expired or already spent (04 "Bootstrap").
 	ReasonConfirmationRefused = types.ReasonCodeOf("confirmation_refused")
 	// ReasonControllerAlreadyRunning: Another adcd holds the state directory lock.
 	ReasonControllerAlreadyRunning = types.ReasonCodeOf("controller_already_running")

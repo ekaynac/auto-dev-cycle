@@ -8,6 +8,28 @@ info:
 security:
   - bearer: []
 paths:
+  /v1/bootstrap:
+    post:
+      operationId: bootstrap
+      tags:
+        - admin
+      summary: Create the first operator and its first token with the one-time setup secret; served only on the private socket, without a bearer.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/api.bootstrap-request'
+      responses:
+        "200":
+          description: 'The bootstrap was decided: applied or refused.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.bootstrap-response'
+        "403":
+          description: Not the private socket; nothing was decided.
   /v1/commands/actor.revoke:
     post:
       operationId: command.actor.revoke
@@ -388,6 +410,85 @@ components:
       scheme: bearer
       type: http
   schemas:
+    api.bootstrap-request:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/bootstrap-request.json
+      title: BootstrapRequest
+      description: 'The body of POST /v1/bootstrap (docs/design/m0/04 "Bootstrap", 14 R4), served only on the private socket and without a bearer: the one-time setup secret from <state_dir>/bootstrap.secret creates the first operator and its first token. The writer runs it once per idempotency_key; a repeat with the same body replays the stored result without the token.'
+      type: object
+      additionalProperties: false
+      required:
+        - idempotency_key
+        - secret
+        - name
+      properties:
+        idempotency_key:
+          type: string
+          maxLength: 200
+          pattern: ^[\x21-\x7e]+$
+        secret:
+          description: 'The setup secret: 32 bytes of base64url, never logged or stored.'
+          type: string
+          pattern: ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$
+        name:
+          description: The first operator's display name.
+          type: string
+          minLength: 1
+          maxLength: 200
+    api.bootstrap-response:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/bootstrap-response.json
+      title: BootstrapResponse
+      description: 'The response to POST /v1/bootstrap, a union on disposition: applied (the first operator and its first token exist) or refused (nothing was applied; a wrong, expired or consumed secret is failed/confirmation_refused).'
+      oneOf:
+        - $ref: '#/$defs/BootstrapApplied'
+        - $ref: '#/$defs/BootstrapRefused'
+      $defs:
+        BootstrapApplied:
+          type: object
+          additionalProperties: false
+          required:
+            - disposition
+            - command
+            - replayed
+            - operator
+            - token
+          properties:
+            disposition:
+              const: applied
+            command:
+              $ref: ../common/defs.json#/$defs/CommandID
+            replayed:
+              type: boolean
+            operator:
+              $ref: ../common/defs.json#/$defs/ActorID
+            token:
+              $ref: ../common/defs.json#/$defs/TokenID
+            issued_credential:
+              description: 'The first token''s bearer string, tok_<id>.<secret> (14 N3): present only on the response that applied the bootstrap, absent on a replay. It is never stored; a lost one is recovered offline (adcd recover operator-token).'
+              type: string
+              pattern: ^tok_[0-7][0-9a-hjkmnp-tv-z]{25}\.[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$
+        BootstrapRefused:
+          type: object
+          additionalProperties: false
+          required:
+            - disposition
+            - outcome
+            - reason
+            - detail
+          properties:
+            disposition:
+              const: refused
+            outcome:
+              enum:
+                - failed
+                - could_not_run
+            reason:
+              $ref: ../common/defs.json#/$defs/ReasonCode
+            detail:
+              type: string
+              minLength: 1
+              maxLength: 4096
     api.command-request:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/command-request.json
