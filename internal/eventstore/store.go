@@ -315,6 +315,40 @@ func (s *Store) ensureGenesis(ctx context.Context) (string, error) {
 
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
+// eventTime is the time the next event is recorded at (03 "Event time"):
+// the store clock, or the previous event's time (prev) when the clock
+// trails it, so recorded times never decrease.
+func (s *Store) eventTime(prev sql.NullString) (time.Time, error) {
+	t := s.clock().UTC()
+	if !prev.Valid {
+		return t, nil
+	}
+	p, err := time.Parse(time.RFC3339Nano, prev.String)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("eventstore: the previous event's time %q: %w", prev.String, err)
+	}
+	if p.After(t) {
+		return p, nil
+	}
+	return t, nil
+}
+
+// after: at is not before prev (an absent prev precedes everything).
+func after(at string, prev sql.NullString) bool {
+	a, err1 := time.Parse(time.RFC3339Nano, at)
+	p, err2 := time.Parse(time.RFC3339Nano, prev.String)
+	return err1 == nil && (!prev.Valid || err2 == nil && !a.Before(p))
+}
+
+// headTime is the time a command recording now gets (Tx.Now).
+func (s *Store) headTime(ctx context.Context, tx *sql.Tx) (time.Time, error) {
+	var prev sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT at FROM events ORDER BY seq DESC LIMIT 1`).Scan(&prev); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, err
+	}
+	return s.eventTime(prev)
+}
+
 const maxSafeInt = 9007199254740991
 
 var integerRe = regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`)
@@ -492,11 +526,20 @@ func (s *Store) append(ctx context.Context, tx *sql.Tx, e Event) (Event, error) 
 	}
 	e.Payload, e.SchemaSet = payload, s.schemaSet
 	var last sql.NullInt64
-	var prev sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1`).Scan(&last, &prev); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	var prev, prevAt sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT seq, hash, at FROM events ORDER BY seq DESC LIMIT 1`).Scan(&last, &prev, &prevAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Event{}, err
 	}
-	e.Seq, e.PrevHash, e.At = last.Int64+1, s.genesis, s.clock().UTC().Format(time.RFC3339Nano)
+	if e.At == "" { // an effect transition: the clock, never before the previous event
+		at, err := s.eventTime(prevAt)
+		if err != nil {
+			return Event{}, err
+		}
+		e.At = at.Format(time.RFC3339Nano)
+	} else if !after(e.At, prevAt) { // a command's event carries its Tx.Now
+		return Event{}, fmt.Errorf("eventstore: event time %s is before the previous event's %s", e.At, prevAt.String)
+	}
+	e.Seq, e.PrevHash = last.Int64+1, s.genesis
 	if prev.Valid {
 		e.PrevHash = prev.String
 	}

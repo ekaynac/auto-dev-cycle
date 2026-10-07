@@ -66,7 +66,8 @@ func (r reviews) Review(_ *eventstore.Tx, id types.ReceiptID, _ types.Proposal) 
 
 type confirmKit struct {
 	*boundary
-	now     time.Time
+	base    time.Time // the real time at open; the grants are around it
+	now     time.Time // the store clock's time, which only moves forward (advance)
 	notes   *applyingNotes
 	reviews reviews
 	grant   types.Grant // the supervisor's, around the real time
@@ -75,17 +76,28 @@ type confirmKit struct {
 // openConfirm is the boundary at the real time (event times are the
 // store's clock), with the supervisor granted note.add and proposal.confirm
 // under k.grant only.
-func openConfirm(t *testing.T) *confirmKit {
-	k := &confirmKit{boundary: openBoundary(t), now: suiteNow().UTC(), notes: &applyingNotes{}, reviews: reviews{}}
-	k.az.Now = func() time.Time { return k.now }
+func openConfirm(t *testing.T) *confirmKit { return openConfirmAt(t, 0) }
+
+// openConfirmAt opens the kit with the store clock start from the real
+// time; every command decides at the store clock (Tx.Now).
+func openConfirmAt(t *testing.T, start time.Duration) *confirmKit {
+	storeShift = start
+	t.Cleanup(func() { storeShift = 0 })
+	base := suiteNow().UTC()
+	k := &confirmKit{boundary: openBoundary(t), base: base, now: base.Add(start), notes: &applyingNotes{}, reviews: reviews{}}
 	k.az.Reviews = k.reviews
 	k.az.Handlers = map[string]authority.Handler{"note.add": k.notes, authority.ConfirmAction: authority.ConfirmHandler{}}
 	k.grant = k.supGrant
 	k.grant.ID, k.grant.Actions = types.GrantID(newID(t, "grt")), []types.ActionKind{"note.add", authority.ConfirmAction}
-	k.grant.ValidFrom, k.grant.ExpiresAt = types.Time(k.now.Add(-100*time.Hour).Format(time.RFC3339)), types.Time(k.now.Add(time.Hour).Format(time.RFC3339))
+	k.grant.ValidFrom, k.grant.ExpiresAt = types.Time(base.Add(-100*time.Hour).Format(time.RFC3339)), types.Time(base.Add(time.Hour).Format(time.RFC3339))
 	k.seed(k.op, createGrant(k.grant))
 	k.seed(k.op, revokeGrant(k.supGrant, k.now)) // k.grant alone covers the supervisor
 	return k
+}
+
+// advance moves the store clock forward to to (event times never go back).
+func (k *confirmKit) advance(to time.Time) {
+	k.now, storeShift = to, to.Sub(suiteNow())
 }
 
 var accept = map[string]any{"classes": []string{"knowledge.accept_claim"}}
@@ -302,11 +314,6 @@ func TestConfirmRevalidates(t *testing.T) {
 	k.seed(k.op, createGrant(tight))
 	invalid("a tightened policy", p, types.ProposalInvalidatedReasonValueProposalInvalidated)
 	k.seed(k.op, revokeGrant(tight, k.now))
-	// The grant lapsed.
-	p = k.propose(k.op.Actor())
-	k.now = k.now.Add(2 * time.Hour)
-	invalid("a lapsed grant", p, types.ProposalInvalidatedReasonValueProposalInvalidated)
-	k.now = k.now.Add(-2 * time.Hour)
 	// The grant revoked: the fold invalidates it.
 	p = k.propose(k.op.Actor())
 	k.seed(k.op, revokeGrant(k.grant, k.now))
@@ -314,17 +321,22 @@ func TestConfirmRevalidates(t *testing.T) {
 		t.Errorf("a revoked grant's proposal: %+v", got)
 	}
 	k.refused("a revoked grant", k.confirmCmd(k.op, p.ID, k.review(p, "claude")), p.ID, isReason(vocab.ReasonProposalNotOpen))
+	// The grant lapsed (last: the store clock only moves forward).
+	again := k.grant
+	again.ID = types.GrantID(newID(t, "grt"))
+	k.seed(k.op, createGrant(again))
+	p = k.propose(k.op.Actor())
+	k.advance(k.now.Add(2 * time.Hour))
+	invalid("a lapsed grant", p, types.ProposalInvalidatedReasonValueProposalInvalidated)
 	k.rebuilds()
 }
 
 // Confirmed past its expiry, a proposal is closed as expired: committed,
 // refused, nothing applied, and never confirmed after.
 func TestConfirmAfterExpiry(t *testing.T) {
-	k := openConfirm(t)
-	real := k.now
-	k.now = real.Add(-authority.ProposalTTL - time.Minute)
+	k := openConfirmAt(t, -authority.ProposalTTL-time.Minute)
 	p := k.propose(k.op.Actor())
-	k.now = real
+	k.advance(k.base)
 	c := k.confirmCmd(k.op, p.ID, k.review(p, "claude"))
 	if out := k.committed(c, eventstore.DispositionRefused); out.Reason != vocab.ReasonProposalExpired.String() {
 		t.Errorf("the expired result: %+v", out)
@@ -340,11 +352,9 @@ func TestConfirmAfterExpiry(t *testing.T) {
 // no confirmation without its approval, no application of an open one, no
 // expiry before its time.
 func TestProposalTransitionGuards(t *testing.T) {
-	k := openConfirm(t)
-	real := k.now
-	k.now = real.Add(-authority.ProposalTTL - time.Minute)
+	k := openConfirmAt(t, -authority.ProposalTTL-time.Minute)
 	old := k.propose(k.op.Actor())
-	k.now = real
+	k.advance(k.base)
 	p := k.propose(k.op.Actor())
 	step := func(p types.Proposal, kind string, status types.ProposalStatus, change func(*types.Proposal)) applyFn {
 		return func(*eventstore.Tx) ([]eventstore.Event, error) {

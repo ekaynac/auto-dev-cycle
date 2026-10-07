@@ -108,8 +108,9 @@ func effectPayload(id, transition string, kind, target, digest, outcome *string,
 }
 
 // appendIntents records the command's effect intents: an event and a
-// pending effect each. It returns the events.
-func (s *Store) appendIntents(ctx context.Context, tx *sql.Tx, c Command, intents []intent) ([]Event, error) {
+// pending effect each, recorded at the command's time (Tx.Now). It returns
+// the events.
+func (s *Store) appendIntents(ctx context.Context, tx *sql.Tx, c Command, at string, intents []intent) ([]Event, error) {
 	var out []Event
 	for _, in := range intents {
 		p, err := effectPayload(in.id, "intent", &in.kind, &in.target, &in.digest, nil, "", nil)
@@ -121,7 +122,7 @@ func (s *Store) appendIntents(ctx context.Context, tx *sql.Tx, c Command, intent
 		if err != nil {
 			return nil, err
 		}
-		e, err := s.append(ctx, tx, Event{ID: evID, Kind: "effect.intent/v1", Subject: in.id, Actor: c.Actor, Command: &cmd, Payload: p})
+		e, err := s.append(ctx, tx, Event{ID: evID, At: at, Kind: "effect.intent/v1", Subject: in.id, Actor: c.Actor, Command: &cmd, Payload: p})
 		if err != nil {
 			return nil, err
 		}

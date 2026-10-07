@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/seat-release.json",
+  "title": "SeatReleaseScope",
+  "description": "The scope of seat.release (docs/design/m0/08 \"Supervisor seat\"): empty. The seat released is the controller's one seat, by its holder or an operator.",
+  "type": "object",
+  "additionalProperties": false
+}

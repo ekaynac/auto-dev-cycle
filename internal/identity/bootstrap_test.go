@@ -42,8 +42,8 @@ func TestIssueBootstrap(t *testing.T) {
 	_, first := bootSecret(t)
 	_, second := bootSecret(t)
 	issue := func(h string) applyFn {
-		return func(*eventstore.Tx) ([]eventstore.Event, error) {
-			return identity.IssueBootstrap(sys.ID, h, time.Now())
+		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return identity.IssueBootstrap(sys.ID, h, tx.Now()) // the command's clock (eventstore Tx.Now)
 		}
 	}
 	if st := f.bootState(); st.Consumed || st.Secret != nil || st.Live(time.Now()) {
@@ -60,8 +60,8 @@ func TestIssueBootstrap(t *testing.T) {
 	if st.Secret == nil || st.Secret.Hash != first || !st.Live(time.Now()) || st.Live(time.Now().Add(identity.BootstrapSecretExpiry)) {
 		t.Fatalf("issued: %+v", st)
 	}
-	f.must(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return identity.RenewBootstrap(sys.ID, second, time.Now())
+	f.must(sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return identity.RenewBootstrap(sys.ID, second, tx.Now()) // the command's clock (eventstore Tx.Now)
 	})
 	if st := f.bootState(); st.Secret.Hash != second {
 		t.Fatal("the renewal did not replace the secret")
@@ -104,16 +104,16 @@ func TestConsumeBootstrap(t *testing.T) {
 		}
 	}
 	refused("none issued", secret, time.Now())
-	f.must(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return identity.IssueBootstrap(sys.ID, oldHash, time.Now())
+	f.must(sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return identity.IssueBootstrap(sys.ID, oldHash, tx.Now()) // the command's clock (eventstore Tx.Now)
 	})
-	if err := f.submit(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return identity.IssueBootstrap(sys.ID, hash, time.Now())
+	if err := f.submit(sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return identity.IssueBootstrap(sys.ID, hash, tx.Now()) // the command's clock (eventstore Tx.Now)
 	}); err == nil {
 		t.Fatal("a second first secret: accepted")
 	}
-	f.must(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return identity.RenewBootstrap(sys.ID, hash, time.Now())
+	f.must(sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return identity.RenewBootstrap(sys.ID, hash, tx.Now()) // the command's clock (eventstore Tx.Now)
 	})
 	refused("the replaced secret", old, time.Now())
 	refused("a wrong secret", func() identity.Secret { s, _ := bootSecret(t); return s }(), time.Now())

@@ -19,6 +19,8 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/command-request.json`](api-command-request.md) | CommandRequest |
 | [`api/command-response.json`](api-command-response.md) | CommandResponse |
 | [`api/read-list.json`](api-read-list.md) | ReadList |
+| [`api/scope/seat-release.json`](api-scope-seat-release.md) | SeatReleaseScope |
+| [`api/scope/seat-take.json`](api-scope-seat-take.md) | SeatTakeScope |
 | [`api/whoami.json`](api-whoami.md) | Whoami |
 | [`common/defs.json`](common-defs.md) | Common definitions |
 | [`config/project-profile.json`](config-project-profile.md) | ProjectProfile |

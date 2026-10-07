@@ -75,8 +75,13 @@ type boundary struct {
 	sys, op, sup  identity.Principal
 	opTok, supTok identity.Secret
 	supGrant      types.Grant
-	az            authority.Authorizer // what the store's Authorize hook runs
+	az            authority.Authorizer        // what the store's Authorize hook runs
+	recorded      map[string]eventstore.Event // every event projected, by subject (the last)
 }
+
+// storeShift shifts the clock of the stores openBoundaryGrace opens (a
+// test sets it and resets it).
+var storeShift time.Duration
 
 func openBoundary(t *testing.T) *boundary { return openBoundaryGrace(t, 0, true) }
 
@@ -97,15 +102,15 @@ func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &boundary{t: t, az: authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{"note.add": &noteHandler{}}, Now: func() time.Time { return t0 }}}
+	b := &boundary{t: t, az: authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{"note.add": &noteHandler{}}}}
 	kinds := identity.Kinds()
 	maps.Copy(kinds, authority.GrantKinds())
 	maps.Copy(kinds, authority.SeatKinds())
 	maps.Copy(kinds, authority.ProposalKinds())
 	kinds["test.noted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	kinds["test.unnoted/v1"] = eventstore.Kind{Schema: "common/defs"}
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: suiteNow,
-		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, authority.ProposalProjector{}.Project, notesProjection),
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: func() time.Time { return suiteNow().Add(storeShift) },
+		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, authority.ProposalProjector{}.Project, notesProjection, b.record),
 			Authorize: func(tx *eventstore.Tx, c eventstore.Command) error {
 				if c.Action == "test.seed" {
 					return nil
@@ -152,6 +157,17 @@ func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary
 		b.seed(b.sup, seat(types.SeatEventTransitionSeatTaken, nil, &sup.ID, nil))
 	}
 	return b
+}
+
+// record keeps each subject's last projected event.
+func (b *boundary) record(_ *eventstore.Tx, evs []eventstore.Event) error {
+	if b.recorded == nil {
+		b.recorded = map[string]eventstore.Event{}
+	}
+	for _, e := range evs {
+		b.recorded[e.Subject] = e
+	}
+	return nil
 }
 
 func issueTo(holder, issuer types.ActorID, out *identity.Secret) applyFn {
@@ -372,16 +388,15 @@ func TestAuthorizerJudgesTheDerivedChange(t *testing.T) {
 	}
 }
 
-// A missing registry, clock or handler, a typed nil handler and a failed
+// A missing registry or handler, a typed nil handler and a failed
 // derivation each refuse, without a panic and without running the logic.
 func TestAuthorizerFailsClosed(t *testing.T) {
 	b := openBoundary(t)
 	full := b.az
 	for name, az := range map[string]authority.Authorizer{
-		"no registry":         {Handlers: full.Handlers, Now: full.Now},
-		"no clock":            {Registry: full.Registry, Handlers: full.Handlers},
-		"a nil handler":       {Registry: full.Registry, Now: full.Now, Handlers: map[string]authority.Handler{"note.add": nil}},
-		"a typed nil handler": {Registry: full.Registry, Now: full.Now, Handlers: map[string]authority.Handler{"note.add": (*noteHandler)(nil)}},
+		"no registry":         {Handlers: full.Handlers},
+		"a nil handler":       {Registry: full.Registry, Handlers: map[string]authority.Handler{"note.add": nil}},
+		"a typed nil handler": {Registry: full.Registry, Handlers: map[string]authority.Handler{"note.add": (*noteHandler)(nil)}},
 	} {
 		b.az = az
 		b.refusedUnrun(name, b.derivedCmd(b.op, nil, nil, false), is(authority.ErrActionNotWired))

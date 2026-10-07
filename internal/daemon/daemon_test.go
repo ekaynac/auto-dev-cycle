@@ -17,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -129,6 +130,17 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 		}))
 	if !errors.Is(err, ErrCommandsRefused) {
 		t.Fatalf("a command was not refused: %v", err)
+	}
+	// The seat actions are wired: seat.take reaches its logic, which
+	// refuses the system actor (not a supervisor) with a recorded reason.
+	if hs := handlers(); len(hs) != 3 || hs[authority.ConfirmAction] == nil || hs["seat.take"] == nil || hs["seat.release"] == nil {
+		t.Fatalf("the wired handlers: %v", hs)
+	}
+	take := newID(t, "cmd")
+	c := d.system.Command(take, "seat.take", take, []byte(`{}`), nil)
+	out, err := d.store.Submit(context.Background(), c, handlers()["seat.take"].(authority.SeatHandler).Logic(c))
+	if err != nil || out.Disposition != eventstore.DispositionRefused || !strings.Contains(string(out.Result), "seat_unavailable") {
+		t.Fatalf("seat.take is not wired: %+v %v", out, err)
 	}
 }
 

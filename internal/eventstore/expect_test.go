@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A command expecting a state of its object fails closed when Authorize
@@ -73,5 +74,44 @@ func TestRequestDigestWithoutExpect(t *testing.T) {
 	want, err := digest(json.RawMessage(`{"action":"test.command","input":{"a":1},"expected":[]}`))
 	if err != nil || got != want {
 		t.Fatalf("input digest %s, want %s (%v)", got, want, err)
+	}
+}
+
+// The logic sees the subject Authorize bound and the time its events are
+// recorded at: every event of the command carries Tx.Now, whatever At the
+// logic set.
+func TestLogicSeesBoundObjectAndNow(t *testing.T) {
+	var projected []Event
+	e := openWriter(t, Hooks{Identify: allow, Authorize: func(tx *Tx, _ Command) error {
+		if _, ok := tx.Bound(); ok || tx.Now().IsZero() {
+			return errors.New("bound before BindObject, or no command time")
+		}
+		return tx.BindObject(Object{Subject: testSubject})
+	}, Project: func(_ *Tx, evs []Event) error { projected = append(projected, evs...); return nil }})
+	var now time.Time
+	_, err := e.s.SubmitApplied(context.Background(), command(t, "k", `{}`), Applies(func(tx *Tx) ([]Event, json.RawMessage, error) {
+		if s, ok := tx.Bound(); !ok || s != testSubject {
+			return nil, nil, errors.New("the logic does not see the bound subject")
+		}
+		now = tx.Now()
+		evs, res, err := appendTo(t, testSubject, 2)(tx)
+		evs[1].At = "2000-01-01T00:00:00Z"
+		return evs, res, err
+	}))
+	if err != nil || len(projected) != 2 {
+		t.Fatalf("%v %v", projected, err)
+	}
+	for _, ev := range projected {
+		if at, err := time.Parse(time.RFC3339Nano, ev.At); err != nil || !at.Equal(now) {
+			t.Errorf("event %d at %s, the command's time %s", ev.Seq, ev.At, now)
+		}
+	}
+	if err := e.s.View(context.Background(), func(tx *Tx) error {
+		if _, ok := tx.Bound(); ok || !tx.Now().IsZero() {
+			return errors.New("a view has a bound object or a command time")
+		}
+		return nil
+	}); err != nil {
+		t.Error(err)
 	}
 }

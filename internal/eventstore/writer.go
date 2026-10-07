@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
@@ -104,6 +105,11 @@ type Object struct {
 	// authority on its existence, and its digest definition. Nil: the
 	// object has none, and any expected state of it is refused.
 	Record func(t *Tx) (json.RawMessage, bool, error)
+	// Version is the object's version, for an object whose record changes
+	// by events of other subjects too (the seat, when its holder's actor is
+	// revoked): the seq of the last event that changed it. Nil: the seq of
+	// its subject's last event (SubjectVersion).
+	Version func(t *Tx) (int64, error)
 }
 
 // BindObject records the command's object, as its Authorize hook derived
@@ -148,6 +154,26 @@ type Tx struct {
 	// fault is the first storage error a read or write met: a projector
 	// that fails on it has not refused the log (RebuildProjections).
 	fault error
+	// at is when a command's events are recorded (Tx.Now).
+	at time.Time
+}
+
+// Now is the command's one clock reading: every time decision in the
+// command (authorization, grant validity, proposal creation, the logic's
+// times) reads it, and every event the command appends is recorded at it
+// (Event.At). It is the store clock (Config.Now) read once when the
+// transaction begins, or the previous event's time when the clock trails
+// it. Projectors read Event.At (a rebuild has no command time); outside a
+// command it is the zero time.
+func (t *Tx) Now() time.Time { return t.at }
+
+// Bound is the subject of the object Authorize bound for the command
+// (BindObject), if one was bound: the logic writes under the same id.
+func (t *Tx) Bound() (string, bool) {
+	if t.object == nil {
+		return "", false
+	}
+	return t.object.Subject, true
 }
 
 // io records a storage error as the transaction's fault and returns it.
@@ -407,7 +433,11 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 	}
 	var out Committed
 	err = s.inTx(ctx, func(tx *sql.Tx) error {
-		t := &Tx{ctx: ctx, tx: tx, store: s, owner: s}
+		at, aterr := s.headTime(ctx, tx)
+		if aterr != nil {
+			return aterr
+		}
+		t := &Tx{ctx: ctx, tx: tx, store: s, owner: s, at: at}
 		// 0. The writer-boundary identity recheck (14 "Replay
 		// authentication"), before the idempotency lookup, so it covers new
 		// commands, reused keys and replays alike. Bootstrap (authorize
@@ -500,7 +530,7 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 			if e.Actor != "" && e.Actor != c.Actor {
 				return fmt.Errorf("eventstore: event %s names actor %s, not the command's %s", e.ID, e.Actor, c.Actor)
 			}
-			e.Actor = c.Actor
+			e.Actor, e.At = c.Actor, t.at.Format(time.RFC3339Nano)
 			cmd := c.ID
 			e.Command = &cmd
 			a, err := s.append(ctx, tx, e)
@@ -510,7 +540,7 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 			appended = append(appended, a)
 		}
 		// Effect intents follow the command's events, in the same transaction.
-		intents, err := s.appendIntents(ctx, tx, c, t.intents)
+		intents, err := s.appendIntents(ctx, tx, c, t.at.Format(time.RFC3339Nano), t.intents)
 		if err != nil {
 			return err
 		}
@@ -572,7 +602,11 @@ func checkExpect(t *Tx, x *State) error {
 		return fmt.Errorf("eventstore: %w: %s does not exist", ErrStaleExpectedState, o.Subject)
 	}
 	if x.Version != nil {
-		v, err := t.SubjectVersion(o.Subject)
+		version := o.Version
+		if version == nil {
+			version = func(t *Tx) (int64, error) { return t.SubjectVersion(o.Subject) }
+		}
+		v, err := version(t)
 		if err != nil {
 			return err
 		}
