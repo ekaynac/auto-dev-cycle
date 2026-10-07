@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -87,4 +88,49 @@ func restart(t *testing.T, dir string) *Daemon {
 		t.Fatal(err)
 	}
 	return d
+}
+
+// What sits at bootstrap.secret before the first secret is recorded (a
+// file left by a crash before its event, or a planted symlink) is never
+// trusted: it is replaced by a fresh 0600 regular file, and a link's
+// target is left untouched.
+func TestBootstrapReplacesUnrecordedFile(t *testing.T) {
+	const planted = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	for name, plant := range map[string]func(t *testing.T, p, target string){
+		"a leftover file": func(t *testing.T, p, _ string) {
+			if err := os.WriteFile(p, []byte(planted+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a symlink": func(t *testing.T, p, target string) {
+			if err := os.Symlink(target, p); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := stateDir(t)
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "target")
+			if err := os.WriteFile(target, []byte(planted), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			p := filepath.Join(dir, bootstrapFile)
+			plant(t, p, target)
+			d := restart(t, dir)
+			defer d.Close()
+			secret := readSecret(t, dir)
+			if st := lstat(t, p); st.Mode&0o170777 != 0o100600 || secret == planted || bootState(t, d).Secret == nil {
+				t.Fatalf("not replaced: mode %o", st.Mode)
+			}
+			if !regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`).MatchString(secret) {
+				t.Fatal("the new secret is not of the issued form")
+			}
+			if b, err := os.ReadFile(target); err != nil || string(b) != planted {
+				t.Fatalf("the link target changed: %v", err)
+			}
+		})
+	}
 }

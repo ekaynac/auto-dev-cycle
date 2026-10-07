@@ -64,7 +64,10 @@ A supervisor cannot create, extend or widen grants (`human`, and never by the gr
 
 ## Action registry and effective-change classification [M3]
 
-`schemas/vocab/actions.yaml` lists every mutating action kind. Authority does **not** trust the endpoint name. For
+`schemas/vocab/actions.yaml` lists every mutating action kind a request can name. The one exception is the controller's own
+system-only action, `identity.bootstrap_issue` (the first start records the bootstrap secret). It is unregistered, has no
+command endpoint or CLI command, and the daemon's Authorize hook admits it for the system principal alone, never for a
+bearer. Authority does **not** trust the endpoint name. For
 every command, it computes the **effective change**: the diff between the current and resulting policy-relevant state.
 That state covers:
 - data floor;
