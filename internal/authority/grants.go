@@ -39,6 +39,7 @@ func GrantKinds() eventstore.Kinds {
 	for _, t := range grantTransitions {
 		k[string(t)+"/v1"] = eventstore.Kind{Schema: GrantEventSchema}
 	}
+	k[GrantReplaced] = eventstore.Kind{Schema: "records/grant-replaced"}
 	return k
 }
 
@@ -108,6 +109,12 @@ type GrantProjector struct{}
 // approved (approvedGrant).
 func (GrantProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
+		if ev.Kind == GrantReplaced {
+			if err := applyLineage(tx, ev); err != nil {
+				return fmt.Errorf("authority: event %s: lineage: %w", ev.ID, err)
+			}
+			continue
+		}
 		if !slices.ContainsFunc(grantTransitions, func(t types.GrantEventTransition) bool { return ev.Kind == string(t)+"/v1" }) {
 			continue
 		}
@@ -162,6 +169,11 @@ func applyGrant(tx *eventstore.Tx, ev eventstore.Event, p types.GrantEvent) erro
 	}
 	if p.Transition == types.GrantEventTransitionGrantCreated {
 		if err := putJSON(tx, GrantIDProjection, string(g.ID), g.Actor); err != nil {
+			return err
+		}
+	}
+	if ev.Command != nil { // which command moved it: a lineage's same-command check
+		if err := putJSON(tx, GrantCommandProjection, commandKey(p.Transition, *ev.Command, g.ID), true); err != nil {
 			return err
 		}
 	}

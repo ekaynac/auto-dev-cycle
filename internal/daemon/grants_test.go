@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -103,5 +104,39 @@ func TestGrantCommands(t *testing.T) {
 	}
 	if c.commandsOf(t) != before {
 		t.Error("an invalid scope was committed")
+	}
+}
+
+// grant.extend through the command endpoint: an operator's, bound to the
+// old grant's version, is applied; a supervisor without a grant is refused
+// action_not_granted; a scope naming the grantee is a 400.
+func TestGrantExtendCommand(t *testing.T) {
+	c := runCommanded(t)
+	old, next := newID(t, "grt"), newID(t, "grt")
+	body := func(version int64, scope string) *strings.Reader {
+		return strings.NewReader(`{"idempotency_key":"` + newID(t, "cmd") + `","expected":{"version":` + strconv.FormatInt(version, 10) +
+			`,"digest":null},"scope":` + scope + `,"reason":"r"}`)
+	}
+	grant := func(id, lead string) string {
+		return `{` + lead + `"id":"` + id + `","projects":"*","actions":[],"reads":{"projects":"same","kinds":[]},"expires_at":"` +
+			time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `","confirmation_overrides":{}}`
+	}
+	code, _, raw := c.post(t, authority.GrantCreateAction, c.op.Reveal(), body(0, grant(old, `"actor":"`+string(c.supID)+`",`)))
+	created, ok := response(t, string(raw)).(*types.CommandApplied)
+	if code != http.StatusOK || !ok {
+		t.Fatalf("grant.create: HTTP %d %s", code, raw)
+	}
+	extend := grant(next, `"replaces":"`+old+`",`)
+	code, _, raw = c.post(t, authority.GrantExtendAction, c.bare.Reveal(), body(created.LastSeq, extend))
+	if code != http.StatusOK {
+		t.Fatalf("a supervisor's grant.extend: HTTP %d %s", code, raw)
+	}
+	refusedAs(t, response(t, string(raw)), vocab.Failed, vocab.ReasonActionNotGranted)
+	if code, _, raw := c.post(t, authority.GrantExtendAction, c.op.Reveal(), body(created.LastSeq, strings.Replace(extend, `{`, `{"actor":"`+string(c.supID)+`",`, 1))); code != http.StatusBadRequest {
+		t.Errorf("a scope naming the grantee: HTTP %d %s", code, raw)
+	}
+	code, _, raw = c.post(t, authority.GrantExtendAction, c.op.Reveal(), body(created.LastSeq, extend))
+	if _, ok := response(t, string(raw)).(*types.CommandApplied); code != http.StatusOK || !ok {
+		t.Fatalf("an operator's grant.extend: HTTP %d %s", code, raw)
 	}
 }

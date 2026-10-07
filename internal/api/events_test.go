@@ -377,6 +377,14 @@ func TestStreamCarriesNoCredentials(t *testing.T) {
 }
 
 // pick keeps only the allowed paths, at any depth.
+// A grant lineage streams its old grant and the complete new one.
+func TestRedactKeepsTheLineage(t *testing.T) {
+	r := api.Redact(eventstore.Event{Kind: authority.GrantReplaced, Payload: []byte(`{"transition":"grant.replaced","replaces":"grt_1","grant":{"id":"grt_2"}}`)})
+	if r.PayloadWithheld || !strings.Contains(string(r.Payload), `"replaces":"grt_1"`) || !strings.Contains(string(r.Payload), `"id":"grt_2"`) {
+		t.Errorf("the lineage: %s", r.Payload)
+	}
+}
+
 func TestRedactKeepsOnlyAllowedPaths(t *testing.T) {
 	ev := eventstore.Event{Kind: "token.issued/v1", Payload: []byte(`{"transition":"token.issued","actor":null,` +
 		`"token":{"id":"tok_1","actor":"act_1","hash":"$argon2id$x","secret":"s","created_by":"act_2","created_at":"t","revoked_at":null},"extra":{"nonce":"n"}}`)}

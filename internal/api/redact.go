@@ -26,7 +26,7 @@ func init() {
 		streamable[k] = identityPaths
 	}
 	for k := range authority.GrantKinds() {
-		streamable[k] = []string{"transition", "grant", "revoked_at"} // a grant record holds no secret
+		streamable[k] = []string{"transition", "grant", "revoked_at", "replaces"} // a grant record holds no secret
 	}
 }
 
