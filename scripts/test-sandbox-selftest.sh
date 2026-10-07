@@ -75,14 +75,21 @@ if getent hosts example.com >/dev/null 2>&1; then host_dns=1; fi
 if timeout 3 bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null; then host_tcp=1; fi
 
 # run <label> <wrapper args...>: go test -json output, wrapper stderr, exit code.
+# Each run used to compile the test's dependencies into an empty build cache,
+# ten cold builds per self-test at full parallelism; with two CI jobs on one
+# small VM, go's compiler got OOM-killed and runs reported nothing. Now the
+# bubblewrap runs share one fresh scratch area (the unsandboxed control keeps
+# its own, so it never writes a cache that sandboxed runs mount) and go builds
+# one action at a time (-p 1): a cold build holds one compiler, not one per CPU.
 run() {
   local label="$1"; shift
-  local rc=0
+  local rc=0 scratch="$out/scratch-bwrap"
+  [[ "$label" == control ]] && scratch="$out/scratch-control"
   env ANTHROPIC_API_KEY=decoy-not-a-key ADC_DECOY_TOKEN=decoy-not-a-token \
     FTP_PROXY=http://decoy:decoy@127.0.0.1:9 NO_PROXY=decoy.invalid \
-    ADC_SELFTEST_LOOPBACK_PORT="$port" ADC_TEST_SCRATCH="$out/scratch-$label" ADC_TEST_PROVISION="$out/provision" \
+    ADC_SELFTEST_LOOPBACK_PORT="$port" ADC_TEST_SCRATCH="$scratch" ADC_TEST_PROVISION="$out/provision" \
     "$repo_root/scripts/test-sandbox.sh" "$@" --env ADC_SELFTEST_LOOPBACK_PORT \
-    -- go test -count=1 -json ./test/sandbox/ >"$out/$label.json" 2>"$out/$label.err" || rc=$?
+    -- go test -p 1 -count=1 -json ./test/sandbox/ >"$out/$label.json" 2>"$out/$label.err" || rc=$?
   printf '%s\n' "$rc" >"$out/$label.rc"
 }
 
@@ -126,6 +133,16 @@ stream_ok() {
       else "ok" end' "$1" 2>/dev/null | grep -qx ok
 }
 
+# diagnose <label>: why a run reported nothing for a test: its exit status, the
+# wrapper's stderr and go's own non-test output (a build failure, or a
+# compiler or test binary killed by a signal, shows up only there).
+diagnose() {
+  echo "        [$1] exit status $(cat "$out/$1.rc" 2>/dev/null || echo unknown); its stderr and go's non-test output:"
+  { sed 's/^/        stderr: /' "$out/$1.err" 2>/dev/null || true; } | tail -n 20
+  { jq -j 'select(.Test == null and .Output != null) | .Output' "$out/$1.json" 2>&1 || true; } | tail -n 20 | sed 's/^/        go: /'
+}
+declare -A diagnosed=()
+
 expect() {  # expect <label> <wanted action> <test>...
   local label="$1" want="$2" t got; shift 2
   for t in "$@"; do
@@ -135,6 +152,7 @@ expect() {  # expect <label> <wanted action> <test>...
     else
       printf '  FAIL  %-44s wanted %s, got %s\n' "$t" "$want" "${got:-nothing}"
       fail=1
+      if [[ -z "$got" && -z "${diagnosed[$label]:-}" ]]; then diagnosed[$label]=1; diagnose "$label"; fi
     fi
   done
 }
@@ -198,7 +216,7 @@ if [[ "$backend" == auto || "$backend" == bwrap ]] && bwrap_starts; then
       [[ " ${red[*]} " == *" $c "* ]] || green+=("$c")
     done
     expect "mut-$name" pass "${green[@]}"
-    got_red="$(results "mut-$name" fail | grep -v / | tr '\n' ' ')"
+    got_red="$(results "mut-$name" fail | { grep -v / || true; } | tr '\n' ' ')"
     want_red="$(printf '%s\n' "${red[@]}" | sort | tr '\n' ' ')"
     all_now="$( { results "mut-$name" pass; results "mut-$name" fail; results "mut-$name" skip; } | sort | tr '\n' ' ')"
     all_clean="$( { results sandboxed pass; results sandboxed fail; results sandboxed skip; } | sort | tr '\n' ' ')"
@@ -219,14 +237,20 @@ else
 fi
 
 echo "refusals: only areas test-sandbox created are ever mounted"
+# unexpected <label> <rc> <stderr file>: a refusal that failed some other way.
+unexpected() {
+  echo "  FAIL  $1: unexpected error (exit $2): $(head -n1 "$3")"; fail=1
+  sed '1d; s/^/        /' "$3" | tail -n 20
+}
 refuse() {  # refuse <label> <expected message> <env assignments...>
-  local label="$1" want="$2"; shift 2
-  if env ADC_TEST_PROVISION="$out/provision" "$@" "$repo_root/scripts/test-sandbox.sh" -- /bin/true 2>"$out/refuse.err"; then
+  local label="$1" want="$2" rc=0; shift 2
+  env ADC_TEST_PROVISION="$out/provision" "$@" "$repo_root/scripts/test-sandbox.sh" -- /bin/true 2>"$out/refuse.err" || rc=$?
+  if [[ "$rc" == 0 ]]; then
     echo "  FAIL  $label: the wrapper ran"; fail=1
   elif grep -q "$want" "$out/refuse.err"; then
     echo "  ok    $label: $(head -n1 "$out/refuse.err")"
   else
-    echo "  FAIL  $label: unexpected error: $(head -n1 "$out/refuse.err")"; fail=1
+    unexpected "$label" "$rc" "$out/refuse.err"
   fi
 }
 mkdir -p "$out/decoy-codex" "$out/xdg-state" "$out/xdg-runtime"
@@ -239,12 +263,14 @@ refuse "scratch inside a relocated CODEX_HOME" "overlaps protected" CODEX_HOME="
 # A genuine provision area whose module cache was replaced by a symlink.
 mkdir -m 700 "$out/prov-symlink" && printf 'adc test-sandbox area v1\n' >"$out/prov-symlink/.adc-test-area"
 ln -s "$out/decoy-codex" "$out/prov-symlink/modcache"
-if env ADC_TEST_PROVISION="$out/prov-symlink" ADC_TEST_SCRATCH="$out/scratch-prov-symlink" "$repo_root/scripts/test-sandbox.sh" -- /bin/true 2>"$out/refuse.err"; then
+rc=0
+env ADC_TEST_PROVISION="$out/prov-symlink" ADC_TEST_SCRATCH="$out/scratch-prov-symlink" "$repo_root/scripts/test-sandbox.sh" -- /bin/true 2>"$out/refuse.err" || rc=$?
+if [[ "$rc" == 0 ]]; then
   echo "  FAIL  a symlinked provisioned module cache was mounted"; fail=1
 elif grep -q 'is a symlink; refused' "$out/refuse.err"; then
   echo "  ok    a symlinked provisioned child: $(head -n1 "$out/refuse.err")"
 else
-  echo "  FAIL  symlinked provisioned child: unexpected error: $(head -n1 "$out/refuse.err")"; fail=1
+  unexpected "symlinked provisioned child" "$rc" "$out/refuse.err"
 fi
 refuse "a provision area inside the writable cache" "inside scratch must be" ADC_TEST_SCRATCH="$out/scratch-overlap" ADC_TEST_PROVISION="$out/scratch-overlap/gocache"
 refuse "the Go installation inside the writable cache" "overlaps" ADC_TEST_SCRATCH="$out/scratch-hostgo" ADC_GO_PREFIX="$out/scratch-hostgo/gocache/host-go"
@@ -256,12 +282,14 @@ echo "refusals: a cache symlink in an otherwise valid scratch"
 mkdir -m 700 "$out/scratch-symlink" && mkdir -p "$out/decoy-target"
 printf 'adc test-sandbox area v1\n' >"$out/scratch-symlink/.adc-test-area"
 ln -s "$out/decoy-target" "$out/scratch-symlink/gocache"
-if ADC_TEST_PROVISION="$out/provision" ADC_TEST_SCRATCH="$out/scratch-symlink" "$repo_root/scripts/test-sandbox.sh" -- /bin/true 2>"$out/symlink.err"; then
+rc=0
+ADC_TEST_PROVISION="$out/provision" ADC_TEST_SCRATCH="$out/scratch-symlink" "$repo_root/scripts/test-sandbox.sh" -- /bin/true 2>"$out/symlink.err" || rc=$?
+if [[ "$rc" == 0 ]]; then
   echo "  FAIL  the wrapper ran with a symlinked cache"; fail=1
 elif grep -q 'symlink; refused' "$out/symlink.err"; then
   echo "  ok    refused: $(head -n1 "$out/symlink.err")"
 else
-  echo "  FAIL  unexpected error: $(head -n1 "$out/symlink.err")"; fail=1
+  unexpected "symlinked cache" "$rc" "$out/symlink.err"
 fi
 
 if [[ "$fail" != 0 ]]; then
