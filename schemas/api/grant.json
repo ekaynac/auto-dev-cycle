@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/grant.json",
+  "title": "GrantRead",
+  "description": "One record of GET /v1/grants (docs/design/m0/04 \"Grants\", \"Read authorization\"): a grant as issued, revoked ones included with when. Its project is every project it names (projects and listed read projects): one named project is that project's record; several, or every project, make it installation-wide, read only under an every-project read. Never the approval it was issued under, nor any credential.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "actor", "projects", "actions", "reads", "valid_from", "expires_at", "confirmation_overrides", "issued_by", "revoked_at"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/GrantID"},
+    "actor": {"description": "The grantee, a supervisor.", "$ref": "../common/defs.json#/$defs/ActorID"},
+    "projects": {"$ref": "../records/grant.json#/$defs/ProjectScope"},
+    "actions": {"type": "array", "uniqueItems": true, "items": {"$ref": "../records/grant.json#/$defs/ActionKind"}},
+    "reads": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projects", "kinds"],
+      "properties": {
+        "projects": {"oneOf": [{"const": "same"}, {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/ProjectID"}}]},
+        "kinds": {"type": "array", "uniqueItems": true, "items": {"$ref": "../records/receipt.json#/$defs/Name"}}
+      }
+    },
+    "valid_from": {"$ref": "../common/defs.json#/$defs/Time"},
+    "expires_at": {"$ref": "../common/defs.json#/$defs/Time"},
+    "confirmation_overrides": {
+      "type": "object",
+      "propertyNames": {"$ref": "../records/grant.json#/$defs/ActionKind"},
+      "additionalProperties": {"enum": ["independent_review", "human"]}
+    },
+    "issued_by": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "revoked_at": {"description": "When it was revoked; null while it is not.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]}
+  }
+}

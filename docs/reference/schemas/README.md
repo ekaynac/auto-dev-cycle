@@ -18,6 +18,8 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/bootstrap-response.json`](api-bootstrap-response.md) | BootstrapResponse |
 | [`api/command-request.json`](api-command-request.md) | CommandRequest |
 | [`api/command-response.json`](api-command-response.md) | CommandResponse |
+| [`api/grant.json`](api-grant.md) | GrantRead |
+| [`api/proposal.json`](api-proposal.md) | ProposalRead |
 | [`api/read-list.json`](api-read-list.md) | ReadList |
 | [`api/scope/seat-release.json`](api-scope-seat-release.md) | SeatReleaseScope |
 | [`api/scope/seat-take.json`](api-scope-seat-take.md) | SeatTakeScope |

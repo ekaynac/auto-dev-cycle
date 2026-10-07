@@ -214,7 +214,8 @@ func TestVersionEndpoint(t *testing.T) {
 
 // Reads through the assembled server: whoami names the listener that
 // admitted the caller, the shared socket's group membership is no
-// credential, and a resource no family registered is not found.
+// credential, every registered resource is served from the daemon's
+// projections, and a resource no family registered is not found.
 func TestReadsThroughServer(t *testing.T) {
 	s := serveStore(t, defaultLimits, &SharedSocket{RunDir: runDir(t, 0o750), Group: egid()})
 	shared := unixClient(filepath.Join(s.srv.sockets[1].dir.Name(), sharedSocket))
@@ -229,7 +230,14 @@ func TestReadsThroughServer(t *testing.T) {
 			t.Errorf("whoami via %s: %s %+v %v", want, resp.Status, got, err)
 		}
 	}
-	if resp := s.get(t, s.client(), "/v1/grants", s.tok.Reveal()); resp.StatusCode != http.StatusNotFound {
+	for name := range api.Registered() {
+		var got types.ReadList
+		resp := s.get(t, s.client(), "/v1/"+name, s.tok.Reveal())
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || resp.StatusCode != http.StatusOK || got.Resource != name {
+			t.Errorf("%s: %s %+v %v", name, resp.Status, got, err)
+		}
+	}
+	if resp := s.get(t, s.client(), "/v1/widgets", s.tok.Reveal()); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("an unregistered resource: %s", resp.Status)
 	}
 }

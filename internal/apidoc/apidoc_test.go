@@ -98,8 +98,9 @@ func TestOneEndpointPerAction(t *testing.T) {
 }
 
 // The reads are described as the handlers serve them: the event stream,
-// whoami and the resource path, GET only, with no body and no action, and
-// every other path a command.
+// whoami, the resource path and each registered resource, its items its
+// record schema, GET only, with no body and no action, and every other
+// path a command.
 func TestReadPaths(t *testing.T) {
 	b, err := Generate(registry(t), schemas.FS())
 	if err != nil {
@@ -122,11 +123,24 @@ func TestReadPaths(t *testing.T) {
 			t.Errorf("%s: %+v", p, ok200)
 		}
 	}
+	for name, res := range api.Registered() {
+		op, ok := d.Paths["/v1/"+name]["get"]
+		var list []any
+		if ok && op.Responses["200"].Content["application/json"].Schema != nil {
+			list = op.Responses["200"].Content["application/json"].Schema.AllOf
+		}
+		want := fmt.Sprint([]any{map[string]any{"$ref": "#/components/schemas/api.read-list"}, map[string]any{"properties": map[string]any{
+			"resource": map[string]any{"const": name}, "items": map[string]any{"items": map[string]any{"$ref": "#/components/schemas/" + ComponentName(res.Schema)}}}}})
+		if len(d.Paths["/v1/"+name]) != 1 || op.RequestBody != nil || op.Action != "" || fmt.Sprint(list) != want || d.Components.Schemas[ComponentName(res.Schema)] == nil {
+			t.Errorf("/v1/%s: %+v", name, d.Paths["/v1/"+name])
+		}
+	}
 	if _, ok := d.Paths[api.WhoamiPath]["get"].Responses["403"]; ok {
 		t.Error("whoami refuses as a grant domain")
 	}
 	for p := range d.Paths {
-		if _, read := want[p]; !read && !strings.HasPrefix(p, CommandPath("")) && p != BootstrapPath {
+		_, resource := api.Registered()[strings.TrimPrefix(p, "/v1/")]
+		if _, read := want[p]; !read && !resource && !strings.HasPrefix(p, CommandPath("")) && p != BootstrapPath {
 			t.Errorf("an unknown path %s", p)
 		}
 	}

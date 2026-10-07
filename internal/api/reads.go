@@ -42,11 +42,10 @@ type Resource struct {
 	// Fields is the record's response allow-list (dotted paths, as the
 	// event stream's): any other field is never sent.
 	Fields []string
+	// Schema is the schema file of one record as sent (api/<name>.json),
+	// which the API description lists the resource with.
+	Schema string
 }
-
-// Registered is the daemon's resources, by path segment; each resource
-// family joins it with its projection.
-func Registered() map[string]Resource { return map[string]Resource{} }
 
 // Reads serves ReadPath over Resources and WhoamiPath, from Store.
 type Reads struct {

@@ -50,7 +50,8 @@ func ComponentName(file string) string {
 }
 
 type ref struct {
-	Ref string `yaml:"$ref"`
+	Ref   string `yaml:"$ref,omitempty"`
+	AllOf []any  `yaml:"allOf,omitempty"` // a registered resource's read: the list, its items one schema
 }
 
 type media struct {
@@ -97,7 +98,7 @@ type document struct {
 }
 
 func jsonOf(file string) map[string]media {
-	return map[string]media{"application/json": {Schema: &ref{"#/components/schemas/" + ComponentName(file)}}}
+	return map[string]media{"application/json": {Schema: &ref{Ref: "#/components/schemas/" + ComponentName(file)}}}
 }
 
 // readResponses are a read's responses: ok, the refusals every read can
@@ -122,7 +123,7 @@ func reads() map[string]map[string]operation {
 	op := func(id, summary string, params []parameter, responses map[string]body) map[string]operation {
 		return map[string]operation{"get": {OperationID: "read." + id, Tags: []string{"read"}, Summary: summary, Parameters: params, Responses: responses}}
 	}
-	return map[string]map[string]operation{
+	out := map[string]map[string]operation{
 		api.EventsPath: op("events", "The event stream, resumable by seq and filtered server-side by the caller's read scope.", []parameter{
 			{Name: "after", In: "query", Description: "Resume after this seq.", Schema: map[string]any{"type": "integer", "minimum": 0}},
 			{Name: "kinds", In: "query", Description: "Comma-separated kinds or kind names; narrows, never widens.", Schema: str},
@@ -135,12 +136,30 @@ func reads() map[string]map[string]operation {
 			[]parameter{{Name: "resource", In: "path", Required: true, Description: "A registered resource.", Schema: str}},
 			readResponses(body{Description: "The readable records.", Content: jsonOf(readSchema)}, "403", notGranted, "404", "No such resource.")),
 	}
+	for name, res := range api.Registered() {
+		list := &ref{AllOf: []any{map[string]string{"$ref": "#/components/schemas/" + ComponentName(readSchema)},
+			map[string]any{"properties": map[string]any{"resource": map[string]string{"const": name},
+				"items": map[string]any{"items": map[string]string{"$ref": "#/components/schemas/" + ComponentName(res.Schema)}}}}}}
+		out["/v1/"+name] = op(name, fmt.Sprintf("The %s records the caller's read scope covers, each authorized in one snapshot.", res.Domain), nil,
+			readResponses(body{Description: "The readable records.", Content: map[string]media{"application/json": {Schema: list}}}, "403", notGranted))
+	}
+	return out
+}
+
+// readSchemas are the schema files of the reads: the list, whoami and each
+// registered resource's record.
+func readSchemas() []string {
+	out := []string{readSchema, whoamiSchema}
+	for _, res := range api.Registered() {
+		out = append(out, res.Schema)
+	}
+	return out
 }
 
 // Generate renders the document for the registry's actions over the schema
 // tree (schemas.FS()); the same inputs always give the same bytes.
 func Generate(actions map[string]types.Action, schemaFS fs.FS) ([]byte, error) {
-	embedded, err := bundle(schemaFS, requestSchema, responseSchema, bootstrapRequest, bootstrapResponse, readSchema, whoamiSchema)
+	embedded, err := bundle(schemaFS, append([]string{requestSchema, responseSchema, bootstrapRequest, bootstrapResponse}, readSchemas()...)...)
 	if err != nil {
 		return nil, err
 	}
