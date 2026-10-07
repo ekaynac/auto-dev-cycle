@@ -212,6 +212,28 @@ func TestVersionEndpoint(t *testing.T) {
 	}
 }
 
+// Reads through the assembled server: whoami names the listener that
+// admitted the caller, the shared socket's group membership is no
+// credential, and a resource no family registered is not found.
+func TestReadsThroughServer(t *testing.T) {
+	s := serveStore(t, defaultLimits, &SharedSocket{RunDir: runDir(t, 0o750), Group: egid()})
+	shared := unixClient(filepath.Join(s.srv.sockets[1].dir.Name(), sharedSocket))
+	if resp := s.get(t, shared, api.WhoamiPath, ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the shared socket without a bearer: %s", resp.Status)
+	}
+	for c, want := range map[*http.Client]types.WhoamiListener{s.client(): types.WhoamiListenerPrivateSocket, shared: types.WhoamiListenerSharedSocket} {
+		resp := s.get(t, c, api.WhoamiPath, s.tok.Reveal())
+		var got types.Whoami
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || resp.StatusCode != http.StatusOK || got.Actor != s.op ||
+			got.Listener != want || string(got.Token) != s.tokenID() || !got.Reads.Everything {
+			t.Errorf("whoami via %s: %s %+v %v", want, resp.Status, got, err)
+		}
+	}
+	if resp := s.get(t, s.client(), "/v1/grants", s.tok.Reveal()); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("an unregistered resource: %s", resp.Status)
+	}
+}
+
 // Shutdown ends open streams, stops accepting and removes the sockets it
 // made; the directory then takes a new server.
 func TestShutdownRemovesSockets(t *testing.T) {

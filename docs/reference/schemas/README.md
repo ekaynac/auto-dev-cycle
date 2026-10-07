@@ -18,6 +18,8 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/bootstrap-response.json`](api-bootstrap-response.md) | BootstrapResponse |
 | [`api/command-request.json`](api-command-request.md) | CommandRequest |
 | [`api/command-response.json`](api-command-response.md) | CommandResponse |
+| [`api/read-list.json`](api-read-list.md) | ReadList |
+| [`api/whoami.json`](api-whoami.md) | Whoami |
 | [`common/defs.json`](common-defs.md) | Common definitions |
 | [`config/project-profile.json`](config-project-profile.md) | ProjectProfile |
 | [`records/actor.json`](records-actor.md) | Actor |

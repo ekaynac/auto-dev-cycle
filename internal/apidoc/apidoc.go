@@ -6,8 +6,9 @@
 // self-contained: every schema the bodies reach, transitively, is embedded
 // under components with its own $id, so a consumer resolves each relative
 // $ref inside the document (a JSON Schema compound document) and never
-// fetches a schema URL. Reads and the event stream join it with their
-// handlers.
+// fetches a schema URL. It also describes the reads (internal/api): the
+// event stream, whoami and the resource path, whose resources join with
+// their families.
 package apidoc
 
 import (
@@ -23,6 +24,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/api"
 )
 
 // CommandPath is the endpoint of an action.
@@ -37,6 +39,8 @@ const (
 	responseSchema    = "api/command-response.json"
 	bootstrapRequest  = "api/bootstrap-request.json"
 	bootstrapResponse = "api/bootstrap-response.json"
+	readSchema        = "api/read-list.json"
+	whoamiSchema      = "api/whoami.json"
 )
 
 // ComponentName is the component a schema file is embedded under
@@ -50,7 +54,7 @@ type ref struct {
 }
 
 type media struct {
-	Schema ref `yaml:"schema"`
+	Schema *ref `yaml:"schema,omitempty"`
 }
 
 type body struct {
@@ -66,8 +70,17 @@ type operation struct {
 	Deprecated  bool                   `yaml:"deprecated,omitempty"`
 	Action      string                 `yaml:"x-adc-action,omitempty"`
 	Security    *[]map[string][]string `yaml:"security,omitempty"` // nil: the document's
-	RequestBody body                   `yaml:"requestBody"`
+	Parameters  []parameter            `yaml:"parameters,omitempty"`
+	RequestBody *body                  `yaml:"requestBody,omitempty"`
 	Responses   map[string]body        `yaml:"responses"`
+}
+
+type parameter struct {
+	Name        string         `yaml:"name"`
+	In          string         `yaml:"in"`
+	Required    bool           `yaml:"required,omitempty"`
+	Description string         `yaml:"description"`
+	Schema      map[string]any `yaml:"schema"`
 }
 
 type components struct {
@@ -84,13 +97,50 @@ type document struct {
 }
 
 func jsonOf(file string) map[string]media {
-	return map[string]media{"application/json": {Schema: ref{"#/components/schemas/" + ComponentName(file)}}}
+	return map[string]media{"application/json": {Schema: &ref{"#/components/schemas/" + ComponentName(file)}}}
+}
+
+// readResponses are a read's responses: ok, the refusals every read can
+// give (403 and 503 carry a result: outcome, reason, detail) and extra
+// (status, description pairs).
+func readResponses(ok body, extra ...string) map[string]body {
+	out := map[string]body{"200": ok,
+		"400": {Description: "A query parameter the read does not take, or a malformed one."},
+		"401": {Description: "No valid bearer token on this listener."},
+		"503": {Description: "could_not_run/store_unreadable, or too many authentications in progress (Retry-After)."}}
+	for i := 0; i+1 < len(extra); i += 2 {
+		out[extra[i]] = body{Description: extra[i+1]}
+	}
+	return out
+}
+
+const notGranted = "failed/action_not_granted: no grant in force grants reads."
+
+// reads are the read paths (08 "Reads, commands, events").
+func reads() map[string]map[string]operation {
+	str := map[string]any{"type": "string"}
+	op := func(id, summary string, params []parameter, responses map[string]body) map[string]operation {
+		return map[string]operation{"get": {OperationID: "read." + id, Tags: []string{"read"}, Summary: summary, Parameters: params, Responses: responses}}
+	}
+	return map[string]map[string]operation{
+		api.EventsPath: op("events", "The event stream, resumable by seq and filtered server-side by the caller's read scope.", []parameter{
+			{Name: "after", In: "query", Description: "Resume after this seq.", Schema: map[string]any{"type": "integer", "minimum": 0}},
+			{Name: "kinds", In: "query", Description: "Comma-separated kinds or kind names; narrows, never widens.", Schema: str},
+			{Name: "project", In: "query", Description: "One project; narrows, never widens.", Schema: str}},
+			readResponses(body{Description: "Server-Sent Events: event frames (id: seq) the caller's read scope covers, each payload cut to its kind's allow-list or withheld, then a closed frame with the result that ended the stream.",
+				Content: map[string]media{"text/event-stream": {}}}, "403", notGranted)),
+		api.WhoamiPath: op("whoami", "The authenticated caller and its effective read scope; no grant domain.", nil,
+			readResponses(body{Description: "The caller.", Content: jsonOf(whoamiSchema)})),
+		api.ReadPath: op("resource", "The records of one resource the caller's read scope covers, each authorized in one snapshot.",
+			[]parameter{{Name: "resource", In: "path", Required: true, Description: "A registered resource.", Schema: str}},
+			readResponses(body{Description: "The readable records.", Content: jsonOf(readSchema)}, "403", notGranted, "404", "No such resource.")),
+	}
 }
 
 // Generate renders the document for the registry's actions over the schema
 // tree (schemas.FS()); the same inputs always give the same bytes.
 func Generate(actions map[string]types.Action, schemaFS fs.FS) ([]byte, error) {
-	embedded, err := bundle(schemaFS, requestSchema, responseSchema, bootstrapRequest, bootstrapResponse)
+	embedded, err := bundle(schemaFS, requestSchema, responseSchema, bootstrapRequest, bootstrapResponse, readSchema, whoamiSchema)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +149,7 @@ func Generate(actions map[string]types.Action, schemaFS fs.FS) ([]byte, error) {
 		Info: map[string]string{"title": "auto-dev-cycle controller API", "version": "v1",
 			"description": "Generated by tools/apigen from schemas/vocab/actions.yaml and schemas/ (make gen); do not edit."},
 		Security: []map[string][]string{{"bearer": {}}},
-		Paths:    map[string]map[string]operation{},
+		Paths:    reads(),
 		Components: components{
 			SecuritySchemes: map[string]map[string]string{"bearer": {"type": "http", "scheme": "bearer"}},
 			Schemas:         embedded,
@@ -116,7 +166,7 @@ func Generate(actions map[string]types.Action, schemaFS fs.FS) ([]byte, error) {
 			Summary:     a.Description,
 			Deprecated:  a.Deprecated != nil,
 			Action:      name,
-			RequestBody: body{Required: true, Content: jsonOf(requestSchema)},
+			RequestBody: &body{Required: true, Content: jsonOf(requestSchema)},
 			Responses: map[string]body{
 				"200": {Description: "The command was decided: applied, proposed or refused.", Content: jsonOf(responseSchema)},
 				"401": {Description: "No valid bearer token; nothing was decided."},
@@ -128,7 +178,7 @@ func Generate(actions map[string]types.Action, schemaFS fs.FS) ([]byte, error) {
 		Tags:        []string{"admin"},
 		Summary:     "Create the first operator and its first token with the one-time setup secret; served only on the private socket, without a bearer.",
 		Security:    &[]map[string][]string{},
-		RequestBody: body{Required: true, Content: jsonOf(bootstrapRequest)},
+		RequestBody: &body{Required: true, Content: jsonOf(bootstrapRequest)},
 		Responses: map[string]body{
 			"200": {Description: "The bootstrap was decided: applied or refused.", Content: jsonOf(bootstrapResponse)},
 			"403": {Description: "Not the private socket; nothing was decided."},

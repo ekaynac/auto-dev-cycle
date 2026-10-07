@@ -18,6 +18,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/api"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 	"github.com/ekaynac/auto-dev-cycle/schemas"
 )
@@ -69,8 +70,14 @@ func TestOneEndpointPerAction(t *testing.T) {
 		b.Responses["200"].Content["application/json"].Schema.Ref != "#/components/schemas/api.bootstrap-response" {
 		t.Errorf("bootstrap: %+v", b)
 	}
-	if len(d.Paths) != len(actions)+1 {
-		t.Fatalf("%d paths for %d actions", len(d.Paths), len(actions))
+	commands := 0
+	for p := range d.Paths {
+		if strings.HasPrefix(p, CommandPath("")) || p == BootstrapPath {
+			commands++
+		}
+	}
+	if commands != len(actions)+1 {
+		t.Fatalf("%d command and bootstrap paths for %d actions", commands, len(actions))
 	}
 	for name, a := range actions {
 		ops, ok := d.Paths[CommandPath(name)]
@@ -86,6 +93,41 @@ func TestOneEndpointPerAction(t *testing.T) {
 		if op.RequestBody.Content["application/json"].Schema.Ref != "#/components/schemas/api.command-request" ||
 			op.Responses["200"].Content["application/json"].Schema.Ref != "#/components/schemas/api.command-response" {
 			t.Errorf("%s: bodies %+v %+v", name, op.RequestBody, op.Responses)
+		}
+	}
+}
+
+// The reads are described as the handlers serve them: the event stream,
+// whoami and the resource path, GET only, with no body and no action, and
+// every other path a command.
+func TestReadPaths(t *testing.T) {
+	b, err := Generate(registry(t), schemas.FS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := parse(t, b)
+	want := map[string]string{api.EventsPath: "", api.WhoamiPath: "api.whoami", api.ReadPath: "api.read-list"}
+	for p, schema := range want {
+		op, ok := d.Paths[p]["get"]
+		if !ok || len(d.Paths[p]) != 1 || op.Action != "" || op.RequestBody != nil || op.Responses["401"].Description == "" {
+			t.Errorf("%s: %+v", p, d.Paths[p])
+			continue
+		}
+		ok200 := op.Responses["200"].Content
+		if schema == "" {
+			if _, sse := ok200["text/event-stream"]; !sse {
+				t.Errorf("%s: %+v", p, ok200)
+			}
+		} else if ok200["application/json"].Schema == nil || ok200["application/json"].Schema.Ref != "#/components/schemas/"+schema {
+			t.Errorf("%s: %+v", p, ok200)
+		}
+	}
+	if _, ok := d.Paths[api.WhoamiPath]["get"].Responses["403"]; ok {
+		t.Error("whoami refuses as a grant domain")
+	}
+	for p := range d.Paths {
+		if _, read := want[p]; !read && !strings.HasPrefix(p, CommandPath("")) && p != BootstrapPath {
+			t.Errorf("an unknown path %s", p)
 		}
 	}
 }

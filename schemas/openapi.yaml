@@ -8,6 +8,36 @@ info:
 security:
   - bearer: []
 paths:
+  /v1/{resource}:
+    get:
+      operationId: read.resource
+      tags:
+        - read
+      summary: The records of one resource the caller's read scope covers, each authorized in one snapshot.
+      parameters:
+        - name: resource
+          in: path
+          required: true
+          description: A registered resource.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The readable records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.read-list'
+        "400":
+          description: A query parameter the read does not take, or a malformed one.
+        "401":
+          description: No valid bearer token on this listener.
+        "403":
+          description: 'failed/action_not_granted: no grant in force grants reads.'
+        "404":
+          description: No such resource.
+        "503":
+          description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
   /v1/bootstrap:
     post:
       operationId: bootstrap
@@ -404,6 +434,61 @@ paths:
                 $ref: '#/components/schemas/api.command-response'
         "401":
           description: No valid bearer token; nothing was decided.
+  /v1/events:
+    get:
+      operationId: read.events
+      tags:
+        - read
+      summary: The event stream, resumable by seq and filtered server-side by the caller's read scope.
+      parameters:
+        - name: after
+          in: query
+          description: Resume after this seq.
+          schema:
+            minimum: 0
+            type: integer
+        - name: kinds
+          in: query
+          description: Comma-separated kinds or kind names; narrows, never widens.
+          schema:
+            type: string
+        - name: project
+          in: query
+          description: One project; narrows, never widens.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 'Server-Sent Events: event frames (id: seq) the caller''s read scope covers, each payload cut to its kind''s allow-list or withheld, then a closed frame with the result that ended the stream.'
+          content:
+            text/event-stream: {}
+        "400":
+          description: A query parameter the read does not take, or a malformed one.
+        "401":
+          description: No valid bearer token on this listener.
+        "403":
+          description: 'failed/action_not_granted: no grant in force grants reads.'
+        "503":
+          description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
+  /v1/whoami:
+    get:
+      operationId: read.whoami
+      tags:
+        - read
+      summary: The authenticated caller and its effective read scope; no grant domain.
+      responses:
+        "200":
+          description: The caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.whoami'
+        "400":
+          description: A query parameter the read does not take, or a malformed one.
+        "401":
+          description: No valid bearer token on this listener.
+        "503":
+          description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
 components:
   securitySchemes:
     bearer:
@@ -625,6 +710,88 @@ components:
               type: string
               minLength: 1
               maxLength: 4096
+    api.read-list:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/read-list.json
+      title: ReadList
+      description: 'A read of one resource, GET /v1/{resource} (docs/design/m0/08 "Reads"): the records the caller''s read scope covers, each authorized against its domain and authoritative project in the same snapshot as the caller''s scope, and each carrying only its resource''s allow-listed fields. found when any record is returned, else empty.'
+      type: object
+      additionalProperties: false
+      required:
+        - resource
+        - outcome
+        - items
+      properties:
+        resource:
+          type: string
+          pattern: ^[a-z][a-z0-9-]*$
+          maxLength: 64
+        outcome:
+          enum:
+            - found
+            - empty
+        items:
+          type: array
+          items:
+            description: One record, its fields the resource's allow-list; one schema per resource.
+            type: object
+            x-adc-open-payload: resource
+    api.whoami:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/whoami.json
+      title: Whoami
+      description: 'The authenticated caller, GET /v1/whoami (docs/design/m0/14 "Read scope"): its actor, the token it presented (its id, never its hash), the listener it came through and its effective read scope. Not a grant domain: every authenticated caller may read its own.'
+      type: object
+      additionalProperties: false
+      required:
+        - actor
+        - kind
+        - token
+        - listener
+        - reads
+      properties:
+        actor:
+          $ref: ../common/defs.json#/$defs/ActorID
+        kind:
+          enum:
+            - operator
+            - supervisor
+        token:
+          $ref: ../common/defs.json#/$defs/TokenID
+        listener:
+          enum:
+            - private_socket
+            - shared_socket
+            - https
+        reads:
+          description: 'everything: an operator reads every record; otherwise the read reach of each grant in force, by grant.'
+          type: object
+          additionalProperties: false
+          required:
+            - everything
+            - grants
+          properties:
+            everything:
+              type: boolean
+            grants:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - grant
+                  - projects
+                  - kinds
+                properties:
+                  grant:
+                    $ref: ../common/defs.json#/$defs/GrantID
+                  projects:
+                    $ref: ../records/grant.json#/$defs/ProjectScope
+                  kinds:
+                    type: array
+                    uniqueItems: true
+                    items:
+                      $ref: ../records/receipt.json#/$defs/Name
     common.defs:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/common/defs.json
