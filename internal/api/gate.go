@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// Slots caps concurrent holders in total and per peer uid, so no one peer
+// Slots caps concurrent holders in total and per peer (Peer.Key), so no one peer
 // takes them all. Each listener has its own, so one listener's clients
 // never starve another's. A taker that finds no slot is refused at once,
 // never queued. Bearer verifications (an Argon2id hash, 64 MiB, each) and
@@ -16,13 +16,13 @@ type Slots struct {
 	mu             sync.Mutex
 	total, perPeer int // perPeer 0: no per-peer cap
 	used           int
-	byPeer         map[int]int
+	byPeer         map[any]int // a uid, or Peer.Key
 	unlimited      bool
 }
 
-// NewSlots is total slots (at least one), at most perPeer per peer uid.
+// NewSlots is total slots (at least one), at most perPeer per peer.
 func NewSlots(total, perPeer int) *Slots {
-	return &Slots{total: max(total, 1), perPeer: perPeer, byPeer: map[int]int{}}
+	return &Slots{total: max(total, 1), perPeer: perPeer, byPeer: map[any]int{}}
 }
 
 // Unlimited is Slots that cap nothing, for callers that bound load
@@ -31,9 +31,10 @@ func NewSlots(total, perPeer int) *Slots {
 // uses it.
 func Unlimited() *Slots { return &Slots{unlimited: true} }
 
-// Take takes a slot for peer: release gives it back (once, whatever the
-// number of calls); false when none is free. Nil Slots admit no one.
-func (s *Slots) Take(peer int) (release func(), ok bool) {
+// Take takes a slot for peer (a uid, or Peer.Key): release gives it back
+// (once, whatever the number of calls); false when none is free. Nil
+// Slots admit no one.
+func (s *Slots) Take(peer any) (release func(), ok bool) {
 	switch {
 	case s == nil:
 		return nil, false
@@ -66,7 +67,7 @@ func (s *Slots) enter(r *http.Request) (func(), bool) {
 	if !ok {
 		p.UID = -1
 	}
-	return s.Take(p.UID)
+	return s.Take(p.Key())
 }
 
 // refuseBusy is the fixed-text refusal of a full gate.

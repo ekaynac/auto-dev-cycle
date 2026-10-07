@@ -9,10 +9,12 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"sync"
 	"time"
 
@@ -165,15 +167,31 @@ func (d *Daemon) Close() error {
 
 // Run starts the daemon, then at its readiness point (every startup check
 // passed) opens the listeners: the private socket and, when configured,
-// the shared one. ready is called once they listen. Run blocks until ctx is
-// done or a listener fails, then stops the server (streams closed, sockets
-// removed) before the store closes. logw never receives a path or a secret.
+// the shared one and the HTTPS listener, whose certificate and key are
+// checked before the store opens. ready is called once they listen. Run
+// blocks until ctx is done or a listener fails, then stops the server
+// (streams closed, sockets removed) before the store closes. logw never receives a path or a secret.
 func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) error {
+	var tc *tls.Config
+	if cfg.HTTPS != nil {
+		err := cfg.Validate()
+		if err == nil {
+			tc, err = cfg.HTTPS.load(time.Now(), os.Geteuid())
+		}
+		if err != nil {
+			return err
+		}
+	}
 	d, err := Start(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	srv, err := listen(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits)
+	if err == nil && tc != nil {
+		if err = srv.listenHTTPS(d.store, cfg.HTTPS.Addr, tc); err != nil {
+			_ = srv.close() // the refusal is err
+		}
+	}
 	if err != nil {
 		if cerr := d.Close(); cerr != nil {
 			return couldNotRun(vocab.ReasonStoreUnreadable, "the event store did not close cleanly", errors.Join(err, cerr))
@@ -181,6 +199,9 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 		return err
 	}
 	fmt.Fprintf(logw, "adcd: started; event log verified to seq %d; listening on %d socket(s)\n", d.head.Seq, len(srv.sockets))
+	if srv.tcp != nil {
+		fmt.Fprintln(logw, "adcd: the HTTPS listener is open")
+	}
 	if d.note != "" {
 		fmt.Fprintln(logw, d.note)
 	}

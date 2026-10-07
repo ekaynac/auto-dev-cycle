@@ -29,6 +29,7 @@ type Config struct {
 	Groups      []types.ResourceGroup // what capacity reserves from; none by default
 	TrustedHead *eventstore.Head      // optional: the log must reach it and carry its hash (03 rule 3)
 	Shared      *SharedSocket         // optional, off by default (14 R2)
+	HTTPS       *HTTPSListener        // optional, off by default (14 R2, R3)
 	// clock is the store clock (eventstore.Config.Now) that every command
 	// and the bootstrap decide by; nil is time.Now. Only tests set it.
 	clock func() time.Time
@@ -66,7 +67,7 @@ var ErrConfig = errors.New("adcd: configuration")
 const (
 	maxGroupsFile = 1 << 20 // bytes
 	groupSchema   = "records/resource-group"
-	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP]"
+	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP] [--https-addr IP:PORT --https-cert FILE --https-key FILE]"
 )
 
 var headHash = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -77,9 +78,13 @@ func configError(detail string) error { return fmt.Errorf("%w: %s", ErrConfig, d
 func LoadConfig(args []string) (Config, error) {
 	return loadConfig("adcd run", usage, args, func(fs *flag.FlagSet) func(*Config) {
 		runDir, group := fs.String("shared-run-dir", "", ""), fs.String("shared-group", "", "")
+		addr, cert, key := fs.String("https-addr", "", ""), fs.String("https-cert", "", ""), fs.String("https-key", "", "")
 		return func(cfg *Config) {
 			if *runDir != "" || *group != "" {
 				cfg.Shared = &SharedSocket{RunDir: *runDir, Group: *group}
+			}
+			if *addr != "" || *cert != "" || *key != "" {
+				cfg.HTTPS = &HTTPSListener{Addr: *addr, CertFile: *cert, KeyFile: *key}
 			}
 		}
 	})
@@ -134,6 +139,11 @@ func (c Config) Validate() error {
 	}
 	if c.Shared != nil {
 		if _, err := c.Shared.gid(); err != nil {
+			return err
+		}
+	}
+	if c.HTTPS != nil {
+		if err := c.HTTPS.validate(absClean); err != nil {
 			return err
 		}
 	}

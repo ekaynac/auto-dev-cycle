@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"net/netip"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 )
@@ -37,10 +38,26 @@ func hardAbort(r *http.Request) func() {
 }
 
 // Peer is who a connection came from, as the listener that admitted it
-// says: the listener and, on a Unix socket, the peer's uid (SO_PEERCRED).
+// says: the listener and, on a Unix socket, the peer's uid (SO_PEERCRED);
+// over TCP, the remote address (and UID -1).
 type Peer struct {
-	Via identity.Listener
-	UID int
+	Via  identity.Listener
+	UID  int
+	Addr netip.Addr
+}
+
+// Key is what per-peer quotas count: the uid on a socket; over TCP the
+// remote IPv4 address, or the IPv6 /64 a host is commonly given, so one
+// host cannot multiply its share by rotating addresses within it.
+func (p Peer) Key() any {
+	switch a := p.Addr.Unmap(); {
+	case !a.IsValid():
+		return p.UID
+	case a.Is6():
+		return netip.PrefixFrom(a, 64).Masked()
+	default:
+		return a
+	}
 }
 
 type peerKey struct{}
