@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/grant-replaced.json",
   "title": "GrantReplaced",
-  "description": "The payload of grant.replaced/v1 (docs/design/m0/14 N6/P6): the lineage of a grant.extend, committed with the old grant's grant.revoked and the new grant's grant.created. Its subject is the old grant. It binds the old id to the complete new grant, whose approval names the approval that confirmed the replacement (null when an operator replaced it directly). internal/authority admits it only for a grant revoked and a grant created, for the same grantee, at its own time, and once per old grant.",
+  "description": "The payload of grant.replaced/v1 (docs/design/m0/14 N6/P6): the lineage of a grant.extend, committed with the old grant's grant.revoked and the new grant's grant.created. Its subject is the old grant. It binds the old id to the complete new grant, whose approval names the approval that confirmed the replacement (null when an operator replaced it directly). internal/authority admits it only for a grant revoked and a grant created, for the same grantee, by the same command, and once per old grant and per new grant.",
   "type": "object",
   "additionalProperties": false,
   "required": ["transition", "replaces", "grant"],
