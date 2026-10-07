@@ -13,6 +13,8 @@ var (
 	ReasonActionDeferred = types.ReasonCodeOf("action_deferred")
 	// ReasonActionNotGranted: No grant in force (not revoked, within its validity) covers this action on this project for the supervisor.
 	ReasonActionNotGranted = types.ReasonCodeOf("action_not_granted")
+	// ReasonActionNotProposable: The command would be proposed, but the action is never recorded as a proposal: its derivation mints its object (note.add) or it is a direct act on a proposal (proposal.withdraw); refused before any proposal is recorded.
+	ReasonActionNotProposable = types.ReasonCodeOf("action_not_proposable")
 	// ReasonActionUnregistered: The action is not in the action registry, or is deprecated; authority classifies only registered, current actions.
 	ReasonActionUnregistered = types.ReasonCodeOf("action_unregistered")
 	// ReasonActorProtected: actor.revoke names the controller's system actor or the last live operator; refused, so the installation never loses its own actor or its last administrator.

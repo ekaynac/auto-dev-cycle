@@ -23,6 +23,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/read-list.json`](api-read-list.md) | ReadList |
 | [`api/scope/actor-revoke.json`](api-scope-actor-revoke.md) | ActorRevokeScope |
 | [`api/scope/agent-enrol.json`](api-scope-agent-enrol.md) | AgentEnrolScope |
+| [`api/scope/proposal-withdraw.json`](api-scope-proposal-withdraw.md) | ProposalWithdrawScope |
 | [`api/scope/seat-release.json`](api-scope-seat-release.md) | SeatReleaseScope |
 | [`api/scope/seat-take.json`](api-scope-seat-take.md) | SeatTakeScope |
 | [`api/whoami.json`](api-whoami.md) | Whoami |
