@@ -104,7 +104,7 @@ func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary
 	maps.Copy(kinds, authority.ProposalKinds())
 	kinds["test.noted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	kinds["test.unnoted/v1"] = eventstore.Kind{Schema: "common/defs"}
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: suiteNow,
 		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, authority.ProposalProjector{}.Project, notesProjection),
 			Authorize: func(tx *eventstore.Tx, c eventstore.Command) error {
 				if c.Action == "test.seed" {
@@ -156,7 +156,7 @@ func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary
 
 func issueTo(holder, issuer types.ActorID, out *identity.Secret) applyFn {
 	return func(*eventstore.Tx) ([]eventstore.Event, error) {
-		evs, secret, err := identity.IssueToken(holder, issuer, time.Now())
+		evs, secret, err := identity.IssueToken(holder, issuer, suiteNow())
 		*out = secret
 		return evs, err
 	}
@@ -294,7 +294,7 @@ func TestReplayAuthentication(t *testing.T) {
 	// new command are both refused.
 	tokID, _, _ := strings.Cut(b.supTok.Reveal(), ".")
 	b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return identity.RevokeToken(tx, types.TokenID(tokID), time.Now())
+		return identity.RevokeToken(tx, types.TokenID(tokID), suiteNow())
 	})
 	refused("a revoked token's replay", b.noteCmd(b.sup, "k", prjA))
 	refused("a revoked token's new command", b.noteCmd(b.sup, "new", prjA))
@@ -308,7 +308,7 @@ func TestRevokedActorIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return identity.RevokeActor(tx, b.sup.Actor(), time.Now())
+		return identity.RevokeActor(tx, b.sup.Actor(), suiteNow())
 	})
 	for _, key := range []string{"k", "new"} {
 		if out, err := b.note(b.noteCmd(b.sup, key, prjA)); !errors.Is(err, identity.ErrUnauthenticated) || out.Replayed {

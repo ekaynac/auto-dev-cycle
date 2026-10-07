@@ -91,7 +91,7 @@ func openGrants(t *testing.T) *grantFixture {
 	kinds := identity.Kinds()
 	maps.Copy(kinds, authority.GrantKinds())
 	kinds["fixture.appended/v1"] = eventstore.Kind{Schema: "common/defs"}
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: suiteNow,
 		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project)}})
 	if err != nil {
@@ -119,7 +119,8 @@ func openGrants(t *testing.T) *grantFixture {
 var (
 	prjA = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sa1")
 	prjB = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sb2")
-	t0   = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	// t0 is the suite's base time, from the store's clock (suiteNow).
+	t0 = suiteNow().UTC().Truncate(time.Second)
 )
 
 // grantFor is a grant to f.sup reading kinds on projects A, valid around t0.

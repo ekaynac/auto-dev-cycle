@@ -149,6 +149,7 @@ type Store struct {
 	ident     fileID // its identity when opened
 	genesis   string
 	schemaSet string
+	clock     func() time.Time // stamps event times (Config.Now)
 	kinds     Kinds
 	blobs     BlobChecker
 	hooks     Hooks
@@ -172,6 +173,10 @@ type Config struct {
 	Blobs   BlobChecker // required: referenced blobs must be published first
 	Hooks   Hooks       // the writer's in-transaction decisions (writer.go)
 	Effects EffectKinds // the external effects commands may intend (effects.go)
+	// Now is the clock that stamps each appended event's time; nil is
+	// time.Now. Folds read only those recorded times, so a test can run a
+	// history under a shifted clock.
+	Now func() time.Time
 }
 
 // Open opens (creating on first use) the store in the lock's state
@@ -242,7 +247,10 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (s *Store, err error) {
 		}
 		effects[k] = v
 	}
-	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs, hooks: cfg.Hooks, effects: effects}
+	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs, hooks: cfg.Hooks, effects: effects, clock: cfg.Now}
+	if s.clock == nil {
+		s.clock = time.Now
+	}
 	s.idle = sync.NewCond(&s.mu)
 	if s.genesis, err = s.ensureGenesis(ctx); err == nil {
 		err = checkDBFiles(file)
@@ -488,7 +496,7 @@ func (s *Store) append(ctx context.Context, tx *sql.Tx, e Event) (Event, error) 
 	if err := tx.QueryRowContext(ctx, `SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1`).Scan(&last, &prev); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Event{}, err
 	}
-	e.Seq, e.PrevHash, e.At = last.Int64+1, s.genesis, now()
+	e.Seq, e.PrevHash, e.At = last.Int64+1, s.genesis, s.clock().UTC().Format(time.RFC3339Nano)
 	if prev.Valid {
 		e.PrevHash = prev.String
 	}

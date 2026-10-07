@@ -26,9 +26,11 @@ import (
 var ErrCommandsRefused = authority.ErrActionNotWired
 
 // hooks are the writer's hooks: the identity recheck, the authorizer over
-// the wired handlers (none in this build) and the projector.
+// the wired handlers and the projector. proposal.confirm is wired without
+// a source of review receipts, so every confirmation is refused
+// (authority.NoReviewSource) until receipts are recorded.
 func hooks(reg *vocab.Registry, project func(*eventstore.Tx, []eventstore.Event) error) eventstore.Hooks {
-	az := authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{}, Now: time.Now}
+	az := authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{authority.ConfirmAction: authority.ConfirmHandler{}}, Now: time.Now}
 	authorize := func(t *eventstore.Tx, c eventstore.Command) error {
 		if c.Action == bootstrapAction || c.Action == issueAction {
 			return authorizeSystem(t, c)
