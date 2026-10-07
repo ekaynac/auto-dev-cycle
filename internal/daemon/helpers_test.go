@@ -168,15 +168,15 @@ func fullHistory(t *testing.T, w *seeder) types.ActorID {
 	g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{"prj_01m3250vkwffc979nzjw0g2sa1"}},
 		Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{}},
 		ValidFrom: types.Time(now.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(now.Add(time.Hour).Format(time.RFC3339)),
-		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID, Approval: types.ApprovalID(newID(t, "apr"))}
+		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID}
 	// The grantee and its grant in one command: admitted only if each event
 	// is projected through every projector before the next one.
-	w.do(op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
+	w.do(op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		a, err := identity.CreateActor(sup)
 		if err != nil {
 			return nil, err
 		}
-		gr, err := authority.CreateGrant(g)
+		gr, err := authority.CreateGrant(tx, g)
 		return append(a, gr...), err
 	})
 	w.grantedLease(op.ID, 4)

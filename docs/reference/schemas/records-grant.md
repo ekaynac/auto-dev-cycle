@@ -19,7 +19,7 @@ A scoped, dated, expiring delegation of actions from an operator to a supervisor
 | `expires_at` | yes | [Time](common-defs.md#time) | Required: every grant expires. |
 | `confirmation_overrides` | yes | map of [ActionKind](#actionkind) to one of `independent_review`, `human` | Per action, a stricter confirmation than its default; never a looser one. |
 | `issued_by` | yes | [ActorID](common-defs.md#actorid) | An operator. |
-| `approval` | yes | [ApprovalID](common-defs.md#approvalid) |  |
+| `approval` | yes | null or [ApprovalID](common-defs.md#approvalid) | The approval that confirmed the grant's proposal, recorded in the same command, whose actor is issued_by; null when an operator issued the grant directly (D31: policy none, whose approvals this build does not persist). |
 
 No other fields are allowed.
 

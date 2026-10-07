@@ -163,7 +163,7 @@ func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary
 	b.supGrant = types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{prjA}},
 		Actions: []types.ActionKind{"note.add"}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{}},
 		ValidFrom: types.Time(t0.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(t0.Add(time.Hour).Format(time.RFC3339)),
-		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID, Approval: types.ApprovalID(newID(t, "apr"))}
+		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID}
 	b.seed(b.op, createGrant(b.supGrant))
 	b.sup = b.login(b.supTok)
 	if seated {

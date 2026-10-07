@@ -114,15 +114,18 @@ func open(t *testing.T) *fixture {
 	for _, k := range []string{"fixture.appended/v1", "lease.granted/v1"} {
 		kinds[k] = eventstore.Kind{Schema: "common/defs"}
 	}
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+	f := &fixture{t: t}
+	f.now.Store(t0.UnixNano())
+	// The store and the stream share one clock: a grant is valid from its
+	// event's time (authority.CreateGrant).
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: func() time.Time { return time.Unix(0, f.now.Load()).UTC() },
 		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.ProposalProjector{}.Project)}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	f := &fixture{t: t, s: s}
-	f.now.Store(t0.UnixNano())
+	f.s = s
 	sys := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSystem, Name: "system"}
 	sys.CreatedBy = sys.ID
 	f.op = types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindOperator, Name: "operator", CreatedBy: sys.ID}
@@ -136,7 +139,7 @@ func open(t *testing.T) *fixture {
 	f.must(sys.ID, issue(f.op.ID, sys.ID, &f.opTok))
 	f.must(f.op.ID, issue(f.sup.ID, f.op.ID, &f.supTk))
 	f.grant = f.grantFor("fixture")
-	f.must(f.op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(f.grant) })
+	f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, f.grant) })
 	f.srv = httptest.NewServer(f.handler(netPoll))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -150,7 +153,7 @@ func (f *fixture) grantFor(kinds ...types.Name) types.Grant {
 	return types.Grant{ID: types.GrantID(newID(f.t, "grt")), Actor: f.sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{types.ProjectID(prjA)}},
 		Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: kinds},
 		ValidFrom: types.Time(t0.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(t0.Add(time.Hour).Format(time.RFC3339)),
-		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: f.op.ID, Approval: types.ApprovalID(newID(f.t, "apr"))}
+		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: f.op.ID}
 }
 
 func (f *fixture) get(method, query, bearer string) *http.Response {
@@ -299,7 +302,9 @@ func TestStreamClosesWhenAuthorityEnds(t *testing.T) {
 			f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 				return authority.RevokeGrant(tx, f.sup.ID, f.grant.ID, t0)
 			})
-			f.must(f.op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(f.grantFor("lease")) })
+			f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return authority.CreateGrant(tx, f.grantFor("lease"))
+			})
 		},
 		"a revoked token": func(f *fixture) {
 			id, _, _ := strings.Cut(f.supTk.Reveal(), ".")

@@ -80,8 +80,9 @@ type Grant struct {
 	// Per action, a stricter confirmation than its default; never a looser one.
 	ConfirmationOverrides map[string]GrantConfirmationOverridesValue `json:"confirmation_overrides"`
 	// An operator.
-	IssuedBy ActorID    `json:"issued_by"`
-	Approval ApprovalID `json:"approval"`
+	IssuedBy ActorID `json:"issued_by"`
+	// The approval that confirmed the grant's proposal, recorded in the same command, whose actor is issued_by; null when an operator issued the grant directly (D31: policy none, whose approvals this build does not persist).
+	Approval *ApprovalID `json:"approval"`
 }
 
 // ActionKind: A mutating action kind of the action registry (schemas/vocab), e.g. task.create or policy.widen_destinations.

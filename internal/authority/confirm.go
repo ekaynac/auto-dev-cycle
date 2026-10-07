@@ -62,9 +62,23 @@ const (
 // belongs in the payload or comes through the proposal (proposal.applied
 // names it). A projector that reads the event's actor as who did it needs
 // tests of the confirmed path when its action is wired as an Applier.
+// Return a *Refusal only when the operation can no longer be applied: it
+// invalidates the proposal. A plain error is a transient failure, which
+// aborts the command and leaves the proposal open.
 type Applier interface {
 	Handler
 	Apply(t *eventstore.Tx, actor types.Actor, input json.RawMessage) ([]eventstore.Event, json.RawMessage, error)
+}
+
+// ConfirmedApplier is an Applier whose operation records its confirmation:
+// ApplyConfirmed also receives the confirmer and the id of the approval the
+// same command records (a grant names its issuer and its approval, 04
+// "Grants"). A handler implements exactly one of Applier and
+// ConfirmedApplier; apply refuses one that implements both. Its refusals
+// and errors mean what Apply's do.
+type ConfirmedApplier interface {
+	Handler
+	ApplyConfirmed(t *eventstore.Tx, proposer, confirmer types.Actor, approval types.ApprovalID, input json.RawMessage) ([]eventstore.Event, json.RawMessage, error)
 }
 
 // Review is a review receipt as an authoritative source holds it: its
@@ -171,26 +185,30 @@ func (a Authorizer) Confirm(c eventstore.Command) eventstore.Decide {
 		if p, err = ConfirmByReview(p, rv.Receipt, rv.Contract, rv.Blobs, rv.Excluded, now); err != nil {
 			return none, err
 		}
-		return a.apply(t, p, by, rv.Event, now)
+		return a.apply(t, p, by, types.ApprovalConfirmation{SatisfiedBy: []types.EventID{rv.Event}}, "an independent review confirmed it", now)
 	}
 }
 
 // apply re-decides the confirmed proposal p's operation for its proposer
-// as of now and applies it, or invalidates p.
-func (a Authorizer) apply(t *eventstore.Tx, p types.Proposal, by types.Actor, review types.EventID, now time.Time) (eventstore.Decision, error) {
+// as of now and applies it, or invalidates p; by's approval records conf
+// (its policy is p's) and reason.
+func (a Authorizer) apply(t *eventstore.Tx, p types.Proposal, by types.Actor, conf types.ApprovalConfirmation, reason string, now time.Time) (eventstore.Decision, error) {
 	var none eventstore.Decision
 	proposer, err := liveActor(t, p.ProposedBy)
 	if err != nil {
 		return invalidated(t, p, types.ProposalInvalidatedReasonValueActorRevoked, err.Error())
 	}
-	h, ok := a.Handlers[string(p.Action)].(Applier)
-	if !ok || isNil(h) {
+	h := a.Handlers[string(p.Action)]
+	plain, ok := h.(Applier)
+	named, ok2 := h.(ConfirmedApplier)
+	if ok == ok2 || isNil(h) { // neither, or both: an Applier implements exactly one
 		return none, fmt.Errorf("%w: %s", ErrActionNotWired, p.Action)
 	}
 	d, err := h.Derive(t, proposer, p.Scope)
 	if errors.Is(err, ErrInvalidScope) { // the stored scope, not the confirmer's
 		return invalidated(t, p, types.ProposalInvalidatedReasonValueProposalInvalidated, "the proposal's scope no longer satisfies its action")
-	} else if err != nil {
+	}
+	if err != nil {
 		return none, err
 	}
 	state, err := StateOf(t, d)
@@ -220,17 +238,27 @@ func (a Authorizer) apply(t *eventstore.Tx, p types.Proposal, by types.Actor, re
 			return none, err
 		}
 	}
-	effects, result, err := h.Apply(t, proposer, p.Scope)
-	if err != nil {
-		return none, err
-	}
 	apr, err := ids.New("apr")
 	if err != nil {
 		return none, err
 	}
+	var effects []eventstore.Event
+	var result json.RawMessage
+	var r *Refusal
+	if ok2 {
+		effects, result, err = named.ApplyConfirmed(t, proposer, by, types.ApprovalID(apr), p.Scope)
+	} else {
+		effects, result, err = plain.Apply(t, proposer, p.Scope)
+	}
+	if errors.As(err, &r) { // the operation cannot be applied as of now
+		return invalidated(t, p, types.ProposalInvalidatedReasonValueProposalInvalidated, r.Error())
+	}
+	if err != nil {
+		return none, err
+	}
 	at := types.Time(now.UTC().Format(time.RFC3339Nano))
-	approval := ApprovalOf(types.Approval{ID: types.ApprovalID(apr), Confirmation: types.ApprovalConfirmation{SatisfiedBy: []types.EventID{review}},
-		Answers: []types.OwedInputID{}, Supersedes: []types.ApprovalID{}, Reason: "an independent review confirmed it", At: at}, p, by)
+	approval := ApprovalOf(types.Approval{ID: types.ApprovalID(apr), Confirmation: conf,
+		Answers: []types.OwedInputID{}, Supersedes: []types.ApprovalID{}, Reason: reason, At: at}, p, by)
 	done := p
 	done.Status = types.ProposalStatusApplied
 	var evs []eventstore.Event

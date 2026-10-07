@@ -339,13 +339,13 @@ func TestSeatVersionCoversRevocation(t *testing.T) {
 }
 
 // The Authorizer decides at the command's time, the store clock's
-// (Tx.Now), never its own: with the store two hours behind, the
-// supervisor's grant (from an hour before t0) is not yet in force.
+// (Tx.Now), never its own: with the store two hours ahead, the
+// supervisor's grant (until an hour after t0) is no longer in force.
 func TestAuthorizerDecidesAtTheCommandTime(t *testing.T) {
-	storeShift = -2 * time.Hour
 	t.Cleanup(func() { storeShift = 0 })
 	b := openBoundary(t)
-	b.refusedUnrun("a command before the grant's validity", b.noteCmd(b.sup, "early", prjA), isReason(vocab.ReasonActionNotGranted))
+	storeShift = 2 * time.Hour
+	b.refusedUnrun("a command after the grant's validity", b.noteCmd(b.sup, "late", prjA), isReason(vocab.ReasonActionNotGranted))
 }
 
 // A pending seat proposal binds the seat's version: a revocation that

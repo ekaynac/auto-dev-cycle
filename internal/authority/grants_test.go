@@ -66,7 +66,7 @@ func create(a types.Actor) applyFn {
 }
 
 func createGrant(g types.Grant) applyFn {
-	return func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(g) }
+	return func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, g) }
 }
 
 func revokeGrant(g types.Grant, at time.Time) applyFn {
@@ -128,7 +128,7 @@ func (f *grantFixture) grantFor(kinds ...types.Name) types.Grant {
 	return types.Grant{ID: types.GrantID(newID(f.t, "grt")), Actor: f.sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{prjA}},
 		Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: kinds},
 		ValidFrom: types.Time(t0.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(t0.Add(time.Hour).Format(time.RFC3339)),
-		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: f.op.ID, Approval: types.ApprovalID(newID(f.t, "apr"))}
+		ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: f.op.ID}
 }
 
 // The projector admits a grant created once, by a live operator as its
@@ -166,8 +166,8 @@ func TestGrantTransitions(t *testing.T) {
 	}
 	altered := g
 	altered.Reads.Kinds = []types.Name{"other"}
-	if err := f.submit(f.op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		evs, err := authority.CreateGrant(altered)
+	if err := f.submit(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		evs, err := authority.CreateGrant(tx, altered)
 		if err == nil {
 			evs[0].Kind = "grant.revoked/v1"
 		}
@@ -210,7 +210,7 @@ func TestReadScope(t *testing.T) {
 	listed := f.grantFor("lease")
 	listed.Reads.Projects = types.GrantReadsProjects{List: []types.ProjectID{prjB}}
 	expired := f.grantFor("token")
-	expired.ExpiresAt = types.Time(t0.Add(-time.Minute).Format(time.RFC3339))
+	expired.ExpiresAt = types.Time(suiteNow().Add(time.Second).UTC().Format(time.RFC3339Nano))
 	everywhere := f.grantFor("grant")
 	everywhere.Projects = types.ProjectScope{All: true}
 	revoked := f.grantFor("identity")
@@ -219,8 +219,11 @@ func TestReadScope(t *testing.T) {
 		f.must(f.op.ID, createGrant(x))
 	}
 	f.must(f.op.ID, revokeGrant(revoked, t0))
+	// Grants are valid from their creation: the scope is taken after it,
+	// once the expired grant has expired.
+	at := suiteNow().Add(2 * time.Second)
 	f.view(func(tx *eventstore.Tx) error {
-		s, err := authority.ReadScopeOf(tx, f.sup, t0)
+		s, err := authority.ReadScopeOf(tx, f.sup, at)
 		for name, c := range map[string]struct {
 			e    eventstore.Event
 			want bool
@@ -238,7 +241,7 @@ func TestReadScope(t *testing.T) {
 				t.Errorf("%s: reads %v, want %v", name, got, c.want)
 			}
 		}
-		op, err2 := authority.ReadScopeOf(tx, f.op, t0)
+		op, err2 := authority.ReadScopeOf(tx, f.op, at)
 		if op.Empty() || !op.Reads(event("token.issued/v1", nil)) {
 			t.Error("an operator does not read everything")
 		}
@@ -253,18 +256,19 @@ func TestReadScopeHolds(t *testing.T) {
 	f := openGrants(t)
 	g := f.grantFor("fixture")
 	f.must(f.op.ID, createGrant(g))
+	at := suiteNow() // after the grant's creation, its validity's start
 	var s authority.ReadScope
 	holds := func(at time.Time) bool {
 		var ok bool
 		f.view(func(tx *eventstore.Tx) (err error) { ok, err = s.Holds(tx, at); return })
 		return ok
 	}
-	f.view(func(tx *eventstore.Tx) (err error) { s, err = authority.ReadScopeOf(tx, f.sup, t0); return })
-	if s.Empty() || !holds(t0) {
+	f.view(func(tx *eventstore.Tx) (err error) { s, err = authority.ReadScopeOf(tx, f.sup, at); return })
+	if s.Empty() || !holds(at) {
 		t.Fatal("a scope in force does not hold")
 	}
 	f.must(f.op.ID, createGrant(f.grantFor("lease")))
-	if !holds(t0) {
+	if !holds(at) {
 		t.Error("a new grant ended the scope")
 	}
 	if holds(t0.Add(time.Hour)) {
@@ -272,7 +276,7 @@ func TestReadScopeHolds(t *testing.T) {
 	}
 	f.must(f.op.ID, revokeGrant(g, t0))
 	f.must(f.op.ID, createGrant(f.grantFor("fixture")))
-	if holds(t0) {
+	if holds(at) {
 		t.Error("a narrowed (revoked and reissued) grant holds")
 	}
 	var none authority.ReadScope

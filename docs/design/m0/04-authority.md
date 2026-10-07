@@ -93,10 +93,33 @@ Grant:
   expires_at: time                  # required
   confirmation_overrides: {action_kind: independent_review|human}   # may only tighten
   issued_by: act_…                  # an operator
-  approval: apr_…
+  approval: apr_…|null              # the approval that confirmed its proposal; null when an operator issued it directly
 ```
 
 A supervisor cannot create, extend or widen grants (`human`, and never by the grantee).
+
+**Creation and revocation (14 PR 7c).**
+- `grant.create` takes the grant without `valid_from`, `issued_by` or `approval`, under an id the client mints, so a
+  retry replays and the same id under a new key, for any grantee, is refused. The controller sets `valid_from` to the
+  time it is applied. Its class is its own and its grantee the scope's actor. Its project is the one project the grant
+  names, in `projects` and listed read projects; several, or every project, make it installation-wide. It is refused
+  (`grant_not_issuable`) when its id is taken, its expiry is not after the command's time or its grantee is not a live
+  supervisor. Only a command applied at once (an operator's) is checked in its derivation; a supervisor's is checked
+  only when its proposal is applied, where a failure invalidates the proposal (`proposal_invalidated`). A supervisor
+  that may not create grants is refused its authorization whatever the id or grantee, so no refusal reveals a taken id
+  or an actor's existence.
+- An operator's is applied at once (D31), issued by the operator with a null `approval`: approvals under policy `none`
+  are not persisted. A supervisor's own is refused (`self_grant_refused`); any other becomes a `human` proposal under
+  the supervisor's grant, which no review confirms (14 R6). Applied after its confirmation, the grant is issued by the
+  confirming operator and names the approval the same command records; the fold admits a grant naming an approval only
+  when it is exactly the grant that approval's proposal asked for, by the approval's actor. The fold of
+  `grant.created/v1` is thereby stricter than before this PR: every grant is valid from its issuing event's time (a
+  grant is never backdated or future-dated), and an id used for any grantee is refused (each id is indexed,
+  `grant_ids`).
+- `grant.revoke {grant}` names a live grant (else `ErrNoGrant`, before any event) and is an operator's: the fold admits only a live operator's revocation, so a supervisor is
+  refused (`operator_only`). The fold invalidates the pending proposals made under the grant
+  (`authority_revoked`), and streams re-check it.
+- Neither action is seat-exempt. Each binds the grant (record and version) for `--expect`.
 
 ## Read authorization [M5]
 

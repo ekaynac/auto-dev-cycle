@@ -40,7 +40,7 @@ type commanded struct {
 	dir                   string
 	d                     *Daemon
 	logs                  *logBuffer
-	opID                  types.ActorID
+	opID, supID           types.ActorID
 	op, sup, bare, review identity.Secret
 	human, revokedTok     identity.Secret
 	gone                  identity.Secret
@@ -77,17 +77,18 @@ func runCommanded(t *testing.T) *commanded {
 		g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: a.ID, Projects: types.ProjectScope{All: true},
 			Actions: []types.ActionKind{"seat.take", "seat.release", authority.WithdrawAction, authority.NoteAction}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{}},
 			ValidFrom: types.Time(now.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(now.Add(time.Hour).Format(time.RFC3339)),
-			ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID, Approval: types.ApprovalID(newID(t, "apr"))}
+			ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID}
 		if override != "" {
 			g.ConfirmationOverrides["seat.take"] = override
 		}
 		if grant {
-			w.do(op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(g) })
+			w.do(op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.CreateGrant(tx, g) })
 		}
 		return a.ID, token(a.ID, op.ID)
 	}
 	var supID, goneID types.ActorID
 	supID, c.sup = supervisor("", true)
+	c.supID = supID
 	_, c.bare = supervisor("", false)
 	_, c.review = supervisor(types.GrantConfirmationOverridesValueIndependentReview, true)
 	_, c.human = supervisor(types.GrantConfirmationOverridesValueHuman, true)
@@ -440,7 +441,8 @@ func TestEveryHandlerHasLogic(t *testing.T) {
 			t.Errorf("%s has a handler and not exactly one of a logic and an issuer", action)
 		}
 	}
-	if len(ls)+len(is) != len(handlers()) || is[authority.EnrolAction] == nil || ls[authority.RevokeActorAction] == nil || ls[authority.WithdrawAction] == nil || ls[authority.NoteAction] == nil {
+	if len(ls)+len(is) != len(handlers()) || is[authority.EnrolAction] == nil || ls[authority.RevokeActorAction] == nil || ls[authority.WithdrawAction] == nil || ls[authority.NoteAction] == nil ||
+		ls[authority.GrantCreateAction] == nil || ls[authority.GrantRevokeAction] == nil {
 		t.Errorf("logics %d, issuers %d, handlers %d", len(ls), len(is), len(handlers()))
 	}
 }

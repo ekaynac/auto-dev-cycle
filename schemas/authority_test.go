@@ -72,6 +72,11 @@ func TestAuthorityRecords(t *testing.T) {
 	if b, _ := json.Marshal(g); contract.Validate("records/grant", b) != nil {
 		t.Error("an every-project grant with listed read projects")
 	}
+	// An operator's direct grant names no approval (04 "Creation and revocation").
+	g["approval"] = nil
+	if b, _ := json.Marshal(g); contract.Validate("records/grant", b) != nil {
+		t.Error("a grant without an approval")
+	}
 
 	cases := map[string]struct {
 		schema string
