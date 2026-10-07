@@ -59,7 +59,7 @@ func deliver(name string, resp types.CommandResponse, v *types.CommandApplied, o
 		if err := json.Unmarshal(v.Result, &r); err != nil || r.Token == "" {
 			r.Token = "not in the result"
 		}
-		return fail("the command applied earlier (token %q) and a repeat delivers no token; %s", r.Token, recovery)
+		return fail("the command applied earlier (token %s) and a repeat delivers no token; %s", r.Token, recovery)
 	case credential == nil:
 		return fail("the command applied but no credential was returned; %s", recovery)
 	}

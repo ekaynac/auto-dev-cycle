@@ -190,7 +190,7 @@ func parseExpect(s string) (types.ExpectedState, error) {
 	}
 	v, err := strconv.ParseInt(s, 10, 64) // a negative one is the schema's to refuse
 	if err != nil {
-		return types.ExpectedState{}, fmt.Errorf("--expect %q is neither a version nor a sha256: digest", s)
+		return types.ExpectedState{}, fmt.Errorf("--expect %s is neither a version nor a sha256: digest", s)
 	}
 	return types.ExpectedState{Version: &v}, nil
 }
@@ -231,7 +231,7 @@ func describe(w io.Writer, r types.CommandResponse, action string, scope json.Ra
 		if v.Policy == types.CommandProposedPolicyHuman {
 			// A human confirmation cannot be completed from the CLI (D37).
 			return say(w, "proposed: %s needs a human confirmation on the dashboard (binding %s)\n  requested: %s %s\n  confirm at: %s%s\n",
-				v.Proposal, v.BindingDigest, action, scope, DashboardProposal, v.Proposal)
+				v.Proposal, v.BindingDigest, action, string(scope), DashboardProposal, v.Proposal)
 		}
 		return say(w, "proposed: %s needs an independent review (binding %s)\n", v.Proposal, v.BindingDigest)
 	case *types.CommandRefused:

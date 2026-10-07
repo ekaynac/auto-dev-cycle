@@ -90,3 +90,21 @@ func TestHostileCommandLocalFields(t *testing.T) {
 		t.Errorf("result write: %q", errb.String())
 	}
 }
+
+// A replayed token id from the result and an invalid refusal's message
+// are escaped (they reach the terminal through fail and couldNotRun).
+func TestHostileCommandMessages(t *testing.T) {
+	h, _ := json.Marshal(hostile)
+	replayed := strings.Replace(applied, `"replayed":false`, `"replayed":true`, 1)
+	replayed = strings.Replace(replayed, `"result":{}`, `"result":{"token":`+string(h)+`}`, 1)
+	enrol := []string{"admin", "enrol-agent", "--expect", "0", "--reason", "r", "--token-out", filepath.Join(privateDir(t), "t")}
+	if code, out, errs := adc(&fake{resp: replayed}, enrol...); code != entry.ExitCouldNotRun || raw(out) || raw(errs) || !strings.Contains(errs, `token \x1b`) && !strings.Contains(errs, `token \u{001B}`) {
+		t.Errorf("replayed token: %d %q %q", code, out, errs)
+	}
+	// A reason its outcome does not allow, with a hostile detail.
+	invalid := `{"disposition":"refused","outcome":"could_not_run","reason":"seat_not_held","detail":` + string(h) + `}`
+	if code, out, errs := adc(&fake{resp: invalid}, "seat", "take", "--expect", "0", "--reason", "r"); code != entry.ExitCouldNotRun || raw(out) || raw(errs) ||
+		!strings.Contains(errs, "the controller's refusal is invalid") {
+		t.Errorf("invalid refusal: %d %q %q", code, out, errs)
+	}
+}
