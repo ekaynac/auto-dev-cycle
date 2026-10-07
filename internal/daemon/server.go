@@ -33,6 +33,7 @@ type limits struct {
 	remote        slotQuota     // the HTTPS listener's, per remote address (api.Peer.Key)
 	freeFailures  int           // failed HTTPS authentications a remote peer has before it is held off (throttle)
 	preAuth       time.Duration // an HTTPS connection's bound from accept to a verified bearer (tcpListener)
+	preAuthFree   time.Duration // a bearer-less HTTPS connection that ends sooner is not a failure (httpsConn.Close)
 	poll          time.Duration // the event stream's re-check bound; zero is api.MaxPoll
 	shutdown      time.Duration // what a graceful stop waits before closing connections
 }
@@ -40,7 +41,7 @@ type limits struct {
 var defaultLimits = limits{headerTimeout: 5 * time.Second, writeTimeout: 30 * time.Second, idleTimeout: time.Minute,
 	headerBytes: 16 << 10, bodyBytes: 1 << 20, shutdown: 5 * time.Second,
 	private: slotQuota{conns: 64, verify: 2}, shared: slotQuota{conns: 32, connsPerPeer: 8, verify: 2, verifyPerPeer: 1},
-	remote: slotQuota{conns: 32, connsPerPeer: 8, verify: 2, verifyPerPeer: 1}, freeFailures: 3, preAuth: 5 * time.Second}
+	remote: slotQuota{conns: 128, connsPerPeer: 4, verify: 2, verifyPerPeer: 1}, freeFailures: 3, preAuth: 5 * time.Second, preAuthFree: time.Second}
 
 // slotQuota is one listener's concurrent connections (so open streams too:
 // each holds one) and bearer verifications (Argon2id, 64 MiB each), in
@@ -55,6 +56,7 @@ type server struct {
 	stop    context.CancelFunc // ends every request context: open streams return
 	tcp     net.Addr           // the HTTPS listener's bound address; nil when off
 	remote  *api.Slots         // the HTTPS listener's bearer verifications
+	th      *throttle          // the HTTPS listener's failure throttle
 	lim     limits
 	wg      sync.WaitGroup
 	failed  chan error // a listener that stopped on its own

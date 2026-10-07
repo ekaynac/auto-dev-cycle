@@ -130,23 +130,30 @@ func (s *server) listenHTTPS(store *eventstore.Store, addr string, tc *tls.Confi
 		return configError("the HTTPS address cannot be bound")
 	}
 	q := s.lim.remote
-	s.tcp, s.remote = ln.Addr(), api.NewSlots(q.verify, q.verifyPerPeer)
-	tl := tls.NewListener(tcpListener{Listener: ln, conns: api.NewSlots(q.conns, q.connsPerPeer), preAuth: s.lim.preAuth}, tc)
+	s.tcp, s.remote, s.th = ln.Addr(), api.NewSlots(q.verify, q.verifyPerPeer), newThrottle(s.lim.freeFailures)
+	tl := tls.NewListener(tcpListener{Listener: ln, conns: api.NewSlots(q.conns, q.connsPerPeer), preAuth: s.lim.preAuth, preAuthFree: s.lim.preAuthFree, th: s.th}, tc)
 	// A failed handshake would log the remote address: nothing to log.
-	s.serve(tl, httpsHandler(store, s.lim, s.remote, newThrottle(s.lim.freeFailures)), log.New(io.Discard, "", 0))
+	s.serve(tl, httpsHandler(store, s.lim, s.remote, s.th), log.New(io.Discard, "", 0))
 	return nil
 }
 
-// tcpListener admits a connection while its remote address has a slot; any
-// other is closed before a byte is read. An admitted connection that has
-// not verified a bearer within preAuth of its accept is closed, whatever
-// stage it is at (handshake, headers, verification): net/http resets its
-// own deadlines at each stage, so they alone would let a caller with no
-// bearer hold the slot for their sum.
+// tcpListener admits a connection while its remote address is not held
+// off (th) and has a slot; any other is closed before a byte is read, so a
+// held-off peer costs no TLS handshake and takes no slot. An admitted
+// connection that has not verified a bearer within preAuth of its accept
+// is closed, whatever stage it is at (handshake, headers, verification):
+// net/http resets its own deadlines at each stage, so they alone would let
+// a caller with no bearer hold the slot for their sum. A connection that
+// ends without ever presenting a bearer, at that bound or by the peer
+// closing it once it has held its slot for preAuthFree, counts as a
+// failure (th), so a peer that only reconnects to hold slots is held off
+// like one that guesses, whether or not it waits for the bound.
 type tcpListener struct {
 	net.Listener
-	conns   *api.Slots
-	preAuth time.Duration
+	conns       *api.Slots
+	preAuth     time.Duration
+	preAuthFree time.Duration
+	th          *throttle
 }
 
 func (l tcpListener) Accept() (net.Conn, error) {
@@ -159,8 +166,12 @@ func (l tcpListener) Accept() (net.Conn, error) {
 		// shared one, so it is refused.
 		if ta, ok := c.RemoteAddr().(*net.TCPAddr); ok && ta.AddrPort().Addr().IsValid() {
 			peer := api.Peer{Via: identity.HTTPS, UID: -1, Addr: ta.AddrPort().Addr().Unmap()}
+			if l.th.wait(peer.Key()) > 0 {
+				_ = c.Close()
+				continue
+			}
 			if release, ok := l.conns.Take(peer.Key()); ok {
-				hc := &httpsConn{Conn: c, peer: peer, release: release}
+				hc := &httpsConn{Conn: c, peer: peer, release: release, th: l.th, since: time.Now(), free: l.preAuthFree}
 				hc.mu.Lock() // expire must see the timer it stops
 				hc.expiry = time.AfterFunc(l.preAuth, hc.expire)
 				hc.mu.Unlock()
@@ -179,11 +190,17 @@ func (l tcpListener) Accept() (net.Conn, error) {
 type httpsConn struct {
 	net.Conn
 	peer    api.Peer
-	release func() // its connection slot
+	release func()        // its connection slot
+	th      *throttle     // what an end with no bearer presented counts against
+	since   time.Time     // its accept
+	free    time.Duration // how long it may last bearer-less and end without a failure
 	started bool
 	mu      sync.Mutex
 	digest  [sha256.Size]byte
 	who     identity.Principal // the zero Principal until a bearer is verified
+	offered bool               // a request on it presented a bearer
+	expired bool               // it reached the pre-auth bound
+	ended   bool               // Close ran: its failure, if any, is counted
 	expiry  *time.Timer        // the pre-auth bound: a no-op once a bearer is verified
 }
 
@@ -203,10 +220,20 @@ func (c *httpsConn) Read(b []byte) (int, error) {
 	return n, err
 }
 
+// Close counts one failure for the peer, the first time, if no bearer was
+// presented (one still being verified is not the peer's fault) and the
+// connection reached the pre-auth bound or held its slot for free: a
+// peer cannot dodge the failure by closing just before the bound. A
+// shorter bearer-less connection (a failed handshake, a probe) is not one.
 func (c *httpsConn) Close() error {
 	c.mu.Lock()
 	c.expiry.Stop()
+	fail := !c.ended && c.who.Actor() == "" && !c.offered && (c.expired || time.Since(c.since) >= c.free)
+	c.ended = true
 	c.mu.Unlock()
+	if fail {
+		c.th.fail(c.peer.Key())
+	}
 	c.release()
 	return c.Conn.Close()
 }
@@ -215,10 +242,18 @@ func (c *httpsConn) Close() error {
 func (c *httpsConn) expire() {
 	c.mu.Lock()
 	authed := c.who.Actor() != ""
+	c.expired = !authed
 	c.mu.Unlock()
 	if !authed {
 		_ = c.Close()
 	}
+}
+
+// present records that a request on the connection presented a bearer.
+func (c *httpsConn) present() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offered = true
 }
 
 // verified is the principal whose bearer this connection verified, if
@@ -241,9 +276,10 @@ type httpsConnKey struct{}
 // httpsHandler is the API on the HTTPS listener. Every request's bearer is
 // authenticated before any route (authenticate), so nothing, not even a
 // 404, answers a caller without one. A peer whose bearers keep failing is
-// held off (throttle) before any verification. The routes get the
-// verified principal (api.WithPrincipal), so they recheck it rather than
-// hash the bearer again. Bootstrap is not served.
+// held off (throttle) before any verification; a 200 clears its failures
+// once they are old (throttle.forgive). The routes get the verified
+// principal (api.WithPrincipal), so they recheck it rather than hash the
+// bearer again. Bootstrap is not served.
 // Responses go through guard: no redirect, no caching, and a refusal
 // closes the connection.
 func httpsHandler(store *eventstore.Store, lim limits, gate *api.Slots, th *throttle) http.Handler {
@@ -258,8 +294,11 @@ func httpsHandler(store *eventstore.Store, lim limits, gate *api.Slots, th *thro
 		}
 		key := hc.peer.Key()
 		defer func() {
-			if w.status == http.StatusUnauthorized {
+			switch w.status {
+			case http.StatusUnauthorized:
 				th.fail(key)
+			case http.StatusOK:
+				th.forgive(key)
 			}
 		}()
 		if wait := th.wait(key); wait > 0 {
@@ -270,6 +309,7 @@ func httpsHandler(store *eventstore.Store, lim limits, gate *api.Slots, th *thro
 		bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		code, who := http.StatusUnauthorized, identity.Principal{}
 		if ok && bearer != "" {
+			hc.present()
 			who, code = authenticate(r, hc, store, gate, bearer)
 		}
 		if code != 0 {

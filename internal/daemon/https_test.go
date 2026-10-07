@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -547,12 +548,18 @@ func TestHTTPSVersionFailsClosed(t *testing.T) {
 	}
 }
 
-// A peer whose bearers keep failing is held off before any verification,
-// with 429 and Retry-After; another peer is not.
+// A peer whose bearers keep failing is held off: a connection it already
+// has gets 429 and Retry-After before any verification, a new one is
+// closed before its TLS handshake; another peer is not held off.
 func TestHTTPSFailureThrottle(t *testing.T) {
 	lim := tlsLimits()
-	lim.freeFailures = 2
+	lim.freeFailures, lim.preAuth = 2, time.Minute // the early connection outlives the failures, even under -race
 	s, c, base, cert := serveTLS(t, lim)
+	early, err := tls.Dial("tcp", s.srv.tcp.String(), &tls.Config{RootCAs: cert.pool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer early.Close()
 	for i := range 3 {
 		if code := httpsStatus(t, c, base+api.VersionPath, "adc_wrong.secret"); code != http.StatusUnauthorized {
 			t.Fatalf("failure %d: %d", i, code)
@@ -560,12 +567,166 @@ func TestHTTPSFailureThrottle(t *testing.T) {
 	}
 	r1, _ := s.srv.remote.Take(api.Peer{Addr: netip.MustParseAddr("127.0.0.1")}.Key())
 	defer r1()
-	resp := httpsDo(t, c, http.MethodGet, base+api.VersionPath, s.tok.Reveal())
-	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" || !resp.Close {
-		t.Fatalf("a held-off peer, its slot taken: %s %v", resp.Status, resp.Header)
+	early.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := io.WriteString(early, "GET "+api.VersionPath+" HTTP/1.1\r\nHost: adcd\r\nAuthorization: Bearer "+s.tok.Reveal()+"\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(early), nil)
+	if err != nil || resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" || !resp.Close {
+		t.Fatalf("a held-off peer, its slot taken: %v %v", resp, err)
+	}
+	if conn, err := tls.Dial("tcp", s.srv.tcp.String(), &tls.Config{RootCAs: cert.pool}); err == nil {
+		conn.Close()
+		t.Fatal("a held-off peer completed a TLS handshake")
 	}
 	if code := httpsStatus(t, tlsClient(t, cert, "127.0.0.2"), base+api.VersionPath, s.tok.Reveal()); code != http.StatusOK {
 		t.Fatalf("another peer: %d", code)
+	}
+}
+
+// A 200 clears a peer's failures once the last is maxBackoff old: with two
+// free, two failures, a quiet spell, a success and two more failures leave
+// it served. A success right after a failure clears nothing, so a caller
+// with a live bearer cannot interleave successes with guesses.
+func TestHTTPSSuccessForgivesFailures(t *testing.T) {
+	lim := tlsLimits()
+	lim.freeFailures = 2
+	s, c, base, _ := serveTLS(t, lim)
+	var skew atomic.Int64
+	s.srv.th.mu.Lock()
+	s.srv.th.now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
+	s.srv.th.mu.Unlock()
+	wrong, right := "adc_wrong.secret", s.tok.Reveal()
+	for i, step := range []struct {
+		bearer string
+		want   int
+		quiet  bool // the clock moves maxBackoff on first
+	}{
+		{wrong, http.StatusUnauthorized, false}, {wrong, http.StatusUnauthorized, false},
+		{right, http.StatusOK, true},
+		{wrong, http.StatusUnauthorized, false}, {wrong, http.StatusUnauthorized, false},
+		{right, http.StatusOK, false}, // two failures, both recent: kept
+		{wrong, http.StatusUnauthorized, false},
+	} {
+		if step.quiet {
+			skew.Add(int64(maxBackoff))
+		}
+		if code := httpsStatus(t, c, base+api.VersionPath, step.bearer); code != step.want {
+			t.Fatalf("step %d: got %d, want %d", i, code, step.want)
+		}
+	}
+	if wait := s.srv.th.wait(api.Peer{Addr: netip.MustParseAddr("127.0.0.1")}.Key()); wait <= 0 {
+		t.Fatal("a success between recent failures cleared them")
+	}
+}
+
+// forgive keeps recent failures, and so a hold-off; it clears failures
+// whose last is maxBackoff old.
+func TestThrottleForgive(t *testing.T) {
+	now := time.Unix(0, 0)
+	th := newThrottle(1)
+	th.now = func() time.Time { return now }
+	th.fail("p")
+	th.forgive("p")
+	if n := strikesOf(th, "p"); n != 1 {
+		t.Fatalf("a recent failure forgiven: %d left", n)
+	}
+	th.fail("p")
+	th.forgive("p")
+	if th.wait("p") <= 0 {
+		t.Fatal("a held-off key forgiven")
+	}
+	now = now.Add(maxBackoff)
+	th.forgive("p")
+	if n := strikesOf(th, "p"); n != 0 {
+		t.Fatalf("old failures kept: %d", n)
+	}
+}
+
+// strikesOf is how many failures th holds against key.
+func strikesOf(th *throttle, key any) int {
+	th.mu.Lock()
+	defer th.mu.Unlock()
+	if s := th.peers[key]; s != nil {
+		return s.n
+	}
+	return 0
+}
+
+// A connection closed at the pre-auth bound without ever presenting a
+// bearer counts as one failure for its peer; one whose bearer was
+// presented (still being verified, say) does not.
+func TestHTTPSExpiryWithoutBearerFails(t *testing.T) {
+	lim := tlsLimits()
+	lim.preAuth, lim.preAuthFree = time.Second, time.Hour // the bound alone makes the failure
+	s, _, _, cert := serveTLS(t, lim)
+	silent, err := tls.Dial("tcp", s.srv.tcp.String(), &tls.Config{RootCAs: cert.pool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	silent.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, err := silent.Read(make([]byte, 1)); err == nil {
+		t.Fatal("a silent connection outlived the pre-auth bound")
+	}
+	key := api.Peer{Addr: netip.MustParseAddr("127.0.0.1")}.Key()
+	if n := strikesOf(s.srv.th, key); n != 1 {
+		t.Fatalf("a silent connection expired: %d failures", n)
+	}
+	// A wrong bearer is one failure (its 401), and its connection's expiry
+	// adds none, nor does its close.
+	server, client := net.Pipe()
+	defer client.Close()
+	th := newThrottle(0)
+	hc := &httpsConn{Conn: server, peer: api.Peer{UID: -1, Addr: netip.MustParseAddr("192.0.2.7")}, release: func() {}, th: th, expiry: time.NewTimer(time.Hour)}
+	req := httptest.NewRequestWithContext(context.WithValue(t.Context(), httpsConnKey{}, hc), http.MethodGet, api.VersionPath, nil)
+	req.Header.Set("Authorization", "Bearer adc_wrong.secret")
+	rec := httptest.NewRecorder()
+	httpsHandler(s.w.s, lim, api.NewSlots(2, 1), th).ServeHTTP(rec, req)
+	hc.expire()
+	_ = hc.Close()
+	if n := strikesOf(th, hc.peer.Key()); rec.Code != http.StatusUnauthorized || n != 1 {
+		t.Errorf("a presented bearer: %d, then %d failures at expiry", rec.Code, n)
+	}
+}
+
+// A bearer-less connection the peer closes itself counts as a failure once
+// it has held its slot for preAuthFree, so closing just before the
+// pre-auth bound dodges nothing; a shorter one is not a failure, and a
+// connection counts at most once however often it is closed.
+func TestHTTPSClosedWithoutBearerFails(t *testing.T) {
+	lim := tlsLimits()
+	lim.preAuth, lim.preAuthFree = time.Minute, 300*time.Millisecond
+	s, _, _, cert := serveTLS(t, lim)
+	conn, err := tls.Dial("tcp", s.srv.tcp.String(), &tls.Config{RootCAs: cert.pool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * lim.preAuthFree)
+	conn.Close()
+	key := api.Peer{Addr: netip.MustParseAddr("127.0.0.1")}.Key()
+	for deadline := time.Now().Add(10 * time.Second); strikesOf(s.srv.th, key) != 1; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("a connection closed bearer-less after %s: %d failures", 2*lim.preAuthFree, strikesOf(s.srv.th, key))
+		}
+	}
+	th := newThrottle(0)
+	conn2 := func(age, free time.Duration) *httpsConn {
+		server, client := net.Pipe()
+		t.Cleanup(func() { client.Close() })
+		return &httpsConn{Conn: server, peer: api.Peer{UID: -1, Addr: netip.MustParseAddr("192.0.2.7")}, release: func() {}, th: th,
+			since: time.Now().Add(-age), free: free, expiry: time.NewTimer(time.Hour)}
+	}
+	short := conn2(0, time.Hour)
+	_ = short.Close()
+	if n := strikesOf(th, short.peer.Key()); n != 0 {
+		t.Fatalf("a short bearer-less connection: %d failures", n)
+	}
+	long := conn2(2*time.Second, time.Second)
+	_ = long.Close()
+	_ = long.Close()
+	if n := strikesOf(th, long.peer.Key()); n != 1 {
+		t.Fatalf("a long bearer-less connection closed twice: %d failures", n)
 	}
 }
 
@@ -658,7 +819,7 @@ func TestHTTPSAcceptNeedsAddress(t *testing.T) {
 	defer other.Close()
 	ln.conns <- addrConn{Conn: valid, remote: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 7), Port: 1}}
 	close(ln.conns)
-	l := tcpListener{Listener: ln, conns: api.NewSlots(4, 4), preAuth: time.Minute}
+	l := tcpListener{Listener: ln, conns: api.NewSlots(4, 4), preAuth: time.Minute, th: newThrottle(0)}
 	c, err := l.Accept()
 	if err != nil {
 		t.Fatal(err)
@@ -670,6 +831,50 @@ func TestHTTPSAcceptNeedsAddress(t *testing.T) {
 	client.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := client.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Fatalf("the addressless connection: %v", err)
+	}
+}
+
+// A held-off peer's connection is closed at accept, before its TLS
+// handshake and without taking a slot; another peer's is admitted.
+func TestHTTPSAcceptRefusesHeldOff(t *testing.T) {
+	th := newThrottle(0)
+	held := api.Peer{UID: -1, Addr: netip.MustParseAddr("192.0.2.7")}
+	th.fail(held.Key())
+	ln := &addrListener{conns: make(chan net.Conn, 2)}
+	server, client := net.Pipe()
+	defer client.Close()
+	ln.conns <- addrConn{Conn: server, remote: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 7), Port: 1}}
+	valid, other := net.Pipe()
+	defer other.Close()
+	ln.conns <- addrConn{Conn: valid, remote: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 8), Port: 1}}
+	close(ln.conns)
+	slots := api.NewSlots(2, 1)
+	l := tcpListener{Listener: ln, conns: slots, preAuth: time.Minute, th: th}
+	c, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if hc := c.(*httpsConn); hc.peer.Addr != netip.MustParseAddr("192.0.2.8") {
+		t.Fatalf("admitted %v", hc.peer.Addr)
+	}
+	client.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := client.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("the held-off connection: %v", err)
+	}
+	release, ok := slots.Take(held.Key())
+	if !ok {
+		t.Fatal("the held-off connection took a slot")
+	}
+	release()
+}
+
+// The HTTPS listener's default share per address is small enough that
+// filling every connection slot takes at least 32 addresses.
+func TestHTTPSDefaultRemoteShare(t *testing.T) {
+	q := defaultLimits.remote
+	if q.connsPerPeer < 1 || q.conns/q.connsPerPeer < 32 {
+		t.Fatalf("%d connections, %d per address: %d addresses fill them", q.conns, q.connsPerPeer, q.conns/max(q.connsPerPeer, 1))
 	}
 }
 

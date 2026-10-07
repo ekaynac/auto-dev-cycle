@@ -51,6 +51,21 @@ func (t *throttle) wait(key any) time.Duration {
 	return 0
 }
 
+// forgive clears key's failures when it is served (a 200) and its last
+// failure is at least maxBackoff old, so clients behind one NAT are not
+// left a single failure from a hold-off by earlier ones. A recent failure
+// is kept: a caller holding one live bearer cannot interleave 200s with
+// guesses (or race one against a failure) to stay clear of the hold-off,
+// and a held-off key, whose last failure is under maxBackoff old, stays
+// held off.
+func (t *throttle) forgive(key any) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.peers[key]; s != nil && t.now().Sub(s.last) >= maxBackoff {
+		delete(t.peers, key)
+	}
+}
+
 // fail records a failed authentication by key.
 func (t *throttle) fail(key any) {
 	t.mu.Lock()
