@@ -5,7 +5,6 @@ package daemon
 import (
 	"fmt"
 	"maps"
-	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
@@ -17,10 +16,10 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// ErrCommandsRefused is the writer's answer to every new command until
-// actions are wired: the Authorize hook rechecks the principal and asks the
-// action's handler for its derivation, and no action has one yet, so it
-// fails closed. (A repeat of a stored command, by the same live actor with
+// ErrCommandsRefused is the writer's answer to every new command whose
+// action is not wired: the Authorize hook rechecks the principal and asks
+// the action's handler for its derivation, and an action without one fails
+// closed (14 D1). (A repeat of a stored command, by the same live actor with
 // the same key and input, still replays its stored result: the identity
 // recheck, then the idempotency lookup, precede authorization, 03.)
 var ErrCommandsRefused = authority.ErrActionNotWired
@@ -30,7 +29,7 @@ var ErrCommandsRefused = authority.ErrActionNotWired
 // a source of review receipts, so every confirmation is refused
 // (authority.NoReviewSource) until receipts are recorded.
 func hooks(reg *vocab.Registry, project func(*eventstore.Tx, []eventstore.Event) error) eventstore.Hooks {
-	az := authority.Authorizer{Registry: reg, Handlers: map[string]authority.Handler{authority.ConfirmAction: authority.ConfirmHandler{}}, Now: time.Now}
+	az := authority.Authorizer{Registry: reg, Handlers: handlers()}
 	authorize := func(t *eventstore.Tx, c eventstore.Command) error {
 		if c.Action == bootstrapAction || c.Action == issueAction {
 			return authorizeSystem(t, c)
@@ -38,6 +37,14 @@ func hooks(reg *vocab.Registry, project func(*eventstore.Tx, []eventstore.Event)
 		return az.Authorize(t, c)
 	}
 	return eventstore.Hooks{Identify: identity.Recheck, Authorize: authorize, Project: project}
+}
+
+// handlers are the wired actions' handlers: proposal.confirm and the
+// seat's. Every other registered action has none and is refused.
+func handlers() map[string]authority.Handler {
+	hs := authority.SeatHandlers(0)
+	hs[authority.ConfirmAction] = authority.ConfirmHandler{}
+	return hs
 }
 
 // eventKinds merges the event kinds of every package the writer projects;

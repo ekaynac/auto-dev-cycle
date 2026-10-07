@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -34,6 +33,9 @@ type Derived struct {
 	// existence is the record's, and a digest expectation is checked
 	// against its canonical bytes. Nil: the action takes no expected state.
 	Record func(t *eventstore.Tx) (json.RawMessage, bool, error)
+	// Version is the object's version when events of other subjects change
+	// its record too (eventstore.Object.Version); nil: its subject's.
+	Version func(t *eventstore.Tx) (int64, error)
 	// SeatExempt marks an action a supervisor performs without holding the
 	// seat (taking or asking for it, 14 N4/P4). Unmarked, a supervisor's
 	// command is a supervisor write and needs the seat (fail closed).
@@ -52,12 +54,20 @@ type Handler interface {
 // ErrActionNotWired refuses an action this build has no handler for.
 var ErrActionNotWired = errors.New("authority: the action has no handler in this build; it is refused")
 
+// version is the object's version: Version's, or its subject's last event.
+func (d Derived) version(t *eventstore.Tx) (int64, error) {
+	if d.Version != nil {
+		return d.Version(t)
+	}
+	return t.SubjectVersion(d.Object)
+}
+
 // Authorizer is the writer's Authorize hook over the wired handlers, by
-// action.
+// action. It has no clock of its own: every time it decides by is the
+// command's (Tx.Now), which the store's clock gives (eventstore.Config.Now).
 type Authorizer struct {
 	Registry *vocab.Registry
 	Handlers map[string]Handler
-	Now      func() time.Time
 	// Reviews is where proposal.confirm finds review receipts; nil: every
 	// confirmation is refused (NoReviewSource).
 	Reviews Reviews
@@ -71,7 +81,7 @@ func (a Authorizer) Authorize(t *eventstore.Tx, c eventstore.Command) error {
 		return err
 	}
 	h, ok := a.Handlers[c.Action]
-	if !ok || isNil(h) || a.Registry == nil || a.Now == nil {
+	if !ok || isNil(h) || a.Registry == nil {
 		return fmt.Errorf("%w: %s", ErrActionNotWired, c.Action)
 	}
 	d, err := h.Derive(t, actor, c.Input)
@@ -83,7 +93,7 @@ func (a Authorizer) Authorize(t *eventstore.Tx, c eventstore.Command) error {
 	}
 	// The writer checks the expected state against this derivation: the
 	// handler runs once per command.
-	if err := t.BindObject(eventstore.Object{Subject: d.Object, Record: d.Record}); err != nil {
+	if err := t.BindObject(eventstore.Object{Subject: d.Object, Record: d.Record, Version: d.Version}); err != nil {
 		return err
 	}
 	grants, revoked, err := GrantsOf(t, actor.ID)
@@ -91,7 +101,7 @@ func (a Authorizer) Authorize(t *eventstore.Tx, c eventstore.Command) error {
 		return err
 	}
 	dec := Decide(a.Registry, Request{Actor: actor, Action: c.Action, Project: d.Project, Classes: d.Classes,
-		Grants: grants, Revoked: revoked, Grantee: d.Grantee, Now: a.Now()})
+		Grants: grants, Revoked: revoked, Grantee: d.Grantee, Now: t.Now()})
 	// 08 "Supervisor seat": a supervisor write needs the seat, checked here,
 	// in the writer transaction; operators' and the system's commands do not.
 	if dec.Disposition != Refuse && actor.Kind == types.ActorKindSupervisor && !d.SeatExempt {

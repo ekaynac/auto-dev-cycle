@@ -88,7 +88,7 @@ func TestProposeCommitsAProposalAndNoEffect(t *testing.T) {
 	if p.Status != types.ProposalStatusOpen || p.Action != "note.add" || p.ProposedBy != b.sup.Actor() || *p.Grantee != op ||
 		*p.Grant != b.supGrant.ID || p.Policy != types.ProposalPolicyHuman || *p.Project != prjA || p.InvalidatedReason != nil ||
 		p.Object.ID != obj || p.Object.Type != "note" || *p.ExpectedState.Version != zero || p.ExpectedState.Digest != nil ||
-		len(p.ChangeClass) != 1 || p.ChangeClass[0] != "grant.create" || p.CreatedAt != types.Time(t0.Format(time.RFC3339Nano)) {
+		len(p.ChangeClass) != 1 || p.ChangeClass[0] != "grant.create" || p.CreatedAt != types.Time(b.recorded[string(p.ID)].At) {
 		t.Errorf("the proposal binds another operation: %+v", p)
 	}
 	b.view(func(tx *eventstore.Tx) error {

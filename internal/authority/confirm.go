@@ -147,7 +147,7 @@ func (a Authorizer) Confirm(c eventstore.Command) eventstore.Decide {
 		if err != nil {
 			return none, err
 		}
-		now := a.Now()
+		now := t.Now()
 		if until, err := time.Parse(time.RFC3339Nano, string(p.ExpiresAt)); p.Status == types.ProposalStatusOpen && err == nil && !now.Before(until) {
 			return closed(ProposalExpired, p, types.ProposalStatusExpired, vocab.ReasonProposalExpired, "proposal "+string(p.ID)+" expired at "+string(p.ExpiresAt))
 		}

@@ -149,3 +149,18 @@ func TestReadResponses(t *testing.T) {
 		}
 	}
 }
+
+// The seat actions' scopes are empty: the seat, its holder and force_after
+// are the controller's, never the caller's.
+func TestSeatScopes(t *testing.T) {
+	for _, schema := range []string{"api/scope/seat-take", "api/scope/seat-release"} {
+		if err := valid(t, schema, map[string]any{}); err != nil {
+			t.Errorf("%s: the empty scope: %v", schema, err)
+		}
+		for _, field := range []string{"force_after", "to", "from", "seat"} {
+			if valid(t, schema, map[string]any{field: "x"}) == nil {
+				t.Errorf("%s: a scope with %s", schema, field)
+			}
+		}
+	}
+}

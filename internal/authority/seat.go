@@ -28,8 +28,8 @@ import (
 const SeatEventSchema = "records/seat-event"
 
 // SeatProjection holds the seat's id (key "id"), its holder (key
-// "holder", an actor id) and the pending handover request (key "request",
-// a seatRequest). The controller has one seat: its first event mints its
+// "holder", an actor id), the pending handover request (key "request",
+// a seatRequest) and its version (key "version", SeatVersion). The controller has one seat: its first event mints its
 // id (sea_…), and every seat event after has that subject.
 const SeatProjection = "seat"
 
@@ -131,11 +131,17 @@ func (s SeatProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) error 
 		var err error
 		switch {
 		case ev.Kind == identity.ActorRevoked+"/v1":
-			err = seatOnRevoked(tx, ev)
+			var changed bool
+			if changed, err = seatOnRevoked(tx, ev); err == nil && changed {
+				err = putVersion(tx, ev)
+			}
 		case slices.ContainsFunc(seatTransitions, func(t types.SeatEventTransition) bool { return ev.Kind == string(t)+"/v1" }):
 			var p types.SeatEvent
 			if err = json.Unmarshal(ev.Payload, &p); err == nil {
 				err = applySeat(tx, ev, p, s.grace())
+			}
+			if err == nil {
+				err = putVersion(tx, ev)
 			}
 		}
 		if err != nil {
@@ -145,25 +151,41 @@ func (s SeatProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) error 
 	return nil
 }
 
+// SeatVersion is the seat's version (14 P3): the seq of the last event
+// that changed its holder or request, a seat event or an actor revocation
+// alike, so an expectation sees every change; 0 before its first event.
+func SeatVersion(tx *eventstore.Tx) (int64, error) {
+	v, _, err := loadJSON[int64](tx, SeatProjection, "version")
+	return v, err
+}
+
+func putVersion(tx *eventstore.Tx, ev eventstore.Event) error {
+	b, err := json.Marshal(ev.Seq)
+	if err != nil {
+		return err
+	}
+	return tx.Put(SeatProjection, "version", b)
+}
+
 // seatOnRevoked: a revoked holder loses the seat, a revoked requester its
-// request.
-func seatOnRevoked(tx *eventstore.Tx, ev eventstore.Event) error {
+// request; changed reports either.
+func seatOnRevoked(tx *eventstore.Tx, ev eventstore.Event) (bool, error) {
 	var p types.IdentityEvent
 	if err := json.Unmarshal(ev.Payload, &p); err != nil || p.Actor == nil {
-		return errors.Join(err, errors.New("an actor revocation without its actor"))
+		return false, errors.Join(err, errors.New("an actor revocation without its actor"))
 	}
 	holder, held, err := SeatHolder(tx)
 	req, pending, err2 := loadJSON[seatRequest](tx, SeatProjection, "request")
 	if err := errors.Join(err, err2); err != nil {
-		return err
+		return false, err
 	}
 	if held && holder == p.Actor.ID {
-		return clearSeat(tx, true)
+		return true, clearSeat(tx, true)
 	}
 	if pending && req.Event.To != nil && *req.Event.To == p.Actor.ID {
-		return tx.Delete(SeatProjection, "request")
+		return true, tx.Delete(SeatProjection, "request")
 	}
-	return nil
+	return false, nil
 }
 
 func clearSeat(tx *eventstore.Tx, holder bool) error {

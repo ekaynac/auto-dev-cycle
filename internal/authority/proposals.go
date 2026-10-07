@@ -72,7 +72,7 @@ func (a Authorizer) propose(t *eventstore.Tx, c eventstore.Command, actor types.
 	if err != nil {
 		return err
 	}
-	now := a.Now()
+	now := t.Now()
 	obj := types.ObjectRef{Type: types.Name(d.ObjectType), ID: d.Object, Version: state.Version, Digest: state.Digest}
 	p, err := NewProposal(types.ProposalID(id), dec, Bound{Action: c.Action, Project: d.Project, Object: obj, ExpectedState: state,
 		Scope: c.Input, ProposedBy: actor.ID, Grantee: d.Grantee}, now, now.Add(ProposalTTL))
@@ -110,7 +110,7 @@ func StateOf(t *eventstore.Tx, d Derived) (types.ExpectedState, error) {
 		}
 		s.Digest = (*types.Digest)(&dg)
 	}
-	v, err := t.SubjectVersion(d.Object)
+	v, err := d.version(t)
 	s.Version = &v
 	return s, err
 }
@@ -211,11 +211,29 @@ func (ProposalProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) erro
 		if err == nil {
 			err = invalidateBy(tx, "object/"+ev.Subject+"/", types.ProposalInvalidatedReasonValueStaleExpectedState)
 		}
+		if err == nil {
+			err = invalidateMovedSeat(tx, ev)
+		}
 		if err != nil {
 			return fmt.Errorf("authority: event %s: proposals: %w", ev.ID, err)
 		}
 	}
 	return nil
+}
+
+// invalidateMovedSeat: an event of another subject that moved the seat's
+// version (its holder's or requester's revocation, SeatVersion) makes the
+// pending proposals bound to the seat stale, as a seat event does. It runs
+// after the seat projector (eventstore.ProjectEach).
+func invalidateMovedSeat(tx *eventstore.Tx, ev eventstore.Event) error {
+	seat, ok, err := loadJSON[string](tx, SeatProjection, "id")
+	if err != nil || !ok || ev.Subject == seat {
+		return err
+	}
+	if v, err := SeatVersion(tx); err != nil || v != ev.Seq {
+		return err
+	}
+	return invalidateBy(tx, "object/"+seat+"/", types.ProposalInvalidatedReasonValueStaleExpectedState)
 }
 
 func createProposal(tx *eventstore.Tx, ev eventstore.Event) error {

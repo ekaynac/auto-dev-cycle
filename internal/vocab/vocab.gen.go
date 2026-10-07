@@ -111,6 +111,8 @@ var (
 	ReasonRunnerFault = types.ReasonCodeOf("runner_fault")
 	// ReasonSeatNotHeld: A supervisor write action without holding the seat.
 	ReasonSeatNotHeld = types.ReasonCodeOf("seat_not_held")
+	// ReasonSeatUnavailable: seat.take cannot change the seat now: the caller already holds it, is not a supervisor, or its own handover request has not reached its force_after.
+	ReasonSeatUnavailable = types.ReasonCodeOf("seat_unavailable")
 	// ReasonSelfGrantRefused: A supervisor asked to create or extend its own grant; grants are never created or extended by the grantee.
 	ReasonSelfGrantRefused = types.ReasonCodeOf("self_grant_refused")
 	// ReasonStaleAttempt: Output from an attempt whose id or fencing token is not current, or whose publication is closed.

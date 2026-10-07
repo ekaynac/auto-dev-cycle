@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/seat-take.json",
+  "title": "SeatTakeScope",
+  "description": "The scope of seat.take (docs/design/m0/08 \"Supervisor seat\"): empty. The controller has one seat, and the caller is the supervisor taking it: a free seat is taken, a held one is asked for (seat.handover_requested), and the caller's own request is executed (seat.handed_over) once it reaches its force_after. force_after is never the caller's: the controller sets it to the request's recorded time plus the minimum grace.",
+  "type": "object",
+  "additionalProperties": false
+}

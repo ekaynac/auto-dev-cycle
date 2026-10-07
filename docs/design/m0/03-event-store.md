@@ -11,7 +11,7 @@ process. Pure-Go driver (no CGO), so release binaries stay static.
 events (append-only)
   seq          INTEGER PRIMARY KEY      -- gapless, assigned inside the writer transaction
   id           TEXT UNIQUE NOT NULL     -- evt_…
-  at           TEXT NOT NULL            -- controller clock, RFC 3339 UTC
+  at           TEXT NOT NULL            -- event time (below), RFC 3339 UTC; never decreases with seq
   kind         TEXT NOT NULL            -- registered event kind + version, e.g. attempt.started/v1
   subject      TEXT NOT NULL            -- primary entity id
   project      TEXT                     -- prj_… or NULL for controller-wide events
@@ -73,9 +73,18 @@ a rebuild recomputes them, and the limit check runs only when an event is admitt
   hook binds that derivation to the transaction (`Tx.BindObject`), and the writer checks the same object. The handler
   defines the object's record, which is required for any expectation. The record decides existence, and its canonical
   bytes give the digest (`eventstore.ContentDigest`, sha256). A missing record matches only version 0 without a digest;
-  a present one never matches version 0; otherwise the version, and the digest when supplied, must match. The writer
+  a present one never matches version 0; otherwise the version, and the digest when supplied, must match. An object
+  whose record other subjects' events also change defines its own version, the seq of the last event that changed it.
+  The seat does this, because revoking its holder's actor frees it. The writer
   enforces this after authorization and before the command's logic runs. A mismatch is refused with
   `failed/stale_expected_state` and commits nothing.
+- **Event time.** An event is recorded at max(the store clock, the previous event's time), so recorded times never
+  decrease with seq, even across a backward clock step. This applies to command and effect events alike, and the
+  writer enforces it at append. A command reads the clock once, when its transaction begins (`Tx.Now`). Every time
+  decision inside the command reads that one value: authorization, grant validity, proposal creation and the logic's
+  own times (a seat request's `force_after`). Every event the command appends carries that value as its time. An event
+  that names a time before the previous event's is refused. The clock is the store's (`Config.Now`, `time.Now` by
+  default); the authorizer has none of its own. Folds read only recorded times, never the clock.
 - **Process exclusivity.** `adcd` takes an exclusive advisory lock (`flock`) on `<state_dir>/adcd.lock`. It records its
   pid and process start time, and refuses to open the database without the lock. A second daemon exits with
   `could_not_run/controller_already_running`. The lock is acquired before the database is opened and never created or
