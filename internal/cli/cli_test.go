@@ -91,6 +91,7 @@ func TestCommandsReachTheirActions(t *testing.T) {
 		"approve confirm": "proposal.confirm", "propose withdraw": "proposal.withdraw",
 		"grant create": "grant.create", "grant extend": "grant.extend", "grant revoke": "grant.revoke",
 		"admin enrol-agent": "agent.enrol", "admin revoke-actor": "actor.revoke",
+		"admin issue-token": "token.issue", "admin revoke-token": "token.revoke", "admin replace-token": "token.replace",
 		"seat take": "seat.take", "seat release": "seat.release", "notes add": "note.add",
 	} {
 		f, args := &fake{resp: applied}, append(strings.Fields(cmd), "--expect", "1", "--reason", "r")
@@ -287,6 +288,9 @@ func TestTokenOutUsage(t *testing.T) {
 	for name, args := range map[string][]string{
 		"none for enrol-agent":       append([]string{"admin", "enrol-agent"}, ok...),
 		"one for revoke-actor":       append([]string{"admin", "revoke-actor", "--token-out", filepath.Join(privateDir(t), "t")}, ok...),
+		"none for issue-token":       append([]string{"admin", "issue-token"}, ok...),
+		"none for replace-token":     append([]string{"admin", "replace-token"}, ok...),
+		"one for revoke-token":       append([]string{"admin", "revoke-token", "--token-out", filepath.Join(privateDir(t), "t")}, ok...),
 		"the caller's own token":     append([]string{"admin", "enrol-agent", "--token-out", own}, ok...),
 		"an unsafe directory":        append([]string{"admin", "enrol-agent", "--token-out", filepath.Join(t.TempDir(), "x", "t")}, ok...),
 		"one for a seat command too": append([]string{"seat", "take", "--token-out", filepath.Join(privateDir(t), "t")}, ok...),
@@ -331,6 +335,10 @@ func TestTokenNotDelivered(t *testing.T) {
 		"an unwritable token":    {"enrol-agent", failing, nil, entry.ExitCouldNotRun, "could not be written (disk full) and is not delivered again; revoke the actor"},
 		"a non-issuing response": {"revoke-actor", issuedResp, nil, entry.ExitCouldNotRun, "discarded and nothing was written"},
 		"no credential returned": {"enrol-agent", applied, nil, entry.ExitCouldNotRun, "applied but no credential was returned; revoke the actor"},
+		"a lost rotation":        {"replace-token", "", errors.New("connection reset"), entry.ExitCouldNotRun, "a repeat delivers no token: the old token is revoked"},
+		"a repeated issue":       {"issue-token", replayed, nil, entry.ExitCouldNotRun, `applied earlier (token "tok_01m3250vkwffc979nzjw0g2sb2") and a repeat delivers no token; a repeat`},
+		"an unwritable rotation": {"replace-token", failing, nil, entry.ExitCouldNotRun, "could not be written (disk full) and is not delivered again; the old token is revoked"},
+		"a revocation's token":   {"revoke-token", issuedResp, nil, entry.ExitCouldNotRun, "discarded and nothing was written"},
 	} {
 		dir := privateDir(t)
 		args := []string{"admin", c.cmd, "--expect", "1", "--reason", "r"}

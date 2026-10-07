@@ -83,7 +83,7 @@ var (
 	ReasonLineageUndeclared = types.ReasonCodeOf("lineage_undeclared")
 	// ReasonLogIntegrityBroken: The event log fails verification: a gap, a broken hash link, an edited event, or (against a trusted head) truncation or a rewritten tail.
 	ReasonLogIntegrityBroken = types.ReasonCodeOf("log_integrity_broken")
-	// ReasonOperatorOnly: The action is an operator's alone in this build: only an operator revokes an actor, and a supervisor's agent.enrol would wait for a human confirmation this build cannot take (14 R6), so it is refused rather than proposed.
+	// ReasonOperatorOnly: The action is an operator's alone in this build: only an operator revokes an actor or issues, revokes or replaces a token, and a supervisor's agent.enrol would wait for a human confirmation this build cannot take (14 R6), so it is refused rather than proposed.
 	ReasonOperatorOnly = types.ReasonCodeOf("operator_only")
 	// ReasonP3Banked: A P3 finding banked as background work (plan §2.5).
 	ReasonP3Banked = types.ReasonCodeOf("p3_banked")
@@ -139,6 +139,8 @@ var (
 	ReasonStreamIdleCut = types.ReasonCodeOf("stream_idle_cut")
 	// ReasonTestIntegrityViolation: A test was deleted or skipped, or an assertion removed, without an approved row (conclusive).
 	ReasonTestIntegrityViolation = types.ReasonCodeOf("test_integrity_violation")
+	// ReasonTokenNotLive: token.revoke or token.replace names a token that is missing or revoked, or token.issue names a holder that is missing, revoked or the controller's own; nothing is issued or revoked.
+	ReasonTokenNotLive = types.ReasonCodeOf("token_not_live")
 	// ReasonUnsafeOutput: An adapter output violated the ingestion boundary (symlink, special file, digest mismatch, foreign handle).
 	ReasonUnsafeOutput = types.ReasonCodeOf("unsafe_output")
 	// ReasonViewStale: A cached view's recorded fingerprint differs from the one recomputed over its current inputs, so it is not served but regenerated.

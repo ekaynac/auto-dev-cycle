@@ -133,7 +133,7 @@ func TestProjectorOrderMatchesRebuild(t *testing.T) {
 	}
 	// The seat and admin actions are wired: seat.take reaches its logic, which
 	// refuses the system actor (not a supervisor) with a recorded reason.
-	if hs := handlers(); len(hs) != 9 || hs[authority.ConfirmAction] == nil || hs["seat.take"] == nil || hs["seat.release"] == nil || hs[authority.EnrolAction] == nil || hs[authority.RevokeActorAction] == nil || hs[authority.WithdrawAction] == nil || hs[authority.NoteAction] == nil ||
+	if hs := handlers(); len(hs) != 12 || hs[authority.TokenIssueAction] == nil || hs[authority.TokenRevokeAction] == nil || hs[authority.TokenReplaceAction] == nil || hs[authority.ConfirmAction] == nil || hs["seat.take"] == nil || hs["seat.release"] == nil || hs[authority.EnrolAction] == nil || hs[authority.RevokeActorAction] == nil || hs[authority.WithdrawAction] == nil || hs[authority.NoteAction] == nil ||
 		hs[authority.GrantCreateAction] == nil || hs[authority.GrantRevokeAction] == nil {
 		t.Fatalf("the wired handlers: %v", hs)
 	}

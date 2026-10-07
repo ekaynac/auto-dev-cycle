@@ -30,6 +30,9 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/scope/proposal-withdraw.json`](api-scope-proposal-withdraw.md) | ProposalWithdrawScope |
 | [`api/scope/seat-release.json`](api-scope-seat-release.md) | SeatReleaseScope |
 | [`api/scope/seat-take.json`](api-scope-seat-take.md) | SeatTakeScope |
+| [`api/scope/token-issue.json`](api-scope-token-issue.md) | TokenIssueScope |
+| [`api/scope/token-replace.json`](api-scope-token-replace.md) | TokenReplaceScope |
+| [`api/scope/token-revoke.json`](api-scope-token-revoke.md) | TokenRevokeScope |
 | [`api/seat.json`](api-seat.md) | SeatRead |
 | [`api/whoami.json`](api-whoami.md) | Whoami |
 | [`common/defs.json`](common-defs.md) | Common definitions |

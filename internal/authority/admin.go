@@ -108,16 +108,9 @@ func (a Authorizer) Enrol(ctx context.Context, s *eventstore.Store, c eventstore
 	return out, secret, ok, nil
 }
 
-// EnrolRequest is agent.enrol's request layer before Submit: it mints the
-// new actor's first token outside the writer transaction and returns the
-// logic that records the actor and the token's hash in one command, and
-// the delivery, which yields the secret only for a fresh applied commit
-// (identity.Issued.Deliver); otherwise the secret is dropped. A cheap
-// read first skips the Argon2id mint for a caller who is not a live
-// operator and for a key already stored (a replay records no token); the
-// writer still rechecks both in its transaction.
+// EnrolRequest is agent.enrol's request layer before Submit
+// (issueRequest): the new actor's first token, recorded with the actor.
 func (Authorizer) EnrolRequest(ctx context.Context, s *eventstore.Store, c eventstore.Command) (eventstore.Decide, func(eventstore.Committed) (identity.Secret, bool), error) {
-	nothing := func(eventstore.Committed) (identity.Secret, bool) { return identity.Secret{}, false }
 	if c.Action != EnrolAction {
 		return nil, nil, fmt.Errorf("authority: %s is not %s", c.Action, EnrolAction)
 	}
@@ -125,29 +118,51 @@ func (Authorizer) EnrolRequest(ctx context.Context, s *eventstore.Store, c event
 	if err != nil {
 		return nil, nil, err
 	}
+	holder := func(*eventstore.Tx) (types.ActorID, error) { return in.Actor, nil }
+	return issueRequest(ctx, s, c, enrolDeferred, holder, func(i identity.Issued) eventstore.Decide { return enrolLogic(c, in, i) })
+}
+
+// issueRequest is the request layer of an action that issues a token
+// (14 N3): it mints the token outside the writer transaction and returns
+// the logic that records its hash, and the delivery, which yields the
+// secret only for a fresh applied commit (identity.Issued.Deliver);
+// otherwise the secret is dropped. A cheap read first skips the Argon2id
+// mint for a caller who is not a live operator, for a key already stored
+// (a replay records no token) and for no live holder (logic refuses it);
+// the writer rechecks all three in its transaction.
+func issueRequest(ctx context.Context, s *eventstore.Store, c eventstore.Command, why string, holder func(*eventstore.Tx) (types.ActorID, error),
+	logic func(identity.Issued) eventstore.Decide) (eventstore.Decide, func(eventstore.Committed) (identity.Secret, bool), error) {
+	nothing := func(eventstore.Committed) (identity.Secret, bool) { return identity.Secret{}, false }
 	var stored bool
+	var to types.ActorID
 	if err := s.View(ctx, func(tx *eventstore.Tx) error {
 		by, err := identity.ActorOf(tx, c)
 		if err == nil {
-			err = operatorOnly(by, EnrolAction, enrolDeferred)
+			err = operatorOnly(by, c.Action, why)
 		}
 		if err == nil {
 			stored, err = hasCommand(tx, c.Actor, c.IdempotencyKey)
+		}
+		if err == nil && !stored {
+			to, err = holder(tx)
 		}
 		return err
 	}); err != nil {
 		return nil, nil, err
 	}
-	if stored {
+	switch {
+	case stored:
 		return func(*eventstore.Tx) (eventstore.Decision, error) {
-			return eventstore.Decision{}, errors.New("authority: a stored enrolment only replays")
+			return eventstore.Decision{}, errors.New("authority: a stored command only replays")
 		}, nothing, nil
+	case to == "":
+		return logic(identity.Issued{}), nothing, nil
 	}
-	issued, err := mint(in.Actor, types.ActorID(c.Actor), time.Now())
+	issued, err := mint(to, types.ActorID(c.Actor), time.Now())
 	if err != nil {
 		return nil, nil, err
 	}
-	return enrolLogic(c, in, issued), issued.Deliver, nil
+	return logic(issued), issued.Deliver, nil
 }
 
 // enrolScope and revokeScope decode a scope, an invalid one wrapping
@@ -172,14 +187,9 @@ func revokeScope(raw json.RawMessage) (types.ActorRevokeScope, error) {
 // at the command's time.
 func enrolLogic(c eventstore.Command, in types.AgentEnrolScope, issued identity.Issued) eventstore.Decide {
 	return eventstore.Applies(func(t *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
-		by := types.ActorID(c.Actor)
-		if issued.Token.Actor != in.Actor || issued.Token.CreatedBy != by {
-			return nil, nil, errors.New("authority: the token minted is not this enrolment's")
-		}
-		issued.Token.CreatedAt = t.Now().UTC().Format(time.RFC3339Nano)
 		evs, err := identity.CreateActor(types.Actor{ID: in.Actor, Kind: types.ActorKindSupervisor, Name: in.Name,
-			DeclaredAgent: in.DeclaredAgent, CreatedBy: by})
-		tok, err2 := issued.Events()
+			DeclaredAgent: in.DeclaredAgent, CreatedBy: types.ActorID(c.Actor)})
+		tok, err2 := recordIssued(t, c, in.Actor, issued)
 		if err := errors.Join(err, err2); err != nil {
 			return nil, nil, err
 		}
@@ -224,11 +234,7 @@ func (Authorizer) RevokeActor(c eventstore.Command) eventstore.Decide {
 			return none, fmt.Errorf("authority: %s: %w", RevokeActorAction, err)
 		}
 		if err := protectedActor(tx, target); err != nil {
-			var r *Refusal
-			if errors.As(err, &r) {
-				return failed(eventstore.DispositionRefused, nil, r.Reason.String(), r.Detail)
-			}
-			return none, err
+			return committed(err)
 		}
 		keys, err := tx.Keys(identity.TokenProjection, "")
 		if err != nil {

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/token-issue.json",
+  "title": "TokenIssueScope",
+  "description": "The scope of token.issue (docs/design/m0/04 \"Token administration\", 14 M4): the live operator or supervisor that receives another token. The token is minted by the request layer, never named here; its secret reaches only the live response of the call that applied the issue (14 N3), and a retry under the same idempotency key replays without it. Only an operator issues in this build.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["actor"],
+  "properties": {
+    "actor": {"$ref": "../../common/defs.json#/$defs/ActorID"}
+  }
+}

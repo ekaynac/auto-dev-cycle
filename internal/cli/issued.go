@@ -24,6 +24,9 @@ import (
 // with how a token that was not delivered is recovered.
 var issuing = map[string]string{
 	"agent.enrol": "revoke the actor (adc admin revoke-actor) and enrol it again under a new actor id",
+	"token.issue": "a repeat with the same --idempotency-key reports the token's id; revoke it (adc admin revoke-token) or rotate it (adc admin replace-token)",
+	"token.replace": "the old token is revoked; a repeat with the same --idempotency-key reports the new token's id: rotate it (adc admin replace-token), " +
+		"from another operator's token or, for your own last one, after adcd recover operator-token",
 }
 
 // writeToken is TokenOut.Write, and encodeResponse the response's

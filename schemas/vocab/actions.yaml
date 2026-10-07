@@ -19,6 +19,9 @@ actions:
   - {action: grant.revoke, family: grant, description: "Revoke a grant at once.", introduced: 0.1.0, deprecated: null, source: "04"}
   - {action: agent.enrol, family: admin, description: "Enrol a supervisor actor and issue its token.", introduced: 0.1.0, deprecated: null, source: "04"}
   - {action: actor.revoke, family: admin, description: "Revoke an actor and its tokens.", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: token.issue, family: admin, description: "Issue another token to a live operator or supervisor.", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: token.revoke, family: admin, description: "Revoke one token.", introduced: 0.1.0, deprecated: null, source: "04"}
+  - {action: token.replace, family: admin, description: "Rotate a token: revoke it and issue its holder a new one in one command.", introduced: 0.1.0, deprecated: null, source: "04"}
   - {action: seat.take, family: seat, description: "Take the supervisor seat, optionally forcing a handover after a delay.", introduced: 0.1.0, deprecated: null, source: "08"}
   - {action: seat.release, family: seat, description: "Release the supervisor seat.", introduced: 0.1.0, deprecated: null, source: "08"}
   - {action: knowledge.change_protected_document, family: project, description: "Change a protected document: exact paths and old and new digests, through independent review and the merge queue; never widens authority (04 \"Protected changes\").", introduced: 0.1.0, deprecated: null, source: "04"}
