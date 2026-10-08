@@ -17,9 +17,13 @@
 # grant and the supervisor's token are revoked, the revoked bearer gets
 # HTTP 401, adcd stops cleanly on SIGTERM, its log verifies, and no secret
 # appears in any log, output or state file besides the two token files.
-# Every wait is bounded. Not covered yet (14 PR 12): the fake adapter run,
-# which needs an installed harness and the adapter in dist, and the CLI
-# reads and `adc events --follow` (PR 10b), which are read here over HTTP.
+# Then result 9 (14 PR 12; 15 S3): the installed adc-harness runs
+# py-mini-feature-1 through the installed Node and fake adapter, with PATH
+# limited to the prefix and the base system directories and any system node
+# masked; its --json report must show a submitted result and a usage record,
+# and it must print nothing on stderr. Every wait is bounded. Not covered
+# yet: the CLI reads and `adc events --follow` (PR 10b), which are read here
+# over HTTP.
 #
 # Usage: scripts/installed-smoke.sh PREFIX
 set -euo pipefail
@@ -37,12 +41,17 @@ if [[ "${1:-}" != --inside ]]; then
   [[ $# -eq 1 ]] || die "usage: installed-smoke.sh PREFIX"
   prefix="$(cd "$1" && pwd)"
   [[ -x "$prefix/bin/adcd" && -x "$prefix/bin/adc" ]] || die "adcd and adc are not installed in $prefix"
+  [[ -x "$prefix/bin/adc-harness" && -x "$prefix/lib/adc/node/bin/node" ]] || die "adc-harness and lib/adc are not installed in $prefix"
   for t in bwrap curl timeout; do command -v "$t" >/dev/null || die "$t is required"; done
   self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
   sys=(--ro-bind /usr /usr)
   for d in bin sbin lib lib64 lib32; do
     if [[ -L "/$d" ]]; then sys+=(--symlink "$(readlink "/$d")" "/$d")
     elif [[ -d "/$d" ]]; then sys+=(--ro-bind "/$d" "/$d"); fi
+  done
+  # No system Node: one under /usr is masked, so only the installed one can run.
+  for n in /usr/bin/node /usr/local/bin/node; do
+    if [[ -e "$n" ]]; then sys+=(--ro-bind /dev/null "$n"); fi
   done
   exec env -i PATH=/usr/bin:/bin timeout --foreground --kill-after=10 300 bwrap --unshare-all --die-with-parent "${sys[@]}" \
     --ro-bind "$prefix" /p --ro-bind "$self" /smoke.sh --tmpfs /tmp --proc /proc --dev /dev \
@@ -257,4 +266,24 @@ step "no secret outside the token files"
 scan "" "$boot"
 scan /tmp/op/.config/adc/token "$op_tok"
 scan /tmp/sup/.config/adc/token "$sup_tok"
-step "ok: bootstrap, enrolment, grant, seat, notes, reads, the event stream and revocation through the installed binaries"
+
+step "result 9: py-mini-feature-1 through the installed harness, Node and fake adapter"
+lib=/p/lib/adc
+hpath="$lib/node/bin:/p/bin:/usr/bin:/bin"
+[[ "$(PATH="$hpath" command -v node)" == "$lib/node/bin/node" ]] || die "node does not resolve to the installed one"
+for n in /usr/bin/node /usr/local/bin/node; do [[ ! -s "$n" ]] || die "a system node is reachable at $n"; done
+cp -R "$lib/fixtures/t0/py-mini/repo" /tmp/py-mini
+timeout 60 env -i PATH="$hpath" HOME=/tmp "$lib/node/bin/node" \
+  -p 'require(process.argv[1]).requirement' "$lib/fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json" >/tmp/prompt.md ||
+  die "reading py-mini-feature-1's requirement failed"
+rc=0
+env -i PATH="$hpath" HOME=/tmp TMPDIR=/tmp ADC_FAKE_SCENARIO=safe-output timeout --kill-after=10 150 /p/bin/adc-harness run --json \
+  --start-timeout 30s --handshake-timeout 30s --result-timeout 60s --shutdown-timeout 10s \
+  --prompt /tmp/prompt.md --workspace /tmp/py-mini --env ADC_FAKE_SCENARIO -- "$lib/node/bin/node" "$lib/adapters/fake/src/main.ts" \
+  >"$out/harness.out" 2>"$out/harness.err" </dev/null || rc=$?
+[[ $rc -eq 0 ]] || die "adc-harness: exit $rc: $(head -c 400 "$out/harness.err") $(head -c 400 "$out/harness.out")"
+[[ ! -s "$out/harness.err" ]] || die "adc-harness wrote to stderr: $(head -c 400 "$out/harness.err")"
+grep -q '"submitted":{"call":"cal_[0-9a-z]*","outcome":"found","reason":"completed_with_findings","kind":"patch","blob":"sha256:[0-9a-f]\{64\}"}' "$out/harness.out" ||
+  die "adc-harness submitted no patch result: $(head -c 600 "$out/harness.out")"
+grep -q '"usage":\[{"id":"msr_' "$out/harness.out" || die "adc-harness recorded no usage: $(head -c 600 "$out/harness.out")"
+step "ok: bootstrap, enrolment, grant, seat, notes, reads, the event stream, revocation and the fake adapter run (result 9) through the installed binaries"
