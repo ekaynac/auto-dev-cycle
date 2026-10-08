@@ -75,6 +75,9 @@ const (
 	// PartialPatchDropped drops the change of a build that did not complete,
 	// so its partial work is neither the result's value nor sealed.
 	PartialPatchDropped = "graph.partial-patch-dropped"
+	// ClaimPerDemand claims a node again on every demand, so a repeat
+	// demand runs it twice.
+	ClaimPerDemand = "graph.claim-per-demand"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -83,4 +86,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	OuterStatusTrusted, AbsentPredicateUnchecked, UnknownFamilyIndependent, BindingDigestIgnored,
 	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly,
 	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked, ConfirmIgnoresStatus, ReservationsUncounted,
-	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks, IncompleteNoDiffEmpty, PartialPatchDropped}
+	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks, IncompleteNoDiffEmpty, PartialPatchDropped, ClaimPerDemand}

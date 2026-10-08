@@ -10,14 +10,17 @@ import (
 	"fmt"
 )
 
-// GraphEvent: The payload of every artifact-graph node event (docs/design/m0/13), discriminated by type: node.recorded/v1 and node.claimed/v1, under the node's id and in its project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive. Result and selection events follow (plan 15 G3-2).
+// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1 and node.invalidated/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 type GraphEvent struct{ Variant GraphEventVariant }
 
-// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed.
+// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *ResultRecorded, *ResultSelected.
 type GraphEventVariant interface{ isGraphEvent() }
 
-func (*NodeRecorded) isGraphEvent() {}
-func (*NodeClaimed) isGraphEvent()  {}
+func (*NodeRecorded) isGraphEvent()    {}
+func (*NodeClaimed) isGraphEvent()     {}
+func (*NodeInvalidated) isGraphEvent() {}
+func (*ResultRecorded) isGraphEvent()  {}
+func (*ResultSelected) isGraphEvent()  {}
 
 func (u GraphEvent) MarshalJSON() ([]byte, error) {
 	if u.Variant == nil {
@@ -63,6 +66,24 @@ func (u *GraphEvent) UnmarshalJSON(b []byte) error {
 			return err
 		}
 		u.Variant = v
+	case "node_invalidated":
+		v := &NodeInvalidated{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	case "result_recorded":
+		v := &ResultRecorded{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	case "result_selected":
+		v := &ResultSelected{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
 	default:
 		return fmt.Errorf("GraphEvent: unknown type %q", d)
 	}
@@ -92,4 +113,26 @@ type NodeClaimed struct {
 	Key  ComputationKey `json:"key"`
 	// Each declared input and what it resolved to, in declared order: a result, or an approval with its revision. A new kind of resolution is a new event version (node.claimed/v2), since every field is required.
 	Inputs []NodeClaimedInputsItem `json:"inputs"`
+}
+
+// NodeInvalidated: An explicit, recorded invalidation (13 [G1]): the node's claim moves to the next generation, with the same inputs, so its key changes and its selected result, if any, no longer answers it.
+type NodeInvalidated struct {
+	Type string         `json:"type"`
+	Node NodeID         `json:"node"`
+	Key  ComputationKey `json:"key"`
+}
+
+// ResultRecorded: An immutable result of a claimed node, with the attempt that produced it (null for a controller node).
+type ResultRecorded struct {
+	Type    string     `json:"type"`
+	Node    NodeID     `json:"node"`
+	Result  Result     `json:"result"`
+	Attempt *AttemptID `json:"attempt"`
+}
+
+// ResultSelected: The node selects its result: a completed result that is not could_not_run (13 [G2]), answering the node's current key, once per claim.
+type ResultSelected struct {
+	Type   string   `json:"type"`
+	Node   NodeID   `json:"node"`
+	Result ResultID `json:"result"`
 }
