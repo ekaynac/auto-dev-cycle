@@ -4,8 +4,6 @@ package graph
 
 import (
 	"context"
-	"errors"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +18,7 @@ import (
 const actID = "act_01m3250v0aer9ss2097svmefj8"
 
 // newHold is a hold of the given registered name and owner, with a fresh
-// id; raise stamps its time.
+// id; the builders stamp its time and record its escalation.
 func newHold(t *testing.T, name string, owner types.Owner, ref *string) types.NodeHold {
 	id, err := ids.New("hld")
 	if err != nil {
@@ -33,11 +31,14 @@ func awaitingInput(t *testing.T) types.NodeHold {
 	return newHold(t, "awaiting_input", types.OwnerGrantHolder, ptr(actID))
 }
 
-// stamped raises h on n at the command's time.
-func stamped(n types.NodeID, h types.NodeHold) logic {
+func now(tx *eventstore.Tx) types.Time { return types.Time(tx.Now().UTC().Format(time.RFC3339Nano)) }
+
+// raised raises h on n at the command's time, with env as the profile's
+// environment owner; at shifts the recorded since (a hold raised earlier).
+func raised(n types.NodeID, h types.NodeHold, env *string) logic {
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		h.Since = types.Time(tx.Now().UTC().Format(time.RFC3339Nano))
-		return Raise(tx, n, h)
+		h.Since = now(tx)
+		return Raise(tx, n, h, env)
 	}
 }
 
@@ -45,96 +46,139 @@ func page(n types.NodeID, h types.HoldID, owner types.Owner, ref *string, channe
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Page(tx, n, h, owner, ref, &channel) }
 }
 
+func clear(n types.NodeID, h types.NodeHold) logic {
+	return func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Clear(tx, n, h.ID, h.SignalInstance) }
+}
+
 func (g graphStore) holds(n types.NodeID) []types.NodeHold { return g.state(n).Holds }
 
-// A hold's life: raised on a waiting successor, paged, moved with its id,
-// owner and pages to another node of the task (13 supersession), paged
-// again there, cleared; an escalation; a could_not_run retry held on its
-// signal; a held node invalidated. Every state is a valid node-state, and
-// the log rebuilds.
+// A hold's life: raised with its registry values, paged once per owner, an
+// escalation only after page_after, cleared on its signal; a could_not_run
+// retry held on its signal and retired by an invalidation, while another
+// wait carries over. Every state is a valid node-state, and the log
+// rebuilds, also after a registry edit.
 func TestHoldLifecycle(t *testing.T) {
 	g := openStore(t)
 	a := g.record(g.newNode(types.NodeKindBuild))
 	g.must(g.claimOf(a))
-	succ := g.newNode(types.NodeKindBuild)
-	succ.Predecessor, succ.Node.Round = &a, 2
-	succ.Node.Inputs = append(succ.Node.Inputs, types.InputSpec{Name: "ruling", Source: types.InputSpecSource{Variant: &types.AnswerSource{Type: "answer", OwedInput: ownID, Revision: 2}}})
-	b := g.record(succ)
+
+	// A waiting node held, then cleared, waits again.
+	w := g.record(g.newNode(types.NodeKindBuild))
+	wh := awaitingInput(t)
+	g.must(raised(w, wh, nil))
+	g.must(clear(w, wh))
+	if st := g.state(w); st.State != types.NodeStateStateWaiting || len(st.WaitingOn) != 1 {
+		t.Fatalf("a waiting node cleared: %+v", st)
+	}
+
 	h := awaitingInput(t)
-	g.must(stamped(b, h))
-	g.must(page(b, h.ID, types.OwnerGrantHolder, ptr(actID), "telegram"))
-	if st := g.state(b); st.State != types.NodeStateStateHeld || len(st.WaitingOn) != 2 || len(st.Holds[0].Pages) != 1 {
-		t.Fatalf("held and paged: %+v", st)
+	g.must(raised(a, h, nil))
+	if got := g.holds(a)[0]; got.EscalateTo != nil || got.PageAfter == nil || *got.PageAfter != "PT1H" {
+		t.Fatalf("the recorded registry values: %+v", got)
 	}
-	before := g.holds(b)[0]
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Transfer(tx, b, a, h.ID) })
-	moved := g.holds(a)[0]
-	if g.state(a).State != types.NodeStateStateHeld || g.state(b).State != types.NodeStateStateWaiting ||
-		!reflect.DeepEqual(moved, before) {
-		t.Fatalf("the transfer lost the hold's history: %+v, was %+v", moved, before)
+	g.must(page(a, h.ID, types.OwnerGrantHolder, ptr(actID), "telegram"))
+	if p := g.holds(a)[0].Pages; len(p) != 1 || p[0].SignalInstance != h.SignalInstance || *p[0].Channel != "telegram" {
+		t.Fatalf("the page: %+v", p)
 	}
-	g.must(page(a, h.ID, types.OwnerGrantHolder, ptr(actID), "email"))
-	if p := g.holds(a)[0].Pages; len(p) != 2 || !reflect.DeepEqual(p[0], before.Pages[0]) || *p[1].Channel != "email" || p[1].SignalInstance != h.SignalInstance {
-		t.Fatalf("the paging history did not carry on: %+v", p)
+	if err := g.do(page(a, h.ID, types.OwnerGrantHolder, ptr(actID), "email")); err == nil {
+		t.Fatal("the owner was paged twice for one signal")
 	}
-	if v, _ := view[types.NodeID](g, HoldProjection, string(h.ID)); v != a {
-		t.Fatalf("the hold index names %s", v)
-	}
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Clear(tx, a, h.ID) })
+	g.must(clear(a, h))
 	if st := g.state(a); st.State != types.NodeStateStateClaimed || len(st.Holds) != 0 {
 		t.Fatalf("cleared: %+v", st)
 	}
 
-	// An escalation: evidence_restore_pending passes from the system to the
-	// environment owner the profile names, who owns it from then on.
+	// evidence_restore_pending escalates from the system to the environment
+	// owner the profile names, never before page_after; with no environment
+	// owner named, to the operator (02).
 	e := newHold(t, "evidence_restore_pending", types.OwnerSystem, nil)
-	g.must(stamped(a, e))
+	g.must(raised(a, e, ptr("staging-owner")))
+	g.must(page(a, e.ID, types.OwnerSystem, nil, "telegram"))
+	if err := g.do(page(a, e.ID, types.OwnerEnvironmentOwner, ptr("staging-owner"), "email")); err == nil {
+		t.Fatal("an escalation before page_after")
+	}
+	g.must(clear(a, e))
+	e = newHold(t, "evidence_restore_pending", types.OwnerSystem, nil)
+	e.PageAfter = ptr(types.Duration("PT0S")) // a project's override: due at once
+	g.must(raised(a, e, ptr("staging-owner")))
 	g.must(page(a, e.ID, types.OwnerSystem, nil, "telegram"))
 	g.must(page(a, e.ID, types.OwnerEnvironmentOwner, ptr("staging-owner"), "email"))
 	if h := g.holds(a)[0]; h.Owner != types.OwnerEnvironmentOwner || *h.OwnerRef != "staging-owner" || len(h.Pages) != 2 {
 		t.Fatalf("escalated: %+v", h)
 	}
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Clear(tx, a, e.ID) })
+	if err := g.do(page(a, e.ID, types.OwnerEnvironmentOwner, ptr("other-owner"), "email")); err == nil {
+		t.Fatal("a page re-pointed the escalated owner")
+	}
+	g.must(clear(a, e))
+	f := newHold(t, "evidence_restore_pending", types.OwnerSystem, nil)
+	g.must(raised(a, f, nil))
+	if h := g.holds(a)[0]; *h.EscalateTo != types.OwnerOperator || h.EscalateRef != nil {
+		t.Fatalf("the operator fallback: %+v", h)
+	}
+	g.must(clear(a, f))
 
 	// A could_not_run result retries on its signal: held on the hold its
-	// reason names; a reason that names none is the rails'.
-	credit := must(Build(*g.state(a).Key, BuildFacts{Project: prjID, Exit: exitHints("credit_exhausted")}))
+	// reason names, once per result; a reason that names none is the rails'.
+	credit := must(Build(*g.state(a).Key, BuildFacts{Project: prjID, Exit: exitmap.Exit{Hints: []string{"credit_exhausted"}}}))
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return RecordResult(tx, types.ResultRecorded{Node: a, Result: credit})
 	})
+	retry := func(res types.ResultID, h types.NodeHold) logic {
+		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			h.Since = now(tx)
+			return Retry(tx, a, res, h, nil)
+		}
+	}
 	r := newHold(t, "", types.OwnerOperator, nil)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		r.Since = types.Time(tx.Now().UTC().Format(time.RFC3339Nano))
-		return Retry(tx, a, credit.ID, r)
-	})
+	g.must(retry(credit.ID, r))
 	if h := g.holds(a)[0]; h.Hold != "broker_credit_exhausted" || *h.Reason != vocab.ReasonBrokerCreditExhausted {
 		t.Fatalf("the retry hold: %+v", h)
+	}
+	if err := g.do(retry(credit.ID, newHold(t, "", types.OwnerOperator, nil))); err == nil {
+		t.Fatal("a second retry wait of one result")
 	}
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return RecordResult(tx, types.ResultRecorded{Node: a, Result: must(Build(*g.state(a).Key, BuildFacts{Project: prjID}))})
 	}); err == nil {
 		t.Fatal("a held node recorded a result")
 	}
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Clear(tx, a, r.ID) }) // the signal
-	plain := must(Build(*g.state(a).Key, BuildFacts{Project: prjID}))
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return event(ResultRecorded, string(plain.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: plain})
-	})
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Retry(tx, a, plain.ID, newHold(t, "", types.OwnerOperator, nil))
-	}); err == nil {
-		t.Fatal("executor_incomplete raised a hold")
-	}
 
-	// A held node is invalidated: its holds end with its generation.
-	g.must(stamped(a, awaitingInput(t)))
+	// An invalidation retires the retry wait of the old key by an event and
+	// keeps the budget wait, which still blocks results.
+	b := newHold(t, "budget_rail", types.OwnerOperator, nil)
+	g.must(raised(a, b, nil))
+	before := g.count(HoldCleared)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Invalidate(tx, a) })
-	if st := g.state(a); st.State != types.NodeStateStateClaimed || len(st.Holds) != 0 || st.Key.Generation != 2 {
+	st := g.state(a)
+	if st.State != types.NodeStateStateHeld || len(st.Holds) != 1 || st.Holds[0].ID != b.ID || st.Key.Generation != 2 || g.count(HoldCleared) != before+1 {
 		t.Fatalf("invalidated while held: %+v", st)
 	}
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return RecordResult(tx, types.ResultRecorded{Node: a, Result: must(Build(*g.state(a).Key, BuildFacts{Project: prjID}))})
+	}); err == nil {
+		t.Fatal("a node still held on its budget recorded a result")
+	}
+	if err := g.do(retry(credit.ID, newHold(t, "", types.OwnerOperator, nil))); err == nil {
+		t.Fatal("a retry on the old key's result")
+	}
+
 	diffs, err := g.s.RebuildProjections(context.Background())
 	if err != nil || len(diffs) != 0 {
 		t.Fatalf("rebuild: %v %+v", err, diffs)
+	}
+	// A registry edit changes no recorded hold: the log still rebuilds.
+	edited, err := vocab.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(edited.Holds, "budget_rail")
+	entry := edited.Holds["evidence_restore_pending"]
+	entry.Owner, entry.EscalateTo = types.OwnerOperator, nil
+	edited.Holds["evidence_restore_pending"] = entry
+	registry = func() (*vocab.Registry, error) { return edited, nil }
+	t.Cleanup(func() { registry = vocab.Load })
+	if diffs, err := g.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild after a registry edit: %v %+v", err, diffs)
 	}
 }
 
@@ -145,69 +189,136 @@ func TestHoldRefusals(t *testing.T) {
 	g.must(g.claimOf(a))
 	c := g.record(g.newNode(types.NodeKindBuild))
 	h := awaitingInput(t)
-	g.must(stamped(c, h))
-	stranger := g.newNode(types.NodeKindBuild)
-	stranger.Task = tskB
-	s := g.record(stranger)
-	done, _ := g.plan, g.planRes // completed
-	raised := func(n types.NodeID, kind, subject string, f func(*types.NodeHold)) logic {
+	g.must(raised(c, h, nil))
+	never := newHold(t, "awaiting_input", types.OwnerGrantHolder, ptr(actID))
+	never.Since = "x"
+	silent := g.record(g.newNode(types.NodeKindBuild))
+	other := g.record(g.newNode(types.NodeKindBuild)) // claimed, with its own could_not_run result
+	g.must(g.claimOf(other))
+	foreign := must(Build(*g.state(other).Key, BuildFacts{Project: prjID, Exit: exitmap.Exit{Hints: []string{"credit_exhausted"}}}))
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return RecordResult(tx, types.ResultRecorded{Node: other, Result: foreign})
+	})
+	done := g.plan // completed
+	forged := func(n types.NodeID, kind, subject string, project types.ProjectID, result *types.ResultID, f func(*types.NodeHold)) logic {
 		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			x := awaitingInput(t)
-			x.Since = types.Time(tx.Now().UTC().Format(time.RFC3339Nano))
+			x.Since, x.PageAfter = now(tx), ptr(types.Duration("PT1H"))
 			f(&x)
-			return event(kind, subject, prjID, &types.HoldRaised{Type: "hold_raised", Node: n, Hold: x})
+			return event(kind, subject, project, &types.HoldRaised{Type: "hold_raised", Node: n, Hold: x, Result: result})
 		}
 	}
 	none := func(*types.NodeHold) {}
-	paged := func(n types.NodeID, kind, subject string, hold types.HoldID, owner types.Owner, ref *string) logic {
-		return forge(kind, subject, prjID, &types.HoldPaged{Type: "hold_paged", Node: n, Hold: hold, Owner: owner, OwnerRef: ref})
+	credit := ptr(vocab.ReasonBrokerCreditExhausted)
+	paged := func(n types.NodeID, kind, subject string, project types.ProjectID, hold types.HoldID, owner types.Owner, ref *string) logic {
+		return forge(kind, subject, project, &types.HoldPaged{Type: "hold_paged", Node: n, Hold: hold, Owner: owner, OwnerRef: ref})
 	}
-	moved := func(subject string, from, to types.NodeID, kind string) logic {
-		return forge(kind, subject, prjID, &types.HoldTransferred{Type: "hold_transferred", From: from, To: to, Hold: h.ID})
+	signal := func(n types.NodeID, kind, subject string, project types.ProjectID, hold types.HoldID, instance string) logic {
+		return forge(kind, subject, project, &types.HoldCleared{Type: "hold_cleared", Node: n, Hold: hold,
+			Cause: types.HoldClearedCause{Variant: &types.Signalled{Type: "signal", SignalInstance: instance}}})
 	}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		never.Since, never.PageAfter = now(tx), nil
+		return event(HoldRaised, string(silent), prjID, &types.HoldRaised{Type: "hold_raised", Node: silent, Hold: never})
+	})
 	for name, fn := range map[string]logic{
-		"a hold under another subject":   raised(a, HoldRaised, string(c), none),
-		"a hold under node.hold_cleared": raised(a, HoldCleared, string(a), none),
-		"a hold raised at another time":  raised(a, HoldRaised, string(a), func(x *types.NodeHold) { x.Since = "2026-01-01T00:00:00Z" }),
-		"a hold raised with a page": raised(a, HoldRaised, string(a), func(x *types.NodeHold) {
+		"a hold under another subject":   forged(a, HoldRaised, string(c), prjID, nil, none),
+		"a hold under node.hold_cleared": forged(a, HoldCleared, string(a), prjID, nil, none),
+		"a hold in another project":      forged(a, HoldRaised, string(a), prjB, nil, none),
+		"a hold raised at another time":  forged(a, HoldRaised, string(a), prjID, nil, func(x *types.NodeHold) { x.Since = "2026-01-01T00:00:00Z" }),
+		"a hold raised with a page": forged(a, HoldRaised, string(a), prjID, nil, func(x *types.NodeHold) {
 			x.Pages = []types.NodeHoldPagesItem{{At: x.Since, Owner: x.Owner, OwnerRef: x.OwnerRef, SignalInstance: "x"}}
 		}),
-		"an unregistered hold":             raised(a, HoldRaised, string(a), func(x *types.NodeHold) { x.Hold = "no_such_hold" }),
-		"a hold raised by another owner":   raised(a, HoldRaised, string(a), func(x *types.NodeHold) { x.Owner, x.OwnerRef = types.OwnerOperator, nil }),
-		"a reason that names another hold": raised(a, HoldRaised, string(a), func(x *types.NodeHold) { x.Reason = ptr(vocab.ReasonBrokerCreditExhausted) }),
-		"a reason that names no hold":      raised(a, HoldRaised, string(a), func(x *types.NodeHold) { x.Reason = ptr(vocab.ReasonExecutorIncomplete) }),
-		"a hold id raised twice":           raised(a, HoldRaised, string(a), func(x *types.NodeHold) { x.ID = h.ID }),
-		"a hold on a completed node":       raised(done, HoldRaised, string(done), none),
-		"a hold in another project": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			evs, err := raised(a, HoldRaised, string(a), none)(tx)
-			evs[0].Project = ptr(string(prjB))
-			return evs, err
-		},
-		"a page under another subject":              paged(c, HoldPaged, string(a), h.ID, types.OwnerGrantHolder, ptr(actID)),
-		"a page under node.hold_cleared":            paged(c, HoldCleared, string(c), h.ID, types.OwnerGrantHolder, ptr(actID)),
-		"a page of a hold not held":                 paged(a, HoldPaged, string(a), h.ID, types.OwnerGrantHolder, ptr(actID)),
-		"a page of another hold":                    paged(c, HoldPaged, string(c), "hld_01m3250v57fhm9v1z9xd1wk8gw", types.OwnerGrantHolder, ptr(actID)),
-		"a page to another owner":                   paged(c, HoldPaged, string(c), h.ID, types.OwnerOperator, nil),
-		"a page to the owner, another ref":          paged(c, HoldPaged, string(c), h.ID, types.OwnerGrantHolder, ptr("act_01m3250vm7f6ktw39dszqnyddr")),
-		"a clear of a hold not held":                forge(HoldCleared, string(a), prjID, &types.HoldCleared{Type: "hold_cleared", Node: a, Hold: h.ID}),
-		"a clear under another subject":             forge(HoldCleared, string(a), prjID, &types.HoldCleared{Type: "hold_cleared", Node: c, Hold: h.ID}),
-		"a clear under node.hold_raised":            forge(HoldRaised, string(c), prjID, &types.HoldCleared{Type: "hold_cleared", Node: c, Hold: h.ID}),
-		"a transfer to the same node":               moved(string(c), c, c, HoldTransferred),
-		"a transfer to another task":                moved(string(s), c, s, HoldTransferred),
-		"a transfer to a completed node":            moved(string(done), c, done, HoldTransferred),
-		"a transfer under the old node":             moved(string(c), c, a, HoldTransferred),
-		"a transfer of a hold not held":             forge(HoldTransferred, string(c), prjID, &types.HoldTransferred{Type: "hold_transferred", From: a, To: c, Hold: h.ID}),
-		"a transfer under node.hold_cleared":        moved(string(a), c, a, HoldCleared),
+		"a hold id raised twice":                    forged(a, HoldRaised, string(a), prjID, nil, func(x *types.NodeHold) { x.ID = h.ID }),
+		"a hold on a completed node":                forged(done, HoldRaised, string(done), prjID, nil, none),
+		"a reason with no result":                   forged(a, HoldRaised, string(a), prjID, nil, func(x *types.NodeHold) { x.Reason = credit }),
+		"a result with no reason":                   forged(other, HoldRaised, string(other), prjID, &foreign.ID, none),
+		"a retry on another node's result":          forged(a, HoldRaised, string(a), prjID, &foreign.ID, func(x *types.NodeHold) { x.Reason = credit }),
+		"a retry with another reason":               forged(other, HoldRaised, string(other), prjID, &foreign.ID, func(x *types.NodeHold) { x.Reason = ptr(vocab.ReasonQuotaExhausted) }),
+		"a retry on an unrecorded result":           forged(a, HoldRaised, string(a), prjID, ptr(types.ResultID(resB)), func(x *types.NodeHold) { x.Reason = credit }),
+		"a page under another subject":              paged(c, HoldPaged, string(a), prjID, h.ID, types.OwnerGrantHolder, ptr(actID)),
+		"a page under node.hold_cleared":            paged(c, HoldCleared, string(c), prjID, h.ID, types.OwnerGrantHolder, ptr(actID)),
+		"a page in another project":                 paged(c, HoldPaged, string(c), prjB, h.ID, types.OwnerGrantHolder, ptr(actID)),
+		"a page of a hold not held":                 paged(a, HoldPaged, string(a), prjID, h.ID, types.OwnerGrantHolder, ptr(actID)),
+		"a page of another hold":                    paged(c, HoldPaged, string(c), prjID, "hld_01m3250v57fhm9v1z9xd1wk8gw", types.OwnerGrantHolder, ptr(actID)),
+		"a page to another owner":                   paged(c, HoldPaged, string(c), prjID, h.ID, types.OwnerOperator, nil),
+		"a page to the owner, another ref":          paged(c, HoldPaged, string(c), prjID, h.ID, types.OwnerGrantHolder, ptr("act_01m3250vm7f6ktw39dszqnyddr")),
+		"a page of a hold never paged":              paged(silent, HoldPaged, string(silent), prjID, never.ID, types.OwnerGrantHolder, ptr(actID)),
+		"a clear of a hold not held":                signal(a, HoldCleared, string(a), prjID, h.ID, h.SignalInstance),
+		"a clear under another subject":             signal(c, HoldCleared, string(a), prjID, h.ID, h.SignalInstance),
+		"a clear under node.hold_raised":            signal(c, HoldRaised, string(c), prjID, h.ID, h.SignalInstance),
+		"a clear in another project":                signal(c, HoldCleared, string(c), prjB, h.ID, h.SignalInstance),
+		"a clear on another signal":                 signal(c, HoldCleared, string(c), prjID, h.ID, "own@9"),
+		"a wait retired as invalidated":             forge(HoldCleared, string(c), prjID, &types.HoldCleared{Type: "hold_cleared", Node: c, Hold: h.ID, Cause: types.HoldClearedCause{Variant: &types.Retired{Type: "retired", Reason: "invalidated"}}}),
 		"an invalidation of a held, unclaimed node": forge(NodeInvalidated, string(c), prjID, &types.NodeInvalidated{Type: "node_invalidated", Node: c, Key: *g.state(a).Key}),
 	} {
 		if err := g.do(fn); err == nil || !strings.Contains(err.Error(), "graph: event") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	var stale ErrKeyStale
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Retry(tx, c, g.planRes, awaitingInput(t)) }); err == nil || errors.As(err, &stale) {
-		t.Errorf("a retry on another node's result: %v", err)
+	// A reason that names no hold is the rails'; a found result has no
+	// retry wait; nor has a result of an old key.
+	z := g.record(g.newNode(types.NodeKindBuild))
+	g.must(g.claimOf(z))
+	plain := must(Build(*g.state(z).Key, BuildFacts{Project: prjID}))
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return RecordResult(tx, types.ResultRecorded{Node: z, Result: plain})
+	})
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Retry(tx, z, plain.ID, newHold(t, "", types.OwnerOperator, nil), nil)
+	}); err == nil {
+		t.Error("executor_incomplete raised a retry wait")
+	}
+	found := unrecorded(t, *g.state(z).Key)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return RecordResult(tx, types.ResultRecorded{Node: z, Result: found})
+	})
+	stale := g.record(g.newNode(types.NodeKindBuild))
+	g.must(g.claimOf(stale))
+	old := must(Build(*g.state(stale).Key, BuildFacts{Project: prjID, Exit: exitmap.Exit{Hints: []string{"credit_exhausted"}}}))
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return RecordResult(tx, types.ResultRecorded{Node: stale, Result: old})
+	})
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Invalidate(tx, stale) })
+	for name, fn := range map[string]logic{
+		"a retry wait of a found result":      forged(z, HoldRaised, string(z), prjID, &found.ID, func(x *types.NodeHold) { x.Reason = ptr(vocab.ReasonCompletedWithFindings) }),
+		"a retry wait of an old key's result": forged(stale, HoldRaised, string(stale), prjID, &old.ID, func(x *types.NodeHold) { x.Reason = credit }),
+	} {
+		if err := g.do(fn); err == nil || !strings.Contains(err.Error(), "graph: event") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// A retry wait of the current key is not retired.
+	r := newHold(t, "", types.OwnerOperator, nil)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		r.Since = now(tx)
+		return Retry(tx, other, foreign.ID, r, nil)
+	})
+	if err := g.do(forge(HoldCleared, string(other), prjID, &types.HoldCleared{Type: "hold_cleared", Node: other, Hold: r.ID,
+		Cause: types.HoldClearedCause{Variant: &types.Retired{Type: "retired", Reason: "invalidated"}}})); err == nil {
+		t.Error("a retry wait of the current key was retired")
+	}
+	// The builders check the registry and the actor.
+	for name, fn := range map[string]logic{
+		"an unregistered hold":       raised(a, newHold(t, "no_such_hold", types.OwnerOperator, nil), nil),
+		"a hold by another owner":    raised(a, newHold(t, "awaiting_input", types.OwnerOperator, nil), nil),
+		"a grant holder, not an act": raised(a, newHold(t, "awaiting_input", types.OwnerGrantHolder, ptr("act_00000000000000000000000000")), nil),
+		"a page to a non-actor":      page(c, h.ID, types.OwnerGrantHolder, ptr("act_00000000000000000000000000"), "email"),
+		"a retry on a plan result": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return Retry(tx, a, g.planRes, awaitingInput(t), nil)
+		},
+	} {
+		if err := g.do(fn); err == nil {
+			t.Errorf("%s was admitted", name)
+		}
 	}
 }
 
-func exitHints(hints ...string) exitmap.Exit { return exitmap.Exit{Hints: hints} }
+func errorsJoin(errs ...error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}

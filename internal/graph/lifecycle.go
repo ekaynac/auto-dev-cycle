@@ -14,7 +14,8 @@ package graph
 //   - A selection takes one of the node's results answering its current
 //     key and not could_not_run, and completes the node: selection is per
 //     node (13 [G1]; one per key for the memoizable kinds).
-//   - An invalidation moves a claimed, held or completed node to the next
+//   - An invalidation (with holds.go's retirement of retry waits) moves a
+//     claimed, held or completed node to the next
 //     generation of the same inputs: a new key and no selected result. For
 //     a memoizable kind the task's current generation of the node's
 //     identity (its inputs, without a generation) moves with it, the new
@@ -65,7 +66,8 @@ func Select(tx *eventstore.Tx, node types.NodeID, result types.ResultID) ([]even
 	return onNode(tx, node, ResultSelected, string(result), &types.ResultSelected{Type: "result_selected", Node: node, Result: result})
 }
 
-// Invalidate is the event moving node's claim to the next generation. A
+// Invalidate is the event moving node's claim to the next generation, then
+// one retiring each retry wait of the old key; other waits carry over. A
 // memoizable key of that generation held by another node of the task is
 // ErrKeyClaimed.
 func Invalidate(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error) {
@@ -88,7 +90,15 @@ func Invalidate(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error
 			return nil, ErrKeyClaimed{holder}
 		}
 	}
-	return onNode(tx, node, NodeInvalidated, string(node), &types.NodeInvalidated{Type: "node_invalidated", Node: node, Key: key})
+	evs, err := onNode(tx, node, NodeInvalidated, string(node), &types.NodeInvalidated{Type: "node_invalidated", Node: node, Key: key})
+	for _, h := range rec.State.Holds {
+		by, _, berr := load[heldBy](tx, HoldProjection, string(h.ID))
+		if err = errors.Join(err, berr); err == nil && by.Result != nil {
+			retire, rerr := cleared(tx, node, h.ID, &types.Retired{Type: "retired", Reason: types.RetiredReasonInvalidated})
+			evs, err = append(evs, retire...), rerr
+		}
+	}
+	return evs, err
 }
 
 func onNode(tx *eventstore.Tx, node types.NodeID, kind, subject string, v types.GraphEventVariant) ([]eventstore.Event, error) {
@@ -174,7 +184,9 @@ func invalidated(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeInvalidate
 	if err := put(tx, ClaimProjection, string(p.Node), c); err != nil {
 		return err
 	}
-	// A held node's holds end with its generation; their events keep them.
-	rec.State.State, rec.State.Key, rec.State.Result, rec.State.Holds = types.NodeStateStateClaimed, &key, nil, []types.NodeHold{}
+	// Waits carry over; the command retires a retry wait of the old key
+	// with its own event after this one.
+	rec.State.Key, rec.State.Result = &key, nil
+	settle(&rec.State)
 	return putNode(tx, rec)
 }

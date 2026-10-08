@@ -33,7 +33,7 @@ export type NodeState = {
   superseded_by: null | string;
 };
 /**
- * A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; 13): approvals, quotas, human acts, probes. Internal inputs wait structurally and need no hold (13). A replacement node keeps a transferred hold's id, signal instance, owner and paging history, so escalation never restarts (13 supersession). Lease holds stay on the lease (05). owner_ref is set exactly for the owner kinds that name a concrete owner: the grant holder's actor id, the named owner, or the environment owner the profile names. A conditional admits only plain keywords (internal/schemagen), so the schema checks the actor id's act_ TypeID shape by pattern and internal/graph checks its UUIDv7 bits (adc-typeid).
+ * A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; 13): approvals, quotas, human acts, probes. Internal inputs wait structurally and need no hold (13). A replacement node keeps a transferred hold's id, signal instance, owner and paging history, so escalation never restarts (13 supersession). It records the owner, escalation and page_after in force when it was raised, so a later registry edit changes no recorded hold. Lease holds stay on the lease (05). owner_ref is set exactly for the owner kinds that name a concrete owner: the grant holder's actor id, the named owner, or the environment owner the profile names. A conditional admits only plain keywords (internal/schemagen), so the schema checks the actor id's act_ TypeID shape by pattern and internal/graph checks its UUIDv7 bits (adc-typeid).
  */
 export type NodeHold = {
   /**
@@ -53,10 +53,23 @@ export type NodeHold = {
    */
   signal_instance: string;
   /**
-   * Who owns the hold now: the registry's owner, or its escalate_to once page_after has passed. When the profile names no environment owner, evidence_restore_pending escalates to operator instead (02, its registry row).
+   * Who owns the hold now: the owner it was raised with, or its escalate_to once paged after page_after.
    */
   owner: "system" | "operator" | "grant_holder" | "confirmation_policy" | "named_owner" | "environment_owner";
   owner_ref: null | string;
+  /**
+   * Who owns the hold once page_after passes, as in force when it was raised: the registry's escalate_to or, for an environment owner the profile does not name, the operator (02); null keeps the owner.
+   */
+  escalate_to:
+    null | ("system" | "operator" | "grant_holder" | "confirmation_policy" | "named_owner" | "environment_owner");
+  /**
+   * The concrete escalation owner, by the owner_ref rule; null when escalate_to is null or names none.
+   */
+  escalate_ref: null | string;
+  /**
+   * The page_after in force when it was raised (02; a project may override the registry's). Null: the hold is never paged.
+   */
+  page_after: null | string;
   /**
    * When the wait began; page_after counts from here, also across a transfer.
    */

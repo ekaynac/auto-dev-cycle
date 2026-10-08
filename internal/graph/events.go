@@ -54,7 +54,6 @@ const (
 	HoldRaised      = "node.hold_raised/v1"
 	HoldPaged       = "node.hold_paged/v1"
 	HoldCleared     = "node.hold_cleared/v1"
-	HoldTransferred = "node.hold_transferred/v1"
 	ResultRecorded  = "result.recorded/v1"
 	ResultSelected  = "result.selected/v1"
 	EventSchema     = "records/graph-event"
@@ -65,7 +64,8 @@ const (
 	TaskProjection   = "graph_tasks"   // task id → its project
 	ResultProjection = "graph_results" // result id → the result.recorded payload
 	GenProjection    = "graph_gens"    // task/identity → its current generation (memoizable kinds)
-	HoldProjection   = "graph_holds"   // hold id → the node holding it
+	HoldProjection   = "graph_holds"   // hold id → the node that last held it (heldBy)
+	RetryProjection  = "graph_retries" // could_not_run result id → its retry wait's hold id
 )
 
 // memoizable are the kinds whose results are reused (13 "v1 scope").
@@ -85,7 +85,7 @@ func (e ErrKeyStale) Error() string {
 }
 
 // Kinds registers the graph event kinds.
-var kinds = []string{NodeRecorded, NodeClaimed, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, HoldTransferred, ResultRecorded, ResultSelected}
+var kinds = []string{NodeRecorded, NodeClaimed, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected}
 
 func Kinds() eventstore.Kinds {
 	k := eventstore.Kinds{}
@@ -258,8 +258,6 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant) err
 		return holdPaged(tx, ev, p)
 	case *types.HoldCleared:
 		return holdCleared(tx, ev, p)
-	case *types.HoldTransferred:
-		return holdTransferred(tx, ev, p)
 	case *types.ResultRecorded:
 		return resultRecorded(tx, ev, p)
 	case *types.ResultSelected:

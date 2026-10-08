@@ -4,7 +4,7 @@
 
 `schemas/records/node-hold.json`
 
-A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; 13): approvals, quotas, human acts, probes. Internal inputs wait structurally and need no hold (13). A replacement node keeps a transferred hold's id, signal instance, owner and paging history, so escalation never restarts (13 supersession). Lease holds stay on the lease (05). owner_ref is set exactly for the owner kinds that name a concrete owner: the grant holder's actor id, the named owner, or the environment owner the profile names. A conditional admits only plain keywords (internal/schemagen), so the schema checks the actor id's act_ TypeID shape by pattern and internal/graph checks its UUIDv7 bits (adc-typeid).
+A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; 13): approvals, quotas, human acts, probes. Internal inputs wait structurally and need no hold (13). A replacement node keeps a transferred hold's id, signal instance, owner and paging history, so escalation never restarts (13 supersession). It records the owner, escalation and page_after in force when it was raised, so a later registry edit changes no recorded hold. Lease holds stay on the lease (05). owner_ref is set exactly for the owner kinds that name a concrete owner: the grant holder's actor id, the named owner, or the environment owner the profile names. A conditional admits only plain keywords (internal/schemagen), so the schema checks the actor id's act_ TypeID shape by pattern and internal/graph checks its UUIDv7 bits (adc-typeid).
 
 ## Fields of the document
 
@@ -14,8 +14,11 @@ A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; 13)
 | `hold` | yes | string (pattern `^[a-z][a-z0-9_]*$`) | A registered hold (schemas/vocab/holds.yaml); internal/graph checks that it is registered. |
 | `reason` | yes | null or [ReasonCode](common-defs.md#reasoncode) | The reason of the result that raised it, whose registry entry names this hold (02; 12, e.g. evidence_cap_exhausted with wrong_owner). Null for a hold the resolver raised with no result, e.g. awaiting_input for a declared answer. |
 | `signal_instance` | yes | string (minLength `1`, maxLength `1024`) | The concrete signal that resumes it, e.g. the reset time or the approval id awaited (02). |
-| `owner` | yes | [Owner](vocab-registry.md#owner) | Who owns the hold now: the registry's owner, or its escalate_to once page_after has passed. When the profile names no environment owner, evidence_restore_pending escalates to operator instead (02, its registry row). |
+| `owner` | yes | [Owner](vocab-registry.md#owner) | Who owns the hold now: the owner it was raised with, or its escalate_to once paged after page_after. |
 | `owner_ref` | yes | null or string (minLength `1`, maxLength `256`) |  |
+| `escalate_to` | yes | null or [Owner](vocab-registry.md#owner) | Who owns the hold once page_after passes, as in force when it was raised: the registry's escalate_to or, for an environment owner the profile does not name, the operator (02); null keeps the owner. |
+| `escalate_ref` | yes | null or string (minLength `1`, maxLength `256`) | The concrete escalation owner, by the owner_ref rule; null when escalate_to is null or names none. |
+| `page_after` | yes | null or [Duration](common-defs.md#duration) | The page_after in force when it was raised (02; a project may override the registry's). Null: the hold is never paged. |
 | `since` | yes | [Time](common-defs.md#time) | When the wait began; page_after counts from here, also across a transfer. |
 | `pages` | yes | array of object ([fields](#fields-of-pages)) | The paging history, oldest first and append-only: who was paged, by the same owner_ref rule. Pages are deduplicated by hold id and signal instance, never by channel (02). |
 

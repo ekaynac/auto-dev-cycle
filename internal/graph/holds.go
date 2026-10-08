@@ -6,75 +6,138 @@ package graph
 // [G2], supersession; plan 15 G3-3).
 //
 // Decisions:
-//   - A hold has an id no other hold had. It is raised at its event's time,
-//     by its registry owner, with no page. A completed node holds nothing:
-//     records/node-state has no held state with a selected result. A held node keeps its key and missing
-//     inputs; once it holds nothing it is claimed, waiting or runnable
-//     again, as they say.
-//   - A could_not_run result retries on its signal (13 [G2]): Retry raises
-//     the hold its reason names in the registry, with the reason, so the
-//     node is held until the signal clears it. A reason that names no hold
-//     leaves the retry to the rails (05, 12).
-//   - A page is recorded at its event's time, for the hold's signal
-//     instance, to the hold's owner or to the registry's escalate_to, which
-//     then owns it: escalation never restarts (13 supersession).
-//   - A transfer moves a hold, with its id, owner and pages, to another
-//     node of the task (to the same node, it would be held twice, which
-//     records/node-state refuses).
-//   - An invalidation clears a held node's holds; the events keep their
-//     history.
+//   - The builders check a hold against the registry and record what is in
+//     force when it is raised: its owner, escalation and page_after. The
+//     fold checks events against those recorded values only, so a later
+//     registry edit changes no recorded hold and the log still rebuilds.
+//   - A hold has an id no other hold had. It is raised at its event's time
+//     with no page. A completed node holds nothing: records/node-state has
+//     no held state with a selected result. A held node keeps its key and
+//     missing inputs; once it holds nothing it is claimed, waiting or
+//     runnable again, as they say.
+//   - A could_not_run result retries on its signal (13 [G2]): Retry holds
+//     the node on the hold the result's reason names, with that reason and
+//     the result, one hold per result, of the node's current key. A reason
+//     that names no hold leaves the retry to the rails (05, 12).
+//   - A page is recorded at its event's time, once per owner and ref: to
+//     the hold's owner, or, from since + page_after on, to the recorded
+//     escalate_to and its exact ref, which then owns the hold. A hold with
+//     no page_after is never paged.
+//   - A hold leaves with a cause: its signal (the hold's signal instance),
+//     or retired as invalidated, a retry wait of a key the node no longer
+//     holds. An invalidation retires its retry waits in the same command
+//     and keeps every other wait, with its id, since and pages.
+//   - Transferring a hold to a replacement is G6b's, inside its
+//     supersession. Tying awaiting_input to an owed input the node declares
+//     is G4b's. As for Claim, M1's commands take the project from the
+//     actor's authorization before they call these builders.
 
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 )
 
-// Raise is the event raising hold on node.
-func Raise(tx *eventstore.Tx, node types.NodeID, hold types.NodeHold) ([]eventstore.Event, error) {
-	return onNode(tx, node, HoldRaised, string(node), &types.HoldRaised{Type: "hold_raised", Node: node, Hold: hold})
+// Raise is the event raising hold on node, a registered hold by its
+// registry owner. Raise records the registry's escalation (for an
+// environment owner, envOwner names it; none falls back to the operator,
+// 02) and page_after, unless hold carries a project's override of it.
+func Raise(tx *eventstore.Tx, node types.NodeID, hold types.NodeHold, envOwner *string) ([]eventstore.Event, error) {
+	return raise(tx, node, hold, envOwner, nil)
+}
+
+func raise(tx *eventstore.Tx, node types.NodeID, h types.NodeHold, envOwner *string, result *types.ResultID) ([]eventstore.Event, error) {
+	reg, err := registry()
+	if err != nil {
+		return nil, err
+	}
+	entry, ok := reg.Holds[h.Hold]
+	if !ok || h.Owner != entry.Owner {
+		return nil, fmt.Errorf("graph: %s is no registered hold of owner %s", h.Hold, h.Owner)
+	}
+	if err := actorRef(h.Owner, h.OwnerRef); err != nil {
+		return nil, err
+	}
+	h.EscalateTo, h.EscalateRef = entry.EscalateTo, nil
+	if h.PageAfter == nil {
+		h.PageAfter = entry.PageAfter
+	}
+	if e := entry.EscalateTo; e != nil && *e == types.OwnerEnvironmentOwner {
+		if h.EscalateRef = envOwner; envOwner == nil {
+			h.EscalateTo = ptrOf(types.OwnerOperator)
+		}
+	}
+	return onNode(tx, node, HoldRaised, string(node), &types.HoldRaised{Type: "hold_raised", Node: node, Hold: h, Result: result})
+}
+
+func ptrOf[T any](v T) *T { return &v }
+
+// actorRef: a grant holder is named by a live actor id (adc-typeid).
+func actorRef(owner types.Owner, ref *string) error {
+	if owner != types.OwnerGrantHolder {
+		return nil
+	}
+	if ref == nil {
+		return errors.New("graph: a grant holder is named by its actor id")
+	}
+	return ids.Check(*ref, "act")
 }
 
 // Retry is the event holding node on the signal of its could_not_run
-// result: the hold the result's reason names, with that reason; hold
-// carries the rest (id, signal instance, owner).
-func Retry(tx *eventstore.Tx, node types.NodeID, result types.ResultID, hold types.NodeHold) ([]eventstore.Event, error) {
-	r, ok, err := load[types.ResultRecorded](tx, ResultProjection, string(result))
-	reg, rerr := registry()
-	if err = errors.Join(err, rerr); err != nil || !ok || r.Node != node || r.Result.Outcome != types.OutcomeCouldNotRun {
-		return nil, errors.Join(err, fmt.Errorf("graph: %s is no could_not_run result of %s", result, node))
+// result of its current key: the hold the result's reason names, with that
+// reason; hold carries the rest (id, signal instance, owner).
+func Retry(tx *eventstore.Tx, node types.NodeID, result types.ResultID, hold types.NodeHold, envOwner *string) ([]eventstore.Event, error) {
+	rec, err := loadNode(tx, node)
+	r, ok, rerr := load[types.ResultRecorded](tx, ResultProjection, string(result))
+	reg, gerr := registry()
+	if err = errors.Join(err, rerr, gerr); err != nil || !ok || r.Node != node || rec.State.Key == nil || rec.State.Key.Key != r.Result.Computation {
+		return nil, errors.Join(err, fmt.Errorf("graph: %s is no result of %s's current key", result, node))
 	}
+	// Only could_not_run reasons name a hold (reasons.yaml); the fold checks
+	// the outcome itself.
 	entry := reg.Reasons[r.Result.Reason.String()]
 	if entry.Hold == nil {
 		return nil, fmt.Errorf("graph: reason %s names no hold; the rails decide its retry", r.Result.Reason)
 	}
 	hold.Hold, hold.Reason = string(*entry.Hold), &r.Result.Reason
-	return Raise(tx, node, hold)
+	return raise(tx, node, hold, envOwner, &result)
 }
 
-// Page is the event recording a page of node's hold.
+// Page is the event recording a page of node's hold. The fold admits only
+// the recorded owner or escalation, refs included, so the raise checked them.
 func Page(tx *eventstore.Tx, node types.NodeID, hold types.HoldID, owner types.Owner, ownerRef *string, channel *types.Name) ([]eventstore.Event, error) {
 	return onNode(tx, node, HoldPaged, string(node), &types.HoldPaged{Type: "hold_paged", Node: node, Hold: hold, Owner: owner, OwnerRef: ownerRef, Channel: channel})
 }
 
-// Clear is the event clearing node's hold.
-func Clear(tx *eventstore.Tx, node types.NodeID, hold types.HoldID) ([]eventstore.Event, error) {
-	return onNode(tx, node, HoldCleared, string(node), &types.HoldCleared{Type: "hold_cleared", Node: node, Hold: hold})
+// Clear is the event clearing node's hold on its signal.
+func Clear(tx *eventstore.Tx, node types.NodeID, hold types.HoldID, signal string) ([]eventstore.Event, error) {
+	return cleared(tx, node, hold, &types.Signalled{Type: "signal", SignalInstance: signal})
 }
 
-// Transfer is the event moving hold from one node to another of its task.
-func Transfer(tx *eventstore.Tx, from, to types.NodeID, hold types.HoldID) ([]eventstore.Event, error) {
-	return onNode(tx, to, HoldTransferred, string(to), &types.HoldTransferred{Type: "hold_transferred", From: from, To: to, Hold: hold})
+func cleared(tx *eventstore.Tx, node types.NodeID, hold types.HoldID, cause types.HoldClearedCauseVariant) ([]eventstore.Event, error) {
+	return onNode(tx, node, HoldCleared, string(node), &types.HoldCleared{Type: "hold_cleared", Node: node, Hold: hold, Cause: types.HoldClearedCause{Variant: cause}})
+}
+
+// heldBy is a hold's index entry: the node that last held it, and the
+// could_not_run result of a retry wait.
+type heldBy struct {
+	Node   types.NodeID    `json:"node"`
+	Result *types.ResultID `json:"result"`
 }
 
 // settle is a node's state once it holds nothing: claimed with a key,
 // waiting with missing inputs, runnable otherwise.
 func settle(st *types.NodeState) {
 	switch {
+	case len(st.Holds) > 0:
+		st.State = types.NodeStateStateHeld
 	case st.Key != nil:
 		st.State = types.NodeStateStateClaimed
 	case len(st.WaitingOn) > 0:
@@ -91,30 +154,51 @@ func sameTime(a, b string) bool {
 	return err1 == nil && err2 == nil && x.Equal(y)
 }
 
+var isoDuration = regexp.MustCompile(`^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$`)
+
+// due: at is at or after since + after (a records Duration).
+func due(since types.Time, after types.Duration, at string) bool {
+	m := isoDuration.FindStringSubmatch(string(after))
+	s, err1 := time.Parse(time.RFC3339Nano, string(since))
+	t, err2 := time.Parse(time.RFC3339Nano, at)
+	if m == nil || err1 != nil || err2 != nil {
+		return false
+	}
+	var d time.Duration
+	for i, unit := range []time.Duration{24 * time.Hour, time.Hour, time.Minute, time.Second} {
+		n, _ := strconv.Atoi(m[i+1])
+		d += time.Duration(n) * unit
+	}
+	return !t.Before(s.Add(d))
+}
+
 func holdRaised(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldRaised) error {
 	rec, err := nodeOf(tx, ev, p.Node)
 	if err != nil || ev.Kind != HoldRaised || ev.Subject != string(p.Node) {
 		return errors.Join(err, errors.New("a hold is raised under its node"))
 	}
-	reg, err := registry()
-	if err != nil {
-		return err
-	}
 	h := p.Hold
-	entry, registered := reg.Holds[h.Hold]
-	if !registered || !sameTime(string(h.Since), ev.At) || len(h.Pages) != 0 || h.Owner != entry.Owner {
-		return errors.New("a hold is a registered hold, raised at its event's time by its registry owner, with no page")
+	if !sameTime(string(h.Since), ev.At) || len(h.Pages) != 0 || (h.Reason == nil) != (p.Result == nil) {
+		return errors.New("a hold is raised at its event's time with no page, with a result exactly when it has a reason")
 	}
-	if h.Reason != nil {
-		if r := reg.Reasons[h.Reason.String()]; r.Hold == nil || string(*r.Hold) != h.Hold {
-			return fmt.Errorf("reason %s does not name hold %s", h.Reason, h.Hold)
+	if p.Result != nil {
+		r, _, err := load[types.ResultRecorded](tx, ResultProjection, string(*p.Result))
+		if err != nil || r.Node != p.Node || r.Result.Outcome != types.OutcomeCouldNotRun || r.Result.Reason != *h.Reason ||
+			rec.State.Key == nil || rec.State.Key.Key != r.Result.Computation {
+			return errors.Join(err, errors.New("a retry wait is of the node's could_not_run result of its current key, with its reason"))
+		}
+		if _, retried, err := load[types.HoldID](tx, RetryProjection, string(*p.Result)); err != nil || retried {
+			return errors.Join(err, errors.New("the result has a retry wait"))
+		}
+		if err := put(tx, RetryProjection, string(*p.Result), h.ID); err != nil {
+			return err
 		}
 	}
-	if _, used, err := load[types.NodeID](tx, HoldProjection, string(h.ID)); err != nil || used {
+	if _, used, err := load[heldBy](tx, HoldProjection, string(h.ID)); err != nil || used {
 		return errors.Join(err, errors.New("the hold id is taken"))
 	}
 	rec.State.State, rec.State.Holds = types.NodeStateStateHeld, append(rec.State.Holds, h)
-	if err := put(tx, HoldProjection, string(h.ID), p.Node); err != nil {
+	if err := put(tx, HoldProjection, string(h.ID), heldBy{Node: p.Node, Result: p.Result}); err != nil {
 		return err
 	}
 	return putNode(tx, rec)
@@ -122,8 +206,7 @@ func holdRaised(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldRaised) err
 
 func holdPaged(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldPaged) error {
 	rec, err := nodeOf(tx, ev, p.Node)
-	reg, rerr := registry()
-	if err = errors.Join(err, rerr); err != nil || ev.Kind != HoldPaged || ev.Subject != string(p.Node) {
+	if err != nil || ev.Kind != HoldPaged || ev.Subject != string(p.Node) {
 		return errors.Join(err, errors.New("a page is under its node"))
 	}
 	i := slices.IndexFunc(rec.State.Holds, func(h types.NodeHold) bool { return h.ID == p.Hold })
@@ -131,30 +214,25 @@ func holdPaged(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldPaged) error
 		return fmt.Errorf("node %s does not hold %s", p.Node, p.Hold)
 	}
 	h := &rec.State.Holds[i]
-	escalate := reg.Holds[h.Hold].EscalateTo
+	same := func(o types.Owner, ref *string, want types.Owner, wantRef *string) bool {
+		return o == want && (ref == nil) == (wantRef == nil) && (ref == nil || *ref == *wantRef)
+	}
 	switch {
-	case p.Owner == h.Owner && (p.OwnerRef == nil) == (h.OwnerRef == nil) && (p.OwnerRef == nil || *p.OwnerRef == *h.OwnerRef):
-	case escalate != nil && p.Owner == *escalate:
+	case h.PageAfter == nil:
+		return errors.New("a hold with no page_after is never paged")
+	case h.EscalateTo != nil && same(p.Owner, p.OwnerRef, *h.EscalateTo, h.EscalateRef):
+		if !due(h.Since, *h.PageAfter, ev.At) {
+			return errors.New("an escalation comes after since + page_after")
+		}
 		h.Owner, h.OwnerRef = p.Owner, p.OwnerRef
-	default:
-		return errors.New("a page goes to the hold's owner or to the registry's escalate_to")
+	case !same(p.Owner, p.OwnerRef, h.Owner, h.OwnerRef):
+		return errors.New("a page goes to the hold's owner, or after page_after to its escalation")
+	}
+	if slices.ContainsFunc(h.Pages, func(x types.NodeHoldPagesItem) bool { return same(x.Owner, x.OwnerRef, p.Owner, p.OwnerRef) }) {
+		return errors.New("the owner was paged for this signal")
 	}
 	h.Pages = append(h.Pages, types.NodeHoldPagesItem{At: types.Time(ev.At), Owner: p.Owner, OwnerRef: p.OwnerRef, Channel: p.Channel, SignalInstance: h.SignalInstance})
 	return putNode(tx, rec)
-}
-
-// takeHold removes hold id from rec and returns it.
-func takeHold(rec *nodeRecord, id types.HoldID) (types.NodeHold, error) {
-	i := slices.IndexFunc(rec.State.Holds, func(h types.NodeHold) bool { return h.ID == id })
-	if i < 0 {
-		return types.NodeHold{}, fmt.Errorf("node %s does not hold %s", rec.Recorded.Node.ID, id)
-	}
-	h := rec.State.Holds[i]
-	rec.State.Holds = slices.Delete(rec.State.Holds, i, i+1)
-	if len(rec.State.Holds) == 0 {
-		settle(&rec.State)
-	}
-	return h, nil
 }
 
 func holdCleared(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldCleared) error {
@@ -162,25 +240,26 @@ func holdCleared(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldCleared) e
 	if err != nil || ev.Kind != HoldCleared || ev.Subject != string(p.Node) {
 		return errors.Join(err, errors.New("a hold is cleared under its node"))
 	}
-	if _, err := takeHold(&rec, p.Hold); err != nil {
-		return err
+	i := slices.IndexFunc(rec.State.Holds, func(h types.NodeHold) bool { return h.ID == p.Hold })
+	if i < 0 {
+		return fmt.Errorf("node %s does not hold %s", p.Node, p.Hold)
 	}
+	switch c := p.Cause.Variant.(type) {
+	case *types.Signalled:
+		if c.SignalInstance != rec.State.Holds[i].SignalInstance {
+			return errors.New("a signal clears the hold it is the signal of")
+		}
+	case *types.Retired: // invalidated: a retry wait of a key the node no longer holds
+		by, _, err := load[heldBy](tx, HoldProjection, string(p.Hold))
+		if err != nil || by.Result == nil {
+			return errors.Join(err, errors.New("only a retry wait is retired as invalidated"))
+		}
+		r, _, err := load[types.ResultRecorded](tx, ResultProjection, string(*by.Result))
+		if err != nil || r.Result.Computation == rec.State.Key.Key {
+			return errors.Join(err, errors.New("a retry wait of the current key is not retired"))
+		}
+	}
+	rec.State.Holds = slices.Delete(rec.State.Holds, i, i+1)
+	settle(&rec.State)
 	return putNode(tx, rec)
-}
-
-func holdTransferred(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldTransferred) error {
-	from, err := nodeOf(tx, ev, p.From)
-	to, err2 := nodeOf(tx, ev, p.To)
-	if err = errors.Join(err, err2); err != nil || ev.Kind != HoldTransferred || ev.Subject != string(p.To) || from.Recorded.Task != to.Recorded.Task {
-		return errors.Join(err, errors.New("a hold moves under its new node, to another node of its task"))
-	}
-	h, err := takeHold(&from, p.Hold)
-	if err != nil {
-		return err
-	}
-	to.State.State, to.State.Holds = types.NodeStateStateHeld, append(to.State.Holds, h)
-	if err := errors.Join(putNode(tx, from), put(tx, HoldProjection, string(p.Hold), p.To)); err != nil {
-		return err
-	}
-	return putNode(tx, to)
 }

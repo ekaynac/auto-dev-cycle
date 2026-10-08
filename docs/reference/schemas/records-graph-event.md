@@ -4,9 +4,9 @@
 
 `schemas/records/graph-event.json`
 
-The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, node.hold_transferred/v1 under the receiving node's, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 
-A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [HoldTransferred](#holdtransferred) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected).
+A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected).
 
 ## Definitions
 
@@ -68,7 +68,7 @@ No other fields are allowed.
 
 ### HoldRaised
 
-An external wait on the node (02 "Hold reasons and resume signals"): raised at the event's time, by its registry owner, with no page yet. A hold with a reason is the retry wait of the node's could_not_run result (13 [G2]), and its reason's registry entry names it.
+An external wait on the node (02 "Hold reasons and resume signals"): raised at the event's time with no page yet. result is set exactly when the hold has a reason: it is the retry wait of the node's could_not_run result of its current key (13 [G2]), one hold per result.
 
 #### Fields of HoldRaised
 
@@ -77,12 +77,13 @@ An external wait on the node (02 "Hold reasons and resume signals"): raised at t
 | `type` | yes | `hold_raised` |  |
 | `node` | yes | [NodeID](common-defs.md#nodeid) |  |
 | `hold` | yes | [node-hold](records-node-hold.md) |  |
+| `result` | yes | null or [ResultID](common-defs.md#resultid) |  |
 
 No other fields are allowed.
 
 ### HoldPaged
 
-A page of the hold at the event's time, for its signal instance: to its owner, or to the registry's escalate_to, which then owns it.
+A page of the hold at the event's time, for its signal instance, once per owner and owner_ref: to its owner, or, from page_after on, to its recorded escalate_to, which then owns it. Repeating a page to the same owner is the pager's to suppress (02: by hold id and signal instance).
 
 #### Fields of HoldPaged
 
@@ -99,7 +100,7 @@ No other fields are allowed.
 
 ### HoldCleared
 
-The hold's signal arrived, or its wait no longer applies: the hold leaves the node.
+The hold leaves the node, with its cause: its signal arrived (the hold's signal instance), or it was retired with a reason (invalidated: a retry wait of an old key). Hold transfer to a replacement is G6b's supersession, in one transaction with it.
 
 #### Fields of HoldCleared
 
@@ -108,21 +109,29 @@ The hold's signal arrived, or its wait no longer applies: the hold leaves the no
 | `type` | yes | `hold_cleared` |  |
 | `node` | yes | [NodeID](common-defs.md#nodeid) |  |
 | `hold` | yes | [HoldID](common-defs.md#holdid) |  |
+| `cause` | yes | [Signalled](#signalled) or [Retired](#retired) |  |
 
 No other fields are allowed.
 
-### HoldTransferred
+### Signalled
 
-A hold moves to another node of the task (13 supersession) with its id, signal instance, owner and paging history.
-
-#### Fields of HoldTransferred
+#### Fields of Signalled
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `type` | yes | `hold_transferred` |  |
-| `from` | yes | [NodeID](common-defs.md#nodeid) |  |
-| `to` | yes | [NodeID](common-defs.md#nodeid) |  |
-| `hold` | yes | [HoldID](common-defs.md#holdid) |  |
+| `type` | yes | `signal` |  |
+| `signal_instance` | yes | string (minLength `1`, maxLength `1024`) |  |
+
+No other fields are allowed.
+
+### Retired
+
+#### Fields of Retired
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | `retired` |  |
+| `reason` | yes | one of `invalidated` |  |
 
 No other fields are allowed.
 
