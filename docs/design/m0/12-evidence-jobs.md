@@ -50,7 +50,8 @@ field is in the params digest and so in the node's key (13).
 - **The grant is never null**, because every run acts outside the sandbox. It exists before the node is recorded. The
   action kind that issues it is #187.
 - **`subject_input`** names a declared result input. `internal/graph` checks that the input exists, and E2 checks its
-  result against the contract's `subject_type`.
+  result against the contract's `subject_type`. In M0 the subject is a result of one of 13's result kinds (13:42), so it
+  is a `tree` subject. `environment` and `call` subjects need a result kind that M1 brings with deploy.
 - **Limits.** The deadline is never zero. `internal/graph` refuses a per-demand cap above the per-subject cap, and an
   evidence node that does not lease an `evidence_target`.
 - **Restore.** A required restore names its procedure. One that is not required names none: the instrument leaves
@@ -94,10 +95,16 @@ field is in the params digest and so in the node's key (13).
     request records both;
   - the identity, an alias of a recorded identity in the project profile, never the remote principal. Recovery
     resolves the alias through the profile when it reconciles, and an alias that no longer resolves leaves the effect
-    uncertain;
+    uncertain. The profile has no identities field yet. M1 adds it (#191);
   - the session tags assigned before egress;
   - the end of the deadline.
 - `remote_process` is not idempotent at its target, so it is never retried.
+- E2 validates the kept request (#190):
+  - against its schema;
+  - that its target equals the intent's;
+  - that the (attempt, run) pair is recorded.
+
+  E2 also adds the restore procedure to the instrument contract.
 
 ## What M0 delivers
 
