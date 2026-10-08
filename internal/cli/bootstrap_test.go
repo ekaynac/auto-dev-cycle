@@ -19,6 +19,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/daemon"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 )
 
 // adcd runs an in-process daemon on a fresh state directory (short, so its
@@ -120,7 +121,7 @@ func TestAdminBootstrapTokenWriteFails(t *testing.T) {
 // A malformed bootstrap response that carries a credential never reaches
 // the terminal: the validation error is fixed text.
 func TestAdminBootstrapMalformedResponse(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testguard.Home(t)
 	dir, err := os.MkdirTemp("", "adc")
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +153,7 @@ func TestAdminBootstrapMalformedResponse(t *testing.T) {
 // The secret file must be a regular file: a FIFO is refused at once (never
 // waited on), and so are a symlink and a directory.
 func TestAdminBootstrapSecretFile(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testguard.Home(t)
 	// The link's target holds a valid secret: following it would get as
 	// far as the transport.
 	s, _, err := identity.NewBootstrapSecret()

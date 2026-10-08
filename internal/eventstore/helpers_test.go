@@ -11,6 +11,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 )
 
 // sysActor is the system actor of the test events.
@@ -68,7 +69,7 @@ func (e *env) close() {
 // creates it 0700 (t.TempDir itself may be group-accessible).
 func stateDir(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(t.TempDir(), "state")
+	return testguard.StateDir(t)
 }
 
 func newID(t *testing.T, prefix string) string {

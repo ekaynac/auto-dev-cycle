@@ -27,21 +27,29 @@ sandbox in which the real home and state do not exist**:
   - a network connection fails.
 
   A broken sandbox fails these tests against the decoy and can never damage the real home.
-- `internal/testguard` remains as a second, in-process layer (temp roots for the store and blob store, a fake clock).
-  It is defence in depth, not the boundary.
+- `internal/testguard` remains as a second, in-process layer: temp roots for the store and blob store and a temporary
+  HOME, each refused in a real home or outside the temp directory; the fake clock; the fake registry. It is defence in
+  depth, not the boundary.
 
 ## Contract-faithful fakes
 
-| Fake | Faithful to | Lives in |
-|---|---|---|
-| Fake adapter | the full JSON-RPC contract: cumulative patches, streaming gaps, sub-calls, usage, errors, stale submissions, unsafe-output modes | `adapters/fake` |
-| Fake forge | push with expected-base, change requests, merge, ambiguous remote outcomes, external base moves | `internal/testguard/fakes/forge` |
-| Fake sandbox | three phases, artifact-before-teardown, evidence manifest, abrupt loss | `…/fakes/sandbox` |
-| Fake provider | quota headers, 429 with reset, unknown quota, **402 credit exhaustion mid-call**, separate rate window and balance, degenerate output, single-chunk tool arguments | `…/fakes/provider` |
-| Fake clock | deadlines, resets, TTLs, challenge expiry | `…/fakes/clock` |
+| Fake | Faithful to | Lives in | M0 scope |
+|---|---|---|---|
+| Fake adapter | the full JSON-RPC contract: cumulative patches, streaming gaps, sub-calls, usage, errors, stale submissions, unsafe-output modes | `adapters/fake` | built: every scenario in `adapters/fake/src/fake.ts` |
+| Fake forge | push with expected-base, change requests, merge, ambiguous remote outcomes, external base moves | `internal/testguard/fakes/forge` | expected-base push and an external base move (G7b) |
+| Fake sandbox | three phases, artifact-before-teardown, evidence manifest, abrupt loss | `…/fakes/sandbox` | declared facts and restore (G8) |
+| Fake provider | quota headers, 429 with reset, unknown quota, **402 credit exhaustion mid-call**, separate rate window and balance, degenerate output, single-chunk tool arguments | `…/fakes/provider` | none here: the 402 mid-call is scripted in `inproc` peers (15 L3); the rest is M2 |
+| Fake clock | deadlines, resets, TTLs, challenge expiry | `…/fakes/clock` | built: a fixed or wall-following time the test sets and moves; no timers |
+| Fake executor registry | the controller's executor registry: the model family a roster derives, never a caller's (13) | `…/fakes/executors` | built: executor id to model family, unregistered is `unknown` (G6a) |
 
 When a real implementation is found to differ from its fake, the fake is fixed first, with a test that fails on the
 old fake.
+
+The M0 scope column records 15 D4: a fake is built only as far as an M0 fixture consumes it, and the full surface
+lands with its real interface. The fake registry (`internal/testguard/fakes`) lists every fake, these and the ones
+that live beside their subject (`inproc`, `fakesched`, `fakeauthn`). Its tests refuse a fake directory it does not
+list, a built entry whose directory is missing or an unbuilt one whose directory exists, and a row of this table
+whose M0 scope differs from the registry's.
 
 ## M0 exercises real validators, not scripted answers [M15]
 

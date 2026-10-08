@@ -111,6 +111,10 @@ func sameSubject(got, want types.Subject) error {
 	return nil
 }
 
+// UnknownFamily is the model family recorded when the controller cannot name
+// one. It never counts as independent (06 rule 3).
+const UnknownFamily = "unknown"
+
 // Independent decides whether a review receipt counts as independent of the
 // given model families (the proposer's and every contributor's): its
 // families must be known, recorded, and disjoint from them (rule 3). An
@@ -126,14 +130,14 @@ func Independent(r types.Receipt, excluded []string) error {
 	}
 	for _, f := range fams {
 		switch {
-		case f == "unknown" && !mutation.Is(mutation.UnknownFamilyIndependent):
+		case f == UnknownFamily && !mutation.Is(mutation.UnknownFamilyIndependent):
 			return &Refusal{vocab.ReasonReviewerNotIndependent, "a contributing model family is unknown"}
 		case slices.Contains(excluded, f):
 			return &Refusal{vocab.ReasonReviewerNotIndependent, "model family " + f + " also produced or contributed to the subject"}
 		}
 	}
 	for _, f := range excluded {
-		if f == "unknown" && !mutation.Is(mutation.UnknownFamilyIndependent) {
+		if f == UnknownFamily && !mutation.Is(mutation.UnknownFamilyIndependent) {
 			return &Refusal{vocab.ReasonReviewerNotIndependent, "a proposer or contributor family is unknown"}
 		}
 	}

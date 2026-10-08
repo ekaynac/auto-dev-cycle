@@ -29,6 +29,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -49,7 +50,7 @@ type commanded struct {
 
 func runCommanded(t *testing.T) *commanded {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir()) // never the user's real ~/.config/adc
+	testguard.Home(t) // never the user's real ~/.config/adc
 	c := &commanded{dir: shortDir(t), logs: &logBuffer{}}
 	w := seed(t, c.dir, daemonProjection(t))
 	actor := func(kind types.ActorKind, by types.ActorID) types.Actor {

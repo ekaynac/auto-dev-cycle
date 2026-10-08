@@ -14,7 +14,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -23,6 +22,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/clock"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -90,15 +90,14 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 	sys.CreatedBy, sup.CreatedBy = sys.ID, op.ID
 	op.CreatedBy = sys.ID
 	now := time.Now().UTC()
-	// The server's clock runs ahead of the wall clock by skew (an expiry).
-	var skew atomic.Int64
-	clock := func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
+	// The server's clock follows the wall clock; advancing it is an expiry.
+	clk := clock.Wall()
 	// A grant is valid from its creation (authority.CreateGrant).
 	newGrant := func() (types.Grant, error) {
 		grt, err := ids.New("grt")
 		return types.Grant{ID: types.GrantID(grt), Actor: sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{projectA}},
 			Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{"fixture"}},
-			ExpiresAt:             types.Time(clock().UTC().Add(time.Hour).Format(time.RFC3339Nano)),
+			ExpiresAt:             types.Time(clk.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)),
 			ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op.ID}, err
 	}
 	g, err := newGrant()
@@ -133,7 +132,7 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 	}
 	// Over HTTP/2 with TLS, and idling several polls before each change:
 	// an idle stream holds no write deadline that could reset it.
-	handler := api.Events{Store: s, Now: clock, Poll: 100 * time.Millisecond, Gate: api.Unlimited()}
+	handler := api.Events{Store: s, Now: clk.Now, Poll: 100 * time.Millisecond, Gate: api.Unlimited()}
 	idle := func() { time.Sleep(5 * handler.Poll) }
 	srv := httptest.NewUnstartedServer(handler)
 	srv.EnableHTTP2 = true
@@ -236,7 +235,7 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 		events int
 	}{
 		{"a revocation mid-delivery", revoke, false, 0, 3},
-		{"an expiry mid-delivery", func(types.Grant) func() { return func() { skew.Add(int64(2 * time.Hour)) } }, false, 0, 3},
+		{"an expiry mid-delivery", func(types.Grant) func() { return func() { clk.Advance(2 * time.Hour) } }, false, 0, 3},
 		{"a slow write through a revocation", revoke, false, 3 * handler.Poll / 4, 1},
 		{"a stalled client through a revocation", revoke, true, 0, 3},
 	} {

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 )
 
 // home makes ~/.config/adc (0700) in a temp home, with a token file of mode
@@ -139,7 +140,7 @@ func TestLoadTokenRefusesAnotherOwner(t *testing.T) {
 
 func TestTokenEnv(t *testing.T) {
 	tok := fakeToken(t)
-	t.Setenv("HOME", t.TempDir()) // never the user's real ~/.config/adc
+	testguard.Home(t) // never the user's real ~/.config/adc
 	env := map[string]string{}
 	getenv := func(k string) string { return env[k] }
 	if _, err := Token(getenv); !errors.Is(err, ErrNoToken) {
