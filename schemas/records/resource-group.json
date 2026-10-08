@@ -8,7 +8,7 @@
   "required": ["id", "kind", "capacity_model", "release_rule", "members"],
   "properties": {
     "id": {"$ref": "../common/defs.json#/$defs/ResourceGroupID"},
-    "kind": {"enum": ["account_quota", "broker_balance", "gpu", "concurrency", "controller_gate", "controller_integration", "evidence_target"]},
+    "kind": {"$ref": "#/$defs/ResourceGroupKind"},
     "capacity_model": {
       "type": "object",
       "additionalProperties": false,
@@ -34,6 +34,7 @@
     {"if": {"properties": {"kind": {"const": "evidence_target"}}}, "then": {"properties": {"release_rule": {"const": "on_restore_verified"}}}, "else": {"properties": {"release_rule": {"not": {"const": "on_restore_verified"}}}}}
   ],
   "$defs": {
+    "ResourceGroupKind": {"enum": ["account_quota", "broker_balance", "gpu", "concurrency", "controller_gate", "controller_integration", "evidence_target"]},
     "CapacityUnit": {
       "description": "Every amount is an integer: money in millionths of a US dollar, GPU time in seconds.",
       "enum": ["requests", "tokens", "usd_micros", "slots", "gpu_seconds"]

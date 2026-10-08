@@ -4232,5 +4232,3990 @@
    "untrustworthy": true
   },
   "valid": false
+ },
+ {
+  "name": "node: valid review with a result and an answer input",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: a first-round controller node with no inputs",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "gate",
+   "definition_version": "1",
+   "inputs": [],
+   "params": {},
+   "requires": {
+    "role": null,
+    "capability": null,
+    "resources": [
+     "controller_gate"
+    ]
+   },
+   "effect": null,
+   "round": 1
+  },
+  "valid": true
+ },
+ {
+  "name": "node: a merge node with its effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "merge",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {},
+   "requires": {
+    "role": null,
+    "capability": null,
+    "resources": [
+     "controller_integration"
+    ]
+   },
+   "effect": "merge",
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: a deploy node with its effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "deploy",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "deploy",
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: a record node with a notification effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "record",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "notification",
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: a record node with no effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "record",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind plan",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "plan",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind build",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "build",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind accept",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "accept",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind gate",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "gate",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind runtime_verify",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "runtime_verify",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind integration",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "integration",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind evidence",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "evidence",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind review",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind carry_over",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "carry_over",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind closure",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "closure",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind merge",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "merge",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "merge",
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind deploy",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "deploy",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "deploy",
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind record",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "record",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: kind phase_gate",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "phase_gate",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: resource kind account_quota",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: resource kind broker_balance",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "broker_balance"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: resource kind gpu",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "gpu"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: resource kind concurrency",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: resource kind controller_gate",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "controller_gate"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: resource kind controller_integration",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "controller_integration"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: resource kind evidence_target",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "evidence_target"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: the largest round",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 9007199254740991
+  },
+  "valid": true
+ },
+ {
+  "name": "node: a 128-character definition version",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "node: missing id",
+  "schema": "records/node",
+  "doc": {
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: missing kind",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: missing definition_version",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: missing inputs",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: missing params",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: missing requires",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: missing effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: missing round",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node: an extra field",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2,
+   "generation": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a boolean ok field",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2,
+   "ok": true
+  },
+  "valid": false
+ },
+ {
+  "name": "node: id with the wrong prefix",
+  "schema": "records/node",
+  "doc": {
+   "id": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: unknown kind",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "lint",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: empty definition version",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a 129-character definition version",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: inputs not an array",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": {
+    "name": "gate",
+    "source": {
+     "type": "result",
+     "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+     "result_kind": "gate_result"
+    }
+   },
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: an invalid input",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate"
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: params not an object",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": [],
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: round 0",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 0
+  },
+  "valid": false
+ },
+ {
+  "name": "node: round past 2^53-1",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 9007199254740992
+  },
+  "valid": false
+ },
+ {
+  "name": "node: round not an integer",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 1.5
+  },
+  "valid": false
+ },
+ {
+  "name": "node: not an object",
+  "schema": "records/node",
+  "doc": [
+   {
+    "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+    "kind": "review",
+    "definition_version": "1",
+    "inputs": [
+     {
+      "name": "gate",
+      "source": {
+       "type": "result",
+       "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+       "result_kind": "gate_result"
+      }
+     },
+     {
+      "name": "ruling",
+      "source": {
+       "type": "answer",
+       "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+       "revision": 2
+      }
+     }
+    ],
+    "params": {
+     "roster": [
+      {
+       "executor": "exe_x",
+       "family": "claude"
+      }
+     ]
+    },
+    "requires": {
+     "role": "reviewer",
+     "capability": "read-only",
+     "resources": [
+      "account_quota",
+      "concurrency"
+     ]
+    },
+    "effect": null,
+    "round": 2
+   }
+  ],
+  "valid": false
+ },
+ {
+  "name": "node: round as a string",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": "2"
+  },
+  "valid": false
+ },
+ {
+  "name": "node: definition version not a string",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": 1,
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: requires not an object",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": "reviewer",
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: effect with capitals",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "Deploy",
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a merge node without an effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "merge",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a merge node with another effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "merge",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "deploy",
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a deploy node without an effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "deploy",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a deploy node with another effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "deploy",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "merge",
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: requires missing role",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: requires missing capability",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: requires missing resources",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only"
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: requires with an extra field",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ],
+    "executor": "exe_x"
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: role with capitals",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "Reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: capability with capitals",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "ReadOnly",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a role without a capability",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": null,
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a capability without a role",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": null,
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: resources not an array",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": "gpu"
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a gate node with a merge effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "gate",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "merge",
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a build node with a deploy effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "build",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "deploy",
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a plan node with a notification effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "plan",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "notification",
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a review node with a merge effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "merge",
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a record node with a deploy effect",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "record",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "deploy",
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: the literal effect none",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "none",
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a record node with the literal effect none",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "record",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": "none",
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: unknown resource kind",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "disk"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a duplicate resource kind",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "gpu",
+     "gpu"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: a result input",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "gate_result"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: an answer input",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "answer",
+    "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+    "revision": 2
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: revision 1",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "answer",
+    "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+    "revision": 1
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: result kind plan",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "plan"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: result kind patch",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "patch"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: result kind partial_patch",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "partial_patch"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: result kind tree",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "tree"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: result kind package",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "package"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: result kind gate_result",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "gate_result"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: result kind review",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "review"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: result kind evidence",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "evidence"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: result kind carry_over_attestation",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "carry_over_attestation"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: result kind merge_result",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "merge_result"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: the largest revision",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "answer",
+    "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+    "revision": 9007199254740991
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "input-spec: missing name",
+  "schema": "records/input-spec",
+  "doc": {
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "gate_result"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: missing source",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate"
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: an extra field",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "gate_result"
+   },
+   "optional": true
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: name with capitals",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "Gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "gate_result"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: unknown source type",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "approval",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "gate_result"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: result source missing type",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "gate_result"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: result source missing producer",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "result_kind": "gate_result"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: result source missing result_kind",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: answer source missing type",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+    "revision": 2
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: answer source missing owed_input",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "answer",
+    "revision": 2
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: answer source missing revision",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "answer",
+    "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: producer with the wrong prefix",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "result_kind": "gate_result"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: unknown result kind",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "verdict"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: owed input with the wrong prefix",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "answer",
+    "owed_input": "att_01m3250vnfeyrv67x6w0ddqr6a",
+    "revision": 2
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: not an object",
+  "schema": "records/input-spec",
+  "doc": [
+   {
+    "name": "gate",
+    "source": {
+     "type": "result",
+     "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+     "result_kind": "gate_result"
+    }
+   }
+  ],
+  "valid": false
+ },
+ {
+  "name": "input-spec: source not an object",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": "result"
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: revision not an integer",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "answer",
+    "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+    "revision": 1.5
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: revision as a string",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "answer",
+    "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+    "revision": "2"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: an answer source with an unknown type",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "approval",
+    "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+    "revision": 2
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: revision 0",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "answer",
+    "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+    "revision": 0
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: revision past 2^53-1",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "answer",
+    "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+    "revision": 9007199254740992
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: a result source with an answer's field",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "gate",
+   "source": {
+    "type": "result",
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+    "result_kind": "gate_result",
+    "revision": 1
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "input-spec: an answer source with a result's field",
+  "schema": "records/input-spec",
+  "doc": {
+   "name": "ruling",
+   "source": {
+    "type": "answer",
+    "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+    "revision": 2,
+    "producer": "nod_01m3250v57ft7aehkqwq0yrq3n"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "computation-key: valid",
+  "schema": "records/computation-key",
+  "doc": {
+   "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 1
+  },
+  "valid": true
+ },
+ {
+  "name": "computation-key: the largest generation",
+  "schema": "records/computation-key",
+  "doc": {
+   "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 9007199254740991
+  },
+  "valid": true
+ },
+ {
+  "name": "computation-key: missing key",
+  "schema": "records/computation-key",
+  "doc": {
+   "generation": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "computation-key: missing generation",
+  "schema": "records/computation-key",
+  "doc": {
+   "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "valid": false
+ },
+ {
+  "name": "computation-key: an extra field",
+  "schema": "records/computation-key",
+  "doc": {
+   "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 1,
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "computation-key: a key that is not a digest",
+  "schema": "records/computation-key",
+  "doc": {
+   "key": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+   "generation": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "computation-key: not an object",
+  "schema": "records/computation-key",
+  "doc": [
+   {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   }
+  ],
+  "valid": false
+ },
+ {
+  "name": "computation-key: generation not an integer",
+  "schema": "records/computation-key",
+  "doc": {
+   "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 1.5
+  },
+  "valid": false
+ },
+ {
+  "name": "computation-key: generation as a string",
+  "schema": "records/computation-key",
+  "doc": {
+   "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": "1"
+  },
+  "valid": false
+ },
+ {
+  "name": "computation-key: generation 0",
+  "schema": "records/computation-key",
+  "doc": {
+   "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 0
+  },
+  "valid": false
+ },
+ {
+  "name": "computation-key: generation past 2^53-1",
+  "schema": "records/computation-key",
+  "doc": {
+   "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "generation": 9007199254740992
+  },
+  "valid": false
+ },
+ {
+  "name": "resource-group: valid",
+  "schema": "records/resource-group",
+  "doc": {
+   "id": "rg_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "account_quota",
+   "capacity_model": {
+    "unit": "tokens",
+    "limit": 1000,
+    "window": "PT1H",
+    "reset_at": null,
+    "quota_state": "known"
+   },
+   "release_rule": "on_window_reset",
+   "members": [
+    "exe_01m3250v57ft7aehkqwq0yrq3n"
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "resource-group: unknown kind",
+  "schema": "records/resource-group",
+  "doc": {
+   "id": "rg_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "disk",
+   "capacity_model": {
+    "unit": "tokens",
+    "limit": 1000,
+    "window": "PT1H",
+    "reset_at": null,
+    "quota_state": "known"
+   },
+   "release_rule": "on_window_reset",
+   "members": [
+    "exe_01m3250v57ft7aehkqwq0yrq3n"
+   ]
+  },
+  "valid": false
  }
 ]

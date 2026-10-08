@@ -4,18 +4,6 @@
 
 package types
 
-type ResourceGroupKind string
-
-const (
-	ResourceGroupKindAccountQuota          ResourceGroupKind = "account_quota"
-	ResourceGroupKindBrokerBalance         ResourceGroupKind = "broker_balance"
-	ResourceGroupKindGpu                   ResourceGroupKind = "gpu"
-	ResourceGroupKindConcurrency           ResourceGroupKind = "concurrency"
-	ResourceGroupKindControllerGate        ResourceGroupKind = "controller_gate"
-	ResourceGroupKindControllerIntegration ResourceGroupKind = "controller_integration"
-	ResourceGroupKindEvidenceTarget        ResourceGroupKind = "evidence_target"
-)
-
 type ResourceGroupCapacityModelQuotaState string
 
 const (
@@ -52,6 +40,18 @@ type ResourceGroup struct {
 	ReleaseRule ResourceGroupReleaseRule `json:"release_rule"`
 	Members     []ExecutorID             `json:"members"`
 }
+
+type ResourceGroupKind string
+
+const (
+	ResourceGroupKindAccountQuota          ResourceGroupKind = "account_quota"
+	ResourceGroupKindBrokerBalance         ResourceGroupKind = "broker_balance"
+	ResourceGroupKindGpu                   ResourceGroupKind = "gpu"
+	ResourceGroupKindConcurrency           ResourceGroupKind = "concurrency"
+	ResourceGroupKindControllerGate        ResourceGroupKind = "controller_gate"
+	ResourceGroupKindControllerIntegration ResourceGroupKind = "controller_integration"
+	ResourceGroupKindEvidenceTarget        ResourceGroupKind = "evidence_target"
+)
 
 // CapacityUnit: Every amount is an integer: money in millionths of a US dollar, GPU time in seconds.
 type CapacityUnit string
