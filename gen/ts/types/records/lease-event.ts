@@ -46,7 +46,7 @@ export type LeaseEvent = {
    */
   result: null | SubmittedResult;
   /**
-   * lease.granted only: the lease's reserved groups that are evidence targets, recorded at the grant so a rebuild reads them from the log, never from configuration. internal/capacity admits a grant only with exactly the configured targets; internal/lease holds a lease with one to the restore table.
+   * lease.granted only: the lease's reserved groups that are evidence targets, recorded at the grant so a rebuild reads them from the log, never from configuration. Events written before targets were wired lack it; readers take that as none (03 rule 4). internal/capacity admits a grant only with exactly the configured targets; internal/lease holds a lease with one to the restore table.
    */
   targets: null | string[];
 };

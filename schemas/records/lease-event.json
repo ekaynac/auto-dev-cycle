@@ -24,7 +24,7 @@
     "successor": {"description": "attempt.superseded only: the replacement attempt, started with the next token.", "oneOf": [{"type": "null"}, {"$ref": "attempt.json"}]},
     "result": {"description": "attempt.result_submitted only: the result the controller admitted, so the log itself identifies it.", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/SubmittedResult"}]},
     "targets": {
-      "description": "lease.granted only: the lease's reserved groups that are evidence targets, recorded at the grant so a rebuild reads them from the log, never from configuration. internal/capacity admits a grant only with exactly the configured targets; internal/lease holds a lease with one to the restore table.",
+      "description": "lease.granted only: the lease's reserved groups that are evidence targets, recorded at the grant so a rebuild reads them from the log, never from configuration. Events written before targets were wired lack it; readers take that as none (03 rule 4). internal/capacity admits a grant only with exactly the configured targets; internal/lease holds a lease with one to the restore table.",
       "oneOf": [{"type": "null"}, {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/ResourceGroupID"}}]
     }
   },

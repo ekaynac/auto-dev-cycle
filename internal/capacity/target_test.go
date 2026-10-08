@@ -144,8 +144,9 @@ func checkGroups(t *testing.T, w *world, groups ...types.ResourceGroup) {
 		gs   []types.ResourceGroup
 		want string
 	}{
-		"a removed group":      {groups[1:], string(quota) + ", which lease"},
-		"a reclassified group": {[]types.ResourceGroup{reclassified, groups[1]}, string(quota) + " changed kind"},
+		"a removed group":       {groups[1:], string(quota) + ", which lease"},
+		"a removed plain group": {groups[:1], string(gpu) + ", which lease"},
+		"a reclassified group":  {[]types.ResourceGroup{reclassified, groups[1]}, string(quota) + " changed kind"},
 	} {
 		if err := check(c.gs...); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", name, err)
@@ -158,5 +159,44 @@ func checkGroups(t *testing.T, w *world, groups ...types.ResourceGroup) {
 	}
 	if check(groups...) == nil {
 		t.Fatal("an unreadable grant record was read as matching")
+	}
+}
+
+// A log written before targets were wired, whose lease.granted carries no
+// targets, replays without drift under this build: its grant record is
+// `{}`, as it always was.
+func TestLegacyGrantReplaysWithoutDrift(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	g := grp(gpu, types.ResourceGroupKindConcurrency, types.CapacityUnitSlots, lim(2))
+	legacy := lease.Kinds()
+	legacy[lease.Granted+"/v1"] = eventstore.Kind{Schema: "common/defs"} // the store as main wrote it
+	w := openKinds(t, dir, hooked, legacy, g)
+	id := w.requested(reserve(gpu, 1, types.CapacityUnitSlots))
+	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		evs, err := lease.ChangeLease(tx, id, 1, granted, w.holds)
+		for i := range evs { // the payload as main wrote it: no targets
+			var p map[string]any
+			_ = json.Unmarshal(evs[i].Payload, &p)
+			delete(p, "targets")
+			evs[i].Payload, _ = json.Marshal(p)
+		}
+		return evs, err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.close()
+	w = openAt(t, dir, hooked, g)
+	if diffs, err := w.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %v", diffs, err)
+	}
+	var raw []byte
+	if err := w.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
+		raw, _, err = tx.Get(capacity.GrantedProjection, string(id))
+		return err
+	}); err != nil || string(raw) != `{}` {
+		t.Fatalf("a grant of no target records %s (%v), want {}", raw, err)
+	}
+	if err := w.change(id, 2, lease.LeaseEvent{Kind: lease.Released}); err == nil {
+		t.Log("released") // the legacy lease still moves under this build
 	}
 }

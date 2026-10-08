@@ -89,11 +89,26 @@ func NewReservations(groups []types.ResourceGroup) (Reservations, error) {
 	return r, nil
 }
 
-// granted is a lease capacity granted: the groups it reserved, and those
-// its grant recorded as evidence targets.
+// granted is a lease capacity granted: the groups its grant recorded as
+// evidence targets. A grant with none is `{}`, as before targets were
+// wired, so an existing store's projection replays byte for byte.
 type granted struct {
-	Groups  []types.ResourceGroupID `json:"groups,omitempty"`
 	Targets []types.ResourceGroupID `json:"targets,omitempty"`
+}
+
+// ErrGroupChanged is CheckGroups' refusal: a group a recorded grant
+// reserved is gone, or changed kind.
+type ErrGroupChanged struct {
+	Group types.ResourceGroupID
+	Lease string
+	Gone  bool
+}
+
+func (e *ErrGroupChanged) Error() string {
+	if e.Gone {
+		return fmt.Sprintf("capacity: group %s, which lease %s reserved, is not configured under an existing store", e.Group, e.Lease)
+	}
+	return fmt.Sprintf("capacity: group %s changed kind under an existing store (lease %s)", e.Group, e.Lease)
 }
 
 // RestoreFree reports whether capacity granted the lease and it holds no
@@ -108,20 +123,25 @@ func (r Reservations) RestoreFree(tx *eventstore.Tx, id types.LeaseID) (bool, er
 // recorded grant: a group it names that is gone, or whose kind changed
 // under it (an evidence target recorded as one, or the reverse). Call it,
 // as CheckHistory, on the store's projections before admitting commands.
+// The groups a lease reserved come from its own record.
 func (r Reservations) CheckGroups(tx *eventstore.Tx) error {
 	keys, err := tx.Keys(GrantedProjection, "")
 	for _, id := range keys {
 		g, _, gerr := r.granted(tx, types.LeaseID(id))
-		if gerr != nil {
-			return gerr
+		var rec struct {
+			Record types.Lease `json:"record"`
 		}
-		for _, group := range g.Groups {
-			cfg, ok := r.groups[group]
-			switch {
-			case !ok:
-				return fmt.Errorf("capacity: group %s, which lease %s reserved, is not configured under an existing store", group, id)
-			case slices.Contains(g.Targets, group) != (cfg.Kind == types.ResourceGroupKindEvidenceTarget):
-				return fmt.Errorf("capacity: group %s changed kind under an existing store (lease %s)", group, id)
+		raw, _, lerr := tx.Get(lease.LeaseProjection, id)
+		if err = errors.Join(gerr, lerr); err == nil {
+			err = json.Unmarshal(raw, &rec)
+		}
+		if err != nil {
+			return err
+		}
+		for _, res := range rec.Record.Reservations {
+			cfg, ok := r.groups[res.Group]
+			if !ok || slices.Contains(g.Targets, res.Group) != (cfg.Kind == types.ResourceGroupKindEvidenceTarget) {
+				return &ErrGroupChanged{Group: res.Group, Lease: id, Gone: !ok}
 			}
 		}
 	}
@@ -252,7 +272,6 @@ func (r Reservations) reserve(tx *eventstore.Tx, l types.Lease, targets []types.
 		if r.groups[res.Group].Kind == types.ResourceGroupKindEvidenceTarget {
 			want = append(want, res.Group)
 		}
-		rec.Groups = append(rec.Groups, res.Group)
 		if _, dup := next[res.Group]; dup {
 			return fmt.Errorf("lease %s reserves group %s twice", l.ID, res.Group)
 		}

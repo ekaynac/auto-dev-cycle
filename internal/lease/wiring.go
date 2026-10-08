@@ -349,6 +349,9 @@ func (p Projector) apply(tx *eventstore.Tx, ev eventstore.Event, pl payload) err
 	case StopRequested, Lost, Sealed, AttemptDone:
 		return p.changeAttempt(tx, pl.Transition, *pl.Attempt)
 	}
+	if pl.Lease == nil {
+		return fmt.Errorf("a %s carries no lease", pl.Transition)
+	}
 	if pl.Targets != nil { // only a grant's; records/lease-event refuses one elsewhere
 		if err := granted(tx, *pl.Lease, *pl.Targets); err != nil {
 			return err

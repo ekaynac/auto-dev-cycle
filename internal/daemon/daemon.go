@@ -126,9 +126,10 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	} else if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the event log cannot be read for verification", err)
 	}
-	// Capacity history is checked on the existing projections before any
-	// replay could manufacture it; then the log's kinds and a full replay.
-	for _, check := range []func(context.Context, *eventstore.Store) error{checkCapacityHistory, checkKinds, checkProjections} {
+	// Capacity history and groups are checked on the existing projections
+	// before any replay could manufacture them; then the log's kinds and a
+	// full replay.
+	for _, check := range []func(context.Context, *eventstore.Store) error{checkCapacityHistory, checkCapacityGroups(reservations), checkKinds, checkProjections} {
 		if err := check(ctx, store); err != nil {
 			return nil, err
 		}

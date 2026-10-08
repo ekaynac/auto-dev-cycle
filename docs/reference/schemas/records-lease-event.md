@@ -16,7 +16,7 @@ The payload of every lease and attempt transition event (docs/design/m0/05): &lt
 | `attempt` | yes | null or [attempt](records-attempt.md) | The attempt after an attempt transition (for attempt.superseded, the retired one). |
 | `successor` | yes | null or [attempt](records-attempt.md) | attempt.superseded only: the replacement attempt, started with the next token. |
 | `result` | yes | null or [SubmittedResult](#submittedresult) | attempt.result_submitted only: the result the controller admitted, so the log itself identifies it. |
-| `targets` | yes | null or array of [ResourceGroupID](common-defs.md#resourcegroupid) (unique items) | lease.granted only: the lease's reserved groups that are evidence targets, recorded at the grant so a rebuild reads them from the log, never from configuration. internal/capacity admits a grant only with exactly the configured targets; internal/lease holds a lease with one to the restore table. |
+| `targets` | yes | null or array of [ResourceGroupID](common-defs.md#resourcegroupid) (unique items) | lease.granted only: the lease's reserved groups that are evidence targets, recorded at the grant so a rebuild reads them from the log, never from configuration. Events written before targets were wired lack it; readers take that as none (03 rule 4). internal/capacity admits a grant only with exactly the configured targets; internal/lease holds a lease with one to the restore table. |
 
 No other fields are allowed.
 
