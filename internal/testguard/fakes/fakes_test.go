@@ -56,7 +56,9 @@ func fakeDirs(t *testing.T, root string) []string {
 		}
 		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
-			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "testdata" || name == "vendor" {
+			// dist/ and bin/ are build outputs: dist carries a packaged copy of adapters/fake (15 S2).
+			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "testdata" || name == "vendor" ||
+				(rel == "." && (name == "dist" || name == "bin")) {
 				return filepath.SkipDir
 			}
 			if self := filepath.ToSlash(filepath.Join(rel, name)); strings.HasPrefix(name, "fake") || strings.HasPrefix(self, Prefix) {

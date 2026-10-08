@@ -12,9 +12,10 @@ import "github.com/ekaynac/auto-dev-cycle/internal/vocab"
 // Exit is what the controller knows of an executor that did not complete.
 type Exit struct {
 	// StopRequested: the controller recorded the attempt's stop_requested
-	// (05), which closes its publication. It does not mean execution or
-	// billing ended (cancel is best effort, 09); the reason never waits for
-	// that.
+	// (05), which closes its publication, or the host stopped the attempt
+	// itself (adc-harness: a bound of its own passed, or a signal), which no
+	// recorded event shows. It does not mean execution or billing ended
+	// (cancel is best effort, 09); the reason never waits for that.
 	StopRequested bool
 	// Protocol: the adapter broke the contract, or its process ended
 	// without a result.

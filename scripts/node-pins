@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The Node runtime packaged into dist (docs/design/m0/15 D6): the official Node 22 LTS release, server platforms only.
+# Fields: platform, version, tarball, the tarball's SHA-256 as Node's signed SHASUMS256.txt.asc lists it, and the
+# SHA-256 of bin/node inside that verified tarball (re-verified on the installed file). A change to this file is a
+# security-posture PR that waits for the operator (04 §4); its PR records the signature check of SHASUMS256.txt.asc.
+linux/amd64 v22.23.3 node-v22.23.3-linux-x64.tar.xz df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de fde6a4bf8d0562f7751d1a2d6cb9b417c4cfe107bbcb0aa3e9a24e125e348f48
+linux/arm64 v22.23.3 node-v22.23.3-linux-arm64.tar.xz a44aeb94849a299b22df10b9e622ec2f605c2183501bc40590705131de7c740f d09e299258c24f7cdf6f5d5ec185e3a56512b27a697113735dac909f1cac7b8d
