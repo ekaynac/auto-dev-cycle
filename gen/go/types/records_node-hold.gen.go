@@ -5,13 +5,15 @@
 package types
 
 type NodeHoldPagesItem struct {
-	At             Time    `json:"at"`
-	Owner          Owner   `json:"owner"`
-	OwnerRef       *string `json:"owner_ref"`
-	SignalInstance string  `json:"signal_instance"`
+	At       Time    `json:"at"`
+	Owner    Owner   `json:"owner"`
+	OwnerRef *string `json:"owner_ref"`
+	// Where the owner was paged, when the pager reports it; null otherwise.
+	Channel        *Name  `json:"channel"`
+	SignalInstance string `json:"signal_instance"`
 }
 
-// NodeHold: A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; 13): approvals, quotas, human acts, probes. Internal inputs wait structurally and need no hold (13). A replacement node keeps a transferred hold's id, signal instance, owner and paging history, so escalation never restarts (13 supersession). Lease holds stay on the lease (05). owner_ref is set exactly for the owner kinds that name a concrete owner: the grant holder's actor id, the named owner, or the environment owner the profile names.
+// NodeHold: A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; 13): approvals, quotas, human acts, probes. Internal inputs wait structurally and need no hold (13). A replacement node keeps a transferred hold's id, signal instance, owner and paging history, so escalation never restarts (13 supersession). Lease holds stay on the lease (05). owner_ref is set exactly for the owner kinds that name a concrete owner: the grant holder's actor id, the named owner, or the environment owner the profile names. A conditional admits only plain keywords (internal/schemagen), so the schema checks the actor id's act_ TypeID shape by pattern and internal/graph checks its UUIDv7 bits (adc-typeid).
 type NodeHold struct {
 	ID HoldID `json:"id"`
 	// A registered hold (schemas/vocab/holds.yaml); internal/graph checks that it is registered.
@@ -20,7 +22,7 @@ type NodeHold struct {
 	Reason *ReasonCode `json:"reason"`
 	// The concrete signal that resumes it, e.g. the reset time or the approval id awaited (02).
 	SignalInstance string `json:"signal_instance"`
-	// Who owns the hold now: the registry's owner, or its escalate_to once page_after has passed. An environment_owner hold falls back to operator when the profile names no environment owner.
+	// Who owns the hold now: the registry's owner, or its escalate_to once page_after has passed. When the profile names no environment owner, evidence_restore_pending escalates to operator instead (02, its registry row).
 	Owner    Owner   `json:"owner"`
 	OwnerRef *string `json:"owner_ref"`
 	// When the wait began; page_after counts from here, also across a transfer.

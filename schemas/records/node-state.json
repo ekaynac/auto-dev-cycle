@@ -2,16 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/node-state.json",
   "title": "NodeState",
-  "description": "A node's current state, as its graph events project it (docs/design/m0/13 \"Evaluation\"). waiting: some inputs have no applicable result yet (a structural wait, no hold). runnable: every input resolved, not claimed. Evaluation is demand-driven, so only a goal that demands the node claims it; a runnable node no goal demands stays runnable. held: an external wait, with its hold, which may also list inputs still missing; this includes a could_not_run that retries on its signal (13 [G2]). claimed: its inputs are fixed and its key computed, in one writer transaction (13 [G10]). completed: a result is selected. superseded: a replacement node took over (13), possibly after it completed. internal/graph owns the transitions and refuses a node that supersedes itself.",
+  "description": "A node's current state, as its graph events project it (docs/design/m0/13 \"Evaluation\"). waiting: some inputs have no applicable result yet (a structural wait, no hold). runnable: every input resolved, not claimed. Evaluation is demand-driven, so only a goal that demands the node claims it; a runnable node no goal demands stays runnable. held: one or more external waits, each with its hold, which may also list inputs still missing; this includes a could_not_run that retries on its signal (13 [G2]). claimed: its inputs are fixed and its key computed, in one writer transaction (13 [G10]). completed: a result is selected. superseded: a replacement node took over (13), possibly after it completed. internal/graph owns the transitions and refuses a node that supersedes itself.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["node", "state", "waiting_on", "key", "hold", "result", "superseded_by"],
+  "required": ["node", "state", "waiting_on", "key", "holds", "result", "superseded_by"],
   "properties": {
     "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
     "state": {"enum": ["waiting", "runnable", "held", "claimed", "completed", "superseded"]},
     "waiting_on": {"description": "The names of the inputs still missing: non-empty while waiting, possibly non-empty while held, empty otherwise.", "type": "array", "uniqueItems": true, "items": {"$ref": "receipt.json#/$defs/Name"}},
-    "key": {"description": "Set from the claim on, never while waiting or runnable. A held or superseded node has one only if it was claimed first.", "oneOf": [{"type": "null"}, {"$ref": "computation-key.json"}]},
-    "hold": {"description": "Set exactly while held.", "oneOf": [{"type": "null"}, {"$ref": "node-hold.json"}]},
+    "key": {"description": "Set from the claim on, never while waiting or runnable, and always when a result is selected. A held or superseded node has one only if it was claimed first.", "oneOf": [{"type": "null"}, {"$ref": "computation-key.json"}]},
+    "holds": {"description": "The node's external waits, one per signal it awaits (13; 04: each owed input is its own wait): non-empty exactly while held, empty otherwise. internal/graph checks that hold ids are unique; the schema refuses exact duplicates.", "type": "array", "uniqueItems": true, "items": {"$ref": "node-hold.json"}},
     "result": {"description": "The selected result: set when completed, kept when a completed node is superseded, null otherwise.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ResultID"}]},
     "superseded_by": {"description": "The replacement node; set exactly when superseded.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/NodeID"}]}
   },
@@ -19,10 +19,11 @@
     {"if": {"required": ["state"], "properties": {"state": {"const": "waiting"}}}, "then": {"properties": {"waiting_on": {"not": {"const": []}}}}},
     {"if": {"required": ["state"], "properties": {"state": {"enum": ["runnable", "claimed", "completed", "superseded"]}}}, "then": {"properties": {"waiting_on": {"const": []}}}},
     {"if": {"required": ["state"], "properties": {"state": {"enum": ["waiting", "runnable"]}}}, "then": {"properties": {"key": {"const": null}}}},
-    {"if": {"required": ["state"], "properties": {"state": {"const": "held"}}}, "then": {"properties": {"hold": {"not": {"const": null}}}}, "else": {"properties": {"hold": {"const": null}}}},
-    {"if": {"required": ["state"], "properties": {"state": {"enum": ["claimed", "completed"]}}}, "then": {"properties": {"key": {"not": {"const": null}}}}},
+    {"if": {"required": ["state"], "properties": {"state": {"const": "held"}}}, "then": {"properties": {"holds": {"not": {"const": []}}}}, "else": {"properties": {"holds": {"const": []}}}},
+    {"if": {"required": ["state"], "properties": {"state": {"const": "claimed"}}}, "then": {"properties": {"key": {"not": {"const": null}}}}},
     {"if": {"required": ["state"], "properties": {"state": {"const": "completed"}}}, "then": {"properties": {"result": {"not": {"const": null}}}}},
-    {"if": {"required": ["state"], "properties": {"state": {"enum": ["waiting", "runnable", "held", "claimed"]}}}, "then": {"properties": {"result": {"const": null}}}},
-    {"if": {"required": ["state"], "properties": {"state": {"const": "superseded"}}}, "then": {"properties": {"superseded_by": {"not": {"const": null}}}}, "else": {"properties": {"superseded_by": {"const": null}}}}
+    {"if": {"required": ["state"], "properties": {"state": {"enum": ["held", "claimed"]}}}, "then": {"properties": {"result": {"const": null}}}},
+    {"if": {"required": ["state"], "properties": {"state": {"const": "superseded"}}}, "then": {"properties": {"superseded_by": {"not": {"const": null}}}}, "else": {"properties": {"superseded_by": {"const": null}}}},
+    {"if": {"required": ["result"], "properties": {"result": {"not": {"const": null}}}}, "then": {"properties": {"key": {"not": {"const": null}}}}}
   ]
 }

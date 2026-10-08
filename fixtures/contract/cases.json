@@ -10040,6 +10040,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10182,12 +10183,14 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "system",
      "owner_ref": null,
+     "channel": "telegram",
      "signal_instance": "lea_restore"
     },
     {
      "at": "2026-10-08T12:00:00Z",
      "owner": "environment_owner",
      "owner_ref": "staging-owner",
+     "channel": "email",
      "signal_instance": "lea_restore"
     }
    ]
@@ -10210,6 +10213,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10221,22 +10225,84 @@
   "schema": "records/node-hold",
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-   "hold": "awaiting_input",
+   "hold": "wrong_owner",
    "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "named_owner",
    "owner_ref": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": []
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: a page with a channel",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": "telegram",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
   },
   "valid": true
+ },
+ {
+  "name": "node-hold: a page with an invalid channel",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": "Telegram",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page with a numeric channel",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": 5,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
  },
  {
   "name": "node-hold: missing id",
@@ -10253,6 +10319,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10274,6 +10341,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10295,6 +10363,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10316,6 +10385,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10337,6 +10407,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10358,6 +10429,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10379,6 +10451,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10414,6 +10487,7 @@
     {
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10435,6 +10509,7 @@
     {
      "at": "2026-10-08T11:00:00Z",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10456,6 +10531,29 @@
     {
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
+     "channel": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: page missing channel",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10477,7 +10575,8 @@
     {
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
-     "owner_ref": "act_01m3250v0aer9ss2097svmefj8"
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null
     }
    ]
   },
@@ -10500,6 +10599,7 @@
       "at": "2026-10-08T11:00:00Z",
       "owner": "grant_holder",
       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+      "channel": null,
       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
      }
     ]
@@ -10523,6 +10623,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ],
@@ -10546,8 +10647,9 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-     "channel": "telegram"
+     "medium": "telegram"
     }
    ]
   },
@@ -10601,6 +10703,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10623,6 +10726,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10645,6 +10749,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10667,6 +10772,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10689,6 +10795,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10711,6 +10818,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10733,6 +10841,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10755,6 +10864,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10777,6 +10887,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10799,6 +10910,7 @@
      "at": "soon",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10821,6 +10933,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "pager",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10843,6 +10956,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": ""
     }
    ]
@@ -10865,6 +10979,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": 5
     }
    ]
@@ -10887,6 +11002,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
     }
    ]
@@ -10909,6 +11025,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10931,6 +11048,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10953,6 +11071,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10975,6 +11094,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10997,6 +11117,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11019,6 +11140,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11041,6 +11163,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11063,6 +11186,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11085,6 +11209,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11107,6 +11232,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11129,6 +11255,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": null,
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11151,6 +11278,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "grant_holder",
      "owner_ref": "dba-team",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11173,6 +11301,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "named_owner",
      "owner_ref": null,
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11195,6 +11324,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "environment_owner",
      "owner_ref": null,
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11217,6 +11347,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "operator",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11239,6 +11370,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "system",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11261,6 +11393,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "confirmation_policy",
      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11283,6 +11416,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "named_owner",
      "owner_ref": "",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11305,6 +11439,7 @@
      "at": "2026-10-08T11:00:00Z",
      "owner": "named_owner",
      "owner_ref": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "channel": null,
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -11321,7 +11456,7 @@
     "gate"
    ],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11335,7 +11470,7 @@
    "state": "runnable",
    "waiting_on": [],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11349,23 +11484,26 @@
    "state": "held",
    "waiting_on": [],
    "key": null,
-   "hold": {
-    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-    "hold": "awaiting_input",
-    "reason": null,
-    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-    "owner": "grant_holder",
-    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-    "since": "2026-10-08T10:00:00Z",
-    "pages": [
-     {
-      "at": "2026-10-08T11:00:00Z",
-      "owner": "grant_holder",
-      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-     }
-    ]
-   },
+   "holds": [
+    {
+     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "hold": "awaiting_input",
+     "reason": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "since": "2026-10-08T10:00:00Z",
+     "pages": [
+      {
+       "at": "2026-10-08T11:00:00Z",
+       "owner": "grant_holder",
+       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+       "channel": null,
+       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+      }
+     ]
+    }
+   ],
    "result": null,
    "superseded_by": null
   },
@@ -11382,7 +11520,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11399,7 +11537,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
    "superseded_by": null
   },
@@ -11413,7 +11551,7 @@
    "state": "superseded",
    "waiting_on": [],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
   },
@@ -11430,23 +11568,26 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": {
-    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-    "hold": "awaiting_input",
-    "reason": null,
-    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-    "owner": "grant_holder",
-    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-    "since": "2026-10-08T10:00:00Z",
-    "pages": [
-     {
-      "at": "2026-10-08T11:00:00Z",
-      "owner": "grant_holder",
-      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-     }
-    ]
-   },
+   "holds": [
+    {
+     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "hold": "awaiting_input",
+     "reason": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "since": "2026-10-08T10:00:00Z",
+     "pages": [
+      {
+       "at": "2026-10-08T11:00:00Z",
+       "owner": "grant_holder",
+       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+       "channel": null,
+       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+      }
+     ]
+    }
+   ],
    "result": null,
    "superseded_by": null
   },
@@ -11462,23 +11603,26 @@
     "ruling"
    ],
    "key": null,
-   "hold": {
-    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-    "hold": "awaiting_input",
-    "reason": null,
-    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-    "owner": "grant_holder",
-    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-    "since": "2026-10-08T10:00:00Z",
-    "pages": [
-     {
-      "at": "2026-10-08T11:00:00Z",
-      "owner": "grant_holder",
-      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-     }
-    ]
-   },
+   "holds": [
+    {
+     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "hold": "awaiting_input",
+     "reason": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "since": "2026-10-08T10:00:00Z",
+     "pages": [
+      {
+       "at": "2026-10-08T11:00:00Z",
+       "owner": "grant_holder",
+       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+       "channel": null,
+       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+      }
+     ]
+    }
+   ],
    "result": null,
    "superseded_by": null
   },
@@ -11495,7 +11639,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
   },
@@ -11512,7 +11656,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
    "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
   },
@@ -11528,7 +11672,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11544,7 +11688,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11560,7 +11704,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11573,14 +11717,14 @@
    "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
    "state": "claimed",
    "waiting_on": [],
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
   "valid": false
  },
  {
-  "name": "node-state: missing hold",
+  "name": "node-state: missing holds",
   "schema": "records/node-state",
   "doc": {
    "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
@@ -11606,7 +11750,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "superseded_by": null
   },
   "valid": false
@@ -11622,7 +11766,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null
   },
   "valid": false
@@ -11639,7 +11783,7 @@
      "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
      "generation": 1
     },
-    "hold": null,
+    "holds": [],
     "result": null,
     "superseded_by": null
    }
@@ -11657,7 +11801,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null,
    "task": "tsk_01m3250v57fhm9v1z9xd1wk8gw"
@@ -11675,7 +11819,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11692,7 +11836,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11709,7 +11853,7 @@
     "gate"
    ],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11725,7 +11869,7 @@
     "Gate"
    ],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11739,7 +11883,7 @@
    "state": "waiting",
    "waiting_on": "gate",
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11755,7 +11899,7 @@
    "key": {
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11769,11 +11913,174 @@
    "state": "held",
    "waiting_on": [],
    "key": null,
-   "hold": {
-    "id": "hld_01m3250vz2ezn81cgvbkcn17jd"
+   "holds": [
+    {
+     "id": "hld_01m3250vz2ezn81cgvbkcn17jd"
+    }
+   ],
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: holds not an array",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "held",
+   "waiting_on": [],
+   "key": null,
+   "holds": {
+    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+    "hold": "awaiting_input",
+    "reason": null,
+    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+    "owner": "grant_holder",
+    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+    "since": "2026-10-08T10:00:00Z",
+    "pages": [
+     {
+      "at": "2026-10-08T11:00:00Z",
+      "owner": "grant_holder",
+      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+      "channel": null,
+      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+     }
+    ]
    },
    "result": null,
    "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: held with two holds",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "held",
+   "waiting_on": [],
+   "key": null,
+   "holds": [
+    {
+     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "hold": "awaiting_input",
+     "reason": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "since": "2026-10-08T10:00:00Z",
+     "pages": [
+      {
+       "at": "2026-10-08T11:00:00Z",
+       "owner": "grant_holder",
+       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+       "channel": null,
+       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+      }
+     ]
+    },
+    {
+     "id": "hld_01m3250v57ft7aehkqwq0yrq3n",
+     "hold": "awaiting_input",
+     "reason": null,
+     "signal_instance": "own_01m3250v57fhm9v1z9xd1wk8gw@1",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "since": "2026-10-08T10:00:00Z",
+     "pages": [
+      {
+       "at": "2026-10-08T11:00:00Z",
+       "owner": "grant_holder",
+       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+       "channel": null,
+       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+      }
+     ]
+    }
+   ],
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": true
+ },
+ {
+  "name": "node-state: held with the same hold twice",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "held",
+   "waiting_on": [],
+   "key": null,
+   "holds": [
+    {
+     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "hold": "awaiting_input",
+     "reason": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "since": "2026-10-08T10:00:00Z",
+     "pages": [
+      {
+       "at": "2026-10-08T11:00:00Z",
+       "owner": "grant_holder",
+       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+       "channel": null,
+       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+      }
+     ]
+    },
+    {
+     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "hold": "awaiting_input",
+     "reason": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "since": "2026-10-08T10:00:00Z",
+     "pages": [
+      {
+       "at": "2026-10-08T11:00:00Z",
+       "owner": "grant_holder",
+       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+       "channel": null,
+       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+      }
+     ]
+    }
+   ],
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: held with no holds",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "held",
+   "waiting_on": [],
+   "key": null,
+   "holds": [],
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: superseded with a result and no key",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "superseded",
+   "waiting_on": [],
+   "key": null,
+   "holds": [],
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
   },
   "valid": false
  },
@@ -11788,7 +12095,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": "nod_01m3250v57fhm9v1z9xd1wk8gw",
    "superseded_by": null
   },
@@ -11802,7 +12109,7 @@
    "state": "superseded",
    "waiting_on": [],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": "res_01m3250v57fhm9v1z9xd1wk8gw"
   },
@@ -11816,7 +12123,7 @@
    "state": "waiting",
    "waiting_on": [],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11835,7 +12142,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11851,7 +12158,7 @@
     "gate"
    ],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
    "superseded_by": null
   },
@@ -11867,7 +12174,7 @@
     "gate"
    ],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11886,7 +12193,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11905,7 +12212,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
    "superseded_by": null
   },
@@ -11921,7 +12228,7 @@
     "gate"
    ],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
   },
@@ -11938,7 +12245,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -11952,23 +12259,26 @@
    "state": "runnable",
    "waiting_on": [],
    "key": null,
-   "hold": {
-    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-    "hold": "awaiting_input",
-    "reason": null,
-    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-    "owner": "grant_holder",
-    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-    "since": "2026-10-08T10:00:00Z",
-    "pages": [
-     {
-      "at": "2026-10-08T11:00:00Z",
-      "owner": "grant_holder",
-      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-     }
-    ]
-   },
+   "holds": [
+    {
+     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "hold": "awaiting_input",
+     "reason": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "since": "2026-10-08T10:00:00Z",
+     "pages": [
+      {
+       "at": "2026-10-08T11:00:00Z",
+       "owner": "grant_holder",
+       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+       "channel": null,
+       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+      }
+     ]
+    }
+   ],
    "result": null,
    "superseded_by": null
   },
@@ -11982,7 +12292,7 @@
    "state": "runnable",
    "waiting_on": [],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
    "superseded_by": null
   },
@@ -11996,23 +12306,9 @@
    "state": "runnable",
    "waiting_on": [],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
-  },
-  "valid": false
- },
- {
-  "name": "node-state: held without a hold",
-  "schema": "records/node-state",
-  "doc": {
-   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
-   "state": "held",
-   "waiting_on": [],
-   "key": null,
-   "hold": null,
-   "result": null,
-   "superseded_by": null
   },
   "valid": false
  },
@@ -12024,23 +12320,62 @@
    "state": "held",
    "waiting_on": [],
    "key": null,
-   "hold": {
-    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-    "hold": "awaiting_input",
-    "reason": null,
-    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-    "owner": "grant_holder",
-    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-    "since": "2026-10-08T10:00:00Z",
-    "pages": [
-     {
-      "at": "2026-10-08T11:00:00Z",
-      "owner": "grant_holder",
-      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-     }
-    ]
+   "holds": [
+    {
+     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "hold": "awaiting_input",
+     "reason": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "since": "2026-10-08T10:00:00Z",
+     "pages": [
+      {
+       "at": "2026-10-08T11:00:00Z",
+       "owner": "grant_holder",
+       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+       "channel": null,
+       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+      }
+     ]
+    }
+   ],
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: held after a claim with a result",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "held",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
    },
+   "holds": [
+    {
+     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "hold": "awaiting_input",
+     "reason": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "since": "2026-10-08T10:00:00Z",
+     "pages": [
+      {
+       "at": "2026-10-08T11:00:00Z",
+       "owner": "grant_holder",
+       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+       "channel": null,
+       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+      }
+     ]
+    }
+   ],
    "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
    "superseded_by": null
   },
@@ -12057,23 +12392,26 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": {
-    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-    "hold": "awaiting_input",
-    "reason": null,
-    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-    "owner": "grant_holder",
-    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-    "since": "2026-10-08T10:00:00Z",
-    "pages": [
-     {
-      "at": "2026-10-08T11:00:00Z",
-      "owner": "grant_holder",
-      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
-      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-     }
-    ]
-   },
+   "holds": [
+    {
+     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "hold": "awaiting_input",
+     "reason": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "since": "2026-10-08T10:00:00Z",
+     "pages": [
+      {
+       "at": "2026-10-08T11:00:00Z",
+       "owner": "grant_holder",
+       "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+       "channel": null,
+       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+      }
+     ]
+    }
+   ],
    "result": null,
    "superseded_by": null
   },
@@ -12087,7 +12425,7 @@
    "state": "claimed",
    "waiting_on": [],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -12101,7 +12439,7 @@
    "state": "completed",
    "waiting_on": [],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
    "superseded_by": null
   },
@@ -12118,7 +12456,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -12135,7 +12473,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
    "superseded_by": null
   },
@@ -12149,7 +12487,7 @@
    "state": "superseded",
    "waiting_on": [],
    "key": null,
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": null
   },
@@ -12166,7 +12504,7 @@
     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "generation": 1
    },
-   "hold": null,
+   "holds": [],
    "result": null,
    "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
   },
