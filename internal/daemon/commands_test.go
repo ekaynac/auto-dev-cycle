@@ -317,8 +317,16 @@ func TestCommandsAuthority(t *testing.T) {
 	if code != entry.ExitProposed || !ok || p.Policy != types.CommandProposedPolicyIndependentReview {
 		t.Fatalf("review: %d %s", code, out)
 	}
+	// The override decided the policy, not the change: the effective change
+	// is the seat at its version, with no sensitive class, not the request's
+	// empty scope.
+	if e := p.EffectiveChange; e.Action != "seat.take" || len(e.ChangeClass) != 0 || e.Project != nil || e.Grantee != nil ||
+		e.Object.Type != authority.SeatObjectType || e.Object.ID != authority.TheSeat || e.Object.Version == nil || *e.Object.Version != 0 {
+		t.Errorf("review: the effective change %+v", e)
+	}
 	code, out, _ = c.adc(c.human.Reveal(), take[:len(take)-1]...)
-	if code != entry.ExitProposed || !strings.Contains(out, "requested: seat.take {}") || !strings.Contains(out, cli.DashboardProposal+"prp_") {
+	if code != entry.ExitProposed || !strings.Contains(out, "requested: seat.take {}") || !strings.Contains(out, cli.DashboardProposal+"prp_") ||
+		!strings.Contains(out, "effective: seat.take on "+authority.SeatObjectType+" "+authority.TheSeat+" at version 0; project installation-wide; change classes none; grantee none\n") {
 		t.Fatalf("human: %d %s", code, out)
 	}
 	version := count(t, c.dir, `SELECT max(seq) FROM events WHERE subject = '`+string(p.Proposal)+`'`)

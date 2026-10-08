@@ -231,16 +231,50 @@ func describe(w io.Writer, r types.CommandResponse, action string, scope json.Ra
 		}
 		return say(w, "applied: %s%s\n", v.Command, repeat)
 	case *types.CommandProposed:
-		if v.Policy == types.CommandProposedPolicyHuman {
-			// A human confirmation cannot be completed from the CLI (D37).
-			return say(w, "proposed: %s needs a human confirmation on the dashboard (binding %s)\n  requested: %s %s\n  confirm at: %s%s\n",
-				v.Proposal, v.BindingDigest, action, string(scope), DashboardProposal, v.Proposal)
+		if v.Policy != types.CommandProposedPolicyHuman {
+			if err := say(w, "proposed: %s needs an independent review (binding %s)\n", v.Proposal, v.BindingDigest); err != nil {
+				return err
+			}
+			return sayEffective(w, v.EffectiveChange)
 		}
-		return say(w, "proposed: %s needs an independent review (binding %s)\n", v.Proposal, v.BindingDigest)
+		// A human confirmation cannot be completed from the CLI (D37).
+		if err := say(w, "proposed: %s needs a human confirmation on the dashboard (binding %s)\n  requested: %s %s\n",
+			v.Proposal, v.BindingDigest, action, string(scope)); err != nil {
+			return err
+		}
+		if err := sayEffective(w, v.EffectiveChange); err != nil {
+			return err
+		}
+		return say(w, "  confirm at: %s%s\n", DashboardProposal, v.Proposal)
 	case *types.CommandRefused:
 		return say(w, "refused: %s/%s: %s\n", v.Outcome, v.Reason, v.Detail)
 	}
 	return say(w, "no response\n")
+}
+
+// sayEffective writes a proposal's effective change: what it binds, as
+// authority derived it, which the request may not name (04, 08 "CLI
+// rules"; a grant override decides the policy, not the change).
+func sayEffective(w io.Writer, e types.EffectiveChange) error {
+	version, project, grantee := "its digest", "installation-wide", "none"
+	if e.Object.Version != nil {
+		version = "version " + strconv.FormatInt(*e.Object.Version, 10)
+	}
+	if e.Project != nil {
+		project = string(*e.Project)
+	}
+	if e.Grantee != nil {
+		grantee = string(*e.Grantee)
+	}
+	classes := make([]string, 0, len(e.ChangeClass))
+	for _, c := range e.ChangeClass {
+		classes = append(classes, string(c))
+	}
+	if len(classes) == 0 {
+		classes = append(classes, "none")
+	}
+	return say(w, "  effective: %s on %s %s at %s; project %s; change classes %s; grantee %s\n",
+		e.Action, e.Object.Type, e.Object.ID, version, project, strings.Join(classes, ", "), grantee)
 }
 
 // NoTransport is the Client of a build with no controller transport yet.

@@ -20,16 +20,24 @@ func commandRequest() map[string]any {
 		"scope": map[string]any{"grant": grtID}, "reason": "the review runs past the expiry"}
 }
 
+// effectiveChange is a proposal's effective change: a grant change, with
+// its grantee.
+func effectiveChange() map[string]any {
+	return map[string]any{"action": "grant.extend", "change_class": []any{"grant.extend"}, "project": prjID,
+		"object": map[string]any{"type": "grant", "id": grtID, "version": 12}, "grantee": actID}
+}
+
 func commandResponses() map[string]map[string]any {
 	return map[string]map[string]any{
 		"applied": {"disposition": "applied", "command": cmdID, "replayed": false, "approval": aprID, "first_seq": 41, "last_seq": 42,
 			"effects": []any{map[string]any{"id": effID, "state": "uncertain"}}, "result": map[string]any{}},
-		"proposed": {"disposition": "proposed", "proposal": prpID, "policy": "human", "binding_digest": dgA},
+		"proposed": {"disposition": "proposed", "proposal": prpID, "policy": "human", "binding_digest": dgA, "effective_change": effectiveChange()},
 		"refused":  {"disposition": "refused", "outcome": "failed", "reason": "stale_expected_state", "detail": "version 12, current 13"},
 		"applied with nothing to show": {"disposition": "applied", "command": cmdID, "replayed": true, "approval": nil, "first_seq": 0, "last_seq": 0,
 			"effects": []any{}, "result": map[string]any{}},
-		"proposed for review": {"disposition": "proposed", "proposal": prpID, "policy": "independent_review", "binding_digest": dgA},
-		"could not run":       {"disposition": "refused", "outcome": "could_not_run", "reason": "ambiguous_state", "detail": "two projections disagree"},
+		"proposed for review": {"disposition": "proposed", "proposal": prpID, "policy": "independent_review", "binding_digest": dgA,
+			"effective_change": with(with(effectiveChange(), "project", nil), "grantee", nil)},
+		"could not run": {"disposition": "refused", "outcome": "could_not_run", "reason": "ambiguous_state", "detail": "two projections disagree"},
 	}
 }
 
@@ -115,6 +123,11 @@ func TestCommandResponse(t *testing.T) {
 		"no disposition":                      without(r["proposed"], "disposition"),
 		"an unknown disposition":              with(r["proposed"], "disposition", "deferred"),
 		"a refusal with no detail":            with(r["refused"], "detail", ""),
+		"a proposal with no effective change": without(r["proposed"], "effective_change"),
+		"an effective change with no classes": with(r["proposed"], "effective_change", without(effectiveChange(), "change_class")),
+		"an effective change's object digest": with(r["proposed"], "effective_change", with(effectiveChange(), "object",
+			map[string]any{"type": "grant", "id": grtID, "version": 12, "digest": dgA})),
+		"an effective change's scope": with(r["proposed"], "effective_change", with(effectiveChange(), "scope", map[string]any{})),
 	} {
 		if valid(t, schema, d) == nil {
 			t.Errorf("%s: accepted", name)

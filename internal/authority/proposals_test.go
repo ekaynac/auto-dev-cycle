@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -46,15 +47,16 @@ func (b *boundary) submitProposal(c eventstore.Command) (eventstore.Committed, t
 		b.t.Fatalf("a proposed command: %+v %v", out, err)
 	}
 	var res struct {
-		Proposal      types.ProposalID `json:"proposal"`
-		Policy        string           `json:"policy"`
-		BindingDigest types.Digest     `json:"binding_digest"`
+		Proposal        types.ProposalID      `json:"proposal"`
+		Policy          string                `json:"policy"`
+		BindingDigest   types.Digest          `json:"binding_digest"`
+		EffectiveChange types.EffectiveChange `json:"effective_change"`
 	}
 	if err := json.Unmarshal(out.Result, &res); err != nil {
 		b.t.Fatal(err)
 	}
 	p := b.proposal(res.Proposal)
-	if res.Policy != string(p.Policy) || res.BindingDigest != p.BindingDigest {
+	if res.Policy != string(p.Policy) || res.BindingDigest != p.BindingDigest || !reflect.DeepEqual(res.EffectiveChange, authority.EffectiveChangeOf(p)) {
 		b.t.Errorf("the result %s does not name the proposal %+v", out.Result, p)
 	}
 	return out, p
@@ -90,6 +92,11 @@ func TestProposeCommitsAProposalAndNoEffect(t *testing.T) {
 		p.Object.ID != obj || p.Object.Type != "note" || *p.ExpectedState.Version != zero || p.ExpectedState.Digest != nil ||
 		len(p.ChangeClass) != 1 || p.ChangeClass[0] != "grant.create" || p.CreatedAt != types.Time(b.recorded[string(p.ID)].At) {
 		t.Errorf("the proposal binds another operation: %+v", p)
+	}
+	// Its effective change is the derived one, not the note the request names.
+	if e := authority.EffectiveChangeOf(p); e.Action != "note.add" || len(e.ChangeClass) != 1 || e.ChangeClass[0] != "grant.create" ||
+		e.Grantee == nil || *e.Grantee != op || e.Project == nil || *e.Project != prjA || e.Object.ID != obj || *e.Object.Version != zero {
+		t.Errorf("the effective change: %+v", e)
 	}
 	b.view(func(tx *eventstore.Tx) error {
 		if _, ok, err := tx.Get(notes, obj); err != nil || ok {
