@@ -4,9 +4,9 @@
 
 `schemas/records/graph-event.json`
 
-The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1, node.hold_cleared/v1 and node.operated/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 
-A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [NodeReused](#nodereused) or [NodeReuseReleased](#nodereusereleased) or [NodeRenewed](#noderenewed) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected).
+A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [NodeReused](#nodereused) or [NodeReuseReleased](#nodereusereleased) or [NodeRenewed](#noderenewed) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected) or [NodeOperated](#nodeoperated).
 
 ## Definitions
 
@@ -112,6 +112,21 @@ Renewal, the one exception to a key selecting once (13 [G1]): the receipt of the
 | `result` | yes | [ResultID](common-defs.md#resultid) |  |
 | `receipt` | yes | [Digest](common-defs.md#digest) |  |
 | `valid_until` | yes | [Time](common-defs.md#time) |  |
+
+No other fields are allowed.
+
+### NodeOperated
+
+An effect node's operation was intended (13 [G4], G7a): effect is the durable effect (03) of the node's request at key, its claim's key, intended in the same command. One per node and key: a resume finds it, and the node's next generation is a new operation. It is the graph's link from the node to its effect.
+
+#### Fields of NodeOperated
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | `node_operated` |  |
+| `node` | yes | [NodeID](common-defs.md#nodeid) |  |
+| `key` | yes | [computation-key](records-computation-key.md) |  |
+| `effect` | yes | [EffectID](common-defs.md#effectid) |  |
 
 No other fields are allowed.
 

@@ -136,6 +136,10 @@ func (t *Tx) BindObject(o Object) error {
 // untrusted bytes reads them strictly first (contract.ReadStrict).
 func ContentDigest(record json.RawMessage) (string, error) { return digest(record) }
 
+// Canonical is record's RFC 8785 form: the bytes a kept request's blob
+// holds (03 "Kept requests"), whose digest is ContentDigest's.
+func Canonical(record json.RawMessage) ([]byte, error) { return canonical(record) }
+
 // Tx is the writer transaction as the hooks and the command's logic see it.
 // It offers no SQL: every statement is the store's own. Hooks read subject
 // versions and read and write projections, all inside the transaction;

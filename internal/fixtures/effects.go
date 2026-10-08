@@ -3,6 +3,7 @@
 package fixtures
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -47,7 +48,7 @@ func (f *effectFix) open() error {
 	var s *eventstore.Store
 	if err == nil {
 		s, err = eventstore.Open(f.ctx, lock, eventstore.Config{Kinds: graph.Kinds(), Blobs: blobs,
-			Effects: eventstore.EffectKinds{"deploy": {Idempotent: true}},
+			Effects: eventstore.EffectKinds{"deploy": {Idempotent: true, RequestBlob: true}},
 			Hooks:   eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(graph.Project)}})
 	}
 	if err != nil {
@@ -120,13 +121,19 @@ func (f *effectFix) goal(pkg types.NodeID) (types.NodeID, error) {
 	return n.Node.ID, err
 }
 
-// operate is node's effect operation, in a command.
+// operate is node's effect operation, in a command, its request published
+// first (03 "Kept requests").
 func (f *effectFix) operate(node types.NodeID) (op graph.Operation, err error) {
-	err = f.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	var req []byte
+	err = f.s.View(f.ctx, func(tx *eventstore.Tx) (err error) { req, err = graph.EffectRequestOf(tx, node); return err })
+	if err == nil {
+		_, err = f.blobs.Put(bytes.NewReader(req), "")
+	}
+	err = errors.Join(err, f.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		var oerr error
 		op, oerr = graph.Operate(tx, node, f.env())
 		return nil, oerr
-	})
+	}))
 	return op, err
 }
 

@@ -58,6 +58,7 @@ const (
 	HoldCleared     = "node.hold_cleared/v1"
 	ResultRecorded  = "result.recorded/v1"
 	ResultSelected  = "result.selected/v1"
+	NodeOperated    = "node.operated/v1"
 	EventSchema     = "records/graph-event"
 
 	NodeProjection    = "graph_nodes"    // node id → nodeRecord
@@ -70,6 +71,7 @@ const (
 	GenProjection     = "graph_gens"     // task/identity → its current generation (memoizable kinds)
 	HoldProjection    = "graph_holds"    // hold id → the node that last held it (heldBy)
 	RetryProjection   = "graph_retries"  // could_not_run result id → its retry wait's hold id
+	EffectProjection  = "graph_effects"  // effect node id → its operation (node.operated)
 )
 
 // memoizable are the kinds whose results are reused (13 "v1 scope").
@@ -100,7 +102,7 @@ func (e ErrReused) Error() string {
 }
 
 // Kinds registers the graph event kinds.
-var kinds = []string{NodeRecorded, NodeClaimed, NodeReused, ReuseReleased, NodeRenewed, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected}
+var kinds = []string{NodeRecorded, NodeClaimed, NodeReused, ReuseReleased, NodeRenewed, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected, NodeOperated}
 
 func Kinds() eventstore.Kinds {
 	k := eventstore.Kinds{}
@@ -318,6 +320,8 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant) err
 		return resultRecorded(tx, ev, p)
 	case *types.ResultSelected:
 		return selected(tx, ev, p)
+	case *types.NodeOperated:
+		return operated(tx, ev, p)
 	}
 	return errors.New("no payload")
 }
@@ -342,6 +346,9 @@ func recorded(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeRecorded) err
 	if project, ok, err := load[types.ProjectID](tx, TaskProjection, string(p.Task)); err != nil || ok && project != p.Project {
 		return errors.Join(err, errors.New("the task's nodes are in another project"))
 	} else if err := put(tx, TaskProjection, string(p.Task), p.Project); err != nil {
+		return err
+	}
+	if err := takesNoDeploy(tx, n); err != nil {
 		return err
 	}
 	round := int64(1)
