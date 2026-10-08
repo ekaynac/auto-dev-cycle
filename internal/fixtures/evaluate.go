@@ -32,7 +32,7 @@ func gateNeed(tree string, demand types.Digest) graph.Requirements {
 
 // env evaluates under gateNeed, with the owed-answer fake's answers.
 func (g *graphFix) env(tree string, demand types.Digest) graph.Env {
-	return graph.Env{Need: gateNeed(tree, demand), Blobs: g.blobs, Authority: owedanswers.Authority{}}
+	return graph.Env{Need: gateNeed(tree, demand), Blobs: g.blobs, Authority: owedanswers.Authority{}, Families: reviewers}
 }
 
 // commit is the step of committing a clean result of kind for n under env:

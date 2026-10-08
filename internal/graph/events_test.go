@@ -121,7 +121,7 @@ func (g graphStore) planOf(task types.TaskID, project types.ProjectID) (types.No
 	r := types.NodeRecorded{Type: "node_recorded", Task: task, Project: project, Node: types.Node{ID: types.NodeID(id), Kind: types.NodeKindPlan,
 		DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{}`), Inputs: []types.InputSpec{}, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}}
 	n := g.record(r)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Claim(tx, n, map[string]Resolved{}, 1) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, n, map[string]Resolved{}, 1) })
 	rid, _ := ids.New("res")
 	res := types.Result{ID: types.ResultID(rid), Computation: g.state(n).Key.Key, Kind: types.ResultKindPlan, Value: []types.Ref{},
 		Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean, Completed: true}
@@ -219,6 +219,15 @@ func (g graphStore) record(r types.NodeRecorded) types.NodeID {
 	return r.Node.ID
 }
 
+// claimAny claims n, a review or review_requirement node under the test
+// registry.
+func claimAny(tx *eventstore.Tx, n types.NodeID, resolved map[string]Resolved, gen int64) ([]eventstore.Event, error) {
+	if rec, err := loadNode(tx, n); err == nil && rostered(rec.Recorded.Node.Kind) {
+		return ClaimReview(tx, n, resolved, gen, reviewers)
+	}
+	return Claim(tx, n, resolved, gen)
+}
+
 // recordAny records r, a review or review_requirement node under the test
 // registry.
 func recordAny(r types.NodeRecorded) ([]eventstore.Event, error) {
@@ -230,7 +239,7 @@ func recordAny(r types.NodeRecorded) ([]eventstore.Event, error) {
 
 func claimWith(n types.NodeID, res types.ResultID) logic {
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Claim(tx, n, map[string]Resolved{"plan": {Result: res}}, 1)
+		return claimAny(tx, n, map[string]Resolved{"plan": {Result: res}}, 1)
 	}
 }
 
@@ -370,7 +379,7 @@ func TestClaimsAreScoped(t *testing.T) {
 	retry := g.newNode(types.NodeKindPlan)
 	retry.Node.Inputs = []types.InputSpec{}
 	p1 := g.record(retry)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Claim(tx, p1, map[string]Resolved{}, 1) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, p1, map[string]Resolved{}, 1) })
 	unselected := must(Build(*g.state(p1).Key, BuildFacts{Project: prjID}))
 	unselected.Kind = types.ResultKindPlan
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
@@ -386,7 +395,7 @@ func TestClaimsAreScoped(t *testing.T) {
 	twice := g.newNode(types.NodeKindPlan)
 	twice.Node.Inputs, twice.Node.Params = []types.InputSpec{}, []byte(`{"twice":true}`)
 	p5 := g.record(twice)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Claim(tx, p5, map[string]Resolved{}, 1) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, p5, map[string]Resolved{}, 1) })
 	planResult := func() types.Result {
 		r := unrecorded(t, *g.state(p5).Key)
 		r.Kind, r.Value, r.Outcome, r.Reason, r.Detail = types.ResultKindPlan, []types.Ref{}, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
@@ -451,7 +460,7 @@ func TestNodeLifecycleRebuilds(t *testing.T) {
 	fresh := g.result(a, true)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, a, fresh.ID) })
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Claim(tx, b, map[string]Resolved{"plan": {Result: g.planRes}, "ruling": {Approval: aprA, Revision: 2}}, 1)
+		return claimAny(tx, b, map[string]Resolved{"plan": {Result: g.planRes}, "ruling": {Approval: aprA, Revision: 2}}, 1)
 	})
 	if c := g.claimed(b); len(c.Inputs) != 2 || *c.Inputs[1].Approval != aprA || c.Command == nil || !strings.HasPrefix(*c.Command, "cmd_") {
 		t.Fatalf("the claim %+v", c)
@@ -482,13 +491,13 @@ func TestInvalidationClaimsTheNewKey(t *testing.T) {
 	// P3: no claim skips to another generation; at the current one, the
 	// holder is named.
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Claim(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 5)
+		return claimAny(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 5)
 	}); !errors.As(err, &stale) {
 		t.Fatalf("a claim at generation 5: %v", err)
 	}
 	var held ErrKeyClaimed
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Claim(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 2)
+		return claimAny(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 2)
 	}); !errors.As(err, &held) || held.Node != a {
 		t.Fatalf("a claim at the current generation: %v", err)
 	}
@@ -498,7 +507,7 @@ func TestInvalidationClaimsTheNewKey(t *testing.T) {
 	}
 	// Generation 0 is the identity's current one: b meets a's claim at 2.
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Claim(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 0)
+		return claimAny(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 0)
 	}); !errors.As(err, &held) || held.Node != a {
 		t.Fatalf("a claim at generation 0: %v", err)
 	}
@@ -523,7 +532,7 @@ func TestFirstClaimsAreAtGenerationOne(t *testing.T) {
 	a, b := g.record(g.newNode(types.NodeKindBuild)), g.record(g.newNode(types.NodeKindBuild))
 	var stale ErrKeyStale
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Claim(tx, a, map[string]Resolved{"plan": {Result: g.planRes}}, 2)
+		return claimAny(tx, a, map[string]Resolved{"plan": {Result: g.planRes}}, 2)
 	}); !errors.As(err, &stale) || stale.Current != 1 {
 		t.Fatalf("a first claim at generation 2: %v", err)
 	}
@@ -533,7 +542,7 @@ func TestFirstClaimsAreAtGenerationOne(t *testing.T) {
 		t.Fatal("a forged first claim at generation 2 was admitted")
 	}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Claim(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 0)
+		return claimAny(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 0)
 	})
 	if g.state(b).Key.Generation != 1 {
 		t.Fatalf("generation 0 claimed %d", g.state(b).Key.Generation)
@@ -550,10 +559,10 @@ func (g graphStore) newNodeLike(n types.NodeID) types.Node {
 func TestProducesTable(t *testing.T) {
 	want := map[types.NodeKind][]types.ResultKind{
 		"plan": {"plan"}, "build": {"patch", "partial_patch"}, "gate": {"gate_result"}, "runtime_verify": {"gate_result"},
-		"integration": {"tree", "package"}, "evidence": {"evidence"}, "review": {"review"}, "carry_over": {"carry_over_attestation"},
+		"integration": {"tree", "package"}, "evidence": {"evidence"}, "review": {"review"}, "review_requirement": {"review_requirement"}, "carry_over": {"carry_over_attestation"},
 		"merge": {"merge_result"}, "accept": nil, "closure": nil, "deploy": nil, "record": nil, "phase_gate": nil,
 	}
-	results := []types.ResultKind{"plan", "patch", "partial_patch", "tree", "package", "gate_result", "review", "evidence", "carry_over_attestation", "merge_result"}
+	results := []types.ResultKind{"plan", "patch", "partial_patch", "tree", "package", "gate_result", "review", "evidence", "carry_over_attestation", "merge_result", "review_requirement"}
 	for nk, kinds := range want {
 		for _, rk := range results {
 			if got := slices.Contains(produces[nk], rk); got != slices.Contains(kinds, rk) {
@@ -561,7 +570,7 @@ func TestProducesTable(t *testing.T) {
 			}
 		}
 	}
-	if len(want) != 14 {
+	if len(want) != 15 {
 		t.Fatal("not every node kind is in the table")
 	}
 }

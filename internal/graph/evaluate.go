@@ -80,6 +80,7 @@ type Env struct {
 	Blobs     receipt.Blobs
 	Authority Authority
 	Contracts Contracts // the instrument contracts evidence nodes run under
+	Families  Families  // the executor registry review rosters are claimed under
 }
 
 // ErrRevalidated: an input no longer resolves to what the claim fixed, so
@@ -259,6 +260,8 @@ func (e *evaluation) claim(rec nodeRecord, resolved map[string]Resolved) error {
 	var err error
 	if rec.Recorded.Node.Kind == types.NodeKindEvidence {
 		evs, err = ClaimEvidence(e.tx, rec.Recorded.Node.ID, resolved, 0, e.env.Contracts)
+	} else if rostered(rec.Recorded.Node.Kind) {
+		evs, err = ClaimReview(e.tx, rec.Recorded.Node.ID, resolved, 0, e.env.Families)
 	} else {
 		evs, err = Claim(e.tx, rec.Recorded.Node.ID, resolved, 0)
 	}

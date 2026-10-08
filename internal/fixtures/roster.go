@@ -35,14 +35,14 @@ func rosterOf(exes ...types.ExecutorID) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(types.ReviewNodeParams{Roster: roster})
+	return json.Marshal(types.ReviewNodeParams{Subject: "candidate", Roster: roster})
 }
 
 // soleReviewer are the params of a review by exeA.
-var soleReviewer = json.RawMessage(`{"roster":[{"executor":"` + string(exeA) + `","family":"claude"}]}`)
+var soleReviewer = json.RawMessage(`{"subject":"candidate","roster":[{"executor":"` + string(exeA) + `","family":"claude"}]}`)
 
 // otherReviewer are the params of a review by exeB.
-var otherReviewer = json.RawMessage(`{"roster":[{"executor":"` + string(exeB) + `","family":"claude"}]}`)
+var otherReviewer = json.RawMessage(`{"subject":"candidate","roster":[{"executor":"` + string(exeB) + `","family":"claude"}]}`)
 
 // otherReviewer are the params of a review by exeB.
 // rosterChangeRunsReview: equal gate conclusions never reuse a review across
@@ -115,9 +115,9 @@ func rosterChangeRunsReview(ctx context.Context, dir string) (steps []Step, viol
 		}
 		steps = append(steps, st)
 	}
-	unknown := json.RawMessage(`{"roster":[{"executor":"` + string(exeX) + `","family":"claude"}]}`)
+	unknown := json.RawMessage(`{"subject":"candidate","roster":[{"executor":"` + string(exeX) + `","family":"claude"}]}`)
 	st := cleanStep
-	var unknownFamily graph.ErrUnknownFamily
+	var unknownFamily graph.ErrNotIndependent
 	if _, err := g.record(types.NodeKindReview, unknown, on("gate", gate, types.ResultKindGateResult)); errors.As(err, &unknownFamily) {
 		st = Step{vocab.CouldNotRun, vocab.ReasonReviewerNotIndependent.String()}
 	} else if err != nil {

@@ -4259,6 +4259,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -4838,6 +4839,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -5160,6 +5162,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -5205,6 +5208,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -5250,6 +5254,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -5295,6 +5300,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -5340,6 +5346,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -5385,6 +5392,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -5430,6 +5438,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -5475,6 +5484,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -5521,6 +5531,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -15550,6 +15561,7 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -16034,6 +16046,7 @@
   "name": "review-node-params: one reviewer",
   "schema": "records/review-node-params",
   "doc": {
+   "subject": "candidate",
    "roster": [
     {
      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -16047,6 +16060,7 @@
   "name": "review-node-params: two reviewers",
   "schema": "records/review-node-params",
   "doc": {
+   "subject": "candidate",
    "roster": [
     {
      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -16064,6 +16078,7 @@
   "name": "review-node-params: refused: no reviewer",
   "schema": "records/review-node-params",
   "doc": {
+   "subject": "candidate",
    "roster": []
   },
   "valid": false
@@ -16071,13 +16086,29 @@
  {
   "name": "review-node-params: refused: no roster",
   "schema": "records/review-node-params",
-  "doc": {},
+  "doc": {
+   "subject": "candidate"
+  },
+  "valid": false
+ },
+ {
+  "name": "review-node-params: refused: no subject",
+  "schema": "records/review-node-params",
+  "doc": {
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    }
+   ]
+  },
   "valid": false
  },
  {
   "name": "review-node-params: refused: an extra field",
   "schema": "records/review-node-params",
   "doc": {
+   "subject": "candidate",
    "roster": [
     {
      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -16092,6 +16123,7 @@
   "name": "review-node-params: refused: an executor that is not an exe_ id",
   "schema": "records/review-node-params",
   "doc": {
+   "subject": "candidate",
    "roster": [
     {
      "executor": "exe_x",
@@ -16105,6 +16137,7 @@
   "name": "review-node-params: refused: a family with capitals",
   "schema": "records/review-node-params",
   "doc": {
+   "subject": "candidate",
    "roster": [
     {
      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
@@ -16118,6 +16151,7 @@
   "name": "review-node-params: refused: a member without a family",
   "schema": "records/review-node-params",
   "doc": {
+   "subject": "candidate",
    "roster": [
     {
      "executor": "exe_01m3250v9xft08ssr4ygq6g2np"
@@ -16326,6 +16360,7 @@
    "definition_version": "1",
    "inputs": [],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
       "executor": "exe_01m3250v9xft08ssr4ygq6g2np",

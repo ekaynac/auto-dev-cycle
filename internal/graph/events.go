@@ -175,7 +175,7 @@ func loadNode(tx *eventstore.Tx, id types.NodeID) (nodeRecord, error) {
 // A review or review_requirement node is recorded through RecordReview,
 // with its roster's families from the executor registry.
 func Record(r types.NodeRecorded) ([]eventstore.Event, error) {
-	if r.Node.Kind == types.NodeKindReview || r.Node.Kind == types.NodeKindReviewRequirement {
+	if rostered(r.Node.Kind) {
 		return nil, errors.Join(fmt.Errorf("graph: a %s node is recorded with the registry's families (RecordReview)", r.Node.Kind))
 	}
 	return record(r)
@@ -246,8 +246,8 @@ func items(n types.Node, resolved map[string]Resolved) []types.ClaimedInput {
 // they call Claim.
 func Claim(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, generation int64) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, node)
-	if err != nil || rec.Recorded.Node.Kind == types.NodeKindEvidence {
-		return nil, errors.Join(err, errors.New("graph: an evidence node is claimed under its contract (ClaimEvidence)"))
+	if err != nil || rec.Recorded.Node.Kind == types.NodeKindEvidence || rostered(rec.Recorded.Node.Kind) {
+		return nil, errors.Join(err, errors.New("graph: an evidence node is claimed under its contract (ClaimEvidence), a review under the registry (ClaimReview)"))
 	}
 	return claimNode(tx, rec, resolved, generation)
 }

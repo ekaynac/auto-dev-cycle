@@ -202,7 +202,7 @@ func TestSuccessorHolds(t *testing.T) {
 	direct := g.recordOf(held)
 	direct.Node.ID, direct.Node.Round, direct.Predecessor = g.newNode(types.NodeKindReview).Node.ID, 2, &held
 	direct.Node.Inputs = append(slices.Clone(direct.Node.Inputs), g.planInput("x"))
-	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(direct) }); err == nil || !strings.Contains(err.Error(), "G6b") {
+	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(direct) }); err == nil || !strings.Contains(err.Error(), "G6b") {
 		t.Errorf("a held predecessor's successor recorded directly: %v", err)
 	}
 	if err := g.do(forge(HoldCleared, string(held), prjID, &types.HoldCleared{Type: "hold_cleared", Node: held, Hold: rail.ID,
@@ -514,7 +514,7 @@ func TestContextLineage(t *testing.T) {
 	stray.Node.Inputs = append(slices.Clone(stray.Node.Inputs), answerAt("ruling", ownB, 2))
 	n := g.record(stray)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Claim(tx, n, map[string]Resolved{"plan": {Result: g.planRes}, "ruling": {Approval: aprB, Revision: 2}}, 0)
+		return claimAny(tx, n, map[string]Resolved{"plan": {Result: g.planRes}, "ruling": {Approval: aprB, Revision: 2}}, 0)
 	})
 	var notOwed ErrNotOwed
 	if refs, err := g.contextOf(n); !errors.As(err, &notOwed) || refs != nil {

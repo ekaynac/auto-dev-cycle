@@ -5,35 +5,24 @@ package graph
 // The reviewer roster in a review's identity (13 "The reviewer roster is
 // part of a review's identity"; 06 rule 3; plan 15 G6a).
 //
-// Decisions:
-//   - A review node's params are its roster: each member's executor and
-//     that executor's model family, sorted by executor, each executor once.
-//     The roster is in the params digest, so in the computation key.
-//   - The family is derived from the executor registry (Families), never
-//     asserted by a caller: a review or review_requirement node is recorded
-//     only through RecordReview, which refuses a roster whose families are
-//     not the registry's, and an executor of unknown family fails closed
-//     (ErrUnknownFamily, never a member). The fold reads no registry: it
-//     checks the roster's shape and that no family is unknown, and trusts
-//     RecordReview for the rest, as it trusts ClaimEvidence's contract.
-//   - The required review is a review_requirement result, recorded by a
-//     controller node with no inputs whose params are the requirement
-//     {subject, roster, definition_version, revision}: the fold refuses a
-//     result whose conclusions are not exactly its node's params.
-//   - ReviewReusable decides whether a review need not run because a prior
-//     review took an equivalent input: only when both have one non-input
-//     identity (kind, definition version, params with the roster, key
-//     generation) and the input is Equivalent for the prior review. Across
-//     a roster change the replacement always runs.
-//   - A review declares at most one review_requirement input. The claim fold
-//     refuses a requirement whose roster or definition version is not the
-//     review's. Selecting a new revision on a roster change is G6b's
-//     supersession.
+// Decisions (13 has the rationale):
+//   - A review's params are its subject and roster (executor, family),
+//     sorted by executor, each once: both are in the key.
+//   - Families come from the registry, never a caller: RecordReview and
+//     ClaimReview both refuse a roster the registry does not derive now
+//     (ErrNotIndependent). The fold reads no registry and checks only the
+//     roster's shape; independence is enforced at claim.
+//   - A review_requirement node has no inputs; its result's conclusions are
+//     its params. A review's optional requirement input binds its subject,
+//     roster and definition version (mandatory in G7b-2).
+//   - ReviewReusable reuses only when the review's key, from the prior's
+//     claimed resolutions, is the prior's key, with the same inputs.
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -41,6 +30,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // Families is the controller's executor registry: an executor's model
@@ -49,17 +39,20 @@ type Families interface {
 	Family(types.ExecutorID) string
 }
 
-// ErrUnknownFamily: the registry knows no family for a roster's executor,
-// so it is never a reviewer (06 rule 3: unknown is not independent).
-type ErrUnknownFamily struct{ Executor types.ExecutorID }
+// ErrNotIndependent: a roster member's family is unknown, or is not the
+// one the registry now derives for its executor (06 rule 3). Its outcome is
+// could_not_run/reviewer_not_independent.
+type ErrNotIndependent struct{ Executor types.ExecutorID }
 
-func (e ErrUnknownFamily) Error() string {
-	return "graph: executor " + string(e.Executor) + " has no known model family"
+func (e ErrNotIndependent) Error() string {
+	return "graph: executor " + string(e.Executor) + " has no registered model family of its roster"
 }
 
+// Reason is the refusal's reason code.
+func (ErrNotIndependent) Reason() vocab.Reason { return vocab.ReasonReviewerNotIndependent }
+
 // Roster is the roster of executors, sorted, each with the family the
-// registry derives for it; an unknown family is ErrUnknownFamily
-// (checkRoster).
+// registry derives for it.
 func Roster(executors []types.ExecutorID, families Families) ([]types.RosterMember, error) {
 	out := []types.RosterMember{}
 	for _, e := range executors {
@@ -69,50 +62,70 @@ func Roster(executors []types.ExecutorID, families Families) ([]types.RosterMemb
 	return out, checkRoster(out)
 }
 
+// registered: n's roster is the one families derives for its executors.
+func registered(n types.Node, families Families) error {
+	roster, _, err := rosterOf(n)
+	if err != nil || roster == nil || families == nil {
+		return errors.Join(err, fmt.Errorf("graph: a %s node is checked against an executor registry", n.Kind))
+	}
+	for _, m := range roster {
+		if types.Name(families.Family(m.Executor)) != m.Family { // an unknown family is no roster family (checkRoster)
+			return ErrNotIndependent{m.Executor}
+		}
+	}
+	return checkRoster(roster)
+}
+
 // RecordReview is Record for a review or review_requirement node, whose
 // roster must be the one the registry derives for its executors.
 func RecordReview(r types.NodeRecorded, families Families) ([]eventstore.Event, error) {
-	roster, err := rosterOf(r.Node)
-	if err != nil {
+	if err := registered(r.Node, families); err != nil {
 		return nil, err
-	}
-	executors := []types.ExecutorID{}
-	for _, m := range roster {
-		executors = append(executors, m.Executor)
-	}
-	want, err := Roster(executors, families)
-	if err != nil {
-		return nil, err
-	}
-	if !slices.Equal(roster, want) {
-		return nil, errors.New("graph: the roster is not the executors' sorted, with the registry's families")
 	}
 	return record(r)
 }
 
-// rosterOf is n's roster: its params' for a review, its requirement's for
-// a review_requirement node, nil for any other kind.
-func rosterOf(n types.Node) ([]types.RosterMember, error) {
+// ClaimReview is Claim for a review or review_requirement node: its roster
+// is checked against the registry again, whoever recorded it.
+func ClaimReview(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, generation int64, families Families) ([]eventstore.Event, error) {
+	rec, err := loadNode(tx, node)
+	if err != nil {
+		return nil, err
+	}
+	if err := registered(rec.Recorded.Node, families); err != nil {
+		return nil, err
+	}
+	return claimNode(tx, rec, resolved, generation)
+}
+
+// rostered: the kinds with a roster.
+func rostered(k types.NodeKind) bool {
+	return k == types.NodeKindReview || k == types.NodeKindReviewRequirement
+}
+
+// rosterOf is n's roster and subject: its params' for a review, its
+// requirement's for a review_requirement node, nil for any other kind.
+func rosterOf(n types.Node) ([]types.RosterMember, types.Name, error) {
 	switch n.Kind {
 	case types.NodeKindReview:
 		p, err := n.ParamsAsReviewNodeParams()
-		return p.Roster, err
+		return p.Roster, p.Subject, err
 	case types.NodeKindReviewRequirement:
 		p, err := n.ParamsAsReviewRequirement()
-		return p.Roster, err
+		return p.Roster, p.Subject, err
 	}
-	return nil, nil
+	return nil, "", nil
 }
 
-// checkRoster: a roster is sorted by executor, names each once, and has no
-// unknown family.
+// checkRoster: a roster has a member, is sorted by executor, names each
+// once, and has no unknown family.
 func checkRoster(roster []types.RosterMember) error {
 	if len(roster) == 0 {
 		return errors.New("graph: a roster has a reviewer")
 	}
 	for i, m := range roster {
 		if m.Family == receipt.UnknownFamily {
-			return ErrUnknownFamily{m.Executor}
+			return ErrNotIndependent{m.Executor}
 		}
 		if i > 0 && roster[i-1].Executor >= m.Executor {
 			return errors.New("graph: a roster is sorted by executor and names each once")
@@ -125,7 +138,7 @@ func checkRoster(roster []types.RosterMember) error {
 // schema cannot say: its roster's shape; a requirement node has no inputs;
 // a review declares at most one review_requirement input.
 func checkReview(n types.Node) error {
-	roster, err := rosterOf(n)
+	roster, _, err := rosterOf(n)
 	if err != nil || roster == nil {
 		return err
 	}
@@ -181,7 +194,7 @@ func recordsRequirement(rec nodeRecord, r types.Result) error {
 }
 
 // bindsRequirement: the requirement a review's claim resolved has the
-// review's roster and definition version.
+// review's subject, roster and definition version.
 func bindsRequirement(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved) error {
 	for _, name := range requirementInputs(rec.Recorded.Node) {
 		r, _, err := load[types.ResultRecorded](tx, ResultProjection, string(resolved[name].Result))
@@ -189,60 +202,40 @@ func bindsRequirement(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Res
 			return err
 		}
 		req, err := requirementOf(r.Result)
-		roster, rerr := rosterOf(rec.Recorded.Node)
+		roster, subject, rerr := rosterOf(rec.Recorded.Node)
 		if err = errors.Join(err, rerr); err != nil {
 			return err
 		}
-		if !slices.Equal(req.Roster, roster) || req.DefinitionVersion != rec.Recorded.Node.DefinitionVersion {
-			return fmt.Errorf("requirement %s is not of the review's roster and definition version", r.Result.ID)
+		if req.Subject != subject || !slices.Equal(req.Roster, roster) || req.DefinitionVersion != rec.Recorded.Node.DefinitionVersion {
+			return fmt.Errorf("requirement %s is not of the review's subject, roster and definition version", r.Result.ID)
 		}
 	}
 	return nil
 }
 
-// ReviewReusable reports whether review need not run because prior, a
-// review of the same non-input identity taking input name from the same
-// producer, ran on used, and fresh, the producer's selected result now,
-// is Equivalent to it for prior. Across a
-// roster change nothing is reusable: the replacement runs (13 "Nothing
-// reuses a review across rosters").
+// ReviewReusable reports whether review need not run: prior declares the
+// same inputs, ran on used for input name, and review's key from prior's
+// claimed resolutions is prior's claimed key, so only name's result may
+// differ; and fresh, name's producer's selected result now, is Equivalent
+// to used for prior.
 func ReviewReusable(tx *eventstore.Tx, prior, review types.NodeID, name types.Name, used, fresh types.ResultID, blobs receipt.Blobs) (bool, error) {
 	was, err := loadNode(tx, prior)
 	rec, rerr := loadNode(tx, review)
-	if err = errors.Join(err, rerr); err != nil {
-		return false, err
+	c, claimed, cerr := load[claim](tx, ClaimProjection, string(prior))
+	if err = errors.Join(err, rerr, cerr); err != nil || !claimed {
+		return false, errors.Join(err, fmt.Errorf("graph: %s never ran", prior))
 	}
-	a, b := was.Recorded.Node, rec.Recorded.Node
-	named := func(in types.InputSpec) bool { return in.Name == name }
-	i, j := slices.IndexFunc(a.Inputs, named), slices.IndexFunc(b.Inputs, named)
-	if i < 0 || j < 0 || !sameSource(a.Inputs[i], b.Inputs[j]) {
-		return false, fmt.Errorf("graph: %s and %s do not both take %s from one producer", prior, review, name)
+	if !reflect.DeepEqual(was.Recorded.Node.Inputs, rec.Recorded.Node.Inputs) {
+		return false, fmt.Errorf("graph: %s and %s declare other inputs", prior, review)
 	}
-	if same, err := sameIdentity(a, b, was.State.Key, rec.State.Key); err != nil || !same {
+	n := rec.Recorded.Node
+	if mutation.Is(mutation.EquivalenceIgnoresRoster) {
+		n.Params = was.Recorded.Node.Params
+	}
+	resolved := resolutions(c.Inputs)
+	resolved[string(name)] = Resolved{Result: used}
+	if k, err := Key(n, resolved, c.Key.Generation); err != nil || k != c.Key {
 		return false, err
 	}
 	return Equivalent(tx, prior, name, used, fresh, blobs)
-}
-
-// sameSource: x and y take results of one kind from one producer.
-func sameSource(x, y types.InputSpec) bool {
-	sx, ok := x.Source.Variant.(*types.ResultSource)
-	sy, oky := y.Source.Variant.(*types.ResultSource)
-	return ok && oky && *sx == *sy
-}
-
-// sameIdentity: a and b have one non-input identity (13): kind, definition
-// version, params (a review's roster) and key generation, none (0) for an
-// unclaimed node.
-func sameIdentity(a, b types.Node, ka, kb *types.ComputationKey) (bool, error) {
-	pa, err := ParamsDigest(a.Params)
-	pb, berr := ParamsDigest(b.Params)
-	gen := func(k *types.ComputationKey) int64 {
-		if k == nil {
-			return 0
-		}
-		return k.Generation
-	}
-	return a.Kind == b.Kind && a.DefinitionVersion == b.DefinitionVersion && (pa == pb || mutation.Is(mutation.EquivalenceIgnoresRoster)) &&
-		gen(ka) == gen(kb), errors.Join(err, berr)
 }

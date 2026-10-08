@@ -181,7 +181,12 @@ func (g *graphFix) record(kind types.NodeKind, params json.RawMessage, input []t
 func (g *graphFix) complete(kind types.NodeKind, params json.RawMessage, input []types.InputSpec, resolved map[string]graph.Resolved, rk types.ResultKind, value []types.Ref, conclusions *json.RawMessage) (types.NodeID, types.ResultID, error) {
 	n, err := g.record(kind, params, input)
 	if err == nil {
-		err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return graph.Claim(tx, n, resolved, 1) })
+		err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if kind == types.NodeKindReview {
+				return graph.ClaimReview(tx, n, resolved, 1, reviewers)
+			}
+			return graph.Claim(tx, n, resolved, 1)
+		})
 	}
 	if err != nil {
 		return "", "", err

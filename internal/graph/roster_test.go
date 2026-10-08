@@ -35,7 +35,7 @@ func reviewParams(exes ...types.ExecutorID) json.RawMessage {
 	if err != nil {
 		panic(err)
 	}
-	return must(json.Marshal(types.ReviewNodeParams{Roster: roster}))
+	return must(json.Marshal(types.ReviewNodeParams{Subject: "candidate", Roster: roster}))
 }
 
 // requirementNode is a review_requirement node at revision rev, for a
@@ -55,7 +55,7 @@ func (g graphStore) requirementNode(rev int64, def string, exes ...types.Executo
 // conclusions are concl (its params when nil).
 func (g graphStore) completeRequirement(req types.NodeRecorded, concl json.RawMessage) (types.NodeID, types.ResultID, error) {
 	n := g.record(req)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Claim(tx, n, map[string]Resolved{}, 1) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, n, map[string]Resolved{}, 1) })
 	if concl == nil {
 		concl = req.Node.Params
 	}
@@ -79,7 +79,7 @@ func TestRoster(t *testing.T) {
 	if err != nil || !slices.Equal(got, want) {
 		t.Fatalf("Roster = %v, %v", got, err)
 	}
-	var unknown ErrUnknownFamily
+	var unknown ErrNotIndependent
 	if _, err := Roster([]types.ExecutorID{exeA, exeX}, reviewers); !errors.As(err, &unknown) || unknown.Executor != exeX {
 		t.Errorf("an unregistered executor: %v", err)
 	}
@@ -99,16 +99,18 @@ func TestRecordReview(t *testing.T) {
 	if _, err := RecordReview(g.requirementNode(1, "1", exeA, exeC), reviewers); err != nil {
 		t.Fatalf("a requirement of the reviewers's roster: %v", err)
 	}
-	for _, kind := range []types.NodeKind{types.NodeKindReview, types.NodeKindReviewRequirement} {
-		if _, err := Record(g.newNode(kind)); err == nil {
-			t.Errorf("Record recorded a %s node", kind)
+	for _, r := range []types.NodeRecorded{g.newNode(types.NodeKindReview), g.requirementNode(1, "1", exeA)} {
+		if _, err := Record(r); err == nil {
+			t.Errorf("Record recorded a valid %s node", r.Node.Kind)
 		}
 	}
 	if _, err := RecordReview(g.newNode(types.NodeKindGate), reviewers); err == nil {
 		t.Error("RecordReview recorded a gate")
 	}
 	roster := func(js string) func(*types.NodeRecorded) {
-		return func(r *types.NodeRecorded) { r.Node.Params = json.RawMessage(`{"roster":[` + js + `]}`) }
+		return func(r *types.NodeRecorded) {
+			r.Node.Params = json.RawMessage(`{"subject":"candidate","roster":[` + js + `]}`)
+		}
 	}
 	member := func(e, f string) string { return `{"executor":"` + e + `","family":"` + f + `"}` }
 	requirement := func(r *types.NodeRecorded) {
@@ -147,6 +149,32 @@ func TestRecordReview(t *testing.T) {
 			t.Errorf("the fold recorded %s", name)
 		}
 	}
+	// The fold takes a roster whose family is not the registry's, as it
+	// reads no registry; the claim refuses it, by the evaluator too.
+	for name, js := range map[string]string{"an asserted family": member(exeA, "gpt"), "an unregistered executor": member(exeX, "claude")} {
+		r := with(g.newNode(types.NodeKindReview), roster(js))
+		r.Type = "node_recorded"
+		g.must(forge(NodeRecorded, string(r.Node.ID), prjID, &r))
+		var refused ErrNotIndependent
+		err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return ClaimReview(tx, r.Node.ID, map[string]Resolved{"plan": {Result: g.planRes}}, 0, reviewers)
+		})
+		if !errors.As(err, &refused) || refused.Reason() != vocab.ReasonReviewerNotIndependent {
+			t.Errorf("%s: claimed: %v", name, err)
+		}
+		if err := g.do(evaluate(g.env(noRequirement), r.Node.ID)); !errors.As(err, &refused) {
+			t.Errorf("%s: evaluated: %v", name, err)
+		}
+		if err := g.do(evaluate(Env{Need: noRequirement, Blobs: g.blobs}, g.record(g.newNode(types.NodeKindReview)))); err == nil {
+			t.Errorf("%s: evaluated with no registry", name)
+		}
+	}
+	plain := g.record(g.newNode(types.NodeKindReview))
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Claim(tx, plain, map[string]Resolved{"plan": {Result: g.planRes}}, 0)
+	}); err == nil {
+		t.Error("Claim claimed a review")
+	}
 }
 
 func with(r types.NodeRecorded, change func(*types.NodeRecorded)) types.NodeRecorded {
@@ -170,7 +198,7 @@ func TestReviewRequirement(t *testing.T) {
 	}
 	claim := func(review types.NodeID, res types.ResultID) error {
 		return g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return Claim(tx, review, map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: res}}, 0)
+			return claimAny(tx, review, map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: res}}, 0)
 		})
 	}
 	req, res, err := g.completeRequirement(g.requirementNode(1, "1", exeA, exeC), nil)
@@ -192,6 +220,15 @@ func TestReviewRequirement(t *testing.T) {
 	if err := claim(reviewOn(older, exeA, exeC), oldRes); err == nil {
 		t.Error("a requirement of another definition version")
 	}
+	elsewhere := g.requirementNode(3, "1", exeA, exeC)
+	elsewhere.Node.Params = must(json.Marshal(types.ReviewRequirement{Subject: "closure", Roster: must(Roster([]types.ExecutorID{exeA, exeC}, reviewers)), DefinitionVersion: "1", Revision: 3}))
+	closure, closureRes, err := g.completeRequirement(elsewhere, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := claim(reviewOn(closure, exeA, exeC), closureRes); err == nil || !strings.Contains(err.Error(), "subject") {
+		t.Errorf("a requirement of another subject: %v", err)
+	}
 }
 
 // A review is reusable only from a review of one non-input identity on the
@@ -202,20 +239,30 @@ func TestReviewReusable(t *testing.T) {
 	gate, usedResult := g.gated(g.receiptBlob(treeSubject(treeA, demandA), nil))
 	used := usedResult.ID
 	env := g.env(gatesOn(treeA, demandA))
-	prior := g.reviewOf(gate)
+	// prior takes the gate's result and, as a second input, the plan.
+	withPlan := g.nodeOn(types.NodeKindReview, gate)
+	withPlan.Node.Inputs[0].Name, withPlan.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = "gate", types.ResultKindGateResult
+	withPlan.Node.Inputs = append(withPlan.Node.Inputs, types.InputSpec{Name: "plan", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: g.plan, ResultKind: types.ResultKindPlan}}})
+	prior := g.record(withPlan)
 	g.must(evaluate(env, prior))
 	g.must(commit(prior, g.reviewResult(prior), env))
-	// The gate's next result concludes the same.
-	g.must(invalidate(gate))
-	d := g.derived(receiptDoc(treeSubject(treeA, demandA), nil))
-	r := unrecorded(t, *g.state(gate).Key)
-	r.Kind, r.Outcome, r.Reason, r.Detail = types.ResultKindGateResult, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
-	r.Conclusions, r.Value = ptr(g.conclusions[d]), []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)}
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return recordResult(tx, types.ResultRecorded{Node: gate, Result: r}, g.blobs)
-	})
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, gate, r.ID) })
-	fresh := r.ID
+	// prior ran again at its second generation, on the same result.
+	g.must(invalidate(prior))
+	g.must(commit(prior, g.reviewResult(prior), env))
+	// reselect makes the gate's next result one holding doc's receipt.
+	reselect := func(doc map[string]any) types.ResultID {
+		g.must(invalidate(gate))
+		d := g.derived(doc)
+		r := unrecorded(t, *g.state(gate).Key)
+		r.Kind, r.Outcome, r.Reason, r.Detail = types.ResultKindGateResult, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+		r.Conclusions, r.Value = ptr(g.conclusions[d]), []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)}
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return recordResult(tx, types.ResultRecorded{Node: gate, Result: r}, g.blobs)
+		})
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, gate, r.ID) })
+		return r.ID
+	}
+	fresh := reselect(receiptDoc(treeSubject(treeA, demandA), nil)) // concludes the same
 	// review records a node like prior, changed, and evaluates it if run.
 	review := func(run bool, change func(*types.Node)) types.NodeID {
 		rec := g.recordOf(prior)
@@ -234,16 +281,20 @@ func TestReviewReusable(t *testing.T) {
 		})
 		return got, err
 	}
+	same := review(true, func(*types.Node) {})
 	for name, c := range map[string]struct {
 		next types.NodeID
 		want bool
 	}{
-		"the same roster":             {review(true, func(*types.Node) {}), true},
+		"the same roster":             {same, true},
 		"a member of the same family": {review(true, func(n *types.Node) { n.Params = reviewParams(exeB) }), false},
 		"a member added":              {review(true, func(n *types.Node) { n.Params = reviewParams(exeA, exeC) }), false},
 		"another definition version":  {review(true, func(n *types.Node) { n.DefinitionVersion = "2" }), false},
 		"another kind":                {review(true, func(n *types.Node) { n.Kind = types.NodeKindCarryOver }), false},
-		"an unclaimed review":         {review(false, func(*types.Node) {}), false},
+		"an unclaimed review":         {review(false, func(*types.Node) {}), true},
+		"another subject": {review(true, func(n *types.Node) {
+			n.Params = must(json.Marshal(types.ReviewNodeParams{Subject: "closure", Roster: must(Roster([]types.ExecutorID{exeA}, reviewers))}))
+		}), false},
 	} {
 		if got, err := reusable(c.next, "gate"); err != nil || got != c.want {
 			t.Errorf("%s: %v %v", name, got, err)
@@ -255,12 +306,26 @@ func TestReviewReusable(t *testing.T) {
 	evidence := review(false, func(n *types.Node) {
 		n.Inputs[0].Source.Variant = &types.ResultSource{Type: "result", Producer: gate, ResultKind: types.ResultKindEvidence}
 	})
+	extra := review(false, func(n *types.Node) {
+		n.Inputs = append(slices.Clone(n.Inputs), types.InputSpec{Name: "more", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: g.plan, ResultKind: types.ResultKindPlan}}})
+	})
+	otherPlan, _ := g.planOf(tskID, prjID)
+	secondProducer := review(false, func(n *types.Node) {
+		n.Inputs = slices.Clone(n.Inputs)
+		n.Inputs[1].Source.Variant = &types.ResultSource{Type: "result", Producer: otherPlan, ResultKind: types.ResultKindPlan}
+	})
 	for name, c := range map[string]struct {
 		next types.NodeID
 		in   types.Name
-	}{"another producer": {plan, "gate"}, "an input of another kind": {evidence, "gate"}, "no such input": {plan, "ruling"}} {
+	}{"another producer": {plan, "gate"}, "an input of another kind": {evidence, "gate"}, "no such input": {plan, "ruling"}, "an extra input": {extra, "gate"}, "another producer on a second input": {secondProducer, "gate"}} {
 		if _, err := reusable(c.next, c.in); err == nil {
 			t.Errorf("%s: compared", name)
 		}
+	}
+	failing := receiptDoc(treeSubject(treeA, demandA), nil)
+	failing["predicates"] = []any{map[string]any{"name": "tests", "outcome": "found", "reason": "completed_with_findings", "detail": "1 failed", "evidence": []any{}}}
+	fresh = reselect(failing)
+	if got, err := reusable(same, "gate"); err != nil || got {
+		t.Errorf("a changed step outcome, the same roster: %v %v", got, err)
 	}
 }

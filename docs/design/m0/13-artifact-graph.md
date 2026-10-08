@@ -86,15 +86,20 @@ Result:                            # what was computed: immutable  [G1]
     wait (awaiting an approval, an input or a budget raise) carries over to the new generation with its id, `since` and
     pages, and the node stays held: as in supersession, a hold is retired only when the node no longer has the wait.
 - **The reviewer roster is part of a review's identity** (intake B1).
-  - **In the key.** A review node's `params` carry its roster: for each member, the executor id and its model family.
+  - **In the key.** A review node's `params` carry its subject and its roster: for each member, the executor id and its
+    model family.
     The family is derived from the controller's executor registry, never asserted by a caller (06 independence). The
     roster is in the params digest, so it is in the computation key, and a result produced by one roster can never
     satisfy another roster's key.
-    - A review (or review-requirement) node is recorded only through the registry: the controller derives each
-      member's family, and refuses a roster whose families differ from the registry's. An executor the registry does
-      not hold has an unknown family, and is never a member (06 rule 3: unknown is not independent).
+    - A review (or review-requirement) node is recorded and claimed only against the registry: each time, the
+      controller refuses a roster whose families are not the ones the registry now derives. An executor the registry
+      does not hold has an unknown family, and is never a member (06 rule 3: unknown is not independent). The claim
+      refuses with `could_not_run`/`reviewer_not_independent`.
     - The roster is sorted by executor, names each executor once, and has at least one member. The graph fold reads no
-      registry: it checks this shape and that no family is `unknown`, and trusts the recording for the rest.
+      registry: it checks only this shape and that no family is `unknown`. **Independence is enforced when the node
+      is claimed**, so a node recorded by a raw event, or with a family the registry no longer gives, never runs.
+    - A successor carries its predecessor's params, roster included, and is not re-checked when recorded: it relies
+      on the claim-time check.
   - **Placement is bound to it** (05). A review member's lease must place on exactly the pinned executor. A fallback
     that would change a member does not run under the old key: the replacement node is instantiated first, and the
     lease belongs to it.
@@ -105,8 +110,15 @@ Result:                            # what was computed: immutable  [G1]
     - The requirement is recorded by a `review_requirement` node: a controller node with no inputs, whose params are
       the requirement. Its result is completed and found, and its `conclusions` are exactly those params. The subject
       is a name the template gives (e.g. `candidate`), not a tree.
-    - A review declares at most one `review_requirement` input. Its claim is refused unless the requirement's roster
-      and definition version are the review's own. Making the input mandatory comes with the cycle template ([G6]).
+    - A review declares at most one `review_requirement` input. Its claim is refused unless the requirement's
+      subject, roster and definition version are the review's own. In G6a the input is optional.
+    - **G7b-2 obligations**, with the cycle template:
+      - *mandatory requirement:* every review declares exactly one `review_requirement` input, enforced by the fold;
+      - *subject binding:* the requirement is the one selected for the review's subject;
+      - *commit-time re-validation:* the merge's commit re-validates against the subject's currently selected
+        requirement revision.
+    - G6b keeps **one selected revision per subject**: a roster change selects the next revision and supersedes the
+      review of the old one.
   - **Replacement is a recorded supersession.** A roster change, decided by placement (05) or by an authority action
     (04), is **one writer transaction** (03). It selects the new requirement revision and records
     `review.superseded{predecessor, replacement, transferred_holds, retired_holds}`, together with the attempt
@@ -127,10 +139,12 @@ Result:                            # what was computed: immutable  [G1]
       - A hold is **retired** only if the replacement's actual dependencies no longer include its wait (e.g. waiting for
         a removed member's executor), with the reason recorded.
       - Resource and settlement obligations stay on their owning leases. Internal artifact waits stay structural.
-  - **Nothing reuses a review across rosters.** The reuse rule below compares only reviews with an identical non-input
-    identity: a review need not run because a prior review ran on an input that the same producer's new result is
-    equivalent to only if both have the same kind, definition version, params (so the same roster) and key generation. Carry-over in a merge-queue generation binds the requirement revision it was attested under, and the
-    merge's commit-time re-validation ([G4]) compares it with the currently selected revision.
+  - **Nothing reuses a review across rosters.** A review need not run because a prior review ran on a result that the
+    same producer's new result is equivalent to only if both declare the same inputs, and the review's key computed
+    from the prior's claimed resolutions, at its generation, is the prior's claimed key: the same kind, definition
+    version, params (so the same roster) and every other input. Carry-over in a merge-queue generation binds the
+    requirement revision it was attested under, and the merge's commit-time re-validation (G7b-2) compares it with
+    the currently selected revision.
 - **Reuse decisions use typed conclusions.** For the declared edges below, a consumer may treat a new result as
   equivalent to one it already used if their `conclusions` projections are equal **and** the subject, demand,
   instrument digest and restrictions are identical, **and** the consumer's non-input identity (kind, definition

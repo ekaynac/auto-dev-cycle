@@ -56,7 +56,7 @@ func gatesOn(tree string, demand types.Digest) Requirements {
 }
 
 func (g graphStore) env(need Requirements) Env {
-	return Env{Need: need, Blobs: g.blobs, Authority: owedanswers.Authority{}}
+	return Env{Need: need, Blobs: g.blobs, Authority: owedanswers.Authority{}, Families: reviewers}
 }
 
 func evaluate(env Env, goals ...types.NodeID) logic {
