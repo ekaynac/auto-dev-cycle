@@ -332,6 +332,9 @@ func (g *graphFix) gateReceipt(tree string, demand types.Digest, until *types.Ti
 // gateReceiptWith is gateReceipt with the predicates ps, its Ref under
 // restrictions; the receipt's own outcome is the first predicate's.
 func (g *graphFix) gateReceiptWith(tree string, demand types.Digest, until *types.Time, restrictions []types.Restriction, ps ...types.Predicate) (types.Ref, json.RawMessage, error) {
+	if len(ps) == 0 {
+		return types.Ref{}, nil, errors.New("a gate receipt has at least one predicate")
+	}
 	p := ps[0]
 	subject, err := subjectOf(tree, demand)
 	if err != nil {

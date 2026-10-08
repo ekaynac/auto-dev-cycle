@@ -102,3 +102,7 @@ the predecessor's digest of the **untrimmed** packet, kept as an identity, not r
   requesting review. If the key includes `requested_by`, step 4 becomes `found/review_input_changed`.
 - A grant rebind between two runs of the same demand (different grant digests): reuse equivalence (note 13) lists
   subject, demand, instrument digest and restrictions, not the grant. Confirm.
+- `f16-walk-demand` step 2: what runs in M0 is the attempt count (the new demand's walk is not cap-exhausted
+  once the old demand's walks are spent), whose fixture step reads `empty/completed_clean`. The golden's
+  `found/evidence_observed` is the evidence run's own result, which needs the graph in `adcd` (M1). Confirm that
+  the golden keeps `found/evidence_observed`, and that the M0 check is the count, not the result.
