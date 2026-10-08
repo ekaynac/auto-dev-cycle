@@ -38,7 +38,8 @@ export interface ResultSource {
     | "review"
     | "evidence"
     | "carry_over_attestation"
-    | "merge_result";
+    | "merge_result"
+    | "review_requirement";
 }
 /**
  * The answer to an owed input: an input.answer approval that binds exactly this revision (04 "Owed inputs"). Only a successor review declares it, never the review that asked (13 "Successor rounds"). It resolves to the approval's id and this revision, which is what the computation key hashes for it. A receipt owed input is declared as a result of its evidence node instead, since a ruling never satisfies it; the resolver (G4a) refuses an answer source whose owed input has kind receipt.

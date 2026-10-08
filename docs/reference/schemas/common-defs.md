@@ -36,7 +36,7 @@ Type: string (pattern `^git:([0-9a-f]{40}|[0-9a-f]{64})$`)
 
 The kind of an immutable graph result (docs/design/m0/13 "Model"): what an input declares it consumes.
 
-Type: one of `plan`, `patch`, `partial_patch`, `tree`, `package`, `gate_result`, `review`, `evidence`, `carry_over_attestation`, `merge_result`
+Type: one of `plan`, `patch`, `partial_patch`, `tree`, `package`, `gate_result`, `review`, `evidence`, `carry_over_attestation`, `merge_result`, `review_requirement`
 
 ### Time
 

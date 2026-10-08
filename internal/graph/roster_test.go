@@ -1,0 +1,266 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package graph
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/executors"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
+)
+
+// The tests' executors, in sorted order: exeA and exeB are claude, exeC is
+// gpt, and the reviewers does not hold exeX.
+const (
+	exeA = "exe_01m3250v9xft08ssr4ygq6g2np"
+	exeB = "exe_01m3250vkwffc979nzjw0g2sf9"
+	exeC = "exe_01m3250vm7f6ktw39dszqnyddr"
+	exeX = "exe_01m3250vnfeyrv67x6w0ddqr6a"
+)
+
+// reviewers is the tests' executor registry (the A1 fake).
+var reviewers = must(executors.New(map[types.ExecutorID]string{exeA: "claude", exeB: "claude", exeC: "gpt"}))
+
+// reviewParams are the ReviewNodeParams of the roster of exes.
+func reviewParams(exes ...types.ExecutorID) json.RawMessage {
+	roster, err := Roster(exes, reviewers)
+	if err != nil {
+		panic(err)
+	}
+	return must(json.Marshal(types.ReviewNodeParams{Roster: roster}))
+}
+
+// requirementNode is a review_requirement node at revision rev, for a
+// review of definition def by exes.
+func (g graphStore) requirementNode(rev int64, def string, exes ...types.ExecutorID) types.NodeRecorded {
+	r := g.newNode(types.NodeKindReviewRequirement)
+	roster, err := Roster(exes, reviewers)
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	r.Node.Inputs = []types.InputSpec{}
+	r.Node.Params = must(json.Marshal(types.ReviewRequirement{Subject: "candidate", Roster: roster, DefinitionVersion: def, Revision: rev}))
+	return r
+}
+
+// requirementOn records, claims and completes req, whose result's
+// conclusions are concl (its params when nil).
+func (g graphStore) completeRequirement(req types.NodeRecorded, concl json.RawMessage) (types.NodeID, types.ResultID, error) {
+	n := g.record(req)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Claim(tx, n, map[string]Resolved{}, 1) })
+	if concl == nil {
+		concl = req.Node.Params
+	}
+	rid := types.ResultID(must(ids.New("res")))
+	r := types.Result{ID: rid, Computation: g.state(n).Key.Key, Kind: types.ResultKindReviewRequirement, Value: []types.Ref{},
+		Conclusions: &concl, Outcome: types.OutcomeFound, Reason: vocab.ReasonCompletedWithFindings, Detail: "required", Completed: true}
+	err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
+	})
+	if err == nil {
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, rid) })
+	}
+	return n, rid, err
+}
+
+// The roster's families are the reviewers's, sorted by executor; an
+// executor of unknown family is never a member.
+func TestRoster(t *testing.T) {
+	got, err := Roster([]types.ExecutorID{exeC, exeA}, reviewers)
+	want := []types.RosterMember{{Executor: exeA, Family: "claude"}, {Executor: exeC, Family: "gpt"}}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("Roster = %v, %v", got, err)
+	}
+	var unknown ErrUnknownFamily
+	if _, err := Roster([]types.ExecutorID{exeA, exeX}, reviewers); !errors.As(err, &unknown) || unknown.Executor != exeX {
+		t.Errorf("an unregistered executor: %v", err)
+	}
+	if _, err := Roster([]types.ExecutorID{exeA, exeA}, reviewers); err == nil {
+		t.Error("an executor twice")
+	}
+}
+
+// A review is recorded only with the reviewers's families: Record refuses
+// it, and RecordReview refuses an asserted family, an unknown one, an
+// unsorted roster and a requirement that is not one input.
+func TestRecordReview(t *testing.T) {
+	g := openStore(t)
+	if _, err := RecordReview(g.newNode(types.NodeKindReview), reviewers); err != nil {
+		t.Fatalf("a review of the reviewers's roster: %v", err)
+	}
+	if _, err := RecordReview(g.requirementNode(1, "1", exeA, exeC), reviewers); err != nil {
+		t.Fatalf("a requirement of the reviewers's roster: %v", err)
+	}
+	for _, kind := range []types.NodeKind{types.NodeKindReview, types.NodeKindReviewRequirement} {
+		if _, err := Record(g.newNode(kind)); err == nil {
+			t.Errorf("Record recorded a %s node", kind)
+		}
+	}
+	if _, err := RecordReview(g.newNode(types.NodeKindGate), reviewers); err == nil {
+		t.Error("RecordReview recorded a gate")
+	}
+	roster := func(js string) func(*types.NodeRecorded) {
+		return func(r *types.NodeRecorded) { r.Node.Params = json.RawMessage(`{"roster":[` + js + `]}`) }
+	}
+	member := func(e, f string) string { return `{"executor":"` + e + `","family":"` + f + `"}` }
+	requirement := func(r *types.NodeRecorded) {
+		r.Node.Inputs = append(r.Node.Inputs, types.InputSpec{Name: "required", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: g.plan, ResultKind: types.ResultKindReviewRequirement}}})
+	}
+	for name, change := range map[string]func(*types.NodeRecorded){
+		"an asserted family":     roster(member(exeA, "gpt")),
+		"an unknown executor":    roster(member(exeX, "claude")),
+		"an unknown family":      roster(member(exeX, "unknown")),
+		"an unsorted roster":     roster(member(exeC, "gpt") + "," + member(exeA, "claude")),
+		"an executor twice":      roster(member(exeA, "claude") + "," + member(exeA, "claude")),
+		"no reviewer":            roster(""),
+		"two requirement inputs": func(r *types.NodeRecorded) { requirement(r); requirement(r); r.Node.Inputs[2].Name = "again" },
+	} {
+		r := g.newNode(types.NodeKindReview)
+		change(&r)
+		if _, err := RecordReview(r, reviewers); err == nil {
+			t.Errorf("%s: recorded", name)
+		}
+	}
+	withInput := g.requirementNode(1, "1", exeA)
+	withInput.Node.Inputs = g.newNode(types.NodeKindGate).Node.Inputs
+	if _, err := RecordReview(withInput, reviewers); err == nil {
+		t.Error("a requirement node with an input")
+	}
+	// The fold, which reads no reviewers, refuses what it can tell.
+	for name, r := range map[string]types.NodeRecorded{
+		"an unknown family":  with(g.newNode(types.NodeKindReview), roster(member(exeX, "unknown"))),
+		"an unsorted roster": with(g.newNode(types.NodeKindReview), roster(member(exeC, "gpt")+","+member(exeA, "claude"))),
+		"a requirement input": with(g.requirementNode(1, "1", exeA), func(r *types.NodeRecorded) {
+			r.Node.Inputs = g.newNode(types.NodeKindGate).Node.Inputs
+		}),
+	} {
+		r.Type = "node_recorded"
+		if err := g.do(forge(NodeRecorded, string(r.Node.ID), prjID, &r)); err == nil {
+			t.Errorf("the fold recorded %s", name)
+		}
+	}
+}
+
+func with(r types.NodeRecorded, change func(*types.NodeRecorded)) types.NodeRecorded {
+	change(&r)
+	return r
+}
+
+// A review requirement's result records exactly its node's params, and a
+// review binds the requirement of its roster and definition version.
+func TestReviewRequirement(t *testing.T) {
+	g := openStore(t)
+	other := must(json.Marshal(types.ReviewRequirement{Subject: "candidate", Roster: must(Roster([]types.ExecutorID{exeB}, reviewers)), DefinitionVersion: "1", Revision: 1}))
+	if _, _, err := g.completeRequirement(g.requirementNode(1, "1", exeA), other); err == nil {
+		t.Error("a requirement result of another roster")
+	}
+	reviewOn := func(req types.NodeID, exes ...types.ExecutorID) types.NodeID {
+		r := g.newNode(types.NodeKindReview)
+		r.Node.Params = reviewParams(exes...)
+		r.Node.Inputs = append(r.Node.Inputs, types.InputSpec{Name: "required", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: req, ResultKind: types.ResultKindReviewRequirement}}})
+		return g.record(r)
+	}
+	claim := func(review types.NodeID, res types.ResultID) error {
+		return g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return Claim(tx, review, map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: res}}, 0)
+		})
+	}
+	req, res, err := g.completeRequirement(g.requirementNode(1, "1", exeA, exeC), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := claim(reviewOn(req, exeA, exeC), res); err != nil {
+		t.Fatalf("a review of its requirement's roster: %v", err)
+	}
+	for name, exes := range map[string][]types.ExecutorID{"another member": {exeA, exeB}, "a member fewer": {exeA}} {
+		if err := claim(reviewOn(req, exes...), res); err == nil || !strings.Contains(err.Error(), "roster and definition") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	older, oldRes, err := g.completeRequirement(g.requirementNode(2, "0", exeA, exeC), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := claim(reviewOn(older, exeA, exeC), oldRes); err == nil {
+		t.Error("a requirement of another definition version")
+	}
+}
+
+// A review is reusable only from a review of one non-input identity on the
+// same producer: never across a roster change, a definition version, a
+// kind or a generation.
+func TestReviewReusable(t *testing.T) {
+	g := openStore(t)
+	gate, usedResult := g.gated(g.receiptBlob(treeSubject(treeA, demandA), nil))
+	used := usedResult.ID
+	env := g.env(gatesOn(treeA, demandA))
+	prior := g.reviewOf(gate)
+	g.must(evaluate(env, prior))
+	g.must(commit(prior, g.reviewResult(prior), env))
+	// The gate's next result concludes the same.
+	g.must(invalidate(gate))
+	d := g.derived(receiptDoc(treeSubject(treeA, demandA), nil))
+	r := unrecorded(t, *g.state(gate).Key)
+	r.Kind, r.Outcome, r.Reason, r.Detail = types.ResultKindGateResult, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+	r.Conclusions, r.Value = ptr(g.conclusions[d]), []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return recordResult(tx, types.ResultRecorded{Node: gate, Result: r}, g.blobs)
+	})
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, gate, r.ID) })
+	fresh := r.ID
+	// review records a node like prior, changed, and evaluates it if run.
+	review := func(run bool, change func(*types.Node)) types.NodeID {
+		rec := g.recordOf(prior)
+		rec.Node.ID = g.newNode(types.NodeKindReview).Node.ID
+		change(&rec.Node)
+		n := g.record(rec)
+		if run {
+			g.must(evaluate(env, n))
+		}
+		return n
+	}
+	reusable := func(next types.NodeID, name types.Name) (got bool, err error) {
+		err = g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
+			got, err = ReviewReusable(tx, prior, next, name, used, fresh, g.blobs)
+			return err
+		})
+		return got, err
+	}
+	for name, c := range map[string]struct {
+		next types.NodeID
+		want bool
+	}{
+		"the same roster":             {review(true, func(*types.Node) {}), true},
+		"a member of the same family": {review(true, func(n *types.Node) { n.Params = reviewParams(exeB) }), false},
+		"a member added":              {review(true, func(n *types.Node) { n.Params = reviewParams(exeA, exeC) }), false},
+		"another definition version":  {review(true, func(n *types.Node) { n.DefinitionVersion = "2" }), false},
+		"another kind":                {review(true, func(n *types.Node) { n.Kind = types.NodeKindCarryOver }), false},
+		"an unclaimed review":         {review(false, func(*types.Node) {}), false},
+	} {
+		if got, err := reusable(c.next, "gate"); err != nil || got != c.want {
+			t.Errorf("%s: %v %v", name, got, err)
+		}
+	}
+	plan := review(false, func(n *types.Node) {
+		n.Inputs[0].Source.Variant = &types.ResultSource{Type: "result", Producer: g.plan, ResultKind: types.ResultKindGateResult}
+	})
+	evidence := review(false, func(n *types.Node) {
+		n.Inputs[0].Source.Variant = &types.ResultSource{Type: "result", Producer: gate, ResultKind: types.ResultKindEvidence}
+	})
+	for name, c := range map[string]struct {
+		next types.NodeID
+		in   types.Name
+	}{"another producer": {plan, "gate"}, "an input of another kind": {evidence, "gate"}, "no such input": {plan, "ruling"}} {
+		if _, err := reusable(c.next, c.in); err == nil {
+			t.Errorf("%s: compared", name)
+		}
+	}
+}

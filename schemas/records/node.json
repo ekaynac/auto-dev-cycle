@@ -8,7 +8,7 @@
   "required": ["id", "kind", "definition_version", "inputs", "params", "requires", "effect", "round"],
   "properties": {
     "id": {"$ref": "../common/defs.json#/$defs/NodeID"},
-    "kind": {"enum": ["plan", "build", "accept", "gate", "runtime_verify", "integration", "evidence", "review", "carry_over", "closure", "merge", "deploy", "record", "phase_gate"]},
+    "kind": {"enum": ["plan", "build", "accept", "gate", "runtime_verify", "integration", "evidence", "review", "review_requirement", "carry_over", "closure", "merge", "deploy", "record", "phase_gate"]},
     "definition_version": {
       "description": "The version of the kind's definition. A change is an explicit invalidation (13 [G1]).",
       "type": "string",
@@ -21,7 +21,7 @@
       "items": {"$ref": "input-spec.json"}
     },
     "params": {
-      "description": "The kind's parameters, one schema per kind (a review's params carry its roster, 13); an evidence node's are EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.",
+      "description": "The kind's parameters, one schema per kind: a review node's are ReviewNodeParams, with its roster (13), a review_requirement node's the ReviewRequirement it records (13), and an evidence node's EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.",
       "type": "object",
       "x-adc-open-payload": "kind"
     },
@@ -55,6 +55,8 @@
     {"if": {"required": ["kind"], "properties": {"kind": {"const": "deploy"}}}, "then": {"properties": {"effect": {"const": "deploy"}}}},
     {"if": {"required": ["kind"], "properties": {"kind": {"const": "record"}}}, "then": {"properties": {"effect": {"enum": [null, "notification"]}}}},
     {"if": {"required": ["kind"], "properties": {"kind": {"not": {"enum": ["merge", "deploy", "record"]}}}}, "then": {"properties": {"effect": {"const": null}}}},
-    {"if": {"required": ["kind"], "properties": {"kind": {"const": "evidence"}}}, "then": {"properties": {"params": {"$ref": "evidence-node-params.json"}}}}
+    {"if": {"required": ["kind"], "properties": {"kind": {"const": "evidence"}}}, "then": {"properties": {"params": {"$ref": "evidence-node-params.json"}}}},
+    {"if": {"required": ["kind"], "properties": {"kind": {"const": "review"}}}, "then": {"properties": {"params": {"$ref": "review-node-params.json"}}}},
+    {"if": {"required": ["kind"], "properties": {"kind": {"const": "review_requirement"}}}, "then": {"properties": {"params": {"$ref": "review-requirement.json"}}}}
   ]
 }

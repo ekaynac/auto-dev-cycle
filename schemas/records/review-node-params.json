@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/review-node-params.json",
+  "title": "ReviewNodeParams",
+  "description": "The params of a review node (docs/design/m0/13 \"The reviewer roster is part of a review's identity\"), which records/node selects for kind review. The roster is in the params digest, so it is in the computation key: a result of one roster never satisfies another roster's key, and equivalence never reuses a review across rosters. internal/graph records a review only through RecordReview, which derives each member's family from the executor registry and refuses an executor of unknown family; it also refuses a roster not sorted by executor or naming an executor twice.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["roster"],
+  "properties": {
+    "roster": {
+      "description": "The reviewers, sorted by executor id. Placement leases each member on exactly its executor (05).",
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/RosterMember"}
+    }
+  },
+  "$defs": {
+    "RosterMember": {
+      "description": "One reviewer: the executor it is pinned to and that executor's model family, derived from the controller's executor registry and never asserted by a caller (06 rule 3). The family is never unknown.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executor", "family"],
+      "properties": {
+        "executor": {"$ref": "../common/defs.json#/$defs/ExecutorID"},
+        "family": {"$ref": "receipt.json#/$defs/Name"}
+      }
+    }
+  }
+}

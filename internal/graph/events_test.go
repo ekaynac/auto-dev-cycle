@@ -146,6 +146,9 @@ func (g graphStore) nodeOn(kind types.NodeKind, plan types.NodeID) types.NodeRec
 	n := types.Node{ID: types.NodeID(id), Kind: kind, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{"task":"x"}`),
 		Inputs:   []types.InputSpec{{Name: "plan", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: plan, ResultKind: types.ResultKindPlan}}}},
 		Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
+	if kind == types.NodeKindReview {
+		n.Params = reviewParams(exeA)
+	}
 	if kind == types.NodeKindEvidence {
 		n.Params, n.Requires.Resources = evidenceParams("x"), []types.ResourceGroupKind{"evidence_target"}
 		n.Inputs = []types.InputSpec{{Name: "tree", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: g.treeNode(), ResultKind: types.ResultKindTree}}}}
@@ -212,8 +215,17 @@ func TestRecordChecksEvidenceNodes(t *testing.T) {
 
 func (g graphStore) record(r types.NodeRecorded) types.NodeID {
 	g.t.Helper()
-	g.must(func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(r) })
+	g.must(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(r) })
 	return r.Node.ID
+}
+
+// recordAny records r, a review or review_requirement node under the test
+// registry.
+func recordAny(r types.NodeRecorded) ([]eventstore.Event, error) {
+	if r.Node.Kind == types.NodeKindReview || r.Node.Kind == types.NodeKindReviewRequirement {
+		return RecordReview(r, reviewers)
+	}
+	return Record(r)
 }
 
 func claimWith(n types.NodeID, res types.ResultID) logic {

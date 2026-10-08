@@ -25,13 +25,14 @@ export type Result = {
     | "review"
     | "evidence"
     | "carry_over_attestation"
-    | "merge_result";
+    | "merge_result"
+    | "review_requirement";
   /**
    * The output's content, by exact reference (10). Manifests list result ids, never keys (13). A gate or evidence result holds its receipt as exactly one receipt Ref whose content_digest names the receipt blob; the resolver checks that the receipt has the Ref's id and the result's conclusions, then applies it with internal/receipt's Applies (06).
    */
   value: Ref[];
   /**
-   * The typed projection used only for reuse decisions (13), one schema per result kind. A gate or evidence result's is its receipt's rule 2a conclusions document (06; internal/receipt's Conclusions), whose RFC 8785 digest is the receipt's conclusions_digest. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"); every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one.
+   * The typed projection used only for reuse decisions (13), one schema per result kind. A gate or evidence result's is its receipt's rule 2a conclusions document (06; internal/receipt's Conclusions), whose RFC 8785 digest is the receipt's conclusions_digest. A review_requirement result's is the ReviewRequirement it records (13), always present: such a result is completed and found. Only these kinds carry one: conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"), and requirements are compared by revision. Every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one.
    */
   conclusions: null | {
     [k: string]: unknown;

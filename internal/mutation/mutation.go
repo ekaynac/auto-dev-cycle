@@ -134,6 +134,9 @@ const (
 	// EquivalenceIgnoresRestrictions treats two gate or evidence results as
 	// equivalent whatever their receipts' restrictions.
 	EquivalenceIgnoresRestrictions = "graph.equivalence-ignores-restrictions"
+	// EquivalenceIgnoresRoster treats two reviews as one identity whatever
+	// their params, so a review is reused across a roster change.
+	EquivalenceIgnoresRoster = "graph.equivalence-ignores-roster"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -147,4 +150,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	AttemptsIgnoreDemand, SubjectCapUnchecked, PreconditionSpendsAttempt,
 	EffectKeyedByComputation, EffectResumeReallocates, EffectTargetUnfenced, EffectApplyBlind, EffectPendingSkipsTarget,
 	RestoreFailureReleases, RuntimeOnSourceFacts,
-	SuccessorTakesAnyAnswer, AnswerLineageUnchecked, EquivalenceIgnoresRestrictions}
+	SuccessorTakesAnyAnswer, AnswerLineageUnchecked, EquivalenceIgnoresRestrictions, EquivalenceIgnoresRoster}

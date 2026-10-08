@@ -11,23 +11,25 @@ One node instance in a task's artifact graph (docs/design/m0/13 "Model"): a deci
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `id` | yes | [NodeID](common-defs.md#nodeid) |  |
-| `kind` | yes | one of `plan`, `build`, `accept`, `gate`, `runtime_verify`, `integration`, `evidence`, `review`, `carry_over`, `closure`, `merge`, `deploy`, `record`, `phase_gate` |  |
+| `kind` | yes | one of `plan`, `build`, `accept`, `gate`, `runtime_verify`, `integration`, `evidence`, `review`, `review_requirement`, `carry_over`, `closure`, `merge`, `deploy`, `record`, `phase_gate` |  |
 | `definition_version` | yes | string (minLength `1`, maxLength `128`) | The version of the kind's definition. A change is an explicit invalidation (13 [G1]). |
 | `inputs` | yes | array of [input-spec](records-input-spec.md) | Declared by the kind's definition. The computation key hashes each input's name with what it resolved to, sorted by name, so the order they are listed in is not part of the key (internal/graph). |
-| `params` | yes | object (open payload) | The kind's parameters, one schema per kind (a review's params carry its roster, 13); an evidence node's are EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range. |
+| `params` | yes | object (open payload) | The kind's parameters, one schema per kind: a review node's are ReviewNodeParams, with its roster (13), a review_requirement node's the ReviewRequirement it records (13), and an evidence node's EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range. |
 | `requires` | yes | object ([fields](#fields-of-requires)) | What the node leases to run (05). A controller node has no role and no capability. That a model kind has both is internal/graph's check, not the schema's. |
 | `effect` | yes | null or [Name](records-receipt.md#name) | The effect kind, run under a durable effect identity (03 "External effects"). null is the only way to say none. A merge node's is merge and a deploy node's deploy; a record node's is notification or null; every other kind has none. A cached effect result is history, never current state (13 [G4]). |
 | `round` | yes | integer (minimum `1`, maximum `9007199254740991`) | The successor index: 1 for the first instance, and the predecessor's round plus one for each successor (repair, answers, new demands). Rails count across rounds. |
 
 No other fields are allowed.
 
-Conditional rules (5, `if`/`then`/`else` in the schema):
+Conditional rules (7, `if`/`then`/`else` in the schema):
 
 - when `kind` `merge`, `kind` required, then `effect` `merge`
 - when `kind` `deploy`, `kind` required, then `effect` `deploy`
 - when `kind` `record`, `kind` required, then `effect` one of `null`, `notification`
 - when `kind` any (with a `not` constraint), `kind` required, then `effect` `null`
 - when `kind` `evidence`, `kind` required, then `params` [evidence-node-params](records-evidence-node-params.md)
+- when `kind` `review`, `kind` required, then `params` [review-node-params](records-review-node-params.md)
+- when `kind` `review_requirement`, `kind` required, then `params` [review-requirement](records-review-requirement.md)
 
 ## Fields of requires
 

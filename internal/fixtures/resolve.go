@@ -166,7 +166,12 @@ func (g *graphFix) record(kind types.NodeKind, params json.RawMessage, input []t
 		n.Node.Requires.Resources = []types.ResourceGroupKind{types.ResourceGroupKindEvidenceTarget}
 	}
 	if err == nil {
-		err = g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return graph.Record(n) })
+		err = g.do(func(*eventstore.Tx) ([]eventstore.Event, error) {
+			if kind == types.NodeKindReview { // under the fixtures' executor registry (G6a)
+				return graph.RecordReview(n, reviewers)
+			}
+			return graph.Record(n)
+		})
 	}
 	return n.Node.ID, err
 }
@@ -249,7 +254,7 @@ func (g *graphFix) gateOf(tree string, demand types.Digest, until *types.Time) (
 
 // reviewOf records a review taking gate's result.
 func (g *graphFix) reviewOf(gate types.NodeID) (types.NodeID, error) {
-	return g.record(types.NodeKindReview, json.RawMessage(`{}`), on("gate", gate, types.ResultKindGateResult))
+	return g.record(types.NodeKindReview, soleReviewer, on("gate", gate, types.ResultKindGateResult))
 }
 
 func on(name string, producer types.NodeID, kind types.ResultKind) []types.InputSpec {

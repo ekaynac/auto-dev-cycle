@@ -1,0 +1,11 @@
+{
+  "name": "roster-change-runs-review",
+  "invariant": "Equal gate conclusions never reuse a review across a roster change: a fresh result equal to the one a review took is equivalent for a review of the same roster (empty/conclusions_unchanged), not for another executor of the same family or an added member (found/review_input_changed); a roster with an executor the registry does not hold is never recorded (could_not_run/reviewer_not_independent) (13 roster identity; 06 rule 3).",
+  "expected": [
+    {"outcome": "empty", "reason": "conclusions_unchanged"},
+    {"outcome": "found", "reason": "review_input_changed"},
+    {"outcome": "found", "reason": "review_input_changed"},
+    {"outcome": "could_not_run", "reason": "reviewer_not_independent"}
+  ],
+  "mutation": "graph.equivalence-ignores-roster"
+}

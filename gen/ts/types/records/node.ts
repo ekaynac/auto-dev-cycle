@@ -17,6 +17,7 @@ export type Node = {
     | "integration"
     | "evidence"
     | "review"
+    | "review_requirement"
     | "carry_over"
     | "closure"
     | "merge"
@@ -32,7 +33,7 @@ export type Node = {
    */
   inputs: InputSpec[];
   /**
-   * The kind's parameters, one schema per kind (a review's params carry its roster, 13); an evidence node's are EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.
+   * The kind's parameters, one schema per kind: a review node's are ReviewNodeParams, with its roster (13), a review_requirement node's the ReviewRequirement it records (13), and an evidence node's EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.
    */
   params: {
     [k: string]: unknown;
@@ -107,7 +108,8 @@ export interface ResultSource {
     | "review"
     | "evidence"
     | "carry_over_attestation"
-    | "merge_result";
+    | "merge_result"
+    | "review_requirement";
 }
 /**
  * The answer to an owed input: an input.answer approval that binds exactly this revision (04 "Owed inputs"). Only a successor review declares it, never the review that asked (13 "Successor rounds"). It resolves to the approval's id and this revision, which is what the computation key hashes for it. A receipt owed input is declared as a result of its evidence node instead, since a ruling never satisfies it; the resolver (G4a) refuses an answer source whose owed input has kind receipt.

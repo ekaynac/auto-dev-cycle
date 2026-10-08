@@ -90,6 +90,7 @@ var runners = map[string]runner{
 	"undeclared-ruling-not-in-context":      undeclaredRulingNotInContext,
 	"answer-reaches-only-successor":         answerReachesOnlySuccessor,
 	"equal-conclusions-reuse-review":        equalConclusionsReuseReview,
+	"roster-change-runs-review":             rosterChangeRunsReview,
 }
 
 // Goldens loads and validates every golden, checking that each has a

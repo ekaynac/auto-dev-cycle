@@ -73,7 +73,7 @@ func commit(n types.NodeID, r types.Result, env Env) logic {
 // successor declaring the answers.
 func (g graphStore) asking(inputs ...types.InputSpec) types.NodeID {
 	ask := g.newNode(types.NodeKindReview)
-	ask.Node.Params = json.RawMessage(`{"node":"` + string(ask.Node.ID) + `"}`)
+	ask.Node.DefinitionVersion = string(ask.Node.ID)
 	ask.Node.Inputs = []types.InputSpec{}
 	var answers []types.InputSpec
 	for _, in := range inputs {
@@ -385,7 +385,7 @@ func TestEvaluateWaitsOnARenewal(t *testing.T) {
 func (g graphStore) reviewWith(producer types.NodeID, kind types.ResultKind) types.NodeID {
 	r := g.nodeOn(types.NodeKindReview, producer)
 	r.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind, r.Node.Inputs[0].Name = kind, "gate"
-	r.Node.Params = json.RawMessage(`{"node":"` + string(r.Node.ID) + `"}`)
+	r.Node.DefinitionVersion = string(r.Node.ID) // a review's params are its roster
 	return g.record(r)
 }
 

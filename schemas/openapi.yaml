@@ -1417,6 +1417,7 @@ components:
             - evidence
             - carry_over_attestation
             - merge_result
+            - review_requirement
         Time:
           description: RFC 3339 in UTC with a Z suffix and a valid calendar date and clock time (adc-time).
           type: string

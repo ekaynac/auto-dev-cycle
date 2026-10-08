@@ -24,7 +24,7 @@ alone is not enough, this note says so and names the remaining check.
 ```yaml
 Node:                              # one instance in a task's graph
   id: nod_…
-  kind: plan | build | accept | gate | runtime_verify | integration | evidence | review | carry_over | closure | merge | deploy | record | phase_gate
+  kind: plan | build | accept | gate | runtime_verify | integration | evidence | review | review_requirement | carry_over | closure | merge | deploy | record | phase_gate
   definition_version: string
   inputs: [InputSpec]              # declared, typed
   params: {…}
@@ -39,9 +39,9 @@ ComputationKey:                    # what to compute  [G1]
 Result:                            # what was computed: immutable  [G1]
   id: res_…                        # identity of THIS output (content digest + attempt), never the computation key
   computation: sha256:…            # the ComputationKey it answers
-  kind: plan | patch | partial_patch | tree | package | gate_result | review | evidence | carry_over_attestation | merge_result | …
+  kind: plan | patch | partial_patch | tree | package | gate_result | review | evidence | carry_over_attestation | merge_result | review_requirement
   value: [Ref]
-  conclusions: {typed projection}  # for reuse decisions only (see below); gate, evidence: the receipt's rule 2a document (06)
+  conclusions: {typed projection}  # for reuse decisions only (see below); gate, evidence: the receipt's rule 2a document (06); review_requirement: the requirement
   outcome, reason
   completed: bool                  # did execution observably complete? (see "Facts, not claims")
 ```
@@ -90,6 +90,11 @@ Result:                            # what was computed: immutable  [G1]
     The family is derived from the controller's executor registry, never asserted by a caller (06 independence). The
     roster is in the params digest, so it is in the computation key, and a result produced by one roster can never
     satisfy another roster's key.
+    - A review (or review-requirement) node is recorded only through the registry: the controller derives each
+      member's family, and refuses a roster whose families differ from the registry's. An executor the registry does
+      not hold has an unknown family, and is never a member (06 rule 3: unknown is not independent).
+    - The roster is sorted by executor, names each executor once, and has at least one member. The graph fold reads no
+      registry: it checks this shape and that no family is `unknown`, and trusts the recording for the rest.
   - **Placement is bound to it** (05). A review member's lease must place on exactly the pinned executor. A fallback
     that would change a member does not run under the old key: the replacement node is instantiated first, and the
     lease belongs to it.
@@ -97,6 +102,11 @@ Result:                            # what was computed: immutable  [G1]
     **review-requirement** result: `{subject, roster, definition_version, revision}`. A review node is made for the
     selected requirement. Base moves do not change it, so a valid carry-over survives them. Comparisons are on the
     requirement's revision (roster and definition), never on a rebased review's computation key.
+    - The requirement is recorded by a `review_requirement` node: a controller node with no inputs, whose params are
+      the requirement. Its result is completed and found, and its `conclusions` are exactly those params. The subject
+      is a name the template gives (e.g. `candidate`), not a tree.
+    - A review declares at most one `review_requirement` input. Its claim is refused unless the requirement's roster
+      and definition version are the review's own. Making the input mandatory comes with the cycle template ([G6]).
   - **Replacement is a recorded supersession.** A roster change, decided by placement (05) or by an authority action
     (04), is **one writer transaction** (03). It selects the new requirement revision and records
     `review.superseded{predecessor, replacement, transferred_holds, retired_holds}`, together with the attempt
@@ -118,7 +128,8 @@ Result:                            # what was computed: immutable  [G1]
         a removed member's executor), with the reason recorded.
       - Resource and settlement obligations stay on their owning leases. Internal artifact waits stay structural.
   - **Nothing reuses a review across rosters.** The reuse rule below compares only reviews with an identical non-input
-    identity. Carry-over in a merge-queue generation binds the requirement revision it was attested under, and the
+    identity: a review need not run because a prior review ran on an input that the same producer's new result is
+    equivalent to only if both have the same kind, definition version, params (so the same roster) and key generation. Carry-over in a merge-queue generation binds the requirement revision it was attested under, and the
     merge's commit-time re-validation ([G4]) compares it with the currently selected revision.
 - **Reuse decisions use typed conclusions.** For the declared edges below, a consumer may treat a new result as
   equivalent to one it already used if their `conclusions` projections are equal **and** the subject, demand,

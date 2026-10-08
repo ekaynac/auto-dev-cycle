@@ -152,7 +152,7 @@ func Successor(tx *eventstore.Tx, pred types.NodeID, added []types.InputSpec, au
 		}
 		evs = append(evs, release...)
 	}
-	recorded, err := Record(next)
+	recorded, err := record(next) // a review keeps its roster, checked again when claimed
 	if err != nil {
 		return nil, err
 	}

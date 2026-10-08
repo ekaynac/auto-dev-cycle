@@ -81,6 +81,7 @@ const (
 	ResultKindEvidence             ResultKind = "evidence"
 	ResultKindCarryOverAttestation ResultKind = "carry_over_attestation"
 	ResultKindMergeResult          ResultKind = "merge_result"
+	ResultKindReviewRequirement    ResultKind = "review_requirement"
 )
 
 // Time: RFC 3339 in UTC with a Z suffix and a valid calendar date and clock time (adc-time).

@@ -81,9 +81,9 @@ func undeclaredRulingNotInContext(ctx context.Context, dir string) (steps []Step
 	}
 	if err == nil { // another review of the gate, and its round 2 answering what the gate owes
 		var other types.NodeID
-		other, err = g.record(types.NodeKindReview, json.RawMessage(`{"other":true}`), on("plan", g.plan, types.ResultKindPlan))
+		other, err = g.record(types.NodeKindReview, otherReviewer, on("plan", g.plan, types.ResultKindPlan))
 		if err == nil {
-			stray, err = g.record(types.NodeKindReview, json.RawMessage(`{"other":true}`), append(on("plan", g.plan, types.ResultKindPlan), answerTo(owedOther)), other)
+			stray, err = g.record(types.NodeKindReview, otherReviewer, append(on("plan", g.plan, types.ResultKindPlan), answerTo(owedOther)), other)
 		}
 	}
 	evaluate := func(n types.NodeID) error {
