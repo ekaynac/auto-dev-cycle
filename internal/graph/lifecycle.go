@@ -35,6 +35,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 )
 
 // produces binds a node kind to the result kinds it records, deny by
@@ -54,13 +55,26 @@ var produces = map[types.NodeKind][]types.ResultKind{
 }
 
 // RecordResult is the event recording r, a valid result of node's claimed key.
-func RecordResult(tx *eventstore.Tx, r types.ResultRecorded) ([]eventstore.Event, error) {
+// A result holding one receipt Ref binds that receipt's valid_until, read
+// from blobs, once: renewal and the resolver hold the receipt to it.
+func RecordResult(tx *eventstore.Tx, r types.ResultRecorded, blobs receipt.Blobs) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, r.Node)
 	if err == nil {
 		err = Check(r.Result)
 	}
 	if err != nil {
 		return nil, err
+	}
+	r.ReceiptValidUntil = nil
+	if ref, rerr := receiptRef(r.Result); rerr == nil {
+		rcpt, err := readReceipt(ref, blobs)
+		if err == nil {
+			err = sinceRenewal(tx, r.Node, rcpt)
+		}
+		if err != nil {
+			return nil, err
+		}
+		r.ReceiptValidUntil = rcpt.ValidUntil
 	}
 	r.Type = "result_recorded"
 	return event(ResultRecorded, string(r.Result.ID), rec.Recorded.Project, &r)
@@ -89,8 +103,8 @@ func Invalidate(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error
 	if err != nil {
 		return nil, err
 	}
-	var reusers []types.NodeID
-	if slices.Contains(memoizable, rec.Recorded.Node.Kind) {
+	memo := slices.Contains(memoizable, rec.Recorded.Node.Kind)
+	if memo {
 		old := keyIndex(rec.Recorded.Task, c.Key.Key)
 		if holder, _, err := load[types.NodeID](tx, KeyProjection, old); err != nil || holder != node {
 			return nil, errors.Join(err, ErrReused{holder})
@@ -100,13 +114,10 @@ func Invalidate(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error
 		} else if taken {
 			return nil, ErrKeyClaimed{holder}
 		}
-		if reusers, _, err = load[[]types.NodeID](tx, ReuseProjection, old); err != nil {
-			return nil, err
-		}
 	}
 	evs, err := onNode(tx, node, NodeInvalidated, string(node), &types.NodeInvalidated{Type: "node_invalidated", Node: node, Key: key})
-	for _, r := range reusers {
-		release, rerr := onNode(tx, r, ReuseReleased, string(r), &types.NodeReuseReleased{Type: "node_reuse_released", Node: r, Key: c.Key})
+	if memo {
+		release, rerr := releases(tx, rec.Recorded.Task, c.Key)
 		evs, err = append(evs, release...), errors.Join(err, rerr)
 	}
 	for _, h := range rec.State.Holds {
@@ -115,6 +126,17 @@ func Invalidate(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error
 			retire, rerr := cleared(tx, node, h.ID, &types.Retired{Type: "retired", Reason: types.RetiredReasonInvalidated})
 			evs, err = append(evs, retire...), rerr
 		}
+	}
+	return evs, err
+}
+
+// releases are the events releasing each node bound to key by reuse.
+func releases(tx *eventstore.Tx, task types.TaskID, key types.ComputationKey) ([]eventstore.Event, error) {
+	reusers, _, err := load[[]types.NodeID](tx, ReuseProjection, keyIndex(task, key.Key))
+	var evs []eventstore.Event
+	for _, r := range reusers {
+		release, rerr := onNode(tx, r, ReuseReleased, string(r), &types.NodeReuseReleased{Type: "node_reuse_released", Node: r, Key: key})
+		evs, err = append(evs, release...), errors.Join(err, rerr)
 	}
 	return evs, err
 }
@@ -141,8 +163,20 @@ func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecor
 	if err := CheckRead(p.Result); err != nil {
 		return err
 	}
+	if _, rerr := receiptRef(p.Result); p.ReceiptValidUntil != nil && rerr != nil {
+		return errors.New("only a result holding one receipt binds a receipt's validity")
+	}
 	if _, exists, err := load[types.ResultRecorded](tx, ResultProjection, string(p.Result.ID)); err != nil || exists {
 		return errors.Join(err, errors.New("the result is recorded"))
+	}
+	// After a renewal, the node selects only a result recorded after it.
+	if ren, renewing, err := load[renewal](tx, RenewalProjection, string(p.Node)); err != nil {
+		return err
+	} else if renewing {
+		ren.After = append(ren.After, p.Result.ID)
+		if err := put(tx, RenewalProjection, string(p.Node), ren); err != nil {
+			return err
+		}
 	}
 	return put(tx, ResultProjection, string(p.Result.ID), p)
 }
@@ -163,6 +197,9 @@ func selected(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultSelected) e
 	// CheckRead refuses a completed one.
 	if r.Result.Outcome == types.OutcomeCouldNotRun {
 		return errors.New("only a completed found, empty or failed result is selected")
+	}
+	if ren, renewing, err := load[renewal](tx, RenewalProjection, string(p.Node)); err != nil || renewing && !slices.Contains(ren.After, p.Result) {
+		return errors.Join(err, errors.New("a renewed node selects only a result recorded after its renewal"))
 	}
 	rec.State.State, rec.State.Result = types.NodeStateStateCompleted, &p.Result
 	return putNode(tx, rec)

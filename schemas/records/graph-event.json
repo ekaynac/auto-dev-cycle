@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/graph-event.json",
   "title": "GraphEvent",
-  "description": "The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.",
-  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}, {"$ref": "#/$defs/NodeInvalidated"}, {"$ref": "#/$defs/NodeReused"}, {"$ref": "#/$defs/NodeReuseReleased"}, {"$ref": "#/$defs/HoldRaised"}, {"$ref": "#/$defs/HoldPaged"}, {"$ref": "#/$defs/HoldCleared"}, {"$ref": "#/$defs/ResultRecorded"}, {"$ref": "#/$defs/ResultSelected"}],
+  "description": "The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.",
+  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}, {"$ref": "#/$defs/NodeInvalidated"}, {"$ref": "#/$defs/NodeReused"}, {"$ref": "#/$defs/NodeReuseReleased"}, {"$ref": "#/$defs/NodeRenewed"}, {"$ref": "#/$defs/HoldRaised"}, {"$ref": "#/$defs/HoldPaged"}, {"$ref": "#/$defs/HoldCleared"}, {"$ref": "#/$defs/ResultRecorded"}, {"$ref": "#/$defs/ResultSelected"}],
   "$defs": {
     "NodeRecorded": {
       "description": "A node joins its task's graph, append-only: its task, its project and the node it succeeds (null for a first round).",
@@ -70,7 +70,7 @@
       }
     },
     "NodeReuseReleased": {
-      "description": "The holder of key was invalidated, and the node bound to key by reuse is released in the same command (13 [G1]): its reuse and its result are dropped, and it waits for its inputs again, to reuse or claim at the new generation.",
+      "description": "The holder of key was invalidated or renewed, and the node bound to key by reuse is released in the same command (13 [G1]): its reuse and its result are dropped, and it waits for its inputs again, to reuse or claim at the new generation.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "node", "key"],
@@ -78,6 +78,20 @@
         "type": {"const": "node_reuse_released"},
         "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
         "key": {"$ref": "computation-key.json"}
+      }
+    },
+    "NodeRenewed": {
+      "description": "Renewal, the one exception to a key selecting once (13 [G1]): the receipt of the node's selected result expired at valid_until, by the event's time, so the same key reopens, claimed with no selected result, for a result recorded after this event. The generation and the claim stay. receipt is the content digest of the result's one receipt Ref, and valid_until the validity the result bound when recorded.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "key", "result", "receipt", "valid_until"],
+      "properties": {
+        "type": {"const": "node_renewed"},
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "key": {"$ref": "computation-key.json"},
+        "result": {"$ref": "../common/defs.json#/$defs/ResultID"},
+        "receipt": {"$ref": "../common/defs.json#/$defs/Digest"},
+        "valid_until": {"$ref": "../common/defs.json#/$defs/Time"}
       }
     },
     "HoldRaised": {
@@ -134,11 +148,12 @@
       "description": "An immutable result of a claimed node, with the attempt that produced it (null for a controller node).",
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "node", "result", "attempt"],
+      "required": ["type", "node", "result", "attempt", "receipt_valid_until"],
       "properties": {
         "type": {"const": "result_recorded"},
         "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
         "result": {"$ref": "result.json"},
+        "receipt_valid_until": {"description": "The valid_until of the receipt the result's one receipt Ref names, bound once when the result is recorded (null: no such receipt, or no limit). Renewal checks expiry against it; the resolver refuses a receipt that differs.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]},
         "attempt": {"description": "Checked by this schema only until M1 binds attempts to nodes.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]}
       }
     },

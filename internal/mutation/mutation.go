@@ -84,6 +84,12 @@ const (
 	// DemandIgnored lets a receipt answer a requirement whatever demand it
 	// answers, so identical conclusions for another demand apply.
 	DemandIgnored = "receipt.demand-ignored"
+	// RetryNeedsInvalidation refuses to clear a retry wait on its signal,
+	// so a could_not_run result retries only after an invalidation.
+	RetryNeedsInvalidation = "graph.retry-needs-invalidation"
+	// RenewalInvalidates renews an expired result by invalidating its key,
+	// a new generation, instead of reopening the same key.
+	RenewalInvalidates = "graph.renewal-invalidates"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -93,4 +99,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly,
 	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked, ConfirmIgnoresStatus, ReservationsUncounted,
 	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks, IncompleteNoDiffEmpty, PartialPatchDropped, ClaimPerDemand,
-	ResolveSkipsApplicability, DemandIgnored}
+	ResolveSkipsApplicability, DemandIgnored, RetryNeedsInvalidation, RenewalInvalidates}

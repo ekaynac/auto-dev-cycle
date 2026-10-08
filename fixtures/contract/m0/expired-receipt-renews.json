@@ -1,0 +1,9 @@
+{
+  "name": "expired-receipt-renews",
+  "invariant": "An expired receipt triggers renewal without resetting counters: the gate's expired receipt leaves its review's input missing, evidence_inapplicable; the renewal reopens the same key, and a fresher result at the same generation, under the same claim, serves the review (13 [G1], [G2]).",
+  "expected": [
+    {"outcome": "could_not_run", "reason": "evidence_inapplicable"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.renewal-invalidates"
+}

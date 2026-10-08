@@ -41,7 +41,7 @@ Result:                            # what was computed: immutable  [G1]
   computation: sha256:…            # the ComputationKey it answers
   kind: plan | patch | partial_patch | tree | package | gate_result | review | evidence | carry_over_attestation | merge_result | …
   value: [Ref]
-  conclusions: {typed projection}  # for reuse decisions only (see below)
+  conclusions: {typed projection}  # for reuse decisions only (see below); gate, evidence: the receipt's rule 2a document (06)
   outcome, reason
   completed: bool                  # did execution observably complete? (see "Facts, not claims")
 ```
@@ -64,7 +64,24 @@ Result:                            # what was computed: immutable  [G1]
     reuse and result and returns it to waiting, so it reuses or waits again at the new generation. Nothing serves an
     invalidated result through a reused node. As a second guard, a memoizable producer whose key is not of its
     identity's current generation counts as not completed: the resolver waits on it and a claim refuses it.
-    Dependants that already claimed the old result keep their claims until supersession (G6b). An invalidation never silently ends a wait. A retry wait of the old key (a hold with a reason, raised for
+    Dependants that already claimed the old result keep their claims until supersession (G6b).
+  - **Renewal is the one exception to "a key selects once".** It applies only to a memoizable kind whose selected
+    result carries a receipt. Once that receipt has passed its `valid_until`, by the event's time, `node.renewed`
+    reopens the same key: the node is claimed again with no selected result, so a new attempt records and selects a
+    fresher result. The renewal is a selection boundary: the node then selects only a result recorded after it, never
+    the renewed result or an older one, and a result renews once. The new result's receipt must be produced at or
+    after the renewal: recording and the resolver refuse an older receipt, still valid or not. The fold checks expiry against the event's time,
+    never wall time, from the receipt validity the result bound when it was recorded (read from the receipt blob).
+    The generation, the claim and its command stay, so counters do not reset, and the old selection stays in the log
+    as history. A reused node is renewed through its holder, whose renewal releases the nodes bound to the key, as an
+    invalidation does.
+  - **What the fold cannot check.** Folds read no blobs, so the fold trusts a result's bound receipt validity. The
+    resolver and the renewal builder re-read the blob and refuse a binding that differs, so a result with a forged
+    binding never serves a dependant and is never renewed by the controller. Nor does a fold check a receipt's
+    `produced_at` against the renewal; recording and the resolver do. As for an invalidation, the fold trusts the
+    builder to emit a renewal's `node.reuse_released` events in the same command: a renewal without them leaves its
+    reusers completed on the renewed result, serving nothing (the resolver refuses it) until the holder's
+    invalidation releases them. An invalidation never silently ends a wait. A retry wait of the old key (a hold with a reason, raised for
     a `could_not_run` result) is retired in the same command by its own event, with the reason `invalidated`. Every other
     wait (awaiting an approval, an input or a budget raise) carries over to the new generation with its id, `since` and
     pages, and the node stays held: as in supersession, a hold is retired only when the node no longer has the wait.
@@ -117,7 +134,9 @@ Result:                            # what was computed: immutable  [G1]
   (a precondition probe passes, a balance probe passes, a reset arrives). Retries are bounded by the rails and attempt
   caps (05, 12). Retrying never resets demand counters or charges.
 - **Freshness.** A result with `valid_until` (e.g. an evidence receipt) is reusable only while fresh. Expiry makes it a
-  missing input, and a renewal run is a new attempt under the same counters.
+  missing input, and a renewal run is a new attempt under the same counters, on the same key ([G1], renewal).
+- **A retry is not an invalidation.** A `could_not_run` result raises a retry wait on its signal (G3-3); the signal
+  clears it, and the node, still claimed on the same key and generation, records its next attempt.
 
 ## Evaluation: demand-driven
 
@@ -130,8 +149,8 @@ The controller evaluates **goals** (e.g. "merge the candidate of task T", "close
    - Applicability is checked against a receipt: a gate or evidence result's `value` holds a `receipt` Ref whose content
      digest names the receipt blob, and the resolver checks it with 06's rules (`internal/receipt`). A receipt that does
      not apply, or has expired, makes the input missing, with the refusal's reason. The result holds exactly one
-     receipt Ref, and the receipt carries the Ref's id and the result's conclusions (its `conclusions_digest` is their
-     RFC 8785 digest); otherwise the input is missing as `receipt_incomplete`.
+     receipt Ref, and the receipt carries the Ref's id and the result's conclusions: they are the receipt's rule 2a
+     document (06), whose digest is its `conclusions_digest`. Otherwise the input is missing as `receipt_incomplete`.
    - What an input requires of its receipt (kind, instrument, subject, demand) is code of the consuming kind, per kind and
      `definition_version`, so the definition version keys it. Schemas carry no requirement. A gate or evidence input
      always has one; none is an error, never a skipped check.

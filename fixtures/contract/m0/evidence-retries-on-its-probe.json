@@ -1,0 +1,9 @@
+{
+  "name": "evidence-retries-on-its-probe",
+  "invariant": "A could_not_run evidence result retries on its probe without operator invalidation: the first attempt fails its precondition, the retry wait on the precondition_failed probe clears when the probe passes, and the second attempt completes clean on the same key and generation, with no invalidation (13 [G2]; 02).",
+  "expected": [
+    {"outcome": "could_not_run", "reason": "precondition_failed"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.retry-needs-invalidation"
+}

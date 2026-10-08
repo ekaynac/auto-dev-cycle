@@ -53,6 +53,7 @@ const (
 	NodeInvalidated = "node.invalidated/v1"
 	NodeReused      = "node.reused/v1"
 	ReuseReleased   = "node.reuse_released/v1"
+	NodeRenewed     = "node.renewed/v1"
 	HoldRaised      = "node.hold_raised/v1"
 	HoldPaged       = "node.hold_paged/v1"
 	HoldCleared     = "node.hold_cleared/v1"
@@ -60,15 +61,16 @@ const (
 	ResultSelected  = "result.selected/v1"
 	EventSchema     = "records/graph-event"
 
-	NodeProjection   = "graph_nodes"   // node id → nodeRecord
-	ClaimProjection  = "graph_claims"  // node id → claim
-	KeyProjection    = "graph_keys"    // task/computation key → the memoizable node that claimed it
-	ReuseProjection  = "graph_reuses"  // task/computation key → the nodes bound to it by reuse
-	TaskProjection   = "graph_tasks"   // task id → its project
-	ResultProjection = "graph_results" // result id → the result.recorded payload
-	GenProjection    = "graph_gens"    // task/identity → its current generation (memoizable kinds)
-	HoldProjection   = "graph_holds"   // hold id → the node that last held it (heldBy)
-	RetryProjection  = "graph_retries" // could_not_run result id → its retry wait's hold id
+	NodeProjection    = "graph_nodes"    // node id → nodeRecord
+	ClaimProjection   = "graph_claims"   // node id → claim
+	KeyProjection     = "graph_keys"     // task/computation key → the memoizable node that claimed it
+	ReuseProjection   = "graph_reuses"   // task/computation key → the nodes bound to it by reuse
+	RenewalProjection = "graph_renewals" // node id → its selection boundary (renewal)
+	TaskProjection    = "graph_tasks"    // task id → its project
+	ResultProjection  = "graph_results"  // result id → the result.recorded payload
+	GenProjection     = "graph_gens"     // task/identity → its current generation (memoizable kinds)
+	HoldProjection    = "graph_holds"    // hold id → the node that last held it (heldBy)
+	RetryProjection   = "graph_retries"  // could_not_run result id → its retry wait's hold id
 )
 
 // memoizable are the kinds whose results are reused (13 "v1 scope").
@@ -91,10 +93,15 @@ func (e ErrKeyStale) Error() string {
 // invalidated through its holder.
 type ErrReused struct{ Holder types.NodeID }
 
-func (e ErrReused) Error() string { return "graph: the node reuses the key of " + string(e.Holder) }
+func (e ErrReused) Error() string {
+	if e.Holder == "" {
+		return "graph: the node reuses a key whose holder was invalidated"
+	}
+	return "graph: the node reuses the key of " + string(e.Holder)
+}
 
 // Kinds registers the graph event kinds.
-var kinds = []string{NodeRecorded, NodeClaimed, NodeReused, ReuseReleased, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected}
+var kinds = []string{NodeRecorded, NodeClaimed, NodeReused, ReuseReleased, NodeRenewed, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected}
 
 func Kinds() eventstore.Kinds {
 	k := eventstore.Kinds{}
@@ -263,6 +270,8 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant) err
 		return reused(tx, ev, p)
 	case *types.NodeReuseReleased:
 		return reuseReleased(tx, ev, p)
+	case *types.NodeRenewed:
+		return renewed(tx, ev, p)
 	case *types.NodeInvalidated:
 		return invalidated(tx, ev, p)
 	case *types.HoldRaised:

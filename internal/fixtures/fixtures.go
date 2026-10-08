@@ -74,6 +74,8 @@ var runners = map[string]runner{
 	"duplicate-demands-share-one-claim": duplicateDemandsShareOneClaim,
 	"review-needs-its-tree":             reviewNeedsItsTree,
 	"receipt-for-another-demand":        receiptForAnotherDemand,
+	"evidence-retries-on-its-probe":     evidenceRetriesOnItsProbe,
+	"expired-receipt-renews":            expiredReceiptRenews,
 }
 
 // Goldens loads and validates every golden, checking that each has a

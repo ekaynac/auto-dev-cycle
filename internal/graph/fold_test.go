@@ -34,7 +34,7 @@ func TestFoldRefusals(t *testing.T) {
 	g.must(g.claimOf(c))
 	good := unrecorded(t, key) // selectable
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: a, Result: good})
+		return RecordResult(tx, types.ResultRecorded{Node: a, Result: good}, g.blobs)
 	})
 	odd := unrecorded(t, key)
 	odd.Completed, odd.Outcome, odd.Reason, odd.Detail = true, types.OutcomeCouldNotRun, vocab.ReasonExecutorIncomplete, "a report that is not completion"
