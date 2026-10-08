@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Fixture definitions of the shared knowledge spec (0.1.0-draft).
+# Fixture definitions of the shared knowledge spec (0.2.0-draft).
 # Each names its inputs (given), the act (when), the expected outcome (then),
 # the invariants it exercises (invariants.md) and the milestone whose
 # behaviour implements its check. Definitions only: no check runs in M0.

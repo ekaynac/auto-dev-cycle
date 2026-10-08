@@ -50,8 +50,10 @@ Not imported, with the reason:
 - `variants` are the same artifacts with one input changed and their own expected sequence (negative cases).
 - Outcomes are the four of `docs/design/m0/02-vocabulary.md`. A refusal (a command or placement check that is refused)
   is written as `failed` with its reason, as in note 03 (`failed/stale_expected_state`).
-- `reason_status` is `registered` only if every reason in `expected` is named in note 02. Otherwise it is `proposed`:
-  the vocabulary PR registers or renames those codes, and the goldens follow. `notes` says which steps are registered.
+- `reason_status` is `registered` only if every reason in `expected` and `variants` is registered in
+  `schemas/vocab/reasons.yaml` (note 02 "Reason codes") for its outcome. Otherwise it is `proposed`, and the golden
+  follows once the codes are registered or renamed. A registered reason with an outcome it does not accompany, or a
+  deprecated one, is an error, never `proposed`. All four goldens are `registered`.
 - A loader must first verify its own setup: the artifacts it reads have the shape the golden describes (the
   predecessor's rule "a test proves its own setup").
 
@@ -91,11 +93,10 @@ jobs (identity, status, launch record, the full `walk` block; the lab inventory 
 controller projection and repair range, and the review continuation's previous head/tree/receipt. `input_digest` is
 the predecessor's digest of the **untrimmed** packet, kept as an identity, not recomputable from the file.
 
-## Open points for the vocabulary PR
+## Open points
 
-- Register or rename every `proposed` reason: `fallback_scope`, `evidence_observed`, `review_input_changed`,
-  `conclusions_unchanged`, `candidate_owned_setup_error`, `gate_test_failed`, `runner_fault`, `closure_repair`,
-  `p3_banked`. Whether a `found` result needs a reason at all is part of this decision.
+- Settled: every reason these goldens first proposed is registered (its `source` in `schemas/vocab/reasons.yaml` is
+  `legacy:<golden>`), and a `found` result carries one.
 - Refusals are written `failed/<reason>` (after note 03); note 02 does not yet say so.
 - The demand key: `f16-walk-demand` step 4 assumes `demand.key = H(plan_sha256, subject)`, independent of the
   requesting review. If the key includes `requested_by`, step 4 becomes `found/review_input_changed`.

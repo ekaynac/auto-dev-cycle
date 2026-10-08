@@ -25,6 +25,6 @@
     {"outcome": "could_not_run", "reason": "broker_credit_exhausted"},
     {"outcome": "failed", "reason": "fallback_scope"}
   ],
-  "reason_status": "proposed",
-  "notes": "Step 1 (registered): the primary review attempt (fallback-primary-usage.json, rollout-*.jsonl: credits depleted, zero model items) is an attempt record, not an empty review; its hold waits on a balance probe or an operator top-up, never a time. Step 2 (fallback_scope, proposed; a placement check in note 05): the lease's (reviewer, phase_review) is not in the chain entry's authorised_for, so placement refuses it before egress; the packet never leaves, and no fallback usage (usage.json, the incident's shape) is recorded or allowed to replace the primary's record. An authorised fallback of another family would re-check independence first."
+  "reason_status": "registered",
+  "notes": "Step 1: the primary review attempt (fallback-primary-usage.json, rollout-*.jsonl: credits depleted, zero model items) is an attempt record, not an empty review; its hold waits on a balance probe or an operator top-up, never a time. Step 2 (a placement check in note 05): the lease's (reviewer, phase_review) is not in the chain entry's authorised_for, so placement refuses it before egress; the packet never leaves, and no fallback usage (usage.json, the incident's shape) is recorded or allowed to replace the primary's record. An authorised fallback of another family would re-check independence first."
 }
