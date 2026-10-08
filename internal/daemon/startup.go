@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -77,6 +78,24 @@ func checkCapacityHistory(ctx context.Context, s *eventstore.Store) error {
 		return couldNotRun(vocab.ReasonStoreUnreadable, "the projections cannot be read", err)
 	}
 	return nil
+}
+
+// checkCapacityGroups refuses to run capacity over groups that no longer
+// match the grants the log recorded: a group gone, or one whose kind changed
+// under them (an evidence target becoming another kind, or the reverse).
+func checkCapacityGroups(r capacity.Reservations) func(context.Context, *eventstore.Store) error {
+	return func(ctx context.Context, s *eventstore.Store) error {
+		err := s.View(ctx, r.CheckGroups)
+		var changed *capacity.ErrGroupChanged
+		switch {
+		case errors.As(err, &changed):
+			return couldNotRun(vocab.ReasonAmbiguousState, fmt.Sprintf("resource group %s, which lease %s reserved, is gone or changed kind; "+
+				"configure it again with its previous kind", changed.Group, changed.Lease), err)
+		case err != nil:
+			return couldNotRun(vocab.ReasonStoreUnreadable, "the projections cannot be read", err)
+		}
+		return nil
+	}
 }
 
 // checkKinds refuses a log holding an event kind or version this build does

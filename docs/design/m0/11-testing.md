@@ -37,7 +37,7 @@ sandbox in which the real home and state do not exist**:
 |---|---|---|---|
 | Fake adapter | the full JSON-RPC contract: cumulative patches, streaming gaps, sub-calls, usage, errors, stale submissions, unsafe-output modes | `adapters/fake` | built: every scenario in `adapters/fake/src/fake.ts` |
 | Fake forge | push with expected-base, change requests, merge, ambiguous remote outcomes, external base moves | `internal/testguard/fakes/forge` | expected-base push and an external base move (G7b) |
-| Fake sandbox | three phases, artifact-before-teardown, evidence manifest, abrupt loss | `…/fakes/sandbox` | declared facts and restore (G8) |
+| Fake sandbox | three phases, artifact-before-teardown, evidence manifest, abrupt loss | `…/fakes/sandbox` | built: a workspace with exactly its declared facts, and evidence-target restores a test scripts to fail (G8) |
 | Fake provider | quota headers, 429 with reset, unknown quota, **402 credit exhaustion mid-call**, separate rate window and balance, degenerate output, single-chunk tool arguments | `…/fakes/provider` | none here: the 402 mid-call is scripted in `inproc` peers (15 L3); the rest is M2 |
 | Fake clock | deadlines, resets, TTLs, challenge expiry | `…/fakes/clock` | built: a fixed or wall-following time the test sets and moves; no timers |
 | Fake executor registry | the controller's executor registry: the model family a roster derives, never a caller's (13) | `…/fakes/executors` | built: executor id to model family, unregistered is `unknown` (G6a) |

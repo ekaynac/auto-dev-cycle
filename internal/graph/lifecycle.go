@@ -41,7 +41,8 @@ import (
 // produces binds a node kind to the result kinds it records, deny by
 // default: a kind without a row records nothing until its PR adds the row
 // (accept, closure, deploy, record, phase_gate). runtime_verify records a
-// gate_result until its own kind is settled with the facts work (G8).
+// gate_result: its facts differ from a gate's (DeclaredFacts, G8), not what
+// it records.
 var produces = map[types.NodeKind][]types.ResultKind{
 	types.NodeKindPlan:          {types.ResultKindPlan},
 	types.NodeKindBuild:         {types.ResultKindPatch, types.ResultKindPartialPatch},

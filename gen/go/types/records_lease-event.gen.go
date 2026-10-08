@@ -34,6 +34,8 @@ const (
 	LeaseEventTransitionAttemptSuperseded      LeaseEventTransition = "attempt.superseded"
 )
 
+type LeaseEventTargetsValue []ResourceGroupID
+
 // LeaseEvent: The payload of every lease and attempt transition event (docs/design/m0/05): <transition>/v1, e.g. lease.granted/v1 or attempt.sealed/v1. Each carries the record(s) as they are after the transition, so a projection is the latest record and a rebuild is a fold. internal/lease checks, in the writer transaction, that every record is exactly its state machine's result from the current one; the event's subject is the lease (lease.*) or the attempt (attempt.*). attempt.started and attempt.superseded also change the lease under the attempt's subject, so commands expect a record's projection revision (not its subject's last seq) for every record they act on. attempt.superseded is atomic: one event carries the retired attempt, its successor (with the next token) and the lease the successor runs under (05: supersession and the replacement's token in one transaction). lease.start_refused is the launch boundary's refusal of a granted lease before any attempt exists (granted → releasing; 05, 09 "Host capability check"). attempt.result_submitted carries the admitted result itself.
 type LeaseEvent struct {
 	Transition LeaseEventTransition `json:"transition"`
@@ -47,6 +49,8 @@ type LeaseEvent struct {
 	Successor *Attempt `json:"successor"`
 	// attempt.result_submitted only: the result the controller admitted, so the log itself identifies it.
 	Result *SubmittedResult `json:"result"`
+	// lease.granted only: the lease's reserved groups that are evidence targets, recorded at the grant so a rebuild reads them from the log, never from configuration. Events written before targets were wired lack it; readers take that as none (03 rule 4). internal/capacity admits a grant only with exactly the configured targets; internal/lease holds a lease with one to the restore table.
+	Targets *LeaseEventTargetsValue `json:"targets"`
 }
 
 type SubmittedResultKindValue string

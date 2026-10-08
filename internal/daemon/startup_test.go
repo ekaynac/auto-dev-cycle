@@ -215,6 +215,31 @@ func TestCapacityHistoryCheckedBeforeReplay(t *testing.T) {
 	refused(t, dir, Config{StateDir: dir, Groups: []types.ResourceGroup{tokens(10)}}, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "before capacity was wired")
 }
 
+// The configured groups must still be the ones the recorded grants
+// reserved: a group gone, or reclassified as an evidence target, refuses
+// the start by name, before any replay.
+func TestCapacityGroupsCheckedAtStart(t *testing.T) {
+	dir, cfg := leaseStore(t)
+	target := tokens(1)
+	target.Kind, target.ReleaseRule, target.CapacityModel.Unit = types.ResourceGroupKindEvidenceTarget, types.ResourceGroupReleaseRuleOnRestoreVerified, types.CapacityUnitSlots
+	for name, groups := range map[string][]types.ResourceGroup{"gone": {}, "reclassified": {target}} {
+		c := cfg
+		c.Groups = groups
+		refused(t, dir, c, vocab.CouldNotRun, vocab.ReasonAmbiguousState, string(quota))
+		_, err := Start(context.Background(), c)
+		if err == nil || !strings.Contains(err.Error(), "previous kind") {
+			t.Errorf("%s: the refusal does not say how to recover: %v", name, err)
+		}
+	}
+	d, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A failed restart transition refuses the start and appends nothing. A
 // fresh store, which this start bootstraps, has no effect to mark: the
 // transition is skipped rather than refused after the append.

@@ -116,6 +116,19 @@ For a lease that holds an `evidence_target` group, settlement carries a **restor
   by fencing. Publishing an already-accepted draft is a controller act, not a late submission.
 - **Restart:** a lease found in `active`, `settling`, `restoring` or `restore_failed` stays in that state, and the
   target stays excluded. The recovery owner is `internal/evidence`, which resumes restore as an effect (03).
+- **Wiring (15 G8).**
+  - The `lease.granted` payload records the lease's `evidence_target` groups (`targets`). Capacity admits a grant only
+    with exactly the configured targets. A rebuild reads them from the log, never from configuration.
+  - At startup, before any replay, `adcd` refuses (`ambiguous_state`) groups that no longer match the recorded grants
+    (`CheckGroups`). It names the group that is gone or changed kind, and says to configure it again with its previous
+    kind.
+  - A grant of no target keeps its old record (`{}`). A `lease.granted` written before targets were wired carries none,
+    and readers take that as no target, so an existing store replays without drift.
+  - The lease projector holds a lease with a target to the restore table, so it settles only through a verified
+    restore. Its slot returns at that settlement (`on_restore_verified`).
+  - A failed restore keeps the slot reserved, so the target stays excluded across restarts and rebuilds, and a new
+    lease on it is refused `capacity_reserved_full`.
+  - A lease of no target never starts a restore.
 - **Run id.** An evidence run is an attempt (D40). Its run id, the name a receipt gives it (06 `demand.run`), is the
   attempt's TypeID under the `run_` prefix (`evidence.RunOf`), so the pair needs no record of its own.
 

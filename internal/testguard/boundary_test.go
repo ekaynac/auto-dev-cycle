@@ -19,13 +19,13 @@ const module = "github.com/ekaynac/auto-dev-cycle/"
 
 // importAllowed reports whether a non-test file in dir (from the repository
 // root) may import path: nothing under internal/testguard, except the fake
-// clock, the owed-answer fake and the fake effect target from the fixture
-// harness (whose installed run is a release binary).
+// clock, the owed-answer fake, the fake effect target and the fake sandbox
+// from the fixture harness (whose installed run is a release binary).
 func importAllowed(dir, path string) bool {
 	if !inTestguard(strings.TrimPrefix(path, module)) || inTestguard(dir) {
 		return true
 	}
-	allowed := []string{"clock", "owedanswers", "effecttarget"}
+	allowed := []string{"clock", "owedanswers", "effecttarget", "sandbox"}
 	return slices.Contains(allowed, strings.TrimPrefix(path, module+"internal/testguard/fakes/")) && dir == "internal/fixtures"
 }
 
@@ -172,6 +172,9 @@ func TestBoundaryRules(t *testing.T) {
 		{"internal/fixtures/x.go", imp("internal/testguard/fakes/effecttarget"), false},
 		{"internal/daemon/x.go", imp("internal/testguard/fakes/effecttarget"), true},
 		{"internal/fixtures/x.go", imp("internal/testguard/fakes/effecttargetx"), true},
+		{"internal/fixtures/x.go", imp("internal/testguard/fakes/sandbox"), false},
+		{"internal/daemon/x.go", imp("internal/testguard/fakes/sandbox"), true},
+		{"internal/fixtures/x.go", imp("internal/testguard/fakes/sandboxes"), true},
 		{"internal/daemon/x_test.go", imp("internal/testguard"), false},
 		{"internal/daemon/x.go", imp("internal/testguardian"), false},
 	} {

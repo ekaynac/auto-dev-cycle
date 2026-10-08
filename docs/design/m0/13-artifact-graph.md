@@ -300,7 +300,9 @@ Evidence targets are `evidence_target` resource groups, capacity 1 (05). Restore
 - the **controller** publishes the run's accepted draft result at settlement;
 - late executor submissions are refused by fencing.
 
-Replacement nodes on the same target wait for the lease.
+Replacement nodes on the same target wait for the lease. The restore transitions are wired over capacity (05 "Wiring"):
+a restore failure keeps the target excluded across a restart, and the run publishes nothing until a restore is
+verified (contract fixture `restore-failure-keeps-target-excluded`).
 
 ## Merge-queue generations [G6]
 
@@ -329,6 +331,14 @@ One tree cannot serve every purpose, so three are distinguished (07):
 
 Declarations narrow the gap between environments; they do not guarantee parity. The ownership rules (07) still
 classify genuine faults.
+
+`graph.DeclaredFacts` derives a node's facts from the profile, never from the executor:
+- **gate:** the source-test workspace, with development dependencies and VCS metadata as `source_tests` declares, and
+  no network;
+- **runtime_verify:** exactly one `package` input and no source input. It gets the package with the VCS metadata,
+  network and runtime of the gate environment `runtime_verification.facts_from` names.
+
+The fake sandbox (11) prepares exactly those facts (contract fixture `gate-and-runtime-see-their-facts`).
 
 ## Acceptance producers [G9]
 

@@ -118,6 +118,12 @@ const (
 	// EffectPendingSkipsTarget applies a new operation without first asking
 	// whether the target already holds what it wants.
 	EffectPendingSkipsTarget = "graph.effect-pending-skips-target"
+	// RestoreFailureReleases returns an evidence target's slot at a failed
+	// restore, so the target is no longer excluded.
+	RestoreFailureReleases = "capacity.restore-failure-releases"
+	// RuntimeOnSourceFacts gives runtime verification the source-test
+	// workspace's facts instead of its package and runtime environment's.
+	RuntimeOnSourceFacts = "graph.runtime-on-source-facts"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -129,4 +135,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks, IncompleteNoDiffEmpty, PartialPatchDropped, ClaimPerDemand,
 	ResolveSkipsApplicability, DemandIgnored, RetryNeedsInvalidation, RenewalInvalidates, CommitSkipsAuthority,
 	AttemptsIgnoreDemand, SubjectCapUnchecked, PreconditionSpendsAttempt,
-	EffectKeyedByComputation, EffectResumeReallocates, EffectTargetUnfenced, EffectApplyBlind, EffectPendingSkipsTarget}
+	EffectKeyedByComputation, EffectResumeReallocates, EffectTargetUnfenced, EffectApplyBlind, EffectPendingSkipsTarget,
+	RestoreFailureReleases, RuntimeOnSourceFacts}

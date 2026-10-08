@@ -70,6 +70,12 @@ func openWith(t *testing.T, wired bool, groups ...types.ResourceGroup) *world {
 // openAt opens the store in dir, composing capacity over groups as how says.
 func openAt(t *testing.T, dir string, how wiring, groups ...types.ResourceGroup) *world {
 	t.Helper()
+	return openKinds(t, dir, how, lease.Kinds(), groups...)
+}
+
+// openKinds is openAt with the store's event kinds given.
+func openKinds(t *testing.T, dir string, how wiring, kinds eventstore.Kinds, groups ...types.ResourceGroup) *world {
+	t.Helper()
 	reg, err := vocab.Load()
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +102,7 @@ func openAt(t *testing.T, dir string, how wiring, groups ...types.ResourceGroup)
 			return errors.Join(lp.Project(tx, evs), r.Project(tx, evs))
 		}
 	}
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: lease.Kinds(), Blobs: blobs,
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
 		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil }, Project: project}})
 	if err != nil {
 		t.Fatal(err)

@@ -582,3 +582,41 @@ func TestRecoverAfterRestart(t *testing.T) {
 		return evs, err
 	})
 }
+
+// A grant's targets are its own reserved groups, each once; the projector
+// takes no other, whether or not capacity is wired.
+func TestGrantTargetsAreReservedGroups(t *testing.T) {
+	own := requested().Reservations[0].Group
+	for name, targets := range map[string][]types.ResourceGroupID{
+		"a group it does not reserve": {"rg_01m3250vnfeyrv67x6w0ddqr6a"},
+		"its group twice":             {own, own},
+	} {
+		w := openWorld(t)
+		w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return RequestLease(tx, requested()) })
+		if w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return ChangeLease(tx, leaID, 1, LeaseEvent{Kind: Granted, Targets: targets}, w.h)
+		}) == nil {
+			t.Errorf("%s: granted", name)
+		}
+	}
+	w := openWorld(t)
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return RequestLease(tx, requested()) })
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return ChangeLease(tx, leaID, 1, LeaseEvent{Kind: Granted, Targets: []types.ResourceGroupID{own}}, w.h)
+	})
+}
+
+// A lease transition that carries no lease is an error, never a panic,
+// whatever the schema let through.
+func TestTransitionWithoutLeaseRefused(t *testing.T) {
+	w := openWorld(t)
+	for _, tr := range []string{Granted, RestoreVerified, Settled} {
+		ev := eventstore.Event{ID: "evt_01m3250v0aer9ss2097svmefj8", Kind: tr + "/v1", Subject: "", // no record, so no subject
+			Payload: []byte(`{"transition":"` + tr + `","reason":null,"lease":null,"attempt":null,"successor":null,"result":null,"targets":[]}`)}
+		if err := w.s.View(context.Background(), func(tx *eventstore.Tx) error {
+			return Projector{Holds: w.h, Units: w.units}.Project(tx, []eventstore.Event{ev})
+		}); err == nil || !strings.Contains(err.Error(), "carries no lease") {
+			t.Errorf("%s with no lease: %v", tr, err)
+		}
+	}
+}
