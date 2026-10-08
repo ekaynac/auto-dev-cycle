@@ -10,10 +10,10 @@ import (
 	"fmt"
 )
 
-// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1, node.hold_cleared/v1 and node.operated/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1, node.hold_cleared/v1 and node.operated/v1 under the node's id, queue.observed/v1 under its task, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 type GraphEvent struct{ Variant GraphEventVariant }
 
-// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *NodeReused, *NodeReuseReleased, *NodeRenewed, *HoldRaised, *HoldPaged, *HoldCleared, *ResultRecorded, *ResultSelected, *NodeOperated.
+// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *NodeReused, *NodeReuseReleased, *NodeRenewed, *HoldRaised, *HoldPaged, *HoldCleared, *ResultRecorded, *ResultSelected, *NodeOperated, *QueueObserved.
 type GraphEventVariant interface{ isGraphEvent() }
 
 func (*NodeRecorded) isGraphEvent()      {}
@@ -28,6 +28,7 @@ func (*HoldCleared) isGraphEvent()       {}
 func (*ResultRecorded) isGraphEvent()    {}
 func (*ResultSelected) isGraphEvent()    {}
 func (*NodeOperated) isGraphEvent()      {}
+func (*QueueObserved) isGraphEvent()     {}
 
 func (u GraphEvent) MarshalJSON() ([]byte, error) {
 	if u.Variant == nil {
@@ -133,6 +134,12 @@ func (u *GraphEvent) UnmarshalJSON(b []byte) error {
 			return err
 		}
 		u.Variant = v
+	case "queue_observed":
+		v := &QueueObserved{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
 	default:
 		return fmt.Errorf("GraphEvent: unknown type %q", d)
 	}
@@ -203,6 +210,15 @@ type NodeOperated struct {
 	Node   NodeID         `json:"node"`
 	Key    ComputationKey `json:"key"`
 	Effect EffectID       `json:"effect"`
+}
+
+// QueueObserved: A merge queue's observation of its branch's base head (13 "Merge-queue generations", G7b-1b): the head with the forge's version of the branch, which rises with every move of the head. The latest observation of each task and branch is kept: an older version, or another head at the same version, is refused, so a delayed observation never moves the queue back.
+type QueueObserved struct {
+	Type    string `json:"type"`
+	Task    TaskID `json:"task"`
+	Branch  string `json:"branch"`
+	Head    string `json:"head"`
+	Version int64  `json:"version"`
 }
 
 // HoldRaised: An external wait on the node (02 "Hold reasons and resume signals"): raised at the event's time with no page yet. result is set exactly when the hold has a reason: it is the retry wait of the node's could_not_run result of its current key (13 [G2]), one hold per result.

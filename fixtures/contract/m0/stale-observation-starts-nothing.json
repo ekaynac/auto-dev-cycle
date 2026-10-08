@@ -1,0 +1,10 @@
+{
+  "name": "stale-observation-starts-nothing",
+  "invariant": "An observation of the base head older than the current generation's starts no generation: a caller observes A and pauses, another observes B and starts generation 2, and the delayed observation of A is refused; a genuine return to A, observed later, starts generation 3 (13 \"Merge-queue generations\").",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.generation-takes-stale"
+}

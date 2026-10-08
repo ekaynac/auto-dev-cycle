@@ -108,6 +108,9 @@ const (
 	// CarryOverIgnoresPatch attests a carry-over without comparing the
 	// rebased patch's identity with the reviewed candidate's.
 	CarryOverIgnoresPatch = "graph.carry-over-ignores-patch"
+	// GenerationTakesStale starts a generation on a base head observed
+	// before the current generation's.
+	GenerationTakesStale = "graph.generation-takes-stale"
 	// EffectKeyedByComputation leaves the node instance out of an effect
 	// operation's request, so a new goal with an equal computation key finds
 	// an earlier operation: a cached effect result read as current state.
@@ -157,4 +160,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	EffectKeyedByComputation, EffectResumeReallocates, EffectTargetUnfenced, EffectApplyBlind, EffectPendingSkipsTarget,
 	RestoreFailureReleases, RuntimeOnSourceFacts,
 	SuccessorTakesAnyAnswer, AnswerLineageUnchecked, EquivalenceIgnoresRestrictions, EquivalenceIgnoresRoster,
-	GenerationKeepsBase, CarryOverIgnoresPatch}
+	GenerationKeepsBase, CarryOverIgnoresPatch, GenerationTakesStale}

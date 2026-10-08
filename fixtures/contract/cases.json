@@ -13152,6 +13152,53 @@
   "valid": false
  },
  {
+  "name": "graph-event: an observation valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "queue_observed",
+   "task": "tsk_01m3250v9xft08ssr4ygq6g2np",
+   "branch": "main",
+   "head": "B1",
+   "version": 3
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: an observation without its version",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "queue_observed",
+   "task": "tsk_01m3250v9xft08ssr4ygq6g2np",
+   "branch": "main",
+   "head": "B1"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: an observation of no head",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "queue_observed",
+   "task": "tsk_01m3250v9xft08ssr4ygq6g2np",
+   "branch": "main",
+   "head": "",
+   "version": 3
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: an observation at a negative version",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "queue_observed",
+   "task": "tsk_01m3250v9xft08ssr4ygq6g2np",
+   "branch": "main",
+   "head": "B1",
+   "version": -1
+  },
+  "valid": false
+ },
+ {
   "name": "graph-event: renewal valid",
   "schema": "records/graph-event",
   "doc": {

@@ -59,6 +59,7 @@ const (
 	ResultRecorded  = "result.recorded/v1"
 	ResultSelected  = "result.selected/v1"
 	NodeOperated    = "node.operated/v1"
+	QueueObserved   = "queue.observed/v1"
 	EventSchema     = "records/graph-event"
 
 	NodeProjection      = "graph_nodes"      // node id → nodeRecord
@@ -73,6 +74,7 @@ const (
 	HoldProjection      = "graph_holds"      // hold id → the node that last held it (heldBy)
 	RetryProjection     = "graph_retries"    // could_not_run result id → its retry wait's hold id
 	EffectProjection    = "graph_effects"    // effect node id → its operation (node.operated)
+	ObservedProjection  = "graph_observed"   // task/branch → the latest observation of its base head
 )
 
 // memoizable are the kinds whose results are reused (13 "v1 scope").
@@ -103,7 +105,7 @@ func (e ErrReused) Error() string {
 }
 
 // Kinds registers the graph event kinds.
-var kinds = []string{NodeRecorded, NodeClaimed, NodeReused, ReuseReleased, NodeRenewed, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected, NodeOperated}
+var kinds = []string{NodeRecorded, NodeClaimed, NodeReused, ReuseReleased, NodeRenewed, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected, NodeOperated, QueueObserved}
 
 func Kinds() eventstore.Kinds {
 	k := eventstore.Kinds{}
@@ -333,6 +335,8 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant) err
 		return selected(tx, ev, p)
 	case *types.NodeOperated:
 		return operated(tx, ev, p)
+	case *types.QueueObserved:
+		return queueObserved(tx, ev, p)
 	}
 	return errors.New("no payload")
 }

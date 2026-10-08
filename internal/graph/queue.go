@@ -5,16 +5,20 @@ package graph
 // Merge-queue generations (13 "Merge-queue generations"; plan 15 G7b-1).
 //
 // Decisions:
-//   - A queue generation is the nodes that try to merge one candidate onto
-//     one base head of one branch. Its rebase node pins the base head in its
-//     params {branch, base, generation}; its carry_over node takes the
-//     rebase's tree. G7b-2 adds the refreshed receipts and the merge.
+//   - A queue generation is the nodes that try to merge one candidate
+//     result onto one base head of one branch: each attempt is one (G7b-1b).
+//     Its rebase node pins {branch, base, version, candidate, generation};
+//     its carry_over node takes the rebase's tree. G7b-2 adds the refreshed
+//     receipts and the merge.
 //   - Generations are numbered per task and branch, from 1. The node.recorded
-//     fold admits a rebase node only as the next generation and only on
-//     another base than the current one: a base move starts a generation,
-//     and nothing else does. Earlier generations stay, as history.
+//     fold admits a rebase node only as the next generation, for the
+//     candidate's selected result, on an observation no older than the
+//     current generation's (the forge's version rises with every move), and
+//     for another base or another candidate result. Earlier generations
+//     stay, as history.
 //   - Generate is the template: it records the next generation when the
-//     base head observed on the forge is not the current generation's.
+//     observation or the candidate's result calls for it, and refuses a
+//     stale observation (ErrStaleObservation).
 //   - A rebase result's conflict status is its outcome: clean, it holds the
 //     git tree and the rebased patch; found, their resolution too. Its refs
 //     are typed. A patch's identity is its one ref's content digest.
@@ -54,20 +58,72 @@ import (
 // generations are its candidate's attempts on that branch.
 const GenerationProjection = "graph_generations"
 
-// rebaseParams are a rebase node's params: the generation it starts.
+// rebaseParams are a rebase node's params: the generation it starts, the
+// base head it pins with the forge's version of that observation, and the
+// candidate result it tries to merge.
 type rebaseParams struct {
-	Branch     string `json:"branch"`
-	Base       string `json:"base"`
-	Generation int64  `json:"generation"`
+	Branch     string         `json:"branch"`
+	Base       string         `json:"base"`
+	Version    int64          `json:"version"`
+	Candidate  types.ResultID `json:"candidate"`
+	Generation int64          `json:"generation"`
 }
 
-// Generation is a queue generation: its number, the base head it pins and
-// its nodes.
+// Observation is a branch's head as the forge reported it, with the
+// forge's version of the branch: it rises with every move of the head.
+type Observation struct {
+	Head    string
+	Version int64
+}
+
+// Generation is a queue generation: its number, the base head it pins (and
+// the version observed with it), the candidate result it tries, and its
+// nodes.
 type Generation struct {
-	Number    int64        `json:"number"`
-	Base      string       `json:"base"`
-	Rebase    types.NodeID `json:"rebase"`
-	CarryOver types.NodeID `json:"carry_over"`
+	Number    int64          `json:"number"`
+	Base      string         `json:"base"`
+	Version   int64          `json:"version"`
+	Candidate types.ResultID `json:"candidate"`
+	Rebase    types.NodeID   `json:"rebase"`
+	CarryOver types.NodeID   `json:"carry_over"`
+}
+
+// ErrStaleObservation: an observation older than the queue's latest, or
+// another head at the latest's version. The queue does not move: a newer
+// observation already did, or the two contradict each other.
+type ErrStaleObservation struct{ Observed, Latest Observation }
+
+func (e ErrStaleObservation) Error() string {
+	return fmt.Sprintf("graph: %s observed at version %d is not newer than the queue's latest observation, %s at %d",
+		e.Observed.Head, e.Observed.Version, e.Latest.Head, e.Latest.Version)
+}
+
+// Result is the refusal an operator sees: failed/stale_expected_state. A
+// queue wedged by a forge whose versions went back (a restart, or a bogus
+// version) refuses every observation this way until it is re-based (13).
+func (e ErrStaleObservation) Result() vocab.Result {
+	return vocab.Result{Outcome: vocab.Failed, Reason: vocab.ReasonStaleExpectedState, Detail: e.Error()}
+}
+
+// observe admits obs as task and branch's latest observation of its base
+// head: newer than the latest, or the latest again. The fold of a
+// queue.observed event and of a rebase node's record both run it.
+func observe(tx *eventstore.Tx, task types.TaskID, branch string, obs Observation) error {
+	key := generationKey(task, branch)
+	last, ok, err := load[Observation](tx, ObservedProjection, key)
+	if err != nil || ok && (obs.Version < last.Version || obs.Version == last.Version && obs.Head != last.Head) && !mutation.Is(mutation.GenerationTakesStale) {
+		return errors.Join(err, ErrStaleObservation{obs, last})
+	}
+	return put(tx, ObservedProjection, key, obs)
+}
+
+// queueObserved folds a queue's observation of its base head.
+func queueObserved(tx *eventstore.Tx, ev eventstore.Event, p *types.QueueObserved) error {
+	project, ok, err := load[types.ProjectID](tx, TaskProjection, string(p.Task))
+	if err != nil || !ok || ev.Project == nil || *ev.Project != string(project) || ev.Subject != string(p.Task) {
+		return errors.Join(err, errors.New("an observation is under its task, in the task's project"))
+	}
+	return observe(tx, p.Task, p.Branch, Observation{Head: p.Head, Version: p.Version})
 }
 
 // QueueSpec is what a queue generation tries to merge: the candidate's
@@ -83,7 +139,8 @@ type QueueSpec struct {
 func generationKey(task types.TaskID, branch string) string { return string(task) + "/" + branch }
 
 // generationRecorded folds a rebase node's record: the next generation of
-// its task and branch, on another base than the current one.
+// its task and branch, observed no earlier than the current one, for
+// another base or another candidate result (the selected one).
 func generationRecorded(tx *eventstore.Tx, p *types.NodeRecorded) error {
 	if p.Node.Kind == types.NodeKindCarryOver {
 		return carryRecorded(tx, p)
@@ -93,14 +150,29 @@ func generationRecorded(tx *eventstore.Tx, p *types.NodeRecorded) error {
 	}
 	var rp rebaseParams
 	if err := contract.UnmarshalStrict(p.Node.Params, &rp); err != nil || rp.Branch == "" || rp.Base == "" {
-		return errors.Join(err, errors.New("a rebase node's params are its branch, base and generation"))
+		return errors.Join(err, errors.New("a rebase node's params are its branch, base, version, candidate and generation"))
+	}
+	i := slices.IndexFunc(p.Node.Inputs, func(in types.InputSpec) bool { return in.Name == "candidate" })
+	src, ok := (*types.ResultSource)(nil), i >= 0
+	if ok {
+		src, ok = p.Node.Inputs[i].Source.Variant.(*types.ResultSource)
+	}
+	if !ok {
+		return errors.New("a rebase node takes its candidate")
+	}
+	if r, why, err := selectedOf(tx, nodeRecord{Recorded: *p}, src); err != nil || why != "" || r.Result.ID != rp.Candidate {
+		return errors.Join(err, fmt.Errorf("the generation's candidate %s is not its producer's selected result %s", rp.Candidate, why))
+	}
+	if err := observe(tx, p.Task, rp.Branch, Observation{Head: rp.Base, Version: rp.Version}); err != nil {
+		return err
 	}
 	key := generationKey(p.Task, rp.Branch)
 	cur, ok, err := load[Generation](tx, GenerationProjection, key)
-	if err != nil || ok && (rp.Generation != cur.Number+1 || rp.Base == cur.Base) || !ok && rp.Generation != 1 {
-		return errors.Join(err, fmt.Errorf("generation %d on %s does not follow generation %d on %s: only a base move starts one", rp.Generation, rp.Base, cur.Number, cur.Base))
+	if err != nil || ok && (rp.Generation != cur.Number+1 || rp.Base == cur.Base && rp.Candidate == cur.Candidate) || !ok && rp.Generation != 1 {
+		return errors.Join(err, fmt.Errorf("generation %d (%s at %d) does not follow generation %d (%s at %d): only a newer base or candidate starts one",
+			rp.Generation, rp.Base, rp.Version, cur.Number, cur.Base, cur.Version))
 	}
-	return put(tx, GenerationProjection, key, Generation{Number: rp.Generation, Base: rp.Base, Rebase: p.Node.ID})
+	return put(tx, GenerationProjection, key, Generation{Number: rp.Generation, Base: rp.Base, Version: rp.Version, Candidate: rp.Candidate, Rebase: p.Node.ID})
 }
 
 // producerOf is the producer of n's result input name ("": none).
@@ -133,19 +205,34 @@ func carryRecorded(tx *eventstore.Tx, p *types.NodeRecorded) error {
 	return put(tx, GenerationProjection, key, cur)
 }
 
-// Generate is the events recording spec's next generation on head, the
-// base head observed on the forge, and that generation; none when head is
-// the current generation's base.
-func Generate(tx *eventstore.Tx, spec QueueSpec, head string) ([]eventstore.Event, Generation, error) {
-	if head == "" {
+// Generate is the events recording spec's next generation on obs, the
+// base head observed on the forge, and that generation: each attempt to
+// merge a candidate result onto a base head is one. It records none when
+// the current generation is of that head and the candidate's selected
+// result, and refuses an observation older than the current generation's.
+func Generate(tx *eventstore.Tx, spec QueueSpec, obs Observation) ([]eventstore.Event, Generation, error) {
+	if obs.Head == "" {
 		return nil, Generation{}, errors.New("graph: no base head was observed")
 	}
-	cur, ok, err := load[Generation](tx, GenerationProjection, generationKey(spec.Task, spec.Branch))
-	if err != nil || ok && (cur.Base == head || mutation.Is(mutation.GenerationKeepsBase)) {
-		return nil, Generation{}, err
+	cand, err := loadNode(tx, spec.Candidate)
+	if err != nil || cand.State.Result == nil {
+		return nil, Generation{}, errors.Join(err, fmt.Errorf("graph: the candidate %s has no selected result", spec.Candidate))
 	}
-	g := Generation{Number: cur.Number + 1, Base: head}
-	params, err := json.Marshal(rebaseParams{Branch: spec.Branch, Base: head, Generation: g.Number})
+	key := generationKey(spec.Task, spec.Branch)
+	last, seen, err := load[Observation](tx, ObservedProjection, key)
+	if err == nil && seen && (obs.Version < last.Version || obs.Version == last.Version && obs.Head != last.Head) && !mutation.Is(mutation.GenerationTakesStale) {
+		err = ErrStaleObservation{obs, last}
+	}
+	var evs []eventstore.Event
+	if err == nil && (!seen || obs.Version > last.Version) { // the latest observation, kept even when no generation starts
+		evs, err = event(QueueObserved, string(spec.Task), spec.Project, &types.QueueObserved{Type: "queue_observed", Task: spec.Task, Branch: spec.Branch, Head: obs.Head, Version: obs.Version})
+	}
+	cur, ok, cerr := load[Generation](tx, GenerationProjection, key)
+	if err = errors.Join(err, cerr); err != nil || ok && (cur.Base == obs.Head && cur.Candidate == *cand.State.Result || mutation.Is(mutation.GenerationKeepsBase)) {
+		return evs, Generation{}, err
+	}
+	g := Generation{Number: cur.Number + 1, Base: obs.Head, Version: obs.Version, Candidate: *cand.State.Result}
+	params, err := json.Marshal(rebaseParams{Branch: spec.Branch, Base: obs.Head, Version: obs.Version, Candidate: g.Candidate, Generation: g.Number})
 	rb, rerr := ids.New("nod")
 	co, cerr := ids.New("nod")
 	if err = errors.Join(err, rerr, cerr); err != nil {
@@ -160,7 +247,6 @@ func Generate(tx *eventstore.Tx, spec QueueSpec, head string) ([]eventstore.Even
 			Params: params, Inputs: inputs, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}}
 	}
 	candidate := input("candidate", spec.Candidate, types.ResultKindPatch)
-	var evs []eventstore.Event
 	for _, n := range []types.NodeRecorded{
 		node(g.Rebase, types.NodeKindRebase, params, candidate),
 		node(g.CarryOver, types.NodeKindCarryOver, json.RawMessage(`{}`), input("review", spec.Review, types.ResultKindReview), candidate,
