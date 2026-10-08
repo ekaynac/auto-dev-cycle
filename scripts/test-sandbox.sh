@@ -260,7 +260,7 @@ exec 9>>"$new_manifest"
 if ! { flock -n 9 && ln -T -- "$new_manifest" "$manifest"; }; then die "could not create the run manifest $manifest"; fi
 rm -f -- "$new_manifest"
 record() { printf '%s\n' "$1" >&9; }
-# shellcheck disable=SC2317  # invoked by the EXIT trap, which bash also runs on a fatal signal
+# shellcheck disable=SC2317,SC2329  # invoked only by the EXIT trap, which bash also runs on a fatal signal (0.10 reports SC2317, 0.11 SC2329)
 cleanup() {
   local rc=$?
   if purge <"$manifest"; then rm -f -- "$manifest" || warn "could not remove $manifest"; fi
