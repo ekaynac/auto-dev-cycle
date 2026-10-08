@@ -170,7 +170,8 @@ func run(ctx context.Context, command, env []string, workspace string, prompt []
 	if err != nil {
 		return spec, out, err
 	}
-	defer func() { err = errors.Join(err, removeState(dir)) }()
+	// A tree not seen to exit may still be writing: then no chmod walk.
+	defer func() { err = errors.Join(err, removeState(dir, !errors.Is(out.Session, session.ErrUnverified))) }()
 	state, root, tmp := filepath.Join(dir, "state"), filepath.Join(dir, "exchange"), filepath.Join(dir, "tmp")
 	for _, d := range []string{root, tmp} {
 		if err := os.Mkdir(d, 0o700); err != nil {
@@ -253,12 +254,12 @@ func sessionDeadline(b adapterhost.Bounds) time.Duration {
 }
 
 // removeState removes the run's temporary state. The adapter shares the
-// file system, so it first gives the owner rwx on every directory in it
-// (walked without following symlinks); what still cannot be removed is
-// reported by its path.
-func removeState(dir string) error {
+// file system, so, when walk is set (its process tree was seen to exit), it
+// first gives the owner rwx on every directory in it (walked without
+// following symlinks); what still cannot be removed is reported by its path.
+func removeState(dir string, walk bool) error {
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err == nil && d.IsDir() {
+		if walk && err == nil && d.IsDir() {
 			if info, ierr := d.Info(); ierr == nil {
 				_ = os.Chmod(p, info.Mode().Perm()|0o700) // RemoveAll reports what this leaves
 			}

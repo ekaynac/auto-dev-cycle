@@ -66,7 +66,7 @@ build: go-check ## Build the binaries for this host into bin/
 	@$(CHECK_RELEASE) $(addprefix $(BIN_DIR)/,$(BINARIES))
 	@$(BIN_DIR)/adc version
 
-dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
+dist: go-check ts-deps ## Cross-build release binaries into dist/<os>-<arch>/; for the server platforms, lib/adc gets the pinned Node, the fake adapter and py-mini (15 S2, D6)
 	@rm -rf $(DIST_DIR)
 	@for p in $(SERVER_PLATFORMS); do \
 	  for b in adcd adc adc-harness; do \
@@ -77,8 +77,9 @@ dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 	  ext=""; [[ $${p%/*} == windows ]] && ext=.exe; \
 	  GOOS=$${p%/*} GOARCH=$${p#*/} $(GOBUILD) -o $(DIST_DIR)/$${p%/*}-$${p#*/}/adc-agent$$ext ./cmd/adc-agent; \
 	done
-	@$(CHECK_RELEASE) $$(find $(DIST_DIR) -type f | sort)
-	@find $(DIST_DIR) -type f | sort
+	@$(CHECK_RELEASE) $$(find $(DIST_DIR) -mindepth 2 -maxdepth 2 -type f | sort)
+	@scripts/dist-lib.sh $(DIST_DIR) $(SERVER_PLATFORMS)
+	@find $(DIST_DIR) -mindepth 2 -maxdepth 2 | sort
 
 install-check: dist build ## Install the dist build into an empty prefix, check what the installed binaries report, run their contract fixtures and the installed smoke in isolation (00 exit check, 14 PR 12)
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \

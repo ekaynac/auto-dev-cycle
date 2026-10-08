@@ -429,3 +429,35 @@ func TestThePromptReadIsBounded(t *testing.T) {
 		t.Fatal("the prompt was read past its bound")
 	}
 }
+
+// Without the walk (a tree not seen to exit), an unreadable directory is
+// left as it is, and the failure names the state.
+func TestRemoveStateWalksOnlyWhenTold(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "adc-harness-x")
+	locked := filepath.Join(dir, "tmp", "locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "f"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	if os.Geteuid() == 0 {
+		t.Skip("permissions do not bind root")
+	}
+	if err := removeState(dir, false); err == nil || !strings.Contains(err.Error(), dir) {
+		t.Fatalf("without the walk: %v", err)
+	}
+	if fi, err := os.Lstat(locked); err != nil || fi.Mode().Perm() != 0 {
+		t.Fatalf("the locked directory was changed: %v %v", fi, err)
+	}
+	if err := removeState(dir, true); err != nil {
+		t.Fatalf("with the walk: %v", err)
+	}
+	if _, err := os.Lstat(dir); err == nil {
+		t.Fatal("the state is still there")
+	}
+}

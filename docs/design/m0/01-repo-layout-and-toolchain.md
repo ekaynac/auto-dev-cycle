@@ -102,7 +102,11 @@ The Go toolchain is installed per user from the official tarball (`~/.local/go`)
 - CI runs on GitHub Actions for this repository (the framework's own CI; projects using auto-dev-cycle may be on any
   forge).
 - Release builds: `adcd`, `adc` and `adc-harness` (15 S1) for linux/amd64 and linux/arm64; `adc-agent` additionally for
-  darwin and windows.
+  darwin and windows. Release builds are no longer Go binaries only (15 S2, D6): for the two linux platforms,
+  `lib/adc` also carries the official Node 22 `bin/node` (pinned in `scripts/node-pins` from Node's signed
+  `SHASUMS256.txt.asc`, verified at `make dist` and re-verified on the installed file), the fake adapter with its
+  production dependencies (licences on an allowlist), `fixtures/t0/py-mini` (tracked files only), the repository's
+  `LICENSE` and `NOTICE`, and a `SHA256SUMS` that install-check verifies. No npm or corepack is packaged.
 - Every build embeds version, commit and schema-set digest; `adc version` and the API report them, and every event
   records the writer's schema-set digest.
 
