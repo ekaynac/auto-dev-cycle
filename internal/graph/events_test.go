@@ -36,6 +36,8 @@ type graphStore struct {
 	plan    types.NodeID
 	planRes types.ResultID
 	blobs   *blobstore.Store
+	// conclusions are each derived receipt's rule 2a document, by digest.
+	conclusions map[types.Digest]json.RawMessage
 }
 
 func openStore(t *testing.T) graphStore {
@@ -56,7 +58,7 @@ func openStore(t *testing.T) graphStore {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close(); lock.Release() })
-	g := graphStore{t: t, s: s, blobs: blobs}
+	g := graphStore{t: t, s: s, blobs: blobs, conclusions: map[types.Digest]json.RawMessage{}}
 	g.plan, g.planRes = g.planOf(tskID, prjID)
 	return g
 }
@@ -106,7 +108,7 @@ func (g graphStore) planOf(task types.TaskID, project types.ProjectID) (types.No
 	res := types.Result{ID: types.ResultID(rid), Computation: g.state(n).Key.Key, Kind: types.ResultKindPlan, Value: []types.Ref{},
 		Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean, Completed: true}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: n, Result: res})
+		return RecordResult(tx, types.ResultRecorded{Node: n, Result: res}, g.blobs)
 	})
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, n, res.ID) })
 	return n, res.ID
@@ -166,7 +168,7 @@ func (g graphStore) result(n types.NodeID, completed bool) types.Result {
 		r = must(Build(*g.state(n).Key, BuildFacts{Project: prjID}))
 	}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: n, Result: r})
+		return RecordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
 	})
 	return r
 }
@@ -274,7 +276,7 @@ func TestClaimsAreScoped(t *testing.T) {
 	unselected := must(Build(*g.state(p1).Key, BuildFacts{Project: prjID}))
 	unselected.Kind = types.ResultKindPlan
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: p1, Result: unselected})
+		return RecordResult(tx, types.ResultRecorded{Node: p1, Result: unselected}, g.blobs)
 	})
 	dropped, droppedRes := g.planOf(tskID, prjID)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Invalidate(tx, dropped) })
@@ -291,7 +293,7 @@ func TestClaimsAreScoped(t *testing.T) {
 		r := unrecorded(t, *g.state(p5).Key)
 		r.Kind, r.Value, r.Outcome, r.Reason, r.Detail = types.ResultKindPlan, []types.Ref{}, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
 		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return RecordResult(tx, types.ResultRecorded{Node: p5, Result: r})
+			return RecordResult(tx, types.ResultRecorded{Node: p5, Result: r}, g.blobs)
 		})
 		return r
 	}
@@ -484,7 +486,7 @@ func TestDeprecatedReasonsReplay(t *testing.T) {
 	registry = func() (*vocab.Registry, error) { return copy, nil }
 	t.Cleanup(func() { registry = vocab.Load })
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: a, Result: unrecorded(t, *g.state(a).Key)})
+		return RecordResult(tx, types.ResultRecorded{Node: a, Result: unrecorded(t, *g.state(a).Key)}, g.blobs)
 	}); err == nil {
 		t.Fatal("a writer recorded a deprecated reason")
 	}

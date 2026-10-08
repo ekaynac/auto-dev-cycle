@@ -31,7 +31,7 @@ export type Result = {
    */
   value: Ref[];
   /**
-   * The typed projection used only for reuse decisions (13), one schema per result kind. A gate or evidence result's is its receipt's conclusions, whose RFC 8785 digest is the receipt's conclusions_digest. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"); every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one.
+   * The typed projection used only for reuse decisions (13), one schema per result kind. A gate or evidence result's is its receipt's rule 2a conclusions document (06; internal/receipt's Conclusions), whose RFC 8785 digest is the receipt's conclusions_digest. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"); every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one.
    */
   conclusions: null | {
     [k: string]: unknown;

@@ -13076,6 +13076,85 @@
   "valid": false
  },
  {
+  "name": "graph-event: renewal valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_renewed",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "receipt": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "valid_until": "2026-10-08T12:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: a renewal without its receipt's validity",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_renewed",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "receipt": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a renewal with no expiry",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_renewed",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "receipt": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "valid_until": null
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a renewal without its result",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_renewed",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "receipt": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "valid_until": "2026-10-08T12:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a renewal naming a holder",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_renewed",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "receipt": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "valid_until": "2026-10-08T12:00:00Z",
+   "holder": "nod_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
   "name": "graph-event: reuse release valid",
   "schema": "records/graph-event",
   "doc": {
@@ -13142,9 +13221,117 @@
     "detail": "a change",
     "completed": true
    },
-   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a"
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "receipt_valid_until": null
   },
   "valid": true
+ },
+ {
+  "name": "graph-event: a result binding its receipt's validity",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_recorded",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "patch",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": null,
+    "outcome": "found",
+    "reason": "completed_with_findings",
+    "detail": "a change",
+    "completed": true
+   },
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "receipt_valid_until": "2026-10-08T12:00:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: a result without its receipt binding",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_recorded",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "patch",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": null,
+    "outcome": "found",
+    "reason": "completed_with_findings",
+    "detail": "a change",
+    "completed": true
+   },
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a result binding a validity that is not a time",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_recorded",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "patch",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": null,
+    "outcome": "found",
+    "reason": "completed_with_findings",
+    "detail": "a change",
+    "completed": true
+   },
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "receipt_valid_until": "tomorrow"
+  },
+  "valid": false
  },
  {
   "name": "graph-event: selected valid",
@@ -13343,7 +13530,8 @@
     "detail": "a change",
     "completed": true
    },
-   "attempt": null
+   "attempt": null,
+   "receipt_valid_until": null
   },
   "valid": true
  },
@@ -13400,7 +13588,8 @@
     "detail": "a change",
     "completed": false
    },
-   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a"
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "receipt_valid_until": null
   },
   "valid": false
  },
@@ -13435,7 +13624,8 @@
     "detail": "a change",
     "completed": true
    },
-   "attempt": "res_01m3250v57fhm9v1z9xd1wk8gw"
+   "attempt": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "receipt_valid_until": null
   },
   "valid": false
  },
@@ -13469,7 +13659,8 @@
     "reason": "completed_with_findings",
     "detail": "a change",
     "completed": true
-   }
+   },
+   "receipt_valid_until": null
   },
   "valid": false
  },

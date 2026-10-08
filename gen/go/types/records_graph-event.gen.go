@@ -10,10 +10,10 @@ import (
 	"fmt"
 )
 
-// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 type GraphEvent struct{ Variant GraphEventVariant }
 
-// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *NodeReused, *NodeReuseReleased, *HoldRaised, *HoldPaged, *HoldCleared, *ResultRecorded, *ResultSelected.
+// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *NodeReused, *NodeReuseReleased, *NodeRenewed, *HoldRaised, *HoldPaged, *HoldCleared, *ResultRecorded, *ResultSelected.
 type GraphEventVariant interface{ isGraphEvent() }
 
 func (*NodeRecorded) isGraphEvent()      {}
@@ -21,6 +21,7 @@ func (*NodeClaimed) isGraphEvent()       {}
 func (*NodeInvalidated) isGraphEvent()   {}
 func (*NodeReused) isGraphEvent()        {}
 func (*NodeReuseReleased) isGraphEvent() {}
+func (*NodeRenewed) isGraphEvent()       {}
 func (*HoldRaised) isGraphEvent()        {}
 func (*HoldPaged) isGraphEvent()         {}
 func (*HoldCleared) isGraphEvent()       {}
@@ -85,6 +86,12 @@ func (u *GraphEvent) UnmarshalJSON(b []byte) error {
 		u.Variant = v
 	case "node_reuse_released":
 		v := &NodeReuseReleased{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	case "node_renewed":
+		v := &NodeRenewed{}
 		if err := decodeStrict(b, v); err != nil {
 			return err
 		}
@@ -166,11 +173,21 @@ type NodeReused struct {
 	Inputs []ClaimedInput `json:"inputs"`
 }
 
-// NodeReuseReleased: The holder of key was invalidated, and the node bound to key by reuse is released in the same command (13 [G1]): its reuse and its result are dropped, and it waits for its inputs again, to reuse or claim at the new generation.
+// NodeReuseReleased: The holder of key was invalidated or renewed, and the node bound to key by reuse is released in the same command (13 [G1]): its reuse and its result are dropped, and it waits for its inputs again, to reuse or claim at the new generation.
 type NodeReuseReleased struct {
 	Type string         `json:"type"`
 	Node NodeID         `json:"node"`
 	Key  ComputationKey `json:"key"`
+}
+
+// NodeRenewed: Renewal, the one exception to a key selecting once (13 [G1]): the receipt of the node's selected result expired at valid_until, by the event's time, so the same key reopens, claimed with no selected result, for a result recorded after this event. The generation and the claim stay. receipt is the content digest of the result's one receipt Ref, and valid_until the validity the result bound when recorded.
+type NodeRenewed struct {
+	Type       string         `json:"type"`
+	Node       NodeID         `json:"node"`
+	Key        ComputationKey `json:"key"`
+	Result     ResultID       `json:"result"`
+	Receipt    Digest         `json:"receipt"`
+	ValidUntil Time           `json:"valid_until"`
 }
 
 // HoldRaised: An external wait on the node (02 "Hold reasons and resume signals"): raised at the event's time with no page yet. result is set exactly when the hold has a reason: it is the retry wait of the node's could_not_run result of its current key (13 [G2]), one hold per result.
@@ -278,6 +295,8 @@ type ResultRecorded struct {
 	Type   string `json:"type"`
 	Node   NodeID `json:"node"`
 	Result Result `json:"result"`
+	// The valid_until of the receipt the result's one receipt Ref names, bound once when the result is recorded (null: no such receipt, or no limit). Renewal checks expiry against it; the resolver refuses a receipt that differs.
+	ReceiptValidUntil *Time `json:"receipt_valid_until"`
 	// Checked by this schema only until M1 binds attempts to nodes.
 	Attempt *AttemptID `json:"attempt"`
 }

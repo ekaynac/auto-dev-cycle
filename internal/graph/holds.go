@@ -44,6 +44,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 )
 
 // Raise is the event raising hold on node now (it stamps since), a
@@ -261,6 +262,9 @@ func holdCleared(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldCleared) e
 	case *types.Signalled:
 		if c.SignalInstance != rec.State.Holds[i].SignalInstance {
 			return errors.New("a signal clears the hold it is the signal of")
+		}
+		if by, _, err := load[heldBy](tx, HoldProjection, string(p.Hold)); err != nil || by.Result != nil && mutation.Is(mutation.RetryNeedsInvalidation) {
+			return errors.Join(err, errors.New("only an invalidation ends a retry wait"))
 		}
 	case *types.Retired: // invalidated: a retry wait of a key the node no longer holds
 		by, _, err := load[heldBy](tx, HoldProjection, string(p.Hold))

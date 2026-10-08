@@ -90,15 +90,16 @@ func invalidate(n types.NodeID) logic {
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Invalidate(tx, n) }
 }
 
-// selectGate records and selects a gate result of n's current key, with
-// the same receipt as gated's.
+// selectGate records and selects a result of n's kind and current key,
+// holding a fresh receipt.
 func (g graphStore) selectGate(n types.NodeID) types.Result {
 	g.t.Helper()
 	r := unrecorded(g.t, *g.state(n).Key)
-	r.Kind, r.Outcome, r.Reason, r.Detail, r.Conclusions = types.ResultKindGateResult, types.OutcomeEmpty, vocab.ReasonCompletedClean, "", ptr(conclusions)
-	r.Value = []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, g.receiptBlob(treeSubject(treeA, demandA), nil))}
+	d := g.receiptBlob(treeSubject(treeA, demandA), nil)
+	r.Kind, r.Outcome, r.Reason, r.Detail, r.Conclusions = produces[g.recordOf(n).Node.Kind][0], types.OutcomeEmpty, vocab.ReasonCompletedClean, "", ptr(g.conclusions[d])
+	r.Value = []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: n, Result: r})
+		return RecordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
 	})
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, n, r.ID) })
 	return r
@@ -127,7 +128,7 @@ func TestStaleReuseServesNothing(t *testing.T) {
 		t.Error("a dependant claims a stale reuse's result")
 	}
 	var reused ErrReused
-	if err := g.do(invalidate(b)); !errors.As(err, &reused) || reused.Holder != "" {
+	if err := g.do(invalidate(b)); !errors.As(err, &reused) || reused.Holder != "" || !strings.Contains(err.Error(), "holder was invalidated") {
 		t.Errorf("a stale reuse invalidated: %v", err)
 	}
 }
@@ -160,7 +161,7 @@ func TestReuseRefusals(t *testing.T) {
 	busy := g.record(g.newNode(types.NodeKindGate)) // holds its key, claimed, not completed
 	g.must(g.claimOf(busy))
 	waiter := g.record(g.newNode(types.NodeKindGate))
-	other, _ := g.gated("sha256:" + strings.Repeat("9", 64)) // another key
+	other, _ := g.gated("") // another key
 	elsewhere := g.nodeLikeGate(holder)
 	elsewhere.Task = tskB
 	far := g.record(elsewhere)
@@ -247,4 +248,9 @@ func TestReuseReleaseRefusals(t *testing.T) {
 	if err := g.do(release(string(b), prjID, b, key)); err == nil {
 		t.Error("a reuse released twice")
 	}
+}
+
+func (g graphStore) recordOf(n types.NodeID) types.NodeRecorded {
+	rec, _ := view[nodeRecord](g, NodeProjection, string(n))
+	return rec.Recorded
 }

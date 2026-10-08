@@ -19,8 +19,9 @@ package graph
 //     receipt included, makes the input missing, with the refusal's reason.
 //     A gate or evidence input always has a requirement: none is an error.
 //   - The result holds exactly one receipt Ref, and the receipt is the
-//     Ref's (its id) and the result's (its conclusions_digest is the RFC
-//     8785 digest of the result's conclusions); else receipt_incomplete.
+//     Ref's (its id) and the result's: the result's conclusions are the
+//     receipt's rule 2a document (receipt.Conclusions), whose digest the
+//     receipt records; else receipt_incomplete.
 //   - Answer inputs are the authority's (an input.answer approval binding
 //     the owed input's revision, 04): the caller passes them resolved, and
 //     one with no approval or of another revision is missing. G4b checks
@@ -82,14 +83,14 @@ func Resolve(tx *eventstore.Tx, node types.NodeID, answered map[string]Resolved,
 			continue
 		}
 		req, err := need(rec.Recorded.Node, in)
-		if err == nil && req == nil && (src.ResultKind == types.ResultKindGateResult || src.ResultKind == types.ResultKindEvidence) {
+		if err == nil && req == nil && carriesConclusions(src.ResultKind) {
 			err = fmt.Errorf("graph: input %s takes a %s and has no receipt requirement", in.Name, src.ResultKind)
 		}
 		if err != nil {
 			return nil, nil, err
 		}
 		if req != nil && !mutation.Is(mutation.ResolveSkipsApplicability) {
-			if err := applies(r.Result, *req, blobs, now); err != nil {
+			if err := applies(tx, r, *req, blobs, now); err != nil {
 				var refusal *receipt.Refusal
 				if !errors.As(err, &refusal) {
 					return nil, nil, err
@@ -104,33 +105,94 @@ func Resolve(tx *eventstore.Tx, node types.NodeID, answered map[string]Resolved,
 }
 
 // applies reads the receipt a result holds and decides whether it applies.
-func applies(r types.Result, req receipt.Requirement, blobs receipt.Blobs, now time.Time) error {
-	refs := slices.DeleteFunc(slices.Clone(r.Value), func(ref types.Ref) bool { return ref.Type != types.RefTypeReceipt })
-	if len(refs) != 1 {
-		return &receipt.Refusal{Reason: vocab.ReasonReceiptIncomplete, Detail: fmt.Sprintf("the result holds %d receipts, not one", len(refs))}
+func applies(tx *eventstore.Tx, r types.ResultRecorded, req receipt.Requirement, blobs receipt.Blobs, now time.Time) error {
+	_, rcpt, err := receiptOf(r, blobs)
+	if err == nil {
+		err = sinceRenewal(tx, r.Node, rcpt)
 	}
-	rc, err := blobs.Open(string(refs[0].ContentDigest))
 	if err != nil {
 		return err
+	}
+	return receipt.Applies(rcpt, req, now)
+}
+
+// sinceRenewal refuses a receipt produced before node's last renewal: the
+// renewal asks for fresher evidence, not only a newer result.
+func sinceRenewal(tx *eventstore.Tx, node types.NodeID, rcpt types.Receipt) error {
+	ren, renewed, err := load[renewal](tx, RenewalProjection, string(node))
+	if err != nil || !renewed {
+		return err
+	}
+	p, err1 := time.Parse(time.RFC3339Nano, string(rcpt.ProducedAt))
+	at, err2 := time.Parse(time.RFC3339Nano, string(ren.At))
+	if err := errors.Join(err1, err2); err != nil {
+		return err
+	}
+	if p.Before(at) {
+		return &receipt.Refusal{Reason: vocab.ReasonEvidenceInapplicable, Detail: fmt.Sprintf("the receipt was produced before %s's renewal at %s", node, ren.At)}
+	}
+	return nil
+}
+
+// receiptRef is the one receipt Ref a result holds.
+func receiptRef(r types.Result) (types.Ref, error) {
+	refs := slices.DeleteFunc(slices.Clone(r.Value), func(ref types.Ref) bool { return ref.Type != types.RefTypeReceipt })
+	if len(refs) != 1 {
+		return types.Ref{}, &receipt.Refusal{Reason: vocab.ReasonReceiptIncomplete, Detail: fmt.Sprintf("the result holds %d receipts, not one", len(refs))}
+	}
+	return refs[0], nil
+}
+
+// readReceipt decodes the receipt blob ref names.
+func readReceipt(ref types.Ref, blobs receipt.Blobs) (types.Receipt, error) {
+	if blobs == nil {
+		return types.Receipt{}, errors.New("graph: a receipt Ref needs the blob store")
+	}
+	rc, err := blobs.Open(string(ref.ContentDigest))
+	if err != nil {
+		return types.Receipt{}, err
 	}
 	b, err := io.ReadAll(rc)
 	if err = errors.Join(err, rc.Close()); err != nil {
-		return err
+		return types.Receipt{}, err
 	}
-	rcpt, err := contract.Decode[types.Receipt]("records/receipt", b)
+	return contract.Decode[types.Receipt]("records/receipt", b)
+}
+
+// carriesConclusions: the result kinds whose conclusions are their
+// receipt's rule 2a document (records/result).
+func carriesConclusions(k types.ResultKind) bool {
+	return k == types.ResultKindGateResult || k == types.ResultKindEvidence
+}
+
+// receiptOf reads the receipt a recorded result holds. It must be the
+// Ref's (its id), whole (its conclusions_digest is its own document's),
+// valid until what the result recorded, and, for a kind that carries
+// conclusions, the result's. A receipt that is not is a receipt_incomplete
+// Refusal.
+func receiptOf(rr types.ResultRecorded, blobs receipt.Blobs) (types.Ref, types.Receipt, error) {
+	r := rr.Result
+	ref, err := receiptRef(r)
 	if err != nil {
-		return err
+		return ref, types.Receipt{}, err
 	}
-	var conclusions types.Digest
+	rcpt, err := readReceipt(ref, blobs)
+	if err != nil {
+		return ref, rcpt, err
+	}
+	_, conclusions, err := receipt.Conclusions(rcpt)
+	if err != nil {
+		return ref, rcpt, err
+	}
+	var held string
 	if r.Conclusions != nil {
-		d, err := eventstore.ContentDigest(*r.Conclusions)
-		if err != nil {
-			return err
+		if held, err = eventstore.ContentDigest(*r.Conclusions); err != nil {
+			return ref, rcpt, err
 		}
-		conclusions = types.Digest(d)
 	}
-	if string(rcpt.ID) != refs[0].ID || rcpt.ConclusionsDigest != conclusions {
-		return &receipt.Refusal{Reason: vocab.ReasonReceiptIncomplete, Detail: "the receipt is not the one the result's Ref and conclusions name"}
+	bound := (rr.ReceiptValidUntil == nil) == (rcpt.ValidUntil == nil) && (rcpt.ValidUntil == nil || sameTime(string(*rr.ReceiptValidUntil), string(*rcpt.ValidUntil)))
+	if string(rcpt.ID) != ref.ID || rcpt.ConclusionsDigest != conclusions || !bound || carriesConclusions(r.Kind) && types.Digest(held) != conclusions {
+		return ref, rcpt, &receipt.Refusal{Reason: vocab.ReasonReceiptIncomplete, Detail: "the receipt is not the one the result's Ref, validity and conclusions name"}
 	}
-	return receipt.Applies(rcpt, req, now)
+	return ref, rcpt, nil
 }

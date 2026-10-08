@@ -91,8 +91,8 @@ func reused(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeReused) error {
 	return putNode(tx, rec)
 }
 
-// reuseReleased drops a reuse whose key's holder was invalidated: the node
-// waits for its inputs again, with its holds.
+// reuseReleased drops a reuse whose key's holder was invalidated or is
+// renewing: the node waits for its inputs again, with its holds.
 func reuseReleased(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeReuseReleased) error {
 	rec, err := nodeOf(tx, ev, p.Node)
 	if err != nil || ev.Kind != ReuseReleased || ev.Subject != string(p.Node) {
@@ -102,8 +102,14 @@ func reuseReleased(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeReuseRel
 	reusers, _, err := load[[]types.NodeID](tx, ReuseProjection, index)
 	holder, _, herr := load[types.NodeID](tx, KeyProjection, index)
 	at := slices.Index(reusers, p.Node)
-	if err = errors.Join(err, herr); err != nil || at < 0 || holder != "" {
-		return errors.Join(err, errors.New("a reuse is released only once the holder of its key is invalidated"))
+	if holder != "" && herr == nil {
+		h, lerr := loadNode(tx, holder)
+		if herr = lerr; lerr == nil && h.State.State == types.NodeStateStateCompleted {
+			at = -1
+		}
+	}
+	if err = errors.Join(err, herr); err != nil || at < 0 {
+		return errors.Join(err, errors.New("a reuse is released only once the holder of its key is invalidated or renewing"))
 	}
 	if err := errors.Join(put(tx, ReuseProjection, index, slices.Delete(reusers, at, at+1)), tx.Delete(ClaimProjection, string(p.Node))); err != nil {
 		return err

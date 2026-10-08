@@ -66,7 +66,7 @@ func Derive(c types.InstrumentContract, r types.Receipt, blobs Blobs) (Derived, 
 	if err := checkPredicates(c, r, blobs); err != nil {
 		return Derived{}, err
 	}
-	conclusions, err := conclusionsDigest(r)
+	_, conclusions, err := Conclusions(r)
 	if err != nil {
 		return Derived{}, err
 	}
@@ -291,11 +291,12 @@ func aggregate(ps []types.Predicate) (vocab.Outcome, vocab.Reason, string) {
 	return vocab.Empty, vocab.ReasonCompletedClean, ""
 }
 
-// conclusionsDigest is the digest of a receipt's typed conclusions (rule
-// 2a): the demand key and each predicate's name, outcome and reason, in
-// name order. (Per-step outcomes and restrictions join it when the
-// envelope carries them.)
-func conclusionsDigest(r types.Receipt) (types.Digest, error) {
+// Conclusions is a receipt's typed conclusions document (rule 2a), in RFC
+// 8785 form, and its digest, the receipt's conclusions_digest: the demand
+// key and each predicate's name, outcome and reason, in name order.
+// (Per-step outcomes and restrictions join it when the envelope carries
+// them.) A gate or evidence result's conclusions are this document (13).
+func Conclusions(r types.Receipt) (json.RawMessage, types.Digest, error) {
 	type conclusion struct {
 		Name    string `json:"name"`
 		Outcome string `json:"outcome"`
@@ -316,14 +317,14 @@ func conclusionsDigest(r types.Receipt) (types.Digest, error) {
 		Predicates []conclusion `json:"predicates"`
 	}{key, cs})
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	c, err := jcs.Transform(b)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	sum := sha256.Sum256(c)
-	return types.Digest("sha256:" + hex.EncodeToString(sum[:])), nil
+	return c, types.Digest("sha256:" + hex.EncodeToString(sum[:])), nil
 }
 
 // refuseLoader refuses every external schema reference.

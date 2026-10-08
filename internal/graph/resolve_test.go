@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -31,10 +32,15 @@ var (
 	demandA          = types.Digest("sha256:" + strings.Repeat("e", 64))
 	demandB          = types.Digest("sha256:" + strings.Repeat("f", 64))
 	envID            = types.Digest("sha256:" + strings.Repeat("c", 64))
-	// conclusions are a gate result's; its receipt's conclusions_digest is
-	// their RFC 8785 digest.
+	// conclusions are a gate result's whose receipt the store did not
+	// derive.
 	conclusions = json.RawMessage(`{"tests": "pass"}`)
 )
+
+// goTest is the gate instrument the receipts here are derived under.
+var goTest = types.InstrumentContract{Name: "go-test", Version: "1.0.0", Digest: instrumentDigest, SubjectType: types.InstrumentContractSubjectTypeTree,
+	RequiredPredicates: []types.InstrumentContractRequiredPredicatesItem{{Name: "tests", EvidenceRequired: []string{}}},
+	OptionalPredicates: []string{}, Preconditions: []types.Name{}, ArtifactClasses: map[string]types.InstrumentContractArtifactClassesValue{}}
 
 // treeSubject is a gate receipt's subject: tree, under demand when set.
 func treeSubject(tree string, demand types.Digest) map[string]any {
@@ -51,7 +57,7 @@ func treeSubject(tree string, demand types.Digest) map[string]any {
 func receiptDoc(subject map[string]any, until *string) map[string]any {
 	return map[string]any{"id": rcpID, "kind": "gate", "instrument": map[string]any{"name": "go-test", "version": "1.0.0", "digest": instrumentDigest},
 		"subject": subject, "provenance": map[string]any{"command": cmdID, "attempt": nil, "calls": []any{}, "model_families": []any{}, "contributors": []any{}},
-		"produced_at": "2026-10-05T12:00:00Z", "valid_until": until, "outcome": "empty", "reason": "completed_clean", "detail": "", "verdict": nil,
+		"produced_at": time.Now().UTC().Format(time.RFC3339Nano), "valid_until": until, "outcome": "empty", "reason": "completed_clean", "detail": "", "verdict": nil,
 		"predicates":         []any{map[string]any{"name": "tests", "outcome": "empty", "reason": "completed_clean", "detail": "", "evidence": []any{}}},
 		"conclusions_digest": must(eventstore.ContentDigest(conclusions)), "supersedes": nil}
 }
@@ -70,8 +76,31 @@ func (g graphStore) blob(doc any) types.Digest {
 	return types.Digest(d)
 }
 
+// receiptBlob publishes a receipt about subject derived under goTest, and
+// keeps its rule 2a conclusions document for the result that holds it.
 func (g graphStore) receiptBlob(subject map[string]any, until *string) types.Digest {
-	return g.blob(receiptDoc(subject, until))
+	g.t.Helper()
+	return g.derived(receiptDoc(subject, until))
+}
+
+// derived publishes the receipt doc derived under goTest, keeping its
+// conclusions document.
+func (g graphStore) derived(doc map[string]any) types.Digest {
+	g.t.Helper()
+	b, err := json.Marshal(doc)
+	var r types.Receipt
+	if err == nil {
+		err = json.Unmarshal(b, &r)
+	}
+	d, derr := receipt.Derive(goTest, r, g.blobs)
+	concl, _, cerr := receipt.Conclusions(r)
+	if err = errors.Join(err, derr, cerr); err != nil {
+		g.t.Fatal(err)
+	}
+	r.Outcome, r.Reason, r.Detail, r.Verdict, r.ConclusionsDigest = types.Outcome(d.Outcome), d.Reason, d.Detail, d.Verdict, d.ConclusionsDigest
+	digest := g.blob(r)
+	g.conclusions[digest] = concl
+	return digest
 }
 
 // sealed is a Ref of type to the content d, under id.
@@ -98,6 +127,22 @@ func (g graphStore) gated(receiptDigest types.Digest) (types.NodeID, types.Resul
 // completedWith records, claims and completes a node of kind, under a key
 // of its own, with a result of kind rk holding value.
 func (g graphStore) completedWith(kind types.NodeKind, rk types.ResultKind, value []types.Ref) (types.NodeID, types.Result) {
+	return g.completedAs(kind, rk, value, func(n types.NodeID, r types.Result) logic {
+		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return RecordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
+		}
+	})
+}
+
+// forgedWith is completedWith with a result.recorded event the builder did
+// not write: its receipt's validity bound to bound, whatever the blob says.
+func (g graphStore) forgedWith(kind types.NodeKind, rk types.ResultKind, value []types.Ref, bound *types.Time) (types.NodeID, types.Result) {
+	return g.completedAs(kind, rk, value, func(n types.NodeID, r types.Result) logic {
+		return forge(ResultRecorded, string(r.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: n, Result: r, ReceiptValidUntil: bound})
+	})
+}
+
+func (g graphStore) completedAs(kind types.NodeKind, rk types.ResultKind, value []types.Ref, recordOf func(types.NodeID, types.Result) logic) (types.NodeID, types.Result) {
 	g.t.Helper()
 	rec := g.newNode(kind)
 	rec.Node.Params = json.RawMessage(`{"node":"` + string(rec.Node.ID) + `"}`)
@@ -105,9 +150,16 @@ func (g graphStore) completedWith(kind types.NodeKind, rk types.ResultKind, valu
 	g.must(g.claimOf(n))
 	r := unrecorded(g.t, *g.state(n).Key)
 	r.Kind, r.Outcome, r.Reason, r.Detail, r.Value, r.Conclusions = rk, types.OutcomeEmpty, vocab.ReasonCompletedClean, "", value, ptr(conclusions)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: n, Result: r})
-	})
+	for _, ref := range value {
+		if doc, ok := g.conclusions[ref.ContentDigest]; ok && ref.Type == types.RefTypeReceipt {
+			r.Conclusions = ptr(doc)
+			break
+		}
+	}
+	if !carriesConclusions(rk) {
+		r.Conclusions = nil
+	}
+	g.must(recordOf(n, r))
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, n, r.ID) })
 	return n, r
 }
@@ -199,15 +251,21 @@ func TestResolve(t *testing.T) {
 	}
 	other := receiptDoc(treeSubject(treeA, demandA), nil)
 	other["conclusions_digest"] = instrumentDigest
+	forged := g.blob(other)
+	g.conclusions[forged] = g.conclusions[good] // the result's conclusions are the receipt's document
 	bare, _ := g.gated("")
 	twice, _ := g.completedWith(types.NodeKindGate, types.ResultKindGateResult,
 		[]types.Ref{g.sealed(types.RefTypeReceipt, rcpID, good), g.sealed(types.RefTypeReceipt, rcpB, g.receiptBlob(treeSubject(treeB, demandA), nil))})
 	misnamed, _ := g.completedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{g.sealed(types.RefTypeReceipt, rcpB, good)})
+	// A derived receipt held by a result whose conclusions are not its.
+	unlike := g.receiptBlob(treeSubject(treeA, demandA), nil)
+	g.conclusions[unlike] = conclusions
 	for name, gate := range map[string]types.NodeID{
 		"a result with no receipt":                       bare,
 		"a result with two receipts":                     twice,
 		"a receipt that is not the one its Ref names":    misnamed,
-		"a receipt of other conclusions than the result": g.gatedOnly(g.blob(other)),
+		"a receipt whose digest is not its conclusions'": g.gatedOnly(forged),
+		"a receipt of other conclusions than the result": g.gatedOnly(unlike),
 	} {
 		if !g.refused(g.reviewOf(gate), gateOn(treeA, demandA), vocab.ReasonReceiptIncomplete) {
 			t.Errorf("%s applies", name)
@@ -231,13 +289,20 @@ func TestResolve(t *testing.T) {
 		"no requirements":                 {review, nil},
 		"no requirement for a gate input": {review, noRequirement},
 		"no requirement for evidence":     {g.consumerOf(evidence, types.ResultKindEvidence), noRequirement},
-		"a receipt Ref with no blob":      {g.reviewOf(g.gatedOnly("sha256:" + strings.Repeat("9", 64))), gateOn(treeA, demandA)},
-		"a blob that is not a receipt":    {g.reviewOf(g.gatedOnly(g.blob(map[string]any{"id": rcpID}))), gateOn(treeA, demandA)},
+		"a receipt Ref with no blob":      {g.reviewOf(g.forgedOnly("sha256:" + strings.Repeat("9", 64))), gateOn(treeA, demandA)},
+		"a blob that is not a receipt":    {g.reviewOf(g.forgedOnly(g.blob(map[string]any{"id": rcpID}))), gateOn(treeA, demandA)},
 	} {
 		if _, _, err := g.resolveWith(c.node, map[string]Resolved{}, c.need); err == nil {
 			t.Errorf("%s resolves", name)
 		}
 	}
+}
+
+// forgedOnly is a gate whose result, recorded by a forged event, holds
+// only the receipt Ref to d, which the builder could not read.
+func (g graphStore) forgedOnly(d types.Digest) types.NodeID {
+	n, _ := g.forgedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)}, nil)
+	return n
 }
 
 // gatedOnly is a gate whose result holds only the receipt Ref to d.

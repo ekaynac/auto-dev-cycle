@@ -4,9 +4,9 @@
 
 `schemas/records/graph-event.json`
 
-The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 
-A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [NodeReused](#nodereused) or [NodeReuseReleased](#nodereusereleased) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected).
+A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [NodeReused](#nodereused) or [NodeReuseReleased](#nodereusereleased) or [NodeRenewed](#noderenewed) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected).
 
 ## Definitions
 
@@ -86,7 +86,7 @@ No other fields are allowed.
 
 ### NodeReuseReleased
 
-The holder of key was invalidated, and the node bound to key by reuse is released in the same command (13 [G1]): its reuse and its result are dropped, and it waits for its inputs again, to reuse or claim at the new generation.
+The holder of key was invalidated or renewed, and the node bound to key by reuse is released in the same command (13 [G1]): its reuse and its result are dropped, and it waits for its inputs again, to reuse or claim at the new generation.
 
 #### Fields of NodeReuseReleased
 
@@ -95,6 +95,23 @@ The holder of key was invalidated, and the node bound to key by reuse is release
 | `type` | yes | `node_reuse_released` |  |
 | `node` | yes | [NodeID](common-defs.md#nodeid) |  |
 | `key` | yes | [computation-key](records-computation-key.md) |  |
+
+No other fields are allowed.
+
+### NodeRenewed
+
+Renewal, the one exception to a key selecting once (13 [G1]): the receipt of the node's selected result expired at valid_until, by the event's time, so the same key reopens, claimed with no selected result, for a result recorded after this event. The generation and the claim stay. receipt is the content digest of the result's one receipt Ref, and valid_until the validity the result bound when recorded.
+
+#### Fields of NodeRenewed
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | `node_renewed` |  |
+| `node` | yes | [NodeID](common-defs.md#nodeid) |  |
+| `key` | yes | [computation-key](records-computation-key.md) |  |
+| `result` | yes | [ResultID](common-defs.md#resultid) |  |
+| `receipt` | yes | [Digest](common-defs.md#digest) |  |
+| `valid_until` | yes | [Time](common-defs.md#time) |  |
 
 No other fields are allowed.
 
@@ -178,6 +195,7 @@ An immutable result of a claimed node, with the attempt that produced it (null f
 | `type` | yes | `result_recorded` |  |
 | `node` | yes | [NodeID](common-defs.md#nodeid) |  |
 | `result` | yes | [result](records-result.md) |  |
+| `receipt_valid_until` | yes | null or [Time](common-defs.md#time) | The valid_until of the receipt the result's one receipt Ref names, bound once when the result is recorded (null: no such receipt, or no limit). Renewal checks expiry against it; the resolver refuses a receipt that differs. |
 | `attempt` | yes | null or [AttemptID](common-defs.md#attemptid) | Checked by this schema only until M1 binds attempts to nodes. |
 
 No other fields are allowed.
