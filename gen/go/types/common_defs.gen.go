@@ -67,6 +67,22 @@ type Digest = string
 // GitID: Git object id with the algorithm explicit by length: sha1 (40 hex) or sha256 (64 hex).
 type GitID = string
 
+// ResultKind: The kind of an immutable graph result (docs/design/m0/13 "Model"): what an input declares it consumes.
+type ResultKind string
+
+const (
+	ResultKindPlan                 ResultKind = "plan"
+	ResultKindPatch                ResultKind = "patch"
+	ResultKindPartialPatch         ResultKind = "partial_patch"
+	ResultKindTree                 ResultKind = "tree"
+	ResultKindPackage              ResultKind = "package"
+	ResultKindGateResult           ResultKind = "gate_result"
+	ResultKindReview               ResultKind = "review"
+	ResultKindEvidence             ResultKind = "evidence"
+	ResultKindCarryOverAttestation ResultKind = "carry_over_attestation"
+	ResultKindMergeResult          ResultKind = "merge_result"
+)
+
 // Time: RFC 3339 in UTC with a Z suffix and a valid calendar date and clock time (adc-time).
 type Time = string
 

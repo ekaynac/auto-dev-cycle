@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/input-spec.json",
+  "title": "InputSpec",
+  "description": "One declared, typed input of a node (docs/design/m0/13 \"Model\"). The node runs only once each input resolves to a selected, reusable, applicable result (06); until then it waits on that input structurally (13 \"Evaluation\"). A model node's controller-supplied context is rendered only from its resolved inputs (13 [G7]), so information that no input declares cannot reach it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "source"],
+  "properties": {
+    "name": {"description": "The input's name within its node; internal/graph refuses a duplicate name.", "$ref": "receipt.json#/$defs/Name"},
+    "source": {
+      "description": "Where the input's value comes from, discriminated by type.",
+      "oneOf": [{"$ref": "#/$defs/ResultSource"}, {"$ref": "#/$defs/AnswerSource"}]
+    }
+  },
+  "$defs": {
+    "ResultSource": {
+      "description": "The selected result of a producer node in the same graph, of exactly the declared kind.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "producer", "result_kind"],
+      "properties": {
+        "type": {"const": "result"},
+        "producer": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "result_kind": {"$ref": "../common/defs.json#/$defs/ResultKind"}
+      }
+    },
+    "AnswerSource": {
+      "description": "The answer to an owed input: an input.answer approval that binds exactly this revision (04 \"Owed inputs\"). Only a successor review declares it, never the review that asked (13 \"Successor rounds\"). It resolves to the approval's id and this revision, which is what the computation key hashes for it. A receipt owed input is declared as a result of its evidence node instead, since a ruling never satisfies it; the resolver (G4a) refuses an answer source whose owed input has kind receipt.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "owed_input", "revision"],
+      "properties": {
+        "type": {"const": "answer"},
+        "owed_input": {"$ref": "../common/defs.json#/$defs/OwedInputID"},
+        "revision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    }
+  }
+}

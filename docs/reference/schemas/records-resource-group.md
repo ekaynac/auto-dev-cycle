@@ -11,7 +11,7 @@ A pool that leases reserve from (docs/design/m0/05 "Resource groups"). Rate wind
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `id` | yes | [ResourceGroupID](common-defs.md#resourcegroupid) |  |
-| `kind` | yes | one of `account_quota`, `broker_balance`, `gpu`, `concurrency`, `controller_gate`, `controller_integration`, `evidence_target` |  |
+| `kind` | yes | [ResourceGroupKind](#resourcegroupkind) |  |
 | `capacity_model` | yes | object ([fields](#fields-of-capacity_model)) |  |
 | `release_rule` | yes | one of `on_settle`, `on_attempt_end`, `on_window_reset`, `on_restore_verified` | How reserved amounts return [M7]. An evidence target returns only once its restore is verified (13, D40). |
 | `members` | yes | array of [ExecutorID](common-defs.md#executorid) (unique items) |  |
@@ -39,6 +39,10 @@ Conditional rules (1, `if`/`then`/`else` in the schema):
 - when `quota_state` `unknown`, then `limit` `null`; otherwise `limit` any (not `null`)
 
 ## Definitions
+
+### ResourceGroupKind
+
+Type: one of `account_quota`, `broker_balance`, `gpu`, `concurrency`, `controller_gate`, `controller_integration`, `evidence_target`
 
 ### CapacityUnit
 

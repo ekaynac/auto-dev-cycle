@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/computation-key.json",
+  "title": "ComputationKey",
+  "description": "What a node would compute (docs/design/m0/13 \"Model\" [G1]). key = H(kind, definition_version, params digest, ordered resolved input ids, generation), computed by internal/graph (G2). A resolved input id is a result id, or for an answer input the approval id and the owed input's revision. A key names a computation, never an output: a result has its own id and answers exactly one key, and each key has one selected result at a time.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["key", "generation"],
+  "properties": {
+    "key": {"$ref": "../common/defs.json#/$defs/Digest"},
+    "generation": {
+      "description": "Starts at 1 and is bumped only by an explicit, recorded invalidation (an operator action, or a definition or instrument version change). A bump changes the key, so a new result is produced and dependants re-key; no result is ever overwritten.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  }
+}

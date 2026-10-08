@@ -8,14 +8,7 @@ export type ResourceGroup = {
    * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
    */
   id: string;
-  kind:
-    | "account_quota"
-    | "broker_balance"
-    | "gpu"
-    | "concurrency"
-    | "controller_gate"
-    | "controller_integration"
-    | "evidence_target";
+  kind: ResourceGroupKind;
   capacity_model: {
     unit: CapacityUnit;
     /**
@@ -35,6 +28,18 @@ export type ResourceGroup = {
    */
   members: string[];
 };
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "ResourceGroupKind".
+ */
+export type ResourceGroupKind =
+  | "account_quota"
+  | "broker_balance"
+  | "gpu"
+  | "concurrency"
+  | "controller_gate"
+  | "controller_integration"
+  | "evidence_target";
 /**
  * Every amount is an integer: money in millionths of a US dollar, GPU time in seconds.
  *

@@ -32,6 +32,12 @@ Git object id with the algorithm explicit by length: sha1 (40 hex) or sha256 (64
 
 Type: string (pattern `^git:([0-9a-f]{40}|[0-9a-f]{64})$`)
 
+### ResultKind
+
+The kind of an immutable graph result (docs/design/m0/13 "Model"): what an input declares it consumes.
+
+Type: one of `plan`, `patch`, `partial_patch`, `tree`, `package`, `gate_result`, `review`, `evidence`, `carry_over_attestation`, `merge_result`
+
 ### Time
 
 RFC 3339 in UTC with a Z suffix and a valid calendar date and clock time (adc-time).

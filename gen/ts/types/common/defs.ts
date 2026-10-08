@@ -29,6 +29,23 @@ export type Digest = string;
  */
 export type GitID = string;
 /**
+ * The kind of an immutable graph result (docs/design/m0/13 "Model"): what an input declares it consumes.
+ *
+ * This interface was referenced by `CommonDefinitions`'s JSON-Schema
+ * via the `definition` "ResultKind".
+ */
+export type ResultKind =
+  | "plan"
+  | "patch"
+  | "partial_patch"
+  | "tree"
+  | "package"
+  | "gate_result"
+  | "review"
+  | "evidence"
+  | "carry_over_attestation"
+  | "merge_result";
+/**
  * RFC 3339 in UTC with a Z suffix and a valid calendar date and clock time (adc-time).
  *
  * This interface was referenced by `CommonDefinitions`'s JSON-Schema
