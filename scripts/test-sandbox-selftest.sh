@@ -301,6 +301,78 @@ else
   unexpected "symlinked cache" "$rc" "$out/symlink.err"
 fi
 
+echo "cleanup: a killed or terminated run leaves nothing behind"
+# A private HOME (and so state directory): the real home is never touched.
+khome="$out/kill-home" && mkdir -p "$khome"
+kstate="$khome/.local/state/adc-test-sandbox"
+# Run as a simple command, so a background run's $! is the wrapper itself.
+kwrap=(env -u XDG_STATE_HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$khome" ADC_GO_PREFIX="${ADC_GO_PREFIX:-$HOME/.local/go}"
+  ADC_TEST_SCRATCH="$sandboxed_scratch" ADC_TEST_PROVISION="$out/provision" "$repo_root/scripts/test-sandbox.sh" --backend "$backend" --)
+planted() {  # planted: the background run recorded its last canary (the repository's)
+  for _ in $(seq 600); do
+    grep -qsF "$repo_root/.adc-sandbox-canary-" "$kstate"/run-* && return 0
+    sleep 0.1
+  done
+  return 1
+}
+gone() {  # gone <label> <path...>: none of the paths remains
+  local p ok=1 label="$1"; shift
+  for p in "$@"; do [[ -e "$p" || -L "$p" ]] && { echo "  FAIL  $label: $p remains"; ok=0; fail=1; }; done
+  if [[ "$ok" == 1 ]]; then echo "  ok    $label: all $# planted paths removed"; fi
+}
+"${kwrap[@]}" sleep 60 2>"$out/kill.err" & kpid=$!
+if planted; then
+  kill -KILL "$kpid"; wait "$kpid" 2>/dev/null || true
+  mapfile -t left < <(cat "$kstate"/run-*)
+  n=0; for p in "${left[@]}"; do [[ -e "$p" ]] && n=$((n + 1)); done
+  if [[ "$n" -ge 5 && "$n" == "${#left[@]}" ]]; then echo "  ok    SIGKILL left $n planted paths behind"
+  else echo "  FAIL  the killed run left $n of ${#left[@]} recorded paths, want all of at least 5"; fail=1; fi
+  rc=0; "${kwrap[@]}" /bin/true 2>"$out/after.err" || rc=$?
+  [[ "$rc" == 0 ]] || { unexpected "the run after a kill" "$rc" "$out/after.err"; }
+  gone "the next run swept the killed run's paths" "${left[@]}"
+else
+  echo "  FAIL  the run to be killed never planted its canaries"; fail=1; kill -KILL "$kpid" 2>/dev/null || true
+fi
+"${kwrap[@]}" sleep 60 2>"$out/term.err" & kpid=$!
+if planted; then
+  mapfile -t left < <(cat "$kstate"/run-*)
+  left+=("$kstate"/run-*)
+  start=$SECONDS; kill -TERM "$kpid"; rc=0; wait "$kpid" || rc=$?
+  if [[ "$rc" == 143 && $((SECONDS - start)) -le 10 ]]; then echo "  ok    SIGTERM: the run died by the signal at once (exit 143)"
+  else echo "  FAIL  SIGTERM: the run exited $rc after $((SECONDS - start))s, want 143 at once"; fail=1; fi
+  gone "SIGTERM cleaned up its own paths and manifest" "${left[@]}"
+else
+  echo "  FAIL  the run to be terminated never planted its canaries"; fail=1; kill -KILL "$kpid" 2>/dev/null || true
+fi
+
+echo "cleanup: read-only directories and hostile manifest entries"
+hhome="$out/hostile-home" && hstate="$hhome/.local/state/adc-test-sandbox" && mkdir -p "$hstate" && chmod 700 "$hstate"
+hwrap=("${kwrap[@]/#HOME=*/HOME=$hhome}")
+# A killed run whose work directory holds a read-only directory (a Go module cache, say).
+mkdir -p "$sandboxed_scratch/work.Rdonly/ro" && touch "$sandboxed_scratch/work.Rdonly/ro/f" && chmod 555 "$sandboxed_scratch/work.Rdonly/ro"
+printf '%s\n' "$sandboxed_scratch/work.Rdonly" >"$hstate/run-Rdonly"
+rc=0; "${hwrap[@]}" /bin/true 2>"$out/ro.err" || rc=$?
+[[ "$rc" == 0 ]] || unexpected "the run after a read-only stale work directory" "$rc" "$out/ro.err"
+gone "a stale work directory with a read-only directory" "$sandboxed_scratch/work.Rdonly" "$hstate/run-Rdonly"
+rc=0; "${hwrap[@]}" bash -c 'mkdir -p /scratch/work/ro && touch /scratch/work/ro/f && chmod 555 /scratch/work/ro; exit 3' 2>"$out/ro.err" || rc=$?
+if [[ "$rc" == 3 && -z "$(find "$hstate" -mindepth 1)" ]]; then echo "  ok    a read-only directory in its own work: cleaned up, exit status 3 kept"
+else echo "  FAIL  a read-only directory in its own work: exit $rc (want 3), left: $(ls -A "$hstate")"; fail=1; fi
+# Entries no run plants: deeper than a canary, a symlink, '..', foreign files,
+# and a work directory of another scratch area. Only the genuine canary goes.
+mkdir -p "$hhome/sub" "$out/other-scratch/work.Other1" && echo keep >"$out/victim"
+: >"$hhome/sub/.adc-sandbox-canary-Deep01" && : >"$hhome/.adc-sandbox-canary-Dots01" && : >"$hhome/.adc-sandbox-canary-Legit1"
+ln -s "$out/victim" "$hhome/.adc-sandbox-canary-Link01"
+hostile=("$hhome/sub/.adc-sandbox-canary-Deep01" "$hhome/.adc-sandbox-canary-Link01" "$hhome/sub/../.adc-sandbox-canary-Dots01"
+  "$out/decoy-codex/auth.json" /etc/passwd "$out/other-scratch/work.Other1")
+printf '%s\n' "${hostile[@]}" "$hhome/.adc-sandbox-canary-Legit1" >"$hstate/run-Hostil"
+rc=0; "${hwrap[@]}" /bin/true 2>"$out/hostile.err" || rc=$?
+[[ "$rc" == 0 ]] || unexpected "the run after a hostile manifest" "$rc" "$out/hostile.err"
+gone "the genuine canary in a hostile manifest" "$hhome/.adc-sandbox-canary-Legit1"
+kept=0; for p in "${hostile[@]}" "$out/victim" "$hstate/run-Hostil"; do [[ -e "$p" ]] && kept=$((kept + 1)); done
+if [[ "$kept" == 8 && "$(cat "$out/victim")" == keep ]] && grep -q 'left in place' "$out/hostile.err"; then
+  echo "  ok    every hostile entry, the symlink target and the manifest were kept, with a warning"
+else echo "  FAIL  a hostile manifest entry was removed ($kept of 8 kept)"; fail=1; fi
+
 if [[ "$fail" != 0 ]]; then
   echo "test-sandbox self-test: FAILED" >&2
   exit 1
