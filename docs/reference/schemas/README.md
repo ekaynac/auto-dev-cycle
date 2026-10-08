@@ -50,6 +50,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/grant-event.json`](records-grant-event.md) | GrantEvent |
 | [`records/grant-replaced.json`](records-grant-replaced.md) | GrantReplaced |
 | [`records/grant.json`](records-grant.md) | Grant |
+| [`records/graph-event.json`](records-graph-event.md) | GraphEvent |
 | [`records/identity-event.json`](records-identity-event.md) | IdentityEvent |
 | [`records/input-spec.json`](records-input-spec.md) | InputSpec |
 | [`records/instrument-contract.json`](records-instrument-contract.md) | InstrumentContract |
