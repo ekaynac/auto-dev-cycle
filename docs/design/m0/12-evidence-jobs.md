@@ -54,9 +54,9 @@ field is in the params digest and so in the node's key (13).
   is a `tree` subject. `environment` and `call` subjects need a result kind that M1 brings with deploy.
 - **Limits.** The deadline is never zero. `internal/graph` refuses a per-demand cap above the per-subject cap, and an
   evidence node that does not lease an `evidence_target`.
-- **Restore.** A required restore names its procedure. One that is not required names none: the instrument leaves
-  nothing to put back, but remote-session cleanup still runs, and the lease still settles only after
-  `lease.restore_verified` (05).
+- **Restore.** It is the instrument contract's `restore_procedure` (06): a required restore names that procedure, and
+  one not required means the contract has none. Remote-session cleanup still runs, and the lease still settles only
+  after `lease.restore_verified` (05).
 
 ### Attempts keyed by demand (nöbetçi Δ§2)
 
@@ -99,12 +99,12 @@ field is in the params digest and so in the node's key (13).
   - the session tags assigned before egress;
   - the end of the deadline.
 - `remote_process` is not idempotent at its target, so it is never retried.
-- E2 validates the kept request (#190):
-  - against its schema;
-  - that its target equals the intent's;
-  - that the (attempt, run) pair is recorded.
+- The store validates the kept request (`evidence.RemoteProcessKind`, #190):
+  - against `records/remote-process-request`;
+  - that its target is the intent's;
+  - that its run is its attempt's run (05).
 
-  E2 also adds the restore procedure to the instrument contract.
+  The restore procedure is the instrument contract's (06); `evidence.CheckRestore` holds the node's restore to it.
 
 ## What M0 delivers
 

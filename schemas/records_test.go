@@ -77,6 +77,7 @@ func instrument() map[string]any {
 		"preconditions":       []any{"toolchain_present"},
 		"payload_schema":      dgB,
 		"artifact_classes":    map[string]any{"junit": "diagnostic", "remote_stderr": "restricted"},
+		"restore_procedure":   nil,
 	}
 }
 
@@ -221,6 +222,9 @@ func TestInstrumentContract(t *testing.T) {
 			m["optional_predicates"] = []any{"reported_status", "reported_status"}
 		}, false},
 		{"missing digest", func(m map[string]any) { delete(m, "digest") }, false},
+		{"a restore procedure", func(m map[string]any) { m["restore_procedure"] = "snapshot-revert" }, true},
+		{"a restore procedure that is not a name", func(m map[string]any) { m["restore_procedure"] = "Revert Snapshot" }, false},
+		{"missing restore procedure", func(m map[string]any) { delete(m, "restore_procedure") }, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
