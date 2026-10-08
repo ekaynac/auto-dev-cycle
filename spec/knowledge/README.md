@@ -1,6 +1,6 @@
 # Shared knowledge spec (draft)
 
-**Version:** 0.1.0-draft.
+**Version:** 0.2.0-draft.
 
 This is the semantic spec for knowledge that auto-dev-cycle shares with InfraMedic (K10): what the terms mean, what
 must always hold, the record schemas, and fixtures both implementations must pass. It has one authoritative home:
@@ -21,7 +21,8 @@ this directory, in the auto-dev-cycle repository.
 
 - InfraMedic vendors a **pinned revision** of this directory **together with its schema dependency closure** at the
   same revision: `schemas/common/defs.json`, `schemas/records/receipt.json`, `schemas/records/ref.json`,
-  `schemas/records/view-fingerprint.json` and `schemas/records/manifest-*.json`, keeping the repository layout
+  `schemas/records/view-fingerprint.json`, `schemas/records/manifest-*.json`, `schemas/records/attempt-record.json`,
+  `schemas/records/failure-signature.json` and `schemas/records/claim.json`, keeping the repository layout
   (`spec/knowledge/` and `schemas/` side by side) so every relative `$ref` and link resolves. It maps onto them in
   its own repository.
 - The spec carries its own semantic version. A breaking change to a term, an invariant or a schema raises the major
@@ -32,5 +33,6 @@ this directory, in the auto-dev-cycle repository.
 ## Status
 
 Draft for M0: schemas, invariants and fixture definitions only. The checks behind each fixture arrive in the
-milestone it names (M1, M2 or M4). `AttemptRecord` (M1), `FailureSignature` (M2) and `Claim` (after M2, K3) are named
-in the vocabulary but have no schema yet.
+milestone it names (M1, M2 or M4). Every record the spec names has a schema. `FailureSignature` (used from M2) and
+`Claim` (unused until K3, after M2) are **draft** schemas: no code writes or reads them yet, they have no golden
+vectors, and their shape may change before first use.

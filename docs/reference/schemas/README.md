@@ -45,8 +45,10 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/attempt.json`](records-attempt.md) | Attempt |
 | [`records/bootstrap-renewed.json`](records-bootstrap-renewed.md) | BootstrapRenewed |
 | [`records/challenge.json`](records-challenge.md) | Challenge |
+| [`records/claim.json`](records-claim.md) | Claim |
 | [`records/computation-key.json`](records-computation-key.md) | ComputationKey |
 | [`records/effect-event.json`](records-effect-event.md) | EffectEvent |
+| [`records/failure-signature.json`](records-failure-signature.md) | FailureSignature |
 | [`records/grant-event.json`](records-grant-event.md) | GrantEvent |
 | [`records/grant-replaced.json`](records-grant-replaced.md) | GrantReplaced |
 | [`records/grant.json`](records-grant.md) | Grant |

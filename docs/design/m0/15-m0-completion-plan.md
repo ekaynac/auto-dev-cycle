@@ -369,6 +369,11 @@ aggregate, not the draft schema. **Recommended default: both in M0 (A5),** with:
 
 Alternative: amend 10 to defer them, which is a design change.
 
+*As delivered (A5, #181):* one deviation from 03-knowledge-layer. 03:91 lists a "purpose-bound decision ref" in
+`Claim` and 03:109 writes `accepted(purpose)`. The draft `Claim` revision carries no decision: each purpose-bound
+decision is its own record that references the revision, as validity is derived rather than stored, so a revision is
+never edited and a claim can be accepted for one purpose and rejected for another. K3 does not re-add the field.
+
 **D6. How auto-dev-cycle distributes adapters.** This decision is bigger than the smoke test:
 - Every real adapter from M1 on is TypeScript on Node (01-repo-layout:56).
 - Today's release builds are Go binaries only (01-repo-layout:104).

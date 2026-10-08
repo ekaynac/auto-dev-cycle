@@ -33,7 +33,9 @@ Competing interpretations are separate claims with an explicit dispute: one home
 
 Three independent dimensions. None of them grants authority.
 
-- **Decision:** `unassessed`, `accepted(purpose)`, `rejected` or `disputed`. Supersession is an explicit link.
+- **Decision:** `unassessed`, `accepted`, `rejected` or `disputed`, each for one purpose. The state and its purpose
+  live in a decision record that references the claim revision, never in the claim; with no decision record for a
+  purpose, the claim is `unassessed` for it. Supersession is an explicit link.
 - **Validity:** `current`, `stale`, `unknown` or `expired`, each with a reason. A claim declares the dependencies
   its validity rests on; a change to one makes it `stale` or `unknown` until revalidated (K6).
 - **Retention:** `available`, `held` or `purged`; a purge leaves a tombstone.
@@ -112,10 +114,11 @@ A delivered tool result is a declared input of the intent, or a ref derived only
 is non-empty, names only declared input ids, and it keeps every restriction of every declared input each lineage
 id names.
 
-## Records named but not yet specified
+## Other records
 
-- `AttemptRecord` (M1): the schema of the existing checkpoint, bound to project, task, contract revision, fencing
-  token and base tree.
-- `FailureSignature` (M2): a derived, project-scoped aggregate (normalized failure and count, no prose).
-- `Claim` (after M2): a revision of a typed claim with evidence refs, applicability, validity conditions, producer
-  and inherited restrictions.
+- `AttemptRecord` ([`records/attempt-record.json`](../../schemas/records/attempt-record.json)): the schema of the
+  existing checkpoint, bound to project, task, contract revision, fencing token and base tree.
+- `FailureSignature` ([`records/failure-signature.json`](../../schemas/records/failure-signature.json), draft, used
+  from M2): a derived, project-scoped aggregate (normalized failure and count, no prose).
+- `Claim` ([`records/claim.json`](../../schemas/records/claim.json), draft, unused until K3): a revision of a typed
+  claim with evidence refs, applicability, validity conditions, producer and inherited restrictions.
