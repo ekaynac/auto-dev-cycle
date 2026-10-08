@@ -4,26 +4,29 @@
 
 `schemas/records/node-state.json`
 
-A node's current state, as its graph events project it (docs/design/m0/13 "Evaluation"). waiting: some inputs have no applicable result yet (a structural wait, no hold). held: an external wait, with its hold (plan 15 L4); this includes a could_not_run that retries on its signal (13 [G2]). claimed: its inputs are fixed and its key computed, in one writer transaction (13 [G10]). completed: a result is selected. superseded: a replacement node took over (13). The transitions are internal/graph's.
+A node's current state, as its graph events project it (docs/design/m0/13 "Evaluation"). waiting: some inputs have no applicable result yet (a structural wait, no hold). runnable: every input resolved, not claimed. Evaluation is demand-driven, so only a goal that demands the node claims it; a runnable node no goal demands stays runnable. held: an external wait, with its hold, which may also list inputs still missing; this includes a could_not_run that retries on its signal (13 [G2]). claimed: its inputs are fixed and its key computed, in one writer transaction (13 [G10]). completed: a result is selected. superseded: a replacement node took over (13), possibly after it completed. internal/graph owns the transitions and refuses a node that supersedes itself.
 
 ## Fields of the document
 
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `node` | yes | [NodeID](common-defs.md#nodeid) |  |
-| `state` | yes | one of `waiting`, `held`, `claimed`, `completed`, `superseded` |  |
-| `waiting_on` | yes | array of [Name](records-receipt.md#name) (unique items) | The names of the inputs still missing; non-empty exactly while waiting. |
-| `key` | yes | null or [computation-key](records-computation-key.md) | Set from the claim on, never while waiting. A held node has one only if it was claimed before the hold. |
+| `state` | yes | one of `waiting`, `runnable`, `held`, `claimed`, `completed`, `superseded` |  |
+| `waiting_on` | yes | array of [Name](records-receipt.md#name) (unique items) | The names of the inputs still missing: non-empty while waiting, possibly non-empty while held, empty otherwise. |
+| `key` | yes | null or [computation-key](records-computation-key.md) | Set from the claim on, never while waiting or runnable. A held or superseded node has one only if it was claimed first. |
 | `hold` | yes | null or [node-hold](records-node-hold.md) | Set exactly while held. |
-| `result` | yes | null or [ResultID](common-defs.md#resultid) | The selected result; set exactly when completed. |
+| `result` | yes | null or [ResultID](common-defs.md#resultid) | The selected result: set when completed, kept when a completed node is superseded, null otherwise. |
 | `superseded_by` | yes | null or [NodeID](common-defs.md#nodeid) | The replacement node; set exactly when superseded. |
 
 No other fields are allowed.
 
-Conditional rules (5, `if`/`then`/`else` in the schema):
+Conditional rules (8, `if`/`then`/`else` in the schema):
 
-- when `state` `waiting`, `state` required, then `waiting_on` any (not `[]`), `key` `null`; otherwise `waiting_on` `[]`
+- when `state` `waiting`, `state` required, then `waiting_on` any (not `[]`)
+- when `state` one of `runnable`, `claimed`, `completed`, `superseded`, `state` required, then `waiting_on` `[]`
+- when `state` one of `waiting`, `runnable`, `state` required, then `key` `null`
 - when `state` `held`, `state` required, then `hold` any (not `null`); otherwise `hold` `null`
 - when `state` one of `claimed`, `completed`, `state` required, then `key` any (not `null`)
-- when `state` `completed`, `state` required, then `result` any (not `null`); otherwise `result` `null`
+- when `state` `completed`, `state` required, then `result` any (not `null`)
+- when `state` one of `waiting`, `runnable`, `held`, `claimed`, `state` required, then `result` `null`
 - when `state` `superseded`, `state` required, then `superseded_by` any (not `null`); otherwise `superseded_by` `null`

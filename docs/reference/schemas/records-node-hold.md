@@ -4,7 +4,7 @@
 
 `schemas/records/node-hold.json`
 
-A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; plan 15 L4): approvals, quotas, human acts, probes. Internal inputs wait structurally and need no hold (13). A replacement node keeps a transferred hold's id, signal instance, owner and paging history, so escalation never restarts (13 supersession). Lease holds stay on the lease (05).
+A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; 13): approvals, quotas, human acts, probes. Internal inputs wait structurally and need no hold (13). A replacement node keeps a transferred hold's id, signal instance, owner and paging history, so escalation never restarts (13 supersession). Lease holds stay on the lease (05). owner_ref is set exactly for the owner kinds that name a concrete owner: the grant holder's actor id, the named owner, or the environment owner the profile names.
 
 ## Fields of the document
 
@@ -12,17 +12,20 @@ A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; pla
 |---|---|---|---|
 | `id` | yes | [HoldID](common-defs.md#holdid) |  |
 | `hold` | yes | string (pattern `^[a-z][a-z0-9_]*$`) | A registered hold (schemas/vocab/holds.yaml); internal/graph checks that it is registered. |
+| `reason` | yes | null or [ReasonCode](common-defs.md#reasoncode) | The reason of the result that raised it, whose registry entry names this hold (02; 12, e.g. evidence_cap_exhausted with wrong_owner). Null for a hold the resolver raised with no result, e.g. awaiting_input for a declared answer. |
 | `signal_instance` | yes | string (minLength `1`, maxLength `1024`) | The concrete signal that resumes it, e.g. the reset time or the approval id awaited (02). |
-| `owner` | yes | [Owner](vocab-registry.md#owner) | Who owns the hold now: the registry's owner, or its escalate_to once page_after has passed. |
-| `owner_ref` | yes | null or string (minLength `1`, maxLength `256`) | The concrete owner, for the owner kinds that name one: the grant holder's actor id, the named owner, or the environment owner the profile names. Null for system, operator and confirmation_policy, which resolve without one. |
+| `owner` | yes | [Owner](vocab-registry.md#owner) | Who owns the hold now: the registry's owner, or its escalate_to once page_after has passed. An environment_owner hold falls back to operator when the profile names no environment owner. |
+| `owner_ref` | yes | null or string (minLength `1`, maxLength `256`) |  |
 | `since` | yes | [Time](common-defs.md#time) | When the wait began; page_after counts from here, also across a transfer. |
-| `pages` | yes | array of object ([fields](#fields-of-pages)) | The paging history, oldest first and append-only. Pages are deduplicated by hold id and signal instance, never by channel (02). |
+| `pages` | yes | array of object ([fields](#fields-of-pages)) | The paging history, oldest first and append-only: who was paged, by the same owner_ref rule. Pages are deduplicated by hold id and signal instance, never by channel (02). |
 
 No other fields are allowed.
 
-Conditional rules (1, `if`/`then`/`else` in the schema):
+Conditional rules (3, `if`/`then`/`else` in the schema):
 
-- when `owner` one of `grant_holder`, `named_owner`, `environment_owner`, `owner` required, then `owner_ref` any (not `null`); otherwise `owner_ref` `null`
+- when `owner` `grant_holder`, `owner` required, then `owner_ref` any (pattern `^act_[0-7][0-9a-hjkmnp-tv-z]{25}$`, not `null`)
+- when `owner` one of `named_owner`, `environment_owner`, `owner` required, then `owner_ref` any (not `null`)
+- when `owner` one of `system`, `operator`, `confirmation_policy`, `owner` required, then `owner_ref` `null`
 
 ## Fields of pages[]
 
@@ -30,6 +33,13 @@ Conditional rules (1, `if`/`then`/`else` in the schema):
 |---|---|---|---|
 | `at` | yes | [Time](common-defs.md#time) |  |
 | `owner` | yes | [Owner](vocab-registry.md#owner) |  |
+| `owner_ref` | yes | null or string (minLength `1`, maxLength `256`) |  |
 | `signal_instance` | yes | string (minLength `1`, maxLength `1024`) |  |
 
 No other fields are allowed.
+
+Conditional rules (3, `if`/`then`/`else` in the schema):
+
+- when `owner` `grant_holder`, `owner` required, then `owner_ref` any (pattern `^act_[0-7][0-9a-hjkmnp-tv-z]{25}$`, not `null`)
+- when `owner` one of `named_owner`, `environment_owner`, `owner` required, then `owner_ref` any (not `null`)
+- when `owner` one of `system`, `operator`, `confirmation_policy`, `owner` required, then `owner_ref` `null`

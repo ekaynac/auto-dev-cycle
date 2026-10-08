@@ -9,7 +9,7 @@ import (
 	"errors"
 )
 
-// Result: One immutable output of a node (docs/design/m0/13 "Model" [G1]). A result is never overwritten. Which result a computation key has selected is recorded by the graph events (G3), not here. The controller computes the outcome from observed facts (13 "Facts, not claims"; the build table is G2's), never from an executor's claim. Only a completed result with outcome found, empty or failed is reusable (13 [G2]); internal/graph checks that a reason fits its outcome (02).
+// Result: One immutable output of a node (docs/design/m0/13 "Model" [G1]). A result is never overwritten. Which result a computation key has selected, and the attempt that produced it (att_), are carried by the graph's result events (G3), not here. Freshness is read from the evidence receipt referenced in value (its valid_until, 06), not from a field of the result (13 [G2]; G4a). The controller computes the outcome from observed facts (13 "Facts, not claims"; the build table is G2's), never from an executor's claim. Only a completed result with outcome found, empty or failed is reusable (13 [G2]); internal/graph checks that a reason fits its outcome (02).
 type Result struct {
 	// The identity of this output, minted by the controller for each output. It is never derived from the computation key.
 	ID ResultID `json:"id"`
@@ -18,7 +18,7 @@ type Result struct {
 	Kind        ResultKind `json:"kind"`
 	// The output's content, by exact reference (10). Manifests list result ids, never keys (13).
 	Value []Ref `json:"value"`
-	// The typed projection used only for reuse decisions (13), one schema per result kind. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"); every other kind has null.
+	// The typed projection used only for reuse decisions (13), one schema per result kind. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"); every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one.
 	Conclusions *json.RawMessage `json:"conclusions"`
 	Outcome     Outcome          `json:"outcome"`
 	Reason      ReasonCode       `json:"reason"`

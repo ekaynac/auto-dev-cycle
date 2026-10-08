@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/result.json",
   "title": "Result",
-  "description": "One immutable output of a node (docs/design/m0/13 \"Model\" [G1]). A result is never overwritten. Which result a computation key has selected is recorded by the graph events (G3), not here. The controller computes the outcome from observed facts (13 \"Facts, not claims\"; the build table is G2's), never from an executor's claim. Only a completed result with outcome found, empty or failed is reusable (13 [G2]); internal/graph checks that a reason fits its outcome (02).",
+  "description": "One immutable output of a node (docs/design/m0/13 \"Model\" [G1]). A result is never overwritten. Which result a computation key has selected, and the attempt that produced it (att_), are carried by the graph's result events (G3), not here. Freshness is read from the evidence receipt referenced in value (its valid_until, 06), not from a field of the result (13 [G2]; G4a). The controller computes the outcome from observed facts (13 \"Facts, not claims\"; the build table is G2's), never from an executor's claim. Only a completed result with outcome found, empty or failed is reusable (13 [G2]); internal/graph checks that a reason fits its outcome (02).",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "computation", "kind", "value", "conclusions", "outcome", "reason", "detail", "completed"],
@@ -12,7 +12,7 @@
     "kind": {"$ref": "../common/defs.json#/$defs/ResultKind"},
     "value": {"description": "The output's content, by exact reference (10). Manifests list result ids, never keys (13).", "type": "array", "items": {"$ref": "ref.json"}},
     "conclusions": {
-      "description": "The typed projection used only for reuse decisions (13), one schema per result kind. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 \"v1 scope\"); every other kind has null.",
+      "description": "The typed projection used only for reuse decisions (13), one schema per result kind. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 \"v1 scope\"); every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one.",
       "oneOf": [{"type": "null"}, {"type": "object", "x-adc-open-payload": "kind"}]
     },
     "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
@@ -24,6 +24,7 @@
     {"if": {"required": ["outcome"], "properties": {"outcome": {"not": {"const": "empty"}}}}, "then": {"properties": {"detail": {"minLength": 1}}}},
     {"if": {"required": ["completed"], "properties": {"completed": {"const": false}}}, "then": {"properties": {"outcome": {"const": "could_not_run"}}}},
     {"if": {"required": ["kind"], "properties": {"kind": {"const": "partial_patch"}}}, "then": {"properties": {"completed": {"const": false}}}},
-    {"if": {"required": ["kind"], "properties": {"kind": {"not": {"enum": ["gate_result", "evidence"]}}}}, "then": {"properties": {"conclusions": {"const": null}}}}
+    {"if": {"required": ["kind"], "properties": {"kind": {"not": {"enum": ["gate_result", "evidence"]}}}}, "then": {"properties": {"conclusions": {"const": null}}}},
+    {"if": {"required": ["kind", "completed", "outcome"], "properties": {"kind": {"enum": ["gate_result", "evidence"]}, "completed": {"const": true}, "outcome": {"enum": ["found", "empty", "failed"]}}}, "then": {"properties": {"conclusions": {"not": {"const": null}}}}}
   ]
 }

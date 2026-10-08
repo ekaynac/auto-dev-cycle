@@ -8252,7 +8252,7 @@
   "valid": true
  },
  {
-  "name": "result: gate result without conclusions",
+  "name": "result: a gate result that could not run, without conclusions",
   "schema": "records/result",
   "doc": {
    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
@@ -8274,10 +8274,40 @@
     }
    ],
    "conclusions": null,
-   "outcome": "empty",
-   "reason": "completed_clean",
-   "detail": "",
+   "outcome": "could_not_run",
+   "reason": "receipt_incomplete",
+   "detail": "no junit file",
    "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: an incomplete evidence result without conclusions",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "evidence",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "could_not_run",
+   "reason": "receipt_incomplete",
+   "detail": "lost",
+   "completed": false
   },
   "valid": true
  },
@@ -8507,7 +8537,7 @@
    ],
    "conclusions": null,
    "outcome": "could_not_run",
-   "reason": "broker_credit_exhausted",
+   "reason": "receipt_incomplete",
    "detail": "sealed",
    "completed": false
   },
@@ -8817,12 +8847,9 @@
      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }
    ],
-   "conclusions": {
-    "tests": "pass",
-    "failed": []
-   },
+   "conclusions": null,
    "outcome": "could_not_run",
-   "reason": "broker_credit_exhausted",
+   "reason": "receipt_incomplete",
    "detail": "x",
    "completed": true
   },
@@ -9706,7 +9733,7 @@
     "failed": []
    },
    "outcome": "could_not_run",
-   "reason": "broker_credit_exhausted",
+   "reason": "receipt_incomplete",
    "detail": "",
    "completed": false
   },
@@ -9875,6 +9902,96 @@
   "valid": false
  },
  {
+  "name": "result: a conclusive gate result without conclusions",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: a found gate result without conclusions",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "detail": "2 failures",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: a failed evidence result without conclusions",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "evidence",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "failed",
+   "reason": "test_integrity_violation",
+   "detail": "x",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
   "name": "result: a patch with conclusions",
   "schema": "records/result",
   "doc": {
@@ -9913,14 +10030,16 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -9933,9 +10052,10 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": []
   },
@@ -9946,18 +10066,13 @@
   "schema": "records/node-hold",
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-   "hold": "awaiting_input",
+   "hold": "quota_reset",
+   "reason": "quota_exhausted",
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "system",
    "owner_ref": null,
    "since": "2026-10-08T10:00:00Z",
-   "pages": [
-    {
-     "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
-     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-    }
-   ]
+   "pages": []
   },
   "valid": true
  },
@@ -9966,18 +10081,13 @@
   "schema": "records/node-hold",
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-   "hold": "awaiting_input",
+   "hold": "budget_rail",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "operator",
    "owner_ref": null,
    "since": "2026-10-08T10:00:00Z",
-   "pages": [
-    {
-     "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
-     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-    }
-   ]
+   "pages": []
   },
   "valid": true
  },
@@ -9987,17 +10097,12 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "grant_holder",
    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
-   "pages": [
-    {
-     "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
-     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-    }
-   ]
+   "pages": []
   },
   "valid": true
  },
@@ -10006,18 +10111,13 @@
   "schema": "records/node-hold",
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-   "hold": "awaiting_input",
+   "hold": "awaiting_confirmation",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "confirmation_policy",
    "owner_ref": null,
    "since": "2026-10-08T10:00:00Z",
-   "pages": [
-    {
-     "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
-     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-    }
-   ]
+   "pages": []
   },
   "valid": true
  },
@@ -10026,18 +10126,13 @@
   "schema": "records/node-hold",
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-   "hold": "awaiting_input",
+   "hold": "wrong_owner",
+   "reason": "evidence_cap_exhausted",
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "named_owner",
    "owner_ref": "dba-team",
    "since": "2026-10-08T10:00:00Z",
-   "pages": [
-    {
-     "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
-     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-    }
-   ]
+   "pages": []
   },
   "valid": true
  },
@@ -10046,7 +10141,38 @@
   "schema": "records/node-hold",
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-   "hold": "awaiting_input",
+   "hold": "precondition_failed",
+   "reason": "precondition_failed",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "environment_owner",
+   "owner_ref": "staging-owner",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": []
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: evidence_restore_pending with the system",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "evidence_restore_pending",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "system",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": []
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: evidence_restore_pending escalated to the environment owner",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "evidence_restore_pending",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "environment_owner",
    "owner_ref": "staging-owner",
@@ -10054,7 +10180,58 @@
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "system",
+     "owner_ref": null,
+     "signal_instance": "lea_restore"
+    },
+    {
+     "at": "2026-10-08T12:00:00Z",
+     "owner": "environment_owner",
+     "owner_ref": "staging-owner",
+     "signal_instance": "lea_restore"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: a 1024-character signal instance",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: a 256-character owner ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "named_owner",
+   "owner_ref": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10066,14 +10243,16 @@
   "schema": "records/node-hold",
   "doc": {
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10085,14 +10264,37 @@
   "schema": "records/node-hold",
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: missing reason",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10105,13 +10307,15 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
-   "owner": "operator",
-   "owner_ref": null,
+   "reason": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10124,13 +10328,15 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner_ref": null,
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10143,13 +10349,15 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
+   "owner": "grant_holder",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10162,13 +10370,15 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10181,9 +10391,10 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z"
   },
   "valid": false
@@ -10194,13 +10405,15 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10213,13 +10426,36 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: page missing owner_ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10232,14 +10468,16 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator"
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8"
     }
    ]
   },
@@ -10252,14 +10490,16 @@
    {
     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
     "hold": "awaiting_input",
+    "reason": null,
     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-    "owner": "operator",
-    "owner_ref": null,
+    "owner": "grant_holder",
+    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
     "since": "2026-10-08T10:00:00Z",
     "pages": [
      {
       "at": "2026-10-08T11:00:00Z",
-      "owner": "operator",
+      "owner": "grant_holder",
+      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
      }
     ]
@@ -10273,14 +10513,16 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ],
@@ -10294,14 +10536,16 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
      "channel": "telegram"
     }
@@ -10315,9 +10559,10 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     "2026-10-08T11:00:00Z"
@@ -10331,9 +10576,10 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": {}
   },
@@ -10345,14 +10591,16 @@
   "doc": {
    "id": "att_01m3250vnfeyrv67x6w0ddqr6a",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10365,14 +10613,60 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "AwaitingInput",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a numeric hold",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": 5,
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: an unregistered reason",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": "no_such_reason_xyz",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10385,14 +10679,38 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a numeric signal instance",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": 5,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10405,14 +10723,16 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10420,39 +10740,21 @@
   "valid": false
  },
  {
-  "name": "node-hold: a 1024-character signal instance",
-  "schema": "records/node-hold",
-  "doc": {
-   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-   "hold": "awaiting_input",
-   "signal_instance": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-   "owner": "operator",
-   "owner_ref": null,
-   "since": "2026-10-08T10:00:00Z",
-   "pages": [
-    {
-     "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
-     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
-    }
-   ]
-  },
-  "valid": true
- },
- {
   "name": "node-hold: unknown owner",
   "schema": "records/node-hold",
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "supervisor",
-   "owner_ref": null,
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10465,14 +10767,16 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10485,14 +10789,16 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "soon",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10505,14 +10811,16 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
      "owner": "pager",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10525,15 +10833,39 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": ""
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page with a numeric signal instance",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": 5
     }
    ]
   },
@@ -10545,35 +10877,17 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "operator",
-   "owner_ref": null,
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-    }
-   ]
-  },
-  "valid": false
- },
- {
-  "name": "node-hold: a named owner without a ref",
-  "schema": "records/node-hold",
-  "doc": {
-   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
-   "hold": "awaiting_input",
-   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "named_owner",
-   "owner_ref": null,
-   "since": "2026-10-08T10:00:00Z",
-   "pages": [
-    {
-     "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
-     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
   },
@@ -10585,6 +10899,7 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "grant_holder",
    "owner_ref": null,
@@ -10592,7 +10907,74 @@
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a grant holder whose ref is not an actor",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "dba-team",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a grant holder whose ref is another id",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a named owner without a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "named_owner",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10605,6 +10987,7 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "environment_owner",
    "owner_ref": null,
@@ -10612,7 +10995,8 @@
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10625,6 +11009,7 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "operator",
    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
@@ -10632,7 +11017,52 @@
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: the system with a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "system",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a confirmation policy with a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "confirmation_policy",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10645,6 +11075,7 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "named_owner",
    "owner_ref": "",
@@ -10652,7 +11083,8 @@
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10665,6 +11097,7 @@
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
    "owner": "named_owner",
    "owner_ref": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -10672,7 +11105,8 @@
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
-     "owner": "operator",
+     "owner": "grant_holder",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
@@ -10680,24 +11114,202 @@
   "valid": false
  },
  {
-  "name": "node-hold: a 256-character owner ref",
+  "name": "node-hold: a page to a grant holder without a ref",
   "schema": "records/node-hold",
   "doc": {
    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
    "hold": "awaiting_input",
+   "reason": null,
    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-   "owner": "named_owner",
-   "owner_ref": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page to a grant holder whose ref is not an actor",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "grant_holder",
+     "owner_ref": "dba-team",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page to a named owner without a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "named_owner",
+     "owner_ref": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page to an environment owner without a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "environment_owner",
+     "owner_ref": null,
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page to the operator with a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
    "since": "2026-10-08T10:00:00Z",
    "pages": [
     {
      "at": "2026-10-08T11:00:00Z",
      "owner": "operator",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
     }
    ]
   },
-  "valid": true
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page to the system with a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "system",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page to a confirmation policy with a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "confirmation_policy",
+     "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page with an empty owner ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "named_owner",
+     "owner_ref": "",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page with a 257-character owner ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "reason": null,
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "named_owner",
+     "owner_ref": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
  },
  {
   "name": "node-state: state waiting",
@@ -10716,6 +11328,20 @@
   "valid": true
  },
  {
+  "name": "node-state: state runnable",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "runnable",
+   "waiting_on": [],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": true
+ },
+ {
   "name": "node-state: state held",
   "schema": "records/node-state",
   "doc": {
@@ -10726,14 +11352,16 @@
    "hold": {
     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
     "hold": "awaiting_input",
+    "reason": null,
     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-    "owner": "operator",
-    "owner_ref": null,
+    "owner": "grant_holder",
+    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
     "since": "2026-10-08T10:00:00Z",
     "pages": [
      {
       "at": "2026-10-08T11:00:00Z",
-      "owner": "operator",
+      "owner": "grant_holder",
+      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
      }
     ]
@@ -10805,14 +11433,48 @@
    "hold": {
     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
     "hold": "awaiting_input",
+    "reason": null,
     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-    "owner": "operator",
-    "owner_ref": null,
+    "owner": "grant_holder",
+    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
     "since": "2026-10-08T10:00:00Z",
     "pages": [
      {
       "at": "2026-10-08T11:00:00Z",
-      "owner": "operator",
+      "owner": "grant_holder",
+      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+     }
+    ]
+   },
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": true
+ },
+ {
+  "name": "node-state: held while waiting on an input",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "held",
+   "waiting_on": [
+    "ruling"
+   ],
+   "key": null,
+   "hold": {
+    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+    "hold": "awaiting_input",
+    "reason": null,
+    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+    "owner": "grant_holder",
+    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+    "since": "2026-10-08T10:00:00Z",
+    "pages": [
+     {
+      "at": "2026-10-08T11:00:00Z",
+      "owner": "grant_holder",
+      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
      }
     ]
@@ -10835,6 +11497,23 @@
    },
    "hold": null,
    "result": null,
+   "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
+  },
+  "valid": true
+ },
+ {
+  "name": "node-state: superseded after completion",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "superseded",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
    "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
   },
   "valid": true
@@ -11163,6 +11842,38 @@
   "valid": false
  },
  {
+  "name": "node-state: waiting with a result",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "waiting",
+   "waiting_on": [
+    "gate"
+   ],
+   "key": null,
+   "hold": null,
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: runnable while waiting on an input",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "runnable",
+   "waiting_on": [
+    "gate"
+   ],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
   "name": "node-state: claimed while waiting on an input",
   "schema": "records/node-state",
   "doc": {
@@ -11182,6 +11893,116 @@
   "valid": false
  },
  {
+  "name": "node-state: completed while waiting on an input",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "completed",
+   "waiting_on": [
+    "gate"
+   ],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: superseded while waiting on an input",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "superseded",
+   "waiting_on": [
+    "gate"
+   ],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: runnable with a key",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "runnable",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: runnable with a hold",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "runnable",
+   "waiting_on": [],
+   "key": null,
+   "hold": {
+    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+    "hold": "awaiting_input",
+    "reason": null,
+    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+    "owner": "grant_holder",
+    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+    "since": "2026-10-08T10:00:00Z",
+    "pages": [
+     {
+      "at": "2026-10-08T11:00:00Z",
+      "owner": "grant_holder",
+      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+     }
+    ]
+   },
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: runnable with a result",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "runnable",
+   "waiting_on": [],
+   "key": null,
+   "hold": null,
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: runnable with a replacement",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "runnable",
+   "waiting_on": [],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
+  },
+  "valid": false
+ },
+ {
   "name": "node-state: held without a hold",
   "schema": "records/node-state",
   "doc": {
@@ -11191,6 +12012,36 @@
    "key": null,
    "hold": null,
    "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: held with a result",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "held",
+   "waiting_on": [],
+   "key": null,
+   "hold": {
+    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+    "hold": "awaiting_input",
+    "reason": null,
+    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+    "owner": "grant_holder",
+    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+    "since": "2026-10-08T10:00:00Z",
+    "pages": [
+     {
+      "at": "2026-10-08T11:00:00Z",
+      "owner": "grant_holder",
+      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+     }
+    ]
+   },
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
    "superseded_by": null
   },
   "valid": false
@@ -11209,14 +12060,16 @@
    "hold": {
     "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
     "hold": "awaiting_input",
+    "reason": null,
     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
-    "owner": "operator",
-    "owner_ref": null,
+    "owner": "grant_holder",
+    "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
     "since": "2026-10-08T10:00:00Z",
     "pages": [
      {
       "at": "2026-10-08T11:00:00Z",
-      "owner": "operator",
+      "owner": "grant_holder",
+      "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
       "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
      }
     ]

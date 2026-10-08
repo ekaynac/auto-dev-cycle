@@ -8,23 +8,24 @@ type NodeStateState string
 
 const (
 	NodeStateStateWaiting    NodeStateState = "waiting"
+	NodeStateStateRunnable   NodeStateState = "runnable"
 	NodeStateStateHeld       NodeStateState = "held"
 	NodeStateStateClaimed    NodeStateState = "claimed"
 	NodeStateStateCompleted  NodeStateState = "completed"
 	NodeStateStateSuperseded NodeStateState = "superseded"
 )
 
-// NodeState: A node's current state, as its graph events project it (docs/design/m0/13 "Evaluation"). waiting: some inputs have no applicable result yet (a structural wait, no hold). held: an external wait, with its hold (plan 15 L4); this includes a could_not_run that retries on its signal (13 [G2]). claimed: its inputs are fixed and its key computed, in one writer transaction (13 [G10]). completed: a result is selected. superseded: a replacement node took over (13). The transitions are internal/graph's.
+// NodeState: A node's current state, as its graph events project it (docs/design/m0/13 "Evaluation"). waiting: some inputs have no applicable result yet (a structural wait, no hold). runnable: every input resolved, not claimed. Evaluation is demand-driven, so only a goal that demands the node claims it; a runnable node no goal demands stays runnable. held: an external wait, with its hold, which may also list inputs still missing; this includes a could_not_run that retries on its signal (13 [G2]). claimed: its inputs are fixed and its key computed, in one writer transaction (13 [G10]). completed: a result is selected. superseded: a replacement node took over (13), possibly after it completed. internal/graph owns the transitions and refuses a node that supersedes itself.
 type NodeState struct {
 	Node  NodeID         `json:"node"`
 	State NodeStateState `json:"state"`
-	// The names of the inputs still missing; non-empty exactly while waiting.
+	// The names of the inputs still missing: non-empty while waiting, possibly non-empty while held, empty otherwise.
 	WaitingOn []Name `json:"waiting_on"`
-	// Set from the claim on, never while waiting. A held node has one only if it was claimed before the hold.
+	// Set from the claim on, never while waiting or runnable. A held or superseded node has one only if it was claimed first.
 	Key *ComputationKey `json:"key"`
 	// Set exactly while held.
 	Hold *NodeHold `json:"hold"`
-	// The selected result; set exactly when completed.
+	// The selected result: set when completed, kept when a completed node is superseded, null otherwise.
 	Result *ResultID `json:"result"`
 	// The replacement node; set exactly when superseded.
 	SupersededBy *NodeID `json:"superseded_by"`
