@@ -18,6 +18,7 @@ const (
 	NodeKindGate              NodeKind = "gate"
 	NodeKindRuntimeVerify     NodeKind = "runtime_verify"
 	NodeKindIntegration       NodeKind = "integration"
+	NodeKindRebase            NodeKind = "rebase"
 	NodeKindEvidence          NodeKind = "evidence"
 	NodeKindReview            NodeKind = "review"
 	NodeKindReviewRequirement NodeKind = "review_requirement"

@@ -15,6 +15,7 @@ export type Node = {
     | "gate"
     | "runtime_verify"
     | "integration"
+    | "rebase"
     | "evidence"
     | "review"
     | "review_requirement"

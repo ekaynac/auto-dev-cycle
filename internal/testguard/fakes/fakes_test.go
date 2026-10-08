@@ -170,7 +170,7 @@ func TestNotFakesAreInsideFakes(t *testing.T) {
 		t.Errorf("%v are listed as parts of a fake, but no registered fake contains them", out)
 	}
 	// Red-proofs: a stray entry, a sibling sharing a prefix, an unbuilt fake.
-	for _, d := range []string{"internal/other/thing", "adapters/fakesrc", Prefix + "forge/x"} {
+	for _, d := range []string{"internal/other/thing", "adapters/fakesrc", Prefix + "provider/x"} {
 		if len(outsideFakes([]string{d}, All())) == 0 {
 			t.Errorf("%s passed as part of a fake", d)
 		}

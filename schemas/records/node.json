@@ -8,7 +8,7 @@
   "required": ["id", "kind", "definition_version", "inputs", "params", "requires", "effect", "round"],
   "properties": {
     "id": {"$ref": "../common/defs.json#/$defs/NodeID"},
-    "kind": {"enum": ["plan", "build", "accept", "gate", "runtime_verify", "integration", "evidence", "review", "review_requirement", "carry_over", "closure", "merge", "deploy", "record", "phase_gate"]},
+    "kind": {"enum": ["plan", "build", "accept", "gate", "runtime_verify", "integration", "rebase", "evidence", "review", "review_requirement", "carry_over", "closure", "merge", "deploy", "record", "phase_gate"]},
     "definition_version": {
       "description": "The version of the kind's definition. A change is an explicit invalidation (13 [G1]).",
       "type": "string",

@@ -324,6 +324,14 @@ func Commit(tx *eventstore.Tx, node types.NodeID, r types.Result, env Env) error
 	if tx.Now().IsZero() {
 		return errors.New("graph: a commit runs in a command's transaction")
 	}
+	if rec, err := loadNode(tx, node); err != nil || rec.Recorded.Node.Effect != nil || rec.Recorded.Node.Kind == types.NodeKindCarryOver {
+		return errors.Join(err, fmt.Errorf("graph: %s's result is recorded only by CompleteEffect or CarryOver", node))
+	}
+	return commitResult(tx, node, r, env)
+}
+
+// commitResult is Commit's recording, for every kind.
+func commitResult(tx *eventstore.Tx, node types.NodeID, r types.Result, env Env) error {
 	if err := revalidate(tx, node, env); err != nil {
 		return err
 	}

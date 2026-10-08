@@ -24,7 +24,7 @@ alone is not enough, this note says so and names the remaining check.
 ```yaml
 Node:                              # one instance in a task's graph
   id: nod_…
-  kind: plan | build | accept | gate | runtime_verify | integration | evidence | review | review_requirement | carry_over | closure | merge | deploy | record | phase_gate
+  kind: plan | build | accept | gate | runtime_verify | integration | rebase | evidence | review | review_requirement | carry_over | closure | merge | deploy | record | phase_gate
   definition_version: string
   inputs: [InputSpec]              # declared, typed
   params: {…}
@@ -361,10 +361,15 @@ Consequences that hold:
   - A `failed_confirmed` effect stays its node's outcome. A retry is a new operation, by an invalidation of the node.
   - One effect is run by one runner at a time. Concurrent runners of one pending effect are M1's, with the effect
     runtime.
-- The effect's state is the operation's outcome. Until a deploy result kind exists, a deploy node records no graph
-  result, and no node takes a deploy's result: recording one that does is refused. **G7b defines effect-node
-  completion**: a result recorded from the effect's observation, its inputs re-validated when the operation was
-  intended.
+- **Effect-node completion** (G7b). Once its operation's effect is `completed`, an effect node records and selects its
+  result, and only through completion (a commit refuses an effect node): the one result kind its node kind produces
+  (a merge's `merge_result`), `empty/completed_clean`, holding exactly the input ref whose content the effect applied
+  (its request's want). Its inputs were re-validated when the operation was intended, so they are not re-validated
+  again: the result folds check instead that the node's operation at its current key, for its current request, has
+  a completed effect, and that the result holds what that effect applied (effect states are monotone, so a replay
+  reads the same). A node whose effect completed is not invalidated before its result is recorded. A deploy has no
+  result kind: it records no result, and no node takes a deploy's result (recording one that does is refused, in
+  either order).
 
 ## Evidence targets and restore [G5]
 
@@ -392,6 +397,29 @@ The merge queue is serialized per project and base branch. Each attempt to merge
 
 If the base moves before the merge commits, the CAS fails, and a **new generation** starts from the new base. The old
 generation's results remain as history.
+
+As delivered (G7b-1; the refreshed receipts and the merge are G7b-2):
+- **Generations are numbered** per task and branch, from 1. The `rebase` node pins its generation in its params
+  `{branch, base, generation}`. The graph admits a rebase node only as the next generation, and only on another base
+  head than the current generation's: a base move starts a generation, and nothing else does. The template records
+  the next generation, its `rebase` and `carry_over` nodes, whenever the base head observed on the forge is not the
+  current generation's, mid-generation included.
+- **A rebase result** is a `tree` whose conflict status is its outcome, never the absence of a ref: a clean rebase
+  (`empty/completed_clean`) holds the prospective tree (a git tree) and the rebased patch (of the candidate patch's
+  ref type); one that found conflicts (`found`) holds their resolution too. Any other shape is refused when the
+  result is recorded. **A patch's identity** is the content digest of its one ref (a build's `patch` holds one: its
+  diff), so the rebased patch has the candidate's identity exactly when rebasing did not change the change.
+- **The carry_over** is a controller node: it attests (`empty/completed_clean`, holding the prospective tree) only
+  when the carried review's claim took the candidate's patch (the same content), the rebase is clean and the rebased
+  patch has the candidate's identity. Otherwise it records `found/review_input_changed`: the demand for a delta
+  review, which a successor review takes (G5). The decision is one function of what the claim fixed, applied by its
+  builder and again by the result fold, which refuses any other outcome, reason or value; a commit refuses a
+  carry_over. A carry_over is recorded only on its current generation's rebase, a rebase of its own candidate. The
+  review's verdict, and the selected review-requirement with its roster, are consumed by G7b-2's merge, not here.
+- **Trust.** The rebase result's prospective tree and rebased patch are trusted from the committer of the rebase
+  result (the controller's own rebase, run where it leases its sandbox): the graph checks their shape and types and
+  compares their identities, but does not recompute the rebase. Recomputing it, or attesting it by a receipt, is
+  M1's with the sandbox runtime.
 
 ## Source tests, package, runtime verification [G8]
 

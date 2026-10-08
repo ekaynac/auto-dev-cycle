@@ -102,6 +102,12 @@ const (
 	// PreconditionSpendsAttempt counts a precondition failure as an
 	// evidence attempt.
 	PreconditionSpendsAttempt = "graph.precondition-spends-attempt"
+	// GenerationKeepsBase keeps the current queue generation whatever base
+	// head the forge shows, so a base move starts no new generation.
+	GenerationKeepsBase = "graph.generation-keeps-base"
+	// CarryOverIgnoresPatch attests a carry-over without comparing the
+	// rebased patch's identity with the reviewed candidate's.
+	CarryOverIgnoresPatch = "graph.carry-over-ignores-patch"
 	// EffectKeyedByComputation leaves the node instance out of an effect
 	// operation's request, so a new goal with an equal computation key finds
 	// an earlier operation: a cached effect result read as current state.
@@ -150,4 +156,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	AttemptsIgnoreDemand, SubjectCapUnchecked, PreconditionSpendsAttempt,
 	EffectKeyedByComputation, EffectResumeReallocates, EffectTargetUnfenced, EffectApplyBlind, EffectPendingSkipsTarget,
 	RestoreFailureReleases, RuntimeOnSourceFacts,
-	SuccessorTakesAnyAnswer, AnswerLineageUnchecked, EquivalenceIgnoresRestrictions, EquivalenceIgnoresRoster}
+	SuccessorTakesAnyAnswer, AnswerLineageUnchecked, EquivalenceIgnoresRestrictions, EquivalenceIgnoresRoster,
+	GenerationKeepsBase, CarryOverIgnoresPatch}

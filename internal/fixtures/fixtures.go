@@ -91,6 +91,8 @@ var runners = map[string]runner{
 	"answer-reaches-only-successor":         answerReachesOnlySuccessor,
 	"equal-conclusions-reuse-review":        equalConclusionsReuseReview,
 	"roster-change-runs-review":             rosterChangeRunsReview,
+	"base-move-starts-a-generation":         baseMoveStartsAGeneration,
+	"carry-over-needs-equal-patch":          carryOverNeedsEqualPatch,
 }
 
 // Goldens loads and validates every golden, checking that each has a

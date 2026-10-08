@@ -150,7 +150,7 @@ func TestInvalidateWaitsForTheEffect(t *testing.T) {
 	}
 }
 
-// No node takes a deploy's result until G7b defines effect-node completion.
+// No node takes a deploy's result: a deploy records none.
 func TestRecordRefusesADeployInput(t *testing.T) {
 	g := openEffectStore(t)
 	d := g.deployTo("A", "prod")

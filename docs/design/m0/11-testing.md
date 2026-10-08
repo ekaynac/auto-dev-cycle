@@ -36,7 +36,7 @@ sandbox in which the real home and state do not exist**:
 | Fake | Faithful to | Lives in | M0 scope |
 |---|---|---|---|
 | Fake adapter | the full JSON-RPC contract: cumulative patches, streaming gaps, sub-calls, usage, errors, stale submissions, unsafe-output modes | `adapters/fake` | built: every scenario in `adapters/fake/src/fake.ts` |
-| Fake forge | push with expected-base, change requests, merge, ambiguous remote outcomes, external base moves | `internal/testguard/fakes/forge` | expected-base push and an external base move (G7b) |
+| Fake forge | push with expected-base, change requests, merge, ambiguous remote outcomes, external base moves | `internal/testguard/fakes/forge` | built: a head per branch, a push by compare-and-set on the expected base, and an external base move (G7b) |
 | Fake sandbox | three phases, artifact-before-teardown, evidence manifest, abrupt loss | `…/fakes/sandbox` | built: a workspace with exactly its declared facts, and evidence-target restores a test scripts to fail (G8) |
 | Fake provider | quota headers, 429 with reset, unknown quota, **402 credit exhaustion mid-call**, separate rate window and balance, degenerate output, single-chunk tool arguments | `…/fakes/provider` | none here: the 402 mid-call is scripted in `inproc` peers (15 L3); the rest is M2 |
 | Fake clock | deadlines, resets, TTLs, challenge expiry | `…/fakes/clock` | built: a fixed or wall-following time the test sets and moves; no timers |
@@ -61,7 +61,7 @@ the same rows. Its tests refuse:
   synopsis calls it a fake, even inside a registered fake (only `adapters/fake/src` is listed as part of one).
 
 `internal/testguard` and the fakes under it are for tests: only `_test` files import them, except that
-`internal/fixtures` may import the fake clock, the owed-answer fake and the fake effect target. Outside the guard package itself (not the fakes below it), a test
+`internal/fixtures` may import the fake clock, the owed-answer fake, the fake effect target and the fake forge. Outside the guard package itself (not the fakes below it), a test
 refuses:
 - a `Setenv` or `Unsetenv` of `HOME` or an `XDG_*` directory, or of a key that is not a string literal;
 - a string literal starting `HOME=` or `XDG_`, the way a child's environment names a home.
