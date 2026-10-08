@@ -44,15 +44,16 @@ import (
 // gate_result: its facts differ from a gate's (DeclaredFacts, G8), not what
 // it records.
 var produces = map[types.NodeKind][]types.ResultKind{
-	types.NodeKindPlan:          {types.ResultKindPlan},
-	types.NodeKindBuild:         {types.ResultKindPatch, types.ResultKindPartialPatch},
-	types.NodeKindGate:          {types.ResultKindGateResult},
-	types.NodeKindRuntimeVerify: {types.ResultKindGateResult},
-	types.NodeKindIntegration:   {types.ResultKindTree, types.ResultKindPackage},
-	types.NodeKindEvidence:      {types.ResultKindEvidence},
-	types.NodeKindReview:        {types.ResultKindReview},
-	types.NodeKindCarryOver:     {types.ResultKindCarryOverAttestation},
-	types.NodeKindMerge:         {types.ResultKindMergeResult},
+	types.NodeKindPlan:              {types.ResultKindPlan},
+	types.NodeKindBuild:             {types.ResultKindPatch, types.ResultKindPartialPatch},
+	types.NodeKindGate:              {types.ResultKindGateResult},
+	types.NodeKindRuntimeVerify:     {types.ResultKindGateResult},
+	types.NodeKindIntegration:       {types.ResultKindTree, types.ResultKindPackage},
+	types.NodeKindEvidence:          {types.ResultKindEvidence},
+	types.NodeKindReview:            {types.ResultKindReview},
+	types.NodeKindReviewRequirement: {types.ResultKindReviewRequirement},
+	types.NodeKindCarryOver:         {types.ResultKindCarryOverAttestation},
+	types.NodeKindMerge:             {types.ResultKindMergeResult},
 }
 
 // recordResult is the event recording r, a valid result of node's claimed key.
@@ -164,7 +165,7 @@ func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecor
 	if err := claimHolds(tx, rec, ev.At); err != nil {
 		return err
 	}
-	if err := CheckRead(p.Result); err != nil {
+	if err := errors.Join(CheckRead(p.Result), recordsRequirement(rec, p.Result)); err != nil {
 		return err
 	}
 	if _, rerr := receiptRef(p.Result); p.ReceiptValidUntil != nil && rerr != nil {

@@ -69,7 +69,7 @@ func (g graphStore) effectOn(pkg types.NodeID, kind types.NodeKind, effect, para
 	if claimed {
 		res := *g.state(pkg).Result
 		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return Claim(tx, n, map[string]Resolved{"package": {Result: res}}, 0)
+			return claimAny(tx, n, map[string]Resolved{"package": {Result: res}}, 0)
 		})
 	}
 	return n
@@ -203,7 +203,7 @@ func TestOperateRefusals(t *testing.T) {
 			rec := g.newNode(types.NodeKindDeploy)
 			rec.Node.Effect, rec.Node.Params, rec.Node.Inputs = ptr(types.Name("deploy")), json.RawMessage(`{"target":"prod"}`), []types.InputSpec{}
 			n := g.record(rec)
-			g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Claim(tx, n, map[string]Resolved{}, 0) })
+			g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, n, map[string]Resolved{}, 0) })
 			return n
 		}(),
 	} {

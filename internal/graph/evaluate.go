@@ -80,6 +80,7 @@ type Env struct {
 	Blobs     receipt.Blobs
 	Authority Authority
 	Contracts Contracts // the instrument contracts evidence nodes run under
+	Families  Families  // the executor registry review rosters are claimed under
 }
 
 // ErrRevalidated: an input no longer resolves to what the claim fixed, so
@@ -259,11 +260,23 @@ func (e *evaluation) claim(rec nodeRecord, resolved map[string]Resolved) error {
 	var err error
 	if rec.Recorded.Node.Kind == types.NodeKindEvidence {
 		evs, err = ClaimEvidence(e.tx, rec.Recorded.Node.ID, resolved, 0, e.env.Contracts)
+	} else if rostered(rec.Recorded.Node.Kind) {
+		evs, err = ClaimReview(e.tx, rec.Recorded.Node.ID, resolved, 0, e.env.Families)
 	} else {
 		evs, err = Claim(e.tx, rec.Recorded.Node.ID, resolved, 0)
 	}
 	var taken ErrKeyClaimed
-	if errors.As(err, &taken) {
+	var notIndependent ErrNotIndependent
+	if errors.As(err, &notIndependent) {
+		// The other goals go on; the node waits for an independent reviewer
+		// (06 rule 3), probed by M1's registry.
+		id, ierr := ids.New("hld")
+		if ierr != nil {
+			return ierr
+		}
+		evs, err = Raise(e.tx, rec.Recorded.Node.ID, types.NodeHold{ID: types.HoldID(id), Hold: "reviewer_unavailable",
+			SignalInstance: "registry:" + string(notIndependent.Executor), Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+	} else if errors.As(err, &taken) {
 		holder, herr := loadNode(e.tx, taken.Node)
 		if herr != nil || holder.State.State != types.NodeStateStateCompleted {
 			return herr // the holder runs: wait for it

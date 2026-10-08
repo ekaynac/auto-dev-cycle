@@ -33,6 +33,7 @@ export type Node = {
     | "integration"
     | "evidence"
     | "review"
+    | "review_requirement"
     | "carry_over"
     | "closure"
     | "merge"
@@ -48,7 +49,7 @@ export type Node = {
    */
   inputs: InputSpec[];
   /**
-   * The kind's parameters, one schema per kind (a review's params carry its roster, 13); an evidence node's are EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.
+   * The kind's parameters, one schema per kind: a review node's are ReviewNodeParams, with its roster (13), a review_requirement node's the ReviewRequirement it records (13), and an evidence node's EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.
    */
   params: {
     [k: string]: unknown;
@@ -168,13 +169,14 @@ export type Result = {
     | "review"
     | "evidence"
     | "carry_over_attestation"
-    | "merge_result";
+    | "merge_result"
+    | "review_requirement";
   /**
    * The output's content, by exact reference (10). Manifests list result ids, never keys (13). A gate or evidence result holds its receipt as exactly one receipt Ref whose content_digest names the receipt blob; the resolver checks that the receipt has the Ref's id and the result's conclusions, then applies it with internal/receipt's Applies (06).
    */
   value: Ref[];
   /**
-   * The typed projection used only for reuse decisions (13), one schema per result kind. A gate or evidence result's is its receipt's rule 2a conclusions document (06; internal/receipt's Conclusions), whose RFC 8785 digest is the receipt's conclusions_digest. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"); every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one.
+   * The typed projection used only for reuse decisions (13), one schema per result kind. A gate or evidence result's is its receipt's rule 2a conclusions document (06; internal/receipt's Conclusions), whose RFC 8785 digest is the receipt's conclusions_digest. A review_requirement result's is the ReviewRequirement it records (13), always present: such a result is completed and found. Only these kinds carry one: conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"), and requirements are compared by revision. Every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one.
    */
   conclusions: null | {
     [k: string]: unknown;
@@ -251,7 +253,8 @@ export interface ResultSource {
     | "review"
     | "evidence"
     | "carry_over_attestation"
-    | "merge_result";
+    | "merge_result"
+    | "review_requirement";
 }
 /**
  * The answer to an owed input: an input.answer approval that binds exactly this revision (04 "Owed inputs"). Only a successor review declares it, never the review that asked (13 "Successor rounds"). It resolves to the approval's id and this revision, which is what the computation key hashes for it. A receipt owed input is declared as a result of its evidence node instead, since a ruling never satisfies it; the resolver (G4a) refuses an answer source whose owed input has kind receipt.

@@ -14,7 +14,7 @@ One immutable output of a node (docs/design/m0/13 "Model" [G1]). A result is nev
 | `computation` | yes | [Digest](common-defs.md#digest) | The ComputationKey.key this result answers. |
 | `kind` | yes | [ResultKind](common-defs.md#resultkind) |  |
 | `value` | yes | array of [ref](records-ref.md) | The output's content, by exact reference (10). Manifests list result ids, never keys (13). A gate or evidence result holds its receipt as exactly one receipt Ref whose content_digest names the receipt blob; the resolver checks that the receipt has the Ref's id and the result's conclusions, then applies it with internal/receipt's Applies (06). |
-| `conclusions` | yes | null or object (open payload) | The typed projection used only for reuse decisions (13), one schema per result kind. A gate or evidence result's is its receipt's rule 2a conclusions document (06; internal/receipt's Conclusions), whose RFC 8785 digest is the receipt's conclusions_digest. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"); every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one. |
+| `conclusions` | yes | null or object (open payload) | The typed projection used only for reuse decisions (13), one schema per result kind. A gate or evidence result's is its receipt's rule 2a conclusions document (06; internal/receipt's Conclusions), whose RFC 8785 digest is the receipt's conclusions_digest. A review_requirement result's is the ReviewRequirement it records (13), always present: such a result is completed and found. Only these kinds carry one: conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"), and requirements are compared by revision. Every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one. |
 | `outcome` | yes | [Outcome](common-defs.md#outcome) |  |
 | `reason` | yes | [ReasonCode](common-defs.md#reasoncode) |  |
 | `detail` | yes | string (maxLength `4096`) | Non-empty for every outcome but empty (02 "Outcome"). |
@@ -22,10 +22,11 @@ One immutable output of a node (docs/design/m0/13 "Model" [G1]). A result is nev
 
 No other fields are allowed.
 
-Conditional rules (5, `if`/`then`/`else` in the schema):
+Conditional rules (6, `if`/`then`/`else` in the schema):
 
 - when `outcome` any (not `empty`), `outcome` required, then `detail` any (minLength `1`)
 - when `completed` `false`, `completed` required, then `outcome` `could_not_run`
 - when `kind` `partial_patch`, `kind` required, then `completed` `false`
 - when `kind` any (with a `not` constraint), `kind` required, then `conclusions` `null`
+- when `kind` `review_requirement`, `kind` required, then `conclusions` any (not `null`), `completed` `true`, `outcome` `found`
 - when `kind` one of `gate_result`, `evidence`, `completed` `true`, `outcome` one of `found`, `empty`, `failed`, `kind` required, `completed` required, `outcome` required, then `conclusions` any (not `null`)

@@ -4,7 +4,6 @@ package fixtures
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -33,7 +32,7 @@ func gateNeed(tree string, demand types.Digest) graph.Requirements {
 
 // env evaluates under gateNeed, with the owed-answer fake's answers.
 func (g *graphFix) env(tree string, demand types.Digest) graph.Env {
-	return graph.Env{Need: gateNeed(tree, demand), Blobs: g.blobs, Authority: owedanswers.Authority{}}
+	return graph.Env{Need: gateNeed(tree, demand), Blobs: g.blobs, Authority: owedanswers.Authority{}, Families: reviewers}
 }
 
 // commit is the step of committing a clean result of kind for n under env:
@@ -73,7 +72,7 @@ func revokedApprovalBlocksCommit(ctx context.Context, dir string) (steps []Step,
 	defer func() { err = errors.Join(err, closeFn()) }()
 	const owed, approval = types.OwedInputID("own_01m3250vz2ezn81cgvbkcn17jd"), types.ApprovalID("apr_01m3250vz2ezn81cgvbkcn17jd")
 	// Round 1 asks for the ruling; its round 2 successor declares the answer.
-	asker, err := g.record(types.NodeKindReview, json.RawMessage(`{}`), on("plan", g.plan, types.ResultKindPlan))
+	asker, err := g.record(types.NodeKindReview, soleReviewer, on("plan", g.plan, types.ResultKindPlan))
 	answer := func(approval *types.ApprovalID) error {
 		return g.do(func(*eventstore.Tx) ([]eventstore.Event, error) {
 			return owedanswers.Record(owedanswers.Answer{Owed: owed, Project: gProject, Asker: asker, Owner: types.ActorID(g.actor), Revision: 1, Approval: approval})

@@ -4259,9 +4259,10 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
-      "executor": "exe_x",
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
       "family": "claude"
      }
     ]
@@ -4838,9 +4839,10 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
-      "executor": "exe_x",
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
       "family": "claude"
      }
     ]
@@ -5160,9 +5162,10 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
-      "executor": "exe_x",
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
       "family": "claude"
      }
     ]
@@ -5205,9 +5208,10 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
-      "executor": "exe_x",
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
       "family": "claude"
      }
     ]
@@ -5250,9 +5254,10 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
-      "executor": "exe_x",
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
       "family": "claude"
      }
     ]
@@ -5295,9 +5300,10 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
-      "executor": "exe_x",
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
       "family": "claude"
      }
     ]
@@ -5340,9 +5346,10 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
-      "executor": "exe_x",
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
       "family": "claude"
      }
     ]
@@ -5385,9 +5392,10 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
-      "executor": "exe_x",
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
       "family": "claude"
      }
     ]
@@ -5430,9 +5438,10 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
-      "executor": "exe_x",
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
       "family": "claude"
      }
     ]
@@ -5475,9 +5484,10 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
-      "executor": "exe_x",
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
       "family": "claude"
      }
     ]
@@ -5521,9 +5531,10 @@
     }
    ],
    "params": {
+    "subject": "candidate",
     "roster": [
      {
-      "executor": "exe_x",
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
       "family": "claude"
      }
     ]
@@ -15550,7 +15561,13 @@
     }
    ],
    "params": {
-    "roster": []
+    "subject": "candidate",
+    "roster": [
+     {
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+      "family": "claude"
+     }
+    ]
    },
    "requires": {
     "role": "reviewer",
@@ -16022,6 +16039,540 @@
    "group": "rg_01m3250vm7f6ktw39dszqnyddr",
    "verified": true,
    "detail": ""
+  },
+  "valid": false
+ },
+ {
+  "name": "review-node-params: one reviewer",
+  "schema": "records/review-node-params",
+  "doc": {
+   "subject": "candidate",
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "review-node-params: two reviewers",
+  "schema": "records/review-node-params",
+  "doc": {
+   "subject": "candidate",
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    },
+    {
+     "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+     "family": "gpt"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "review-node-params: refused: no reviewer",
+  "schema": "records/review-node-params",
+  "doc": {
+   "subject": "candidate",
+   "roster": []
+  },
+  "valid": false
+ },
+ {
+  "name": "review-node-params: refused: no roster",
+  "schema": "records/review-node-params",
+  "doc": {
+   "subject": "candidate"
+  },
+  "valid": false
+ },
+ {
+  "name": "review-node-params: refused: no subject",
+  "schema": "records/review-node-params",
+  "doc": {
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "review-node-params: refused: an extra field",
+  "schema": "records/review-node-params",
+  "doc": {
+   "subject": "candidate",
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    }
+   ],
+   "max_turns": 8
+  },
+  "valid": false
+ },
+ {
+  "name": "review-node-params: refused: an executor that is not an exe_ id",
+  "schema": "records/review-node-params",
+  "doc": {
+   "subject": "candidate",
+   "roster": [
+    {
+     "executor": "exe_x",
+     "family": "claude"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "review-node-params: refused: a family with capitals",
+  "schema": "records/review-node-params",
+  "doc": {
+   "subject": "candidate",
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "Claude"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "review-node-params: refused: a member without a family",
+  "schema": "records/review-node-params",
+  "doc": {
+   "subject": "candidate",
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "review-requirement: a requirement",
+  "schema": "records/review-requirement",
+  "doc": {
+   "subject": "candidate",
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    },
+    {
+     "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+     "family": "gpt"
+    }
+   ],
+   "definition_version": "1",
+   "revision": 1
+  },
+  "valid": true
+ },
+ {
+  "name": "review-requirement: refused: missing subject",
+  "schema": "records/review-requirement",
+  "doc": {
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    },
+    {
+     "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+     "family": "gpt"
+    }
+   ],
+   "definition_version": "1",
+   "revision": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "review-requirement: refused: missing roster",
+  "schema": "records/review-requirement",
+  "doc": {
+   "subject": "candidate",
+   "definition_version": "1",
+   "revision": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "review-requirement: refused: missing definition_version",
+  "schema": "records/review-requirement",
+  "doc": {
+   "subject": "candidate",
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    },
+    {
+     "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+     "family": "gpt"
+    }
+   ],
+   "revision": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "review-requirement: refused: missing revision",
+  "schema": "records/review-requirement",
+  "doc": {
+   "subject": "candidate",
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    },
+    {
+     "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+     "family": "gpt"
+    }
+   ],
+   "definition_version": "1"
+  },
+  "valid": false
+ },
+ {
+  "name": "review-requirement: refused: revision 0",
+  "schema": "records/review-requirement",
+  "doc": {
+   "subject": "candidate",
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    },
+    {
+     "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+     "family": "gpt"
+    }
+   ],
+   "definition_version": "1",
+   "revision": 0
+  },
+  "valid": false
+ },
+ {
+  "name": "review-requirement: refused: no reviewer",
+  "schema": "records/review-requirement",
+  "doc": {
+   "subject": "candidate",
+   "roster": [],
+   "definition_version": "1",
+   "revision": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "review-requirement: refused: an empty definition version",
+  "schema": "records/review-requirement",
+  "doc": {
+   "subject": "candidate",
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    },
+    {
+     "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+     "family": "gpt"
+    }
+   ],
+   "definition_version": "",
+   "revision": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "review-requirement: refused: a subject with capitals",
+  "schema": "records/review-requirement",
+  "doc": {
+   "subject": "Candidate",
+   "roster": [
+    {
+     "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+     "family": "claude"
+    },
+    {
+     "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+     "family": "gpt"
+    }
+   ],
+   "definition_version": "1",
+   "revision": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "node: kind review_requirement",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review_requirement",
+   "definition_version": "1",
+   "inputs": [],
+   "params": {
+    "subject": "candidate",
+    "roster": [
+     {
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+      "family": "claude"
+     },
+     {
+      "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+      "family": "gpt"
+     }
+    ],
+    "definition_version": "1",
+    "revision": 1
+   },
+   "requires": {
+    "role": null,
+    "capability": null,
+    "resources": []
+   },
+   "effect": null,
+   "round": 1
+  },
+  "valid": true
+ },
+ {
+  "name": "node: refused: a review_requirement node with a review's params",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review_requirement",
+   "definition_version": "1",
+   "inputs": [],
+   "params": {
+    "subject": "candidate",
+    "roster": [
+     {
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": null,
+    "capability": null,
+    "resources": []
+   },
+   "effect": null,
+   "round": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "node: refused: a review node without a roster",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {},
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: refused: a review node with a requirement's params",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "subject": "candidate",
+    "roster": [
+     {
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+      "family": "claude"
+     },
+     {
+      "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+      "family": "gpt"
+     }
+    ],
+    "definition_version": "1",
+    "revision": 1
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "account_quota",
+     "concurrency"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "result: a review requirement",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "review_requirement",
+   "value": [],
+   "conclusions": {
+    "subject": "candidate",
+    "roster": [
+     {
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+      "family": "claude"
+     },
+     {
+      "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+      "family": "gpt"
+     }
+    ],
+    "definition_version": "1",
+    "revision": 1
+   },
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "detail": "required",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: refused: a review requirement without conclusions",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "review_requirement",
+   "value": [],
+   "conclusions": null,
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "detail": "required",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: refused: an empty review requirement",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "review_requirement",
+   "value": [],
+   "conclusions": {
+    "subject": "candidate",
+    "roster": [
+     {
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+      "family": "claude"
+     },
+     {
+      "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+      "family": "gpt"
+     }
+    ],
+    "definition_version": "1",
+    "revision": 1
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: refused: an incomplete review requirement",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "review_requirement",
+   "value": [],
+   "conclusions": {
+    "subject": "candidate",
+    "roster": [
+     {
+      "executor": "exe_01m3250v9xft08ssr4ygq6g2np",
+      "family": "claude"
+     },
+     {
+      "executor": "exe_01m3250vm7f6ktw39dszqnyddr",
+      "family": "gpt"
+     }
+    ],
+    "definition_version": "1",
+    "revision": 1
+   },
+   "outcome": "could_not_run",
+   "reason": "quota_exhausted",
+   "detail": "x",
+   "completed": false
   },
   "valid": false
  }

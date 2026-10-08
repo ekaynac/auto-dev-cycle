@@ -44,7 +44,8 @@ export type ResultKind =
   | "review"
   | "evidence"
   | "carry_over_attestation"
-  | "merge_result";
+  | "merge_result"
+  | "review_requirement";
 /**
  * RFC 3339 in UTC with a Z suffix and a valid calendar date and clock time (adc-time).
  *

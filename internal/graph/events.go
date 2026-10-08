@@ -171,9 +171,19 @@ func loadNode(tx *eventstore.Tx, id types.NodeID) (nodeRecord, error) {
 // Record is the event that adds r's node to its task's graph. Its caller
 // (M1's graph commands) takes r's project from the actor's authorization
 // before it calls Record; the event's project is never the actor's claim.
+//
+// A review or review_requirement node is recorded through RecordReview,
+// with its roster's families from the executor registry.
 func Record(r types.NodeRecorded) ([]eventstore.Event, error) {
+	if rostered(r.Node.Kind) {
+		return nil, errors.Join(fmt.Errorf("graph: a %s node is recorded with the registry's families (RecordReview)", r.Node.Kind))
+	}
+	return record(r)
+}
+
+func record(r types.NodeRecorded) ([]eventstore.Event, error) {
 	r.Type = "node_recorded"
-	if err := checkEvidence(r.Node); err != nil {
+	if err := errors.Join(checkEvidence(r.Node), checkReview(r.Node)); err != nil {
 		return nil, err
 	}
 	return event(NodeRecorded, string(r.Node.ID), r.Project, &r)
@@ -236,8 +246,8 @@ func items(n types.Node, resolved map[string]Resolved) []types.ClaimedInput {
 // they call Claim.
 func Claim(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, generation int64) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, node)
-	if err != nil || rec.Recorded.Node.Kind == types.NodeKindEvidence {
-		return nil, errors.Join(err, errors.New("graph: an evidence node is claimed under its contract (ClaimEvidence)"))
+	if err != nil || rec.Recorded.Node.Kind == types.NodeKindEvidence || rostered(rec.Recorded.Node.Kind) {
+		return nil, errors.Join(err, errors.New("graph: an evidence node is claimed under its contract (ClaimEvidence), a review under the registry (ClaimReview)"))
 	}
 	return claimNode(tx, rec, resolved, generation)
 }
@@ -369,7 +379,7 @@ func recorded(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeRecorded) err
 		}
 		round = pred.Recorded.Node.Round + 1
 	}
-	if err := checkEvidence(n); err != nil {
+	if err := errors.Join(checkEvidence(n), checkReview(n)); err != nil {
 		return err
 	}
 	if n.Round != round {
@@ -521,7 +531,7 @@ func claimed(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeClaimed) error
 	if !reflect.DeepEqual(items(rec.Recorded.Node, resolved), p.Inputs) {
 		return errors.New("the claim's inputs are not one resolution per declared input, in order")
 	}
-	if err := selectedInputs(tx, rec, resolved); err != nil {
+	if err := errors.Join(selectedInputs(tx, rec, resolved), bindsRequirement(tx, rec, resolved)); err != nil {
 		return err
 	}
 	key, err := Key(rec.Recorded.Node, resolved, p.Key.Generation)

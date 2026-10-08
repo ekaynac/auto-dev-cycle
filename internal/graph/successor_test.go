@@ -118,7 +118,7 @@ func TestSuccessor(t *testing.T) {
 	older.Node.ID, older.Node.Round, older.Predecessor = g.newNode(types.NodeKindReview).Node.ID, older.Node.Round+1, &fourth
 	older.Node.Inputs = slices.Clone(older.Node.Inputs)
 	older.Node.Inputs[1] = owes("ruling", ownID) // revision 2
-	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(older) }); err == nil {
+	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(older) }); err == nil {
 		t.Error("an inherited answer moved back to an older revision")
 	}
 	if diffs, err := g.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
@@ -141,13 +141,13 @@ func TestSuccessorLineage(t *testing.T) {
 		n := g.recordOf(review)
 		n.Node.ID, n.Node.Round, n.Predecessor = g.newNode(types.NodeKindReview).Node.ID, 2, &review
 		edit(&n.Node)
-		return n.Node.ID, g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(n) })
+		return n.Node.ID, g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(n) })
 	}
 	refused := func(_ types.NodeID, err error) error { return err }
 	for name, err := range map[string]error{
-		"an answer on a first round":   g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(first) }),
+		"an answer on a first round":   g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(first) }),
 		"another definition version":   refused(recordSuccessor(func(n *types.Node) { n.DefinitionVersion = "2" })),
-		"other params":                 refused(recordSuccessor(func(n *types.Node) { n.Params = json.RawMessage(`{"task":"y"}`) })),
+		"other params":                 refused(recordSuccessor(func(n *types.Node) { n.Params = reviewParams(exeB) })),
 		"other requirements":           refused(recordSuccessor(func(n *types.Node) { n.Requires.Resources = []types.ResourceGroupKind{"evidence_target"} })),
 		"inputs not the predecessor's": refused(recordSuccessor(func(n *types.Node) { n.Inputs = []types.InputSpec{} })),
 	} {
@@ -202,7 +202,7 @@ func TestSuccessorHolds(t *testing.T) {
 	direct := g.recordOf(held)
 	direct.Node.ID, direct.Node.Round, direct.Predecessor = g.newNode(types.NodeKindReview).Node.ID, 2, &held
 	direct.Node.Inputs = append(slices.Clone(direct.Node.Inputs), g.planInput("x"))
-	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(direct) }); err == nil || !strings.Contains(err.Error(), "G6b") {
+	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(direct) }); err == nil || !strings.Contains(err.Error(), "G6b") {
 		t.Errorf("a held predecessor's successor recorded directly: %v", err)
 	}
 	if err := g.do(forge(HoldCleared, string(held), prjID, &types.HoldCleared{Type: "hold_cleared", Node: held, Hold: rail.ID,
@@ -296,7 +296,7 @@ func TestEquivalent(t *testing.T) {
 	carry.Node.Inputs[0].Source.Variant.(*types.ResultSource).Producer = gate
 	carried := g.record(carry)
 	pendingNode := g.nodeOn(types.NodeKindReview, gate)
-	pendingNode.Node.Params, pendingNode.Node.Inputs[0].Name = json.RawMessage(`{"pending":true}`), "gate"
+	pendingNode.Node.Params, pendingNode.Node.Inputs[0].Name = reviewParams(exeB), "gate"
 	pendingNode.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = types.ResultKindGateResult
 	pending := g.record(pendingNode)
 	g.must(evaluate(env, review, carried, pending))
@@ -514,7 +514,7 @@ func TestContextLineage(t *testing.T) {
 	stray.Node.Inputs = append(slices.Clone(stray.Node.Inputs), answerAt("ruling", ownB, 2))
 	n := g.record(stray)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Claim(tx, n, map[string]Resolved{"plan": {Result: g.planRes}, "ruling": {Approval: aprB, Revision: 2}}, 0)
+		return claimAny(tx, n, map[string]Resolved{"plan": {Result: g.planRes}, "ruling": {Approval: aprB, Revision: 2}}, 0)
 	})
 	var notOwed ErrNotOwed
 	if refs, err := g.contextOf(n); !errors.As(err, &notOwed) || refs != nil {

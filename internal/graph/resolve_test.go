@@ -151,6 +151,9 @@ func (g graphStore) completedAs(kind types.NodeKind, rk types.ResultKind, value 
 	if kind == types.NodeKindEvidence {
 		rec.Node.Params = evidenceParams(string(rec.Node.ID))
 	}
+	if kind == types.NodeKindReview {
+		rec.Node.Params = reviewParams(exeA)
+	}
 	n := g.record(rec)
 	g.must(g.claimOf(n))
 	r := unrecorded(g.t, *g.state(n).Key)

@@ -29,7 +29,7 @@ func node() types.Node {
 			{Name: "gate", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: planID, ResultKind: types.ResultKindGateResult}}},
 			{Name: "ruling", Source: types.InputSpecSource{Variant: &types.AnswerSource{Type: "answer", OwedInput: ownID, Revision: 2}}},
 		},
-		Params: json.RawMessage(`{"roster":[{"executor":"exe_x","family":"claude"}],"max_turns":8}`), Round: 1,
+		Params: json.RawMessage(`{"subject":"candidate","roster":[{"executor":"exe_01m3250v9xft08ssr4ygq6g2np","family":"claude"}]}`), Round: 1,
 		Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
 }
 
@@ -50,14 +50,14 @@ func key(t *testing.T, n types.Node, r map[string]Resolved, gen int64) types.Com
 // json.dumps(o, sort_keys=True, separators=(",", ":")):
 //
 //	h({"framing": "adc.computation-key/1", "kind": "review", "definition_version": "1",
-//	   "params": h({"max_turns": 8, "roster": [{"executor": "exe_x", "family": "claude"}]}),
+//	   "params": h({"subject": "candidate", "roster": [{"executor": "exe_01m3250v9xft08ssr4ygq6g2np", "family": "claude"}]}),
 //	   "inputs": [{"name": "gate", "result": "res_01m3250v57fhm9v1z9xd1wk8gw"},
 //	              {"name": "ruling", "approval": "apr_01m3250vz2ezn81cgvbkcn17jd", "revision": 2}],
 //	   "generation": 1})
 //	h({"framing": "adc.computation-key/1", "kind": "plan", "definition_version": "1",
 //	   "params": h({}), "inputs": [], "generation": 3})
 func TestKeyFraming(t *testing.T) {
-	if got, want := key(t, node(), resolved(), 1).Key, types.Digest("sha256:cbcda91af26037f851209b257a1df5daa7c6e33eb61c833c7499e9606fe4810c"); got != want {
+	if got, want := key(t, node(), resolved(), 1).Key, types.Digest("sha256:ad427bdd37926514217fe46177379412769a80b02f4e2b95afc5cbe5d874cfcc"); got != want {
 		t.Fatalf("key %s, want %s", got, want)
 	}
 	n := node()
@@ -74,7 +74,7 @@ func TestKeyIsDeterministic(t *testing.T) {
 	}
 	// The params' spelling and the declared order are not part of the key.
 	n := node()
-	n.Params = json.RawMessage("{ \"max_turns\": 8,\n \"roster\": [ {\"family\": \"claude\", \"executor\": \"exe_x\"} ] }")
+	n.Params = json.RawMessage("{\n \"roster\": [ {\"family\": \"claude\", \"executor\": \"exe_01m3250v9xft08ssr4ygq6g2np\"} ], \"subject\": \"candidate\" }")
 	n.Inputs[0], n.Inputs[1] = n.Inputs[1], n.Inputs[0]
 	if b := key(t, n, resolved(), 1); a != b {
 		t.Fatalf("a respelling or reordering changed the key: %v, %v", a, b)
@@ -93,7 +93,7 @@ func TestEveryPartChangesTheKey(t *testing.T) {
 			n.Inputs[1].Source.Variant.(*types.AnswerSource).Revision, r["ruling"] = 3, Resolved{Approval: aprA, Revision: 3}
 		}, 1},
 		"another params value": {func(n *types.Node, _ map[string]Resolved) {
-			n.Params = json.RawMessage(`{"roster":[{"executor":"exe_x","family":"claude"}],"max_turns":9}`)
+			n.Params = json.RawMessage(`{"subject":"candidate","roster":[{"executor":"exe_01m3250v9xft08ssr4ygq6g2np","family":"gpt"}]}`)
 		}, 1},
 		"the next generation": {func(*types.Node, map[string]Resolved) {}, 2},
 		"another kind":        {func(n *types.Node, _ map[string]Resolved) { n.Kind = types.NodeKindGate }, 1},
@@ -194,6 +194,6 @@ func deep(depth int) json.RawMessage {
 // Within the bound, the same nesting keys.
 func TestParamsAtTheDepthBound(t *testing.T) {
 	n := node()
-	n.Params = deep(128)
+	n.Kind, n.Params = types.NodeKindClosure, deep(128) // a review's params are a roster
 	key(t, n, resolved(), 1)
 }

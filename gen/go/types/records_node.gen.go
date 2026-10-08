@@ -12,20 +12,21 @@ import (
 type NodeKind string
 
 const (
-	NodeKindPlan          NodeKind = "plan"
-	NodeKindBuild         NodeKind = "build"
-	NodeKindAccept        NodeKind = "accept"
-	NodeKindGate          NodeKind = "gate"
-	NodeKindRuntimeVerify NodeKind = "runtime_verify"
-	NodeKindIntegration   NodeKind = "integration"
-	NodeKindEvidence      NodeKind = "evidence"
-	NodeKindReview        NodeKind = "review"
-	NodeKindCarryOver     NodeKind = "carry_over"
-	NodeKindClosure       NodeKind = "closure"
-	NodeKindMerge         NodeKind = "merge"
-	NodeKindDeploy        NodeKind = "deploy"
-	NodeKindRecord        NodeKind = "record"
-	NodeKindPhaseGate     NodeKind = "phase_gate"
+	NodeKindPlan              NodeKind = "plan"
+	NodeKindBuild             NodeKind = "build"
+	NodeKindAccept            NodeKind = "accept"
+	NodeKindGate              NodeKind = "gate"
+	NodeKindRuntimeVerify     NodeKind = "runtime_verify"
+	NodeKindIntegration       NodeKind = "integration"
+	NodeKindEvidence          NodeKind = "evidence"
+	NodeKindReview            NodeKind = "review"
+	NodeKindReviewRequirement NodeKind = "review_requirement"
+	NodeKindCarryOver         NodeKind = "carry_over"
+	NodeKindClosure           NodeKind = "closure"
+	NodeKindMerge             NodeKind = "merge"
+	NodeKindDeploy            NodeKind = "deploy"
+	NodeKindRecord            NodeKind = "record"
+	NodeKindPhaseGate         NodeKind = "phase_gate"
 )
 
 // NodeRequires: What the node leases to run (05). A controller node has no role and no capability. That a model kind has both is internal/graph's check, not the schema's.
@@ -45,7 +46,7 @@ type Node struct {
 	DefinitionVersion string `json:"definition_version"`
 	// Declared by the kind's definition. The computation key hashes each input's name with what it resolved to, sorted by name, so the order they are listed in is not part of the key (internal/graph).
 	Inputs []InputSpec `json:"inputs"`
-	// The kind's parameters, one schema per kind (a review's params carry its roster, 13); an evidence node's are EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.
+	// The kind's parameters, one schema per kind: a review node's are ReviewNodeParams, with its roster (13), a review_requirement node's the ReviewRequirement it records (13), and an evidence node's EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.
 	Params json.RawMessage `json:"params"`
 	// What the node leases to run (05). A controller node has no role and no capability. That a model kind has both is internal/graph's check, not the schema's.
 	Requires NodeRequires `json:"requires"`
@@ -60,6 +61,24 @@ func (x *Node) ParamsAsEvidenceNodeParams() (EvidenceNodeParams, error) {
 	var out EvidenceNodeParams
 	if string(x.Kind) != "evidence" {
 		return out, fmt.Errorf("Node.Params is a EvidenceNodeParams only when kind is %q, not %q", "evidence", x.Kind)
+	}
+	return out, decodeStrict(x.Params, &out)
+}
+
+// ParamsAsReviewNodeParams decodes Params as ReviewNodeParams; only valid when kind is "review".
+func (x *Node) ParamsAsReviewNodeParams() (ReviewNodeParams, error) {
+	var out ReviewNodeParams
+	if string(x.Kind) != "review" {
+		return out, fmt.Errorf("Node.Params is a ReviewNodeParams only when kind is %q, not %q", "review", x.Kind)
+	}
+	return out, decodeStrict(x.Params, &out)
+}
+
+// ParamsAsReviewRequirement decodes Params as ReviewRequirement; only valid when kind is "review_requirement".
+func (x *Node) ParamsAsReviewRequirement() (ReviewRequirement, error) {
+	var out ReviewRequirement
+	if string(x.Kind) != "review_requirement" {
+		return out, fmt.Errorf("Node.Params is a ReviewRequirement only when kind is %q, not %q", "review_requirement", x.Kind)
 	}
 	return out, decodeStrict(x.Params, &out)
 }

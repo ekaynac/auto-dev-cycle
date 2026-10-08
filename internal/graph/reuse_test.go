@@ -59,7 +59,7 @@ func TestReuse(t *testing.T) {
 			t.Errorf("a dependant resolves the invalidated result")
 		}
 		if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return Claim(tx, d, map[string]Resolved{"gate": {Result: r.ID}}, 0)
+			return claimAny(tx, d, map[string]Resolved{"gate": {Result: r.ID}}, 0)
 		}); err == nil {
 			t.Error("a dependant claims the invalidated result")
 		}
@@ -67,7 +67,7 @@ func TestReuse(t *testing.T) {
 	// At the new generation b reuses again, and the holder's next
 	// invalidation releases it again.
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Claim(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 0)
+		return claimAny(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 0)
 	}); !errors.As(err, &held) || held.Node != holder {
 		t.Fatalf("b's claim at generation 2: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestStaleReuseServesNothing(t *testing.T) {
 		t.Errorf("a stale reuse serves its result: %+v", st)
 	}
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Claim(tx, onB, map[string]Resolved{"gate": {Result: r.ID}}, 0)
+		return claimAny(tx, onB, map[string]Resolved{"gate": {Result: r.ID}}, 0)
 	}); err == nil {
 		t.Error("a dependant claims a stale reuse's result")
 	}
