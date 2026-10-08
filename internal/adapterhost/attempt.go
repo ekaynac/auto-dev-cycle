@@ -86,6 +86,7 @@ type Spec struct {
 	// inputs are the host's.
 	Prepare types.AdapterPrepareParams
 	Prompt  []byte
+	Bounds  Bounds // the waits on the adapter; zero: as Bounds says
 }
 
 // Outcome is what an attempt left.
@@ -241,15 +242,27 @@ func (r *attemptRun) finalizing(ctx context.Context) (context.Context, context.C
 	return context.WithTimeout(context.WithoutCancel(ctx), finalizeTimeout)
 }
 
-// shutdown shuts the session down within shutdownTimeout, killing the
-// namespace otherwise, and returns the shutdown's error; an outcome other
-// than empty or found is ErrShutdownFailed.
+// shutdown shuts the session down and waits for the process tree to exit,
+// both within the shutdown bound (Bounds.ShutdownBound), killing the
+// namespace otherwise, and returns the shutdown's error (a *TimeoutError
+// when the bound passed); an outcome other than empty or found is
+// ErrShutdownFailed. The session's deadline is only the backstop.
 func (r *attemptRun) shutdown(ctx context.Context, s *session.Session) error {
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.spec.Bounds.ShutdownBound())
 	defer cancel()
 	o, err := s.Shutdown(sctx)
+	if err == nil {
+		select {
+		case <-s.Exited():
+		case <-sctx.Done():
+			err = sctx.Err()
+		}
+	}
 	if err != nil {
 		_ = s.Close()
+		if errors.Is(sctx.Err(), context.DeadlineExceeded) {
+			return &TimeoutError{Wait: "shutdown"}
+		}
 		return err
 	}
 	if o.Outcome != types.OutcomeEmpty && o.Outcome != types.OutcomeFound {
@@ -278,17 +291,19 @@ func sessionEnd(ctx context.Context, s *session.Session, shutErr error) error {
 	return nil
 }
 
-// converse describes, prepares and runs the call under the caller's ctx.
+// converse describes, prepares and runs the call under the caller's ctx,
+// each wait within its bound (Bounds).
 func (r *attemptRun) converse(ctx context.Context, s *session.Session) (types.AdapterRunResult, error) {
+	b := r.spec.Bounds
 	hook("describe")
-	if _, err := s.Describe(ctx); err != nil {
+	if _, err := bounded(ctx, b.Start, "start", s.Describe); err != nil {
 		return types.AdapterRunResult{}, err
 	}
 	p := r.spec.Prepare
 	p.Attempt, p.FencingToken, p.Inputs = r.spec.Attempt, r.token, []types.AdapterHandle{r.x.prompt}
 	p.Exchange = types.AdapterPrepareParamsExchange{In: r.x.in, Out: r.x.out}
 	hook("prepare")
-	o, err := s.Prepare(ctx, p)
+	o, err := bounded(ctx, b.Handshake, "handshake", func(ctx context.Context) (types.AdapterOutcome, error) { return s.Prepare(ctx, p) })
 	if err != nil {
 		return types.AdapterRunResult{}, err
 	}
@@ -300,7 +315,9 @@ func (r *attemptRun) converse(ctx context.Context, s *session.Session) (types.Ad
 	r.mu.Lock()
 	r.cancelRun = cancel
 	r.mu.Unlock()
-	return s.Run(runCtx, types.AdapterRunParams{Attempt: r.spec.Attempt, FencingToken: r.token, Call: r.spec.Call, Prompt: r.x.prompt}, r.onEvent)
+	return bounded(runCtx, b.Result, "result", func(ctx context.Context) (types.AdapterRunResult, error) {
+		return s.Run(ctx, types.AdapterRunParams{Attempt: r.spec.Attempt, FencingToken: r.token, Call: r.spec.Call, Prompt: r.x.prompt}, r.onEvent)
+	})
 }
 
 // onEvent keeps usage reports and the final outputs events declare, and

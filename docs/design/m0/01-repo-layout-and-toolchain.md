@@ -101,7 +101,8 @@ The Go toolchain is installed per user from the official tarball (`~/.local/go`)
   **inside the test sandbox** (bubblewrap, or a rootless container as fallback; 11). It refuses to run unsandboxed.
 - CI runs on GitHub Actions for this repository (the framework's own CI; projects using auto-dev-cycle may be on any
   forge).
-- Release builds: `adcd` and `adc` for linux/amd64 and linux/arm64; `adc-agent` additionally for darwin and windows.
+- Release builds: `adcd`, `adc` and `adc-harness` (15 S1) for linux/amd64 and linux/arm64; `adc-agent` additionally for
+  darwin and windows.
 - Every build embeds version, commit and schema-set digest; `adc version` and the API report them, and every event
   records the writer's schema-set digest.
 

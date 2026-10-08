@@ -202,6 +202,10 @@ func (s *Session) end(e *Error) {
 // Done is closed once the session has ended (Err is then set).
 func (s *Session) Done() <-chan struct{} { return s.ended }
 
+// Exited is closed once the adapter's process tree has exited
+// (Process.Done).
+func (s *Session) Exited() <-chan struct{} { return s.p.Done() }
+
 // Err is why the session ended, or nil while it is live.
 func (s *Session) Err() error {
 	s.mu.Lock()

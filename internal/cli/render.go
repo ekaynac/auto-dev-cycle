@@ -95,6 +95,16 @@ func sayJSON(w io.Writer, doc []byte) error {
 	return err
 }
 
+// Say, SayJSON and Parse are say, sayJSON and parse for the other command
+// lines (adc-harness): one escaping for all human and --json output.
+func Say(w io.Writer, format string, a ...any) error { return say(w, format, a...) }
+
+func SayJSON(w io.Writer, doc []byte) error { return sayJSON(w, doc) }
+
+func Parse(fs *flag.FlagSet, args []string, stderr io.Writer) (code int, ok bool) {
+	return parse(fs, args, stderr)
+}
+
 // parse parses fs's flags from args with nothing printed by the flag
 // package: a usage error goes through say, and -h prints the CLI's own
 // defaults. ok is false when the command ends with code.
