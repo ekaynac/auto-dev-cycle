@@ -18,7 +18,7 @@ One immutable output of a node (docs/design/m0/13 "Model" [G1]). A result is nev
 | `outcome` | yes | [Outcome](common-defs.md#outcome) |  |
 | `reason` | yes | [ReasonCode](common-defs.md#reasoncode) |  |
 | `detail` | yes | string (maxLength `4096`) | Non-empty for every outcome but empty (02 "Outcome"). |
-| `completed` | yes | boolean | Whether execution observably completed: the executor reached a terminal result the controller accepted (05). An incomplete result is could_not_run, never empty (13 "Facts, not claims"). |
+| `completed` | yes | boolean | Whether execution observably completed: the executor reached a terminal result the controller accepted (05) and reported it found or empty. A reported could_not_run or failed is not completion, nor is a refused or missing result or a lost attempt. An incomplete result is could_not_run, never empty (13 "Facts, not claims"). |
 
 No other fields are allowed.
 

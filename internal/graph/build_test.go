@@ -26,21 +26,33 @@ func TestBuildOutcomeTable(t *testing.T) {
 		outcome types.Outcome
 		reason  vocab.Reason
 		value   bool
+		detail  string
 	}{
-		"completed with a diff":       {BuildFacts{Completed: true, Diff: diff}, types.ResultKindPatch, types.OutcomeFound, vocab.ReasonCompletedWithFindings, true},
-		"completed with no diff":      {BuildFacts{Completed: true}, types.ResultKindPatch, types.OutcomeEmpty, vocab.ReasonCompletedClean, false},
-		"a 402 after edits":           {BuildFacts{Diff: diff, Exit: credit}, types.ResultKindPartialPatch, types.OutcomeCouldNotRun, vocab.ReasonBrokerCreditExhausted, true},
-		"a 402 before the first edit": {BuildFacts{Exit: credit}, types.ResultKindPatch, types.OutcomeCouldNotRun, vocab.ReasonBrokerCreditExhausted, false},
-		"incomplete with no cause":    {BuildFacts{}, types.ResultKindPatch, types.OutcomeCouldNotRun, vocab.ReasonExecutorIncomplete, false},
-		"stopped after edits":         {BuildFacts{Diff: diff, Exit: exitmap.Exit{StopRequested: true}}, types.ResultKindPartialPatch, types.OutcomeCouldNotRun, vocab.ReasonAttemptStopped, true},
+		"found with a diff": {BuildFacts{Submitted: true, Reported: types.OutcomeFound, Diff: diff},
+			types.ResultKindPatch, types.OutcomeFound, vocab.ReasonCompletedWithFindings, true, "the build produced a change"},
+		"empty with a diff": {BuildFacts{Submitted: true, Reported: types.OutcomeEmpty, Diff: diff},
+			types.ResultKindPatch, types.OutcomeFound, vocab.ReasonCompletedWithFindings, true, "the build produced a change"},
+		"found with no diff": {BuildFacts{Submitted: true, Reported: types.OutcomeFound},
+			types.ResultKindPatch, types.OutcomeEmpty, vocab.ReasonCompletedClean, false, ""},
+		"a 402 after edits": {BuildFacts{Submitted: true, Reported: types.OutcomeCouldNotRun, Diff: diff, Exit: credit},
+			types.ResultKindPartialPatch, types.OutcomeCouldNotRun, vocab.ReasonBrokerCreditExhausted, true, "the executor reported could_not_run; its partial change is sealed"},
+		"a 402 before the first edit": {BuildFacts{Submitted: true, Reported: types.OutcomeCouldNotRun, Exit: credit},
+			types.ResultKindPatch, types.OutcomeCouldNotRun, vocab.ReasonBrokerCreditExhausted, false, "the executor reported could_not_run; nothing changed"},
+		"a reported failure after edits": {BuildFacts{Submitted: true, Reported: types.OutcomeFailed, Diff: diff},
+			types.ResultKindPartialPatch, types.OutcomeCouldNotRun, vocab.ReasonExecutorIncomplete, true, "the executor reported failed; its partial change is sealed"},
+		"no accepted result": {BuildFacts{Reported: types.OutcomeFound},
+			types.ResultKindPatch, types.OutcomeCouldNotRun, vocab.ReasonExecutorIncomplete, false, "no accepted result; nothing changed"},
+		"stopped after edits": {BuildFacts{Diff: diff, Exit: exitmap.Exit{StopRequested: true}},
+			types.ResultKindPartialPatch, types.OutcomeCouldNotRun, vocab.ReasonAttemptStopped, true, "no accepted result; its partial change is sealed"},
 	} {
 		c.facts.Project = prjID
 		r, err := Build(k, c.facts)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if r.Kind != c.kind || r.Outcome != c.outcome || r.Reason != c.reason || r.Completed != c.facts.Completed || r.Computation != k.Key {
-			t.Errorf("%s: %s %s/%s completed=%t", name, r.Kind, r.Outcome, r.Reason, r.Completed)
+		done := c.outcome != types.OutcomeCouldNotRun
+		if r.Kind != c.kind || r.Outcome != c.outcome || r.Reason != c.reason || r.Completed != done || r.Computation != k.Key || r.Detail != c.detail {
+			t.Errorf("%s: %s %s/%s completed=%t %q", name, r.Kind, r.Outcome, r.Reason, r.Completed, r.Detail)
 		}
 		if got := len(r.Value) == 1 && r.Value[0].ContentDigest == diff; got != c.value || (!c.value && len(r.Value) != 0) {
 			t.Errorf("%s: value %+v", name, r.Value)
@@ -51,15 +63,30 @@ func TestBuildOutcomeTable(t *testing.T) {
 	}
 }
 
+// Check refuses a reason that does not fit the outcome, which the schema
+// alone accepts.
+func TestCheckFitsTheReason(t *testing.T) {
+	k := types.ComputationKey{Key: types.Digest("sha256:" + strings.Repeat("a", 64)), Generation: 1}
+	r, err := Build(k, BuildFacts{Submitted: true, Reported: types.OutcomeFound, Project: prjID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Reason = vocab.ReasonBrokerCreditExhausted
+	if err := Check(r); err == nil {
+		t.Fatal("empty with broker_credit_exhausted passed")
+	}
+}
+
 // A result's identity is its own, never the key's: two builds of one key
 // are two results.
 func TestResultIdentityIsNotTheKey(t *testing.T) {
 	k := types.ComputationKey{Key: types.Digest("sha256:" + strings.Repeat("a", 64)), Generation: 1}
-	a, err := Build(k, BuildFacts{Completed: true, Diff: diff, Project: prjID})
+	f := BuildFacts{Submitted: true, Reported: types.OutcomeFound, Diff: diff, Project: prjID}
+	a, err := Build(k, f)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := Build(k, BuildFacts{Completed: true, Diff: diff, Project: prjID})
+	b, err := Build(k, f)
 	if err != nil {
 		t.Fatal(err)
 	}

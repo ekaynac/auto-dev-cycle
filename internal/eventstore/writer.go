@@ -130,6 +130,10 @@ func (t *Tx) BindObject(o Object) error {
 
 // ContentDigest is a record's content digest: sha256 of its canonical
 // (RFC 8785) bytes, so neither field order nor spacing changes it.
+//
+// It refuses any number that is not an integer within ±(2^53−1) and
+// trailing data, but not duplicate keys or bad escapes: a caller digesting
+// untrusted bytes reads them strictly first (contract.ReadStrict).
 func ContentDigest(record json.RawMessage) (string, error) { return digest(record) }
 
 // Tx is the writer transaction as the hooks and the command's logic see it.

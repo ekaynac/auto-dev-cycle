@@ -24,6 +24,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/wire"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
@@ -160,9 +161,10 @@ func creditExhausted(ctx context.Context, dir string, edit bool) (steps []Step, 
 	if err != nil {
 		return nil, nil, err
 	}
-	facts := graph.BuildFacts{Project: "prj_01m3250vkwffc979nzjw0g2sf9",
-		Completed: out.Submitted.Outcome == types.OutcomeFound || out.Submitted.Outcome == types.OutcomeEmpty,
-		Exit:      exitmap.Exit{Protocol: out.Result == nil, Hints: out.Hints}}
+	// No status: the host keeps no error excerpt once the run ends, so the
+	// controller has no observed status here, only the hints.
+	facts := graph.BuildFacts{Project: "prj_01m3250vkwffc979nzjw0g2sf9", Submitted: true, Reported: out.Submitted.Outcome,
+		Exit: exitmap.Exit{Protocol: out.Result == nil, Hints: out.Hints}}
 	if len(d) > 0 {
 		digest, err := blobs.Put(bytes.NewReader(d), "")
 		if err != nil {
@@ -175,6 +177,7 @@ func creditExhausted(ctx context.Context, dir string, edit bool) (steps []Step, 
 		return nil, nil, err
 	}
 	var o observe
+	o.check(slices.Equal(out.Hints, []string{"credit_exhausted"}), "the run's error hints are %v", out.Hints)
 	o.steps = append(o.steps, Step{vocab.Outcome(r.Outcome), r.Reason.String()})
 	o.check(graph.Check(r) == nil, "the result is not a valid records/result: %v", graph.Check(r))
 	o.check(r.Computation == key.Key && r.ID != types.ResultID(key.Key), "the result does not answer the node's key %s", key.Key)
@@ -188,6 +191,19 @@ func creditExhausted(ctx context.Context, dir string, edit bool) (steps []Step, 
 	}
 	if err := seal(do, blobs, actor, att, baseTree, partial); err != nil {
 		return nil, nil, err
+	}
+	rec, err := sealed(ctx, s, blobs, att)
+	if err != nil {
+		return nil, nil, err
+	}
+	if edit {
+		has, err := blobs.Has(string(facts.Diff))
+		if err != nil {
+			return nil, nil, err
+		}
+		o.check(rec.PartialDiff != nil && *rec.PartialDiff == facts.Diff && has, "the sealed record's partial diff is %v, want the published %s", rec.PartialDiff, facts.Diff)
+	} else {
+		o.check(rec.PartialDiff == nil, "the sealed record of an unchanged tree names a partial diff %v", rec.PartialDiff)
 	}
 	if edit {
 		o.check(r.Kind == types.ResultKindPartialPatch && partial != nil && *partial == facts.Diff,
@@ -244,6 +260,38 @@ func seal(do func(func(*eventstore.Tx) ([]eventstore.Event, error)) error, blobs
 	})
 }
 
+// excerpt is the raw excerpt of the peer's error event.
+const excerpt = "HTTP 402: insufficient credits\n"
+
+// sealed reads the attempt back and decodes the AttemptRecord its seal names.
+func sealed(ctx context.Context, s *eventstore.Store, blobs *blobstore.Store, att types.AttemptID) (types.AttemptRecord, error) {
+	var raw json.RawMessage
+	if err := s.View(ctx, func(tx *eventstore.Tx) (err error) {
+		raw, _, err = tx.Get(lease.AttemptProjection, string(att))
+		return err
+	}); err != nil {
+		return types.AttemptRecord{}, err
+	}
+	var a struct {
+		Record types.Attempt `json:"record"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return types.AttemptRecord{}, err
+	}
+	if a.Record.Status != types.AttemptStatusSealed || a.Record.Checkpoint == nil {
+		return types.AttemptRecord{}, fmt.Errorf("the attempt is %s with checkpoint %v, not sealed", a.Record.Status, a.Record.Checkpoint)
+	}
+	rc, err := blobs.Open(string(*a.Record.Checkpoint))
+	if err != nil {
+		return types.AttemptRecord{}, err
+	}
+	b, err := io.ReadAll(rc)
+	if err = errors.Join(err, rc.Close()); err != nil {
+		return types.AttemptRecord{}, err
+	}
+	return contract.Decode[types.AttemptRecord]("records/attempt-record", b)
+}
+
 // treeDiff is the fake sandbox's diff of work against base: one line per
 // path whose bytes differ or that only one side has, sorted; empty when the
 // trees are the same.
@@ -293,7 +341,6 @@ func creditRun(edit bool, workspace, outDir string, params json.RawMessage, send
 			return nil, err
 		}
 	}
-	const excerpt = "HTTP 402: insufficient credits\n"
 	if err := os.WriteFile(filepath.Join(outDir, "error-1.txt"), []byte(excerpt), 0o644); err != nil {
 		return nil, err
 	}
@@ -301,9 +348,13 @@ func creditRun(edit bool, workspace, outDir string, params json.RawMessage, send
 	h.Handle = "error-1.txt"
 	ev := types.ErrorEvent{Event: "error", Attempt: p.Attempt, FencingToken: p.FencingToken, Call: p.Call, Turn: 1,
 		ClassHint: types.ErrorEventClassHintCreditExhausted, RawExcerpt: h}
-	if err := send(map[string]any{"jsonrpc": wire.Version, "method": wire.EventMethod, "params": ev}); err != nil {
-		return nil, err
+	for range 2 { // the provider refuses twice: the hints are a set
+		if err := send(map[string]any{"jsonrpc": wire.Version, "method": wire.EventMethod, "params": ev}); err != nil {
+			return nil, err
+		}
 	}
-	return json.Marshal(types.AdapterRunResult{Outcome: types.OutcomeCouldNotRun, Reason: vocab.ReasonBrokerCreditExhausted,
+	// The adapter's own reason is not the credit one: the result's reason
+	// must come from the exit map.
+	return json.Marshal(types.AdapterRunResult{Outcome: types.OutcomeCouldNotRun, Reason: vocab.ReasonProviderUnavailable,
 		Detail: "the fake provider: credit_exhausted"})
 }

@@ -18,7 +18,7 @@
     "outcome": {"$ref": "../common/defs.json#/$defs/Outcome"},
     "reason": {"$ref": "../common/defs.json#/$defs/ReasonCode"},
     "detail": {"description": "Non-empty for every outcome but empty (02 \"Outcome\").", "type": "string", "maxLength": 4096},
-    "completed": {"description": "Whether execution observably completed: the executor reached a terminal result the controller accepted (05). An incomplete result is could_not_run, never empty (13 \"Facts, not claims\").", "type": "boolean"}
+    "completed": {"description": "Whether execution observably completed: the executor reached a terminal result the controller accepted (05) and reported it found or empty. A reported could_not_run or failed is not completion, nor is a refused or missing result or a lost attempt. An incomplete result is could_not_run, never empty (13 \"Facts, not claims\").", "type": "boolean"}
   },
   "allOf": [
     {"if": {"required": ["outcome"], "properties": {"outcome": {"not": {"const": "empty"}}}}, "then": {"properties": {"detail": {"minLength": 1}}}},
