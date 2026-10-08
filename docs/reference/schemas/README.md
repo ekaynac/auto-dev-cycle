@@ -58,6 +58,8 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/manifest-delivery.json`](records-manifest-delivery.md) | ManifestDelivery |
 | [`records/manifest-finalized.json`](records-manifest-finalized.md) | ManifestFinalized |
 | [`records/manifest-intent.json`](records-manifest-intent.md) | ManifestIntent |
+| [`records/node-hold.json`](records-node-hold.md) | NodeHold |
+| [`records/node-state.json`](records-node-state.md) | NodeState |
 | [`records/node.json`](records-node.md) | Node |
 | [`records/note.json`](records-note.md) | Note |
 | [`records/owed-input.json`](records-owed-input.md) | OwedInput |
@@ -65,6 +67,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/receipt.json`](records-receipt.md) | Receipt |
 | [`records/ref.json`](records-ref.md) | Ref |
 | [`records/resource-group.json`](records-resource-group.md) | ResourceGroup |
+| [`records/result.json`](records-result.md) | Result |
 | [`records/seat-event.json`](records-seat-event.md) | SeatEvent |
 | [`records/token-recovered.json`](records-token-recovered.md) | TokenRecovered |
 | [`records/token.json`](records-token.md) | Token |

@@ -1509,6 +1509,9 @@ components:
         ResultID:
           $ref: '#/$defs/TypeID'
           pattern: ^res_
+        HoldID:
+          $ref: '#/$defs/TypeID'
+          pattern: ^hld_
         CommandID:
           $ref: '#/$defs/TypeID'
           pattern: ^cmd_

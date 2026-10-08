@@ -252,6 +252,13 @@ export type ResultID = string;
  * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
  *
  * This interface was referenced by `CommonDefinitions`'s JSON-Schema
+ * via the `definition` "HoldID".
+ */
+export type HoldID = string;
+/**
+ * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+ *
+ * This interface was referenced by `CommonDefinitions`'s JSON-Schema
  * via the `definition` "CommandID".
  */
 export type CommandID = string;

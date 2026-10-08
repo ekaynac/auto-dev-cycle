@@ -71,6 +71,7 @@
     "MeasurementID": {"$ref": "#/$defs/TypeID", "pattern": "^msr_"},
     "NodeID": {"$ref": "#/$defs/TypeID", "pattern": "^nod_"},
     "ResultID": {"$ref": "#/$defs/TypeID", "pattern": "^res_"},
+    "HoldID": {"$ref": "#/$defs/TypeID", "pattern": "^hld_"},
     "CommandID": {"$ref": "#/$defs/TypeID", "pattern": "^cmd_"},
     "TokenID": {"$ref": "#/$defs/TypeID", "pattern": "^tok_"},
     "NoteID": {"$ref": "#/$defs/TypeID", "pattern": "^not_"},

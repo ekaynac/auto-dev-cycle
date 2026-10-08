@@ -160,6 +160,10 @@ Type: [TypeID](#typeid) (pattern `^nod_`)
 
 Type: [TypeID](#typeid) (pattern `^res_`)
 
+### HoldID
+
+Type: [TypeID](#typeid) (pattern `^hld_`)
+
 ### CommandID
 
 Type: [TypeID](#typeid) (pattern `^cmd_`)

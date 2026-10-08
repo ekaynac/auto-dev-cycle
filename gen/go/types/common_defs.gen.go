@@ -144,6 +144,8 @@ type NodeID = TypeID
 
 type ResultID = TypeID
 
+type HoldID = TypeID
+
 type CommandID = TypeID
 
 type TokenID = TypeID
