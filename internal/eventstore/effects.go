@@ -11,6 +11,7 @@ import (
 	"slices"
 	"unicode/utf8"
 
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 )
 
@@ -37,7 +38,13 @@ const (
 // never blindly retried. A kind that reconciles from its request (12
 // remote_process) keeps it: its request_digest references a blob, which the
 // caller publishes, in its RFC 8785 form, before it intends the effect.
-type EffectKind struct{ Idempotent, RequestBlob bool }
+// A kind with a RequestSchema has its request validated against it, and a
+// Check refuses what the schema cannot (the request against the target).
+type EffectKind struct {
+	Idempotent, RequestBlob bool
+	RequestSchema           string
+	Check                   func(target string, request json.RawMessage) error
+}
 
 // EffectKinds are the effect kinds the controller may intend, by name.
 type EffectKinds map[string]EffectKind
@@ -91,6 +98,16 @@ func (t *Tx) IntendEffect(id, kind, target string, request json.RawMessage) erro
 	d, err := digest(request)
 	if err != nil {
 		return fmt.Errorf("eventstore: effect %s request: %w", id, err)
+	}
+	if ek.RequestSchema != "" {
+		if err := contract.Validate(ek.RequestSchema, request); err != nil {
+			return fmt.Errorf("eventstore: effect %s request: %w", id, err)
+		}
+	}
+	if ek.Check != nil {
+		if err := ek.Check(target, request); err != nil {
+			return fmt.Errorf("eventstore: effect %s request: %w", id, err)
+		}
 	}
 	if ek.RequestBlob {
 		if kept, err := t.store.blobs.Has(d); err != nil || !kept {

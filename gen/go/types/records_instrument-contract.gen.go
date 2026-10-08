@@ -39,6 +39,8 @@ type InstrumentContract struct {
 	// Environment checks before each run (12); a failure is a precondition_failed hold, not a spent attempt.
 	Preconditions []Name `json:"preconditions"`
 	// Blob digest of the JSON Schema for typed predicate fields (rule 7); null means the instrument's predicates carry no payload.
-	PayloadSchema   *Digest                                           `json:"payload_schema"`
-	ArtifactClasses map[string]InstrumentContractArtifactClassesValue `json:"artifact_classes"`
+	PayloadSchema *Digest `json:"payload_schema"`
+	// The procedure that puts the instrument's target back after a run (12 "Node parameters", 05 "Evidence-target leases"); null: the instrument leaves nothing to put back. An evidence node's restore must be exactly this: required with this procedure, or not required when it is null (internal/evidence CheckRestore).
+	RestoreProcedure *Name                                             `json:"restore_procedure"`
+	ArtifactClasses  map[string]InstrumentContractArtifactClassesValue `json:"artifact_classes"`
 }

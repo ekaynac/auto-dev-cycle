@@ -35,7 +35,7 @@ var receipts = map[string]string{
 
 const instrument = `{"name":"go-test","version":"1.0.0","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","subject_type":"tree",` +
 	`"required_predicates":[{"name":"tests","evidence_required":["application/junit+xml"]}],"optional_predicates":[],` +
-	`"preconditions":["toolchain_present"],"payload_schema":null,"artifact_classes":{"junit":"diagnostic"}}`
+	`"preconditions":["toolchain_present"],"payload_schema":null,"restore_procedure":null,"artifact_classes":{"junit":"diagnostic"}}`
 
 func TestReceiptsRoundTripThroughTheContract(t *testing.T) {
 	for name, doc := range receipts {

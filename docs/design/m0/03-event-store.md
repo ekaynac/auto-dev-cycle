@@ -120,7 +120,9 @@ planned ──[effect.intent committed]──▶ pending ──[effect.observed{
 - **Kept requests.** A kind that reconciles from its request declares `RequestBlob`. The caller publishes the
   request's RFC 8785 form as a blob before the intent, and the intent's `request_digest` references it; the store
   refuses the intent while the blob is absent. The blob is retained while its effect is pending or uncertain and
-  until the target's lease settles; retention never purges it before then.
+  until the target's lease settles; retention never purges it before then. A kind may declare a `RequestSchema`,
+  which the request must satisfy, and a `Check` for what the schema cannot say (remote_process: the request's target
+  is the intent's).
 - **Retry versus reconcile.** An effect kind declares whether it is idempotent at the target (safe to retry with the
   same effect id) or must be reconciled first. Non-idempotent effects are never blindly retried. A command result
   returned on an idempotent retry includes its effects' current states, so unfinished work is visible, not lost.

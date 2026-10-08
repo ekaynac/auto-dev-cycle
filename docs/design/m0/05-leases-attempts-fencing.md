@@ -116,6 +116,8 @@ For a lease that holds an `evidence_target` group, settlement carries a **restor
   by fencing. Publishing an already-accepted draft is a controller act, not a late submission.
 - **Restart:** a lease found in `active`, `settling`, `restoring` or `restore_failed` stays in that state, and the
   target stays excluded. The recovery owner is `internal/evidence`, which resumes restore as an effect (03).
+- **Run id.** An evidence run is an attempt (D40). Its run id, the name a receipt gives it (06 `demand.run`), is the
+  attempt's TypeID under the `run_` prefix (`evidence.RunOf`), so the pair needs no record of its own.
 
 - **A refused grant leaves the lease `requested`.** When a group cannot hold its reservation, the grant is refused
   with `could_not_run/capacity_reserved_full` and nothing is reserved; the M2 scheduler then moves the lease to

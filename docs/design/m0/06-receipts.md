@@ -21,6 +21,7 @@ InstrumentContract:
   preconditions: [name]             # environment checks before each run (12); failure = precondition_failed hold, not a spent attempt
   payload_schema: sha256:…|null     # blob digest of the JSON Schema for typed predicate fields (rule 7); null: predicates carry no payload
   artifact_classes: {name: diagnostic|restricted}
+  restore_procedure: name|null      # how the target is put back after a run (12); an evidence node's restore must match it
 ```
 
 ## Envelope

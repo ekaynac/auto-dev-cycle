@@ -214,7 +214,7 @@ func TestOpenNeedsTheLockAndABlobChecker(t *testing.T) {
 func typedPayload(digest string) []byte {
 	return []byte(`{"name":"go-test","version":"1","digest":"sha256:` + strings.Repeat("a", 64) + `","subject_type":"tree",` +
 		`"required_predicates":[{"name":"tests","evidence_required":[]}],"optional_predicates":[],"preconditions":[],` +
-		`"payload_schema":"` + digest + `","artifact_classes":{}}`)
+		`"payload_schema":"` + digest + `","artifact_classes":{},"restore_procedure":null}`)
 }
 
 // Astra #25: a state path with URI syntax opens its own database, and the

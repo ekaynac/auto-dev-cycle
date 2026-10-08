@@ -55,6 +55,10 @@ export interface InstrumentContract {
    * Blob digest of the JSON Schema for typed predicate fields (rule 7); null means the instrument's predicates carry no payload.
    */
   payload_schema: null | string;
+  /**
+   * The procedure that puts the instrument's target back after a run (12 "Node parameters", 05 "Evidence-target leases"); null: the instrument leaves nothing to put back. An evidence node's restore must be exactly this: required with this procedure, or not required when it is null (internal/evidence CheckRestore).
+   */
+  restore_procedure: null | string;
   artifact_classes: {
     [k: string]: "diagnostic" | "restricted";
   };
