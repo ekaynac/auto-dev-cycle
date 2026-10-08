@@ -47,10 +47,19 @@ var _ peer = client.Transport{}
 type system struct {
 	uid  func() int
 	home func(uid int) (string, error)
-	// open opens path read-only, without following a symlink, and closes
-	// it at once: nothing is read.
+	// open checks path's type with lstat (a directory when dir, else a
+	// regular file: never a symlink, FIFO or device), then opens it
+	// read-only and closes it at once: nothing is read.
 	open func(path string, dir bool) error
 }
+
+// wrongType: the path is not of the type probed, so it was not opened.
+type wrongType string
+
+func (w wrongType) Error() string { return "is " + string(w) }
+
+var typeNames = map[uint32]wrongType{unix.S_IFLNK: "a symlink", unix.S_IFIFO: "a FIFO", unix.S_IFSOCK: "a socket",
+	unix.S_IFCHR: "a device", unix.S_IFBLK: "a device", unix.S_IFDIR: "a directory", unix.S_IFREG: "a regular file"}
 
 func hostSystem() system {
 	return system{
@@ -63,9 +72,16 @@ func hostSystem() system {
 			return u.HomeDir, nil
 		},
 		open: func(path string, dir bool) error {
-			flags := unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_NONBLOCK | unix.O_NOCTTY | unix.O_CLOEXEC
+			var st unix.Stat_t
+			if err := unix.Lstat(path, &st); err != nil {
+				return err
+			}
+			want, flags := uint32(unix.S_IFREG), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC
 			if dir {
-				flags |= unix.O_DIRECTORY
+				want, flags = unix.S_IFDIR, flags|unix.O_DIRECTORY
+			}
+			if t := st.Mode & unix.S_IFMT; t != want {
+				return typeNames[t]
 			}
 			fd, err := unix.Open(path, flags, 0)
 			if err != nil {
@@ -111,7 +127,8 @@ func doctor(ctx context.Context, args []string, stdout, stderr io.Writer, c Clie
 		return failed(stderr, name, err)
 	}
 	var who types.Whoami
-	if err := json.Unmarshal(raw, &who); err != nil || (who.Kind != types.WhoamiKindOperator && who.Kind != types.WhoamiKindSupervisor) {
+	if err := json.Unmarshal(raw, &who); err != nil || who.Actor == "" ||
+		(who.Kind != types.WhoamiKindOperator && who.Kind != types.WhoamiKindSupervisor) {
 		say(stderr, "%s: could_not_run: the controller's whoami is not valid\n", name)
 		return entry.ExitCouldNotRun
 	}
@@ -144,7 +161,7 @@ func examine(rep doctorReport, c Client, sys system, stateDir string) doctorRepo
 	}
 	switch {
 	case !seen:
-		add(&rep.Unseen, checkDaemonUID, "this transport shows no peer credentials, so the daemon's uid and its operator token file are unknown")
+		add(&rep.Unseen, checkDaemonUID, "this transport shows no peer credentials, so the daemon's uid is unknown")
 	case daemon == uid:
 		add(&rep.Warnings, checkDaemonUID, "this supervisor token is used as the daemon's uid "+strconv.Itoa(uid)+", which can read the operator token and the controller's state")
 	default:
@@ -153,30 +170,49 @@ func examine(rep doctorReport, c Client, sys system, stateDir string) doctorRepo
 	if stateDir == "" {
 		add(&rep.Unseen, checkStateDir, "no --state-dir given: the daemon exposes no path, so the state directory was not checked")
 	} else {
-		reach(&rep, checkStateDir, "the state directory "+stateDir, sys.open(stateDir, true))
+		// A refusal passes only because adcd starts on nothing but a 0700
+		// directory of its own (internal/daemon/startup.go:31), so this
+		// user cannot hold search alone on it.
+		reach(&rep, checkStateDir, "the state directory "+stateDir, "adcd refuses symlinked or non-directory state",
+			" (adcd keeps it 0700)", "the supplied state directory "+stateDir+" does not exist", sys.open(stateDir, true))
 	}
+	home, err := "", error(nil)
 	if seen {
-		if home, err := sys.home(daemon); err != nil || home == "" {
-			add(&rep.Unseen, checkOperatorToken, "the daemon uid "+strconv.Itoa(daemon)+" has no home directory this user can look up, so its operator token file was not checked")
-		} else {
-			reach(&rep, checkOperatorToken, "the operator token file "+filepath.Join(home, ".config", "adc", "token"),
-				sys.open(filepath.Join(home, ".config", "adc", "token"), false))
+		home, err = sys.home(daemon)
+	}
+	notSeen := "; a token kept elsewhere, or under a HOME other than the daemon user's passwd home, is not seen"
+	switch {
+	case !seen:
+		add(&rep.Unseen, checkOperatorToken, "the daemon's uid is unknown over this transport, so its token file was not checked")
+	case err != nil || !filepath.IsAbs(home):
+		add(&rep.Unseen, checkOperatorToken, "the daemon uid "+strconv.Itoa(daemon)+" has no passwd home this user can look up, so its token file was not checked"+notSeen)
+	default:
+		path := filepath.Join(home, ".config", "adc", "token")
+		what := "the daemon user's token file " + path + ", where the operator token the private socket accepts is kept"
+		if daemon == uid {
+			what = "its own token file " + path + " (this uid is the daemon's)"
 		}
+		reach(&rep, checkOperatorToken, what, "the CLI refuses a token that is not a regular file", "",
+			"no token file at "+path+notSeen, sys.open(path, false))
 	}
 	add(&rep.Unseen, checkElsewhere, "an operator token held anywhere else, which this user may still be able to read")
 	return rep
 }
 
-// reach records what opening what returned: opened is a warning, a
-// permission refusal or no such file passes, and anything else is unseen.
-func reach(rep *doctorReport, check, what string, err error) {
+// reach records what probing what returned: opened is a warning; a
+// permission refusal passes (with why it can); a missing path, a wrong
+// type or any other error is unseen, never a pass.
+func reach(rep *doctorReport, check, what, refuses, why, missing string, err error) {
+	var wt wrongType
 	switch {
 	case err == nil:
 		rep.Warnings = append(rep.Warnings, finding{check, "this user can open " + what})
 	case errors.Is(err, unix.EACCES), errors.Is(err, unix.EPERM):
-		rep.Passed = append(rep.Passed, finding{check, "this user cannot open " + what})
+		rep.Passed = append(rep.Passed, finding{check, "this user cannot open " + what + why})
 	case errors.Is(err, unix.ENOENT):
-		rep.Passed = append(rep.Passed, finding{check, "there is no " + what})
+		rep.Unseen = append(rep.Unseen, finding{check, missing})
+	case errors.As(err, &wt):
+		rep.Unseen = append(rep.Unseen, finding{check, what + " " + wt.Error() + "; " + refuses + ", so it was not opened"})
 	default:
 		rep.Unseen = append(rep.Unseen, finding{check, what + " could not be checked: " + err.Error()})
 	}

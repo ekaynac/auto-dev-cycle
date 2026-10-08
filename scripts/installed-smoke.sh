@@ -200,8 +200,10 @@ if [[ $code != 200 ]] || ! grep -q "\"$sup\"" "$out/whoami.out"; then die "the s
 step "adc doctor warns a supervisor run as the daemon uid, and not an operator (04 D31)"
 adc_as /tmp/sup doctor doctor --state-dir /tmp/state --json
 want 0 doctor
-grep -q '"warnings":\[{"check":"daemon_uid","detail":"[^"]*"},{"check":"state_dir","detail":"this user can open' "$out/doctor.out" ||
-  die "adc doctor gave a supervisor as the daemon uid no daemon_uid and state_dir warnings: $(head -c 400 "$out/doctor.out")"
+f='{"check":"%s","detail":"[^"]*"}'
+# shellcheck disable=SC2059
+grep -q "\"warnings\":\[$(printf "$f,$f" daemon_uid state_dir)\],\"passed\":\[\],\"unseen\":\[$(printf "$f,$f" operator_token operator_token_elsewhere)\]" "$out/doctor.out" ||
+  die "adc doctor as the daemon uid: not exactly the daemon_uid and state_dir warnings and an unseen operator token: $(head -c 600 "$out/doctor.out")"
 adc_as /tmp/op doctor-op doctor --json
 want 0 doctor-op
 grep -q '"kind":"operator","listener":"private_socket","warnings":\[\],"passed":\[\],"unseen":\[\]' "$out/doctor-op.out" ||
