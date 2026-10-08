@@ -5,6 +5,7 @@ package owedanswers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -15,11 +16,12 @@ import (
 )
 
 const (
-	owed = types.OwedInputID("own_01m3250vz2ezn81cgvbkcn17jd")
-	apr  = types.ApprovalID("apr_01m3250vz2ezn81cgvbkcn17jd")
-	act  = types.ActorID("act_01m3250vz2ezn81cgvbkcn17jd")
-	prj  = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sf9")
-	prjB = types.ProjectID("prj_01m3250vm7f6ktw39dszqnyddr")
+	owed  = types.OwedInputID("own_01m3250vz2ezn81cgvbkcn17jd")
+	owedB = types.OwedInputID("own_01m3250vnfeyrv67x6w0ddqr6a")
+	apr   = types.ApprovalID("apr_01m3250vz2ezn81cgvbkcn17jd")
+	act   = types.ActorID("act_01m3250vz2ezn81cgvbkcn17jd")
+	prj   = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sf9")
+	prjB  = types.ProjectID("prj_01m3250vm7f6ktw39dszqnyddr")
 )
 
 // An answer is read through the transaction: granted, then revoked, only
@@ -41,7 +43,7 @@ func TestAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close(); lock.Release() })
-	record := func(a Answer) {
+	record := func(a Answer) error {
 		t.Helper()
 		cmd, err := ids.New("cmd")
 		if err != nil {
@@ -51,9 +53,7 @@ func TestAuthority(t *testing.T) {
 			evs, err := Record(a)
 			return evs, json.RawMessage(`{}`), err
 		}))
-		if err != nil {
-			t.Fatal(err)
-		}
+		return err
 	}
 	node := func(project types.ProjectID) types.NodeRecorded {
 		return types.NodeRecorded{Project: project, Node: types.Node{Inputs: []types.InputSpec{{Name: "ruling",
@@ -70,12 +70,31 @@ func TestAuthority(t *testing.T) {
 		return ok
 	}
 	approval := apr
-	record(Answer{Owed: owed, Project: prj, Owner: act, Revision: 1, Approval: &approval})
+	asker := types.NodeID("nod_01m3250vz2ezn81cgvbkcn17jd")
+	if err := record(Answer{Owed: owed, Project: prj, Asker: asker, Owner: act, Revision: 1, Approval: &approval}); err != nil {
+		t.Fatal(err)
+	}
 	if !answered(node(prj), 1) || answered(node(prj), 2) || answered(node(prjB), 1) || answered(types.NodeRecorded{Project: prj}, 1) {
 		t.Fatal("the grant")
 	}
-	record(Answer{Owed: owed, Project: prj, Owner: act, Revision: 1})
-	if answered(node(prj), 1) {
-		t.Fatal("the revocation")
+	// What a node owes, and an approval's artifact, stay in their project.
+	if err := s.View(context.Background(), func(tx *eventstore.Tx) error {
+		mine, err := Authority{}.Owed(tx, types.NodeRecorded{Project: prj, Node: types.Node{ID: asker}})
+		theirs, terr := Authority{}.Owed(tx, types.NodeRecorded{Project: prjB, Node: types.Node{ID: asker}})
+		_, here := Authority{}.Approval(tx, node(prj), owed, 1, apr)
+		_, there := Authority{}.Approval(tx, node(prjB), owed, 1, apr)
+		_, stale := Authority{}.Approval(tx, node(prj), owed, 2, apr)
+		if err = errors.Join(err, terr, here); err == nil && (len(mine) != 1 || len(theirs) != 0 || there == nil || stale == nil) {
+			t.Errorf("isolation: %v %v %v %v", mine, theirs, there, stale)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := record(Answer{Owed: owedB, Project: prj, Owner: act, Revision: 1, Approval: &approval}); err == nil {
+		t.Fatal("one approval answered two owed inputs")
+	}
+	if err := record(Answer{Owed: owed, Project: prj, Owner: act, Revision: 1}); err != nil || answered(node(prj), 1) {
+		t.Fatalf("the revocation: %v", err)
 	}
 }

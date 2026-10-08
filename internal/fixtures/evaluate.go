@@ -72,18 +72,22 @@ func revokedApprovalBlocksCommit(ctx context.Context, dir string) (steps []Step,
 	}
 	defer func() { err = errors.Join(err, closeFn()) }()
 	const owed, approval = types.OwedInputID("own_01m3250vz2ezn81cgvbkcn17jd"), types.ApprovalID("apr_01m3250vz2ezn81cgvbkcn17jd")
-	review, err := g.record(types.NodeKindReview, json.RawMessage(`{}`), []types.InputSpec{{Name: "ruling",
-		Source: types.InputSpecSource{Variant: &types.AnswerSource{Type: "answer", OwedInput: owed, Revision: 1}}}})
-	if err != nil {
-		return nil, nil, err
-	}
+	// Round 1 asks for the ruling; its round 2 successor declares the answer.
+	asker, err := g.record(types.NodeKindReview, json.RawMessage(`{}`), on("plan", g.plan, types.ResultKindPlan))
 	answer := func(approval *types.ApprovalID) error {
 		return g.do(func(*eventstore.Tx) ([]eventstore.Event, error) {
-			return owedanswers.Record(owedanswers.Answer{Owed: owed, Project: gProject, Owner: types.ActorID(g.actor), Revision: 1, Approval: approval})
+			return owedanswers.Record(owedanswers.Answer{Owed: owed, Project: gProject, Asker: asker, Owner: types.ActorID(g.actor), Revision: 1, Approval: approval})
 		})
 	}
 	env := g.env(treeA, demandA)
-	if err := answer(nil); err != nil {
+	if err == nil {
+		err = answer(nil)
+	}
+	var review types.NodeID
+	if err == nil {
+		review, err = g.successorOf(asker, types.InputSpec{Name: "ruling", Source: types.InputSpecSource{Variant: &types.AnswerSource{Type: "answer", OwedInput: owed, Revision: 1}}})
+	}
+	if err != nil {
 		return nil, nil, err
 	}
 	evaluate := func() error {

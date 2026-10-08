@@ -1,0 +1,10 @@
+{
+  "name": "undeclared-ruling-not-in-context",
+  "invariant": "An undeclared ruling never enters a review's controller context: the review that owes a ruling, once it is answered, still renders only its declared inputs (empty/completed_clean); a round 2 recorded with an answer to an owed input no ancestor asked for is refused by the evaluator (failed/lineage_undeclared); the successor that declares the answer its predecessor owed renders it and is re-keyed (found/review_input_changed) (13 \"Successor rounds\"; 10; 11:156).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "lineage_undeclared"},
+    {"outcome": "found", "reason": "review_input_changed"}
+  ],
+  "mutation": "graph.answer-lineage-unchecked"
+}

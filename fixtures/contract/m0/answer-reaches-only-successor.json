@@ -1,0 +1,9 @@
+{
+  "name": "answer-reaches-only-successor",
+  "invariant": "A ruling answers an owed input and re-keys the review through its successor only: the round 2 review declaring the answer has another computation key than the review that asked (found/review_input_changed), and a successor answering an owed input its predecessor did not owe is refused (failed/lineage_undeclared) (13 \"Successor rounds\"; 11:155, 156).",
+  "expected": [
+    {"outcome": "found", "reason": "review_input_changed"},
+    {"outcome": "failed", "reason": "lineage_undeclared"}
+  ],
+  "mutation": "graph.successor-takes-any-answer"
+}

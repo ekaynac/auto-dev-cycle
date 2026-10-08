@@ -22,12 +22,27 @@ const (
 	actB = "act_01m3250vnfeyrv67x6w0ddqr6a"
 )
 
-// answer sets owed's answer at revision 2 (nil: unanswered or revoked),
-// waiting on owner.
-func answer(owed types.OwedInputID, owner types.ActorID, approval *types.ApprovalID) logic {
-	return func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return owedanswers.Record(owedanswers.Answer{Owed: owed, Project: prjID, Owner: owner, Revision: 2, Approval: approval})
+// owedAnswer sets owed's recorded state at revision 2 by edit, keeping
+// what edit leaves.
+func owedAnswer(owed types.OwedInputID, edit func(*owedanswers.Answer)) logic {
+	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		a := owedanswers.Answer{Owed: owed, Project: prjID, Owner: actID, Revision: 2}
+		raw, ok, err := tx.Get(owedanswers.Projection, string(owed))
+		if err == nil && ok {
+			err = json.Unmarshal(raw, &a)
+		}
+		if err != nil {
+			return nil, err
+		}
+		edit(&a)
+		return owedanswers.Record(a)
 	}
+}
+
+// answer sets owed's answer (nil: unanswered or revoked), waiting on owner;
+// who asked for it stays.
+func answer(owed types.OwedInputID, owner types.ActorID, approval *types.ApprovalID) logic {
+	return owedAnswer(owed, func(a *owedanswers.Answer) { a.Owner, a.Approval = owner, approval })
 }
 
 // gatesOn is gateOn for gate result inputs; the others need no receipt.
@@ -52,12 +67,35 @@ func commit(n types.NodeID, r types.Result, env Env) logic {
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) { return nil, Commit(tx, n, r, env) }
 }
 
-// asking records a review, under a key of its own, with inputs.
+// asking records a review, under a key of its own, with inputs. An answer
+// is a successor's input: given answers, it records a round 1 review with
+// the other inputs that asks for each owed input, and returns its round 2
+// successor declaring the answers.
 func (g graphStore) asking(inputs ...types.InputSpec) types.NodeID {
 	ask := g.newNode(types.NodeKindReview)
 	ask.Node.Params = json.RawMessage(`{"node":"` + string(ask.Node.ID) + `"}`)
-	ask.Node.Inputs = inputs
-	return g.record(ask)
+	ask.Node.Inputs = []types.InputSpec{}
+	var answers []types.InputSpec
+	for _, in := range inputs {
+		if a, ok := in.Source.Variant.(*types.AnswerSource); ok {
+			answers = append(answers, in)
+			g.must(owedAnswer(a.OwedInput, func(*owedanswers.Answer) {})) // recorded, if it was not
+		} else {
+			ask.Node.Inputs = append(ask.Node.Inputs, in)
+		}
+	}
+	n := g.record(ask)
+	if len(answers) == 0 {
+		return n
+	}
+	for _, in := range answers {
+		g.must(owedAnswer(in.Source.Variant.(*types.AnswerSource).OwedInput, func(a *owedanswers.Answer) { a.Asker = n }))
+	}
+	next, err := g.successor(n, answers...)
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	return next
 }
 
 func owes(name string, owed types.OwedInputID) types.InputSpec {
@@ -184,9 +222,10 @@ func TestEvaluateAwaitsAnswers(t *testing.T) {
 func TestCommitRevalidates(t *testing.T) {
 	g := openStore(t)
 	g.must(answer(ownID, actID, ptr(types.ApprovalID(aprA))))
+	g.must(answer(ownB, actID, ptr(types.ApprovalID(aprB))))
 	gate, _ := g.gated(g.receiptBlob(treeSubject(treeA, demandA), nil))
 	both := g.asking(takes("gate", gate), owes("ruling", ownID))
-	asked := g.asking(owes("ruling", ownID))
+	asked := g.asking(owes("ruling", ownB))
 	env := g.env(gatesOn(treeA, demandA))
 	g.must(evaluate(env, both, asked))
 	var stale ErrRevalidated
@@ -197,8 +236,8 @@ func TestCommitRevalidates(t *testing.T) {
 		input  types.Name
 		reason vocab.Reason
 	}{
-		"a revoked answer":     {asked, answer(ownID, actID, nil), env, "ruling", vocab.ReasonAuthorityRevoked},
-		"another approval":     {asked, answer(ownID, actID, ptr(types.ApprovalID(aprB))), env, "ruling", vocab.ReasonAuthorityRevoked},
+		"a revoked answer":     {asked, answer(ownB, actID, nil), env, "ruling", vocab.ReasonAuthorityRevoked},
+		"another approval":     {asked, answer(ownB, actID, ptr(types.ApprovalID(aprC))), env, "ruling", vocab.ReasonAuthorityRevoked},
 		"another demand":       {both, answer(ownID, actID, ptr(types.ApprovalID(aprA))), g.env(gatesOn(treeA, demandB)), "gate", vocab.ReasonEvidenceInapplicable},
 		"two inputs that fail": {both, answer(ownID, actID, nil), g.env(gatesOn(treeA, demandB)), "gate", vocab.ReasonEvidenceInapplicable},
 	} {
@@ -209,7 +248,7 @@ func TestCommitRevalidates(t *testing.T) {
 			}
 		}
 	}
-	g.must(answer(ownID, actID, ptr(types.ApprovalID(aprA))))
+	g.must(answer(ownB, actID, ptr(types.ApprovalID(aprB))))
 	failed := g.reviewResult(asked)
 	failed.Outcome, failed.Reason, failed.Detail, failed.Completed = types.OutcomeCouldNotRun, vocab.ReasonReceiptIncomplete, "no receipt", false
 	if err := g.do(commit(asked, failed, env)); err != nil || g.state(asked).State != types.NodeStateStateClaimed {
@@ -299,7 +338,7 @@ func TestEvaluateRenews(t *testing.T) {
 }
 
 // failingAuthority cannot answer, though it names the owner.
-type failingAuthority struct{}
+type failingAuthority struct{ owedanswers.Authority }
 
 func (failingAuthority) Answer(*eventstore.Tx, types.NodeRecorded, types.OwedInputID, int64) (types.ApprovalID, bool, error) {
 	return "", false, errors.New("the authority is unavailable")

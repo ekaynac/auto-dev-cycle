@@ -62,6 +62,13 @@ type Authority interface {
 	Answer(tx *eventstore.Tx, rec types.NodeRecorded, owed types.OwedInputID, revision int64) (types.ApprovalID, bool, error)
 	// Owner is the actor owed waits on: the grant holder of its hold.
 	Owner(tx *eventstore.Tx, rec types.NodeRecorded, owed types.OwedInputID) (types.ActorID, error)
+	// Owed are the owed inputs rec's node asked for (their requested_by), at
+	// their current revisions, each as the answer source a successor
+	// declares for it.
+	Owed(tx *eventstore.Tx, rec types.NodeRecorded) ([]types.AnswerSource, error)
+	// Approval is the sealed Ref to approval's answer artifact (04), which
+	// must answer owed at revision in rec's project.
+	Approval(tx *eventstore.Tx, rec types.NodeRecorded, owed types.OwedInputID, revision int64, approval types.ApprovalID) (types.Ref, error)
 }
 
 // Env is what evaluation reads besides the store: the consuming kinds'
@@ -90,11 +97,20 @@ func awaitSignal(ask *types.AnswerSource) string {
 	return fmt.Sprintf("%s@%d", ask.OwedInput, ask.Revision)
 }
 
-// answers are rec's answer inputs the authority answers now.
+// answers are rec's answer inputs the authority answers now. Each must
+// answer an owed input rec's lineage asked for, at its current revision
+// (ErrNotOwed), whether rec declared it or inherited it.
 func answers(tx *eventstore.Tx, rec nodeRecord, auth Authority) (map[string]Resolved, error) {
 	out := map[string]Resolved{}
+	owed, err := lineageOwed(tx, rec.Recorded.Predecessor, auth)
+	if err != nil {
+		return nil, err
+	}
 	for _, in := range rec.Recorded.Node.Inputs {
 		if ask, ok := in.Source.Variant.(*types.AnswerSource); ok {
+			if !owedIn(owed, ask) && !mutation.Is(mutation.AnswerLineageUnchecked) {
+				return nil, ErrNotOwed{ask.OwedInput}
+			}
 			apr, answered, err := auth.Answer(tx, rec.Recorded, ask.OwedInput, ask.Revision)
 			if err != nil {
 				return nil, err

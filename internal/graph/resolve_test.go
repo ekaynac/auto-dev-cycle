@@ -92,7 +92,9 @@ func (g graphStore) derived(doc map[string]any) types.Digest {
 	if err == nil {
 		err = json.Unmarshal(b, &r)
 	}
-	d, derr := receipt.Derive(goTest, r, g.blobs)
+	contract := goTest // at the doc's instrument version
+	contract.Version = r.Instrument.Version
+	d, derr := receipt.Derive(contract, r, g.blobs)
 	concl, _, cerr := receipt.Conclusions(r)
 	if err = errors.Join(err, derr, cerr); err != nil {
 		g.t.Fatal(err)
@@ -318,9 +320,7 @@ func (g graphStore) gatedOnly(d types.Digest) types.NodeID {
 // G4b checks the approval again at commit.
 func TestResolveAnswers(t *testing.T) {
 	g := openStore(t)
-	ask := g.newNode(types.NodeKindReview)
-	ask.Node.Inputs = []types.InputSpec{{Name: "ruling", Source: types.InputSpecSource{Variant: &types.AnswerSource{Type: "answer", OwedInput: ownID, Revision: 2}}}}
-	asking := g.record(ask)
+	asking := g.asking(owes("ruling", ownID))
 	if res, miss, err := g.resolveWith(asking, map[string]Resolved{"ruling": {Approval: aprA, Revision: 2}}, noRequirement); err != nil || res["ruling"].Approval != aprA || len(miss) != 0 {
 		t.Errorf("the answer: %v %+v %v", res, miss, err)
 	}
