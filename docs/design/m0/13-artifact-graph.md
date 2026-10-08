@@ -94,10 +94,13 @@ Result:                            # what was computed: immutable  [G1]
     - A review (or review-requirement) node is recorded and claimed only against the registry: each time, the
       controller refuses a roster whose families are not the ones the registry now derives. An executor the registry
       does not hold has an unknown family, and is never a member (06 rule 3: unknown is not independent). The claim
-      refuses with `could_not_run`/`reviewer_not_independent`.
+      refuses with `reviewer_not_independent`; the evaluator then holds that node on `reviewer_unavailable` (signal:
+      the registry's probe) and goes on with its other goals.
     - The roster is sorted by executor, names each executor once, and has at least one member. The graph fold reads no
-      registry: it checks only this shape and that no family is `unknown`. **Independence is enforced when the node
-      is claimed**, so a node recorded by a raw event, or with a family the registry no longer gives, never runs.
+      registry: it checks only this shape and that no family is `unknown`. **Independence is enforced by the claim
+      command** (ClaimReview), so a node recorded by a raw event, or with a family the registry no longer gives, is
+      never claimed through it. A raw `node.claimed` event is outside this guarantee, as the fold reads no registry:
+      M1's lease and dispatch step re-checks the registry before an attempt starts.
     - A successor carries its predecessor's params, roster included, and is not re-checked when recorded: it relies
       on the claim-time check.
   - **Placement is bound to it** (05). A review member's lease must place on exactly the pinned executor. A fallback
@@ -140,9 +143,9 @@ Result:                            # what was computed: immutable  [G1]
         a removed member's executor), with the reason recorded.
       - Resource and settlement obligations stay on their owning leases. Internal artifact waits stay structural.
   - **Nothing reuses a review across rosters.** A review need not run because a prior review ran on a result that the
-    same producer's new result is equivalent to only if both declare the same inputs, and the review's key computed
-    from the prior's claimed resolutions, at its generation, is the prior's claimed key: the same kind, definition
-    version, params (so the same roster) and every other input. Carry-over in a merge-queue generation binds the
+    same producer's new result is equivalent to only if both declare the same inputs, and the review's key, with its
+    other inputs resolved now as a claim would and that input at the prior's result, is the prior's claimed key at
+    its generation: the same kind, definition version, params (so the same roster) and every other input. Carry-over in a merge-queue generation binds the
     requirement revision it was attested under, and the merge's commit-time re-validation (G7b-2) compares it with
     the currently selected revision.
 - **Reuse decisions use typed conclusions.** For the declared edges below, a consumer may treat a new result as

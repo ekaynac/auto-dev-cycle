@@ -10,13 +10,15 @@ package graph
 //     sorted by executor, each once: both are in the key.
 //   - Families come from the registry, never a caller: RecordReview and
 //     ClaimReview both refuse a roster the registry does not derive now
-//     (ErrNotIndependent). The fold reads no registry and checks only the
-//     roster's shape; independence is enforced at claim.
+//     (ErrNotIndependent); the evaluator holds such a node on
+//     reviewer_unavailable and goes on. The fold reads no registry and
+//     checks only the roster's shape: a raw node.claimed is outside the
+//     guarantee, and M1's dispatch re-checks the registry.
 //   - A review_requirement node has no inputs; its result's conclusions are
 //     its params. A review's optional requirement input binds its subject,
 //     roster and definition version (mandatory in G7b-2).
-//   - ReviewReusable reuses only when the review's key, from the prior's
-//     claimed resolutions, is the prior's key, with the same inputs.
+//   - ReviewReusable reuses only when the review's key, its other inputs
+//     resolved now, is the prior's claimed key, with the same inputs.
 
 import (
 	"encoding/json"
@@ -48,7 +50,8 @@ func (e ErrNotIndependent) Error() string {
 	return "graph: executor " + string(e.Executor) + " has no registered model family of its roster"
 }
 
-// Reason is the refusal's reason code.
+// Reason is the refusal's reason code; the evaluator holds the node on
+// reviewer_unavailable instead of claiming it.
 func (ErrNotIndependent) Reason() vocab.Reason { return vocab.ReasonReviewerNotIndependent }
 
 // Roster is the roster of executors, sorted, each with the family the
@@ -214,11 +217,12 @@ func bindsRequirement(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Res
 }
 
 // ReviewReusable reports whether review need not run: prior declares the
-// same inputs, ran on used for input name, and review's key from prior's
-// claimed resolutions is prior's claimed key, so only name's result may
-// differ; and fresh, name's producer's selected result now, is Equivalent
-// to used for prior.
-func ReviewReusable(tx *eventstore.Tx, prior, review types.NodeID, name types.Name, used, fresh types.ResultID, blobs receipt.Blobs) (bool, error) {
+// same inputs and ran on used for input name; review's other inputs,
+// resolved now as a claim would (each producer's selected result, each
+// answer through auth), with name at used, key to prior's claimed key at
+// its generation; and fresh, name's producer's selected result now, is
+// Equivalent to used for prior.
+func ReviewReusable(tx *eventstore.Tx, prior, review types.NodeID, name types.Name, used, fresh types.ResultID, blobs receipt.Blobs, auth Authority) (bool, error) {
 	was, err := loadNode(tx, prior)
 	rec, rerr := loadNode(tx, review)
 	c, claimed, cerr := load[claim](tx, ClaimProjection, string(prior))
@@ -232,7 +236,26 @@ func ReviewReusable(tx *eventstore.Tx, prior, review types.NodeID, name types.Na
 	if mutation.Is(mutation.EquivalenceIgnoresRoster) {
 		n.Params = was.Recorded.Node.Params
 	}
-	resolved := resolutions(c.Inputs)
+	resolved, stale, err := answers(tx, rec, auth)
+	if err != nil || stale {
+		return false, err
+	}
+	for _, in := range n.Inputs {
+		src, ok := in.Source.Variant.(*types.ResultSource)
+		if !ok || in.Name == name { // name's result is used's: Equivalent holds prior's claim to it
+			continue
+		}
+		now, why, err := selectedOf(tx, rec, src)
+		if err != nil || why != "" {
+			return false, err
+		}
+		resolved[string(in.Name)] = Resolved{Result: now.Result.ID}
+	}
+	for _, in := range n.Inputs {
+		if _, given := resolved[string(in.Name)]; !given && in.Name != name {
+			return false, nil // an answer not given now: the review waits
+		}
+	}
 	resolved[string(name)] = Resolved{Result: used}
 	if k, err := Key(n, resolved, c.Key.Generation); err != nil || k != c.Key {
 		return false, err

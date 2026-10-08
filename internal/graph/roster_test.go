@@ -14,6 +14,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/executors"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -162,8 +163,20 @@ func TestRecordReview(t *testing.T) {
 		if !errors.As(err, &refused) || refused.Reason() != vocab.ReasonReviewerNotIndependent {
 			t.Errorf("%s: claimed: %v", name, err)
 		}
-		if err := g.do(evaluate(g.env(noRequirement), r.Node.ID)); !errors.As(err, &refused) {
+		// Evaluated with another goal, it is held and the other is claimed.
+		other := g.newNode(types.NodeKindReview)
+		other.Node.DefinitionVersion = string(other.Node.ID)
+		if err := g.do(evaluate(g.env(noRequirement), r.Node.ID, g.record(other))); err != nil {
 			t.Errorf("%s: evaluated: %v", name, err)
+		}
+		if st := g.state(r.Node.ID); st.State != types.NodeStateStateHeld || len(st.Holds) != 1 || st.Holds[0].Hold != "reviewer_unavailable" {
+			t.Errorf("%s: %+v", name, st)
+		}
+		if st := g.state(other.Node.ID); st.State != types.NodeStateStateClaimed {
+			t.Errorf("%s: the other goal is %s", name, st.State)
+		}
+		if err := g.do(evaluate(g.env(noRequirement), r.Node.ID)); err != nil || len(g.state(r.Node.ID).Holds) != 1 {
+			t.Errorf("%s: evaluated again: %v %+v", name, err, g.state(r.Node.ID))
 		}
 		if err := g.do(evaluate(Env{Need: noRequirement, Blobs: g.blobs}, g.record(g.newNode(types.NodeKindReview)))); err == nil {
 			t.Errorf("%s: evaluated with no registry", name)
@@ -276,7 +289,7 @@ func TestReviewReusable(t *testing.T) {
 	}
 	reusable := func(next types.NodeID, name types.Name) (got bool, err error) {
 		err = g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
-			got, err = ReviewReusable(tx, prior, next, name, used, fresh, g.blobs)
+			got, err = ReviewReusable(tx, prior, next, name, used, fresh, g.blobs, owedanswers.Authority{})
 			return err
 		})
 		return got, err
@@ -327,5 +340,21 @@ func TestReviewReusable(t *testing.T) {
 	fresh = reselect(failing)
 	if got, err := reusable(same, "gate"); err != nil || got {
 		t.Errorf("a changed step outcome, the same roster: %v %v", got, err)
+	}
+	// The gate concludes the same again; then the plan, a second input,
+	// is reselected.
+	fresh = reselect(receiptDoc(treeSubject(treeA, demandA), nil))
+	if got, err := reusable(same, "gate"); err != nil || !got {
+		t.Fatalf("the same conclusions again: %v %v", got, err)
+	}
+	g.must(invalidate(g.plan))
+	plan2 := unrecorded(t, *g.state(g.plan).Key)
+	plan2.Kind, plan2.Outcome, plan2.Reason, plan2.Detail, plan2.Value = types.ResultKindPlan, types.OutcomeEmpty, vocab.ReasonCompletedClean, "", []types.Ref{}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return recordResult(tx, types.ResultRecorded{Node: g.plan, Result: plan2}, g.blobs)
+	})
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, g.plan, plan2.ID) })
+	if got, err := reusable(same, "gate"); err != nil || got {
+		t.Errorf("a second input reselected: %v %v", got, err)
 	}
 }
