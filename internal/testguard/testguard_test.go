@@ -30,6 +30,8 @@ func mustResolve(t *testing.T, p string) string {
 }
 
 func TestCheck(t *testing.T) {
+	// Order matters: the first t.TempDir (in withHome) fixes this test's
+	// temp root before TMPDIR moves below, and later calls reuse it.
 	home := withHome(t)
 	links := t.TempDir()
 	link, sub, dangling := filepath.Join(links, "link"), filepath.Join(links, "sub"), filepath.Join(links, "dangling")
@@ -144,7 +146,8 @@ func (f *fatalTB) Fatalf(format string, args ...any) {
 // StateDir and Home refuse a temp dir in a real home before using it.
 func TestRootsRefuseRealHome(t *testing.T) {
 	home := withHome(t)
-	for name, use := range map[string]func(testing.TB) string{"StateDir": StateDir, "Home": Home} {
+	homeEnv := func(tb testing.TB) string { return strings.Join(HomeEnv(tb), " ") }
+	for name, use := range map[string]func(testing.TB) string{"StateDir": StateDir, "Home": Home, "HomeEnv": homeEnv} {
 		f := &fatalTB{TB: t, tempDir: filepath.Join(home, "tmp")}
 		func() {
 			defer func() {
@@ -199,6 +202,31 @@ func TestHome(t *testing.T) {
 		if got := os.Getenv(v); got != filepath.Join(h, rel) {
 			t.Errorf("%s = %q, want it under %s", v, got, h)
 		}
+	}
+}
+
+// A child's HOME and XDG directories lie in one checked temp directory.
+func TestHomeEnv(t *testing.T) {
+	env := HomeEnv(t)
+	got := map[string]string{}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		got[k] = v
+	}
+	h := got["HOME"]
+	if err := Check(h); err != nil || h == "" {
+		t.Fatalf("HomeEnv HOME %q: %v", h, err)
+	}
+	for v, rel := range map[string]string{
+		"XDG_CONFIG_HOME": ".config", "XDG_STATE_HOME": ".local/state",
+		"XDG_DATA_HOME": ".local/share", "XDG_CACHE_HOME": ".cache",
+	} {
+		if got[v] != filepath.Join(h, rel) {
+			t.Errorf("%s = %q, want it under %s", v, got[v], h)
+		}
+	}
+	if len(env) != 5 || os.Getenv("HOME") == h {
+		t.Errorf("HomeEnv = %v; it must not move this process's HOME", env)
 	}
 }
 

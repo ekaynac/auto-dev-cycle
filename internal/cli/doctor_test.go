@@ -17,6 +17,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -39,7 +40,7 @@ func whoamiBody(kind string) string {
 // holds can be opened.
 func doctorEnv(t *testing.T) (*doctorClient, system, string) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir()) // never the user's real ~/.config/adc
+	testguard.Home(t) // never the user's real ~/.config/adc
 	daemonHome := t.TempDir()
 	c := &doctorClient{reader: reader{body: whoamiBody("supervisor")}, daemon: 4343, seen: true}
 	sys := system{

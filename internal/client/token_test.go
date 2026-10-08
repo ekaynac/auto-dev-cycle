@@ -22,7 +22,13 @@ import (
 // 0600 holding content unless content is empty.
 func home(t *testing.T, content string) (Files, string) {
 	t.Helper()
-	f := Files{Home: t.TempDir(), UID: os.Getuid()}
+	return homeAt(t, t.TempDir(), content)
+}
+
+// homeAt is home in the directory dir.
+func homeAt(t *testing.T, dir, content string) (Files, string) {
+	t.Helper()
+	f := Files{Home: dir, UID: os.Getuid()}
 	if err := os.MkdirAll(f.dir(), 0o700); err != nil {
 		t.Fatal(err)
 	}

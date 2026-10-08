@@ -16,6 +16,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 )
 
 // The test binary runs as adc itself when asked to.
@@ -30,11 +31,7 @@ func TestMain(m *testing.M) {
 // the reserved --token-out, which no token reached, is removed and adc
 // exits could_not_run.
 func TestInterruptRemovesTheReservedTokenOut(t *testing.T) {
-	dir, err := os.MkdirTemp("", "adc-int") // short: a socket path is bounded
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	dir := testguard.Home(t) // the child's HOME too; short, as a socket path is bounded
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +54,7 @@ func TestInterruptRemovesTheReservedTokenOut(t *testing.T) {
 	out := filepath.Join(dir, "agent.token")
 	cmd := exec.Command(os.Args[0], "admin", "enrol-agent", "--expect", "0", "--reason", "r", "--token-out", out,
 		"--scope", `{"actor":"act_01m3250vkwffc979nzjw0g2sa1","name":"a","declared_agent":null}`)
-	cmd.Env = append(os.Environ(), "ADC_MAIN_UNDER_TEST=1", "HOME="+dir, cli.SocketEnv+"="+sock,
+	cmd.Env = append(os.Environ(), "ADC_MAIN_UNDER_TEST=1", cli.SocketEnv+"="+sock,
 		client.TokenEnv+"="+id+"."+strings.Repeat("A", 43))
 	var stderr strings.Builder
 	cmd.Stderr = &stderr

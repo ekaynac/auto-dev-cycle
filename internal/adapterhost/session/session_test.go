@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session/inproc"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -107,7 +108,7 @@ func stubConfig(t *testing.T, mode string, env ...string) Config {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Config{Command: []string{self}, Env: append([]string{"PATH=" + os.Getenv("PATH"), stubEnv + "=" + mode}, env...), Deadline: 30 * time.Second}
+	return Config{Command: []string{self}, Env: append(append([]string{"PATH=" + os.Getenv("PATH"), stubEnv + "=" + mode}, testguard.HomeEnv(t)...), env...), Deadline: 30 * time.Second}
 }
 
 func open(t *testing.T, cfg Config) *Session {

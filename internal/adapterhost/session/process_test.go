@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 )
 
 const stubEnv = "ADC_SESSION_STUB"
@@ -110,7 +112,7 @@ func stubSpec(t *testing.T, mode string, env ...string) ProcessSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ProcessSpec{Command: []string{self}, Env: append([]string{"PATH=" + os.Getenv("PATH"), stubEnv + "=" + mode}, env...), Deadline: 30 * time.Second}
+	return ProcessSpec{Command: []string{self}, Env: append(append([]string{"PATH=" + os.Getenv("PATH"), stubEnv + "=" + mode}, testguard.HomeEnv(t)...), env...), Deadline: 30 * time.Second}
 }
 
 func spawn(t *testing.T, spec ProcessSpec) *Process {

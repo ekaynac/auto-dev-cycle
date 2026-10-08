@@ -4,24 +4,25 @@
 // the repository, what it is faithful to, and how far M0 builds it. When a
 // real implementation is found to differ from its fake, the fake is fixed
 // first (11 "Contract-faithful fakes"); this list is where that starts.
-// Tests hold it to the repository and to 11's table.
+// Tests hold it to the repository and to 11's table, row for row.
 package fakes
 
 // Fake is one registered fake.
 type Fake struct {
-	// Name is the fake's row in 11's table, or its package name.
+	// Name is the fake's row in 11's table.
 	Name string
 	// Path is the fake's directory from the repository root.
 	Path string
 	// Built is whether Path exists yet. A fake no M0 fixture consumes yet
 	// is registered unbuilt, at the path it will have.
 	Built bool
-	// M0Scope is how far M0 builds the fake (15 D4); for a row of 11's
-	// table, the table's "M0 scope" cell.
+	// M0Scope is how far M0 builds the fake (15 D4): the "M0 scope" cell of
+	// its row; it starts with "built" exactly when Built is set.
 	M0Scope string
 }
 
-// Prefix is where 11's fakes live; each of them is a row of its table.
+// Prefix is where the fakes without another home live; 11's table spells it
+// "…/fakes/".
 const Prefix = "internal/testguard/fakes/"
 
 // All returns the registry.
@@ -33,8 +34,8 @@ func All() []Fake {
 		{"Fake provider", Prefix + "provider", false, "none here: the 402 mid-call is scripted in `inproc` peers (15 L3); the rest is M2"},
 		{"Fake clock", Prefix + "clock", true, "built: a fixed or wall-following time the test sets and moves; no timers"},
 		{"Fake executor registry", Prefix + "executors", true, "built: executor id to model family, unregistered is `unknown` (G6a)"},
-		{"inproc", "internal/adapterhost/session/inproc", true, "built: an in-process adapter peer for the fixture harness (09)"},
-		{"fakesched", "internal/capacity/fakesched", true, "built: the deterministic scheduler of 05 \"What M0 delivers\""},
-		{"fakeauthn", "internal/authority/fakeauthn", true, "built: a WebAuthn authenticator for the challenge fixtures (11)"},
+		{"In-process adapter peer", "internal/adapterhost/session/inproc", true, "built: an in-process adapter peer for the fixture harness (09)"},
+		{"Fake scheduler", "internal/capacity/fakesched", true, "built: the deterministic scheduler of 05 \"What M0 delivers\""},
+		{"Fake authenticator", "internal/authority/fakeauthn", true, "built: a WebAuthn authenticator for the challenge fixtures (11)"},
 	}
 }

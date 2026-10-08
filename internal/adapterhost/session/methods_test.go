@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -49,7 +50,7 @@ func fakeConfig(t *testing.T, scenario string) Config {
 		t.Skip("the adapters workspace is not installed: run make ts-deps (make test does)")
 	}
 	return Config{Command: []string{node, filepath.Join(root, "fake", "src", "main.ts")},
-		Env: []string{"PATH=" + os.Getenv("PATH"), "ADC_FAKE_SCENARIO=" + scenario}, Deadline: 30 * time.Second}
+		Env: append([]string{"PATH=" + os.Getenv("PATH"), "ADC_FAKE_SCENARIO=" + scenario}, testguard.HomeEnv(t)...), Deadline: 30 * time.Second}
 }
 
 func handle(name string) types.AdapterHandle {

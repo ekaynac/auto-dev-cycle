@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 )
 
 // The test binary doubles as a scripted adapter (stubEnv: its plan) and as
@@ -146,7 +147,7 @@ func stub(t *testing.T, plan stubPlan) session.Config {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return session.Config{Command: []string{self}, Env: []string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + t.TempDir(), stubEnv + "=" + string(b)},
+	return session.Config{Command: []string{self}, Env: append([]string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + t.TempDir(), stubEnv + "=" + string(b)}, testguard.HomeEnv(t)...),
 		Deadline: 30 * time.Second}
 }
 
