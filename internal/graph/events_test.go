@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -257,12 +258,51 @@ func TestClaimsAreScoped(t *testing.T) {
 	keyD := must(Key(borrower.Node, map[string]Resolved{"plan": {Result: g.planRes}}, 1))
 	intruder := g.newNode(types.NodeKindGate)
 	intruder.Project = prjB
+	// P1: a producer's could_not_run result, never selected; P2: a result
+	// of a producer's invalidated generation; P9: a result of another kind.
+	retry := g.newNode(types.NodeKindPlan)
+	retry.Node.Inputs = []types.InputSpec{}
+	p1 := g.record(retry)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Claim(tx, p1, map[string]Resolved{}, 1) })
+	unselected := must(Build(*g.state(p1).Key, BuildFacts{Project: prjID}))
+	unselected.Kind = types.ResultKindPlan
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return RecordResult(tx, types.ResultRecorded{Node: p1, Result: unselected})
+	})
+	dropped, droppedRes := g.planOf(tskID, prjID)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Invalidate(tx, dropped) })
+	builder := g.record(g.newNode(types.NodeKindBuild))
+	g.must(g.claimOf(builder))
+	patch := g.result(builder, true)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, builder, patch.ID) })
+	// A producer's completed result that it did not select.
+	twice := g.newNode(types.NodeKindPlan)
+	twice.Node.Inputs, twice.Node.Params = []types.InputSpec{}, []byte(`{"twice":true}`)
+	p5 := g.record(twice)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Claim(tx, p5, map[string]Resolved{}, 1) })
+	planResult := func() types.Result {
+		r := unrecorded(t, *g.state(p5).Key)
+		r.Kind, r.Value, r.Outcome, r.Reason, r.Detail = types.ResultKindPlan, []types.Ref{}, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return RecordResult(tx, types.ResultRecorded{Node: p5, Result: r})
+		})
+		return r
+	}
+	chosen, passed := planResult(), planResult()
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, p5, chosen.ID) })
+	on := func(producer types.NodeID, res types.ResultID) logic {
+		return claimWith(g.record(g.nodeOn(types.NodeKindBuild, producer)), res)
+	}
 	for name, fn := range map[string]logic{
-		"another project's result as an input":   claimWith(d, g.planRes),
-		"a result of another producer":           g.claimOf(e),
-		"an unrecorded result":                   claimWith(g.record(g.newNode(types.NodeKindBuild)), resA),
-		"a claim of another project's node here": forge(NodeClaimed, string(d), prjID, &types.NodeClaimed{Type: "node_claimed", Node: d, Key: keyD, Inputs: g.claimed(a).Inputs}),
-		"a node of the task in another project":  forge(NodeRecorded, string(intruder.Node.ID), prjB, &intruder),
+		"P1: an unselected could_not_run result":  on(p1, unselected.ID),
+		"an unselected completed result":          on(p5, passed.ID),
+		"P2: a result of an invalidated producer": on(dropped, droppedRes),
+		"P9: a result of another kind":            on(builder, patch.ID),
+		"another project's result as an input":    claimWith(d, g.planRes),
+		"a result of another producer":            g.claimOf(e),
+		"an unrecorded result":                    claimWith(g.record(g.newNode(types.NodeKindBuild)), resA),
+		"a claim of another project's node here":  forge(NodeClaimed, string(d), prjID, &types.NodeClaimed{Type: "node_claimed", Node: d, Key: keyD, Inputs: g.claimed(a).Inputs}),
+		"a node of the task in another project":   forge(NodeRecorded, string(intruder.Node.ID), prjB, &intruder),
 	} {
 		if err := g.do(fn); err == nil {
 			t.Errorf("%s was admitted", name)
@@ -324,10 +364,93 @@ func TestInvalidationClaimsTheNewKey(t *testing.T) {
 	if holder, ok := view[types.NodeID](g, KeyProjection, keyIndex(tskID, g.state(a).Key.Key)); !ok || holder != a {
 		t.Fatal("the new key is not claimed")
 	}
+	// P4: the old key is stale, not held: a claim of it is ErrKeyStale.
+	if holder, ok := view[types.NodeID](g, KeyProjection, keyIndex(tskID, must(Key(g.newNodeLike(a), map[string]Resolved{"plan": {Result: g.planRes}}, 1)).Key)); !ok || holder != "" {
+		t.Fatalf("the old key is held by %q", holder)
+	}
+	var stale ErrKeyStale
+	if err := g.do(g.claimOf(b)); !errors.As(err, &stale) || stale.Current != 2 {
+		t.Fatalf("a claim at the old generation: %v", err)
+	}
+	// P3: no claim skips to another generation; at the current one, the
+	// holder is named.
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Claim(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 5)
+	}); !errors.As(err, &stale) {
+		t.Fatalf("a claim at generation 5: %v", err)
+	}
+	var held ErrKeyClaimed
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Claim(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 2)
+	}); !errors.As(err, &held) || held.Node != a {
+		t.Fatalf("a claim at the current generation: %v", err)
+	}
+	g3 := must(Key(g.newNodeLike(b), map[string]Resolved{"plan": {Result: g.planRes}}, 3))
+	if err := g.do(forge(NodeClaimed, string(b), prjID, &types.NodeClaimed{Type: "node_claimed", Node: b, Key: g3, Inputs: g.claimed(a).Inputs})); err == nil {
+		t.Fatal("a forged claim at generation 3 was admitted")
+	}
+	// A replayed invalidation is refused.
+	if err := g.do(forge(NodeInvalidated, string(a), prjID, &types.NodeInvalidated{Type: "node_invalidated", Node: a, Key: *g.state(a).Key})); err == nil {
+		t.Fatal("a replayed invalidation was admitted")
+	}
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return event(NodeClaimed, string(b), prjID, &types.NodeClaimed{Type: "node_claimed", Node: b, Key: *g.state(a).Key, Inputs: g.claimed(a).Inputs})
 	}); err == nil {
 		t.Fatal("another gate claimed the invalidated gate's new key")
+	}
+}
+
+func (g graphStore) newNodeLike(n types.NodeID) types.Node {
+	rec, _ := view[nodeRecord](g, NodeProjection, string(n))
+	return rec.Recorded.Node
+}
+
+// Every node kind records exactly the result kinds of its row, and a kind
+// without one records none.
+func TestProducesTable(t *testing.T) {
+	want := map[types.NodeKind][]types.ResultKind{
+		"plan": {"plan"}, "build": {"patch", "partial_patch"}, "gate": {"gate_result"}, "runtime_verify": {"gate_result"},
+		"integration": {"tree", "package"}, "evidence": {"evidence"}, "review": {"review"}, "carry_over": {"carry_over_attestation"},
+		"merge": {"merge_result"}, "accept": nil, "closure": nil, "deploy": nil, "record": nil, "phase_gate": nil,
+	}
+	results := []types.ResultKind{"plan", "patch", "partial_patch", "tree", "package", "gate_result", "review", "evidence", "carry_over_attestation", "merge_result"}
+	for nk, kinds := range want {
+		for _, rk := range results {
+			if got := slices.Contains(produces[nk], rk); got != slices.Contains(kinds, rk) {
+				t.Errorf("%s records %s: %t", nk, rk, got)
+			}
+		}
+	}
+	if len(want) != 14 {
+		t.Fatal("not every node kind is in the table")
+	}
+}
+
+// A reason deprecated after a result was recorded still replays: the fold
+// reads results as a reader (CheckRead), while a writer may not emit it.
+func TestDeprecatedReasonsReplay(t *testing.T) {
+	g := openStore(t)
+	a := g.record(g.newNode(types.NodeKindBuild))
+	g.must(g.claimOf(a))
+	r := g.result(a, true)
+	copy, err := vocab.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := copy.Reasons[r.Reason.String()]
+	since := "0.2.0"
+	entry.Deprecated = &since
+	copy.Reasons[r.Reason.String()] = entry
+	registry = func() (*vocab.Registry, error) { return copy, nil }
+	t.Cleanup(func() { registry = vocab.Load })
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return RecordResult(tx, types.ResultRecorded{Node: a, Result: unrecorded(t, *g.state(a).Key)})
+	}); err == nil {
+		t.Fatal("a writer recorded a deprecated reason")
+	}
+	diffs, err := g.s.RebuildProjections(context.Background())
+	if err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %+v", err, diffs)
 	}
 }
 

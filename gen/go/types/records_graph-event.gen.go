@@ -124,9 +124,10 @@ type NodeInvalidated struct {
 
 // ResultRecorded: An immutable result of a claimed node, with the attempt that produced it (null for a controller node).
 type ResultRecorded struct {
-	Type    string     `json:"type"`
-	Node    NodeID     `json:"node"`
-	Result  Result     `json:"result"`
+	Type   string `json:"type"`
+	Node   NodeID `json:"node"`
+	Result Result `json:"result"`
+	// Checked by this schema only until M1 binds attempts to nodes.
 	Attempt *AttemptID `json:"attempt"`
 }
 

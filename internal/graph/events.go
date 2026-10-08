@@ -60,6 +60,7 @@ const (
 	KeyProjection    = "graph_keys"    // task/computation key → the memoizable node that claimed it
 	TaskProjection   = "graph_tasks"   // task id → its project
 	ResultProjection = "graph_results" // result id → the result.recorded payload
+	GenProjection    = "graph_gens"    // task/identity → its current generation (memoizable kinds)
 )
 
 // memoizable are the kinds whose results are reused (13 "v1 scope").
@@ -69,6 +70,14 @@ var memoizable = []types.NodeKind{types.NodeKindGate, types.NodeKindRuntimeVerif
 type ErrKeyClaimed struct{ Node types.NodeID }
 
 func (e ErrKeyClaimed) Error() string { return "graph: the key is claimed by " + string(e.Node) }
+
+// ErrKeyStale: a memoizable claim at a generation other than its identity's
+// current one in the task.
+type ErrKeyStale struct{ Current int64 }
+
+func (e ErrKeyStale) Error() string {
+	return fmt.Sprintf("graph: the key is not of the task's current generation %d", e.Current)
+}
 
 // Kinds registers the graph event kinds.
 var kinds = []string{NodeRecorded, NodeClaimed, NodeInvalidated, ResultRecorded, ResultSelected}
@@ -184,6 +193,13 @@ func Claim(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, g
 		return nil, err
 	}
 	if slices.Contains(memoizable, rec.Recorded.Node.Kind) {
+		cur, err := current(tx, rec, resolved)
+		if err != nil {
+			return nil, err
+		}
+		if generation != cur {
+			return nil, ErrKeyStale{cur}
+		}
 		holder, taken, err := load[types.NodeID](tx, KeyProjection, keyIndex(rec.Recorded.Task, key.Key))
 		if err != nil {
 			return nil, err
@@ -291,33 +307,51 @@ func resolutions(inputs []types.NodeClaimedInputsItem) map[string]Resolved {
 	return out
 }
 
-// producedHere: every result input resolved to a recorded result of its
-// declared producer, a node of the same project.
-func producedHere(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved) error {
+// selectedInputs: every result input is the selected result of its
+// declared producer, of the declared kind, a node of the same project (a
+// producer bound by reuse, G4a, selects its holder's result).
+func selectedInputs(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved) error {
 	for _, in := range rec.Recorded.Node.Inputs {
 		src, ok := in.Source.Variant.(*types.ResultSource)
 		if !ok {
 			continue
 		}
-		r, found, err := load[types.ResultRecorded](tx, ResultProjection, string(resolved[in.Name].Result))
-		if err == nil && found {
-			var producer nodeRecord
-			producer, err = loadNode(tx, src.Producer)
-			found = err == nil && r.Node == src.Producer && producer.Recorded.Project == rec.Recorded.Project
-		}
-		if err != nil || !found {
-			return errors.Join(err, fmt.Errorf("input %s is not a result of its producer %s in the project", in.Name, src.Producer))
+		id := resolved[in.Name].Result
+		producer, err := loadNode(tx, src.Producer)
+		r, _, rerr := load[types.ResultRecorded](tx, ResultProjection, string(id))
+		if err = errors.Join(err, rerr); err != nil || producer.Recorded.Project != rec.Recorded.Project ||
+			producer.State.State != types.NodeStateStateCompleted || *producer.State.Result != id || r.Result.Kind != src.ResultKind {
+			return errors.Join(err, fmt.Errorf("input %s is not the selected %s result of its producer %s in the project", in.Name, src.ResultKind, src.Producer))
 		}
 	}
 	return nil
 }
 
-// claimKey claims key in rec's task for a memoizable kind.
-func claimKey(tx *eventstore.Tx, rec nodeRecord, key types.Digest) error {
+// current is the current generation of rec's identity in its task: the
+// node with its inputs, without a generation (its generation-1 key).
+func current(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved) (int64, error) {
+	identity, err := Key(rec.Recorded.Node, resolved, 1)
+	if err != nil {
+		return 0, err
+	}
+	gen, ok, err := load[int64](tx, GenProjection, keyIndex(rec.Recorded.Task, identity.Key))
+	if !ok {
+		gen = 1
+	}
+	return gen, err
+}
+
+// claimKey claims key in rec's task for a memoizable kind: the key must be
+// of its identity's current generation and held by no node, nor stale.
+func claimKey(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved, key types.ComputationKey) error {
 	if !slices.Contains(memoizable, rec.Recorded.Node.Kind) {
 		return nil
 	}
-	index := keyIndex(rec.Recorded.Task, key)
+	cur, err := current(tx, rec, resolved)
+	if err != nil || key.Generation != cur {
+		return errors.Join(err, fmt.Errorf("the key is of generation %d, the task's current is %d", key.Generation, cur))
+	}
+	index := keyIndex(rec.Recorded.Task, key.Key)
 	if _, taken, err := load[types.NodeID](tx, KeyProjection, index); err != nil || taken {
 		return errors.Join(err, errors.New("the key is claimed in the task"))
 	}
@@ -336,14 +370,14 @@ func claimed(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeClaimed) error
 	if !reflect.DeepEqual(items(rec.Recorded.Node, resolved), p.Inputs) {
 		return errors.New("the claim's inputs are not one resolution per declared input, in order")
 	}
-	if err := producedHere(tx, rec, resolved); err != nil {
+	if err := selectedInputs(tx, rec, resolved); err != nil {
 		return err
 	}
 	key, err := Key(rec.Recorded.Node, resolved, p.Key.Generation)
 	if err != nil || key != p.Key {
 		return errors.Join(err, errors.New("the claim's key is not its node's key from its inputs"))
 	}
-	if err := claimKey(tx, rec, key.Key); err != nil {
+	if err := claimKey(tx, rec, resolved, key); err != nil {
 		return err
 	}
 	if err := put(tx, ClaimProjection, string(p.Node), claim{Key: key, Inputs: p.Inputs, Command: ev.Command}); err != nil {

@@ -38,7 +38,6 @@ func TestFoldRefusals(t *testing.T) {
 	})
 	odd := unrecorded(t, key)
 	odd.Completed, odd.Outcome, odd.Reason, odd.Detail = true, types.OutcomeCouldNotRun, vocab.ReasonExecutorIncomplete, "a report that is not completion"
-	g.must(forge(ResultRecorded, string(odd.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: odd}))
 	ok := unrecorded(t, key)
 	key2 := must(Key(aRec.Node, resolutions(in), 2))
 	with := func(r types.NodeRecorded, f func(*types.NodeRecorded)) *types.NodeRecorded { f(&r); return &r }
@@ -48,6 +47,8 @@ func TestFoldRefusals(t *testing.T) {
 			return event(NodeRecorded, string(r.Node.ID), project, r)
 		}
 	}
+	closure := g.record(g.newNode(types.NodeKindClosure)) // a kind with no result row
+	g.must(g.claimOf(closure))
 	foreignPred := g.newNode(types.NodeKindBuild)
 	foreignPred.Task, foreignPred.Project = tskC, prjB
 	fp := g.record(foreignPred)
@@ -92,6 +93,7 @@ func TestFoldRefusals(t *testing.T) {
 		"a result of another key":            forge(ResultRecorded, string(ok.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: withKey(ok, diff)}),
 		"a result recorded twice":            forge(ResultRecorded, string(failed.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: failed}),
 		"a result under another subject":     forge(ResultRecorded, string(a), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: ok}),
+		"a result of a kind with no row":     forge(ResultRecorded, string(ok.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: closure, Result: withKey(ok, g.state(closure).Key.Key)}),
 		"a result of another kind":           forge(ResultRecorded, string(ok.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: withKind(ok, types.ResultKindReview)}),
 		"a result whose reason does not fit": forge(ResultRecorded, string(ok.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: withReason(ok, vocab.ReasonBrokerCreditExhausted)}),
 		// result.selected
@@ -100,7 +102,10 @@ func TestFoldRefusals(t *testing.T) {
 		"a's result selected for c":          forge(ResultSelected, string(good.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: c, Result: good.ID}),
 		"a's result selected for its twin":   forge(ResultSelected, string(good.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: twin, Result: good.ID}),
 		"a could_not_run selected":           forge(ResultSelected, string(failed.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: a, Result: failed.ID}),
-		"a completed could_not_run selected": forge(ResultSelected, string(odd.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: a, Result: odd.ID}),
+		"a completed could_not_run result":   forge(ResultRecorded, string(odd.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: odd}),
+		"a result in another project":        forge(ResultRecorded, string(ok.ID), prjB, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: ok}),
+		"a selection in another project":     forge(ResultSelected, string(good.ID), prjB, &types.ResultSelected{Type: "result_selected", Node: a, Result: good.ID}),
+		"an invalidation in another project": forge(NodeInvalidated, string(a), prjB, &types.NodeInvalidated{Type: "node_invalidated", Node: a, Key: key2}),
 		"an unrecorded result selected":      forge(ResultSelected, string(ok.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: a, Result: ok.ID}),
 		"a selection for an unclaimed node":  forge(ResultSelected, string(failed.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: other, Result: failed.ID}),
 		// node.invalidated

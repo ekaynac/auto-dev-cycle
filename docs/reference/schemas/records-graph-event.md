@@ -77,7 +77,7 @@ An immutable result of a claimed node, with the attempt that produced it (null f
 | `type` | yes | `result_recorded` |  |
 | `node` | yes | [NodeID](common-defs.md#nodeid) |  |
 | `result` | yes | [result](records-result.md) |  |
-| `attempt` | yes | null or [AttemptID](common-defs.md#attemptid) |  |
+| `attempt` | yes | null or [AttemptID](common-defs.md#attemptid) | Checked by this schema only until M1 binds attempts to nodes. |
 
 No other fields are allowed.
 

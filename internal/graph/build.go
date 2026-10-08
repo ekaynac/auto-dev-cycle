@@ -3,6 +3,8 @@
 package graph
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -88,16 +90,34 @@ func Build(key types.ComputationKey, f BuildFacts) (types.Result, error) {
 	return r, nil
 }
 
-// Check validates a result against records/result, and its outcome and
-// reason against the vocabulary (a writer's check: the reason is current
-// and fits the outcome, 02).
-func Check(r types.Result) error {
-	if _, err := contract.Encode("records/result", r); err != nil {
+// Check is a writer's check of a result: records/result, never completed
+// and could_not_run, and its outcome and reason by the vocabulary (the
+// reason is current and fits the outcome, 02).
+func Check(r types.Result) error { return check(r, true) }
+
+// CheckRead is a reader's check of a recorded result: Check, except that a
+// reason deprecated since it was recorded is still read (02), so a log
+// replays whatever the registry deprecates later.
+func CheckRead(r types.Result) error { return check(r, false) }
+
+// registry is the vocabulary results are checked against; a test swaps it.
+var registry = vocab.Load
+
+func check(r types.Result, writing bool) error {
+	b, err := json.Marshal(r)
+	if err == nil {
+		err = contract.Validate("records/result", b)
+	}
+	if err == nil && r.Completed && r.Outcome == types.OutcomeCouldNotRun {
+		err = errors.New("graph: a completed result is not could_not_run")
+	}
+	reg, rerr := registry()
+	if err = errors.Join(err, rerr); err != nil {
 		return err
 	}
-	reg, err := vocab.Load()
-	if err != nil {
-		return err
+	res := vocab.Result{Outcome: vocab.Outcome(r.Outcome), Reason: r.Reason, Detail: r.Detail}
+	if writing {
+		return reg.Check(res)
 	}
-	return reg.Check(vocab.Result{Outcome: vocab.Outcome(r.Outcome), Reason: r.Reason, Detail: r.Detail})
+	return reg.CheckRead(res)
 }

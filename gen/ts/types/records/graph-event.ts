@@ -253,6 +253,9 @@ export interface ResultRecorded {
    */
   node: string;
   result: Result;
+  /**
+   * Checked by this schema only until M1 binds attempts to nodes.
+   */
   attempt: null | string;
 }
 /**

@@ -64,7 +64,7 @@
         "type": {"const": "result_recorded"},
         "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
         "result": {"$ref": "result.json"},
-        "attempt": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]}
+        "attempt": {"description": "Checked by this schema only until M1 binds attempts to nodes.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]}
       }
     },
     "ResultSelected": {
