@@ -20,7 +20,11 @@ package graph
 //     a forged or replayed claim binds no other computation or resolution.
 //     Two claims of one key in one command fail, as the second's fold sees
 //     the first.
-//   - A task's nodes are all in one project (graph_tasks).
+//   - A task's nodes are all in one project (graph_tasks): the first node
+//     of a task pins its project, until tasks are records (M1) and the
+//     fold checks the task's own project.
+//   - Two successors of one predecessor may share a round: G6b's
+//     replacement keeps its predecessor's round (13 supersession).
 //   - Results and selection follow in G3-2.
 //   - A missing answer input leaves the node waiting: held on
 //     awaiting_input needs the hold events of G3-2.
@@ -125,7 +129,9 @@ func loadNode(tx *eventstore.Tx, id types.NodeID) (nodeRecord, error) {
 	return rec, err
 }
 
-// Record is the event that adds r's node to its task's graph.
+// Record is the event that adds r's node to its task's graph. Its caller
+// (M1's graph commands) takes r's project from the actor's authorization
+// before it calls Record; the event's project is never the actor's claim.
 func Record(r types.NodeRecorded) ([]eventstore.Event, error) {
 	r.Type = "node_recorded"
 	return event(NodeRecorded, string(r.Node.ID), r.Project, &r)
@@ -151,6 +157,13 @@ func items(n types.Node, resolved map[string]Resolved) []types.NodeClaimedInputs
 // inputs. A claimed node's repeat demand joins its claim: no event. A
 // memoizable node whose key another node of its task claimed gets
 // ErrKeyClaimed.
+//
+// Claim sees only what earlier commands committed, so one command claims a
+// given node at most once and a given memoizable key at most once; a second
+// claim in the same command fails the command in the fold. The evaluator
+// (G4b) deduplicates its demands before it claims. As for Record, M1's
+// graph commands take the project from the actor's authorization before
+// they call Claim.
 func Claim(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, generation int64) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, node)
 	if err != nil {
@@ -164,8 +177,16 @@ func Claim(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, g
 		return nil, err
 	}
 	if slices.Contains(memoizable, rec.Recorded.Node.Kind) {
-		if holder, taken, err := load[types.NodeID](tx, KeyProjection, keyIndex(rec.Recorded.Task, key.Key)); err != nil || taken {
-			return nil, errors.Join(err, ErrKeyClaimed{holder})
+		holder, taken, err := load[types.NodeID](tx, KeyProjection, keyIndex(rec.Recorded.Task, key.Key))
+		if err != nil {
+			return nil, err
+		}
+		if taken {
+			// The refused instance never claims and never runs: it completes
+			// through a reuse binding (G4a, node.reused/v1), which sets its
+			// key and result from the holder's selected result, of the same
+			// task, kind and key.
+			return nil, ErrKeyClaimed{holder}
 		}
 	}
 	c := types.NodeClaimed{Type: "node_claimed", Node: node, Key: key, Inputs: items(rec.Recorded.Node, resolved)}

@@ -51,7 +51,8 @@ Result:                            # what was computed: immutable  [G1]
   - Downstream inputs and manifests reference **result ids**, so every manifest stays exact.
   - Each key has one **selected result** at a time. An explicit invalidation (an operator action, or a definition or
     instrument version change) bumps the generation, so the key changes, a new result is produced, and dependants
-    re-key. No artifact is ever overwritten.
+    re-key. No artifact is ever overwritten. This holds for the memoizable kinds (see "v1 scope"), whose key is claimed
+    once per task. Instances of the other kinds can share a key (two builds, deploy A again) and select per node.
 - **The reviewer roster is part of a review's identity** (intake B1).
   - **In the key.** A review node's `params` carry its roster: for each member, the executor id and its model family.
     The family is derived from the controller's executor registry, never asserted by a caller (06 independence). The
@@ -115,8 +116,11 @@ The controller evaluates **goals** (e.g. "merge the candidate of task T", "close
   - A claim is a node instance's: a repeat demand of a claimed node joins its claim. Two instances never share one;
     build, plan and effect nodes are not reused (see "v1 scope" and [G4]).
   - For the memoizable kinds, a computation key is claimed once per task. Another instance whose key is claimed in its
-    task is refused, records nothing and stays as it was; reusing the result is the resolver's memoization, under
-    applicability (06). No claim spans tasks or projects.
+    task is refused, records nothing and stays as it was. It never claims and never runs: it completes through a
+    reuse binding, `node.reused`, which sets its key and result from the holder's selected result, of the same task,
+    kind and key (the resolver's memoization, under applicability, 06). No claim spans tasks or projects.
+  - A command claims a given node, and a given memoizable key, at most once; the evaluator deduplicates its demands
+    before it claims.
   - The fold re-derives a claim: one resolution per declared input, in order, and the key from them.
 - **Waiting is structural for internal inputs.** A node with a missing input is `waiting(input)`, and its signal is
   that input's result. External waits (approval, quota, human act, probe) use the hold registry (02).
