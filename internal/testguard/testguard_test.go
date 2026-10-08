@@ -4,25 +4,42 @@ package testguard
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
 // withHome makes a fresh temp directory one of the real homes for the test.
 func withHome(t *testing.T) string {
-	home := resolve(t.TempDir())
+	home := mustResolve(t, t.TempDir())
 	saved := realHomes
 	realHomes = append(append([]string(nil), saved...), home)
 	t.Cleanup(func() { realHomes = saved })
 	return home
 }
 
+func mustResolve(t *testing.T, p string) string {
+	t.Helper()
+	r, err := resolve(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
 func TestCheck(t *testing.T) {
 	home := withHome(t)
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(home, link); err != nil {
+	links := t.TempDir()
+	link, sub, dangling := filepath.Join(links, "link"), filepath.Join(links, "sub"), filepath.Join(links, "dangling")
+	if err := os.MkdirAll(filepath.Join(home, "subdir"), 0o700); err != nil {
 		t.Fatal(err)
+	}
+	for l, target := range map[string]string{link: home, sub: filepath.Join(home, "subdir"), dangling: filepath.Join(home, "missing")} {
+		if err := os.Symlink(target, l); err != nil {
+			t.Fatal(err)
+		}
 	}
 	outside := filepath.Join(filepath.Dir(tempRoot), "adc-not-temp")
 	t.Setenv("TMPDIR", outside) // a test may move TMPDIR; the guard keeps the starting one
@@ -37,6 +54,12 @@ func TestCheck(t *testing.T) {
 		{"a root outside the temp directory", outside, "outside the temp directory"},
 		{"a temp-looking path that climbs out", filepath.Join(tempRoot, "..", "etc"), "outside the temp directory"},
 		{"a root in a TMPDIR moved outside", filepath.Join(os.TempDir(), "state"), "outside the temp directory"},
+		// sub/.. is the home on the filesystem, links/ once cleaned.
+		{"a literal .. after a symlink", sub + "/../credentials", ".. component"},
+		{"a literal .. that stays inside", t.TempDir() + "/a/../b", ".. component"},
+		// A write through a dangling link creates its target in the home.
+		{"a dangling symlink into the real home", dangling, "does not resolve"},
+		{"a root below a dangling symlink", filepath.Join(dangling, "state"), "does not resolve"},
 	} {
 		err := Check(c.dir)
 		if c.want == "" && err != nil || c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
@@ -45,21 +68,61 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-// The real homes include the HOME this process started with.
+// The guarded homes (the package's own, not a fresh computation) include
+// the starting HOME, the sandbox's host home when set, and the user
+// database's home.
 func TestRealHomesIncludeStartHome(t *testing.T) {
-	h := os.Getenv("HOME")
-	if h == "" || h == "/" {
-		t.Skip("no HOME to guard")
-	}
-	t.Setenv("ADC_SANDBOX_HOST_HOME", "/nonexistent/host-home")
-	homes := startHomes()
-	for _, want := range []string{resolve(h), "/nonexistent/host-home"} {
-		found := false
-		for _, got := range homes {
-			found = found || got == want
+	var want []string
+	for _, h := range []string{os.Getenv("HOME"), os.Getenv("ADC_SANDBOX_HOST_HOME")} {
+		if h != "" && filepath.Clean(h) != "/" {
+			want = append(want, mustResolve(t, h))
 		}
-		if !found {
-			t.Errorf("real homes %v do not include %s", homes, want)
+	}
+	if u, err := user.Current(); err == nil && u.HomeDir != "/" && u.HomeDir != "" {
+		want = append(want, mustResolve(t, u.HomeDir))
+	}
+	if len(want) == 0 {
+		t.Skip("no home to guard")
+	}
+	for _, w := range want {
+		if !slices.Contains(realHomes, w) {
+			t.Errorf("real homes %v do not include %s", realHomes, w)
+		}
+	}
+}
+
+// A relative HOME or HOME=/ is never a guarded home: "/" would refuse every
+// root, and a relative one would be resolved against the working directory.
+func TestStartHomesSkipsRelativeAndRoot(t *testing.T) {
+	t.Setenv("ADC_SANDBOX_HOST_HOME", "")
+	for _, h := range []string{"relative/home", "/"} {
+		t.Setenv("HOME", h)
+		for _, got := range startHomes() {
+			if got == "/" || !filepath.IsAbs(got) || strings.HasSuffix(got, "relative/home") {
+				t.Errorf("HOME=%s gives the guarded home %s", h, got)
+			}
+		}
+	}
+}
+
+// startHomes takes the sandbox's host home when it is set.
+func TestStartHomesTakesHostHome(t *testing.T) {
+	t.Setenv("ADC_SANDBOX_HOST_HOME", "/nonexistent/host-home")
+	if homes := startHomes(); !slices.Contains(homes, "/nonexistent/host-home") {
+		t.Errorf("startHomes() = %v, without the host home", homes)
+	}
+}
+
+func TestWithin(t *testing.T) {
+	for p, want := range map[string]bool{
+		tempRoot:                           true,
+		filepath.Join(tempRoot, "x"):       true,
+		filepath.Dir(tempRoot):             false,
+		tempRoot + "-sibling/x":            false,
+		filepath.Join(tempRoot, "..", "x"): false,
+	} {
+		if got := within(tempRoot, p); got != want {
+			t.Errorf("within(%s, %s) = %v, want %v", tempRoot, p, got, want)
 		}
 	}
 }
@@ -68,10 +131,11 @@ func TestRealHomesIncludeStartHome(t *testing.T) {
 type fatalTB struct {
 	testing.TB
 	tempDir string
+	made    bool // TempDir was called
 	failed  string
 }
 
-func (f *fatalTB) TempDir() string { return f.tempDir }
+func (f *fatalTB) TempDir() string { f.made = true; return f.tempDir }
 func (f *fatalTB) Fatalf(format string, args ...any) {
 	f.failed = format
 	panic(f)
@@ -100,6 +164,24 @@ func TestRootsRefuseRealHome(t *testing.T) {
 	}
 }
 
+// With TMPDIR moved outside the temp directory, a root fails before
+// t.TempDir creates anything there.
+func TestRootChecksTempDirFirst(t *testing.T) {
+	f := &fatalTB{TB: t, tempDir: t.TempDir()}
+	t.Setenv("TMPDIR", filepath.Join(filepath.Dir(tempRoot), "adc-not-temp"))
+	func() {
+		defer func() {
+			if r := recover(); r != nil && r != any(f) {
+				panic(r)
+			}
+		}()
+		StateDir(f)
+	}()
+	if f.failed == "" || f.made {
+		t.Errorf("StateDir under a moved TMPDIR: failed %q, TempDir called %v", f.failed, f.made)
+	}
+}
+
 func TestHome(t *testing.T) {
 	start := os.Getenv("HOME")
 	h := Home(t)
@@ -109,7 +191,11 @@ func TestHome(t *testing.T) {
 	if err := Check(h); err != nil {
 		t.Error(err)
 	}
-	for v, rel := range xdgDirs {
+	// Spelled out, not read from xdgDirs: dropping a mapping must fail here.
+	for v, rel := range map[string]string{
+		"XDG_CONFIG_HOME": ".config", "XDG_STATE_HOME": ".local/state",
+		"XDG_DATA_HOME": ".local/share", "XDG_CACHE_HOME": ".cache",
+	} {
 		if got := os.Getenv(v); got != filepath.Join(h, rel) {
 			t.Errorf("%s = %q, want it under %s", v, got, h)
 		}

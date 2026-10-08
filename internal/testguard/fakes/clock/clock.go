@@ -44,13 +44,13 @@ func (c *Clock) Now() time.Time {
 // returns the new reading.
 func (c *Clock) Advance(d time.Duration) time.Time {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.wall {
 		c.offset += d
-	} else {
-		c.at = c.at.Add(d)
+		return time.Now().Add(c.offset)
 	}
-	c.mu.Unlock()
-	return c.Now()
+	c.at = c.at.Add(d)
+	return c.at
 }
 
 // Set moves the clock to t; a wall-following clock keeps following from there.

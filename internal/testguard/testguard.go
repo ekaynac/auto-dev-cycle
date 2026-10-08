@@ -9,23 +9,41 @@
 package testguard
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
 // realHomes are the homes no test root may lie in: the HOME this process
-// started with, and the host's home the test sandbox names. tempRoot is the
-// temp directory it started with: a test that moves TMPDIR does not move it.
-var realHomes, tempRoot = startHomes(), resolve(os.TempDir())
+// started with, the host's home the test sandbox names, and the user
+// database's home for this uid. tempRoot is the temp directory the process
+// started with: a test that moves TMPDIR does not move it.
+var (
+	realHomes         = startHomes()
+	tempRoot, tempErr = resolve(os.TempDir())
+)
 
 func startHomes() []string {
+	candidates := []string{os.Getenv("HOME"), os.Getenv("ADC_SANDBOX_HOST_HOME")}
+	if u, err := user.Current(); err == nil {
+		candidates = append(candidates, u.HomeDir)
+	}
 	var homes []string
-	for _, v := range []string{"HOME", "ADC_SANDBOX_HOST_HOME"} {
-		if h := os.Getenv(v); h != "" && filepath.IsAbs(h) && filepath.Clean(h) != "/" {
-			homes = append(homes, resolve(h))
+	for _, h := range candidates {
+		if h == "" || !filepath.IsAbs(h) || filepath.Clean(h) == "/" {
+			continue
 		}
+		r, err := resolve(h)
+		if err != nil {
+			r = filepath.Clean(h)
+		}
+		homes = append(homes, r)
 	}
 	return homes
 }
@@ -59,6 +77,10 @@ func Home(t testing.TB) string {
 
 func root(t testing.TB) string {
 	t.Helper()
+	// The temp directory first: t.TempDir creates its root before Check.
+	if err := Check(os.TempDir()); err != nil {
+		t.Fatalf("testguard: %v", err)
+	}
 	d := t.TempDir()
 	if err := Check(d); err != nil {
 		t.Fatalf("testguard: %v", err)
@@ -67,9 +89,20 @@ func root(t testing.TB) string {
 }
 
 // Check refuses a test root that, with symlinks resolved, lies outside the
-// starting temp directory or in a real home.
+// starting temp directory or in a real home. It refuses a ".." component
+// outright: cleaning one away before resolving the symlink before it would
+// check another path than the one the filesystem reaches.
 func Check(dir string) error {
-	d := resolve(dir)
+	if slices.Contains(strings.Split(filepath.ToSlash(dir), "/"), "..") {
+		return fmt.Errorf("test root %s has a .. component", dir)
+	}
+	if tempErr != nil {
+		return fmt.Errorf("the temp directory does not resolve: %w", tempErr)
+	}
+	d, err := resolve(dir)
+	if err != nil {
+		return fmt.Errorf("test root %s: %w", dir, err)
+	}
 	if !within(tempRoot, d) {
 		return fmt.Errorf("test root %s is outside the temp directory %s", d, tempRoot)
 	}
@@ -82,19 +115,25 @@ func Check(dir string) error {
 }
 
 // resolve is p made absolute with symlinks resolved, as far as it exists.
-func resolve(p string) string {
+// A component that exists but does not resolve (a dangling symlink, which a
+// write would follow) is an error.
+func resolve(p string) (string, error) {
 	p, err := filepath.Abs(p)
 	if err != nil {
-		return filepath.Clean(p)
+		return "", err
 	}
 	rest := ""
 	for {
-		if r, err := filepath.EvalSymlinks(p); err == nil {
-			return filepath.Join(r, rest)
+		r, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			return filepath.Join(r, rest), nil
+		}
+		if _, lerr := os.Lstat(p); !errors.Is(lerr, fs.ErrNotExist) {
+			return "", fmt.Errorf("%s exists but does not resolve: %w", p, err)
 		}
 		parent := filepath.Dir(p)
 		if parent == p {
-			return filepath.Join(p, rest)
+			return filepath.Join(p, rest), nil
 		}
 		rest, p = filepath.Join(filepath.Base(p), rest), parent
 	}

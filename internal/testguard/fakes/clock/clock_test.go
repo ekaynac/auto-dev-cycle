@@ -62,15 +62,25 @@ func TestWall(t *testing.T) {
 	}
 }
 
-// Readers and movers may run on different goroutines (go test -race).
+// Readers and movers may run on different goroutines (go test -race), and
+// each Advance returns its own reading: concurrent advances of a fixed clock
+// by one second return every second exactly once.
 func TestConcurrent(t *testing.T) {
+	const workers, steps = 4, 100
 	for _, c := range []*Clock{Fixed(t0), Wall()} {
-		var wg sync.WaitGroup
-		for range 4 {
+		var (
+			wg   sync.WaitGroup
+			mu   sync.Mutex
+			seen = map[time.Time]int{}
+		)
+		for range workers {
 			wg.Go(func() {
-				for range 100 {
-					c.Advance(time.Second)
+				for range steps {
+					got := c.Advance(time.Second)
 					c.Now()
+					mu.Lock()
+					seen[got]++
+					mu.Unlock()
 				}
 			})
 		}
@@ -78,8 +88,33 @@ func TestConcurrent(t *testing.T) {
 		if c.wall {
 			continue
 		}
-		if got := c.Now(); !got.Equal(t0.Add(400 * time.Second)) {
-			t.Errorf("concurrent advances lost: Now = %s, want %s", got, t0.Add(400*time.Second))
+		if got := c.Now(); !got.Equal(t0.Add(workers * steps * time.Second)) {
+			t.Errorf("concurrent advances lost: Now = %s, want %s", got, t0.Add(workers*steps*time.Second))
 		}
+		for i := 1; i <= workers*steps; i++ {
+			if n := seen[t0.Add(time.Duration(i)*time.Second)]; n != 1 {
+				t.Errorf("Advance returned t0+%ds %d times, want once", i, n)
+				break
+			}
+		}
+	}
+}
+
+// Set races with readers and advances on neither clock (go test -race).
+func TestConcurrentSet(t *testing.T) {
+	for _, c := range []*Clock{Fixed(t0), Wall()} {
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			for i := range 100 {
+				c.Set(t0.Add(time.Duration(i) * time.Minute))
+			}
+		})
+		wg.Go(func() {
+			for range 100 {
+				c.Advance(time.Second)
+				c.Now()
+			}
+		})
+		wg.Wait()
 	}
 }
