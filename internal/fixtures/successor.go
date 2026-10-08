@@ -178,7 +178,7 @@ func equalConclusionsReuseReview(ctx context.Context, dir string) (steps []Step,
 	env := g.env(treeA, demandA)
 	// The review ran on the gate's first result; each later result follows
 	// an invalidation of the gate.
-	ref, conclusions, err := g.gateReceiptWith(treeA, demandA, nil, clean, []types.Restriction{})
+	ref, conclusions, err := g.gateReceiptWith(treeA, demandA, nil, []types.Restriction{}, clean)
 	var gate, review types.NodeID
 	var used types.ResultID
 	if err == nil {
@@ -206,7 +206,7 @@ func equalConclusionsReuseReview(ctx context.Context, dir string) (steps []Step,
 	}{{clean, []types.Restriction{}}, {findings, []types.Restriction{}}, {clean, restricted}} {
 		var fresh types.ResultID
 		var same bool
-		ref, conclusions, err := g.gateReceiptWith(treeA, demandA, nil, c.p, c.r)
+		ref, conclusions, err := g.gateReceiptWith(treeA, demandA, nil, c.r, c.p)
 		if err == nil {
 			err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return graph.Invalidate(tx, gate) })
 		}

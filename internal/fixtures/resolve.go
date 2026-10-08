@@ -326,12 +326,13 @@ func ptrTo[T any](v T) *T { return &v }
 func (g *graphFix) gateReceipt(tree string, demand types.Digest, until *types.Time) (types.Ref, json.RawMessage, error) {
 	clean := pred("tests", vocab.Empty, vocab.ReasonCompletedClean)
 	clean.Detail = ""
-	return g.gateReceiptWith(tree, demand, until, clean, []types.Restriction{})
+	return g.gateReceiptWith(tree, demand, until, []types.Restriction{}, clean)
 }
 
-// gateReceiptWith is gateReceipt with the tests predicate p, its Ref under
-// restrictions.
-func (g *graphFix) gateReceiptWith(tree string, demand types.Digest, until *types.Time, p types.Predicate, restrictions []types.Restriction) (types.Ref, json.RawMessage, error) {
+// gateReceiptWith is gateReceipt with the predicates ps, its Ref under
+// restrictions; the receipt's own outcome is the first predicate's.
+func (g *graphFix) gateReceiptWith(tree string, demand types.Digest, until *types.Time, restrictions []types.Restriction, ps ...types.Predicate) (types.Ref, json.RawMessage, error) {
+	p := ps[0]
 	subject, err := subjectOf(tree, demand)
 	if err != nil {
 		return types.Ref{}, nil, err
@@ -340,7 +341,7 @@ func (g *graphFix) gateReceiptWith(tree string, demand types.Digest, until *type
 		Instrument: types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: instrumentDigest},
 		Provenance: types.ReceiptProvenance{Command: "cmd_01m3250vz2ezn81cgvbkcn17jd", Calls: []types.CallID{}, ModelFamilies: []types.Name{}, Contributors: []types.ActorID{}},
 		ProducedAt: types.Time(time.Now().UTC().Format(time.RFC3339Nano)), ValidUntil: until, Outcome: p.Outcome, Reason: p.Reason, Detail: p.Detail,
-		Predicates: []types.Predicate{p}}
+		Predicates: ps}
 	conclusions, digest, err := receipt.Conclusions(r)
 	if err != nil {
 		return types.Ref{}, nil, err
