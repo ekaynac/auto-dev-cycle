@@ -126,6 +126,16 @@ For a lease that holds an `evidence_target` group, settlement carries a **restor
     and readers take that as no target, so an existing store replays without drift.
   - The lease projector holds a lease with a target to the restore table, so it settles only through a verified
     restore. Its slot returns at that settlement (`on_restore_verified`).
+  - A restore's outcome is its own log fact, `lease.restore_recorded` (`records/restore-evidence`). It is recorded
+    while the lease restores, for its attempt, one of its targets and its current restore cycle, under a new receipt
+    id.
+  - Each `lease.restore_started` opens the lease's next restore cycle. A `lease.restore_failed`, or a failed restore
+    of a target, voids the successes recorded before it in the cycle.
+  - `lease.restore_verified` must name a standing verified restore of the current cycle, and every target the grant
+    recorded must have one. The fold, which admission and replay share, refuses a missing, failed, voided or foreign
+    receipt, and one whose cycle or targets fall short.
+  - `lease.restore_recorded` is trusted controller input. In M0 only the fixtures and the fake sandbox record it. M1's
+    restore runner must be its only writer.
   - A failed restore keeps the slot reserved, so the target stays excluded across restarts and rebuilds, and a new
     lease on it is refused `capacity_reserved_full`.
   - A lease of no target never starts a restore.

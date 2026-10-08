@@ -146,6 +146,14 @@ func ChangeLease(tx *eventstore.Tx, id types.LeaseID, expected int64, e LeaseEve
 	return []eventstore.Event{ev}, err
 }
 
+// RecordRestore records the outcome of a restore of a lease's evidence
+// target (lease.restore_recorded), which lease.restore_verified then names.
+func RecordRestore(tx *eventstore.Tx, r types.RestoreEvidence) ([]eventstore.Event, error) {
+	b, err := json.Marshal(r)
+	id, ierr := ids.New("evt")
+	return []eventstore.Event{{ID: id, Kind: RestoreRecorded, Subject: string(r.Lease), Payload: b}}, errors.Join(err, ierr)
+}
+
 // StartAttempt starts a unit's first attempt (token 1) under a granted
 // lease: one attempt.started event carries the attempt and the lease.
 func StartAttempt(tx *eventstore.Tx, leaseID types.LeaseID, expected int64, id types.AttemptID, base types.AttemptBase) ([]eventstore.Event, error) {
@@ -294,6 +302,12 @@ type Groups interface {
 // Project is the event store's Project hook.
 func (p Projector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
+		if ev.Kind == RestoreRecorded {
+			if err := restoreRecorded(tx, ev); err != nil {
+				return fmt.Errorf("lease: event %s: %w", ev.ID, err)
+			}
+			continue
+		}
 		if ev.Kind == OutputRefused {
 			if err := refused(tx, ev); err != nil {
 				return fmt.Errorf("lease: event %s: %w", ev.ID, err)
@@ -398,6 +412,11 @@ func (p Projector) changeLease(tx *eventstore.Tx, transition string, reason *str
 		return err
 	}
 	target := len(targets) > 0
+	if transition == RestoreVerified {
+		if err := verified(tx, n, targets); err != nil {
+			return err
+		}
+	}
 	if transition == Settled && !target {
 		if err := p.restoreFree(tx, prev); err != nil {
 			return err
@@ -421,6 +440,11 @@ func (p Projector) changeLease(tx *eventstore.Tx, transition string, reason *str
 			return fmt.Errorf("lease %s completes before its attempt (%s)", n.ID, a.Status)
 		case a.Publication == types.AttemptPublicationOpen:
 			return fmt.Errorf("lease %s leaves active while its attempt still publishes; stop it first", n.ID)
+		}
+	}
+	if target {
+		if err := restoreCycle(tx, transition, n.ID); err != nil {
+			return err
 		}
 	}
 	return put(tx, LeaseProjection, string(n.ID), rev+1, n)

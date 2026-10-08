@@ -34,5 +34,6 @@ func Kinds() eventstore.Kinds {
 		k[t+"/v1"] = eventstore.Kind{Schema: EventSchema, BlobFields: []string{"checkpoint", "blob"}}
 	}
 	k[OutputRefused] = eventstore.Kind{Schema: OutputRefusalSchema}
+	k[RestoreRecorded] = eventstore.Kind{Schema: RestoreSchema}
 	return k
 }

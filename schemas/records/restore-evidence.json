@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/restore-evidence.json",
+  "title": "RestoreEvidence",
+  "description": "The payload of lease.restore_recorded/v1 (docs/design/m0/05 \"Evidence-target leases\"): the outcome of one restore of a lease's evidence target, recorded when the restore runs, under the lease's subject. lease.restore_verified names a verified one by its receipt. internal/lease checks, from the log alone, that it is recorded while the lease restores, for the lease's attempt and one of the targets its grant recorded, under a receipt id not used before.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["receipt", "lease", "attempt", "group", "cycle", "verified", "detail"],
+  "properties": {
+    "receipt": {"description": "The restore's receipt, which lease.restore_verified names.", "$ref": "../common/defs.json#/$defs/ReceiptID"},
+    "lease": {"$ref": "../common/defs.json#/$defs/LeaseID"},
+    "attempt": {"description": "The evidence run the restore follows.", "$ref": "../common/defs.json#/$defs/AttemptID"},
+    "group": {"description": "The evidence_target group restored.", "$ref": "../common/defs.json#/$defs/ResourceGroupID"},
+    "cycle": {"description": "The lease's restore cycle: 1 after its first lease.restore_started, one more after each.", "type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "verified": {"description": "Whether the restore was verified: the target is back as it was.", "type": "boolean"},
+    "detail": {"description": "What the restore observed; non-empty when it was not verified.", "type": "string", "maxLength": 4096}
+  },
+  "if": {"properties": {"verified": {"const": false}}},
+  "then": {"properties": {"detail": {"minLength": 1}}}
+}

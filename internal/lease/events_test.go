@@ -41,8 +41,11 @@ func eventBytes(t *testing.T, transition, reason string, l *types.Lease, a, succ
 // built from the state machine's own output, fits the schema.
 func TestEventKinds(t *testing.T) {
 	kinds := Kinds()
-	if len(kinds) != 21 {
-		t.Fatalf("%d kinds, want 21", len(kinds))
+	if len(kinds) != 22 {
+		t.Fatalf("%d kinds, want 22", len(kinds))
+	}
+	if kinds[RestoreRecorded].Schema != RestoreSchema {
+		t.Errorf("%s has schema %q", RestoreRecorded, kinds[RestoreRecorded].Schema)
 	}
 	if kinds[OutputRefused].Schema != OutputRefusalSchema {
 		t.Errorf("%s has schema %q", OutputRefused, kinds[OutputRefused].Schema)

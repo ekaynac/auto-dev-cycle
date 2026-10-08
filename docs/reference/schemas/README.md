@@ -72,6 +72,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/ref.json`](records-ref.md) | Ref |
 | [`records/remote-process-request.json`](records-remote-process-request.md) | RemoteProcessRequest |
 | [`records/resource-group.json`](records-resource-group.md) | ResourceGroup |
+| [`records/restore-evidence.json`](records-restore-evidence.md) | RestoreEvidence |
 | [`records/result.json`](records-result.md) | Result |
 | [`records/seat-event.json`](records-seat-event.md) | SeatEvent |
 | [`records/token-recovered.json`](records-token-recovered.md) | TokenRecovered |

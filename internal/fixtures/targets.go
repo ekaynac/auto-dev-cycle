@@ -101,14 +101,21 @@ func restoreFailureKeepsTargetExcluded(ctx context.Context, dir string) (steps [
 	if change(run.ID, settle) == nil {
 		violations = append(violations, "the run published before its restore was verified")
 	}
-	// The restore runs and fails.
+	// The restore runs and fails; its outcome is recorded before the lease
+	// moves, and a failed restore's receipt never verifies it.
 	var targets sandbox.Targets
 	targets.Fail(sandboxTarget, "the snapshot is gone")
 	rerr := targets.Restore(sandboxTarget)
 	if rerr == nil {
 		return nil, append(violations, "the scripted restore failure did not fail"), nil
 	}
-	verified := types.ReceiptID("rcp_01m3250v57fhm9v1z9xd1wk8gw")
+	failed, verified := types.ReceiptID("rcp_01m3250vkwffc979nzjw0g2sf9"), types.ReceiptID("rcp_01m3250v57fhm9v1z9xd1wk8gw")
+	if err := record(ctx, s, run, attempt, failed, rerr); err != nil {
+		return nil, nil, err
+	}
+	if change(run.ID, lease.LeaseEvent{Kind: lease.RestoreVerified, Receipt: &failed}) == nil {
+		violations = append(violations, "a failed restore's receipt verified the target")
+	}
 	hold := &types.LeaseHoldValue{Hold: lease.RestoreHold, SignalInstance: "restore:" + string(run.ID)}
 	if err := change(run.ID, lease.LeaseEvent{Kind: lease.RestoreFailed, Reason: rerr.Error(), Hold: hold}); err != nil {
 		return nil, nil, err
@@ -132,6 +139,9 @@ func restoreFailureKeepsTargetExcluded(ctx context.Context, dir string) (steps [
 	if err := targets.Restore(sandboxTarget); err != nil {
 		return nil, nil, err
 	}
+	if err := record(ctx, s, run, attempt, verified, nil); err != nil {
+		return nil, nil, err
+	}
 	if err := change(run.ID, lease.LeaseEvent{Kind: lease.RestoreVerified, Receipt: &verified}); err != nil {
 		return nil, nil, err
 	}
@@ -143,6 +153,16 @@ func restoreFailureKeepsTargetExcluded(ctx context.Context, dir string) (steps [
 }
 
 const sandboxTarget = types.EvidenceTargetID("tgt_01m3250v0aer9ss2097svmefj8")
+
+// record records the outcome of run's restore under receipt: verified
+// unless failure says why not.
+func record(ctx context.Context, s *eventstore.Store, run types.Lease, attempt types.AttemptID, receipt types.ReceiptID, failure error) error {
+	r := types.RestoreEvidence{Receipt: receipt, Lease: run.ID, Attempt: attempt, Group: targetGroup, Cycle: 1, Verified: failure == nil}
+	if failure != nil {
+		r.Detail = failure.Error()
+	}
+	return do(ctx, s, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RecordRestore(tx, r) })
+}
 
 // targetLease is a fresh lease of the evidence target's one slot.
 func targetLease() (types.Lease, types.AttemptID, error) {
