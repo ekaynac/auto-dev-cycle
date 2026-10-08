@@ -52,6 +52,7 @@ const (
 	NodeClaimed     = "node.claimed/v1"
 	NodeInvalidated = "node.invalidated/v1"
 	NodeReused      = "node.reused/v1"
+	ReuseReleased   = "node.reuse_released/v1"
 	HoldRaised      = "node.hold_raised/v1"
 	HoldPaged       = "node.hold_paged/v1"
 	HoldCleared     = "node.hold_cleared/v1"
@@ -62,6 +63,7 @@ const (
 	NodeProjection   = "graph_nodes"   // node id → nodeRecord
 	ClaimProjection  = "graph_claims"  // node id → claim
 	KeyProjection    = "graph_keys"    // task/computation key → the memoizable node that claimed it
+	ReuseProjection  = "graph_reuses"  // task/computation key → the nodes bound to it by reuse
 	TaskProjection   = "graph_tasks"   // task id → its project
 	ResultProjection = "graph_results" // result id → the result.recorded payload
 	GenProjection    = "graph_gens"    // task/identity → its current generation (memoizable kinds)
@@ -85,8 +87,14 @@ func (e ErrKeyStale) Error() string {
 	return fmt.Sprintf("graph: the key is not of the task's current generation %d", e.Current)
 }
 
+// ErrReused: the node is bound by reuse to its holder's key; the key is
+// invalidated through its holder.
+type ErrReused struct{ Holder types.NodeID }
+
+func (e ErrReused) Error() string { return "graph: the node reuses the key of " + string(e.Holder) }
+
 // Kinds registers the graph event kinds.
-var kinds = []string{NodeRecorded, NodeClaimed, NodeReused, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected}
+var kinds = []string{NodeRecorded, NodeClaimed, NodeReused, ReuseReleased, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected}
 
 func Kinds() eventstore.Kinds {
 	k := eventstore.Kinds{}
@@ -253,6 +261,8 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant) err
 		return claimed(tx, ev, p)
 	case *types.NodeReused:
 		return reused(tx, ev, p)
+	case *types.NodeReuseReleased:
+		return reuseReleased(tx, ev, p)
 	case *types.NodeInvalidated:
 		return invalidated(tx, ev, p)
 	case *types.HoldRaised:
@@ -302,11 +312,18 @@ func recorded(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeRecorded) err
 	if n.Round != round {
 		return fmt.Errorf("round %d, want %d: a first round is 1, a successor its predecessor's plus one", n.Round, round)
 	}
-	st := types.NodeState{Node: n.ID, State: types.NodeStateStateRunnable, WaitingOn: []types.Name{}, Holds: []types.NodeHold{}}
-	for _, in := range n.Inputs {
-		st.State, st.WaitingOn = types.NodeStateStateWaiting, append(st.WaitingOn, in.Name)
-	}
+	st := types.NodeState{Node: n.ID, WaitingOn: waitingOn(n), Holds: []types.NodeHold{}}
+	settle(&st)
 	return putNode(tx, nodeRecord{Recorded: *p, State: st})
+}
+
+// waitingOn is what a node waits for before its inputs resolve: all of them.
+func waitingOn(n types.Node) []types.Name {
+	out := []types.Name{}
+	for _, in := range n.Inputs {
+		out = append(out, in.Name)
+	}
+	return out
 }
 
 // resolutions reads a claim's inputs back.
@@ -326,23 +343,51 @@ func resolutions(inputs []types.ClaimedInput) map[string]Resolved {
 }
 
 // selectedInputs: every result input is the selected result of its
-// declared producer, of the declared kind, a node of the same project (a
-// producer bound by reuse, G4a, selects its holder's result).
+// declared producer (selectedOf).
 func selectedInputs(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved) error {
 	for _, in := range rec.Recorded.Node.Inputs {
 		src, ok := in.Source.Variant.(*types.ResultSource)
 		if !ok {
 			continue
 		}
-		id := resolved[in.Name].Result
-		producer, err := loadNode(tx, src.Producer)
-		r, _, rerr := load[types.ResultRecorded](tx, ResultProjection, string(id))
-		if err = errors.Join(err, rerr); err != nil || producer.Recorded.Project != rec.Recorded.Project ||
-			producer.State.State != types.NodeStateStateCompleted || *producer.State.Result != id || r.Result.Kind != src.ResultKind {
+		r, why, err := selectedOf(tx, rec, src)
+		if err != nil || why != "" || r.Result.ID != resolved[in.Name].Result {
 			return errors.Join(err, fmt.Errorf("input %s is not the selected %s result of its producer %s in the project", in.Name, src.ResultKind, src.Producer))
 		}
 	}
 	return nil
+}
+
+// selectedOf is the result src's producer gives rec, or why it gives none:
+// it is a node of rec's project, completed at its identity's current
+// generation (a memoizable producer whose key an invalidation made stale
+// gives nothing, even before its reuse is released), and its selected
+// result is of the declared kind. A producer bound by reuse (G4a) gives
+// its holder's result.
+func selectedOf(tx *eventstore.Tx, rec nodeRecord, src *types.ResultSource) (types.ResultRecorded, string, error) {
+	var r types.ResultRecorded
+	producer, err := loadNode(tx, src.Producer)
+	if err != nil {
+		return r, "", err
+	}
+	if producer.Recorded.Project != rec.Recorded.Project {
+		return r, fmt.Sprintf("%s is not a node of the project", src.Producer), nil
+	}
+	if producer.State.State != types.NodeStateStateCompleted {
+		return r, fmt.Sprintf("%s is %s", src.Producer, producer.State.State), nil
+	}
+	if slices.Contains(memoizable, producer.Recorded.Node.Kind) {
+		c, _, err := load[claim](tx, ClaimProjection, string(src.Producer))
+		cur, cerr := current(tx, producer, resolutions(c.Inputs))
+		if err = errors.Join(err, cerr); err != nil || producer.State.Key.Generation != cur {
+			return r, fmt.Sprintf("%s's key is of a stale generation", src.Producer), err
+		}
+	}
+	r, _, err = load[types.ResultRecorded](tx, ResultProjection, string(*producer.State.Result))
+	if err == nil && r.Result.Kind != src.ResultKind {
+		return r, fmt.Sprintf("%s's result is a %s", src.Producer, r.Result.Kind), nil
+	}
+	return r, "", err
 }
 
 // current is the current generation of rec's identity in its task: the

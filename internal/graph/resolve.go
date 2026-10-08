@@ -7,21 +7,30 @@ package graph
 // Decisions:
 //   - An input resolves to its producer's selected result: selected,
 //     reusable (only a completed result that is not could_not_run is ever
-//     selected), and applicable. A producer not yet completed is a
-//     structural wait, not an error.
+//     selected), and applicable. A producer not completed at its identity's
+//     current generation is a structural wait, not an error; one of another
+//     project or with a result of another kind is missing (selectedOf, the
+//     claim's own rule).
 //   - Applicability is the consuming kind's: Requirements, Go code of the
 //     kind at its definition_version (which keys it), names the receipt a
 //     result must carry. A gate or evidence result holds its receipt as a
 //     receipt Ref whose content digest names the receipt blob; the resolver
 //     reads it and asks internal/receipt (Applies). A refusal, an expired
 //     receipt included, makes the input missing, with the refusal's reason.
+//     A gate or evidence input always has a requirement: none is an error.
+//   - The result holds exactly one receipt Ref, and the receipt is the
+//     Ref's (its id) and the result's (its conclusions_digest is the RFC
+//     8785 digest of the result's conclusions); else receipt_incomplete.
 //   - Answer inputs are the authority's (an input.answer approval binding
-//     the owed input's revision, 04): the caller passes them resolved.
+//     the owed input's revision, 04): the caller passes them resolved, and
+//     one with no approval or of another revision is missing. G4b checks
+//     the approval again at commit.
 
 import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -49,33 +58,33 @@ type Missing struct {
 // that resolved and those that did not.
 func Resolve(tx *eventstore.Tx, node types.NodeID, answered map[string]Resolved, need Requirements, blobs receipt.Blobs, now time.Time) (map[string]Resolved, []Missing, error) {
 	rec, err := loadNode(tx, node)
-	if err != nil {
-		return nil, nil, err
+	if err != nil || need == nil {
+		return nil, nil, errors.Join(err, errors.New("graph: resolve needs the kind's requirements"))
 	}
 	resolved, missing := map[string]Resolved{}, []Missing{}
 	for _, in := range rec.Recorded.Node.Inputs {
 		src, ok := in.Source.Variant.(*types.ResultSource)
 		if !ok {
-			if r, ok := answered[in.Name]; ok {
+			ask := in.Source.Variant.(*types.AnswerSource)
+			if r, ok := answered[in.Name]; ok && r.Approval != "" && r.Revision == ask.Revision {
 				resolved[in.Name] = r
 			} else {
-				missing = append(missing, Missing{Name: in.Name, Detail: "no answer yet"})
+				missing = append(missing, Missing{Name: in.Name, Detail: fmt.Sprintf("no approved answer at revision %d", ask.Revision)})
 			}
 			continue
 		}
-		producer, err := loadNode(tx, src.Producer)
+		r, why, err := selectedOf(tx, rec, src)
 		if err != nil {
 			return nil, nil, err
 		}
-		if producer.State.State != types.NodeStateStateCompleted {
-			missing = append(missing, Missing{Name: in.Name, Detail: fmt.Sprintf("%s is %s", src.Producer, producer.State.State)})
+		if why != "" {
+			missing = append(missing, Missing{Name: in.Name, Detail: why})
 			continue
 		}
-		r, _, err := load[types.ResultRecorded](tx, ResultProjection, string(*producer.State.Result))
-		if err != nil {
-			return nil, nil, err
-		}
 		req, err := need(rec.Recorded.Node, in)
+		if err == nil && req == nil && (src.ResultKind == types.ResultKindGateResult || src.ResultKind == types.ResultKindEvidence) {
+			err = fmt.Errorf("graph: input %s takes a %s and has no receipt requirement", in.Name, src.ResultKind)
+		}
 		if err != nil {
 			return nil, nil, err
 		}
@@ -96,23 +105,32 @@ func Resolve(tx *eventstore.Tx, node types.NodeID, answered map[string]Resolved,
 
 // applies reads the receipt a result holds and decides whether it applies.
 func applies(r types.Result, req receipt.Requirement, blobs receipt.Blobs, now time.Time) error {
-	for _, ref := range r.Value {
-		if ref.Type != types.RefTypeReceipt {
-			continue
-		}
-		rc, err := blobs.Open(string(ref.ContentDigest))
-		if err != nil {
-			return err
-		}
-		b, err := io.ReadAll(rc)
-		if err = errors.Join(err, rc.Close()); err != nil {
-			return err
-		}
-		rcpt, err := contract.Decode[types.Receipt]("records/receipt", b)
-		if err != nil {
-			return err
-		}
-		return receipt.Applies(rcpt, req, now)
+	refs := slices.DeleteFunc(slices.Clone(r.Value), func(ref types.Ref) bool { return ref.Type != types.RefTypeReceipt })
+	if len(refs) != 1 {
+		return &receipt.Refusal{Reason: vocab.ReasonReceiptIncomplete, Detail: fmt.Sprintf("the result holds %d receipts, not one", len(refs))}
 	}
-	return &receipt.Refusal{Reason: vocab.ReasonReceiptIncomplete, Detail: "the result holds no receipt"}
+	rc, err := blobs.Open(string(refs[0].ContentDigest))
+	if err != nil {
+		return err
+	}
+	b, err := io.ReadAll(rc)
+	if err = errors.Join(err, rc.Close()); err != nil {
+		return err
+	}
+	rcpt, err := contract.Decode[types.Receipt]("records/receipt", b)
+	if err != nil {
+		return err
+	}
+	var conclusions types.Digest
+	if r.Conclusions != nil {
+		d, err := eventstore.ContentDigest(*r.Conclusions)
+		if err != nil {
+			return err
+		}
+		conclusions = types.Digest(d)
+	}
+	if string(rcpt.ID) != refs[0].ID || rcpt.ConclusionsDigest != conclusions {
+		return &receipt.Refusal{Reason: vocab.ReasonReceiptIncomplete, Detail: "the receipt is not the one the result's Ref and conclusions name"}
+	}
+	return receipt.Applies(rcpt, req, now)
 }

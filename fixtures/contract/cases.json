@@ -13033,6 +13033,85 @@
   "valid": true
  },
  {
+  "name": "graph-event: reuse valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_reused",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "holder": "nod_01m3250v9xft08ssr4ygq6g2np",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "inputs": [
+    {
+     "name": "plan",
+     "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+     "approval": null,
+     "revision": null
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: a reuse without its holder",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_reused",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "inputs": [
+    {
+     "name": "plan",
+     "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+     "approval": null,
+     "revision": null
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: reuse release valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_reuse_released",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: a reuse release without its key",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_reuse_released",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a reuse release naming its holder",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_reuse_released",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "holder": "nod_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
   "name": "graph-event: result valid",
   "schema": "records/graph-event",
   "doc": {

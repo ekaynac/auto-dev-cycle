@@ -10,21 +10,22 @@ import (
 	"fmt"
 )
 
-// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 type GraphEvent struct{ Variant GraphEventVariant }
 
-// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *NodeReused, *HoldRaised, *HoldPaged, *HoldCleared, *ResultRecorded, *ResultSelected.
+// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *NodeReused, *NodeReuseReleased, *HoldRaised, *HoldPaged, *HoldCleared, *ResultRecorded, *ResultSelected.
 type GraphEventVariant interface{ isGraphEvent() }
 
-func (*NodeRecorded) isGraphEvent()    {}
-func (*NodeClaimed) isGraphEvent()     {}
-func (*NodeInvalidated) isGraphEvent() {}
-func (*NodeReused) isGraphEvent()      {}
-func (*HoldRaised) isGraphEvent()      {}
-func (*HoldPaged) isGraphEvent()       {}
-func (*HoldCleared) isGraphEvent()     {}
-func (*ResultRecorded) isGraphEvent()  {}
-func (*ResultSelected) isGraphEvent()  {}
+func (*NodeRecorded) isGraphEvent()      {}
+func (*NodeClaimed) isGraphEvent()       {}
+func (*NodeInvalidated) isGraphEvent()   {}
+func (*NodeReused) isGraphEvent()        {}
+func (*NodeReuseReleased) isGraphEvent() {}
+func (*HoldRaised) isGraphEvent()        {}
+func (*HoldPaged) isGraphEvent()         {}
+func (*HoldCleared) isGraphEvent()       {}
+func (*ResultRecorded) isGraphEvent()    {}
+func (*ResultSelected) isGraphEvent()    {}
 
 func (u GraphEvent) MarshalJSON() ([]byte, error) {
 	if u.Variant == nil {
@@ -78,6 +79,12 @@ func (u *GraphEvent) UnmarshalJSON(b []byte) error {
 		u.Variant = v
 	case "node_reused":
 		v := &NodeReused{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	case "node_reuse_released":
+		v := &NodeReuseReleased{}
 		if err := decodeStrict(b, v); err != nil {
 			return err
 		}
@@ -150,13 +157,20 @@ type ClaimedInput struct {
 	Revision *int64      `json:"revision"`
 }
 
-// NodeReused: A memoizable instance refused a claim because another node of its task holds its key completes by reuse (13 [G10]): the holder's selected result at the current generation, same task, kind and key. inputs are the instance's own resolved inputs, so it can be invalidated. It never claims and never runs.
+// NodeReused: A memoizable instance refused a claim because another node of its task holds its key completes by reuse (13 [G10]): the holder's selected result at the current generation, same task, kind and key. inputs are the instance's own resolved inputs. It never claims and never runs, and is never invalidated on its own: the holder's invalidation releases it (node.reuse_released).
 type NodeReused struct {
 	Type   string         `json:"type"`
 	Node   NodeID         `json:"node"`
 	Holder NodeID         `json:"holder"`
 	Key    ComputationKey `json:"key"`
 	Inputs []ClaimedInput `json:"inputs"`
+}
+
+// NodeReuseReleased: The holder of key was invalidated, and the node bound to key by reuse is released in the same command (13 [G1]): its reuse and its result are dropped, and it waits for its inputs again, to reuse or claim at the new generation.
+type NodeReuseReleased struct {
+	Type string         `json:"type"`
+	Node NodeID         `json:"node"`
+	Key  ComputationKey `json:"key"`
 }
 
 // HoldRaised: An external wait on the node (02 "Hold reasons and resume signals"): raised at the event's time with no page yet. result is set exactly when the hold has a reason: it is the retry wait of the node's could_not_run result of its current key (13 [G2]), one hold per result.

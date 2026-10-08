@@ -13,8 +13,13 @@ package graph
 //   - The instance must be waiting or runnable: a held instance waits for
 //     its hold first, and a claimed or completed one has its own result.
 //   - The fold re-derives the instance's inputs and key as for a claim, and
-//     records them as its claim, so the reused node can be invalidated like
-//     any claimed one. It never claims the key and never runs.
+//     records them as its claim (for the commit-time re-validation, 13
+//     [G4]), and the instance among the key's reusers. It never claims the
+//     key and never runs.
+//   - A reused node is never invalidated on its own (ErrReused): the
+//     holder's invalidation releases it in the same command
+//     (node.reuse_released), which drops its claim and result and returns
+//     it to waiting, so nothing serves the invalidated result through it.
 
 import (
 	"errors"
@@ -42,7 +47,7 @@ func Reuse(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved) (
 		return nil, err
 	}
 	holder, taken, err := load[types.NodeID](tx, KeyProjection, keyIndex(rec.Recorded.Task, key.Key))
-	if err != nil || !taken { // a key of the current generation is never stale
+	if err != nil || !taken || holder == "" {
 		return nil, errors.Join(err, fmt.Errorf("graph: no node holds %s's key in its task", node))
 	}
 	r := types.NodeReused{Type: "node_reused", Node: node, Holder: holder, Key: key, Inputs: items(rec.Recorded.Node, resolved)}
@@ -71,15 +76,39 @@ func reused(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeReused) error {
 	}
 	holder, held, err := load[types.NodeID](tx, KeyProjection, keyIndex(rec.Recorded.Task, key.Key))
 	h, herr := nodeOf(tx, ev, p.Holder)
-	// The key names the kind, so its holder is of the same kind; a holder
-	// with no selected result leaves a completed state with none, which
-	// records/node-state refuses.
-	if err = errors.Join(err, herr); err != nil || !held || holder != p.Holder || *h.State.Key != key {
-		return errors.Join(err, errors.New("the holder is the node that holds the key in the task"))
+	// The key names the kind, so its holder is of the same kind.
+	if err = errors.Join(err, herr); err != nil || !held || holder != p.Holder || *h.State.Key != key ||
+		h.State.State != types.NodeStateStateCompleted || h.State.Result == nil {
+		return errors.Join(err, errors.New("the holder is the completed node that holds the key in the task"))
 	}
-	if err := put(tx, ClaimProjection, string(p.Node), claim{Key: key, Inputs: p.Inputs, Command: ev.Command}); err != nil {
+	index := keyIndex(rec.Recorded.Task, key.Key)
+	reusers, _, err := load[[]types.NodeID](tx, ReuseProjection, index)
+	if err = errors.Join(err, put(tx, ReuseProjection, index, append(reusers, p.Node)),
+		put(tx, ClaimProjection, string(p.Node), claim{Key: key, Inputs: p.Inputs, Command: ev.Command})); err != nil {
 		return err
 	}
 	rec.State.State, rec.State.WaitingOn, rec.State.Key, rec.State.Result = types.NodeStateStateCompleted, []types.Name{}, &key, h.State.Result
+	return putNode(tx, rec)
+}
+
+// reuseReleased drops a reuse whose key's holder was invalidated: the node
+// waits for its inputs again, with its holds.
+func reuseReleased(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeReuseReleased) error {
+	rec, err := nodeOf(tx, ev, p.Node)
+	if err != nil || ev.Kind != ReuseReleased || ev.Subject != string(p.Node) {
+		return errors.Join(err, errors.New("a reuse is released under its node"))
+	}
+	index := keyIndex(rec.Recorded.Task, p.Key.Key)
+	reusers, _, err := load[[]types.NodeID](tx, ReuseProjection, index)
+	holder, _, herr := load[types.NodeID](tx, KeyProjection, index)
+	at := slices.Index(reusers, p.Node)
+	if err = errors.Join(err, herr); err != nil || at < 0 || holder != "" {
+		return errors.Join(err, errors.New("a reuse is released only once the holder of its key is invalidated"))
+	}
+	if err := errors.Join(put(tx, ReuseProjection, index, slices.Delete(reusers, at, at+1)), tx.Delete(ClaimProjection, string(p.Node))); err != nil {
+		return err
+	}
+	rec.State.WaitingOn, rec.State.Key, rec.State.Result = waitingOn(rec.Recorded.Node), nil, nil
+	settle(&rec.State)
 	return putNode(tx, rec)
 }

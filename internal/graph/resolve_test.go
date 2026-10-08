@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +21,7 @@ const (
 	treeA = "git:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	treeB = "git:" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	rcpID = "rcp_01m3250v57fhm9v1z9xd1wk8gw"
+	rcpB  = "rcp_01m3250v9xft08ssr4ygq6g2np"
 	cmdID = "cmd_01m3250vz2ezn81cgvbkcn17jd"
 	runA  = "run_01m3250v03fpq92bcrrpmkpsj9"
 )
@@ -31,6 +31,9 @@ var (
 	demandA          = types.Digest("sha256:" + strings.Repeat("e", 64))
 	demandB          = types.Digest("sha256:" + strings.Repeat("f", 64))
 	envID            = types.Digest("sha256:" + strings.Repeat("c", 64))
+	// conclusions are a gate result's; its receipt's conclusions_digest is
+	// their RFC 8785 digest.
+	conclusions = json.RawMessage(`{"tests": "pass"}`)
 )
 
 // treeSubject is a gate receipt's subject: tree, under demand when set.
@@ -43,15 +46,19 @@ func treeSubject(tree string, demand types.Digest) map[string]any {
 		"environment": map[string]any{"identity": envID, "description": "linux/arm64"}, "contract_revision": "1", "demand": d}
 }
 
-// receiptBlob publishes a clean gate receipt about subject, valid until
-// until (nil: no limit), and returns its digest.
-func (g graphStore) receiptBlob(subject map[string]any, until *string) types.Digest {
-	g.t.Helper()
-	doc := map[string]any{"id": rcpID, "kind": "gate", "instrument": map[string]any{"name": "go-test", "version": "1.0.0", "digest": instrumentDigest},
+// receiptDoc is a clean gate receipt about subject, valid until until (nil:
+// no limit), concluding conclusions.
+func receiptDoc(subject map[string]any, until *string) map[string]any {
+	return map[string]any{"id": rcpID, "kind": "gate", "instrument": map[string]any{"name": "go-test", "version": "1.0.0", "digest": instrumentDigest},
 		"subject": subject, "provenance": map[string]any{"command": cmdID, "attempt": nil, "calls": []any{}, "model_families": []any{}, "contributors": []any{}},
 		"produced_at": "2026-10-05T12:00:00Z", "valid_until": until, "outcome": "empty", "reason": "completed_clean", "detail": "", "verdict": nil,
 		"predicates":         []any{map[string]any{"name": "tests", "outcome": "empty", "reason": "completed_clean", "detail": "", "evidence": []any{}}},
-		"conclusions_digest": instrumentDigest, "supersedes": nil}
+		"conclusions_digest": must(eventstore.ContentDigest(conclusions)), "supersedes": nil}
+}
+
+// blob publishes doc and returns its digest.
+func (g graphStore) blob(doc any) types.Digest {
+	g.t.Helper()
 	b, err := json.Marshal(doc)
 	if err != nil {
 		g.t.Fatal(err)
@@ -63,30 +70,41 @@ func (g graphStore) receiptBlob(subject map[string]any, until *string) types.Dig
 	return types.Digest(d)
 }
 
-// gated records, claims and completes a gate node whose result holds the
-// receipt blob; nil holds no receipt.
-func (g graphStore) gated(receiptDigest types.Digest) (types.NodeID, types.Result) {
+func (g graphStore) receiptBlob(subject map[string]any, until *string) types.Digest {
+	return g.blob(receiptDoc(subject, until))
+}
+
+// sealed is a Ref of type to the content d, under id.
+func (g graphStore) sealed(typ types.RefType, id string, d types.Digest) types.Ref {
 	g.t.Helper()
-	rec := g.newNode(types.NodeKindGate)
-	rec.Node.Params = json.RawMessage(`{"receipt":"` + string(receiptDigest) + `"}`) // a key of its own
+	ref, err := knowledge.Seal(types.Ref{Type: typ, ID: id, Scope: types.RefScope{Project: ptr(types.ProjectID(prjID))},
+		Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: d})
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	return ref
+}
+
+// gated records, claims and completes a gate node whose result holds a
+// blob and the receipt blob, in that order; "" holds no receipt.
+func (g graphStore) gated(receiptDigest types.Digest) (types.NodeID, types.Result) {
+	value := []types.Ref{}
+	if receiptDigest != "" { // the receipt need not come first
+		value = []types.Ref{g.sealed(types.RefTypeBlob, string(diff), diff), g.sealed(types.RefTypeReceipt, rcpID, receiptDigest)}
+	}
+	return g.completedWith(types.NodeKindGate, types.ResultKindGateResult, value)
+}
+
+// completedWith records, claims and completes a node of kind, under a key
+// of its own, with a result of kind rk holding value.
+func (g graphStore) completedWith(kind types.NodeKind, rk types.ResultKind, value []types.Ref) (types.NodeID, types.Result) {
+	g.t.Helper()
+	rec := g.newNode(kind)
+	rec.Node.Params = json.RawMessage(`{"node":"` + string(rec.Node.ID) + `"}`)
 	n := g.record(rec)
 	g.must(g.claimOf(n))
 	r := unrecorded(g.t, *g.state(n).Key)
-	r.Kind, r.Outcome, r.Reason, r.Detail, r.Value = types.ResultKindGateResult, types.OutcomeEmpty, vocab.ReasonCompletedClean, "", []types.Ref{}
-	r.Conclusions = ptr(json.RawMessage(`{"tests":"pass"}`))
-	if receiptDigest != "" {
-		ref, err := knowledge.Seal(types.Ref{Type: types.RefTypeReceipt, ID: rcpID, Scope: types.RefScope{Project: ptr(types.ProjectID(prjID))},
-			Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: receiptDigest})
-		if err != nil {
-			g.t.Fatal(err)
-		}
-		diffRef, err := knowledge.Seal(types.Ref{Type: types.RefTypeBlob, ID: string(diff), Scope: types.RefScope{Project: ptr(types.ProjectID(prjID))},
-			Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: diff})
-		if err != nil {
-			g.t.Fatal(err)
-		}
-		r.Value = []types.Ref{diffRef, ref} // the receipt need not come first
-	}
+	r.Kind, r.Outcome, r.Reason, r.Detail, r.Value, r.Conclusions = rk, types.OutcomeEmpty, vocab.ReasonCompletedClean, "", value, ptr(conclusions)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return RecordResult(tx, types.ResultRecorded{Node: n, Result: r})
 	})
@@ -96,8 +114,13 @@ func (g graphStore) gated(receiptDigest types.Digest) (types.NodeID, types.Resul
 
 // reviewOf is a review node taking gate's result.
 func (g graphStore) reviewOf(gate types.NodeID) types.NodeID {
-	r := g.nodeOn(types.NodeKindReview, gate)
-	r.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = types.ResultKindGateResult
+	return g.consumerOf(gate, types.ResultKindGateResult)
+}
+
+// consumerOf is a review node taking producer's result as a kind result.
+func (g graphStore) consumerOf(producer types.NodeID, kind types.ResultKind) types.NodeID {
+	r := g.nodeOn(types.NodeKindReview, producer)
+	r.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = kind
 	r.Node.Inputs[0].Name = "gate"
 	return g.record(r)
 }
@@ -116,6 +139,18 @@ func gateOn(tree string, demand types.Digest) Requirements {
 	}
 }
 
+func noRequirement(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
+
+func (g graphStore) resolveWith(n types.NodeID, answered map[string]Resolved, need Requirements) (map[string]Resolved, []Missing, error) {
+	var res map[string]Resolved
+	var miss []Missing
+	err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
+		res, miss, err = Resolve(tx, n, answered, need, g.blobs, at)
+		return err
+	})
+	return res, miss, err
+}
+
 func (g graphStore) resolve(n types.NodeID, need Requirements, at time.Time) (map[string]Resolved, []Missing) {
 	g.t.Helper()
 	var res map[string]Resolved
@@ -131,57 +166,103 @@ func (g graphStore) resolve(n types.NodeID, need Requirements, at time.Time) (ma
 
 var at = time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 
+// refused: n's one input is missing with reason.
+func (g graphStore) refused(n types.NodeID, need Requirements, reason vocab.Reason) bool {
+	res, miss := g.resolve(n, need, at)
+	return len(res) == 0 && len(miss) == 1 && miss[0].Refusal != nil && miss[0].Refusal.Reason == reason && miss[0].Name == "gate"
+}
+
+// waits: n's one input is missing with no refusal: a structural wait.
+func (g graphStore) waits(n types.NodeID, need Requirements) bool {
+	res, miss := g.resolve(n, need, at)
+	return len(res) == 0 && len(miss) == 1 && miss[0].Refusal == nil && miss[0].Detail != ""
+}
+
 // An input resolves to its producer's selected result only while that
 // result applies: the same tree and demand, still fresh. Otherwise it is
 // missing with the refusal's reason; a producer not completed is a wait.
 func TestResolve(t *testing.T) {
 	g := openStore(t)
 	until := "2026-10-08T11:00:00Z"
-	gate, r := g.gated(g.receiptBlob(treeSubject(treeA, demandA), nil))
+	good := g.receiptBlob(treeSubject(treeA, demandA), nil)
+	gate, r := g.gated(good)
 	review := g.reviewOf(gate)
-	inapplicable := &vocab.ReasonEvidenceInapplicable
-	for name, c := range map[string]struct {
-		need   Requirements
-		reason *vocab.Reason
-	}{
-		"the same tree and demand": {gateOn(treeA, demandA), nil},
-		"another tree":             {gateOn(treeB, demandA), inapplicable},
-		"another demand":           {gateOn(treeA, demandB), inapplicable},
-		"no requirement":           {func(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }, nil},
-	} {
-		res, miss := g.resolve(review, c.need, at)
-		switch {
-		case c.reason == nil && (len(miss) != 0 || res["gate"].Result != r.ID):
-			t.Errorf("%s: %v, missing %+v", name, res, miss)
-		case c.reason != nil && (len(miss) != 1 || miss[0].Refusal == nil || miss[0].Refusal.Reason != *c.reason || miss[0].Name != "gate" || len(res) != 0):
-			t.Errorf("%s: missing %+v", name, miss)
-		}
+	if res, miss := g.resolve(review, gateOn(treeA, demandA), at); len(miss) != 0 || res["gate"].Result != r.ID {
+		t.Errorf("the same tree and demand: %v, missing %+v", res, miss)
+	}
+	if !g.refused(review, gateOn(treeB, demandA), vocab.ReasonEvidenceInapplicable) || !g.refused(review, gateOn(treeA, demandB), vocab.ReasonEvidenceInapplicable) {
+		t.Error("another tree or demand applies")
 	}
 	expired, _ := g.gated(g.receiptBlob(treeSubject(treeA, demandA), &until))
-	if _, miss := g.resolve(g.reviewOf(expired), gateOn(treeA, demandA), at); len(miss) != 1 || miss[0].Refusal == nil || miss[0].Refusal.Reason != vocab.ReasonEvidenceInapplicable {
-		t.Errorf("an expired receipt: %+v", miss)
+	if !g.refused(g.reviewOf(expired), gateOn(treeA, demandA), vocab.ReasonEvidenceInapplicable) {
+		t.Error("an expired receipt applies")
 	}
+	other := receiptDoc(treeSubject(treeA, demandA), nil)
+	other["conclusions_digest"] = instrumentDigest
 	bare, _ := g.gated("")
-	if _, miss := g.resolve(g.reviewOf(bare), gateOn(treeA, demandA), at); len(miss) != 1 || miss[0].Refusal == nil || miss[0].Refusal.Reason != vocab.ReasonReceiptIncomplete {
-		t.Errorf("a result with no receipt: %+v", miss)
+	twice, _ := g.completedWith(types.NodeKindGate, types.ResultKindGateResult,
+		[]types.Ref{g.sealed(types.RefTypeReceipt, rcpID, good), g.sealed(types.RefTypeReceipt, rcpB, g.receiptBlob(treeSubject(treeB, demandA), nil))})
+	misnamed, _ := g.completedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{g.sealed(types.RefTypeReceipt, rcpB, good)})
+	for name, gate := range map[string]types.NodeID{
+		"a result with no receipt":                       bare,
+		"a result with two receipts":                     twice,
+		"a receipt that is not the one its Ref names":    misnamed,
+		"a receipt of other conclusions than the result": g.gatedOnly(g.blob(other)),
+	} {
+		if !g.refused(g.reviewOf(gate), gateOn(treeA, demandA), vocab.ReasonReceiptIncomplete) {
+			t.Errorf("%s applies", name)
+		}
 	}
-	waiting := g.record(g.newNode(types.NodeKindGate))
-	if res, miss := g.resolve(g.reviewOf(waiting), gateOn(treeA, demandA), at); len(res) != 0 || len(miss) != 1 || miss[0].Refusal != nil {
-		t.Errorf("a producer not completed: %v %+v", res, miss)
+	if !g.waits(g.reviewOf(g.record(g.newNode(types.NodeKindGate))), gateOn(treeA, demandA)) {
+		t.Error("a producer not completed is not a wait")
 	}
-	ask := g.nodeOn(types.NodeKindReview, gate)
+	far, _ := g.planOf(tskB, prjB)
+	if !g.waits(g.consumerOf(far, types.ResultKindPlan), noRequirement) || !g.waits(g.consumerOf(gate, types.ResultKindReview), noRequirement) {
+		t.Error("a producer of another project, or a result of another kind, resolves")
+	}
+	if res, miss := g.resolve(g.record(g.newNode(types.NodeKindReview)), noRequirement, at); len(miss) != 0 || res["plan"].Result != g.planRes {
+		t.Errorf("a plan input needs no receipt: %v %+v", res, miss)
+	}
+	evidence, _ := g.completedWith(types.NodeKindEvidence, types.ResultKindEvidence, []types.Ref{})
+	for name, c := range map[string]struct {
+		node types.NodeID
+		need Requirements
+	}{
+		"no requirements":                 {review, nil},
+		"no requirement for a gate input": {review, noRequirement},
+		"no requirement for evidence":     {g.consumerOf(evidence, types.ResultKindEvidence), noRequirement},
+		"a receipt Ref with no blob":      {g.reviewOf(g.gatedOnly("sha256:" + strings.Repeat("9", 64))), gateOn(treeA, demandA)},
+		"a blob that is not a receipt":    {g.reviewOf(g.gatedOnly(g.blob(map[string]any{"id": rcpID}))), gateOn(treeA, demandA)},
+	} {
+		if _, _, err := g.resolveWith(c.node, map[string]Resolved{}, c.need); err == nil {
+			t.Errorf("%s resolves", name)
+		}
+	}
+}
+
+// gatedOnly is a gate whose result holds only the receipt Ref to d.
+func (g graphStore) gatedOnly(d types.Digest) types.NodeID {
+	n, _ := g.completedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)})
+	return n
+}
+
+// An answer input resolves only to an approval at its declared revision;
+// G4b checks the approval again at commit.
+func TestResolveAnswers(t *testing.T) {
+	g := openStore(t)
+	ask := g.newNode(types.NodeKindReview)
 	ask.Node.Inputs = []types.InputSpec{{Name: "ruling", Source: types.InputSpecSource{Variant: &types.AnswerSource{Type: "answer", OwedInput: ownID, Revision: 2}}}}
 	asking := g.record(ask)
-	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
-		res, miss, err := Resolve(tx, asking, map[string]Resolved{"ruling": {Approval: aprA, Revision: 2}}, gateOn(treeA, demandA), g.blobs, at)
-		if err == nil && (res["ruling"].Approval != aprA || len(miss) != 0) {
-			err = errors.New("the answer did not pass through")
+	if res, miss, err := g.resolveWith(asking, map[string]Resolved{"ruling": {Approval: aprA, Revision: 2}}, noRequirement); err != nil || res["ruling"].Approval != aprA || len(miss) != 0 {
+		t.Errorf("the answer: %v %+v %v", res, miss, err)
+	}
+	for name, answered := range map[string]map[string]Resolved{
+		"no answer":                     {},
+		"an answer of another revision": {"ruling": {Approval: aprA, Revision: 3}},
+		"an answer with no approval":    {"ruling": {Revision: 2}},
+	} {
+		if res, miss, err := g.resolveWith(asking, answered, noRequirement); err != nil || len(res) != 0 || len(miss) != 1 || miss[0].Name != "ruling" {
+			t.Errorf("%s: %v %+v %v", name, res, miss, err)
 		}
-		if _, miss, _ = Resolve(tx, asking, map[string]Resolved{}, gateOn(treeA, demandA), g.blobs, at); err == nil && len(miss) != 1 {
-			err = errors.New("an unanswered input is not missing")
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
 	}
 }

@@ -4,9 +4,9 @@
 
 `schemas/records/graph-event.json`
 
-The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 
-A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [NodeReused](#nodereused) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected).
+A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [NodeReused](#nodereused) or [NodeReuseReleased](#nodereusereleased) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected).
 
 ## Definitions
 
@@ -70,7 +70,7 @@ No other fields are allowed.
 
 ### NodeReused
 
-A memoizable instance refused a claim because another node of its task holds its key completes by reuse (13 [G10]): the holder's selected result at the current generation, same task, kind and key. inputs are the instance's own resolved inputs, so it can be invalidated. It never claims and never runs.
+A memoizable instance refused a claim because another node of its task holds its key completes by reuse (13 [G10]): the holder's selected result at the current generation, same task, kind and key. inputs are the instance's own resolved inputs. It never claims and never runs, and is never invalidated on its own: the holder's invalidation releases it (node.reuse_released).
 
 #### Fields of NodeReused
 
@@ -81,6 +81,20 @@ A memoizable instance refused a claim because another node of its task holds its
 | `holder` | yes | [NodeID](common-defs.md#nodeid) |  |
 | `key` | yes | [computation-key](records-computation-key.md) |  |
 | `inputs` | yes | array of [ClaimedInput](#claimedinput) |  |
+
+No other fields are allowed.
+
+### NodeReuseReleased
+
+The holder of key was invalidated, and the node bound to key by reuse is released in the same command (13 [G1]): its reuse and its result are dropped, and it waits for its inputs again, to reuse or claim at the new generation.
+
+#### Fields of NodeReuseReleased
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | `node_reuse_released` |  |
+| `node` | yes | [NodeID](common-defs.md#nodeid) |  |
+| `key` | yes | [computation-key](records-computation-key.md) |  |
 
 No other fields are allowed.
 

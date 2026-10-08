@@ -22,6 +22,11 @@ package graph
 //     key is claimed in the task and the old one is left stale, so a later
 //     claim of it is ErrKeyStale. Results of the old key stay, history,
 //     never selected again.
+//   - A node bound by reuse is not invalidated on its own (ErrReused): its
+//     key is its holder's, and the holder's invalidation releases every
+//     node bound to the old key in the same command, each with its own
+//     node.reuse_released event. A released node waits again, to reuse or
+//     claim at the new generation. Its dependants' claims stay (G6b).
 
 import (
 	"errors"
@@ -67,9 +72,10 @@ func Select(tx *eventstore.Tx, node types.NodeID, result types.ResultID) ([]even
 }
 
 // Invalidate is the event moving node's claim to the next generation, then
-// one retiring each retry wait of the old key; other waits carry over. A
-// memoizable key of that generation held by another node of the task is
-// ErrKeyClaimed.
+// one releasing each node bound to the old key by reuse, and one retiring
+// each retry wait of the old key; other waits carry over. A memoizable key
+// of that generation held by another node of the task is ErrKeyClaimed; a
+// node bound by reuse is ErrReused.
 func Invalidate(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error) {
 	c, ok, err := load[claim](tx, ClaimProjection, string(node))
 	if err != nil || !ok {
@@ -83,14 +89,26 @@ func Invalidate(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error
 	if err != nil {
 		return nil, err
 	}
+	var reusers []types.NodeID
 	if slices.Contains(memoizable, rec.Recorded.Node.Kind) {
+		old := keyIndex(rec.Recorded.Task, c.Key.Key)
+		if holder, _, err := load[types.NodeID](tx, KeyProjection, old); err != nil || holder != node {
+			return nil, errors.Join(err, ErrReused{holder})
+		}
 		if holder, taken, err := load[types.NodeID](tx, KeyProjection, keyIndex(rec.Recorded.Task, key.Key)); err != nil {
 			return nil, err
 		} else if taken {
 			return nil, ErrKeyClaimed{holder}
 		}
+		if reusers, _, err = load[[]types.NodeID](tx, ReuseProjection, old); err != nil {
+			return nil, err
+		}
 	}
 	evs, err := onNode(tx, node, NodeInvalidated, string(node), &types.NodeInvalidated{Type: "node_invalidated", Node: node, Key: key})
+	for _, r := range reusers {
+		release, rerr := onNode(tx, r, ReuseReleased, string(r), &types.NodeReuseReleased{Type: "node_reuse_released", Node: r, Key: c.Key})
+		evs, err = append(evs, release...), errors.Join(err, rerr)
+	}
 	for _, h := range rec.State.Holds {
 		by, _, berr := load[heldBy](tx, HoldProjection, string(h.ID))
 		if err = errors.Join(err, berr); err == nil && by.Result != nil {
@@ -172,8 +190,12 @@ func invalidated(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeInvalidate
 		if err != nil {
 			return err
 		}
+		old := keyIndex(rec.Recorded.Task, c.Key.Key)
+		if holder, _, err := load[types.NodeID](tx, KeyProjection, old); err != nil || holder != p.Node {
+			return errors.Join(err, errors.New("a node bound by reuse is not invalidated: its holder is"))
+		}
 		if err := errors.Join(put(tx, GenProjection, keyIndex(rec.Recorded.Task, identity.Key), key.Generation),
-			put(tx, KeyProjection, keyIndex(rec.Recorded.Task, c.Key.Key), types.NodeID(""))); err != nil {
+			put(tx, KeyProjection, old, types.NodeID(""))); err != nil {
 			return err
 		}
 		if err := claimKey(tx, rec, resolved, key); err != nil {

@@ -1,6 +1,6 @@
 {
   "name": "receipt-for-another-demand",
-  "invariant": "A receipt for another demand does not apply, whatever its conclusions: demand A's receipt resolves for demand A and is missing, evidence_inapplicable, for demand B on the same tree (06 rule 6; 11 intake).",
+  "invariant": "A receipt for another demand does not apply, whatever its conclusions: two gate results on the same tree with the same conclusions hold receipts for demands A and B; for demand B, B's resolves and A's is missing, evidence_inapplicable (06 rule 6; 11 intake). This is the resolver's half; refusing the lease and the commit is G4b's.",
   "expected": [
     {"outcome": "empty", "reason": "completed_clean"},
     {"outcome": "could_not_run", "reason": "evidence_inapplicable"}
