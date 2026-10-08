@@ -90,6 +90,9 @@ const (
 	// RenewalInvalidates renews an expired result by invalidating its key,
 	// a new generation, instead of reopening the same key.
 	RenewalInvalidates = "graph.renewal-invalidates"
+	// CommitSkipsAuthority commits a result whose answer input's approval
+	// no longer answers its owed input.
+	CommitSkipsAuthority = "graph.commit-skips-authority"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -99,4 +102,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly,
 	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked, ConfirmIgnoresStatus, ReservationsUncounted,
 	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks, IncompleteNoDiffEmpty, PartialPatchDropped, ClaimPerDemand,
-	ResolveSkipsApplicability, DemandIgnored, RetryNeedsInvalidation, RenewalInvalidates}
+	ResolveSkipsApplicability, DemandIgnored, RetryNeedsInvalidation, RenewalInvalidates, CommitSkipsAuthority}

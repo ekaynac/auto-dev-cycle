@@ -44,6 +44,7 @@ sandbox in which the real home and state do not exist**:
 | In-process adapter peer | an adapter run inside the fixture harness's process, over the session's pipes (09) | `internal/adapterhost/session/inproc` | built: an in-process adapter peer for the fixture harness (09) |
 | Fake scheduler | the lease state machine: all-or-nothing reservations in a fixed order (05) | `internal/capacity/fakesched` | built: the deterministic scheduler of 05 "What M0 delivers" |
 | Fake authenticator | a platform WebAuthn authenticator, with a settable RP ID, origin and flags | `internal/authority/fakeauthn` | built: a WebAuthn authenticator for the challenge fixtures (11) |
+| Fake owed-answer authority | the authority's answers to owed inputs until `input.answer` (04, 15 D1): the approval in force that answers an owed input at its revision, in its project, and the grant holder it waits on | `…/fakes/owedanswers` | built: an owed input's answer, granted or revoked by event and read through the transaction (G4b); who may answer is M1's |
 
 When a real implementation is found to differ from its fake, the fake is fixed first, with a test that fails on the
 old fake.

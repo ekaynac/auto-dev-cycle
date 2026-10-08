@@ -25,9 +25,8 @@ package graph
 //     fold checks the task's own project.
 //   - Two successors of one predecessor may share a round: G6b's
 //     replacement keeps its predecessor's round (13 supersession).
-//   - Results and selection follow in G3-2.
-//   - A missing answer input leaves the node waiting: held on
-//     awaiting_input needs the hold events of G3-2.
+//   - A missing answer input leaves the node waiting; the evaluator raises
+//     awaiting_input against its owed input (evaluate.go).
 //   - The fold reads only the events and these projections, so a rebuild
 //     reaches the same state. A claim keeps its command (ev.Command), as
 //     grant lineages do.

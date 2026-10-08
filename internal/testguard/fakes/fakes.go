@@ -37,5 +37,6 @@ func All() []Fake {
 		{"In-process adapter peer", "internal/adapterhost/session/inproc", true, "built: an in-process adapter peer for the fixture harness (09)"},
 		{"Fake scheduler", "internal/capacity/fakesched", true, "built: the deterministic scheduler of 05 \"What M0 delivers\""},
 		{"Fake authenticator", "internal/authority/fakeauthn", true, "built: a WebAuthn authenticator for the challenge fixtures (11)"},
+		{"Fake owed-answer authority", Prefix + "owedanswers", true, "built: an owed input's answer, granted or revoked by event and read through the transaction (G4b); who may answer is M1's"},
 	}
 }

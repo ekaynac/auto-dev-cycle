@@ -1,8 +1,10 @@
 {
   "name": "receipt-for-another-demand",
-  "invariant": "A receipt for another demand does not apply, whatever its conclusions: two gate results on the same tree with the same conclusions hold receipts for demands A and B; for demand B, B's resolves and A's is missing, evidence_inapplicable (06 rule 6; 11 intake). This is the resolver's half; refusing the lease and the commit is G4b's.",
+  "invariant": "A receipt for another demand does not apply, whatever its conclusions: two gate results on the same tree with the same predicate conclusions hold receipts for demands A and B. For demand B, B's resolves and A's is missing, evidence_inapplicable; the evaluator does not claim the review of A's gate for demand B (the lease half); and a review claimed for demand A does not commit once demand B is required, evidence_inapplicable (the commit half, 13 [G4]) (06 rule 6; 11 intake).",
   "expected": [
     {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "could_not_run", "reason": "evidence_inapplicable"},
+    {"outcome": "could_not_run", "reason": "evidence_inapplicable"},
     {"outcome": "could_not_run", "reason": "evidence_inapplicable"}
   ],
   "mutation": "receipt.demand-ignored"

@@ -129,7 +129,7 @@ func TestHoldLifecycle(t *testing.T) {
 	// reason names, once per result; a reason that names none is the rails'.
 	credit := must(Build(*g.state(a).Key, BuildFacts{Project: prjID, Exit: exitmap.Exit{Hints: []string{"credit_exhausted"}}}))
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: a, Result: credit}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: a, Result: credit}, g.blobs)
 	})
 	retry := func(res types.ResultID, h types.NodeHold) logic {
 		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
@@ -146,7 +146,7 @@ func TestHoldLifecycle(t *testing.T) {
 		t.Fatal("a second retry wait of one result")
 	}
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: a, Result: must(Build(*g.state(a).Key, BuildFacts{Project: prjID}))}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: a, Result: must(Build(*g.state(a).Key, BuildFacts{Project: prjID}))}, g.blobs)
 	}); err == nil {
 		t.Fatal("a held node recorded a result")
 	}
@@ -162,7 +162,7 @@ func TestHoldLifecycle(t *testing.T) {
 		t.Fatalf("invalidated while held: %+v", st)
 	}
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: a, Result: must(Build(*g.state(a).Key, BuildFacts{Project: prjID}))}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: a, Result: must(Build(*g.state(a).Key, BuildFacts{Project: prjID}))}, g.blobs)
 	}); err == nil {
 		t.Fatal("a node still held on its budget recorded a result")
 	}
@@ -205,7 +205,7 @@ func TestHoldRefusals(t *testing.T) {
 	g.must(g.claimOf(other))
 	foreign := must(Build(*g.state(other).Key, BuildFacts{Project: prjID, Exit: exitmap.Exit{Hints: []string{"credit_exhausted"}}}))
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: other, Result: foreign}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: other, Result: foreign}, g.blobs)
 	})
 	done := g.plan // completed
 	forged := func(n types.NodeID, kind, subject string, project types.ProjectID, result *types.ResultID, f func(*types.NodeHold)) logic {
@@ -270,7 +270,7 @@ func TestHoldRefusals(t *testing.T) {
 	g.must(g.claimOf(z))
 	plain := must(Build(*g.state(z).Key, BuildFacts{Project: prjID}))
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: z, Result: plain}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: z, Result: plain}, g.blobs)
 	})
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return Retry(tx, z, plain.ID, newHold(t, "", types.OwnerOperator, nil), nil)
@@ -279,13 +279,13 @@ func TestHoldRefusals(t *testing.T) {
 	}
 	found := unrecorded(t, *g.state(z).Key)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: z, Result: found}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: z, Result: found}, g.blobs)
 	})
 	stale := g.record(g.newNode(types.NodeKindBuild))
 	g.must(g.claimOf(stale))
 	old := must(Build(*g.state(stale).Key, BuildFacts{Project: prjID, Exit: exitmap.Exit{Hints: []string{"credit_exhausted"}}}))
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: stale, Result: old}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: stale, Result: old}, g.blobs)
 	})
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Invalidate(tx, stale) })
 	for name, fn := range map[string]logic{

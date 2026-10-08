@@ -129,7 +129,7 @@ func (g graphStore) gated(receiptDigest types.Digest) (types.NodeID, types.Resul
 func (g graphStore) completedWith(kind types.NodeKind, rk types.ResultKind, value []types.Ref) (types.NodeID, types.Result) {
 	return g.completedAs(kind, rk, value, func(n types.NodeID, r types.Result) logic {
 		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return RecordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
+			return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
 		}
 	})
 }
@@ -163,7 +163,7 @@ func (g graphStore) completedAs(kind types.NodeKind, rk types.ResultKind, value 
 		r.Conclusions = nil
 	}
 	g.must(recordOf(n, r))
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, n, r.ID) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, r.ID) })
 	return n, r
 }
 
