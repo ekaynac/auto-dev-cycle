@@ -57,7 +57,10 @@ Result:                            # what was computed: immutable  [G1]
     inputs, without the generation) a task holds a current generation, 1 until an invalidation moves it. A claim at any
     other generation is refused as stale, and an invalidated key stays stale: no later claim names its old holder. The
     reuse binding (G4a) reuses only a result of the current generation's key. The other kinds keep their generation
-    per node.
+    per node. An invalidation never silently ends a wait. A retry wait of the old key (a hold with a reason, raised for
+    a `could_not_run` result) is retired in the same command by its own event, with the reason `invalidated`. Every other
+    wait (awaiting an approval, an input or a budget raise) carries over to the new generation with its id, `since` and
+    pages, and the node stays held: as in supersession, a hold is retired only when the node no longer has the wait.
 - **The reviewer roster is part of a review's identity** (intake B1).
   - **In the key.** A review node's `params` carry its roster: for each member, the executor id and its model family.
     The family is derived from the controller's executor registry, never asserted by a caller (06 independence). The

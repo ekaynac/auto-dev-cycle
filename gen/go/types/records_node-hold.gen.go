@@ -13,7 +13,7 @@ type NodeHoldPagesItem struct {
 	SignalInstance string `json:"signal_instance"`
 }
 
-// NodeHold: A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; 13): approvals, quotas, human acts, probes. Internal inputs wait structurally and need no hold (13). A replacement node keeps a transferred hold's id, signal instance, owner and paging history, so escalation never restarts (13 supersession). Lease holds stay on the lease (05). owner_ref is set exactly for the owner kinds that name a concrete owner: the grant holder's actor id, the named owner, or the environment owner the profile names. A conditional admits only plain keywords (internal/schemagen), so the schema checks the actor id's act_ TypeID shape by pattern and internal/graph checks its UUIDv7 bits (adc-typeid).
+// NodeHold: A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; 13): approvals, quotas, human acts, probes. Internal inputs wait structurally and need no hold (13). A replacement node keeps a transferred hold's id, signal instance, owner and paging history, so escalation never restarts (13 supersession). It records the owner, escalation and page_after in force when it was raised, so a later registry edit changes no recorded hold. Lease holds stay on the lease (05). owner_ref is set exactly for the owner kinds that name a concrete owner: the grant holder's actor id, the named owner, or the environment owner the profile names. A conditional admits only plain keywords (internal/schemagen), so the schema checks the actor id's act_ TypeID shape by pattern and internal/graph checks its UUIDv7 bits (adc-typeid).
 type NodeHold struct {
 	ID HoldID `json:"id"`
 	// A registered hold (schemas/vocab/holds.yaml); internal/graph checks that it is registered.
@@ -22,9 +22,15 @@ type NodeHold struct {
 	Reason *ReasonCode `json:"reason"`
 	// The concrete signal that resumes it, e.g. the reset time or the approval id awaited (02).
 	SignalInstance string `json:"signal_instance"`
-	// Who owns the hold now: the registry's owner, or its escalate_to once page_after has passed. When the profile names no environment owner, evidence_restore_pending escalates to operator instead (02, its registry row).
+	// Who owns the hold now: the owner it was raised with, or its escalate_to once paged after page_after.
 	Owner    Owner   `json:"owner"`
 	OwnerRef *string `json:"owner_ref"`
+	// Who owns the hold once page_after passes, as in force when it was raised: the registry's escalate_to or, for an environment owner the profile does not name, the operator (02); null keeps the owner.
+	EscalateTo *Owner `json:"escalate_to"`
+	// The concrete escalation owner, by the owner_ref rule; null when escalate_to is null or names none.
+	EscalateRef *string `json:"escalate_ref"`
+	// The page_after in force when it was raised (02; a project may override the registry's). It times only the escalation: the owner's first page may come at once. Null: the hold is never paged.
+	PageAfter *Duration `json:"page_after"`
 	// When the wait began; page_after counts from here, also across a transfer.
 	Since Time `json:"since"`
 	// The paging history, oldest first and append-only: who was paged, by the same owner_ref rule. Pages are deduplicated by hold id and signal instance, never by channel (02).

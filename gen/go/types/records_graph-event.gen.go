@@ -10,15 +10,18 @@ import (
 	"fmt"
 )
 
-// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1 and node.invalidated/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 type GraphEvent struct{ Variant GraphEventVariant }
 
-// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *ResultRecorded, *ResultSelected.
+// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *HoldRaised, *HoldPaged, *HoldCleared, *ResultRecorded, *ResultSelected.
 type GraphEventVariant interface{ isGraphEvent() }
 
 func (*NodeRecorded) isGraphEvent()    {}
 func (*NodeClaimed) isGraphEvent()     {}
 func (*NodeInvalidated) isGraphEvent() {}
+func (*HoldRaised) isGraphEvent()      {}
+func (*HoldPaged) isGraphEvent()       {}
+func (*HoldCleared) isGraphEvent()     {}
 func (*ResultRecorded) isGraphEvent()  {}
 func (*ResultSelected) isGraphEvent()  {}
 
@@ -72,6 +75,24 @@ func (u *GraphEvent) UnmarshalJSON(b []byte) error {
 			return err
 		}
 		u.Variant = v
+	case "hold_raised":
+		v := &HoldRaised{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	case "hold_paged":
+		v := &HoldPaged{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	case "hold_cleared":
+		v := &HoldCleared{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
 	case "result_recorded":
 		v := &ResultRecorded{}
 		if err := decodeStrict(b, v); err != nil {
@@ -120,6 +141,106 @@ type NodeInvalidated struct {
 	Type string         `json:"type"`
 	Node NodeID         `json:"node"`
 	Key  ComputationKey `json:"key"`
+}
+
+// HoldRaised: An external wait on the node (02 "Hold reasons and resume signals"): raised at the event's time with no page yet. result is set exactly when the hold has a reason: it is the retry wait of the node's could_not_run result of its current key (13 [G2]), one hold per result.
+type HoldRaised struct {
+	Type   string    `json:"type"`
+	Node   NodeID    `json:"node"`
+	Hold   NodeHold  `json:"hold"`
+	Result *ResultID `json:"result"`
+}
+
+// HoldPaged: A page of the hold at the event's time, for its signal instance, once per owner and owner_ref: the fold refuses a repeated (owner, owner_ref), and the pager must not retry it (02: by hold id and signal instance). The owner's first page may come at once; page_after times only the escalation, from which on a page may go to the recorded escalate_to, which then owns the hold.
+type HoldPaged struct {
+	Type     string  `json:"type"`
+	Node     NodeID  `json:"node"`
+	Hold     HoldID  `json:"hold"`
+	Owner    Owner   `json:"owner"`
+	OwnerRef *string `json:"owner_ref"`
+	Channel  *Name   `json:"channel"`
+}
+
+type HoldClearedCause struct{ Variant HoldClearedCauseVariant }
+
+// HoldClearedCauseVariant is implemented by *Signalled, *Retired.
+type HoldClearedCauseVariant interface{ isHoldClearedCause() }
+
+func (*Signalled) isHoldClearedCause() {}
+func (*Retired) isHoldClearedCause()   {}
+
+func (u HoldClearedCause) MarshalJSON() ([]byte, error) {
+	if u.Variant == nil {
+		return nil, fmt.Errorf("HoldClearedCause: no variant set")
+	}
+	return json.Marshal(u.Variant)
+}
+
+// MarshalJSONTo encodes the variant on the caller's encoder, so its options
+// (internal/contract refuses invalid UTF-8) reach the variant's strings.
+func (u HoldClearedCause) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if u.Variant == nil {
+		return fmt.Errorf("HoldClearedCause: no variant set")
+	}
+	return marshalTo(enc, u.Variant)
+}
+
+func (u *HoldClearedCause) UnmarshalJSON(b []byte) error {
+	// The discriminator is read by its exact key: encoding/json matches
+	// struct fields case-insensitively.
+	var head map[string]json.RawMessage
+	if err := json.Unmarshal(b, &head); err != nil {
+		return err
+	}
+	raw, ok := head["type"]
+	if !ok {
+		return fmt.Errorf("HoldClearedCause: no type")
+	}
+	var d string
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return err
+	}
+	switch d {
+	case "signal":
+		v := &Signalled{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	case "retired":
+		v := &Retired{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	default:
+		return fmt.Errorf("HoldClearedCause: unknown type %q", d)
+	}
+	return nil
+}
+
+// HoldCleared: The hold leaves the node, with its cause: its signal arrived (the hold's signal instance), or it was retired with a reason (invalidated: a retry wait of an old key). Hold transfer to a replacement is G6b's supersession, in one transaction with it.
+type HoldCleared struct {
+	Type  string           `json:"type"`
+	Node  NodeID           `json:"node"`
+	Hold  HoldID           `json:"hold"`
+	Cause HoldClearedCause `json:"cause"`
+}
+
+type Signalled struct {
+	Type           string `json:"type"`
+	SignalInstance string `json:"signal_instance"`
+}
+
+type RetiredReason string
+
+const (
+	RetiredReasonInvalidated RetiredReason = "invalidated"
+)
+
+type Retired struct {
+	Type   string        `json:"type"`
+	Reason RetiredReason `json:"reason"`
 }
 
 // ResultRecorded: An immutable result of a claimed node, with the attempt that produced it (null for a controller node).

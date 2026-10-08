@@ -51,6 +51,9 @@ const (
 	NodeRecorded    = "node.recorded/v1"
 	NodeClaimed     = "node.claimed/v1"
 	NodeInvalidated = "node.invalidated/v1"
+	HoldRaised      = "node.hold_raised/v1"
+	HoldPaged       = "node.hold_paged/v1"
+	HoldCleared     = "node.hold_cleared/v1"
 	ResultRecorded  = "result.recorded/v1"
 	ResultSelected  = "result.selected/v1"
 	EventSchema     = "records/graph-event"
@@ -61,6 +64,8 @@ const (
 	TaskProjection   = "graph_tasks"   // task id → its project
 	ResultProjection = "graph_results" // result id → the result.recorded payload
 	GenProjection    = "graph_gens"    // task/identity → its current generation (memoizable kinds)
+	HoldProjection   = "graph_holds"   // hold id → the node that last held it (heldBy)
+	RetryProjection  = "graph_retries" // could_not_run result id → its retry wait's hold id
 )
 
 // memoizable are the kinds whose results are reused (13 "v1 scope").
@@ -80,7 +85,7 @@ func (e ErrKeyStale) Error() string {
 }
 
 // Kinds registers the graph event kinds.
-var kinds = []string{NodeRecorded, NodeClaimed, NodeInvalidated, ResultRecorded, ResultSelected}
+var kinds = []string{NodeRecorded, NodeClaimed, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected}
 
 func Kinds() eventstore.Kinds {
 	k := eventstore.Kinds{}
@@ -170,7 +175,8 @@ func items(n types.Node, resolved map[string]Resolved) []types.NodeClaimedInputs
 }
 
 // Claim claims node's computation key at generation from its resolved
-// inputs. A claimed node's repeat demand joins its claim: no event. A
+// inputs; generation 0 is the current one: for a memoizable kind its
+// identity's in the task, 1 for the other kinds' first claim. A claimed node's repeat demand joins its claim: no event. A
 // memoizable node whose key another node of its task claimed gets
 // ErrKeyClaimed.
 //
@@ -188,18 +194,21 @@ func Claim(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, g
 	if _, claimed, err := load[claim](tx, ClaimProjection, string(node)); err != nil || claimed && !mutation.Is(mutation.ClaimPerDemand) {
 		return nil, err
 	}
+	cur, err := current(tx, rec, resolved)
+	if err != nil {
+		return nil, err
+	}
+	if generation == 0 {
+		generation = cur
+	}
+	if generation != cur {
+		return nil, ErrKeyStale{cur}
+	}
 	key, err := Key(rec.Recorded.Node, resolved, generation)
 	if err != nil {
 		return nil, err
 	}
 	if slices.Contains(memoizable, rec.Recorded.Node.Kind) {
-		cur, err := current(tx, rec, resolved)
-		if err != nil {
-			return nil, err
-		}
-		if generation != cur {
-			return nil, ErrKeyStale{cur}
-		}
 		holder, taken, err := load[types.NodeID](tx, KeyProjection, keyIndex(rec.Recorded.Task, key.Key))
 		if err != nil {
 			return nil, err
@@ -243,6 +252,12 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant) err
 		return claimed(tx, ev, p)
 	case *types.NodeInvalidated:
 		return invalidated(tx, ev, p)
+	case *types.HoldRaised:
+		return holdRaised(tx, ev, p)
+	case *types.HoldPaged:
+		return holdPaged(tx, ev, p)
+	case *types.HoldCleared:
+		return holdCleared(tx, ev, p)
 	case *types.ResultRecorded:
 		return resultRecorded(tx, ev, p)
 	case *types.ResultSelected:
@@ -330,6 +345,9 @@ func selectedInputs(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resol
 // current is the current generation of rec's identity in its task: the
 // node with its inputs, without a generation (its generation-1 key).
 func current(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved) (int64, error) {
+	if !slices.Contains(memoizable, rec.Recorded.Node.Kind) {
+		return 1, nil // a first claim; invalidations move the claim itself
+	}
 	identity, err := Key(rec.Recorded.Node, resolved, 1)
 	if err != nil {
 		return 0, err
@@ -344,12 +362,12 @@ func current(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved) (i
 // claimKey claims key in rec's task for a memoizable kind: the key must be
 // of its identity's current generation and held by no node, nor stale.
 func claimKey(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved, key types.ComputationKey) error {
-	if !slices.Contains(memoizable, rec.Recorded.Node.Kind) {
-		return nil
-	}
 	cur, err := current(tx, rec, resolved)
 	if err != nil || key.Generation != cur {
-		return errors.Join(err, fmt.Errorf("the key is of generation %d, the task's current is %d", key.Generation, cur))
+		return errors.Join(err, fmt.Errorf("the key is of generation %d, the current is %d", key.Generation, cur))
+	}
+	if !slices.Contains(memoizable, rec.Recorded.Node.Kind) {
+		return nil
 	}
 	index := keyIndex(rec.Recorded.Task, key.Key)
 	if _, taken, err := load[types.NodeID](tx, KeyProjection, index); err != nil || taken {

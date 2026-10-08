@@ -75,7 +75,7 @@ func TestFoldRefusals(t *testing.T) {
 		"a claim in another project":       forge(NodeClaimed, string(other), prjB, claimOther(in)),
 		"a claim whose key is not its own": forge(NodeClaimed, string(other), prjID, &types.NodeClaimed{Type: "node_claimed", Node: other, Key: types.ComputationKey{Key: diff, Generation: 1}, Inputs: in}),
 		"a claim from other inputs":        forge(NodeClaimed, string(other), prjID, claimOther([]types.NodeClaimedInputsItem{{Name: "plan", Result: ptr(types.ResultID(resB))}})),
-		"a claim of a claimed node":        forge(NodeClaimed, string(a), prjID, &types.NodeClaimed{Type: "node_claimed", Node: a, Key: key2, Inputs: in}),
+		"a claim of a claimed node":        forge(NodeClaimed, string(a), prjID, &types.NodeClaimed{Type: "node_claimed", Node: a, Key: key, Inputs: in}),
 		"a claim with no inputs":           forge(NodeClaimed, string(other), prjID, claimOther([]types.NodeClaimedInputsItem{})),
 		"a claim with an input twice":      forge(NodeClaimed, string(other), prjID, claimOther(append(in[:1:1], in[0]))),
 		"a claim with an undeclared input": forge(NodeClaimed, string(other), prjID, claimOther(append(in[:1:1], types.NodeClaimedInputsItem{Name: "extra", Result: ptr(types.ResultID(resB))}))),
