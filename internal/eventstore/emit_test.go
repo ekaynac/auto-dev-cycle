@@ -22,6 +22,13 @@ func TestEmit(t *testing.T) {
 	if err != nil || out.FirstSeq != 1 || out.LastSeq != 2 {
 		t.Fatalf("applied: %+v %v", out, err)
 	}
+	// Hooks do not emit: neither before the logic nor once it decided.
+	var before, after error
+	h := openWriter(t, Hooks{Identify: allow, Authorize: func(tx *Tx, _ Command) error { before = tx.Emit(emitted); return nil },
+		Project: func(tx *Tx, _ []Event) error { after = tx.Emit(emitted); return nil }})
+	if _, err := h.s.SubmitApplied(context.Background(), command(t, "h", `{}`), Applies(appendTo(t, testSubject, 1))); err != nil || before == nil || after == nil {
+		t.Fatalf("a hook emitted: %v, before %v, after %v", err, before, after)
+	}
 	if err := e.s.View(context.Background(), func(tx *Tx) error {
 		evs, err := tx.EventsAfter(0, 10)
 		if err == nil && (len(evs) != 2 || evs[0].ID != emitted.ID || *evs[0].Command != out.CommandID) {

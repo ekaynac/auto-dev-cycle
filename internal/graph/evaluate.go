@@ -112,13 +112,17 @@ type evaluation struct {
 	env  Env
 	seen map[types.NodeID]bool
 	keys map[string]bool // keys this command claimed
-	evs  []eventstore.Event
+	// renewed: the nodes this command renewed, holders and the demanded
+	// nodes bound to them, which are no producer's result until they
+	// complete again.
+	renewed map[types.NodeID]bool
+	evs     []eventstore.Event
 }
 
 // Evaluate is the events that advance goals: claims, reuses, and the
 // awaiting_input holds raised or cleared, producers first.
 func Evaluate(tx *eventstore.Tx, goals []types.NodeID, env Env) ([]eventstore.Event, error) {
-	e := &evaluation{tx: tx, env: env, seen: map[types.NodeID]bool{}, keys: map[string]bool{}}
+	e := &evaluation{tx: tx, env: env, seen: map[types.NodeID]bool{}, keys: map[string]bool{}, renewed: map[types.NodeID]bool{}}
 	for _, g := range goals {
 		if err := e.visit(g); err != nil {
 			return nil, err
@@ -139,12 +143,17 @@ func (e *evaluation) visit(n types.NodeID) error {
 	case rec.State.State == types.NodeStateStateCompleted:
 		return e.renew(rec)
 	}
+	waits := false
 	for _, in := range rec.Recorded.Node.Inputs {
 		if src, ok := in.Source.Variant.(*types.ResultSource); ok {
 			if err := e.visit(src.Producer); err != nil {
 				return err
 			}
+			waits = waits || e.renewed[src.Producer]
 		}
+	}
+	if waits {
+		return nil // a producer renewed in this command: a structural wait
 	}
 	answered, err := answers(e.tx, rec, e.env.Authority)
 	if err != nil {
@@ -245,7 +254,7 @@ func (e *evaluation) claim(rec nodeRecord, resolved map[string]Resolved) error {
 func (e *evaluation) renew(rec nodeRecord) error {
 	holder, _, err := load[types.NodeID](e.tx, KeyProjection, keyIndex(rec.Recorded.Task, rec.State.Key.Key))
 	r, _, rerr := load[types.ResultRecorded](e.tx, ResultProjection, string(*rec.State.Result))
-	if err = errors.Join(err, rerr); err != nil || holder == "" || r.ReceiptValidUntil == nil || e.keys["renew/"+string(holder)] {
+	if err = errors.Join(err, rerr); err != nil || holder == "" || r.ReceiptValidUntil == nil {
 		return err
 	}
 	if expired, err := expiredAt(*r.ReceiptValidUntil, e.tx.Now().UTC().Format(time.RFC3339Nano)); err != nil || !expired {
@@ -256,7 +265,11 @@ func (e *evaluation) renew(rec nodeRecord) error {
 			return err
 		}
 	}
-	e.keys["renew/"+string(holder)] = true
+	again := e.renewed[holder]
+	e.renewed[holder], e.renewed[rec.Recorded.Node.ID] = true, true
+	if again {
+		return nil
+	}
 	evs, err := Renew(e.tx, holder, e.env.Blobs)
 	e.evs = append(e.evs, evs...)
 	return err

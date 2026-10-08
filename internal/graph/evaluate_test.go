@@ -321,3 +321,41 @@ func TestEvaluateOnce(t *testing.T) {
 		t.Error("an authority error was ignored")
 	}
 }
+
+// A producer renewed in this command is a structural wait, even for an
+// input that needs no receipt: a review result holding an expiring
+// receipt, consumed by a review.
+func TestEvaluateWaitsOnARenewal(t *testing.T) {
+	g := openStore(t)
+	producer, _ := g.completedWith(types.NodeKindReview, types.ResultKindReview,
+		[]types.Ref{g.sealed(types.RefTypeReceipt, rcpID, g.receiptBlob(treeSubject(treeA, demandA), &past))})
+	like := g.newNode(types.NodeKindReview)
+	like.Node.Params = g.newNodeLike(producer).Params
+	reuser := g.record(like)
+	g.must(reuseOf(reuser, g.planRes))
+	consumer, onReuser := g.consumerOf(producer, types.ResultKindReview), g.consumerOf(reuser, types.ResultKindReview)
+	g.must(evaluate(g.env(noRequirement), onReuser, consumer))
+	if g.count(NodeRenewed) != 1 || g.state(consumer).State != types.NodeStateStateWaiting || g.state(onReuser).State != types.NodeStateStateWaiting {
+		t.Fatalf("the consumers of a renewal: %+v %+v", g.state(consumer), g.state(onReuser))
+	}
+}
+
+// A result built while its input's receipt was fresh and submitted after it
+// expired is refused by the fold, from the validity the input bound.
+func TestBufferedResultAfterExpiry(t *testing.T) {
+	g := openStore(t)
+	producer, _ := g.completedWith(types.NodeKindReview, types.ResultKindReview,
+		[]types.Ref{g.sealed(types.RefTypeReceipt, rcpID, g.receiptBlob(treeSubject(treeA, demandA), &future))})
+	consumer := g.consumerOf(producer, types.ResultKindReview)
+	g.must(evaluate(g.env(noRequirement), consumer))
+	r := g.reviewResult(consumer)
+	g.must(commit(consumer, r, g.env(noRequirement)))
+	expiring, _ := g.completedWith(types.NodeKindReview, types.ResultKindReview,
+		[]types.Ref{g.sealed(types.RefTypeReceipt, rcpID, g.receiptBlob(treeSubject(treeA, demandA), &past))})
+	late := g.consumerOf(expiring, types.ResultKindReview)
+	resolved := map[string]Resolved{"gate": {Result: *g.state(expiring).Result}}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Claim(tx, late, resolved, 0) })
+	if err := g.do(commit(late, g.reviewResult(late), g.env(noRequirement))); err == nil || !strings.Contains(err.Error(), "expired before the result") {
+		t.Fatalf("a result after its input expired: %v", err)
+	}
+}
