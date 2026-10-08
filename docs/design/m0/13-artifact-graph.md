@@ -250,6 +250,36 @@ Consequences that hold:
 - **A cached effect result is history, not current state.** A new goal ("deploy A") always creates a new operation,
   which reconciles against the target's current state. Deploying A, then B, then requesting A again deploys A again.
   It does not hit the old result.
+- **The keying rule** (G7a). An effect node's goal is one effect operation, a durable effect (03) whose request is
+  the node instance, its claim's computation key and inputs, the target its params name, and the **want**: what the
+  target is to hold. The want is content identity, the content digest of the one ref its one result input holds (a
+  deploy's package bytes), never a digest of the controller's own records. A real target reports what it runs by
+  the same digest. The request's digest identifies the operation.
+  - The node instance is in the request, so the computation key alone never finds an operation. Deploy A and deploy
+    A again share a computation key (effect nodes are not memoized, see "v1 scope"). Each goal is its own node
+    instance, so its operation is new. An invalidation's next generation is a new key, so it is also a new
+    operation.
+  - Re-deriving the request after a crash finds the intended effect, and the operation resumes it: nothing intends a
+    second effect for one request. Two recorded effects for one request are `could_not_run/ambiguous_state`.
+- **One live operation per target.** While an effect of a kind on a target is pending or uncertain, no other
+  operation of that kind is intended there: the new goal waits, structurally, recording nothing, until the live one
+  completes or is confirmed failed. So a stale operation, resumed after a newer goal was demanded, never lands over
+  the newer one: the newer one is intended only after the stale one settles.
+- **Re-validation before egress.** A new operation re-resolves its claim's inputs in the transaction that intends
+  it, exactly as a commit does ([G4]), and is refused as the commit would be. A resume of an intended effect does
+  not re-validate: its reconciliation must finish.
+- **Reconciliation comes before egress.** A pending effect whose target already holds the want is observed without
+  egress. Otherwise it is applied under its effect id by **compare-and-set**: the apply lands only while the target
+  still holds the value just observed (the shape of G7b's expected-base merge). A target that moved in between, or
+  an apply that fails, leaves the effect uncertain.
+  - An uncertain effect (pending at a restart) completes if the target holds the want. Otherwise an idempotent kind
+    is retried under the same id. Any other kind stays uncertain, recorded as `still_uncertain` once per change in
+    what was observed.
+  - A `failed_confirmed` effect stays its node's outcome. A retry is a new operation, by an invalidation of the node.
+  - One effect is run by one runner at a time. Concurrent runners of one pending effect are M1's, with the effect
+    runtime.
+- The effect's state is the operation's outcome. Until a deploy result kind exists, a deploy node records no graph
+  result.
 
 ## Evidence targets and restore [G5]
 

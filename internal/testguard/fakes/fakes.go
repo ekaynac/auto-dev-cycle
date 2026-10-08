@@ -38,5 +38,6 @@ func All() []Fake {
 		{"Fake scheduler", "internal/capacity/fakesched", true, "built: the deterministic scheduler of 05 \"What M0 delivers\""},
 		{"Fake authenticator", "internal/authority/fakeauthn", true, "built: a WebAuthn authenticator for the challenge fixtures (11)"},
 		{"Fake owed-answer authority", Prefix + "owedanswers", true, "built: an owed input's answer, granted or revoked by event and read through the transaction (G4b); who may answer is M1's"},
+		{"Fake effect target", Prefix + "effecttarget", true, "built: a value held per target, applied by compare-and-set under an effect id and logged in order (G7a)"},
 	}
 }

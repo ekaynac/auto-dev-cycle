@@ -1,0 +1,9 @@
+{
+  "name": "one-live-operation-per-target",
+  "invariant": "One operation is live per target, so a stale operation never lands over a newer one: A is intended and the controller crashes; B waits while A's effect is uncertain and intends nothing; A resumes, then B applies, and the target ends on B (13 [G4]).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.effect-target-unfenced"
+}

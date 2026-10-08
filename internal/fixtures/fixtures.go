@@ -80,6 +80,11 @@ var runners = map[string]runner{
 	"evidence-total-cap-exhausted":      evidenceTotalCapExhausted,
 	"expired-receipt-renews":            expiredReceiptRenews,
 	"revoked-approval-blocks-commit":    revokedApprovalBlocksCommit,
+	"deploy-again-deploys-again":        deployAgainDeploysAgain,
+	"deploy-held-applies-nothing":       deployAgainDeploysAgain, // its fourth goal, under its own mutation
+	"crash-after-intent-resumes":        crashAfterIntentResumes,
+	"one-live-operation-per-target":     oneLiveOperationPerTarget,
+	"target-moved-refuses-apply":        targetMovedRefusesApply,
 }
 
 // Goldens loads and validates every golden, checking that each has a

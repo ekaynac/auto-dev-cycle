@@ -1,0 +1,11 @@
+{
+  "name": "deploy-again-deploys-again",
+  "invariant": "Deploy A, then B, then A again deploys A again: each goal is a new deploy node and so a new effect operation, keyed by its node instance and reconciled against the target's current state, never an earlier operation's cached result; a fourth goal, A while the target already holds A, completes with no apply (13 [G4]).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.effect-keyed-by-computation"
+}

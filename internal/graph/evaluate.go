@@ -270,6 +270,25 @@ func Commit(tx *eventstore.Tx, node types.NodeID, r types.Result, env Env) error
 	if tx.Now().IsZero() {
 		return errors.New("graph: a commit runs in a command's transaction")
 	}
+	if err := revalidate(tx, node, env); err != nil {
+		return err
+	}
+	evs, err := recordResult(tx, types.ResultRecorded{Node: node, Result: r}, env.Blobs)
+	if err == nil && r.Outcome != types.OutcomeCouldNotRun {
+		var sel []eventstore.Event
+		sel, err = selectResult(tx, node, r.ID)
+		evs = append(evs, sel...)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Emit(evs...)
+}
+
+// revalidate: every input of node's claim still resolves, in tx at its
+// time, to what the claim fixed (13 [G4]), checked in declared order; else
+// ErrRevalidated. Commit and Operate (before egress) run it.
+func revalidate(tx *eventstore.Tx, node types.NodeID, env Env) error {
 	c, ok, err := load[claim](tx, ClaimProjection, string(node))
 	rec, rerr := loadNode(tx, node)
 	if err = errors.Join(err, rerr); err != nil || !ok {
@@ -300,14 +319,5 @@ func Commit(tx *eventstore.Tx, node types.NodeID, r types.Result, env Env) error
 		}
 		return ErrRevalidated{Input: types.Name(name), Reason: reason, Detail: detail}
 	}
-	evs, err := recordResult(tx, types.ResultRecorded{Node: node, Result: r}, env.Blobs)
-	if err == nil && r.Outcome != types.OutcomeCouldNotRun {
-		var sel []eventstore.Event
-		sel, err = selectResult(tx, node, r.ID)
-		evs = append(evs, sel...)
-	}
-	if err != nil {
-		return err
-	}
-	return tx.Emit(evs...)
+	return nil
 }

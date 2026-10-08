@@ -121,6 +121,60 @@ func (t *Tx) IntendEffect(id, kind, target string, request json.RawMessage) erro
 	return nil
 }
 
+// ErrAmbiguousEffect: two recorded effects where one is allowed (rule 2:
+// could_not_run/ambiguous_state, never a pick).
+var ErrAmbiguousEffect = errors.New("ambiguous_state")
+
+// EffectFor is the effect of kind intended for request, if any: one this
+// command intends, or one recorded. An operation resumes through it, so a
+// crash after the intent never allocates another effect (13 [G4]).
+func (t *Tx) EffectFor(kind string, request json.RawMessage) (Effect, bool, error) {
+	d, err := digest(request)
+	if err != nil {
+		return Effect{}, false, fmt.Errorf("eventstore: effect request: %w", err)
+	}
+	return t.oneEffect(func(in intent) bool { return in.kind == kind && in.digest == d },
+		`kind = ? AND request_digest = ?`, kind, d)
+}
+
+// LiveEffect is the effect of kind on target that is pending or uncertain,
+// if any: one this command intends, or one recorded. An operation on a
+// target waits while another is live (13 [G4]).
+func (t *Tx) LiveEffect(kind, target string) (Effect, bool, error) {
+	return t.oneEffect(func(in intent) bool { return in.kind == kind && in.target == target },
+		`kind = ? AND target = ? AND state IN ('pending', 'uncertain')`, kind, target)
+}
+
+// oneEffect is the effect this command intends that match selects, or the
+// one recorded effect the where clause (a constant) selects; two recorded
+// are ErrAmbiguousEffect.
+func (t *Tx) oneEffect(match func(intent) bool, where string, args ...any) (Effect, bool, error) {
+	for _, in := range t.intents {
+		if match(in) {
+			return Effect{ID: in.id, Kind: in.kind, Target: in.target, RequestDigest: in.digest, State: EffectPending, Attempts: 1}, true, nil
+		}
+	}
+	var n int
+	var id sql.NullString
+	err := t.tx.QueryRowContext(t.ctx, `SELECT count(*), min(id) FROM effects WHERE `+where, args...).Scan(&n, &id)
+	switch {
+	case err != nil:
+		return Effect{}, false, t.io(err)
+	case n > 1:
+		return Effect{}, false, fmt.Errorf("eventstore: %w: %d effects where one is allowed (%v)", ErrAmbiguousEffect, n, args)
+	case n == 0:
+		return Effect{}, false, nil
+	}
+	e, err := loadEffect(t.ctx, t.tx, id.String)
+	return e, err == nil, t.io(err)
+}
+
+// EffectKind is how a registered effect kind recovers.
+func (s *Store) EffectKind(kind string) (EffectKind, bool) {
+	k, ok := s.effects[kind]
+	return k, ok
+}
+
 // effectPayload is the canonical payload of an effect event.
 func effectPayload(id, transition string, kind, target, digest, outcome *string, observation string, resultRef *string) ([]byte, error) {
 	return json.Marshal(struct {

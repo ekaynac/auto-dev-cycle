@@ -1,0 +1,8 @@
+{
+  "name": "target-moved-refuses-apply",
+  "invariant": "An effect's apply is a compare-and-set on the value the operation observed: when the target moves between the observation and the apply, nothing lands and the effect is uncertain; run again, it reconciles against the moved target and applies (13 [G4]).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.effect-apply-blind"
+}
