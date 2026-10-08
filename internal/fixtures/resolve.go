@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -26,17 +28,48 @@ import (
 // result. The gate result's receipt is about tree A; a review of tree A
 // resolves it, a review of tree B finds it missing as evidence_inapplicable
 // (13 "Evaluation"; 06; 11 intake). The requirement is the fixture's until
-// the review kind's own (G4b), which also refuses the lease and the commit.
+// the review kind's own.
 func reviewNeedsItsTree(ctx context.Context, dir string) ([]Step, []string, error) {
-	return resolveGate(ctx, dir, []resolveCase{{gate: demandA, tree: treeA, demand: demandA}, {gate: demandA, tree: treeB, demand: demandA}})
+	return resolveGate(ctx, dir, []resolveCase{{gate: demandA, tree: treeA, demand: demandA}, {gate: demandA, tree: treeB, demand: demandA}}, nil)
 }
 
 // receiptForAnotherDemand: a receipt for another demand does not apply,
 // whatever its conclusions. Two gate results with the same predicate
 // conclusions, on the same tree, hold receipts for demands A and B: B's
-// serves demand B, A's does not (06 rule 6; 11 intake).
+// serves demand B, A's does not (06 rule 6; 11 intake). The evaluator
+// does not claim the review of A's gate for demand B (the lease half), and
+// a review claimed for demand A does not commit once demand B is required
+// (the commit half, 13 [G4]).
 func receiptForAnotherDemand(ctx context.Context, dir string) ([]Step, []string, error) {
-	return resolveGate(ctx, dir, []resolveCase{{gate: demandB, tree: treeA, demand: demandB}, {gate: demandA, tree: treeA, demand: demandB}})
+	return resolveGate(ctx, dir, []resolveCase{{gate: demandB, tree: treeA, demand: demandB}, {gate: demandA, tree: treeA, demand: demandB}}, leaseAndCommit)
+}
+
+// leaseAndCommit evaluates the review of demand A's gate for demand B,
+// then claims it for demand A and commits it for demand B.
+func leaseAndCommit(g *graphFix, reviews map[types.Digest]types.NodeID) ([]Step, error) {
+	review := reviews[demandA]
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Evaluate(tx, []types.NodeID{review}, g.env(treeA, demandB))
+	}); err != nil {
+		return nil, err
+	}
+	st, _, err := g.node(review)
+	if err != nil {
+		return nil, err
+	}
+	lease := Step{vocab.Empty, vocab.ReasonCompletedClean.String()}
+	if st.State != types.NodeStateStateClaimed {
+		if lease, err = g.resolved(review, treeA, demandB, time.Now()); err != nil {
+			return nil, err
+		}
+		if err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.Evaluate(tx, []types.NodeID{review}, g.env(treeA, demandA))
+		}); err != nil {
+			return nil, err
+		}
+	}
+	commit, err := g.commit(review, types.ResultKindReview, g.env(treeA, demandB))
+	return []Step{lease, commit}, err
 }
 
 const (
@@ -89,8 +122,10 @@ func openGraph(ctx context.Context, dir string) (g *graphFix, close func() error
 	none := func(*eventstore.Tx, eventstore.Command) error { return nil }
 	var s *eventstore.Store
 	if err == nil {
-		s, err = eventstore.Open(ctx, lock, eventstore.Config{Kinds: graph.Kinds(), Blobs: blobs,
-			Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(graph.Project)}})
+		kinds := graph.Kinds()
+		maps.Copy(kinds, owedanswers.Kinds())
+		s, err = eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+			Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(graph.Project, owedanswers.Project)}})
 	}
 	if err != nil {
 		return nil, nil, errors.Join(err, lock.Release())
@@ -157,12 +192,9 @@ func (g *graphFix) selectResult(n types.NodeID, rk types.ResultKind, value []typ
 	}
 	r := types.Result{ID: types.ResultID(rid), Computation: st.Key.Key, Kind: rk, Value: value, Conclusions: conclusions,
 		Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean, Completed: true}
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.RecordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
-	}); err != nil {
-		return "", err
-	}
-	return r.ID, g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return graph.Select(tx, n, r.ID) })
+	return r.ID, g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return nil, graph.Commit(tx, n, r, g.env(treeA, demandA))
+	})
 }
 
 // node is n's state and its claim's command, read from the projections.
@@ -225,13 +257,7 @@ func on(name string, producer types.NodeID, kind types.ResultKind) []types.Input
 // receipt about tree under demand: empty/completed_clean when its gate
 // input resolves, could_not_run with the refusal's reason when it does not.
 func (g *graphFix) resolved(review types.NodeID, tree string, demand types.Digest, at time.Time) (Step, error) {
-	subject, err := subjectOf(tree, demand)
-	if err != nil {
-		return Step{}, err
-	}
-	need := func(types.Node, types.InputSpec) (*receipt.Requirement, error) {
-		return &receipt.Requirement{Kind: types.ReceiptKindGate, Instrument: types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: instrumentDigest}, Subject: subject}, nil
-	}
+	need := gateNeed(tree, demand)
 	var res map[string]graph.Resolved
 	var miss []graph.Missing
 	if err := g.s.View(g.ctx, func(tx *eventstore.Tx) (err error) {
@@ -252,7 +278,7 @@ func (g *graphFix) resolved(review types.NodeID, tree string, demand types.Diges
 // resolveGate builds plan → gate → review for each gate a case names (its
 // result holding a clean receipt about tree A under that demand), and
 // resolves the case's review.
-func resolveGate(ctx context.Context, dir string, cases []resolveCase) (steps []Step, violations []string, err error) {
+func resolveGate(ctx context.Context, dir string, cases []resolveCase, after func(*graphFix, map[types.Digest]types.NodeID) ([]Step, error)) (steps []Step, violations []string, err error) {
 	g, closeFn, err := openGraph(ctx, dir)
 	if err != nil {
 		return nil, nil, err
@@ -278,6 +304,13 @@ func resolveGate(ctx context.Context, dir string, cases []resolveCase) (steps []
 			return nil, nil, err
 		}
 		o.steps = append(o.steps, st)
+	}
+	if after != nil {
+		more, err := after(g, reviews)
+		if err != nil {
+			return nil, nil, err
+		}
+		o.steps = append(o.steps, more...)
 	}
 	return o.steps, o.violations, nil
 }

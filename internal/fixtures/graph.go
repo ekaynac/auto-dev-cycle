@@ -70,10 +70,7 @@ func duplicateDemandsShareOneClaim(ctx context.Context, dir string) (steps []Ste
 			if err != nil {
 				return nil, err
 			}
-			return graph.RecordResult(tx, types.ResultRecorded{Node: plan.Node.ID, Result: planResult}, nil)
-		},
-		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return graph.Select(tx, plan.Node.ID, planResult.ID)
+			return nil, graph.Commit(tx, plan.Node.ID, planResult, graph.Env{Need: noNeed})
 		},
 	} {
 		if err := do(fn); err != nil {

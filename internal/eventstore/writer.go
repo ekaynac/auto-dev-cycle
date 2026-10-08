@@ -147,6 +147,7 @@ type Tx struct {
 	store   *Store   // set for a command's transaction
 	owner   *Store   // the store a command's or a View's transaction is on
 	intents []intent // effects the command intends
+	emitted []Event  // events the logic recorded itself (Emit)
 	object  *Object  // the command's object, as Authorize bound it
 	// decided: the command's decision, when Authorize made it (Tx.Decided).
 	decided *Decision
@@ -160,6 +161,18 @@ type Tx struct {
 	fault error
 	// at is when a command's events are recorded (Tx.Now).
 	at time.Time
+}
+
+// Emit records evs as the command's own events, ahead of those its logic
+// returns, so a logic can write events it never hands back to a caller
+// (graph.Commit: 13 [G4]). Only a command's transaction emits, and only an
+// applied command records what it emitted.
+func (t *Tx) Emit(evs ...Event) error {
+	if t.store == nil || t.readOnly || t.rebuild {
+		return errors.New("eventstore: only a command's transaction emits events")
+	}
+	t.emitted = append(t.emitted, evs...)
+	return nil
 }
 
 // Now is the command's one clock reading: every time decision in the
@@ -533,8 +546,12 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 		if err := checkDecision(d, canonResult, len(t.intents)); err != nil {
 			return err
 		}
-		appended := make([]Event, 0, len(d.Events))
-		for _, e := range d.Events {
+		if d.Disposition != DispositionApplied && len(t.emitted) > 0 {
+			return fmt.Errorf("eventstore: a %s command emits no event", d.Disposition)
+		}
+		events := append(slices.Clone(t.emitted), d.Events...)
+		appended := make([]Event, 0, len(events))
+		for _, e := range events {
 			// Effect events are the store's own: only IntendEffect and the
 			// transitions write them, so the effects table always agrees.
 			if isEffectKind(e.Kind) {

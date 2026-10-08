@@ -28,9 +28,10 @@ package graph
 //     holds. An invalidation retires its retry waits in the same command
 //     and keeps every other wait, with its id, since and pages.
 //   - Transferring a hold to a replacement is G6b's, inside its
-//     supersession. Tying awaiting_input to an owed input the node declares
-//     is G4b's. As for Claim, M1's commands take the project from the
-//     actor's authorization before they call these builders.
+//     supersession. The evaluator ties awaiting_input to an owed input the
+//     node declares (evaluate.go); this fold does not, until M1 records owed
+//     inputs. As for Claim, M1's commands take the project from the actor's
+//     authorization before they call these builders.
 
 import (
 	"errors"

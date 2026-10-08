@@ -23,7 +23,7 @@ var (
 // recordResult records r for n.
 func (g graphStore) recordResult(n types.NodeID, r types.Result) error {
 	return g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
 	})
 }
 
@@ -38,7 +38,7 @@ func TestRetryKeepsTheKey(t *testing.T) {
 	failed := unrecorded(t, key)
 	failed.Kind, failed.Outcome, failed.Reason, failed.Detail, failed.Completed, failed.Value = types.ResultKindEvidence, types.OutcomeCouldNotRun, vocab.ReasonPreconditionFailed, "probe", false, []types.Ref{}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: n, Result: failed}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: n, Result: failed}, g.blobs)
 	})
 	h := newHold(t, "", types.OwnerEnvironmentOwner, ptr("staging-owner"))
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Retry(tx, n, failed.ID, h, nil) })
@@ -90,7 +90,7 @@ func TestRenew(t *testing.T) {
 	}
 	// The renewal is a boundary: the renewed result is not selected again,
 	// so the node is not completed with it and does not renew again.
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, holder, old.ID) }); err == nil {
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, holder, old.ID) }); err == nil {
 		t.Fatal("the renewed result selected again")
 	}
 	if err := g.do(renew(holder, g)); err == nil {
@@ -127,7 +127,7 @@ func TestRenewRefusals(t *testing.T) {
 	build := g.record(g.newNode(types.NodeKindBuild))
 	g.must(g.claimOf(build))
 	built := g.result(build, true)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, build, built.ID) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, build, built.ID) })
 	renewal := func(subject string, project types.ProjectID, n types.NodeID, k types.ComputationKey, res types.ResultID, rcpt types.Digest, until string) logic {
 		return forge(NodeRenewed, subject, project, &types.NodeRenewed{Type: "node_renewed", Node: n, Key: k, Result: res, Receipt: rcpt, ValidUntil: types.Time(until)})
 	}
@@ -188,16 +188,16 @@ func TestRenewalIsASelectionBoundary(t *testing.T) {
 		}
 		r.Value = []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)}
 		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return RecordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
+			return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
 		})
 		return r
 	}
 	long := result(future, types.OutcomeEmpty, vocab.ReasonCompletedClean)
 	short := result(past, types.OutcomeFound, vocab.ReasonCompletedWithFindings)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, n, short.ID) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, short.ID) })
 	g.must(renew(n, g))
 	for name, id := range map[string]types.ResultID{"the renewed result": short.ID, "an older result": long.ID} {
-		if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, n, id) }); err == nil {
+		if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, id) }); err == nil {
 			t.Errorf("%s selected after the renewal", name)
 		}
 	}
@@ -254,7 +254,7 @@ func TestRecordResultBindsTheReceipt(t *testing.T) {
 	g.must(g.claimOf(n))
 	plain := unrecorded(t, *g.state(n).Key)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: n, Result: plain, ReceiptValidUntil: ptr(types.Time(past))}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: n, Result: plain, ReceiptValidUntil: ptr(types.Time(past))}, g.blobs)
 	})
 	if r, _ := view[types.ResultRecorded](g, ResultProjection, string(plain.ID)); r.ReceiptValidUntil != nil {
 		t.Errorf("the caller's binding: %v", *r.ReceiptValidUntil)
@@ -266,7 +266,7 @@ func TestRecordResultBindsTheReceipt(t *testing.T) {
 	held.Conclusions = ptr(conclusions)
 	for name, blobs := range map[string]receipt.Blobs{"no blob": g.blobs, "no blob store": nil} {
 		if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return RecordResult(tx, types.ResultRecorded{Node: gate, Result: held}, blobs)
+			return recordResult(tx, types.ResultRecorded{Node: gate, Result: held}, blobs)
 		}); err == nil {
 			t.Errorf("a receipt Ref with %s recorded", name)
 		}
@@ -289,14 +289,14 @@ func TestRenewalBoundaryMoves(t *testing.T) {
 		r.Kind, r.Outcome, r.Reason, r.Detail, r.Conclusions = types.ResultKindGateResult, types.OutcomeEmpty, vocab.ReasonCompletedClean, "", ptr(g.conclusions[d])
 		r.Value = []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)}
 		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return RecordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
+			return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
 		})
 		return r
 	}
 	x, y := between(future), between(past)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, n, y.ID) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, y.ID) })
 	g.must(renew(n, g))
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, n, x.ID) }); err == nil {
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, x.ID) }); err == nil {
 		t.Error("a result from before the second renewal selected")
 	}
 }
@@ -319,7 +319,7 @@ func TestRenewalNeedsAFreshReceipt(t *testing.T) {
 		t.Fatalf("an old receipt recorded after the renewal: %v", err)
 	}
 	g.must(forge(ResultRecorded, string(r.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: n, Result: r, ReceiptValidUntil: ptr(types.Time(future))}))
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, n, r.ID) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, r.ID) })
 	if !g.refused(review, gateOn(treeA, demandA), vocab.ReasonEvidenceInapplicable) {
 		t.Error("an old receipt serves after the renewal")
 	}

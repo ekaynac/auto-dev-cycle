@@ -54,10 +54,10 @@ var produces = map[types.NodeKind][]types.ResultKind{
 	types.NodeKindMerge:         {types.ResultKindMergeResult},
 }
 
-// RecordResult is the event recording r, a valid result of node's claimed key.
+// recordResult is the event recording r, a valid result of node's claimed key.
 // A result holding one receipt Ref binds that receipt's valid_until, read
 // from blobs, once: renewal and the resolver hold the receipt to it.
-func RecordResult(tx *eventstore.Tx, r types.ResultRecorded, blobs receipt.Blobs) ([]eventstore.Event, error) {
+func recordResult(tx *eventstore.Tx, r types.ResultRecorded, blobs receipt.Blobs) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, r.Node)
 	if err == nil {
 		err = Check(r.Result)
@@ -80,8 +80,8 @@ func RecordResult(tx *eventstore.Tx, r types.ResultRecorded, blobs receipt.Blobs
 	return event(ResultRecorded, string(r.Result.ID), rec.Recorded.Project, &r)
 }
 
-// Select is the event selecting result for node.
-func Select(tx *eventstore.Tx, node types.NodeID, result types.ResultID) ([]eventstore.Event, error) {
+// selectResult is the event selecting result for node.
+func selectResult(tx *eventstore.Tx, node types.NodeID, result types.ResultID) ([]eventstore.Event, error) {
 	return onNode(tx, node, ResultSelected, string(result), &types.ResultSelected{Type: "result_selected", Node: node, Result: result})
 }
 
@@ -160,6 +160,9 @@ func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecor
 	if !slices.Contains(produces[rec.Recorded.Node.Kind], p.Result.Kind) {
 		return fmt.Errorf("a %s node does not record a %s result", rec.Recorded.Node.Kind, p.Result.Kind)
 	}
+	if err := claimHolds(tx, rec); err != nil {
+		return err
+	}
 	if err := CheckRead(p.Result); err != nil {
 		return err
 	}
@@ -181,6 +184,17 @@ func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecor
 	return put(tx, ResultProjection, string(p.Result.ID), p)
 }
 
+// claimHolds: the result inputs rec's claim fixed are still their
+// producers' selected results at their current keys (13 [G4]), from the log
+// alone; Commit checks the rest, the authority included.
+func claimHolds(tx *eventstore.Tx, rec nodeRecord) error {
+	c, ok, err := load[claim](tx, ClaimProjection, string(rec.Recorded.Node.ID))
+	if err != nil || !ok {
+		return errors.Join(err, errors.New("an unclaimed node records no result"))
+	}
+	return selectedInputs(tx, rec, resolutions(c.Inputs))
+}
+
 func selected(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultSelected) error {
 	rec, err := nodeOf(tx, ev, p.Node)
 	if err != nil || ev.Kind != ResultSelected || ev.Subject != string(p.Result) {
@@ -192,6 +206,9 @@ func selected(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultSelected) e
 	}
 	if rec.State.State != types.NodeStateStateClaimed || rec.State.Key.Key != r.Result.Computation {
 		return fmt.Errorf("a %s node selects no result of another key", rec.State.State)
+	}
+	if err := claimHolds(tx, rec); err != nil {
+		return err
 	}
 	// records/result makes every incomplete result could_not_run, and
 	// CheckRead refuses a completed one.

@@ -1,0 +1,9 @@
+{
+  "name": "revoked-approval-blocks-commit",
+  "invariant": "An approval revoked between claim and commit blocks the commit: a review owing a ruling holds on awaiting_input, tied to its owed input; the answer clears the hold and the review is claimed; once the approval no longer answers the owed input, the commit is refused as authority_revoked, re-validated in the committing transaction (13 [G4]; 04).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "authority_revoked"}
+  ],
+  "mutation": "graph.commit-skips-authority"
+}

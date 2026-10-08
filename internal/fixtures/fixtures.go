@@ -76,6 +76,7 @@ var runners = map[string]runner{
 	"receipt-for-another-demand":        receiptForAnotherDemand,
 	"evidence-retries-on-its-probe":     evidenceRetriesOnItsProbe,
 	"expired-receipt-renews":            expiredReceiptRenews,
+	"revoked-approval-blocks-commit":    revokedApprovalBlocksCommit,
 }
 
 // Goldens loads and validates every golden, checking that each has a

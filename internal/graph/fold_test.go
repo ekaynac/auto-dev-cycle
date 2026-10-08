@@ -34,7 +34,7 @@ func TestFoldRefusals(t *testing.T) {
 	g.must(g.claimOf(c))
 	good := unrecorded(t, key) // selectable
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: a, Result: good}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: a, Result: good}, g.blobs)
 	})
 	odd := unrecorded(t, key)
 	odd.Completed, odd.Outcome, odd.Reason, odd.Detail = true, types.OutcomeCouldNotRun, vocab.ReasonExecutorIncomplete, "a report that is not completion"
@@ -120,8 +120,8 @@ func TestFoldRefusals(t *testing.T) {
 	}
 	// A selected node is completed: it selects nothing more and records no
 	// further result.
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, a, good.ID) })
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, a, good.ID) }); err == nil {
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, a, good.ID) })
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, a, good.ID) }); err == nil {
 		t.Error("a second selection was admitted")
 	}
 	if err := g.do(forge(ResultRecorded, string(ok.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: ok})); err == nil {

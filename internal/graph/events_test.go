@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -54,8 +56,10 @@ func openStore(t *testing.T) graphStore {
 		t.Fatal(err)
 	}
 	none := func(*eventstore.Tx, eventstore.Command) error { return nil }
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: Kinds(), Blobs: blobs,
-		Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(Project)}})
+	kinds := Kinds()
+	maps.Copy(kinds, owedanswers.Kinds())
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+		Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(Project, owedanswers.Project)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,9 +114,9 @@ func (g graphStore) planOf(task types.TaskID, project types.ProjectID) (types.No
 	res := types.Result{ID: types.ResultID(rid), Computation: g.state(n).Key.Key, Kind: types.ResultKindPlan, Value: []types.Ref{},
 		Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean, Completed: true}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: n, Result: res}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: n, Result: res}, g.blobs)
 	})
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, n, res.ID) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, res.ID) })
 	return n, res.ID
 }
 
@@ -213,7 +217,7 @@ func (g graphStore) result(n types.NodeID, completed bool) types.Result {
 		r = must(Build(*g.state(n).Key, BuildFacts{Project: prjID}))
 	}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
 	})
 	return r
 }
@@ -321,14 +325,14 @@ func TestClaimsAreScoped(t *testing.T) {
 	unselected := must(Build(*g.state(p1).Key, BuildFacts{Project: prjID}))
 	unselected.Kind = types.ResultKindPlan
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: p1, Result: unselected}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: p1, Result: unselected}, g.blobs)
 	})
 	dropped, droppedRes := g.planOf(tskID, prjID)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Invalidate(tx, dropped) })
 	builder := g.record(g.newNode(types.NodeKindBuild))
 	g.must(g.claimOf(builder))
 	patch := g.result(builder, true)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, builder, patch.ID) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, builder, patch.ID) })
 	// A producer's completed result that it did not select.
 	twice := g.newNode(types.NodeKindPlan)
 	twice.Node.Inputs, twice.Node.Params = []types.InputSpec{}, []byte(`{"twice":true}`)
@@ -338,12 +342,12 @@ func TestClaimsAreScoped(t *testing.T) {
 		r := unrecorded(t, *g.state(p5).Key)
 		r.Kind, r.Value, r.Outcome, r.Reason, r.Detail = types.ResultKindPlan, []types.Ref{}, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
 		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return RecordResult(tx, types.ResultRecorded{Node: p5, Result: r}, g.blobs)
+			return recordResult(tx, types.ResultRecorded{Node: p5, Result: r}, g.blobs)
 		})
 		return r
 	}
 	chosen, passed := planResult(), planResult()
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, p5, chosen.ID) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, p5, chosen.ID) })
 	on := func(producer types.NodeID, res types.ResultID) logic {
 		return claimWith(g.record(g.nodeOn(types.NodeKindBuild, producer)), res)
 	}
@@ -379,7 +383,7 @@ func TestNodeLifecycleRebuilds(t *testing.T) {
 	b := g.record(succ)
 	g.must(g.claimOf(a))
 	old := g.result(a, true)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, a, old.ID) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, a, old.ID) })
 	if st := g.state(a); st.State != types.NodeStateStateCompleted || *st.Result != old.ID {
 		t.Fatalf("%+v", st)
 	}
@@ -388,7 +392,7 @@ func TestNodeLifecycleRebuilds(t *testing.T) {
 	if st.State != types.NodeStateStateClaimed || st.Result != nil || st.Key.Generation != 2 || st.Key.Key == old.Computation {
 		t.Fatalf("after the invalidation: %+v", st)
 	}
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, a, old.ID) }); err == nil {
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, a, old.ID) }); err == nil {
 		t.Fatal("the old generation's result was selected again")
 	}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Invalidate(tx, a) })
@@ -396,7 +400,7 @@ func TestNodeLifecycleRebuilds(t *testing.T) {
 		t.Fatalf("after a second invalidation: %+v, claim %+v", st, g.claimed(a))
 	}
 	fresh := g.result(a, true)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, a, fresh.ID) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, a, fresh.ID) })
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return Claim(tx, b, map[string]Resolved{"plan": {Result: g.planRes}, "ruling": {Approval: aprA, Revision: 2}}, 1)
 	})
@@ -531,7 +535,7 @@ func TestDeprecatedReasonsReplay(t *testing.T) {
 	registry = func() (*vocab.Registry, error) { return copy, nil }
 	t.Cleanup(func() { registry = vocab.Load })
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: a, Result: unrecorded(t, *g.state(a).Key)}, g.blobs)
+		return recordResult(tx, types.ResultRecorded{Node: a, Result: unrecorded(t, *g.state(a).Key)}, g.blobs)
 	}); err == nil {
 		t.Fatal("a writer recorded a deprecated reason")
 	}

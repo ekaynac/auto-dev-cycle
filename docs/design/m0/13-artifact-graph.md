@@ -171,10 +171,31 @@ The controller evaluates **goals** (e.g. "merge the candidate of task T", "close
   - The fold re-derives a claim: one resolution per declared input, in order, and the key from them.
 - **Waiting is structural for internal inputs.** A node with a missing input is `waiting(input)`, and its signal is
   that input's result. External waits (approval, quota, human act, probe) use the hold registry (02).
+  - The evaluator walks from its goals through each node's producers first, once per node, and claims a node once all
+    its inputs resolve. A missing internal input records nothing. One evaluation claims a memoizable key once: another
+    instance of a key it claimed waits, and every instance of a key whose holder is completed reuses its result. A
+    demanded completed node whose selected receipt has passed the validity it bound is renewed through the holder of
+    its key, and its dependants wait for the fresher result.
+  - A missing answer raises `awaiting_input` only against the owed input the node declares: the hold's signal instance
+    is `<owed input>@<revision>`, and its owner is the owed input's grant holder. Once the authority answers, the
+    evaluation clears the hold on that signal and claims the node in the same command. A receipt owed input is not
+    an answer: the node declares the evidence node's result, and the owed input names that evidence node (E1).
 - **Inputs are resolved, and mutable eligibility is re-checked at commit** [G4]. A node's inputs are fixed when it is
   claimed. But approvals and grants can be revoked, receipts can expire and policy can tighten in the meantime. So
   authority (04) and applicability (06) are **re-validated in the writer transaction that commits the node's
   result**, and for effectful nodes before the effect starts. This is the explicit exception to "inputs only".
+  - The commit resolves the node's inputs again at the transaction's time and requires each to resolve to what the
+    claim fixed. An answer whose approval no longer answers its owed input refuses the commit as `authority_revoked`;
+    a receipt that no longer applies, with the resolver's reason; a result no longer selected, as
+    `stale_expected_state`. Nothing is recorded then.
+  - The commit checks the claimed inputs in declared order, and writes its events itself in the committing transaction
+    (`Tx.Emit`), handing none back; it is the only exported way to record a result. The result and selection folds
+    refuse, from the log alone, a result whose claim's result inputs are no longer their producers' selected results at
+    their current keys.
+  - Until M1's `input.answer` records owed inputs and their answers (15 D1), the evaluator takes the authority's
+    answers from its caller, which reads the committing transaction and alone decides who may answer (04); the
+    owed-answer fake stands in (11). So no fold checks an approval yet: M1 must make the claim and commit folds check
+    the recorded approvals.
 
 ## Successor rounds [G10]
 

@@ -43,7 +43,7 @@ func evidenceRetriesOnItsProbe(ctx context.Context, dir string) (steps []Step, v
 	hold := types.NodeHold{ID: types.HoldID(hid), SignalInstance: "probe:" + rid, Owner: types.OwnerEnvironmentOwner, OwnerRef: ptrTo("staging-owner"), Pages: []types.NodeHoldPagesItem{}}
 	for _, fn := range []func(*eventstore.Tx) ([]eventstore.Event, error){
 		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return graph.RecordResult(tx, types.ResultRecorded{Node: n, Result: failed}, g.blobs)
+			return nil, graph.Commit(tx, n, failed, g.env(treeA, demandA))
 		},
 		func(tx *eventstore.Tx) ([]eventstore.Event, error) { return graph.Retry(tx, n, failed.ID, hold, nil) },
 	} {
