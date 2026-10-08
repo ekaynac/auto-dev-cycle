@@ -89,7 +89,7 @@ func stub(mode string) int {
 			case "credit-hang":
 				h := fmt.Sprintf(`{"attempt":%q,"handle":"x.txt","digest":"sha256:%s","size":1}`, req.Params.Attempt, strings.Repeat("0", 64))
 				send(`{"jsonrpc":"2.0","method":"adapter.event","params":{"event":"error","turn":1,"class_hint":"credit_exhausted","raw_excerpt":` + h + `,` + stamp + `}}`)
-				time.Sleep(time.Hour)
+				continue // run is never answered; shutdown still is
 			case "env":
 				var names []string
 				for _, kv := range os.Environ() {
@@ -210,19 +210,35 @@ func TestFakeHangIsBounded(t *testing.T) {
 	bounded(t, "result", vocab.ReasonAttemptStopped, map[string]string{"ADC_FAKE_SCENARIO": "hang"}, append([]string{"--env", "ADC_FAKE_SCENARIO", "--"}, fakeCommand(t)...)...)
 }
 
+// bounded runs the harness with only wait's bound short; every other wait
+// gets generousBound, so a slow start under load (Node's, say) never
+// passes a bound the test is not about.
 func bounded(t *testing.T, wait string, reason vocab.Reason, env map[string]string, args ...string) {
 	t.Helper()
-	short := []string{"--json", "--start-timeout", "300ms", "--handshake-timeout", "300ms", "--result-timeout", "500ms", "--shutdown-timeout", "300ms"}
+	flags := []string{"--json"}
+	for _, w := range []string{"start", "handshake", "result", "shutdown"} {
+		d := generousBound
+		if w == wait {
+			d = shortBound
+		}
+		flags = append(flags, "--"+w+"-timeout", d.String())
+	}
 	began := time.Now()
-	code, r, text := harness(t, env, append(short, args...)...)
+	code, r, text := harness(t, env, append(flags, args...)...)
 	if code != entry.ExitCouldNotRun || r.Outcome != types.OutcomeCouldNotRun || r.Reason != reason.String() ||
 		r.Detail != "the adapter's "+wait+" passed its bound" || r.Submitted != nil {
 		t.Fatalf("exit %d, report %+v: %s", code, r, text)
 	}
-	if d := time.Since(began); d > 3*time.Second {
+	if d := time.Since(began); d >= generousBound {
 		t.Fatalf("took %s: the bound did not end the wait", d)
 	}
 }
+
+// The bound of the wait under test, and every other wait's.
+const (
+	shortBound    = 500 * time.Millisecond
+	generousBound = 30 * time.Second
+)
 
 // Nothing the adapter is given or says reaches the output: not its
 // environment, its stderr nor its result's detail.
