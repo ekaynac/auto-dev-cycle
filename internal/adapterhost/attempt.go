@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -105,6 +106,10 @@ type Outcome struct {
 	Submitted *types.SubmittedResult
 	Refusals  []types.AttemptOutputRefusal
 	Usage     []types.UsageMeasurement
+	// Hints are the distinct class_hint values of the run's error events,
+	// in the order they first arrived: the exit map's input
+	// (internal/vocab/exitmap).
+	Hints []string
 }
 
 // Seams for tests: the prelaunch check, the staging copy, and a hook at
@@ -308,6 +313,9 @@ func (r *attemptRun) onEvent(e session.Event) {
 	case *types.UsageEvent:
 		r.usage = append(r.usage, v)
 	case *types.ErrorEvent:
+		if !slices.Contains(r.out.Hints, string(v.ClassHint)) {
+			r.out.Hints = append(r.out.Hints, string(v.ClassHint))
+		}
 		for _, h := range r.declared {
 			if h == v.RawExcerpt {
 				return

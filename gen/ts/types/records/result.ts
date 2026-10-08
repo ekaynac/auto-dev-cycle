@@ -49,7 +49,7 @@ export type Result = {
    */
   detail: string;
   /**
-   * Whether execution observably completed: the executor reached a terminal result the controller accepted (05). An incomplete result is could_not_run, never empty (13 "Facts, not claims").
+   * Whether execution observably completed: the executor reached a terminal result the controller accepted (05) and reported it found or empty. A reported could_not_run or failed is not completion, nor is a refused or missing result or a lost attempt. An incomplete result is could_not_run, never empty (13 "Facts, not claims").
    */
   completed: boolean;
 };

@@ -133,7 +133,9 @@ Rails (round caps, "same blocking findings three times") are cumulative across r
 Results are computed by the controller from observed facts:
 - **Build:** two observed facts, combined.
   - *Changes:* the controller's diff of the sandbox output tree against the base.
-  - *Completion:* whether the executor reached a terminal result the controller accepted (05 attempt states).
+  - *Completion:* whether the executor reached a terminal result the controller accepted (05 attempt states) and
+    reported it `found` or `empty`. A reported `could_not_run` or `failed` is not completion, nor is a refused or
+    missing result or a lost attempt.
 
   | Completed | Diff | Result |
   |---|---|---|

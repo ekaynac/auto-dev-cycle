@@ -28,7 +28,7 @@ export type Node = {
    */
   definition_version: string;
   /**
-   * Ordered, and the order is part of the kind's definition: two instances of a kind list the same inputs in the same order. The computation key hashes the resolved input ids either in this order or sorted by name; G2 fixes which.
+   * Declared by the kind's definition. The computation key hashes each input's name with what it resolved to, sorted by name, so the order they are listed in is not part of the key (internal/graph).
    */
   inputs: InputSpec[];
   /**
