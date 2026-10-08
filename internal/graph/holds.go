@@ -35,6 +35,7 @@ package graph
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -45,8 +46,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 )
 
-// Raise is the event raising hold on node, a registered hold by its
-// registry owner. Raise records the registry's escalation (for an
+// Raise is the event raising hold on node now (it stamps since), a
+// registered hold by its registry owner. Raise records the registry's escalation (for an
 // environment owner, envOwner names it; none falls back to the operator,
 // 02) and page_after, unless hold carries a project's override of it.
 func Raise(tx *eventstore.Tx, node types.NodeID, hold types.NodeHold, envOwner *string) ([]eventstore.Event, error) {
@@ -62,9 +63,10 @@ func raise(tx *eventstore.Tx, node types.NodeID, h types.NodeHold, envOwner *str
 	if !ok || h.Owner != entry.Owner {
 		return nil, fmt.Errorf("graph: %s is no registered hold of owner %s", h.Hold, h.Owner)
 	}
-	if err := actorRef(h.Owner, h.OwnerRef); err != nil {
+	if err := ownerRef(h.Owner, h.OwnerRef); err != nil {
 		return nil, err
 	}
+	h.Since = types.Time(tx.Now().UTC().Format(time.RFC3339Nano))
 	h.EscalateTo, h.EscalateRef = entry.EscalateTo, nil
 	if h.PageAfter == nil {
 		h.PageAfter = entry.PageAfter
@@ -79,15 +81,18 @@ func raise(tx *eventstore.Tx, node types.NodeID, h types.NodeHold, envOwner *str
 
 func ptrOf[T any](v T) *T { return &v }
 
-// actorRef: a grant holder is named by a live actor id (adc-typeid).
-func actorRef(owner types.Owner, ref *string) error {
-	if owner != types.OwnerGrantHolder {
-		return nil
+// ownerRef: a grant holder is named by an actor id (adc-typeid), a named
+// or environment owner by a non-null ref; the other owners need none.
+func ownerRef(owner types.Owner, ref *string) error {
+	switch {
+	case owner == types.OwnerGrantHolder && ref != nil:
+		return ids.Check(*ref, "act")
+	case owner == types.OwnerGrantHolder || owner == types.OwnerNamedOwner || owner == types.OwnerEnvironmentOwner:
+		if ref == nil {
+			return fmt.Errorf("graph: a %s hold names its owner", owner)
+		}
 	}
-	if ref == nil {
-		return errors.New("graph: a grant holder is named by its actor id")
-	}
-	return ids.Check(*ref, "act")
+	return nil
 }
 
 // Retry is the event holding node on the signal of its could_not_run
@@ -154,22 +159,30 @@ func sameTime(a, b string) bool {
 	return err1 == nil && err2 == nil && x.Equal(y)
 }
 
-var isoDuration = regexp.MustCompile(`^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$`)
+// isoDuration bounds each component to 9 digits, so its seconds fit an
+// int64; a longer Duration the schema admits is an error, never "due".
+var isoDuration = regexp.MustCompile(`^P(?:(\d{1,9})D)?(?:T(?:(\d{1,9})H)?(?:(\d{1,9})M)?(?:(\d{1,9})S)?)?$`)
+
+// maxSeconds is the longest Duration a time.Duration holds.
+const maxSeconds = int64(math.MaxInt64 / int64(time.Second))
 
 // due: at is at or after since + after (a records Duration).
-func due(since types.Time, after types.Duration, at string) bool {
+func due(since types.Time, after types.Duration, at string) (bool, error) {
 	m := isoDuration.FindStringSubmatch(string(after))
 	s, err1 := time.Parse(time.RFC3339Nano, string(since))
 	t, err2 := time.Parse(time.RFC3339Nano, at)
 	if m == nil || err1 != nil || err2 != nil {
-		return false
+		return false, fmt.Errorf("page_after %s or a time is unreadable", after)
 	}
-	var d time.Duration
-	for i, unit := range []time.Duration{24 * time.Hour, time.Hour, time.Minute, time.Second} {
-		n, _ := strconv.Atoi(m[i+1])
-		d += time.Duration(n) * unit
+	var secs int64
+	for i, unit := range []int64{86400, 3600, 60, 1} {
+		n, _ := strconv.ParseInt("0"+m[i+1], 10, 64) // at most 9 digits
+		secs += n * unit
 	}
-	return !t.Before(s.Add(d))
+	if secs > maxSeconds {
+		return false, fmt.Errorf("page_after %s is longer than the clock holds", after)
+	}
+	return !t.Before(s.Add(time.Duration(secs) * time.Second)), nil
 }
 
 func holdRaised(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldRaised) error {
@@ -221,8 +234,8 @@ func holdPaged(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldPaged) error
 	case h.PageAfter == nil:
 		return errors.New("a hold with no page_after is never paged")
 	case h.EscalateTo != nil && same(p.Owner, p.OwnerRef, *h.EscalateTo, h.EscalateRef):
-		if !due(h.Since, *h.PageAfter, ev.At) {
-			return errors.New("an escalation comes after since + page_after")
+		if ok, err := due(h.Since, *h.PageAfter, ev.At); !ok { // an unreadable page_after is not due
+			return errors.Join(err, errors.New("an escalation comes after since + page_after"))
 		}
 		h.Owner, h.OwnerRef = p.Owner, p.OwnerRef
 	case !same(p.Owner, p.OwnerRef, h.Owner, h.OwnerRef):

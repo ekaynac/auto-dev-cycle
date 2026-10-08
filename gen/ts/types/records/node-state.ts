@@ -67,7 +67,7 @@ export type NodeHold = {
    */
   escalate_ref: null | string;
   /**
-   * The page_after in force when it was raised (02; a project may override the registry's). Null: the hold is never paged.
+   * The page_after in force when it was raised (02; a project may override the registry's). It times only the escalation: the owner's first page may come at once. Null: the hold is never paged.
    */
   page_after: null | string;
   /**

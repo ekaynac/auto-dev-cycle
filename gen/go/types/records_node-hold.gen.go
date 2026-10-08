@@ -29,7 +29,7 @@ type NodeHold struct {
 	EscalateTo *Owner `json:"escalate_to"`
 	// The concrete escalation owner, by the owner_ref rule; null when escalate_to is null or names none.
 	EscalateRef *string `json:"escalate_ref"`
-	// The page_after in force when it was raised (02; a project may override the registry's). Null: the hold is never paged.
+	// The page_after in force when it was raised (02; a project may override the registry's). It times only the escalation: the owner's first page may come at once. Null: the hold is never paged.
 	PageAfter *Duration `json:"page_after"`
 	// When the wait began; page_after counts from here, also across a transfer.
 	Since Time `json:"since"`

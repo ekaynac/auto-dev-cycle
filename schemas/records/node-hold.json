@@ -15,7 +15,7 @@
     "owner_ref": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 256}]},
     "escalate_to": {"description": "Who owns the hold once page_after passes, as in force when it was raised: the registry's escalate_to or, for an environment owner the profile does not name, the operator (02); null keeps the owner.", "oneOf": [{"type": "null"}, {"$ref": "../vocab/registry.json#/$defs/Owner"}]},
     "escalate_ref": {"description": "The concrete escalation owner, by the owner_ref rule; null when escalate_to is null or names none.", "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 256}]},
-    "page_after": {"description": "The page_after in force when it was raised (02; a project may override the registry's). Null: the hold is never paged.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Duration"}]},
+    "page_after": {"description": "The page_after in force when it was raised (02; a project may override the registry's). It times only the escalation: the owner's first page may come at once. Null: the hold is never paged.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Duration"}]},
     "since": {"description": "When the wait began; page_after counts from here, also across a transfer.", "$ref": "../common/defs.json#/$defs/Time"},
     "pages": {
       "description": "The paging history, oldest first and append-only: who was paged, by the same owner_ref rule. Pages are deduplicated by hold id and signal instance, never by channel (02).",

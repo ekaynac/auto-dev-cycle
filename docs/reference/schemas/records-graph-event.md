@@ -83,7 +83,7 @@ No other fields are allowed.
 
 ### HoldPaged
 
-A page of the hold at the event's time, for its signal instance, once per owner and owner_ref: to its owner, or, from page_after on, to its recorded escalate_to, which then owns it. Repeating a page to the same owner is the pager's to suppress (02: by hold id and signal instance).
+A page of the hold at the event's time, for its signal instance, once per owner and owner_ref: the fold refuses a repeated (owner, owner_ref), and the pager must not retry it (02: by hold id and signal instance). The owner's first page may come at once; page_after times only the escalation, from which on a page may go to the recorded escalate_to, which then owns the hold.
 
 #### Fields of HoldPaged
 

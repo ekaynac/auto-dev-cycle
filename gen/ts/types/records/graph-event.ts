@@ -108,7 +108,7 @@ export type NodeHold = {
    */
   escalate_ref: null | string;
   /**
-   * The page_after in force when it was raised (02; a project may override the registry's). Null: the hold is never paged.
+   * The page_after in force when it was raised (02; a project may override the registry's). It times only the escalation: the owner's first page may come at once. Null: the hold is never paged.
    */
   page_after: null | string;
   /**
@@ -316,7 +316,7 @@ export interface HoldRaised {
   result: null | string;
 }
 /**
- * A page of the hold at the event's time, for its signal instance, once per owner and owner_ref: to its owner, or, from page_after on, to its recorded escalate_to, which then owns it. Repeating a page to the same owner is the pager's to suppress (02: by hold id and signal instance).
+ * A page of the hold at the event's time, for its signal instance, once per owner and owner_ref: the fold refuses a repeated (owner, owner_ref), and the pager must not retry it (02: by hold id and signal instance). The owner's first page may come at once; page_after times only the escalation, from which on a page may go to the recorded escalate_to, which then owns the hold.
  */
 export interface HoldPaged {
   type: "hold_paged";

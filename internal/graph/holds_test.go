@@ -33,13 +33,9 @@ func awaitingInput(t *testing.T) types.NodeHold {
 
 func now(tx *eventstore.Tx) types.Time { return types.Time(tx.Now().UTC().Format(time.RFC3339Nano)) }
 
-// raised raises h on n at the command's time, with env as the profile's
-// environment owner; at shifts the recorded since (a hold raised earlier).
+// raised raises h on n, with env as the profile's environment owner.
 func raised(n types.NodeID, h types.NodeHold, env *string) logic {
-	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		h.Since = now(tx)
-		return Raise(tx, n, h, env)
-	}
+	return func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Raise(tx, n, h, env) }
 }
 
 func page(n types.NodeID, h types.HoldID, owner types.Owner, ref *string, channel types.Name) logic {
@@ -116,6 +112,18 @@ func TestHoldLifecycle(t *testing.T) {
 		t.Fatalf("the operator fallback: %+v", h)
 	}
 	g.must(clear(a, f))
+
+	// A page_after past what the clock holds is an error, never due.
+	long := newHold(t, "evidence_restore_pending", types.OwnerSystem, nil)
+	for _, d := range []types.Duration{"P9999999999D", "P999999999D"} { // too many digits; past the clock
+		long.PageAfter = ptr(d)
+		g.must(raised(a, long, ptr("staging-owner")))
+		if err := g.do(page(a, long.ID, types.OwnerEnvironmentOwner, ptr("staging-owner"), "email")); err == nil {
+			t.Fatalf("page_after %s was due", d)
+		}
+		g.must(clear(a, long))
+		long = newHold(t, "evidence_restore_pending", types.OwnerSystem, nil)
+	}
 
 	// A could_not_run result retries on its signal: held on the hold its
 	// reason names, once per result; a reason that names none is the rails'.
@@ -302,6 +310,7 @@ func TestHoldRefusals(t *testing.T) {
 	for name, fn := range map[string]logic{
 		"an unregistered hold":       raised(a, newHold(t, "no_such_hold", types.OwnerOperator, nil), nil),
 		"a hold by another owner":    raised(a, newHold(t, "awaiting_input", types.OwnerOperator, nil), nil),
+		"a named owner with no ref":  raised(a, newHold(t, "wrong_owner", types.OwnerNamedOwner, nil), nil),
 		"a grant holder, not an act": raised(a, newHold(t, "awaiting_input", types.OwnerGrantHolder, ptr("act_00000000000000000000000000")), nil),
 		"a page to a non-actor":      page(c, h.ID, types.OwnerGrantHolder, ptr("act_00000000000000000000000000"), "email"),
 		"a retry on a plan result": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
@@ -312,13 +321,4 @@ func TestHoldRefusals(t *testing.T) {
 			t.Errorf("%s was admitted", name)
 		}
 	}
-}
-
-func errorsJoin(errs ...error) error {
-	for _, e := range errs {
-		if e != nil {
-			return e
-		}
-	}
-	return nil
 }

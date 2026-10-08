@@ -18,7 +18,7 @@ A node's external wait (docs/design/m0/02 "Hold reasons and resume signals"; 13)
 | `owner_ref` | yes | null or string (minLength `1`, maxLength `256`) |  |
 | `escalate_to` | yes | null or [Owner](vocab-registry.md#owner) | Who owns the hold once page_after passes, as in force when it was raised: the registry's escalate_to or, for an environment owner the profile does not name, the operator (02); null keeps the owner. |
 | `escalate_ref` | yes | null or string (minLength `1`, maxLength `256`) | The concrete escalation owner, by the owner_ref rule; null when escalate_to is null or names none. |
-| `page_after` | yes | null or [Duration](common-defs.md#duration) | The page_after in force when it was raised (02; a project may override the registry's). Null: the hold is never paged. |
+| `page_after` | yes | null or [Duration](common-defs.md#duration) | The page_after in force when it was raised (02; a project may override the registry's). It times only the escalation: the owner's first page may come at once. Null: the hold is never paged. |
 | `since` | yes | [Time](common-defs.md#time) | When the wait began; page_after counts from here, also across a transfer. |
 | `pages` | yes | array of object ([fields](#fields-of-pages)) | The paging history, oldest first and append-only: who was paged, by the same owner_ref rule. Pages are deduplicated by hold id and signal instance, never by channel (02). |
 
