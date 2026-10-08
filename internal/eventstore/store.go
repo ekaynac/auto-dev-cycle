@@ -416,6 +416,11 @@ func safeNumbers(v any) error {
 	return nil
 }
 
+// Digest is sha256 over the canonical form of a JSON document, written
+// "sha256:" + lowercase hex: the canonicaliser every payload digest goes
+// through, refusing any number that is not an integer within ±(2^53−1).
+func Digest(doc []byte) (string, error) { return digest(doc) }
+
 // digest is sha256 over the canonical form of a JSON document.
 func digest(doc []byte) (string, error) {
 	c, err := canonical(doc)

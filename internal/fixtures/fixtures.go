@@ -69,6 +69,8 @@ var runners = map[string]runner{
 	"replayed-expired-challenge":       replayedExpiredChallenge,
 	"stream-after-grant-revocation":    streamAfterGrantRevocation,
 	"unsafe-adapter-outputs":           unsafeAdapterOutputs,
+	"credit-before-first-edit":         creditBeforeEdit,
+	"credit-after-edits":               creditAfterEdit,
 }
 
 // Goldens loads and validates every golden, checking that each has a

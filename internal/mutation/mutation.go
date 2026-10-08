@@ -69,6 +69,12 @@ const (
 	// IngestFollowsLinks resolves an adapter output's handle following a
 	// symlink, so a link out of out/ is ingested as the file it names.
 	IngestFollowsLinks = "adapterhost.ingest-follows-links"
+	// IncompleteNoDiffEmpty reads a build that did not complete and changed
+	// nothing as empty, the "no changes" a 402 before the first edit is not.
+	IncompleteNoDiffEmpty = "graph.incomplete-no-diff-empty"
+	// PartialPatchDropped drops the change of a build that did not complete,
+	// so its partial work is neither the result's value nor sealed.
+	PartialPatchDropped = "graph.partial-patch-dropped"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -77,4 +83,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	OuterStatusTrusted, AbsentPredicateUnchecked, UnknownFamilyIndependent, BindingDigestIgnored,
 	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly,
 	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked, ConfirmIgnoresStatus, ReservationsUncounted,
-	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks}
+	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks, IncompleteNoDiffEmpty, PartialPatchDropped}

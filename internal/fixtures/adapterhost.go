@@ -78,9 +78,17 @@ func plainOutput(name string) func(string, types.AttemptID) (types.AdapterHandle
 // run with the case's output, one usage delta and a found result. Its own
 // failure (a file it could not make) lands in *failed.
 func scriptedPeer(c unsafeCase, failed *error) func(io.Reader, io.Writer) {
+	return peer(func(p types.AdapterPrepareParams, params json.RawMessage, send func(any) error) (json.RawMessage, error) {
+		return peerRun(c, p.Exchange.Out, params, send)
+	}, failed)
+}
+
+// peer is a scripted adapter: describe, prepare and shutdown are answered
+// cleanly, run by run with prepare's params.
+func peer(run func(types.AdapterPrepareParams, json.RawMessage, func(any) error) (json.RawMessage, error), failed *error) func(io.Reader, io.Writer) {
 	return func(in io.Reader, out io.Writer) {
 		r, w := wire.NewReader(in), wire.NewWriter(out)
-		var outDir string
+		var prepared types.AdapterPrepareParams
 		send := func(v any) error {
 			b, err := wire.Encode(v)
 			if err == nil {
@@ -103,14 +111,12 @@ func scriptedPeer(c unsafeCase, failed *error) func(io.Reader, io.Writer) {
 			case "describe":
 				result = json.RawMessage(peerDescribe)
 			case "prepare":
-				var p types.AdapterPrepareParams
-				if err := json.Unmarshal(req.Params, &p); err != nil {
+				if err := json.Unmarshal(req.Params, &prepared); err != nil {
 					*failed = err
 					return
 				}
-				outDir = p.Exchange.Out
 			case "run":
-				if result, err = peerRun(c, outDir, req.Params, send); err != nil {
+				if result, err = run(prepared, req.Params, send); err != nil {
 					*failed = err
 					return
 				}

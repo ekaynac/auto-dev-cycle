@@ -4,7 +4,7 @@
 
 package types
 
-// ComputationKey: What a node would compute (docs/design/m0/13 "Model" [G1]). key = H(kind, definition_version, params digest, ordered resolved input ids, generation), computed by internal/graph (G2). A resolved input id is a result id, or for an answer input the approval id and the owed input's revision. A key names a computation, never an output: a result has its own id and answers exactly one key, and each key has one selected result at a time.
+// ComputationKey: What a node would compute (docs/design/m0/13 "Model" [G1]). key is sha256 over the RFC 8785 form of {kind, definition_version, params (the params digest), inputs, generation}, computed by internal/graph: inputs are the declared inputs sorted by name, each {name, result} for a result input or {name, approval, revision} for an answer input. A key names a computation, never an output: a result has its own id and answers exactly one key, and each key has one selected result at a time.
 type ComputationKey struct {
 	Key Digest `json:"key"`
 	// Starts at 1 and is bumped only by an explicit, recorded invalidation (an operator action, or a definition or instrument version change). A bump changes the key, so a new result is produced and dependants re-key; no result is ever overwritten.

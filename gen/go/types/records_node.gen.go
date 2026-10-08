@@ -42,7 +42,7 @@ type Node struct {
 	Kind NodeKind `json:"kind"`
 	// The version of the kind's definition. A change is an explicit invalidation (13 [G1]).
 	DefinitionVersion string `json:"definition_version"`
-	// Ordered, and the order is part of the kind's definition: two instances of a kind list the same inputs in the same order. The computation key hashes the resolved input ids either in this order or sorted by name; G2 fixes which.
+	// Declared by the kind's definition. The computation key hashes each input's name with what it resolved to, sorted by name, so the order they are listed in is not part of the key (internal/graph).
 	Inputs []InputSpec `json:"inputs"`
 	// The kind's parameters, one schema per kind (a review's params carry its roster, 13). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.
 	Params json.RawMessage `json:"params"`

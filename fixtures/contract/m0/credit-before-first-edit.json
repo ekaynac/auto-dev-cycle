@@ -1,0 +1,8 @@
+{
+  "name": "credit-before-first-edit",
+  "invariant": "A build whose executor hit a 402 before its first edit did not complete and changed nothing: the controller's own facts make it could_not_run with the exit map's reason broker_credit_exhausted, never empty (13 \"Facts, not claims\"; 02).",
+  "expected": [
+    {"outcome": "could_not_run", "reason": "broker_credit_exhausted"}
+  ],
+  "mutation": "graph.incomplete-no-diff-empty"
+}

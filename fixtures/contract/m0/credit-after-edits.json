@@ -1,0 +1,8 @@
+{
+  "name": "credit-after-edits",
+  "invariant": "A build whose executor hit a 402 after editing is a partial_patch, could_not_run with broker_credit_exhausted, whose value is the controller's diff of the workspace and whose attempt is sealed with that diff as its AttemptRecord's partial_diff, never \"no changes\" (13 \"Facts, not claims\"; 05 \"AttemptRecord\"; 11 intake).",
+  "expected": [
+    {"outcome": "could_not_run", "reason": "broker_credit_exhausted"}
+  ],
+  "mutation": "graph.partial-patch-dropped"
+}
