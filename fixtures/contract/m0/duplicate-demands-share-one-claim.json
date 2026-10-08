@@ -1,0 +1,11 @@
+{
+  "name": "duplicate-demands-share-one-claim",
+  "invariant": "Goals demanding the same node instance at once run it once: the first demand claims it in the writer transaction, the others join that claim, and the log holds one node.claimed for the node (13 [G10] \"Atomic producer claiming\").",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.claim-per-demand"
+}

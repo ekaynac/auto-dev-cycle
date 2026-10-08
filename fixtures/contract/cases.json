@@ -12563,6 +12563,64 @@
   "valid": true
  },
  {
+  "name": "graph-event: invalidated valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_invalidated",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 2
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: result valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_recorded",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "patch",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": null,
+    "outcome": "found",
+    "reason": "completed_with_findings",
+    "detail": "a change",
+    "completed": true
+   },
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a"
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: selected valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_selected",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": true
+ },
+ {
   "name": "graph-event: a first-round node",
   "schema": "records/graph-event",
   "doc": {
@@ -12669,12 +12727,184 @@
   "valid": false
  },
  {
-  "name": "graph-event: a result event, not yet a variant",
+  "name": "graph-event: a controller result",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_recorded",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "patch",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": null,
+    "outcome": "found",
+    "reason": "completed_with_findings",
+    "detail": "a change",
+    "completed": true
+   },
+   "attempt": null
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: an invalidation to generation 0",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_invalidated",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 0
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: an invalidation without its key",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_invalidated",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a result that is not a records/result",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_recorded",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "patch",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": null,
+    "outcome": "found",
+    "reason": "completed_with_findings",
+    "detail": "a change",
+    "completed": false
+   },
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: an attempt with the wrong prefix",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_recorded",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "patch",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": null,
+    "outcome": "found",
+    "reason": "completed_with_findings",
+    "detail": "a change",
+    "completed": true
+   },
+   "attempt": "res_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a result without its attempt",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_recorded",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "patch",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": null,
+    "outcome": "found",
+    "reason": "completed_with_findings",
+    "detail": "a change",
+    "completed": true
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a selected result with the wrong prefix",
   "schema": "records/graph-event",
   "doc": {
    "type": "result_selected",
    "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
-   "result": "res_01m3250v57fhm9v1z9xd1wk8gw"
+   "result": "nod_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a selection with an extra field",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_selected",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "valid": false
  },

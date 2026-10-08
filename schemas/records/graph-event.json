@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/graph-event.json",
   "title": "GraphEvent",
-  "description": "The payload of every artifact-graph node event (docs/design/m0/13), discriminated by type: node.recorded/v1 and node.claimed/v1, under the node's id and in its project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive. Result and selection events follow (plan 15 G3-2).",
-  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}],
+  "description": "The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1 and node.invalidated/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.",
+  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}, {"$ref": "#/$defs/NodeInvalidated"}, {"$ref": "#/$defs/ResultRecorded"}, {"$ref": "#/$defs/ResultSelected"}],
   "$defs": {
     "NodeRecorded": {
       "description": "A node joins its task's graph, append-only: its task, its project and the node it succeeds (null for a first round).",
@@ -42,6 +42,40 @@
             }
           }
         }
+      }
+    },
+    "NodeInvalidated": {
+      "description": "An explicit, recorded invalidation (13 [G1]): the node's claim moves to the next generation, with the same inputs, so its key changes and its selected result, if any, no longer answers it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "key"],
+      "properties": {
+        "type": {"const": "node_invalidated"},
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "key": {"$ref": "computation-key.json"}
+      }
+    },
+    "ResultRecorded": {
+      "description": "An immutable result of a claimed node, with the attempt that produced it (null for a controller node).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "result", "attempt"],
+      "properties": {
+        "type": {"const": "result_recorded"},
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "result": {"$ref": "result.json"},
+        "attempt": {"description": "Checked by this schema only until M1 binds attempts to nodes.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]}
+      }
+    },
+    "ResultSelected": {
+      "description": "The node selects its result: a completed result that is not could_not_run (13 [G2]), answering the node's current key, once per claim.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "result"],
+      "properties": {
+        "type": {"const": "result_selected"},
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "result": {"$ref": "../common/defs.json#/$defs/ResultID"}
       }
     }
   }

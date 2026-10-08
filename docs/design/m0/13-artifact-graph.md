@@ -53,6 +53,11 @@ Result:                            # what was computed: immutable  [G1]
     instrument version change) bumps the generation, so the key changes, a new result is produced, and dependants
     re-key. No artifact is ever overwritten. This holds for the memoizable kinds (see "v1 scope"), whose key is claimed
     once per task. Instances of the other kinds can share a key (two builds, deploy A again) and select per node.
+  - **Generations of the memoizable kinds are the task's.** For each identity (kind, definition version, params and
+    inputs, without the generation) a task holds a current generation, 1 until an invalidation moves it. A claim at any
+    other generation is refused as stale, and an invalidated key stays stale: no later claim names its old holder. The
+    reuse binding (G4a) reuses only a result of the current generation's key. The other kinds keep their generation
+    per node.
 - **The reviewer roster is part of a review's identity** (intake B1).
   - **In the key.** A review node's `params` carry its roster: for each member, the executor id and its model family.
     The family is derived from the controller's executor registry, never asserted by a caller (06 independence). The
