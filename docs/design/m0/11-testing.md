@@ -41,15 +41,32 @@ sandbox in which the real home and state do not exist**:
 | Fake provider | quota headers, 429 with reset, unknown quota, **402 credit exhaustion mid-call**, separate rate window and balance, degenerate output, single-chunk tool arguments | `…/fakes/provider` | none here: the 402 mid-call is scripted in `inproc` peers (15 L3); the rest is M2 |
 | Fake clock | deadlines, resets, TTLs, challenge expiry | `…/fakes/clock` | built: a fixed or wall-following time the test sets and moves; no timers |
 | Fake executor registry | the controller's executor registry: the model family a roster derives, never a caller's (13) | `…/fakes/executors` | built: executor id to model family, unregistered is `unknown` (G6a) |
+| In-process adapter peer | an adapter run inside the fixture harness's process, over the session's pipes (09) | `internal/adapterhost/session/inproc` | built: an in-process adapter peer for the fixture harness (09) |
+| Fake scheduler | the lease state machine: all-or-nothing reservations in a fixed order (05) | `internal/capacity/fakesched` | built: the deterministic scheduler of 05 "What M0 delivers" |
+| Fake authenticator | a platform WebAuthn authenticator, with a settable RP ID, origin and flags | `internal/authority/fakeauthn` | built: a WebAuthn authenticator for the challenge fixtures (11) |
 
 When a real implementation is found to differ from its fake, the fake is fixed first, with a test that fails on the
 old fake.
 
 The M0 scope column records 15 D4: a fake is built only as far as an M0 fixture consumes it, and the full surface
-lands with its real interface. The fake registry (`internal/testguard/fakes`) lists every fake, these and the ones
-that live beside their subject (`inproc`, `fakesched`, `fakeauthn`). Its tests refuse a fake directory it does not
-list, a built entry whose directory is missing or an unbuilt one whose directory exists, and a row of this table
-whose M0 scope differs from the registry's.
+lands with its real interface. The table lists every fake, and the fake registry (`internal/testguard/fakes`) holds
+the same rows. Its tests refuse:
+- a row and a registry entry that differ in name, place or M0 scope, or a row missing from either side;
+- a malformed or duplicate row;
+- a built entry whose directory is missing, an unbuilt one whose directory exists, or a "built" scope on an unbuilt
+  entry and the reverse;
+- an unregistered fake: a directory named `fake*`, one under `internal/testguard/fakes/`, or a Go package whose
+  synopsis calls it a fake, even inside a registered fake (only `adapters/fake/src` is listed as part of one).
+
+`internal/testguard` and the fakes under it are for tests: only `_test` files import them, except that
+`internal/fixtures` may import the fake clock. Outside the guard package itself (not the fakes below it), a test
+refuses:
+- a `Setenv` or `Unsetenv` of `HOME` or an `XDG_*` directory, or of a key that is not a string literal;
+- a string literal starting `HOME=` or `XDG_`, the way a child's environment names a home.
+
+So a home a test sets, for itself or for a child, comes from `testguard.Home` or `testguard.HomeEnv`. The rule cannot
+see a child given an explicit environment that names no home at all. The tests that spawn the fake adapter or a stub
+adapter take `testguard.HomeEnv`; for any other such child, the sandbox remains the boundary.
 
 ## M0 exercises real validators, not scripted answers [M15]
 

@@ -65,8 +65,7 @@ func bootstrapCLI(t *testing.T, c Client, in string, args ...string) (int, strin
 // delivers no token; the spent secret, from stdin, is refused; the secret
 // is never an argument.
 func TestAdminBootstrap(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home) // never the user's real ~/.config/adc
+	home := testguard.Home(t) // never the user's real ~/.config/adc
 	dir, c := adcd(t)
 	raw, err := os.ReadFile(filepath.Join(dir, identity.BootstrapFile))
 	if err != nil {
@@ -105,8 +104,7 @@ func TestAdminBootstrap(t *testing.T) {
 // A token-file write that fails after the commit says how to recover and
 // prints no token.
 func TestAdminBootstrapTokenWriteFails(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testguard.Home(t)
 	if err := os.WriteFile(filepath.Join(home, ".config"), nil, 0o600); err != nil { // not a directory
 		t.Fatal(err)
 	}

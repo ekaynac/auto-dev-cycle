@@ -6,12 +6,16 @@
 // the temp directory. It is defence in depth; the boundary is the test
 // sandbox (scripts/test-sandbox.sh). Only _test files import it: it imports
 // testing. The fakes are in internal/testguard/fakes.
+//
+// A temp directory inside a real home (TMPDIR=$HOME/tmp, say) makes every
+// root fail as "in the real home": the guard fails closed, loudly.
 package testguard
 
 import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -73,6 +77,20 @@ func Home(t testing.TB) string {
 		t.Setenv(v, filepath.Join(h, rel))
 	}
 	return h
+}
+
+// HomeEnv is a child process's HOME and XDG base directories, in a fresh
+// checked directory under the test's temp dir, for an explicit environment
+// (exec.Cmd.Env, an adapter's Env) that would otherwise name none and leave
+// the child to fall back to the real home.
+func HomeEnv(t testing.TB) []string {
+	t.Helper()
+	h := root(t)
+	env := []string{"HOME=" + h}
+	for _, v := range slices.Sorted(maps.Keys(xdgDirs)) {
+		env = append(env, v+"="+filepath.Join(h, xdgDirs[v]))
+	}
+	return env
 }
 
 func root(t testing.TB) string {

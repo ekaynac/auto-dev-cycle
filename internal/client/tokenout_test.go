@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 )
 
 // A reserved --token-out is created 0600 before anything is sent (whatever
@@ -55,8 +57,7 @@ func TestTokenOutWrites(t *testing.T) {
 // directory must be the caller's, not group or other writable, and not a
 // symlink. Each refusal leaves what was there.
 func TestTokenOutRefusals(t *testing.T) {
-	f, own := home(t, fakeToken(t).Reveal())
-	t.Setenv("HOME", f.Home)
+	f, own := homeAt(t, testguard.Home(t), fakeToken(t).Reveal())
 	before, err := os.ReadFile(own)
 	must(t, err)
 	dir := privateDir(t)
@@ -108,8 +109,7 @@ func TestTokenOutRefusesAnotherOwner(t *testing.T) {
 // The caller's own token file is refused by its directory's identity, even
 // before it exists and when spelled through a symlinked parent.
 func TestTokenOutRefusesOwnTokenFileNotYetWritten(t *testing.T) {
-	f, _ := home(t, "")
-	t.Setenv("HOME", f.Home)
+	f, _ := homeAt(t, testguard.Home(t), "")
 	alias := filepath.Join(privateDir(t), "alias")
 	must(t, os.Symlink(filepath.Join(f.Home, ".config"), alias))
 	for _, path := range []string{filepath.Join(f.dir(), tokenName), filepath.Join(alias, "adc", tokenName)} {

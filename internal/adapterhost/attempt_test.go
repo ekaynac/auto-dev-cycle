@@ -26,6 +26,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -168,7 +169,7 @@ func fake(t *testing.T, scenario string) session.Config {
 		t.Skip("the adapters workspace is not installed: run make ts-deps (make test does)")
 	}
 	return session.Config{Command: []string{node, filepath.Join(root, "fake", "src", "main.ts")},
-		Env:      []string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + t.TempDir(), "ADC_FAKE_SCENARIO=" + scenario},
+		Env:      append([]string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + t.TempDir(), "ADC_FAKE_SCENARIO=" + scenario}, testguard.HomeEnv(t)...),
 		Deadline: 30 * time.Second}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -242,8 +243,7 @@ func privateDir(t *testing.T) string {
 // ownToken writes the caller's own token file in a fresh HOME and returns
 // its path and bytes, to show they never change.
 func ownToken(t *testing.T) (string, []byte) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testguard.Home(t)
 	own, err := identity.ParseSecret("tok_01m3250vkwffc979nzjw0g2sf9.ownOWNownOWNownOWNownOWNownOWNownOWNownOWNA")
 	if err == nil {
 		err = client.Files{Home: home, UID: os.Getuid()}.Write(own)
