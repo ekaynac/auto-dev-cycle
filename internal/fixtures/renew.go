@@ -26,7 +26,7 @@ func evidenceRetriesOnItsProbe(ctx context.Context, dir string) (steps []Step, v
 		return nil, nil, err
 	}
 	defer func() { err = errors.Join(err, closeFn()) }()
-	n, err := g.record(types.NodeKindEvidence, json.RawMessage(`{}`), on("plan", g.plan, types.ResultKindPlan))
+	n, err := g.record(types.NodeKindEvidence, evidenceParams, on("plan", g.plan, types.ResultKindPlan))
 	if err == nil {
 		err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return graph.Claim(tx, n, map[string]graph.Resolved{"plan": {Result: g.planRes}}, 1)
@@ -134,3 +134,9 @@ func expiredReceiptRenews(ctx context.Context, dir string) (steps []Step, violat
 	}
 	return o.steps, o.violations, nil
 }
+
+// evidenceParams are a walk's EvidenceNodeParams (12) on the plan's result.
+var evidenceParams = json.RawMessage(`{"instrument":{"name":"walk","version":"1","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},` +
+	`"grant":"apr_01m3250v0aer9ss2097svmefj8","target":"tgt_01m3250v0aer9ss2097svmefj8","subject_input":"plan","demand":{"key":null},` +
+	`"limits":{"max_attempts_per_demand":2,"max_attempts_per_subject":2,"deadline":"PT1H","cooldown":"PT0S"},` +
+	`"restore":{"required":false,"procedure":null}}`)

@@ -13,7 +13,7 @@ The payload of every effect transition event (docs/design/m0/03 "External effect
 | `effect` | yes | [EffectID](common-defs.md#effectid) |  |
 | `transition` | yes | one of `intent`, `observed`, `failed`, `uncertain`, `retried`, `reconciled` |  |
 | `kind` | yes | null or [Name](records-receipt.md#name) | The effect kind; set on intent, null otherwise. |
-| `target` | yes | null or string (minLength `1`, maxLength `1024`) | What the effect acts on (a provider, a remote ref, a deploy target); set on intent, null otherwise. |
+| `target` | yes | null or string (minLength `1`, maxLength `1024`) | What the effect acts on (a provider, a remote ref, a deploy target); set on intent, null otherwise. A remote_process effect acts on its evidence target (tgt_), which its RemoteProcessRequest also names (12). |
 | `request_digest` | yes | null or [Digest](common-defs.md#digest) | Digest of the canonical request; set on intent, null otherwise. |
 | `outcome` | yes | null or one of `completed`, `failed_confirmed`, `still_uncertain` | The reconciliation outcome; set on reconciled, null otherwise. |
 | `observation` | yes | string (maxLength `4096`) | What was observed (empty on intent and retry). |
@@ -21,7 +21,8 @@ The payload of every effect transition event (docs/design/m0/03 "External effect
 
 No other fields are allowed.
 
-Conditional rules (2, `if`/`then`/`else` in the schema):
+Conditional rules (3, `if`/`then`/`else` in the schema):
 
 - when `transition` `intent`, then `kind` any (not `null`), `target` any (not `null`), `request_digest` any (not `null`); otherwise `kind` `null`, `target` `null`, `request_digest` `null`
 - when `transition` `reconciled`, then `outcome` any (not `null`); otherwise `outcome` `null`
+- when `kind` `remote_process`, `kind` required, then `target` any (pattern `^tgt_`, format `adc-typeid`)

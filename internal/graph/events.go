@@ -171,7 +171,37 @@ func loadNode(tx *eventstore.Tx, id types.NodeID) (nodeRecord, error) {
 // before it calls Record; the event's project is never the actor's claim.
 func Record(r types.NodeRecorded) ([]eventstore.Event, error) {
 	r.Type = "node_recorded"
+	if err := checkEvidence(r.Node); err != nil {
+		return nil, err
+	}
 	return event(NodeRecorded, string(r.Node.ID), r.Project, &r)
+}
+
+// checkEvidence holds an evidence node to what its params schema cannot
+// say (12): the node leases its evidence target, its per-demand cap is
+// within its per-subject cap, and its subject is a declared result input.
+// The store validates the params themselves when the event is appended.
+func checkEvidence(n types.Node) error {
+	if n.Kind != types.NodeKindEvidence {
+		return nil
+	}
+	p, err := n.ParamsAsEvidenceNodeParams()
+	if err != nil {
+		return fmt.Errorf("graph: evidence params: %w", err)
+	}
+	subject := func(in types.InputSpec) bool {
+		_, result := in.Source.Variant.(*types.ResultSource)
+		return result && in.Name == p.SubjectInput
+	}
+	switch {
+	case !slices.Contains(n.Requires.Resources, types.ResourceGroupKindEvidenceTarget):
+		return errors.New("graph: an evidence node must lease an evidence_target")
+	case p.Limits.MaxAttemptsPerDemand > p.Limits.MaxAttemptsPerSubject:
+		return fmt.Errorf("graph: evidence cap per demand %d exceeds the cap per subject %d", p.Limits.MaxAttemptsPerDemand, p.Limits.MaxAttemptsPerSubject)
+	case !slices.ContainsFunc(n.Inputs, subject):
+		return fmt.Errorf("graph: evidence subject_input %s is not a declared result input", p.SubjectInput)
+	}
+	return nil
 }
 
 // items are the claim's inputs: one per declared input, in declared order,

@@ -34,8 +34,10 @@ const (
 
 // EffectKind declares how an effect kind recovers: an idempotent kind is
 // safe to retry with the same effect id; any other is reconciled first and
-// never blindly retried.
-type EffectKind struct{ Idempotent bool }
+// never blindly retried. A kind that reconciles from its request (12
+// remote_process) keeps it: its request_digest references a blob, which the
+// caller publishes, in its RFC 8785 form, before it intends the effect.
+type EffectKind struct{ Idempotent, RequestBlob bool }
 
 // EffectKinds are the effect kinds the controller may intend, by name.
 type EffectKinds map[string]EffectKind
@@ -79,7 +81,8 @@ func (t *Tx) IntendEffect(id, kind, target string, request json.RawMessage) erro
 	if err := ids.Check(id, "eff"); err != nil {
 		return fmt.Errorf("eventstore: effect: %w", err)
 	}
-	if _, ok := t.store.effects[kind]; !ok {
+	ek, ok := t.store.effects[kind]
+	if !ok {
 		return fmt.Errorf("eventstore: unregistered effect kind %q", kind)
 	}
 	if target == "" || !utf8.ValidString(target) {
@@ -88,6 +91,11 @@ func (t *Tx) IntendEffect(id, kind, target string, request json.RawMessage) erro
 	d, err := digest(request)
 	if err != nil {
 		return fmt.Errorf("eventstore: effect %s request: %w", id, err)
+	}
+	if ek.RequestBlob {
+		if kept, err := t.store.blobs.Has(d); err != nil || !kept {
+			return errors.Join(fmt.Errorf("eventstore: effect %s request %s is not a published blob", id, d), err)
+		}
 	}
 	t.intents = append(t.intents, intent{id, kind, target, d})
 	return nil

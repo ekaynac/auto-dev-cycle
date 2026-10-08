@@ -105,7 +105,7 @@ they drive (01 §4).
 | # | Obligation | Design source | Issue |
 |---|---|---|---|
 | O1 | Artifact graph: schemas for Node, ComputationKey, Result, InputSpec and node state; key and generation computation; resolver and evaluator with atomic claiming and fake nodes; successor rounds; the build outcome table; queue generations as a template; the 19 fixtures of 13 and the M0 rows of §1.3 | 13:237-266; 01:635 | #114 |
-| O2 | Evidence nodes: the parameter schema, attempt-key counting with the total cap, the precondition → hold mapping, artifact classes, the `remote_process` effect kind, five fixtures | 12:71-81 | #115 |
+| O2 | Evidence nodes: the parameter schema, attempt-key counting with the total cap, the precondition → hold mapping, artifact classes, the `remote_process` effect kind, five fixtures | 12:109-119 | #115 |
 | O3 | `internal/testguard` with a fake clock and a fake registry; the fakes the O1 and O2 fixtures need | 11:30-44; 01-repo-layout:23; 01:635 | new; scope in D4 |
 | O4 | Installed fake-adapter run: `make dist` packages a harness binary, the fake adapter with its dependencies and a Node runtime, and `fixtures/t0/py-mini`; the smoke checks result 9 | 14 §4 item 12; 01:635 "fake-driven T0 dry run" | #162 |
 | O5 | Knowledge spec: the `FailureSignature` and `Claim` draft schemas; the spec's status corrected (`AttemptRecord` exists as `records/attempt-record.json`, and the manifest events are no longer "in review") | 10:83-113, 10:97-98 | #116 |
@@ -152,7 +152,7 @@ they drive (01 §4).
   - the paging history.
 
   13's supersession needs it to transfer a hold with its id and paging history (13:81-85). 12 needs it to map
-  precondition failures and cap exhaustion to holds (12:44, 12:51). Lease holds stay where they are
+  precondition failures and cap exhaustion to holds (12:64, 12:71). Lease holds stay where they are
   (`lease.waiting`, 05:91).
 - **L5. Fakes stop where M0 stops.** A fake is built only as far as an M0 fixture consumes its interface (D4). Each
   one lives under `internal/testguard/fakes/` and is listed in the fake registry. So 11's rule "fix the fake first"
@@ -237,11 +237,11 @@ Changes to the plan that follow from these splits:
 
 ### Track E: evidence nodes (#115)
 
-| PR | Content | Size | Fixtures (12:73-79) |
+| PR | Content | Size | Fixtures (12:111-117) |
 |---|---|---|---|
-| **E1. Evidence-node schema** | `EvidenceNode` params (instrument, grant, target, demand, preconditions, limits, restore); artifact classes bound to the instrument contract; the `remote_process` effect kind with its reconciliation declaration (12:64-69) | [~250] | schema cases |
+| **E1. Evidence-node schema** | `EvidenceNode` params (instrument, grant, target, subject input, demand key, limits, restore; the preconditions are the instrument contract's); artifact classes bound to the instrument contract; the `remote_process` effect kind with its reconciliation declaration (12:84-107) | [~250] | schema cases |
 | **E2. Counting and preconditions** | Attempts counted per (subject, instrument digest, demand key), with a total cap per subject. Exhaustion is `could_not_run/evidence_cap_exhausted` with a `wrong_owner` hold. A precondition failure is `could_not_run/precondition_failed` with its hold, spends no attempt, and recovers on a bounded probe schedule | [~300] | a new demand gets new attempts, and the same demand does not; total-cap exhaustion; a precondition failure spends no attempt and recovers on its probe (also 11:157, 158, 166, 171) |
-| **E3. Content classes** | An isolation probe inside the same wrapper, so an empty isolation setting is never published; a `restricted` artifact never reaches a manifest's `included` (12:55-62) | [~200] | an empty isolation setting is never published; a restricted artifact never reaches a prompt |
+| **E3. Content classes** | An isolation probe inside the same wrapper, so an empty isolation setting is never published; a `restricted` artifact never reaches a manifest's `included` (12:75-82) | [~200] | an empty isolation setting is never published; a restricted artifact never reaches a prompt |
 
 ### Track L: legacy goldens (#116, second half)
 
@@ -294,7 +294,7 @@ and G7b. They come to about 5,900 hand-written lines, of which the graph is abou
 |---|---|---|
 | O1 graph | `adc dev fixtures --contract` (installed, `installed-fixtures.sh`) | The 19 fixtures of 13:243-266 and the M0 rows of §1.3 yield their golden `(outcome, reason)` sequences. Each turns red under its named mutation in `make fixtures-contract` and stays green in the release build (`release-guard`) |
 | O1 schemas | `make gen-check`, `make schema-docs` | Generated Go and TypeScript, and the new `docs/reference/schemas/records-*.md`, regenerate with no diff |
-| O2 evidence | installed contract fixtures | The five fixtures of 12:75-79, plus E2's reasons and holds checked by `adc dev vocab check` (every hold has a resume signal) |
+| O2 evidence | installed contract fixtures | The five fixtures of 12:113-117, plus E2's reasons and holds checked by `adc dev vocab check` (every hold has a resume signal) |
 | O3 testguard and fakes | `make test` | Fixtures run on the fake clock; the fake registry lists every fake; a faithfulness test per fake (11:43); 11:35-41 states each fake's M0 scope |
 | O4 dry run | `make install-check` → `scripts/installed-smoke.sh` | Results 1-9 of 14 §4 item 12. Result 9 is `attempt.result_submitted` applied and a `usage.measured` record, from the installed prefix under bwrap, with no source tree and no system Node, and with the Node checksum re-verified |
 | O5 spec | `go test ./internal/knowledge` (in `make test`) | The definitions validate; the golden vectors reproduce; the draft schemas validate their example cases; the spec READMEs list no stale status |

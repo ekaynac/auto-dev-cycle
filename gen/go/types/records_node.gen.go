@@ -6,6 +6,7 @@ package types
 
 import (
 	"encoding/json"
+	"fmt"
 )
 
 type NodeKind string
@@ -44,7 +45,7 @@ type Node struct {
 	DefinitionVersion string `json:"definition_version"`
 	// Declared by the kind's definition. The computation key hashes each input's name with what it resolved to, sorted by name, so the order they are listed in is not part of the key (internal/graph).
 	Inputs []InputSpec `json:"inputs"`
-	// The kind's parameters, one schema per kind (a review's params carry its roster, 13). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.
+	// The kind's parameters, one schema per kind (a review's params carry its roster, 13); an evidence node's are EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.
 	Params json.RawMessage `json:"params"`
 	// What the node leases to run (05). A controller node has no role and no capability. That a model kind has both is internal/graph's check, not the schema's.
 	Requires NodeRequires `json:"requires"`
@@ -52,4 +53,13 @@ type Node struct {
 	Effect *Name `json:"effect"`
 	// The successor index: 1 for the first instance, and the predecessor's round plus one for each successor (repair, answers, new demands). Rails count across rounds.
 	Round int64 `json:"round"`
+}
+
+// ParamsAsEvidenceNodeParams decodes Params as EvidenceNodeParams; only valid when kind is "evidence".
+func (x *Node) ParamsAsEvidenceNodeParams() (EvidenceNodeParams, error) {
+	var out EvidenceNodeParams
+	if string(x.Kind) != "evidence" {
+		return out, fmt.Errorf("Node.Params is a EvidenceNodeParams only when kind is %q, not %q", "evidence", x.Kind)
+	}
+	return out, decodeStrict(x.Params, &out)
 }

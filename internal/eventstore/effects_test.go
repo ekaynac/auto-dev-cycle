@@ -12,7 +12,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 )
 
-var testEffects = EffectKinds{"model_call": {Idempotent: false}, "notification": {Idempotent: true}}
+var testEffects = EffectKinds{"model_call": {Idempotent: false}, "notification": {Idempotent: true}, "remote_process": {RequestBlob: true}}
 
 // openEffectsAt opens (or reopens) a store with effects in dir.
 func openEffectsAt(t *testing.T, dir string) *env {
@@ -55,6 +55,33 @@ func state(t *testing.T, e *env, id string) EffectState {
 		t.Fatal(err)
 	}
 	return eff.State
+}
+
+// A kind that reconciles from its request keeps it: the intent is refused
+// until the request's canonical form is a published blob, which its
+// request_digest then names (12 remote_process).
+func TestRequestBlobKindsKeepTheirRequest(t *testing.T) {
+	e := openEffectsAt(t, stateDir(t))
+	id := newID(t, "eff")
+	submit := func() error {
+		_, err := e.s.SubmitApplied(context.Background(), command(t, "k-"+id, `{}`), Applies(func(tx *Tx) ([]Event, json.RawMessage, error) {
+			return nil, json.RawMessage(`{}`), tx.IntendEffect(id, "remote_process", "tgt_01m3250v0aer9ss2097svmefj8", json.RawMessage(`{"b": 1, "a": 2}`))
+		}))
+		return err
+	}
+	if err := submit(); err == nil || !strings.Contains(err.Error(), "is not a published blob") {
+		t.Fatalf("a remote_process intent without its request blob: %v", err)
+	}
+	d, err := e.blobs.Put(strings.NewReader(`{"a":2,"b":1}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := submit(); err != nil {
+		t.Fatal(err)
+	}
+	if eff, err := e.s.LoadEffect(context.Background(), id); err != nil || eff.RequestDigest != d {
+		t.Fatalf("effect %+v (%v), want request %s", eff, err, d)
+	}
 }
 
 func TestIntentCommitsWithTheCommand(t *testing.T) {

@@ -4778,19 +4778,33 @@
     }
    ],
    "params": {
-    "roster": [
-     {
-      "executor": "exe_x",
-      "family": "claude"
-     }
-    ]
+    "instrument": {
+     "name": "browser-walk",
+     "version": "1.2.0",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "grant": "apr_01m3250v0aer9ss2097svmefj8",
+    "target": "tgt_01m3250v0aer9ss2097svmefj8",
+    "subject_input": "gate",
+    "demand": {
+     "key": null
+    },
+    "limits": {
+     "max_attempts_per_demand": 2,
+     "max_attempts_per_subject": 6,
+     "deadline": "PT30M",
+     "cooldown": "PT5M"
+    },
+    "restore": {
+     "required": true,
+     "procedure": "snapshot-revert"
+    }
    },
    "requires": {
     "role": "reviewer",
     "capability": "read-only",
     "resources": [
-     "account_quota",
-     "concurrency"
+     "evidence_target"
     ]
    },
    "effect": null,
@@ -14084,6 +14098,1783 @@
      "revision": 2
     }
    ]
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: the plan's own evidence",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "evidence-node-params: a demanded walk",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "evidence-node-params: no restore, no cooldown",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT0S"
+   },
+   "restore": {
+    "required": false,
+    "procedure": null
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "evidence-node-params: a deadline of a day",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "P1D",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "evidence-node-params: refused: no instrument",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: no grant",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: no target",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: no subject_input",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: no demand",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: no limits",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: no restore",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: artifact classes of its own (they are the instrument contract's)",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   },
+   "artifact_classes": {
+    "stderr": "diagnostic"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: preconditions of its own (they are the instrument contract's)",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   },
+   "preconditions": [
+    "dns"
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: an instrument without its digest",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: an instrument digest that is not a digest",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "abc"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: no grant (null)",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": null,
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a grant id where the approval goes",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "grt_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a resource group id as the target",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "rg_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: no target (null)",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": null,
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a subject input that is not a name",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "Gate Result",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a demand naming who asked (not keyed)",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null,
+    "requested_by": "own_01m3250v0aer9ss2097svmefj8"
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a demand without key",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {},
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a demand key that is not a digest",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": "walk-1"
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: max_attempts_per_demand 0",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 0,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: max_attempts_per_demand past 2^53-1",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 9007199254740992,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: max_attempts_per_demand not an integer",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 1.5,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: max_attempts_per_subject 0",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 0,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: max_attempts_per_subject past 2^53-1",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 9007199254740992,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: max_attempts_per_subject not an integer",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 1.5,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: limits without max_attempts_per_demand",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: limits without max_attempts_per_subject",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: limits without deadline",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: limits without cooldown",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a deadline that is not a duration",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "30m",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a zero deadline",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT0S",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a zero deadline of days and minutes",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "P0DT0H0M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a cooldown that is not a duration",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "5m"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a null cooldown",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": null
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: limits with an extra field",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M",
+    "max_runs": 3
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a required restore without a procedure",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": null
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a procedure for a restore not required",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": false,
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a restore without its procedure field",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a restore without required",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "procedure": "snapshot-revert"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: restore.required as a string",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": "yes",
+    "procedure": null
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a restore with an extra field",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "snapshot-revert",
+    "x": 1
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "evidence-node-params: refused: a restore procedure that is not a name",
+  "schema": "records/evidence-node-params",
+  "doc": {
+   "instrument": {
+    "name": "browser-walk",
+    "version": "1.2.0",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "grant": "apr_01m3250v0aer9ss2097svmefj8",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "subject_input": "gate",
+   "demand": {
+    "key": null
+   },
+   "limits": {
+    "max_attempts_per_demand": 2,
+    "max_attempts_per_subject": 6,
+    "deadline": "PT30M",
+    "cooldown": "PT5M"
+   },
+   "restore": {
+    "required": true,
+    "procedure": "Revert Snapshot"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "node: refused: an evidence node with a review's params",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "evidence",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": [
+     {
+      "executor": "exe_x",
+      "family": "claude"
+     }
+    ]
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "evidence_target"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: refused: an evidence node whose params break EvidenceNodeParams",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "evidence",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "instrument": {
+     "name": "browser-walk",
+     "version": "1.2.0",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "grant": null,
+    "target": "tgt_01m3250v0aer9ss2097svmefj8",
+    "subject_input": "gate",
+    "demand": {
+     "key": null
+    },
+    "limits": {
+     "max_attempts_per_demand": 2,
+     "max_attempts_per_subject": 6,
+     "deadline": "PT30M",
+     "cooldown": "PT5M"
+    },
+    "restore": {
+     "required": true,
+     "procedure": "snapshot-revert"
+    }
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "evidence_target"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": false
+ },
+ {
+  "name": "node: a review node is not read as an evidence node",
+  "schema": "records/node",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "review",
+   "definition_version": "1",
+   "inputs": [
+    {
+     "name": "gate",
+     "source": {
+      "type": "result",
+      "producer": "nod_01m3250v57ft7aehkqwq0yrq3n",
+      "result_kind": "gate_result"
+     }
+    },
+    {
+     "name": "ruling",
+     "source": {
+      "type": "answer",
+      "owed_input": "own_01m3250vz2ezn81cgvbkcn17jd",
+      "revision": 2
+     }
+    }
+   ],
+   "params": {
+    "roster": []
+   },
+   "requires": {
+    "role": "reviewer",
+    "capability": "read-only",
+    "resources": [
+     "evidence_target"
+    ]
+   },
+   "effect": null,
+   "round": 2
+  },
+  "valid": true
+ },
+ {
+  "name": "remote-process-request: valid",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": true
+ },
+ {
+  "name": "remote-process-request: refused: no target",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: no attempt",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: no run",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: no identity",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: no sessions",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: no deadline_at",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: no session",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: a session listed twice",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-a"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: a session tag that is not a name",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "Session 1"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: a host name where the target goes",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "lab-dc1",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: a resource group where the target goes",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "rg_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: a run id where the attempt goes",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "run_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: an attempt id where the run goes",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "att_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: a remote principal where the identity alias goes",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "Administrator@LAB",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: a deadline that is a duration",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "PT10M"
+  },
+  "valid": false
+ },
+ {
+  "name": "remote-process-request: refused: an extra field",
+  "schema": "records/remote-process-request",
+  "doc": {
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "attempt": "att_01m3250v0aer9ss2097svmefj8",
+   "run": "run_01m3250v0aer9ss2097svmefj8",
+   "identity": "lab-admin",
+   "sessions": [
+    "eff-1-a",
+    "eff-1-b"
+   ],
+   "deadline_at": "2026-10-08T12:30:00Z",
+   "kill_leftovers": true
+  },
+  "valid": false
+ },
+ {
+  "name": "effect-event: a remote_process intent on an evidence target",
+  "schema": "records/effect-event",
+  "doc": {
+   "effect": "eff_01m3250v0aer9ss2097svmefj8",
+   "transition": "intent",
+   "kind": "remote_process",
+   "target": "tgt_01m3250v0aer9ss2097svmefj8",
+   "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "outcome": null,
+   "observation": "",
+   "result_ref": null
+  },
+  "valid": true
+ },
+ {
+  "name": "effect-event: a deploy intent on any target",
+  "schema": "records/effect-event",
+  "doc": {
+   "effect": "eff_01m3250v0aer9ss2097svmefj8",
+   "transition": "intent",
+   "kind": "deploy",
+   "target": "prod-eu",
+   "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "outcome": null,
+   "observation": "",
+   "result_ref": null
+  },
+  "valid": true
+ },
+ {
+  "name": "effect-event: refused: a remote_process intent on a host name",
+  "schema": "records/effect-event",
+  "doc": {
+   "effect": "eff_01m3250v0aer9ss2097svmefj8",
+   "transition": "intent",
+   "kind": "remote_process",
+   "target": "lab-dc1",
+   "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "outcome": null,
+   "observation": "",
+   "result_ref": null
+  },
+  "valid": false
+ },
+ {
+  "name": "effect-event: refused: a remote_process intent on a resource group",
+  "schema": "records/effect-event",
+  "doc": {
+   "effect": "eff_01m3250v0aer9ss2097svmefj8",
+   "transition": "intent",
+   "kind": "remote_process",
+   "target": "rg_01m3250v0aer9ss2097svmefj8",
+   "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "outcome": null,
+   "observation": "",
+   "result_ref": null
+  },
+  "valid": false
+ },
+ {
+  "name": "effect-event: refused: a remote_process intent on tgt_x",
+  "schema": "records/effect-event",
+  "doc": {
+   "effect": "eff_01m3250v0aer9ss2097svmefj8",
+   "transition": "intent",
+   "kind": "remote_process",
+   "target": "tgt_x",
+   "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "outcome": null,
+   "observation": "",
+   "result_ref": null
+  },
+  "valid": false
+ },
+ {
+  "name": "effect-event: refused: a remote_process intent on a tgt_ outside the alphabet",
+  "schema": "records/effect-event",
+  "doc": {
+   "effect": "eff_01m3250v0aer9ss2097svmefj8",
+   "transition": "intent",
+   "kind": "remote_process",
+   "target": "tgt_01m3250v0aer9ss2097svmefju",
+   "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "outcome": null,
+   "observation": "",
+   "result_ref": null
+  },
+  "valid": false
+ },
+ {
+  "name": "effect-event: refused: a remote_process intent on a tgt_ that is no UUIDv7",
+  "schema": "records/effect-event",
+  "doc": {
+   "effect": "eff_01m3250v0aer9ss2097svmefj8",
+   "transition": "intent",
+   "kind": "remote_process",
+   "target": "tgt_00000000000000000000000000",
+   "request_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "outcome": null,
+   "observation": "",
+   "result_ref": null
   },
   "valid": false
  }

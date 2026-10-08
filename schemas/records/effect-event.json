@@ -14,7 +14,7 @@
       "oneOf": [{"type": "null"}, {"$ref": "receipt.json#/$defs/Name"}]
     },
     "target": {
-      "description": "What the effect acts on (a provider, a remote ref, a deploy target); set on intent, null otherwise.",
+      "description": "What the effect acts on (a provider, a remote ref, a deploy target); set on intent, null otherwise. A remote_process effect acts on its evidence target (tgt_), which its RemoteProcessRequest also names (12).",
       "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 1024}]
     },
     "request_digest": {
@@ -33,6 +33,7 @@
   },
   "allOf": [
     {"if": {"properties": {"transition": {"const": "intent"}}}, "then": {"properties": {"kind": {"not": {"const": null}}, "target": {"not": {"const": null}}, "request_digest": {"not": {"const": null}}}}, "else": {"properties": {"kind": {"const": null}, "target": {"const": null}, "request_digest": {"const": null}}}},
-    {"if": {"properties": {"transition": {"const": "reconciled"}}}, "then": {"properties": {"outcome": {"not": {"const": null}}}}, "else": {"properties": {"outcome": {"const": null}}}}
+    {"if": {"properties": {"transition": {"const": "reconciled"}}}, "then": {"properties": {"outcome": {"not": {"const": null}}}}, "else": {"properties": {"outcome": {"const": null}}}},
+    {"if": {"required": ["kind"], "properties": {"kind": {"const": "remote_process"}}}, "then": {"properties": {"target": {"pattern": "^tgt_", "format": "adc-typeid"}}}}
   ]
 }

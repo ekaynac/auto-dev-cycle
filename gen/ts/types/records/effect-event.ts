@@ -14,7 +14,7 @@ export type EffectEvent = {
    */
   kind: null | string;
   /**
-   * What the effect acts on (a provider, a remote ref, a deploy target); set on intent, null otherwise.
+   * What the effect acts on (a provider, a remote ref, a deploy target); set on intent, null otherwise. A remote_process effect acts on its evidence target (tgt_), which its RemoteProcessRequest also names (12).
    */
   target: null | string;
   /**

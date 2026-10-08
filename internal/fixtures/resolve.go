@@ -124,6 +124,9 @@ func (g *graphFix) record(kind types.NodeKind, params json.RawMessage, input []t
 	nid, err := ids.New("nod")
 	n := types.NodeRecorded{Type: "node_recorded", Task: gTask, Project: gProject, Node: types.Node{ID: types.NodeID(nid), Kind: kind, DefinitionVersion: "1",
 		Round: 1, Params: params, Inputs: input, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}}
+	if kind == types.NodeKindEvidence { // an evidence node leases its target (12)
+		n.Node.Requires.Resources = []types.ResourceGroupKind{types.ResourceGroupKindEvidenceTarget}
+	}
 	if err == nil {
 		err = g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return graph.Record(n) })
 	}
