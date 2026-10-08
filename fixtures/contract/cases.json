@@ -8217,5 +8217,3106 @@
    ]
   },
   "valid": false
+ },
+ {
+  "name": "result: a completed gate result with conclusions",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: gate result without conclusions",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: evidence with conclusions",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "evidence",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: a patch, found",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "patch",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "detail": "3 files",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: a sealed partial patch",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "partial_patch",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "could_not_run",
+   "reason": "broker_credit_exhausted",
+   "detail": "402 after edits",
+   "completed": false
+  },
+  "valid": true
+ },
+ {
+  "name": "result: an incomplete build with no diff",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "patch",
+   "value": [],
+   "conclusions": null,
+   "outcome": "could_not_run",
+   "reason": "broker_credit_exhausted",
+   "detail": "402 before the first edit",
+   "completed": false
+  },
+  "valid": true
+ },
+ {
+  "name": "result: a conclusive failure",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "failed",
+   "reason": "test_integrity_violation",
+   "detail": "2 tests failed",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: kind plan",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "plan",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: kind patch",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "patch",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: kind partial_patch",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "partial_patch",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "could_not_run",
+   "reason": "broker_credit_exhausted",
+   "detail": "sealed",
+   "completed": false
+  },
+  "valid": true
+ },
+ {
+  "name": "result: kind tree",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "tree",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: kind package",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "package",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: kind gate_result",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: kind review",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "review",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: kind evidence",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "evidence",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: kind carry_over_attestation",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "carry_over_attestation",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: kind merge_result",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "merge_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: outcome found",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "detail": "x",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: outcome empty",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: outcome could_not_run",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "could_not_run",
+   "reason": "broker_credit_exhausted",
+   "detail": "x",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: outcome failed",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "failed",
+   "reason": "test_integrity_violation",
+   "detail": "x",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: a 4096-character detail",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "detail": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "completed": true
+  },
+  "valid": true
+ },
+ {
+  "name": "result: missing id",
+  "schema": "records/result",
+  "doc": {
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: missing computation",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: missing kind",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: missing value",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: missing conclusions",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: missing outcome",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: missing reason",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: missing detail",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: missing completed",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": ""
+  },
+  "valid": false
+ },
+ {
+  "name": "result: not an object",
+  "schema": "records/result",
+  "doc": [
+   {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "gate_result",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": {
+     "tests": "pass",
+     "failed": []
+    },
+    "outcome": "empty",
+    "reason": "completed_clean",
+    "detail": "",
+    "completed": true
+   }
+  ],
+  "valid": false
+ },
+ {
+  "name": "result: an extra field",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true,
+   "selected": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: a boolean ok field",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true,
+   "ok": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: id with the wrong prefix",
+  "schema": "records/result",
+  "doc": {
+   "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: computation not a digest",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: unknown kind",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "verdict",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: value not an array",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": {
+    "type": "blob",
+    "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revision": null,
+    "scope": {
+     "project": null,
+     "framework": false
+    },
+    "lineage": [],
+    "restrictions": [],
+    "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: an invalid ref in value",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: conclusions not an object",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": "pass",
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: unknown outcome",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "passed",
+   "reason": "completed_clean",
+   "detail": "x",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: an unregistered reason",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "no_such_reason_xyz",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: detail not a string",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": 0,
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: a 4097-character detail",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "detail": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: completed not a boolean",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": "yes"
+  },
+  "valid": false
+ },
+ {
+  "name": "result: found without detail",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: failed without detail",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "failed",
+   "reason": "test_integrity_violation",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: could_not_run without detail",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "could_not_run",
+   "reason": "broker_credit_exhausted",
+   "detail": "",
+   "completed": false
+  },
+  "valid": false
+ },
+ {
+  "name": "result: incomplete and empty",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": false
+  },
+  "valid": false
+ },
+ {
+  "name": "result: incomplete and found",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "detail": "diff",
+   "completed": false
+  },
+  "valid": false
+ },
+ {
+  "name": "result: incomplete and failed",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "gate_result",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "failed",
+   "reason": "test_integrity_violation",
+   "detail": "x",
+   "completed": false
+  },
+  "valid": false
+ },
+ {
+  "name": "result: a completed partial patch",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "partial_patch",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": null,
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "detail": "diff",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: a review with conclusions",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "review",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "empty",
+   "reason": "completed_clean",
+   "detail": "",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "result: a patch with conclusions",
+  "schema": "records/result",
+  "doc": {
+   "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "kind": "patch",
+   "value": [
+    {
+     "type": "blob",
+     "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "revision": null,
+     "scope": {
+      "project": null,
+      "framework": false
+     },
+     "lineage": [],
+     "restrictions": [],
+     "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "conclusions": {
+    "tests": "pass",
+    "failed": []
+   },
+   "outcome": "found",
+   "reason": "completed_with_findings",
+   "detail": "x",
+   "completed": true
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: valid",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: no pages yet",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": []
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: owner system",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "system",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: owner operator",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: owner grant_holder",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: owner confirmation_policy",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "confirmation_policy",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: owner named_owner",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "named_owner",
+   "owner_ref": "dba-team",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: owner environment_owner",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "environment_owner",
+   "owner_ref": "staging-owner",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: missing id",
+  "schema": "records/node-hold",
+  "doc": {
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: missing hold",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: missing signal_instance",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: missing owner",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: missing owner_ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: missing since",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: missing pages",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z"
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: page missing at",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: page missing owner",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: page missing signal_instance",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: not an object",
+  "schema": "records/node-hold",
+  "doc": [
+   {
+    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+    "hold": "awaiting_input",
+    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+    "owner": "operator",
+    "owner_ref": null,
+    "since": "2026-10-08T10:00:00Z",
+    "pages": [
+     {
+      "at": "2026-10-08T11:00:00Z",
+      "owner": "operator",
+      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+     }
+    ]
+   }
+  ],
+  "valid": false
+ },
+ {
+  "name": "node-hold: an extra field",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ],
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page with an extra field",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+     "channel": "telegram"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page not an object",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    "2026-10-08T11:00:00Z"
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: pages not an array",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": {}
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: id with the wrong prefix",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: hold with capitals",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "AwaitingInput",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: empty signal instance",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a 1025-character signal instance",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a 1024-character signal instance",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "node-hold: unknown owner",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "supervisor",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: since not a time",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page at no time",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "soon",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page to an unknown owner",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "pager",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page with an empty signal instance",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": ""
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a page with a 1025-character signal instance",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a named owner without a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "named_owner",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a grant holder without a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "grant_holder",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: an environment owner without a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "environment_owner",
+   "owner_ref": null,
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: the operator with a ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "operator",
+   "owner_ref": "act_01m3250v0aer9ss2097svmefj8",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: an empty owner ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "named_owner",
+   "owner_ref": "",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a 257-character owner ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "named_owner",
+   "owner_ref": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "node-hold: a 256-character owner ref",
+  "schema": "records/node-hold",
+  "doc": {
+   "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "hold": "awaiting_input",
+   "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+   "owner": "named_owner",
+   "owner_ref": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "since": "2026-10-08T10:00:00Z",
+   "pages": [
+    {
+     "at": "2026-10-08T11:00:00Z",
+     "owner": "operator",
+     "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "node-state: state waiting",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "waiting",
+   "waiting_on": [
+    "gate"
+   ],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": true
+ },
+ {
+  "name": "node-state: state held",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "held",
+   "waiting_on": [],
+   "key": null,
+   "hold": {
+    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+    "hold": "awaiting_input",
+    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+    "owner": "operator",
+    "owner_ref": null,
+    "since": "2026-10-08T10:00:00Z",
+    "pages": [
+     {
+      "at": "2026-10-08T11:00:00Z",
+      "owner": "operator",
+      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+     }
+    ]
+   },
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": true
+ },
+ {
+  "name": "node-state: state claimed",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": true
+ },
+ {
+  "name": "node-state: state completed",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "completed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "superseded_by": null
+  },
+  "valid": true
+ },
+ {
+  "name": "node-state: state superseded",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "superseded",
+   "waiting_on": [],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
+  },
+  "valid": true
+ },
+ {
+  "name": "node-state: held after a claim",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "held",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": {
+    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+    "hold": "awaiting_input",
+    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+    "owner": "operator",
+    "owner_ref": null,
+    "since": "2026-10-08T10:00:00Z",
+    "pages": [
+     {
+      "at": "2026-10-08T11:00:00Z",
+      "owner": "operator",
+      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+     }
+    ]
+   },
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": true
+ },
+ {
+  "name": "node-state: superseded after a claim",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "superseded",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
+  },
+  "valid": true
+ },
+ {
+  "name": "node-state: missing node",
+  "schema": "records/node-state",
+  "doc": {
+   "state": "claimed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: missing state",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: missing waiting_on",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: missing key",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: missing hold",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: missing result",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: missing superseded_by",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: not an object",
+  "schema": "records/node-state",
+  "doc": [
+   {
+    "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+    "state": "claimed",
+    "waiting_on": [],
+    "key": {
+     "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "generation": 1
+    },
+    "hold": null,
+    "result": null,
+    "superseded_by": null
+   }
+  ],
+  "valid": false
+ },
+ {
+  "name": "node-state: an extra field",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null,
+   "task": "tsk_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: node with the wrong prefix",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: unknown state",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "running",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: waiting on a duplicate input",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "waiting",
+   "waiting_on": [
+    "gate",
+    "gate"
+   ],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: waiting on an invalid name",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "waiting",
+   "waiting_on": [
+    "Gate"
+   ],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: waiting_on not an array",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "waiting",
+   "waiting_on": "gate",
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: an invalid key",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: an invalid hold",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "held",
+   "waiting_on": [],
+   "key": null,
+   "hold": {
+    "id": "hld_01m3250vz2ezn81cgvbkcn17jd"
+   },
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: result with the wrong prefix",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "completed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: superseded_by with the wrong prefix",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "superseded",
+   "waiting_on": [],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": "res_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: waiting on nothing",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "waiting",
+   "waiting_on": [],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: waiting with a key",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "waiting",
+   "waiting_on": [
+    "gate"
+   ],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: claimed while waiting on an input",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [
+    "gate"
+   ],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: held without a hold",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "held",
+   "waiting_on": [],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: claimed with a hold",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": {
+    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+    "hold": "awaiting_input",
+    "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2",
+    "owner": "operator",
+    "owner_ref": null,
+    "since": "2026-10-08T10:00:00Z",
+    "pages": [
+     {
+      "at": "2026-10-08T11:00:00Z",
+      "owner": "operator",
+      "signal_instance": "own_01m3250vz2ezn81cgvbkcn17jd@2"
+     }
+    ]
+   },
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: claimed without a key",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: completed without a key",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "completed",
+   "waiting_on": [],
+   "key": null,
+   "hold": null,
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: completed without a result",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "completed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: claimed with a result",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: superseded without a replacement",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "superseded",
+   "waiting_on": [],
+   "key": null,
+   "hold": null,
+   "result": null,
+   "superseded_by": null
+  },
+  "valid": false
+ },
+ {
+  "name": "node-state: claimed with a replacement",
+  "schema": "records/node-state",
+  "doc": {
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "state": "claimed",
+   "waiting_on": [],
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "hold": null,
+   "result": null,
+   "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
+  },
+  "valid": false
  }
 ]

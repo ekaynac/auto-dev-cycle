@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/node-hold.json",
+  "title": "NodeHold",
+  "description": "A node's external wait (docs/design/m0/02 \"Hold reasons and resume signals\"; plan 15 L4): approvals, quotas, human acts, probes. Internal inputs wait structurally and need no hold (13). A replacement node keeps a transferred hold's id, signal instance, owner and paging history, so escalation never restarts (13 supersession). Lease holds stay on the lease (05).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "hold", "signal_instance", "owner", "owner_ref", "since", "pages"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/HoldID"},
+    "hold": {"description": "A registered hold (schemas/vocab/holds.yaml); internal/graph checks that it is registered.", "type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "signal_instance": {"description": "The concrete signal that resumes it, e.g. the reset time or the approval id awaited (02).", "type": "string", "minLength": 1, "maxLength": 1024},
+    "owner": {"description": "Who owns the hold now: the registry's owner, or its escalate_to once page_after has passed.", "$ref": "../vocab/registry.json#/$defs/Owner"},
+    "owner_ref": {
+      "description": "The concrete owner, for the owner kinds that name one: the grant holder's actor id, the named owner, or the environment owner the profile names. Null for system, operator and confirmation_policy, which resolve without one.",
+      "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 256}]
+    },
+    "since": {"description": "When the wait began; page_after counts from here, also across a transfer.", "$ref": "../common/defs.json#/$defs/Time"},
+    "pages": {
+      "description": "The paging history, oldest first and append-only. Pages are deduplicated by hold id and signal instance, never by channel (02).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at", "owner", "signal_instance"],
+        "properties": {
+          "at": {"$ref": "../common/defs.json#/$defs/Time"},
+          "owner": {"$ref": "../vocab/registry.json#/$defs/Owner"},
+          "signal_instance": {"type": "string", "minLength": 1, "maxLength": 1024}
+        }
+      }
+    }
+  },
+  "if": {"required": ["owner"], "properties": {"owner": {"enum": ["grant_holder", "named_owner", "environment_owner"]}}},
+  "then": {"properties": {"owner_ref": {"not": {"const": null}}}},
+  "else": {"properties": {"owner_ref": {"const": null}}}
+}
