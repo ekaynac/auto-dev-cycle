@@ -29,6 +29,18 @@ func TestEmit(t *testing.T) {
 	if _, err := h.s.SubmitApplied(context.Background(), command(t, "h", `{}`), Applies(appendTo(t, testSubject, 1))); err != nil || before == nil || after == nil {
 		t.Fatalf("a hook emitted: %v, before %v, after %v", err, before, after)
 	}
+	// Nor once the authorizer decided in the logic's place.
+	after = nil
+	d := openWriter(t, Hooks{Identify: allow, Authorize: func(tx *Tx, _ Command) error {
+		evs, _, err := appendTo(t, testSubject, 1)(tx)
+		if err == nil {
+			err = tx.Decided(Decision{Disposition: DispositionProposed, Events: evs, Result: json.RawMessage(`{"proposal":"p"}`)})
+		}
+		return err
+	}, Project: func(tx *Tx, _ []Event) error { after = tx.Emit(emitted); return nil }})
+	if out, err := d.s.Submit(context.Background(), command(t, "d", `{}`), nil); err != nil || out.Disposition != DispositionProposed || after == nil {
+		t.Fatalf("a hook emitted after an authorizer's decision: %+v %v, %v", out, err, after)
+	}
 	if err := e.s.View(context.Background(), func(tx *Tx) error {
 		evs, err := tx.EventsAfter(0, 10)
 		if err == nil && (len(evs) != 2 || evs[0].ID != emitted.ID || *evs[0].Command != out.CommandID) {

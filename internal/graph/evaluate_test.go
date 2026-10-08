@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -340,22 +341,85 @@ func TestEvaluateWaitsOnARenewal(t *testing.T) {
 	}
 }
 
-// A result built while its input's receipt was fresh and submitted after it
-// expired is refused by the fold, from the validity the input bound.
+// reviewWith is a review of its own key taking producer's result as a kind
+// result.
+func (g graphStore) reviewWith(producer types.NodeID, kind types.ResultKind) types.NodeID {
+	r := g.nodeOn(types.NodeKindReview, producer)
+	r.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind, r.Node.Inputs[0].Name = kind, "gate"
+	r.Node.Params = json.RawMessage(`{"node":"` + string(r.Node.ID) + `"}`)
+	return g.record(r)
+}
+
+// A result built while its gate input's receipt was fresh and submitted
+// after it expired is refused by the fold, from the validity the input
+// bound: recorded late, or recorded in time and selected late. A review
+// input's receipt, which no requirement reads, does not expire a result.
 func TestBufferedResultAfterExpiry(t *testing.T) {
-	g := openStore(t)
-	producer, _ := g.completedWith(types.NodeKindReview, types.ResultKindReview,
-		[]types.Ref{g.sealed(types.RefTypeReceipt, rcpID, g.receiptBlob(treeSubject(treeA, demandA), &future))})
-	consumer := g.consumerOf(producer, types.ResultKindReview)
-	g.must(evaluate(g.env(noRequirement), consumer))
-	r := g.reviewResult(consumer)
-	g.must(commit(consumer, r, g.env(noRequirement)))
-	expiring, _ := g.completedWith(types.NodeKindReview, types.ResultKindReview,
-		[]types.Ref{g.sealed(types.RefTypeReceipt, rcpID, g.receiptBlob(treeSubject(treeA, demandA), &past))})
-	late := g.consumerOf(expiring, types.ResultKindReview)
-	resolved := map[string]Resolved{"gate": {Result: *g.state(expiring).Result}}
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Claim(tx, late, resolved, 0) })
-	if err := g.do(commit(late, g.reviewResult(late), g.env(noRequirement))); err == nil || !strings.Contains(err.Error(), "expired before the result") {
-		t.Fatalf("a result after its input expired: %v", err)
+	at := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	until := at.Add(time.Hour).Format(time.RFC3339Nano)
+	g := openStoreAt(t, func() time.Time { return at })
+	gate, _ := g.gated(g.receiptBlob(treeSubject(treeA, demandA), &until))
+	review, _ := g.completedWith(types.NodeKindReview, types.ResultKindReview,
+		[]types.Ref{g.sealed(types.RefTypeReceipt, rcpID, g.receiptBlob(treeSubject(treeA, demandA), &until))})
+	recorded, late, free := g.reviewWith(gate, types.ResultKindGateResult), g.reviewWith(gate, types.ResultKindGateResult), g.reviewWith(review, types.ResultKindReview)
+	g.must(evaluate(g.env(gatesOn(treeA, demandA)), recorded, late, free))
+	in := g.reviewResult(recorded)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return recordResult(tx, types.ResultRecorded{Node: recorded, Result: in}, g.blobs)
+	})
+	at = at.Add(2 * time.Hour)
+	for name, fn := range map[string]logic{
+		"recorded": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return recordResult(tx, types.ResultRecorded{Node: late, Result: g.reviewResult(late)}, g.blobs)
+		},
+		"selected": func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, recorded, in.ID) },
+	} {
+		if err := g.do(fn); err == nil || !strings.Contains(err.Error(), "expired before the result") {
+			t.Errorf("a result %s after its input expired: %v", name, err)
+		}
+	}
+	if err := g.do(commit(free, g.reviewResult(free), g.env(noRequirement))); err != nil || g.state(free).State != types.NodeStateStateCompleted {
+		t.Fatalf("a review input's expired receipt: %v, %+v", err, g.state(free))
+	}
+}
+
+// The fold reads the time a result was recorded, not the wall clock or the
+// command's: a store clock before a validity that wall time has passed
+// commits, and rebuilds, a result. The fold also refuses a claim whose
+// input result is not recorded.
+func TestFoldClock(t *testing.T) {
+	at := time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC) // before past
+	g := openStoreAt(t, func() time.Time { return at })
+	gate, _ := g.gated(g.receiptBlob(treeSubject(treeA, demandA), &past))
+	consumer := g.reviewOf(gate)
+	env := g.env(gatesOn(treeA, demandA))
+	g.must(evaluate(env, consumer))
+	r, input := g.reviewResult(consumer), string(*g.state(gate).Result)
+	rollback := errors.New("rolled back")
+	var late, unrecorded error
+	_ = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { // as a rebuild folds an event
+		evs, err := recordResult(tx, types.ResultRecorded{Node: consumer, Result: r}, g.blobs)
+		if err == nil {
+			evs[0].At = future
+			late = Project(tx, evs)
+		}
+		return nil, errors.Join(err, rollback)
+	})
+	_ = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		rec, err := loadNode(tx, consumer)
+		if err == nil {
+			err = tx.Delete(ResultProjection, input)
+		}
+		if err == nil {
+			unrecorded = claimHolds(tx, rec, past)
+		}
+		return nil, errors.Join(err, rollback)
+	})
+	if late == nil || !strings.Contains(late.Error(), "expired before the result") || unrecorded == nil || !strings.Contains(unrecorded.Error(), "is not recorded") {
+		t.Fatalf("a result folded after its input expired: %v; an unrecorded input: %v", late, unrecorded)
+	}
+	g.must(commit(consumer, r, env))
+	if diffs, err := g.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 || g.state(consumer).State != types.NodeStateStateCompleted {
+		t.Fatalf("the rebuild: %v, %+v, %+v", err, diffs, g.state(consumer))
 	}
 }

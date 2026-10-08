@@ -188,9 +188,11 @@ func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecor
 }
 
 // claimHolds: the result inputs rec's claim fixed are still their
-// producers' selected results at their current keys, and none has passed
-// the receipt validity it bound by at (13 [G4]), from the log alone; Commit
-// checks the rest, the authority included.
+// producers' selected results at their current keys, and none of a kind
+// that carries conclusions has passed the receipt validity it bound by at
+// (13 [G4]), from the log alone; Commit checks the rest, the authority
+// included. Only those kinds have a receipt requirement (Resolve), so this
+// backs up, from the log, what Commit refuses with a typed reason.
 func claimHolds(tx *eventstore.Tx, rec nodeRecord, at string) error {
 	c, ok, err := load[claim](tx, ClaimProjection, string(rec.Recorded.Node.ID))
 	if err != nil || !ok {
@@ -200,11 +202,11 @@ func claimHolds(tx *eventstore.Tx, rec nodeRecord, at string) error {
 		if in.Result == nil {
 			continue
 		}
-		r, _, err := load[types.ResultRecorded](tx, ResultProjection, string(*in.Result))
-		if err != nil {
-			return err
+		r, ok, err := load[types.ResultRecorded](tx, ResultProjection, string(*in.Result))
+		if err != nil || !ok {
+			return errors.Join(err, fmt.Errorf("input %s's result %s is not recorded", in.Name, *in.Result))
 		}
-		if r.ReceiptValidUntil != nil {
+		if r.ReceiptValidUntil != nil && carriesConclusions(r.Result.Kind) {
 			if expired, err := expiredAt(*r.ReceiptValidUntil, at); err != nil || expired {
 				return errors.Join(err, fmt.Errorf("input %s's receipt expired before the result", in.Name))
 			}
