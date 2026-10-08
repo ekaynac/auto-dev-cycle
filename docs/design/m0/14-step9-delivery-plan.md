@@ -2,6 +2,8 @@
 
 Status: revision 4, 2026-10-06. Reviewed by Astra in three rounds (NO-GO, NO-GO, GO with changes; records in `reviews/2026-10-06-step9-plan-astra.md`); this revision applies the round-3 changes P1–P6.
 
+Amended 2026-10-08 (15 D2, approved by the operator): **9e (projects and holds reads) moved to M1**, with `project.create`. No daemon path creates a project or raises a hold in M0, so the read could not be tested end to end. Step 9 is complete without it.
+
 Scope: **step-9 completion** of 04 §9 — the daemon, local API, CLI transport, parity harness and installed smoke. It is not complete M0. These M0 obligations are tracked separately, each with its own completion evidence and a tracking issue linked from issue #3:
 - artifact graph (13);
 - evidence nodes (12);
@@ -178,7 +180,8 @@ Each PR is at most about 400 hand-written non-test lines, counting added plus de
 8. **Notes** [~150] (contract).
 9. **Reads** (contract):
    - **9a. Read-authorization foundation** [~250]: the resource map, snapshot authorization and `whoami`; apidoc emits `/v1/events`.
-   - **9b–9e.** One PR per resource family (grants, proposals, seat and notes, projects and holds), each with its schema, OpenAPI and redaction allow-list.
+   - **9b–9d.** One PR per resource family (grants, proposals, seat and notes), each with its schema, OpenAPI and redaction allow-list.
+   - **9e. Projects and holds: moved to M1** (15 D2), in the PR that wires `project.create` or right after it. The hold record lands in M0 as part of node state (15 L4). The M1 read reconciles lease holds (`lease.waiting`) with `NodeHold` into one shape before it serves them.
 10. **CLI** (contract):
     - **10a. Command integration** [~300]: `--expect`, unknown-flag rejection, exit codes, human-policy output (proposal, effective change and the dashboard link), `issued_credential`.
     - **10b. Reads and events** [~300]: `adc events --follow --json`, resuming by seq.
@@ -210,8 +213,8 @@ Each PR is at most about 400 hand-written non-test lines, counting added plus de
 - **Credentials:** 3 → 4a → 4b → 4c → 4d.
 - **Seat and proposals:** 2c → 5 → 6a → 6b → 6c → 6d.
 - **Identity and grants:** 6c → 7a → 7b → 7c → 7d → 8.
-- **Reads:** 9a after 3; 9b–9e after the projections they read.
-- **CLI:** 10a after 4a and 6c; 10b after 9e; 10c after 3b.
+- **Reads:** 9a after 3; 9b–9d after the projections they read (9e is M1).
+- **CLI:** 10a after 4a and 6c; 10b after 9d; 10c after 3b.
 - **Finish:** 11 after 10a–10c; 12 last.
 
 **Size:** about 29 PRs and roughly 7,000 hand-written lines.

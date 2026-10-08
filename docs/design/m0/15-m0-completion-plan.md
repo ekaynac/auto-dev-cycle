@@ -12,6 +12,10 @@ Status: revision 2, 2026-10-08. Draft for the operator.
   - M6: two reviews at a time.
   - M7: the estimate revised.
   - L1-L9: applied, except two L3 corrections. Checked, `matrix.go:49` and `matrix.go:42` are right as written.
+- Approved by the operator with the default decisions D1-D8 (merged as 96ca5df).
+- Amended by A7, 2026-10-08:
+  - D1 and D2 are recorded in `internal/daemon/matrix.go`, `docs/reference/action-matrix.md` and 14;
+  - §3.1 records how the G track has actually been delivered so far.
 
 Scope: **everything M0 still owes before its exit check can pass.** 14 tracked four obligations outside step 9. This
 note plans them, plus the gaps that a check against 01 §4 and the 00 exit table turned up:
@@ -200,6 +204,31 @@ Every PR in this track is a contract PR.
 | **G8. Targets and facts** | Evidence targets over the existing lease restore events; source-test workspace versus package artifact versus runtime verification facts, with a minimal fake sandbox (13:174-183, 13:199-211) | [~250] | restore failure keeps the target excluded across a restart; a gate on the source-test workspace and runtime verification on the package see their declared facts; 11:159 and 11:165 |
 
 Total for G: 12 PRs, about 3,300 lines. Up to three more if G3, G6b or G7b splits.
+
+### 3.1 Track G as delivered
+
+This records the splits made during review, on main and in open PRs, as of A7. The table above is the plan; where
+the two differ, this section is what later PRs build on.
+
+| Planned | Delivered as | Content |
+|---|---|---|
+| G1 | **G1a** (#168), **G1b** (#171) | as planned (the pre-split of M4) |
+| G2 | **G2** (#173) | as planned |
+| G3 | **G3-1** (#175) | node events, their projections and atomic producer claiming. Claiming moved here from G3-2. Claims are per node instance; a memoizable kind's key is unique per (task, key) |
+| | **G3-2** (#176) | results, per-node selection, recorded invalidation, and the task-level generations |
+| | **G3-3** (#177) | hold events: raise, page, clear, and retry waits. There is no transfer event: hold transfer moved to G6b's supersession |
+| G4a | **G4a-1** (#178, open) | `node.reused/v1`; `Resolve`; the fixtures for 11:162 and 11:164 |
+| | **G4a-2** (next) | a `could_not_run` evidence result retrying on its probe; receipt renewal, the one exception that re-selects a result for an already selected key |
+
+Changes to the plan that follow from these splits:
+- **CheckHistory coverage moves to M1.** G3 planned CheckHistory coverage for the graph's projections. The graph is
+  not wired into `adcd` in M0 (L1), so no startup replay reads them; the coverage lands with that wiring in M1.
+- **G4b obligations added.** Within one command, the evaluator deduplicates demands and claims a given node instance
+  or memoizable key at most once. It raises `awaiting_input` only against an owed input, to which the hold is tied.
+- **G6b** carries hold transfer (13:81-85), since G3-3 defines no transfer event.
+- **Follow-up issues** from the track: #172 (schemagen: a `$ref` to a plain definition inside if/then) and #174 (an
+  exit-map reason for an executor-reported failure, wanted before or with G4b; error excerpts for
+  controller-derived statuses).
 
 ### Track E: evidence nodes (#115)
 

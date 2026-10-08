@@ -22,18 +22,18 @@ and the generated API description (gen-check pins the committed `schemas/openapi
 | `grant.create` | grant | wired (logic) |  | `POST /v1/commands/grant.create` | `adc grant create` | M5 |  |
 | `grant.extend` | grant | wired (logic) |  | `POST /v1/commands/grant.extend` | `adc grant extend` | M5 |  |
 | `grant.revoke` | grant | wired (logic) |  | `POST /v1/commands/grant.revoke` | `adc grant revoke` | M5 |  |
-| `input.answer` | holds | deferred | unassigned | `POST /v1/commands/input.answer` | `adc holds answer` | M5 |  |
-| `integration.change_topology` | project | deferred | unassigned | `POST /v1/commands/integration.change_topology` | `adc project change-topology` | M5 |  |
+| `input.answer` | holds | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/input.answer` | `adc holds answer` | M5 |  |
+| `integration.change_topology` | project | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/integration.change_topology` | `adc project change-topology` | M5 |  |
 | `knowledge.change_protected_document` | project | deferred | M1 (plan/01 §4; plan/03 §4.6, §9) | `POST /v1/commands/knowledge.change_protected_document` | `adc project change-protected-document` | M5 |  |
 | `note.add` | notes | wired (logic) |  | `POST /v1/commands/note.add` | `adc notes add` | M5 |  |
-| `profile.adopt` | project | deferred | unassigned | `POST /v1/commands/profile.adopt` | `adc project adopt-profile` | M5 |  |
-| `project.create` | project | deferred | unassigned | `POST /v1/commands/project.create` | `adc project create` | M5 |  |
+| `profile.adopt` | project | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/profile.adopt` | `adc project adopt-profile` | M5 |  |
+| `project.create` | project | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/project.create` | `adc project create` | M5 |  |
 | `proposal.confirm` | approve | wired (logic) |  | `POST /v1/commands/proposal.confirm` | `adc approve confirm` | M5 | every confirmation is refused: no source of review receipts (authority.NoReviewSource); human confirmation waits for WebAuthn (14 R6) |
 | `proposal.withdraw` | propose | wired (logic) |  | `POST /v1/commands/proposal.withdraw` | `adc propose withdraw` | M5 |  |
-| `review.request` | task | deferred | unassigned | `POST /v1/commands/review.request` | `adc task request-review` | M5 |  |
+| `review.request` | task | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/review.request` | `adc task request-review` | M5 |  |
 | `seat.release` | seat | wired (logic) |  | `POST /v1/commands/seat.release` | `adc seat release` | M5 |  |
 | `seat.take` | seat | wired (logic) |  | `POST /v1/commands/seat.take` | `adc seat take` | M5 |  |
-| `task.create` | task | deferred | unassigned | `POST /v1/commands/task.create` | `adc task create` | M5 |  |
+| `task.create` | task | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/task.create` | `adc task create` | M5 |  |
 | `token.issue` | admin | wired (issuer) |  | `POST /v1/commands/token.issue` | `adc admin issue-token` | M5 |  |
 | `token.replace` | admin | wired (issuer) |  | `POST /v1/commands/token.replace` | `adc admin replace-token` | M5 |  |
 | `token.revoke` | admin | wired (logic) |  | `POST /v1/commands/token.revoke` | `adc admin revoke-token` | M5 |  |
