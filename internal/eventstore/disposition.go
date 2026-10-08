@@ -137,5 +137,7 @@ func (t *Tx) decision(decide Decide) (Decision, error) {
 	if t.decided != nil {
 		return *t.decided, nil
 	}
+	t.logic = true
+	defer func() { t.logic = false }()
 	return decide(t)
 }

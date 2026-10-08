@@ -152,6 +152,7 @@ type Tx struct {
 	owner   *Store   // the store a command's or a View's transaction is on
 	intents []intent // effects the command intends
 	emitted []Event  // events the logic recorded itself (Emit)
+	logic   bool     // the command's logic is running: only it emits
 	object  *Object  // the command's object, as Authorize bound it
 	// decided: the command's decision, when Authorize made it (Tx.Decided).
 	decided *Decision
@@ -169,11 +170,13 @@ type Tx struct {
 
 // Emit records evs as the command's own events, ahead of those its logic
 // returns, so a logic can write events it never hands back to a caller
-// (graph.Commit: 13 [G4]). Only a command's transaction emits, and only an
-// applied command records what it emitted.
+// (graph.Commit: 13 [G4]). Emitted events always precede the returned ones,
+// whatever the order of the logic's calls. Only a command's logic emits,
+// while it runs: not a hook, before or after it, and not a view or a
+// rebuild. Only an applied command records what it emitted.
 func (t *Tx) Emit(evs ...Event) error {
-	if t.store == nil || t.readOnly || t.rebuild {
-		return errors.New("eventstore: only a command's transaction emits events")
+	if t.store == nil || t.readOnly || t.rebuild || !t.logic {
+		return errors.New("eventstore: only a command's logic emits events")
 	}
 	t.emitted = append(t.emitted, evs...)
 	return nil

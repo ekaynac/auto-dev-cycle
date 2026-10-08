@@ -160,7 +160,7 @@ func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecor
 	if !slices.Contains(produces[rec.Recorded.Node.Kind], p.Result.Kind) {
 		return fmt.Errorf("a %s node does not record a %s result", rec.Recorded.Node.Kind, p.Result.Kind)
 	}
-	if err := claimHolds(tx, rec); err != nil {
+	if err := claimHolds(tx, rec, ev.At); err != nil {
 		return err
 	}
 	if err := CheckRead(p.Result); err != nil {
@@ -188,12 +188,29 @@ func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecor
 }
 
 // claimHolds: the result inputs rec's claim fixed are still their
-// producers' selected results at their current keys (13 [G4]), from the log
-// alone; Commit checks the rest, the authority included.
-func claimHolds(tx *eventstore.Tx, rec nodeRecord) error {
+// producers' selected results at their current keys, and none of a kind
+// that carries conclusions has passed the receipt validity it bound by at
+// (13 [G4]), from the log alone; Commit checks the rest, the authority
+// included. Only those kinds have a receipt requirement (Resolve), so this
+// backs up, from the log, what Commit refuses with a typed reason.
+func claimHolds(tx *eventstore.Tx, rec nodeRecord, at string) error {
 	c, ok, err := load[claim](tx, ClaimProjection, string(rec.Recorded.Node.ID))
 	if err != nil || !ok {
 		return errors.Join(err, errors.New("an unclaimed node records no result"))
+	}
+	for _, in := range c.Inputs {
+		if in.Result == nil {
+			continue
+		}
+		r, ok, err := load[types.ResultRecorded](tx, ResultProjection, string(*in.Result))
+		if err != nil || !ok {
+			return errors.Join(err, fmt.Errorf("input %s's result %s is not recorded", in.Name, *in.Result))
+		}
+		if r.ReceiptValidUntil != nil && carriesConclusions(r.Result.Kind) {
+			if expired, err := expiredAt(*r.ReceiptValidUntil, at); err != nil || expired {
+				return errors.Join(err, fmt.Errorf("input %s's receipt expired before the result", in.Name))
+			}
+		}
 	}
 	return selectedInputs(tx, rec, resolutions(c.Inputs))
 }
@@ -210,7 +227,7 @@ func selected(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultSelected) e
 	if rec.State.State != types.NodeStateStateClaimed || rec.State.Key.Key != r.Result.Computation {
 		return fmt.Errorf("a %s node selects no result of another key", rec.State.State)
 	}
-	if err := claimHolds(tx, rec); err != nil {
+	if err := claimHolds(tx, rec, ev.At); err != nil {
 		return err
 	}
 	// records/result makes every incomplete result could_not_run, and

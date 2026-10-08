@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
@@ -49,7 +50,10 @@ type graphStore struct {
 	}
 }
 
-func openStore(t *testing.T) graphStore {
+func openStore(t *testing.T) graphStore { t.Helper(); return openStoreAt(t, nil) }
+
+// openStoreAt is openStore on the store clock now (nil: the wall clock).
+func openStoreAt(t *testing.T, now func() time.Time) graphStore {
 	t.Helper()
 	state := filepath.Join(t.TempDir(), "state")
 	lock, err := eventstore.AcquireLock(state)
@@ -63,7 +67,7 @@ func openStore(t *testing.T) graphStore {
 	none := func(*eventstore.Tx, eventstore.Command) error { return nil }
 	kinds := Kinds()
 	maps.Copy(kinds, owedanswers.Kinds())
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: now,
 		Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(Project, owedanswers.Project)}})
 	if err != nil {
 		t.Fatal(err)

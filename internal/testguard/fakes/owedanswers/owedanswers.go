@@ -7,7 +7,9 @@
 // input's project, and the grant holder it waits on. A grant or a
 // revocation is an event of its own, folded into a projection, so an
 // evaluation sees exactly the answers its transaction sees and a rebuild
-// reaches the same state. Who may answer (04) is M1's.
+// reaches the same state. Who may answer (04) is M1's. An owed input the
+// fake has not seen has no owner, which fails the evaluation: a fixture
+// records it unanswered (a null approval) before it evaluates.
 package owedanswers
 
 import (
