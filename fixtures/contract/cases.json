@@ -12621,6 +12621,59 @@
   "valid": true
  },
  {
+  "name": "graph-event: raised valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_raised",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "hold": {
+    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+    "hold": "awaiting_input",
+    "reason": null,
+    "signal_instance": "own@2",
+    "owner": "operator",
+    "owner_ref": null,
+    "since": "2026-10-08T10:00:00Z",
+    "pages": []
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: paged valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_paged",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "hold": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "owner": "named_owner",
+   "owner_ref": "dba-team",
+   "channel": "telegram"
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: cleared valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_cleared",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "hold": "hld_01m3250vz2ezn81cgvbkcn17jd"
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: transferred valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_transferred",
+   "from": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "to": "nod_01m3250v57ft7aehkqwq0yrq3n",
+   "hold": "hld_01m3250vz2ezn81cgvbkcn17jd"
+  },
+  "valid": true
+ },
+ {
   "name": "graph-event: a first-round node",
   "schema": "records/graph-event",
   "doc": {
@@ -12905,6 +12958,109 @@
    "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
    "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a page with no channel",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_paged",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "hold": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "owner": "named_owner",
+   "owner_ref": "dba-team",
+   "channel": null
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: a raised hold that is not a records/node-hold",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_raised",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "hold": {
+    "id": "hld_01m3250vz2ezn81cgvbkcn17jd",
+    "hold": "awaiting_input",
+    "reason": null,
+    "signal_instance": "own@2",
+    "owner": "nobody",
+    "owner_ref": null,
+    "since": "2026-10-08T10:00:00Z",
+    "pages": []
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a page to an unknown owner",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_paged",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "hold": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "owner": "nobody",
+   "owner_ref": "dba-team",
+   "channel": "telegram"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a page with an empty owner ref",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_paged",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "hold": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "owner": "named_owner",
+   "owner_ref": "",
+   "channel": "telegram"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a page on an invalid channel",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_paged",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "hold": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "owner": "named_owner",
+   "owner_ref": "dba-team",
+   "channel": "Telegram"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a clear of a hold with the wrong prefix",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_cleared",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "hold": "nod_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a transfer without its source",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_transferred",
+   "to": "nod_01m3250v57ft7aehkqwq0yrq3n",
+   "hold": "hld_01m3250vz2ezn81cgvbkcn17jd"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a transfer with an extra field",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "hold_transferred",
+   "from": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "to": "nod_01m3250v57ft7aehkqwq0yrq3n",
+   "hold": "hld_01m3250vz2ezn81cgvbkcn17jd",
+   "pages": []
   },
   "valid": false
  },

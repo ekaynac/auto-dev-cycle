@@ -10,15 +10,19 @@ import (
 	"fmt"
 )
 
-// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1 and node.invalidated/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, node.hold_transferred/v1 under the receiving node's, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 type GraphEvent struct{ Variant GraphEventVariant }
 
-// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *ResultRecorded, *ResultSelected.
+// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *HoldRaised, *HoldPaged, *HoldCleared, *HoldTransferred, *ResultRecorded, *ResultSelected.
 type GraphEventVariant interface{ isGraphEvent() }
 
 func (*NodeRecorded) isGraphEvent()    {}
 func (*NodeClaimed) isGraphEvent()     {}
 func (*NodeInvalidated) isGraphEvent() {}
+func (*HoldRaised) isGraphEvent()      {}
+func (*HoldPaged) isGraphEvent()       {}
+func (*HoldCleared) isGraphEvent()     {}
+func (*HoldTransferred) isGraphEvent() {}
 func (*ResultRecorded) isGraphEvent()  {}
 func (*ResultSelected) isGraphEvent()  {}
 
@@ -72,6 +76,30 @@ func (u *GraphEvent) UnmarshalJSON(b []byte) error {
 			return err
 		}
 		u.Variant = v
+	case "hold_raised":
+		v := &HoldRaised{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	case "hold_paged":
+		v := &HoldPaged{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	case "hold_cleared":
+		v := &HoldCleared{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
+	case "hold_transferred":
+		v := &HoldTransferred{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
 	case "result_recorded":
 		v := &ResultRecorded{}
 		if err := decodeStrict(b, v); err != nil {
@@ -120,6 +148,38 @@ type NodeInvalidated struct {
 	Type string         `json:"type"`
 	Node NodeID         `json:"node"`
 	Key  ComputationKey `json:"key"`
+}
+
+// HoldRaised: An external wait on the node (02 "Hold reasons and resume signals"): raised at the event's time, by its registry owner, with no page yet. A hold with a reason is the retry wait of the node's could_not_run result (13 [G2]), and its reason's registry entry names it.
+type HoldRaised struct {
+	Type string   `json:"type"`
+	Node NodeID   `json:"node"`
+	Hold NodeHold `json:"hold"`
+}
+
+// HoldPaged: A page of the hold at the event's time, for its signal instance: to its owner, or to the registry's escalate_to, which then owns it.
+type HoldPaged struct {
+	Type     string  `json:"type"`
+	Node     NodeID  `json:"node"`
+	Hold     HoldID  `json:"hold"`
+	Owner    Owner   `json:"owner"`
+	OwnerRef *string `json:"owner_ref"`
+	Channel  *Name   `json:"channel"`
+}
+
+// HoldCleared: The hold's signal arrived, or its wait no longer applies: the hold leaves the node.
+type HoldCleared struct {
+	Type string `json:"type"`
+	Node NodeID `json:"node"`
+	Hold HoldID `json:"hold"`
+}
+
+// HoldTransferred: A hold moves to another node of the task (13 supersession) with its id, signal instance, owner and paging history.
+type HoldTransferred struct {
+	Type string `json:"type"`
+	From NodeID `json:"from"`
+	To   NodeID `json:"to"`
+	Hold HoldID `json:"hold"`
 }
 
 // ResultRecorded: An immutable result of a claimed node, with the attempt that produced it (null for a controller node).

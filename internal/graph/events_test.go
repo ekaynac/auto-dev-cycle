@@ -14,6 +14,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -141,8 +142,13 @@ func claimWith(n types.NodeID, res types.ResultID) logic {
 
 func (g graphStore) claimOf(n types.NodeID) logic { return claimWith(n, g.planRes) }
 
+// state is n's projected state, which must be a valid records/node-state.
 func (g graphStore) state(n types.NodeID) types.NodeState {
+	g.t.Helper()
 	rec, _ := view[nodeRecord](g, NodeProjection, string(n))
+	if _, err := contract.Encode("records/node-state", rec.State); err != nil {
+		g.t.Fatalf("%s's projected state: %v", n, err)
+	}
 	return rec.State
 }
 
@@ -389,6 +395,12 @@ func TestInvalidationClaimsTheNewKey(t *testing.T) {
 	if err := g.do(forge(NodeClaimed, string(b), prjID, &types.NodeClaimed{Type: "node_claimed", Node: b, Key: g3, Inputs: g.claimed(a).Inputs})); err == nil {
 		t.Fatal("a forged claim at generation 3 was admitted")
 	}
+	// Generation 0 is the identity's current one: b meets a's claim at 2.
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Claim(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 0)
+	}); !errors.As(err, &held) || held.Node != a {
+		t.Fatalf("a claim at generation 0: %v", err)
+	}
 	// A replayed invalidation is refused.
 	if err := g.do(forge(NodeInvalidated, string(a), prjID, &types.NodeInvalidated{Type: "node_invalidated", Node: a, Key: *g.state(a).Key})); err == nil {
 		t.Fatal("a replayed invalidation was admitted")
@@ -397,6 +409,33 @@ func TestInvalidationClaimsTheNewKey(t *testing.T) {
 		return event(NodeClaimed, string(b), prjID, &types.NodeClaimed{Type: "node_claimed", Node: b, Key: *g.state(a).Key, Inputs: g.claimed(a).Inputs})
 	}); err == nil {
 		t.Fatal("another gate claimed the invalidated gate's new key")
+	}
+	diffs, err := g.s.RebuildProjections(context.Background())
+	if err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild after a memoizable invalidation: %v %+v", err, diffs)
+	}
+}
+
+// A non-memoizable node is first claimed at generation 1; 0 means 1.
+func TestFirstClaimsAreAtGenerationOne(t *testing.T) {
+	g := openStore(t)
+	a, b := g.record(g.newNode(types.NodeKindBuild)), g.record(g.newNode(types.NodeKindBuild))
+	var stale ErrKeyStale
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Claim(tx, a, map[string]Resolved{"plan": {Result: g.planRes}}, 2)
+	}); !errors.As(err, &stale) || stale.Current != 1 {
+		t.Fatalf("a first claim at generation 2: %v", err)
+	}
+	g2 := must(Key(g.newNodeLike(a), map[string]Resolved{"plan": {Result: g.planRes}}, 2))
+	if err := g.do(forge(NodeClaimed, string(a), prjID, &types.NodeClaimed{Type: "node_claimed", Node: a, Key: g2,
+		Inputs: []types.NodeClaimedInputsItem{{Name: "plan", Result: ptr(g.planRes)}}})); err == nil {
+		t.Fatal("a forged first claim at generation 2 was admitted")
+	}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Claim(tx, b, map[string]Resolved{"plan": {Result: g.planRes}}, 0)
+	})
+	if g.state(b).Key.Generation != 1 {
+		t.Fatalf("generation 0 claimed %d", g.state(b).Key.Generation)
 	}
 }
 

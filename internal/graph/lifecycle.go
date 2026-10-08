@@ -14,7 +14,7 @@ package graph
 //   - A selection takes one of the node's results answering its current
 //     key and not could_not_run, and completes the node: selection is per
 //     node (13 [G1]; one per key for the memoizable kinds).
-//   - An invalidation moves a claimed or completed node to the next
+//   - An invalidation moves a claimed, held or completed node to the next
 //     generation of the same inputs: a new key and no selected result. For
 //     a memoizable kind the task's current generation of the node's
 //     identity (its inputs, without a generation) moves with it, the new
@@ -145,10 +145,13 @@ func invalidated(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeInvalidate
 	if err != nil || ev.Kind != NodeInvalidated || ev.Subject != string(p.Node) {
 		return errors.Join(err, errors.New("an invalidation is under its node"))
 	}
-	if s := rec.State.State; s != types.NodeStateStateClaimed && s != types.NodeStateStateCompleted {
-		return fmt.Errorf("a %s node is not invalidated: only a claimed or completed one", s)
+	if s := rec.State.State; s != types.NodeStateStateClaimed && s != types.NodeStateStateCompleted && s != types.NodeStateStateHeld {
+		return fmt.Errorf("a %s node is not invalidated: only a claimed, held or completed one", s)
 	}
-	c, _, err := load[claim](tx, ClaimProjection, string(p.Node))
+	c, ok, err := load[claim](tx, ClaimProjection, string(p.Node))
+	if err != nil || !ok {
+		return errors.Join(err, errors.New("an unclaimed node is not invalidated"))
+	}
 	resolved := resolutions(c.Inputs)
 	key, kerr := Key(rec.Recorded.Node, resolved, c.Key.Generation+1)
 	if err = errors.Join(err, kerr); err != nil || key != p.Key {
@@ -171,6 +174,7 @@ func invalidated(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeInvalidate
 	if err := put(tx, ClaimProjection, string(p.Node), c); err != nil {
 		return err
 	}
-	rec.State.State, rec.State.Key, rec.State.Result = types.NodeStateStateClaimed, &key, nil
+	// A held node's holds end with its generation; their events keep them.
+	rec.State.State, rec.State.Key, rec.State.Result, rec.State.Holds = types.NodeStateStateClaimed, &key, nil, []types.NodeHold{}
 	return putNode(tx, rec)
 }

@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/graph-event.json",
   "title": "GraphEvent",
-  "description": "The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1 and node.invalidated/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.",
-  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}, {"$ref": "#/$defs/NodeInvalidated"}, {"$ref": "#/$defs/ResultRecorded"}, {"$ref": "#/$defs/ResultSelected"}],
+  "description": "The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, node.hold_transferred/v1 under the receiving node's, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.",
+  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}, {"$ref": "#/$defs/NodeInvalidated"}, {"$ref": "#/$defs/HoldRaised"}, {"$ref": "#/$defs/HoldPaged"}, {"$ref": "#/$defs/HoldCleared"}, {"$ref": "#/$defs/HoldTransferred"}, {"$ref": "#/$defs/ResultRecorded"}, {"$ref": "#/$defs/ResultSelected"}],
   "$defs": {
     "NodeRecorded": {
       "description": "A node joins its task's graph, append-only: its task, its project and the node it succeeds (null for a first round).",
@@ -53,6 +53,54 @@
         "type": {"const": "node_invalidated"},
         "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
         "key": {"$ref": "computation-key.json"}
+      }
+    },
+    "HoldRaised": {
+      "description": "An external wait on the node (02 \"Hold reasons and resume signals\"): raised at the event's time, by its registry owner, with no page yet. A hold with a reason is the retry wait of the node's could_not_run result (13 [G2]), and its reason's registry entry names it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "hold"],
+      "properties": {
+        "type": {"const": "hold_raised"},
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "hold": {"$ref": "node-hold.json"}
+      }
+    },
+    "HoldPaged": {
+      "description": "A page of the hold at the event's time, for its signal instance: to its owner, or to the registry's escalate_to, which then owns it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "hold", "owner", "owner_ref", "channel"],
+      "properties": {
+        "type": {"const": "hold_paged"},
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "hold": {"$ref": "../common/defs.json#/$defs/HoldID"},
+        "owner": {"$ref": "../vocab/registry.json#/$defs/Owner"},
+        "owner_ref": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 256}]},
+        "channel": {"oneOf": [{"type": "null"}, {"$ref": "receipt.json#/$defs/Name"}]}
+      }
+    },
+    "HoldCleared": {
+      "description": "The hold's signal arrived, or its wait no longer applies: the hold leaves the node.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "hold"],
+      "properties": {
+        "type": {"const": "hold_cleared"},
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "hold": {"$ref": "../common/defs.json#/$defs/HoldID"}
+      }
+    },
+    "HoldTransferred": {
+      "description": "A hold moves to another node of the task (13 supersession) with its id, signal instance, owner and paging history.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "from", "to", "hold"],
+      "properties": {
+        "type": {"const": "hold_transferred"},
+        "from": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "to": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "hold": {"$ref": "../common/defs.json#/$defs/HoldID"}
       }
     },
     "ResultRecorded": {

@@ -4,9 +4,9 @@
 
 `schemas/records/graph-event.json`
 
-The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1 and node.invalidated/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, node.hold_transferred/v1 under the receiving node's, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 
-A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected).
+A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [HoldTransferred](#holdtransferred) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected).
 
 ## Definitions
 
@@ -63,6 +63,66 @@ An explicit, recorded invalidation (13 [G1]): the node's claim moves to the next
 | `type` | yes | `node_invalidated` |  |
 | `node` | yes | [NodeID](common-defs.md#nodeid) |  |
 | `key` | yes | [computation-key](records-computation-key.md) |  |
+
+No other fields are allowed.
+
+### HoldRaised
+
+An external wait on the node (02 "Hold reasons and resume signals"): raised at the event's time, by its registry owner, with no page yet. A hold with a reason is the retry wait of the node's could_not_run result (13 [G2]), and its reason's registry entry names it.
+
+#### Fields of HoldRaised
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | `hold_raised` |  |
+| `node` | yes | [NodeID](common-defs.md#nodeid) |  |
+| `hold` | yes | [node-hold](records-node-hold.md) |  |
+
+No other fields are allowed.
+
+### HoldPaged
+
+A page of the hold at the event's time, for its signal instance: to its owner, or to the registry's escalate_to, which then owns it.
+
+#### Fields of HoldPaged
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | `hold_paged` |  |
+| `node` | yes | [NodeID](common-defs.md#nodeid) |  |
+| `hold` | yes | [HoldID](common-defs.md#holdid) |  |
+| `owner` | yes | [Owner](vocab-registry.md#owner) |  |
+| `owner_ref` | yes | null or string (minLength `1`, maxLength `256`) |  |
+| `channel` | yes | null or [Name](records-receipt.md#name) |  |
+
+No other fields are allowed.
+
+### HoldCleared
+
+The hold's signal arrived, or its wait no longer applies: the hold leaves the node.
+
+#### Fields of HoldCleared
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | `hold_cleared` |  |
+| `node` | yes | [NodeID](common-defs.md#nodeid) |  |
+| `hold` | yes | [HoldID](common-defs.md#holdid) |  |
+
+No other fields are allowed.
+
+### HoldTransferred
+
+A hold moves to another node of the task (13 supersession) with its id, signal instance, owner and paging history.
+
+#### Fields of HoldTransferred
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | `hold_transferred` |  |
+| `from` | yes | [NodeID](common-defs.md#nodeid) |  |
+| `to` | yes | [NodeID](common-defs.md#nodeid) |  |
+| `hold` | yes | [HoldID](common-defs.md#holdid) |  |
 
 No other fields are allowed.
 
