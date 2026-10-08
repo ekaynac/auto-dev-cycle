@@ -1,0 +1,9 @@
+{
+  "name": "crash-after-intent-resumes",
+  "invariant": "A crash after an effect's intent resumes that effect and never allocates another: after a crash before the send, the operation retries its intended effect under the same id; after a crash between the send and its observation, it reconciles against the target, which holds what it wants, with no second apply (13 [G4]; 03 \"External effects\").",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.effect-resume-reallocates"
+}

@@ -45,6 +45,7 @@ sandbox in which the real home and state do not exist**:
 | Fake scheduler | the lease state machine: all-or-nothing reservations in a fixed order (05) | `internal/capacity/fakesched` | built: the deterministic scheduler of 05 "What M0 delivers" |
 | Fake authenticator | a platform WebAuthn authenticator, with a settable RP ID, origin and flags | `internal/authority/fakeauthn` | built: a WebAuthn authenticator for the challenge fixtures (11) |
 | Fake owed-answer authority | the authority's answers to owed inputs until `input.answer` (04, 15 D1): the approval in force that answers an owed input at its revision, in its project, and the grant holder it waits on | `…/fakes/owedanswers` | built: an owed input's answer, granted or revoked by event and read through the transaction (G4b); who may answer is M1's |
+| Fake effect target | a deploy target as reconciliation queries it (03 "External effects"): what it holds now, and an apply under an effect id, conditional on the value it replaces and idempotent at the target | `…/fakes/effecttarget` | built: a value held per target, applied by compare-and-set under an effect id and logged in order (G7a) |
 
 When a real implementation is found to differ from its fake, the fake is fixed first, with a test that fails on the
 old fake.
@@ -60,7 +61,7 @@ the same rows. Its tests refuse:
   synopsis calls it a fake, even inside a registered fake (only `adapters/fake/src` is listed as part of one).
 
 `internal/testguard` and the fakes under it are for tests: only `_test` files import them, except that
-`internal/fixtures` may import the fake clock. Outside the guard package itself (not the fakes below it), a test
+`internal/fixtures` may import the fake clock, the owed-answer fake and the fake effect target. Outside the guard package itself (not the fakes below it), a test
 refuses:
 - a `Setenv` or `Unsetenv` of `HOME` or an `XDG_*` directory, or of a key that is not a string literal;
 - a string literal starting `HOME=` or `XDG_`, the way a child's environment names a home.

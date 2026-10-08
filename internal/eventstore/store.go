@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS effects (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS effects_command ON effects(command);
 CREATE INDEX IF NOT EXISTS effects_state ON effects(state);
+CREATE INDEX IF NOT EXISTS effects_request ON effects(kind, request_digest);
 CREATE TABLE IF NOT EXISTS commands (
   id              TEXT PRIMARY KEY,
   actor           TEXT NOT NULL,

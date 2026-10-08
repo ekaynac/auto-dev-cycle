@@ -102,6 +102,22 @@ const (
 	// PreconditionSpendsAttempt counts a precondition failure as an
 	// evidence attempt.
 	PreconditionSpendsAttempt = "graph.precondition-spends-attempt"
+	// EffectKeyedByComputation leaves the node instance out of an effect
+	// operation's request, so a new goal with an equal computation key finds
+	// an earlier operation: a cached effect result read as current state.
+	EffectKeyedByComputation = "graph.effect-keyed-by-computation"
+	// EffectResumeReallocates intends a new effect when an operation resumes,
+	// instead of resuming the one its request already intended.
+	EffectResumeReallocates = "graph.effect-resume-reallocates"
+	// EffectTargetUnfenced intends an operation while another effect on its
+	// target is live, so a stale operation can land over a newer one.
+	EffectTargetUnfenced = "graph.effect-target-unfenced"
+	// EffectApplyBlind applies against the target's value read again at the
+	// apply, not the value observed, so a move in between is overwritten.
+	EffectApplyBlind = "graph.effect-apply-blind"
+	// EffectPendingSkipsTarget applies a new operation without first asking
+	// whether the target already holds what it wants.
+	EffectPendingSkipsTarget = "graph.effect-pending-skips-target"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -112,4 +128,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked, ConfirmIgnoresStatus, ReservationsUncounted,
 	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks, IncompleteNoDiffEmpty, PartialPatchDropped, ClaimPerDemand,
 	ResolveSkipsApplicability, DemandIgnored, RetryNeedsInvalidation, RenewalInvalidates, CommitSkipsAuthority,
-	AttemptsIgnoreDemand, SubjectCapUnchecked, PreconditionSpendsAttempt}
+	AttemptsIgnoreDemand, SubjectCapUnchecked, PreconditionSpendsAttempt,
+	EffectKeyedByComputation, EffectResumeReallocates, EffectTargetUnfenced, EffectApplyBlind, EffectPendingSkipsTarget}
