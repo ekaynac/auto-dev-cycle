@@ -36,7 +36,8 @@ const Framing = "adc.computation-key/1"
 // keyed is the document a key hashes. Inputs are sorted by name: names are
 // unique within a node, so the order a template declares them in is not
 // part of the key, and two instances of one kind with the same inputs
-// share it (13 [G10], duplicate demands).
+// share it. Sharing a key serves memoization (13 [G1], G4a); duplicate
+// demands join a node instance's claim, not a key (13 [G10]).
 type keyed struct {
 	Framing           string         `json:"framing"`
 	Kind              types.NodeKind `json:"kind"`

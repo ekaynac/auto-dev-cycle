@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/graph-event.json",
+  "title": "GraphEvent",
+  "description": "The payload of every artifact-graph node event (docs/design/m0/13), discriminated by type: node.recorded/v1 and node.claimed/v1, under the node's id and in its project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive. Result and selection events follow (plan 15 G3-2).",
+  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}],
+  "$defs": {
+    "NodeRecorded": {
+      "description": "A node joins its task's graph, append-only: its task, its project and the node it succeeds (null for a first round).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "task", "project", "predecessor"],
+      "properties": {
+        "type": {"const": "node_recorded"},
+        "node": {"$ref": "node.json"},
+        "task": {"$ref": "../common/defs.json#/$defs/TaskID"},
+        "project": {"$ref": "../common/defs.json#/$defs/ProjectID"},
+        "predecessor": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/NodeID"}]}
+      }
+    },
+    "NodeClaimed": {
+      "description": "A node's claim on its computation key (13 [G10]): its inputs as they resolved, fixed from here on, and the key they give. A claim is a node instance's: a repeat demand of the node joins it and records nothing; a memoizable kind's key is claimed once per task.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "key", "inputs"],
+      "properties": {
+        "type": {"const": "node_claimed"},
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "key": {"$ref": "computation-key.json"},
+        "inputs": {
+          "description": "Each declared input and what it resolved to, in declared order: a result, or an approval with its revision. A new kind of resolution is a new event version (node.claimed/v2), since every field is required.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "result", "approval", "revision"],
+            "properties": {
+              "name": {"$ref": "receipt.json#/$defs/Name"},
+              "result": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ResultID"}]},
+              "approval": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ApprovalID"}]},
+              "revision": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1, "maximum": 9007199254740991}]}
+            }
+          }
+        }
+      }
+    }
+  }
+}

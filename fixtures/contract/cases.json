@@ -12509,5 +12509,356 @@
    "superseded_by": "nod_01m3250v57ft7aehkqwq0yrq3n"
   },
   "valid": false
+ },
+ {
+  "name": "graph-event: recorded valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_recorded",
+   "node": {
+    "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+    "kind": "build",
+    "definition_version": "1",
+    "inputs": [],
+    "params": {},
+    "effect": null,
+    "round": 1,
+    "requires": {
+     "role": null,
+     "capability": null,
+     "resources": []
+    }
+   },
+   "task": "tsk_01m3250v9xft08ssr4ygq6g2np",
+   "project": "prj_01m3250vkwffc979nzjw0g2sf9",
+   "predecessor": "nod_01m3250v57ft7aehkqwq0yrq3n"
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: claimed valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_claimed",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "inputs": [
+    {
+     "name": "plan",
+     "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+     "approval": null,
+     "revision": null
+    },
+    {
+     "name": "ruling",
+     "result": null,
+     "approval": "apr_01m3250vz2ezn81cgvbkcn17jd",
+     "revision": 2
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: a first-round node",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_recorded",
+   "node": {
+    "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+    "kind": "build",
+    "definition_version": "1",
+    "inputs": [],
+    "params": {},
+    "effect": null,
+    "round": 1,
+    "requires": {
+     "role": null,
+     "capability": null,
+     "resources": []
+    }
+   },
+   "task": "tsk_01m3250v9xft08ssr4ygq6g2np",
+   "project": "prj_01m3250vkwffc979nzjw0g2sf9",
+   "predecessor": null
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: unknown type",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_dropped",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "inputs": [
+    {
+     "name": "plan",
+     "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+     "approval": null,
+     "revision": null
+    },
+    {
+     "name": "ruling",
+     "result": null,
+     "approval": "apr_01m3250vz2ezn81cgvbkcn17jd",
+     "revision": 2
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: an extra field",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_claimed",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "inputs": [
+    {
+     "name": "plan",
+     "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+     "approval": null,
+     "revision": null
+    },
+    {
+     "name": "ruling",
+     "result": null,
+     "approval": "apr_01m3250vz2ezn81cgvbkcn17jd",
+     "revision": 2
+    }
+   ],
+   "extra": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a claim without its node",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_claimed",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "inputs": [
+    {
+     "name": "plan",
+     "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+     "approval": null,
+     "revision": null
+    },
+    {
+     "name": "ruling",
+     "result": null,
+     "approval": "apr_01m3250vz2ezn81cgvbkcn17jd",
+     "revision": 2
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a result event, not yet a variant",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_selected",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": "res_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a node that is not a records/node",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_recorded",
+   "node": {
+    "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+    "kind": "lint",
+    "definition_version": "1",
+    "inputs": [],
+    "params": {},
+    "effect": null,
+    "round": 1,
+    "requires": {
+     "role": null,
+     "capability": null,
+     "resources": []
+    }
+   },
+   "task": "tsk_01m3250v9xft08ssr4ygq6g2np",
+   "project": "prj_01m3250vkwffc979nzjw0g2sf9",
+   "predecessor": "nod_01m3250v57ft7aehkqwq0yrq3n"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a task with the wrong prefix",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_recorded",
+   "node": {
+    "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+    "kind": "build",
+    "definition_version": "1",
+    "inputs": [],
+    "params": {},
+    "effect": null,
+    "round": 1,
+    "requires": {
+     "role": null,
+     "capability": null,
+     "resources": []
+    }
+   },
+   "task": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "project": "prj_01m3250vkwffc979nzjw0g2sf9",
+   "predecessor": "nod_01m3250v57ft7aehkqwq0yrq3n"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a predecessor with the wrong prefix",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_recorded",
+   "node": {
+    "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+    "kind": "build",
+    "definition_version": "1",
+    "inputs": [],
+    "params": {},
+    "effect": null,
+    "round": 1,
+    "requires": {
+     "role": null,
+     "capability": null,
+     "resources": []
+    }
+   },
+   "task": "tsk_01m3250v9xft08ssr4ygq6g2np",
+   "project": "prj_01m3250vkwffc979nzjw0g2sf9",
+   "predecessor": "res_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a claim with an invalid key",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_claimed",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 0
+   },
+   "inputs": [
+    {
+     "name": "plan",
+     "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+     "approval": null,
+     "revision": null
+    },
+    {
+     "name": "ruling",
+     "result": null,
+     "approval": "apr_01m3250vz2ezn81cgvbkcn17jd",
+     "revision": 2
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a claim input of revision 0",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_claimed",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "inputs": [
+    {
+     "name": "plan",
+     "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+     "approval": null,
+     "revision": null
+    },
+    {
+     "name": "ruling",
+     "result": null,
+     "approval": "apr_01m3250vz2ezn81cgvbkcn17jd",
+     "revision": 0
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a claim input without a name",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_claimed",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "inputs": [
+    {
+     "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+     "approval": null,
+     "revision": null
+    },
+    {
+     "name": "ruling",
+     "result": null,
+     "approval": "apr_01m3250vz2ezn81cgvbkcn17jd",
+     "revision": 2
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a claim input with an extra field",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_claimed",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "inputs": [
+    {
+     "name": "plan",
+     "result": "res_01m3250v57fhm9v1z9xd1wk8gw",
+     "approval": null,
+     "revision": null,
+     "kind": "plan"
+    },
+    {
+     "name": "ruling",
+     "result": null,
+     "approval": "apr_01m3250vz2ezn81cgvbkcn17jd",
+     "revision": 2
+    }
+   ]
+  },
+  "valid": false
  }
 ]
