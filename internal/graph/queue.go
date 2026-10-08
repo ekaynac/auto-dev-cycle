@@ -24,6 +24,9 @@ package graph
 //     patch has the candidate's identity; else the demand for a delta review
 //     (found/review_input_changed). CarryOver applies it, and the result fold
 //     refuses any other outcome, reason or value; Commit refuses carry_over.
+//     Its inputs hold their roles (roleInput): the candidate a patch, the
+//     rebase the required rebase node's tree, the review a review node's
+//     review.
 //   - Effect-node completion: CompleteEffect records and selects an effect
 //     node's result once its operation's effect is completed, holding the
 //     input ref the effect applied. Its inputs were re-validated at the
@@ -226,6 +229,24 @@ func inputResult(tx *eventstore.Tx, c claim, name string) (types.ResultRecorded,
 	return r, err
 }
 
+// roleInput is the result c fixed for rec's input name, in its role: a
+// result of kind rk from rec's declared producer of name, a node of kind nk
+// ("": any). A carry_over's inputs are declared by whoever records it, and
+// selection checks only the kind declared, so the fold holds each input to
+// its role: the candidate a patch, the rebase the required rebase node's
+// tree, the review a review node's review.
+func roleInput(tx *eventstore.Tx, c claim, rec nodeRecord, name string, rk types.ResultKind, nk types.NodeKind) (types.ResultRecorded, error) {
+	r, err := inputResult(tx, c, name)
+	if err != nil {
+		return r, err
+	}
+	producer, err := loadNode(tx, r.Node)
+	if err == nil && (r.Result.Kind != rk || r.Node != producerOf(rec.Recorded.Node, name) || nk != "" && producer.Recorded.Node.Kind != nk) {
+		err = fmt.Errorf("graph: a carry_over's %s is a %s result of its %s producer, not a %s result of a %s node", name, rk, map[bool]types.NodeKind{true: nk, false: "declared"}[nk != ""], r.Result.Kind, producer.Recorded.Node.Kind)
+	}
+	return r, err
+}
+
 // carryInputs are what rec's claim fixed, from the log: the candidate's
 // patch result, the rebase's result, and the result the carried review's
 // claim took from the candidate's producer (nil: none).
@@ -234,9 +255,9 @@ func carryInputs(tx *eventstore.Tx, rec nodeRecord) (cand, rb types.Result, revi
 	if err != nil || !ok || rec.Recorded.Node.Kind != types.NodeKindCarryOver {
 		return cand, rb, nil, errors.Join(err, fmt.Errorf("graph: %s is not a claimed carry_over node", rec.Recorded.Node.ID))
 	}
-	cr, err := inputResult(tx, c, "candidate")
-	rr, rerr := inputResult(tx, c, "rebase")
-	vr, verr := inputResult(tx, c, "review")
+	cr, err := roleInput(tx, c, rec, "candidate", types.ResultKindPatch, "")
+	rr, rerr := roleInput(tx, c, rec, "rebase", types.ResultKindTree, types.NodeKindRebase)
+	vr, verr := roleInput(tx, c, rec, "review", types.ResultKindReview, types.NodeKindReview)
 	review, nerr := loadNode(tx, vr.Node)
 	rc, _, cerr := load[claim](tx, ClaimProjection, string(vr.Node))
 	if err = errors.Join(err, rerr, verr, nerr, cerr); err != nil {

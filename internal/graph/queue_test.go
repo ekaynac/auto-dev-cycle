@@ -11,6 +11,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/effecttarget"
 	fakeforge "github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/forge"
@@ -316,6 +317,92 @@ func TestCarryOverRefusals(t *testing.T) {
 		if _, err := g.carryOver(n); err == nil || !strings.Contains(err.Error(), "is not a claimed carry_over node") {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// A carry_over's inputs hold their roles in the fold: a raw carry_over
+// whose review is an integration's tree over the candidate's patch, or
+// whose candidate is a tree, attests nothing, by command, by raw
+// events or replayed.
+func TestCarryOverRoles(t *testing.T) {
+	g := openEffectStore(t)
+	p, tree := g.ref(types.RefTypeBlob, "P"), g.ref(types.RefTypeGitTree, "T")
+	spec := g.queueSpec("main", p)
+	gen, _ := g.generate(spec, "B1")
+	g.must(evaluate(effectEnv, gen.Rebase))
+	g.must(commit(gen.Rebase, g.rebaseResult(gen, tree, p), effectEnv))
+	// An integration that took the candidate's patch, completed with a tree.
+	irec := g.nodeOn(types.NodeKindIntegration, spec.Candidate)
+	irec.Node.Inputs[0].Name = "patch"
+	irec.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = types.ResultKindPatch
+	integration := g.record(irec)
+	g.must(evaluate(effectEnv, integration))
+	ir := unrecorded(t, *g.state(integration).Key)
+	ir.Kind, ir.Value, ir.Outcome, ir.Reason, ir.Detail = types.ResultKindTree, []types.Ref{tree}, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+	g.must(commit(integration, ir, effectEnv))
+	// substitute records and claims a node like tmpl, under a fresh id,
+	// whose inputs named in with are those producers' results of their kinds.
+	type source struct {
+		producer types.NodeID
+		kind     types.ResultKind
+	}
+	substitute := func(tmpl types.NodeID, params string, with map[string]source) types.NodeID {
+		rec := g.recordOf(tmpl)
+		id, _ := ids.New("nod")
+		rec.Node.ID, rec.Node.Inputs = types.NodeID(id), slices.Clone(rec.Node.Inputs)
+		if params != "" {
+			rec.Node.Params = json.RawMessage(params)
+		}
+		for i, in := range rec.Node.Inputs {
+			if src, ok := with[in.Name]; ok {
+				rec.Node.Inputs[i].Source.Variant = &types.ResultSource{Type: "result", Producer: src.producer, ResultKind: src.kind}
+			}
+		}
+		n := g.record(rec)
+		g.must(evaluate(effectEnv, n))
+		return n
+	}
+	forged := substitute(gen.CarryOver, "", map[string]source{"review": {integration, types.ResultKindTree}})
+	if _, err := g.carryOver(forged); err == nil || !strings.Contains(err.Error(), "a carry_over's review is a review result of its review producer") {
+		t.Fatalf("CarryOver over an integration's tree as the review: %v", err)
+	}
+	attest := unrecorded(t, *g.state(forged).Key)
+	attest.Kind, attest.Value, attest.Outcome, attest.Reason, attest.Detail = types.ResultKindCarryOverAttestation, []types.Ref{tree}, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+	if err := g.do(raw(forged, attest, g.blobs)); err == nil || !strings.Contains(err.Error(), "a carry_over's review") {
+		t.Fatalf("a raw attestation over an integration's tree as the review: %v", err)
+	}
+	// Replayed: the same events, through the fold a rebuild replays.
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		evs, err := raw(forged, attest, g.blobs)(tx)
+		if err != nil {
+			return nil, err
+		}
+		return nil, Project(tx, evs)
+	}); err == nil || !strings.Contains(err.Error(), "a carry_over's review") {
+		t.Fatalf("a replayed attestation over an integration's tree as the review: %v", err)
+	}
+	if st := g.state(forged); st.State != types.NodeStateStateClaimed || st.Result != nil {
+		t.Fatalf("the forged carry_over is %s with %v", st.State, st.Result)
+	}
+
+	// The integration's tree as the candidate of a raw rebase, reviewed as a
+	// tree: the rebased "patch" is the tree, so only the role refuses it.
+	treeReview := g.consumerOf(integration, types.ResultKindTree)
+	g.must(evaluate(effectEnv, treeReview))
+	g.must(commit(treeReview, g.reviewResult(treeReview), effectEnv))
+	rebase := substitute(gen.Rebase, `{"branch":"dev","base":"B1","generation":1}`, map[string]source{"candidate": {integration, types.ResultKindTree}})
+	rr := unrecorded(t, *g.state(rebase).Key)
+	rr.Kind, rr.Value, rr.Outcome, rr.Reason, rr.Detail = types.ResultKindTree, []types.Ref{g.ref(types.RefTypeGitTree, "T2"), tree}, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+	g.must(commit(rebase, rr, effectEnv))
+	treeCarry := substitute(gen.CarryOver, "", map[string]source{"candidate": {integration, types.ResultKindTree}, "rebase": {rebase, types.ResultKindTree},
+		"review": {treeReview, types.ResultKindReview}})
+	if _, err := g.carryOver(treeCarry); err == nil || !strings.Contains(err.Error(), "a carry_over's candidate is a patch result") {
+		t.Fatalf("CarryOver over an integration's tree as the candidate: %v", err)
+	}
+
+	diffs, err := g.s.RebuildProjections(context.Background())
+	if err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %+v", err, diffs)
 	}
 }
 

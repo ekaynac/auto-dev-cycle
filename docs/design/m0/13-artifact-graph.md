@@ -414,7 +414,10 @@ As delivered (G7b-1; the refreshed receipts and the merge are G7b-2):
   patch has the candidate's identity. Otherwise it records `found/review_input_changed`: the demand for a delta
   review, which a successor review takes (G5). The decision is one function of what the claim fixed, applied by its
   builder and again by the result fold, which refuses any other outcome, reason or value; a commit refuses a
-  carry_over. A carry_over is recorded only on its current generation's rebase, a rebase of its own candidate. The
+  carry_over. A carry_over is recorded only on its current generation's rebase, a rebase of its own candidate. Its
+  inputs are declared by whoever records it and selection checks only the declared kind, so the fold also holds each
+  input to its role: the candidate is a `patch` result, the rebase the required rebase node's `tree`, the review a
+  review node's `review`; another result in a role is refused, whatever it took. The
   review's verdict, and the selected review-requirement with its roster, are consumed by G7b-2's merge, not here.
 - **Trust.** The rebase result's prospective tree and rebased patch are trusted from the committer of the rebase
   result (the controller's own rebase, run where it leases its sandbox): the graph checks their shape and types and
