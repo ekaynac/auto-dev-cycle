@@ -40,6 +40,9 @@ const (
 // caller publishes, in its RFC 8785 form, before it intends the effect.
 // A kind with a RequestSchema has its request validated against it, and a
 // Check refuses what the schema cannot (the request against the target).
+// Check runs inside the writer transaction: it treats the request bytes as
+// immutable, is deterministic and free of side effects, and does no
+// blocking I/O and no write, to the store or anything else.
 type EffectKind struct {
 	Idempotent, RequestBlob bool
 	RequestSchema           string

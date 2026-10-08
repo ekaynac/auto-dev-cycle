@@ -63,6 +63,19 @@ field is in the params digest and so in the node's key (13).
 - Attempts are counted per `(subject, instrument digest, demand key)`, with a total cap per subject across demands.
 - Exhausting the cap yields `could_not_run/evidence_cap_exhausted` with a `wrong_owner` hold for the project owner.
 - A precondition failure is not a spent attempt.
+- **What counts.** An attempt is a recorded result of the evidence node.
+  - The subject is the content of the result its `subject_input` resolves to: its one Ref's content digest. The
+    same tree produced again is the same subject. The total is per (subject, instrument digest), across demands.
+  - The counts are kept apart from the computation key (`graph_attempts`), so an invalidation, a renewal or a retry
+    never resets them.
+  - Each count binds the cap it was first counted under. A node whose caps differ from a bound cap is refused at
+    claim and by the count fold. Raising a bound cap is an M1 policy change.
+  - A `could_not_run` result spends no attempt when its reason says nothing ran (`notRun` in
+    `internal/graph/evidence.go`: `precondition_failed`, `evidence_cap_exhausted`, capacity, configuration and
+    controller refusals). Every other result spends one. A test keeps every `could_not_run` reason classified.
+  - The fold refuses a counted result once a cap is spent. It admits `evidence_cap_exhausted` only then.
+  - Only `Exhaust` holds an exhaustion: on `wrong_owner`, for the project owner, on signal `caps:<result>`. In M0 the
+    owner's act is to retire the node. An exhausted node cannot renew, since it has no selected result.
 
 ### Preconditions (nöbetçi Δ§5)
 
@@ -71,6 +84,13 @@ field is in the params digest and so in the node's key (13).
 - A failure yields `could_not_run/precondition_failed` and the `precondition_failed` hold (02). It recovers when the
   probe passes, on a bounded probe schedule, and pages the environment owner after `page_after`.
 - A transient external lock is retried inside the run's single deadline.
+- **Only the contract's preconditions.** Only `Probe` holds a precondition failure: on the probe of one of its
+  contract's preconditions (signal instance `probe:<precondition>`). `Retry` refuses it, and the fold requires that
+  signal. The node retries under the same key once the probe passes.
+- An evidence node is claimed only through `ClaimEvidence`, under its registered contract. The evaluator checks the
+  contract again before it renews an evidence node. The instrument must match by name, version and digest, and the
+  subject input must be a result kind of the contract's `subject_type`. In M0 only `tree` has such kinds: `tree` and
+  `package`.
 
 ### Content (nöbetçi Δ§8) [PR5-6]
 
@@ -104,7 +124,7 @@ field is in the params digest and so in the node's key (13).
   - that its target is the intent's;
   - that its run is its attempt's run (05).
 
-  The restore procedure is the instrument contract's (06); `evidence.CheckRestore` holds the node's restore to it.
+  The restore procedure is the instrument contract's (06); `graph.CheckContract` holds the node's restore to it.
 
 ## What M0 delivers
 

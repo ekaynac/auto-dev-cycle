@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -57,9 +58,10 @@ func TestRemoteProcessRequests(t *testing.T) {
 		}
 		return b
 	}
+	var eff string
 	intend := func(target string, req json.RawMessage) error {
 		cmd, _ := ids.New("cmd")
-		eff, _ := ids.New("eff")
+		eff, _ = ids.New("eff")
 		actor, _ := ids.New("act")
 		_, err := s.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: actor, Action: "evidence.test", IdempotencyKey: cmd, Input: []byte(`{}`)},
 			eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
@@ -69,6 +71,18 @@ func TestRemoteProcessRequests(t *testing.T) {
 	}
 	if err := intend(tgt, request(func(map[string]any) {})); err != nil {
 		t.Fatalf("a valid request: %v", err)
+	}
+	// The real declaration is not idempotent: an uncertain remote_process is
+	// reconciled, never retried, and a refused retry leaves it uncertain.
+	ctx, sys, id := context.Background(), "act_01m3250vm7f6ktw39dszqnyddr", eff
+	if _, err := s.RecordEffect(ctx, sys, id, eventstore.Transition{Kind: "uncertain", Observation: "timeout"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordEffect(ctx, sys, id, eventstore.Transition{Kind: "retried"}); !errors.Is(err, eventstore.ErrEffectTransition) {
+		t.Fatalf("a remote_process retried: %v", err)
+	}
+	if e, err := s.LoadEffect(ctx, id); err != nil || e.State != eventstore.EffectUncertain {
+		t.Fatalf("after the refused retry: %+v (%v)", e, err)
 	}
 	unkept := json.RawMessage(strings.Replace(string(request(func(map[string]any) {})), `"s-1"`, `"s-2"`, 1))
 	if err := intend(tgt, unkept); err == nil || !strings.Contains(err.Error(), "is not a published blob") {

@@ -42,6 +42,11 @@ type graphStore struct {
 	blobs   *blobstore.Store
 	// conclusions are each derived receipt's rule 2a document, by digest.
 	conclusions map[types.Digest]json.RawMessage
+	// tree is the completed tree the evidence nodes under test walk.
+	tree *struct {
+		node types.NodeID
+		res  types.ResultID
+	}
 }
 
 func openStore(t *testing.T) graphStore {
@@ -64,7 +69,10 @@ func openStore(t *testing.T) graphStore {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close(); lock.Release() })
-	g := graphStore{t: t, s: s, blobs: blobs, conclusions: map[types.Digest]json.RawMessage{}}
+	g := graphStore{t: t, s: s, blobs: blobs, conclusions: map[types.Digest]json.RawMessage{}, tree: &struct {
+		node types.NodeID
+		res  types.ResultID
+	}{}}
 	g.plan, g.planRes = g.planOf(tskID, prjID)
 	return g
 }
@@ -136,19 +144,37 @@ func (g graphStore) nodeOn(kind types.NodeKind, plan types.NodeID) types.NodeRec
 		Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
 	if kind == types.NodeKindEvidence {
 		n.Params, n.Requires.Resources = evidenceParams("x"), []types.ResourceGroupKind{"evidence_target"}
+		n.Inputs = []types.InputSpec{{Name: "tree", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: g.treeNode(), ResultKind: types.ResultKindTree}}}}
 	}
 	return types.NodeRecorded{Type: "node_recorded", Node: n, Task: tskID, Project: prjID}
 }
 
-// evidenceParams are valid EvidenceNodeParams whose demand key is the digest
-// of demand, so that each demand is a key of its own.
-func evidenceParams(demand string) json.RawMessage {
-	return json.RawMessage(fmt.Sprintf(`{"instrument":{"name":"walk","version":"1","digest":"sha256:%[1]x"},`+
-		`"grant":"apr_01m3250v0aer9ss2097svmefj8","target":"tgt_01m3250v0aer9ss2097svmefj8",`+
-		`"subject_input":"plan","demand":{"key":"sha256:%[1]x"},`+
-		`"limits":{"max_attempts_per_demand":1,"max_attempts_per_subject":1,"deadline":"PT1H","cooldown":"PT0S"},`+
-		`"restore":{"required":false,"procedure":null}}`, sha256.Sum256([]byte(demand))))
+// treeNode is the store's tree producer, completed on first use with a
+// result holding one git_tree Ref.
+func (g graphStore) treeNode() types.NodeID {
+	if g.tree.node == "" {
+		ref := g.sealed(types.RefTypeGitTree, "git:"+strings.Repeat("a", 40), walkDigest)
+		g.tree.node, _ = g.completedWith(types.NodeKindIntegration, types.ResultKindTree, []types.Ref{ref})
+		g.tree.res = *g.state(g.tree.node).Result
+	}
+	return g.tree.node
 }
+
+// evidenceParams are valid EvidenceNodeParams whose demand key is the digest
+// of demand, so that each demand is a key of its own, with one attempt per
+// demand.
+func evidenceParams(demand string) json.RawMessage { return evidenceCaps(demand, "tree", 1, 1000) }
+
+// evidenceCaps are a walk's params on subject for demand, with its caps.
+func evidenceCaps(demand, subject string, perDemand, perSubject int) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"instrument":{"name":"walk","version":"1","digest":"%s"},`+
+		`"grant":"apr_01m3250v0aer9ss2097svmefj8","target":"tgt_01m3250v0aer9ss2097svmefj8",`+
+		`"subject_input":"%s","demand":{"key":"sha256:%x"},`+
+		`"limits":{"max_attempts_per_demand":%d,"max_attempts_per_subject":%d,"deadline":"PT1H","cooldown":"PT0S"},`+
+		`"restore":{"required":false,"procedure":null}}`, walkDigest, subject, sha256.Sum256([]byte(demand)), perDemand, perSubject))
+}
+
+const walkDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 // Record refuses an evidence node for what its params schema cannot say
 // (12): it leases its target, its caps nest, and its subject is a declared
@@ -163,8 +189,8 @@ func TestRecordChecksEvidenceNodes(t *testing.T) {
 	}
 	for name, change := range map[string]func(*types.Node){
 		"no evidence_target":          func(n *types.Node) { n.Requires.Resources = []types.ResourceGroupKind{"concurrency"} },
-		"per demand over per subject": params(`"max_attempts_per_demand":1`, `"max_attempts_per_demand":2`),
-		"an undeclared subject":       params(`"subject_input":"plan"`, `"subject_input":"tree"`),
+		"per demand over per subject": params(`"max_attempts_per_demand":1`, `"max_attempts_per_demand":1001`),
+		"an undeclared subject":       params(`"subject_input":"tree"`, `"subject_input":"plan"`),
 		"an answer as the subject": func(n *types.Node) {
 			n.Inputs[0].Source.Variant = &types.AnswerSource{Type: "answer", OwedInput: "own_01m3250vz2ezn81cgvbkcn17jd", Revision: 1}
 		},
@@ -192,7 +218,14 @@ func claimWith(n types.NodeID, res types.ResultID) logic {
 	}
 }
 
-func (g graphStore) claimOf(n types.NodeID) logic { return claimWith(n, g.planRes) }
+func (g graphStore) claimOf(n types.NodeID) logic {
+	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		if rec, err := loadNode(tx, n); err != nil || rec.Recorded.Node.Kind != types.NodeKindEvidence {
+			return claimWith(n, g.planRes)(tx)
+		}
+		return ClaimEvidence(tx, n, map[string]Resolved{"tree": {Result: g.tree.res}}, 1, contractsOf(walkContract()))
+	}
+}
 
 // state is n's projected state, which must be a valid records/node-state.
 func (g graphStore) state(n types.NodeID) types.NodeState {

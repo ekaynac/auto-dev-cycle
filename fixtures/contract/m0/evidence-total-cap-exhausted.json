@@ -1,0 +1,10 @@
+{
+  "name": "evidence-total-cap-exhausted",
+  "invariant": "The total evidence cap per subject holds across demands: with two attempts per tree, the walks of demands A and B run, and the walk of demand C is could_not_run/evidence_cap_exhausted, held on wrong_owner (12 \"Attempts keyed by demand\"; 11 intake).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "could_not_run", "reason": "evidence_cap_exhausted"}
+  ],
+  "mutation": "graph.subject-cap-unchecked"
+}

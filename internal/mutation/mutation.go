@@ -93,6 +93,15 @@ const (
 	// CommitSkipsAuthority commits a result whose answer input's approval
 	// no longer answers its owed input.
 	CommitSkipsAuthority = "graph.commit-skips-authority"
+	// AttemptsIgnoreDemand counts evidence attempts per subject alone, so
+	// a new demand finds its per-demand cap spent by another demand.
+	AttemptsIgnoreDemand = "graph.attempts-ignore-demand"
+	// SubjectCapUnchecked lets evidence attempts past the total cap per
+	// subject while each demand's own cap is unspent.
+	SubjectCapUnchecked = "graph.subject-cap-unchecked"
+	// PreconditionSpendsAttempt counts a precondition failure as an
+	// evidence attempt.
+	PreconditionSpendsAttempt = "graph.precondition-spends-attempt"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -102,4 +111,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly,
 	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked, ConfirmIgnoresStatus, ReservationsUncounted,
 	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks, IncompleteNoDiffEmpty, PartialPatchDropped, ClaimPerDemand,
-	ResolveSkipsApplicability, DemandIgnored, RetryNeedsInvalidation, RenewalInvalidates, CommitSkipsAuthority}
+	ResolveSkipsApplicability, DemandIgnored, RetryNeedsInvalidation, RenewalInvalidates, CommitSkipsAuthority,
+	AttemptsIgnoreDemand, SubjectCapUnchecked, PreconditionSpendsAttempt}
