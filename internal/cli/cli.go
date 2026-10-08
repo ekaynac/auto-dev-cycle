@@ -47,6 +47,9 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 	if len(args) >= 1 && args[0] == "events" {
 		return events(ctx, args[1:], stdout, stderr, c)
 	}
+	if len(args) >= 1 && args[0] == "doctor" {
+		return doctor(ctx, args[1:], stdout, stderr, c, hostSystem())
+	}
 	if len(args) == 0 || !isNoun(args[0]) {
 		return entry.Main("adc", args, stdout, stderr)
 	}
