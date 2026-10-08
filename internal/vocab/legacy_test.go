@@ -40,7 +40,8 @@ type legacyGolden struct {
 // The legacy goldens' setup (docs/design/m0/11 "Legacy incident goldens"):
 // each golden is well formed, carries its artifacts, cites design notes that
 // exist, and its reason_status is what the registry says of its reasons. The
-// loader that runs the goldens through real components is separate (15, L1).
+// loader that checks the artifacts' setup and runs the M0 steps through real
+// components is internal/fixtures/legacy_test.go (15, L1).
 func TestLegacyGoldensSetup(t *testing.T) {
 	reg, err := Load()
 	if err != nil {
