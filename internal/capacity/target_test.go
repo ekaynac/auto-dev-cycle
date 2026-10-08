@@ -49,7 +49,12 @@ func (w *world) raw(kind string, l types.Lease, targets []types.ResourceGroupID)
 	})
 }
 
-// A lease of a target settles only through a verified restore. A failed restore keeps the target's
+func (w *world) recordRestore(r types.RestoreEvidence) error {
+	return w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RecordRestore(tx, r) })
+}
+
+// A lease of a target settles only through a verified restore recorded in
+// the log for its attempt and target. A failed restore keeps the target's
 // slot, across a restart and a rebuild, so the next lease is refused; a
 // verified restore and the settlement return it. A lease of no target owes
 // no restore, and settles plainly.
@@ -96,10 +101,42 @@ func TestTargetsStayExcludedUntilRestored(t *testing.T) {
 	if rs, _ := lease.ApplyLease(leaseOf(t, w, id), lease.LeaseEvent{Kind: lease.RestoreStarted}, true, w.holds); w.raw(lease.RestoreStarted+"/v1", rs, []types.ResourceGroupID{quota}) == nil {
 		t.Fatal("a transition other than the grant carried targets")
 	}
+	early := types.RestoreEvidence{Receipt: "rcp_01m3250vm7f6ktw39dszqnyddr", Lease: id, Attempt: att, Group: quota, Cycle: 1, Verified: true}
+	if w.recordRestore(early) == nil {
+		t.Fatal("a restore was recorded before the lease restores")
+	}
 	if err := w.change(id, 4, lease.LeaseEvent{Kind: lease.RestoreStarted}); err != nil {
 		t.Fatal(err)
 	}
-	rcpOK := types.ReceiptID("rcp_01m3250v57fhm9v1z9xd1wk8gw")
+	rcpFailed, rcpOK := types.ReceiptID("rcp_01m3250vkwffc979nzjw0g2sf9"), types.ReceiptID("rcp_01m3250v57fhm9v1z9xd1wk8gw")
+	evidence := func(rcp types.ReceiptID, ok bool) types.RestoreEvidence {
+		r := types.RestoreEvidence{Receipt: rcp, Lease: id, Attempt: att, Group: quota, Cycle: 1, Verified: ok}
+		if !ok {
+			r.Detail = "snapshot gone"
+		}
+		return r
+	}
+	foreignAttempt, foreignTarget := evidence("rcp_01m3250vnfeyrv67x6w0ddqr6a", true), evidence("rcp_01m3250v9xft08ssr4ygq6g2np", true)
+	foreignAttempt.Attempt, foreignTarget.Group = "att_01m3250vnfeyrv67x6w0ddqr6a", gpu
+	if w.recordRestore(foreignAttempt) == nil || w.recordRestore(foreignTarget) == nil {
+		t.Fatal("a restore of another attempt or of no target was recorded")
+	}
+	verify := func(rcp types.ReceiptID) error {
+		return w.change(id, 5, lease.LeaseEvent{Kind: lease.RestoreVerified, Receipt: &rcp})
+	}
+	if verify(rcpOK) == nil {
+		t.Fatal("a restore receipt with no recorded restore verified the target")
+	}
+	if err := w.recordRestore(evidence(rcpFailed, false)); err != nil {
+		t.Fatal(err)
+	}
+	if verify(rcpFailed) == nil {
+		t.Fatal("a failed restore verified the target")
+	}
+	forged, err := lease.ApplyLease(leaseOf(t, w, id), lease.LeaseEvent{Kind: lease.RestoreVerified, Receipt: &rcpOK}, true, w.holds)
+	if err != nil || w.raw(lease.RestoreVerified+"/v1", forged, nil) == nil {
+		t.Fatalf("a forged restore_verified with no recorded restore was accepted (%v)", err)
+	}
 	hold := &types.LeaseHoldValue{Hold: lease.RestoreHold, SignalInstance: "restore:x"}
 	if err := w.change(id, 5, lease.LeaseEvent{Kind: lease.RestoreFailed, Reason: "snapshot gone", Hold: hold}); err != nil {
 		t.Fatal(err)
@@ -111,6 +148,9 @@ func TestTargetsStayExcludedUntilRestored(t *testing.T) {
 	}
 	next := w.requested(reserve(quota, 1, types.CapacityUnitSlots))
 	exhausted(t, w.change(next, 1, lease.LeaseEvent{Kind: lease.Granted, Targets: []types.ResourceGroupID{quota}}), vocab.ReasonCapacityReservedFull)
+	if err := w.recordRestore(evidence(rcpOK, true)); err != nil {
+		t.Fatal(err)
+	}
 	for i, e := range []lease.LeaseEvent{{Kind: lease.RestoreVerified, Receipt: &rcpOK}, settle} {
 		if err := w.change(id, int64(6+i), e); err != nil {
 			t.Fatal(err)
@@ -198,5 +238,114 @@ func TestLegacyGrantReplaysWithoutDrift(t *testing.T) {
 	}
 	if err := w.change(id, 2, lease.LeaseEvent{Kind: lease.Released}); err == nil {
 		t.Log("released") // the legacy lease still moves under this build
+	}
+}
+
+// targetLease is a target lease of groups, granted, its attempt stopped and
+// its restore started (cycle 1).
+func (w *world) targetLease(att types.AttemptID, groups ...types.ResourceGroupID) types.LeaseID {
+	var res []types.LeaseReservationsItem
+	for _, g := range groups {
+		res = append(res, reserve(g, 1, types.CapacityUnitSlots))
+	}
+	id := w.requested(res...)
+	steps := lifecycle(w, id, att)
+	steps[0] = func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, id, 1, lease.LeaseEvent{Kind: lease.Granted, Targets: groups}, w.holds)
+	}
+	for _, s := range steps[:4] {
+		if err := w.do(s); err != nil {
+			w.t.Fatal(err)
+		}
+	}
+	if err := w.change(id, 4, lease.LeaseEvent{Kind: lease.RestoreStarted}); err != nil {
+		w.t.Fatal(err)
+	}
+	return id
+}
+
+// A success voided in its cycle never verifies: by a later failed restore
+// of its target, or by lease.restore_failed; a rebuild agrees.
+func TestRestoreCycleVoidsEarlierSuccesses(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	w := openAt(t, dir, hooked, target(quota))
+	att := types.AttemptID("att_01m3250vkwffc979nzjw0g2sf9")
+	id := w.targetLease(att, quota)
+	r := func(rcp types.ReceiptID, ok bool, cycle int64) types.RestoreEvidence {
+		e := types.RestoreEvidence{Receipt: rcp, Lease: id, Attempt: att, Group: quota, Cycle: cycle, Verified: ok}
+		if !ok {
+			e.Detail = "snapshot gone"
+		}
+		return e
+	}
+	r1, r2, r3 := types.ReceiptID("rcp_01m3250vkwffc979nzjw0g2sf9"), types.ReceiptID("rcp_01m3250v57fhm9v1z9xd1wk8gw"), types.ReceiptID("rcp_01m3250vnfeyrv67x6w0ddqr6a")
+	if w.recordRestore(r(r3, true, 2)) == nil {
+		t.Fatal("a restore of another cycle was recorded")
+	}
+	for _, e := range []types.RestoreEvidence{r(r1, true, 1), r(r2, false, 1)} {
+		if err := w.recordRestore(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	verify := func(rcp types.ReceiptID, rev int64) error {
+		return w.change(id, rev, lease.LeaseEvent{Kind: lease.RestoreVerified, Receipt: &rcp})
+	}
+	if verify(r1, 5) == nil {
+		t.Fatal("a success voided by a later failure verified the target")
+	}
+	if err := w.recordRestore(r(r3, true, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if verify(r1, 5) == nil {
+		t.Fatal("a voided success verified the target beside a standing one")
+	}
+	hold := &types.LeaseHoldValue{Hold: lease.RestoreHold, SignalInstance: "restore:x"}
+	if err := w.change(id, 5, lease.LeaseEvent{Kind: lease.RestoreFailed, Reason: "snapshot gone", Hold: hold}); err != nil {
+		t.Fatal(err)
+	}
+	w.close()
+	w = openAt(t, dir, hooked, target(quota))
+	if diffs, err := w.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %v", diffs, err)
+	}
+	if verify(r3, 6) == nil || verify(r1, 6) == nil {
+		t.Fatal("a success the cycle's restore_failed voided verified the target after a replay")
+	}
+	r4 := types.ReceiptID("rcp_01m3250v9xft08ssr4ygq6g2np")
+	if err := w.recordRestore(r(r4, true, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := verify(r4, 6); err != nil {
+		t.Fatalf("a standing success did not verify: %v", err)
+	}
+}
+
+// Every target the grant recorded needs its verified restore: with only A
+// verified, the restore is refused and neither slot returns.
+func TestRestoreVerifiesEveryTarget(t *testing.T) {
+	b := types.ResourceGroupID("rg_01m3250vz2ezn81cgvbkcn17jd")
+	w := open(t, target(quota), target(b))
+	att := types.AttemptID("att_01m3250vkwffc979nzjw0g2sf9")
+	id := w.targetLease(att, quota, b)
+	rcp := types.ReceiptID("rcp_01m3250vkwffc979nzjw0g2sf9")
+	if err := w.recordRestore(types.RestoreEvidence{Receipt: rcp, Lease: id, Attempt: att, Group: quota, Cycle: 1, Verified: true}); err != nil {
+		t.Fatal(err)
+	}
+	if w.change(id, 5, lease.LeaseEvent{Kind: lease.RestoreVerified, Receipt: &rcp}) == nil {
+		t.Fatal("a restore of one of two targets verified the lease")
+	}
+	if w.outstanding(quota) != 1 || w.outstanding(b) != 1 {
+		t.Fatalf("a slot returned: %d, %d", w.outstanding(quota), w.outstanding(b))
+	}
+	rcpB := types.ReceiptID("rcp_01m3250v57fhm9v1z9xd1wk8gw")
+	if err := w.recordRestore(types.RestoreEvidence{Receipt: rcpB, Lease: id, Attempt: att, Group: b, Cycle: 1, Verified: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.change(id, 5, lease.LeaseEvent{Kind: lease.RestoreVerified, Receipt: &rcp}); err != nil {
+		t.Fatal(err)
+	}
+	late := types.RestoreEvidence{Receipt: "rcp_01m3250vnfeyrv67x6w0ddqr6a", Lease: id, Attempt: att, Group: b, Cycle: 1, Verified: true}
+	if w.recordRestore(late) == nil {
+		t.Fatal("a restore was recorded after the lease's restore was verified")
 	}
 }

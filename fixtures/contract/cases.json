@@ -15928,5 +15928,101 @@
    "result_ref": null
   },
   "valid": false
+ },
+ {
+  "name": "restore-evidence: verified",
+  "schema": "records/restore-evidence",
+  "doc": {
+   "receipt": "rcp_01m3250v57fhm9v1z9xd1wk8gw",
+   "lease": "lea_01m3250vkwffc979nzjw0g2sf9",
+   "attempt": "att_01m3250vkwffc979nzjw0g2sf9",
+   "group": "rg_01m3250vm7f6ktw39dszqnyddr",
+   "verified": true,
+   "detail": "",
+   "cycle": 1
+  },
+  "valid": true
+ },
+ {
+  "name": "restore-evidence: failed with what it observed",
+  "schema": "records/restore-evidence",
+  "doc": {
+   "receipt": "rcp_01m3250v57fhm9v1z9xd1wk8gw",
+   "lease": "lea_01m3250vkwffc979nzjw0g2sf9",
+   "attempt": "att_01m3250vkwffc979nzjw0g2sf9",
+   "group": "rg_01m3250vm7f6ktw39dszqnyddr",
+   "verified": false,
+   "detail": "snapshot gone",
+   "cycle": 1
+  },
+  "valid": true
+ },
+ {
+  "name": "restore-evidence: refused: failed with no detail",
+  "schema": "records/restore-evidence",
+  "doc": {
+   "receipt": "rcp_01m3250v57fhm9v1z9xd1wk8gw",
+   "lease": "lea_01m3250vkwffc979nzjw0g2sf9",
+   "attempt": "att_01m3250vkwffc979nzjw0g2sf9",
+   "group": "rg_01m3250vm7f6ktw39dszqnyddr",
+   "verified": false,
+   "detail": "",
+   "cycle": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "restore-evidence: refused: a target id for the group",
+  "schema": "records/restore-evidence",
+  "doc": {
+   "receipt": "rcp_01m3250v57fhm9v1z9xd1wk8gw",
+   "lease": "lea_01m3250vkwffc979nzjw0g2sf9",
+   "attempt": "att_01m3250vkwffc979nzjw0g2sf9",
+   "group": "tgt_01m3250v0aer9ss2097svmefj8",
+   "verified": true,
+   "detail": "",
+   "cycle": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "restore-evidence: refused: no attempt",
+  "schema": "records/restore-evidence",
+  "doc": {
+   "receipt": "rcp_01m3250v57fhm9v1z9xd1wk8gw",
+   "lease": "lea_01m3250vkwffc979nzjw0g2sf9",
+   "group": "rg_01m3250vm7f6ktw39dszqnyddr",
+   "verified": true,
+   "detail": "",
+   "cycle": 1
+  },
+  "valid": false
+ },
+ {
+  "name": "restore-evidence: refused: cycle 0 (before any restore started)",
+  "schema": "records/restore-evidence",
+  "doc": {
+   "receipt": "rcp_01m3250v57fhm9v1z9xd1wk8gw",
+   "lease": "lea_01m3250vkwffc979nzjw0g2sf9",
+   "attempt": "att_01m3250vkwffc979nzjw0g2sf9",
+   "group": "rg_01m3250vm7f6ktw39dszqnyddr",
+   "verified": true,
+   "detail": "",
+   "cycle": 0
+  },
+  "valid": false
+ },
+ {
+  "name": "restore-evidence: refused: no cycle",
+  "schema": "records/restore-evidence",
+  "doc": {
+   "receipt": "rcp_01m3250v57fhm9v1z9xd1wk8gw",
+   "lease": "lea_01m3250vkwffc979nzjw0g2sf9",
+   "attempt": "att_01m3250vkwffc979nzjw0g2sf9",
+   "group": "rg_01m3250vm7f6ktw39dszqnyddr",
+   "verified": true,
+   "detail": ""
+  },
+  "valid": false
  }
 ]

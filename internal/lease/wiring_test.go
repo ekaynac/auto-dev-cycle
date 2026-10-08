@@ -620,3 +620,58 @@ func TestTransitionWithoutLeaseRefused(t *testing.T) {
 		}
 	}
 }
+
+// A restore receipt verifies only its own lease's restore.
+func TestRestoreVerifiesItsOwnLease(t *testing.T) {
+	w := openWorld(t)
+	restoring := func(l types.Lease, att types.AttemptID) {
+		group := l.Reservations[0].Group
+		for _, fn := range []func(*eventstore.Tx) ([]eventstore.Event, error){
+			func(tx *eventstore.Tx) ([]eventstore.Event, error) { return RequestLease(tx, l) },
+			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return ChangeLease(tx, l.ID, 1, LeaseEvent{Kind: Granted, Targets: []types.ResourceGroupID{group}}, w.h)
+			},
+			func(tx *eventstore.Tx) ([]eventstore.Event, error) { return StartAttempt(tx, l.ID, 2, att, base) },
+			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return ChangeAttempt(tx, att, 1, attemptEvent(StopRequested))
+			},
+			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return ChangeLease(tx, l.ID, 3, event(Revoked), w.h)
+			},
+			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return ChangeLease(tx, l.ID, 4, event(RestoreStarted), w.h)
+			},
+		} {
+			w.must(fn)
+		}
+	}
+	a, b := requested(), requested()
+	b.ID, b.Unit = leaB, "unt_01m3250vkwffc979nzjw0g2sf9"
+	restoring(a, attA)
+	restoring(b, attB)
+	rcp := types.ReceiptID("rcp_01m3250v57fhm9v1z9xd1wk8gw")
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return RecordRestore(tx, types.RestoreEvidence{Receipt: rcp, Lease: leaB, Attempt: attB, Group: b.Reservations[0].Group, Cycle: 1, Verified: true})
+	})
+	verify := func(id types.LeaseID) error {
+		return w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return ChangeLease(tx, id, 5, LeaseEvent{Kind: RestoreVerified, Receipt: &rcp}, w.h)
+		})
+	}
+	if verify(leaID) == nil {
+		t.Fatal("another lease's restore verified this one")
+	}
+	if err := verify(leaB); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A restore_verified with no receipt is an error, never a panic.
+func TestVerifiedWithoutReceiptRefused(t *testing.T) {
+	w := openWorld(t)
+	if err := w.s.View(context.Background(), func(tx *eventstore.Tx) error {
+		return verified(tx, types.Lease{ID: leaID}, nil)
+	}); err == nil || !strings.Contains(err.Error(), "names no receipt") {
+		t.Fatalf("no receipt: %v", err)
+	}
+}
