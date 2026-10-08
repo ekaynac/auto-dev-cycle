@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Packages the fake adapter with its workspace dependencies, and fixtures/t0/py-mini, into OUTDIR (dist's
-# lib/adc; docs/design/m0/15 S2). The repository's own files are its tracked ones only (git ls-files: never an
-# untracked .env or .venv), with its LICENSE and NOTICE. The workspace packages keep their source paths
+# lib/adc; docs/design/m0/15 S2). The repository's own files are its committed content (git archive HEAD: never
+# an untracked .env or .venv, nor an uncommitted edit), with its LICENSE and NOTICE. The workspace packages keep their source paths
 # (adapters/fake, adapters/contract, gen/ts): Node strips TypeScript types only outside node_modules, so
 # node_modules/@adc holds two relative symlinks to them. The third-party packages are the fake's production
 # closure as the lockfile installed it (make ts-deps), from a store pnpm finds unmodified, copied into
-# node_modules; each must carry a licence file and declare a licence on the allowlist. Nothing else.
+# node_modules; each must carry a licence file, declare a licence on the allowlist and hold no nested
+# node_modules (which would shadow the flat layout). Nothing else.
 #
 # Usage: scripts/dist-adapters.sh OUTDIR
 set -euo pipefail
@@ -23,10 +24,13 @@ git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$root is 
 (cd "$root/adapters" && pnpm store status >/dev/null) || die "pnpm store status failed: the store may hold modified packages"
 
 mkdir -p -- "$out/node_modules/@adc"
-tracked=(LICENSE NOTICE adapters/fake/package.json adapters/fake/src adapters/contract/package.json adapters/contract/src
+committed=(LICENSE NOTICE adapters/fake/package.json adapters/fake/src adapters/contract/package.json adapters/contract/src
   gen/ts/package.json gen/ts/validators.cjs gen/ts/formats.cjs fixtures/t0/py-mini)
-git -C "$root" ls-files -z -- "${tracked[@]}" | tar -C "$root" --null -T - -cf - | tar -C "$out" -xf - ||
-  die "copying the tracked files failed"
+for p in "${committed[@]}"; do
+  git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null || die "$p is not committed"
+done
+git -C "$root" archive --format=tar HEAD -- "${committed[@]}" | tar -C "$out" -xf - ||
+  die "copying the committed files failed"
 for f in LICENSE NOTICE adapters/fake/src/main.ts adapters/contract/src/index.ts gen/ts/validators.cjs; do
   [[ -f "$out/$f" ]] || die "$f is missing"
 done
@@ -50,6 +54,7 @@ while IFS= read -r d; do
     MIT | BSD-2-Clause | BSD-3-Clause | ISC | Apache-2.0) ;;
     *) die "$name declares the licence $licence, which is not on the allowlist" ;;
   esac
+  [[ -z "$(find "$d" -mindepth 1 -name node_modules -print -quit)" ]] || die "$name holds a nested node_modules"
   [[ ! -e "$out/node_modules/$name" ]] || die "$name is listed twice"
   mkdir -p -- "$(dirname -- "$out/node_modules/$name")"
   cp -R -- "$d" "$out/node_modules/$name"

@@ -131,6 +131,9 @@ func TestDistNode(t *testing.T) {
 		}},
 		"downloaded": {func(t *testing.T, e *nodeEnv) { write(t, e.body, string(good), 0o600); e.goodPin(t, good) }, "", func(t *testing.T, e *nodeEnv) {
 			argv, _ := os.ReadFile(e.argv)
+			if !strings.HasPrefix(string(argv), "-q\n") {
+				t.Errorf("curl's first argument is not -q (so ~/.curlrc is read):\n%s", argv)
+			}
 			for _, want := range []string{"--fail\n", "--proto\n=https\n", "--proto-redir\n=https\n", "--tlsv1.2\n",
 				"\nhttps://nodejs.org/dist/" + testVersion + "/" + tarName("x64") + "\n"} {
 				if !strings.Contains(string(argv), want) {
@@ -331,7 +334,7 @@ func fakeRepo(t *testing.T, listing string, scripts ...string) (root string, env
 	}
 	for name, content := range map[string]string{
 		"LICENSE": "apache", "NOTICE": "notice", "adapters/fake/package.json": "{}", "adapters/fake/src/main.ts": "",
-		"adapters/fake/test/fake.test.ts": "", "adapters/contract/package.json": "{}", "adapters/contract/src/index.ts": "",
+		"adapters/fake/test/fake.test.ts": "", "adapters/fake/src/.keep": "", "adapters/contract/package.json": "{}", "adapters/contract/src/index.ts": "",
 		"gen/ts/package.json": "{}", "gen/ts/validators.cjs": "", "gen/ts/formats.cjs": "", "gen/ts/types/x.ts": "",
 		"fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json": "{}", "fixtures/t0/py-mini/repo/m.py": "",
 	} {
@@ -347,6 +350,9 @@ func fakeRepo(t *testing.T, listing string, scripts ...string) (root string, env
 	}
 	git("init", "-q")
 	git("add", "--", ".")
+	git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "fixture")
+	// Committed, then edited: the committed bytes ship.
+	write(t, filepath.Join(root, "adapters/fake/src/main.ts"), "UNCOMMITTED", 0o644)
 	// Untracked, after the index is written: never packaged.
 	for _, name := range []string{"adapters/fake/src/.env", "gen/ts/.env", "fixtures/t0/py-mini/.venv/bin/python", "fixtures/t0/py-mini/repo/__pycache__/m.pyc"} {
 		write(t, filepath.Join(root, name), "SECRET", 0o644)
@@ -403,30 +409,42 @@ func TestDistAdaptersRefusals(t *testing.T) {
 		"no licence declared": {goodListing, func(root string, _ *[]string) {
 			write(t, inPkg(root, "package.json"), `{"name":"a"}`, 0o644)
 		}, "declares the licence undefined"},
-		"a modified store":   {goodListing, func(_ string, env *[]string) { *env = append(*env, "ADC_TEST_STORE_RC=1") }, "pnpm store status failed"},
-		"not a git checkout": {goodListing, func(root string, _ *[]string) { rm(t, filepath.Join(root, ".git")) }, "is not a git checkout"},
-		"outside the store":  {goodListing + "/usr/lib/node_modules/b\n", nil, "an unexpected production dependency"},
-		"another workspace":  {goodListing + "ROOT/adapters/conformance\n", nil, "an unexpected production dependency"},
-		"an @adc package":    {goodListing + "ROOT/adapters/node_modules/.pnpm/x/node_modules/@adc/evil\n", nil, "an unexpected package name"},
-		"a dot name":         {goodListing + "ROOT/adapters/node_modules/.pnpm/x/node_modules/.\n", nil, "an unexpected package name: ."},
-		"a dot-dot name":     {goodListing + "ROOT/adapters/node_modules/.pnpm/x/node_modules/..\n", nil, "an unexpected package name: .."},
-		"a spaced name":      {goodListing + "ROOT/adapters/node_modules/.pnpm/x/node_modules/b c\n", nil, "an unexpected package name"},
-		"listed twice":       {goodListing + pkg + "\n", nil, "a is listed twice"},
-		"no third party":     {"ROOT/adapters/fake\n", nil, "no third-party dependency"},
+		"a modified store":      {goodListing, func(_ string, env *[]string) { *env = append(*env, "ADC_TEST_STORE_RC=1") }, "pnpm store status failed"},
+		"not a git checkout":    {goodListing, func(root string, _ *[]string) { rm(t, filepath.Join(root, ".git")) }, "is not a git checkout"},
+		"outside the store":     {goodListing + "/usr/lib/node_modules/b\n", nil, "an unexpected production dependency"},
+		"another workspace":     {goodListing + "ROOT/adapters/conformance\n", nil, "an unexpected production dependency"},
+		"an @adc package":       {goodListing + "ROOT/adapters/node_modules/.pnpm/x/node_modules/@adc/evil\n", nil, "an unexpected package name"},
+		"a dot name":            {goodListing + "ROOT/adapters/node_modules/.pnpm/x/node_modules/.\n", nil, "an unexpected package name: ."},
+		"a dot-dot name":        {goodListing + "ROOT/adapters/node_modules/.pnpm/x/node_modules/..\n", nil, "an unexpected package name: .."},
+		"a spaced name":         {goodListing + "ROOT/adapters/node_modules/.pnpm/x/node_modules/b c\n", nil, "an unexpected package name"},
+		"listed twice":          {goodListing + pkg + "\n", nil, "a is listed twice"},
+		"a nested node_modules": {goodListing, func(root string, _ *[]string) { write(t, inPkg(root, "node_modules/ajv/index.js"), "", 0o644) }, "a holds a nested node_modules"},
+		"no third party":        {"ROOT/adapters/fake\n", nil, "no third-party dependency"},
 		"no py-mini task": {goodListing, func(root string, env *[]string) {
-			cmd := exec.Command("git", "rm", "-rq", "--cached", "--", "fixtures/t0/py-mini/tasks")
+			cmd := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "rm")
+			mustRun(t, root, "git", "rm", "-rq", "--cached", "--", "fixtures/t0/py-mini/tasks")
 			cmd.Dir, cmd.Env = root, *env
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("%v %s", err, out)
 			}
 		}, "py-mini-feature-1 is missing"},
-		"no NOTICE": {goodListing, func(root string, env *[]string) {
-			cmd := exec.Command("git", "rm", "-q", "--cached", "--", "NOTICE")
+		"no main.ts": {goodListing, func(root string, env *[]string) {
+			cmd := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "rm")
+			mustRun(t, root, "git", "rm", "-q", "--cached", "--", "adapters/fake/src/main.ts")
+			mustRun(t, root, "git", "add", "--", "adapters/fake/src/.keep")
 			cmd.Dir, cmd.Env = root, *env
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("%v %s", err, out)
 			}
-		}, "NOTICE is missing"},
+		}, "adapters/fake/src/main.ts is missing"},
+		"no NOTICE": {goodListing, func(root string, env *[]string) {
+			cmd := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "rm")
+			mustRun(t, root, "git", "rm", "-q", "--cached", "--", "NOTICE")
+			cmd.Dir, cmd.Env = root, *env
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%v %s", err, out)
+			}
+		}, "NOTICE is not committed"},
 		"a symlink in a dep": {goodListing, func(root string, _ *[]string) { _ = os.Symlink("/etc/passwd", inPkg(root, "p")) }, "unexpected symlinks"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -448,11 +466,14 @@ func TestDistAdaptersRefusals(t *testing.T) {
 				t.Fatalf("%v: %s", err, text)
 			}
 			want := []string{"LICENSE", "NOTICE", "adapters/contract/package.json", "adapters/contract/src/index.ts", "adapters/fake/package.json",
-				"adapters/fake/src/main.ts", "fixtures/t0/py-mini/repo/m.py", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json",
+				"adapters/fake/src/.keep", "adapters/fake/src/main.ts", "fixtures/t0/py-mini/repo/m.py", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json",
 				"gen/ts/formats.cjs", "gen/ts/package.json", "gen/ts/validators.cjs", "node_modules/@adc/contract", "node_modules/@adc/contract-gen",
 				"node_modules/a/LICENSE", "node_modules/a/index.js", "node_modules/a/package.json"}
 			if got := files(out); !slices.Equal(got, want) {
 				t.Fatalf("packaged %v", got)
+			}
+			if b, _ := os.ReadFile(filepath.Join(out, "adapters/fake/src/main.ts")); len(b) != 0 {
+				t.Fatalf("an uncommitted edit shipped: %q", b)
 			}
 		})
 	}

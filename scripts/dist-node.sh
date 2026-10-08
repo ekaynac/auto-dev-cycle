@@ -53,7 +53,7 @@ trap 'rm -rf -- "$work"; [[ -z "$part" ]] || rm -f -- "$part"' EXIT
 if [[ ! -f "$entry" ]] || ! matches "$entry" "$tarsum"; then
   rm -f -- "$entry"
   part="$(mktemp -- "$entry.XXXXXX")"
-  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 600 \
+  curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 600 \
     -o "$part" "https://nodejs.org/dist/$version/$tarball" || die "downloading $tarball failed"
   mv -f -- "$part" "$entry"
   part=""

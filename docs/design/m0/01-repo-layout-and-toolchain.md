@@ -105,7 +105,7 @@ The Go toolchain is installed per user from the official tarball (`~/.local/go`)
   darwin and windows. Release builds are no longer Go binaries only (15 S2, D6): for the two linux platforms,
   `lib/adc` also carries the official Node 22 `bin/node` (pinned in `scripts/node-pins` from Node's signed
   `SHASUMS256.txt.asc`, verified at `make dist` and re-verified on the installed file), the fake adapter with its
-  production dependencies (licences on an allowlist), `fixtures/t0/py-mini` (tracked files only), the repository's
+  production dependencies (licences on an allowlist), `fixtures/t0/py-mini` (committed content, by `git archive HEAD`), the repository's
   `LICENSE` and `NOTICE`, and a `SHA256SUMS` that install-check verifies. No npm or corepack is packaged.
 - Every build embeds version, commit and schema-set digest; `adc version` and the API report them, and every event
   records the writer's schema-set digest.
