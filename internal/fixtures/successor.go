@@ -50,8 +50,8 @@ func askedReview(g *graphFix) (review types.NodeID, err error) {
 func (g *graphFix) successorOf(pred types.NodeID, added ...types.InputSpec) (next types.NodeID, err error) {
 	err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		evs, err := graph.Successor(tx, pred, added, owedanswers.Authority{})
-		if len(evs) == 1 {
-			next = types.NodeID(evs[0].Subject)
+		if len(evs) > 0 {
+			next = types.NodeID(evs[len(evs)-1].Subject) // node.recorded comes last
 		}
 		return evs, err
 	})

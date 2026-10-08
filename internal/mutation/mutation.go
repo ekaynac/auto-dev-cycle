@@ -127,8 +127,9 @@ const (
 	// SuccessorTakesAnyAnswer lets a successor declare an answer to an owed
 	// input its predecessor did not owe.
 	SuccessorTakesAnyAnswer = "graph.successor-takes-any-answer"
-	// AnswerLineageUnchecked resolves an answer input whatever owed input
-	// it answers, so a ruling its lineage never asked for reaches a node.
+	// AnswerLineageUnchecked resolves and renders an answer input whatever
+	// owed input it answers, so a ruling its lineage never asked for
+	// reaches a node's controller context.
 	AnswerLineageUnchecked = "graph.answer-lineage-unchecked"
 	// EquivalenceIgnoresRestrictions treats two gate or evidence results as
 	// equivalent whatever their receipts' restrictions.

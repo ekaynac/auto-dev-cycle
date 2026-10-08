@@ -281,7 +281,7 @@ func (u *HoldClearedCause) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// HoldCleared: The hold leaves the node, with its cause: its signal arrived (the hold's signal instance), or it was retired with a reason (invalidated: a retry wait of an old key). Hold transfer to a replacement is G6b's supersession, in one transaction with it.
+// HoldCleared: The hold leaves the node, with its cause: its signal arrived (the hold's signal instance), or it was retired with a reason (invalidated: a retry wait of an old key; revised: an awaiting_input wait on a revision of its owed input that the successor recorded in the same command answers at a newer one). Hold transfer to a replacement is G6b's supersession, in one transaction with it.
 type HoldCleared struct {
 	Type  string           `json:"type"`
 	Node  NodeID           `json:"node"`
@@ -298,6 +298,7 @@ type RetiredReason string
 
 const (
 	RetiredReasonInvalidated RetiredReason = "invalidated"
+	RetiredReasonRevised     RetiredReason = "revised"
 )
 
 type Retired struct {

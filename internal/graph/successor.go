@@ -17,17 +17,27 @@ package graph
 //     ancestor) asked for, at that owed input's current revision: by
 //     Successor for what it adds (ErrNotOwed), and by the evaluator and the
 //     commit for every answer input, inherited or recorded directly.
+//   - An answer input at a revision its owed input has moved past is
+//     unanswered for its node: the evaluator leaves the node waiting (a
+//     structural wait, never an error for the command) and the commit
+//     refuses it as authority_revoked. The lineage moves on through a
+//     successor that answers the current revision.
 //   - Until G6b transfers holds, a successor is refused while its
-//     predecessor holds anything but an awaiting_input wait for an answer
-//     the successor declares and the authority has given; that wait is
-//     cleared on its signal in the same command. An inherited answer not
-//     given yet refuses the round: it would raise a second hold.
+//     predecessor holds anything but an awaiting_input wait on an answer
+//     input it inherits: one the authority has given is cleared on its
+//     signal, one the successor moves to a newer revision is retired as
+//     revised. Both events precede node.recorded in the same command, and
+//     the node.recorded fold refuses a successor of a node that holds
+//     anything. An inherited answer not given yet refuses the round: it
+//     would raise a second hold.
 //   - The controller context of a node is rendered only from its claimed
 //     inputs, in declared order: a result input gives its result's refs, an
 //     answer input the authority's Ref to the exact answer the claim fixed
-//     (approval, owed input, revision). Nothing else, an answer to an owed
-//     input the node did not declare included, reaches it; a
-//     manifest.intent lists exactly these refs (10).
+//     (approval, owed input, revision), for an owed input its lineage asked
+//     for, at the current revision. Nothing else, an answer to an owed
+//     input the node did not declare or its lineage did not ask for
+//     included, reaches it, however the claim was made; a manifest.intent
+//     lists exactly these refs (10).
 
 import (
 	"errors"
@@ -38,6 +48,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // ErrNotOwed: an answer to an owed input the node's lineage did not ask for.
@@ -64,6 +75,11 @@ func lineageOwed(tx *eventstore.Tx, pred *types.NodeID, auth Authority) ([]types
 	return out, nil
 }
 
+// asks: owed holds owed input id, at any revision.
+func asks(owed []types.AnswerSource, id types.OwedInputID) bool {
+	return slices.ContainsFunc(owed, func(o types.AnswerSource) bool { return o.OwedInput == id })
+}
+
 // owedIn: ask is among owed, at its revision.
 func owedIn(owed []types.AnswerSource, ask *types.AnswerSource) bool {
 	return slices.ContainsFunc(owed, func(o types.AnswerSource) bool { return o.OwedInput == ask.OwedInput && o.Revision == ask.Revision })
@@ -77,7 +93,9 @@ func newerAnswer(p, in types.InputSpec) bool {
 }
 
 // Successor is the events recording the round n+1 successor of pred, with
-// pred's inputs followed by added, and clearing the waits of pred it answers.
+// pred's inputs followed by added: first those releasing pred's waits on
+// the answers it inherits (cleared on their signal, or retired as revised
+// for one it moves to a newer revision), then its node.recorded, last.
 func Successor(tx *eventstore.Tx, pred types.NodeID, added []types.InputSpec, auth Authority) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, pred)
 	id, ierr := ids.New("nod")
@@ -114,29 +132,46 @@ func Successor(tx *eventstore.Tx, pred types.NodeID, added []types.InputSpec, au
 			}
 		}
 	}
-	evs, err := Record(next)
+	var evs []eventstore.Event
 	for _, h := range rec.State.Holds {
-		// pred waits only for its own answers, each given (above).
-		answers := slices.ContainsFunc(n.Inputs[:len(rec.Recorded.Node.Inputs)], func(in types.InputSpec) bool {
+		// pred waits only on answers it declares, each given in n (above).
+		i := slices.IndexFunc(rec.Recorded.Node.Inputs, func(in types.InputSpec) bool {
 			ask, ok := in.Source.Variant.(*types.AnswerSource)
 			return ok && h.Hold == "awaiting_input" && h.SignalInstance == awaitSignal(ask)
 		})
-		if err != nil || !answers {
-			return nil, errors.Join(err, fmt.Errorf("graph: %s holds %s (%s): a hold moves to a successor only with G6b", pred, h.ID, h.Hold))
+		if i < 0 {
+			return nil, fmt.Errorf("graph: %s holds %s (%s): a hold moves to a successor only with G6b", pred, h.ID, h.Hold)
 		}
-		clear, cerr := Clear(tx, pred, h.ID, h.SignalInstance)
-		evs, err = append(evs, clear...), cerr
+		var cause types.HoldClearedCauseVariant = &types.Signalled{Type: "signal", SignalInstance: h.SignalInstance}
+		if newerAnswer(rec.Recorded.Node.Inputs[i], n.Inputs[i]) {
+			cause = &types.Retired{Type: "retired", Reason: types.RetiredReasonRevised}
+		}
+		release, err := cleared(tx, pred, h.ID, cause)
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, release...)
 	}
-	return evs, err
+	recorded, err := Record(next)
+	if err != nil {
+		return nil, err
+	}
+	return append(evs, recorded...), nil
 }
 
 // Context is node's controller context: the refs of its claimed inputs, in
-// declared order.
+// declared order. An answer its lineage did not ask for is ErrNotOwed, one
+// at a revision its owed input has moved past ErrRevalidated
+// (authority_revoked).
 func Context(tx *eventstore.Tx, node types.NodeID, auth Authority) ([]types.Ref, error) {
 	rec, err := loadNode(tx, node)
 	c, ok, cerr := load[claim](tx, ClaimProjection, string(node))
 	if err = errors.Join(err, cerr); err != nil || !ok {
 		return nil, errors.Join(err, fmt.Errorf("graph: %s is not claimed: its inputs are not fixed", node))
+	}
+	owed, err := lineageOwed(tx, rec.Recorded.Predecessor, auth)
+	if err != nil {
+		return nil, err
 	}
 	refs := []types.Ref{}
 	for i, in := range c.Inputs {
@@ -149,6 +184,14 @@ func Context(tx *eventstore.Tx, node types.NodeID, auth Authority) ([]types.Ref,
 			refs = append(refs, r.Result.Value...)
 		case in.Approval != nil && in.Revision != nil:
 			ask := rec.Recorded.Node.Inputs[i].Source.Variant.(*types.AnswerSource)
+			if !mutation.Is(mutation.AnswerLineageUnchecked) {
+				if !asks(owed, ask.OwedInput) {
+					return nil, ErrNotOwed{ask.OwedInput}
+				}
+				if !owedIn(owed, &types.AnswerSource{OwedInput: ask.OwedInput, Revision: *in.Revision}) {
+					return nil, ErrRevalidated{Input: in.Name, Reason: vocab.ReasonAuthorityRevoked, Detail: "the answer is not at its owed input's current revision"}
+				}
+			}
 			ref, err := auth.Approval(tx, rec.Recorded, ask.OwedInput, *in.Revision, *in.Approval)
 			if err != nil {
 				return nil, err

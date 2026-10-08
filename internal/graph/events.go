@@ -361,6 +361,9 @@ func recorded(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeRecorded) err
 		if err != nil || pred.Recorded.Task != p.Task || pred.Recorded.Node.Kind != n.Kind {
 			return errors.Join(err, errors.New("the predecessor is not a node of the task of the same kind"))
 		}
+		if len(pred.State.Holds) > 0 {
+			return fmt.Errorf("the predecessor holds %s: a hold moves to a successor only with G6b", pred.State.Holds[0].ID)
+		}
 		if err := succeeds(tx, pred.Recorded.Node, n); err != nil {
 			return err
 		}

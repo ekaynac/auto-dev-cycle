@@ -164,7 +164,7 @@ No other fields are allowed.
 
 ### HoldCleared
 
-The hold leaves the node, with its cause: its signal arrived (the hold's signal instance), or it was retired with a reason (invalidated: a retry wait of an old key). Hold transfer to a replacement is G6b's supersession, in one transaction with it.
+The hold leaves the node, with its cause: its signal arrived (the hold's signal instance), or it was retired with a reason (invalidated: a retry wait of an old key; revised: an awaiting_input wait on a revision of its owed input that the successor recorded in the same command answers at a newer one). Hold transfer to a replacement is G6b's supersession, in one transaction with it.
 
 #### Fields of HoldCleared
 
@@ -195,7 +195,7 @@ No other fields are allowed.
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `type` | yes | `retired` |  |
-| `reason` | yes | one of `invalidated` |  |
+| `reason` | yes | one of `invalidated`, `revised` |  |
 
 No other fields are allowed.
 

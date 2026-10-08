@@ -36,7 +36,7 @@ func (g graphStore) successor(pred types.NodeID, added ...types.InputSpec) (type
 	err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		evs, err := Successor(tx, pred, added, owedanswers.Authority{})
 		if len(evs) > 0 {
-			id = types.NodeID(evs[0].Subject)
+			id = types.NodeID(evs[len(evs)-1].Subject) // node.recorded comes last
 		}
 		return evs, err
 	})
@@ -133,6 +133,7 @@ func TestSuccessor(t *testing.T) {
 func TestSuccessorLineage(t *testing.T) {
 	g := openStore(t)
 	review := g.reviewOf(g.plan)
+	g.must(asked(ownID, review, nil))                        // what the lineage owes
 	g.must(asked(ownB, g.plan, ptr(types.ApprovalID(aprB)))) // another node's
 	first := g.newNode(types.NodeKindReview)
 	first.Node.Inputs = append(first.Node.Inputs, owes("data", ownB))
@@ -191,9 +192,22 @@ func TestSuccessorLineage(t *testing.T) {
 func TestSuccessorHolds(t *testing.T) {
 	g := openStore(t)
 	held := g.reviewOf(g.plan)
-	g.must(raised(held, newHold(t, "budget_rail", types.OwnerOperator, nil), nil))
+	rail := newHold(t, "budget_rail", types.OwnerOperator, nil)
+	g.must(raised(held, rail, nil))
 	if _, err := g.successor(held, g.planInput("x")); err == nil || !strings.Contains(err.Error(), "G6b") {
 		t.Errorf("a held predecessor: %v", err)
+	}
+	// The fold refuses it too, recorded directly, and retires only an
+	// awaiting_input wait as revised.
+	direct := g.recordOf(held)
+	direct.Node.ID, direct.Node.Round, direct.Predecessor = g.newNode(types.NodeKindReview).Node.ID, 2, &held
+	direct.Node.Inputs = append(slices.Clone(direct.Node.Inputs), g.planInput("x"))
+	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(direct) }); err == nil || !strings.Contains(err.Error(), "G6b") {
+		t.Errorf("a held predecessor's successor recorded directly: %v", err)
+	}
+	if err := g.do(forge(HoldCleared, string(held), prjID, &types.HoldCleared{Type: "hold_cleared", Node: held, Hold: rail.ID,
+		Cause: types.HoldClearedCause{Variant: &types.Retired{Type: "retired", Reason: types.RetiredReasonRevised}}})); err == nil || !strings.Contains(err.Error(), "graph: event") {
+		t.Errorf("a budget rail retired as revised: %v", err)
 	}
 	g.must(answer(ownID, actID, nil))
 	waiting := g.asking(owes("ruling", ownID))
@@ -394,5 +408,116 @@ func TestSuccessorAuthorityError(t *testing.T) {
 		return Successor(tx, review, []types.InputSpec{owes("ruling", ownID)}, failingOwed{})
 	}); err == nil || !strings.Contains(err.Error(), "unavailable") {
 		t.Fatalf("an authority error: %v", err)
+	}
+}
+
+// answerAt answers owed at revision under name.
+func answerAt(name string, owed types.OwedInputID, revision int64) types.InputSpec {
+	return types.InputSpec{Name: types.Name(name), Source: types.InputSpecSource{Variant: &types.AnswerSource{Type: "answer", OwedInput: owed, Revision: revision}}}
+}
+
+// An owed input revised while a round awaits its answer leaves that round
+// waiting, never failing the command: an unrelated goal still progresses,
+// a round declaring the old revision raises no hold, and one claimed on it
+// is refused at commit and in its context as authority_revoked. The
+// successor answering the new revision retires the old wait as revised,
+// before it is recorded, and claims.
+func TestSuccessorRevisionBump(t *testing.T) {
+	const ownD, aprD = types.OwedInputID("own_01m3250vm7f6ktw39dszqnyddr"), types.ApprovalID("apr_01m3250vm7f6ktw39dszqnyda")
+	g := openStore(t)
+	env := g.env(noRequirement)
+	review := g.asking(g.planInput("plan"))
+	g.must(asked(ownID, review, nil)) // revision 2, unanswered
+	next, err := g.successor(review, owes("ruling", ownID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.must(evaluate(env, next))
+	wait := g.state(next).Holds
+	if len(wait) != 1 || wait[0].SignalInstance != string(ownID)+"@2" {
+		t.Fatalf("the wait: %+v", wait)
+	}
+	running := g.asking(g.planInput("plan")) // a round claimed on revision 2
+	g.must(asked(ownB, running, ptr(types.ApprovalID(aprB))))
+	onB, err := g.successor(running, owes("ruling", ownB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.must(evaluate(env, onB))
+	quiet := g.asking(g.planInput("plan")) // a round not evaluated yet
+	g.must(asked(ownD, quiet, nil))
+	onD, err := g.successor(quiet, owes("ruling", ownD))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every question is revised.
+	g.must(owedAnswer(ownID, func(a *owedanswers.Answer) { a.Revision, a.Approval = 3, ptr(types.ApprovalID(aprC)) }))
+	g.must(owedAnswer(ownB, func(a *owedanswers.Answer) { a.Revision, a.Approval = 3, ptr(aprD) }))
+	g.must(owedAnswer(ownD, func(a *owedanswers.Answer) { a.Revision = 3 }))
+	other := g.asking(g.planInput("plan")) // an unrelated goal
+	raisedBefore := g.count(HoldRaised)
+	g.must(evaluate(env, next, onD, other))
+	if g.state(other).State != types.NodeStateStateClaimed {
+		t.Errorf("the unrelated goal: %+v", g.state(other))
+	}
+	if h := g.state(next).Holds; len(h) != 1 || h[0].ID != wait[0].ID || g.state(onD).State != types.NodeStateStateWaiting || g.count(HoldRaised) != raisedBefore {
+		t.Errorf("a stale answer is a structural wait: %+v %+v", g.state(next), g.state(onD))
+	}
+	var revoked ErrRevalidated
+	if err := g.do(commit(onB, g.reviewResult(onB), env)); !errors.As(err, &revoked) || revoked.Reason != vocab.ReasonAuthorityRevoked {
+		t.Errorf("a commit on a stale answer: %v", err)
+	}
+	if _, err := g.contextOf(onB); !errors.As(err, &revoked) || revoked.Reason != vocab.ReasonAuthorityRevoked {
+		t.Errorf("the context of a stale answer: %v", err)
+	}
+	cleared := g.count(HoldCleared)
+	third, err := g.successor(next, answerAt("ruling", ownID, 3))
+	if err != nil || len(g.state(next).Holds) != 0 || g.count(HoldCleared) != cleared+1 {
+		t.Fatalf("the round answering revision 3: %v %+v", err, g.state(next))
+	}
+	evs := g.events(HoldCleared)
+	var retired types.HoldCleared
+	if err := json.Unmarshal(evs[len(evs)-1].Payload, &retired); err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := retired.Cause.Variant.(*types.Retired); !ok || c.Reason != types.RetiredReasonRevised || retired.Hold != wait[0].ID {
+		t.Errorf("the old wait's release: %+v", retired)
+	}
+	g.must(evaluate(env, third))
+	if g.state(third).State != types.NodeStateStateClaimed {
+		t.Errorf("the round on revision 3: %+v", g.state(third))
+	}
+	if diffs, err := g.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %+v", err, diffs)
+	}
+}
+
+// contextOf is n's controller context.
+func (g graphStore) contextOf(n types.NodeID) ([]types.Ref, error) {
+	var refs []types.Ref
+	err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
+		refs, err = Context(tx, n, owedanswers.Authority{})
+		return err
+	})
+	return refs, err
+}
+
+// A ruling the lineage did not ask for never reaches the context, even of
+// a node claimed through Claim, which does not check the lineage.
+func TestContextLineage(t *testing.T) {
+	g := openStore(t)
+	g.must(asked(ownB, g.plan, ptr(types.ApprovalID(aprB)))) // owed by the plan
+	asker := g.asking(g.planInput("plan"))
+	g.must(asked(ownID, asker, nil)) // the lineage owes something else
+	stray := g.recordOf(asker)
+	stray.Node.ID, stray.Node.Round, stray.Predecessor = g.newNode(types.NodeKindReview).Node.ID, 2, &asker
+	stray.Node.Inputs = append(slices.Clone(stray.Node.Inputs), answerAt("ruling", ownB, 2))
+	n := g.record(stray)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Claim(tx, n, map[string]Resolved{"plan": {Result: g.planRes}, "ruling": {Approval: aprB, Revision: 2}}, 0)
+	})
+	var notOwed ErrNotOwed
+	if refs, err := g.contextOf(n); !errors.As(err, &notOwed) || refs != nil {
+		t.Errorf("a foreign ruling's context: %v %+v", err, refs)
 	}
 }

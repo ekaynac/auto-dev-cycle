@@ -395,7 +395,7 @@ export interface HoldPaged {
   channel: null | string;
 }
 /**
- * The hold leaves the node, with its cause: its signal arrived (the hold's signal instance), or it was retired with a reason (invalidated: a retry wait of an old key). Hold transfer to a replacement is G6b's supersession, in one transaction with it.
+ * The hold leaves the node, with its cause: its signal arrived (the hold's signal instance), or it was retired with a reason (invalidated: a retry wait of an old key; revised: an awaiting_input wait on a revision of its owed input that the successor recorded in the same command answers at a newer one). Hold transfer to a replacement is G6b's supersession, in one transaction with it.
  */
 export interface HoldCleared {
   type: "hold_cleared";
@@ -415,7 +415,7 @@ export interface Signalled {
 }
 export interface Retired {
   type: "retired";
-  reason: "invalidated";
+  reason: "invalidated" | "revised";
 }
 /**
  * An immutable result of a claimed node, with the attempt that produced it (null for a controller node).

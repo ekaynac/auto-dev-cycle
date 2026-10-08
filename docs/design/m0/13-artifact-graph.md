@@ -218,12 +218,32 @@ The graph is append-only. Nothing modifies an existing node's inputs. New inform
   answer may move to a newer revision of the same owed input. The `node.recorded` fold checks this and refuses an answer
   input on a first round.
 - An answer is accepted only for an owed input that the node's lineage (an ancestor, its `requested_by`) asked for, at
-  that owed input's current revision: the successor refuses another, and the evaluator and the commit refuse any answer
-  input, inherited or recorded directly, that is not. So a ruling for an input not owed is never delivered.
+  that owed input's current revision: the successor refuses another, and the evaluator, the commit and the controller
+  context refuse any answer input, inherited, recorded directly or claimed directly, whose owed input the lineage did
+  not ask for. So a ruling for an input not owed is never delivered.
+- An answer input at a revision its owed input has moved past is unanswered for its node. The evaluator leaves the
+  node waiting, a structural wait that raises no hold and fails nothing else in the command; the commit refuses it as
+  `authority_revoked` ([G4]), and so does its controller context. The lineage moves on through a successor that answers
+  the current revision.
 - Holds do not move to a successor until G6b transfers them. Until then a successor is refused while its predecessor
-  holds anything but an `awaiting_input` wait for an answer the successor declares and the authority has given; that
-  wait is cleared on its signal in the same command. An inherited answer not given yet refuses the round, so no second
-  hold restarts its paging.
+  holds anything but an `awaiting_input` wait on an answer input the successor inherits. In the same command, before
+  the successor's `node.recorded`, a wait whose answer the authority has given is cleared on its signal, and a wait on
+  a revision the successor moves to a newer one is retired as `revised`. The `node.recorded` fold refuses a successor
+  of a node that holds anything. An inherited answer not given yet refuses the round, so no second hold restarts its
+  paging.
+- *As delivered (G5, #204), what G6b inherits:*
+  - A replacement (a roster change, "Replacement is a recorded supersession" above) is not a successor. It needs its
+    own event, and must maintain `graph_successors`: the one-successor rule and the hold check are keyed on the
+    predecessor, so a replacement takes over its predecessor's successor slot rather than opening a second lineage.
+  - The answer lineage is computed from `requested_by` through `predecessor` links. Either the lineage follows
+    supersession (a replacement's ancestors include what it replaced), or the authority moves `requested_by` to the
+    replacement in the same transaction; otherwise the replacement's successors cannot answer what the replaced
+    review asked.
+  - A question superseded by a *different* owed input (not a newer revision of the same one) is a replacement's: a
+    successor cannot drop or rename an inherited answer, so a lineage whose inherited answer will never be given stays
+    waiting until G6b replaces it.
+  - The fold cannot check that a wait retired as `revised` was revised, nor that a cleared wait's answer was given,
+    until M1 records owed inputs and approvals.
 
 Rails (round caps, "same blocking findings three times") are cumulative across rounds.
 

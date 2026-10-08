@@ -20,7 +20,9 @@ package graph
 //     its owed input: the hold's signal instance is "<owed input>@<revision>"
 //     of an answer input the node declares, and its owner is the owed
 //     input's grant holder. Once the authority answers, the evaluation
-//     clears the hold on that signal and claims in the same command.
+//     clears the hold on that signal and claims in the same command. An
+//     answer input at a revision its owed input has moved past raises
+//     nothing: the node waits for a successor (successor.go).
 //   - Commit re-validates authority and applicability in the writer
 //     transaction that records the node's result (13 [G4]): every input must
 //     still resolve, at the transaction's time, to what the claim fixed,
@@ -97,30 +99,40 @@ func awaitSignal(ask *types.AnswerSource) string {
 	return fmt.Sprintf("%s@%d", ask.OwedInput, ask.Revision)
 }
 
-// answers are rec's answer inputs the authority answers now. Each must
-// answer an owed input rec's lineage asked for, at its current revision
-// (ErrNotOwed), whether rec declared it or inherited it.
-func answers(tx *eventstore.Tx, rec nodeRecord, auth Authority) (map[string]Resolved, error) {
-	out := map[string]Resolved{}
+// answers are rec's answer inputs the authority answers now, and stale:
+// those at a revision its owed input has moved past. Each must answer an
+// owed input rec's lineage asked for (ErrNotOwed), whether rec declared it
+// or inherited it; one at a stale revision is unanswered for rec, whose
+// lineage moves on only through a successor at the current revision.
+func answers(tx *eventstore.Tx, rec nodeRecord, auth Authority) (out map[string]Resolved, stale bool, err error) {
+	out = map[string]Resolved{}
 	owed, err := lineageOwed(tx, rec.Recorded.Predecessor, auth)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	for _, in := range rec.Recorded.Node.Inputs {
-		if ask, ok := in.Source.Variant.(*types.AnswerSource); ok {
-			if !owedIn(owed, ask) && !mutation.Is(mutation.AnswerLineageUnchecked) {
-				return nil, ErrNotOwed{ask.OwedInput}
+		ask, ok := in.Source.Variant.(*types.AnswerSource)
+		if !ok {
+			continue
+		}
+		if !mutation.Is(mutation.AnswerLineageUnchecked) {
+			if !asks(owed, ask.OwedInput) {
+				return nil, false, ErrNotOwed{ask.OwedInput}
 			}
-			apr, answered, err := auth.Answer(tx, rec.Recorded, ask.OwedInput, ask.Revision)
-			if err != nil {
-				return nil, err
-			}
-			if answered {
-				out[in.Name] = Resolved{Approval: apr, Revision: ask.Revision}
+			if !owedIn(owed, ask) {
+				stale = true
+				continue
 			}
 		}
+		apr, answered, err := auth.Answer(tx, rec.Recorded, ask.OwedInput, ask.Revision)
+		if err != nil {
+			return nil, false, err
+		}
+		if answered {
+			out[in.Name] = Resolved{Approval: apr, Revision: ask.Revision}
+		}
 	}
-	return out, nil
+	return out, stale, nil
 }
 
 type evaluation struct {
@@ -171,9 +183,9 @@ func (e *evaluation) visit(n types.NodeID) error {
 	if waits {
 		return nil // a producer renewed in this command: a structural wait
 	}
-	answered, err := answers(e.tx, rec, e.env.Authority)
-	if err != nil {
-		return err
+	answered, stale, err := answers(e.tx, rec, e.env.Authority)
+	if err != nil || stale {
+		return err // a stale answer: a structural wait for the successor at the current revision
 	}
 	if held, err := e.clear(rec, answered); err != nil || held {
 		return err
@@ -323,7 +335,7 @@ func revalidate(tx *eventstore.Tx, node types.NodeID, env Env) error {
 	if err = errors.Join(err, rerr); err != nil || !ok {
 		return errors.Join(err, fmt.Errorf("graph: %s is not claimed", node))
 	}
-	answered, err := answers(tx, rec, env.Authority)
+	answered, _, err := answers(tx, rec, env.Authority) // a stale answer is unanswered: authority_revoked
 	if err != nil {
 		return err
 	}
