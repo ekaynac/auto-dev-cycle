@@ -301,6 +301,49 @@ else
   unexpected "symlinked cache" "$rc" "$out/symlink.err"
 fi
 
+echo "cleanup: a killed or terminated run leaves nothing behind"
+# A private HOME (and so state directory): the real home is never touched.
+khome="$out/kill-home" && mkdir -p "$khome"
+kstate="$khome/.local/state/adc-test-sandbox"
+# Run as a simple command, so a background run's $! is the wrapper itself.
+kwrap=(env -u XDG_STATE_HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$khome" ADC_GO_PREFIX="${ADC_GO_PREFIX:-$HOME/.local/go}"
+  ADC_TEST_SCRATCH="$sandboxed_scratch" ADC_TEST_PROVISION="$out/provision" "$repo_root/scripts/test-sandbox.sh" --backend "$backend" --)
+planted() {  # planted: the background run recorded its last canary (the repository's)
+  for _ in $(seq 600); do
+    grep -qsF "$repo_root/.adc-sandbox-canary-" "$kstate"/run-* && return 0
+    sleep 0.1
+  done
+  return 1
+}
+gone() {  # gone <label> <path...>: none of the paths remains
+  local p ok=1 label="$1"; shift
+  for p in "$@"; do [[ -e "$p" || -L "$p" ]] && { echo "  FAIL  $label: $p remains"; ok=0; fail=1; }; done
+  if [[ "$ok" == 1 ]]; then echo "  ok    $label: all $# planted paths removed"; fi
+}
+"${kwrap[@]}" sleep 60 2>"$out/kill.err" & kpid=$!
+if planted; then
+  kill -KILL "$kpid"; wait "$kpid" 2>/dev/null || true
+  mapfile -t left < <(cat "$kstate"/run-*)
+  n=0; for p in "${left[@]}"; do [[ -e "$p" ]] && n=$((n + 1)); done
+  if [[ "$n" -ge 5 && "$n" == "${#left[@]}" ]]; then echo "  ok    SIGKILL left $n planted paths behind"
+  else echo "  FAIL  the killed run left $n of ${#left[@]} recorded paths, want all of at least 5"; fail=1; fi
+  rc=0; "${kwrap[@]}" /bin/true 2>"$out/after.err" || rc=$?
+  [[ "$rc" == 0 ]] || { unexpected "the run after a kill" "$rc" "$out/after.err"; }
+  gone "the next run swept the killed run's paths" "${left[@]}"
+else
+  echo "  FAIL  the run to be killed never planted its canaries"; fail=1; kill -KILL "$kpid" 2>/dev/null || true
+fi
+"${kwrap[@]}" sleep 3 2>"$out/term.err" & kpid=$!
+if planted; then
+  mapfile -t left < <(cat "$kstate"/run-*)
+  kill -TERM "$kpid"; rc=0; wait "$kpid" || rc=$?
+  if [[ "$rc" == 143 ]]; then echo "  ok    SIGTERM: the run died by the signal (exit 143)"
+  else echo "  FAIL  SIGTERM: the run exited $rc, want 143"; fail=1; fi
+  gone "SIGTERM cleaned up its own paths" "${left[@]}" "$kstate/run-$kpid"
+else
+  echo "  FAIL  the run to be terminated never planted its canaries"; fail=1; kill -KILL "$kpid" 2>/dev/null || true
+fi
+
 if [[ "$fail" != 0 ]]; then
   echo "test-sandbox self-test: FAILED" >&2
   exit 1

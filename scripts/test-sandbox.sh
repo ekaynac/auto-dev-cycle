@@ -202,7 +202,37 @@ fi
 gocache="$scratch_root/gocache"
 inside_area "$scratch_root" "$gocache"
 mkdir -p "$gocache"
-work="$(mktemp -d "$scratch_root/work.XXXXXX")"
+# Every path this run plants is recorded in its manifest as it is created, and
+# the manifest stays locked while the run lives. A killed run (SIGKILL, a
+# timeout) leaves an unlocked manifest: the next run removes what it lists.
+mkdir -p "$state_dir"
+manifest_dir="$state_dir/adc-test-sandbox"
+mkdir -p -m 700 "$manifest_dir"
+# purge_manifest <file>: remove a run's recorded paths, but only the exact
+# shapes a run plants, owned by this user, canonical and never a symlink.
+purge_manifest() {
+  local p
+  while IFS= read -r p; do
+    [[ -n "$p" && ! -L "$p" && -O "$p" && "$(realpath -m -- "$p")" == "$p" ]] || continue
+    case "$p" in
+      /tmp/adc-sentinel-?????? | "$scratch_root"/work.??????) if [[ -d "$p" ]]; then rm -rf -- "$p"; fi ;;
+      */.adc-sandbox-canary-??????) if [[ -f "$p" && "$(stat -c %s -- "$p")" -le 33 ]]; then rm -f -- "$p"; fi ;;
+    esac
+  done <"$1"
+  rm -f -- "$1"
+}
+for m in "$manifest_dir"/run-*; do
+  if [[ -f "$m" && ! -L "$m" ]] && flock -n "$m" true; then purge_manifest "$m"; fi
+done
+manifest="$manifest_dir/run-$$"
+# Locked before it gets its run-* name, so no other run can take it for stale.
+: >"$manifest_dir/.new-$$" && exec 9<"$manifest_dir/.new-$$" && flock -n 9 \
+  && mv -- "$manifest_dir/.new-$$" "$manifest" || die "could not create the run manifest in $manifest_dir"
+record() { printf '%s\n' "$1" >>"$manifest"; }
+cleanup() { trap - EXIT INT TERM HUP; purge_manifest "$manifest"; }
+trap cleanup EXIT
+for s in INT TERM HUP; do trap "cleanup; kill -$s \$\$" "$s"; done   # then die by the same signal
+work="$(mktemp -d "$scratch_root/work.XXXXXX")" && record "$work"
 # Re-check every mount source after provisioning, right before use.
 for src in "$toolchain" "$node_copy/bin/node" "$modcache"; do inside_area "$provision_root" "$src"; done
 for src in "$gocache" "$work"; do inside_area "$scratch_root" "$src"; done
@@ -211,22 +241,20 @@ for w in "$gocache" "$work"; do
     { covers "$w" "$r" || covers "$r" "$w"; } && die "writable $w overlaps provisioned $r; refused"
   done
 done
-sentinel="$(mktemp -d /tmp/adc-sentinel-XXXXXX)"
+sentinel="$(mktemp -d /tmp/adc-sentinel-XXXXXX)" && record "$sentinel"
 sentinel_inode="$(stat -c %i "$sentinel")"
 # Canaries mark protected places: the home, the user state directory (where
 # controller state lives; always present, created if missing), the config and
 # data directories when they exist, and the repository. Paths are canonical,
 # so a symlinked directory gets its canary in the real target.
 canary_value="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
-mkdir -p "$state_dir"
 protected_canaries=() protected_kinds=()
 for kd in "home:$home" "state:$state_dir" "config:$config_dir" "data:$data_dir"; do
   [[ -d "${kd#*:}" ]] || continue
   protected_kinds+=("${kd%%:*}")
-  protected_canaries+=("$(mktemp "${kd#*:}/.adc-sandbox-canary-XXXXXX")")
+  protected_canaries+=("$(mktemp "${kd#*:}/.adc-sandbox-canary-XXXXXX")") && record "${protected_canaries[-1]}"
 done
-repo_canary="$(mktemp "$repo_root/.adc-sandbox-canary-XXXXXX")"
-trap 'rm -rf "$work" "$sentinel"; rm -f "${protected_canaries[@]}" "$repo_canary"' EXIT
+repo_canary="$(mktemp "$repo_root/.adc-sandbox-canary-XXXXXX")" && record "$repo_canary"
 for c in "${protected_canaries[@]}" "$repo_canary"; do printf '%s\n' "$canary_value" >"$c"; done
 canary_names=""
 for c in "${protected_canaries[@]}"; do canary_names+="protected:$c "; done
@@ -312,14 +340,14 @@ run_bwrap() {
   args+=("${mutation_args[@]}")
   # bwrap's own init (PID 1 inside) keeps the environment bwrap was started
   # with, readable through /proc/1/environ: start it with nothing.
-  env -i PATH=/usr/bin:/bin "$(command -v bwrap)" "${args[@]}" -- "$@"
+  env -i PATH=/usr/bin:/bin "$(command -v bwrap)" "${args[@]}" -- "$@" 9<&-   # not the manifest lock
 }
 
 run_none() {
   # Host environment kept on purpose: this is the "no containment" control.
   (cd "$repo_root" && env "${inner_env[@]/#PATH=*/PATH=$goroot/bin:$PATH}" \
     GOROOT="$goroot" GOCACHE="$gocache" GOMODCACHE="$modcache" HOME="$HOME" \
-    TMPDIR=/tmp ADC_TEST_WORK="$work" "$@")
+    TMPDIR=/tmp ADC_TEST_WORK="$work" "$@" 9<&-)
 }
 
 probe() { "run_$1" /bin/true >/dev/null 2>&1; }  # the exact configuration, a harmless command
