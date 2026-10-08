@@ -67,6 +67,14 @@ func (t Transport) base() string {
 	return "http://adcd"
 }
 
+// DaemonPeer is the uid every socket connection's peer is checked to run
+// as: it is proven only once a request on the socket has succeeded. ok is
+// false over HTTPS, where no peer credentials are seen, and with no
+// socket (adc doctor, 04 D31).
+func (t Transport) DaemonPeer() (uid int, ok bool) {
+	return t.DaemonUID, t.Remote == nil && t.Socket != ""
+}
+
 // dial connects to the socket and returns the connection only if its peer
 // runs as the daemon uid.
 func (t Transport) dial(ctx context.Context, _, _ string) (net.Conn, error) {

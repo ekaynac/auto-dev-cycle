@@ -12,7 +12,8 @@
 # token goes to --token-out, grants it, and has it take the seat, add a
 # note and release the seat; a scoped read returns only granted records;
 # stale, refused and deferred commands give their registered reasons and
-# exit codes; the event stream shows the events in seq order. Then the
+# exit codes; adc doctor warns a supervisor run as the daemon uid and not
+# an operator; the event stream shows the events in seq order. Then the
 # grant and the supervisor's token are revoked, the revoked bearer gets
 # HTTP 401, adcd stops cleanly on SIGTERM, its log verifies, and no secret
 # appears in any log, output or state file besides the two token files.
@@ -195,6 +196,18 @@ if ! grep -q "smoke: granted" "$out/notes.out" || grep -q "$other" "$out/notes.o
 fi
 get whoami "$sup_tok" /v1/whoami
 if [[ $code != 200 ]] || ! grep -q "\"$sup\"" "$out/whoami.out"; then die "the supervisor's whoami: HTTP $code"; fi
+
+step "adc doctor warns a supervisor run as the daemon uid, and not an operator (04 D31)"
+adc_as /tmp/sup doctor doctor --state-dir /tmp/state --json
+want 0 doctor
+f='{"check":"%s","detail":"[^"]*"}'
+# shellcheck disable=SC2059
+grep -q "\"warnings\":\[$(printf "$f,$f" daemon_uid state_dir)\],\"passed\":\[\],\"unseen\":\[$(printf "$f,$f" operator_token operator_token_elsewhere)\]" "$out/doctor.out" ||
+  die "adc doctor as the daemon uid: not exactly the daemon_uid and state_dir warnings and an unseen operator token: $(head -c 600 "$out/doctor.out")"
+adc_as /tmp/op doctor-op doctor --json
+want 0 doctor-op
+grep -q '"kind":"operator","listener":"private_socket","warnings":\[\],"passed":\[\],"unseen":\[\]' "$out/doctor-op.out" ||
+  die "adc doctor checked an operator token: $(head -c 400 "$out/doctor-op.out")"
 
 step "the event stream shows the events in seq order"
 printf 'Authorization: Bearer %s\n' "$op_tok" | curl -sSN --max-time 120 --unix-socket "$sock" -H @- \
