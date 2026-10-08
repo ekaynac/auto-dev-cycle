@@ -24,7 +24,9 @@ package graph
 //     reason of the registry is in notRun or in ran.
 //   - The preconditions are the instrument contract's (06): only Probe holds
 //     a precondition failure, on the probe of one of the contract's
-//     preconditions ("probe:<precondition>"), and Retry refuses it.
+//     preconditions ("probe:<precondition>"), and Retry refuses it. The
+//     hold fold binds only the prefix of a builder's signal (probe:, caps:):
+//     which precondition or result follows it is checked by the builder.
 //   - An evidence node is claimed only through ClaimEvidence, under its
 //     contract: the instrument by name, version and digest, and a subject
 //     input whose result kind is the contract's subject_type (in M0 only a
@@ -61,10 +63,11 @@ var subjectKinds = map[types.InstrumentContractSubjectType][]types.ResultKind{
 // the evidence run started: a notRun result spends no attempt.
 var (
 	notRun = []string{"precondition_failed", "evidence_cap_exhausted", "capacity_reserved_full", "quota_unknown", "action_deferred",
-		"project_unconfigured", "controller_already_running", "store_unreadable", "ambiguous_state", "reviewer_not_independent", "instrument_changed"}
-	ran = []string{"quota_exhausted", "broker_credit_exhausted", "runner_fault", "receipt_incomplete", "evidence_inapplicable", "view_stale",
+		"project_unconfigured", "controller_already_running", "store_unreadable", "ambiguous_state", "reviewer_not_independent", "instrument_changed",
+		"check_unloadable", "view_stale", "evidence_inapplicable"}
+	ran = []string{"quota_exhausted", "broker_credit_exhausted", "runner_fault", "receipt_incomplete",
 		"attempt_stopped", "adapter_protocol_error", "provider_request_refused", "provider_unavailable", "stream_idle_cut", "degenerate_output",
-		"executor_incomplete", "check_unloadable"}
+		"executor_incomplete"}
 )
 
 // count is one counter and the cap it is bound to.
@@ -145,8 +148,13 @@ func countAttempt(tx *eventstore.Tx, rec nodeRecord, r types.Result) error {
 	if rec.Recorded.Node.Kind != types.NodeKindEvidence {
 		return nil
 	}
+	// What did not run is admitted before the budget is read, so a node that
+	// lost the bind race still records its precondition failure.
+	counted := r.Reason == vocab.ReasonPreconditionFailed && mutation.Is(mutation.PreconditionSpendsAttempt)
+	if r.Outcome == types.OutcomeCouldNotRun && slices.Contains(notRun, r.Reason.String()) && r.Reason != vocab.ReasonEvidenceCapExhausted && !counted {
+		return nil
+	}
 	b, err := budgetOf(tx, rec)
-	nothingRan := r.Outcome == types.OutcomeCouldNotRun && slices.Contains(notRun, r.Reason.String())
 	switch {
 	case err != nil:
 		return err
@@ -154,9 +162,6 @@ func countAttempt(tx *eventstore.Tx, rec nodeRecord, r types.Result) error {
 		if !b.spent() {
 			return errors.New("an evidence node is not exhausted while a cap is unspent")
 		}
-		return nil
-	case r.Reason == vocab.ReasonPreconditionFailed && mutation.Is(mutation.PreconditionSpendsAttempt):
-	case nothingRan:
 		return nil
 	case b.spent():
 		return errors.New("the evidence node's attempts are spent: its result is evidence_cap_exhausted")

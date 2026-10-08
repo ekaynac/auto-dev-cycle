@@ -153,7 +153,7 @@ func (g graphStore) nodeOn(kind types.NodeKind, plan types.NodeID) types.NodeRec
 // result holding one git_tree Ref.
 func (g graphStore) treeNode() types.NodeID {
 	if g.tree.node == "" {
-		ref := g.sealed(types.RefTypeGitTree, "git:"+strings.Repeat("a", 40), walkDigest)
+		ref := g.sealed(types.RefTypeGitTree, "git:"+strings.Repeat("a", 40), "sha256:"+types.Digest(strings.Repeat("d", 64)))
 		g.tree.node, _ = g.completedWith(types.NodeKindIntegration, types.ResultKindTree, []types.Ref{ref})
 		g.tree.res = *g.state(g.tree.node).Result
 	}

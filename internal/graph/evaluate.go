@@ -218,9 +218,12 @@ func (e *evaluation) claim(rec nodeRecord, resolved map[string]Resolved) error {
 			return nil // claimed by this command: reuse once its holder completes
 		}
 	}
-	evs, err := Claim(e.tx, rec.Recorded.Node.ID, resolved, 0)
+	var evs []eventstore.Event
+	var err error
 	if rec.Recorded.Node.Kind == types.NodeKindEvidence {
 		evs, err = ClaimEvidence(e.tx, rec.Recorded.Node.ID, resolved, 0, e.env.Contracts)
+	} else {
+		evs, err = Claim(e.tx, rec.Recorded.Node.ID, resolved, 0)
 	}
 	var taken ErrKeyClaimed
 	if errors.As(err, &taken) {
@@ -240,11 +243,6 @@ func (e *evaluation) claim(rec nodeRecord, resolved map[string]Resolved) error {
 // receipt has passed the validity it bound, at the transaction's time.
 // Only a memoizable node's key has a holder.
 func (e *evaluation) renew(rec nodeRecord) error {
-	if rec.Recorded.Node.Kind == types.NodeKindEvidence {
-		if _, err := contractOf(rec, e.env.Contracts); err != nil {
-			return err
-		}
-	}
 	holder, _, err := load[types.NodeID](e.tx, KeyProjection, keyIndex(rec.Recorded.Task, rec.State.Key.Key))
 	r, _, rerr := load[types.ResultRecorded](e.tx, ResultProjection, string(*rec.State.Result))
 	if err = errors.Join(err, rerr); err != nil || holder == "" || r.ReceiptValidUntil == nil || e.keys["renew/"+string(holder)] {
@@ -252,6 +250,11 @@ func (e *evaluation) renew(rec nodeRecord) error {
 	}
 	if expired, err := expiredAt(*r.ReceiptValidUntil, e.tx.Now().UTC().Format(time.RFC3339Nano)); err != nil || !expired {
 		return err
+	}
+	if rec.Recorded.Node.Kind == types.NodeKindEvidence { // only a due renewal asks for the contract
+		if _, err := contractOf(rec, e.env.Contracts); err != nil {
+			return err
+		}
 	}
 	e.keys["renew/"+string(holder)] = true
 	evs, err := Renew(e.tx, holder, e.env.Blobs)

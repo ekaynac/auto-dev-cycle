@@ -66,16 +66,27 @@ field is in the params digest and so in the node's key (13).
 - **What counts.** An attempt is a recorded result of the evidence node.
   - The subject is the content of the result its `subject_input` resolves to: its one Ref's content digest. The
     same tree produced again is the same subject. The total is per (subject, instrument digest), across demands.
+    In M0 the budget key is that content and the instrument digest (with the demand key per demand); the evidence
+    target is not part of it.
   - The counts are kept apart from the computation key (`graph_attempts`), so an invalidation, a renewal or a retry
     never resets them.
   - Each count binds the cap it was first counted under. A node whose caps differ from a bound cap is refused at
     claim and by the count fold. Raising a bound cap is an M1 policy change.
   - A `could_not_run` result spends no attempt when its reason says nothing ran (`notRun` in
     `internal/graph/evidence.go`: `precondition_failed`, `evidence_cap_exhausted`, capacity, configuration and
-    controller refusals). Every other result spends one. A test keeps every `could_not_run` reason classified.
+    controller refusals, and results refused before the run: an unloadable check, a stale view, an inapplicable
+    receipt). Every other result spends one, `quota_exhausted`, `broker_credit_exhausted` and `attempt_stopped`
+    included, on the conservative side. A test keeps every `could_not_run` reason classified. M1 should replace the
+    two reason sets with "spend if and only if an attempt started", read from the attempt record.
+  - A result that did not run is admitted before the budget is read, so a node that lost the race to bind its caps
+    still records its precondition failure.
   - The fold refuses a counted result once a cap is spent. It admits `evidence_cap_exhausted` only then.
   - Only `Exhaust` holds an exhaustion: on `wrong_owner`, for the project owner, on signal `caps:<result>`. In M0 the
-    owner's act is to retire the node. An exhausted node cannot renew, since it has no selected result.
+    hold is terminal: no signal clears it, and the owner's act is to retire the node. Raising a bound cap is M1.
+    An exhausted node never renews: renewal applies to a completed node, and an exhausted one never completes.
+  - E2 is the first change that tightens the `node.recorded` and `result.recorded` folds (Record's evidence checks
+    and the count). No M0 log holds graph events written before it, since the graph is not wired into `adcd` (15 L1),
+    so no migration is needed.
 
 ### Preconditions (nöbetçi Δ§5)
 
