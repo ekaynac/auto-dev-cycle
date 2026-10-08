@@ -90,11 +90,22 @@ func (a Authorizer) propose(t *eventstore.Tx, c eventstore.Command, actor types.
 	} else if evs, err = proposalEvent(ProposalCreated, p); err != nil {
 		return err
 	}
-	result, err := json.Marshal(map[string]any{"proposal": p.ID, "policy": p.Policy, "binding_digest": p.BindingDigest})
+	result, err := json.Marshal(map[string]any{"proposal": p.ID, "policy": p.Policy, "binding_digest": p.BindingDigest,
+		"effective_change": EffectiveChangeOf(p)})
 	if err != nil {
 		return err
 	}
 	return t.Decided(eventstore.Decision{Disposition: eventstore.DispositionProposed, Events: evs, Result: result})
+}
+
+// EffectiveChangeOf is what p binds, as authority derived it (08: the
+// CLI prints a proposal's effective change, not the request): its action,
+// change classes, project, object and grantee, copied from the record,
+// never from the command. Like a proposal read, it omits the object's
+// content digest.
+func EffectiveChangeOf(p types.Proposal) types.EffectiveChange {
+	return types.EffectiveChange{Action: p.Action, ChangeClass: p.ChangeClass, Project: p.Project, Grantee: p.Grantee,
+		Object: types.EffectiveChangeObject{Type: p.Object.Type, ID: p.Object.ID, Version: p.Object.Version}}
 }
 
 // StateOf is the derived object's current state: its version (0 when its

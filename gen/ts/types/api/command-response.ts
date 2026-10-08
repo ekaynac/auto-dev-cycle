@@ -40,7 +40,7 @@ export interface CommandApplied {
   issued_credential?: string;
 }
 /**
- * The command needs a confirmation (04 "Proposals"): nothing was applied. A human policy is confirmed only on the dashboard (D37).
+ * The command needs a confirmation (04 "Proposals"): nothing was applied. A human policy is confirmed only on the dashboard (D37); the CLI prints the proposal, its effective change and the dashboard link (08 "CLI rules").
  */
 export interface CommandProposed {
   disposition: "proposed";
@@ -53,6 +53,46 @@ export interface CommandProposed {
    * Content digest: sha256 over the bytes, lowercase hex.
    */
   binding_digest: string;
+  effective_change: EffectiveChange;
+}
+/**
+ * The effective change the proposal binds, as authority derived it from the command (04 "Action registry and effective-change classification"), never as the request named it: the action, the change classes it was classified by (the action's own included), the derived project (null: installation-wide), the derived object at its bound version and, for a grant change, the grantee. As in a proposal read (api/proposal), never the object's content digest.
+ */
+export interface EffectiveChange {
+  /**
+   * A mutating action kind of the action registry (schemas/vocab), e.g. task.create or policy.widen_destinations.
+   */
+  action: string;
+  /**
+   * Items: Sensitive change classes and their supervisor confirmation defaults are in docs/design/m0/04 (D32, K5, KA1, M12).
+   */
+  change_class: (
+    | "install.self"
+    | "policy.widen_data"
+    | "policy.widen_destinations"
+    | "policy.weaken_protection"
+    | "capacity.allow_paid_fallback"
+    | "agent.enrol"
+    | "grant.create"
+    | "grant.extend"
+    | "knowledge.accept_claim"
+    | "knowledge.export_framework_prose"
+    | "knowledge.change_protected_document"
+    | "integration.change_topology"
+  )[];
+  project: null | string;
+  /**
+   * The derived object: its type, id and bound version (null when it was bound by digest alone).
+   */
+  object: {
+    /**
+     * Instrument, predicate, artifact, precondition and model-family names: lowercase letters and digits, then also '.', '_' and '-' (06 "Names and media types").
+     */
+    type: string;
+    id: string;
+    version: null | number;
+  };
+  grantee: null | string;
 }
 /**
  * Nothing was applied: failed (the command was decided and refused) or could_not_run (the controller or a dependency could not run it).

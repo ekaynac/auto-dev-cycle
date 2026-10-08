@@ -36,15 +36,17 @@ func TestHostileCommandFields(t *testing.T) {
 		args []string
 		code int
 	}{
-		"refusal detail": {&fake{resp: `{"disposition":"refused","outcome":"failed","reason":"seat_not_held","detail":` + string(h) + `}`}, cmd, entry.ExitRefused},
-		"human scope":    {&fake{resp: human}, append(cmd, "--scope", "{\"a\":\"\u202e\u2066\u200b\u2028\"}"), entry.ExitProposed},
-		"transport":      {&fake{err: errors.New(hostile)}, cmd, entry.ExitCouldNotRun},
-		"401":            {&fake{err: fmt.Errorf("%w %s", client.ErrUnauthenticated, hostile)}, cmd, entry.ExitRefused},
-		"400":            {&fake{err: fmt.Errorf("%w %s", client.ErrBadRequest, hostile)}, cmd, entry.ExitUsage},
-		"unknown flag":   {&fake{}, append(cmd, "--"+hostile), entry.ExitUsage},
-		"argument":       {&fake{}, append(cmd, hostile), entry.ExitUsage},
-		"expect":         {&fake{}, []string{"seat", "take", "--reason", "r", "--expect", hostile}, entry.ExitUsage},
-		"verb":           {&fake{}, []string{"seat", hostile}, entry.ExitUsage},
+		"refusal detail":            {&fake{resp: `{"disposition":"refused","outcome":"failed","reason":"seat_not_held","detail":` + string(h) + `}`}, cmd, entry.ExitRefused},
+		"human scope":               {&fake{resp: human}, append(cmd, "--scope", "{\"a\":\"\u202e\u2066\u200b\u2028\"}"), entry.ExitProposed},
+		"effective change":          {&fake{resp: strings.Replace(human, `"id":"grt_01m3250vkwffc979nzjw0g2sf9"`, `"id":`+string(h), 1)}, cmd, entry.ExitProposed},
+		"review's effective change": {&fake{resp: strings.Replace(review, `"id":"grt_01m3250vkwffc979nzjw0g2sf9"`, `"id":`+string(h), 1)}, cmd, entry.ExitProposed},
+		"transport":                 {&fake{err: errors.New(hostile)}, cmd, entry.ExitCouldNotRun},
+		"401":                       {&fake{err: fmt.Errorf("%w %s", client.ErrUnauthenticated, hostile)}, cmd, entry.ExitRefused},
+		"400":                       {&fake{err: fmt.Errorf("%w %s", client.ErrBadRequest, hostile)}, cmd, entry.ExitUsage},
+		"unknown flag":              {&fake{}, append(cmd, "--"+hostile), entry.ExitUsage},
+		"argument":                  {&fake{}, append(cmd, hostile), entry.ExitUsage},
+		"expect":                    {&fake{}, []string{"seat", "take", "--reason", "r", "--expect", hostile}, entry.ExitUsage},
+		"verb":                      {&fake{}, []string{"seat", hostile}, entry.ExitUsage},
 	} {
 		code, out, errb := adc(c.f, c.args...)
 		if code != c.code || raw(out) || raw(errb) || !strings.Contains(strings.ToUpper(out+errb), "202E") {

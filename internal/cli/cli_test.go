@@ -23,9 +23,13 @@ import (
 )
 
 const (
-	applied  = `{"disposition":"applied","command":"cmd_01m3250vz2ezn81cgvbkcn17jd","replayed":false,"approval":null,"first_seq":4,"last_seq":4,"effects":[],"result":{}}`
-	human    = `{"disposition":"proposed","proposal":"prp_01m3250vm7f6ktw39dszqnyddr","policy":"human","binding_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
-	review   = `{"disposition":"proposed","proposal":"prp_01m3250vm7f6ktw39dszqnyddr","policy":"independent_review","binding_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
+	applied = `{"disposition":"applied","command":"cmd_01m3250vz2ezn81cgvbkcn17jd","replayed":false,"approval":null,"first_seq":4,"last_seq":4,"effects":[],"result":{}}`
+	human   = `{"disposition":"proposed","proposal":"prp_01m3250vm7f6ktw39dszqnyddr","policy":"human","binding_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","effective_change":` + effective + `}`
+	review  = `{"disposition":"proposed","proposal":"prp_01m3250vm7f6ktw39dszqnyddr","policy":"independent_review","binding_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","effective_change":` + effective + `}`
+	// effective is a grant extension as authority derived it: its project,
+	// object version and grantee, which the request does not name.
+	effective = `{"action":"grant.extend","change_class":["grant.extend"],"project":"prj_01m3250vkwffc979nzjw0g2sf9",` +
+		`"object":{"type":"grant","id":"grt_01m3250vkwffc979nzjw0g2sf9","version":7},"grantee":"act_01m3250v0aer9ss2097svmefj8"}`
 	notFound = `{"disposition":"refused","outcome":"failed","reason":"seat_not_held","detail":"held by another supervisor"}`
 )
 
@@ -209,7 +213,9 @@ func TestOutput(t *testing.T) {
 // the dashboard confirms it.
 func TestHumanProposal(t *testing.T) {
 	_, out, _ := adc(&fake{resp: human}, "grant", "extend", "--expect", "5", "--reason", "r", "--scope", `{"grant":"grt_01m3250vkwffc979nzjw0g2sf9"}`)
-	for _, want := range []string{"prp_01m3250vm7f6ktw39dszqnyddr", `requested: grant.extend {"grant":"grt_01m3250vkwffc979nzjw0g2sf9"}`, DashboardProposal + "prp_01m3250vm7f6ktw39dszqnyddr"} {
+	for _, want := range []string{"prp_01m3250vm7f6ktw39dszqnyddr", `requested: grant.extend {"grant":"grt_01m3250vkwffc979nzjw0g2sf9"}`,
+		"effective: grant.extend on grant grt_01m3250vkwffc979nzjw0g2sf9 at version 7; project prj_01m3250vkwffc979nzjw0g2sf9; " +
+			"change classes grant.extend; grantee act_01m3250v0aer9ss2097svmefj8\n  confirm at: " + DashboardProposal + "prp_01m3250vm7f6ktw39dszqnyddr"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("no %q in %q", want, out)
 		}

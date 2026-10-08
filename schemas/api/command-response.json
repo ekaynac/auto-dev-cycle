@@ -42,15 +42,39 @@
       }
     },
     "CommandProposed": {
-      "description": "The command needs a confirmation (04 \"Proposals\"): nothing was applied. A human policy is confirmed only on the dashboard (D37).",
+      "description": "The command needs a confirmation (04 \"Proposals\"): nothing was applied. A human policy is confirmed only on the dashboard (D37); the CLI prints the proposal, its effective change and the dashboard link (08 \"CLI rules\").",
       "type": "object",
       "additionalProperties": false,
-      "required": ["disposition", "proposal", "policy", "binding_digest"],
+      "required": ["disposition", "proposal", "policy", "binding_digest", "effective_change"],
       "properties": {
         "disposition": {"const": "proposed"},
         "proposal": {"$ref": "../common/defs.json#/$defs/ProposalID"},
         "policy": {"enum": ["independent_review", "human"]},
-        "binding_digest": {"$ref": "../common/defs.json#/$defs/Digest"}
+        "binding_digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+        "effective_change": {"$ref": "#/$defs/EffectiveChange"}
+      }
+    },
+    "EffectiveChange": {
+      "description": "The effective change the proposal binds, as authority derived it from the command (04 \"Action registry and effective-change classification\"), never as the request named it: the action, the change classes it was classified by (the action's own included), the derived project (null: installation-wide), the derived object at its bound version and, for a grant change, the grantee. As in a proposal read (api/proposal), never the object's content digest.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "change_class", "project", "object", "grantee"],
+      "properties": {
+        "action": {"$ref": "../records/grant.json#/$defs/ActionKind"},
+        "change_class": {"type": "array", "uniqueItems": true, "items": {"$ref": "../records/approval.json#/$defs/ChangeClass"}},
+        "project": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ProjectID"}]},
+        "object": {
+          "description": "The derived object: its type, id and bound version (null when it was bound by digest alone).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id", "version"],
+          "properties": {
+            "type": {"$ref": "../records/receipt.json#/$defs/Name"},
+            "id": {"type": "string", "minLength": 1},
+            "version": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 9007199254740991}]}
+          }
+        },
+        "grantee": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ActorID"}]}
       }
     },
     "CommandRefused": {

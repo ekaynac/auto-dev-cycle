@@ -41,7 +41,7 @@ No other fields are allowed.
 
 ### CommandProposed
 
-The command needs a confirmation (04 "Proposals"): nothing was applied. A human policy is confirmed only on the dashboard (D37).
+The command needs a confirmation (04 "Proposals"): nothing was applied. A human policy is confirmed only on the dashboard (D37); the CLI prints the proposal, its effective change and the dashboard link (08 "CLI rules").
 
 #### Fields of CommandProposed
 
@@ -51,6 +51,33 @@ The command needs a confirmation (04 "Proposals"): nothing was applied. A human 
 | `proposal` | yes | [ProposalID](common-defs.md#proposalid) |  |
 | `policy` | yes | one of `independent_review`, `human` |  |
 | `binding_digest` | yes | [Digest](common-defs.md#digest) |  |
+| `effective_change` | yes | [EffectiveChange](#effectivechange) |  |
+
+No other fields are allowed.
+
+### EffectiveChange
+
+The effective change the proposal binds, as authority derived it from the command (04 "Action registry and effective-change classification"), never as the request named it: the action, the change classes it was classified by (the action's own included), the derived project (null: installation-wide), the derived object at its bound version and, for a grant change, the grantee. As in a proposal read (api/proposal), never the object's content digest.
+
+#### Fields of EffectiveChange
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `action` | yes | [ActionKind](records-grant.md#actionkind) |  |
+| `change_class` | yes | array of [ChangeClass](records-approval.md#changeclass) (unique items) |  |
+| `project` | yes | null or [ProjectID](common-defs.md#projectid) |  |
+| `object` | yes | object ([fields](#fields-of-effectivechangeobject)) | The derived object: its type, id and bound version (null when it was bound by digest alone). |
+| `grantee` | yes | null or [ActorID](common-defs.md#actorid) |  |
+
+No other fields are allowed.
+
+#### Fields of EffectiveChange.object
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | [Name](records-receipt.md#name) |  |
+| `id` | yes | string (minLength `1`) |  |
+| `version` | yes | null or integer (minimum `0`, maximum `9007199254740991`) |  |
 
 No other fields are allowed.
 

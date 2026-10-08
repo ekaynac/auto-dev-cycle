@@ -114,12 +114,30 @@ const (
 	CommandProposedPolicyHuman             CommandProposedPolicy = "human"
 )
 
-// CommandProposed: The command needs a confirmation (04 "Proposals"): nothing was applied. A human policy is confirmed only on the dashboard (D37).
+// CommandProposed: The command needs a confirmation (04 "Proposals"): nothing was applied. A human policy is confirmed only on the dashboard (D37); the CLI prints the proposal, its effective change and the dashboard link (08 "CLI rules").
 type CommandProposed struct {
-	Disposition   string                `json:"disposition"`
-	Proposal      ProposalID            `json:"proposal"`
-	Policy        CommandProposedPolicy `json:"policy"`
-	BindingDigest Digest                `json:"binding_digest"`
+	Disposition     string                `json:"disposition"`
+	Proposal        ProposalID            `json:"proposal"`
+	Policy          CommandProposedPolicy `json:"policy"`
+	BindingDigest   Digest                `json:"binding_digest"`
+	EffectiveChange EffectiveChange       `json:"effective_change"`
+}
+
+// EffectiveChangeObject: The derived object: its type, id and bound version (null when it was bound by digest alone).
+type EffectiveChangeObject struct {
+	Type    Name   `json:"type"`
+	ID      string `json:"id"`
+	Version *int64 `json:"version"`
+}
+
+// EffectiveChange: The effective change the proposal binds, as authority derived it from the command (04 "Action registry and effective-change classification"), never as the request named it: the action, the change classes it was classified by (the action's own included), the derived project (null: installation-wide), the derived object at its bound version and, for a grant change, the grantee. As in a proposal read (api/proposal), never the object's content digest.
+type EffectiveChange struct {
+	Action      ActionKind    `json:"action"`
+	ChangeClass []ChangeClass `json:"change_class"`
+	Project     *ProjectID    `json:"project"`
+	// The derived object: its type, id and bound version (null when it was bound by digest alone).
+	Object  EffectiveChangeObject `json:"object"`
+	Grantee *ActorID              `json:"grantee"`
 }
 
 type CommandRefusedOutcome string
