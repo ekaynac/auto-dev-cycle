@@ -155,10 +155,13 @@ func (g *graphFix) do(fn func(*eventstore.Tx) ([]eventstore.Event, error)) error
 }
 
 // record records a node of kind in the task, on input.
-func (g *graphFix) record(kind types.NodeKind, params json.RawMessage, input []types.InputSpec) (types.NodeID, error) {
+func (g *graphFix) record(kind types.NodeKind, params json.RawMessage, input []types.InputSpec, pred ...types.NodeID) (types.NodeID, error) {
 	nid, err := ids.New("nod")
 	n := types.NodeRecorded{Type: "node_recorded", Task: gTask, Project: gProject, Node: types.Node{ID: types.NodeID(nid), Kind: kind, DefinitionVersion: "1",
 		Round: 1, Params: params, Inputs: input, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}}
+	if len(pred) == 1 { // recorded as pred's round 2 directly
+		n.Predecessor, n.Node.Round = &pred[0], 2
+	}
 	if kind == types.NodeKindEvidence { // an evidence node leases its target (12)
 		n.Node.Requires.Resources = []types.ResourceGroupKind{types.ResourceGroupKindEvidenceTarget}
 	}
@@ -321,6 +324,14 @@ func ptrTo[T any](v T) *T { return &v }
 // valid until until, and returns its Ref and its rule 2a conclusions
 // document, which a result holding it carries as its conclusions.
 func (g *graphFix) gateReceipt(tree string, demand types.Digest, until *types.Time) (types.Ref, json.RawMessage, error) {
+	clean := pred("tests", vocab.Empty, vocab.ReasonCompletedClean)
+	clean.Detail = ""
+	return g.gateReceiptWith(tree, demand, until, clean, []types.Restriction{})
+}
+
+// gateReceiptWith is gateReceipt with the tests predicate p, its Ref under
+// restrictions.
+func (g *graphFix) gateReceiptWith(tree string, demand types.Digest, until *types.Time, p types.Predicate, restrictions []types.Restriction) (types.Ref, json.RawMessage, error) {
 	subject, err := subjectOf(tree, demand)
 	if err != nil {
 		return types.Ref{}, nil, err
@@ -328,9 +339,8 @@ func (g *graphFix) gateReceipt(tree string, demand types.Digest, until *types.Ti
 	r := types.Receipt{ID: receiptID, Kind: types.ReceiptKindGate, Subject: subject,
 		Instrument: types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: instrumentDigest},
 		Provenance: types.ReceiptProvenance{Command: "cmd_01m3250vz2ezn81cgvbkcn17jd", Calls: []types.CallID{}, ModelFamilies: []types.Name{}, Contributors: []types.ActorID{}},
-		ProducedAt: types.Time(time.Now().UTC().Format(time.RFC3339Nano)), ValidUntil: until, Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean,
-		Predicates: []types.Predicate{pred("tests", vocab.Empty, vocab.ReasonCompletedClean)}}
-	r.Predicates[0].Detail = ""
+		ProducedAt: types.Time(time.Now().UTC().Format(time.RFC3339Nano)), ValidUntil: until, Outcome: p.Outcome, Reason: p.Reason, Detail: p.Detail,
+		Predicates: []types.Predicate{p}}
 	conclusions, digest, err := receipt.Conclusions(r)
 	if err != nil {
 		return types.Ref{}, nil, err
@@ -345,6 +355,6 @@ func (g *graphFix) gateReceipt(tree string, demand types.Digest, until *types.Ti
 		return types.Ref{}, nil, err
 	}
 	ref, err := knowledge.Seal(types.Ref{Type: types.RefTypeReceipt, ID: receiptID, Scope: types.RefScope{Project: ptrTo(gProject)},
-		Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: types.Digest(d)})
+		Lineage: []string{}, Restrictions: restrictions, ContentDigest: types.Digest(d)})
 	return ref, conclusions, err
 }

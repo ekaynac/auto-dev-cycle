@@ -4,7 +4,8 @@
 // 15 L5): the authority's answers to owed inputs until M1's input.answer
 // records them (15 D1). It is faithful to what graph.Authority reads: the
 // approval in force that answers an owed input at its revision, in the owed
-// input's project, and the grant holder it waits on. A grant or a
+// input's project, the grant holder it waits on, the owed inputs a node
+// asked for, and the Ref to an answering approval. A grant or a
 // revocation is an event of its own, folded into a projection, so an
 // evaluation sees exactly the answers its transaction sees and a rebuild
 // reaches the same state. Who may answer (04) is M1's. An owed input the
@@ -20,6 +21,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
 )
 
 const (
@@ -28,13 +30,27 @@ const (
 	Kind = "fake.owed_answer/v1"
 	// Projection holds each owed input's answer under its id.
 	Projection = "fake_owed_answers"
+	// Approvals holds each answering approval's immutable artifact, under
+	// the approval id: the one owed input and revision it answers.
+	Approvals = "fake_owed_approvals"
 )
 
-// Answer is an owed input's state: its project, the actor it waits on and
-// the approval answering it at revision (none: unanswered or revoked).
+// Artifact is an approval's answer artifact: what it answers, in which
+// project. An approval answers one owed input at one revision, ever.
+type Artifact struct {
+	Approval types.ApprovalID  `json:"approval"`
+	Owed     types.OwedInputID `json:"owed"`
+	Revision int64             `json:"revision"`
+	Project  types.ProjectID   `json:"project"`
+}
+
+// Answer is an owed input's state: its project, the node that asked for it
+// (its requested_by), the actor it waits on and the approval answering it at
+// revision (none: unanswered or revoked).
 type Answer struct {
 	Owed     types.OwedInputID `json:"owed"`
 	Project  types.ProjectID   `json:"project"`
+	Asker    types.NodeID      `json:"asker"`
 	Owner    types.ActorID     `json:"owner"`
 	Revision int64             `json:"revision"`
 	Approval *types.ApprovalID `json:"approval"`
@@ -61,6 +77,21 @@ func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		if err := json.Unmarshal(ev.Payload, &a); err != nil || ev.Subject != string(a.Owed) || ev.Project == nil || *ev.Project != string(a.Project) {
 			return errors.Join(err, errors.New("owedanswers: an answer is under its owed input, in its project"))
 		}
+		if a.Approval != nil {
+			art := Artifact{Approval: *a.Approval, Owed: a.Owed, Revision: a.Revision, Project: a.Project}
+			var was Artifact
+			raw, bound, err := tx.Get(Approvals, string(*a.Approval))
+			if err == nil && bound {
+				err = json.Unmarshal(raw, &was)
+			}
+			if err != nil || bound && was != art {
+				return errors.Join(err, errors.New("owedanswers: an approval answers one owed input at one revision"))
+			}
+			b, err := json.Marshal(art)
+			if err = errors.Join(err, tx.Put(Approvals, string(*a.Approval), b)); err != nil {
+				return err
+			}
+		}
 		if err := tx.Put(Projection, string(a.Owed), ev.Payload); err != nil {
 			return err
 		}
@@ -80,6 +111,7 @@ func (Authority) load(tx *eventstore.Tx, rec types.NodeRecorded, owed types.Owed
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return a, false, err
 	}
+	// A node reads an owed input it declares an answer to.
 	asks := slices.ContainsFunc(rec.Node.Inputs, func(in types.InputSpec) bool {
 		ask, ok := in.Source.Variant.(*types.AnswerSource)
 		return ok && ask.OwedInput == owed
@@ -95,6 +127,43 @@ func (f Authority) Answer(tx *eventstore.Tx, rec types.NodeRecorded, owed types.
 		return "", false, err
 	}
 	return *a.Approval, true, nil
+}
+
+// Owed are the owed inputs rec's node asked for, at their current revisions.
+func (Authority) Owed(tx *eventstore.Tx, rec types.NodeRecorded) ([]types.AnswerSource, error) {
+	keys, err := tx.Keys(Projection, "")
+	out := []types.AnswerSource{}
+	for _, k := range keys {
+		raw, _, gerr := tx.Get(Projection, k)
+		var a Answer
+		if err = errors.Join(err, gerr, json.Unmarshal(raw, &a)); err != nil {
+			return nil, err
+		}
+		if a.Asker == rec.Node.ID && a.Project == rec.Project {
+			out = append(out, types.AnswerSource{Type: "answer", OwedInput: a.Owed, Revision: a.Revision})
+		}
+	}
+	return out, err
+}
+
+// Approval is the Ref to the artifact of approval, which must answer owed at
+// revision in rec's project: its content is that artifact.
+func (Authority) Approval(tx *eventstore.Tx, rec types.NodeRecorded, owed types.OwedInputID, revision int64, approval types.ApprovalID) (types.Ref, error) {
+	raw, ok, err := tx.Get(Approvals, string(approval))
+	var art Artifact
+	if err == nil && ok {
+		err = json.Unmarshal(raw, &art)
+	}
+	if err != nil || !ok || art != (Artifact{Approval: approval, Owed: owed, Revision: revision, Project: rec.Project}) {
+		return types.Ref{}, errors.Join(err, errors.New("owedanswers: the approval does not answer that owed input in the node's project"))
+	}
+	d, err := eventstore.ContentDigest(raw)
+	if err != nil {
+		return types.Ref{}, err
+	}
+	project := rec.Project
+	return knowledge.Seal(types.Ref{Type: types.RefTypeApproval, ID: string(approval), Scope: types.RefScope{Project: &project},
+		Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: types.Digest(d)})
 }
 
 // Owner is the actor owed waits on.

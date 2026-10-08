@@ -24,9 +24,12 @@ package graph
 //     escalate_to and its exact ref, which then owns the hold. A hold with
 //     no page_after is never paged.
 //   - A hold leaves with a cause: its signal (the hold's signal instance),
-//     or retired as invalidated, a retry wait of a key the node no longer
-//     holds. An invalidation retires its retry waits in the same command
-//     and keeps every other wait, with its id, since and pages.
+//     or retired: as invalidated, a retry wait of a key the node no longer
+//     holds, or as revised, an awaiting_input wait on an answer its
+//     successor moves to a newer revision of the owed input (successor.go;
+//     the fold cannot check the revision until M1 records owed inputs). An
+//     invalidation retires its retry waits in the same command and keeps
+//     every other wait, with its id, since and pages.
 //   - Transferring a hold to a replacement is G6b's, inside its
 //     supersession. The evaluator ties awaiting_input to an owed input the
 //     node declares (evaluate.go); this fold does not, until M1 records owed
@@ -278,14 +281,26 @@ func holdCleared(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldCleared) e
 		if by, _, err := load[heldBy](tx, HoldProjection, string(p.Hold)); err != nil || by.Result != nil && mutation.Is(mutation.RetryNeedsInvalidation) {
 			return errors.Join(err, errors.New("only an invalidation ends a retry wait"))
 		}
-	case *types.Retired: // invalidated: a retry wait of a key the node no longer holds
+	case *types.Retired:
 		by, _, err := load[heldBy](tx, HoldProjection, string(p.Hold))
-		if err != nil || by.Result == nil {
-			return errors.Join(err, errors.New("only a retry wait is retired as invalidated"))
+		if err != nil {
+			return err
 		}
-		r, _, err := load[types.ResultRecorded](tx, ResultProjection, string(*by.Result))
-		if err != nil || r.Result.Computation == rec.State.Key.Key {
-			return errors.Join(err, errors.New("a retry wait of the current key is not retired"))
+		switch c.Reason {
+		case types.RetiredReasonInvalidated: // a retry wait of a key the node no longer holds
+			if by.Result == nil {
+				return errors.New("only a retry wait is retired as invalidated")
+			}
+			r, _, err := load[types.ResultRecorded](tx, ResultProjection, string(*by.Result))
+			if err != nil || r.Result.Computation == rec.State.Key.Key {
+				return errors.Join(err, errors.New("a retry wait of the current key is not retired"))
+			}
+		case types.RetiredReasonRevised: // a wait on an answer its successor moves to a newer revision (successor.go)
+			if rec.State.Holds[i].Hold != "awaiting_input" { // never a retry wait: no reason names it
+				return errors.New("only an awaiting_input wait is retired as revised")
+			}
+		default:
+			return fmt.Errorf("a hold is not retired as %s", c.Reason)
 		}
 	}
 	rec.State.Holds = slices.Delete(rec.State.Holds, i, i+1)

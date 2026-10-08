@@ -23,8 +23,8 @@ package graph
 //   - A task's nodes are all in one project (graph_tasks): the first node
 //     of a task pins its project, until tasks are records (M1) and the
 //     fold checks the task's own project.
-//   - Two successors of one predecessor may share a round: G6b's
-//     replacement keeps its predecessor's round (13 supersession).
+//   - A node has one successor (succeeds); G6b's replacement, which keeps
+//     its predecessor's round (13 supersession), is its own event.
 //   - A missing answer input leaves the node waiting; the evaluator raises
 //     awaiting_input against its owed input (evaluate.go).
 //   - The fold reads only the events and these projections, so a rebuild
@@ -61,17 +61,18 @@ const (
 	NodeOperated    = "node.operated/v1"
 	EventSchema     = "records/graph-event"
 
-	NodeProjection    = "graph_nodes"    // node id → nodeRecord
-	ClaimProjection   = "graph_claims"   // node id → claim
-	KeyProjection     = "graph_keys"     // task/computation key → the memoizable node that claimed it
-	ReuseProjection   = "graph_reuses"   // task/computation key → the nodes bound to it by reuse
-	RenewalProjection = "graph_renewals" // node id → its selection boundary (renewal)
-	TaskProjection    = "graph_tasks"    // task id → its project
-	ResultProjection  = "graph_results"  // result id → the result.recorded payload
-	GenProjection     = "graph_gens"     // task/identity → its current generation (memoizable kinds)
-	HoldProjection    = "graph_holds"    // hold id → the node that last held it (heldBy)
-	RetryProjection   = "graph_retries"  // could_not_run result id → its retry wait's hold id
-	EffectProjection  = "graph_effects"  // effect node id → its operation (node.operated)
+	NodeProjection      = "graph_nodes"      // node id → nodeRecord
+	ClaimProjection     = "graph_claims"     // node id → claim
+	KeyProjection       = "graph_keys"       // task/computation key → the memoizable node that claimed it
+	ReuseProjection     = "graph_reuses"     // task/computation key → the nodes bound to it by reuse
+	RenewalProjection   = "graph_renewals"   // node id → its selection boundary (renewal)
+	SuccessorProjection = "graph_successors" // node id → its one successor
+	TaskProjection      = "graph_tasks"      // task id → its project
+	ResultProjection    = "graph_results"    // result id → the result.recorded payload
+	GenProjection       = "graph_gens"       // task/identity → its current generation (memoizable kinds)
+	HoldProjection      = "graph_holds"      // hold id → the node that last held it (heldBy)
+	RetryProjection     = "graph_retries"    // could_not_run result id → its retry wait's hold id
+	EffectProjection    = "graph_effects"    // effect node id → its operation (node.operated)
 )
 
 // memoizable are the kinds whose results are reused (13 "v1 scope").
@@ -352,10 +353,19 @@ func recorded(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeRecorded) err
 		return err
 	}
 	round := int64(1)
+	if p.Predecessor == nil && slices.ContainsFunc(n.Inputs, func(in types.InputSpec) bool { _, a := in.Source.Variant.(*types.AnswerSource); return a }) {
+		return errors.New("a first round answers nothing: an answer is a successor's input (13)")
+	}
 	if p.Predecessor != nil {
 		pred, err := nodeOf(tx, ev, *p.Predecessor)
 		if err != nil || pred.Recorded.Task != p.Task || pred.Recorded.Node.Kind != n.Kind {
 			return errors.Join(err, errors.New("the predecessor is not a node of the task of the same kind"))
+		}
+		if len(pred.State.Holds) > 0 {
+			return fmt.Errorf("the predecessor holds %s: a hold moves to a successor only with G6b", pred.State.Holds[0].ID)
+		}
+		if err := succeeds(tx, pred.Recorded.Node, n); err != nil {
+			return err
 		}
 		round = pred.Recorded.Node.Round + 1
 	}
@@ -368,6 +378,28 @@ func recorded(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeRecorded) err
 	st := types.NodeState{Node: n.ID, WaitingOn: waitingOn(n), Holds: []types.NodeHold{}}
 	settle(&st)
 	return putNode(tx, nodeRecord{Recorded: *p, State: st})
+}
+
+// succeeds: n may be p's one successor (13 "Successor rounds"): the same
+// definition version, params, requirements and effect, p's inputs first
+// (an inherited answer may move to a newer revision), and no other
+// successor yet.
+func succeeds(tx *eventstore.Tx, p, n types.Node) error {
+	pp, err1 := ParamsDigest(p.Params)
+	np, err2 := ParamsDigest(n.Params)
+	if err := errors.Join(err1, err2); err != nil || p.DefinitionVersion != n.DefinitionVersion || pp != np ||
+		!reflect.DeepEqual(p.Requires, n.Requires) || !reflect.DeepEqual(p.Effect, n.Effect) || len(n.Inputs) < len(p.Inputs) {
+		return errors.Join(err, errors.New("a successor keeps its predecessor's definition, params, requirements, effect and inputs"))
+	}
+	for i, in := range p.Inputs {
+		if !reflect.DeepEqual(in, n.Inputs[i]) && !newerAnswer(in, n.Inputs[i]) {
+			return fmt.Errorf("a successor's input %d is not its predecessor's", i)
+		}
+	}
+	if _, forked, err := load[types.NodeID](tx, SuccessorProjection, string(p.ID)); err != nil || forked {
+		return errors.Join(err, errors.New("the predecessor has a successor"))
+	}
+	return put(tx, SuccessorProjection, string(p.ID), n.ID)
 }
 
 // waitingOn is what a node waits for before its inputs resolve: all of them.

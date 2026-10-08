@@ -87,6 +87,9 @@ var runners = map[string]runner{
 	"target-moved-refuses-apply":            targetMovedRefusesApply,
 	"restore-failure-keeps-target-excluded": restoreFailureKeepsTargetExcluded,
 	"gate-and-runtime-see-their-facts":      gateAndRuntimeSeeTheirFacts,
+	"undeclared-ruling-not-in-context":      undeclaredRulingNotInContext,
+	"answer-reaches-only-successor":         answerReachesOnlySuccessor,
+	"equal-conclusions-reuse-review":        equalConclusionsReuseReview,
 }
 
 // Goldens loads and validates every golden, checking that each has a

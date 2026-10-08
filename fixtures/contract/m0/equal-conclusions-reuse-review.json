@@ -1,0 +1,10 @@
+{
+  "name": "equal-conclusions-reuse-review",
+  "invariant": "Equal conclusions reuse a review, and a change re-runs it: a review that ran on its gate's first result stands when the gate's next selected result, after an invalidation, has an unchanged conclusions digest, subject, instrument, project and restrictions (empty/conclusions_unchanged); a changed step outcome or changed restrictions on its receipt Ref re-run it (found/review_input_changed) (13 \"Reuse decisions use typed conclusions\"; 11:167).",
+  "expected": [
+    {"outcome": "empty", "reason": "conclusions_unchanged"},
+    {"outcome": "found", "reason": "review_input_changed"},
+    {"outcome": "found", "reason": "review_input_changed"}
+  ],
+  "mutation": "graph.equivalence-ignores-restrictions"
+}

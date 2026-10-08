@@ -124,6 +124,16 @@ const (
 	// RuntimeOnSourceFacts gives runtime verification the source-test
 	// workspace's facts instead of its package and runtime environment's.
 	RuntimeOnSourceFacts = "graph.runtime-on-source-facts"
+	// SuccessorTakesAnyAnswer lets a successor declare an answer to an owed
+	// input its predecessor did not owe.
+	SuccessorTakesAnyAnswer = "graph.successor-takes-any-answer"
+	// AnswerLineageUnchecked resolves and renders an answer input whatever
+	// owed input it answers, so a ruling its lineage never asked for
+	// reaches a node's controller context.
+	AnswerLineageUnchecked = "graph.answer-lineage-unchecked"
+	// EquivalenceIgnoresRestrictions treats two gate or evidence results as
+	// equivalent whatever their receipts' restrictions.
+	EquivalenceIgnoresRestrictions = "graph.equivalence-ignores-restrictions"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -136,4 +146,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	ResolveSkipsApplicability, DemandIgnored, RetryNeedsInvalidation, RenewalInvalidates, CommitSkipsAuthority,
 	AttemptsIgnoreDemand, SubjectCapUnchecked, PreconditionSpendsAttempt,
 	EffectKeyedByComputation, EffectResumeReallocates, EffectTargetUnfenced, EffectApplyBlind, EffectPendingSkipsTarget,
-	RestoreFailureReleases, RuntimeOnSourceFacts}
+	RestoreFailureReleases, RuntimeOnSourceFacts,
+	SuccessorTakesAnyAnswer, AnswerLineageUnchecked, EquivalenceIgnoresRestrictions}

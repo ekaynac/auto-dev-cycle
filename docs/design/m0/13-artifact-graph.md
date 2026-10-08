@@ -124,7 +124,12 @@ Result:                            # what was computed: immutable  [G1]
   equivalent to one it already used if their `conclusions` projections are equal **and** the subject, demand,
   instrument digest and restrictions are identical, **and** the consumer's non-input identity (kind, definition
   version, params including a review's roster, generation) is identical: only the declared input edges may differ. Equivalence decides only whether to re-run. Manifests still list
-  the exact result ids.
+  the exact result ids. The decision is the review's own: the review stands completed, at its identity's current
+  generation, on a claim whose input resolved to the result it used, and the fresh result is its declared producer's
+  selected result now. Both are completed and conclusive, and their whole receipts must have equal conclusions digests
+  (rule 2a: the demand and each step's name, outcome and reason), subjects and instruments, and their receipt Refs equal
+  project scopes and restrictions. Ref lineage is not compared: it records derivation, not what was concluded. Any
+  other edge is an error, never "equivalent".
 
 ## What is cached, and what is retried [G2]
 
@@ -169,6 +174,11 @@ The controller evaluates **goals** (e.g. "merge the candidate of task T", "close
   - A command claims a given node, and a given memoizable key, at most once; the evaluator deduplicates its demands
     before it claims.
   - The fold re-derives a claim: one resolution per declared input, in order, and the key from them.
+- **The controller context is the claimed inputs.** A node's controller context is rendered only from the inputs its
+  claim fixed, in declared order: a result input gives its result's refs, an answer input the authority's Ref to the
+  exact answer the claim fixed (an approval answers one owed input at one revision, and its artifact is immutable). An
+  answer to an owed input the node did not declare never reaches it; the call's `manifest.intent` lists exactly these
+  refs as its inputs (10).
 - **Waiting is structural for internal inputs.** A node with a missing input is `waiting(input)`, and its signal is
   that input's result. External waits (approval, quota, human act, probe) use the hold registry (02).
   - The evaluator walks from its goals through each node's producers first, once per node, and claims a node once all
@@ -203,6 +213,37 @@ The graph is append-only. Nothing modifies an existing node's inputs. New inform
 - **Repair:** round *n* is a new build node whose inputs include round *n−1*'s review findings and candidate tree.
 - **Answers and new demands:** when a review records an owed input or an evidence demand, the answer or the demanded
   evidence is an input of the **successor review** (round *n+1*), never of the review that asked. No cycles.
+- A node has at most one successor. It keeps its predecessor's kind, definition version, params, requirements and
+  effect, and declares its predecessor's inputs followed by the new ones, so the new inputs re-key it; an inherited
+  answer may move to a newer revision of the same owed input. The `node.recorded` fold checks this and refuses an answer
+  input on a first round.
+- An answer is accepted only for an owed input that the node's lineage (an ancestor, its `requested_by`) asked for, at
+  that owed input's current revision: the successor refuses another, and the evaluator, the commit and the controller
+  context refuse any answer input, inherited, recorded directly or claimed directly, whose owed input the lineage did
+  not ask for. So a ruling for an input not owed is never delivered.
+- An answer input at a revision its owed input has moved past is unanswered for its node. The evaluator leaves the
+  node waiting, a structural wait that raises no hold and fails nothing else in the command; the commit refuses it as
+  `authority_revoked` ([G4]), and so does its controller context. The lineage moves on through a successor that answers
+  the current revision.
+- Holds do not move to a successor until G6b transfers them. Until then a successor is refused while its predecessor
+  holds anything but an `awaiting_input` wait on an answer input the successor inherits. In the same command, before
+  the successor's `node.recorded`, a wait whose answer the authority has given is cleared on its signal, and a wait on
+  a revision the successor moves to a newer one is retired as `revised`. The `node.recorded` fold refuses a successor
+  of a node that holds anything. An inherited answer not given yet refuses the round, so no second hold restarts its
+  paging.
+- *As delivered (G5, #204), what G6b inherits:*
+  - A replacement (a roster change, "Replacement is a recorded supersession" above) is not a successor. It needs its
+    own event, and must maintain `graph_successors`: the one-successor rule and the hold check are keyed on the
+    predecessor, so a replacement takes over its predecessor's successor slot rather than opening a second lineage.
+  - The answer lineage is computed from `requested_by` through `predecessor` links. Either the lineage follows
+    supersession (a replacement's ancestors include what it replaced), or the authority moves `requested_by` to the
+    replacement in the same transaction; otherwise the replacement's successors cannot answer what the replaced
+    review asked.
+  - A question superseded by a *different* owed input (not a newer revision of the same one) is a replacement's: a
+    successor cannot drop or rename an inherited answer, so a lineage whose inherited answer will never be given stays
+    waiting until G6b replaces it.
+  - The fold cannot check that a wait retired as `revised` was revised, nor that a cleared wait's answer was given,
+    until M1 records owed inputs and approvals.
 
 Rails (round caps, "same blocking findings three times") are cumulative across rounds.
 
