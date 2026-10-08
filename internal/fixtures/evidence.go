@@ -68,7 +68,7 @@ func (g *graphFix) walkOn(tree types.NodeID, demand types.Digest, perDemand, per
 // tree completes an integration node with a result holding tree A.
 func (g *graphFix) tree() (types.NodeID, error) {
 	ref, err := knowledge.Seal(types.Ref{Type: types.RefTypeGitTree, ID: treeA, Scope: types.RefScope{Project: ptrTo(gProject)},
-		Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: walkDigest})
+		Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: types.Digest("sha256:" + strings.Repeat("d", 64))})
 	if err != nil {
 		return "", err
 	}

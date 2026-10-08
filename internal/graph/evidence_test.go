@@ -177,6 +177,10 @@ func TestEvidenceCapsBind(t *testing.T) {
 	if err := g.recordResult(late, g.evidence(late, nil)); err == nil || !strings.Contains(err.Error(), "bound cap") {
 		t.Fatalf("the fold counted under another cap per demand: %v", err)
 	}
+	pre := vocab.ReasonPreconditionFailed
+	if err := g.recordResult(late, g.evidence(late, &pre)); err != nil {
+		t.Fatalf("the node that lost the bind race could not record its precondition failure: %v", err)
+	}
 	for name, rec := range map[string]types.NodeRecorded{"the same demand": g.walkNode("a", 2, 2), "another total": g.walkNode("b", 1, 3)} {
 		n := g.record(rec)
 		if err := g.do(g.claimOf(n)); err == nil || !strings.Contains(err.Error(), "bound cap") {
@@ -234,7 +238,7 @@ func TestCheckContract(t *testing.T) {
 	if g.do(forge(NodeRecorded, string(forged.Node.ID), prjID, &forged)) == nil {
 		t.Fatal("the fold recorded an evidence node with no subject input")
 	}
-	n := g.record(g.walkNode("a", 1, 1))
+	n := g.record(g.walkNode("a", 1, 2))
 	if g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return Claim(tx, n, map[string]Resolved{"tree": {Result: g.tree.res}}, 1)
 	}) == nil {
@@ -255,7 +259,7 @@ func TestCheckContract(t *testing.T) {
 		t.Fatal("the evaluator did not claim a walk under its contract")
 	}
 	// A subject holding two Refs has no one content to count against.
-	ref := g.sealed(types.RefTypeGitTree, "git:"+strings.Repeat("b", 40), walkDigest)
+	ref := g.sealed(types.RefTypeGitTree, "git:"+strings.Repeat("b", 40), "sha256:"+types.Digest(strings.Repeat("e", 64)))
 	twoRefs, _ := g.completedWith(types.NodeKindIntegration, types.ResultKindTree, []types.Ref{ref, ref})
 	two := g.walkNode("a", 1, 1)
 	two.Node.Inputs[0].Source.Variant = &types.ResultSource{Type: "result", Producer: twoRefs, ResultKind: types.ResultKindTree}
@@ -265,11 +269,22 @@ func TestCheckContract(t *testing.T) {
 	}) == nil {
 		t.Error("a walk of a subject with two Refs claimed")
 	}
-	// Renewal re-checks the contract of a completed walk first.
+	// A due renewal re-checks the contract of a completed walk first; a walk
+	// whose receipt is fresh asks for no contract.
 	if err := g.recordResult(n, g.evidence(n, nil)); err != nil {
 		t.Fatal(err)
 	}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, g.results(n)[0]) })
+	g.must(evaluate(withContracts(g.env(noReceipts), nil), n))
+	expired := g.walk("expired", 1, 2)
+	d := g.receiptBlob(treeSubject(treeA, demandA), ptr("2026-01-01T00:00:00Z"))
+	r := g.evidence(expired, nil)
+	r.Conclusions, r.Value = ptr(g.conclusions[d]), []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)}
+	if err := g.recordResult(expired, r); err != nil {
+		t.Fatal(err)
+	}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, expired, r.ID) })
+	n = expired
 	for name, c := range map[string]Contracts{"no contracts": nil, "a failing registry": failing, "another version": contractsOf(edit(func(c *types.InstrumentContract) { c.Version = "2" }))} {
 		if g.do(evaluate(withContracts(g.env(noReceipts), c), n)) == nil {
 			t.Errorf("%s: the evaluator renewed a walk outside its contract", name)
