@@ -38,8 +38,8 @@ GOBUILD    := $(GO) build -trimpath -ldflags '$(LDFLAGS)'
 
 BIN_DIR    := bin
 DIST_DIR   := dist
-BINARIES   := adcd adc adc-agent
-# adcd and adc run on the Linux controller; adc-agent is cross-platform (plan §2.12, §2.14).
+BINARIES   := adcd adc adc-harness adc-agent
+# adcd, adc and adc-harness run on the Linux controller; adc-agent is cross-platform (plan §2.12, §2.14).
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
@@ -69,7 +69,7 @@ build: go-check ## Build the binaries for this host into bin/
 dist: go-check ## Cross-build release binaries into dist/<os>-<arch>/
 	@rm -rf $(DIST_DIR)
 	@for p in $(SERVER_PLATFORMS); do \
-	  for b in adcd adc; do \
+	  for b in adcd adc adc-harness; do \
 	    GOOS=$${p%/*} GOARCH=$${p#*/} $(GOBUILD) -o $(DIST_DIR)/$${p%/*}-$${p#*/}/$$b ./cmd/$$b; \
 	  done; \
 	done

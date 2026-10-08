@@ -16,6 +16,11 @@ Status: revision 2, 2026-10-08. Draft for the operator.
 - Amended by A7, 2026-10-08:
   - D1 and D2 are recorded in `internal/daemon/matrix.go`, `docs/reference/action-matrix.md` and 14;
   - §3.1 records how the G track has actually been delivered so far.
+- Amended by S1, 2026-10-08, on the operator's decision (operator 2026-10-08 (Telegram): option C). `adcd` wires no
+  lease or attempt action and serves no attempt API in M0 (`internal/daemon/wiring.go`), so no harness can drive an
+  attempt against the installed daemon. S1 is therefore a standalone harness with its own temporary state; S3 and O4
+  check result 9 from its output. Driving attempts against the installed daemon comes with M1's wired lease and
+  attempt actions.
 
 Scope: **everything M0 still owes before its exit check can pass.** 14 tracked four obligations outside step 9. This
 note plans them, plus the gaps that a check against 01 §4 and the 00 exit table turned up:
@@ -51,7 +56,7 @@ It does not reopen step 9. Wiring the graph into `adcd` is M1 (§2, L1).
 | Log integrity | `adc dev verify-log` | delivered (also in the installed smoke) |
 
 The fake-driven T0 dry run is #162's result 9: the fake adapter on `py-mini-feature-1` ends with
-`attempt.result_submitted` applied and a `usage.measured` record (14 §4 item 12).
+`attempt.result_submitted` applied and a `usage.measured` record (14 §4 item 12), from the harness's own state (S1).
 
 ### 1.2 The M0 row's contents (01:635), item by item
 
@@ -107,7 +112,7 @@ they drive (01 §4).
 | O1 | Artifact graph: schemas for Node, ComputationKey, Result, InputSpec and node state; key and generation computation; resolver and evaluator with atomic claiming and fake nodes; successor rounds; the build outcome table; queue generations as a template; the 19 fixtures of 13 and the M0 rows of §1.3 | 13:237-266; 01:635 | #114 |
 | O2 | Evidence nodes: the parameter schema, attempt-key counting with the total cap, the precondition → hold mapping, artifact classes, the `remote_process` effect kind, five fixtures | 12:71-81 | #115 |
 | O3 | `internal/testguard` with a fake clock and a fake registry; the fakes the O1 and O2 fixtures need | 11:30-44; 01-repo-layout:23; 01:635 | new; scope in D4 |
-| O4 | Installed fake-adapter run: `make dist` packages a harness binary, the fake adapter with its dependencies and a Node runtime, and `fixtures/t0/py-mini`; the smoke checks result 9 | 14 §4 item 12; 01:635 "fake-driven T0 dry run" | #162 |
+| O4 | Installed fake-adapter run: `make dist` packages a harness binary (standalone, with its own temporary state), the fake adapter with its dependencies and a Node runtime, and `fixtures/t0/py-mini`; the smoke checks result 9 from the harness's output | 14 §4 item 12; 01:635 "fake-driven T0 dry run" | #162 |
 | O5 | Knowledge spec: the `FailureSignature` and `Claim` draft schemas; the spec's status corrected (`AttemptRecord` exists as `records/attempt-record.json`, and the manifest events are no longer "in review") | 10:83-113, 10:97-98 | #116 |
 | O6 | Legacy goldens: a loader that verifies each golden's setup and runs the steps whose milestone is M0 through the real components; `reason_status` brought up to date | 11:102-113; `fixtures/legacy/index.md` rows A3, A4, A6 | #116 |
 | O7 | `adc doctor` warns when a supervisor token is used from an OS user that can read the operator token file or the controller's state directory | 04-authority:379-383 (D31) | #117; milestone in D3 |
@@ -253,9 +258,9 @@ Changes to the plan that follow from these splits:
 
 | PR | Content | Size | Class |
 |---|---|---|---|
-| **S1. Harness binary** | A release binary that drives `internal/adapterhost` for one attempt against the installed daemon and an adapter; every wait bounded | [~250] | mechanical while the adapter contract is unchanged (14 item 12), contract otherwise |
+| **S1. Harness binary** | `adc-harness run`: a release binary that drives `internal/adapterhost` for one attempt against a spawned adapter. It is standalone, with its own temporary state: driving attempts against the installed daemon comes with M1's wired lease and attempt actions (operator 2026-10-08 (Telegram): option C). Every wait (start, handshake, result, shutdown) has a configurable bound, and a bound that passes is `could_not_run`, exit 2, its reason by the exit map with the stop requested (`attempt_stopped` unless a capacity hint outranks it) | [~400] | contract: it amends this plan (S1, S3, O4) and 01-repo-layout:104 |
 | **S2. Dist packaging** | `make dist` packages the fake adapter with its workspace dependencies, the `node` binary under D6, and `fixtures/t0/py-mini`; `install-check.sh` installs them and re-verifies the Node checksum on the installed file; amends 01-repo-layout:104 (release builds are no longer Go binaries only) | [~200] | **contract, and it waits for the operator**: a third-party runtime in release artifacts is security posture (04 §4, 04:82) |
-| **S3. Smoke result 9** | `scripts/installed-smoke.sh` runs `py-mini-feature-1` through the installed harness under bwrap, with no source tree, and checks that `attempt.result_submitted` is applied and that a `usage.measured` record exists | [~120] | mechanical |
+| **S3. Smoke result 9** | `scripts/installed-smoke.sh` runs `py-mini-feature-1` through the installed harness under bwrap, with no source tree, and checks result 9 from the harness's output: a submitted result (`attempt.result_submitted` applied in the harness's own state) and a usage record. It does not read the daemon's events | [~120] | mechanical |
 
 ### Track X: exit
 
@@ -296,7 +301,7 @@ and G7b. They come to about 5,900 hand-written lines, of which the graph is abou
 | O1 schemas | `make gen-check`, `make schema-docs` | Generated Go and TypeScript, and the new `docs/reference/schemas/records-*.md`, regenerate with no diff |
 | O2 evidence | installed contract fixtures | The five fixtures of 12:75-79, plus E2's reasons and holds checked by `adc dev vocab check` (every hold has a resume signal) |
 | O3 testguard and fakes | `make test` | Fixtures run on the fake clock; the fake registry lists every fake; a faithfulness test per fake (11:43); 11:35-41 states each fake's M0 scope |
-| O4 dry run | `make install-check` → `scripts/installed-smoke.sh` | Results 1-9 of 14 §4 item 12. Result 9 is `attempt.result_submitted` applied and a `usage.measured` record, from the installed prefix under bwrap, with no source tree and no system Node, and with the Node checksum re-verified |
+| O4 dry run | `make install-check` → `scripts/installed-smoke.sh` | Results 1-9 of 14 §4 item 12. Result 9 is read from the installed harness's output (S1): a submitted result and a usage record, from its own temporary state, not the daemon's events. It runs from the installed prefix under bwrap, with no source tree and no system Node, and with the Node checksum re-verified |
 | O5 spec | `go test ./internal/knowledge` (in `make test`) | The definitions validate; the golden vectors reproduce; the draft schemas validate their example cases; the spec READMEs list no stale status |
 | O6 legacy | `make test` (loader tests) | Every golden's setup check passes. The loader refuses a mutated artifact (a trimmed terminal record, a missing field). The M0 steps of `f16-walk-demand` and `f16-inline-fallback` yield their golden sequences through the real components |
 | O7 doctor | `make test` plus one installed-smoke step | A supervisor token used as the daemon uid, or with a readable state directory or operator token file, warns with exit code 0 and names the condition. A properly separated supervisor gets no warning. An operator token gets no supervisor warning |
@@ -389,7 +394,8 @@ never edited and a claim can be accepted for one purpose and rejected for anothe
 - **Only the `node` binary is packaged**: no npm and no corepack.
 - `install-check.sh` **re-verifies the checksum** on the installed file.
 - **A pin bump is a security-posture PR that waits for the operator** (04 §4).
-- S2 amends 01-repo-layout:104.
+- S1 amends 01-repo-layout:104 (`adc-harness` is a release binary); S2 amends it again (release builds are no longer
+  Go binaries only).
 
 The download adds a network need inside `make ci`. Today that need is only pnpm in `ts-deps` (Makefile:100-104).
 `fixtures-check` runs as a separate CI job.

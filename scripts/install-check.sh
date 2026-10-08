@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # The clean-install row of the M0 exit check (docs/design/m0/00): install
-# adcd, adc and adc-agent for this host from dist/ into an empty prefix,
+# adcd, adc, adc-harness and adc-agent for this host from dist/ into an empty prefix,
 # then run the installed binaries outside the source tree, with a scrubbed
 # environment, and check what they report: each its own name, this
 # platform, one commit, and one schema-set digest (equal to --expect when
@@ -42,7 +42,7 @@ if [[ -e "$prefix" ]]; then
   [[ -d "$prefix" && -z "$(ls -A -- "$prefix")" ]] || die "$prefix exists and is not an empty directory"
 fi
 mkdir -p -- "$prefix/bin"
-for b in adcd adc adc-agent; do
+for b in adcd adc adc-harness adc-agent; do
   [[ -f "$src/$b" ]] || die "$src/$b is missing"
   install -m 0755 -- "$src/$b" "$prefix/bin/$b"
   [[ -f "$prefix/bin/$b" && ! -L "$prefix/bin/$b" ]] || die "$prefix/bin/$b is not a regular file"
@@ -53,7 +53,7 @@ scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 field() { sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p" <<<"$2"; }
 commit="" schemaset=""
-for b in adcd adc adc-agent; do
+for b in adcd adc adc-harness adc-agent; do
   out="$(cd "$scratch" && env -i PATH=/usr/bin:/bin HOME="$scratch" "$prefix/bin/$b" version --json)" || die "$b version failed"
   [[ "$(field binary "$out")" == "$b" ]] || die "$b reports binary $(field binary "$out")"
   [[ "$(field platform "$out")" == "$platform" ]] || die "$b reports platform $(field platform "$out"), want $platform"
@@ -65,4 +65,4 @@ for b in adcd adc adc-agent; do
   schemaset="$s" commit="$c"
 done
 [[ -z "$expect" || "$schemaset" == "$expect" ]] || die "installed schema set $schemaset, expected $expect"
-echo "install-check: adcd, adc and adc-agent installed into $prefix ($platform, commit $commit, schema set $schemaset)"
+echo "install-check: adcd, adc, adc-harness and adc-agent installed into $prefix ($platform, commit $commit, schema set $schemaset)"

@@ -49,7 +49,7 @@ printf '{"binary":"%s","version":"v","commit":"%s","schema_set":"%s","go_version
 
 func good() []fake {
 	p := "linux/" + runtime.GOARCH
-	return []fake{{"adcd", p, "c1c1c1c", goodSet}, {"adc", p, "c1c1c1c", goodSet}, {"adc-agent", p, "c1c1c1c", goodSet}}
+	return []fake{{"adcd", p, "c1c1c1c", goodSet}, {"adc", p, "c1c1c1c", goodSet}, {"adc-harness", p, "c1c1c1c", goodSet}, {"adc-agent", p, "c1c1c1c", goodSet}}
 }
 
 func run(t *testing.T, distDir, prefix string, extra ...string) (string, error) {
@@ -70,7 +70,7 @@ func TestInstallCheck(t *testing.T) {
 	if err != nil || !strings.Contains(out, "installed into") {
 		t.Fatalf("a good build: %v\n%s", err, out)
 	}
-	for _, b := range []string{"adcd", "adc", "adc-agent"} {
+	for _, b := range []string{"adcd", "adc", "adc-harness", "adc-agent"} {
 		if fi, err := os.Lstat(filepath.Join(prefix, "bin", b)); err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o755 {
 			t.Errorf("%s: %v", b, err)
 		}
