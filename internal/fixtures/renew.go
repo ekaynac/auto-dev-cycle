@@ -4,7 +4,6 @@ package fixtures
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -16,48 +15,51 @@ import (
 )
 
 // evidenceRetriesOnItsProbe: a could_not_run evidence result retries on
-// its probe without operator invalidation (13 [G2]). The first attempt
-// fails its precondition; the retry wait on the precondition_failed probe
-// clears when the probe passes, and the second attempt, on the same key
-// and generation, completes clean.
+// its probe without operator invalidation (13 [G2]), and a precondition
+// failure spends no attempt (12; 11 intake). With one attempt per demand,
+// the first attempt fails the contract's dns precondition; the retry wait
+// on its probe clears when the probe passes, and the second attempt, on
+// the same key and generation, completes clean.
 func evidenceRetriesOnItsProbe(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
 	g, closeFn, err := openGraph(ctx, dir)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer func() { err = errors.Join(err, closeFn()) }()
-	n, err := g.record(types.NodeKindEvidence, evidenceParams, on("plan", g.plan, types.ResultKindPlan))
+	tree, err := g.tree()
+	var n types.NodeID
 	if err == nil {
-		err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return graph.Claim(tx, n, map[string]graph.Resolved{"plan": {Result: g.planRes}}, 1)
-		})
+		n, err = g.walkOn(tree, "", 1, 1)
+	}
+	if err != nil {
+		return nil, nil, err
 	}
 	before, _, serr := g.node(n)
 	rid, rerr := ids.New("res")
 	hid, herr := ids.New("hld")
-	if err = errors.Join(err, serr, rerr, herr); err != nil {
+	if err = errors.Join(serr, rerr, herr); err != nil {
 		return nil, nil, err
 	}
 	failed := types.Result{ID: types.ResultID(rid), Computation: before.Key.Key, Kind: types.ResultKindEvidence, Value: []types.Ref{},
-		Outcome: types.OutcomeCouldNotRun, Reason: vocab.ReasonPreconditionFailed, Detail: "the precondition failed", Completed: false}
-	hold := types.NodeHold{ID: types.HoldID(hid), SignalInstance: "probe:" + rid, Owner: types.OwnerEnvironmentOwner, OwnerRef: ptrTo("staging-owner"), Pages: []types.NodeHoldPagesItem{}}
+		Outcome: types.OutcomeCouldNotRun, Reason: vocab.ReasonPreconditionFailed, Detail: "dns does not resolve", Completed: false}
+	hold := types.NodeHold{ID: types.HoldID(hid), Owner: types.OwnerEnvironmentOwner, OwnerRef: ptrTo("staging-owner"), Pages: []types.NodeHoldPagesItem{}}
 	for _, fn := range []func(*eventstore.Tx) ([]eventstore.Event, error){
 		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return nil, graph.Commit(tx, n, failed, g.env(treeA, demandA))
+			return nil, graph.Commit(tx, n, failed, g.walkEnv())
 		},
-		func(tx *eventstore.Tx) ([]eventstore.Event, error) { return graph.Retry(tx, n, failed.ID, hold, nil) },
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.Probe(tx, n, failed.ID, "dns", hold, nil, g.walkEnv())
+		},
 	} {
 		if err := g.do(fn); err != nil {
 			return nil, nil, err
 		}
 	}
-	var o observe
-	o.steps = append(o.steps, Step{vocab.Outcome(failed.Outcome), failed.Reason.String()})
+	steps = append(steps, Step{vocab.Outcome(failed.Outcome), failed.Reason.String()})
 	// The probe passes. A refused clear leaves the node held.
-	if g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.Clear(tx, n, hold.ID, hold.SignalInstance)
-	}) == nil {
-		if _, err := g.selectResult(n, types.ResultKindEvidence, []types.Ref{}, ptrTo(json.RawMessage(`{"tests":"pass"}`))); err != nil {
+	second := Step{vocab.Outcome(failed.Outcome), failed.Reason.String()}
+	if g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return graph.Clear(tx, n, hold.ID, "probe:dns") }) == nil {
+		if second, err = g.attempt(n); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -66,15 +68,10 @@ func evidenceRetriesOnItsProbe(ctx context.Context, dir string) (steps []Step, v
 	if err = errors.Join(err, cerr); err != nil {
 		return nil, nil, err
 	}
-	if after.State == types.NodeStateStateCompleted {
-		o.steps = append(o.steps, Step{vocab.Empty, vocab.ReasonCompletedClean.String()})
-	} else {
-		o.steps = append(o.steps, Step{vocab.Outcome(failed.Outcome), failed.Reason.String()})
-	}
 	if invalidations != 0 || *after.Key != *before.Key {
-		o.violations = append(o.violations, "the retry invalidated the key")
+		violations = append(violations, "the retry invalidated the key")
 	}
-	return o.steps, o.violations, nil
+	return append(steps, second), violations, nil
 }
 
 // expiredReceiptRenews: an expired receipt triggers renewal without
@@ -134,9 +131,3 @@ func expiredReceiptRenews(ctx context.Context, dir string) (steps []Step, violat
 	}
 	return o.steps, o.violations, nil
 }
-
-// evidenceParams are a walk's EvidenceNodeParams (12) on the plan's result.
-var evidenceParams = json.RawMessage(`{"instrument":{"name":"walk","version":"1","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},` +
-	`"grant":"apr_01m3250v0aer9ss2097svmefj8","target":"tgt_01m3250v0aer9ss2097svmefj8","subject_input":"plan","demand":{"key":null},` +
-	`"limits":{"max_attempts_per_demand":2,"max_attempts_per_subject":2,"deadline":"PT1H","cooldown":"PT0S"},` +
-	`"restore":{"required":false,"procedure":null}}`)

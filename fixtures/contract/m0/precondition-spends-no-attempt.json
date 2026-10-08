@@ -1,0 +1,9 @@
+{
+  "name": "precondition-spends-no-attempt",
+  "invariant": "A precondition failure spends no evidence attempt and recovers on its probe: with one attempt per demand, the walk fails its contract's dns precondition, is held on the precondition_failed probe, and once the probe passes its one attempt completes clean (12 \"Preconditions\"; 11 intake).",
+  "expected": [
+    {"outcome": "could_not_run", "reason": "precondition_failed"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.precondition-spends-attempt"
+}

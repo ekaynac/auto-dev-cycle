@@ -41,7 +41,23 @@ func TestRetryKeepsTheKey(t *testing.T) {
 		return recordResult(tx, types.ResultRecorded{Node: n, Result: failed}, g.blobs)
 	})
 	h := newHold(t, "", types.OwnerEnvironmentOwner, ptr("staging-owner"))
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Retry(tx, n, failed.ID, h, nil) })
+	probed := h
+	probed.SignalInstance = "probe:dns" // the probe's own signal, outside its contract check
+	if g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Retry(tx, n, failed.ID, probed, nil) }) == nil {
+		t.Fatal("a precondition failure held through Retry, not its probe")
+	}
+	forged := types.HoldRaised{Type: "hold_raised", Node: n, Result: &failed.ID, Hold: h}
+	forged.Hold.Hold, forged.Hold.Reason, forged.Hold.SignalInstance = "precondition_failed", &failed.Reason, "anything"
+	if g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		forged.Hold.Since = now(tx)
+		return forge(HoldRaised, string(n), prjID, &forged)(tx)
+	}) == nil {
+		t.Fatal("the fold took a precondition wait on no probe")
+	}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Probe(tx, n, failed.ID, "dns", h, nil, Env{Contracts: contractsOf(walkContract())})
+	})
+	h.SignalInstance = "probe:dns"
 	if st := g.state(n); st.State != types.NodeStateStateHeld || st.Holds[0].Hold != "precondition_failed" {
 		t.Fatalf("the retry wait: %+v", st)
 	}

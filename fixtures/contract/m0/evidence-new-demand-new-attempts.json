@@ -1,0 +1,10 @@
+{
+  "name": "evidence-new-demand-new-attempts",
+  "invariant": "A new demand gets new evidence attempts and the same demand does not: with one attempt per demand, the walk of demand A runs once, its next attempt after an invalidation is evidence_cap_exhausted (the count outlives the key), and the walk of demand B on the same tree still runs (12 \"Attempts keyed by demand\"; 11 intake).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "could_not_run", "reason": "evidence_cap_exhausted"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.attempts-ignore-demand"
+}

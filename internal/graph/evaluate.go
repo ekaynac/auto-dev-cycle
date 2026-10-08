@@ -70,6 +70,7 @@ type Env struct {
 	Need      Requirements
 	Blobs     receipt.Blobs
 	Authority Authority
+	Contracts Contracts // the instrument contracts evidence nodes run under
 }
 
 // ErrRevalidated: an input no longer resolves to what the claim fixed, so
@@ -218,6 +219,9 @@ func (e *evaluation) claim(rec nodeRecord, resolved map[string]Resolved) error {
 		}
 	}
 	evs, err := Claim(e.tx, rec.Recorded.Node.ID, resolved, 0)
+	if rec.Recorded.Node.Kind == types.NodeKindEvidence {
+		evs, err = ClaimEvidence(e.tx, rec.Recorded.Node.ID, resolved, 0, e.env.Contracts)
+	}
 	var taken ErrKeyClaimed
 	if errors.As(err, &taken) {
 		holder, herr := loadNode(e.tx, taken.Node)
@@ -236,6 +240,11 @@ func (e *evaluation) claim(rec nodeRecord, resolved map[string]Resolved) error {
 // receipt has passed the validity it bound, at the transaction's time.
 // Only a memoizable node's key has a holder.
 func (e *evaluation) renew(rec nodeRecord) error {
+	if rec.Recorded.Node.Kind == types.NodeKindEvidence {
+		if _, err := contractOf(rec, e.env.Contracts); err != nil {
+			return err
+		}
+	}
 	holder, _, err := load[types.NodeID](e.tx, KeyProjection, keyIndex(rec.Recorded.Task, rec.State.Key.Key))
 	r, _, rerr := load[types.ResultRecorded](e.tx, ResultProjection, string(*rec.State.Result))
 	if err = errors.Join(err, rerr); err != nil || holder == "" || r.ReceiptValidUntil == nil || e.keys["renew/"+string(holder)] {

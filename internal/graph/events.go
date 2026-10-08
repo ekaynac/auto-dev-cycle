@@ -233,9 +233,14 @@ func items(n types.Node, resolved map[string]Resolved) []types.ClaimedInput {
 // they call Claim.
 func Claim(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, generation int64) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, node)
-	if err != nil {
-		return nil, err
+	if err != nil || rec.Recorded.Node.Kind == types.NodeKindEvidence {
+		return nil, errors.Join(err, errors.New("graph: an evidence node is claimed under its contract (ClaimEvidence)"))
 	}
+	return claimNode(tx, rec, resolved, generation)
+}
+
+func claimNode(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved, generation int64) ([]eventstore.Event, error) {
+	node := rec.Recorded.Node.ID
 	if _, claimed, err := load[claim](tx, ClaimProjection, string(node)); err != nil || claimed && !mutation.Is(mutation.ClaimPerDemand) {
 		return nil, err
 	}
@@ -346,6 +351,9 @@ func recorded(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeRecorded) err
 			return errors.Join(err, errors.New("the predecessor is not a node of the task of the same kind"))
 		}
 		round = pred.Recorded.Node.Round + 1
+	}
+	if err := checkEvidence(n); err != nil {
+		return err
 	}
 	if n.Round != round {
 		return fmt.Errorf("round %d, want %d: a first round is 1, a successor its predecessor's plus one", n.Round, round)

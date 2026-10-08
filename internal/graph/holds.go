@@ -101,6 +101,14 @@ func ownerRef(owner types.Owner, ref *string) error {
 // result of its current key: the hold the result's reason names, with that
 // reason; hold carries the rest (id, signal instance, owner).
 func Retry(tx *eventstore.Tx, node types.NodeID, result types.ResultID, hold types.NodeHold, envOwner *string) ([]eventstore.Event, error) {
+	r, _, err := load[types.ResultRecorded](tx, ResultProjection, string(result))
+	if _, built := builtWaits[r.Result.Reason.String()]; err != nil || built {
+		return nil, errors.Join(err, fmt.Errorf("graph: a %s wait is raised by Probe or Exhaust", r.Result.Reason))
+	}
+	return retry(tx, node, result, hold, envOwner)
+}
+
+func retry(tx *eventstore.Tx, node types.NodeID, result types.ResultID, hold types.NodeHold, envOwner *string) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, node)
 	r, ok, rerr := load[types.ResultRecorded](tx, ResultProjection, string(result))
 	reg, gerr := registry()
@@ -197,6 +205,9 @@ func holdRaised(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldRaised) err
 		return errors.New("a hold is raised at its event's time with no page, with a result exactly when it has a reason")
 	}
 	if p.Result != nil {
+		if err := builtWait(*h.Reason, h.SignalInstance); err != nil {
+			return err
+		}
 		r, _, err := load[types.ResultRecorded](tx, ResultProjection, string(*p.Result))
 		if err != nil || r.Node != p.Node || r.Result.Outcome != types.OutcomeCouldNotRun || r.Result.Reason != *h.Reason ||
 			rec.State.Key == nil || rec.State.Key.Key != r.Result.Computation {

@@ -172,6 +172,9 @@ func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecor
 	if _, exists, err := load[types.ResultRecorded](tx, ResultProjection, string(p.Result.ID)); err != nil || exists {
 		return errors.Join(err, errors.New("the result is recorded"))
 	}
+	if err := countAttempt(tx, rec, p.Result); err != nil {
+		return err
+	}
 	// After a renewal, the node selects only a result recorded after it.
 	if ren, renewing, err := load[renewal](tx, RenewalProjection, string(p.Node)); err != nil {
 		return err

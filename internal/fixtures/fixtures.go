@@ -75,6 +75,9 @@ var runners = map[string]runner{
 	"review-needs-its-tree":             reviewNeedsItsTree,
 	"receipt-for-another-demand":        receiptForAnotherDemand,
 	"evidence-retries-on-its-probe":     evidenceRetriesOnItsProbe,
+	"precondition-spends-no-attempt":    evidenceRetriesOnItsProbe,
+	"evidence-new-demand-new-attempts":  evidenceNewDemandNewAttempts,
+	"evidence-total-cap-exhausted":      evidenceTotalCapExhausted,
 	"expired-receipt-renews":            expiredReceiptRenews,
 	"revoked-approval-blocks-commit":    revokedApprovalBlocksCommit,
 }
