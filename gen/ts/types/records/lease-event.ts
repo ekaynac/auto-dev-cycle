@@ -45,6 +45,10 @@ export type LeaseEvent = {
    * attempt.result_submitted only: the result the controller admitted, so the log itself identifies it.
    */
   result: null | SubmittedResult;
+  /**
+   * lease.granted only: the lease's reserved groups that are evidence targets, recorded at the grant so a rebuild reads them from the log, never from configuration. internal/capacity admits a grant only with exactly the configured targets; internal/lease holds a lease with one to the restore table.
+   */
+  targets: null | string[];
 };
 /**
  * A unit's claim on an executor and its resource groups (docs/design/m0/05 "Lease"): the current state a lease's events project to. Reservations are made all-or-nothing inside the writer transaction; terminal states (settled, released) are immutable. internal/lease enforces the state machine.

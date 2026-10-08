@@ -1,0 +1,9 @@
+{
+  "name": "gate-and-runtime-see-their-facts",
+  "invariant": "A gate on the source-test workspace and a runtime verification on the package artifact each see their declared facts: the tests read VCS metadata, which the source-test workspace declares, so the gate passes; the self-check reads it too, which the deployed package lacks, so runtime verification finds the target-only failure before merge (13 [G8]; 07).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "found", "reason": "completed_with_findings"}
+  ],
+  "mutation": "graph.runtime-on-source-facts"
+}

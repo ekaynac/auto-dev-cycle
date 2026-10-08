@@ -16,16 +16,18 @@ The payload of every lease and attempt transition event (docs/design/m0/05): &lt
 | `attempt` | yes | null or [attempt](records-attempt.md) | The attempt after an attempt transition (for attempt.superseded, the retired one). |
 | `successor` | yes | null or [attempt](records-attempt.md) | attempt.superseded only: the replacement attempt, started with the next token. |
 | `result` | yes | null or [SubmittedResult](#submittedresult) | attempt.result_submitted only: the result the controller admitted, so the log itself identifies it. |
+| `targets` | yes | null or array of [ResourceGroupID](common-defs.md#resourcegroupid) (unique items) | lease.granted only: the lease's reserved groups that are evidence targets, recorded at the grant so a rebuild reads them from the log, never from configuration. internal/capacity admits a grant only with exactly the configured targets; internal/lease holds a lease with one to the restore table. |
 
 No other fields are allowed.
 
-Conditional rules (5, `if`/`then`/`else` in the schema):
+Conditional rules (6, `if`/`then`/`else` in the schema):
 
 - when `transition` one of `lease.revoked`, `lease.start_refused`, `lease.restore_failed`, then `reason` any (not `null`); otherwise `reason` `null`
 - when `transition` one of `lease.requested`, `lease.waiting`, `lease.granted`, `lease.start_refused`, `lease.expired`, `lease.completed`, `lease.revoked`, `lease.preempted`, `lease.settled`, `lease.released`, `lease.restore_started`, `lease.restore_verified`, `lease.restore_failed`, `attempt.started`, `attempt.superseded`, then `lease` any (not `null`); otherwise `lease` `null`
 - when `transition` one of `attempt.started`, `attempt.stop_requested`, `attempt.result_submitted`, `attempt.lost`, `attempt.sealed`, `attempt.completed`, `attempt.superseded`, then `attempt` any (not `null`); otherwise `attempt` `null`
 - when `transition` `attempt.superseded`, then `successor` any (not `null`); otherwise `successor` `null`
 - when `transition` `attempt.result_submitted`, then `result` any (not `null`); otherwise `result` `null`
+- when `transition` `lease.granted`, then `targets` any (not `null`); otherwise `targets` `null`
 
 ## Definitions
 

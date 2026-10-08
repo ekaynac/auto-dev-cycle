@@ -1,0 +1,9 @@
+{
+  "name": "restore-failure-keeps-target-excluded",
+  "invariant": "An unrestored evidence run blocks its target: the run is collected, the controller crashes before cleanup, the restore fails and the controller restarts again. Across both restarts the run publishes nothing and a new job on the target is refused (capacity_reserved_full); once a restore is verified, the run settles with its draft and the target serves the next job (13 [G5]; 05 \"Evidence-target leases\"; 11 intake).",
+  "expected": [
+    {"outcome": "could_not_run", "reason": "capacity_reserved_full"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "capacity.restore-failure-releases"
+}

@@ -79,12 +79,13 @@ func unitAttempt(tx *eventstore.Tx, unit types.UnitID) (types.AttemptID, bool, e
 }
 
 type payload struct {
-	Transition string                 `json:"transition"`
-	Reason     *string                `json:"reason"`
-	Lease      *types.Lease           `json:"lease"`
-	Attempt    *types.Attempt         `json:"attempt"`
-	Successor  *types.Attempt         `json:"successor"`
-	Result     *types.SubmittedResult `json:"result"`
+	Transition string                   `json:"transition"`
+	Reason     *string                  `json:"reason"`
+	Lease      *types.Lease             `json:"lease"`
+	Attempt    *types.Attempt           `json:"attempt"`
+	Successor  *types.Attempt           `json:"successor"`
+	Result     *types.SubmittedResult   `json:"result"`
+	Targets    *[]types.ResourceGroupID `json:"targets"` // lease.granted only
 }
 
 func newEvent(subject string, p payload) (eventstore.Event, error) {
@@ -120,19 +121,28 @@ func RequestLease(tx *eventstore.Tx, l types.Lease) ([]eventstore.Event, error) 
 }
 
 // ChangeLease applies one lease transition to the lease at the expected
-// revision, deriving the record from the projection. Restore transitions
-// wait for the resource-group projection that says which leases hold an
-// evidence target, so none is accepted yet.
+// revision, deriving the record from the projection. A grant carries
+// e.Targets, its evidence-target groups. It proposes a restore transition
+// where the plain table has none; the projector accepts it only for a lease
+// whose grant recorded a target.
 func ChangeLease(tx *eventstore.Tx, id types.LeaseID, expected int64, e LeaseEvent, holds map[string]types.Hold) ([]eventstore.Event, error) {
 	l, err := current[types.Lease](tx, LeaseProjection, string(id), expected)
 	if err != nil {
 		return nil, err
 	}
 	n, err := ApplyLease(l, e, false, holds)
+	if errors.Is(err, ErrTransition) {
+		n, err = ApplyLease(l, e, true, holds)
+	}
 	if err != nil {
 		return nil, err
 	}
-	ev, err := newEvent(string(id), payload{Transition: e.Kind, Reason: reasonOf(e.Reason), Lease: &n})
+	p := payload{Transition: e.Kind, Reason: reasonOf(e.Reason), Lease: &n}
+	if e.Kind == Granted {
+		t := append([]types.ResourceGroupID{}, e.Targets...)
+		p.Targets = &t
+	}
+	ev, err := newEvent(string(id), p)
 	return []eventstore.Event{ev}, err
 }
 
@@ -339,6 +349,11 @@ func (p Projector) apply(tx *eventstore.Tx, ev eventstore.Event, pl payload) err
 	case StopRequested, Lost, Sealed, AttemptDone:
 		return p.changeAttempt(tx, pl.Transition, *pl.Attempt)
 	}
+	if pl.Targets != nil { // only a grant's; records/lease-event refuses one elsewhere
+		if err := granted(tx, *pl.Lease, *pl.Targets); err != nil {
+			return err
+		}
+	}
 	return p.changeLease(tx, pl.Transition, pl.Reason, *pl.Lease)
 }
 
@@ -375,12 +390,17 @@ func (p Projector) changeLease(tx *eventstore.Tx, transition string, reason *str
 	// Evidence targets count slots (12, 13), so a lease with a slot
 	// reservation may owe a restore: it settles plainly only once Groups
 	// says it holds no evidence target.
-	if transition == Settled {
+	targets, err := targetsOf(tx, n.ID)
+	if err != nil {
+		return err
+	}
+	target := len(targets) > 0
+	if transition == Settled && !target {
 		if err := p.restoreFree(tx, prev); err != nil {
 			return err
 		}
 	}
-	want, err := ApplyLease(prev, e, false, holds)
+	want, err := ApplyLease(prev, e, target, holds)
 	if err != nil {
 		return err
 	}

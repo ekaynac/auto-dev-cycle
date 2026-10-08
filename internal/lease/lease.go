@@ -49,6 +49,7 @@ type LeaseEvent struct {
 	Attempt    *types.AttemptID            // attempt.started
 	Receipt    *types.ReceiptID            // lease.restore_verified
 	Settlement *types.LeaseSettlementValue // lease.settled
+	Targets    []types.ResourceGroupID     // lease.granted: its evidence-target groups
 }
 
 type leaseStep struct {

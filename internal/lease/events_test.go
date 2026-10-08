@@ -27,6 +27,9 @@ func eventBytes(t *testing.T, transition, reason string, l *types.Lease, a, succ
 	if transition == ResultSubmitted {
 		p.Result = &submitted
 	}
+	if transition == Granted {
+		p.Targets = &[]types.ResourceGroupID{}
+	}
 	b, err := json.Marshal(p)
 	if err != nil {
 		t.Fatal(err)

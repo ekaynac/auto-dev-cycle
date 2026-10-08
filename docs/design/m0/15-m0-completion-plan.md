@@ -109,7 +109,7 @@ they drive (01 §4).
 
 | # | Obligation | Design source | Issue |
 |---|---|---|---|
-| O1 | Artifact graph: schemas for Node, ComputationKey, Result, InputSpec and node state; key and generation computation; resolver and evaluator with atomic claiming and fake nodes; successor rounds; the build outcome table; queue generations as a template; the 19 fixtures of 13 and the M0 rows of §1.3 | 13:317-346; 01:635 | #114 |
+| O1 | Artifact graph: schemas for Node, ComputationKey, Result, InputSpec and node state; key and generation computation; resolver and evaluator with atomic claiming and fake nodes; successor rounds; the build outcome table; queue generations as a template; the 19 fixtures of 13 and the M0 rows of §1.3 | 13:367-396; 01:635 | #114 |
 | O2 | Evidence nodes: the parameter schema, attempt-key counting with the total cap, the precondition → hold mapping, artifact classes, the `remote_process` effect kind, five fixtures | 12:140-150 | #115 |
 | O3 | `internal/testguard` with a fake clock and a fake registry; the fakes the O1 and O2 fixtures need | 11:30-50; 01-repo-layout:23; 01:635 | new; scope in D4 |
 | O4 | Installed fake-adapter run: `make dist` packages a harness binary (standalone, with its own temporary state), the fake adapter with its dependencies and a Node runtime, and `fixtures/t0/py-mini`; the smoke checks result 9 from the harness's output | 14 §4 item 12; 01:635 "fake-driven T0 dry run" | #162 |
@@ -133,7 +133,7 @@ they drive (01 §4).
 ## 2. Lead decisions
 
 - **L1. The graph runs under fixtures only in M0.** `internal/graph` holds the schemas' Go side, the key computation,
-  the resolver and the evaluator, driven by fake nodes (13:319-320; 01:635 "with fakes"). `adcd` does not instantiate
+  the resolver and the evaluator, driven by fake nodes (13:369-370; 01:635 "with fakes"). `adcd` does not instantiate
   task graphs before M1. So no daemon path raises a node hold in M0 (D2).
 - **L2. Every new fixture is an installed contract fixture.** Each fixture in 12, 13 and the M0 rows of §1.3 gets
   three things:
@@ -147,7 +147,7 @@ they drive (01 §4).
   no bubblewrap, no Node and no source tree. Fixtures that need adapter behaviour use a scripted peer from
   `internal/adapterhost/session/inproc`, as the `unsafe-adapter-outputs` fixture already does
   (`internal/fixtures/adapterhost.go`). That peer runs inside `adc`. This covers the 402 before and after edits
-  (13:335-336), which emit the `credit-exhausted` shape of `adapters/fake/src/fake.ts:38`. The live Node run belongs
+  (13:385-386), which emit the `credit-exhausted` shape of `adapters/fake/src/fake.ts:38`. The live Node run belongs
   only to O4 (S3).
 - **L4. Holds become node state.** The node-state schema (G1b) carries a hold record (02:78-86):
   - the hold id;
@@ -201,12 +201,12 @@ Every PR in this track is a contract PR.
 | **G3. Graph events and claiming** | Node, result and selection events in the store, with their projection and CheckHistory coverage; registry entries for the new event kinds. Their payloads carry the task, the predecessor, the selection and the producing attempt, so they are defined here and in G5 and G6b, never in G1b; atomic producer claiming in the writer transaction; a generation bump as a recorded invalidation. **Split line:** events and projection (G3-1), then claiming and invalidation (G3-2) | [~300] | duplicate demands share one claimed node |
 | **G4a. Resolver** | Selected, reusable and applicable results (`internal/receipt`); only completed results are reused; `could_not_run` is an attempt record that retries on its signal; freshness by `valid_until` | [~300] | a `could_not_run` evidence result retries on its probe without invalidation; an expired receipt triggers renewal without resetting counters; a review cannot start with another tree's gate result (also 11:188); a receipt for another demand with identical conclusions does not apply (11:190) |
 | **G4b. Evaluator** | Demand-driven goals; structural waits for internal inputs; node holds for external waits; authority and applicability re-validated in the committing transaction (13:183-186) | [~300] | a revoked approval between claim and commit blocks the commit |
-| **G5. Successor rounds and equivalence** | Successor instantiation (repair, answers, demands); typed-conclusion equivalence only on review←gate and review←evidence (13:314); controller context rendered only from resolved inputs, listed by a `manifest.intent` (13:230-242, 10:74-77) | [~350] | an undeclared ruling never enters a review's controller context; an answer reaches only the successor review; equal conclusions reuse a review, and a changed step outcome re-runs it (also 11:181, 156, 167) |
+| **G5. Successor rounds and equivalence** | Successor instantiation (repair, answers, demands); typed-conclusion equivalence only on review←gate and review←evidence (13:364); controller context rendered only from resolved inputs, listed by a `manifest.intent` (13:230-242, 10:74-77) | [~350] | an undeclared ruling never enters a review's controller context; an answer reaches only the successor review; equal conclusions reuse a review, and a changed step outcome re-runs it (also 11:181, 156, 167) |
 | **G6a. Review roster identity** | The roster in a review's params; the review-requirement result `{subject, roster, definition_version, revision}`; the family derived from the executor registry (a fake registry under A1) | [~250] | equal gate or evidence conclusions never reuse a review across a roster change |
-| **G6b. Supersession** | One writer transaction: `review.superseded{predecessor, replacement, transferred_holds, retired_holds}`, `attempt.stop_requested{preempt}` for running attempts, hold transfer or retirement; replay reaches the same outcome (13:100-119). **Split line:** the transaction with attempt stops and the race and restart cases (G6b-1), then hold transfer and retirement (G6b-2) | [~300] | a roster change is one recorded supersession, with every sub-case of 13:327-330 |
-| **G7a. Effects as operations** | A new goal is a new effect operation, reconciled against the target; a crash after intent resumes the effect (03 effects; 13:244-252); a fake effect target | [~200] | deploy A, B, A deploys A again; a crash after effect intent resumes and never re-allocates |
-| **G7b. Merge-queue generation** | The template: rebase, carry_over, gate/runtime_verify, and merge by expected-base CAS; a minimal fake forge (expected-base push, an external base move) (13:265-277). **Split line:** the fake forge, rebase and carry_over (G7b-1), then the refreshed receipts and the merge CAS (G7b-2) | [~300] | a base move mid-generation starts a new generation; carry-over applies only with an equal patch identity; a roster change after carry-over was selected makes the merge wait |
-| **G8. Targets and facts** | Evidence targets over the existing lease restore events; source-test workspace versus package artifact versus runtime verification facts, with a minimal fake sandbox (13:254-263, 13:279-291) | [~250] | restore failure keeps the target excluded across a restart; a gate on the source-test workspace and runtime verification on the package see their declared facts; 11:185 and 11:191 |
+| **G6b. Supersession** | One writer transaction: `review.superseded{predecessor, replacement, transferred_holds, retired_holds}`, `attempt.stop_requested{preempt}` for running attempts, hold transfer or retirement; replay reaches the same outcome (13:100-119). **Split line:** the transaction with attempt stops and the race and restart cases (G6b-1), then hold transfer and retirement (G6b-2) | [~300] | a roster change is one recorded supersession, with every sub-case of 13:377-380 |
+| **G7a. Effects as operations** | A new goal is a new effect operation, reconciled against the target; a crash after intent resumes the effect (03 effects; 13:244-292); a fake effect target | [~200] | deploy A, B, A deploys A again; a crash after effect intent resumes and never re-allocates |
+| **G7b. Merge-queue generation** | The template: rebase, carry_over, gate/runtime_verify, and merge by expected-base CAS; a minimal fake forge (expected-base push, an external base move) (13:307-319). **Split line:** the fake forge, rebase and carry_over (G7b-1), then the refreshed receipts and the merge CAS (G7b-2) | [~300] | a base move mid-generation starts a new generation; carry-over applies only with an equal patch identity; a roster change after carry-over was selected makes the merge wait |
+| **G8. Targets and facts** | Evidence targets over the existing lease restore events; source-test workspace versus package artifact versus runtime verification facts, with a minimal fake sandbox (13:294-305, 13:321-341) | [~250] | restore failure keeps the target excluded across a restart; a gate on the source-test workspace and runtime verification on the package see their declared facts; 11:185 and 11:191 |
 
 Total for G: 12 PRs, about 3,300 lines. Up to three more if G3, G6b or G7b splits.
 
@@ -297,7 +297,7 @@ and G7b. They come to about 5,900 hand-written lines, of which the graph is abou
 
 | Obligation | Proven by | Expected result |
 |---|---|---|
-| O1 graph | `adc dev fixtures --contract` (installed, `installed-fixtures.sh`) | The 19 fixtures of 13:323-346 and the M0 rows of §1.3 yield their golden `(outcome, reason)` sequences. Each turns red under its named mutation in `make fixtures-contract` and stays green in the release build (`release-guard`) |
+| O1 graph | `adc dev fixtures --contract` (installed, `installed-fixtures.sh`) | The 19 fixtures of 13:373-396 and the M0 rows of §1.3 yield their golden `(outcome, reason)` sequences. Each turns red under its named mutation in `make fixtures-contract` and stays green in the release build (`release-guard`) |
 | O1 schemas | `make gen-check`, `make schema-docs` | Generated Go and TypeScript, and the new `docs/reference/schemas/records-*.md`, regenerate with no diff |
 | O2 evidence | installed contract fixtures | The five fixtures of 12:144-148, plus E2's reasons and holds checked by `adc dev vocab check` (every hold has a resume signal) |
 | O3 testguard and fakes | `make test` | Fixtures run on the fake clock; the fake registry lists every fake; a faithfulness test per fake (11:49); 11:36-47 states each fake's M0 scope |

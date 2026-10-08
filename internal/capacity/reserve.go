@@ -51,13 +51,18 @@ func (e *Exhausted) Error() string {
 // only when an event is admitted, never on replay.
 //
 // Only what the log can account for is admitted. A group returns its
-// reservations at settlement or release (on_settle). Broker balances wait
-// for the ledger's affordability rule, window resets and evidence-target
-// restores for their events, and an uncertain liability for its amount on
-// the group's ledger; until then such a group or settlement is refused.
-// Capacity must be wired from a store's first grant (CheckHistory): a
-// lease it granted holds no evidence target, which RestoreFree tells the
-// lease projector. Compose it with Hook.
+// reservations at settlement or release (on_settle). An evidence target
+// (on_restore_verified, 13) returns its slot at the settlement that only a
+// verified restore reaches: the grant's payload records its targets, which
+// admission checks against the groups and a rebuild reads from the log
+// alone, and the lease projector holds such a lease to the restore table,
+// so a failed restore keeps the target excluded, across restarts, until a
+// restore is verified. Broker balances wait for the ledger's affordability
+// rule, window resets for their events, and an uncertain liability for its
+// amount on the group's ledger; until then such a group or settlement is
+// refused. Capacity must be wired from a store's first grant (CheckHistory),
+// and its groups must still be the ones recorded grants name (CheckGroups).
+// Compose it with Hook.
 type Reservations struct {
 	groups map[types.ResourceGroupID]types.ResourceGroup
 }
@@ -72,8 +77,9 @@ func NewReservations(groups []types.ResourceGroup) (Reservations, error) {
 		switch {
 		case g.Kind == types.ResourceGroupKindBrokerBalance:
 			return Reservations{}, fmt.Errorf("capacity: broker balance %s is admitted by the ledger's affordability rule, which is not wired yet", g.ID)
-		case g.ReleaseRule != types.ResourceGroupReleaseRuleOnSettle:
-			// Evidence targets among them: on_restore_verified (13).
+		case (g.Kind == types.ResourceGroupKindEvidenceTarget) != (g.ReleaseRule == types.ResourceGroupReleaseRuleOnRestoreVerified):
+			return Reservations{}, fmt.Errorf("capacity: group %s returns %s: only an evidence target returns on a verified restore, and always", g.ID, g.ReleaseRule)
+		case g.ReleaseRule != types.ResourceGroupReleaseRuleOnSettle && g.ReleaseRule != types.ResourceGroupReleaseRuleOnRestoreVerified:
 			return Reservations{}, fmt.Errorf("capacity: group %s returns %s, which is not wired yet", g.ID, g.ReleaseRule)
 		case r.groups[g.ID].ID != "":
 			return Reservations{}, fmt.Errorf("capacity: group %s twice", g.ID)
@@ -83,12 +89,52 @@ func NewReservations(groups []types.ResourceGroup) (Reservations, error) {
 	return r, nil
 }
 
-// RestoreFree reports whether capacity granted the lease, which therefore
-// holds no evidence target and owes no restore (lease.Groups). The record
-// is a fold over the log, written at the grant.
+// granted is a lease capacity granted: the groups it reserved, and those
+// its grant recorded as evidence targets.
+type granted struct {
+	Groups  []types.ResourceGroupID `json:"groups,omitempty"`
+	Targets []types.ResourceGroupID `json:"targets,omitempty"`
+}
+
+// RestoreFree reports whether capacity granted the lease and it holds no
+// evidence target, so it owes no restore (lease.Groups). The record is a
+// fold over the log, written at the grant.
 func (r Reservations) RestoreFree(tx *eventstore.Tx, id types.LeaseID) (bool, error) {
-	_, ok, err := tx.Get(GrantedProjection, string(id))
-	return ok, err
+	g, ok, err := r.granted(tx, id)
+	return ok && len(g.Targets) == 0, err
+}
+
+// CheckGroups refuses to run capacity over groups that no longer match a
+// recorded grant: a group it names that is gone, or whose kind changed
+// under it (an evidence target recorded as one, or the reverse). Call it,
+// as CheckHistory, on the store's projections before admitting commands.
+func (r Reservations) CheckGroups(tx *eventstore.Tx) error {
+	keys, err := tx.Keys(GrantedProjection, "")
+	for _, id := range keys {
+		g, _, gerr := r.granted(tx, types.LeaseID(id))
+		if gerr != nil {
+			return gerr
+		}
+		for _, group := range g.Groups {
+			cfg, ok := r.groups[group]
+			switch {
+			case !ok:
+				return fmt.Errorf("capacity: group %s, which lease %s reserved, is not configured under an existing store", group, id)
+			case slices.Contains(g.Targets, group) != (cfg.Kind == types.ResourceGroupKindEvidenceTarget):
+				return fmt.Errorf("capacity: group %s changed kind under an existing store (lease %s)", group, id)
+			}
+		}
+	}
+	return err
+}
+
+func (r Reservations) granted(tx *eventstore.Tx, id types.LeaseID) (granted, bool, error) {
+	var g granted
+	raw, ok, err := tx.Get(GrantedProjection, string(id))
+	if err == nil && ok {
+		err = json.Unmarshal(raw, &g)
+	}
+	return g, ok, err
 }
 
 // Hook composes the lease projector and r into one Project hook, event by
@@ -155,8 +201,9 @@ func CheckHistory(tx *eventstore.Tx) error {
 
 // leaseEvent is the part of a lease event's payload the fold reads.
 type leaseEvent struct {
-	Transition string       `json:"transition"`
-	Lease      *types.Lease `json:"lease"`
+	Transition string                  `json:"transition"`
+	Lease      *types.Lease            `json:"lease"`
+	Targets    []types.ResourceGroupID `json:"targets"`
 }
 
 // Project is an event store Project hook; compose it after lease.Projector,
@@ -166,6 +213,10 @@ func (r Reservations) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		var p leaseEvent
 		switch ev.Kind {
 		case lease.Granted + "/v1", lease.Settled + "/v1", lease.Released + "/v1":
+		case lease.RestoreFailed + "/v1":
+			if !mutation.Is(mutation.RestoreFailureReleases) {
+				continue
+			}
 		default:
 			continue
 		}
@@ -174,7 +225,7 @@ func (r Reservations) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		}
 		var err error
 		if p.Transition == lease.Granted {
-			err = r.reserve(tx, *p.Lease)
+			err = r.reserve(tx, *p.Lease, p.Targets)
 		} else {
 			err = r.release(tx, *p.Lease)
 		}
@@ -194,9 +245,14 @@ type tally struct {
 
 // reserve admits every reservation of l against its group, then records
 // them all: a refusal rolls back the whole command.
-func (r Reservations) reserve(tx *eventstore.Tx, l types.Lease) error {
-	next := map[types.ResourceGroupID]tally{}
+func (r Reservations) reserve(tx *eventstore.Tx, l types.Lease, targets []types.ResourceGroupID) error {
+	next, rec := map[types.ResourceGroupID]tally{}, granted{Targets: targets}
+	var want []types.ResourceGroupID // the targets the groups name
 	for _, res := range l.Reservations {
+		if r.groups[res.Group].Kind == types.ResourceGroupKindEvidenceTarget {
+			want = append(want, res.Group)
+		}
+		rec.Groups = append(rec.Groups, res.Group)
 		if _, dup := next[res.Group]; dup {
 			return fmt.Errorf("lease %s reserves group %s twice", l.ID, res.Group)
 		}
@@ -214,7 +270,14 @@ func (r Reservations) reserve(tx *eventstore.Tx, l types.Lease) error {
 		}
 		next[res.Group] = tally{cur.Reserved + int64(res.Amount), cur.Revision + 1}
 	}
-	if err := tx.Put(GrantedProjection, string(l.ID), json.RawMessage(`{}`)); err != nil {
+	if !tx.Replaying() && !slices.Equal(slices.Sorted(slices.Values(want)), slices.Sorted(slices.Values(targets))) {
+		return fmt.Errorf("lease %s's grant names evidence targets %v, its groups %v", l.ID, targets, want)
+	}
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	if err := tx.Put(GrantedProjection, string(l.ID), raw); err != nil {
 		return err
 	}
 	return putAll(tx, next)
