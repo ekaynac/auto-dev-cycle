@@ -28,6 +28,10 @@ package graph
 //     patch has the candidate's identity; else the demand for a delta review
 //     (found/review_input_changed). CarryOver applies it, and the result fold
 //     refuses any other outcome, reason or value; Commit refuses carry_over.
+//   - The generation's candidate result is pinned through execution: the
+//     claim of its rebase, the rebase's result and its carry_over's inputs
+//     take exactly params.candidate (pinnedCandidate). A candidate
+//     reselected after the generation was recorded is a new generation's.
 //     Its inputs hold their roles (roleInput): the candidate a patch, the
 //     rebase the required rebase node's tree, the review a review node's
 //     review.
@@ -173,6 +177,29 @@ func generationRecorded(tx *eventstore.Tx, p *types.NodeRecorded) error {
 			rp.Generation, rp.Base, rp.Version, cur.Number, cur.Base, cur.Version))
 	}
 	return put(tx, GenerationProjection, key, Generation{Number: rp.Generation, Base: rp.Base, Version: rp.Version, Candidate: rp.Candidate, Rebase: p.Node.ID})
+}
+
+// pinnedCandidate: rb, a rebase node, takes cand as its candidate, the
+// candidate result its generation pins (params.candidate). The node.claimed
+// fold checks it of a rebase's claim and the result fold again, so a
+// candidate reselected after the generation was recorded is refused, not
+// rebased under the generation that names another result.
+func pinnedCandidate(rb nodeRecord, cand types.ResultID) error {
+	var rp rebaseParams
+	if err := json.Unmarshal(rb.Recorded.Node.Params, &rp); err != nil || cand != rp.Candidate {
+		return errors.Join(err, fmt.Errorf("graph: generation %d's rebase %s takes candidate %s, not %s, the candidate it pins",
+			rp.Generation, rb.Recorded.Node.ID, cand, rp.Candidate))
+	}
+	return nil
+}
+
+// rebaseClaimed: a rebase's claim resolves its candidate to the result its
+// generation pins; other kinds pass.
+func rebaseClaimed(rec nodeRecord, resolved map[string]Resolved) error {
+	if rec.Recorded.Node.Kind != types.NodeKindRebase {
+		return nil
+	}
+	return pinnedCandidate(rec, resolved["candidate"].Result)
 }
 
 // producerOf is the producer of n's result input name ("": none).
@@ -349,6 +376,10 @@ func carryInputs(tx *eventstore.Tx, rec nodeRecord) (cand, rb types.Result, revi
 	if err = errors.Join(err, rerr, verr, nerr, cerr); err != nil {
 		return cand, rb, nil, err
 	}
+	rbn, err := loadNode(tx, rr.Node)
+	if err = errors.Join(err, pinnedCandidate(rbn, cr.Result.ID)); err != nil {
+		return cand, rb, nil, err
+	}
 	for _, in := range review.Recorded.Node.Inputs {
 		if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.Producer == producerOf(rec.Recorded.Node, "candidate") {
 			r, err := inputResult(tx, rc, in.Name)
@@ -419,6 +450,9 @@ func resultSemantics(tx *eventstore.Tx, rec nodeRecord, r types.Result) error {
 		return err
 	case rec.Recorded.Node.Kind == types.NodeKindRebase:
 		cand, err := inputResult(tx, c, "candidate")
+		if err == nil {
+			err = pinnedCandidate(rec, cand.Result.ID)
+		}
 		if err == nil {
 			_, err = rebaseShape(cand.Result, r)
 		}

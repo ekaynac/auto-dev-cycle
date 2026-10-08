@@ -3,8 +3,10 @@
 package graph
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -88,6 +90,53 @@ func TestRebuiltCandidate(t *testing.T) {
 	rec.Node.Inputs = rec.Node.Inputs[:0]
 	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(rec) }); err == nil {
 		t.Fatal("a rebase without its candidate was recorded")
+	}
+}
+
+// A generation's candidate result is pinned through execution: recorded
+// with C1, its rebase is not claimed once C2 is selected, and its
+// carry_over does not take a candidate reselected after its rebase ran;
+// C2's attempt is the next generation's.
+func TestPinnedCandidate(t *testing.T) {
+	g := openEffectStore(t)
+	p, tree := g.ref(types.RefTypeBlob, "P"), g.ref(types.RefTypeGitTree, "T")
+	spec := g.queueSpec("main", p)
+	rebuild := func() types.ResultID {
+		g.must(invalidate(spec.Candidate))
+		r := unrecorded(t, *g.state(spec.Candidate).Key)
+		r.Value, r.Outcome, r.Reason, r.Detail = []types.Ref{p}, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+		g.must(commit(spec.Candidate, r, effectEnv))
+		return r.ID
+	}
+	g1, err := g.generate(spec, "B1")
+	if err != nil || g1.Number != 1 {
+		t.Fatalf("G1: %+v (%v)", g1, err)
+	}
+	c2 := rebuild() // C2 is selected before G1's rebase is claimed
+	if err := g.do(evaluate(effectEnv, g1.Rebase)); err == nil || !strings.Contains(err.Error(), "the candidate it pins") {
+		t.Fatalf("G1's rebase claimed over C2: %v", err)
+	}
+	if st := g.state(g1.Rebase); st.State == types.NodeStateStateClaimed {
+		t.Fatal("G1's rebase is claimed")
+	}
+	g2, err := g.generate(spec, "B1")
+	if err != nil || g2.Number != 2 || g2.Candidate != c2 {
+		t.Fatalf("C2's generation: %+v (%v)", g2, err)
+	}
+	g.must(evaluate(effectEnv, g2.Rebase))
+	g.must(commit(g2.Rebase, g.rebaseResult(g2, tree, p), effectEnv))
+	rebuild() // C3, after G2's rebase ran on C2
+	g.must(evaluate(effectEnv, g2.CarryOver))
+	if _, err := g.carryOver(g2.CarryOver); err == nil || !strings.Contains(err.Error(), "the candidate it pins") {
+		t.Fatalf("G2's carry_over over C3: %v", err)
+	}
+	attest := unrecorded(t, *g.state(g2.CarryOver).Key)
+	attest.Kind, attest.Value, attest.Outcome, attest.Reason, attest.Detail = types.ResultKindCarryOverAttestation, []types.Ref{tree}, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+	if err := g.do(raw(g2.CarryOver, attest, g.blobs)); err == nil || !strings.Contains(err.Error(), "the candidate it pins") {
+		t.Fatalf("a raw attestation of G2's carry_over over C3: %v", err)
+	}
+	if diffs, err := g.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %+v", err, diffs)
 	}
 }
 

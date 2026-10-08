@@ -409,6 +409,10 @@ As delivered (G7b-1; the refreshed receipts and the merge are G7b-2):
   refused, so a delayed caller cannot start a generation on a head the forge has already left; a genuine return to
   an earlier head is a newer observation, and starts one. The template records the next generation, its `rebase`
   and `carry_over` nodes, whenever the observation calls for it, mid-generation included.
+- **The generation's candidate is pinned** through execution, not only when it is recorded: the claim of its `rebase`
+  must resolve the candidate to `params.candidate`, the rebase's result is accepted only for that result, and its
+  `carry_over` takes only that candidate. A candidate reselected after the generation was recorded is refused there
+  (the claim, or the carry-over, fails), and its attempt is the next generation's.
 - **The latest observation is kept** per task and branch, by `queue.observed/v1`, even when it starts no generation.
   An older version, or another head at the latest version, is refused as `failed/stale_expected_state`, so a
   delayed observation never moves the queue back.
@@ -417,6 +421,10 @@ As delivered (G7b-1; the refreshed receipts and the merge are G7b-2):
     persisted with it and raised whenever it observes a new head; that counter cannot see a move it did not observe
     (an unobserved A→B→A reads as A, unmoved), which is safe here, since the queue's merge is a compare-and-set on
     the head.
+  - **Versions are trusted controller input.** The graph checks that versions rise; it does not authenticate them.
+    A fabricated higher version is accepted, so a version is only as good as the adapter that reports it. The fake
+    forge (`internal/testguard/fakes/forge`) keeps its counters in memory: they reset when it is recreated, so its
+    monotonicity does not survive a recreation, which reads to the queue as the wedge below.
   - **A wedged queue.** If the source's versions go back (a forge restart that resets them, or a bogus far-future
     version), every later observation is refused, visibly, with that reason; nothing moves silently. Recovery is
     an operator's: re-basing the queue's observations is an M1 operator action, and in M0 a new task re-queues the
