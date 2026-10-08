@@ -72,6 +72,8 @@ var runners = map[string]runner{
 	"credit-before-first-edit":          creditBeforeEdit,
 	"credit-after-edits":                creditAfterEdit,
 	"duplicate-demands-share-one-claim": duplicateDemandsShareOneClaim,
+	"review-needs-its-tree":             reviewNeedsItsTree,
+	"receipt-for-another-demand":        receiptForAnotherDemand,
 }
 
 // Goldens loads and validates every golden, checking that each has a

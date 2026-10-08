@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/graph-event.json",
   "title": "GraphEvent",
-  "description": "The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.",
-  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}, {"$ref": "#/$defs/NodeInvalidated"}, {"$ref": "#/$defs/HoldRaised"}, {"$ref": "#/$defs/HoldPaged"}, {"$ref": "#/$defs/HoldCleared"}, {"$ref": "#/$defs/ResultRecorded"}, {"$ref": "#/$defs/ResultSelected"}],
+  "description": "The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1 and node.hold_cleared/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.",
+  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}, {"$ref": "#/$defs/NodeInvalidated"}, {"$ref": "#/$defs/NodeReused"}, {"$ref": "#/$defs/NodeReuseReleased"}, {"$ref": "#/$defs/HoldRaised"}, {"$ref": "#/$defs/HoldPaged"}, {"$ref": "#/$defs/HoldCleared"}, {"$ref": "#/$defs/ResultRecorded"}, {"$ref": "#/$defs/ResultSelected"}],
   "$defs": {
     "NodeRecorded": {
       "description": "A node joins its task's graph, append-only: its task, its project and the node it succeeds (null for a first round).",
@@ -30,17 +30,7 @@
         "inputs": {
           "description": "Each declared input and what it resolved to, in declared order: a result, or an approval with its revision. A new kind of resolution is a new event version (node.claimed/v2), since every field is required.",
           "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["name", "result", "approval", "revision"],
-            "properties": {
-              "name": {"$ref": "receipt.json#/$defs/Name"},
-              "result": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ResultID"}]},
-              "approval": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ApprovalID"}]},
-              "revision": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1, "maximum": 9007199254740991}]}
-            }
-          }
+          "items": {"$ref": "#/$defs/ClaimedInput"}
         }
       }
     },
@@ -51,6 +41,41 @@
       "required": ["type", "node", "key"],
       "properties": {
         "type": {"const": "node_invalidated"},
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "key": {"$ref": "computation-key.json"}
+      }
+    },
+    "ClaimedInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "result", "approval", "revision"],
+      "properties": {
+        "name": {"$ref": "receipt.json#/$defs/Name"},
+        "result": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ResultID"}]},
+        "approval": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ApprovalID"}]},
+        "revision": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1, "maximum": 9007199254740991}]}
+      }
+    },
+    "NodeReused": {
+      "description": "A memoizable instance refused a claim because another node of its task holds its key completes by reuse (13 [G10]): the holder's selected result at the current generation, same task, kind and key. inputs are the instance's own resolved inputs. It never claims and never runs, and is never invalidated on its own: the holder's invalidation releases it (node.reuse_released).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "holder", "key", "inputs"],
+      "properties": {
+        "type": {"const": "node_reused"},
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "holder": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "key": {"$ref": "computation-key.json"},
+        "inputs": {"type": "array", "items": {"$ref": "#/$defs/ClaimedInput"}}
+      }
+    },
+    "NodeReuseReleased": {
+      "description": "The holder of key was invalidated, and the node bound to key by reuse is released in the same command (13 [G1]): its reuse and its result are dropped, and it waits for its inputs again, to reuse or claim at the new generation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "node", "key"],
+      "properties": {
+        "type": {"const": "node_reuse_released"},
         "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
         "key": {"$ref": "computation-key.json"}
       }

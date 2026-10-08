@@ -1,0 +1,9 @@
+{
+  "name": "review-needs-its-tree",
+  "invariant": "A review does not start with another tree's gate result: the gate result's receipt about tree A resolves for a review of tree A and is missing, evidence_inapplicable, for a review of tree B (13 \"Evaluation\"; 06; 11 intake). This is the resolver's half, under a requirement the fixture supplies; the review kind's own requirement and refusing the lease and the commit are G4b's.",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "could_not_run", "reason": "evidence_inapplicable"}
+  ],
+  "mutation": "graph.resolve-skips-applicability"
+}

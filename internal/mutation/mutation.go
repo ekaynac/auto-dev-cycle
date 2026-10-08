@@ -78,6 +78,12 @@ const (
 	// ClaimPerDemand claims a node again on every demand, so a repeat
 	// demand runs it twice.
 	ClaimPerDemand = "graph.claim-per-demand"
+	// ResolveSkipsApplicability resolves an input to its producer's selected
+	// result without asking whether its receipt applies.
+	ResolveSkipsApplicability = "graph.resolve-skips-applicability"
+	// DemandIgnored lets a receipt answer a requirement whatever demand it
+	// answers, so identical conclusions for another demand apply.
+	DemandIgnored = "receipt.demand-ignored"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -86,4 +92,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	OuterStatusTrusted, AbsentPredicateUnchecked, UnknownFamilyIndependent, BindingDigestIgnored,
 	InheritedUsageNarrows, ProtectedCheckSupervisorsOnly,
 	StaleAttemptUsageDropped, DeltasNotDeduplicated, ChainHashUnchecked, ConfirmIgnoresStatus, ReservationsUncounted,
-	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks, IncompleteNoDiffEmpty, PartialPatchDropped, ClaimPerDemand}
+	SignatureUnchecked, StreamCheckedAtOpenOnly, IngestFollowsLinks, IncompleteNoDiffEmpty, PartialPatchDropped, ClaimPerDemand,
+	ResolveSkipsApplicability, DemandIgnored}

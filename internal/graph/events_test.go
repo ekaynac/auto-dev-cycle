@@ -35,6 +35,7 @@ type graphStore struct {
 	s       *eventstore.Store
 	plan    types.NodeID
 	planRes types.ResultID
+	blobs   *blobstore.Store
 }
 
 func openStore(t *testing.T) graphStore {
@@ -55,7 +56,7 @@ func openStore(t *testing.T) graphStore {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close(); lock.Release() })
-	g := graphStore{t: t, s: s}
+	g := graphStore{t: t, s: s, blobs: blobs}
 	g.plan, g.planRes = g.planOf(tskID, prjID)
 	return g
 }
@@ -428,7 +429,7 @@ func TestFirstClaimsAreAtGenerationOne(t *testing.T) {
 	}
 	g2 := must(Key(g.newNodeLike(a), map[string]Resolved{"plan": {Result: g.planRes}}, 2))
 	if err := g.do(forge(NodeClaimed, string(a), prjID, &types.NodeClaimed{Type: "node_claimed", Node: a, Key: g2,
-		Inputs: []types.NodeClaimedInputsItem{{Name: "plan", Result: ptr(g.planRes)}}})); err == nil {
+		Inputs: []types.ClaimedInput{{Name: "plan", Result: ptr(g.planRes)}}})); err == nil {
 		t.Fatal("a forged first claim at generation 2 was admitted")
 	}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {

@@ -57,7 +57,14 @@ Result:                            # what was computed: immutable  [G1]
     inputs, without the generation) a task holds a current generation, 1 until an invalidation moves it. A claim at any
     other generation is refused as stale, and an invalidated key stays stale: no later claim names its old holder. The
     reuse binding (G4a) reuses only a result of the current generation's key. The other kinds keep their generation
-    per node. An invalidation never silently ends a wait. A retry wait of the old key (a hold with a reason, raised for
+    per node.
+  - **A key is invalidated through its holder.** A node bound to a key by reuse (`node.reused`) shares the holder's key
+    and result, so it is never invalidated on its own (`ErrReused`). The holder's invalidation releases every node
+    bound to the old key in the same command, each with its own `node.reuse_released`: the release drops the node's
+    reuse and result and returns it to waiting, so it reuses or waits again at the new generation. Nothing serves an
+    invalidated result through a reused node. As a second guard, a memoizable producer whose key is not of its
+    identity's current generation counts as not completed: the resolver waits on it and a claim refuses it.
+    Dependants that already claimed the old result keep their claims until supersession (G6b). An invalidation never silently ends a wait. A retry wait of the old key (a hold with a reason, raised for
     a `could_not_run` result) is retired in the same command by its own event, with the reason `invalidated`. Every other
     wait (awaiting an approval, an input or a budget raise) carries over to the new generation with its id, `since` and
     pages, and the node stays held: as in supersession, a hold is retired only when the node no longer has the wait.
@@ -116,6 +123,18 @@ Result:                            # what was computed: immutable  [G1]
 
 The controller evaluates **goals** (e.g. "merge the candidate of task T", "close phase P"):
 1. Resolve each node's inputs to selected, reusable, applicable results (06).
+   - An input resolves to its producer's selected result; a producer not yet completed, or completed at a stale
+     generation, is a structural wait. A producer of another project, or a result of another kind, is missing.
+   - An answer input resolves to an approval at the owed input's declared revision, or is missing. The commit checks
+     the approval again ([G4]).
+   - Applicability is checked against a receipt: a gate or evidence result's `value` holds a `receipt` Ref whose content
+     digest names the receipt blob, and the resolver checks it with 06's rules (`internal/receipt`). A receipt that does
+     not apply, or has expired, makes the input missing, with the refusal's reason. The result holds exactly one
+     receipt Ref, and the receipt carries the Ref's id and the result's conclusions (its `conclusions_digest` is their
+     RFC 8785 digest); otherwise the input is missing as `receipt_incomplete`.
+   - What an input requires of its receipt (kind, instrument, subject, demand) is code of the consuming kind, per kind and
+     `definition_version`, so the definition version keys it. Schemas carry no requirement. A gate or evidence input
+     always has one; none is an error, never a skipped check.
 2. Schedule producers of missing inputs first.
 3. Run a node when all its inputs are present, by leasing what it requires (05).
 
@@ -126,7 +145,8 @@ The controller evaluates **goals** (e.g. "merge the candidate of task T", "close
   - For the memoizable kinds, a computation key is claimed once per task. Another instance whose key is claimed in its
     task is refused, records nothing and stays as it was. It never claims and never runs: it completes through a
     reuse binding, `node.reused`, which sets its key and result from the holder's selected result, of the same task,
-    kind and key (the resolver's memoization, under applicability, 06). No claim spans tasks or projects.
+    kind and key (the resolver's memoization, under applicability, 06). The holder must be completed. The task keeps
+    the nodes bound to each key, and the holder's invalidation releases them ([G1]). No claim spans tasks or projects.
   - A command claims a given node, and a given memoizable key, at most once; the evaluator deduplicates its demands
     before it claims.
   - The fold re-derives a claim: one resolution per declared input, in order, and the key from them.
