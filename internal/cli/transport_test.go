@@ -17,10 +17,11 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 )
 
 func TestClientFromEnv(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // never the user's real ~/.config/adc
+	testguard.Home(t) // never the user's real ~/.config/adc
 	env := map[string]string{}
 	getenv := func(k string) string { return env[k] }
 	if _, ok := ClientFromEnv(getenv).(NoTransport); !ok {
@@ -43,7 +44,7 @@ func TestClientFromEnv(t *testing.T) {
 // A command goes over the socket ADC_SOCKET names with ADC_TOKEN; a peer of
 // another uid is refused as could_not_run.
 func TestCommandOverTheSocket(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testguard.Home(t)
 	dir, err := os.MkdirTemp("", "adc")
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +82,7 @@ func TestCommandOverTheSocket(t *testing.T) {
 // anchor; it and ADC_SOCKET together are refused; a bad configuration
 // fails every command with its fixed text.
 func TestClientFromEnvHTTPS(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testguard.Home(t)
 	pin := client.PinPrefix + strings.Repeat("ab", 32)
 	env := map[string]string{HTTPSAddrEnv: "127.0.0.1:8443", HTTPSPinEnv: pin}
 	getenv := func(k string) string { return env[k] }
@@ -111,7 +112,7 @@ func TestClientFromEnvHTTPS(t *testing.T) {
 // adc admin bootstrap with the HTTPS transport is a usage error, and the
 // secret goes nowhere: the bootstrap stays unconsumed.
 func TestBootstrapNotOverHTTPS(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testguard.Home(t)
 	dir, _ := adcd(t)
 	secret, err := os.ReadFile(filepath.Join(dir, identity.BootstrapFile))
 	if err != nil {

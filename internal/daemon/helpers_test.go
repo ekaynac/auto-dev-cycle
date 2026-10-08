@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -20,6 +19,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -40,7 +40,7 @@ func newID(t *testing.T, prefix string) string {
 	return v
 }
 
-func stateDir(t *testing.T) string { return filepath.Join(t.TempDir(), "state") }
+func stateDir(t *testing.T) string { return testguard.StateDir(t) }
 
 // seeder is a store under the state directory, opened outside the daemon
 // with a permissive authorizer, to write a history the daemon then starts

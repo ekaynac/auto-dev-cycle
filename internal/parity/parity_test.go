@@ -19,6 +19,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/cli"
 	"github.com/ekaynac/auto-dev-cycle/internal/daemon"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 	"github.com/ekaynac/auto-dev-cycle/schemas"
 )
@@ -62,7 +63,7 @@ func openapi(t *testing.T, reg *vocab.Registry) map[string]string {
 // where it does not.
 func answers(t *testing.T, command string) bool {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	testguard.Home(t)
 	args := append(strings.Fields(command)[1:], "--help")
 	return cli.Main(context.Background(), args, io.Discard, io.Discard, nil) == entry.ExitOK
 }
