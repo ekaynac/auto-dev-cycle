@@ -48,7 +48,7 @@ func Applies(r types.Receipt, req Requirement, now time.Time) error {
 	if err := sameSubject(r.Subject, req.Subject); err != nil {
 		return &Refusal{vocab.ReasonEvidenceInapplicable, err.Error()}
 	}
-	if want := demandOf(req.Subject); want != nil {
+	if want := demandOf(req.Subject); want != nil && !mutation.Is(mutation.DemandIgnored) {
 		d := demandOf(r.Subject)
 		if d == nil || d.Key != want.Key {
 			return &Refusal{vocab.ReasonEvidenceInapplicable, "the receipt answers another demand"}

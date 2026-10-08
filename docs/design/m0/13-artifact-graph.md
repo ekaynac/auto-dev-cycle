@@ -116,6 +116,12 @@ Result:                            # what was computed: immutable  [G1]
 
 The controller evaluates **goals** (e.g. "merge the candidate of task T", "close phase P"):
 1. Resolve each node's inputs to selected, reusable, applicable results (06).
+   - An input resolves to its producer's selected result; a producer not yet completed is a structural wait.
+   - Applicability is checked against a receipt: a gate or evidence result's `value` holds a `receipt` Ref whose content
+     digest names the receipt blob, and the resolver checks it with 06's rules (`internal/receipt`). A receipt that does
+     not apply, or has expired, makes the input missing, with the refusal's reason.
+   - What an input requires of its receipt (kind, instrument, subject, demand) is code of the consuming kind, per kind and
+     `definition_version`, so the definition version keys it. Schemas carry no requirement.
 2. Schedule producers of missing inputs first.
 3. Run a node when all its inputs are present, by leasing what it requires (05).
 

@@ -51,6 +51,7 @@ const (
 	NodeRecorded    = "node.recorded/v1"
 	NodeClaimed     = "node.claimed/v1"
 	NodeInvalidated = "node.invalidated/v1"
+	NodeReused      = "node.reused/v1"
 	HoldRaised      = "node.hold_raised/v1"
 	HoldPaged       = "node.hold_paged/v1"
 	HoldCleared     = "node.hold_cleared/v1"
@@ -85,7 +86,7 @@ func (e ErrKeyStale) Error() string {
 }
 
 // Kinds registers the graph event kinds.
-var kinds = []string{NodeRecorded, NodeClaimed, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected}
+var kinds = []string{NodeRecorded, NodeClaimed, NodeReused, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected}
 
 func Kinds() eventstore.Kinds {
 	k := eventstore.Kinds{}
@@ -103,9 +104,9 @@ type nodeRecord struct {
 // claim is a node's claim: its key, its inputs as they resolved (for the
 // commit-time re-validation, 13 [G4]) and the command that made it.
 type claim struct {
-	Key     types.ComputationKey          `json:"key"`
-	Inputs  []types.NodeClaimedInputsItem `json:"inputs"`
-	Command *string                       `json:"command"`
+	Key     types.ComputationKey `json:"key"`
+	Inputs  []types.ClaimedInput `json:"inputs"`
+	Command *string              `json:"command"`
 }
 
 func keyIndex(task types.TaskID, key types.Digest) string { return string(task) + "/" + string(key) }
@@ -160,10 +161,10 @@ func Record(r types.NodeRecorded) ([]eventstore.Event, error) {
 
 // items are the claim's inputs: one per declared input, in declared order,
 // each a result or an approval with its revision, as its source says.
-func items(n types.Node, resolved map[string]Resolved) []types.NodeClaimedInputsItem {
-	out := []types.NodeClaimedInputsItem{}
+func items(n types.Node, resolved map[string]Resolved) []types.ClaimedInput {
+	out := []types.ClaimedInput{}
 	for _, in := range n.Inputs {
-		r, item := resolved[in.Name], types.NodeClaimedInputsItem{Name: in.Name}
+		r, item := resolved[in.Name], types.ClaimedInput{Name: in.Name}
 		if _, answer := in.Source.Variant.(*types.AnswerSource); answer {
 			item.Approval, item.Revision = &r.Approval, &r.Revision
 		} else {
@@ -250,6 +251,8 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant) err
 		return recorded(tx, ev, p)
 	case *types.NodeClaimed:
 		return claimed(tx, ev, p)
+	case *types.NodeReused:
+		return reused(tx, ev, p)
 	case *types.NodeInvalidated:
 		return invalidated(tx, ev, p)
 	case *types.HoldRaised:
@@ -307,7 +310,7 @@ func recorded(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeRecorded) err
 }
 
 // resolutions reads a claim's inputs back.
-func resolutions(inputs []types.NodeClaimedInputsItem) map[string]Resolved {
+func resolutions(inputs []types.ClaimedInput) map[string]Resolved {
 	out := map[string]Resolved{}
 	for _, in := range inputs {
 		r := Resolved{}

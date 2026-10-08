@@ -10,7 +10,7 @@
     "id": {"description": "The identity of this output, minted by the controller for each output. It is never derived from the computation key.", "$ref": "../common/defs.json#/$defs/ResultID"},
     "computation": {"description": "The ComputationKey.key this result answers.", "$ref": "../common/defs.json#/$defs/Digest"},
     "kind": {"$ref": "../common/defs.json#/$defs/ResultKind"},
-    "value": {"description": "The output's content, by exact reference (10). Manifests list result ids, never keys (13).", "type": "array", "items": {"$ref": "ref.json"}},
+    "value": {"description": "The output's content, by exact reference (10). Manifests list result ids, never keys (13). A gate or evidence result holds its receipt as a receipt Ref whose content_digest names the receipt blob; the resolver checks it with internal/receipt's Applies (06).", "type": "array", "items": {"$ref": "ref.json"}},
     "conclusions": {
       "description": "The typed projection used only for reuse decisions (13), one schema per result kind. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 \"v1 scope\"); every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one.",
       "oneOf": [{"type": "null"}, {"type": "object", "x-adc-open-payload": "kind"}]

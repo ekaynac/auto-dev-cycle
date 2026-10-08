@@ -27,7 +27,7 @@ export type Result = {
     | "carry_over_attestation"
     | "merge_result";
   /**
-   * The output's content, by exact reference (10). Manifests list result ids, never keys (13).
+   * The output's content, by exact reference (10). Manifests list result ids, never keys (13). A gate or evidence result holds its receipt as a receipt Ref whose content_digest names the receipt blob; the resolver checks it with internal/receipt's Applies (06).
    */
   value: Ref[];
   /**

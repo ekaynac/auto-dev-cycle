@@ -16,7 +16,7 @@ type Result struct {
 	// The ComputationKey.key this result answers.
 	Computation Digest     `json:"computation"`
 	Kind        ResultKind `json:"kind"`
-	// The output's content, by exact reference (10). Manifests list result ids, never keys (13).
+	// The output's content, by exact reference (10). Manifests list result ids, never keys (13). A gate or evidence result holds its receipt as a receipt Ref whose content_digest names the receipt blob; the resolver checks it with internal/receipt's Applies (06).
 	Value []Ref `json:"value"`
 	// The typed projection used only for reuse decisions (13), one schema per result kind. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"); every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one.
 	Conclusions *json.RawMessage `json:"conclusions"`

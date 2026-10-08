@@ -13,7 +13,7 @@ One immutable output of a node (docs/design/m0/13 "Model" [G1]). A result is nev
 | `id` | yes | [ResultID](common-defs.md#resultid) | The identity of this output, minted by the controller for each output. It is never derived from the computation key. |
 | `computation` | yes | [Digest](common-defs.md#digest) | The ComputationKey.key this result answers. |
 | `kind` | yes | [ResultKind](common-defs.md#resultkind) |  |
-| `value` | yes | array of [ref](records-ref.md) | The output's content, by exact reference (10). Manifests list result ids, never keys (13). |
+| `value` | yes | array of [ref](records-ref.md) | The output's content, by exact reference (10). Manifests list result ids, never keys (13). A gate or evidence result holds its receipt as a receipt Ref whose content_digest names the receipt blob; the resolver checks it with internal/receipt's Applies (06). |
 | `conclusions` | yes | null or object (open payload) | The typed projection used only for reuse decisions (13), one schema per result kind. Only gate and evidence results carry one, since conclusions-only equivalence exists only on the review←gate and review←evidence edges (13 "v1 scope"); every other kind has null. A conclusive gate or evidence result (completed, and found, empty or failed) always has one. |
 | `outcome` | yes | [Outcome](common-defs.md#outcome) |  |
 | `reason` | yes | [ReasonCode](common-defs.md#reasoncode) |  |

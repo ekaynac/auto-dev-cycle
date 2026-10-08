@@ -23,7 +23,7 @@ func TestFoldRefusals(t *testing.T) {
 	failed := g.result(a, false)                      // could_not_run
 	other := g.record(g.newNode(types.NodeKindBuild)) // the same key, unclaimed
 	in := g.claimed(a).Inputs
-	claimOther := func(items []types.NodeClaimedInputsItem) *types.NodeClaimed {
+	claimOther := func(items []types.ClaimedInput) *types.NodeClaimed {
 		return &types.NodeClaimed{Type: "node_claimed", Node: other, Key: key, Inputs: items}
 	}
 	twin := g.record(g.newNode(types.NodeKindBuild)) // claimed, with a's key
@@ -74,12 +74,12 @@ func TestFoldRefusals(t *testing.T) {
 		"a claim under another subject":    forge(NodeClaimed, string(c), prjID, claimOther(in)),
 		"a claim in another project":       forge(NodeClaimed, string(other), prjB, claimOther(in)),
 		"a claim whose key is not its own": forge(NodeClaimed, string(other), prjID, &types.NodeClaimed{Type: "node_claimed", Node: other, Key: types.ComputationKey{Key: diff, Generation: 1}, Inputs: in}),
-		"a claim from other inputs":        forge(NodeClaimed, string(other), prjID, claimOther([]types.NodeClaimedInputsItem{{Name: "plan", Result: ptr(types.ResultID(resB))}})),
+		"a claim from other inputs":        forge(NodeClaimed, string(other), prjID, claimOther([]types.ClaimedInput{{Name: "plan", Result: ptr(types.ResultID(resB))}})),
 		"a claim of a claimed node":        forge(NodeClaimed, string(a), prjID, &types.NodeClaimed{Type: "node_claimed", Node: a, Key: key, Inputs: in}),
-		"a claim with no inputs":           forge(NodeClaimed, string(other), prjID, claimOther([]types.NodeClaimedInputsItem{})),
+		"a claim with no inputs":           forge(NodeClaimed, string(other), prjID, claimOther([]types.ClaimedInput{})),
 		"a claim with an input twice":      forge(NodeClaimed, string(other), prjID, claimOther(append(in[:1:1], in[0]))),
-		"a claim with an undeclared input": forge(NodeClaimed, string(other), prjID, claimOther(append(in[:1:1], types.NodeClaimedInputsItem{Name: "extra", Result: ptr(types.ResultID(resB))}))),
-		"a claim input with both shapes": forge(NodeClaimed, string(other), prjID, claimOther([]types.NodeClaimedInputsItem{{Name: "plan", Result: in[0].Result,
+		"a claim with an undeclared input": forge(NodeClaimed, string(other), prjID, claimOther(append(in[:1:1], types.ClaimedInput{Name: "extra", Result: ptr(types.ResultID(resB))}))),
+		"a claim input with both shapes": forge(NodeClaimed, string(other), prjID, claimOther([]types.ClaimedInput{{Name: "plan", Result: in[0].Result,
 			Approval: ptr(types.ApprovalID(aprA)), Revision: ptr(int64(2))}})),
 		"a claimed gate key claimed again in the task": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			r := g.newNode(types.NodeKindGate)
