@@ -114,7 +114,8 @@ Result:                            # what was computed: immutable  [G1]
       the requirement. Its result is completed and found, and its `conclusions` are exactly those params. The subject
       is a name the template gives (e.g. `candidate`), not a tree.
     - A review declares at most one `review_requirement` input. Its claim is refused unless the requirement's
-      subject, roster and definition version are the review's own. In G6a the input is optional.
+      subject, roster and definition version are the review's own. In G6a the input is optional. Only a review is
+      bound so: `carry_over` and `merge` consume the requirement under their own rules (G7b-2).
     - **G7b-2 obligations**, with the cycle template:
       - *mandatory requirement:* every review declares exactly one `review_requirement` input, enforced by the fold;
       - *subject binding:* the requirement is the one selected for the review's subject;
@@ -136,6 +137,9 @@ Result:                            # what was computed: immutable  [G1]
       the new roster. The lineage of owed inputs and demands persists, and cumulative rails carry over; nothing resets.
       Answers and evidence that become available later enter a declared successor review at round *n+1* (as for any
       review), never the replacement.
+    - **Moved questions (G6b obligation).** When a question moved to a different owed input, the replacement contract
+      must explicitly allow replacing or removing the superseded answer dependency. Transferring holds and preserving
+      ancestry alone do not resolve it.
     - **Holds.**
       - A hold whose wait the replacement still has is **transferred**: a recorded reassociation that keeps its hold
         id, concrete signal, owner and paging history (02), so escalation does not restart.
@@ -143,9 +147,11 @@ Result:                            # what was computed: immutable  [G1]
         a removed member's executor), with the reason recorded.
       - Resource and settlement obligations stay on their owning leases. Internal artifact waits stay structural.
   - **Nothing reuses a review across rosters.** A review need not run because a prior review ran on a result that the
-    same producer's new result is equivalent to only if both declare the same inputs, and the review's key, with its
-    other inputs resolved now as a claim would and that input at the prior's result, is the prior's claimed key at
-    its generation: the same kind, definition version, params (so the same roster) and every other input. Carry-over in a merge-queue generation binds the
+    same producer's new result is equivalent to only if both declare the same inputs; every input of the review
+    resolves now as its own claim would (selected in its project, applicable and unexpired, at a writer
+    transaction's time), the input under test to that new result; and the review's key, with that input at the
+    prior's result, is the prior's claimed key at its generation: the same kind, definition version, params (so the
+    same roster) and every other input. Carry-over in a merge-queue generation binds the
     requirement revision it was attested under, and the merge's commit-time re-validation (G7b-2) compares it with
     the currently selected revision.
 - **Reuse decisions use typed conclusions.** For the declared edges below, a consumer may treat a new result as

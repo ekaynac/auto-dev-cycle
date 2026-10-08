@@ -71,6 +71,13 @@ func raise(tx *eventstore.Tx, node types.NodeID, h types.NodeHold, envOwner *str
 	if err := ownerRef(h.Owner, h.OwnerRef); err != nil {
 		return nil, err
 	}
+	rec, err := loadNode(tx, node)
+	if err != nil {
+		return nil, err
+	}
+	if slices.ContainsFunc(rec.State.Holds, func(o types.NodeHold) bool { return o.Hold == h.Hold && o.SignalInstance == h.SignalInstance }) {
+		return nil, fmt.Errorf("graph: %s already holds %s on %s", node, h.Hold, h.SignalInstance)
+	}
 	h.Since = types.Time(tx.Now().UTC().Format(time.RFC3339Nano))
 	h.EscalateTo, h.EscalateRef = entry.EscalateTo, nil
 	if h.PageAfter == nil {

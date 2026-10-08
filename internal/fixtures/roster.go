@@ -11,7 +11,6 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/executors"
-	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -102,9 +101,9 @@ func rosterChangeRunsReview(ctx context.Context, dir string) (steps []Step, viol
 		}
 		var same bool
 		if err == nil {
-			err = g.s.View(ctx, func(tx *eventstore.Tx) (err error) {
-				same, err = graph.ReviewReusable(tx, prior, next, "gate", used, fresh, g.blobs, owedanswers.Authority{})
-				return err
+			err = g.do(func(tx *eventstore.Tx) (_ []eventstore.Event, err error) {
+				same, err = graph.ReviewReusable(tx, prior, next, "gate", used, fresh, env)
+				return nil, err
 			})
 		}
 		if err != nil {

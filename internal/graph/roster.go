@@ -197,8 +197,11 @@ func recordsRequirement(rec nodeRecord, r types.Result) error {
 }
 
 // bindsRequirement: the requirement a review's claim resolved has the
-// review's subject, roster and definition version.
+// review's subject, roster and definition version. Only a review is bound.
 func bindsRequirement(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved) error {
+	if rec.Recorded.Node.Kind != types.NodeKindReview {
+		return nil // carry_over and merge get their own rules (G7b-2)
+	}
 	for _, name := range requirementInputs(rec.Recorded.Node) {
 		r, _, err := load[types.ResultRecorded](tx, ResultProjection, string(resolved[name].Result))
 		if err != nil {
@@ -218,11 +221,11 @@ func bindsRequirement(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Res
 
 // ReviewReusable reports whether review need not run: prior declares the
 // same inputs and ran on used for input name; review's other inputs,
-// resolved now as a claim would (each producer's selected result, each
-// answer through auth), with name at used, key to prior's claimed key at
-// its generation; and fresh, name's producer's selected result now, is
-// Equivalent to used for prior.
-func ReviewReusable(tx *eventstore.Tx, prior, review types.NodeID, name types.Name, used, fresh types.ResultID, blobs receipt.Blobs, auth Authority) (bool, error) {
+// resolved now as a claim would (answers through env.Authority, then
+// Resolve: selected, applicable and fresh results), with name at used, key
+// to prior's claimed key at its generation; and fresh, name's producer's
+// selected result now, is Equivalent to used for prior.
+func ReviewReusable(tx *eventstore.Tx, prior, review types.NodeID, name types.Name, used, fresh types.ResultID, env Env) (bool, error) {
 	was, err := loadNode(tx, prior)
 	rec, rerr := loadNode(tx, review)
 	c, claimed, cerr := load[claim](tx, ClaimProjection, string(prior))
@@ -236,29 +239,23 @@ func ReviewReusable(tx *eventstore.Tx, prior, review types.NodeID, name types.Na
 	if mutation.Is(mutation.EquivalenceIgnoresRoster) {
 		n.Params = was.Recorded.Node.Params
 	}
-	resolved, stale, err := answers(tx, rec, auth)
+	if tx.Now().IsZero() {
+		return false, errors.New("graph: reuse is decided at a writer transaction's time")
+	}
+	answered, stale, err := answers(tx, rec, env.Authority)
 	if err != nil || stale {
+		return false, err // a stale answer: the review waits for its successor
+	}
+	// Every input, fresh on name included, resolves now for review itself:
+	// selected in its project, applicable and unexpired.
+	resolved, missing, err := Resolve(tx, review, answered, env.Need, env.Blobs, tx.Now())
+	if err != nil || len(missing) > 0 || resolved[string(name)].Result != fresh {
 		return false, err
 	}
-	for _, in := range n.Inputs {
-		src, ok := in.Source.Variant.(*types.ResultSource)
-		if !ok || in.Name == name { // name's result is used's: Equivalent holds prior's claim to it
-			continue
-		}
-		now, why, err := selectedOf(tx, rec, src)
-		if err != nil || why != "" {
-			return false, err
-		}
-		resolved[string(in.Name)] = Resolved{Result: now.Result.ID}
-	}
-	for _, in := range n.Inputs {
-		if _, given := resolved[string(in.Name)]; !given && in.Name != name {
-			return false, nil // an answer not given now: the review waits
-		}
-	}
+	// name's result is used's: Equivalent holds prior's claim to it.
 	resolved[string(name)] = Resolved{Result: used}
 	if k, err := Key(n, resolved, c.Key.Generation); err != nil || k != c.Key {
 		return false, err
 	}
-	return Equivalent(tx, prior, name, used, fresh, blobs)
+	return Equivalent(tx, prior, name, used, fresh, env.Blobs)
 }

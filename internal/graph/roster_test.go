@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -178,6 +179,11 @@ func TestRecordReview(t *testing.T) {
 		if err := g.do(evaluate(g.env(noRequirement), r.Node.ID)); err != nil || len(g.state(r.Node.ID).Holds) != 1 {
 			t.Errorf("%s: evaluated again: %v %+v", name, err, g.state(r.Node.ID))
 		}
+		again := g.state(r.Node.ID).Holds[0]
+		again.ID = types.HoldID(must(ids.New("hld")))
+		if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Raise(tx, r.Node.ID, again, nil) }); err == nil {
+			t.Errorf("%s: the same hold raised twice", name)
+		}
 		if err := g.do(evaluate(Env{Need: noRequirement, Blobs: g.blobs}, g.record(g.newNode(types.NodeKindReview)))); err == nil {
 			t.Errorf("%s: evaluated with no registry", name)
 		}
@@ -232,6 +238,11 @@ func TestReviewRequirement(t *testing.T) {
 	}
 	if err := claim(reviewOn(older, exeA, exeC), oldRes); err == nil {
 		t.Error("a requirement of another definition version")
+	}
+	carry := g.newNode(types.NodeKindCarryOver)
+	carry.Node.Inputs = append(carry.Node.Inputs, types.InputSpec{Name: "required", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: req, ResultKind: types.ResultKindReviewRequirement}}})
+	if err := claim(g.record(carry), res); err != nil {
+		t.Errorf("a carry-over consumer of a requirement: %v", err)
 	}
 	elsewhere := g.requirementNode(3, "1", exeA, exeC)
 	elsewhere.Node.Params = must(json.Marshal(types.ReviewRequirement{Subject: "closure", Roster: must(Roster([]types.ExecutorID{exeA, exeC}, reviewers)), DefinitionVersion: "1", Revision: 3}))
@@ -288,9 +299,9 @@ func TestReviewReusable(t *testing.T) {
 		return n
 	}
 	reusable := func(next types.NodeID, name types.Name) (got bool, err error) {
-		err = g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
-			got, err = ReviewReusable(tx, prior, next, name, used, fresh, g.blobs, owedanswers.Authority{})
-			return err
+		err = g.do(func(tx *eventstore.Tx) (_ []eventstore.Event, err error) {
+			got, err = ReviewReusable(tx, prior, next, name, used, fresh, env)
+			return nil, err
 		})
 		return got, err
 	}
@@ -319,6 +330,11 @@ func TestReviewReusable(t *testing.T) {
 	evidence := review(false, func(n *types.Node) {
 		n.Inputs[0].Source.Variant = &types.ResultSource{Type: "result", Producer: gate, ResultKind: types.ResultKindEvidence}
 	})
+	elsewhere := g.recordOf(prior)
+	elsewhere.Node.ID, elsewhere.Task, elsewhere.Project = g.newNode(types.NodeKindReview).Node.ID, tskB, prjB
+	if got, err := reusable(g.record(elsewhere), "gate"); err != nil || got {
+		t.Errorf("a review in another project: %v %v", got, err)
+	}
 	extra := review(false, func(n *types.Node) {
 		n.Inputs = append(slices.Clone(n.Inputs), types.InputSpec{Name: "more", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: g.plan, ResultKind: types.ResultKindPlan}}})
 	})
@@ -356,5 +372,71 @@ func TestReviewReusable(t *testing.T) {
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, g.plan, plan2.ID) })
 	if got, err := reusable(same, "gate"); err != nil || got {
 		t.Errorf("a second input reselected: %v %v", got, err)
+	}
+}
+
+// A review is reusable only on its inputs as a claim resolves them now: not
+// with its answer missing or stale, nor with a second input whose selected
+// result is no longer applicable (an expired receipt).
+func TestReviewReusableResolvesNow(t *testing.T) {
+	const own = types.OwedInputID("own_01m3250vm7f6ktw39dszqnyddr")
+	// setup is a review that ran on a gate, another gate and an answer, and
+	// the gate's next result, which concludes the same.
+	// The other gate's receipt is valid for an hour of the store's clock.
+	setup := func() (g graphStore, clock *time.Time, reusable func() (bool, error)) {
+		clock = ptr(time.Now().UTC())
+		g = openStoreAt(t, func() time.Time { return *clock })
+		env := g.env(gatesOn(treeA, demandA))
+		gate, used := g.gated(g.receiptBlob(treeSubject(treeA, demandA), nil))
+		until := clock.Add(time.Hour).Format(time.RFC3339)
+		other, _ := g.gated(g.receiptBlob(treeSubject(treeA, demandA), &until))
+		g.must(answer(own, actID, ptr(types.ApprovalID(aprA))))
+		review := g.asking(takes("gate", gate), takes("other", other), owes("ruling", own))
+		g.must(evaluate(env, review))
+		g.must(commit(review, g.reviewResult(review), env))
+		var fresh types.ResultID
+		g.must(invalidate(gate))
+		r := g.gateResult(gate, nil)
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return recordResult(tx, types.ResultRecorded{Node: gate, Result: r}, g.blobs)
+		})
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, gate, r.ID) })
+		fresh = r.ID
+		reusable = func() (got bool, err error) {
+			err = g.do(func(tx *eventstore.Tx) (_ []eventstore.Event, err error) {
+				got, err = ReviewReusable(tx, review, review, "gate", used.ID, fresh, env)
+				return nil, err
+			})
+			return got, err
+		}
+		if got, err := reusable(); err != nil || !got {
+			t.Fatalf("its inputs as they were: %v %v", got, err)
+		}
+		if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+			_, err := ReviewReusable(tx, review, review, "gate", used.ID, fresh, env)
+			return err
+		}); err == nil {
+			t.Fatal("decided in a read transaction, which has no time")
+		}
+		return g, clock, reusable
+	}
+	g, _, reusable := setup()
+	g.must(answer(own, actID, nil))
+	if got, err := reusable(); err != nil || got {
+		t.Errorf("its answer missing: %v %v", got, err)
+	}
+	g.must(answer(own, actID, ptr(types.ApprovalID(aprA))))
+	if got, err := reusable(); err != nil || !got {
+		t.Errorf("its answer given again: %v %v", got, err)
+	}
+	g.must(owedAnswer(own, func(a *owedanswers.Answer) { a.Revision, a.Approval = 3, ptr(types.ApprovalID(aprB)) }))
+	if got, err := reusable(); err != nil || got {
+		t.Errorf("its answer stale: %v %v", got, err)
+	}
+	// The clock passes the other receipt's validity; its result id stays.
+	_, clock, reusable := setup()
+	*clock = clock.Add(2 * time.Hour)
+	if got, err := reusable(); err != nil || got {
+		t.Errorf("a second input expired: %v %v", got, err)
 	}
 }
