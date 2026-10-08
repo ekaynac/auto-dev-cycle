@@ -29,7 +29,7 @@ type EffectEvent struct {
 	Transition EffectEventTransition `json:"transition"`
 	// The effect kind; set on intent, null otherwise.
 	Kind *Name `json:"kind"`
-	// What the effect acts on (a provider, a remote ref, a deploy target); set on intent, null otherwise.
+	// What the effect acts on (a provider, a remote ref, a deploy target); set on intent, null otherwise. A remote_process effect acts on its evidence target (tgt_), which its RemoteProcessRequest also names (12).
 	Target *string `json:"target"`
 	// Digest of the canonical request; set on intent, null otherwise.
 	RequestDigest *Digest `json:"request_digest"`

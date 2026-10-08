@@ -262,7 +262,7 @@ var (
 		"then":         keySet("properties"),
 		"conditional":  keySet("if", "then", "else"),
 		"condition":    keySet("properties", "required"),
-		"constraint":   keySet("const", "enum", "not", "minLength", "maxLength", "pattern", "minimum", "maximum"),
+		"constraint":   keySet("const", "enum", "not", "minLength", "maxLength", "pattern", "format", "minimum", "maximum"),
 		"keyed branch": keySet("type", "additionalProperties", "required", "properties"),
 		"key names":    keySet("type", "enum", "pattern", "minLength", "maxLength", "format"),
 	}

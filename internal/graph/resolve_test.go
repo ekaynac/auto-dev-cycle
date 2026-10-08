@@ -146,6 +146,9 @@ func (g graphStore) completedAs(kind types.NodeKind, rk types.ResultKind, value 
 	g.t.Helper()
 	rec := g.newNode(kind)
 	rec.Node.Params = json.RawMessage(`{"node":"` + string(rec.Node.ID) + `"}`)
+	if kind == types.NodeKindEvidence {
+		rec.Node.Params = evidenceParams(string(rec.Node.ID))
+	}
 	n := g.record(rec)
 	g.must(g.claimOf(n))
 	r := unrecorded(g.t, *g.state(n).Key)

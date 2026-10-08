@@ -113,8 +113,13 @@ planned ──[effect.intent committed]──▶ pending ──[effect.observed{
   - merge: query the change-request state;
   - deploy: query the target's running version;
   - notification: query the outbox delivery id;
-  - remote process (12): "no process of the recorded remote sessions remains", killing leftovers;
-  - evidence job run (12): its restore procedure, then the receipt.
+  - remote process (12): "no process of the recorded remote sessions remains", killing leftovers. Its intent's
+    target is the evidence target, and its request (`records/remote-process-request.json`) records the identity alias
+    and the session tags;
+  - evidence run (12): its restore procedure, then the receipt.
+- **Kept requests.** A kind that reconciles from its request declares `RequestBlob`. The caller publishes the
+  request's RFC 8785 form as a blob before the intent, and the intent's `request_digest` references it; the store
+  refuses the intent while the blob is absent.
 - **Retry versus reconcile.** An effect kind declares whether it is idempotent at the target (safe to retry with the
   same effect id) or must be reconciled first. Non-idempotent effects are never blindly retried. A command result
   returned on an idempotent retry includes its effects' current states, so unfinished work is visible, not lost.

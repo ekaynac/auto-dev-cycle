@@ -21,7 +21,7 @@
       "items": {"$ref": "input-spec.json"}
     },
     "params": {
-      "description": "The kind's parameters, one schema per kind (a review's params carry its roster, 13). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.",
+      "description": "The kind's parameters, one schema per kind (a review's params carry its roster, 13); an evidence node's are EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.",
       "type": "object",
       "x-adc-open-payload": "kind"
     },
@@ -54,6 +54,7 @@
     {"if": {"required": ["kind"], "properties": {"kind": {"const": "merge"}}}, "then": {"properties": {"effect": {"const": "merge"}}}},
     {"if": {"required": ["kind"], "properties": {"kind": {"const": "deploy"}}}, "then": {"properties": {"effect": {"const": "deploy"}}}},
     {"if": {"required": ["kind"], "properties": {"kind": {"const": "record"}}}, "then": {"properties": {"effect": {"enum": [null, "notification"]}}}},
-    {"if": {"required": ["kind"], "properties": {"kind": {"not": {"enum": ["merge", "deploy", "record"]}}}}, "then": {"properties": {"effect": {"const": null}}}}
+    {"if": {"required": ["kind"], "properties": {"kind": {"not": {"enum": ["merge", "deploy", "record"]}}}}, "then": {"properties": {"effect": {"const": null}}}},
+    {"if": {"required": ["kind"], "properties": {"kind": {"const": "evidence"}}}, "then": {"properties": {"params": {"$ref": "evidence-node-params.json"}}}}
   ]
 }

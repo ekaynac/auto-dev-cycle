@@ -48,6 +48,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/claim.json`](records-claim.md) | Claim |
 | [`records/computation-key.json`](records-computation-key.md) | ComputationKey |
 | [`records/effect-event.json`](records-effect-event.md) | EffectEvent |
+| [`records/evidence-node-params.json`](records-evidence-node-params.md) | EvidenceNodeParams |
 | [`records/failure-signature.json`](records-failure-signature.md) | FailureSignature |
 | [`records/grant-event.json`](records-grant-event.md) | GrantEvent |
 | [`records/grant-replaced.json`](records-grant-replaced.md) | GrantReplaced |
@@ -69,6 +70,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/proposal.json`](records-proposal.md) | Proposal |
 | [`records/receipt.json`](records-receipt.md) | Receipt |
 | [`records/ref.json`](records-ref.md) | Ref |
+| [`records/remote-process-request.json`](records-remote-process-request.md) | RemoteProcessRequest |
 | [`records/resource-group.json`](records-resource-group.md) | ResourceGroup |
 | [`records/result.json`](records-result.md) | Result |
 | [`records/seat-event.json`](records-seat-event.md) | SeatEvent |

@@ -32,7 +32,7 @@ export type Node = {
    */
   inputs: InputSpec[];
   /**
-   * The kind's parameters, one schema per kind (a review's params carry its roster, 13). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.
+   * The kind's parameters, one schema per kind (a review's params carry its roster, 13); an evidence node's are EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range.
    */
   params: {
     [k: string]: unknown;

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/evidence-node-params.json",
+  "title": "EvidenceNodeParams",
+  "description": "The params of an evidence node (docs/design/m0/12 \"Node parameters\"), which records/node selects for kind evidence. They are in the params digest, so each field is part of the computation key (13 [G1]). Who asked for a demand is not: one evidence node serves each (subject, instrument digest, demand key), and every owed input that asks for it links to that node (G4b). The preconditions and artifact classes are the instrument contract's, bound by its digest (06 rule 7); the params repeat neither. internal/graph refuses an evidence node that does not lease an evidence_target, or whose per-demand cap exceeds its per-subject cap. internal/evidence (15 E2) counts the attempts and checks subject_input against the contract's subject_type.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["instrument", "grant", "target", "subject_input", "demand", "limits", "restore"],
+  "properties": {
+    "instrument": {
+      "description": "The instrument contract by name, version and digest (06). A receipt applies only under the same instrument (06 rule 2).",
+      "$ref": "receipt.json#/$defs/InstrumentRef"
+    },
+    "grant": {
+      "description": "The approval that authorises the run's live acts, bound to the instrument digest (12). It exists before the node is recorded. Never null: an evidence node always acts outside the sandbox, and it writes to production only when this grant says so (12 \"Content\").",
+      "$ref": "../common/defs.json#/$defs/ApprovalID"
+    },
+    "target": {
+      "description": "The evidence target, leased as an evidence_target resource group of capacity 1 that releases only on a verified restore (05 \"Evidence-target leases\").",
+      "$ref": "../common/defs.json#/$defs/EvidenceTargetID"
+    },
+    "subject_input": {
+      "description": "The name of the node's declared input whose result is the receipt's subject (06 \"Subject\"); internal/graph refuses a name the node does not declare.",
+      "$ref": "receipt.json#/$defs/Name"
+    },
+    "demand": {
+      "description": "What the run must prove (12). Its key is the demand key that a receipt's subject carries (06 rule 2), computed from what is demanded and the subject, never from who asked. A new key is a new node key, so it gets new attempts and re-keys the review that asked (13). null is the plan's own evidence.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key"],
+      "properties": {
+        "key": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Digest"}]}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_attempts_per_demand", "max_attempts_per_subject", "deadline", "cooldown"],
+      "properties": {
+        "max_attempts_per_demand": {"description": "Attempts per (subject, instrument digest, demand key) (12).", "type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "max_attempts_per_subject": {"description": "The total cap per subject across demands; exhausting it is could_not_run/evidence_cap_exhausted (12).", "type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "deadline": {"description": "The run's single deadline, never zero: every remote call and every retry of a transient lock gets only the time left in it (12).", "$ref": "../common/defs.json#/$defs/Duration", "pattern": "[1-9]"},
+        "cooldown": {"description": "The least time between two attempts on the target (PT0S for none).", "$ref": "../common/defs.json#/$defs/Duration"}
+      }
+    },
+    "restore": {
+      "description": "How the target is put back after a run (12; 05 \"Evidence-target leases\"). A required restore names the instrument's procedure. One not required names none: the instrument leaves nothing to put back, but the cleanup of remote sessions still runs, and the lease still settles only after lease.restore_verified (05).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "procedure"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "procedure": {"description": "The instrument plugin's restore procedure, by name.", "oneOf": [{"type": "null"}, {"$ref": "receipt.json#/$defs/Name"}]}
+      },
+      "if": {"properties": {"required": {"const": true}}},
+      "then": {"properties": {"procedure": {"not": {"const": null}}}},
+      "else": {"properties": {"procedure": {"const": null}}}
+    }
+  }
+}

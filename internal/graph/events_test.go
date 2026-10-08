@@ -4,8 +4,10 @@ package graph
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -128,7 +130,50 @@ func (g graphStore) nodeOn(kind types.NodeKind, plan types.NodeID) types.NodeRec
 	n := types.Node{ID: types.NodeID(id), Kind: kind, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{"task":"x"}`),
 		Inputs:   []types.InputSpec{{Name: "plan", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: plan, ResultKind: types.ResultKindPlan}}}},
 		Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
+	if kind == types.NodeKindEvidence {
+		n.Params, n.Requires.Resources = evidenceParams("x"), []types.ResourceGroupKind{"evidence_target"}
+	}
 	return types.NodeRecorded{Type: "node_recorded", Node: n, Task: tskID, Project: prjID}
+}
+
+// evidenceParams are valid EvidenceNodeParams whose demand key is the digest
+// of demand, so that each demand is a key of its own.
+func evidenceParams(demand string) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"instrument":{"name":"walk","version":"1","digest":"sha256:%[1]x"},`+
+		`"grant":"apr_01m3250v0aer9ss2097svmefj8","target":"tgt_01m3250v0aer9ss2097svmefj8",`+
+		`"subject_input":"plan","demand":{"key":"sha256:%[1]x"},`+
+		`"limits":{"max_attempts_per_demand":1,"max_attempts_per_subject":1,"deadline":"PT1H","cooldown":"PT0S"},`+
+		`"restore":{"required":false,"procedure":null}}`, sha256.Sum256([]byte(demand))))
+}
+
+// Record refuses an evidence node for what its params schema cannot say
+// (12): it leases its target, its caps nest, and its subject is a declared
+// result input.
+func TestRecordChecksEvidenceNodes(t *testing.T) {
+	g := openStore(t)
+	if _, err := Record(g.newNode(types.NodeKindEvidence)); err != nil {
+		t.Fatalf("a valid evidence node: %v", err)
+	}
+	params := func(old, new string) func(*types.Node) {
+		return func(n *types.Node) { n.Params = json.RawMessage(strings.Replace(string(n.Params), old, new, 1)) }
+	}
+	for name, change := range map[string]func(*types.Node){
+		"no evidence_target":          func(n *types.Node) { n.Requires.Resources = []types.ResourceGroupKind{"concurrency"} },
+		"per demand over per subject": params(`"max_attempts_per_demand":1`, `"max_attempts_per_demand":2`),
+		"an undeclared subject":       params(`"subject_input":"plan"`, `"subject_input":"tree"`),
+		"an answer as the subject": func(n *types.Node) {
+			n.Inputs[0].Source.Variant = &types.AnswerSource{Type: "answer", OwedInput: "own_01m3250vz2ezn81cgvbkcn17jd", Revision: 1}
+		},
+	} {
+		r := g.newNode(types.NodeKindEvidence)
+		change(&r.Node)
+		if _, err := Record(r); err == nil {
+			t.Errorf("%s: recorded", name)
+		}
+	}
+	if _, err := Record(g.newNode(types.NodeKindGate)); err != nil {
+		t.Fatalf("a gate node is not checked as evidence: %v", err)
+	}
 }
 
 func (g graphStore) record(r types.NodeRecorded) types.NodeID {
