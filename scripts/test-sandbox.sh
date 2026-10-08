@@ -202,36 +202,71 @@ fi
 gocache="$scratch_root/gocache"
 inside_area "$scratch_root" "$gocache"
 mkdir -p "$gocache"
-# Every path this run plants is recorded in its manifest as it is created, and
-# the manifest stays locked while the run lives. A killed run (SIGKILL, a
-# timeout) leaves an unlocked manifest: the next run removes what it lists.
+# Every path this run plants is recorded, as it is created, in a manifest the
+# run keeps locked while it lives. A killed run (SIGKILL, a timeout) leaves an
+# unlocked manifest: the next run removes what it lists, then the manifest.
 mkdir -p "$state_dir"
 manifest_dir="$state_dir/adc-test-sandbox"
-mkdir -p -m 700 "$manifest_dir"
-# purge_manifest <file>: remove a run's recorded paths, but only the exact
-# shapes a run plants, owned by this user, canonical and never a symlink.
-purge_manifest() {
-  local p
+if [[ ! -e "$manifest_dir" && ! -L "$manifest_dir" ]]; then mkdir -m 700 "$manifest_dir"; fi
+[[ -d "$manifest_dir" && ! -L "$manifest_dir" && "$(stat -c %u "$manifest_dir")" == "$(id -u)" \
+   && "$(stat -c %a "$manifest_dir")" == 700 ]] || die "manifest directory $manifest_dir is not a private directory of this user; refused"
+warn() { printf 'test-sandbox: warning: %s\n' "$1" >&2; }
+# planted_shape <path>: exactly a path this script plants: a sentinel directly
+# under /tmp, a work directory directly under this scratch area, or a canary
+# directly in the home, state, config or data directory or the repository.
+planted_shape() {
+  local d="${1%/*}" b="${1##*/}" c
+  if [[ "$1" =~ ^/tmp/adc-sentinel-[A-Za-z0-9]{6}$ ]]; then return 0; fi
+  if [[ "$d" == "$scratch_root" && "$b" =~ ^work\.[A-Za-z0-9]{6}$ ]]; then return 0; fi
+  [[ "$b" =~ ^\.adc-sandbox-canary-[A-Za-z0-9]{6}$ ]] || return 1
+  for c in "$home" "$state_dir" "$config_dir" "$data_dir" "$repo_root"; do
+    if [[ "$d" == "$c" ]]; then return 0; fi
+  done
+  return 1
+}
+# purge: remove each recorded path (one per line on stdin) that has a planted
+# shape, is this user's and is not a symlink. Warns about, and keeps, anything
+# else; returns 1 while any recorded path remains. Callers run it as a
+# condition, so a failed removal never aborts the run.
+purge() {
+  local p left=0
   while IFS= read -r p; do
-    [[ -n "$p" && ! -L "$p" && -O "$p" && "$(realpath -m -- "$p")" == "$p" ]] || continue
-    case "$p" in
-      /tmp/adc-sentinel-?????? | "$scratch_root"/work.??????) if [[ -d "$p" ]]; then rm -rf -- "$p"; fi ;;
-      */.adc-sandbox-canary-??????) if [[ -f "$p" && "$(stat -c %s -- "$p")" -le 33 ]]; then rm -f -- "$p"; fi ;;
-    esac
-  done <"$1"
-  rm -f -- "$1"
+    [[ -n "$p" ]] || continue
+    if [[ -e "$p" && ! -L "$p" && -O "$p" ]] && planted_shape "$p"; then
+      if [[ "${p##*/}" == .adc-sandbox-canary-* ]]; then
+        if [[ -f "$p" && "$(stat -c %s -- "$p")" -le 33 ]]; then rm -f -- "$p"; fi
+      elif [[ -d "$p" ]]; then   # a work directory, or a sentinel (a breach writes into it)
+        find "$p" -type d ! -perm -u+w -exec chmod u+w {} +; rm -rf -- "$p"
+      fi
+    fi
+    if [[ -e "$p" || -L "$p" ]]; then warn "left in place: $p (recorded by a test-sandbox run)"; left=1; fi
+  done
+  return "$left"
 }
 for m in "$manifest_dir"/run-*; do
-  if [[ -f "$m" && ! -L "$m" ]] && flock -n "$m" true; then purge_manifest "$m"; fi
+  [[ -f "$m" && ! -L "$m" && -O "$m" ]] || continue
+  exec {fd}<"$m" || continue
+  # Unlocked: its run is gone. The lock is held while purging, and the manifest
+  # is removed only if it is still the file that was read.
+  if flock -n "$fd" && purge <&"$fd" && [[ "$m" -ef "/proc/self/fd/$fd" ]]; then rm -f -- "$m"; fi
+  exec {fd}<&-
 done
-manifest="$manifest_dir/run-$$"
+find "$manifest_dir" -maxdepth 1 -name '.new-*' -type f -user "$(id -u)" -mmin +60 -delete \
+  || warn "could not remove stale partial manifests in $manifest_dir"
+new_manifest="$(mktemp "$manifest_dir/.new-XXXXXX")" || die "could not create a run manifest in $manifest_dir"
+manifest="$manifest_dir/run-${new_manifest##*/.new-}"
+exec 9>>"$new_manifest"
 # Locked before it gets its run-* name, so no other run can take it for stale.
-: >"$manifest_dir/.new-$$" && exec 9<"$manifest_dir/.new-$$" && flock -n 9 \
-  && mv -- "$manifest_dir/.new-$$" "$manifest" || die "could not create the run manifest in $manifest_dir"
-record() { printf '%s\n' "$1" >>"$manifest"; }
-cleanup() { trap - EXIT INT TERM HUP; purge_manifest "$manifest"; }
+if ! { flock -n 9 && ln -T -- "$new_manifest" "$manifest"; }; then die "could not create the run manifest $manifest"; fi
+rm -f -- "$new_manifest"
+record() { printf '%s\n' "$1" >&9; }
+# shellcheck disable=SC2317  # invoked by the EXIT trap, which bash also runs on a fatal signal
+cleanup() {
+  local rc=$?
+  if purge <"$manifest"; then rm -f -- "$manifest" || warn "could not remove $manifest"; fi
+  return "$rc"
+}
 trap cleanup EXIT
-for s in INT TERM HUP; do trap "cleanup; kill -$s \$\$" "$s"; done   # then die by the same signal
 work="$(mktemp -d "$scratch_root/work.XXXXXX")" && record "$work"
 # Re-check every mount source after provisioning, right before use.
 for src in "$toolchain" "$node_copy/bin/node" "$modcache"; do inside_area "$provision_root" "$src"; done
