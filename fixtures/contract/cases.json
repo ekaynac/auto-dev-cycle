@@ -13090,6 +13090,57 @@
   "valid": false
  },
  {
+  "name": "graph-event: an operation valid",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_operated",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "effect": "eff_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: an operation without its effect",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_operated",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: an operation naming a node as its effect",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_operated",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "key": {
+    "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "generation": 1
+   },
+   "effect": "nod_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: an operation without its key",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "node_operated",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "effect": "eff_01m3250v57fhm9v1z9xd1wk8gw"
+  },
+  "valid": false
+ },
+ {
   "name": "graph-event: renewal valid",
   "schema": "records/graph-event",
   "doc": {

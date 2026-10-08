@@ -233,6 +233,11 @@ func invalidated(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeInvalidate
 	if s := rec.State.State; s != types.NodeStateStateClaimed && s != types.NodeStateStateCompleted && s != types.NodeStateStateHeld {
 		return fmt.Errorf("a %s node is not invalidated: only a claimed, held or completed one", s)
 	}
+	// Effect states are monotone (a settled effect never goes live again),
+	// so this reads the same at a replay as at admission.
+	if err := settledOperation(tx, p.Node); err != nil {
+		return err
+	}
 	c, ok, err := load[claim](tx, ClaimProjection, string(p.Node))
 	if err != nil || !ok {
 		return errors.Join(err, errors.New("an unclaimed node is not invalidated"))

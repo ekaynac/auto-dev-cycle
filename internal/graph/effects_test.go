@@ -3,6 +3,7 @@
 package graph
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,7 +35,7 @@ func openEffectStore(t *testing.T) graphStore {
 	}
 	none := func(*eventstore.Tx, eventstore.Command) error { return nil }
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: Kinds(), Blobs: blobs,
-		Effects: eventstore.EffectKinds{"deploy": {Idempotent: true}, "merge": {}},
+		Effects: eventstore.EffectKinds{"deploy": {Idempotent: true, RequestBlob: true}, "merge": {}},
 		Hooks:   eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(Project)}})
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +81,14 @@ func (g graphStore) deployTo(content, target string) types.NodeID {
 	return g.effectOn(pkg, types.NodeKindDeploy, "deploy", `{"target":"`+target+`"}`, true)
 }
 
+// operate is n's operation, its request published first when it has one.
 func (g graphStore) operate(n types.NodeID) (op Operation, err error) {
+	var req []byte
+	if g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) { req, err = EffectRequestOf(tx, n); return err }) == nil {
+		if _, err := g.blobs.Put(bytes.NewReader(req), ""); err != nil {
+			g.t.Fatal(err)
+		}
+	}
 	err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		var oerr error
 		op, oerr = Operate(tx, n, effectEnv)
@@ -257,6 +265,11 @@ func TestOperateAmbiguous(t *testing.T) {
 	g := openEffectStore(t)
 	intend := func(request any, target string) string {
 		b, _ := json.Marshal(request)
+		if c, err := eventstore.Canonical(b); err != nil {
+			t.Fatal(err)
+		} else if _, err := g.blobs.Put(bytes.NewReader(c), ""); err != nil {
+			t.Fatal(err)
+		}
 		id, _ := ids.New("eff")
 		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return nil, tx.IntendEffect(id, "deploy", target, b)

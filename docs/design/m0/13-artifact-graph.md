@@ -261,6 +261,12 @@ Consequences that hold:
     operation.
   - Re-deriving the request after a crash finds the intended effect, and the operation resumes it: nothing intends a
     second effect for one request. Two recorded effects for one request are `could_not_run/ambiguous_state`.
+  - **The request is kept** (03 "Kept requests"). Deploy reconciles from its request, so it declares `RequestBlob`:
+    the caller publishes the request's RFC 8785 form before the operation is intended, and a reconciler works from
+    the effect's `request_digest` alone.
+  - **The node links to its effect.** The intent is recorded with `node.operated{node, key, effect}`, once per node
+    and key. An effect node is not invalidated while that effect is pending or uncertain: the invalidation waits for
+    it to settle, so no live effect is orphaned by a new key. An operation runs only its node's current request.
 - **One live operation per target.** While an effect of a kind on a target is pending or uncertain, no other
   operation of that kind is intended there: the new goal waits, structurally, recording nothing, until the live one
   completes or is confirmed failed. So a stale operation, resumed after a newer goal was demanded, never lands over
@@ -274,12 +280,16 @@ Consequences that hold:
   an apply that fails, leaves the effect uncertain.
   - An uncertain effect (pending at a restart) completes if the target holds the want. Otherwise an idempotent kind
     is retried under the same id. Any other kind stays uncertain, recorded as `still_uncertain` once per change in
-    what was observed.
+    what was observed. Settling such an effect (to `completed` or `failed_confirmed`) is M1's reconciler, with the
+    effect runtime. Until then an uncertain non-idempotent effect pins its target (no other operation is intended
+    there) and its node (which is not invalidated).
   - A `failed_confirmed` effect stays its node's outcome. A retry is a new operation, by an invalidation of the node.
   - One effect is run by one runner at a time. Concurrent runners of one pending effect are M1's, with the effect
     runtime.
 - The effect's state is the operation's outcome. Until a deploy result kind exists, a deploy node records no graph
-  result.
+  result, and no node takes a deploy's result: recording one that does is refused. **G7b defines effect-node
+  completion**: a result recorded from the effect's observation, its inputs re-validated when the operation was
+  intended.
 
 ## Evidence targets and restore [G5]
 

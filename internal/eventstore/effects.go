@@ -169,6 +169,9 @@ func (t *Tx) oneEffect(match func(intent) bool, where string, args ...any) (Effe
 	return e, err == nil, t.io(err)
 }
 
+// LoadEffect is an effect's current state, read in the transaction.
+func (t *Tx) LoadEffect(id string) (Effect, error) { return loadEffect(t.ctx, t.tx, id) }
+
 // EffectKind is how a registered effect kind recovers.
 func (s *Store) EffectKind(kind string) (EffectKind, bool) {
 	k, ok := s.effects[kind]
