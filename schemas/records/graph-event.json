@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/graph-event.json",
   "title": "GraphEvent",
-  "description": "The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1 and node.claimed/v1, under the node's id, and result.recorded/v1 and result.selected/v1, under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.",
-  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}, {"$ref": "#/$defs/ResultRecorded"}, {"$ref": "#/$defs/ResultSelected"}],
+  "description": "The payload of every artifact-graph node event (docs/design/m0/13), discriminated by type: node.recorded/v1 and node.claimed/v1, under the node's id and in its project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive. Result and selection events follow (plan 15 G3-2).",
+  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}],
   "$defs": {
     "NodeRecorded": {
       "description": "A node joins its task's graph, append-only: its task, its project and the node it succeeds (null for a first round).",
@@ -19,7 +19,7 @@
       }
     },
     "NodeClaimed": {
-      "description": "A node's claim on its computation key (13 [G10]): its inputs as they resolved, fixed from here on, and the key they give. One claim per key: a duplicate demand joins the claim and records nothing.",
+      "description": "A node's claim on its computation key (13 [G10]): its inputs as they resolved, fixed from here on, and the key they give. A claim is a node instance's: a repeat demand of the node joins it and records nothing; a memoizable kind's key is claimed once per task.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "node", "key", "inputs"],
@@ -28,7 +28,7 @@
         "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
         "key": {"$ref": "computation-key.json"},
         "inputs": {
-          "description": "Each declared input and what it resolved to, in declared order.",
+          "description": "Each declared input and what it resolved to, in declared order: a result, or an approval with its revision. A new kind of resolution is a new event version (node.claimed/v2), since every field is required.",
           "type": "array",
           "items": {
             "type": "object",
@@ -42,29 +42,6 @@
             }
           }
         }
-      }
-    },
-    "ResultRecorded": {
-      "description": "An immutable result of a claimed node, with the attempt that produced it (null for a controller node).",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "node", "result", "attempt"],
-      "properties": {
-        "type": {"const": "result_recorded"},
-        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
-        "result": {"$ref": "result.json"},
-        "attempt": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]}
-      }
-    },
-    "ResultSelected": {
-      "description": "The node's key selects this result: only a completed result that is found, empty or failed (13 [G2]), and one per key.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "node", "result"],
-      "properties": {
-        "type": {"const": "result_selected"},
-        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
-        "result": {"$ref": "../common/defs.json#/$defs/ResultID"}
       }
     }
   }

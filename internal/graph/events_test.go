@@ -5,6 +5,7 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,8 +18,11 @@ import (
 )
 
 const (
-	tskID = "tsk_01m3250v9xft08ssr4ygq6g2np"
-	prjB  = "prj_01m3250vm7f6ktw39dszqnyddr"
+	tskID  = "tsk_01m3250v9xft08ssr4ygq6g2np"
+	tskB   = "tsk_01m3250vkwffc979nzjw0g2sf9"
+	tskC   = "tsk_01m3250vm7f6ktw39dszqnyddr"
+	prjB   = "prj_01m3250vm7f6ktw39dszqnyddr"
+	nodNil = "nod_01m3250vnfeyrv67x6w0ddqr6a"
 )
 
 type graphStore struct {
@@ -47,8 +51,10 @@ func openStore(t *testing.T) graphStore {
 	return graphStore{t, s}
 }
 
+type logic func(tx *eventstore.Tx) ([]eventstore.Event, error)
+
 // do submits one command whose logic is fn.
-func (g graphStore) do(fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) error {
+func (g graphStore) do(fn logic) error {
 	cmd, err := ids.New("cmd")
 	if err != nil {
 		g.t.Fatal(err)
@@ -62,131 +68,171 @@ func (g graphStore) do(fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) e
 	return err
 }
 
-func (g graphStore) must(fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) {
+func (g graphStore) must(fn logic) {
 	g.t.Helper()
 	if err := g.do(fn); err != nil {
 		g.t.Fatal(err)
 	}
 }
 
-// build is a build node with one plan input, under a fresh id.
-func build(t *testing.T) types.NodeRecorded {
+func view[T any](g graphStore, projection, key string) (T, bool) {
+	var v T
+	var ok bool
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) { v, ok, err = load[T](tx, projection, key); return err }); err != nil {
+		g.t.Fatal(err)
+	}
+	return v, ok
+}
+
+// newNode is a node of kind with one plan input, in task tskID of prjID,
+// under a fresh id.
+func newNode(t *testing.T, kind types.NodeKind) types.NodeRecorded {
 	id, err := ids.New("nod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := types.Node{ID: types.NodeID(id), Kind: types.NodeKindBuild, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{"task":"x"}`),
+	n := types.Node{ID: types.NodeID(id), Kind: kind, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{"task":"x"}`),
 		Inputs:   []types.InputSpec{{Name: "plan", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: planID, ResultKind: types.ResultKindPlan}}}},
 		Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
-	return types.NodeRecorded{Node: n, Task: tskID, Project: prjID}
+	return types.NodeRecorded{Type: "node_recorded", Node: n, Task: tskID, Project: prjID}
 }
 
 func (g graphStore) record(r types.NodeRecorded) types.NodeID {
+	g.t.Helper()
 	g.must(func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(r) })
 	return r.Node.ID
 }
 
-func (g graphStore) claim(n types.NodeID) (got types.NodeID) {
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		var evs []eventstore.Event
-		var err error
-		got, evs, err = Claim(tx, n, map[string]Resolved{"plan": {Result: resA}}, 1)
-		return evs, err
-	})
-	return got
+func claimOf(n types.NodeID) logic {
+	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Claim(tx, n, map[string]Resolved{"plan": {Result: resA}}, 1)
+	}
 }
 
 func (g graphStore) state(n types.NodeID) types.NodeState {
-	var rec nodeRecord
-	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
-		rec, _, err = load[nodeRecord](tx, NodeProjection, string(n))
-		return err
-	}); err != nil {
-		g.t.Fatal(err)
-	}
+	rec, _ := view[nodeRecord](g, NodeProjection, string(n))
 	return rec.State
 }
 
-// result is a completed patch result of n's claimed key.
-func (g graphStore) result(n types.NodeID, completed bool) types.Result {
-	st := g.state(n)
-	f := BuildFacts{Submitted: completed, Reported: types.OutcomeFound, Diff: diff, Project: prjID}
-	r, err := Build(*st.Key, f)
-	if err != nil {
-		g.t.Fatal(err)
-	}
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return RecordResult(tx, types.ResultRecorded{Node: n, Result: r})
-	})
-	return r
-}
-
-// Duplicate demands share one claim: many claims of one key, at once, from
-// distinct nodes, make one node.claimed and all name its node.
-func TestConcurrentClaimsShareOne(t *testing.T) {
-	g := openStore(t)
-	var nodes []types.NodeID
-	for range 8 {
-		nodes = append(nodes, g.record(build(t)))
-	}
-	got := make([]types.NodeID, len(nodes))
-	var wg sync.WaitGroup
-	for i, n := range nodes {
-		wg.Go(func() { got[i] = g.claim(n) })
-	}
-	wg.Wait()
-	claimed := 0
-	for i, n := range nodes {
-		if got[i] != got[0] {
-			t.Fatalf("claims name %s and %s", got[0], got[i])
+func (g graphStore) claims() int {
+	n := 0
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+		evs, err := tx.EventsAfter(0, 1000)
+		for _, e := range evs {
+			if e.Kind == NodeClaimed {
+				n++
+			}
 		}
-		switch st := g.state(n); {
-		case st.State == types.NodeStateStateClaimed:
-			claimed++
-		case st.State != types.NodeStateStateWaiting || len(st.WaitingOn) != 1 || st.WaitingOn[0] != "plan" || st.Key != nil:
-			t.Fatalf("a joining node is %+v, want waiting on plan", st)
-		}
-	}
-	if claimed != 1 || g.state(got[0]).State != types.NodeStateStateClaimed {
-		t.Fatalf("%d claimed nodes, want the one claims name", claimed)
-	}
-	// The same node demanded again joins its own claim.
-	if again := g.claim(got[0]); again != got[0] {
-		t.Fatalf("a repeated demand names %s", again)
-	}
-}
-
-func (g graphStore) nodeOf(n types.NodeID) types.Node {
-	var rec nodeRecord
-	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
-		rec, _, err = load[nodeRecord](tx, NodeProjection, string(n))
 		return err
 	}); err != nil {
 		g.t.Fatal(err)
 	}
-	return rec.Recorded.Node
+	return n
 }
 
-// The projections a rebuild reaches equal the live ones.
+// Duplicate demands of one node instance, at once, make one claim (13 [G10]).
+func TestRepeatDemandsJoinOneClaim(t *testing.T) {
+	g := openStore(t)
+	a := g.record(newNode(t, types.NodeKindBuild))
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() { g.must(claimOf(a)) })
+	}
+	wg.Wait()
+	if c := g.claims(); c != 1 || g.state(a).State != types.NodeStateStateClaimed {
+		t.Fatalf("%d claims, state %s", c, g.state(a).State)
+	}
+}
+
+// A memoizable key is claimed once per task: the second instance is told
+// who holds it and is left as it was. Build instances never share.
+func TestKeyClaimsByKind(t *testing.T) {
+	g := openStore(t)
+	a, b := g.record(newNode(t, types.NodeKindGate)), g.record(newNode(t, types.NodeKindGate))
+	g.must(claimOf(a))
+	var held ErrKeyClaimed
+	if err := g.do(claimOf(b)); !errors.As(err, &held) || held.Node != a {
+		t.Fatalf("the second gate's claim: %v", err)
+	}
+	if st := g.state(b); st.State != types.NodeStateStateWaiting || st.Key != nil {
+		t.Fatalf("the refused gate is %+v", st)
+	}
+	x, y := g.record(newNode(t, types.NodeKindBuild)), g.record(newNode(t, types.NodeKindBuild))
+	g.must(claimOf(x))
+	g.must(claimOf(y))
+	if *g.state(x).Key != *g.state(y).Key || g.state(y).State != types.NodeStateStateClaimed {
+		t.Fatal("two builds of one key did not both claim")
+	}
+	// Two claims of one memoizable key in one command fail.
+	c, d := g.record(newNode(t, types.NodeKindEvidence)), g.record(newNode(t, types.NodeKindEvidence))
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		e1, err1 := claimOf(c)(tx)
+		e2, err2 := claimOf(d)(tx)
+		return append(e1, e2...), errors.Join(err1, err2)
+	}); err == nil {
+		t.Fatal("two claims of one key in one command")
+	}
+}
+
+// Claims never span tasks or projects: same-key memoizable nodes of other
+// tasks claim their own, and no event moves a node or a task across.
+func TestClaimsAreTaskScoped(t *testing.T) {
+	g := openStore(t)
+	a := g.record(newNode(t, types.NodeKindGate))
+	otherTask, otherProject := newNode(t, types.NodeKindGate), newNode(t, types.NodeKindGate)
+	otherTask.Task = tskB
+	otherProject.Task, otherProject.Project = tskC, prjB
+	b, c := g.record(otherTask), g.record(otherProject)
+	for _, n := range []types.NodeID{a, b, c} {
+		g.must(claimOf(n))
+	}
+	if *g.state(a).Key != *g.state(c).Key {
+		t.Fatal("the nodes do not share a key")
+	}
+	later := newNode(t, types.NodeKindBuild) // unclaimed, in the other project
+	later.Task, later.Project = tskC, prjB
+	d := g.record(later)
+	keyD, err := Key(later.Node, map[string]Resolved{"plan": {Result: resA}}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intruder := newNode(t, types.NodeKindGate)
+	intruder.Project = prjB
+	for name, fn := range map[string]logic{
+		"a claim of another project's node here": forge(NodeClaimed, string(d), prjID, &types.NodeClaimed{Type: "node_claimed", Node: d, Key: keyD, Inputs: g.claimed(a).Inputs}),
+		"a node of the task in another project":  forge(NodeRecorded, string(intruder.Node.ID), prjB, &intruder),
+	} {
+		if err := g.do(fn); err == nil {
+			t.Errorf("%s was admitted", name)
+		}
+	}
+}
+
+func (g graphStore) claimed(n types.NodeID) claim {
+	c, _ := view[claim](g, ClaimProjection, string(n))
+	return c
+}
+
+func forge(kind, subject string, project types.ProjectID, v types.GraphEventVariant) logic {
+	return func(*eventstore.Tx) ([]eventstore.Event, error) { return event(kind, subject, project, v) }
+}
+
+// The projections a rebuild reaches equal the live ones, with a successor
+// and an answer input in a claim; a claim keeps its resolution and command.
 func TestRebuildReachesTheSameGraph(t *testing.T) {
 	g := openStore(t)
-	a := g.record(build(t))
-	succ := build(t)
-	succ.Predecessor = &a
+	a := g.record(newNode(t, types.NodeKindBuild))
+	succ := newNode(t, types.NodeKindBuild)
+	succ.Predecessor, succ.Node.Round = &a, 2
+	succ.Node.Inputs = append(succ.Node.Inputs, types.InputSpec{Name: "ruling", Source: types.InputSpecSource{Variant: &types.AnswerSource{Type: "answer", OwedInput: ownID, Revision: 2}}})
 	b := g.record(succ)
-	g.claim(a)
-	g.claim(b)
-	r := g.result(a, true)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, a, r.ID) })
-	if st := g.state(a); st.State != types.NodeStateStateCompleted || *st.Result != r.ID {
-		t.Fatalf("%+v", st)
-	}
-	var c claim
-	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
-		c, _, err = load[claim](tx, ClaimProjection, string(g.state(a).Key.Key))
-		return err
-	}); err != nil || c.Node != a || c.Command == nil || !strings.HasPrefix(*c.Command, "cmd_") {
-		t.Fatalf("the claim %+v does not name its node and command: %v", c, err)
+	g.must(claimOf(a))
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Claim(tx, b, map[string]Resolved{"plan": {Result: resA}, "ruling": {Approval: aprA, Revision: 2}}, 1)
+	})
+	c := g.claimed(b)
+	if c.Key != *g.state(b).Key || len(c.Inputs) != 2 || *c.Inputs[1].Approval != aprA || *c.Inputs[1].Revision != 2 || c.Command == nil || !strings.HasPrefix(*c.Command, "cmd_") {
+		t.Fatalf("the claim %+v", c)
 	}
 	diffs, err := g.s.RebuildProjections(context.Background())
 	if err != nil || len(diffs) != 0 {
@@ -194,103 +240,112 @@ func TestRebuildReachesTheSameGraph(t *testing.T) {
 	}
 }
 
+// Other kinds pass through the fold untouched.
+func TestOtherKindsPassThrough(t *testing.T) {
+	g := openStore(t)
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+		return Project(tx, []eventstore.Event{{Kind: "lease.granted/v1", Payload: json.RawMessage(`not json`)}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The fold refuses events its state does not derive: forged or replayed.
 func TestFoldRefusals(t *testing.T) {
 	g := openStore(t)
-	a := g.record(build(t))
-	g.claim(a)
-	failed := g.result(a, false) // could_not_run
-	other := g.record(build(t))  // the same key, never claimed
-	recA := build(t)
-	recA.Node.ID = a
-	forge := func(kind, subject string, project types.ProjectID, v types.GraphEventVariant) func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return func(*eventstore.Tx) ([]eventstore.Event, error) { return event(kind, subject, project, v) }
-	}
+	aRec := newNode(t, types.NodeKindBuild)
+	a := g.record(aRec)
+	g.must(claimOf(a))
 	key := *g.state(a).Key
+	other := g.record(newNode(t, types.NodeKindBuild)) // the same key, unclaimed
 	in := []types.NodeClaimedInputsItem{{Name: "plan", Result: ptr(types.ResultID(resA))}}
-	inB := []types.NodeClaimedInputsItem{{Name: "plan", Result: ptr(types.ResultID(resB))}}
-	ok := unrecorded(t, key)
-	elsewhere, orphan := build(t), build(t)
-	elsewhere.Type, orphan.Type = "node_recorded", "node_recorded"
-	orphan.Predecessor = ptr(types.NodeID("nod_01m3250vnfeyrv67x6w0ddqr6a"))
-	odd := unrecorded(t, key)
-	odd.Completed, odd.Outcome, odd.Reason, odd.Detail = true, types.OutcomeCouldNotRun, failed.Reason, "a gate that could not load its baseline"
-	g.must(func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return event(ResultRecorded, string(odd.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: odd})
-	})
-	// fresh and c have keys of their own: fresh is unclaimed, c claimed;
-	// good is a selectable result of a.
-	freshRec, cRec := build(t), build(t)
-	freshRec.Node.Params, cRec.Node.Params = json.RawMessage(`{"task":"fresh"}`), json.RawMessage(`{"task":"c"}`)
-	fresh, c := g.record(freshRec), g.record(cRec)
-	g.claim(c)
-	keyF, err := Key(freshRec.Node, map[string]Resolved{"plan": {Result: resA}}, 1)
+	claimOther := func(items []types.NodeClaimedInputsItem) *types.NodeClaimed {
+		return &types.NodeClaimed{Type: "node_claimed", Node: other, Key: key, Inputs: items}
+	}
+	// c is claimed with a key of its own.
+	cRec := newNode(t, types.NodeKindBuild)
+	cRec.Node.Params = json.RawMessage(`{"task":"c"}`)
+	c := g.record(cRec)
+	g.must(claimOf(c))
+	key2, err := Key(aRec.Node, map[string]Resolved{"plan": {Result: resA}}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimF := &types.NodeClaimed{Type: "node_claimed", Node: fresh, Key: keyF, Inputs: []types.NodeClaimedInputsItem{{Name: "plan", Result: ptr(types.ResultID(resA))}}}
-	good := g.result(a, true)
-	stranger := build(t)
-	stranger.Type, stranger.Task, stranger.Predecessor = "node_recorded", "tsk_01m3250vkwffc979nzjw0g2sf9", &a
-	key2, err := Key(g.nodeOf(a), map[string]Resolved{"plan": {Result: resA}}, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, fn := range map[string]func(*eventstore.Tx) ([]eventstore.Event, error){
-		"a node recorded twice":                  forge(NodeRecorded, string(a), prjID, &types.NodeRecorded{Type: "node_recorded", Node: recA.Node, Task: tskID, Project: prjID}),
-		"a node under another subject":           forge(NodeRecorded, string(other), prjID, &types.NodeRecorded{Type: "node_recorded", Node: build(t).Node, Task: tskID, Project: prjID}),
-		"a node in another project":              forge(NodeRecorded, string(elsewhere.Node.ID), prjB, &elsewhere),
-		"a predecessor of another task":          forge(NodeRecorded, string(stranger.Node.ID), prjID, &stranger),
-		"a claimed node claimed again":           forge(NodeClaimed, string(a), prjID, &types.NodeClaimed{Type: "node_claimed", Node: a, Key: key2, Inputs: in}),
-		"a recorded node under node.claimed":     forge(NodeClaimed, string(elsewhere.Node.ID), prjID, &elsewhere),
-		"a claim under node.recorded":            forge(NodeRecorded, string(other), prjID, &types.NodeClaimed{Type: "node_claimed", Node: other, Key: key, Inputs: in}),
-		"a result under result.selected":         forge(ResultSelected, string(ok.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: ok}),
-		"a selection under result.recorded":      forge(ResultRecorded, string(failed.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: a, Result: failed.ID}),
-		"a completed could_not_run selected":     forge(ResultSelected, string(odd.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: a, Result: odd.ID}),
-		"a fresh claim under node.recorded":      forge(NodeRecorded, string(fresh), prjID, claimF),
-		"a fresh claim under another subject":    forge(NodeClaimed, string(other), prjID, claimF),
-		"a fresh claim in another project":       forge(NodeClaimed, string(fresh), prjB, claimF),
-		"a good selection under result.recorded": forge(ResultRecorded, string(good.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: a, Result: good.ID}),
-		"a good selection under another subject": forge(ResultSelected, string(a), prjID, &types.ResultSelected{Type: "result_selected", Node: a, Result: good.ID}),
-		"a's result selected for c":              forge(ResultSelected, string(good.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: c, Result: good.ID}),
-		"an unknown predecessor":                 forge(NodeRecorded, string(orphan.Node.ID), prjID, &orphan),
-		"a second claim of a key":                forge(NodeClaimed, string(other), prjID, &types.NodeClaimed{Type: "node_claimed", Node: other, Key: key, Inputs: in}),
-		"a claim whose key is not its own":       forge(NodeClaimed, string(other), prjID, &types.NodeClaimed{Type: "node_claimed", Node: other, Key: types.ComputationKey{Key: diff, Generation: 1}, Inputs: in}),
-		"a claim from other inputs":              forge(NodeClaimed, string(other), prjID, &types.NodeClaimed{Type: "node_claimed", Node: other, Key: key, Inputs: inB}),
-		"a claim in another project":             forge(NodeClaimed, string(other), prjB, &types.NodeClaimed{Type: "node_claimed", Node: other, Key: key, Inputs: in}),
-		"a claim of a claimed node":              forge(NodeClaimed, string(a), prjID, &types.NodeClaimed{Type: "node_claimed", Node: a, Key: key, Inputs: in}),
-		"a result of an unclaimed node":          forge(ResultRecorded, string(ok.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: other, Result: ok}),
-		"a result of another key":                forge(ResultRecorded, string(ok.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: withKey(ok, diff)}),
-		"a result recorded twice":                forge(ResultRecorded, string(failed.ID), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: failed}),
-		"a result under another subject":         forge(ResultRecorded, string(a), prjID, &types.ResultRecorded{Type: "result_recorded", Node: a, Result: ok}),
-		"a could_not_run selected":               forge(ResultSelected, string(failed.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: a, Result: failed.ID}),
-		"an unrecorded result selected":          forge(ResultSelected, string(ok.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: a, Result: ok.ID}),
-		"a result selected for another node":     forge(ResultSelected, string(failed.ID), prjID, &types.ResultSelected{Type: "result_selected", Node: other, Result: failed.ID}),
-		"a selection under another subject":      forge(ResultSelected, string(a), prjID, &types.ResultSelected{Type: "result_selected", Node: a, Result: failed.ID}),
+	with := func(r types.NodeRecorded, f func(*types.NodeRecorded)) *types.NodeRecorded { f(&r); return &r }
+	fresh := func() types.NodeRecorded { return newNode(t, types.NodeKindBuild) }
+	foreignPred := fresh()
+	foreignPred.Task, foreignPred.Project = tskC, prjB
+	fp := g.record(foreignPred)
+	gate := g.record(newNode(t, types.NodeKindGate))
+	g.must(claimOf(gate))
+	for name, fn := range map[string]logic{
+		"a node recorded twice":        forge(NodeRecorded, string(a), prjID, &aRec),
+		"a node under another subject": forge(NodeRecorded, string(other), prjID, with(fresh(), func(*types.NodeRecorded) {})),
+		"a node in another project": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			r := fresh()
+			return event(NodeRecorded, string(r.Node.ID), prjB, &r)
+		},
+		"an unknown predecessor": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			r := with(fresh(), func(r *types.NodeRecorded) { r.Predecessor, r.Node.Round = ptr(types.NodeID(nodNil)), 2 })
+			return event(NodeRecorded, string(r.Node.ID), prjID, r)
+		},
+		"a predecessor of another task": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			r := with(fresh(), func(r *types.NodeRecorded) { r.Task, r.Predecessor, r.Node.Round = tskB, &a, 2 })
+			return event(NodeRecorded, string(r.Node.ID), prjID, r)
+		},
+		"a predecessor in another project": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			r := with(fresh(), func(r *types.NodeRecorded) { r.Predecessor, r.Node.Round = &fp, 2 })
+			return event(NodeRecorded, string(r.Node.ID), prjID, r)
+		},
+		"a predecessor of another kind": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			r := with(fresh(), func(r *types.NodeRecorded) { r.Predecessor, r.Node.Round = &gate, 2 })
+			return event(NodeRecorded, string(r.Node.ID), prjID, r)
+		},
+		"a successor of the same round": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			r := with(fresh(), func(r *types.NodeRecorded) { r.Predecessor = &a })
+			return event(NodeRecorded, string(r.Node.ID), prjID, r)
+		},
+		"a first node of round 2": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			r := with(fresh(), func(r *types.NodeRecorded) { r.Node.Round = 2 })
+			return event(NodeRecorded, string(r.Node.ID), prjID, r)
+		},
+		"a recorded node under node.claimed": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			r := fresh()
+			return event(NodeClaimed, string(r.Node.ID), prjID, &r)
+		},
+		"a claim under node.recorded":      forge(NodeRecorded, string(other), prjID, claimOther(in)),
+		"a claim under another subject":    forge(NodeClaimed, string(c), prjID, claimOther(in)),
+		"a claim in another project":       forge(NodeClaimed, string(other), prjB, claimOther(in)),
+		"a claim whose key is not its own": forge(NodeClaimed, string(other), prjID, &types.NodeClaimed{Type: "node_claimed", Node: other, Key: types.ComputationKey{Key: diff, Generation: 1}, Inputs: in}),
+		"a claim from other inputs":        forge(NodeClaimed, string(other), prjID, claimOther([]types.NodeClaimedInputsItem{{Name: "plan", Result: ptr(types.ResultID(resB))}})),
+		"a claim of a claimed node":        forge(NodeClaimed, string(a), prjID, &types.NodeClaimed{Type: "node_claimed", Node: a, Key: key2, Inputs: in}),
+		"a claim with no inputs":           forge(NodeClaimed, string(other), prjID, claimOther([]types.NodeClaimedInputsItem{})),
+		"a claim with an input twice":      forge(NodeClaimed, string(other), prjID, claimOther(append(in, in[0]))),
+		"a claim with an undeclared input": forge(NodeClaimed, string(other), prjID, claimOther(append(in, types.NodeClaimedInputsItem{Name: "extra", Result: ptr(types.ResultID(resB))}))),
+		"a claim input with both shapes":   forge(NodeClaimed, string(other), prjID, claimOther([]types.NodeClaimedInputsItem{{Name: "plan", Result: ptr(types.ResultID(resA)), Approval: ptr(types.ApprovalID(aprA)), Revision: ptr(int64(2))}})),
+		"a claimed gate key claimed again in the task": func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			r := newNode(t, types.NodeKindGate)
+			evs, err := Record(r)
+			evc, err2 := event(NodeClaimed, string(r.Node.ID), prjID, &types.NodeClaimed{Type: "node_claimed", Node: r.Node.ID, Key: *g.state(gate).Key, Inputs: in})
+			return append(evs, evc...), errors.Join(err, err2)
+		},
 	} {
 		if err := g.do(fn); err == nil || !strings.Contains(err.Error(), "graph: event") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	// A selected result is the node's one: a second selection is refused.
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, a, good.ID) })
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Select(tx, a, good.ID) }); err == nil {
-		t.Error("a second selection was admitted")
-	}
-}
-
-// unrecorded is a completed result of key, not yet recorded.
-func unrecorded(t *testing.T, key types.ComputationKey) types.Result {
-	r, err := Build(key, BuildFacts{Submitted: true, Reported: types.OutcomeFound, Diff: diff, Project: prjID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return r
-}
-
-func withKey(r types.Result, key types.Digest) types.Result {
-	r.Computation = key
-	return r
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// Every projected node state is a valid records/node-state.
+func TestInvalidNodeStatesAreNotStored(t *testing.T) {
+	g := openStore(t)
+	r := newNode(t, types.NodeKindBuild)
+	bad := types.NodeState{Node: r.Node.ID, State: types.NodeStateStateHeld, WaitingOn: []types.Name{}, Holds: []types.NodeHold{}}
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return nil, putNode(tx, nodeRecord{Recorded: r, State: bad})
+	}); err == nil {
+		t.Fatal("a held state with no hold was stored")
+	}
+}

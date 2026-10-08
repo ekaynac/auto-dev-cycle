@@ -5,47 +5,66 @@ package graph
 // Graph events and their projections (13 "Evaluation", plan 15 G3-1).
 //
 // Decisions:
-//   - One claim per computation key, decided in the writer transaction: a
-//     claim reads the claims projection and either appends node.claimed or
-//     joins the claim already there, appending nothing. The writer runs one
-//     transaction at a time, so two demands of one key never both claim.
-//   - The fold recomputes the key from the recorded node and the claim's
-//     inputs (Key) and refuses a claim whose key differs, so a forged or
-//     replayed claim cannot bind a node to another computation.
-//   - A result is recorded only for a claimed key, and selected only once,
-//     only if completed and found, empty or failed (13 [G2]).
+//   - A claim is a node instance's (13 [G10]): a repeat demand of a claimed
+//     node joins its claim and appends nothing. Two instances never share
+//     a claim: build, plan and effect nodes are not reused (13 "v1 scope",
+//     [G4]), and reuse of a memoizable kind's result across instances is
+//     the resolver's memoization (G4a), not a claim.
+//   - For the memoizable kinds (gate, runtime_verify, evidence, review,
+//     carry_over) a key is claimed once per task: a second instance whose
+//     key is claimed in its task gets ErrKeyClaimed, nothing is appended,
+//     and it stays as it was for the resolver to reuse or wait. Every check
+//     is scoped to the task, which also scopes it to the project.
+//   - The fold re-derives each claim: the claimed inputs are exactly the
+//     items Claim builds for the declared inputs, and the key is Key's. So
+//     a forged or replayed claim binds no other computation or resolution.
+//     Two claims of one key in one command fail, as the second's fold sees
+//     the first.
+//   - A task's nodes are all in one project (graph_tasks).
+//   - Results and selection follow in G3-2.
+//   - A missing answer input leaves the node waiting: held on
+//     awaiting_input needs the hold events of G3-2.
 //   - The fold reads only the events and these projections, so a rebuild
-//     reaches the same state. The claim keeps the command that made it
-//     (ev.Command), as grant lineages do.
+//     reaches the same state. A claim keeps its command (ev.Command), as
+//     grant lineages do.
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 )
 
 // The graph event kinds and projections.
 const (
-	NodeRecorded   = "node.recorded/v1"
-	NodeClaimed    = "node.claimed/v1"
-	ResultRecorded = "result.recorded/v1"
-	ResultSelected = "result.selected/v1"
-	EventSchema    = "records/graph-event"
+	NodeRecorded = "node.recorded/v1"
+	NodeClaimed  = "node.claimed/v1"
+	EventSchema  = "records/graph-event"
 
-	NodeProjection   = "graph_nodes"   // node id → nodeRecord
-	ClaimProjection  = "graph_claims"  // computation key → claim
-	ResultProjection = "graph_results" // result id → the result.recorded payload
+	NodeProjection  = "graph_nodes"  // node id → nodeRecord
+	ClaimProjection = "graph_claims" // node id → claim
+	KeyProjection   = "graph_keys"   // task/computation key → the memoizable node that claimed it
+	TaskProjection  = "graph_tasks"  // task id → its project
 )
+
+// memoizable are the kinds whose results are reused (13 "v1 scope").
+var memoizable = []types.NodeKind{types.NodeKindGate, types.NodeKindRuntimeVerify, types.NodeKindEvidence, types.NodeKindReview, types.NodeKindCarryOver}
+
+// ErrKeyClaimed: another node of the task holds the key's claim.
+type ErrKeyClaimed struct{ Node types.NodeID }
+
+func (e ErrKeyClaimed) Error() string { return "graph: the key is claimed by " + string(e.Node) }
 
 // Kinds registers the graph event kinds.
 func Kinds() eventstore.Kinds {
 	k := eventstore.Kinds{}
-	for _, n := range []string{NodeRecorded, NodeClaimed, ResultRecorded, ResultSelected} {
+	for _, n := range []string{NodeRecorded, NodeClaimed} {
 		k[n] = eventstore.Kind{Schema: EventSchema}
 	}
 	return k
@@ -56,10 +75,15 @@ type nodeRecord struct {
 	State    types.NodeState    `json:"state"`
 }
 
+// claim is a node's claim: its key, its inputs as they resolved (for the
+// commit-time re-validation, 13 [G4]) and the command that made it.
 type claim struct {
-	Node    types.NodeID `json:"node"`
-	Command *string      `json:"command"`
+	Key     types.ComputationKey          `json:"key"`
+	Inputs  []types.NodeClaimedInputsItem `json:"inputs"`
+	Command *string                       `json:"command"`
 }
+
+func keyIndex(task types.TaskID, key types.Digest) string { return string(task) + "/" + string(key) }
 
 func load[T any](tx *eventstore.Tx, projection, key string) (T, bool, error) {
 	var v T
@@ -78,11 +102,27 @@ func put(tx *eventstore.Tx, projection, key string, v any) error {
 	return tx.Put(projection, key, b)
 }
 
+// putNode stores a node with its state, which must be a valid NodeState.
+func putNode(tx *eventstore.Tx, rec nodeRecord) error {
+	if _, err := contract.Encode("records/node-state", rec.State); err != nil {
+		return err
+	}
+	return put(tx, NodeProjection, string(rec.Recorded.Node.ID), rec)
+}
+
 func event(kind, subject string, project types.ProjectID, payload types.GraphEventVariant) ([]eventstore.Event, error) {
 	b, err := json.Marshal(types.GraphEvent{Variant: payload})
 	id, ierr := ids.New("evt")
 	p := string(project)
 	return []eventstore.Event{{ID: id, Kind: kind, Subject: subject, Project: &p, Payload: b}}, errors.Join(err, ierr)
+}
+
+func loadNode(tx *eventstore.Tx, id types.NodeID) (nodeRecord, error) {
+	rec, ok, err := load[nodeRecord](tx, NodeProjection, string(id))
+	if err == nil && !ok {
+		err = fmt.Errorf("graph: no node %s", id)
+	}
+	return rec, err
 }
 
 // Record is the event that adds r's node to its task's graph.
@@ -91,61 +131,52 @@ func Record(r types.NodeRecorded) ([]eventstore.Event, error) {
 	return event(NodeRecorded, string(r.Node.ID), r.Project, &r)
 }
 
+// items are the claim's inputs: one per declared input, in declared order,
+// each a result or an approval with its revision, as its source says.
+func items(n types.Node, resolved map[string]Resolved) []types.NodeClaimedInputsItem {
+	out := []types.NodeClaimedInputsItem{}
+	for _, in := range n.Inputs {
+		r, item := resolved[in.Name], types.NodeClaimedInputsItem{Name: in.Name}
+		if _, answer := in.Source.Variant.(*types.AnswerSource); answer {
+			item.Approval, item.Revision = &r.Approval, &r.Revision
+		} else {
+			item.Result = &r.Result
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 // Claim claims node's computation key at generation from its resolved
-// inputs. It returns the claiming node: node itself with node.claimed, or,
-// when the key is already claimed, that claim's node and no event (a
-// duplicate demand joins it).
-func Claim(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, generation int64) (types.NodeID, []eventstore.Event, error) {
-	rec, ok, err := load[nodeRecord](tx, NodeProjection, string(node))
-	if err != nil || !ok {
-		return "", nil, errors.Join(err, fmt.Errorf("graph: no node %s", node))
+// inputs. A claimed node's repeat demand joins its claim: no event. A
+// memoizable node whose key another node of its task claimed gets
+// ErrKeyClaimed.
+func Claim(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, generation int64) ([]eventstore.Event, error) {
+	rec, err := loadNode(tx, node)
+	if err != nil {
+		return nil, err
+	}
+	if _, claimed, err := load[claim](tx, ClaimProjection, string(node)); err != nil || claimed {
+		return nil, err
 	}
 	key, err := Key(rec.Recorded.Node, resolved, generation)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	if c, ok, err := load[claim](tx, ClaimProjection, string(key.Key)); err != nil || ok {
-		return c.Node, nil, err
-	}
-	c := types.NodeClaimed{Type: "node_claimed", Node: node, Key: key, Inputs: []types.NodeClaimedInputsItem{}}
-	for _, in := range rec.Recorded.Node.Inputs {
-		r := resolved[in.Name]
-		item := types.NodeClaimedInputsItem{Name: in.Name}
-		if r.Result != "" {
-			item.Result = &r.Result
-		} else {
-			item.Approval, item.Revision = &r.Approval, &r.Revision
+	if slices.Contains(memoizable, rec.Recorded.Node.Kind) {
+		if holder, taken, err := load[types.NodeID](tx, KeyProjection, keyIndex(rec.Recorded.Task, key.Key)); err != nil || taken {
+			return nil, errors.Join(err, ErrKeyClaimed{holder})
 		}
-		c.Inputs = append(c.Inputs, item)
 	}
-	evs, err := event(NodeClaimed, string(node), rec.Recorded.Project, &c)
-	return node, evs, err
-}
-
-// RecordResult is the event recording r, a result of node's claimed key.
-func RecordResult(tx *eventstore.Tx, r types.ResultRecorded) ([]eventstore.Event, error) {
-	rec, ok, err := load[nodeRecord](tx, NodeProjection, string(r.Node))
-	if err != nil || !ok {
-		return nil, errors.Join(err, fmt.Errorf("graph: no node %s", r.Node))
-	}
-	r.Type = "result_recorded"
-	return event(ResultRecorded, string(r.Result.ID), rec.Recorded.Project, &r)
-}
-
-// Select is the event selecting result for node's key.
-func Select(tx *eventstore.Tx, node types.NodeID, result types.ResultID) ([]eventstore.Event, error) {
-	rec, ok, err := load[nodeRecord](tx, NodeProjection, string(node))
-	if err != nil || !ok {
-		return nil, errors.Join(err, fmt.Errorf("graph: no node %s", node))
-	}
-	return event(ResultSelected, string(result), rec.Recorded.Project, &types.ResultSelected{Type: "result_selected", Node: node, Result: result})
+	c := types.NodeClaimed{Type: "node_claimed", Node: node, Key: key, Inputs: items(rec.Recorded.Node, resolved)}
+	return event(NodeClaimed, string(node), rec.Recorded.Project, &c)
 }
 
 // Project is the eventstore.Hooks.Project fold for the graph projections;
 // other kinds pass through.
 func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
-		if !slices.Contains([]string{NodeRecorded, NodeClaimed, ResultRecorded, ResultSelected}, ev.Kind) {
+		if ev.Kind != NodeRecorded && ev.Kind != NodeClaimed {
 			continue
 		}
 		var g types.GraphEvent
@@ -166,18 +197,14 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant) err
 		return recorded(tx, ev, p)
 	case *types.NodeClaimed:
 		return claimed(tx, ev, p)
-	case *types.ResultRecorded:
-		return resultRecorded(tx, ev, p)
-	case *types.ResultSelected:
-		return selected(tx, ev, p)
 	}
 	return errors.New("no payload")
 }
 
 // nodeOf loads the node an event names, which must be in the event's project.
 func nodeOf(tx *eventstore.Tx, ev eventstore.Event, id types.NodeID) (nodeRecord, error) {
-	rec, ok, err := load[nodeRecord](tx, NodeProjection, string(id))
-	if err == nil && (!ok || ev.Project == nil || *ev.Project != string(rec.Recorded.Project)) {
+	rec, err := loadNode(tx, id)
+	if err == nil && (ev.Project == nil || *ev.Project != string(rec.Recorded.Project)) {
 		err = fmt.Errorf("node %s is not recorded in the event's project", id)
 	}
 	return rec, err
@@ -191,17 +218,27 @@ func recorded(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeRecorded) err
 	if _, exists, err := load[nodeRecord](tx, NodeProjection, string(n.ID)); err != nil || exists {
 		return errors.Join(err, errors.New("the node is recorded"))
 	}
+	if project, ok, err := load[types.ProjectID](tx, TaskProjection, string(p.Task)); err != nil || ok && project != p.Project {
+		return errors.Join(err, errors.New("the task's nodes are in another project"))
+	} else if err := put(tx, TaskProjection, string(p.Task), p.Project); err != nil {
+		return err
+	}
+	round := int64(1)
 	if p.Predecessor != nil {
 		pred, err := nodeOf(tx, ev, *p.Predecessor)
-		if err != nil || pred.Recorded.Task != p.Task {
-			return errors.Join(err, errors.New("the predecessor is not a node of the task"))
+		if err != nil || pred.Recorded.Task != p.Task || pred.Recorded.Node.Kind != n.Kind {
+			return errors.Join(err, errors.New("the predecessor is not a node of the task of the same kind"))
 		}
+		round = pred.Recorded.Node.Round + 1
+	}
+	if n.Round != round {
+		return fmt.Errorf("round %d, want %d: a first round is 1, a successor its predecessor's plus one", n.Round, round)
 	}
 	st := types.NodeState{Node: n.ID, State: types.NodeStateStateRunnable, WaitingOn: []types.Name{}, Holds: []types.NodeHold{}}
 	for _, in := range n.Inputs {
 		st.State, st.WaitingOn = types.NodeStateStateWaiting, append(st.WaitingOn, in.Name)
 	}
-	return put(tx, NodeProjection, string(n.ID), nodeRecord{Recorded: *p, State: st})
+	return putNode(tx, nodeRecord{Recorded: *p, State: st})
 }
 
 func claimed(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeClaimed) error {
@@ -211,9 +248,6 @@ func claimed(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeClaimed) error
 	}
 	if s := rec.State.State; s != types.NodeStateStateWaiting && s != types.NodeStateStateRunnable {
 		return fmt.Errorf("a %s node is not claimed", s)
-	}
-	if _, taken, err := load[claim](tx, ClaimProjection, string(p.Key.Key)); err != nil || taken {
-		return errors.Join(err, errors.New("the key is claimed"))
 	}
 	resolved := map[string]Resolved{}
 	for _, in := range p.Inputs {
@@ -226,47 +260,25 @@ func claimed(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeClaimed) error
 		}
 		resolved[in.Name] = r
 	}
+	if !reflect.DeepEqual(items(rec.Recorded.Node, resolved), p.Inputs) {
+		return errors.New("the claim's inputs are not one resolution per declared input, in order")
+	}
 	key, err := Key(rec.Recorded.Node, resolved, p.Key.Generation)
 	if err != nil || key != p.Key {
 		return errors.Join(err, errors.New("the claim's key is not its node's key from its inputs"))
 	}
-	rec.State.State, rec.State.WaitingOn, rec.State.Key = types.NodeStateStateClaimed, []types.Name{}, &key
-	if err := put(tx, ClaimProjection, string(key.Key), claim{Node: p.Node, Command: ev.Command}); err != nil {
+	if slices.Contains(memoizable, rec.Recorded.Node.Kind) {
+		index := keyIndex(rec.Recorded.Task, key.Key)
+		if _, taken, err := load[types.NodeID](tx, KeyProjection, index); err != nil || taken {
+			return errors.Join(err, errors.New("the key is claimed in the task"))
+		}
+		if err := put(tx, KeyProjection, index, p.Node); err != nil {
+			return err
+		}
+	}
+	if err := put(tx, ClaimProjection, string(p.Node), claim{Key: key, Inputs: p.Inputs, Command: ev.Command}); err != nil {
 		return err
 	}
-	return put(tx, NodeProjection, string(p.Node), rec)
-}
-
-func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecorded) error {
-	rec, err := nodeOf(tx, ev, p.Node)
-	if err != nil || ev.Kind != ResultRecorded || ev.Subject != string(p.Result.ID) {
-		return errors.Join(err, errors.New("a result is recorded under its id"))
-	}
-	if rec.State.Key == nil || rec.State.Key.Key != p.Result.Computation {
-		return errors.New("the result does not answer its node's claimed key")
-	}
-	if _, exists, err := load[types.ResultRecorded](tx, ResultProjection, string(p.Result.ID)); err != nil || exists {
-		return errors.Join(err, errors.New("the result is recorded"))
-	}
-	return put(tx, ResultProjection, string(p.Result.ID), p)
-}
-
-func selected(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultSelected) error {
-	rec, err := nodeOf(tx, ev, p.Node)
-	if err != nil || ev.Kind != ResultSelected || ev.Subject != string(p.Result) {
-		return errors.Join(err, errors.New("a selection is under its result"))
-	}
-	r, ok, err := load[types.ResultRecorded](tx, ResultProjection, string(p.Result))
-	if err != nil || !ok || r.Node != p.Node {
-		return errors.Join(err, errors.New("the result is not one of the node's"))
-	}
-	if rec.State.State != types.NodeStateStateClaimed {
-		return fmt.Errorf("a %s node selects no result", rec.State.State)
-	}
-	// records/result makes every incomplete result could_not_run.
-	if r.Result.Outcome == types.OutcomeCouldNotRun {
-		return errors.New("only a completed found, empty or failed result is selected")
-	}
-	rec.State.State, rec.State.Result = types.NodeStateStateCompleted, &p.Result
-	return put(tx, NodeProjection, string(p.Node), rec)
+	rec.State.State, rec.State.WaitingOn, rec.State.Key = types.NodeStateStateClaimed, []types.Name{}, &key
+	return putNode(tx, rec)
 }

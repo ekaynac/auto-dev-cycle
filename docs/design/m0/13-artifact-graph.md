@@ -112,6 +112,12 @@ The controller evaluates **goals** (e.g. "merge the candidate of task T", "close
 
 - **Atomic producer claiming** [G10]. Claiming a runnable node instance is a writer-transaction step (03), so two goals
   needing the same node never run it twice. Duplicate demands join the existing claim.
+  - A claim is a node instance's: a repeat demand of a claimed node joins its claim. Two instances never share one;
+    build, plan and effect nodes are not reused (see "v1 scope" and [G4]).
+  - For the memoizable kinds, a computation key is claimed once per task. Another instance whose key is claimed in its
+    task is refused, records nothing and stays as it was; reusing the result is the resolver's memoization, under
+    applicability (06). No claim spans tasks or projects.
+  - The fold re-derives a claim: one resolution per declared input, in order, and the key from them.
 - **Waiting is structural for internal inputs.** A node with a missing input is `waiting(input)`, and its signal is
   that input's result. External waits (approval, quota, human act, probe) use the hold registry (02).
 - **Inputs are resolved, and mutable eligibility is re-checked at commit** [G4]. A node's inputs are fixed when it is

@@ -4,9 +4,9 @@
 
 `schemas/records/graph-event.json`
 
-The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1 and node.claimed/v1, under the node's id, and result.recorded/v1 and result.selected/v1, under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+The payload of every artifact-graph node event (docs/design/m0/13), discriminated by type: node.recorded/v1 and node.claimed/v1, under the node's id and in its project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive. Result and selection events follow (plan 15 G3-2).
 
-A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected).
+A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed).
 
 ## Definitions
 
@@ -28,7 +28,7 @@ No other fields are allowed.
 
 ### NodeClaimed
 
-A node's claim on its computation key (13 [G10]): its inputs as they resolved, fixed from here on, and the key they give. One claim per key: a duplicate demand joins the claim and records nothing.
+A node's claim on its computation key (13 [G10]): its inputs as they resolved, fixed from here on, and the key they give. A claim is a node instance's: a repeat demand of the node joins it and records nothing; a memoizable kind's key is claimed once per task.
 
 #### Fields of NodeClaimed
 
@@ -37,7 +37,7 @@ A node's claim on its computation key (13 [G10]): its inputs as they resolved, f
 | `type` | yes | `node_claimed` |  |
 | `node` | yes | [NodeID](common-defs.md#nodeid) |  |
 | `key` | yes | [computation-key](records-computation-key.md) |  |
-| `inputs` | yes | array of object ([fields](#fields-of-nodeclaimedinputs)) | Each declared input and what it resolved to, in declared order. |
+| `inputs` | yes | array of object ([fields](#fields-of-nodeclaimedinputs)) | Each declared input and what it resolved to, in declared order: a result, or an approval with its revision. A new kind of resolution is a new event version (node.claimed/v2), since every field is required. |
 
 No other fields are allowed.
 
@@ -49,34 +49,5 @@ No other fields are allowed.
 | `result` | yes | null or [ResultID](common-defs.md#resultid) |  |
 | `approval` | yes | null or [ApprovalID](common-defs.md#approvalid) |  |
 | `revision` | yes | null or integer (minimum `1`, maximum `9007199254740991`) |  |
-
-No other fields are allowed.
-
-### ResultRecorded
-
-An immutable result of a claimed node, with the attempt that produced it (null for a controller node).
-
-#### Fields of ResultRecorded
-
-| Field | Required | Type | Description |
-|---|---|---|---|
-| `type` | yes | `result_recorded` |  |
-| `node` | yes | [NodeID](common-defs.md#nodeid) |  |
-| `result` | yes | [result](records-result.md) |  |
-| `attempt` | yes | null or [AttemptID](common-defs.md#attemptid) |  |
-
-No other fields are allowed.
-
-### ResultSelected
-
-The node's key selects this result: only a completed result that is found, empty or failed (13 [G2]), and one per key.
-
-#### Fields of ResultSelected
-
-| Field | Required | Type | Description |
-|---|---|---|---|
-| `type` | yes | `result_selected` |  |
-| `node` | yes | [NodeID](common-defs.md#nodeid) |  |
-| `result` | yes | [ResultID](common-defs.md#resultid) |  |
 
 No other fields are allowed.

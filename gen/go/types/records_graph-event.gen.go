@@ -10,16 +10,14 @@ import (
 	"fmt"
 )
 
-// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1 and node.claimed/v1, under the node's id, and result.recorded/v1 and result.selected/v1, under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+// GraphEvent: The payload of every artifact-graph node event (docs/design/m0/13), discriminated by type: node.recorded/v1 and node.claimed/v1, under the node's id and in its project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive. Result and selection events follow (plan 15 G3-2).
 type GraphEvent struct{ Variant GraphEventVariant }
 
-// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *ResultRecorded, *ResultSelected.
+// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed.
 type GraphEventVariant interface{ isGraphEvent() }
 
-func (*NodeRecorded) isGraphEvent()   {}
-func (*NodeClaimed) isGraphEvent()    {}
-func (*ResultRecorded) isGraphEvent() {}
-func (*ResultSelected) isGraphEvent() {}
+func (*NodeRecorded) isGraphEvent() {}
+func (*NodeClaimed) isGraphEvent()  {}
 
 func (u GraphEvent) MarshalJSON() ([]byte, error) {
 	if u.Variant == nil {
@@ -65,18 +63,6 @@ func (u *GraphEvent) UnmarshalJSON(b []byte) error {
 			return err
 		}
 		u.Variant = v
-	case "result_recorded":
-		v := &ResultRecorded{}
-		if err := decodeStrict(b, v); err != nil {
-			return err
-		}
-		u.Variant = v
-	case "result_selected":
-		v := &ResultSelected{}
-		if err := decodeStrict(b, v); err != nil {
-			return err
-		}
-		u.Variant = v
 	default:
 		return fmt.Errorf("GraphEvent: unknown type %q", d)
 	}
@@ -99,26 +85,11 @@ type NodeClaimedInputsItem struct {
 	Revision *int64      `json:"revision"`
 }
 
-// NodeClaimed: A node's claim on its computation key (13 [G10]): its inputs as they resolved, fixed from here on, and the key they give. One claim per key: a duplicate demand joins the claim and records nothing.
+// NodeClaimed: A node's claim on its computation key (13 [G10]): its inputs as they resolved, fixed from here on, and the key they give. A claim is a node instance's: a repeat demand of the node joins it and records nothing; a memoizable kind's key is claimed once per task.
 type NodeClaimed struct {
 	Type string         `json:"type"`
 	Node NodeID         `json:"node"`
 	Key  ComputationKey `json:"key"`
-	// Each declared input and what it resolved to, in declared order.
+	// Each declared input and what it resolved to, in declared order: a result, or an approval with its revision. A new kind of resolution is a new event version (node.claimed/v2), since every field is required.
 	Inputs []NodeClaimedInputsItem `json:"inputs"`
-}
-
-// ResultRecorded: An immutable result of a claimed node, with the attempt that produced it (null for a controller node).
-type ResultRecorded struct {
-	Type    string     `json:"type"`
-	Node    NodeID     `json:"node"`
-	Result  Result     `json:"result"`
-	Attempt *AttemptID `json:"attempt"`
-}
-
-// ResultSelected: The node's key selects this result: only a completed result that is found, empty or failed (13 [G2]), and one per key.
-type ResultSelected struct {
-	Type   string   `json:"type"`
-	Node   NodeID   `json:"node"`
-	Result ResultID `json:"result"`
 }
