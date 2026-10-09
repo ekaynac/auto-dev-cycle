@@ -180,8 +180,8 @@ func TestSupersededFold(t *testing.T) {
 			p.Replacement.Params = json.RawMessage(strings.Replace(string(p.Replacement.Params), "candidate", "closure", 1))
 		}, "another roster"},
 		"an input moved":         {input(0, next), "input 0"},
-		"an input dropped":       {func(p *types.ReviewSuperseded) { p.Replacement.Inputs = p.Replacement.Inputs[1:] }, "input 0"},
-		"the last input dropped": {func(p *types.ReviewSuperseded) { p.Replacement.Inputs = p.Replacement.Inputs[:1] }, "input 1"},
+		"an input dropped":       {func(p *types.ReviewSuperseded) { p.Replacement.Inputs = p.Replacement.Inputs[1:] }, "another roster"},
+		"the last input dropped": {func(p *types.ReviewSuperseded) { p.Replacement.Inputs = p.Replacement.Inputs[:1] }, "another roster"},
 		"an input added": {func(p *types.ReviewSuperseded) {
 			p.Replacement.Inputs = append(p.Replacement.Inputs, g.planInput("again"))
 		}, "another roster"},

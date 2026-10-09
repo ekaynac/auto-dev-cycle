@@ -248,7 +248,7 @@ const (
 	RetiredHoldReasonQuestionMoved RetiredHoldReason = "question_moved"
 )
 
-// RetiredHold: A hold a supersession retires: invalidated, a retry wait of the predecessor's key, which the replacement does not hold; member_removed, a reviewer_unavailable wait on an executor the replacement's roster drops; question_moved, an awaiting_input wait on an answer the replacement replaces or removes because its question moved to another owed input.
+// RetiredHold: A hold a supersession retires: invalidated, a retry wait of the predecessor's key, which the replacement does not hold; member_removed, a reviewer_unavailable wait on an executor the replacement's roster drops; question_moved, an awaiting_input wait on an answer the predecessor declares and the replacement replaces because its question moved to another owed input.
 type RetiredHold struct {
 	Hold   HoldID            `json:"hold"`
 	Reason RetiredHoldReason `json:"reason"`

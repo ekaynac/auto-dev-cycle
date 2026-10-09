@@ -150,7 +150,10 @@ func TestSupersedeHolds(t *testing.T) {
 }
 
 // A retry wait is of the predecessor's key, which its replacement does not
-// hold: it retires as invalidated. A removed answer retires its wait.
+// hold: it retires as invalidated. A wait that matches none of the
+// predecessor's answers or members transfers: an awaiting_input wait on an
+// answer it does not declare, a reviewer_unavailable wait on an executor
+// not in its roster, or on a signal that names no executor.
 func TestSupersedeRetires(t *testing.T) {
 	g := openStore(t)
 	review, _, next := g.superseding()
@@ -170,21 +173,22 @@ func TestSupersedeRetires(t *testing.T) {
 	}
 
 	second := g.heldRound(review)
-	data := on(t, "awaiting_input", ownB+"@2")
-	g.must(raised(second, data, nil))
-	g.must(asked(ownB, review, nil))
-	g.must(moving(second, next, Moves{"data": nil}))
-	p := g.supersession()
-	if len(p.Replacement.Inputs) != 3 || !slices.Equal(p.RetiredHolds, []types.RetiredHold{{Hold: data.ID, Reason: types.RetiredHoldReasonQuestionMoved}}) {
-		t.Errorf("the removed answer: %+v %v", p.Replacement.Inputs, p.RetiredHolds)
+	unmatched := []types.NodeHold{on(t, "awaiting_input", ownD+"@2"), on(t, "reviewer_unavailable", "registry:"+string(exeC)),
+		on(t, "reviewer_unavailable", "probe")}
+	for _, h := range unmatched {
+		g.must(raised(second, h, nil))
+	}
+	g.must(supersede(second, next))
+	if p := g.supersession(); !slices.Equal(p.TransferredHolds, holdIDs(unmatched)) || len(p.RetiredHolds) != 0 {
+		t.Errorf("unmatched waits: %v %v", p.TransferredHolds, p.RetiredHolds)
 	}
 }
 
 // The fold derives both lists: a hold missing, unknown, in both, out of
 // order or retired for another reason is refused. A move that is not one
 // is refused by the builder, and a replacement's answers by the fold unless
-// each is its review's, removed, or replaced under its name by one answer
-// to an owed input the review does not declare.
+// each is its review's or replaced under its name by one answer to an owed
+// input the review does not declare: a removal is refused until M1.
 func TestSupersedeHoldsRefused(t *testing.T) {
 	g := openStore(t)
 	review, _, next := g.superseding()
@@ -225,9 +229,12 @@ func TestSupersedeHoldsRefused(t *testing.T) {
 		moves Moves
 		want  string
 	}{
-		"a question not moved":       {Moves{"ruling": nil}, "not moved"},
-		"a result input":             {Moves{"plan": nil}, "not moved"},
-		"no such input":              {Moves{"nope": nil}, "names no answer input"},
+		"a question not moved":       {Moves{"ruling": {OwedInput: ownC, Revision: 2}}, "not moved"},
+		"a result input":             {Moves{"plan": {OwedInput: ownC, Revision: 2}}, "no answer input"},
+		"the requirement input":      {Moves{"required": {OwedInput: ownC, Revision: 2}}, "no answer input"},
+		"the requirement, removed":   {Moves{"required": nil}, "no answer input"},
+		"a removal":                  {Moves{"data": nil}, "M1"},
+		"no such input":              {Moves{"nope": {OwedInput: ownC, Revision: 2}}, "names no answer input"},
 		"to an owed input not asked": {Moves{"data": {OwedInput: ownD, Revision: 2}}, ""},
 		"to the same owed input":     {Moves{"data": {OwedInput: ownB, Revision: 2}}, ""},
 		"to another revision":        {Moves{"data": {OwedInput: ownC, Revision: 3}}, ""},
@@ -267,6 +274,25 @@ func TestSupersedeHoldsRefused(t *testing.T) {
 		},
 	} {
 		if err := g.do(edited(second, next, edit)); err == nil || !strings.Contains(err.Error(), "input") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := g.do(edited(second, next, func(p *types.ReviewSuperseded) {
+		p.Replacement.Inputs = slices.DeleteFunc(slices.Clone(p.Replacement.Inputs), func(in types.InputSpec) bool { return in.Name == "data" })
+	})); err == nil || !strings.Contains(err.Error(), "another roster") {
+		t.Errorf("a raw removal: %v", err)
+	}
+	// Two moves to one owed input, or a move to one another answer answers,
+	// are refused by the builder.
+	for name, moves := range map[string]Moves{
+		"two moves to one":  {"data": {OwedInput: ownC, Revision: 2}, "ruling": {OwedInput: ownC, Revision: 2}},
+		"to a declared one": {"data": {OwedInput: ownID, Revision: 2}},
+	} {
+		g.must(asked(ownID, review, nil))
+		if name == "to a declared one" {
+			g.must(asked(ownID, *g.recordOf(second).Predecessor, nil))
+		}
+		if err := g.do(moving(second, next, moves)); err == nil || !strings.Contains(err.Error(), "another answer") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

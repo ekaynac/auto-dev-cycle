@@ -181,19 +181,24 @@ Result:                            # what was computed: immutable  [G1]
         the replacement, never chosen by the caller, and the fold derives it again and refuses any other lists:
         - a retry wait (a hold raised for a `could_not_run` result) is of the predecessor's key, which the replacement
           does not hold: retired as `invalidated`, as an invalidation retires it;
-        - a `reviewer_unavailable` wait on an executor (`registry:<executor>`) the new roster drops: retired as
-          `member_removed`;
-        - an `awaiting_input` wait on an answer the replacement no longer declares: retired as `question_moved`;
-        - every other wait transfers. The replacement holds it unchanged (id, signal, owner, `since`, pages), so a
+        - a `reviewer_unavailable` wait on `registry:<executor>`, a member of the predecessor's roster that the new
+          roster drops: retired as `member_removed`;
+        - an `awaiting_input` wait on an answer the predecessor declares and the replacement no longer does: retired
+          as `question_moved`;
+        - every other wait transfers, including one that matches none of the predecessor's members or answers. The replacement holds it unchanged (id, signal, owner, `since`, pages), so a
           page is not repeated and escalation does not restart, and the hold index names the replacement. The
           replacement is `held` until its waits clear; the predecessor holds nothing.
       - **Moved questions.** The caller may name answer inputs whose question moved (`graph.SupersedeMoving`): each is
-        replaced under its name by an answer to another owed input, or removed. The builder requires, through the
-        authority, that the lineage no longer asks the old owed input and asks the new one at its current revision.
+        replaced under its name by an answer to another owed input. The builder requires, through the authority, that
+        the lineage no longer asks the old owed input and asks the new one at its current revision, and that no other
+        answer of the review answers it.
         The fold checks only the shape: every other input is the predecessor's, and a replaced answer names an owed
         input the predecessor does not declare, once. As for a wait retired as `revised`, the fold cannot check that
         the question moved until M1 records owed inputs. A question moves only with a roster change: a moved question
-        on an unchanged roster still waits for one.
+        on an unchanged roster still waits for one. **Removing an answer is deferred to M1**: a removal would retire
+        its wait and let the replacement run without the owed answer, a gate the fold cannot re-check. M1 records owed
+        inputs and re-checks each `question_moved` retirement against them; until then the builder and the fold refuse
+        a removal.
       - **Dependants stay refused.** Re-pointing a dependant that claimed the superseded result would release its
         claim, and no event releases a claim except a reuse release. G6b-2 keeps G6b-1's refusal; G7b-2 makes the
         merge wait for the replacement, and any other claimed dependant keeps the review unsuperseded in M0.
@@ -332,8 +337,8 @@ The graph is append-only. Nothing modifies an existing node's inputs. New inform
     review asked. G6b-1 delivers the first: lineage follows supersession.
   - A question superseded by a *different* owed input (not a newer revision of the same one) is a replacement's: a
     successor cannot drop or rename an inherited answer, so a lineage whose inherited answer will never be given stays
-    waiting until G6b replaces it. G6b-2 delivers this for a roster change: the replacement may replace or remove
-    that answer.
+    waiting until G6b replaces it. G6b-2 delivers this for a roster change: the replacement may replace that answer by
+    an answer to the new owed input. Removing it is deferred to M1.
   - The fold cannot check that a wait retired as `revised` was revised, nor that a cleared wait's answer was given,
     until M1 records owed inputs and approvals.
 
