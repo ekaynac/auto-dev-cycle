@@ -43,7 +43,7 @@ type Facts struct {
 }
 
 // sourceKinds are the results that are source, never the package.
-var sourceKinds = []types.ResultKind{types.ResultKindTree, types.ResultKindPatch, types.ResultKindPartialPatch}
+var sourceKinds = []types.ResultKind{types.ResultKindTree, types.ResultKindPatch, types.ResultKindPartialPatch, types.ResultKindCarryOverAttestation}
 
 // DeclaredFacts are the facts profile p declares for node n: the
 // source-test workspace for a gate, the package with its environment's

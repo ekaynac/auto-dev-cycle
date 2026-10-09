@@ -580,9 +580,45 @@ As delivered (G7b-2a):
   it (another review of the subject was superseded) never serves a carry_over again: it, its carry_overs and their
   merges wait. Nothing moves them; the operator supersedes or re-records the review (an M1 action; in M0 a new task
   re-queues the candidate).
-- **Not yet (G7b-2b).** The merge consumes the review's verdict, the refreshed gate, runtime and evidence receipts of
-  the prospective tree, and lands by compare-and-set on the generation's base; a requirement change starts a
-  generation of its own.
+
+As delivered (G7b-2b):
+- **A generation's identity** is its base head, its candidate result, the review it carries over with that review's
+  selected result, and the subject's selected requirement node. The rebase pins them (`{branch, base, version,
+  candidate, review, review_result, requirement, generation}`; the fold checks the candidate's and the review's
+  results are their producers' selected ones), and the fold admits the next generation only when one of them
+  differs. The pins hold through execution: a carry_over is recorded only with the review, its pinned result and the
+  requirement its rebase pins, its claim takes only the pinned review result, and its attestation (CarryOver and the
+  result fold) only of it. So a replacement review, a re-run review with a new result, or a roster change is a new
+  generation, on an unmoved base too: the merge waits for it, then goes.
+- **The verdict.** A carry_over serves any consumer (the merge, a refreshed check) only by its attestation, and only
+  while the review it attested resolves as an input does (`selectedOf`: completed, at its identity's current
+  generation, so a reuse whose holder was invalidated serves nothing even before its release), to the very result it
+  attested, and, when the review is a reuse alias, still its holder's selected result with the holder completed (a
+  holder renewed or re-run, its alias's release unrecorded, serves nothing; a renewal keeps the generation, so
+  `selectedOf` alone would not see it), and that result is `go`: `empty`, no blocking finding (06 rule 4). Otherwise the consumer waits, and a
+  merge's intent is refused. Every path to a merge's carry_over input runs it: the resolver, the claim, the intent's
+  re-validation and the pre-apply re-check (all through `selectedOf`). The carry_over itself still attests the review,
+  not its verdict.
+- **Refreshed checks.** The queue spec names the checks each generation refreshes (gate, runtime_verify or evidence,
+  with their definitions, params and requirements). The template records one node per check, taking the generation's
+  carry_over attestation as `tree`: it holds exactly one ref, the prospective tree the merge applies, so an evidence
+  check's subject (its budget identity) is that tree, and a check runs only once the review is attested and go (the
+  attestation kind counts as a tree subject and a source tree). The merge takes each check's result, in order, after
+  `carry_over` and `requirement`; the folds admit a check only on its current generation's carry_over, before its
+  merge, and a merge only with exactly its generation's checks. The merge's requirements (its kind's code) say which
+  receipt each check must hold; the resolver also binds a receipt about a tree to the prospective tree, so a receipt
+  of another tree is `evidence_inapplicable` and the merge waits. A receipt about anything else (a package's runtime)
+  is bound by the merge's requirements alone. Runtime verification of the prospective tree's package needs a package
+  node in the generation, which M0 does not record. The checks are preconditions: the merge's effect wants the
+  attestation's tree, and never holds a receipt.
+- **The merge is a compare-and-set on the generation's base.** A merge's effect request carries `expected`, its
+  generation's base head, so the request (and the operation) is of that base. Before any egress, a pending merge whose
+  branch holds neither its want nor its base is not applied, and, as for any pending effect that applies nothing
+  (G7b-2a), it fails, confirmed, only when the target proves it never landed; otherwise it is uncertain, and M1's
+  reconciler settles it. Otherwise the push is the forge's compare-and-set on the base; one that finds the branch moved
+  in between leaves the effect uncertain, as for any kind.
+- Fixtures: `roster-change-makes-merge-wait` (G7b-2a), `base-move-fails-the-merge-cas` and
+  `replacement-review-starts-a-generation`.
 
 ## Source tests, package, runtime verification [G8]
 

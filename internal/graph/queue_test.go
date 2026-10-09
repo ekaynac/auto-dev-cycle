@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -138,7 +139,7 @@ func TestGenerations(t *testing.T) {
 	if err != nil || gen1.Number != 1 || gen1.Base != "B1" {
 		t.Fatalf("the first generation: %+v (%v)", gen1, err)
 	}
-	if cur, _ := view[Generation](g, GenerationProjection, generationKey(tskID, "main")); cur != gen1 {
+	if cur, _ := view[Generation](g, GenerationProjection, generationKey(tskID, "main")); !reflect.DeepEqual(cur, gen1) {
 		t.Fatalf("the projection holds %+v, want %+v", cur, gen1)
 	}
 	if again, err := g.generate(spec, head()); err != nil || again.Number != 0 {
@@ -162,9 +163,13 @@ func TestGenerations(t *testing.T) {
 	}
 
 	cand := *g.state(spec.Candidate).Result
+	pinned, _ := view[Generation](g, GenerationProjection, generationKey(tskID, "main"))
 	rebase := func(params string) logic {
 		rec := g.newNode(types.NodeKindRebase)
 		rec.Node.Inputs[0].Name, rec.Node.Inputs[0].Source.Variant = "candidate", &types.ResultSource{Type: "result", Producer: spec.Candidate, ResultKind: types.ResultKindPatch}
+		if !strings.Contains(params, `"review"`) {
+			params = strings.Replace(params, `"generation"`, `"review":"`+string(pinned.Review)+`","review_result":"`+string(pinned.Verdict)+`","requirement":"`+string(pinned.Requirement)+`","generation"`, 1)
+		}
 		params = strings.Replace(params, `"generation"`, `"version":1000,"candidate":"`+string(cand)+`","generation"`, 1)
 		rec.Node.Params = json.RawMessage(params)
 		return func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(rec) }
@@ -177,6 +182,8 @@ func TestGenerations(t *testing.T) {
 		"a new branch at two": `{"branch":"dev","base":"B1","generation":2}`,
 		"no base":             `{"branch":"main","base":"","generation":3}`,
 		"another param":       `{"branch":"main","base":"B3","generation":3,"x":1}`,
+		"no review":           `{"branch":"main","base":"B3","review":"","requirement":"` + string(pinned.Requirement) + `","generation":3}`,
+		"no requirement":      `{"branch":"main","base":"B3","review":"` + string(spec.Review) + `","requirement":"","generation":3}`,
 	} {
 		if err := g.do(rebase(params)); err == nil {
 			t.Errorf("%s: recorded", name)
@@ -396,7 +403,19 @@ func TestCarryOverRoles(t *testing.T) {
 		g.must(evaluate(effectEnv, n))
 		return n
 	}
-	forged := substitute(gen.CarryOver, "", map[string]source{"review": {integration, types.ResultKindTree}})
+	// A raw rebase pins the integration as its generation's review: only
+	// the role refuses it then.
+	pinning := substitute(gen.Rebase, `{"branch":"main","base":"B1","version":`+strconv.FormatInt(gen.Version, 10)+`,"candidate":"`+string(gen.Candidate)+`","review":"`+string(integration)+
+		`","review_result":"`+string(ir.ID)+`","requirement":"`+string(gen.Requirement)+`","generation":2}`, nil)
+	g.must(commit(pinning, g.rebaseResult(Generation{Rebase: pinning}, tree, p), effectEnv))
+	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) {
+		rec := g.recordOf(gen.CarryOver)
+		rec.Node.ID = types.NodeID(must(ids.New("nod")))
+		return Record(rec)
+	}); err == nil {
+		t.Fatal("a carry_over of an earlier generation's rebase was recorded")
+	}
+	forged := substitute(gen.CarryOver, "", map[string]source{"review": {integration, types.ResultKindTree}, "rebase": {pinning, types.ResultKindTree}})
 	if _, err := g.carryOver(forged); err == nil || !strings.Contains(err.Error(), "a carry_over's review is a review result of its review producer") {
 		t.Fatalf("CarryOver over an integration's tree as the review: %v", err)
 	}
@@ -424,7 +443,8 @@ func TestCarryOverRoles(t *testing.T) {
 	treeReview := g.consumerOf(integration, types.ResultKindTree)
 	g.must(evaluate(effectEnv, treeReview))
 	g.must(commit(treeReview, g.reviewResult(treeReview), effectEnv))
-	rebase := substitute(gen.Rebase, `{"branch":"dev","base":"B1","version":1,"candidate":"`+string(ir.ID)+`","generation":1}`, map[string]source{"candidate": {integration, types.ResultKindTree}})
+	rebase := substitute(gen.Rebase, `{"branch":"dev","base":"B1","version":1,"candidate":"`+string(ir.ID)+`","review":"`+string(treeReview)+
+		`","review_result":"`+string(*g.state(treeReview).Result)+`","requirement":"`+string(gen.Requirement)+`","generation":1}`, map[string]source{"candidate": {integration, types.ResultKindTree}})
 	rr := unrecorded(t, *g.state(rebase).Key)
 	rr.Kind, rr.Value, rr.Outcome, rr.Reason, rr.Detail = types.ResultKindTree, []types.Ref{g.ref(types.RefTypeGitTree, "T2"), tree}, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
 	g.must(commit(rebase, rr, effectEnv))
@@ -466,7 +486,9 @@ func TestCompleteEffect(t *testing.T) {
 	if err := g.do(raw(merge, result(pres.Result.Value...), g.blobs)); err == nil {
 		t.Fatal("a result of a pending effect folded")
 	}
-	if _, err := g.runEffect(op, effecttarget.New()); err != nil {
+	f := fakeforge.New()
+	f.Move("main", "B1") // the generation's base
+	if _, err := g.runEffect(op, f); err != nil {
 		t.Fatal(err)
 	}
 	g.must(invalidate(pkg)) // after the apply: no re-validation at completion
@@ -529,7 +551,7 @@ func TestMergeRequirement(t *testing.T) {
 	spec := g.specOf(gen1)
 	replacement := g.rosterChange(spec.Review, exeB)
 	var stale ErrRevalidated
-	if _, err := g.operate(gen1.Merge); !errors.As(err, &stale) || stale.Reason != vocab.ReasonStaleExpectedState || stale.Input != "requirement" || g.count(NodeOperated) != 0 {
+	if _, err := g.operate(gen1.Merge); !errors.As(err, &stale) || stale.Reason != vocab.ReasonStaleExpectedState || stale.Input != "carry_over" && stale.Input != "requirement" || g.count(NodeOperated) != 0 { // the verdict sees the superseded review first
 		t.Fatalf("the merge's intent after a roster change: %v", err)
 	}
 	patch := g.patchOf(spec.Candidate)
@@ -975,7 +997,8 @@ func TestQueueTaskLocal(t *testing.T) {
 	}
 	if err := raw(g.recordOf(gen.Rebase), func(n *types.NodeRecorded) {
 		swap("candidate", foreignCand, types.ResultKindPatch)(n)
-		n.Node.Params = json.RawMessage(`{"branch":"main","base":"B2","version":` + strconv.FormatInt(gen.Version+1, 10) + `,"candidate":"` + string(r.ID) + `","generation":2}`)
+		n.Node.Params = json.RawMessage(`{"branch":"main","base":"B2","version":` + strconv.FormatInt(gen.Version+1, 10) + `,"candidate":"` + string(r.ID) + `","review":"` + string(gen.Review) +
+			`","review_result":"` + string(gen.Verdict) + `","requirement":"` + string(gen.Requirement) + `","generation":2}`)
 	}); err == nil || !strings.Contains(err.Error(), "own task") {
 		t.Errorf("a raw rebase of a foreign candidate: %v", err)
 	}

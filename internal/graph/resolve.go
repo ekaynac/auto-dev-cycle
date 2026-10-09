@@ -96,7 +96,11 @@ func Resolve(tx *eventstore.Tx, node types.NodeID, answered map[string]Resolved,
 			return nil, nil, err
 		}
 		if req != nil && !mutation.Is(mutation.ResolveSkipsApplicability) {
-			if err := applies(tx, r, *req, blobs, now); err != nil {
+			err := applies(tx, r, *req, blobs, now)
+			if err == nil && rec.Recorded.Node.Kind == types.NodeKindMerge {
+				err = refreshed(tx, rec, r, blobs)
+			}
+			if err != nil {
 				var refusal *receipt.Refusal
 				if !errors.As(err, &refusal) {
 					return nil, nil, err
@@ -201,4 +205,30 @@ func receiptOf(rr types.ResultRecorded, blobs receipt.Blobs) (types.Ref, types.R
 		return ref, rcpt, &receipt.Refusal{Reason: vocab.ReasonReceiptIncomplete, Detail: "the receipt is not the one the result's Ref, validity and conclusions name"}
 	}
 	return ref, rcpt, nil
+}
+
+// refreshed: r, a check result a merge takes, holds a receipt about its
+// generation's prospective tree, the git tree its carry_over's attestation
+// holds (what the merge applies), when the receipt is about a tree. A
+// receipt about anything else (a package's runtime) is bound by the
+// merge's requirement alone.
+func refreshed(tx *eventstore.Tx, rec nodeRecord, r types.ResultRecorded, blobs receipt.Blobs) error {
+	co, err := loadNode(tx, producerOf(rec.Recorded.Node, "carry_over"))
+	_, rcpt, cerr := receiptOf(r, blobs)
+	if err = errors.Join(err, cerr); err != nil {
+		return err
+	}
+	sub, tree := rcpt.Subject.Variant.(*types.TreeSubject)
+	if !tree {
+		return nil
+	}
+	var prospective types.ResultRecorded
+	ok := false
+	if co.State.Result != nil {
+		prospective, ok, err = load[types.ResultRecorded](tx, ResultProjection, string(*co.State.Result))
+	}
+	if err == nil && (!ok || len(prospective.Result.Value) == 0 || string(sub.Tree) != prospective.Result.Value[0].ID) {
+		err = &receipt.Refusal{Reason: vocab.ReasonEvidenceInapplicable, Detail: fmt.Sprintf("the receipt is about %s, not the generation's prospective tree", sub.Tree)}
+	}
+	return err
 }

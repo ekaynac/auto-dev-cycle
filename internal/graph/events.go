@@ -549,7 +549,7 @@ func claimed(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeClaimed) error
 	if !reflect.DeepEqual(items(rec.Recorded.Node, resolved), p.Inputs) {
 		return errors.New("the claim's inputs are not one resolution per declared input, in order")
 	}
-	if err := errors.Join(selectedInputs(tx, rec, resolved), bindsRequirement(tx, rec, resolved), rebaseClaimed(rec, resolved)); err != nil {
+	if err := errors.Join(selectedInputs(tx, rec, resolved), bindsRequirement(tx, rec, resolved), rebaseClaimed(rec, resolved), carryClaimed(tx, rec, resolved)); err != nil {
 		return err
 	}
 	key, err := Key(rec.Recorded.Node, resolved, p.Key.Generation)
