@@ -107,6 +107,15 @@ func awaitSignal(ask *types.AnswerSource) string {
 // lineage moves on only through a successor at the current revision.
 func answers(tx *eventstore.Tx, rec nodeRecord, auth Authority) (out map[string]Resolved, stale bool, err error) {
 	out = map[string]Resolved{}
+	if auth == nil { // fail closed: only a first round with no answer input and no replaced review needs none
+		if rec.Recorded.Predecessor != nil || rec.Replaces != nil || slices.ContainsFunc(rec.Recorded.Node.Inputs, func(in types.InputSpec) bool {
+			_, ok := in.Source.Variant.(*types.AnswerSource)
+			return ok
+		}) {
+			return nil, false, errors.New("graph: answers need the authority")
+		}
+		return out, false, nil
+	}
 	owed, err := lineageOwed(tx, rec.Recorded.Predecessor, auth)
 	if err != nil {
 		return nil, false, err
@@ -134,10 +143,13 @@ func answers(tx *eventstore.Tx, rec nodeRecord, auth Authority) (out map[string]
 		}
 	}
 	name, still, err := displaced(tx, rec, owed) // a replaced question still owed: wait, never run without it
+	if err != nil {
+		return nil, false, err // fail closed: an unreadable lineage answers nothing
+	}
 	if still {
 		delete(out, string(name))
 	}
-	return out, stale || still, err
+	return out, stale || still, nil
 }
 
 type evaluation struct {

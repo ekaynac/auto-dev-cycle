@@ -397,11 +397,45 @@ func TestReuseDisplacedQuestion(t *testing.T) {
 	}); !errors.As(err, &stale) || stale.Reason != vocab.ReasonAuthorityRevoked {
 		t.Errorf("the replacement reused the successor's result: %v", err)
 	}
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Reuse(tx, rep, resolved, nil) }); err == nil {
-		t.Error("a reuse with no authority")
+	// Fail closed: an authority that errs, or none, refuses the reuse, by the
+	// builder and by the evaluator.
+	for name, auth := range map[string]Authority{"no authority": nil, "an authority error": failingOwed{}} {
+		if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Reuse(tx, rep, resolved, auth) }); err == nil {
+			t.Errorf("a reuse with %s", name)
+		}
+		e := env
+		e.Authority = auth
+		if err := g.do(evaluate(e, rep)); err == nil || g.state(rep).State == types.NodeStateStateCompleted {
+			t.Errorf("an evaluation with %s: %v", name, err)
+		}
 	}
+	g.must(asked(ownID, review, nil)) // with the ruling moved, the answers are in force: still fail closed
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Reuse(tx, rep, resolved, failingOwed{}) }); err == nil {
+		t.Error("a reuse whose authority errs, with nothing displaced")
+	}
+	g.must(asked(ownID, first, nil))
 	g.must(evaluate(env, rep))
 	if st := g.state(rep); st.State == types.NodeStateStateCompleted || st.State == types.NodeStateStateClaimed {
 		t.Errorf("the evaluator ran the replacement: %s", st.State)
+	}
+}
+
+// Fail closed: a supersession lineage that cannot be read answers nothing,
+// so neither the evaluator nor a reuse runs on it.
+func TestAnswersFailClosed(t *testing.T) {
+	g := openStore(t)
+	review, _, _ := g.superseding()
+	var got map[string]Resolved
+	err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		rec, err := loadNode(tx, review)
+		if err != nil {
+			return nil, err
+		}
+		rec.Replaces = ptr(types.NodeID("nod_01m3250vnfeyrv67x6w0ddqr6a")) // no such node
+		got, _, err = answers(tx, rec, owedanswers.Authority{})
+		return nil, err
+	})
+	if err == nil || got != nil {
+		t.Errorf("answers on an unreadable lineage: %v %v", got, err)
 	}
 }
