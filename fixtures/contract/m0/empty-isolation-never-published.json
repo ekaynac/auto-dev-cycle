@@ -1,0 +1,10 @@
+{
+  "name": "empty-isolation-never-published",
+  "invariant": "An empty isolation setting is never published: an evidence result is published only with its isolation proven by a probe inside the run's own wrapper. A walk run under an empty isolation setting, and a walk whose probe ran in another run's wrapper, are could_not_run/isolation_unproven and never selected; a walk under a loopback setting is published (12 \"Content\"; 15 E3).",
+  "expected": [
+    {"outcome": "could_not_run", "reason": "isolation_unproven"},
+    {"outcome": "could_not_run", "reason": "isolation_unproven"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "evidence.isolation-unchecked"
+}

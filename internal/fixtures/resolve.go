@@ -342,16 +342,20 @@ func (g *graphFix) gateReceipt(tree string, demand types.Digest, until *types.Ti
 // gateReceiptWith is gateReceipt with the predicates ps, its Ref under
 // restrictions; the receipt's own outcome is the first predicate's.
 func (g *graphFix) gateReceiptWith(tree string, demand types.Digest, until *types.Time, restrictions []types.Restriction, ps ...types.Predicate) (types.Ref, json.RawMessage, error) {
+	return g.receiptWith(types.ReceiptKindGate, types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: instrumentDigest}, tree, demand, until, restrictions, ps...)
+}
+
+// receiptWith is gateReceiptWith for a receipt of kind from instrument.
+func (g *graphFix) receiptWith(kind types.ReceiptKind, instrument types.InstrumentRef, tree string, demand types.Digest, until *types.Time, restrictions []types.Restriction, ps ...types.Predicate) (types.Ref, json.RawMessage, error) {
 	if len(ps) == 0 {
-		return types.Ref{}, nil, errors.New("a gate receipt has at least one predicate")
+		return types.Ref{}, nil, errors.New("a receipt has at least one predicate")
 	}
 	p := ps[0]
 	subject, err := subjectOf(tree, demand)
 	if err != nil {
 		return types.Ref{}, nil, err
 	}
-	r := types.Receipt{ID: receiptID, Kind: types.ReceiptKindGate, Subject: subject,
-		Instrument: types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: instrumentDigest},
+	r := types.Receipt{ID: receiptID, Kind: kind, Subject: subject, Instrument: instrument,
 		Provenance: types.ReceiptProvenance{Command: "cmd_01m3250vz2ezn81cgvbkcn17jd", Calls: []types.CallID{}, ModelFamilies: []types.Name{}, Contributors: []types.ActorID{}},
 		ProducedAt: types.Time(time.Now().UTC().Format(time.RFC3339Nano)), ValidUntil: until, Outcome: p.Outcome, Reason: p.Reason, Detail: p.Detail,
 		Predicates: ps}

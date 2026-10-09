@@ -57,6 +57,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/identity-event.json`](records-identity-event.md) | IdentityEvent |
 | [`records/input-spec.json`](records-input-spec.md) | InputSpec |
 | [`records/instrument-contract.json`](records-instrument-contract.md) | InstrumentContract |
+| [`records/isolation-proof.json`](records-isolation-proof.md) | IsolationProof |
 | [`records/lease-event.json`](records-lease-event.md) | LeaseEvent |
 | [`records/lease.json`](records-lease.md) | Lease |
 | [`records/manifest-delivery.json`](records-manifest-delivery.md) | ManifestDelivery |

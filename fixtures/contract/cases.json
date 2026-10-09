@@ -13530,7 +13530,8 @@
     "completed": true
    },
    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
-   "receipt_valid_until": null
+   "receipt_valid_until": null,
+   "isolation": null
   },
   "valid": true
  },
@@ -13566,7 +13567,8 @@
     "completed": true
    },
    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
-   "receipt_valid_until": "2026-10-08T12:00:00Z"
+   "receipt_valid_until": "2026-10-08T12:00:00Z",
+   "isolation": null
   },
   "valid": true
  },
@@ -13601,7 +13603,8 @@
     "detail": "a change",
     "completed": true
    },
-   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a"
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "isolation": null
   },
   "valid": false
  },
@@ -13637,7 +13640,8 @@
     "completed": true
    },
    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
-   "receipt_valid_until": "tomorrow"
+   "receipt_valid_until": "tomorrow",
+   "isolation": null
   },
   "valid": false
  },
@@ -13839,7 +13843,8 @@
     "completed": true
    },
    "attempt": null,
-   "receipt_valid_until": null
+   "receipt_valid_until": null,
+   "isolation": null
   },
   "valid": true
  },
@@ -13897,7 +13902,8 @@
     "completed": false
    },
    "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
-   "receipt_valid_until": null
+   "receipt_valid_until": null,
+   "isolation": null
   },
   "valid": false
  },
@@ -13933,7 +13939,8 @@
     "completed": true
    },
    "attempt": "res_01m3250v57fhm9v1z9xd1wk8gw",
-   "receipt_valid_until": null
+   "receipt_valid_until": null,
+   "isolation": null
   },
   "valid": false
  },
@@ -13968,7 +13975,8 @@
     "detail": "a change",
     "completed": true
    },
-   "receipt_valid_until": null
+   "receipt_valid_until": null,
+   "isolation": null
   },
   "valid": false
  },
@@ -16805,6 +16813,231 @@
    "reason": "quota_exhausted",
    "detail": "x",
    "completed": false
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: an evidence result with its isolation proof",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_recorded",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "patch",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": null,
+    "outcome": "found",
+    "reason": "completed_with_findings",
+    "detail": "a change",
+    "completed": true
+   },
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "receipt_valid_until": null,
+   "isolation": {
+    "run": "run_01m3250vnfeyrv67x6w0ddqr6a",
+    "setting": {
+     "network": "loopback"
+    },
+    "interfaces": [
+     "lo"
+    ],
+    "host_reachable": false
+   }
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: a result without its isolation field",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_recorded",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "patch",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": null,
+    "outcome": "found",
+    "reason": "completed_with_findings",
+    "detail": "a change",
+    "completed": true
+   },
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "receipt_valid_until": null
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: an isolation that is not a records/isolation-proof",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "result_recorded",
+   "node": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+   "result": {
+    "id": "res_01m3250v57fhm9v1z9xd1wk8gw",
+    "computation": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "patch",
+    "value": [
+     {
+      "type": "blob",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "revision": null,
+      "scope": {
+       "project": null,
+       "framework": false
+      },
+      "lineage": [],
+      "restrictions": [],
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    ],
+    "conclusions": null,
+    "outcome": "found",
+    "reason": "completed_with_findings",
+    "detail": "a change",
+    "completed": true
+   },
+   "attempt": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "receipt_valid_until": null,
+   "isolation": {
+    "run": "run_01m3250vnfeyrv67x6w0ddqr6a"
+   }
+  },
+  "valid": false
+ },
+ {
+  "name": "isolation-proof: loopback only",
+  "schema": "records/isolation-proof",
+  "doc": {
+   "run": "run_01m3250vnfeyrv67x6w0ddqr6a",
+   "setting": {
+    "network": "loopback"
+   },
+   "interfaces": [
+    "lo"
+   ],
+   "host_reachable": false
+  },
+  "valid": true
+ },
+ {
+  "name": "isolation-proof: an empty setting is a valid record, never a published one",
+  "schema": "records/isolation-proof",
+  "doc": {
+   "run": "run_01m3250vnfeyrv67x6w0ddqr6a",
+   "setting": {},
+   "interfaces": [
+    "eth0",
+    "lo"
+   ],
+   "host_reachable": true
+  },
+  "valid": true
+ },
+ {
+  "name": "isolation-proof: a setting option without a value",
+  "schema": "records/isolation-proof",
+  "doc": {
+   "run": "run_01m3250vnfeyrv67x6w0ddqr6a",
+   "setting": {
+    "network": ""
+   },
+   "interfaces": [
+    "lo"
+   ],
+   "host_reachable": false
+  },
+  "valid": false
+ },
+ {
+  "name": "isolation-proof: a setting option that is not a name",
+  "schema": "records/isolation-proof",
+  "doc": {
+   "run": "run_01m3250vnfeyrv67x6w0ddqr6a",
+   "setting": {
+    "Network": "loopback"
+   },
+   "interfaces": [
+    "lo"
+   ],
+   "host_reachable": false
+  },
+  "valid": false
+ },
+ {
+  "name": "isolation-proof: a run with the wrong prefix",
+  "schema": "records/isolation-proof",
+  "doc": {
+   "run": "att_01m3250vnfeyrv67x6w0ddqr6a",
+   "setting": {
+    "network": "loopback"
+   },
+   "interfaces": [
+    "lo"
+   ],
+   "host_reachable": false
+  },
+  "valid": false
+ },
+ {
+  "name": "isolation-proof: without host_reachable",
+  "schema": "records/isolation-proof",
+  "doc": {
+   "run": "run_01m3250vnfeyrv67x6w0ddqr6a",
+   "setting": {
+    "network": "loopback"
+   },
+   "interfaces": [
+    "lo"
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "isolation-proof: an interface seen twice",
+  "schema": "records/isolation-proof",
+  "doc": {
+   "run": "run_01m3250vnfeyrv67x6w0ddqr6a",
+   "setting": {
+    "network": "loopback"
+   },
+   "interfaces": [
+    "lo",
+    "lo"
+   ],
+   "host_reachable": false
   },
   "valid": false
  }

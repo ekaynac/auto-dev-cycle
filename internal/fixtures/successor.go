@@ -102,8 +102,9 @@ func undeclaredRulingNotInContext(ctx context.Context, dir string) (steps []Step
 		}
 		var refs []types.Ref
 		if err == nil {
-			err = g.s.View(ctx, func(tx *eventstore.Tx) (err error) {
-				refs, err = graph.Context(tx, n, owedanswers.Authority{})
+			err = g.s.View(ctx, func(tx *eventstore.Tx) error {
+				c, err := graph.Context(tx, n, graph.Env{Authority: owedanswers.Authority{}})
+				refs = c.Included
 				return err
 			})
 		}

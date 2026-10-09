@@ -441,6 +441,10 @@ export interface ResultRecorded {
    * Checked by this schema only until M1 binds attempts to nodes.
    */
   attempt: null | string;
+  /**
+   * The isolation proof of the evidence run that produced the result (12 "Content"); null for every other kind. An evidence result that is not could_not_run needs its attempt and a proof from that attempt's run that proves its isolation (internal/evidence CheckIsolation).
+   */
+  isolation: null | IsolationProof;
 }
 /**
  * An exact reference to an input (docs/design/m0/10 "Refs and fingerprints"). Canonical form: lineage, restrictions and each restriction's allowed_destinations are sets, written sorted (strings by Unicode code point; restrictions by project, policy_digest, floor, routing, then allowed_destinations compared element by element, a shorter prefix first), without duplicates, and an empty set is [] (never null or absent). identity_digest is "sha256:" followed by the lowercase hex SHA-256 of the RFC 8785 (JCS) encoding of the canonical ref without identity_digest, so a change of revision, scope, lineage or restrictions changes the identity even when the bytes are identical. Content deduplication never merges restrictions.
@@ -510,6 +514,29 @@ export interface Restriction {
    * Resolved destinations, recorded when the restriction is: here an empty set means no destination may receive the ref (never 'derived from the usage profile').
    */
   allowed_destinations: string[];
+}
+/**
+ * What an isolation probe observed inside an evidence run's wrapper (docs/design/m0/12 "Content"). The probe runs in the same wrapper as the run, so it names the run. An evidence result is published only with a proof that proves its isolation (internal/evidence CheckIsolation): the run is the result's attempt's run, the setting is not empty, and the probe saw loopback only and could not reach the host. graph.CommitEvidence records any other result as could_not_run/isolation_unproven, and the result.recorded fold refuses a published one.
+ */
+export interface IsolationProof {
+  /**
+   * The run whose wrapper the probe ran in (05: the attempt's id under run_).
+   */
+  run: string;
+  /**
+   * The wrapper's isolation setting as it applied it, by option. {} is an empty setting: it is never published.
+   */
+  setting: {
+    [k: string]: string;
+  };
+  /**
+   * The network interfaces the probe saw.
+   */
+  interfaces: string[];
+  /**
+   * Whether the probe connected to an address the host can reach.
+   */
+  host_reachable: boolean;
 }
 /**
  * The node selects its result: a completed result that is not could_not_run (13 [G2]), answering the node's current key, once per claim.

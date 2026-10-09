@@ -5,17 +5,20 @@
 // check run in it observes, and it restores an evidence target, or fails to,
 // as the test scripts.
 //
-// M0 scope (15 D4): declared facts and restore (G8). The three phases,
+// M0 scope (15 D4): declared facts and restore (G8), and an evidence run's
+// wrapper with its isolation probe (E3). The three phases,
 // artifact-before-teardown, the evidence manifest and abrupt loss land with
 // the real sandbox (M1).
 package sandbox
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/evidence"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 )
 
@@ -91,4 +94,23 @@ func (t *Targets) Restored() []types.EvidenceTargetID {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return slices.Clone(t.restored)
+}
+
+// Wrapper is one evidence run's wrapper (12 "Content"): the run and its
+// isolation probe execute inside it, under its isolation setting.
+type Wrapper struct {
+	Run     types.EvidenceRunID
+	Setting map[string]string
+}
+
+// Probe is what an isolation probe inside w observes. The fake isolates a
+// run only under network=loopback; any other setting, the empty one
+// included, leaves the host's network in place.
+func (w Wrapper) Probe() types.IsolationProof {
+	p := types.IsolationProof{Run: w.Run, Setting: map[string]string{}, Interfaces: []string{"eth0", evidence.Loopback}, HostReachable: true}
+	maps.Copy(p.Setting, w.Setting)
+	if w.Setting["network"] == "loopback" {
+		p.Interfaces, p.HostReachable = []string{evidence.Loopback}, false
+	}
+	return p
 }

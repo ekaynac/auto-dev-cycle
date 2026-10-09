@@ -1,0 +1,11 @@
+{
+  "name": "restricted-artifact-not-in-prompt",
+  "invariant": "A restricted artifact never reaches a prompt: a review's context of a walk's result renders the receipt and diagnostic trace and omits as restricted the remote stderr and a blob the receipt does not name (empty/completed_clean each; a restricted ref rendered is failed/restriction_dropped). Delivered later as a tool result, the stderr is refused (failed/restriction_dropped) and the trace delivered (empty/completed_clean) (12 \"Content\"; 10; 15 E3).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "restriction_dropped"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.restricted-artifact-rendered"
+}

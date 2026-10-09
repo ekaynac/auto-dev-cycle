@@ -332,13 +332,22 @@ func Commit(tx *eventstore.Tx, node types.NodeID, r types.Result, env Env) error
 
 // commitResult is Commit's recording, for every kind.
 func commitResult(tx *eventstore.Tx, node types.NodeID, r types.Result, env Env) error {
-	if err := revalidate(tx, node, env); err != nil {
+	return commitRecorded(tx, types.ResultRecorded{Node: node, Result: r}, env)
+}
+
+// commitRecorded is commitResult of rr, which may carry its attempt and
+// isolation proof (CommitEvidence).
+func commitRecorded(tx *eventstore.Tx, rr types.ResultRecorded, env Env) error {
+	if tx.Now().IsZero() {
+		return errors.New("graph: a commit runs in a command's transaction")
+	}
+	if err := revalidate(tx, rr.Node, env); err != nil {
 		return err
 	}
-	evs, err := recordResult(tx, types.ResultRecorded{Node: node, Result: r}, env.Blobs)
-	if err == nil && r.Outcome != types.OutcomeCouldNotRun {
+	evs, err := recordResult(tx, rr, env.Blobs)
+	if err == nil && rr.Result.Outcome != types.OutcomeCouldNotRun {
 		var sel []eventstore.Event
-		sel, err = selectResult(tx, node, r.ID)
+		sel, err = selectResult(tx, rr.Node, rr.Result.ID)
 		evs = append(evs, sel...)
 	}
 	if err != nil {

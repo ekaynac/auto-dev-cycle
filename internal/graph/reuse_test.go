@@ -96,10 +96,13 @@ func (g graphStore) selectGate(n types.NodeID) types.Result {
 	g.t.Helper()
 	r := unrecorded(g.t, *g.state(n).Key)
 	d := g.receiptBlob(treeSubject(treeA, demandA), nil)
+	if g.recordOf(n).Node.Kind == types.NodeKindEvidence { // an evidence node holds its own instrument's receipt
+		d = g.walkReceipt(walkContract())
+	}
 	r.Kind, r.Outcome, r.Reason, r.Detail, r.Conclusions = produces[g.recordOf(n).Node.Kind][0], types.OutcomeEmpty, vocab.ReasonCompletedClean, "", ptr(g.conclusions[d])
 	r.Value = []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
+		return recordResult(tx, g.published(n, r), g.blobs)
 	})
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, r.ID) })
 	return r

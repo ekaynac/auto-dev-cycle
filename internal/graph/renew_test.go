@@ -23,7 +23,7 @@ var (
 // recordResult records r for n.
 func (g graphStore) recordResult(n types.NodeID, r types.Result) error {
 	return g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
+		return recordResult(tx, g.published(n, r), g.blobs)
 	})
 }
 

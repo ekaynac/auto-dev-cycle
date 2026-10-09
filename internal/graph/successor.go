@@ -38,7 +38,8 @@ package graph
 //     for, at the current revision. Nothing else, an answer to an owed
 //     input the node did not declare or its lineage did not ask for
 //     included, reaches it, however the claim was made; a manifest.intent
-//     lists exactly these refs (10).
+//     lists exactly these refs (10). A result's artifacts are rendered by
+//     their content class (content.go): a restricted one is omitted.
 
 import (
 	"errors"
@@ -168,47 +169,57 @@ func Successor(tx *eventstore.Tx, pred types.NodeID, added []types.InputSpec, au
 	return append(evs, recorded...), nil
 }
 
-// Context is node's controller context: the refs of its claimed inputs, in
-// declared order. An answer its lineage did not ask for is ErrNotOwed, one
-// at a revision its owed input has moved past ErrRevalidated
-// (authority_revoked).
-func Context(tx *eventstore.Tx, node types.NodeID, auth Authority) ([]types.Ref, error) {
+// Context is node's controller context under env: the refs of its claimed
+// inputs, in declared order, a restricted artifact omitted. An answer its
+// lineage did not ask for is ErrNotOwed, one at a revision its owed input
+// has moved past ErrRevalidated (authority_revoked).
+func Context(tx *eventstore.Tx, node types.NodeID, env Env) (Rendered, error) {
+	out, err := renderContext(tx, node, env)
+	if err != nil {
+		return Rendered{}, err
+	}
+	return out, nil
+}
+
+func renderContext(tx *eventstore.Tx, node types.NodeID, env Env) (Rendered, error) {
+	out, auth := Rendered{Included: []types.Ref{}, Omitted: []types.ManifestIntentOmittedItem{}}, env.Authority
 	rec, err := loadNode(tx, node)
 	c, ok, cerr := load[claim](tx, ClaimProjection, string(node))
 	if err = errors.Join(err, cerr); err != nil || !ok {
-		return nil, errors.Join(err, fmt.Errorf("graph: %s is not claimed: its inputs are not fixed", node))
+		return out, errors.Join(err, fmt.Errorf("graph: %s is not claimed: its inputs are not fixed", node))
 	}
 	owed, err := lineageOwed(tx, rec.Recorded.Predecessor, auth)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
-	refs := []types.Ref{}
 	for i, in := range c.Inputs {
 		switch {
 		case in.Result != nil:
 			r, ok, err := load[types.ResultRecorded](tx, ResultProjection, string(*in.Result))
 			if err != nil || !ok {
-				return nil, errors.Join(err, fmt.Errorf("graph: %s's input %s names no recorded result", node, in.Name))
+				return out, errors.Join(err, fmt.Errorf("graph: %s's input %s names no recorded result", node, in.Name))
 			}
-			refs = append(refs, r.Result.Value...)
+			if err := classed(tx, r, env, &out); err != nil {
+				return out, err
+			}
 		case in.Approval != nil && in.Revision != nil:
 			ask := rec.Recorded.Node.Inputs[i].Source.Variant.(*types.AnswerSource)
 			if !mutation.Is(mutation.AnswerLineageUnchecked) {
 				if !asks(owed, ask.OwedInput) {
-					return nil, ErrNotOwed{ask.OwedInput}
+					return out, ErrNotOwed{ask.OwedInput}
 				}
 				if !owedIn(owed, &types.AnswerSource{OwedInput: ask.OwedInput, Revision: *in.Revision}) {
-					return nil, ErrRevalidated{Input: in.Name, Reason: vocab.ReasonAuthorityRevoked, Detail: "the answer is not at its owed input's current revision"}
+					return out, ErrRevalidated{Input: in.Name, Reason: vocab.ReasonAuthorityRevoked, Detail: "the answer is not at its owed input's current revision"}
 				}
 			}
 			ref, err := auth.Approval(tx, rec.Recorded, ask.OwedInput, *in.Revision, *in.Approval)
 			if err != nil {
-				return nil, err
+				return out, err
 			}
-			refs = append(refs, ref)
+			out.Included = append(out.Included, ref)
 		default:
-			return nil, fmt.Errorf("graph: %s's input %s resolved to nothing", node, in.Name)
+			return out, fmt.Errorf("graph: %s's input %s resolved to nothing", node, in.Name)
 		}
 	}
-	return refs, nil
+	return out, nil
 }

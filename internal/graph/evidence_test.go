@@ -277,7 +277,10 @@ func TestCheckContract(t *testing.T) {
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, g.results(n)[0]) })
 	g.must(evaluate(withContracts(g.env(noReceipts), nil), n))
 	expired := g.walk("expired", 1, 2)
-	d := g.receiptBlob(treeSubject(treeA, demandA), ptr("2026-01-01T00:00:00Z"))
+	doc := receiptDoc(treeSubject(treeA, demandA), ptr("2026-01-01T00:00:00Z"))
+	doc["instrument"] = map[string]any{"name": "walk", "version": "1", "digest": walkDigest}
+	doc["predicates"].([]any)[0].(map[string]any)["name"] = "steps"
+	d := g.derivedUnder(walkContract(), doc) // the walk's own receipt, expired
 	r := g.evidence(expired, nil)
 	r.Conclusions, r.Value = ptr(g.conclusions[d]), []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)}
 	if err := g.recordResult(expired, r); err != nil {
