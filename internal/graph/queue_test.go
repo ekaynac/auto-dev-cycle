@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -918,4 +919,64 @@ func TestMergeFenceScope(t *testing.T) {
 	n := g.record(next)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, n, map[string]Resolved{}, 1) })
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, rid, n, nil, reviewers) })
+}
+
+// A queue generation takes only its own task's nodes: a candidate or a
+// review of another task of the project is refused, by Generate and by
+// the rebase and carry_over folds, so the task-scoped fences see every
+// live merge.
+func TestQueueTaskLocal(t *testing.T) {
+	g := openEffectStore(t)
+	patch := g.ref(types.RefTypeBlob, "P")
+	spec := g.queueSpec("main", patch)
+	inC := func(kind types.NodeKind, producer types.NodeID, rk types.ResultKind) types.NodeID {
+		rec := g.nodeOn(kind, producer)
+		rec.Task = tskC
+		rec.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = rk
+		return g.record(rec)
+	}
+	// Task C's review of A's candidate, and C's own candidate.
+	foreignReview := inC(types.NodeKindReview, spec.Candidate, types.ResultKindPatch)
+	g.must(evaluate(effectEnv, foreignReview))
+	g.must(commit(foreignReview, g.reviewResult(foreignReview), effectEnv))
+	foreignCand := inC(types.NodeKindBuild, g.plan, types.ResultKindPlan)
+	g.must(evaluate(effectEnv, foreignCand))
+	r := unrecorded(t, *g.state(foreignCand).Key)
+	r.Value = []types.Ref{patch}
+	g.must(commit(foreignCand, r, effectEnv))
+	for name, s := range map[string]QueueSpec{
+		"a foreign review":    {Task: tskID, Project: prjID, Branch: "main", Candidate: spec.Candidate, Review: foreignReview},
+		"a foreign candidate": {Task: tskID, Project: prjID, Branch: "main", Candidate: foreignCand, Review: spec.Review},
+	} {
+		if _, err := g.generate(s, "B1"); err == nil || !strings.Contains(err.Error(), "own task") || strings.Contains(err.Error(), "graph: event") {
+			t.Errorf("Generate with %s, refused by the builder: %v", name, err)
+		}
+	}
+	gen, err := g.generate(spec, "B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := func(n types.NodeRecorded, edit func(*types.NodeRecorded)) error {
+		n.Node.ID, n.Node.Inputs = types.NodeID(must(ids.New("nod"))), slices.Clone(n.Node.Inputs)
+		edit(&n)
+		return g.do(forge(NodeRecorded, string(n.Node.ID), prjID, &n))
+	}
+	swap := func(name string, producer types.NodeID, kind types.ResultKind) func(*types.NodeRecorded) {
+		return func(n *types.NodeRecorded) {
+			for i, in := range n.Node.Inputs {
+				if in.Name == types.Name(name) {
+					n.Node.Inputs[i].Source.Variant = &types.ResultSource{Type: "result", Producer: producer, ResultKind: kind}
+				}
+			}
+		}
+	}
+	if err := raw(g.recordOf(gen.CarryOver), swap("review", foreignReview, types.ResultKindReview)); err == nil || !strings.Contains(err.Error(), "own task") {
+		t.Errorf("a raw carry_over of a foreign review: %v", err)
+	}
+	if err := raw(g.recordOf(gen.Rebase), func(n *types.NodeRecorded) {
+		swap("candidate", foreignCand, types.ResultKindPatch)(n)
+		n.Node.Params = json.RawMessage(`{"branch":"main","base":"B2","version":` + strconv.FormatInt(gen.Version+1, 10) + `,"candidate":"` + string(r.ID) + `","generation":2}`)
+	}); err == nil || !strings.Contains(err.Error(), "own task") {
+		t.Errorf("a raw rebase of a foreign candidate: %v", err)
+	}
 }

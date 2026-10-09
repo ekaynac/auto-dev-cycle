@@ -21,6 +21,10 @@ package graph
 //     checks, the carried review, the candidate and the rebase.
 //   - Once the operation settles (completed, or failed confirmed) nothing is
 //     fenced: the effect is history.
+//   - The fences look only in the task of what changes. That is complete
+//     because a queue generation's dependencies are task-local at
+//     admission (taskLocal, queue.go): its candidate, carried review (and
+//     its holder) and requirement are nodes of the generation's task.
 
 import (
 	"errors"

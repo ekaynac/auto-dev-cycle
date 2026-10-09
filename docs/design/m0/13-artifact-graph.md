@@ -567,7 +567,10 @@ As delivered (G7b-2a):
   subject a live merge of the task takes, whichever review it replaces; and the invalidation or renewal of any
   producer the live merge's claim or its carry_over's claim took (declared, or recording the result: a reused
   review's holder), so the requirement, the carry_over, the carried review, the candidate, the rebase and the
-  refreshed checks. A settled operation fences nothing.
+  refreshed checks. A settled operation fences nothing. The fences look only in the task of what changes, which is
+  complete because a generation's dependencies are task-local at admission: its candidate, its carried review (and a
+  reuse holder) and its requirement must be nodes of the generation's task, refused otherwise by `Generate`,
+  `CarryOver` and the rebase, carry_over and result folds, raw events included.
 - **Before the apply,** as a backstop, a pending merge is applied only while its claimed inputs are still served to
   it. A pending effect that applies nothing, for this or any other refusal, fails, confirmed, only when the target
   proves the effect never landed (`EffectTarget.Landed`; the fake forge and the fake effect target log their

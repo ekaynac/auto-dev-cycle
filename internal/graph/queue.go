@@ -183,6 +183,9 @@ func generationRecorded(tx *eventstore.Tx, p *types.NodeRecorded) error {
 	if !ok {
 		return errors.New("a rebase node takes its candidate")
 	}
+	if err := taskLocal(tx, p.Task, src.Producer); err != nil {
+		return err
+	}
 	if r, why, err := selectedOf(tx, nodeRecord{Recorded: *p}, src); err != nil || why != "" || r.Result.ID != rp.Candidate {
 		return errors.Join(err, fmt.Errorf("the generation's candidate %s is not its producer's selected result %s", rp.Candidate, why))
 	}
@@ -196,6 +199,23 @@ func generationRecorded(tx *eventstore.Tx, p *types.NodeRecorded) error {
 			rp.Generation, rp.Base, rp.Version, cur.Number, cur.Base, cur.Version))
 	}
 	return put(tx, GenerationProjection, key, Generation{Number: rp.Generation, Base: rp.Base, Version: rp.Version, Candidate: rp.Candidate, Rebase: p.Node.ID})
+}
+
+// taskLocal: each of nodes is a node of task. A queue generation's
+// dependencies (its candidate, its carried review and its holder, its
+// requirement) are its own task's, at admission, so the fences, which
+// look for live merges in the task of what changes, see every one.
+func taskLocal(tx *eventstore.Tx, task types.TaskID, nodes ...types.NodeID) error {
+	for _, n := range nodes {
+		rec, err := loadNode(tx, n)
+		if err != nil {
+			return err
+		}
+		if rec.Recorded.Task != task {
+			return fmt.Errorf("graph: %s is of task %s: a queue generation takes only its own task's nodes", n, rec.Recorded.Task)
+		}
+	}
+	return nil
 }
 
 // pinnedCandidate: rb, a rebase node, takes cand as its candidate, the
@@ -241,6 +261,9 @@ func carryRecorded(tx *eventstore.Tx, p *types.NodeRecorded) error {
 	if err != nil || !found || cand == "" || rb.Recorded.Node.Kind != types.NodeKindRebase || producerOf(rb.Recorded.Node, "candidate") != cand ||
 		json.Unmarshal(rb.Recorded.Node.Params, &rp) != nil {
 		return errors.Join(err, errors.New("a carry_over takes a rebase node of its own candidate"))
+	}
+	if err := taskLocal(tx, p.Task, cand, producerOf(p.Node, "review"), producerOf(p.Node, "requirement")); err != nil {
+		return err
 	}
 	key := generationKey(p.Task, rp.Branch)
 	cur, ok, err := load[Generation](tx, GenerationProjection, key)
@@ -299,6 +322,9 @@ func Generate(tx *eventstore.Tx, spec QueueSpec, obs Observation) ([]eventstore.
 		return nil, Generation{}, errors.Join(err, fmt.Errorf("graph: the candidate %s has no selected result", spec.Candidate))
 	}
 	review, err := loadNode(tx, spec.Review)
+	if err == nil {
+		err = taskLocal(tx, spec.Task, spec.Candidate, spec.Review)
+	}
 	_, subject, serr := rosterOf(review.Recorded.Node)
 	required, rerr := selectedRequirement(tx, spec.Task, subject)
 	if err = errors.Join(err, serr, rerr); err != nil {
@@ -478,6 +504,12 @@ func carryInputs(tx *eventstore.Tx, rec nodeRecord) (out carried, err error) {
 	review, nerr := loadNode(tx, vr.Node)
 	rc, _, cerr := load[claim](tx, ClaimProjection, string(vr.Node))
 	if err = errors.Join(err, rerr, verr, qerr, nerr, cerr); err != nil {
+		return out, err
+	}
+	// What the carry_over attests is its task's: the nodes that recorded its
+	// inputs (a reused review's holder included), so the fences, scoped to
+	// a task, see every live merge that consumed them.
+	if err := taskLocal(tx, rec.Recorded.Task, cr.Node, rr.Node, vr.Node, qr.Node); err != nil {
 		return out, err
 	}
 	rbn, err := loadNode(tx, rr.Node)
