@@ -35,7 +35,10 @@ The attended session writes a handover comment when it hands back. This is the s
   count (D44). Tests, test fixtures, generated code and unchanged vendored schemas don't count, but their review burden
   is stated in the description. "One feature, one PR" means one reviewable behaviour, never a whole subsystem. A larger
   piece is split, unless it is one cohesive package that splitting would only fill with temporary scaffolding; then it
-  ships as one PR with the reason stated in the description (D41).
+  ships as one PR with the reason stated in the description (D41). That exception may exceed the usual 300–600 range
+  but not the ~800 ceiling, unless the description justifies it and the lead accepts before review. The justification
+  names the one behaviour and its acceptance story, the scaffolding a split would need, the line count per part, and
+  why no part touching authority, replay, fencing or merge state can land separately.
 - **Fault evidence (D46).** Targeted mutation, or equivalent discriminating fault evidence (a test that fails under a
   named, realistic fault), is required for changes to:
   - authority, grants, containment and egress;
@@ -113,7 +116,9 @@ PRs; they are picked up when their trigger arrives.
 ## 4. Merge
 
 The lead merges (`gh pr merge --merge`) when **CI is green and the review is GO**, after applying any requested
-changes.
+changes. **GO with changes** permits the merge once no Critical/High finding or bounded acceptance obligation (§3)
+remains open and the nonblocking findings are recorded in the PR's backlog issue (D46); it needs no second review
+round. The CI gate and the operator gates below are unchanged.
 
 These PRs **wait for the operator**:
 - a PR that changes a decision (D#);
