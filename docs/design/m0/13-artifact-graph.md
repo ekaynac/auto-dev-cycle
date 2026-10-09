@@ -211,7 +211,8 @@ Result:                            # what was computed: immutable  [G1]
         ignores round and ancestry, so a replacement could take the result of a successor completed while its
         displaced question was not asked. The `Reuse` builder therefore takes the authority: each answer input must
         resolve to the answer in force for a question the lineage asks at its current revision, and no displaced
-        question may still be owed; otherwise the reuse is `authority_revoked`. The evaluator's reuse already goes
+        question may still be owed; otherwise the reuse is `authority_revoked`. The check fails closed: an authority
+        error, an unreadable lineage or no authority refuses the reuse, and the evaluator alike. The evaluator's reuse already goes
         through `answers()`. The `node.reused` fold reads no authority, so a raw reuse is not refused on its answers
         until M1 records approvals and owed inputs (contract fixture `reuse-displaced-question`).
       - **Dependants stay refused.** Re-pointing a dependant that claimed the superseded result would release its
