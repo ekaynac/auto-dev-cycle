@@ -228,7 +228,7 @@ the two differ, this section is what later PRs build on.
 | | **G6b-2** (#213) | hold transfer and retirement inside `review.superseded`, derived from the replacement and re-derived by the fold; moved questions (an answer replaced only; removal is deferred to M1). A review whose result a dependant claimed stays refused: the merge's wait is G7b-2's |
 | G7b | **G7b-1** (#206), **G7b-1b** (#208) | the fake forge, rebase and carry_over; observed versions and the pinned candidate |
 | | **G7b-2a** (this PR) | the mandatory requirement, the subject's selected revision, the carry_over's and the merge's requirement rules, a reused review's carry-over; fixture `roster-change-makes-merge-wait` |
-| | **G7b-2b** (stacked) | the review's verdict, the refreshed receipts, and the merge by expected-base compare-and-set |
+| | **G7b-2b** (stacked on G7b-2a) | a generation's identity with its review and requirement; the review's verdict; the refreshed checks and their receipts; the merge by expected-base compare-and-set; fixtures `base-move-fails-the-merge-cas`, `replacement-review-starts-a-generation` |
 
 **Size.** The G track now has at least 15 PRs, against the 12 planned: G3 split in three and G4a in two. G6b and
 G7b may still split.

@@ -115,6 +115,13 @@ const (
 	// its subject's revisions, so a roster change after carry-over was
 	// selected leaves the merge free to go.
 	RequirementRevisionUnchecked = "graph.requirement-revision-unchecked"
+	// GenerationKeepsReview keeps the current queue generation whatever
+	// review or requirement it is to carry over, so a replacement review
+	// starts no generation and the merge waits for a base move.
+	GenerationKeepsReview = "graph.generation-keeps-review"
+	// MergeCASOnHead applies a merge against the head its runner observed,
+	// not the base its generation pins, so a base move is merged over.
+	MergeCASOnHead = "graph.merge-cas-on-head"
 	// EffectKeyedByComputation leaves the node instance out of an effect
 	// operation's request, so a new goal with an equal computation key finds
 	// an earlier operation: a cached effect result read as current state.
@@ -208,4 +215,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	IsolationUnchecked, RestrictedArtifactRendered,
 	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer, DisplacedQuestionUnchecked,
 	ReuseSkipsAuthority, ContextNeedsNoAuthority,
-	RequirementRevisionUnchecked}
+	RequirementRevisionUnchecked,
+	GenerationKeepsReview, MergeCASOnHead}

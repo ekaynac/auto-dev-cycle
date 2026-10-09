@@ -47,7 +47,7 @@ func TestStaleObservations(t *testing.T) {
 	cur, _ := view[Generation](g, GenerationProjection, generationKey(tskID, "main"))
 	rec := g.recordOf(cur.Rebase)
 	rec.Node.ID = "nod_01m4e289fveqtbx5mgt0y0559z"
-	params, _ := json.Marshal(rebaseParams{Branch: "main", Base: "C", Version: cur.Version - 1, Candidate: cur.Candidate, Generation: cur.Number + 1})
+	params, _ := json.Marshal(rebaseParams{Branch: "main", Base: "C", Version: cur.Version - 1, Candidate: cur.Candidate, Review: cur.Review, Requirement: cur.Requirement, Generation: cur.Number + 1})
 	rec.Node.Params = params
 	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(rec) }); err == nil {
 		t.Fatal("a generation on an older observation was recorded")
@@ -82,7 +82,7 @@ func TestRebuiltCandidate(t *testing.T) {
 	// candidate's selected one.
 	rec := g.recordOf(second.Rebase)
 	rec.Node.ID = "nod_01m4e289fveqtbx5mgt0y0559z"
-	params, _ := json.Marshal(rebaseParams{Branch: "main", Base: "B9", Version: 1 << 40, Candidate: first.Candidate, Generation: 3})
+	params, _ := json.Marshal(rebaseParams{Branch: "main", Base: "B9", Version: 1 << 40, Candidate: first.Candidate, Review: second.Review, Requirement: second.Requirement, Generation: 3})
 	rec.Node.Params = params
 	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(rec) }); err == nil {
 		t.Fatal("a generation of a superseded candidate result was recorded")

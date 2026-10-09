@@ -25,6 +25,8 @@ package graph
 //     moving while its operation is live (fence.go). A pending effect that
 //     applies nothing fails, confirmed, only when the target proves it
 //     never landed (Landed); otherwise it is uncertain (unapplied).
+//     A merge's compare-and-set is on its generation's base (the
+//     request's expected): a target that no longer holds it gets no apply.
 //   - A kind that reconciles from its request keeps it (03 "Kept
 //     requests"): the caller publishes EffectRequestOf before Operate. The
 //     intent is recorded with node.operated, the graph's link from the node
@@ -68,6 +70,9 @@ type EffectRequest struct {
 	Inputs []types.ClaimedInput `json:"inputs"`
 	Target string               `json:"target"`
 	Want   types.Digest         `json:"want"`
+	// Expected is what a compare-and-set kind (a merge) applies over: its
+	// generation's base head. Empty for any other kind.
+	Expected string `json:"expected,omitempty"`
 
 	applied types.Ref // the input ref whose content is Want: what the effect applies
 }
@@ -142,8 +147,8 @@ func effectRequest(tx *eventstore.Tx, node types.NodeID) (EffectRequest, string,
 			continue
 		}
 		res, _, err := load[types.ResultRecorded](tx, ResultProjection, string(*in.Result))
-		if err == nil && res.Result.Kind == types.ResultKindReviewRequirement {
-			continue // a merge's precondition, which the target never holds
+		if err == nil && (res.Result.Kind == types.ResultKindReviewRequirement || carriesConclusions(res.Result.Kind)) {
+			continue // a merge's precondition (its requirement, a refreshed check), which the target never holds
 		}
 		if err != nil || len(res.Result.Value) != 1 || r.Want != "" {
 			return EffectRequest{}, "", errors.Join(err, errors.New("graph: an effect node's one result input holds one ref, what its target is to hold"))
@@ -152,6 +157,13 @@ func effectRequest(tx *eventstore.Tx, node types.NodeID) (EffectRequest, string,
 	}
 	if r.Want == "" {
 		return EffectRequest{}, "", errors.New("graph: an effect node takes the result its target is to hold")
+	}
+	if rec.Recorded.Node.Kind == types.NodeKindMerge {
+		var mp mergeParams
+		if err := json.Unmarshal(rec.Recorded.Node.Params, &mp); err != nil || mp.Base == "" {
+			return EffectRequest{}, "", errors.Join(err, errors.New("graph: a merge applies over its generation's base"))
+		}
+		r.Expected = mp.Base
 	}
 	if mutation.Is(mutation.EffectKeyedByComputation) {
 		r.Node = ""
@@ -373,6 +385,11 @@ func RunEffect(ctx context.Context, s *eventstore.Store, actor string, op Operat
 	}
 	if held != nil { // the merge's requirement or attestation no longer serves it: nothing is applied now
 		return unapplied(record, target, op, "the merge's inputs no longer hold", held)
+	}
+	// A compare-and-set kind (a merge) applies only over its expected
+	// value, which is then what the target holds.
+	if x := op.Request.Expected; x != "" && holds != x && !mutation.Is(mutation.MergeCASOnHead) { // the base moved, and a new generation merges
+		return unapplied(record, target, op, "the target holds "+holds+", not the expected "+x, ErrTargetMoved{op.Request.Target})
 	}
 	expected := holds
 	if mutation.Is(mutation.EffectApplyBlind) {

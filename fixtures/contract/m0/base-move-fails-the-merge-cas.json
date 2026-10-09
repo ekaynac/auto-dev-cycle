@@ -1,0 +1,19 @@
+{
+  "name": "base-move-fails-the-merge-cas",
+  "invariant": "A merge lands by compare-and-set on its generation's base head: if the base moves after the merge's operation was intended and before it applies, nothing is pushed and the effect fails, confirmed; a new generation starts from the new base, and its merge lands (13 \"Merge-queue generations\").",
+  "expected": [
+    {
+      "outcome": "empty",
+      "reason": "completed_clean"
+    },
+    {
+      "outcome": "failed",
+      "reason": "stale_expected_state"
+    },
+    {
+      "outcome": "empty",
+      "reason": "completed_clean"
+    }
+  ],
+  "mutation": "graph.merge-cas-on-head"
+}

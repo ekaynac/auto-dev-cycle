@@ -1,6 +1,6 @@
 {
   "name": "roster-change-makes-merge-wait",
-  "invariant": "A roster change after carry-over was selected makes the merge wait: the merge re-validates against its subject's currently selected review-requirement revision when its effect is intended, so an attestation made under the old revision is refused (stale_expected_state) and nothing is pushed; the review superseded by the roster change serves no later generation's carry_over, whose merge waits for the replacement (13 \"Merge-queue generations\").",
+  "invariant": "A roster change after carry-over was selected makes the merge wait: the merge re-validates against its subject's currently selected review-requirement revision when its effect is intended, so an attestation made under the old revision is refused (stale_expected_state) and nothing is pushed; the next generation's carry_over demands the replacement review, and its merge waits for it (13 \"Merge-queue generations\").",
   "expected": [
     {
       "outcome": "empty",
@@ -9,6 +9,10 @@
     {
       "outcome": "failed",
       "reason": "stale_expected_state"
+    },
+    {
+      "outcome": "found",
+      "reason": "review_input_changed"
     }
   ],
   "mutation": "graph.requirement-revision-unchecked"

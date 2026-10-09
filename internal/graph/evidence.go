@@ -56,7 +56,7 @@ type Contracts func(ref types.InstrumentRef) (types.InstrumentContract, error)
 
 // subjectKinds are the result kinds that are a subject of each type.
 var subjectKinds = map[types.InstrumentContractSubjectType][]types.ResultKind{
-	types.InstrumentContractSubjectTypeTree: {types.ResultKindTree, types.ResultKindPackage},
+	types.InstrumentContractSubjectTypeTree: {types.ResultKindTree, types.ResultKindPackage, types.ResultKindCarryOverAttestation}, // an attestation holds one tree, the prospective one (G7b-2b)
 }
 
 // notRun and ran split the could_not_run reasons (reasons.yaml) by whether

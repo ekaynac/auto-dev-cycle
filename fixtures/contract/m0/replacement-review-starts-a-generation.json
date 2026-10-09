@@ -1,0 +1,15 @@
+{
+  "name": "replacement-review-starts-a-generation",
+  "invariant": "After a roster change the merge waits for the replacement review, and goes with it: a review made under the subject's new requirement revision starts a generation of its own, on an unmoved base, whose carry_over attests it and whose merge lands; the attested review of the old revision never merges (13 \"Merge-queue generations\").",
+  "expected": [
+    {
+      "outcome": "empty",
+      "reason": "completed_clean"
+    },
+    {
+      "outcome": "empty",
+      "reason": "completed_clean"
+    }
+  ],
+  "mutation": "graph.generation-keeps-review"
+}

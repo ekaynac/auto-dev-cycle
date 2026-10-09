@@ -247,11 +247,12 @@ func staleObservationStartsNothing(ctx context.Context, dir string) (steps []Ste
 // rosterChangeMakesMergeWait: a roster change after carry-over was
 // selected makes the merge wait (13 "Merge-queue generations"; plan 15
 // G7b). Generation 1's carry_over attests the review under requirement
-// revision 1 and its merge is claimed; the roster changes (the review is
-// superseded under revision 2); the merge's intent re-validates against
-// the subject's selected revision and is refused, so nothing is pushed.
-// The base moves: generation 2's carry_over of the superseded review, and
-// its merge, wait for the replacement.
+// revision 1 and its merge is claimed; the roster changes (another review
+// of the subject is superseded under revision 2, so the carried review
+// stays completed and go, G7b-2b's verdict); the merge's intent
+// re-validates against the subject's selected revision and is refused, so
+// nothing is pushed. The base moves: generation 2's carry_over demands the
+// replacement review, and its merge waits.
 func rosterChangeMakesMergeWait(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
 	q, patch, closeFn, err := openQueue(ctx, dir, "patch P")
 	if err != nil {
@@ -288,8 +289,17 @@ func rosterChangeMakesMergeWait(ctx context.Context, dir string) (steps []Step, 
 	}
 	o.check(st.State == types.NodeStateStateClaimed, "generation 1's merge is %s, not claimed on its attestation", st.State)
 	byB, rerr := rosterOf(exeB)
-	if _, err = q.supersede(q.spec.Review, byB); errors.Join(err, rerr) != nil { // the roster change
-		return nil, nil, errors.Join(err, rerr)
+	var cand types.ResultID
+	if st, _, serr := q.node(q.spec.Candidate); errors.Join(rerr, serr) == nil && st.Result != nil {
+		cand = *st.Result
+	}
+	other, _, err := q.complete(types.NodeKindReview, soleReviewer, append(on("patch", q.spec.Candidate, types.ResultKindPatch), on("plan", q.plan, types.ResultKindPlan)...),
+		map[string]graph.Resolved{"patch": {Result: cand}, "plan": {Result: q.planRes}}, types.ResultKindReview, []types.Ref{}, nil)
+	if err == nil {
+		_, err = q.supersede(other, byB) // the roster change
+	}
+	if err = errors.Join(err, rerr); err != nil {
+		return nil, nil, err
 	}
 	err = q.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		_, err := graph.Operate(tx, gen1.Merge, q.env())
@@ -305,9 +315,6 @@ func rosterChangeMakesMergeWait(ctx context.Context, dir string) (steps []Step, 
 		return nil, nil, err
 	}
 	gen2, err := attest("B2")
-	co2, _, cerr2 := q.node(gen2.CarryOver)
-	err = errors.Join(err, cerr2)
-	o.check(co2.State == types.NodeStateStateWaiting, "generation 2's carry_over of the superseded review is %s", co2.State)
 	st2, _, serr := q.node(gen2.Merge)
 	operated, cerr := q.count(graph.NodeOperated)
 	if err = errors.Join(err, serr, cerr); err != nil {
@@ -315,5 +322,167 @@ func rosterChangeMakesMergeWait(ctx context.Context, dir string) (steps []Step, 
 	}
 	o.check(st2.State == types.NodeStateStateWaiting, "generation 2's merge is %s: it waits for the replacement review", st2.State)
 	o.check(operated == 0 && len(q.forge.Pushed("main")) == 0, "%d operations were intended and %d pushes landed after the roster change", operated, len(q.forge.Pushed("main")))
+	return o.steps, o.violations, nil
+}
+
+// attested starts the generation the forge's head calls for, rebases it
+// cleanly onto the tree on base and commits its carry_over: its step.
+func (q *queueFix) attested(o *observe, base string, patch types.Ref) (graph.Generation, error) {
+	gen, err := q.generate(&observe{})
+	tree, terr := q.ref(types.RefTypeGitTree, "tree on "+base)
+	if err = errors.Join(err, terr); err == nil && gen.Number == 0 {
+		return gen, nil
+	}
+	if err == nil {
+		err = q.rebase(gen, tree, patch)
+	}
+	if err == nil {
+		_, err = q.carry(o, gen)
+	}
+	return gen, err
+}
+
+// merge claims gen's merge, intends its operation and runs it on the
+// forge: the effect's state ("": the merge is not claimed). A completed
+// merge records its result.
+func (q *queueFix) merge(gen graph.Generation) (eventstore.EffectState, error) {
+	err := q.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Evaluate(tx, []types.NodeID{gen.Merge}, q.env())
+	})
+	st, _, serr := q.node(gen.Merge)
+	if err = errors.Join(err, serr); err != nil || st.State != types.NodeStateStateClaimed {
+		return "", err
+	}
+	var op graph.Operation
+	if err := q.do(func(tx *eventstore.Tx) (_ []eventstore.Event, err error) {
+		op, err = graph.Operate(tx, gen.Merge, q.env())
+		return nil, err
+	}); err != nil {
+		return "", err
+	}
+	e, err := graph.RunEffect(q.ctx, q.s, q.actor, op, q.forge)
+	if errors.As(err, new(graph.ErrTargetMoved)) {
+		err = nil // the effect's state says what happened
+	}
+	if err == nil && e.State == eventstore.EffectCompleted {
+		err = q.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return nil, graph.CompleteEffect(tx, gen.Merge, q.blobs)
+		})
+	}
+	return e.State, err
+}
+
+// mergeStep is the step of a merge that ended in state: completed, failed
+// over a moved base, or waiting for its review.
+func mergeStep(state eventstore.EffectState) Step {
+	switch state {
+	case eventstore.EffectCompleted:
+		return Step{vocab.Empty, vocab.ReasonCompletedClean.String()}
+	case eventstore.EffectFailedConfirmed:
+		return Step{vocab.Failed, vocab.ReasonStaleExpectedState.String()}
+	}
+	return Step{vocab.Found, vocab.ReasonReviewInputChanged.String()}
+}
+
+// baseMoveFailsTheMergeCAS: if the base moves before the merge commits,
+// the compare-and-set fails and a new generation starts from the new base
+// (13 "Merge-queue generations"). Generation 1's merge is intended over
+// B1; the base moves to B2 outside the controller before the apply, so
+// nothing is pushed and its effect fails, confirmed; generation 2 merges
+// over B2.
+func baseMoveFailsTheMergeCAS(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
+	q, patch, closeFn, err := openQueue(ctx, dir, "patch P")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { err = errors.Join(err, closeFn()) }()
+	var o observe
+	q.forge.Move("main", "B1")
+	gen1, err := q.attested(&observe{}, "B1", patch)
+	var state eventstore.EffectState
+	if err == nil {
+		err = q.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.Evaluate(tx, []types.NodeID{gen1.Merge}, q.env())
+		})
+	}
+	var op graph.Operation
+	if err == nil {
+		err = o.step(q.do(func(tx *eventstore.Tx) (_ []eventstore.Event, err error) {
+			op, err = graph.Operate(tx, gen1.Merge, q.env())
+			return nil, err
+		}))
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	q.forge.Move("main", "B2") // after the intent, before the apply
+	e, err := graph.RunEffect(ctx, q.s, q.actor, op, q.forge)
+	if err != nil && !errors.As(err, new(graph.ErrTargetMoved)) {
+		return nil, nil, err
+	}
+	o.steps = append(o.steps, mergeStep(e.State))
+	gen2, err := q.attested(&observe{}, "B2", patch)
+	if err == nil {
+		state, err = q.merge(gen2)
+	}
+	st1, _, serr := q.node(gen1.Merge)
+	if err = errors.Join(err, serr); err != nil {
+		return nil, nil, err
+	}
+	o.steps = append(o.steps, mergeStep(state))
+	head, _ := q.forge.Holds("main")
+	o.check(gen2.Number == 2 && gen2.Base == "B2", "the base move started generation %d on %s", gen2.Number, gen2.Base)
+	o.check(len(q.forge.Pushed("main")) == map[bool]int{true: 1, false: 2}[e.State != eventstore.EffectCompleted], "the forge took pushes %v", q.forge.Pushed("main"))
+	o.check(head != "B2", "main still holds B2: the next generation did not merge")
+	o.check(st1.Result == nil, "generation 1's merge recorded a result")
+	return o.steps, o.violations, nil
+}
+
+// replacementReviewStartsAGeneration: the merge waits for the replacement
+// review after a roster change, and goes with it (13 "Merge-queue
+// generations"; "Replacement is a recorded supersession"). Generation 1
+// attests the review under requirement revision 1; the roster changes and
+// the replacement review is made under revision 2; on the unmoved base, a
+// generation of its own carries it over and merges.
+func replacementReviewStartsAGeneration(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
+	q, patch, closeFn, err := openQueue(ctx, dir, "patch P")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { err = errors.Join(err, closeFn()) }()
+	var o observe
+	q.forge.Move("main", "B1")
+	gen1, err := q.attested(&o, "B1", patch)
+	byB, rerr := rosterOf(exeB)
+	if err = errors.Join(err, rerr); err == nil {
+		q.spec.Review, err = q.supersede(q.spec.Review, byB) // the roster change: the replacement, under revision 2
+	}
+	var cand types.ResultID
+	if st, _, serr := q.node(q.spec.Candidate); errors.Join(err, serr) == nil && st.Result != nil {
+		cand = *st.Result
+	}
+	if err == nil { // the replacement runs
+		err = q.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.ClaimReview(tx, q.spec.Review, q.withRequired(q.spec.Review, map[string]graph.Resolved{"patch": {Result: cand}}), 0, reviewers)
+		})
+	}
+	if err == nil {
+		_, err = q.selectResult(q.spec.Review, types.ResultKindReview, []types.Ref{}, nil)
+	}
+	var gen2 graph.Generation
+	var state eventstore.EffectState
+	if err == nil {
+		gen2, err = q.attested(&observe{}, "B1", patch)
+	}
+	if err == nil && gen2.Number != 0 {
+		state, err = q.merge(gen2)
+	}
+	st1, _, serr := q.node(gen1.Merge)
+	if err = errors.Join(err, serr); err != nil {
+		return nil, nil, err
+	}
+	o.steps = append(o.steps, mergeStep(state))
+	o.check(st1.Result == nil, "generation 1's merge, of the replaced review, recorded a result")
+	o.check(gen2.Number == 0 || gen2.Base == "B1" && gen2.Review == q.spec.Review, "the replacement's generation is %+v", gen2)
 	return o.steps, o.violations, nil
 }
