@@ -66,6 +66,32 @@ func LoseRunning(tx *eventstore.Tx, id types.AttemptID, reason types.AttemptLost
 	return []eventstore.Event{ev}, err
 }
 
+// StopRunning proposes attempt.stop_requested{reason} for an attempt still
+// running, and nothing for one in any other state, which keeps its state
+// and settles normally (13 supersession: preempt).
+func StopRunning(tx *eventstore.Tx, id types.AttemptID, reason types.AttemptStopReasonValue) ([]eventstore.Event, error) {
+	a, _, ok, err := load[types.Attempt](tx, AttemptProjection, string(id))
+	if err != nil || !ok || a.Status != types.AttemptStatusRunning {
+		return nil, errors.Join(err, missing(ok, id))
+	}
+	n, err := ApplyAttempt(a, AttemptEvent{Kind: StopRequested, StopReason: reason})
+	if err != nil {
+		return nil, err
+	}
+	ev, err := newEvent(string(id), payload{Transition: StopRequested, Attempt: &n})
+	return []eventstore.Event{ev}, err
+}
+
+// AttemptOf is the attempt's record as its events project it, with the
+// command that requested its stop, if one did.
+func AttemptOf(tx *eventstore.Tx, id types.AttemptID) (a types.Attempt, stoppedBy *string, ok bool, err error) {
+	a, _, ok, err = load[types.Attempt](tx, AttemptProjection, string(id))
+	if raw, stopped, serr := tx.Get(StopProjection, string(id)); serr != nil || stopped {
+		err = errors.Join(err, serr, json.Unmarshal(raw, &stoppedBy))
+	}
+	return a, stoppedBy, ok, err
+}
+
 func missing(ok bool, id types.AttemptID) error {
 	if ok {
 		return nil

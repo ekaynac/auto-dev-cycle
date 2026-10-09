@@ -23,10 +23,14 @@ package graph
 //   - A task's nodes are all in one project (graph_tasks): the first node
 //     of a task pins its project, until tasks are records (M1) and the
 //     fold checks the task's own project.
-//   - A node has one successor (succeeds); G6b's replacement, which keeps
-//     its predecessor's round (13 supersession), is its own event.
+//   - A node has one successor (succeeds); a replacement, which keeps its
+//     predecessor's round (13 supersession), is its own event
+//     (review.superseded, supersede.go) and takes the successor slot.
 //   - A missing answer input leaves the node waiting; the evaluator raises
 //     awaiting_input against its owed input (evaluate.go).
+//   - The supersession fold reads the lease projections (the attempts it
+//     lists and who stopped them), so a store composes the lease projector
+//     before the graph's in eventstore.ProjectEach.
 //   - The fold reads only the events and these projections, so a rebuild
 //     reaches the same state. A claim keeps its command (ev.Command), as
 //     grant lineages do.
@@ -105,7 +109,7 @@ func (e ErrReused) Error() string {
 }
 
 // Kinds registers the graph event kinds.
-var kinds = []string{NodeRecorded, NodeClaimed, NodeReused, ReuseReleased, NodeRenewed, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected, NodeOperated, QueueObserved}
+var kinds = []string{NodeRecorded, NodeClaimed, NodeReused, ReuseReleased, NodeRenewed, NodeInvalidated, HoldRaised, HoldPaged, HoldCleared, ResultRecorded, ResultSelected, NodeOperated, QueueObserved, ReviewSuperseded}
 
 func Kinds() eventstore.Kinds {
 	k := eventstore.Kinds{}
@@ -115,8 +119,11 @@ func Kinds() eventstore.Kinds {
 	return k
 }
 
+// nodeRecord is a node as recorded, with its state. A replacement records
+// the review it replaces, which its lineage includes.
 type nodeRecord struct {
 	Recorded types.NodeRecorded `json:"recorded"`
+	Replaces *types.NodeID      `json:"replaces,omitempty"`
 	State    types.NodeState    `json:"state"`
 }
 
@@ -337,6 +344,8 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant) err
 		return operated(tx, ev, p)
 	case *types.QueueObserved:
 		return queueObserved(tx, ev, p)
+	case *types.ReviewSuperseded:
+		return supersededFold(tx, ev, p)
 	}
 	return errors.New("no payload")
 }

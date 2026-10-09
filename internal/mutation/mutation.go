@@ -146,6 +146,19 @@ const (
 	// EquivalenceIgnoresRoster treats two reviews as one identity whatever
 	// their params, so a review is reused across a roster change.
 	EquivalenceIgnoresRoster = "graph.equivalence-ignores-roster"
+	// SupersessionKeepsAttempts supersedes a review without stopping its
+	// running attempts, so their late output still lands.
+	SupersessionKeepsAttempts = "graph.supersession-keeps-attempts"
+	// SupersessionKeepsPredecessor records a replacement but leaves its
+	// predecessor as it was, so the old roster's result is still selected.
+	SupersessionKeepsPredecessor = "graph.supersession-keeps-predecessor"
+	// SupersedeTwice lets a superseded review be superseded again, so a
+	// retried roster change records a second supersession.
+	SupersedeTwice = "graph.supersede-twice"
+	// LineageIgnoresSupersession walks a lineage through predecessors only,
+	// so a replacement's successor cannot answer what the replaced review
+	// asked.
+	LineageIgnoresSupersession = "graph.lineage-ignores-supersession"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -160,4 +173,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	EffectKeyedByComputation, EffectResumeReallocates, EffectTargetUnfenced, EffectApplyBlind, EffectPendingSkipsTarget,
 	RestoreFailureReleases, RuntimeOnSourceFacts,
 	SuccessorTakesAnyAnswer, AnswerLineageUnchecked, EquivalenceIgnoresRestrictions, EquivalenceIgnoresRoster,
-	GenerationKeepsBase, CarryOverIgnoresPatch, GenerationTakesStale}
+	GenerationKeepsBase, CarryOverIgnoresPatch, GenerationTakesStale,
+	SupersessionKeepsAttempts, SupersessionKeepsPredecessor, SupersedeTwice, LineageIgnoresSupersession}

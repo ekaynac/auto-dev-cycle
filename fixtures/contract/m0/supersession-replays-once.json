@@ -1,0 +1,13 @@
+{
+  "name": "supersession-replays-once",
+  "invariant": "A supersession is one outcome across a crash and a restart (13): a crash inside its transaction records nothing, the retried command replays after the restart, replay rebuilds the same state, and a second supersession is refused (failed/stale_expected_state). Steps: supersede, replay after restart, supersede again, late result, commit to the predecessor, successor's answer.",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "stale_expected_state"},
+    {"outcome": "failed", "reason": "stale_attempt"},
+    {"outcome": "failed", "reason": "stale_expected_state"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.supersede-twice"
+}

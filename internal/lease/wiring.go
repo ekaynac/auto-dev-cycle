@@ -22,6 +22,7 @@ const (
 	LeaseProjection   = "leases"
 	AttemptProjection = "attempts"
 	UnitProjection    = "unit_attempts"
+	StopProjection    = "attempt_stops" // attempt id → the command that requested its stop
 )
 
 // StaleRecord refuses a command that expected another revision of a record.
@@ -360,7 +361,13 @@ func (p Projector) apply(tx *eventstore.Tx, ev eventstore.Event, pl payload) err
 		return p.start(tx, *pl.Lease, *pl.Attempt, nil)
 	case Superseded:
 		return p.start(tx, *pl.Lease, *pl.Successor, pl.Attempt)
-	case StopRequested, Lost, Sealed, AttemptDone:
+	case StopRequested:
+		cmd, err := json.Marshal(ev.Command)
+		if err == nil {
+			err = tx.Put(StopProjection, string(pl.Attempt.ID), cmd)
+		}
+		return errors.Join(err, p.changeAttempt(tx, pl.Transition, *pl.Attempt))
+	case Lost, Sealed, AttemptDone:
 		return p.changeAttempt(tx, pl.Transition, *pl.Attempt)
 	}
 	if pl.Lease == nil {

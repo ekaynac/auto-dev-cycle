@@ -94,6 +94,10 @@ var runners = map[string]runner{
 	"base-move-starts-a-generation":         baseMoveStartsAGeneration,
 	"carry-over-needs-equal-patch":          carryOverNeedsEqualPatch,
 	"stale-observation-starts-nothing":      staleObservationStartsNothing,
+	"roster-change-one-supersession":        rosterChangeOneSupersession,
+	"superseded-result-never-selected":      rosterChangeOneSupersession, // its fifth step, under its own mutation
+	"supersession-replays-once":             rosterChangeOneSupersession, // its third step, under its own mutation
+	"replaced-question-reaches-successor":   rosterChangeOneSupersession, // its sixth step, under its own mutation
 }
 
 // Goldens loads and validates every golden, checking that each has a

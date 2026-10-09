@@ -1,0 +1,13 @@
+{
+  "name": "superseded-result-never-selected",
+  "invariant": "No predecessor result is selected after a supersession (13): the finishing attempt's result, committed to the superseded review, is refused (failed/stale_expected_state). Steps: supersede, replay after restart, supersede again, late result, commit to the predecessor, successor's answer.",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "stale_expected_state"},
+    {"outcome": "failed", "reason": "stale_attempt"},
+    {"outcome": "failed", "reason": "stale_expected_state"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.supersession-keeps-predecessor"
+}

@@ -4,9 +4,9 @@
 
 `schemas/records/graph-event.json`
 
-The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1, node.hold_cleared/v1 and node.operated/v1 under the node's id, queue.observed/v1 under its task, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1, node.hold_cleared/v1 and node.operated/v1 under the node's id, review.superseded/v1 under the predecessor's id, queue.observed/v1 under its task, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 
-A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [NodeReused](#nodereused) or [NodeReuseReleased](#nodereusereleased) or [NodeRenewed](#noderenewed) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected) or [NodeOperated](#nodeoperated) or [QueueObserved](#queueobserved).
+A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [NodeReused](#nodereused) or [NodeReuseReleased](#nodereusereleased) or [NodeRenewed](#noderenewed) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected) or [NodeOperated](#nodeoperated) or [QueueObserved](#queueobserved) or [ReviewSuperseded](#reviewsuperseded).
 
 ## Definitions
 
@@ -143,6 +143,23 @@ A merge queue's observation of its branch's base head (13 "Merge-queue generatio
 | `branch` | yes | string (minLength `1`, maxLength `256`) |  |
 | `head` | yes | string (minLength `1`, maxLength `256`) |  |
 | `version` | yes | integer (minimum `0`, maximum `9007199254740991`) |  |
+
+No other fields are allowed.
+
+### ReviewSuperseded
+
+A roster change replaces a review (13 "Replacement is a recorded supersession"), in one writer transaction with the attempt stops it needs. The predecessor is superseded. The replacement keeps its round, inputs, requirements and effect, with the roster of its subject's next requirement revision, to which its review_requirement input moves; it takes the predecessor's successor slot, and its lineage includes what the predecessor asked. stopped_attempts are the attempts its caller named for the predecessor that this command stopped (attempt.stop_requested{preempt}, before this event), each listed once across supersessions; until M1 binds attempts to nodes, the list is not proven complete. Hold transfer and retirement are G6b-2: until then both lists are empty and a held review is not superseded.
+
+#### Fields of ReviewSuperseded
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | `review_superseded` |  |
+| `predecessor` | yes | [NodeID](common-defs.md#nodeid) |  |
+| `replacement` | yes | [node](records-node.md) |  |
+| `stopped_attempts` | yes | array of [AttemptID](common-defs.md#attemptid) (unique items) |  |
+| `transferred_holds` | yes | array of [HoldID](common-defs.md#holdid) (maxItems `0`) | Empty until G6b-2 defines hold transfer. |
+| `retired_holds` | yes | array of [HoldID](common-defs.md#holdid) (maxItems `0`) | Empty until G6b-2 defines hold retirement. |
 
 No other fields are allowed.
 
