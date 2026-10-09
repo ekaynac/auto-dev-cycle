@@ -62,10 +62,11 @@ package graph
 //   - A review whose result a dependant claimed is not superseded. G6b-2
 //     keeps this refusal: re-pointing a claimed dependant would release its
 //     claim, which no event does yet. A queue generation's carry_over is the
-//     exception (G7b-2a): its merge waits for the replacement. The
-//     exception holds only while no merge of that carry_over has an
-//     unsettled operation, checked by the builder and the fold
-//     (mergesSettled): an intended merge resumes without re-validation.
+//     exception (G7b-2a): its merge waits for the replacement. Any
+//     supersession is refused, by the builder and the fold, while a merge
+//     of the task on the review's subject has a live operation
+//     (revisionFenced, fence.go): an intended merge resumes without
+//     re-validation.
 
 import (
 	"encoding/json"
@@ -180,7 +181,7 @@ func SupersedeMoving(tx *eventstore.Tx, pred, requirement types.NodeID, attempts
 	if err := superseded(rec); err != nil && !mutation.Is(mutation.SupersedeTwice) {
 		return nil, err
 	}
-	if err := unclaimed(tx, rec); err != nil { // as the fold refuses it, before any attempt is stopped
+	if err := errors.Join(unclaimed(tx, rec), revisionFenced(tx, rec)); err != nil { // as the fold refuses it, before any attempt is stopped
 		return nil, err
 	}
 	p, err := req.Recorded.Node.ParamsAsReviewRequirement()
@@ -344,7 +345,7 @@ func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuper
 	if rec.Recorded.Node.Kind != types.NodeKindReview {
 		return fmt.Errorf("a %s is not superseded: only a review", rec.Recorded.Node.Kind)
 	}
-	if err := errors.Join(unshared(tx, rec), unclaimed(tx, rec)); err != nil {
+	if err := errors.Join(unshared(tx, rec), unclaimed(tx, rec), revisionFenced(tx, rec)); err != nil {
 		return err
 	}
 	if _, exists, err := load[nodeRecord](tx, NodeProjection, string(p.Replacement.ID)); err != nil || exists {
@@ -416,10 +417,9 @@ func unshared(tx *eventstore.Tx, rec nodeRecord) error {
 // unclaimed: no other node's claim took rec's selected result, but a queue
 // generation's carry_over: its merge consumes the review's requirement at
 // the subject's selected revision (serves), so it waits for the
-// replacement (G7b-2a). That exception holds only while no merge of that
-// carry_over has an unsettled operation: an intended merge is not
-// re-validated when it resumes, so the review it carries is not
-// superseded under it (mergesSettled).
+// replacement (G7b-2a). No supersession moves a subject's revision while
+// a merge of it is live (revisionFenced), so the exception never lets a
+// review be superseded under an intended merge.
 func unclaimed(tx *eventstore.Tx, rec nodeRecord) error {
 	if rec.State.Result == nil {
 		return nil
@@ -436,34 +436,21 @@ func unclaimed(tx *eventstore.Tx, rec nodeRecord) error {
 		case !took:
 		case claimant.Recorded.Node.Kind != types.NodeKindCarryOver:
 			return fmt.Errorf("%s claimed the review's result: re-pointing a dependant is G6b-2's", n)
-		default:
-			if err := mergesSettled(tx, claimant.Recorded.Node.ID); err != nil {
-				return err
-			}
 		}
 	}
 	return err
 }
 
-// mergesSettled: no merge whose claim took a result of carry, a carry_over
-// node, has an operation pending, uncertain, or completed without its
-// result (settledOperation).
-func mergesSettled(tx *eventstore.Tx, carry types.NodeID) error {
-	nodes, err := tx.Keys(ClaimProjection, "")
-	for _, n := range nodes {
-		m, lerr := loadNode(tx, types.NodeID(n))
-		c, _, cerr := load[claim](tx, ClaimProjection, n)
-		if err = errors.Join(err, lerr, cerr); err != nil || m.Recorded.Node.Kind != types.NodeKindMerge {
-			continue
-		}
-		r, _, rerr := load[types.ResultRecorded](tx, ResultProjection, string(resolutions(c.Inputs)["carry_over"].Result))
-		if err = rerr; err == nil && r.Node == carry {
-			if err := settledOperation(tx, m.Recorded.Node.ID); err != nil {
-				return fmt.Errorf("the review's carry_over is merged by %s, whose operation is not settled: %w", n, err)
-			}
-		}
+// revisionFenced: superseding rec, a review, moves its subject's
+// requirement revision, which no live merge of its task on that subject
+// may see move (subjectFenced): whichever review of the subject it is,
+// carried or not.
+func revisionFenced(tx *eventstore.Tx, rec nodeRecord) error {
+	_, subject, err := rosterOf(rec.Recorded.Node)
+	if err != nil {
+		return err
 	}
-	return err
+	return subjectFenced(tx, rec.Recorded.Task, subject)
 }
 
 // replaces: n replaces rec, a review, after a roster change: the same kind,

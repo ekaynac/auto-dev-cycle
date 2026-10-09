@@ -21,8 +21,10 @@ package graph
 //   - RunEffect reconciles against the target before any egress, and its
 //     apply is a compare-and-set on the value it observed. A pending merge
 //     is applied only while its claimed inputs are still served to it
-//     (mergeHolds): a requirement superseded or re-run after its intent
-//     fails the effect, confirmed, with nothing applied.
+//     (mergeHolds), a backstop to the fences that keep its inputs from
+//     moving while its operation is live (fence.go). A pending effect that
+//     applies nothing fails, confirmed, only when the target proves it
+//     never landed (Landed); otherwise it is uncertain (unapplied).
 //   - A kind that reconciles from its request keeps it (03 "Kept
 //     requests"): the caller publishes EffectRequestOf before Operate. The
 //     intent is recorded with node.operated, the graph's link from the node
@@ -54,6 +56,9 @@ import (
 type EffectTarget interface {
 	Holds(target string) (string, error)
 	Apply(target, effect, want, expected string) (applied bool, err error)
+	// Landed: an apply under effect ever landed on target. A target that
+	// cannot tell returns an error, and nothing is taken as proven.
+	Landed(target, effect string) (bool, error)
 }
 
 // EffectRequest is an effect operation's request, its identity.
@@ -297,6 +302,20 @@ func takesNoDeploy(tx *eventstore.Tx, n types.Node) error {
 	return nil
 }
 
+// unapplied records that op's pending effect applies nothing now, for
+// cause: failed, confirmed, only when target proves the effect never
+// landed. An earlier apply may have landed (a push whose observation was
+// not recorded, then moved over), so without that proof the effect is
+// uncertain and keeps its target fenced.
+func unapplied(record func(eventstore.Transition) (eventstore.Effect, error), target EffectTarget, op Operation, why string, cause error) (eventstore.Effect, error) {
+	tr := eventstore.Transition{Kind: "failed", Observation: why + ": nothing was applied"}
+	if landed, err := target.Landed(op.Request.Target, op.Effect); err != nil || landed {
+		tr = eventstore.Transition{Kind: "uncertain", Observation: why + ", and the target cannot show this effect never landed"}
+	}
+	e, err := record(tr)
+	return e, errors.Join(cause, err)
+}
+
 // RunEffect carries op's effect to target, by actor, after the command that
 // intended it committed, and returns the effect's state.
 func RunEffect(ctx context.Context, s *eventstore.Store, actor string, op Operation, target EffectTarget) (eventstore.Effect, error) {
@@ -352,9 +371,8 @@ func RunEffect(ctx context.Context, s *eventstore.Store, actor string, op Operat
 	if holds == want && !mutation.Is(mutation.EffectPendingSkipsTarget) {
 		return record(eventstore.Transition{Kind: "observed", Observation: "the target already holds the request's want"})
 	}
-	if held != nil { // nothing was applied: the merge's requirement or attestation no longer serves it
-		e, rerr := record(eventstore.Transition{Kind: "failed", Observation: "the merge's inputs no longer hold: nothing was applied"})
-		return e, errors.Join(held, rerr)
+	if held != nil { // the merge's requirement or attestation no longer serves it: nothing is applied now
+		return unapplied(record, target, op, "the merge's inputs no longer hold", held)
 	}
 	expected := holds
 	if mutation.Is(mutation.EffectApplyBlind) {

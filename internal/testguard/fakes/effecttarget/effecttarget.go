@@ -57,6 +57,11 @@ func (t *Target) Apply(target, effect, want, expected string) (applied bool, err
 	return true, nil
 }
 
+// Landed: an apply under effect landed on target.
+func (t *Target) Landed(target, effect string) (bool, error) {
+	return slices.Contains(t.Applied(target), effect), nil
+}
+
 // Applied lists the effect ids applied to target, in order.
 func (t *Target) Applied(target string) []string {
 	t.mu.Lock()

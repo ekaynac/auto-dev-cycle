@@ -72,6 +72,11 @@ func (f *Forge) Move(branch, head string) {
 	f.versions[branch]++
 }
 
+// Landed: a push under effect landed on branch.
+func (f *Forge) Landed(branch, effect string) (bool, error) {
+	return slices.Contains(f.Pushed(branch), effect), nil
+}
+
 // Pushed lists the effect ids pushed to branch, in order.
 func (f *Forge) Pushed(branch string) []string {
 	f.mu.Lock()

@@ -17,6 +17,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/effecttarget"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -46,7 +47,9 @@ func openEffectStore(t *testing.T) graphStore {
 	return g
 }
 
-var effectEnv = Env{Need: noRequirement, Families: reviewers}
+// effectEnv reads answers through the owed-answer fake: a replacement's
+// lineage needs an authority (#219).
+var effectEnv = Env{Need: noRequirement, Families: reviewers, Authority: owedanswers.Authority{}}
 
 // pkgOf completes an integration node whose package result holds refs.
 func (g graphStore) pkgOf(refs ...types.Ref) (types.NodeID, types.Result) {

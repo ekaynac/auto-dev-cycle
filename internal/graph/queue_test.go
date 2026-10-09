@@ -714,59 +714,110 @@ func TestCarryOverRequirement(t *testing.T) {
 	}
 }
 
-// A review is not superseded while a merge of its carry_over has an
-// intended operation (the resume does not re-validate), and a pending
-// merge whose requirement no longer holds applies nothing. Once the
-// operation settles, the supersession goes.
-func TestSupersedeUnderIntent(t *testing.T) {
+// While a merge's operation is live, nothing it consumed moves: no
+// supersession moves its subject's revision, whichever review it replaces;
+// its requirement, carry_over and carried review are not invalidated, by
+// command or raw event. Once the operation settles, they move.
+func TestMergeInputsFenced(t *testing.T) {
 	g := openEffectStore(t)
 	f := fakeforge.New()
 	f.Move("main", "B1")
 	gen := g.claimedMerge("main", "B1")
+	spec := g.specOf(gen)
+	// Another review of the subject, unclaimed by any carry_over.
+	other := g.nodeOn(types.NodeKindReview, spec.Candidate)
+	other.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = types.ResultKindPatch
+	other.Node.Inputs = append(other.Node.Inputs, g.planInput("again"))
+	otherReview := g.record(other)
 	op := g.mustOperate(gen.Merge)
 	cur, _ := view[revision](g, RequirementProjection, requirementIndex(tskID, "candidate"))
-	req := g.requirementNode(cur.Revision+1, "1", exeB)
-	next := g.record(req)
+	next := g.record(g.requirementNode(cur.Revision+1, "1", exeB))
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return claimAny(tx, next, map[string]Resolved{}, 1)
 	})
-	review := g.specOf(gen).Review
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Supersede(tx, review, next, nil, reviewers)
-	}); err == nil || !strings.Contains(err.Error(), "not settled") || strings.Contains(err.Error(), ReviewSuperseded) {
-		t.Fatalf("a supersession under an intended merge, refused by the builder: %v", err)
-	}
-	// A raw supersession is refused by the fold too.
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		rec, err := loadNode(tx, review)
-		n := rec.Recorded.Node
-		n.ID, n.Params, n.Inputs = types.NodeID(must(ids.New("nod"))), reviewParams(exeB), slices.Clone(n.Inputs)
-		for i, in := range n.Inputs {
-			if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
-				n.Inputs[i].Source.Variant = &types.ResultSource{Type: "result", Producer: next, ResultKind: types.ResultKindReviewRequirement}
-			}
+	fenced := func(what string, err error, fold bool) {
+		t.Helper()
+		var live ErrMergeLive
+		if !errors.As(err, &live) || live.Merge != gen.Merge || fold != strings.Contains(err.Error(), "graph: event") {
+			t.Errorf("%s: %v (want a fence, by the %s)", what, err, map[bool]string{true: "fold", false: "builder"}[fold])
 		}
-		evs, eerr := event(ReviewSuperseded, string(review), prjID, &types.ReviewSuperseded{Type: "review_superseded", Predecessor: review, Replacement: n,
-			StoppedAttempts: []types.AttemptID{}, TransferredHolds: []types.HoldID{}, RetiredHolds: []types.RetiredHold{}})
-		return evs, errors.Join(err, eerr)
-	}); err == nil || !strings.Contains(err.Error(), "not settled") {
-		t.Fatalf("a raw supersession under an intended merge: %v", err)
 	}
-	// The requirement is re-run after the intent: the merge applies nothing.
-	reqNode := producerOf(g.recordOf(gen.Merge).Node, "requirement")
-	g.must(invalidate(reqNode))
-	e, err := g.runEffect(op, f)
-	if err == nil || e.State != eventstore.EffectFailedConfirmed || len(f.Pushed("main")) != 0 {
-		t.Fatalf("a merge whose requirement no longer holds: %+v (%v), pushed %v", e, err, f.Pushed("main"))
+	for name, review := range map[string]types.NodeID{"the carried review": spec.Review, "another review of the subject": otherReview} {
+		fenced(name+" superseded", g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return Supersede(tx, review, next, nil, reviewers)
+		}), false)
+		fenced(name+" superseded by a raw event", g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			rec, err := loadNode(tx, review)
+			n := rec.Recorded.Node
+			n.ID, n.Params, n.Inputs = types.NodeID(must(ids.New("nod"))), reviewParams(exeB), slices.Clone(n.Inputs)
+			for i, in := range n.Inputs {
+				if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
+					n.Inputs[i].Source.Variant = &types.ResultSource{Type: "result", Producer: next, ResultKind: types.ResultKindReviewRequirement}
+				}
+			}
+			evs, eerr := event(ReviewSuperseded, string(review), prjID, &types.ReviewSuperseded{Type: "review_superseded", Predecessor: review, Replacement: n,
+				StoppedAttempts: []types.AttemptID{}, TransferredHolds: []types.HoldID{}, RetiredHolds: []types.RetiredHold{}})
+			return evs, errors.Join(err, eerr)
+		}), true)
 	}
-	// Settled, the review may be superseded.
-	r := unrecorded(t, *g.state(reqNode).Key)
-	r.Kind, r.Value, r.Conclusions, r.Outcome, r.Reason, r.Detail = types.ResultKindReviewRequirement, []types.Ref{}, ptr(g.recordOf(reqNode).Node.Params), types.OutcomeFound, vocab.ReasonCompletedWithFindings, "required"
-	g.must(raw(reqNode, r, g.blobs))
+	for name, n := range map[string]types.NodeID{"the requirement": producerOf(g.recordOf(gen.Merge).Node, "requirement"), "the carry_over": gen.CarryOver,
+		"the carried review": spec.Review, "the rebase": gen.Rebase} {
+		fenced(name+" invalidated", g.do(invalidate(n)), false)
+		fenced(name+" invalidated by a raw event", g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			c, _, err := load[claim](tx, ClaimProjection, string(n))
+			rec, rerr := loadNode(tx, n)
+			key, kerr := Key(rec.Recorded.Node, resolutions(c.Inputs), c.Key.Generation+1)
+			if err = errors.Join(err, rerr, kerr); err != nil {
+				return nil, err
+			}
+			return event(NodeInvalidated, string(n), prjID, &types.NodeInvalidated{Type: "node_invalidated", Node: n, Key: key})
+		}), true)
+	}
+	if e, err := g.runEffect(op, f); err != nil || e.State != eventstore.EffectCompleted || len(f.Pushed("main")) != 1 {
+		t.Fatalf("the fenced merge: %+v (%v)", e, err)
+	}
+	// Settled: the review may be superseded, and the requirement re-run.
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Supersede(tx, review, next, nil, reviewers)
+		return nil, CompleteEffect(tx, gen.Merge, g.blobs)
+	})
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Supersede(tx, otherReview, next, nil, reviewers)
 	})
 }
+
+// A pending effect that applies nothing fails, confirmed, only when its
+// target proves it never landed; an apply that landed (a push whose
+// observation was lost, then moved over), or a target that cannot tell,
+// leaves it uncertain, its target still fenced.
+func TestUnappliedNeedsLandedProof(t *testing.T) {
+	f := fakeforge.New()
+	f.Move("main", "B1")
+	if _, err := f.Apply("main", "eff_landed", "W", "B1"); err != nil {
+		t.Fatal(err)
+	}
+	f.Move("main", "B2")
+	for name, c := range map[string]struct {
+		target EffectTarget
+		effect string
+		want   string
+	}{
+		"never landed": {f, "eff_other", "failed"},
+		"landed":       {f, "eff_landed", "uncertain"},
+		"cannot tell":  {blindTarget{f}, "eff_other", "uncertain"},
+	} {
+		var got eventstore.Transition
+		record := func(tr eventstore.Transition) (eventstore.Effect, error) { got = tr; return eventstore.Effect{}, nil }
+		cause := errors.New("stale")
+		if _, err := unapplied(record, c.target, Operation{Effect: c.effect, Request: EffectRequest{Target: "main"}}, "inputs moved", cause); !errors.Is(err, cause) || got.Kind != c.want {
+			t.Errorf("%s: %s (%v), want %s", name, got.Kind, err, c.want)
+		}
+	}
+}
+
+// blindTarget cannot tell what landed.
+type blindTarget struct{ *fakeforge.Forge }
+
+func (blindTarget) Landed(string, string) (bool, error) { return false, errors.New("no push log") }
 
 // A requirement is matched by what it requires, not by the result that
 // recorded it: a review that took an identical requirement node's result,
@@ -835,4 +886,36 @@ func TestCarryOverReusedHolderRerun(t *testing.T) {
 	if _, err := g.carryOver(gen.CarryOver); !errors.As(err, &stale) || stale.Reason != vocab.ReasonStaleExpectedState {
 		t.Fatalf("the carry_over of a re-run holder: %v", err)
 	}
+}
+
+// An uncertain merge fences its inputs as a pending one does; a merge of
+// another task fences nothing of this one.
+func TestMergeFenceScope(t *testing.T) {
+	g := openEffectStore(t)
+	gen := g.claimedMerge("main", "B1")
+	g.mustOperate(gen.Merge)
+	g.uncertain()
+	if err := g.do(invalidate(gen.CarryOver)); !errors.As(err, new(ErrMergeLive)) {
+		t.Fatalf("an input of an uncertain merge invalidated: %v", err)
+	}
+	// Task B's subject candidate moves, under task A's live merge.
+	plan, planRes := g.planOf(tskB, prjB)
+	req := g.requirementNode(1, "1", exeA)
+	req.Task, req.Project = tskB, prjB
+	first, res, err := g.completeRequirement(req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := g.nodeOn(types.NodeKindReview, plan)
+	review.Task, review.Project = tskB, prjB
+	review.Node.Inputs[1] = requiredOn(first)
+	rid := g.record(review)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return claimAny(tx, rid, map[string]Resolved{"plan": {Result: planRes}, "required": {Result: res}}, 0)
+	})
+	next := g.requirementNode(2, "1", exeB)
+	next.Task, next.Project = tskB, prjB
+	n := g.record(next)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, n, map[string]Resolved{}, 1) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, rid, n, nil, reviewers) })
 }

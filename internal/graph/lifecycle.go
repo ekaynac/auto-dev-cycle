@@ -99,6 +99,9 @@ func Invalidate(tx *eventstore.Tx, node types.NodeID) ([]eventstore.Event, error
 		return nil, errors.Join(err, fmt.Errorf("graph: %s is not claimed", node))
 	}
 	rec, err := loadNode(tx, node)
+	if err == nil {
+		err = inputsFenced(tx, node)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +269,7 @@ func invalidated(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeInvalidate
 	}
 	// Effect states are monotone (a settled effect never goes live again),
 	// so this reads the same at a replay as at admission.
-	if err := settledOperation(tx, p.Node); err != nil {
+	if err := errors.Join(settledOperation(tx, p.Node), inputsFenced(tx, p.Node)); err != nil {
 		return err
 	}
 	c, ok, err := load[claim](tx, ClaimProjection, string(p.Node))

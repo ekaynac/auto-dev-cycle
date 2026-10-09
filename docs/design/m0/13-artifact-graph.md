@@ -178,9 +178,9 @@ Result:                            # what was computed: immutable  [G1]
       - **Dependants.** A review whose selected result another node's claim took is not superseded: the dependant's
         claim could no longer commit. G6b-2 keeps this refusal (below). The exception is a queue generation's carry_over
         (G7b-2a): the review it carried is superseded, and its merge waits for the replacement review, since the
-        merge's requirement no longer serves. The exception holds only while no merge of that carry_over has an
-        operation pending, uncertain, or completed without its result: an intended merge resumes without
-        re-validation, so its review is not superseded under it (the builder and the fold refuse). A dependant not yet
+        merge's requirement no longer serves. No supersession, of whichever review, moves a subject's revision while a
+        merge of the task on that subject has a live operation (the builder and the fold refuse, "The merge's inputs
+        are fenced" below), so the exception never supersedes a review under an intended merge. A dependant not yet
         claimed waits structurally.
       - A review bound by reuse, or whose key another review reuses, is not superseded either.
     - *As delivered (G6b-2):*
@@ -561,9 +561,18 @@ As delivered (G7b-2a):
   subject, roster, definition version and revision, never by result id: an identical requirement node selected
   again, or a requirement re-run, keeps the match. A subject's revision keeps the node of its first selection (or
   of its supersession), which the template takes.
-- **Before the apply.** A pending merge is applied only while its claimed inputs are still served to it (its
-  requirement at the subject's selected revision, its carry_over by the attestation it claimed). Otherwise the effect
-  fails, confirmed, with nothing applied. This backs up the supersession's refusal above.
+- **The merge's inputs are fenced.** An intended merge resumes without re-validation, and a re-check read before the
+  push ends before it, so what the merge consumed does not move while its operation is live (pending or uncertain).
+  The builders and folds refuse (`ErrMergeLive`): any supersession that would move the requirement revision of a
+  subject a live merge of the task takes, whichever review it replaces; and the invalidation or renewal of any
+  producer the live merge's claim or its carry_over's claim took (declared, or recording the result: a reused
+  review's holder), so the requirement, the carry_over, the carried review, the candidate, the rebase and the
+  refreshed checks. A settled operation fences nothing.
+- **Before the apply,** as a backstop, a pending merge is applied only while its claimed inputs are still served to
+  it. A pending effect that applies nothing, for this or any other refusal, fails, confirmed, only when the target
+  proves the effect never landed (`EffectTarget.Landed`; the fake forge and the fake effect target log their
+  applies). Otherwise (a push that landed, its observation lost, then moved over; or a target that cannot tell) it
+  is uncertain, and keeps its target fenced until M1's reconciler settles it.
 - **Stranded reviews are an operator's.** A review whose requirement revision was moved past without superseding
   it (another review of the subject was superseded) never serves a carry_over again: it, its carry_overs and their
   merges wait. Nothing moves them; the operator supersedes or re-records the review (an M1 action; in M0 a new task

@@ -50,6 +50,9 @@ func Renew(tx *eventstore.Tx, node types.NodeID, blobs receipt.Blobs) ([]eventst
 	if rec.State.State != types.NodeStateStateCompleted {
 		return nil, fmt.Errorf("graph: %s is not completed", node)
 	}
+	if err := inputsFenced(tx, node); err != nil {
+		return nil, err
+	}
 	// Only a memoizable node holds its key in the task's index.
 	if holder, _, err := load[types.NodeID](tx, KeyProjection, keyIndex(rec.Recorded.Task, rec.State.Key.Key)); err != nil || holder != node {
 		return nil, errors.Join(err, ErrReused{holder})
@@ -91,6 +94,9 @@ func renewed(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeRenewed) error
 	}
 	if rec.State.State != types.NodeStateStateCompleted || *rec.State.Key != p.Key || *rec.State.Result != p.Result {
 		return errors.New("a renewal is of a completed node's key and selected result")
+	}
+	if err := inputsFenced(tx, p.Node); err != nil {
+		return err
 	}
 	holder, _, err := load[types.NodeID](tx, KeyProjection, keyIndex(rec.Recorded.Task, p.Key.Key))
 	// Only a memoizable node holds a key in the index, and only its current key.
