@@ -26,7 +26,27 @@ import (
 //
 // The evaluator leaves the replacement unclaimed, and replay rebuilds the
 // same state.
-func displacedQuestionWaits(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
+func displacedQuestionWaits(ctx context.Context, dir string) ([]Step, []string, error) {
+	return displacedRun(ctx, dir, false)
+}
+
+// reuseDisplacedQuestion: nor does a replacement complete by reuse without
+// an answer its lineage still owes (13 [G10] reuse; Astra on #216). As
+// above, a raw supersession replaces the ruling's answer, and the
+// replacement stays unclaimed. Its successor, with the same inputs and so
+// the same key, completes once the ruling has moved out of the lineage;
+// the ruling is then asked again, unanswered. The steps:
+//  1. the raw supersession;
+//  2. the reuse of the successor's result for the replacement: refused as
+//     authority_revoked.
+//
+// The evaluator does not complete the replacement either, and replay
+// rebuilds the same state.
+func reuseDisplacedQuestion(ctx context.Context, dir string) ([]Step, []string, error) {
+	return displacedRun(ctx, dir, true)
+}
+
+func displacedRun(ctx context.Context, dir string, reuse bool) (steps []Step, violations []string, err error) {
 	reg, err := vocab.Load()
 	actor, aerr := ids.New("act")
 	if err = errors.Join(err, aerr); err != nil {
@@ -92,6 +112,9 @@ func displacedQuestionWaits(ctx context.Context, dir string) (steps []Step, viol
 		}
 	}
 	env := f.env(treeA, demandA)
+	if reuse {
+		return reusedAfterMove(f, &o, first, rep, res, env)
+	}
 	if err == nil {
 		err = f.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return graph.Evaluate(tx, []types.NodeID{rep}, env)
@@ -114,6 +137,63 @@ func displacedQuestionWaits(ctx context.Context, dir string) (steps []Step, viol
 	}
 	o.steps = append(o.steps, step)
 	diffs, err := f.s.RebuildProjections(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	o.check(len(diffs) == 0, "replay reached another state: %+v", diffs)
+	return o.steps, o.violations, nil
+}
+
+// reusedAfterMove completes rep's successor while the ruling is not asked,
+// asks it again, and records the step of reusing the successor's result
+// for rep.
+func reusedAfterMove(f *supersessionFix, o *observe, first, rep types.NodeID, res types.ResultID, env graph.Env) ([]Step, []string, error) {
+	later, err := f.successorOf(rep)
+	if err == nil {
+		err = f.asking(owedRuling, f.plan, nil) // the ruling moves out of the lineage
+	}
+	if err == nil {
+		err = f.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.Evaluate(tx, []types.NodeID{later}, env)
+		})
+	}
+	var step Step
+	if err == nil {
+		step, err = f.commit(later, types.ResultKindReview, env)
+	}
+	if err == nil && step != cleanStep {
+		err = errors.New("the successor did not complete")
+	}
+	if err == nil {
+		err = f.asking(owedRuling, first, nil) // and back in, unanswered
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	resolved := map[string]graph.Resolved{"plan": {Result: f.planRes}, "required": {Result: res}, "ruling": {Approval: approvalOther, Revision: 1}}
+	err = f.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Reuse(tx, rep, resolved, env.Authority)
+	})
+	var stale graph.ErrRevalidated
+	switch {
+	case err == nil:
+		o.steps = append(o.steps, cleanStep)
+	case errors.As(err, &stale):
+		o.steps = append(o.steps, Step{vocab.Failed, stale.Reason.String()})
+	default:
+		return nil, nil, err
+	}
+	if err := f.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Evaluate(tx, []types.NodeID{rep}, env)
+	}); err != nil {
+		return nil, nil, err
+	}
+	st, _, err := f.node(rep)
+	if err != nil {
+		return nil, nil, err
+	}
+	o.check(st.State != types.NodeStateStateCompleted, "the replacement completed while its lineage still asks the ruling")
+	diffs, err := f.s.RebuildProjections(f.ctx)
 	if err != nil {
 		return nil, nil, err
 	}

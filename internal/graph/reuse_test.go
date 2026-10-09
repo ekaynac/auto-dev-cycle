@@ -10,12 +10,13 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 func reuseOf(n types.NodeID, res types.ResultID) logic {
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Reuse(tx, n, map[string]Resolved{"plan": {Result: res}})
+		return Reuse(tx, n, map[string]Resolved{"plan": {Result: res}}, owedanswers.Authority{})
 	}
 }
 

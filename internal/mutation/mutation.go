@@ -178,6 +178,9 @@ const (
 	// still asks a question a supersession replaced, so a raw substitution
 	// runs it without the owed answer.
 	DisplacedQuestionUnchecked = "graph.displaced-question-unchecked"
+	// ReuseSkipsAuthority binds a reuse whatever its answer inputs resolve
+	// to, so a node completes without the answers its lineage owes.
+	ReuseSkipsAuthority = "graph.reuse-skips-authority"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -195,4 +198,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	GenerationKeepsBase, CarryOverIgnoresPatch, GenerationTakesStale,
 	SupersessionKeepsAttempts, SupersessionKeepsPredecessor, SupersedeTwice, LineageIgnoresSupersession,
 	IsolationUnchecked, RestrictedArtifactRendered,
-	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer, DisplacedQuestionUnchecked}
+	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer, DisplacedQuestionUnchecked,
+	ReuseSkipsAuthority}

@@ -104,6 +104,7 @@ var runners = map[string]runner{
 	"resolved-wait-retired":                 supersessionMovesHolds, // its second step, under its own mutation
 	"moved-question-replaced":               supersessionMovesHolds, // its second step, under its own mutation
 	"displaced-question-waits":              displacedQuestionWaits,
+	"reuse-displaced-question":              reuseDisplacedQuestion,
 }
 
 // Goldens loads and validates every golden, checking that each has a

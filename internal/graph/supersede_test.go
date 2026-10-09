@@ -246,7 +246,7 @@ func TestSupersedeRefused(t *testing.T) {
 	unbound := g.record(g.newNode(types.NodeKindReview))
 	g.must(commit(review, g.reviewResult(review), env))
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Reuse(tx, reuser, map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: res}})
+		return Reuse(tx, reuser, map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: res}}, owedanswers.Authority{})
 	})
 	if _, err := g.successor(later); err != nil {
 		t.Fatal(err)

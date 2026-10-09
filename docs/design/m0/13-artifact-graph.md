@@ -205,7 +205,15 @@ Result:                            # what was computed: immutable  [G1]
         evaluator leaves the node waiting (a structural wait, as for a stale answer) and Commit refuses it as
         `authority_revoked`. This uses the same authority path as the builder's check (`lineageOwed`). The claim fold
         reads no authority, so a raw claim of such a node is not refused; it never commits, until M1 records owed
-        inputs and the fold checks the move (contract fixture `displaced-question-waits`).
+        inputs and the fold checks the move (contract fixture `displaced-question-waits`). The controller context of
+        such a node is refused the same way.
+      - **A reuse re-validates answers as a commit does.** A reuse completes its node without a commit, and its key
+        ignores round and ancestry, so a replacement could take the result of a successor completed while its
+        displaced question was not asked. The `Reuse` builder therefore takes the authority: each answer input must
+        resolve to the answer in force for a question the lineage asks at its current revision, and no displaced
+        question may still be owed; otherwise the reuse is `authority_revoked`. The evaluator's reuse already goes
+        through `answers()`. The `node.reused` fold reads no authority, so a raw reuse is not refused on its answers
+        until M1 records approvals and owed inputs (contract fixture `reuse-displaced-question`).
       - **Dependants stay refused.** Re-pointing a dependant that claimed the superseded result would release its
         claim, and no event releases a claim except a reuse release. G6b-2 keeps G6b-1's refusal; G7b-2 makes the
         merge wait for the replacement, and any other claimed dependant keeps the review unsuperseded in M0.

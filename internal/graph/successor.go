@@ -192,6 +192,9 @@ func renderContext(tx *eventstore.Tx, node types.NodeID, env Env) (Rendered, err
 	if err != nil {
 		return out, err
 	}
+	if name, still, err := displaced(tx, rec, owed); err != nil || still {
+		return out, errors.Join(err, ErrRevalidated{Input: name, Reason: vocab.ReasonAuthorityRevoked, Detail: "a question a supersession replaced is still owed"})
+	}
 	for i, in := range c.Inputs {
 		switch {
 		case in.Result != nil:
