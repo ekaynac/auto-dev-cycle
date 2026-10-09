@@ -298,3 +298,55 @@ func TestSupersedeHoldsRefused(t *testing.T) {
 	}
 	g.must(edited(second, next, answerTo("data", ownC, 2))) // a replaced answer, with the wait on ownB@2 retired
 }
+
+// A raw supersession that replaces an answer whose question its lineage
+// still asks (Astra, #213): round 1 asks ruling (ownID), unanswered, and
+// ownC, answered; the replacement of round 2 answers ownC in place of the
+// ruling. It neither claims nor commits while ownID is asked; once the
+// question moves, it claims.
+func TestDisplacedQuestion(t *testing.T) {
+	g := openStore(t)
+	env := g.env(gatesOn(treeA, demandA))
+	review, _, next := g.superseding()
+	r := g.recordOf(review)
+	r.Node.ID = g.newNode(types.NodeKindReview).Node.ID
+	first := g.record(r)
+	g.must(asked(ownID, first, nil))
+	g.must(asked(ownC, first, ptr(types.ApprovalID(aprC))))
+	second, err := g.successor(first, owes("ruling", ownID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.must(edited(second, next, func(p *types.ReviewSuperseded) {
+		p.Replacement.Inputs = slices.Clone(p.Replacement.Inputs)
+		p.Replacement.Inputs[2] = answerAt("ruling", ownC, 2)
+	}))
+	rep := *g.state(second).SupersededBy
+	req, err := g.completeRecorded(next, g.recordOf(next).Node.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.must(evaluate(env, rep))
+	if st := g.state(rep); st.State == types.NodeStateStateClaimed {
+		t.Fatal("the replacement claimed while its lineage still asks the ruling")
+	}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return claimAny(tx, rep, map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: req}, "ruling": {Approval: aprC, Revision: 2}}, 0)
+	})
+	var stale ErrRevalidated
+	if err := g.do(commit(rep, g.reviewResult(rep), env)); !errors.As(err, &stale) || stale.Reason != vocab.ReasonAuthorityRevoked {
+		t.Fatalf("the raw claim committed: %v", err)
+	}
+	// Nor does a successor of a waiting copy of it run.
+	copied := g.recordOf(rep)
+	copied.Node.ID, copied.Predecessor = g.newNode(types.NodeKindReview).Node.ID, &rep
+	copied.Node.Round++
+	copied.Node.Inputs = append(slices.Clone(copied.Node.Inputs), g.planInput("again"))
+	later := g.record(copied)
+	g.must(evaluate(env, later))
+	if st := g.state(later); st.State == types.NodeStateStateClaimed {
+		t.Error("a successor of the replacement claimed while its lineage still asks the ruling")
+	}
+	g.must(asked(ownID, review, nil)) // the question moves: the lineage no longer asks it
+	g.must(commit(rep, g.reviewResult(rep), env))
+}

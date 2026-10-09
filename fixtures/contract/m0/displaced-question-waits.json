@@ -1,0 +1,9 @@
+{
+  "name": "displaced-question-waits",
+  "invariant": "A replacement never runs without an answer its lineage still owes (13 \"Moved questions\"): a raw supersession that replaces an answer whose question did not move is accepted by the fold, but the evaluator leaves the replacement unclaimed and its commit is refused (failed/authority_revoked). Steps: the raw supersession, then the commit of the replacement claimed raw.",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "authority_revoked"}
+  ],
+  "mutation": "graph.displaced-question-unchecked"
+}

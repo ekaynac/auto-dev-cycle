@@ -46,6 +46,14 @@ package graph
 //     refused in M0: it would drop a gate the fold cannot re-check, so it
 //     waits for M1, which re-checks each question_moved retirement against
 //     the recorded owed inputs.
+//   - A replaced question is checked again before the replacement runs
+//     (displaced): the evaluator leaves a node waiting, and Commit refuses
+//     it (authority_revoked), while its lineage still asks an owed input
+//     that a supersession in that lineage replaced and the node does not
+//     answer. So a raw supersession that replaces an answer still owed
+//     never runs without it. The claim fold reads no authority, so it
+//     cannot refuse the claim; until M1 records owed inputs, the claim is
+//     inert, as an answer claimed directly at a stale revision is.
 //   - M1 binds attempts to nodes. Until then the caller names the
 //     predecessor's attempts: the fold proves neither that the list is
 //     complete nor that the listed attempts are the predecessor's. An
@@ -471,4 +479,42 @@ func answeredAnew(p, n types.Node, in, m types.InputSpec) bool {
 		}))
 	}
 	return ok && ok2 && in.Name == m.Name && declares(p) == 0 && declares(n) == 1
+}
+
+// displaced is the answer input of a supersession in rec's lineage (rec, or
+// an ancestor, replaced another review) whose owed input owed, rec's
+// lineage's questions, still asks, and which rec does not answer: the
+// supersession replaced a question that has not moved.
+func displaced(tx *eventstore.Tx, rec nodeRecord, owed []types.AnswerSource) (types.Name, bool, error) {
+	if mutation.Is(mutation.DisplacedQuestionUnchecked) {
+		return "", false, nil
+	}
+	answers := func(id types.OwedInputID) bool {
+		return slices.ContainsFunc(rec.Recorded.Node.Inputs, func(in types.InputSpec) bool {
+			ask, ok := in.Source.Variant.(*types.AnswerSource)
+			return ok && ask.OwedInput == id
+		})
+	}
+	for x := rec; ; {
+		for r := x; r.Replaces != nil; {
+			pred, err := loadNode(tx, *r.Replaces)
+			if err != nil {
+				return "", false, err
+			}
+			for _, in := range pred.Recorded.Node.Inputs {
+				a, ok := in.Source.Variant.(*types.AnswerSource)
+				if ok && asks(owed, a.OwedInput) && !answers(a.OwedInput) {
+					return in.Name, true, nil
+				}
+			}
+			r = pred
+		}
+		if x.Recorded.Predecessor == nil {
+			return "", false, nil
+		}
+		var err error
+		if x, err = loadNode(tx, *x.Recorded.Predecessor); err != nil {
+			return "", false, err
+		}
+	}
 }

@@ -133,7 +133,11 @@ func answers(tx *eventstore.Tx, rec nodeRecord, auth Authority) (out map[string]
 			out[in.Name] = Resolved{Approval: apr, Revision: ask.Revision}
 		}
 	}
-	return out, stale, nil
+	name, still, err := displaced(tx, rec, owed) // a replaced question still owed: wait, never run without it
+	if still {
+		delete(out, string(name))
+	}
+	return out, stale || still, err
 }
 
 type evaluation struct {

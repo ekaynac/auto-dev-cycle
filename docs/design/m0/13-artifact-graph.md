@@ -199,6 +199,13 @@ Result:                            # what was computed: immutable  [G1]
         its wait and let the replacement run without the owed answer, a gate the fold cannot re-check. M1 records owed
         inputs and re-checks each `question_moved` retirement against them; until then the builder and the fold refuse
         a removal.
+      - **A replaced question is checked again before the replacement runs.** The fold cannot tell that a replaced
+        answer's question moved, so a raw supersession can replace an answer that is still owed. While a node's lineage
+        still asks an owed input that a supersession in that lineage replaced, and the node does not answer it, the
+        evaluator leaves the node waiting (a structural wait, as for a stale answer) and Commit refuses it as
+        `authority_revoked`. This uses the same authority path as the builder's check (`lineageOwed`). The claim fold
+        reads no authority, so a raw claim of such a node is not refused; it never commits, until M1 records owed
+        inputs and the fold checks the move (contract fixture `displaced-question-waits`).
       - **Dependants stay refused.** Re-pointing a dependant that claimed the superseded result would release its
         claim, and no event releases a claim except a reuse release. G6b-2 keeps G6b-1's refusal; G7b-2 makes the
         merge wait for the replacement, and any other claimed dependant keeps the review unsuperseded in M0.
