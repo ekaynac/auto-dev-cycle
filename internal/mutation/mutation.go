@@ -181,6 +181,9 @@ const (
 	// ReuseSkipsAuthority binds a reuse whatever its answer inputs resolve
 	// to, so a node completes without the answers its lineage owes.
 	ReuseSkipsAuthority = "graph.reuse-skips-authority"
+	// ContextNeedsNoAuthority renders a controller context with no
+	// authority, so its lineage's questions are never read.
+	ContextNeedsNoAuthority = "graph.context-needs-no-authority"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -199,4 +202,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	SupersessionKeepsAttempts, SupersessionKeepsPredecessor, SupersedeTwice, LineageIgnoresSupersession,
 	IsolationUnchecked, RestrictedArtifactRendered,
 	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer, DisplacedQuestionUnchecked,
-	ReuseSkipsAuthority}
+	ReuseSkipsAuthority, ContextNeedsNoAuthority}

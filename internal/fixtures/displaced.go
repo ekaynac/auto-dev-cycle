@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -198,5 +199,72 @@ func reusedAfterMove(f *supersessionFix, o *observe, first, rep types.NodeID, re
 		return nil, nil, err
 	}
 	o.check(len(diffs) == 0, "replay reached another state: %+v", diffs)
+	return o.steps, o.violations, nil
+}
+
+// contextNeedsAuthority: a controller context is rendered only with the
+// authority that reads its lineage's questions (13 "Successor rounds", 10;
+// Astra on #218). Round 1 of a review asks the ruling, answered; round 2
+// answers it and is claimed. The steps:
+//  1. its context with no authority: refused as authority_revoked, never a
+//     panic;
+//  2. its context with the authority: rendered.
+func contextNeedsAuthority(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
+	reg, err := vocab.Load()
+	actor, aerr := ids.New("act")
+	if err = errors.Join(err, aerr); err != nil {
+		return nil, nil, err
+	}
+	f := &supersessionFix{graphFix: &graphFix{ctx: ctx, actor: actor}, dir: dir, holds: reg.Holds}
+	if err := f.open(); err != nil {
+		return nil, nil, err
+	}
+	defer func() { err = errors.Join(err, f.close()) }()
+	f.plan, f.planRes, err = f.complete(types.NodeKindPlan, json.RawMessage(`{}`), []types.InputSpec{}, map[string]graph.Resolved{}, types.ResultKindPlan, []types.Ref{}, nil)
+	one, oerr := requirementOf(1, exeA)
+	req, rerr := f.record(types.NodeKindReviewRequirement, one, []types.InputSpec{})
+	var first, second types.NodeID
+	if err = errors.Join(err, oerr, rerr); err == nil {
+		err = f.fulfilled(req, one)
+	}
+	if err == nil {
+		first, err = f.record(types.NodeKindReview, soleReviewer, append(on("plan", f.plan, types.ResultKindPlan), on("required", req, types.ResultKindReviewRequirement)...))
+	}
+	if err == nil {
+		err = f.asking(owedRuling, first, ptrTo(approvalOne))
+	}
+	if err == nil {
+		second, err = f.successorOf(first, answerTo(owedRuling))
+	}
+	env := f.env(treeA, demandA)
+	if err == nil {
+		err = f.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.Evaluate(tx, []types.NodeID{second}, env)
+		})
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	var o observe
+	for _, e := range []graph.Env{{}, env} {
+		err := f.s.View(ctx, func(tx *eventstore.Tx) (err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("panic: %v", r)
+				}
+			}()
+			_, err = graph.Context(tx, second, e)
+			return err
+		})
+		var stale graph.ErrRevalidated
+		switch {
+		case err == nil:
+			o.steps = append(o.steps, cleanStep)
+		case errors.As(err, &stale):
+			o.steps = append(o.steps, Step{vocab.Failed, stale.Reason.String()})
+		default:
+			o.check(false, "the context: %v", err)
+		}
+	}
 	return o.steps, o.violations, nil
 }
