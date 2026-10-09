@@ -201,3 +201,38 @@ func TestRefusalAfterACompletedAttempt(t *testing.T) {
 		t.Fatal("not untrustworthy")
 	}
 }
+
+// StopRunning stops a running attempt with its reason, closing
+// publication, and proposes nothing for an attempt in another state or
+// none; AttemptOf reads the record back, with the stopping command.
+func TestStopRunning(t *testing.T) {
+	w := openWorld(t)
+	w.granted(requested())
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return StartAttempt(tx, leaID, 2, attA, base) })
+	stop := func(id types.AttemptID) (evs []eventstore.Event, err error) {
+		err = w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			evs, err = StopRunning(tx, id, types.AttemptStopReasonValuePreempt)
+			return evs, err
+		})
+		return evs, err
+	}
+	if evs, err := stop(attA); err != nil || len(evs) != 1 {
+		t.Fatalf("stopping a running attempt: %v %v", evs, err)
+	}
+	var a types.Attempt
+	var by *string
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		var err error
+		a, by, _, err = AttemptOf(tx, attA)
+		return nil, err
+	})
+	if a.Status != types.AttemptStatusStopping || a.Publication != types.AttemptPublicationClosed || *a.StopReason != types.AttemptStopReasonValuePreempt || by == nil {
+		t.Fatalf("after the stop: %+v", a)
+	}
+	if evs, err := stop(attA); err != nil || len(evs) != 0 {
+		t.Errorf("stopping a stopping attempt: %v %v", evs, err)
+	}
+	if _, err := stop(attB); err == nil {
+		t.Error("stopping an unknown attempt")
+	}
+}

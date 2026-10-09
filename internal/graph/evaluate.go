@@ -167,8 +167,8 @@ func (e *evaluation) visit(n types.NodeID) error {
 	e.seen[n] = true
 	rec, err := loadNode(e.tx, n)
 	switch {
-	case err != nil || rec.State.State == types.NodeStateStateClaimed:
-		return err
+	case err != nil || rec.State.State == types.NodeStateStateClaimed || rec.State.State == types.NodeStateStateSuperseded:
+		return err // a superseded node produces nothing: its dependants wait
 	case rec.State.State == types.NodeStateStateCompleted:
 		return e.renew(rec)
 	}
@@ -349,12 +349,16 @@ func commitResult(tx *eventstore.Tx, node types.NodeID, r types.Result, env Env)
 
 // revalidate: every input of node's claim still resolves, in tx at its
 // time, to what the claim fixed (13 [G4]), checked in declared order; else
-// ErrRevalidated. Commit and Operate (before egress) run it.
+// ErrRevalidated, or ErrSuperseded for a superseded node. Commit and
+// Operate (before egress) run it.
 func revalidate(tx *eventstore.Tx, node types.NodeID, env Env) error {
 	c, ok, err := load[claim](tx, ClaimProjection, string(node))
 	rec, rerr := loadNode(tx, node)
 	if err = errors.Join(err, rerr); err != nil || !ok {
 		return errors.Join(err, fmt.Errorf("graph: %s is not claimed", node))
+	}
+	if err := superseded(rec); err != nil {
+		return err
 	}
 	answered, _, err := answers(tx, rec, env.Authority) // a stale answer is unanswered: authority_revoked
 	if err != nil {

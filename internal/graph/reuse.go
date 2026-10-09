@@ -12,7 +12,9 @@ package graph
 //     generation; so a reuse never reads a stale or unselected result.
 //   - The instance must be waiting or runnable: a held instance waits for
 //     its hold first, and a claimed or completed one has its own result.
-//   - The fold re-derives the instance's inputs and key as for a claim, and
+//   - The fold re-derives the instance's inputs and key as for a claim, binds
+//     a review's requirement as a claim does (the current revision of its
+//     own task, supersede.go), and
 //     records them as its claim (for the commit-time re-validation, 13
 //     [G4]), and the instance among the key's reusers. It never claims the
 //     key and never runs.
@@ -35,7 +37,7 @@ import (
 // key in its task, from node's resolved inputs.
 func Reuse(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, node)
-	if err != nil {
+	if err = errors.Join(err, bindsRequirement(tx, rec, resolved)); err != nil {
 		return nil, err
 	}
 	cur, err := current(tx, rec, resolved)
@@ -66,7 +68,7 @@ func reused(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeReused) error {
 	if !reflect.DeepEqual(items(rec.Recorded.Node, resolved), p.Inputs) {
 		return errors.New("the reuse's inputs are not one resolution per declared input, in order")
 	}
-	if err := selectedInputs(tx, rec, resolved); err != nil {
+	if err := errors.Join(selectedInputs(tx, rec, resolved), bindsRequirement(tx, rec, resolved)); err != nil {
 		return err
 	}
 	cur, err := current(tx, rec, resolved)

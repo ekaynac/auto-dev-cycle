@@ -1,0 +1,13 @@
+{
+  "name": "roster-change-one-supersession",
+  "invariant": "A roster change is one recorded supersession (13): it stops the review's running attempt, whose late result is refused (failed/stale_attempt), while a finishing one keeps its state; a submission racing it is ordered either way. Steps: supersede, replay after restart, supersede again, late result, commit to the predecessor, successor's answer.",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "stale_expected_state"},
+    {"outcome": "failed", "reason": "stale_attempt"},
+    {"outcome": "failed", "reason": "stale_expected_state"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.supersession-keeps-attempts"
+}

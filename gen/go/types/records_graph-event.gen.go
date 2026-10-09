@@ -10,10 +10,10 @@ import (
 	"fmt"
 )
 
-// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1, node.hold_cleared/v1 and node.operated/v1 under the node's id, queue.observed/v1 under its task, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+// GraphEvent: The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1, node.hold_cleared/v1 and node.operated/v1 under the node's id, review.superseded/v1 under the predecessor's id, queue.observed/v1 under its task, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 type GraphEvent struct{ Variant GraphEventVariant }
 
-// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *NodeReused, *NodeReuseReleased, *NodeRenewed, *HoldRaised, *HoldPaged, *HoldCleared, *ResultRecorded, *ResultSelected, *NodeOperated, *QueueObserved.
+// GraphEventVariant is implemented by *NodeRecorded, *NodeClaimed, *NodeInvalidated, *NodeReused, *NodeReuseReleased, *NodeRenewed, *HoldRaised, *HoldPaged, *HoldCleared, *ResultRecorded, *ResultSelected, *NodeOperated, *QueueObserved, *ReviewSuperseded.
 type GraphEventVariant interface{ isGraphEvent() }
 
 func (*NodeRecorded) isGraphEvent()      {}
@@ -29,6 +29,7 @@ func (*ResultRecorded) isGraphEvent()    {}
 func (*ResultSelected) isGraphEvent()    {}
 func (*NodeOperated) isGraphEvent()      {}
 func (*QueueObserved) isGraphEvent()     {}
+func (*ReviewSuperseded) isGraphEvent()  {}
 
 func (u GraphEvent) MarshalJSON() ([]byte, error) {
 	if u.Variant == nil {
@@ -140,6 +141,12 @@ func (u *GraphEvent) UnmarshalJSON(b []byte) error {
 			return err
 		}
 		u.Variant = v
+	case "review_superseded":
+		v := &ReviewSuperseded{}
+		if err := decodeStrict(b, v); err != nil {
+			return err
+		}
+		u.Variant = v
 	default:
 		return fmt.Errorf("GraphEvent: unknown type %q", d)
 	}
@@ -219,6 +226,18 @@ type QueueObserved struct {
 	Branch  string `json:"branch"`
 	Head    string `json:"head"`
 	Version int64  `json:"version"`
+}
+
+// ReviewSuperseded: A roster change replaces a review (13 "Replacement is a recorded supersession"), in one writer transaction with the attempt stops it needs. The predecessor is superseded. The replacement keeps its round, inputs, requirements and effect, with the roster of its subject's next requirement revision, to which its review_requirement input moves; it takes the predecessor's successor slot, and its lineage includes what the predecessor asked. stopped_attempts are the attempts its caller named for the predecessor that this command stopped (attempt.stop_requested{preempt}, before this event), each listed once across supersessions; until M1 binds attempts to nodes, the list is not proven complete. Hold transfer and retirement are G6b-2: until then both lists are empty and a held review is not superseded.
+type ReviewSuperseded struct {
+	Type            string      `json:"type"`
+	Predecessor     NodeID      `json:"predecessor"`
+	Replacement     Node        `json:"replacement"`
+	StoppedAttempts []AttemptID `json:"stopped_attempts"`
+	// Empty until G6b-2 defines hold transfer.
+	TransferredHolds []HoldID `json:"transferred_holds"`
+	// Empty until G6b-2 defines hold retirement.
+	RetiredHolds []HoldID `json:"retired_holds"`
 }
 
 // HoldRaised: An external wait on the node (02 "Hold reasons and resume signals"): raised at the event's time with no page yet. result is set exactly when the hold has a reason: it is the retry wait of the node's could_not_run result of its current key (13 [G2]), one hold per result.

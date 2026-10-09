@@ -197,7 +197,9 @@ func recordsRequirement(rec nodeRecord, r types.Result) error {
 }
 
 // bindsRequirement: the requirement a review's claim resolved has the
-// review's subject, roster and definition version. Only a review is bound.
+// review's subject, roster and definition version, and is of the review's
+// task and its subject's selected revision there (supersede.go). Only a
+// review is bound.
 func bindsRequirement(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved) error {
 	if rec.Recorded.Node.Kind != types.NodeKindReview {
 		return nil // carry_over and merge get their own rules (G7b-2)
@@ -214,6 +216,9 @@ func bindsRequirement(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Res
 		}
 		if req.Subject != subject || !slices.Equal(req.Roster, roster) || req.DefinitionVersion != rec.Recorded.Node.DefinitionVersion {
 			return fmt.Errorf("requirement %s is not of the review's subject, roster and definition version", r.Result.ID)
+		}
+		if err := currentRevision(tx, rec.Recorded.Task, r.Node, req); err != nil {
+			return err
 		}
 	}
 	return nil

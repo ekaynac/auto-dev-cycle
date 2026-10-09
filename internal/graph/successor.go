@@ -14,7 +14,8 @@ package graph
 //     owed input. The node.recorded fold checks all of this, refuses a fork
 //     and refuses an answer input on a first round.
 //   - An answer is accepted only for an owed input this node's lineage (an
-//     ancestor) asked for, at that owed input's current revision: by
+//     ancestor, or a review one replaced) asked for, at that owed input's
+//     current revision: by
 //     Successor for what it adds (ErrNotOwed), and by the evaluator and the
 //     commit for every answer input, inherited or recorded directly.
 //   - An answer input at a revision its owed input has moved past is
@@ -58,19 +59,27 @@ func (e ErrNotOwed) Error() string {
 	return "graph: no ancestor owes " + string(e.Owed) + " at that revision"
 }
 
-// lineageOwed are the owed inputs pred and its ancestors asked for.
+// lineageOwed are the owed inputs pred and its ancestors asked for, and
+// those the reviews each of them replaced asked for (supersede.go).
 func lineageOwed(tx *eventstore.Tx, pred *types.NodeID, auth Authority) ([]types.AnswerSource, error) {
 	var out []types.AnswerSource
 	for p := pred; p != nil; {
 		anc, err := loadNode(tx, *p)
+		for q := p; err == nil && q != nil; {
+			var asker nodeRecord
+			var owed []types.AnswerSource
+			if asker, err = loadNode(tx, *q); err == nil {
+				owed, err = auth.Owed(tx, asker.Recorded)
+			}
+			out, q = append(out, owed...), asker.Replaces
+			if mutation.Is(mutation.LineageIgnoresSupersession) {
+				q = nil
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
-		owed, err := auth.Owed(tx, anc.Recorded)
-		if err != nil {
-			return nil, err
-		}
-		out, p = append(out, owed...), anc.Recorded.Predecessor
+		p = anc.Recorded.Predecessor
 	}
 	return out, nil
 }
@@ -100,7 +109,7 @@ func Successor(tx *eventstore.Tx, pred types.NodeID, added []types.InputSpec, au
 	rec, err := loadNode(tx, pred)
 	id, ierr := ids.New("nod")
 	owed, oerr := lineageOwed(tx, &pred, auth)
-	if err = errors.Join(err, ierr, oerr); err != nil {
+	if err = errors.Join(err, ierr, oerr, superseded(rec)); err != nil {
 		return nil, err
 	}
 	n := rec.Recorded.Node

@@ -167,7 +167,7 @@ func (g *graphFix) record(kind types.NodeKind, params json.RawMessage, input []t
 	}
 	if err == nil {
 		err = g.do(func(*eventstore.Tx) ([]eventstore.Event, error) {
-			if kind == types.NodeKindReview { // under the fixtures' executor registry (G6a)
+			if kind == types.NodeKindReview || kind == types.NodeKindReviewRequirement { // under the fixtures' executor registry (G6a)
 				return graph.RecordReview(n, reviewers)
 			}
 			return graph.Record(n)

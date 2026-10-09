@@ -72,7 +72,7 @@ func raise(tx *eventstore.Tx, node types.NodeID, h types.NodeHold, envOwner *str
 		return nil, err
 	}
 	rec, err := loadNode(tx, node)
-	if err != nil {
+	if err = errors.Join(err, superseded(rec)); err != nil {
 		return nil, err
 	}
 	if slices.ContainsFunc(rec.State.Holds, func(o types.NodeHold) bool { return o.Hold == h.Hold && o.SignalInstance == h.SignalInstance }) {
@@ -209,6 +209,9 @@ func holdRaised(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldRaised) err
 	rec, err := nodeOf(tx, ev, p.Node)
 	if err != nil || ev.Kind != HoldRaised || ev.Subject != string(p.Node) {
 		return errors.Join(err, errors.New("a hold is raised under its node"))
+	}
+	if err := superseded(rec); err != nil {
+		return err
 	}
 	h := p.Hold
 	if !sameTime(string(h.Since), ev.At) || len(h.Pages) != 0 || (h.Reason == nil) != (p.Result == nil) {

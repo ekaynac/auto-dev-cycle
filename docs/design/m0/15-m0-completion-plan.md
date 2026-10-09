@@ -224,6 +224,8 @@ the two differ, this section is what later PRs build on.
 | | **G3-3** (#177) | hold events: raise, page, clear, and retry waits. G3's row did not list them. There is no transfer event: hold transfer stays with G6b-2, as planned |
 | G4a | **G4a-1** (#178, open) | `node.reused/v1`; `Resolve`; the fixtures for 11:188 and 11:190 |
 | | **G4a-2** (next) | a `could_not_run` evidence result retrying on its probe; receipt renewal, the one exception that re-selects a result for an already selected key |
+| G6b | **G6b-1** (#212, open) | `review.superseded/v1` with the attempt stops in one transaction; the race, crash and replay cases; lineage through supersession; one selected requirement revision per subject. A held review is refused |
+| | **G6b-2** (next) | hold transfer and retirement; moved questions |
 
 **Size.** The G track now has at least 15 PRs, against the 12 planned: G3 split in three and G4a in two. G6b and
 G7b may still split.

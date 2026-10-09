@@ -1,0 +1,13 @@
+{
+  "name": "replaced-question-reaches-successor",
+  "invariant": "Lineage follows supersession (13): the replacement's round n+1 successor answers the owed input the superseded review asked (empty/completed_clean), never failed/lineage_undeclared. Steps: supersede, replay after restart, supersede again, late result, commit to the predecessor, successor's answer.",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "stale_expected_state"},
+    {"outcome": "failed", "reason": "stale_attempt"},
+    {"outcome": "failed", "reason": "stale_expected_state"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.lineage-ignores-supersession"
+}

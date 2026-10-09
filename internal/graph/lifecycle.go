@@ -244,6 +244,11 @@ func selected(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultSelected) e
 	if ren, renewing, err := load[renewal](tx, RenewalProjection, string(p.Node)); err != nil || renewing && !slices.Contains(ren.After, p.Result) {
 		return errors.Join(err, errors.New("a renewed node selects only a result recorded after its renewal"))
 	}
+	if r.Result.Kind == types.ResultKindReviewRequirement { // one selected revision per subject (supersede.go)
+		if err := selectRevision(tx, rec.Recorded.Task, rec.Recorded.Node.Params, false); err != nil {
+			return err
+		}
+	}
 	rec.State.State, rec.State.Result = types.NodeStateStateCompleted, &p.Result
 	return putNode(tx, rec)
 }

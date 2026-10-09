@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/graph-event.json",
   "title": "GraphEvent",
-  "description": "The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1, node.hold_cleared/v1 and node.operated/v1 under the node's id, queue.observed/v1 under its task, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.",
-  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}, {"$ref": "#/$defs/NodeInvalidated"}, {"$ref": "#/$defs/NodeReused"}, {"$ref": "#/$defs/NodeReuseReleased"}, {"$ref": "#/$defs/NodeRenewed"}, {"$ref": "#/$defs/HoldRaised"}, {"$ref": "#/$defs/HoldPaged"}, {"$ref": "#/$defs/HoldCleared"}, {"$ref": "#/$defs/ResultRecorded"}, {"$ref": "#/$defs/ResultSelected"}, {"$ref": "#/$defs/NodeOperated"}, {"$ref": "#/$defs/QueueObserved"}],
+  "description": "The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1, node.hold_cleared/v1 and node.operated/v1 under the node's id, review.superseded/v1 under the predecessor's id, queue.observed/v1 under its task, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.",
+  "oneOf": [{"$ref": "#/$defs/NodeRecorded"}, {"$ref": "#/$defs/NodeClaimed"}, {"$ref": "#/$defs/NodeInvalidated"}, {"$ref": "#/$defs/NodeReused"}, {"$ref": "#/$defs/NodeReuseReleased"}, {"$ref": "#/$defs/NodeRenewed"}, {"$ref": "#/$defs/HoldRaised"}, {"$ref": "#/$defs/HoldPaged"}, {"$ref": "#/$defs/HoldCleared"}, {"$ref": "#/$defs/ResultRecorded"}, {"$ref": "#/$defs/ResultSelected"}, {"$ref": "#/$defs/NodeOperated"}, {"$ref": "#/$defs/QueueObserved"}, {"$ref": "#/$defs/ReviewSuperseded"}],
   "$defs": {
     "NodeRecorded": {
       "description": "A node joins its task's graph, append-only: its task, its project and the node it succeeds (null for a first round).",
@@ -117,6 +117,20 @@
         "branch": {"type": "string", "minLength": 1, "maxLength": 256},
         "head": {"type": "string", "minLength": 1, "maxLength": 256},
         "version": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
+      }
+    },
+    "ReviewSuperseded": {
+      "description": "A roster change replaces a review (13 \"Replacement is a recorded supersession\"), in one writer transaction with the attempt stops it needs. The predecessor is superseded. The replacement keeps its round, inputs, requirements and effect, with the roster of its subject's next requirement revision, to which its review_requirement input moves; it takes the predecessor's successor slot, and its lineage includes what the predecessor asked. stopped_attempts are the attempts its caller named for the predecessor that this command stopped (attempt.stop_requested{preempt}, before this event), each listed once across supersessions; until M1 binds attempts to nodes, the list is not proven complete. Hold transfer and retirement are G6b-2: until then both lists are empty and a held review is not superseded.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "predecessor", "replacement", "stopped_attempts", "transferred_holds", "retired_holds"],
+      "properties": {
+        "type": {"const": "review_superseded"},
+        "predecessor": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "replacement": {"$ref": "node.json"},
+        "stopped_attempts": {"type": "array", "uniqueItems": true, "items": {"$ref": "../common/defs.json#/$defs/AttemptID"}},
+        "transferred_holds": {"description": "Empty until G6b-2 defines hold transfer.", "type": "array", "maxItems": 0, "items": {"$ref": "../common/defs.json#/$defs/HoldID"}},
+        "retired_holds": {"description": "Empty until G6b-2 defines hold retirement.", "type": "array", "maxItems": 0, "items": {"$ref": "../common/defs.json#/$defs/HoldID"}}
       }
     },
     "HoldRaised": {

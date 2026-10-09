@@ -57,10 +57,17 @@ func (g graphStore) requirementNode(rev int64, def string, exes ...types.Executo
 // conclusions are concl (its params when nil).
 func (g graphStore) completeRequirement(req types.NodeRecorded, concl json.RawMessage) (types.NodeID, types.ResultID, error) {
 	n := g.record(req)
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, n, map[string]Resolved{}, 1) })
 	if concl == nil {
 		concl = req.Node.Params
 	}
+	rid, err := g.completeRecorded(n, concl)
+	return n, rid, err
+}
+
+// completeRecorded claims and completes the recorded requirement n with
+// conclusions concl.
+func (g graphStore) completeRecorded(n types.NodeID, concl json.RawMessage) (types.ResultID, error) {
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, n, map[string]Resolved{}, 1) })
 	rid := types.ResultID(must(ids.New("res")))
 	r := types.Result{ID: rid, Computation: g.state(n).Key.Key, Kind: types.ResultKindReviewRequirement, Value: []types.Ref{},
 		Conclusions: &concl, Outcome: types.OutcomeFound, Reason: vocab.ReasonCompletedWithFindings, Detail: "required", Completed: true}
@@ -68,9 +75,9 @@ func (g graphStore) completeRequirement(req types.NodeRecorded, concl json.RawMe
 		return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
 	})
 	if err == nil {
-		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, rid) })
+		err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, rid) })
 	}
-	return n, rid, err
+	return rid, err
 }
 
 // The roster's families are the reviewers's, sorted by executor; an
@@ -232,7 +239,15 @@ func TestReviewRequirement(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	older, oldRes, err := g.completeRequirement(g.requirementNode(2, "0", exeA, exeC), nil)
+	// A subject has one selected revision in a task: a second is refused
+	// (only a supersession moves it), so the older definition is another
+	// task's.
+	if _, _, err := g.completeRequirement(g.requirementNode(2, "0", exeA, exeC), nil); err == nil {
+		t.Error("a second requirement revision selected without a supersession")
+	}
+	olderReq := g.requirementNode(2, "0", exeA, exeC)
+	olderReq.Task = "tsk_01m3250vm7f6ktw39dszqnyddr"
+	older, oldRes, err := g.completeRequirement(olderReq, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
