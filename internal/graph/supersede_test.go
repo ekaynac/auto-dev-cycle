@@ -144,10 +144,6 @@ func edited(pred, req types.NodeID, edit func(*types.ReviewSuperseded)) logic {
 func TestSupersededFold(t *testing.T) {
 	g := openStore(t)
 	review, _, next := g.superseding()
-	held := g.recordOf(review)
-	held.Node.ID = g.newNode(types.NodeKindReview).Node.ID
-	g.record(held)
-	g.must(raised(held.Node.ID, newHold(t, "reviewer_unavailable", types.OwnerSystem, nil), nil))
 	requirement := func(change func(*types.NodeRecorded), rev int64, def string, exes ...types.ExecutorID) types.NodeID {
 		r := g.requirementNode(rev, def, exes...)
 		if change != nil {
@@ -184,8 +180,8 @@ func TestSupersededFold(t *testing.T) {
 			p.Replacement.Params = json.RawMessage(strings.Replace(string(p.Replacement.Params), "candidate", "closure", 1))
 		}, "another roster"},
 		"an input moved":         {input(0, next), "input 0"},
-		"an input dropped":       {func(p *types.ReviewSuperseded) { p.Replacement.Inputs = p.Replacement.Inputs[1:] }, "another roster"},
-		"the last input dropped": {func(p *types.ReviewSuperseded) { p.Replacement.Inputs = p.Replacement.Inputs[:1] }, "another roster"},
+		"an input dropped":       {func(p *types.ReviewSuperseded) { p.Replacement.Inputs = p.Replacement.Inputs[1:] }, "input 0"},
+		"the last input dropped": {func(p *types.ReviewSuperseded) { p.Replacement.Inputs = p.Replacement.Inputs[:1] }, "input 1"},
 		"an input added": {func(p *types.ReviewSuperseded) {
 			p.Replacement.Inputs = append(p.Replacement.Inputs, g.planInput("again"))
 		}, "another roster"},
@@ -207,10 +203,9 @@ func TestSupersededFold(t *testing.T) {
 		"an attempt not stopped": {func(p *types.ReviewSuperseded) {
 			p.StoppedAttempts = []types.AttemptID{"att_01m3250vnfeyrv67x6w0ddqr6a"}
 		}, "not stopped"},
-		"a transferred hold":       {func(p *types.ReviewSuperseded) { p.TransferredHolds = []types.HoldID{"hld_01m3250vnfeyrv67x6w0ddqr6a"} }, "maxItems"},
+		"a transferred hold":       {func(p *types.ReviewSuperseded) { p.TransferredHolds = []types.HoldID{"hld_01m3250vnfeyrv67x6w0ddqr6a"} }, "each of the review's holds"},
 		"a recorded replacement":   {func(p *types.ReviewSuperseded) { p.Replacement.ID = review }, "is recorded"},
 		"of a requirement":         {func(p *types.ReviewSuperseded) { p.Predecessor = next }, "only a review"},
-		"of a held review":         {func(p *types.ReviewSuperseded) { p.Predecessor = held.Node.ID }, "G6b-2"},
 		"another kind replacement": {func(p *types.ReviewSuperseded) { p.Replacement.Kind = types.NodeKindCarryOver }, ""},
 	} {
 		if err := g.do(edited(review, next, c.edit)); err == nil || !strings.Contains(err.Error(), c.want) {
@@ -233,8 +228,8 @@ func TestSupersededFold(t *testing.T) {
 	}
 }
 
-// Until G6b-2, a held review is not superseded, nor one bound by reuse or
-// whose key another review reuses; nor is a review whose lineage has a
+// A review bound by reuse, or whose key another review reuses, is not
+// superseded; nor is a review whose lineage has a
 // later round, one with no requirement input, nor one whose replacement
 // the registry no longer derives. Superseding a review never claimed
 // leaves nothing for the evaluator to claim.
@@ -247,9 +242,8 @@ func TestSupersedeRefused(t *testing.T) {
 		r.Node.ID = g.newNode(types.NodeKindReview).Node.ID
 		return g.record(r)
 	}
-	held, reuser, later, waiting := copyOf(), copyOf(), copyOf(), copyOf()
+	reuser, later, waiting := copyOf(), copyOf(), copyOf()
 	unbound := g.record(g.newNode(types.NodeKindReview))
-	g.must(raised(held, newHold(t, "reviewer_unavailable", types.OwnerSystem, nil), nil))
 	g.must(commit(review, g.reviewResult(review), env))
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return Reuse(tx, reuser, map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: res}})
@@ -257,7 +251,7 @@ func TestSupersedeRefused(t *testing.T) {
 	if _, err := g.successor(later); err != nil {
 		t.Fatal(err)
 	}
-	for n, want := range map[types.NodeID]string{held: "G6b-2", review: "reuse", reuser: "reuse", later: "successor", unbound: "review_requirement input"} {
+	for n, want := range map[types.NodeID]string{review: "reuse", reuser: "reuse", later: "successor", unbound: "review_requirement input"} {
 		if err := g.do(supersede(n, next)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", want, err, want)
 		}

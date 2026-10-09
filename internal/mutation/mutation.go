@@ -165,6 +165,15 @@ const (
 	// RestrictedArtifactRendered renders every ref of a result in a
 	// controller context, so a restricted artifact reaches a prompt.
 	RestrictedArtifactRendered = "graph.restricted-artifact-rendered"
+	// SupersessionDropsHolds lists the holds a supersession transfers but
+	// leaves its replacement holding none, so a wait restarts its paging.
+	SupersessionDropsHolds = "graph.supersession-drops-holds"
+	// SupersessionTransfersEveryHold transfers every hold to a replacement,
+	// so it waits on what it no longer depends on.
+	SupersessionTransfersEveryHold = "graph.supersession-transfers-every-hold"
+	// ReplacementKeepsMovedAnswer ignores a supersession's moved questions,
+	// so the replacement keeps an answer its lineage no longer asks.
+	ReplacementKeepsMovedAnswer = "graph.replacement-keeps-moved-answer"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -181,4 +190,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	SuccessorTakesAnyAnswer, AnswerLineageUnchecked, EquivalenceIgnoresRestrictions, EquivalenceIgnoresRoster,
 	GenerationKeepsBase, CarryOverIgnoresPatch, GenerationTakesStale,
 	SupersessionKeepsAttempts, SupersessionKeepsPredecessor, SupersedeTwice, LineageIgnoresSupersession,
-	IsolationUnchecked, RestrictedArtifactRendered}
+	IsolationUnchecked, RestrictedArtifactRendered,
+	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer}

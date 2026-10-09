@@ -100,6 +100,9 @@ var runners = map[string]runner{
 	"replaced-question-reaches-successor":   rosterChangeOneSupersession, // its sixth step, under its own mutation
 	"empty-isolation-never-published":       emptyIsolationNeverPublished,
 	"restricted-artifact-not-in-prompt":     restrictedArtifactNotInPrompt,
+	"held-review-transfers-hold":            supersessionMovesHolds,
+	"resolved-wait-retired":                 supersessionMovesHolds, // its second step, under its own mutation
+	"moved-question-replaced":               supersessionMovesHolds, // its second step, under its own mutation
 }
 
 // Goldens loads and validates every golden, checking that each has a

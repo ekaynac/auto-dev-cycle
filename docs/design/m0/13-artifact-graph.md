@@ -64,8 +64,9 @@ Result:                            # what was computed: immutable  [G1]
     reuse and result and returns it to waiting, so it reuses or waits again at the new generation. Nothing serves an
     invalidated result through a reused node. As a second guard, a memoizable producer whose key is not of its
     identity's current generation counts as not completed: the resolver waits on it and a claim refuses it.
-    Dependants that already claimed the old result keep their claims, which no longer commit. Re-pointing them is
-    G6b-2's and G7b-2's: until then a review whose result a dependant claimed is not superseded (G6b-1).
+    Dependants that already claimed the old result keep their claims, which no longer commit. A review whose result a
+    dependant claimed is not superseded (G6b-1, kept by G6b-2): re-pointing the dependant would release its claim, which
+    no event does yet; the merge's wait for a replacement is G7b-2's.
   - **Renewal is the one exception to "a key selects once".** It applies only to a memoizable kind whose selected
     result carries a receipt. Once that receipt has passed its `valid_until`, by the event's time, `node.renewed`
     reopens the same key: the node is claimed again with no selected result, so a new attempt records and selects a
@@ -153,7 +154,8 @@ Result:                            # what was computed: immutable  [G1]
         attempt still running (`graph.Supersede`). The fold records the replacement from the event: the predecessor's
         round, inputs, requirements and effect, with the roster of the subject's next requirement revision, and its
         `review_requirement` input moved to that revision's node. The replacement takes the predecessor's successor
-        slot. The predecessor must be its lineage's last round, declare a requirement input, and hold nothing.
+        slot. The predecessor must be its lineage's last round and declare a requirement input (and, until G6b-2,
+        hold nothing).
       - **The predecessor is `superseded`.** It records, selects, claims and serves nothing more, and a completed one
         keeps its result as history. A second supersession of it, a successor of it and a commit to it are refused as
         `ErrSuperseded` (`stale_expected_state`). Replay re-derives all of this from the log, and a retried command
@@ -170,11 +172,33 @@ Result:                            # what was computed: immutable  [G1]
         complete nor that the listed attempts are the predecessor's. An unlisted running attempt is safe, as nothing
         selects its result for the predecessor or the replacement, but it holds its capacity until it ends.
       - **Dependants.** A review whose selected result another node's claim took is not superseded: the dependant's
-        claim could no longer commit, and re-pointing it is G6b-2's (with holds) and G7b-2's (the merge waits for the
-        replacement review). A dependant not yet claimed waits structurally.
-      - **Left to G6b-2:** hold transfer and retirement, so a held review is refused with an error naming G6b-2, and
-        both hold lists are empty (the schema says so); and moved questions, so the replacement keeps every answer
-        input. A review bound by reuse, or whose key another review reuses, is not superseded either.
+        claim could no longer commit. G6b-2 keeps this refusal (below); the merge's wait for the replacement review is
+        G7b-2's. A dependant not yet claimed waits structurally.
+      - A review bound by reuse, or whose key another review reuses, is not superseded either.
+    - *As delivered (G6b-2):*
+      - **Holds move in the supersession event.** Each of the predecessor's holds is in exactly one of
+        `transferred_holds` and `retired_holds{hold, reason}`, in the predecessor's order. Which list is derived from
+        the replacement, never chosen by the caller, and the fold derives it again and refuses any other lists:
+        - a retry wait (a hold raised for a `could_not_run` result) is of the predecessor's key, which the replacement
+          does not hold: retired as `invalidated`, as an invalidation retires it;
+        - a `reviewer_unavailable` wait on an executor (`registry:<executor>`) the new roster drops: retired as
+          `member_removed`;
+        - an `awaiting_input` wait on an answer the replacement no longer declares: retired as `question_moved`;
+        - every other wait transfers. The replacement holds it unchanged (id, signal, owner, `since`, pages), so a
+          page is not repeated and escalation does not restart, and the hold index names the replacement. The
+          replacement is `held` until its waits clear; the predecessor holds nothing.
+      - **Moved questions.** The caller may name answer inputs whose question moved (`graph.SupersedeMoving`): each is
+        replaced under its name by an answer to another owed input, or removed. The builder requires, through the
+        authority, that the lineage no longer asks the old owed input and asks the new one at its current revision.
+        The fold checks only the shape: every other input is the predecessor's, and a replaced answer names an owed
+        input the predecessor does not declare, once. As for a wait retired as `revised`, the fold cannot check that
+        the question moved until M1 records owed inputs. A question moves only with a roster change: a moved question
+        on an unchanged roster still waits for one.
+      - **Dependants stay refused.** Re-pointing a dependant that claimed the superseded result would release its
+        claim, and no event releases a claim except a reuse release. G6b-2 keeps G6b-1's refusal; G7b-2 makes the
+        merge wait for the replacement, and any other claimed dependant keeps the review unsuperseded in M0.
+      - **Successors are unchanged.** A successor still needs its predecessor to hold nothing but the answer waits it
+        clears or retires as `revised` ("Successor rounds"); holds transfer only to a replacement.
   - **Nothing reuses a review across rosters.** A review need not run because a prior review ran on a result that the
     same producer's new result is equivalent to only if both declare the same inputs; every input of the review
     resolves now as its own claim would (selected in its project, applicable and unexpired, at a writer
@@ -291,12 +315,12 @@ The graph is append-only. Nothing modifies an existing node's inputs. New inform
   node waiting, a structural wait that raises no hold and fails nothing else in the command; the commit refuses it as
   `authority_revoked` ([G4]), and so does its controller context. The lineage moves on through a successor that answers
   the current revision.
-- Holds do not move to a successor until G6b transfers them. Until then a successor is refused while its predecessor
-  holds anything but an `awaiting_input` wait on an answer input the successor inherits. In the same command, before
-  the successor's `node.recorded`, a wait whose answer the authority has given is cleared on its signal, and a wait on
-  a revision the successor moves to a newer one is retired as `revised`. The `node.recorded` fold refuses a successor
-  of a node that holds anything. An inherited answer not given yet refuses the round, so no second hold restarts its
-  paging.
+- Holds do not move to a successor: G6b-2 transfers them only to a replacement. A successor is refused while its
+  predecessor holds anything but an `awaiting_input` wait on an answer input the successor inherits. In the same
+  command, before the successor's `node.recorded`, a wait whose answer the authority has given is cleared on its
+  signal, and a wait on a revision the successor moves to a newer one is retired as `revised`. The `node.recorded` fold
+  refuses a successor of a node that holds anything. An inherited answer not given yet refuses the round, so no second
+  hold restarts its paging.
 - *As delivered (G5, #204), what G6b inherits:*
   - A replacement (a roster change, "Replacement is a recorded supersession" above) is not a successor. It needs its
     own event, and must maintain `graph_successors`: the one-successor rule and the hold check are keyed on the
@@ -308,7 +332,8 @@ The graph is append-only. Nothing modifies an existing node's inputs. New inform
     review asked. G6b-1 delivers the first: lineage follows supersession.
   - A question superseded by a *different* owed input (not a newer revision of the same one) is a replacement's: a
     successor cannot drop or rename an inherited answer, so a lineage whose inherited answer will never be given stays
-    waiting until G6b replaces it. This is left to G6b-2.
+    waiting until G6b replaces it. G6b-2 delivers this for a roster change: the replacement may replace or remove
+    that answer.
   - The fold cannot check that a wait retired as `revised` was revised, nor that a cleared wait's answer was given,
     until M1 records owed inputs and approvals.
 
@@ -543,7 +568,9 @@ Fixtures, each tied to the class it addresses:
   the supersession and a restart each reach one outcome; an owed input still outstanding carries to the replacement
   with its hold (same id and paging history), while an answer arriving later enters the round *n+1* successor
   (contract fixtures `roster-change-one-supersession`, `superseded-result-never-selected`, `supersession-replays-once`
-  and `replaced-question-reaches-successor`; the hold's carry-over is G6b-2's);
+  and `replaced-question-reaches-successor`); a wait the replacement no longer has is retired with its reason, and a
+  moved question is answered in the replacement (`held-review-transfers-hold`, `resolved-wait-retired` and
+  `moved-question-replaced`);
 - equal gate or evidence conclusions never reuse a review across a roster change: the replacement runs;
 - a roster change after carry-over was selected, but before the merge commits, makes the merge wait for the
   replacement review;

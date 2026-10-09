@@ -13103,7 +13103,7 @@
   "valid": true
  },
  {
-  "name": "graph-event: a supersession transferring a hold (G6b-2)",
+  "name": "graph-event: a supersession transferring a hold",
   "schema": "records/graph-event",
   "doc": {
    "type": "review_superseded",
@@ -13147,10 +13147,10 @@
    ],
    "retired_holds": []
   },
-  "valid": false
+  "valid": true
  },
  {
-  "name": "graph-event: a supersession retiring a hold (G6b-2)",
+  "name": "graph-event: a supersession retiring a hold with no reason",
   "schema": "records/graph-event",
   "doc": {
    "type": "review_superseded",
@@ -13192,6 +13192,210 @@
    "transferred_holds": [],
    "retired_holds": [
     "hld_01m3250vz2ezn81cgvbkcn17jd"
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a supersession retiring a hold with its reason",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "review_superseded",
+   "predecessor": "nod_01m3250v57ft7aehkqwq0yrq3n",
+   "replacement": {
+    "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+    "kind": "review",
+    "definition_version": "1",
+    "inputs": [
+     {
+      "name": "required",
+      "source": {
+       "type": "result",
+       "producer": "nod_01m3250vm7f6ktw39dszqnyddr",
+       "result_kind": "review_requirement"
+      }
+     }
+    ],
+    "params": {
+     "subject": "candidate",
+     "roster": [
+      {
+       "executor": "exe_01m3250vkwffc979nzjw0g2sf9",
+       "family": "claude"
+      }
+     ]
+    },
+    "effect": null,
+    "round": 2,
+    "requires": {
+     "role": null,
+     "capability": null,
+     "resources": []
+    }
+   },
+   "stopped_attempts": [
+    "att_01m3250vz2ezn81cgvbkcn17jd"
+   ],
+   "transferred_holds": [
+    "hld_01m3250vnfeyrv67x6w0ddqr6a"
+   ],
+   "retired_holds": [
+    {
+     "hold": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "reason": "question_moved"
+    }
+   ]
+  },
+  "valid": true
+ },
+ {
+  "name": "graph-event: a supersession retiring a hold for an unknown reason",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "review_superseded",
+   "predecessor": "nod_01m3250v57ft7aehkqwq0yrq3n",
+   "replacement": {
+    "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+    "kind": "review",
+    "definition_version": "1",
+    "inputs": [
+     {
+      "name": "required",
+      "source": {
+       "type": "result",
+       "producer": "nod_01m3250vm7f6ktw39dszqnyddr",
+       "result_kind": "review_requirement"
+      }
+     }
+    ],
+    "params": {
+     "subject": "candidate",
+     "roster": [
+      {
+       "executor": "exe_01m3250vkwffc979nzjw0g2sf9",
+       "family": "claude"
+      }
+     ]
+    },
+    "effect": null,
+    "round": 2,
+    "requires": {
+     "role": null,
+     "capability": null,
+     "resources": []
+    }
+   },
+   "stopped_attempts": [
+    "att_01m3250vz2ezn81cgvbkcn17jd"
+   ],
+   "transferred_holds": [],
+   "retired_holds": [
+    {
+     "hold": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "reason": "revised"
+    }
+   ]
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a supersession transferring a hold twice",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "review_superseded",
+   "predecessor": "nod_01m3250v57ft7aehkqwq0yrq3n",
+   "replacement": {
+    "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+    "kind": "review",
+    "definition_version": "1",
+    "inputs": [
+     {
+      "name": "required",
+      "source": {
+       "type": "result",
+       "producer": "nod_01m3250vm7f6ktw39dszqnyddr",
+       "result_kind": "review_requirement"
+      }
+     }
+    ],
+    "params": {
+     "subject": "candidate",
+     "roster": [
+      {
+       "executor": "exe_01m3250vkwffc979nzjw0g2sf9",
+       "family": "claude"
+      }
+     ]
+    },
+    "effect": null,
+    "round": 2,
+    "requires": {
+     "role": null,
+     "capability": null,
+     "resources": []
+    }
+   },
+   "stopped_attempts": [
+    "att_01m3250vz2ezn81cgvbkcn17jd"
+   ],
+   "transferred_holds": [
+    "hld_01m3250vz2ezn81cgvbkcn17jd",
+    "hld_01m3250vz2ezn81cgvbkcn17jd"
+   ],
+   "retired_holds": []
+  },
+  "valid": false
+ },
+ {
+  "name": "graph-event: a supersession retiring a hold twice",
+  "schema": "records/graph-event",
+  "doc": {
+   "type": "review_superseded",
+   "predecessor": "nod_01m3250v57ft7aehkqwq0yrq3n",
+   "replacement": {
+    "id": "nod_01m3250v57fhm9v1z9xd1wk8gw",
+    "kind": "review",
+    "definition_version": "1",
+    "inputs": [
+     {
+      "name": "required",
+      "source": {
+       "type": "result",
+       "producer": "nod_01m3250vm7f6ktw39dszqnyddr",
+       "result_kind": "review_requirement"
+      }
+     }
+    ],
+    "params": {
+     "subject": "candidate",
+     "roster": [
+      {
+       "executor": "exe_01m3250vkwffc979nzjw0g2sf9",
+       "family": "claude"
+      }
+     ]
+    },
+    "effect": null,
+    "round": 2,
+    "requires": {
+     "role": null,
+     "capability": null,
+     "resources": []
+    }
+   },
+   "stopped_attempts": [
+    "att_01m3250vz2ezn81cgvbkcn17jd"
+   ],
+   "transferred_holds": [],
+   "retired_holds": [
+    {
+     "hold": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "reason": "member_removed"
+    },
+    {
+     "hold": "hld_01m3250vz2ezn81cgvbkcn17jd",
+     "reason": "member_removed"
+    }
    ]
   },
   "valid": false

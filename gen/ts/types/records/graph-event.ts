@@ -401,7 +401,7 @@ export interface HoldPaged {
   channel: null | string;
 }
 /**
- * The hold leaves the node, with its cause: its signal arrived (the hold's signal instance), or it was retired with a reason (invalidated: a retry wait of an old key; revised: an awaiting_input wait on a revision of its owed input that the successor recorded in the same command answers at a newer one). Hold transfer to a replacement is G6b's supersession, in one transaction with it.
+ * The hold leaves the node, with its cause: its signal arrived (the hold's signal instance), or it was retired with a reason (invalidated: a retry wait of an old key; revised: an awaiting_input wait on a revision of its owed input that the successor recorded in the same command answers at a newer one). A supersession transfers or retires holds in its own event (review.superseded).
  */
 export interface HoldCleared {
   type: "hold_cleared";
@@ -581,7 +581,7 @@ export interface QueueObserved {
   version: number;
 }
 /**
- * A roster change replaces a review (13 "Replacement is a recorded supersession"), in one writer transaction with the attempt stops it needs. The predecessor is superseded. The replacement keeps its round, inputs, requirements and effect, with the roster of its subject's next requirement revision, to which its review_requirement input moves; it takes the predecessor's successor slot, and its lineage includes what the predecessor asked. stopped_attempts are the attempts its caller named for the predecessor that this command stopped (attempt.stop_requested{preempt}, before this event), each listed once across supersessions; until M1 binds attempts to nodes, the list is not proven complete. Hold transfer and retirement are G6b-2: until then both lists are empty and a held review is not superseded.
+ * A roster change replaces a review (13 "Replacement is a recorded supersession"), in one writer transaction with the attempt stops it needs. The predecessor is superseded. The replacement keeps its round, inputs, requirements and effect, with the roster of its subject's next requirement revision, to which its review_requirement input moves; it takes the predecessor's successor slot, and its lineage includes what the predecessor asked. stopped_attempts are the attempts its caller named for the predecessor that this command stopped (attempt.stop_requested{preempt}, before this event), each listed once across supersessions; until M1 binds attempts to nodes, the list is not proven complete. Each of the predecessor's holds is in exactly one of transferred_holds and retired_holds, in the predecessor's order: a wait the replacement still has transfers to it with its id, since and pages; one it no longer has is retired with its reason.
  */
 export interface ReviewSuperseded {
   type: "review_superseded";
@@ -595,15 +595,23 @@ export interface ReviewSuperseded {
    */
   stopped_attempts: string[];
   /**
-   * Empty until G6b-2 defines hold transfer.
+   * The holds the replacement now holds, unchanged.
    *
-   * @maxItems 0
+   * Items: Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
    */
-  transferred_holds: [];
+  transferred_holds: string[];
   /**
-   * Empty until G6b-2 defines hold retirement.
-   *
-   * @maxItems 0
+   * The holds that leave with the predecessor, each with its reason.
    */
-  retired_holds: [];
+  retired_holds: RetiredHold[];
+}
+/**
+ * A hold a supersession retires: invalidated, a retry wait of the predecessor's key, which the replacement does not hold; member_removed, a reviewer_unavailable wait on an executor the replacement's roster drops; question_moved, an awaiting_input wait on an answer the replacement replaces or removes because its question moved to another owed input.
+ */
+export interface RetiredHold {
+  /**
+   * Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
+   */
+  hold: string;
+  reason: "invalidated" | "member_removed" | "question_moved";
 }
