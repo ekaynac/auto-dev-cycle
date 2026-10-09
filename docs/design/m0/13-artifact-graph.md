@@ -66,7 +66,8 @@ Result:                            # what was computed: immutable  [G1]
     identity's current generation counts as not completed: the resolver waits on it and a claim refuses it.
     Dependants that already claimed the old result keep their claims, which no longer commit. A review whose result a
     dependant claimed is not superseded (G6b-1, kept by G6b-2): re-pointing the dependant would release its claim, which
-    no event does yet; the merge's wait for a replacement is G7b-2's.
+    no event does yet. The one exception is a queue generation's carry_over, whose merge waits for the replacement
+    (G7b-2a).
   - **Renewal is the one exception to "a key selects once".** It applies only to a memoizable kind whose selected
     result carries a receipt. Once that receipt has passed its `valid_until`, by the event's time, `node.renewed`
     reopens the same key: the node is claimed again with no selected result, so a new attempt records and selects a
@@ -115,14 +116,17 @@ Result:                            # what was computed: immutable  [G1]
     - The requirement is recorded by a `review_requirement` node: a controller node with no inputs, whose params are
       the requirement. Its result is completed and found, and its `conclusions` are exactly those params. The subject
       is a name the template gives (e.g. `candidate`), not a tree.
-    - A review declares at most one `review_requirement` input. Its claim is refused unless the requirement's
-      subject, roster and definition version are the review's own. In G6a the input is optional. Only a review is
-      bound so: `carry_over` and `merge` consume the requirement under their own rules (G7b-2).
-    - **G7b-2 obligations**, with the cycle template:
-      - *mandatory requirement:* every review declares exactly one `review_requirement` input, enforced by the fold;
-      - *subject binding:* the requirement is the one selected for the review's subject;
-      - *commit-time re-validation:* the merge's commit re-validates against the subject's currently selected
-        requirement revision.
+    - A review declares exactly one `review_requirement` input (G7b-2a), refused otherwise when it is recorded, by
+      the builder and the fold. Its claim is refused unless the requirement's subject, roster and definition version
+      are the review's own. `carry_over` and `merge` consume the requirement under their own rules (below, "As
+      delivered (G7b-2a)").
+    - **The subject's selected revision** (G7b-2a). A subject has one selected requirement revision per task
+      (`graph_requirements`, G6b-1: only a supersession moves it); the projection also keeps the requirement node
+      that selected it, which a generation's carry_over and merge take. A requirement result **serves** a consumer only in its own task and only at its subject's selected revision
+      there. Serving is part of selection (the resolver, a claim, a reuse, a commit's or an effect intent's
+      re-validation, and the result folds), so a review is claimed only on its subject's current requirement, and a
+      roster change makes every consumer of the old revision a structural wait, or its commit or intent a refusal
+      (`stale_expected_state`). A requirement carries no receipt.
     - G6b keeps **one selected revision per subject**: a roster change selects the next revision and supersedes the
       review of the old one.
   - **Replacement is a recorded supersession.** A roster change, decided by placement (05) or by an authority action
@@ -162,8 +166,8 @@ Result:                            # what was computed: immutable  [G1]
         replays.
       - **One selected requirement revision per subject**, in a task. The first selection sets it, a selection of any
         other revision is refused, and only a supersession moves it, to the next revision. A review is claimed only on
-        a requirement of its own task, at its subject's current revision there. A roster change of a review that
-        declares no requirement input is a new review, not a supersession, until G7b-2 makes the input mandatory.
+        a requirement of its own task, at its subject's current revision there. Since G7b-2a every review declares
+        its requirement input, so every roster change of a review is a supersession.
       - **Lineage follows supersession.** A replacement's lineage includes what the review it replaced asked, so
         `requested_by` does not move.
       - **The caller names the attempts** until M1 binds attempts to nodes. The fold requires each attempt the event
@@ -172,8 +176,9 @@ Result:                            # what was computed: immutable  [G1]
         complete nor that the listed attempts are the predecessor's. An unlisted running attempt is safe, as nothing
         selects its result for the predecessor or the replacement, but it holds its capacity until it ends.
       - **Dependants.** A review whose selected result another node's claim took is not superseded: the dependant's
-        claim could no longer commit. G6b-2 keeps this refusal (below); the merge's wait for the replacement review is
-        G7b-2's. A dependant not yet claimed waits structurally.
+        claim could no longer commit. G6b-2 keeps this refusal (below). The exception is a queue generation's carry_over
+        (G7b-2a): the review it carried is superseded, and its merge waits for the replacement review, since the
+        merge's requirement no longer serves. A dependant not yet claimed waits structurally.
       - A review bound by reuse, or whose key another review reuses, is not superseded either.
     - *As delivered (G6b-2):*
       - **Holds move in the supersession event.** Each of the predecessor's holds is in exactly one of
@@ -216,8 +221,8 @@ Result:                            # what was computed: immutable  [G1]
         through `answers()`. The `node.reused` fold reads no authority, so a raw reuse is not refused on its answers
         until M1 records approvals and owed inputs (contract fixture `reuse-displaced-question`).
       - **Dependants stay refused.** Re-pointing a dependant that claimed the superseded result would release its
-        claim, and no event releases a claim except a reuse release. G6b-2 keeps G6b-1's refusal; G7b-2 makes the
-        merge wait for the replacement, and any other claimed dependant keeps the review unsuperseded in M0.
+        claim, and no event releases a claim except a reuse release. G6b-2 keeps G6b-1's refusal for every dependant
+        but a queue generation's carry_over (G7b-2a), whose merge waits for the replacement.
       - **Successors are unchanged.** A successor still needs its predecessor to hold nothing but the answer waits it
         clears or retires as `revised` ("Successor rounds"); holds transfer only to a replacement.
   - **Nothing reuses a review across rosters.** A review need not run because a prior review ran on a result that the
@@ -477,7 +482,8 @@ The merge queue is serialized per project and base branch. Each attempt to merge
 If the base moves before the merge commits, the CAS fails, and a **new generation** starts from the new base. The old
 generation's results remain as history.
 
-As delivered (G7b-1; the refreshed receipts and the merge are G7b-2):
+As delivered (G7b-1; the requirement, the merge node and its re-validation are G7b-2a; the refreshed receipts, the
+verdict and the merge's compare-and-set are G7b-2b):
 - **Each attempt to merge a candidate result onto a base head is a generation.** Generations are numbered per task
   and branch, from 1. The `rebase` node pins its generation in its params `{branch, base, version, candidate,
   generation}`: the base head, the forge's version of the branch when that head was observed (it rises with every
@@ -527,6 +533,30 @@ As delivered (G7b-1; the refreshed receipts and the merge are G7b-2):
   result (the controller's own rebase, run where it leases its sandbox): the graph checks their shape and types and
   compares their identities, but does not recompute the rebase. Recomputing it, or attesting it by a receipt, is
   M1's with the sandbox runtime.
+
+As delivered (G7b-2a):
+- **The carry_over takes the subject's selected requirement.** The template gives a generation's `carry_over` a
+  `requirement` input on the node of the review's subject's selected revision (a generation needs one), held to its
+  role (a `review_requirement` node's result). It attests only when, besides G7b-1's rules, the carried review's
+  claim took that same requirement result: a review made under another revision gets
+  `found/review_input_changed`, the demand for the replacement review.
+- **A reused review carries over.** A declared review producer bound by reuse gives its holder's result; the fold
+  accepts it when the producer is completed on that result, at its key, among the key's reusers, and reads the
+  holder's claim (what the review took).
+- **The merge node.** The template records one `merge` per generation: effect `merge`, params `{target, base,
+  generation}` (the branch, and the generation's base and number), inputs `carry_over` (its attestation) and
+  `requirement` (the carry_over's own requirement node). The fold admits only that: a second merge, another base,
+  another requirement or other inputs are refused. Its effect's want is the attestation's tree; the requirement is a
+  precondition, never held by the target.
+- **The merge waits.** A carry_over serves a merge only by its attestation; a demand for a delta or replacement
+  review is a structural wait. The merge's requirement serves only at the subject's selected revision, so a roster
+  change after carry-over was selected leaves an unclaimed merge waiting and refuses a claimed merge's intent
+  (Operate re-validates, `stale_expected_state`); nothing is pushed. The roster change is G6b-1's supersession of
+  the carried review, which a carry_over's claim does not block: the superseded review serves no later carry_over,
+  and a later generation, whose carry_over takes the new revision, attests only the replacement review.
+- **Not yet (G7b-2b).** The merge consumes the review's verdict, the refreshed gate, runtime and evidence receipts of
+  the prospective tree, and lands by compare-and-set on the generation's base; a requirement change starts a
+  generation of its own.
 
 ## Source tests, package, runtime verification [G8]
 

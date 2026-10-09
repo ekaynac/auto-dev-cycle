@@ -8,8 +8,10 @@ package graph
 //   - A queue generation is the nodes that try to merge one candidate
 //     result onto one base head of one branch: each attempt is one (G7b-1b).
 //     Its rebase node pins {branch, base, version, candidate, generation};
-//     its carry_over node takes the rebase's tree. G7b-2 adds the refreshed
-//     receipts and the merge.
+//     its carry_over node takes the rebase's tree and the review subject's
+//     selected requirement; its one merge node takes the carry_over's
+//     attestation and that requirement (G7b-2a). G7b-2b adds the refreshed
+//     receipts, the verdict and the merge's compare-and-set.
 //   - Generations are numbered per task and branch, from 1. The node.recorded
 //     fold admits a rebase node only as the next generation, for the
 //     candidate's selected result, on an observation no older than the
@@ -24,8 +26,9 @@ package graph
 //     are typed. A patch's identity is its one ref's content digest.
 //   - carryDecision is the one function of a carry_over's claimed inputs:
 //     an attestation holding the prospective tree only when the carried
-//     review took the candidate's patch, the rebase is clean and the rebased
-//     patch has the candidate's identity; else the demand for a delta review
+//     review took the candidate's patch under the carry_over's requirement,
+//     the rebase is clean and the rebased patch has the candidate's
+//     identity; else the demand for a delta or replacement review
 //     (found/review_input_changed). CarryOver applies it, and the result fold
 //     refuses any other outcome, reason or value; Commit refuses carry_over.
 //   - The generation's candidate result is pinned through execution: the
@@ -34,7 +37,11 @@ package graph
 //     reselected after the generation was recorded is a new generation's.
 //     Its inputs hold their roles (roleInput): the candidate a patch, the
 //     rebase the required rebase node's tree, the review a review node's
-//     review.
+//     review (a reused review's holder's), the requirement a requirement's.
+//   - The merge waits on a roster change: its requirement serves only at the
+//     subject's selected revision and a carry_over only by its attestation
+//     (serves, requirement.go), so Operate's re-validation refuses its
+//     intent and an unclaimed merge waits.
 //   - Effect-node completion: CompleteEffect records and selects an effect
 //     node's result once its operation's effect is completed, holding the
 //     input ref the effect applied. Its inputs were re-validated at the
@@ -90,6 +97,15 @@ type Generation struct {
 	Candidate types.ResultID `json:"candidate"`
 	Rebase    types.NodeID   `json:"rebase"`
 	CarryOver types.NodeID   `json:"carry_over"`
+	Merge     types.NodeID   `json:"merge"`
+}
+
+// mergeParams are a merge node's params: the branch it merges onto (its
+// effect's target), and its generation with the base head it pins.
+type mergeParams struct {
+	Target     string `json:"target"`
+	Base       string `json:"base"`
+	Generation int64  `json:"generation"`
 }
 
 // ErrStaleObservation: an observation older than the queue's latest, or
@@ -148,6 +164,9 @@ func generationKey(task types.TaskID, branch string) string { return string(task
 func generationRecorded(tx *eventstore.Tx, p *types.NodeRecorded) error {
 	if p.Node.Kind == types.NodeKindCarryOver {
 		return carryRecorded(tx, p)
+	}
+	if p.Node.Kind == types.NodeKindMerge {
+		return mergeRecorded(tx, p)
 	}
 	if p.Node.Kind != types.NodeKindRebase {
 		return nil
@@ -232,6 +251,40 @@ func carryRecorded(tx *eventstore.Tx, p *types.NodeRecorded) error {
 	return put(tx, GenerationProjection, key, cur)
 }
 
+// mergeInputs: n takes exactly a carry_over's attestation and a review
+// requirement, by those names.
+func mergeInputs(n types.Node) bool {
+	want := map[types.Name]types.ResultKind{"carry_over": types.ResultKindCarryOverAttestation, "requirement": types.ResultKindReviewRequirement}
+	seen := map[types.Name]bool{}
+	for _, in := range n.Inputs {
+		src, ok := in.Source.Variant.(*types.ResultSource)
+		if !ok || want[in.Name] != src.ResultKind || seen[in.Name] {
+			return false
+		}
+		seen[in.Name] = true
+	}
+	return len(seen) == len(want)
+}
+
+// mergeRecorded admits one merge node per generation, only on its current
+// generation's carry_over, at that generation's number and base, taking
+// the requirement its carry_over takes, and keeps it in that generation.
+func mergeRecorded(tx *eventstore.Tx, p *types.NodeRecorded) error {
+	var mp mergeParams
+	if err := contract.UnmarshalStrict(p.Node.Params, &mp); err != nil || !mergeInputs(p.Node) {
+		return errors.Join(err, errors.New("a merge node's params are its target, base and generation; it takes a carry_over and a review requirement"))
+	}
+	key := generationKey(p.Task, mp.Target)
+	cur, ok, err := load[Generation](tx, GenerationProjection, key)
+	co, cerr := loadNode(tx, cur.CarryOver)
+	if err = errors.Join(err, cerr); err != nil || !ok || cur.Merge != "" || producerOf(p.Node, "carry_over") != cur.CarryOver || mp.Base != cur.Base ||
+		mp.Generation != cur.Number || producerOf(p.Node, "requirement") != producerOf(co.Recorded.Node, "requirement") {
+		return errors.Join(err, errors.New("a generation's one merge takes its current carry_over and that carry_over's requirement, at its base"))
+	}
+	cur.Merge = p.Node.ID
+	return put(tx, GenerationProjection, key, cur)
+}
+
 // Generate is the events recording spec's next generation on obs, the
 // base head observed on the forge, and that generation: each attempt to
 // merge a candidate result onto a base head is one. It records none when
@@ -244,6 +297,12 @@ func Generate(tx *eventstore.Tx, spec QueueSpec, obs Observation) ([]eventstore.
 	cand, err := loadNode(tx, spec.Candidate)
 	if err != nil || cand.State.Result == nil {
 		return nil, Generation{}, errors.Join(err, fmt.Errorf("graph: the candidate %s has no selected result", spec.Candidate))
+	}
+	review, err := loadNode(tx, spec.Review)
+	_, subject, serr := rosterOf(review.Recorded.Node)
+	required, rerr := selectedRequirement(tx, spec.Task, subject)
+	if err = errors.Join(err, serr, rerr); err != nil {
+		return nil, Generation{}, err
 	}
 	key := generationKey(spec.Task, spec.Branch)
 	last, seen, err := load[Observation](tx, ObservedProjection, key)
@@ -260,12 +319,14 @@ func Generate(tx *eventstore.Tx, spec QueueSpec, obs Observation) ([]eventstore.
 	}
 	g := Generation{Number: cur.Number + 1, Base: obs.Head, Version: obs.Version, Candidate: *cand.State.Result}
 	params, err := json.Marshal(rebaseParams{Branch: spec.Branch, Base: obs.Head, Version: obs.Version, Candidate: g.Candidate, Generation: g.Number})
+	mparams, merr := json.Marshal(mergeParams{Target: spec.Branch, Base: obs.Head, Generation: g.Number})
 	rb, rerr := ids.New("nod")
 	co, cerr := ids.New("nod")
-	if err = errors.Join(err, rerr, cerr); err != nil {
+	mg, gerr := ids.New("nod")
+	if err = errors.Join(err, merr, rerr, cerr, gerr); err != nil {
 		return nil, Generation{}, err
 	}
-	g.Rebase, g.CarryOver = types.NodeID(rb), types.NodeID(co)
+	g.Rebase, g.CarryOver, g.Merge = types.NodeID(rb), types.NodeID(co), types.NodeID(mg)
 	input := func(name string, producer types.NodeID, kind types.ResultKind) types.InputSpec {
 		return types.InputSpec{Name: name, Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: producer, ResultKind: kind}}}
 	}
@@ -274,10 +335,15 @@ func Generate(tx *eventstore.Tx, spec QueueSpec, obs Observation) ([]eventstore.
 			Params: params, Inputs: inputs, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}}
 	}
 	candidate := input("candidate", spec.Candidate, types.ResultKindPatch)
+	requirement := input("requirement", required.Node, types.ResultKindReviewRequirement)
+	merge := node(g.Merge, types.NodeKindMerge, mparams, input("carry_over", g.CarryOver, types.ResultKindCarryOverAttestation), requirement)
+	effect := types.Name("merge")
+	merge.Node.Effect = &effect
 	for _, n := range []types.NodeRecorded{
 		node(g.Rebase, types.NodeKindRebase, params, candidate),
 		node(g.CarryOver, types.NodeKindCarryOver, json.RawMessage(`{}`), input("review", spec.Review, types.ResultKindReview), candidate,
-			input("rebase", g.Rebase, types.ResultKindTree)),
+			input("rebase", g.Rebase, types.ResultKindTree), requirement),
+		merge,
 	} {
 		ev, err := Record(n)
 		if err != nil {
@@ -310,19 +376,34 @@ func rebaseShape(cand, rb types.Result) (clean bool, err error) {
 	return clean, nil
 }
 
+// carried is what a carry_over's claim fixed: the candidate's patch
+// result, the rebase's result, the result the carried review's claim took
+// from the candidate's producer (nil: none), and whether that claim took
+// the carry_over's requirement.
+type carried struct {
+	cand, rb types.Result
+	reviewed *types.Result
+	required bool
+}
+
 // carryDecision is what a carry_over records, from what its claim fixed:
 // an attestation holding the prospective tree only when the carried review
-// took the candidate's patch, the rebase is clean and its rebased patch has
-// that patch's identity; otherwise the demand for a delta review.
-func carryDecision(cand, rb types.Result, reviewed *types.Result) (carryOutcome, error) {
+// took the candidate's patch under the carry_over's requirement (the
+// subject's selected revision), the rebase is clean and its rebased patch
+// has that patch's identity; otherwise the demand for a delta review, or
+// for the replacement review after a roster change.
+func carryDecision(c carried) (carryOutcome, error) {
+	cand, rb, reviewed := c.cand, c.rb, c.reviewed
 	clean, err := rebaseShape(cand, rb)
 	if err != nil {
 		return carryOutcome{}, err
 	}
-	why := ""
+	why, demand := "", "a delta review"
 	switch {
 	case reviewed == nil || len(reviewed.Value) != 1 || reviewed.Value[0].ContentDigest != cand.Value[0].ContentDigest:
 		why = "the carried review is not of the candidate's patch"
+	case !c.required:
+		why, demand = "the carried review was not made under the selected requirement revision", "the replacement review"
 	case rb.Value[1].ContentDigest != cand.Value[0].ContentDigest && !mutation.Is(mutation.CarryOverIgnoresPatch):
 		why = "the rebased patch is not the reviewed one"
 	case !clean:
@@ -330,7 +411,7 @@ func carryDecision(cand, rb types.Result, reviewed *types.Result) (carryOutcome,
 	default:
 		return carryOutcome{types.OutcomeEmpty, vocab.ReasonCompletedClean, "", []types.Ref{rb.Value[0]}}, nil
 	}
-	return carryOutcome{types.OutcomeFound, vocab.ReasonReviewInputChanged, why + ": a delta review is demanded", []types.Ref{}}, nil
+	return carryOutcome{types.OutcomeFound, vocab.ReasonReviewInputChanged, why + ": " + demand + " is demanded", []types.Ref{}}, nil
 }
 
 // inputResult is the recorded result a claim fixed for input name.
@@ -347,49 +428,79 @@ func inputResult(tx *eventstore.Tx, c claim, name string) (types.ResultRecorded,
 // ("": any). A carry_over's inputs are declared by whoever records it, and
 // selection checks only the kind declared, so the fold holds each input to
 // its role: the candidate a patch, the rebase the required rebase node's
-// tree, the review a review node's review.
+// tree, the review a review node's review, the requirement a
+// review_requirement node's. A declared producer bound by reuse gives its
+// holder's result (reused): the holder recorded it, and its claim is the
+// one read.
 func roleInput(tx *eventstore.Tx, c claim, rec nodeRecord, name string, rk types.ResultKind, nk types.NodeKind) (types.ResultRecorded, error) {
 	r, err := inputResult(tx, c, name)
 	if err != nil {
 		return r, err
 	}
 	producer, err := loadNode(tx, r.Node)
-	if err == nil && (r.Result.Kind != rk || r.Node != producerOf(rec.Recorded.Node, name) || nk != "" && producer.Recorded.Node.Kind != nk) {
+	declared := producerOf(rec.Recorded.Node, name)
+	if err == nil && r.Node != declared {
+		err = reusedFrom(tx, declared, r)
+	}
+	if err == nil && (r.Result.Kind != rk || nk != "" && producer.Recorded.Node.Kind != nk) {
 		err = fmt.Errorf("graph: a carry_over's %s is a %s result of its %s producer, not a %s result of a %s node", name, rk, map[bool]types.NodeKind{true: nk, false: "declared"}[nk != ""], r.Result.Kind, producer.Recorded.Node.Kind)
 	}
 	return r, err
 }
 
-// carryInputs are what rec's claim fixed, from the log: the candidate's
-// patch result, the rebase's result, and the result the carried review's
-// claim took from the candidate's producer (nil: none).
-func carryInputs(tx *eventstore.Tx, rec nodeRecord) (cand, rb types.Result, reviewed *types.Result, err error) {
+// reusedFrom: declared, a producer bound by reuse (G4a), gives r, its
+// holder's selected result: it is completed on r, of the key r answers,
+// among that key's reusers in its task.
+func reusedFrom(tx *eventstore.Tx, declared types.NodeID, r types.ResultRecorded) error {
+	d, err := loadNode(tx, declared)
+	if err != nil || d.State.Result == nil || *d.State.Result != r.Result.ID || d.State.Key == nil || d.State.Key.Key != r.Result.Computation {
+		return errors.Join(err, fmt.Errorf("graph: %s does not give %s's result %s", declared, r.Node, r.Result.ID))
+	}
+	reusers, _, err := load[[]types.NodeID](tx, ReuseProjection, keyIndex(d.Recorded.Task, d.State.Key.Key))
+	if err == nil && !slices.Contains(reusers, declared) {
+		err = fmt.Errorf("graph: %s is not bound by reuse to %s's key", declared, r.Node)
+	}
+	return err
+}
+
+// carryInputs are what rec's claim fixed, from the log (carried). The
+// carried review's claim is its result holder's: the review itself, or the
+// node whose key a reused review is bound to.
+func carryInputs(tx *eventstore.Tx, rec nodeRecord) (out carried, err error) {
 	c, ok, err := load[claim](tx, ClaimProjection, string(rec.Recorded.Node.ID))
 	if err != nil || !ok || rec.Recorded.Node.Kind != types.NodeKindCarryOver {
-		return cand, rb, nil, errors.Join(err, fmt.Errorf("graph: %s is not a claimed carry_over node", rec.Recorded.Node.ID))
+		return out, errors.Join(err, fmt.Errorf("graph: %s is not a claimed carry_over node", rec.Recorded.Node.ID))
 	}
 	cr, err := roleInput(tx, c, rec, "candidate", types.ResultKindPatch, "")
 	rr, rerr := roleInput(tx, c, rec, "rebase", types.ResultKindTree, types.NodeKindRebase)
 	vr, verr := roleInput(tx, c, rec, "review", types.ResultKindReview, types.NodeKindReview)
+	qr, qerr := roleInput(tx, c, rec, "requirement", types.ResultKindReviewRequirement, types.NodeKindReviewRequirement)
 	review, nerr := loadNode(tx, vr.Node)
 	rc, _, cerr := load[claim](tx, ClaimProjection, string(vr.Node))
-	if err = errors.Join(err, rerr, verr, nerr, cerr); err != nil {
-		return cand, rb, nil, err
+	if err = errors.Join(err, rerr, verr, qerr, nerr, cerr); err != nil {
+		return out, err
 	}
 	rbn, err := loadNode(tx, rr.Node)
 	if err = errors.Join(err, pinnedCandidate(rbn, cr.Result.ID)); err != nil {
-		return cand, rb, nil, err
+		return out, err
 	}
+	out.cand, out.rb = cr.Result, rr.Result
 	for _, in := range review.Recorded.Node.Inputs {
-		if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.Producer == producerOf(rec.Recorded.Node, "candidate") {
-			r, err := inputResult(tx, rc, in.Name)
-			if err != nil {
-				return cand, rb, nil, err
-			}
-			reviewed = &r.Result
+		src, ok := in.Source.Variant.(*types.ResultSource)
+		if !ok || src.Producer != producerOf(rec.Recorded.Node, "candidate") && src.ResultKind != types.ResultKindReviewRequirement {
+			continue
+		}
+		r, err := inputResult(tx, rc, in.Name)
+		if err != nil {
+			return out, err
+		}
+		if src.ResultKind == types.ResultKindReviewRequirement {
+			out.required = r.Result.ID == qr.Result.ID
+		} else {
+			out.reviewed = &r.Result
 		}
 	}
-	return cr.Result, rr.Result, reviewed, nil
+	return out, nil
 }
 
 // CarryOver commits the result of node, a claimed carry_over node, from
@@ -399,11 +510,11 @@ func CarryOver(tx *eventstore.Tx, node types.NodeID, env Env) (types.Result, err
 	if err != nil {
 		return types.Result{}, err
 	}
-	cand, rb, reviewed, err := carryInputs(tx, rec)
+	in, err := carryInputs(tx, rec)
 	if err != nil {
 		return types.Result{}, err
 	}
-	d, err := carryDecision(cand, rb, reviewed)
+	d, err := carryDecision(in)
 	id, ierr := ids.New("res")
 	if err = errors.Join(err, ierr); err != nil {
 		return types.Result{}, err
@@ -458,8 +569,8 @@ func resultSemantics(tx *eventstore.Tx, rec nodeRecord, r types.Result) error {
 		}
 		return err
 	case rec.Recorded.Node.Kind == types.NodeKindCarryOver:
-		cand, rb, reviewed, err := carryInputs(tx, rec)
-		d, derr := carryDecision(cand, rb, reviewed)
+		in, err := carryInputs(tx, rec)
+		d, derr := carryDecision(in)
 		if err = errors.Join(err, derr); err == nil && (r.Outcome != d.Outcome || r.Reason != d.Reason || !sameRefs(r.Value, d.Value)) {
 			err = fmt.Errorf("the carry_over records %s/%s, not its inputs' %s/%s", r.Outcome, r.Reason.String(), d.Outcome, d.Reason.String())
 		}

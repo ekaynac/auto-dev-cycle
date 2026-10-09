@@ -248,7 +248,7 @@ func selected(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultSelected) e
 		return errors.Join(err, errors.New("a renewed node selects only a result recorded after its renewal"))
 	}
 	if r.Result.Kind == types.ResultKindReviewRequirement { // one selected revision per subject (supersede.go)
-		if err := selectRevision(tx, rec.Recorded.Task, rec.Recorded.Node.Params, false); err != nil {
+		if err := selectRevision(tx, rec.Recorded.Task, rec.Recorded.Node.ID, rec.Recorded.Node.Params, false); err != nil {
 			return err
 		}
 	}

@@ -15,8 +15,9 @@ package graph
 //     checks only the roster's shape: a raw node.claimed is outside the
 //     guarantee, and M1's dispatch re-checks the registry.
 //   - A review_requirement node has no inputs; its result's conclusions are
-//     its params. A review's optional requirement input binds its subject,
-//     roster and definition version (mandatory in G7b-2).
+//     its params. A review declares exactly one requirement input (G7b-2),
+//     which binds its subject, roster and definition version, at the
+//     subject's selected revision in its task (requirement.go).
 //   - ReviewReusable reuses only when the review's key, its other inputs
 //     resolved now, is the prior's claimed key, with the same inputs.
 
@@ -139,7 +140,7 @@ func checkRoster(roster []types.RosterMember) error {
 
 // checkReview holds a review or review_requirement node to what its params
 // schema cannot say: its roster's shape; a requirement node has no inputs;
-// a review declares at most one review_requirement input.
+// a review declares exactly one review_requirement input (G7b-2).
 func checkReview(n types.Node) error {
 	roster, _, err := rosterOf(n)
 	if err != nil || roster == nil {
@@ -151,8 +152,8 @@ func checkReview(n types.Node) error {
 	if n.Kind == types.NodeKindReviewRequirement && len(n.Inputs) != 0 {
 		return errors.New("graph: a review_requirement node has no inputs")
 	}
-	if len(requirementInputs(n)) > 1 {
-		return errors.New("graph: a review declares one review_requirement input at most")
+	if n.Kind == types.NodeKindReview && len(requirementInputs(n)) != 1 {
+		return errors.New("graph: a review declares exactly one review_requirement input")
 	}
 	return nil
 }
@@ -202,7 +203,7 @@ func recordsRequirement(rec nodeRecord, r types.Result) error {
 // review is bound.
 func bindsRequirement(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved) error {
 	if rec.Recorded.Node.Kind != types.NodeKindReview {
-		return nil // carry_over and merge get their own rules (G7b-2)
+		return nil // carry_over and merge consume it under their own rules (queue.go)
 	}
 	for _, name := range requirementInputs(rec.Recorded.Node) {
 		r, _, err := load[types.ResultRecorded](tx, ResultProjection, string(resolved[name].Result))
@@ -224,12 +225,25 @@ func bindsRequirement(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Res
 	return nil
 }
 
+// unbound are inputs with each review requirement's producer left out:
+// two reviews of other requirements declare the same inputs otherwise.
+func unbound(inputs []types.InputSpec) []types.InputSpec {
+	out := slices.Clone(inputs)
+	for i, in := range out {
+		if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
+			out[i].Source.Variant = &types.ResultSource{Type: src.Type, ResultKind: src.ResultKind}
+		}
+	}
+	return out
+}
+
 // ReviewReusable reports whether review need not run: prior declares the
 // same inputs and ran on used for input name; review's other inputs,
 // resolved now as a claim would (answers through env.Authority, then
 // Resolve: selected, applicable and fresh results), with name at used, key
 // to prior's claimed key at its generation; and fresh, name's producer's
-// selected result now, is Equivalent to used for prior.
+// selected result now, is Equivalent to used for prior. A review of
+// another requirement (a roster change) is not reusable.
 func ReviewReusable(tx *eventstore.Tx, prior, review types.NodeID, name types.Name, used, fresh types.ResultID, env Env) (bool, error) {
 	was, err := loadNode(tx, prior)
 	rec, rerr := loadNode(tx, review)
@@ -237,12 +251,14 @@ func ReviewReusable(tx *eventstore.Tx, prior, review types.NodeID, name types.Na
 	if err = errors.Join(err, rerr, cerr); err != nil || !claimed {
 		return false, errors.Join(err, fmt.Errorf("graph: %s never ran", prior))
 	}
-	if !reflect.DeepEqual(was.Recorded.Node.Inputs, rec.Recorded.Node.Inputs) {
+	if !reflect.DeepEqual(unbound(was.Recorded.Node.Inputs), unbound(rec.Recorded.Node.Inputs)) {
 		return false, fmt.Errorf("graph: %s and %s declare other inputs", prior, review)
 	}
+	// Another requirement (a roster change) is another key: never reused.
 	n := rec.Recorded.Node
-	if mutation.Is(mutation.EquivalenceIgnoresRoster) {
-		n.Params = was.Recorded.Node.Params
+	ignored := mutation.Is(mutation.EquivalenceIgnoresRoster)
+	if ignored {
+		n.Params, n.Inputs = was.Recorded.Node.Params, was.Recorded.Node.Inputs
 	}
 	if tx.Now().IsZero() {
 		return false, errors.New("graph: reuse is decided at a writer transaction's time")
@@ -259,6 +275,11 @@ func ReviewReusable(tx *eventstore.Tx, prior, review types.NodeID, name types.Na
 	}
 	// name's result is used's: Equivalent holds prior's claim to it.
 	resolved[string(name)] = Resolved{Result: used}
+	for _, q := range requirementInputs(n) {
+		if ignored { // the prior's requirement, whatever the review's
+			resolved[string(q)] = resolutions(c.Inputs)[string(q)]
+		}
+	}
 	if k, err := Key(n, resolved, c.Key.Generation); err != nil || k != c.Key {
 		return false, err
 	}

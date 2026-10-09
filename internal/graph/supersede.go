@@ -61,8 +61,8 @@ package graph
 //     but holds its capacity until it ends.
 //   - A review whose result a dependant claimed is not superseded. G6b-2
 //     keeps this refusal: re-pointing a claimed dependant would release its
-//     claim, which no event does yet; the merge's wait for the replacement
-//     is G7b-2's.
+//     claim, which no event does yet. A queue generation's carry_over is the
+//     exception (G7b-2a): its merge waits for the replacement.
 
 import (
 	"encoding/json"
@@ -107,16 +107,18 @@ func superseded(rec nodeRecord) error {
 }
 
 // revision is a subject's selected requirement revision in a task, with
-// its requirement's params digest.
+// its requirement's params digest and the node that last selected it (a
+// generation's carry_over and merge take it, G7b-2a).
 type revision struct {
 	Revision int64        `json:"revision"`
 	Params   types.Digest `json:"params"`
+	Node     types.NodeID `json:"node,omitempty"`
 }
 
-// selectRevision makes req, the params of a review_requirement node of
-// task, its subject's selected revision: the first, the current one again,
-// or, by a supersession (next), the next one.
-func selectRevision(tx *eventstore.Tx, task types.TaskID, req json.RawMessage, next bool) error {
+// selectRevision makes req, the params of node, a review_requirement node
+// of task, its subject's selected revision: the first, the current one
+// again, or, by a supersession (next), the next one.
+func selectRevision(tx *eventstore.Tx, task types.TaskID, node types.NodeID, req json.RawMessage, next bool) error {
 	var r types.ReviewRequirement
 	d, err := ParamsDigest(req)
 	if err = errors.Join(err, json.Unmarshal(req, &r)); err != nil {
@@ -132,7 +134,7 @@ func selectRevision(tx *eventstore.Tx, task types.TaskID, req json.RawMessage, n
 	case ok && cur.Revision != r.Revision && (!next || r.Revision != cur.Revision+1):
 		return fmt.Errorf("%s is at requirement revision %d: only a supersession moves it", r.Subject, cur.Revision)
 	}
-	return put(tx, RequirementProjection, index, revision{r.Revision, d})
+	return put(tx, RequirementProjection, index, revision{r.Revision, d, node})
 }
 
 // currentRevision: req, the params of the requirement node, is of task and
@@ -344,7 +346,7 @@ func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuper
 	if err != nil {
 		return err
 	}
-	if err := selectRevision(tx, rec.Recorded.Task, requirement.Recorded.Node.Params, true); err != nil {
+	if err := selectRevision(tx, rec.Recorded.Task, requirement.Recorded.Node.ID, requirement.Recorded.Node.Params, true); err != nil {
 		return err
 	}
 	if _, forked, err := load[types.NodeID](tx, SuccessorProjection, string(p.Predecessor)); err != nil || forked && !mutation.Is(mutation.SupersedeTwice) {
@@ -403,7 +405,10 @@ func unshared(tx *eventstore.Tx, rec nodeRecord) error {
 	return nil
 }
 
-// unclaimed: no other node's claim took rec's selected result.
+// unclaimed: no other node's claim took rec's selected result, but a queue
+// generation's carry_over: its merge consumes the review's requirement at
+// the subject's selected revision (serves), so it waits for the
+// replacement (G7b-2a).
 func unclaimed(tx *eventstore.Tx, rec nodeRecord) error {
 	if rec.State.Result == nil {
 		return nil
@@ -411,7 +416,8 @@ func unclaimed(tx *eventstore.Tx, rec nodeRecord) error {
 	nodes, err := tx.Keys(ClaimProjection, "")
 	for _, n := range nodes {
 		c, _, cerr := load[claim](tx, ClaimProjection, n)
-		if err = errors.Join(err, cerr); err == nil && n != string(rec.Recorded.Node.ID) && slices.ContainsFunc(c.Inputs, func(in types.ClaimedInput) bool {
+		claimant, lerr := loadNode(tx, types.NodeID(n))
+		if err = errors.Join(err, cerr, lerr); err == nil && n != string(rec.Recorded.Node.ID) && claimant.Recorded.Node.Kind != types.NodeKindCarryOver && slices.ContainsFunc(c.Inputs, func(in types.ClaimedInput) bool {
 			return in.Result != nil && *in.Result == *rec.State.Result
 		}) {
 			return fmt.Errorf("%s claimed the review's result: re-pointing a dependant is G6b-2's and G7b-2's", n)

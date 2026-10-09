@@ -78,7 +78,7 @@ func TestSuccessor(t *testing.T) {
 	pred, succ := g.recordOf(review), g.recordOf(next)
 	if succ.Node.Round != 2 || *succ.Predecessor != review || succ.Node.Kind != pred.Node.Kind || string(succ.Node.Params) != string(pred.Node.Params) ||
 		succ.Node.DefinitionVersion != pred.Node.DefinitionVersion || !reflect.DeepEqual(succ.Node.Requires, pred.Node.Requires) || succ.Node.Effect != pred.Node.Effect ||
-		len(succ.Node.Inputs) != 2 || !reflect.DeepEqual(succ.Node.Inputs[0], pred.Node.Inputs[0]) || succ.Node.Inputs[1].Name != "ruling" {
+		len(succ.Node.Inputs) != 3 || !reflect.DeepEqual(succ.Node.Inputs[:2], pred.Node.Inputs) || succ.Node.Inputs[2].Name != "ruling" {
 		t.Fatalf("the successor: %+v", succ)
 	}
 	if _, err := g.successor(review, g.planInput("repair")); err == nil || !strings.Contains(err.Error(), "has a successor") {
@@ -86,7 +86,7 @@ func TestSuccessor(t *testing.T) {
 	}
 	env := g.env(gatesOn(treeA, demandA))
 	g.must(evaluate(env, review, next))
-	if *g.state(review).Key == *g.state(next).Key || len(g.claimed(review).Inputs) != 1 {
+	if *g.state(review).Key == *g.state(next).Key || len(g.claimed(review).Inputs) != 2 {
 		t.Fatal("the answer did not re-key the successor, or reached the review that asked")
 	}
 	third, err := g.successor(next, g.planInput("repair")) // an inherited answer, given
@@ -98,7 +98,7 @@ func TestSuccessor(t *testing.T) {
 	g.must(owedAnswer(ownID, func(a *owedanswers.Answer) { a.Revision, a.Approval = 3, ptr(types.ApprovalID(aprC)) }))
 	newer := types.InputSpec{Name: "ruling", Source: types.InputSpecSource{Variant: &types.AnswerSource{Type: "answer", OwedInput: ownID, Revision: 3}}}
 	fourth, err := g.successor(third, newer)
-	if err != nil || !reflect.DeepEqual(g.recordOf(fourth).Node.Inputs[1], newer) {
+	if err != nil || !reflect.DeepEqual(g.recordOf(fourth).Node.Inputs[2], newer) {
 		t.Fatalf("a newer revision: %v", err)
 	}
 	g.must(evaluate(env, fourth))
@@ -117,7 +117,7 @@ func TestSuccessor(t *testing.T) {
 	older := g.recordOf(fourth)
 	older.Node.ID, older.Node.Round, older.Predecessor = g.newNode(types.NodeKindReview).Node.ID, older.Node.Round+1, &fourth
 	older.Node.Inputs = slices.Clone(older.Node.Inputs)
-	older.Node.Inputs[1] = owes("ruling", ownID) // revision 2
+	older.Node.Inputs[2] = owes("ruling", ownID) // revision 2
 	if err := g.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(older) }); err == nil {
 		t.Error("an inherited answer moved back to an older revision")
 	}
@@ -149,7 +149,7 @@ func TestSuccessorLineage(t *testing.T) {
 		"another definition version":   refused(recordSuccessor(func(n *types.Node) { n.DefinitionVersion = "2" })),
 		"other params":                 refused(recordSuccessor(func(n *types.Node) { n.Params = reviewParams(exeB) })),
 		"other requirements":           refused(recordSuccessor(func(n *types.Node) { n.Requires.Resources = []types.ResourceGroupKind{"evidence_target"} })),
-		"inputs not the predecessor's": refused(recordSuccessor(func(n *types.Node) { n.Inputs = []types.InputSpec{} })),
+		"inputs not the predecessor's": refused(recordSuccessor(func(n *types.Node) { n.Inputs = n.Inputs[1:] })),
 	} {
 		if err == nil || !strings.Contains(err.Error(), "graph: event") {
 			t.Errorf("%s: %v", name, err)
@@ -298,7 +298,7 @@ func TestEquivalent(t *testing.T) {
 	carry.Node.Inputs[0].Source.Variant.(*types.ResultSource).Producer = gate
 	carried := g.record(carry)
 	pendingNode := g.nodeOn(types.NodeKindReview, gate)
-	pendingNode.Node.Params, pendingNode.Node.Inputs[0].Name = reviewParams(exeB), "gate"
+	pendingNode.Node.Params, pendingNode.Node.Inputs[0].Name = reviewOf(types.Name(pendingNode.Node.ID), exeB), "gate"
 	pendingNode.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = types.ResultKindGateResult
 	pending := g.record(pendingNode)
 	g.must(evaluate(env, review, carried, pending))

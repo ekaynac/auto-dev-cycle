@@ -48,6 +48,9 @@ type graphStore struct {
 		node types.NodeID
 		res  types.ResultID
 	}
+	// req is the requirement a review takes by default (newNode): revision
+	// 1 of the candidate, reviewed by exeA, in tskID.
+	req *types.NodeID
 }
 
 func openStore(t *testing.T) graphStore { t.Helper(); return openStoreAt(t, nil) }
@@ -76,7 +79,7 @@ func openStoreAt(t *testing.T, now func() time.Time) graphStore {
 	g := graphStore{t: t, s: s, blobs: blobs, conclusions: map[types.Digest]json.RawMessage{}, tree: &struct {
 		node types.NodeID
 		res  types.ResultID
-	}{}}
+	}{}, req: new(types.NodeID)}
 	g.plan, g.planRes = g.planOf(tskID, prjID)
 	return g
 }
@@ -146,8 +149,9 @@ func (g graphStore) nodeOn(kind types.NodeKind, plan types.NodeID) types.NodeRec
 	n := types.Node{ID: types.NodeID(id), Kind: kind, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{"task":"x"}`),
 		Inputs:   []types.InputSpec{{Name: "plan", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: plan, ResultKind: types.ResultKindPlan}}}},
 		Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
-	if kind == types.NodeKindReview {
+	if kind == types.NodeKindReview { // every review declares its requirement (G7b-2)
 		n.Params = reviewParams(exeA)
+		n.Inputs = append(n.Inputs, requiredOn(g.defaultRequirement()))
 	}
 	if kind == types.NodeKindEvidence {
 		n.Params, n.Requires.Resources = evidenceParams("x"), []types.ResourceGroupKind{"evidence_target"}
@@ -215,17 +219,88 @@ func TestRecordChecksEvidenceNodes(t *testing.T) {
 
 func (g graphStore) record(r types.NodeRecorded) types.NodeID {
 	g.t.Helper()
+	g.requiredFor(&r)
 	g.must(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(r) })
 	return r.Node.ID
+}
+
+// requiredOn is a review's input taking req's requirement.
+func requiredOn(req types.NodeID) types.InputSpec {
+	return types.InputSpec{Name: "required", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: req, ResultKind: types.ResultKindReviewRequirement}}}
+}
+
+// defaultRequirement is the store's default requirement, completed on
+// first use.
+func (g graphStore) defaultRequirement() types.NodeID {
+	if *g.req == "" {
+		*g.req, _, _ = g.completeRequirement(g.requirementNode(1, "1", exeA), nil)
+	}
+	return *g.req
+}
+
+// requiredFor moves r's input on the default requirement, when r is a
+// review, to its subject's selected requirement in its task, which must be
+// of r's roster and definition version, or to the subject's first
+// revision, completed now: so a test that changes a review's task or
+// subject binds the matching requirement. Only a supersession moves a
+// subject's revision (rosterChange).
+func (g graphStore) requiredFor(r *types.NodeRecorded) {
+	g.t.Helper()
+	if n := len(requirementInputs(r.Node)); n > 1 && r.Node.Kind == types.NodeKindReview { // the test names its own: drop the default
+		r.Node.Inputs = slices.DeleteFunc(slices.Clone(r.Node.Inputs), func(in types.InputSpec) bool {
+			src, ok := in.Source.Variant.(*types.ResultSource)
+			return ok && src.Producer == *g.req
+		})
+	}
+	i := slices.IndexFunc(r.Node.Inputs, func(in types.InputSpec) bool {
+		src, ok := in.Source.Variant.(*types.ResultSource)
+		return ok && *g.req != "" && src.Producer == *g.req
+	})
+	p, err := r.Node.ParamsAsReviewNodeParams()
+	if r.Node.Kind != types.NodeKindReview || i < 0 || err != nil {
+		return
+	}
+	cur, ok := view[revision](g, RequirementProjection, requirementIndex(r.Task, p.Subject))
+	params := func(rev int64) json.RawMessage {
+		return must(json.Marshal(types.ReviewRequirement{Subject: p.Subject, Roster: p.Roster, DefinitionVersion: r.Node.DefinitionVersion, Revision: rev}))
+	}
+	node := cur.Node
+	if d, err := ParamsDigest(params(cur.Revision)); ok && (err != nil || d != cur.Params) {
+		g.t.Fatalf("%s is at requirement revision %d of another roster: a roster change is a supersession (rosterChange)", p.Subject, cur.Revision)
+	} else if !ok {
+		req := g.requirementNode(1, r.Node.DefinitionVersion, exeA)
+		req.Task, req.Project, req.Node.Params = r.Task, r.Project, params(1)
+		node, _, _ = g.completeRequirement(req, nil)
+	}
+	r.Node.Inputs = slices.Clone(r.Node.Inputs)
+	r.Node.Inputs[i] = requiredOn(node)
 }
 
 // claimAny claims n, a review or review_requirement node under the test
 // registry.
 func claimAny(tx *eventstore.Tx, n types.NodeID, resolved map[string]Resolved, gen int64) ([]eventstore.Event, error) {
 	if rec, err := loadNode(tx, n); err == nil && rostered(rec.Recorded.Node.Kind) {
-		return ClaimReview(tx, n, resolved, gen, reviewers)
+		return ClaimReview(tx, n, withRequired(tx, n, resolved), gen, reviewers)
 	}
 	return Claim(tx, n, resolved, gen)
+}
+
+// withRequired is resolved with n's review requirement inputs the test
+// does not name resolved to their producers' selected results.
+func withRequired(tx *eventstore.Tx, n types.NodeID, resolved map[string]Resolved) map[string]Resolved {
+	rec, err := loadNode(tx, n)
+	if err != nil {
+		return resolved
+	}
+	resolved = maps.Clone(resolved)
+	for _, in := range rec.Recorded.Node.Inputs {
+		if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement && resolved[in.Name].Result == "" {
+			if req, err := loadNode(tx, src.Producer); err == nil && req.State.Result != nil {
+				resolved[in.Name] = Resolved{Result: *req.State.Result}
+			}
+		}
+	}
+	return resolved
 }
 
 // recordAny records r, a review or review_requirement node under the test

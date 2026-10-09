@@ -32,12 +32,17 @@ const (
 var reviewers = must(executors.New(map[types.ExecutorID]string{exeA: "claude", exeB: "claude", exeC: "gpt"}))
 
 // reviewParams are the ReviewNodeParams of the roster of exes.
-func reviewParams(exes ...types.ExecutorID) json.RawMessage {
+func reviewParams(exes ...types.ExecutorID) json.RawMessage { return reviewOf("candidate", exes...) }
+
+// reviewOf are the ReviewNodeParams of a review of subject by exes. A
+// test that wants a review of its own key gives it a subject of its own,
+// whose requirement is its own too (one selected revision per subject).
+func reviewOf(subject types.Name, exes ...types.ExecutorID) json.RawMessage {
 	roster, err := Roster(exes, reviewers)
 	if err != nil {
 		panic(err)
 	}
-	return must(json.Marshal(types.ReviewNodeParams{Subject: "candidate", Roster: roster}))
+	return must(json.Marshal(types.ReviewNodeParams{Subject: subject, Roster: roster}))
 }
 
 // requirementNode is a review_requirement node at revision rev, for a
@@ -132,7 +137,8 @@ func TestRecordReview(t *testing.T) {
 		"an unsorted roster":     roster(member(exeC, "gpt") + "," + member(exeA, "claude")),
 		"an executor twice":      roster(member(exeA, "claude") + "," + member(exeA, "claude")),
 		"no reviewer":            roster(""),
-		"two requirement inputs": func(r *types.NodeRecorded) { requirement(r); requirement(r); r.Node.Inputs[2].Name = "again" },
+		"two requirement inputs": func(r *types.NodeRecorded) { requirement(r); r.Node.Inputs[2].Name = "again" },
+		"no requirement input":   func(r *types.NodeRecorded) { r.Node.Inputs = r.Node.Inputs[:1] },
 	} {
 		r := g.newNode(types.NodeKindReview)
 		change(&r)
@@ -147,8 +153,9 @@ func TestRecordReview(t *testing.T) {
 	}
 	// The fold, which reads no reviewers, refuses what it can tell.
 	for name, r := range map[string]types.NodeRecorded{
-		"an unknown family":  with(g.newNode(types.NodeKindReview), roster(member(exeX, "unknown"))),
-		"an unsorted roster": with(g.newNode(types.NodeKindReview), roster(member(exeC, "gpt")+","+member(exeA, "claude"))),
+		"an unknown family":    with(g.newNode(types.NodeKindReview), roster(member(exeX, "unknown"))),
+		"an unsorted roster":   with(g.newNode(types.NodeKindReview), roster(member(exeC, "gpt")+","+member(exeA, "claude"))),
+		"no requirement input": with(g.newNode(types.NodeKindReview), func(r *types.NodeRecorded) { r.Node.Inputs = r.Node.Inputs[:1] }),
 		"a requirement input": with(g.requirementNode(1, "1", exeA), func(r *types.NodeRecorded) {
 			r.Node.Inputs = g.newNode(types.NodeKindGate).Node.Inputs
 		}),
@@ -173,7 +180,7 @@ func TestRecordReview(t *testing.T) {
 		}
 		// Evaluated with another goal, it is held and the other is claimed.
 		other := g.newNode(types.NodeKindReview)
-		other.Node.DefinitionVersion = string(other.Node.ID)
+		other.Node.Params = reviewOf(types.Name(other.Node.ID), exeA)
 		if err := g.do(evaluate(g.env(noRequirement), r.Node.ID, g.record(other))); err != nil {
 			t.Errorf("%s: evaluated: %v", name, err)
 		}
@@ -209,17 +216,24 @@ func with(r types.NodeRecorded, change func(*types.NodeRecorded)) types.NodeReco
 }
 
 // A review requirement's result records exactly its node's params, and a
-// review binds the requirement of its roster and definition version.
+// review binds the requirement of its roster and definition version, of
+// its task, at its subject's selected revision there; a subject's revision
+// is kept or moves to the next, nothing else.
 func TestReviewRequirement(t *testing.T) {
 	g := openStore(t)
-	other := must(json.Marshal(types.ReviewRequirement{Subject: "candidate", Roster: must(Roster([]types.ExecutorID{exeB}, reviewers)), DefinitionVersion: "1", Revision: 1}))
-	if _, _, err := g.completeRequirement(g.requirementNode(1, "1", exeA), other); err == nil {
+	reqOf := func(subject types.Name, rev int64, def string, exes ...types.ExecutorID) types.NodeRecorded {
+		r := g.requirementNode(rev, def, exes...)
+		r.Node.Params = must(json.Marshal(types.ReviewRequirement{Subject: subject, Roster: must(Roster(exes, reviewers)), DefinitionVersion: def, Revision: rev}))
+		return r
+	}
+	other := reqOf("pair", 1, "1", exeB).Node.Params
+	if _, _, err := g.completeRequirement(reqOf("pair", 1, "1", exeA), other); err == nil {
 		t.Error("a requirement result of another roster")
 	}
-	reviewOn := func(req types.NodeID, exes ...types.ExecutorID) types.NodeID {
+	reviewOn := func(req types.NodeID, subject types.Name, exes ...types.ExecutorID) types.NodeID {
 		r := g.newNode(types.NodeKindReview)
-		r.Node.Params = reviewParams(exes...)
-		r.Node.Inputs = append(r.Node.Inputs, types.InputSpec{Name: "required", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: req, ResultKind: types.ResultKindReviewRequirement}}})
+		r.Node.Params = reviewOf(subject, exes...)
+		r.Node.Inputs = []types.InputSpec{r.Node.Inputs[0], requiredOn(req)}
 		return g.record(r)
 	}
 	claim := func(review types.NodeID, res types.ResultID) error {
@@ -227,46 +241,83 @@ func TestReviewRequirement(t *testing.T) {
 			return claimAny(tx, review, map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: res}}, 0)
 		})
 	}
-	req, res, err := g.completeRequirement(g.requirementNode(1, "1", exeA, exeC), nil)
+	req, res, err := g.completeRequirement(reqOf("pair", 1, "1", exeA, exeC), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := claim(reviewOn(req, exeA, exeC), res); err != nil {
+	if err := claim(reviewOn(req, "pair", exeA, exeC), res); err != nil {
 		t.Fatalf("a review of its requirement's roster: %v", err)
 	}
 	for name, exes := range map[string][]types.ExecutorID{"another member": {exeA, exeB}, "a member fewer": {exeA}} {
-		if err := claim(reviewOn(req, exes...), res); err == nil || !strings.Contains(err.Error(), "roster and definition") {
+		if err := claim(reviewOn(req, "pair", exes...), res); err == nil || !strings.Contains(err.Error(), "roster and definition") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	// A subject has one selected revision in a task: a second is refused
-	// (only a supersession moves it), so the older definition is another
-	// task's.
-	if _, _, err := g.completeRequirement(g.requirementNode(2, "0", exeA, exeC), nil); err == nil {
-		t.Error("a second requirement revision selected without a supersession")
-	}
-	olderReq := g.requirementNode(2, "0", exeA, exeC)
-	olderReq.Task = "tsk_01m3250vm7f6ktw39dszqnyddr"
-	older, oldRes, err := g.completeRequirement(olderReq, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := claim(reviewOn(older, exeA, exeC), oldRes); err == nil {
-		t.Error("a requirement of another definition version")
-	}
 	carry := g.newNode(types.NodeKindIntegration) // a carry_over is the queue's (G7b)
-	carry.Node.Inputs = append(carry.Node.Inputs, types.InputSpec{Name: "required", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: req, ResultKind: types.ResultKindReviewRequirement}}})
+	carry.Node.Inputs = append(carry.Node.Inputs, requiredOn(req))
 	if err := claim(g.record(carry), res); err != nil {
 		t.Errorf("an integration consumer of a requirement: %v", err)
 	}
-	elsewhere := g.requirementNode(3, "1", exeA, exeC)
-	elsewhere.Node.Params = must(json.Marshal(types.ReviewRequirement{Subject: "closure", Roster: must(Roster([]types.ExecutorID{exeA, exeC}, reviewers)), DefinitionVersion: "1", Revision: 3}))
+	// A subject has one selected revision in a task: another requirement
+	// at revision 1, or a next one, is refused (only a supersession moves
+	// it), so the older definition is another task's.
+	for name, r := range map[string]types.NodeRecorded{"another requirement at the revision": reqOf("pair", 1, "1", exeC), "a second revision": reqOf("pair", 2, "1", exeC)} {
+		if _, _, err := g.completeRequirement(r, nil); err == nil {
+			t.Errorf("%s: selected without a supersession", name)
+		}
+	}
+	olderReq := reqOf("pair", 2, "0", exeA, exeC)
+	olderReq.Task = tskC
+	older, oldRes, err := g.completeRequirement(olderReq, nil)
+	// The roster changes: the review of revision 1 is superseded by one of
+	// revision 2.
+	first := reviewOn(req, "pair", exeA, exeC)
+	next := g.record(reqOf("pair", 2, "1", exeB))
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return claimAny(tx, next, map[string]Resolved{}, 1)
+	})
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, first, next, nil, reviewers) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := claim(reviewOn(older, "pair", exeA, exeC), oldRes); err == nil {
+		t.Error("a requirement of another definition version")
+	}
+	// A review of the old revision waits, and the fold refuses its claim.
+	stale := reviewOn(req, "pair", exeA, exeB, exeC)
+	if _, miss := g.resolve(stale, noRequirement, at); len(miss) != 1 || miss[0].Name != "required" || !strings.Contains(miss[0].Detail, "not its selected revision") {
+		t.Errorf("a requirement past its subject's selected revision resolves: %+v", miss)
+	}
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		resolved := map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: res}}
+		rec, err := loadNode(tx, stale)
+		key, kerr := Key(rec.Recorded.Node, resolved, 1)
+		if err = errors.Join(err, kerr); err != nil {
+			return nil, err
+		}
+		return event(NodeClaimed, string(stale), prjID, &types.NodeClaimed{Type: "node_claimed", Node: stale, Key: key, Inputs: items(rec.Recorded.Node, resolved)})
+	}); err == nil || !strings.Contains(err.Error(), "is not the selected review_requirement") {
+		t.Errorf("a raw claim past its subject's selected revision: %v", err)
+	}
+	if _, _, err := g.completeRequirement(reqOf("pair", 1, "1", exeA, exeC), nil); err == nil {
+		t.Error("a subject's revision went back")
+	}
+	elsewhere := reqOf("closure", 3, "1", exeA, exeC) // a subject's first selection is any revision
 	closure, closureRes, err := g.completeRequirement(elsewhere, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := claim(reviewOn(closure, exeA, exeC), closureRes); err == nil || !strings.Contains(err.Error(), "subject") {
+	if err := claim(reviewOn(closure, "pair", exeA, exeC), closureRes); err == nil || !strings.Contains(err.Error(), "subject") {
 		t.Errorf("a requirement of another subject: %v", err)
+	}
+	inC := reqOf("task", 1, "1", exeA, exeC)
+	inC.Task = tskC
+	other3, otherRes, err := g.completeRequirement(inC, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := claim(reviewOn(other3, "task", exeA, exeC), otherRes); err == nil || !strings.Contains(err.Error(), "is not the selected review_requirement") {
+		t.Errorf("a requirement of another task: %v", err)
 	}
 }
 
@@ -303,14 +354,19 @@ func TestReviewReusable(t *testing.T) {
 	}
 	fresh := reselect(receiptDoc(treeSubject(treeA, demandA), nil)) // concludes the same
 	// review records a node like prior, changed, and evaluates it if run.
+	// One not run keeps prior's requirement input: a roster change needs a
+	// requirement of its own, whose next revision would leave prior's
+	// unselected (requirement.go), and reuse is decided on the key alone.
 	review := func(run bool, change func(*types.Node)) types.NodeID {
 		rec := g.recordOf(prior)
 		rec.Node.ID = g.newNode(types.NodeKindReview).Node.ID
 		change(&rec.Node)
-		n := g.record(rec)
-		if run {
-			g.must(evaluate(env, n))
+		if !run {
+			g.must(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(rec) })
+			return rec.Node.ID
 		}
+		n := g.record(rec)
+		g.must(evaluate(env, n))
 		return n
 	}
 	reusable := func(next types.NodeID, name types.Name) (got bool, err error) {
@@ -326,12 +382,12 @@ func TestReviewReusable(t *testing.T) {
 		want bool
 	}{
 		"the same roster":             {same, true},
-		"a member of the same family": {review(true, func(n *types.Node) { n.Params = reviewParams(exeB) }), false},
-		"a member added":              {review(true, func(n *types.Node) { n.Params = reviewParams(exeA, exeC) }), false},
-		"another definition version":  {review(true, func(n *types.Node) { n.DefinitionVersion = "2" }), false},
+		"a member of the same family": {review(false, func(n *types.Node) { n.Params = reviewParams(exeB) }), false},
+		"a member added":              {review(false, func(n *types.Node) { n.Params = reviewParams(exeA, exeC) }), false},
+		"another definition version":  {review(false, func(n *types.Node) { n.DefinitionVersion = "2" }), false},
 		"another kind":                {review(true, func(n *types.Node) { n.Kind = types.NodeKindIntegration }), false},
 		"an unclaimed review":         {review(false, func(*types.Node) {}), true},
-		"another subject": {review(true, func(n *types.Node) {
+		"another subject": {review(false, func(n *types.Node) {
 			n.Params = must(json.Marshal(types.ReviewNodeParams{Subject: "closure", Roster: must(Roster([]types.ExecutorID{exeA}, reviewers))}))
 		}), false},
 	} {
@@ -347,7 +403,8 @@ func TestReviewReusable(t *testing.T) {
 	})
 	elsewhere := g.recordOf(prior)
 	elsewhere.Node.ID, elsewhere.Task, elsewhere.Project = g.newNode(types.NodeKindReview).Node.ID, tskB, prjB
-	if got, err := reusable(g.record(elsewhere), "gate"); err != nil || got {
+	g.must(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(elsewhere) })
+	if got, err := reusable(elsewhere.Node.ID, "gate"); err != nil || got {
 		t.Errorf("a review in another project: %v %v", got, err)
 	}
 	extra := review(false, func(n *types.Node) {
@@ -356,7 +413,7 @@ func TestReviewReusable(t *testing.T) {
 	otherPlan, _ := g.planOf(tskID, prjID)
 	secondProducer := review(false, func(n *types.Node) {
 		n.Inputs = slices.Clone(n.Inputs)
-		n.Inputs[1].Source.Variant = &types.ResultSource{Type: "result", Producer: otherPlan, ResultKind: types.ResultKindPlan}
+		n.Inputs[2].Source.Variant = &types.ResultSource{Type: "result", Producer: otherPlan, ResultKind: types.ResultKindPlan} // [gate, required, plan]
 	})
 	for name, c := range map[string]struct {
 		next types.NodeID

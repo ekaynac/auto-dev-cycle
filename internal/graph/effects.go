@@ -9,7 +9,8 @@ package graph
 //   - An effect node's goal is one effect operation, identified by its
 //     request's digest: the node instance, its claim's key and inputs, the
 //     target its params name and the target's want (the content digest of
-//     the one ref its result input holds). The computation key alone never
+//     the one ref its result input holds; a merge's review requirement is a
+//     precondition, not held). The computation key alone never
 //     finds an operation, so deploy A again is a new one; a resume
 //     re-derives the request from the log and finds its effect.
 //   - One operation is live (pending or uncertain) per target: Operate
@@ -133,6 +134,9 @@ func effectRequest(tx *eventstore.Tx, node types.NodeID) (EffectRequest, string,
 			continue
 		}
 		res, _, err := load[types.ResultRecorded](tx, ResultProjection, string(*in.Result))
+		if err == nil && res.Result.Kind == types.ResultKindReviewRequirement {
+			continue // a merge's precondition, which the target never holds
+		}
 		if err != nil || len(res.Result.Value) != 1 || r.Want != "" {
 			return EffectRequest{}, "", errors.Join(err, errors.New("graph: an effect node's one result input holds one ref, what its target is to hold"))
 		}

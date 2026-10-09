@@ -469,9 +469,10 @@ func selectedInputs(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resol
 // selectedOf is the result src's producer gives rec, or why it gives none:
 // it is a node of rec's project, completed at its identity's current
 // generation (a memoizable producer whose key an invalidation made stale
-// gives nothing, even before its reuse is released), and its selected
-// result is of the declared kind. A producer bound by reuse (G4a) gives
-// its holder's result.
+// gives nothing, even before its reuse is released), its selected result
+// is of the declared kind, and it serves rec (serves: a requirement at its
+// subject's selected revision). A producer bound by reuse (G4a) gives its
+// holder's result.
 func selectedOf(tx *eventstore.Tx, rec nodeRecord, src *types.ResultSource) (types.ResultRecorded, string, error) {
 	var r types.ResultRecorded
 	producer, err := loadNode(tx, src.Producer)
@@ -495,7 +496,11 @@ func selectedOf(tx *eventstore.Tx, rec nodeRecord, src *types.ResultSource) (typ
 	if err == nil && r.Result.Kind != src.ResultKind {
 		return r, fmt.Sprintf("%s's result is a %s", src.Producer, r.Result.Kind), nil
 	}
-	return r, "", err
+	if err != nil {
+		return r, "", err
+	}
+	why, err := serves(tx, rec, producer, r.Result)
+	return r, why, err
 }
 
 // current is the current generation of rec's identity in its task: the

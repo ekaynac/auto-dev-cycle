@@ -243,7 +243,11 @@ func TestSupersedeRefused(t *testing.T) {
 		return g.record(r)
 	}
 	reuser, later, waiting := copyOf(), copyOf(), copyOf()
-	unbound := g.record(g.newNode(types.NodeKindReview))
+	unbound := g.newNode(types.NodeKindReview) // every review declares its requirement (G7b-2a)
+	unbound.Node.Inputs = unbound.Node.Inputs[:1]
+	if _, err := RecordReview(unbound, reviewers); err == nil || !strings.Contains(err.Error(), "review_requirement input") {
+		t.Errorf("a review with no requirement: %v", err)
+	}
 	g.must(commit(review, g.reviewResult(review), env))
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return Reuse(tx, reuser, map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: res}}, owedanswers.Authority{})
@@ -251,7 +255,7 @@ func TestSupersedeRefused(t *testing.T) {
 	if _, err := g.successor(later); err != nil {
 		t.Fatal(err)
 	}
-	for n, want := range map[types.NodeID]string{review: "reuse", reuser: "reuse", later: "successor", unbound: "review_requirement input"} {
+	for n, want := range map[types.NodeID]string{review: "reuse", reuser: "reuse", later: "successor"} {
 		if err := g.do(supersede(n, next)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", want, err, want)
 		}
@@ -398,7 +402,7 @@ func TestReuseBindsRevision(t *testing.T) {
 	}
 	g.must(supersede(copyOf(g.planInput("again")), next)) // the subject is at revision 2
 	fresh := copyOf()
-	if err := g.do(evaluate(env, fresh)); err == nil || g.state(fresh).State == types.NodeStateStateCompleted {
+	if err := g.do(evaluate(env, fresh)); err != nil || g.state(fresh).State != types.NodeStateStateWaiting { // its requirement no longer serves (G7b-2a)
 		t.Errorf("a review of revision 1 reused by the evaluator: %v, %s", err, g.state(fresh).State)
 	}
 	resolved := map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: res}}

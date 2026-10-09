@@ -18,6 +18,8 @@ package graph
 //     reads it and asks internal/receipt (Applies). A refusal, an expired
 //     receipt included, makes the input missing, with the refusal's reason.
 //     A gate or evidence input always has a requirement: none is an error.
+//     A review requirement carries no receipt: it serves at its subject's
+//     selected revision (serves, requirement.go).
 //   - The result holds exactly one receipt Ref, and the receipt is the
 //     Ref's (its id) and the result's: the result's conclusions are the
 //     receipt's rule 2a document (receipt.Conclusions), whose digest the
@@ -80,6 +82,10 @@ func Resolve(tx *eventstore.Tx, node types.NodeID, answered map[string]Resolved,
 		}
 		if why != "" {
 			missing = append(missing, Missing{Name: in.Name, Detail: why})
+			continue
+		}
+		if src.ResultKind == types.ResultKindReviewRequirement { // no receipt: it serves at its subject's selected revision (serves)
+			resolved[in.Name] = Resolved{Result: r.Result.ID}
 			continue
 		}
 		req, err := need(rec.Recorded.Node, in)

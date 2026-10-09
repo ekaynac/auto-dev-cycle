@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -41,10 +43,11 @@ func rosterOf(exes ...types.ExecutorID) (json.RawMessage, error) {
 // soleReviewer are the params of a review by exeA.
 var soleReviewer = json.RawMessage(`{"subject":"candidate","roster":[{"executor":"` + string(exeA) + `","family":"claude"}]}`)
 
-// otherReviewer are the params of a review by exeB.
-var otherReviewer = json.RawMessage(`{"subject":"candidate","roster":[{"executor":"` + string(exeB) + `","family":"claude"}]}`)
+// otherReviewer are the params of another review, by exeB: of another
+// subject, whose requirement is its own (one selected revision per
+// subject, G7b-2).
+var otherReviewer = json.RawMessage(`{"subject":"other","roster":[{"executor":"` + string(exeB) + `","family":"claude"}]}`)
 
-// otherReviewer are the params of a review by exeB.
 // rosterChangeRunsReview: equal gate conclusions never reuse a review across
 // a roster change (13 "Nothing reuses a review across rosters"; plan 15
 // G6a). A review by exeA ran on a gate's result; the gate's next result
@@ -90,8 +93,14 @@ func rosterChangeRunsReview(ctx context.Context, dir string) (steps []Step, viol
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, roster := range [][]types.ExecutorID{{exeA}, {exeB}, {exeA, exeC}} {
+	// A subject has one selected requirement revision, and only a
+	// supersession moves it (G6b-1): the other rosters review subjects of
+	// their own, so their requirements are revisions of their own.
+	for i, roster := range [][]types.ExecutorID{{exeA}, {exeB}, {exeA, exeC}} {
 		params, err := rosterOf(roster...)
+		if i > 0 && err == nil {
+			params = json.RawMessage(strings.Replace(string(params), `"subject":"candidate"`, fmt.Sprintf(`"subject":"candidate-%d"`, i), 1))
+		}
 		var next types.NodeID
 		if err == nil {
 			next, err = g.record(types.NodeKindReview, params, on("gate", gate, types.ResultKindGateResult))
