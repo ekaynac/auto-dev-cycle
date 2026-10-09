@@ -188,6 +188,11 @@ func renderContext(tx *eventstore.Tx, node types.NodeID, env Env) (Rendered, err
 	if err = errors.Join(err, cerr); err != nil || !ok {
 		return out, errors.Join(err, fmt.Errorf("graph: %s is not claimed: its inputs are not fixed", node))
 	}
+	if auth == nil && !mutation.Is(mutation.ContextNeedsNoAuthority) {
+		if err := needsAuthority(rec); err != nil { // fail closed, never a nil call
+			return out, err
+		}
+	}
 	owed, err := lineageOwed(tx, rec.Recorded.Predecessor, auth)
 	if err != nil {
 		return out, err

@@ -1,0 +1,9 @@
+{
+  "name": "context-needs-authority",
+  "invariant": "A controller context is rendered only with the authority that reads its lineage's questions (13 \"Successor rounds\", 10): for a claimed round 2, a context with no authority is refused (failed/authority_revoked), never a panic, and the context with the authority is rendered. Steps: the context with no authority, then with it.",
+  "expected": [
+    {"outcome": "failed", "reason": "authority_revoked"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.context-needs-no-authority"
+}

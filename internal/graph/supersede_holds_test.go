@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -437,5 +438,35 @@ func TestAnswersFailClosed(t *testing.T) {
 	})
 	if err == nil || got != nil {
 		t.Errorf("answers on an unreadable lineage: %v %v", got, err)
+	}
+}
+
+// Fail closed: a controller context with no authority, for a node whose
+// predecessor's questions it must read, is refused, never a nil call.
+func TestContextNeedsAuthority(t *testing.T) {
+	g := openStore(t)
+	review, res, _ := g.superseding()
+	later, err := g.successor(review, g.planInput("again"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return claimAny(tx, later, map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: res}, "again": {Result: g.planRes}}, 0)
+	})
+	var stale ErrRevalidated
+	err = g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic: %v", r)
+			}
+		}()
+		_, err = Context(tx, later, Env{})
+		return err
+	})
+	if !errors.As(err, &stale) || stale.Reason != vocab.ReasonAuthorityRevoked {
+		t.Errorf("a context with no authority: %v", err)
+	}
+	if _, err := g.contextOf(later); err != nil {
+		t.Errorf("the context with the authority: %v", err)
 	}
 }

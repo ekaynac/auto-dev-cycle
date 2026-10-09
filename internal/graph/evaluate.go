@@ -107,12 +107,9 @@ func awaitSignal(ask *types.AnswerSource) string {
 // lineage moves on only through a successor at the current revision.
 func answers(tx *eventstore.Tx, rec nodeRecord, auth Authority) (out map[string]Resolved, stale bool, err error) {
 	out = map[string]Resolved{}
-	if auth == nil { // fail closed: only a first round with no answer input and no replaced review needs none
-		if rec.Recorded.Predecessor != nil || rec.Replaces != nil || slices.ContainsFunc(rec.Recorded.Node.Inputs, func(in types.InputSpec) bool {
-			_, ok := in.Source.Variant.(*types.AnswerSource)
-			return ok
-		}) {
-			return nil, false, errors.New("graph: answers need the authority")
+	if auth == nil { // fail closed
+		if err := needsAuthority(rec); err != nil {
+			return nil, false, err
 		}
 		return out, false, nil
 	}
@@ -409,6 +406,18 @@ func revalidate(tx *eventstore.Tx, node types.NodeID, env Env) error {
 			reason = vocab.ReasonAuthorityRevoked
 		}
 		return ErrRevalidated{Input: types.Name(name), Reason: reason, Detail: detail}
+	}
+	return nil
+}
+
+// needsAuthority: rec's answers cannot be read without the authority. Only
+// a first round with no answer input and no replaced review needs none.
+func needsAuthority(rec nodeRecord) error {
+	if rec.Recorded.Predecessor != nil || rec.Replaces != nil || slices.ContainsFunc(rec.Recorded.Node.Inputs, func(in types.InputSpec) bool {
+		_, ok := in.Source.Variant.(*types.AnswerSource)
+		return ok
+	}) {
+		return ErrRevalidated{Reason: vocab.ReasonAuthorityRevoked, Detail: "no authority to read the node's answers"}
 	}
 	return nil
 }
