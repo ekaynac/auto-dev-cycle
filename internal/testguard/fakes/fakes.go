@@ -29,7 +29,7 @@ const Prefix = "internal/testguard/fakes/"
 func All() []Fake {
 	return []Fake{
 		{"Fake adapter", "adapters/fake", true, "built: every scenario in `adapters/fake/src/fake.ts`"},
-		{"Fake forge", Prefix + "forge", false, "expected-base push and an external base move (G7b)"},
+		{"Fake forge", Prefix + "forge", true, "built: a head per branch, a push by compare-and-set on the expected base, and an external base move (G7b)"},
 		{"Fake sandbox", Prefix + "sandbox", true, "built: a workspace with exactly its declared facts, and evidence-target restores a test scripts to fail (G8)"},
 		{"Fake provider", Prefix + "provider", false, "none here: the 402 mid-call is scripted in `inproc` peers (15 L3); the rest is M2"},
 		{"Fake clock", Prefix + "clock", true, "built: a fixed or wall-following time the test sets and moves; no timers"},

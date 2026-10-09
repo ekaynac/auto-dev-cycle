@@ -46,7 +46,7 @@ func openEffectStore(t *testing.T) graphStore {
 	return g
 }
 
-var effectEnv = Env{Need: noRequirement}
+var effectEnv = Env{Need: noRequirement, Families: reviewers}
 
 // pkgOf completes an integration node whose package result holds refs.
 func (g graphStore) pkgOf(refs ...types.Ref) (types.NodeID, types.Result) {

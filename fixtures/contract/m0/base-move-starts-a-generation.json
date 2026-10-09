@@ -1,0 +1,10 @@
+{
+  "name": "base-move-starts-a-generation",
+  "invariant": "A base move mid-generation starts a new generation: generation 1 pins base B1 and its rebase completes; the base moves to B2 outside the controller, so the queue template records generation 2 pinned to B2, and B2 again starts nothing. Generation 1's results stay as history (13 \"Merge-queue generations\").",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.generation-keeps-base"
+}

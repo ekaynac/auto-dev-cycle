@@ -559,7 +559,7 @@ func (g graphStore) newNodeLike(n types.NodeID) types.Node {
 func TestProducesTable(t *testing.T) {
 	want := map[types.NodeKind][]types.ResultKind{
 		"plan": {"plan"}, "build": {"patch", "partial_patch"}, "gate": {"gate_result"}, "runtime_verify": {"gate_result"},
-		"integration": {"tree", "package"}, "evidence": {"evidence"}, "review": {"review"}, "review_requirement": {"review_requirement"}, "carry_over": {"carry_over_attestation"},
+		"integration": {"tree", "package"}, "rebase": {"tree"}, "evidence": {"evidence"}, "review": {"review"}, "review_requirement": {"review_requirement"}, "carry_over": {"carry_over_attestation"},
 		"merge": {"merge_result"}, "accept": nil, "closure": nil, "deploy": nil, "record": nil, "phase_gate": nil,
 	}
 	results := []types.ResultKind{"plan", "patch", "partial_patch", "tree", "package", "gate_result", "review", "evidence", "carry_over_attestation", "merge_result", "review_requirement"}
@@ -570,7 +570,7 @@ func TestProducesTable(t *testing.T) {
 			}
 		}
 	}
-	if len(want) != 15 {
+	if len(want) != 16 {
 		t.Fatal("not every node kind is in the table")
 	}
 }

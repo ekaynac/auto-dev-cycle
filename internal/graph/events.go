@@ -359,7 +359,7 @@ func recorded(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeRecorded) err
 	} else if err := put(tx, TaskProjection, string(p.Task), p.Project); err != nil {
 		return err
 	}
-	if err := takesNoDeploy(tx, n); err != nil {
+	if err := errors.Join(takesNoDeploy(tx, n), generationRecorded(tx, p)); err != nil {
 		return err
 	}
 	round := int64(1)

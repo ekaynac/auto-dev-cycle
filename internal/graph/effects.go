@@ -24,9 +24,9 @@ package graph
 //     intent is recorded with node.operated, the graph's link from the node
 //     to its effect; an invalidation waits while that effect is live, and
 //     RunEffect runs only the node's current request.
-//   - The node records no graph result: the effect's state is the outcome,
-//     and no node takes a deploy's result until G7b defines effect-node
-//     completion. A failed_confirmed effect stays the node's until an
+//   - Once the effect completes, CompleteEffect records the node's result
+//     (queue.go). A deploy has no result kind, so no node takes a deploy's
+//     result. A failed_confirmed effect stays the node's until an
 //     invalidation; concurrent runners of one effect are M1's (13).
 
 import (
@@ -59,6 +59,8 @@ type EffectRequest struct {
 	Inputs []types.ClaimedInput `json:"inputs"`
 	Target string               `json:"target"`
 	Want   types.Digest         `json:"want"`
+
+	applied types.Ref // the input ref whose content is Want: what the effect applies
 }
 
 // Operation is node's effect operation: its effect, of Kind, for Request.
@@ -134,7 +136,7 @@ func effectRequest(tx *eventstore.Tx, node types.NodeID) (EffectRequest, string,
 		if err != nil || len(res.Result.Value) != 1 || r.Want != "" {
 			return EffectRequest{}, "", errors.Join(err, errors.New("graph: an effect node's one result input holds one ref, what its target is to hold"))
 		}
-		r.Want = res.Result.Value[0].ContentDigest
+		r.Want, r.applied = res.Result.Value[0].ContentDigest, res.Result.Value[0]
 	}
 	if r.Want == "" {
 		return EffectRequest{}, "", errors.New("graph: an effect node takes the result its target is to hold")
@@ -221,10 +223,16 @@ func settledOperation(tx *eventstore.Tx, node types.NodeID) error {
 		return err
 	}
 	e, err := tx.LoadEffect(string(op.Effect))
-	if err == nil && (e.State == eventstore.EffectPending || e.State == eventstore.EffectUncertain) {
-		err = ErrEffectLive{node, e.ID}
+	rec, rerr := loadNode(tx, node)
+	switch {
+	case errors.Join(err, rerr) != nil:
+		return errors.Join(err, rerr)
+	case e.State == eventstore.EffectPending || e.State == eventstore.EffectUncertain:
+		return ErrEffectLive{node, e.ID}
+	case e.State == eventstore.EffectCompleted && len(produces[rec.Recorded.Node.Kind]) == 1 && rec.State.State != types.NodeStateStateCompleted && rec.State.Key != nil && op.Key == *rec.State.Key:
+		return fmt.Errorf("graph: %s's effect %s completed: its result is recorded (CompleteEffect) before an invalidation", node, e.ID)
 	}
-	return err
+	return nil
 }
 
 // operated folds node.operated: an operation of a claimed effect node at
@@ -250,8 +258,8 @@ func operated(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeOperated) err
 	return put(tx, EffectProjection, string(p.Node), p)
 }
 
-// takesNoDeploy: no input of n is a deploy's result, until G7b defines
-// effect-node completion (13): n takes no recorded deploy, and a deploy n
+// takesNoDeploy: no input of n is a deploy's result, since a deploy records
+// none (13 "Effect-node completion"): n takes no recorded deploy, and a deploy n
 // is taken by no recorded node (a consumer recorded before its producer).
 // The scan for the latter is linear in the graph's nodes; M0's graphs are
 // small, and an index by producer can come with M1's wiring.
@@ -264,7 +272,7 @@ func takesNoDeploy(tx *eventstore.Tx, n types.Node) error {
 				src, ok := in.Source.Variant.(*types.ResultSource)
 				return ok && src.Producer == n.ID
 			}) {
-				err = fmt.Errorf("node %s takes this deploy's result, which no node takes before G7b", k)
+				err = fmt.Errorf("node %s takes this deploy's result, which no node takes", k)
 			}
 			if err != nil {
 				return err
@@ -275,7 +283,7 @@ func takesNoDeploy(tx *eventstore.Tx, n types.Node) error {
 		if src, ok := in.Source.Variant.(*types.ResultSource); ok {
 			prod, found, err := load[nodeRecord](tx, NodeProjection, string(src.Producer))
 			if err != nil || found && prod.Recorded.Node.Kind == types.NodeKindDeploy {
-				return errors.Join(err, fmt.Errorf("input %s takes a deploy's result, which no node takes before G7b", in.Name))
+				return errors.Join(err, fmt.Errorf("input %s takes a deploy's result, which no node takes", in.Name))
 			}
 		}
 	}

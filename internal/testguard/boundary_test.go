@@ -19,14 +19,14 @@ const module = "github.com/ekaynac/auto-dev-cycle/"
 
 // importAllowed reports whether a non-test file in dir (from the repository
 // root) may import path: nothing under internal/testguard, except the fake
-// clock, the owed-answer fake, the fake effect target, the fake sandbox and
-// the fake executor registry from the fixture harness (whose installed run
-// is a release binary).
+// clock, the owed-answer fake, the fake effect target, the fake sandbox,
+// the fake executor registry and the fake forge from the fixture harness
+// (whose installed run is a release binary).
 func importAllowed(dir, path string) bool {
 	if !inTestguard(strings.TrimPrefix(path, module)) || inTestguard(dir) {
 		return true
 	}
-	allowed := []string{"clock", "owedanswers", "effecttarget", "sandbox", "executors"}
+	allowed := []string{"clock", "owedanswers", "effecttarget", "sandbox", "executors", "forge"}
 	return slices.Contains(allowed, strings.TrimPrefix(path, module+"internal/testguard/fakes/")) && dir == "internal/fixtures"
 }
 

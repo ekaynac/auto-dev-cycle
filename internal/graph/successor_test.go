@@ -290,8 +290,9 @@ func TestEquivalent(t *testing.T) {
 	used := usedResult.ID
 	review := g.reviewOf(gate)
 	env := g.env(gatesOn(treeA, demandA))
-	// A carry-over ran on the gate too; another review is claimed, not run.
-	carry := g.newNode(types.NodeKindCarryOver)
+	// An integration ran on the gate too (a carry_over is the queue's, G7b);
+	// another review is claimed, not run.
+	carry := g.newNode(types.NodeKindIntegration)
 	carry.Node.Inputs[0].Name, carry.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = "gate", types.ResultKindGateResult
 	carry.Node.Inputs[0].Source.Variant.(*types.ResultSource).Producer = gate
 	carried := g.record(carry)
@@ -302,7 +303,8 @@ func TestEquivalent(t *testing.T) {
 	g.must(evaluate(env, review, carried, pending))
 	g.must(commit(review, g.reviewResult(review), env))
 	attestation := unrecorded(t, *g.state(carried).Key)
-	attestation.Kind, attestation.Outcome, attestation.Reason, attestation.Detail = types.ResultKindCarryOverAttestation, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+	attestation.Kind, attestation.Outcome, attestation.Reason, attestation.Detail = types.ResultKindTree, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+	attestation.Value = []types.Ref{g.sealed(types.RefTypeGitTree, "git:"+strings.Repeat("c", 40), "sha256:"+types.Digest(strings.Repeat("c", 64)))}
 	g.must(commit(carried, attestation, env))
 	equivalent := func(n types.NodeID, name types.Name, u, f types.ResultID) (got bool, err error) {
 		err = g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
@@ -370,7 +372,7 @@ func TestEquivalent(t *testing.T) {
 		}
 	}
 	refused("a review's plan input", g.record(g.newNode(types.NodeKindReview)), "plan", used, fresh)
-	refused("a carry-over that used the result", carried, "gate", used, fresh)
+	refused("an integration that used the result", carried, "gate", used, fresh)
 	refused("a review's review input", onReview, "gate", rr.ID, rr.ID)
 	refused("an undeclared input", review, "ruling", used, fresh)
 	refused("a review that never ran", g.reviewOf(gate), "gate", used, fresh)

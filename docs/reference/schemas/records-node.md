@@ -11,7 +11,7 @@ One node instance in a task's artifact graph (docs/design/m0/13 "Model"): a deci
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `id` | yes | [NodeID](common-defs.md#nodeid) |  |
-| `kind` | yes | one of `plan`, `build`, `accept`, `gate`, `runtime_verify`, `integration`, `evidence`, `review`, `review_requirement`, `carry_over`, `closure`, `merge`, `deploy`, `record`, `phase_gate` |  |
+| `kind` | yes | one of `plan`, `build`, `accept`, `gate`, `runtime_verify`, `integration`, `rebase`, `evidence`, `review`, `review_requirement`, `carry_over`, `closure`, `merge`, `deploy`, `record`, `phase_gate` |  |
 | `definition_version` | yes | string (minLength `1`, maxLength `128`) | The version of the kind's definition. A change is an explicit invalidation (13 [G1]). |
 | `inputs` | yes | array of [input-spec](records-input-spec.md) | Declared by the kind's definition. The computation key hashes each input's name with what it resolved to, sorted by name, so the order they are listed in is not part of the key (internal/graph). |
 | `params` | yes | object (open payload) | The kind's parameters, one schema per kind: a review node's are ReviewNodeParams, with its roster (13), a review_requirement node's the ReviewRequirement it records (13), and an evidence node's EvidenceNodeParams (12). Their digest is part of the computation key. G2 computes it only after a bounded strict read (internal/contract ReadStrict: integers within ±(2^53−1)), through the eventstore canonicaliser, and refuses anything outside that range. |

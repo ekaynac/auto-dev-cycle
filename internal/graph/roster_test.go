@@ -239,10 +239,10 @@ func TestReviewRequirement(t *testing.T) {
 	if err := claim(reviewOn(older, exeA, exeC), oldRes); err == nil {
 		t.Error("a requirement of another definition version")
 	}
-	carry := g.newNode(types.NodeKindCarryOver)
+	carry := g.newNode(types.NodeKindIntegration) // a carry_over is the queue's (G7b)
 	carry.Node.Inputs = append(carry.Node.Inputs, types.InputSpec{Name: "required", Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: req, ResultKind: types.ResultKindReviewRequirement}}})
 	if err := claim(g.record(carry), res); err != nil {
-		t.Errorf("a carry-over consumer of a requirement: %v", err)
+		t.Errorf("an integration consumer of a requirement: %v", err)
 	}
 	elsewhere := g.requirementNode(3, "1", exeA, exeC)
 	elsewhere.Node.Params = must(json.Marshal(types.ReviewRequirement{Subject: "closure", Roster: must(Roster([]types.ExecutorID{exeA, exeC}, reviewers)), DefinitionVersion: "1", Revision: 3}))
@@ -314,7 +314,7 @@ func TestReviewReusable(t *testing.T) {
 		"a member of the same family": {review(true, func(n *types.Node) { n.Params = reviewParams(exeB) }), false},
 		"a member added":              {review(true, func(n *types.Node) { n.Params = reviewParams(exeA, exeC) }), false},
 		"another definition version":  {review(true, func(n *types.Node) { n.DefinitionVersion = "2" }), false},
-		"another kind":                {review(true, func(n *types.Node) { n.Kind = types.NodeKindCarryOver }), false},
+		"another kind":                {review(true, func(n *types.Node) { n.Kind = types.NodeKindIntegration }), false},
 		"an unclaimed review":         {review(false, func(*types.Node) {}), true},
 		"another subject": {review(true, func(n *types.Node) {
 			n.Params = must(json.Marshal(types.ReviewNodeParams{Subject: "closure", Roster: must(Roster([]types.ExecutorID{exeA}, reviewers))}))

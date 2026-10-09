@@ -49,6 +49,7 @@ var produces = map[types.NodeKind][]types.ResultKind{
 	types.NodeKindGate:              {types.ResultKindGateResult},
 	types.NodeKindRuntimeVerify:     {types.ResultKindGateResult},
 	types.NodeKindIntegration:       {types.ResultKindTree, types.ResultKindPackage},
+	types.NodeKindRebase:            {types.ResultKindTree},
 	types.NodeKindEvidence:          {types.ResultKindEvidence},
 	types.NodeKindReview:            {types.ResultKindReview},
 	types.NodeKindReviewRequirement: {types.ResultKindReviewRequirement},
@@ -162,7 +163,7 @@ func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecor
 	if !slices.Contains(produces[rec.Recorded.Node.Kind], p.Result.Kind) {
 		return fmt.Errorf("a %s node does not record a %s result", rec.Recorded.Node.Kind, p.Result.Kind)
 	}
-	if err := claimHolds(tx, rec, ev.At); err != nil {
+	if err := errors.Join(claimHolds(tx, rec, ev.At), resultSemantics(tx, rec, p.Result)); err != nil {
 		return err
 	}
 	if err := errors.Join(CheckRead(p.Result), recordsRequirement(rec, p.Result)); err != nil {
@@ -199,6 +200,9 @@ func claimHolds(tx *eventstore.Tx, rec nodeRecord, at string) error {
 	c, ok, err := load[claim](tx, ClaimProjection, string(rec.Recorded.Node.ID))
 	if err != nil || !ok {
 		return errors.Join(err, errors.New("an unclaimed node records no result"))
+	}
+	if rec.Recorded.Node.Effect != nil { // re-validated at its intent (queue.go)
+		return operationCompleted(tx, rec)
 	}
 	for _, in := range c.Inputs {
 		if in.Result == nil {

@@ -1,0 +1,10 @@
+{
+  "name": "carry-over-needs-equal-patch",
+  "invariant": "Carry-over applies only with an equal patch identity: when the rebased patch is the reviewed one and no conflict was resolved, the carry_over attests the review for the new tree; when the rebased patch differs, or the rebase resolved conflicts, it demands a delta review (13 \"Merge-queue generations\").",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "found", "reason": "review_input_changed"},
+    {"outcome": "found", "reason": "review_input_changed"}
+  ],
+  "mutation": "graph.carry-over-ignores-patch"
+}
