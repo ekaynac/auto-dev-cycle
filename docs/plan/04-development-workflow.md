@@ -1,6 +1,6 @@
 # Development workflow until self-host (M0–M6)
 
-Status: adopted 2026-10-03 (D38). This document is written to be **self-sufficient for a fresh Claude session**: a
+Status: adopted 2026-10-03 (D38); §2–§3 amended 2026-10-09 (D45, D46). This document is written to be **self-sufficient for a fresh Claude session**: a
 background session must be able to pick up the work from this file, the repository and the Development log issue
 alone.
 
@@ -29,10 +29,22 @@ The attended session writes a handover comment when it hands back. This is the s
 
 - **Branch per PR from `main`:** `feature/<scope>/<desc>`, `fix/<scope>/<desc>`, `chore/<desc>`. Conventional commits.
   Nothing is committed to `main` directly. The shell guard blocks pushing `main`, and that is intended.
-- **Size:** ≤ ~400 added plus deleted lines (`git diff --numstat main...HEAD`) of hand-written non-test code;
-  project-authored schemas under `schemas/` count (D44). Tests, test fixtures, generated code and unchanged vendored
-  schemas don't count. A larger piece is split, unless it is one cohesive package that splitting would only fill with temporary
-  scaffolding; then it ships as one PR with the reason stated in the description (D41).
+- **Size (D46):** typically 300–600 added plus deleted lines (`git diff --numstat main...HEAD`) of hand-written
+  non-test code, with a ceiling of about 800 for **one reviewable behaviour** with a clear acceptance story. Changes
+  that interact with authority, replay, fencing or merge state stay smaller. Project-authored schemas under `schemas/`
+  count (D44). Tests, test fixtures, generated code and unchanged vendored schemas don't count, but their review burden
+  is stated in the description. "One feature, one PR" means one reviewable behaviour, never a whole subsystem. A larger
+  piece is split, unless it is one cohesive package that splitting would only fill with temporary scaffolding; then it
+  ships as one PR with the reason stated in the description (D41).
+- **Fault evidence (D46).** Targeted mutation, or equivalent discriminating fault evidence (a test that fails under a
+  named, realistic fault), is required for changes to:
+  - authority, grants, containment and egress;
+  - receipt completeness, applicability and review independence;
+  - fencing, uncertain effects, duplicate delivery and accounting;
+  - publication before restore, and restart/replay invariants.
+
+  Routine plumbing needs ordinary behavioural tests. Existing contract fixtures keep their named mutations. The
+  red-proof rule for `fix(...)` PRs (11-testing) is separate and unchanged.
 - **The PR description states, before review:**
   - acceptance criteria;
   - the smoke check (exact commands);
@@ -41,7 +53,12 @@ The attended session writes a handover comment when it hands back. This is the s
 - **CI must be green:** `make ci` and the T0 fixtures check run on the self-hosted homelab runner (amd64, #75). The
   workflow has no arm64 job: the lead must run `make ci` locally on the controller host (arm64) before every push. Tests run inside the sandbox, which is bubblewrap (11-testing; the
   rootless-container fallback is deferred to M3, D42).
-- **Split after 3 NO-GOs** on the same PR.
+- **One defect class, one repair.** A defect class is fixed once, across all its entry points (for an eligibility rule:
+  every completion and consumption path together), followed by one review, not a run of small follow-up PRs. A
+  prerequisite repair may land first as its own reviewed PR; no PR may activate a known blocking defect.
+- **After two NO-GOs** on the same PR, the lead first settles the invariant or contract (in a design note, or a
+  question to the operator when it is a decision) and only then revises or splits the code. Splitting does not resolve
+  an unclear contract.
 
 ## 3. Review
 
@@ -56,13 +73,36 @@ The attended session writes a handover comment when it hands back. This is the s
 cosmetics, refactors with no contract change.
 
 **Brief format** for both: the PR diff (`git diff main...HEAD`), the design note it implements, the acceptance
-criteria. A contract-PR brief also states the threat model (D43): honest use and adversarial behaviour by any party
-without elevated privileges are in scope (malicious API clients, forged adapter messages, hostile repositories, sandbox
-escape attempts, processes ignoring a cooperative lock, attacks starting from ordinary credentials or a limited grant);
-attacks requiring pre-existing elevated privileges, and the operator deliberately overriding the build system, are
-Low at most. D43 never relaxes an existing contract or
-§4's operator gate. Output: GO / GO with changes / NO-GO, and findings by severity. Block only on Critical/High. Reviews are saved
-to `docs/reviews/<date>-pr<N>-<reviewer>.md` in the PR itself.
+criteria. A contract-PR brief also states the threat model (D43 as amended by D45):
+- **in scope:** honest use and adversarial behaviour by any party without elevated privileges or controller authority:
+  malicious API clients, forged adapter messages, hostile repositories, sandbox escape attempts, supervisors,
+  processes ignoring a cooperative lock, attacks starting from ordinary credentials or a limited grant; also invalid
+  transitions the controller itself generates, crashes, stale authority and uncertain effects;
+- **out of scope, Low at most:** attacks requiring pre-existing elevated privileges; the operator deliberately
+  overriding the build system; arbitrary fabricated histories (direct store edits, events manufactured outside
+  supported commands) by the controller principal, which is trusted until M7-S (D45).
+
+D43 and D45 never relax an existing contract or §4's operator gate. Output: GO / GO with changes / NO-GO, and findings
+by severity. Reviews are saved to `docs/reviews/<date>-pr<N>-<reviewer>.md` in the PR itself.
+
+**What blocks (D46):**
+- **Critical/High findings inside the threat model.** A synthetic raw event alone does not justify High. The reviewer
+  names one of:
+  1. a reachable input path;
+  2. a realistic controller or recovery defect;
+  3. an explicitly promised invariant (a design note or contract line).
+
+  Authority bypass, silent accounting loss and unauthorised effects are High, never a Medium.
+- **Bounded acceptance obligations**, blocking at any severity:
+  1. the advertised feature fails on its ordinary supported path;
+  2. a restart or migration leaves valid state unreadable or work permanently stranded;
+  3. the PR's evidence cannot establish its acceptance criteria;
+  4. a deferred feature is reachable without its guard.
+
+**Everything else** (other Medium and Low findings, cosmetics, recoverable inconvenience, defence against excluded
+capabilities) goes into **one deduplicated backlog issue per PR**. Each entry names an owner, the affected invariant
+and its trigger (the milestone, activation or release that makes it due). These entries are not same-day follow-up
+PRs; they are picked up when their trigger arrives.
 
 **When Codex credits run out:**
 1. contract PRs wait, unmerged;
