@@ -106,6 +106,7 @@ var runners = map[string]runner{
 	"displaced-question-waits":              displacedQuestionWaits,
 	"reuse-displaced-question":              reuseDisplacedQuestion,
 	"context-needs-authority":               contextNeedsAuthority,
+	"roster-change-makes-merge-wait":        rosterChangeMakesMergeWait,
 }
 
 // Goldens loads and validates every golden, checking that each has a

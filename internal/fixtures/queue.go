@@ -43,7 +43,7 @@ func (q *queueFix) ref(typ types.RefType, content string) (types.Ref, error) {
 // openQueue opens the store in dir with a candidate whose patch is patch's
 // blob, and its review.
 func openQueue(ctx context.Context, dir, patch string) (*queueFix, types.Ref, func() error, error) {
-	g, closeFn, err := openGraph(ctx, dir)
+	g, closeFn, err := openGraphWith(ctx, dir, eventstore.EffectKinds{"merge": {}}) // reconciled first, never blindly retried
 	if err != nil {
 		return nil, types.Ref{}, nil, err
 	}
@@ -241,5 +241,79 @@ func staleObservationStartsNothing(ctx context.Context, dir string) (steps []Ste
 	o.check(gen1.Number == 1 && gen2.Number == 2, "A then B started generations %d and %d", gen1.Number, gen2.Number)
 	o.check(staleErr != nil && stale.Number == 0, "the delayed observation of A started generation %d", stale.Number)
 	o.check(gen3.Base == "A" && gen3.Number == map[bool]int64{true: 3, false: 4}[staleErr != nil], "the genuine return to A started generation %d", gen3.Number)
+	return o.steps, o.violations, nil
+}
+
+// rosterChangeMakesMergeWait: a roster change after carry-over was
+// selected makes the merge wait (13 "Merge-queue generations"; plan 15
+// G7b). Generation 1's carry_over attests the review under requirement
+// revision 1 and its merge is claimed; the roster changes (the review is
+// superseded under revision 2); the merge's intent re-validates against
+// the subject's selected revision and is refused, so nothing is pushed.
+// The base moves: generation 2's carry_over of the superseded review, and
+// its merge, wait for the replacement.
+func rosterChangeMakesMergeWait(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
+	q, patch, closeFn, err := openQueue(ctx, dir, "patch P")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { err = errors.Join(err, closeFn()) }()
+	var o observe
+	evaluate := func(n types.NodeID) error {
+		return q.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.Evaluate(tx, []types.NodeID{n}, q.env())
+		})
+	}
+	attest := func(base string) (graph.Generation, error) {
+		q.forge.Move("main", base)
+		gen, err := q.generate(&observe{})
+		tree, terr := q.ref(types.RefTypeGitTree, "tree on "+base)
+		if err = errors.Join(err, terr); err == nil {
+			err = q.rebase(gen, tree, patch)
+		}
+		if st, _, serr := q.node(gen.CarryOver); errors.Join(err, serr, evaluate(gen.CarryOver)) == nil && st.Key == nil {
+			if st, _, _ = q.node(gen.CarryOver); st.Key != nil { // its review serves it
+				_, err = q.carry(&o, gen)
+			}
+		}
+		if err == nil {
+			err = evaluate(gen.Merge)
+		}
+		return gen, err
+	}
+	gen1, err := attest("B1")
+	st, _, serr := q.node(gen1.Merge)
+	if err = errors.Join(err, serr); err != nil {
+		return nil, nil, err
+	}
+	o.check(st.State == types.NodeStateStateClaimed, "generation 1's merge is %s, not claimed on its attestation", st.State)
+	byB, rerr := rosterOf(exeB)
+	if _, err = q.supersede(q.spec.Review, byB); errors.Join(err, rerr) != nil { // the roster change
+		return nil, nil, errors.Join(err, rerr)
+	}
+	err = q.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		_, err := graph.Operate(tx, gen1.Merge, q.env())
+		return nil, err
+	})
+	var refused graph.ErrRevalidated
+	switch {
+	case errors.As(err, &refused):
+		o.steps = append(o.steps, Step{vocab.Failed, refused.Reason.String()})
+	case err == nil:
+		o.steps = append(o.steps, Step{vocab.Empty, vocab.ReasonCompletedClean.String()})
+	default:
+		return nil, nil, err
+	}
+	gen2, err := attest("B2")
+	co2, _, cerr2 := q.node(gen2.CarryOver)
+	err = errors.Join(err, cerr2)
+	o.check(co2.State == types.NodeStateStateWaiting, "generation 2's carry_over of the superseded review is %s", co2.State)
+	st2, _, serr := q.node(gen2.Merge)
+	operated, cerr := q.count(graph.NodeOperated)
+	if err = errors.Join(err, serr, cerr); err != nil {
+		return nil, nil, err
+	}
+	o.check(st2.State == types.NodeStateStateWaiting, "generation 2's merge is %s: it waits for the replacement review", st2.State)
+	o.check(operated == 0 && len(q.forge.Pushed("main")) == 0, "%d operations were intended and %d pushes landed after the roster change", operated, len(q.forge.Pushed("main")))
 	return o.steps, o.violations, nil
 }

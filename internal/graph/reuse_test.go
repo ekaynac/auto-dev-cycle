@@ -16,7 +16,7 @@ import (
 
 func reuseOf(n types.NodeID, res types.ResultID) logic {
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Reuse(tx, n, map[string]Resolved{"plan": {Result: res}}, owedanswers.Authority{})
+		return Reuse(tx, n, withRequired(tx, n, map[string]Resolved{"plan": {Result: res}}), owedanswers.Authority{})
 	}
 }
 

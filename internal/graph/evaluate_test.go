@@ -73,8 +73,8 @@ func commit(n types.NodeID, r types.Result, env Env) logic {
 // successor declaring the answers.
 func (g graphStore) asking(inputs ...types.InputSpec) types.NodeID {
 	ask := g.newNode(types.NodeKindReview)
-	ask.Node.DefinitionVersion = string(ask.Node.ID)
-	ask.Node.Inputs = []types.InputSpec{}
+	ask.Node.Params = reviewOf(types.Name(ask.Node.ID), exeA)
+	ask.Node.Inputs = []types.InputSpec{requiredOn(g.defaultRequirement())}
 	var answers []types.InputSpec
 	for _, in := range inputs {
 		if a, ok := in.Source.Variant.(*types.AnswerSource); ok {
@@ -132,13 +132,13 @@ func TestEvaluateProducersFirst(t *testing.T) {
 	a := g.reviewOf(gn)
 	env := g.env(gatesOn(treeA, demandA))
 	g.must(evaluate(env, a, a))
-	if g.state(gn).State != types.NodeStateStateClaimed || g.count(NodeClaimed) != 2 || g.state(a).State != types.NodeStateStateWaiting {
+	if g.state(gn).State != types.NodeStateStateClaimed || g.count(NodeClaimed) != 3 || g.state(a).State != types.NodeStateStateWaiting {
 		t.Fatalf("the first evaluation: gate %+v, review %+v", g.state(gn), g.state(a))
 	}
 	g.must(evaluate(env, a)) // the gate runs
 	g.must(commit(gn, g.gateResult(gn, nil), env))
 	g.must(evaluate(env, a))
-	if g.state(a).State != types.NodeStateStateClaimed || g.count(NodeClaimed) != 3 {
+	if g.state(a).State != types.NodeStateStateClaimed || g.count(NodeClaimed) != 4 { // the plan's, the requirement's, the gate's and the review's
 		t.Fatalf("the dependant: %+v", g.state(a))
 	}
 }
@@ -385,7 +385,7 @@ func TestEvaluateWaitsOnARenewal(t *testing.T) {
 func (g graphStore) reviewWith(producer types.NodeID, kind types.ResultKind) types.NodeID {
 	r := g.nodeOn(types.NodeKindReview, producer)
 	r.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind, r.Node.Inputs[0].Name = kind, "gate"
-	r.Node.DefinitionVersion = string(r.Node.ID) // a review's params are its roster
+	r.Node.Params = reviewOf(types.Name(r.Node.ID), exeA) // a review of its own key
 	return g.record(r)
 }
 

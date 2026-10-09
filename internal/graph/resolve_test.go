@@ -228,15 +228,25 @@ func (g graphStore) resolve(n types.NodeID, need Requirements, at time.Time) (ma
 
 var at = time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 
-// refused: n's one input is missing with reason.
+// unrequired is res without a review's requirement, which every review
+// declares (G7b-2).
+func unrequired(res map[string]Resolved) map[string]Resolved {
+	delete(res, "required")
+	return res
+}
+
+// refused: n's one input but its requirement is missing with reason.
 func (g graphStore) refused(n types.NodeID, need Requirements, reason vocab.Reason) bool {
 	res, miss := g.resolve(n, need, at)
+	res = unrequired(res)
 	return len(res) == 0 && len(miss) == 1 && miss[0].Refusal != nil && miss[0].Refusal.Reason == reason && miss[0].Name == "gate"
 }
 
-// waits: n's one input is missing with no refusal: a structural wait.
+// waits: n's one input but its requirement is missing with no refusal: a
+// structural wait.
 func (g graphStore) waits(n types.NodeID, need Requirements) bool {
 	res, miss := g.resolve(n, need, at)
+	res = unrequired(res)
 	return len(res) == 0 && len(miss) == 1 && miss[0].Refusal == nil && miss[0].Detail != ""
 }
 
@@ -334,7 +344,7 @@ func TestResolveAnswers(t *testing.T) {
 		"an answer of another revision": {"ruling": {Approval: aprA, Revision: 3}},
 		"an answer with no approval":    {"ruling": {Revision: 2}},
 	} {
-		if res, miss, err := g.resolveWith(asking, answered, noRequirement); err != nil || len(res) != 0 || len(miss) != 1 || miss[0].Name != "ruling" {
+		if res, miss, err := g.resolveWith(asking, answered, noRequirement); err != nil || len(unrequired(res)) != 0 || len(miss) != 1 || miss[0].Name != "ruling" {
 			t.Errorf("%s: %v %+v %v", name, res, miss, err)
 		}
 	}

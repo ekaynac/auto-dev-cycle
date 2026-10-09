@@ -17,6 +17,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/effecttarget"
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -41,12 +42,14 @@ func openEffectStore(t *testing.T) graphStore {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close(); lock.Release() })
-	g := graphStore{t: t, s: s, blobs: blobs, conclusions: map[types.Digest]json.RawMessage{}}
+	g := graphStore{t: t, s: s, blobs: blobs, conclusions: map[types.Digest]json.RawMessage{}, req: new(types.NodeID)}
 	g.plan, g.planRes = g.planOf(tskID, prjID)
 	return g
 }
 
-var effectEnv = Env{Need: noRequirement, Families: reviewers}
+// effectEnv reads answers through the owed-answer fake: a replacement's
+// lineage needs an authority (#219).
+var effectEnv = Env{Need: noRequirement, Families: reviewers, Authority: owedanswers.Authority{}}
 
 // pkgOf completes an integration node whose package result holds refs.
 func (g graphStore) pkgOf(refs ...types.Ref) (types.NodeID, types.Result) {
@@ -385,8 +388,7 @@ func TestRunEffect(t *testing.T) {
 
 	// A kind reconciled first is never blindly retried, and a repeat that
 	// observes nothing new records nothing.
-	pkg, _ := g.pkg("M")
-	merge := g.mustOperate(g.effectOn(pkg, types.NodeKindMerge, "merge", `{"target":"main"}`, true))
+	merge := g.mustOperate(g.claimedMerge("main", "B1").Merge)
 	g.uncertain()
 	if e := run(merge, tg); e.State != eventstore.EffectUncertain || len(tg.Applied("main")) != 0 {
 		t.Fatalf("merge: %+v, applied %v", e, tg.Applied("main"))

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -113,6 +114,11 @@ type graphFix struct {
 
 // openGraph opens the fixture's store in dir; close releases it.
 func openGraph(ctx context.Context, dir string) (g *graphFix, close func() error, err error) {
+	return openGraphWith(ctx, dir, nil)
+}
+
+// openGraphWith is openGraph whose commands may intend effects.
+func openGraphWith(ctx context.Context, dir string, effects eventstore.EffectKinds) (g *graphFix, close func() error, err error) {
 	state := filepath.Join(dir, "state")
 	lock, err := eventstore.AcquireLock(state)
 	if err != nil {
@@ -124,7 +130,7 @@ func openGraph(ctx context.Context, dir string) (g *graphFix, close func() error
 	if err == nil {
 		kinds := graph.Kinds()
 		maps.Copy(kinds, owedanswers.Kinds())
-		s, err = eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+		s, err = eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Effects: effects,
 			Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(graph.Project, owedanswers.Project)}})
 	}
 	if err != nil {
@@ -165,6 +171,9 @@ func (g *graphFix) record(kind types.NodeKind, params json.RawMessage, input []t
 	if kind == types.NodeKindEvidence { // an evidence node leases its target (12)
 		n.Node.Requires.Resources = []types.ResourceGroupKind{types.ResourceGroupKindEvidenceTarget}
 	}
+	if err == nil && kind == types.NodeKindReview && !slices.ContainsFunc(input, isRequirement) {
+		n.Node.Inputs, err = g.required(params, input, pred...)
+	}
 	if err == nil {
 		err = g.do(func(*eventstore.Tx) ([]eventstore.Event, error) {
 			if kind == types.NodeKindReview || kind == types.NodeKindReviewRequirement { // under the fixtures' executor registry (G6a)
@@ -176,14 +185,162 @@ func (g *graphFix) record(kind types.NodeKind, params json.RawMessage, input []t
 	return n.Node.ID, err
 }
 
+// required is input with a review's requirement input (requirementFor),
+// or, for a successor, its predecessor's, in its predecessor's place.
+func (g *graphFix) required(params json.RawMessage, input []types.InputSpec, pred ...types.NodeID) ([]types.InputSpec, error) {
+	out := slices.Clone(input)
+	if len(pred) == 1 {
+		var rec struct {
+			Recorded types.NodeRecorded `json:"recorded"`
+		}
+		err := g.s.View(g.ctx, func(tx *eventstore.Tx) error {
+			raw, _, err := tx.Get(graph.NodeProjection, string(pred[0]))
+			if err == nil {
+				err = json.Unmarshal(raw, &rec)
+			}
+			return err
+		})
+		i := slices.IndexFunc(rec.Recorded.Node.Inputs, isRequirement)
+		if err != nil || i < 0 || i > len(out) {
+			return nil, errors.Join(err, errors.New("the predecessor declares no requirement"))
+		}
+		return slices.Insert(out, i, rec.Recorded.Node.Inputs[i]), nil
+	}
+	req, err := g.requirementFor(params)
+	return append(out, types.InputSpec{Name: "required", Source: types.InputSpecSource{Variant: &types.ResultSource{
+		Type: "result", Producer: req, ResultKind: types.ResultKindReviewRequirement}}}), err
+}
+
+func isRequirement(in types.InputSpec) bool {
+	src, ok := in.Source.Variant.(*types.ResultSource)
+	return ok && src.ResultKind == types.ResultKindReviewRequirement
+}
+
+// requirementFor is the review_requirement node a review of params (by
+// definition version 1) takes in the fixtures' task: its subject's
+// selected requirement, which must be of its roster, or the first
+// revision, recorded and completed now (every review declares one,
+// G7b-2a). Only a supersession moves a subject's revision (supersede).
+func (g *graphFix) requirementFor(params json.RawMessage) (types.NodeID, error) {
+	var p types.ReviewNodeParams
+	var cur struct {
+		Revision int64        `json:"revision"`
+		Params   types.Digest `json:"params"`
+		Node     types.NodeID `json:"node"`
+	}
+	err := json.Unmarshal(params, &p)
+	for _, m := range p.Roster { // an executor the registry does not hold is refused first, as RecordReview refuses it
+		if _, rerr := graph.Roster([]types.ExecutorID{m.Executor}, reviewers); err == nil && rerr != nil {
+			err = rerr
+		}
+	}
+	if err == nil {
+		err = g.s.View(g.ctx, func(tx *eventstore.Tx) error {
+			raw, ok, err := tx.Get(graph.RequirementProjection, string(gTask)+"/"+string(p.Subject))
+			if err == nil && ok {
+				err = json.Unmarshal(raw, &cur)
+			}
+			return err
+		})
+	}
+	req := func(rev int64) (json.RawMessage, types.Digest, error) {
+		b, err := json.Marshal(types.ReviewRequirement{Subject: p.Subject, Roster: p.Roster, DefinitionVersion: "1", Revision: rev})
+		d, derr := graph.ParamsDigest(b)
+		return b, d, errors.Join(err, derr)
+	}
+	_, d, derr := req(cur.Revision)
+	if err = errors.Join(err, derr); err != nil || cur.Node != "" && d == cur.Params {
+		return cur.Node, err
+	}
+	if cur.Node != "" {
+		return "", fmt.Errorf("%s is at requirement revision %d of another roster: a roster change is a supersession", p.Subject, cur.Revision)
+	}
+	b, _, err := req(1)
+	var n types.NodeID
+	if err == nil {
+		n, err = g.claimedRequirement(b)
+	}
+	return n, errors.Join(err, g.requirementResult(n, b))
+}
+
+// claimedRequirement records and claims a review_requirement node of
+// params b.
+func (g *graphFix) claimedRequirement(b json.RawMessage) (types.NodeID, error) {
+	n, err := g.record(types.NodeKindReviewRequirement, b, []types.InputSpec{})
+	if err == nil {
+		err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.ClaimReview(tx, n, map[string]graph.Resolved{}, 1, reviewers)
+		})
+	}
+	return n, err
+}
+
+// supersede replaces review, of the fixtures' candidate subject, by a
+// review of roster under the subject's next requirement revision (G6b-1),
+// and returns the replacement.
+func (g *graphFix) supersede(review types.NodeID, roster json.RawMessage) (types.NodeID, error) {
+	var p types.ReviewNodeParams
+	var cur struct {
+		Revision int64 `json:"revision"`
+	}
+	var repl types.NodeID
+	err := json.Unmarshal(roster, &p)
+	if err == nil {
+		err = g.s.View(g.ctx, func(tx *eventstore.Tx) error {
+			raw, _, err := tx.Get(graph.RequirementProjection, string(gTask)+"/"+string(p.Subject))
+			if err == nil {
+				err = json.Unmarshal(raw, &cur)
+			}
+			return err
+		})
+	}
+	b, merr := json.Marshal(types.ReviewRequirement{Subject: p.Subject, Roster: p.Roster, DefinitionVersion: "1", Revision: cur.Revision + 1})
+	var n types.NodeID
+	if err = errors.Join(err, merr); err == nil {
+		n, err = g.claimedRequirement(b)
+	}
+	if err == nil {
+		err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.Supersede(tx, review, n, nil, reviewers)
+		})
+	}
+	if err == nil {
+		err = errors.Join(g.requirementResult(n, b), g.s.View(g.ctx, func(tx *eventstore.Tx) error {
+			raw, _, err := tx.Get(graph.SuccessorProjection, string(review))
+			if err == nil {
+				err = json.Unmarshal(raw, &repl)
+			}
+			return err
+		}))
+	}
+	return repl, err
+}
+
+// requirementResult commits n's requirement result, its params b.
+func (g *graphFix) requirementResult(n types.NodeID, b json.RawMessage) error {
+	if n == "" {
+		return nil
+	}
+	rid, ierr := ids.New("res")
+	st, _, serr := g.node(n)
+	if err := errors.Join(ierr, serr); err != nil || st.Key == nil {
+		return errors.Join(err, errors.New("the requirement is not claimed"))
+	}
+	r := types.Result{ID: types.ResultID(rid), Computation: st.Key.Key, Kind: types.ResultKindReviewRequirement, Value: []types.Ref{}, Conclusions: &b,
+		Outcome: types.OutcomeFound, Reason: vocab.ReasonCompletedWithFindings, Detail: "required", Completed: true}
+	return g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return nil, graph.Commit(tx, n, r, graph.Env{Need: noNeed})
+	})
+}
+
 // complete records, claims and completes a node of kind on input, with
 // a result of kind holding value.
 func (g *graphFix) complete(kind types.NodeKind, params json.RawMessage, input []types.InputSpec, resolved map[string]graph.Resolved, rk types.ResultKind, value []types.Ref, conclusions *json.RawMessage) (types.NodeID, types.ResultID, error) {
 	n, err := g.record(kind, params, input)
 	if err == nil {
 		err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			if kind == types.NodeKindReview {
-				return graph.ClaimReview(tx, n, resolved, 1, reviewers)
+			if kind == types.NodeKindReview || kind == types.NodeKindReviewRequirement {
+				return graph.ClaimReview(tx, n, g.withRequired(n, resolved), 1, reviewers)
 			}
 			return graph.Claim(tx, n, resolved, 1)
 		})
@@ -193,6 +350,30 @@ func (g *graphFix) complete(kind types.NodeKind, params json.RawMessage, input [
 	}
 	r, err := g.selectResult(n, rk, value, conclusions)
 	return n, r, err
+}
+
+// withRequired is resolved with n's review requirement inputs resolved to
+// their producers' selected results.
+func (g *graphFix) withRequired(n types.NodeID, resolved map[string]graph.Resolved) map[string]graph.Resolved {
+	out := maps.Clone(resolved)
+	_ = g.s.View(g.ctx, func(tx *eventstore.Tx) error {
+		raw, _, err := tx.Get(graph.NodeProjection, string(n))
+		var rec struct {
+			Recorded types.NodeRecorded `json:"recorded"`
+		}
+		if err == nil {
+			err = json.Unmarshal(raw, &rec)
+		}
+		for _, in := range rec.Recorded.Node.Inputs {
+			if src, ok := in.Source.Variant.(*types.ResultSource); err == nil && ok && isRequirement(in) {
+				if st, _, nerr := g.node(src.Producer); nerr == nil && st.Result != nil {
+					out[string(in.Name)] = graph.Resolved{Result: *st.Result}
+				}
+			}
+		}
+		return err
+	})
+	return out
 }
 
 // selectResult records and selects a clean result of kind holding value

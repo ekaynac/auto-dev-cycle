@@ -5,7 +5,9 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -81,6 +83,26 @@ func (g graphStore) rebased(gen Generation, value ...types.Ref) {
 	g.must(evaluate(effectEnv, gen.Rebase))
 	g.must(commit(gen.Rebase, g.rebaseResult(gen, value...), effectEnv))
 	g.must(evaluate(effectEnv, gen.CarryOver))
+}
+
+// claimedMerge is the first generation of a reviewed candidate on base,
+// whose carry_over attested and whose merge is claimed.
+func (g graphStore) claimedMerge(branch, base string) Generation {
+	g.t.Helper()
+	patch := g.ref(types.RefTypeBlob, "P on "+branch)
+	gen, err := g.generate(g.queueSpec(branch, patch), base)
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	g.rebased(gen, g.ref(types.RefTypeGitTree, "T on "+base), patch)
+	if r, err := g.carryOver(gen.CarryOver); err != nil || r.Outcome != types.OutcomeEmpty {
+		g.t.Fatalf("the carry_over: %+v (%v)", r, err)
+	}
+	g.must(evaluate(effectEnv, gen.Merge))
+	if st := g.state(gen.Merge); st.State != types.NodeStateStateClaimed {
+		g.t.Fatalf("the merge is %s", st.State)
+	}
+	return gen
 }
 
 func (g graphStore) carryOver(n types.NodeID) (r types.Result, err error) {
@@ -423,8 +445,9 @@ func TestCarryOverRoles(t *testing.T) {
 // intent, not again.
 func TestCompleteEffect(t *testing.T) {
 	g := openEffectStore(t)
-	pkg, pres := g.pkg("M")
-	merge := g.effectOn(pkg, types.NodeKindMerge, "merge", `{"target":"main"}`, true)
+	gen := g.claimedMerge("main", "B1")
+	pkg, merge := gen.CarryOver, gen.Merge
+	pres, _ := view[types.ResultRecorded](g, ResultProjection, string(*g.state(pkg).Result))
 	complete := func(n types.NodeID) error {
 		return g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return nil, CompleteEffect(tx, n, g.blobs) })
 	}
@@ -440,20 +463,20 @@ func TestCompleteEffect(t *testing.T) {
 		r.Kind, r.Value, r.Outcome, r.Reason, r.Detail = types.ResultKindMergeResult, append([]types.Ref{}, value...), types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
 		return r
 	}
-	if err := g.do(raw(merge, result(pres.Value...), g.blobs)); err == nil {
+	if err := g.do(raw(merge, result(pres.Result.Value...), g.blobs)); err == nil {
 		t.Fatal("a result of a pending effect folded")
 	}
-	g.must(invalidate(pkg)) // after the intent: no re-validation at completion
 	if _, err := g.runEffect(op, effecttarget.New()); err != nil {
 		t.Fatal(err)
 	}
+	g.must(invalidate(pkg)) // after the apply: no re-validation at completion
 	if err := g.do(invalidate(merge)); err == nil || !strings.Contains(err.Error(), "its result is recorded") {
 		t.Fatalf("a completed merge with no result was invalidated: %v", err)
 	}
-	if err := g.do(commit(merge, result(pres.Value...), effectEnv)); err == nil || !strings.Contains(err.Error(), "only by CompleteEffect") {
+	if err := g.do(commit(merge, result(pres.Result.Value...), effectEnv)); err == nil || !strings.Contains(err.Error(), "only by CompleteEffect") {
 		t.Fatalf("Commit of an effect node: %v", err)
 	}
-	found := result(pres.Value...)
+	found := result(pres.Result.Value...)
 	found.Outcome, found.Reason, found.Detail = types.OutcomeFound, vocab.ReasonCompletedWithFindings, "forged"
 	for name, r := range map[string]types.Result{
 		"an unrelated ref": result(g.ref(types.RefTypeGitTree, "never pushed")),
@@ -472,7 +495,7 @@ func TestCompleteEffect(t *testing.T) {
 	}
 	st := g.state(merge)
 	res, _ := view[types.ResultRecorded](g, ResultProjection, string(*st.Result))
-	if st.State != types.NodeStateStateCompleted || res.Result.Kind != types.ResultKindMergeResult || !sameRefs(res.Result.Value, pres.Value) {
+	if st.State != types.NodeStateStateCompleted || res.Result.Kind != types.ResultKindMergeResult || !sameRefs(res.Result.Value, pres.Result.Value) {
 		t.Fatalf("the merge is %s with %+v", st.State, res.Result)
 	}
 	// The next generation of a completed merge has no operation at its key.
@@ -491,5 +514,469 @@ func TestCompleteEffect(t *testing.T) {
 		if err := complete(n); err == nil || !strings.Contains(err.Error(), "records no effect result") {
 			t.Fatalf("%s completed: %v", n, err)
 		}
+	}
+}
+
+// A roster change after carry-over was selected makes the merge wait: the
+// merge's intent re-validates against the subject's selected requirement
+// revision and is refused; the next generation's carry_over demands the
+// replacement review, and its merge waits. Once the replacement review is
+// made under the new revision, a generation attests it and its merge is
+// claimed and intended.
+func TestMergeRequirement(t *testing.T) {
+	g := openEffectStore(t)
+	gen1 := g.claimedMerge("main", "B1")
+	spec := g.specOf(gen1)
+	replacement := g.rosterChange(spec.Review, exeB)
+	var stale ErrRevalidated
+	if _, err := g.operate(gen1.Merge); !errors.As(err, &stale) || stale.Reason != vocab.ReasonStaleExpectedState || stale.Input != "requirement" || g.count(NodeOperated) != 0 {
+		t.Fatalf("the merge's intent after a roster change: %v", err)
+	}
+	patch := g.patchOf(spec.Candidate)
+	gen2, err := g.generate(spec, "B2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.must(evaluate(effectEnv, gen2.Rebase))
+	g.must(commit(gen2.Rebase, g.rebaseResult(gen2, g.ref(types.RefTypeGitTree, "T on B2"), patch), effectEnv))
+	g.must(evaluate(effectEnv, gen2.Merge)) // the superseded review serves no carry_over
+	if co, m := g.state(gen2.CarryOver), g.state(gen2.Merge); co.State != types.NodeStateStateWaiting || m.State != types.NodeStateStateWaiting {
+		t.Fatalf("the carry_over of a superseded review is %s, its merge %s", co.State, m.State)
+	}
+	// The replacement review, made under revision 2.
+	spec.Review = replacement
+	g.must(evaluate(effectEnv, spec.Review))
+	g.must(commit(spec.Review, g.reviewResult(spec.Review), effectEnv))
+	gen3, err := g.generate(spec, "B3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.rebased(gen3, g.ref(types.RefTypeGitTree, "T on B3"), patch)
+	if r, err := g.carryOver(gen3.CarryOver); err != nil || r.Outcome != types.OutcomeEmpty {
+		t.Fatalf("the carry_over of the replacement: %+v (%v)", r, err)
+	}
+	g.must(evaluate(effectEnv, gen3.Merge))
+	if op := g.mustOperate(gen3.Merge); g.effect(op.Effect).State != eventstore.EffectPending {
+		t.Fatalf("the replacement's merge: %+v", g.effect(op.Effect))
+	}
+	if diffs, err := g.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %+v", err, diffs)
+	}
+}
+
+// rosterChange supersedes review, of the candidate in tskID, by one of
+// exes, under its subject's next requirement revision (G6b-1), and
+// returns the replacement.
+func (g graphStore) rosterChange(review types.NodeID, exes ...types.ExecutorID) types.NodeID {
+	g.t.Helper()
+	cur, _ := view[revision](g, RequirementProjection, requirementIndex(tskID, "candidate"))
+	req := g.requirementNode(cur.Revision+1, "1", exes...)
+	n := g.record(req)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, n, map[string]Resolved{}, 1) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, review, n, nil, reviewers) })
+	r := unrecorded(g.t, *g.state(n).Key)
+	r.Kind, r.Value, r.Conclusions, r.Outcome, r.Reason, r.Detail = types.ResultKindReviewRequirement, []types.Ref{}, &req.Node.Params, types.OutcomeFound, vocab.ReasonCompletedWithFindings, "required"
+	g.must(raw(n, r, g.blobs))
+	repl, _ := view[types.NodeID](g, SuccessorProjection, string(review))
+	return repl
+}
+
+// specOf is the queue spec gen was generated for.
+func (g graphStore) specOf(gen Generation) QueueSpec {
+	co := g.recordOf(gen.CarryOver).Node
+	return QueueSpec{Task: tskID, Project: prjID, Branch: "main", Candidate: producerOf(co, "candidate"), Review: producerOf(co, "review")}
+}
+
+// patchOf is the one ref of n's selected patch.
+func (g graphStore) patchOf(n types.NodeID) types.Ref {
+	r, _ := view[types.ResultRecorded](g, ResultProjection, string(*g.state(n).Result))
+	return r.Result.Value[0]
+}
+
+// A merge is one per generation, on its current carry_over and that
+// carry_over's requirement, at its base; a generation needs its review's
+// selected requirement.
+func TestMergeRecorded(t *testing.T) {
+	g := openEffectStore(t)
+	gen := g.claimedMerge("main", "B1")
+	other, _, err := g.completeRequirement(g.requirementNode(1, "1", exeA, exeC), nil)
+	if err == nil {
+		t.Fatal("another requirement at the selected revision")
+	}
+	second := g.recordOf(gen.Merge)
+	second.Node.ID = types.NodeID(must(ids.New("nod")))
+	if err := g.do(forge(NodeRecorded, string(second.Node.ID), prjID, &second)); err == nil {
+		t.Error("a second merge: recorded")
+	}
+	// A generation recorded without its merge, so each refusal is its own.
+	spec := g.specOf(gen)
+	spec.Branch = "dev"
+	var bare Generation
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		evs, gn, err := Generate(tx, spec, Observation{Head: "B1", Version: 1})
+		bare = gn
+		return evs[:len(evs)-1], err // the merge's node.recorded comes last
+	})
+	rec := g.recordOf(gen.Merge)
+	rec.Node.Params = json.RawMessage(`{"target":"dev","base":"B1","generation":1}`)
+	rec.Node.Inputs = slices.Clone(rec.Node.Inputs)
+	rec.Node.Inputs[0].Source.Variant = &types.ResultSource{Type: "result", Producer: bare.CarryOver, ResultKind: types.ResultKindCarryOverAttestation}
+	params := func(js string) func(*types.NodeRecorded) {
+		return func(r *types.NodeRecorded) { r.Node.Params = json.RawMessage(js) }
+	}
+	for name, change := range map[string]func(*types.NodeRecorded){
+		"another generation's carry_over": func(r *types.NodeRecorded) {
+			r.Node.Inputs[0].Source.Variant = &types.ResultSource{Type: "result", Producer: gen.CarryOver, ResultKind: types.ResultKindCarryOverAttestation}
+		},
+		"another generation":     params(`{"target":"dev","base":"B1","generation":2}`),
+		"another base":           params(`{"target":"dev","base":"B0","generation":1}`),
+		"no generation":          params(`{"target":"rel","base":"B1","generation":1}`),
+		"params of another kind": params(`{"target":"dev","base":"B1","generation":1,"x":1}`),
+		"no requirement":         func(r *types.NodeRecorded) { r.Node.Inputs = r.Node.Inputs[:1] },
+		"another requirement": func(r *types.NodeRecorded) {
+			r.Node.Inputs[1].Source.Variant = &types.ResultSource{Type: "result", Producer: other, ResultKind: types.ResultKindReviewRequirement}
+		},
+		"the carry_over twice": func(r *types.NodeRecorded) { r.Node.Inputs[1] = r.Node.Inputs[0] },
+		"a renamed input":      func(r *types.NodeRecorded) { r.Node.Inputs[1].Name = "required" },
+		"an extra input":       func(r *types.NodeRecorded) { r.Node.Inputs = append(r.Node.Inputs, g.planInput("plan")) },
+	} {
+		r := rec
+		r.Node.ID, r.Node.Inputs = types.NodeID(must(ids.New("nod"))), slices.Clone(rec.Node.Inputs)
+		change(&r)
+		if err := g.do(forge(NodeRecorded, string(r.Node.ID), prjID, &r)); err == nil {
+			t.Errorf("%s: recorded", name)
+		}
+	}
+	rec.Node.ID = types.NodeID(must(ids.New("nod")))
+	g.must(forge(NodeRecorded, string(rec.Node.ID), prjID, &rec))
+	if cur, _ := view[Generation](g, GenerationProjection, generationKey(tskID, "dev")); cur.Merge != rec.Node.ID {
+		t.Fatalf("the generation's merge is %s, want %s", cur.Merge, rec.Node.ID)
+	}
+	nobody := QueueSpec{Task: tskID, Project: prjID, Branch: "other", Candidate: spec.Candidate, Review: g.plan}
+	if _, err := g.generate(nobody, "B1"); err == nil || !strings.Contains(err.Error(), "no selected review requirement") {
+		t.Fatalf("a generation of a review with no requirement: %v", err)
+	}
+}
+
+// A carry_over of a reused review attests through the review's result
+// holder: its claim is the one read.
+func TestCarryOverReusedReview(t *testing.T) {
+	g := openEffectStore(t)
+	patch := g.ref(types.RefTypeBlob, "P")
+	spec := g.queueSpec("main", patch)
+	like := g.recordOf(spec.Review)
+	like.Node.ID = types.NodeID(must(ids.New("nod")))
+	reused := g.record(like)
+	if err := g.do(evaluate(g.env(noRequirement), reused)); err != nil || g.state(reused).State != types.NodeStateStateCompleted {
+		t.Fatalf("the reuse: %v %+v", err, g.state(reused))
+	}
+	spec.Review = reused
+	gen, err := g.generate(spec, "B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.rebased(gen, g.ref(types.RefTypeGitTree, "T"), patch)
+	if r, err := g.carryOver(gen.CarryOver); err != nil || r.Outcome != types.OutcomeEmpty {
+		t.Fatalf("the carry_over of a reused review: %+v (%v)", r, err)
+	}
+	if diffs, err := g.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %+v", err, diffs)
+	}
+}
+
+// A carry_over attests only a review made under its requirement: a review
+// of the old revision that was not superseded (another review of the
+// subject was) gets the demand for the replacement, and the merge of that
+// demand waits.
+func TestCarryOverRequirement(t *testing.T) {
+	g := openEffectStore(t)
+	patch := g.ref(types.RefTypeBlob, "P")
+	spec := g.queueSpec("main", patch)
+	other := g.nodeOn(types.NodeKindReview, spec.Candidate)
+	other.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = types.ResultKindPatch
+	other.Node.Inputs = append(other.Node.Inputs, g.planInput("again"))
+	kept := g.record(other) // another review of revision 1, of its own key
+	g.must(evaluate(effectEnv, kept))
+	g.must(commit(kept, g.reviewResult(kept), effectEnv))
+	g.rosterChange(spec.Review, exeB)
+	spec.Review = kept
+	gen, err := g.generate(spec, "B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.rebased(gen, g.ref(types.RefTypeGitTree, "T"), patch)
+	r, err := g.carryOver(gen.CarryOver)
+	if err != nil || r.Outcome != types.OutcomeFound || r.Reason != vocab.ReasonReviewInputChanged || !strings.Contains(r.Detail, "replacement review") {
+		t.Fatalf("the carry_over of a review of the old revision: %+v (%v)", r, err)
+	}
+	g.must(evaluate(effectEnv, gen.Merge))
+	if st := g.state(gen.Merge); st.State != types.NodeStateStateWaiting {
+		t.Fatalf("the merge of a demand for the replacement is %s", st.State)
+	}
+}
+
+// While a merge's operation is live, nothing it consumed moves: no
+// supersession moves its subject's revision, whichever review it replaces;
+// its requirement, carry_over and carried review are not invalidated, by
+// command or raw event. Once the operation settles, they move.
+func TestMergeInputsFenced(t *testing.T) {
+	g := openEffectStore(t)
+	f := fakeforge.New()
+	f.Move("main", "B1")
+	gen := g.claimedMerge("main", "B1")
+	spec := g.specOf(gen)
+	// Another review of the subject, unclaimed by any carry_over.
+	other := g.nodeOn(types.NodeKindReview, spec.Candidate)
+	other.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = types.ResultKindPatch
+	other.Node.Inputs = append(other.Node.Inputs, g.planInput("again"))
+	otherReview := g.record(other)
+	op := g.mustOperate(gen.Merge)
+	cur, _ := view[revision](g, RequirementProjection, requirementIndex(tskID, "candidate"))
+	next := g.record(g.requirementNode(cur.Revision+1, "1", exeB))
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return claimAny(tx, next, map[string]Resolved{}, 1)
+	})
+	fenced := func(what string, err error, fold bool) {
+		t.Helper()
+		var live ErrMergeLive
+		if !errors.As(err, &live) || live.Merge != gen.Merge || fold != strings.Contains(err.Error(), "graph: event") {
+			t.Errorf("%s: %v (want a fence, by the %s)", what, err, map[bool]string{true: "fold", false: "builder"}[fold])
+		}
+	}
+	for name, review := range map[string]types.NodeID{"the carried review": spec.Review, "another review of the subject": otherReview} {
+		fenced(name+" superseded", g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return Supersede(tx, review, next, nil, reviewers)
+		}), false)
+		fenced(name+" superseded by a raw event", g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			rec, err := loadNode(tx, review)
+			n := rec.Recorded.Node
+			n.ID, n.Params, n.Inputs = types.NodeID(must(ids.New("nod"))), reviewParams(exeB), slices.Clone(n.Inputs)
+			for i, in := range n.Inputs {
+				if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
+					n.Inputs[i].Source.Variant = &types.ResultSource{Type: "result", Producer: next, ResultKind: types.ResultKindReviewRequirement}
+				}
+			}
+			evs, eerr := event(ReviewSuperseded, string(review), prjID, &types.ReviewSuperseded{Type: "review_superseded", Predecessor: review, Replacement: n,
+				StoppedAttempts: []types.AttemptID{}, TransferredHolds: []types.HoldID{}, RetiredHolds: []types.RetiredHold{}})
+			return evs, errors.Join(err, eerr)
+		}), true)
+	}
+	for name, n := range map[string]types.NodeID{"the requirement": producerOf(g.recordOf(gen.Merge).Node, "requirement"), "the carry_over": gen.CarryOver,
+		"the carried review": spec.Review, "the rebase": gen.Rebase} {
+		fenced(name+" invalidated", g.do(invalidate(n)), false)
+		fenced(name+" invalidated by a raw event", g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			c, _, err := load[claim](tx, ClaimProjection, string(n))
+			rec, rerr := loadNode(tx, n)
+			key, kerr := Key(rec.Recorded.Node, resolutions(c.Inputs), c.Key.Generation+1)
+			if err = errors.Join(err, rerr, kerr); err != nil {
+				return nil, err
+			}
+			return event(NodeInvalidated, string(n), prjID, &types.NodeInvalidated{Type: "node_invalidated", Node: n, Key: key})
+		}), true)
+	}
+	if e, err := g.runEffect(op, f); err != nil || e.State != eventstore.EffectCompleted || len(f.Pushed("main")) != 1 {
+		t.Fatalf("the fenced merge: %+v (%v)", e, err)
+	}
+	// Settled: the review may be superseded, and the requirement re-run.
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return nil, CompleteEffect(tx, gen.Merge, g.blobs)
+	})
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Supersede(tx, otherReview, next, nil, reviewers)
+	})
+}
+
+// A pending effect that applies nothing fails, confirmed, only when its
+// target proves it never landed; an apply that landed (a push whose
+// observation was lost, then moved over), or a target that cannot tell,
+// leaves it uncertain, its target still fenced.
+func TestUnappliedNeedsLandedProof(t *testing.T) {
+	f := fakeforge.New()
+	f.Move("main", "B1")
+	if _, err := f.Apply("main", "eff_landed", "W", "B1"); err != nil {
+		t.Fatal(err)
+	}
+	f.Move("main", "B2")
+	for name, c := range map[string]struct {
+		target EffectTarget
+		effect string
+		want   string
+	}{
+		"never landed": {f, "eff_other", "failed"},
+		"landed":       {f, "eff_landed", "uncertain"},
+		"cannot tell":  {blindTarget{f}, "eff_other", "uncertain"},
+	} {
+		var got eventstore.Transition
+		record := func(tr eventstore.Transition) (eventstore.Effect, error) { got = tr; return eventstore.Effect{}, nil }
+		cause := errors.New("stale")
+		if _, err := unapplied(record, c.target, Operation{Effect: c.effect, Request: EffectRequest{Target: "main"}}, "inputs moved", cause); !errors.Is(err, cause) || got.Kind != c.want {
+			t.Errorf("%s: %s (%v), want %s", name, got.Kind, err, c.want)
+		}
+	}
+}
+
+// blindTarget cannot tell what landed.
+type blindTarget struct{ *fakeforge.Forge }
+
+func (blindTarget) Landed(string, string) (bool, error) { return false, errors.New("no push log") }
+
+// A requirement is matched by what it requires, not by the result that
+// recorded it: a review that took an identical requirement node's result,
+// or the requirement's result before it was re-run, still carries over.
+func TestCarryOverSameRequirement(t *testing.T) {
+	for _, rerun := range []bool{false, true} {
+		g := openEffectStore(t)
+		patch := g.ref(types.RefTypeBlob, "P")
+		cand := g.candidate(patch)
+		first := g.defaultRequirement()
+		review := g.consumerOf(cand, types.ResultKindPatch)
+		if !rerun { // an identical requirement node, selected again, binds the review
+			twin, _, err := g.completeRequirement(g.requirementNode(1, "1", exeA), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cur, _ := view[revision](g, RequirementProjection, requirementIndex(tskID, "candidate")); cur.Node != first {
+				t.Fatalf("an identical requirement moved the revision's node to %s", cur.Node)
+			}
+			rec := g.recordOf(review)
+			rec.Node.ID, rec.Node.Inputs = types.NodeID(must(ids.New("nod"))), slices.Clone(rec.Node.Inputs)
+			rec.Node.Inputs[1] = requiredOn(twin)
+			g.must(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(rec) })
+			review = rec.Node.ID
+		}
+		g.must(evaluate(effectEnv, review))
+		g.must(commit(review, g.reviewResult(review), effectEnv))
+		if rerun { // the requirement runs again after the review took it
+			g.must(invalidate(first))
+			r := unrecorded(t, *g.state(first).Key)
+			r.Kind, r.Value, r.Conclusions, r.Outcome, r.Reason, r.Detail = types.ResultKindReviewRequirement, []types.Ref{}, ptr(g.recordOf(first).Node.Params), types.OutcomeFound, vocab.ReasonCompletedWithFindings, "required"
+			g.must(raw(first, r, g.blobs))
+		}
+		gen, err := g.generate(QueueSpec{Task: tskID, Project: prjID, Branch: "main", Candidate: cand, Review: review}, "B1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.rebased(gen, g.ref(types.RefTypeGitTree, "T"), patch)
+		if r, err := g.carryOver(gen.CarryOver); err != nil || r.Outcome != types.OutcomeEmpty {
+			t.Fatalf("rerun %t: the carry_over: %+v (%v)", rerun, r, err)
+		}
+	}
+}
+
+// A carry_over whose reused review's holder ran again after the claim is
+// refused as a commit is, ErrRevalidated (stale_expected_state), not by a
+// role error: the carry_over is invalidated, and claims the fresh result.
+func TestCarryOverReusedHolderRerun(t *testing.T) {
+	g := openEffectStore(t)
+	patch := g.ref(types.RefTypeBlob, "P")
+	spec := g.queueSpec("main", patch)
+	like := g.recordOf(spec.Review)
+	like.Node.ID = types.NodeID(must(ids.New("nod")))
+	reused := g.record(like)
+	g.must(evaluate(g.env(noRequirement), reused))
+	holder := spec.Review
+	spec.Review = reused
+	gen, err := g.generate(spec, "B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.rebased(gen, g.ref(types.RefTypeGitTree, "T"), patch)
+	g.must(invalidate(holder)) // releases the reuse
+	g.must(commit(holder, g.reviewResult(holder), effectEnv))
+	var stale ErrRevalidated
+	if _, err := g.carryOver(gen.CarryOver); !errors.As(err, &stale) || stale.Reason != vocab.ReasonStaleExpectedState {
+		t.Fatalf("the carry_over of a re-run holder: %v", err)
+	}
+}
+
+// An uncertain merge fences its inputs as a pending one does; a merge of
+// another task fences nothing of this one.
+func TestMergeFenceScope(t *testing.T) {
+	g := openEffectStore(t)
+	gen := g.claimedMerge("main", "B1")
+	g.mustOperate(gen.Merge)
+	g.uncertain()
+	if err := g.do(invalidate(gen.CarryOver)); !errors.As(err, new(ErrMergeLive)) {
+		t.Fatalf("an input of an uncertain merge invalidated: %v", err)
+	}
+	// Task B's subject candidate moves, under task A's live merge.
+	plan, planRes := g.planOf(tskB, prjB)
+	req := g.requirementNode(1, "1", exeA)
+	req.Task, req.Project = tskB, prjB
+	first, res, err := g.completeRequirement(req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := g.nodeOn(types.NodeKindReview, plan)
+	review.Task, review.Project = tskB, prjB
+	review.Node.Inputs[1] = requiredOn(first)
+	rid := g.record(review)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return claimAny(tx, rid, map[string]Resolved{"plan": {Result: planRes}, "required": {Result: res}}, 0)
+	})
+	next := g.requirementNode(2, "1", exeB)
+	next.Task, next.Project = tskB, prjB
+	n := g.record(next)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, n, map[string]Resolved{}, 1) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, rid, n, nil, reviewers) })
+}
+
+// A queue generation takes only its own task's nodes: a candidate or a
+// review of another task of the project is refused, by Generate and by
+// the rebase and carry_over folds, so the task-scoped fences see every
+// live merge.
+func TestQueueTaskLocal(t *testing.T) {
+	g := openEffectStore(t)
+	patch := g.ref(types.RefTypeBlob, "P")
+	spec := g.queueSpec("main", patch)
+	inC := func(kind types.NodeKind, producer types.NodeID, rk types.ResultKind) types.NodeID {
+		rec := g.nodeOn(kind, producer)
+		rec.Task = tskC
+		rec.Node.Inputs[0].Source.Variant.(*types.ResultSource).ResultKind = rk
+		return g.record(rec)
+	}
+	// Task C's review of A's candidate, and C's own candidate.
+	foreignReview := inC(types.NodeKindReview, spec.Candidate, types.ResultKindPatch)
+	g.must(evaluate(effectEnv, foreignReview))
+	g.must(commit(foreignReview, g.reviewResult(foreignReview), effectEnv))
+	foreignCand := inC(types.NodeKindBuild, g.plan, types.ResultKindPlan)
+	g.must(evaluate(effectEnv, foreignCand))
+	r := unrecorded(t, *g.state(foreignCand).Key)
+	r.Value = []types.Ref{patch}
+	g.must(commit(foreignCand, r, effectEnv))
+	for name, s := range map[string]QueueSpec{
+		"a foreign review":    {Task: tskID, Project: prjID, Branch: "main", Candidate: spec.Candidate, Review: foreignReview},
+		"a foreign candidate": {Task: tskID, Project: prjID, Branch: "main", Candidate: foreignCand, Review: spec.Review},
+	} {
+		if _, err := g.generate(s, "B1"); err == nil || !strings.Contains(err.Error(), "own task") || strings.Contains(err.Error(), "graph: event") {
+			t.Errorf("Generate with %s, refused by the builder: %v", name, err)
+		}
+	}
+	gen, err := g.generate(spec, "B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := func(n types.NodeRecorded, edit func(*types.NodeRecorded)) error {
+		n.Node.ID, n.Node.Inputs = types.NodeID(must(ids.New("nod"))), slices.Clone(n.Node.Inputs)
+		edit(&n)
+		return g.do(forge(NodeRecorded, string(n.Node.ID), prjID, &n))
+	}
+	swap := func(name string, producer types.NodeID, kind types.ResultKind) func(*types.NodeRecorded) {
+		return func(n *types.NodeRecorded) {
+			for i, in := range n.Node.Inputs {
+				if in.Name == types.Name(name) {
+					n.Node.Inputs[i].Source.Variant = &types.ResultSource{Type: "result", Producer: producer, ResultKind: kind}
+				}
+			}
+		}
+	}
+	if err := raw(g.recordOf(gen.CarryOver), swap("review", foreignReview, types.ResultKindReview)); err == nil || !strings.Contains(err.Error(), "own task") {
+		t.Errorf("a raw carry_over of a foreign review: %v", err)
+	}
+	if err := raw(g.recordOf(gen.Rebase), func(n *types.NodeRecorded) {
+		swap("candidate", foreignCand, types.ResultKindPatch)(n)
+		n.Node.Params = json.RawMessage(`{"branch":"main","base":"B2","version":` + strconv.FormatInt(gen.Version+1, 10) + `,"candidate":"` + string(r.ID) + `","generation":2}`)
+	}); err == nil || !strings.Contains(err.Error(), "own task") {
+		t.Errorf("a raw rebase of a foreign candidate: %v", err)
 	}
 }

@@ -111,6 +111,10 @@ const (
 	// GenerationTakesStale starts a generation on a base head observed
 	// before the current generation's.
 	GenerationTakesStale = "graph.generation-takes-stale"
+	// RequirementRevisionUnchecked serves a review requirement at any of
+	// its subject's revisions, so a roster change after carry-over was
+	// selected leaves the merge free to go.
+	RequirementRevisionUnchecked = "graph.requirement-revision-unchecked"
 	// EffectKeyedByComputation leaves the node instance out of an effect
 	// operation's request, so a new goal with an equal computation key finds
 	// an earlier operation: a cached effect result read as current state.
@@ -144,7 +148,8 @@ const (
 	// equivalent whatever their receipts' restrictions.
 	EquivalenceIgnoresRestrictions = "graph.equivalence-ignores-restrictions"
 	// EquivalenceIgnoresRoster treats two reviews as one identity whatever
-	// their params, so a review is reused across a roster change.
+	// their params and requirement (which binds the roster, G7b-2), so a
+	// review is reused across a roster change.
 	EquivalenceIgnoresRoster = "graph.equivalence-ignores-roster"
 	// SupersessionKeepsAttempts supersedes a review without stopping its
 	// running attempts, so their late output still lands.
@@ -202,4 +207,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	SupersessionKeepsAttempts, SupersessionKeepsPredecessor, SupersedeTwice, LineageIgnoresSupersession,
 	IsolationUnchecked, RestrictedArtifactRendered,
 	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer, DisplacedQuestionUnchecked,
-	ReuseSkipsAuthority, ContextNeedsNoAuthority}
+	ReuseSkipsAuthority, ContextNeedsNoAuthority,
+	RequirementRevisionUnchecked}
