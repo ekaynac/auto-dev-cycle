@@ -302,7 +302,8 @@ func TestSupersedeHoldsRefused(t *testing.T) {
 // A raw supersession that replaces an answer whose question its lineage
 // still asks (Astra, #213): round 1 asks ruling (ownID), unanswered, and
 // ownC, answered; the replacement of round 2 answers ownC in place of the
-// ruling. It neither claims nor commits while ownID is asked; once the
+// ruling. It neither claims, commits nor renders a context while ownID is
+// asked; once the
 // question moves, it claims.
 func TestDisplacedQuestion(t *testing.T) {
 	g := openStore(t)
@@ -337,6 +338,9 @@ func TestDisplacedQuestion(t *testing.T) {
 	if err := g.do(commit(rep, g.reviewResult(rep), env)); !errors.As(err, &stale) || stale.Reason != vocab.ReasonAuthorityRevoked {
 		t.Fatalf("the raw claim committed: %v", err)
 	}
+	if _, err := g.contextOf(rep); !errors.As(err, &stale) || stale.Reason != vocab.ReasonAuthorityRevoked {
+		t.Errorf("the raw claim's context: %v", err)
+	}
 	// Nor does a successor of a waiting copy of it run.
 	copied := g.recordOf(rep)
 	copied.Node.ID, copied.Predecessor = g.newNode(types.NodeKindReview).Node.ID, &rep
@@ -349,4 +353,55 @@ func TestDisplacedQuestion(t *testing.T) {
 	}
 	g.must(asked(ownID, review, nil)) // the question moves: the lineage no longer asks it
 	g.must(commit(rep, g.reviewResult(rep), env))
+}
+
+// Astra's reuse sequence (#216): a raw replacement answers ownC in place of
+// the ruling (ownID) and stays unclaimed; its successor, with the same
+// inputs and so the same key, completes once the ruling has moved; the
+// ruling is asked again, unanswered. The replacement is not reused, by the
+// builder or by the evaluator.
+func TestReuseDisplacedQuestion(t *testing.T) {
+	g := openStore(t)
+	env := g.env(gatesOn(treeA, demandA))
+	review, _, next := g.superseding()
+	r := g.recordOf(review)
+	r.Node.ID = g.newNode(types.NodeKindReview).Node.ID
+	first := g.record(r)
+	g.must(asked(ownID, first, nil))
+	g.must(asked(ownC, first, ptr(types.ApprovalID(aprC))))
+	second, err := g.successor(first, owes("ruling", ownID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.must(edited(second, next, func(p *types.ReviewSuperseded) {
+		p.Replacement.Inputs = slices.Clone(p.Replacement.Inputs)
+		p.Replacement.Inputs[2] = answerAt("ruling", ownC, 2)
+	}))
+	rep := *g.state(second).SupersededBy
+	req, err := g.completeRecorded(next, g.recordOf(next).Node.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later, err := g.successor(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.must(asked(ownID, review, nil)) // the ruling moves out of the lineage
+	g.must(evaluate(env, later))
+	g.must(commit(later, g.reviewResult(later), env))
+	g.must(asked(ownID, first, nil)) // and back in, unanswered
+	resolved := map[string]Resolved{"plan": {Result: g.planRes}, "required": {Result: req}, "ruling": {Approval: aprC, Revision: 2}}
+	var stale ErrRevalidated
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Reuse(tx, rep, resolved, owedanswers.Authority{})
+	}); !errors.As(err, &stale) || stale.Reason != vocab.ReasonAuthorityRevoked {
+		t.Errorf("the replacement reused the successor's result: %v", err)
+	}
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Reuse(tx, rep, resolved, nil) }); err == nil {
+		t.Error("a reuse with no authority")
+	}
+	g.must(evaluate(env, rep))
+	if st := g.state(rep); st.State == types.NodeStateStateCompleted || st.State == types.NodeStateStateClaimed {
+		t.Errorf("the evaluator ran the replacement: %s", st.State)
+	}
 }

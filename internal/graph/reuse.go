@@ -18,6 +18,14 @@ package graph
 //     records them as its claim (for the commit-time re-validation, 13
 //     [G4]), and the instance among the key's reusers. It never claims the
 //     key and never runs.
+//   - A reuse completes its node without a commit, so the builder
+//     re-validates its answer inputs as Commit does (13 [G4]): each is the
+//     answer the authority holds in force now, for a question its lineage
+//     asks at its current revision, and no question a supersession in its
+//     lineage replaced is still owed (displaced). The fold reads no
+//     authority, so a raw node.reused is not refused on its answers; until
+//     M1 records approvals and owed inputs, only the builder checks them,
+//     as only Commit checks a claim's.
 //   - A reused node is never invalidated on its own (ErrReused): the
 //     holder's invalidation releases it in the same command
 //     (node.reuse_released), which drops its claim and result and returns
@@ -31,13 +39,19 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // Reuse is the event binding node to the result of the node that holds its
-// key in its task, from node's resolved inputs.
-func Reuse(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved) ([]eventstore.Event, error) {
+// key in its task, from node's resolved inputs; auth answers its answer
+// inputs.
+func Reuse(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, auth Authority) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, node)
 	if err = errors.Join(err, bindsRequirement(tx, rec, resolved)); err != nil {
+		return nil, err
+	}
+	if err := answeredNow(tx, rec, resolved, auth); err != nil {
 		return nil, err
 	}
 	cur, err := current(tx, rec, resolved)
@@ -119,4 +133,28 @@ func reuseReleased(tx *eventstore.Tx, ev eventstore.Event, p *types.NodeReuseRel
 	rec.State.WaitingOn, rec.State.Key, rec.State.Result = waitingOn(rec.Recorded.Node), nil, nil
 	settle(&rec.State)
 	return putNode(tx, rec)
+}
+
+// answeredNow: each of rec's answer inputs resolves to the answer auth holds
+// in force now, for a question rec's lineage asks at its current revision,
+// and no displaced question is still owed (answers); else the input is
+// authority_revoked, as at commit.
+func answeredNow(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved, auth Authority) error {
+	if mutation.Is(mutation.ReuseSkipsAuthority) {
+		return nil
+	}
+	if auth == nil {
+		return errors.New("graph: a reuse needs the authority to answer its answer inputs")
+	}
+	answered, _, err := answers(tx, rec, auth)
+	if err != nil {
+		return err
+	}
+	for _, in := range rec.Recorded.Node.Inputs {
+		got, want := resolved[string(in.Name)], answered[string(in.Name)]
+		if _, ok := in.Source.Variant.(*types.AnswerSource); ok && (want.Approval == "" || got != want) {
+			return ErrRevalidated{Input: in.Name, Reason: vocab.ReasonAuthorityRevoked, Detail: "the answer is not the one in force for a question its lineage asks"}
+		}
+	}
+	return nil
 }

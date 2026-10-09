@@ -1,0 +1,9 @@
+{
+  "name": "reuse-displaced-question",
+  "invariant": "A replacement never completes by reuse without an answer its lineage still owes (13 [G10] reuse, \"Moved questions\"): a raw supersession replaces an answer whose question did not move, its successor completes while the question is not asked, and once the question is asked again the reuse of that result for the replacement is refused (failed/authority_revoked); the evaluator does not complete it either. Steps: the raw supersession, then the reuse.",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "authority_revoked"}
+  ],
+  "mutation": "graph.reuse-skips-authority"
+}

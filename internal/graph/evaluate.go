@@ -285,7 +285,7 @@ func (e *evaluation) claim(rec nodeRecord, resolved map[string]Resolved) error {
 		if herr != nil || holder.State.State != types.NodeStateStateCompleted {
 			return herr // the holder runs: wait for it
 		}
-		evs, err = Reuse(e.tx, rec.Recorded.Node.ID, resolved)
+		evs, err = Reuse(e.tx, rec.Recorded.Node.ID, resolved, e.env.Authority)
 	} else if index != "" { // claimed now: the node was unclaimed (visit)
 		e.keys[index] = true
 	}
