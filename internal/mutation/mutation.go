@@ -174,6 +174,10 @@ const (
 	// ReplacementKeepsMovedAnswer ignores a supersession's moved questions,
 	// so the replacement keeps an answer its lineage no longer asks.
 	ReplacementKeepsMovedAnswer = "graph.replacement-keeps-moved-answer"
+	// DisplacedQuestionUnchecked lets a replacement run while its lineage
+	// still asks a question a supersession replaced, so a raw substitution
+	// runs it without the owed answer.
+	DisplacedQuestionUnchecked = "graph.displaced-question-unchecked"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -191,4 +195,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	GenerationKeepsBase, CarryOverIgnoresPatch, GenerationTakesStale,
 	SupersessionKeepsAttempts, SupersessionKeepsPredecessor, SupersedeTwice, LineageIgnoresSupersession,
 	IsolationUnchecked, RestrictedArtifactRendered,
-	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer}
+	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer, DisplacedQuestionUnchecked}
