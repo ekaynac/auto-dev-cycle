@@ -465,10 +465,10 @@ func TestCompleteEffect(t *testing.T) {
 	if err := g.do(raw(merge, result(pres.Result.Value...), g.blobs)); err == nil {
 		t.Fatal("a result of a pending effect folded")
 	}
-	g.must(invalidate(pkg)) // after the intent: no re-validation at completion
 	if _, err := g.runEffect(op, effecttarget.New()); err != nil {
 		t.Fatal(err)
 	}
+	g.must(invalidate(pkg)) // after the apply: no re-validation at completion
 	if err := g.do(invalidate(merge)); err == nil || !strings.Contains(err.Error(), "its result is recorded") {
 		t.Fatalf("a completed merge with no result was invalidated: %v", err)
 	}
@@ -711,5 +711,128 @@ func TestCarryOverRequirement(t *testing.T) {
 	g.must(evaluate(effectEnv, gen.Merge))
 	if st := g.state(gen.Merge); st.State != types.NodeStateStateWaiting {
 		t.Fatalf("the merge of a demand for the replacement is %s", st.State)
+	}
+}
+
+// A review is not superseded while a merge of its carry_over has an
+// intended operation (the resume does not re-validate), and a pending
+// merge whose requirement no longer holds applies nothing. Once the
+// operation settles, the supersession goes.
+func TestSupersedeUnderIntent(t *testing.T) {
+	g := openEffectStore(t)
+	f := fakeforge.New()
+	f.Move("main", "B1")
+	gen := g.claimedMerge("main", "B1")
+	op := g.mustOperate(gen.Merge)
+	cur, _ := view[revision](g, RequirementProjection, requirementIndex(tskID, "candidate"))
+	req := g.requirementNode(cur.Revision+1, "1", exeB)
+	next := g.record(req)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return claimAny(tx, next, map[string]Resolved{}, 1)
+	})
+	review := g.specOf(gen).Review
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Supersede(tx, review, next, nil, reviewers)
+	}); err == nil || !strings.Contains(err.Error(), "not settled") || strings.Contains(err.Error(), ReviewSuperseded) {
+		t.Fatalf("a supersession under an intended merge, refused by the builder: %v", err)
+	}
+	// A raw supersession is refused by the fold too.
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		rec, err := loadNode(tx, review)
+		n := rec.Recorded.Node
+		n.ID, n.Params, n.Inputs = types.NodeID(must(ids.New("nod"))), reviewParams(exeB), slices.Clone(n.Inputs)
+		for i, in := range n.Inputs {
+			if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
+				n.Inputs[i].Source.Variant = &types.ResultSource{Type: "result", Producer: next, ResultKind: types.ResultKindReviewRequirement}
+			}
+		}
+		evs, eerr := event(ReviewSuperseded, string(review), prjID, &types.ReviewSuperseded{Type: "review_superseded", Predecessor: review, Replacement: n,
+			StoppedAttempts: []types.AttemptID{}, TransferredHolds: []types.HoldID{}, RetiredHolds: []types.RetiredHold{}})
+		return evs, errors.Join(err, eerr)
+	}); err == nil || !strings.Contains(err.Error(), "not settled") {
+		t.Fatalf("a raw supersession under an intended merge: %v", err)
+	}
+	// The requirement is re-run after the intent: the merge applies nothing.
+	reqNode := producerOf(g.recordOf(gen.Merge).Node, "requirement")
+	g.must(invalidate(reqNode))
+	e, err := g.runEffect(op, f)
+	if err == nil || e.State != eventstore.EffectFailedConfirmed || len(f.Pushed("main")) != 0 {
+		t.Fatalf("a merge whose requirement no longer holds: %+v (%v), pushed %v", e, err, f.Pushed("main"))
+	}
+	// Settled, the review may be superseded.
+	r := unrecorded(t, *g.state(reqNode).Key)
+	r.Kind, r.Value, r.Conclusions, r.Outcome, r.Reason, r.Detail = types.ResultKindReviewRequirement, []types.Ref{}, ptr(g.recordOf(reqNode).Node.Params), types.OutcomeFound, vocab.ReasonCompletedWithFindings, "required"
+	g.must(raw(reqNode, r, g.blobs))
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return Supersede(tx, review, next, nil, reviewers)
+	})
+}
+
+// A requirement is matched by what it requires, not by the result that
+// recorded it: a review that took an identical requirement node's result,
+// or the requirement's result before it was re-run, still carries over.
+func TestCarryOverSameRequirement(t *testing.T) {
+	for _, rerun := range []bool{false, true} {
+		g := openEffectStore(t)
+		patch := g.ref(types.RefTypeBlob, "P")
+		cand := g.candidate(patch)
+		first := g.defaultRequirement()
+		review := g.consumerOf(cand, types.ResultKindPatch)
+		if !rerun { // an identical requirement node, selected again, binds the review
+			twin, _, err := g.completeRequirement(g.requirementNode(1, "1", exeA), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cur, _ := view[revision](g, RequirementProjection, requirementIndex(tskID, "candidate")); cur.Node != first {
+				t.Fatalf("an identical requirement moved the revision's node to %s", cur.Node)
+			}
+			rec := g.recordOf(review)
+			rec.Node.ID, rec.Node.Inputs = types.NodeID(must(ids.New("nod"))), slices.Clone(rec.Node.Inputs)
+			rec.Node.Inputs[1] = requiredOn(twin)
+			g.must(func(*eventstore.Tx) ([]eventstore.Event, error) { return recordAny(rec) })
+			review = rec.Node.ID
+		}
+		g.must(evaluate(effectEnv, review))
+		g.must(commit(review, g.reviewResult(review), effectEnv))
+		if rerun { // the requirement runs again after the review took it
+			g.must(invalidate(first))
+			r := unrecorded(t, *g.state(first).Key)
+			r.Kind, r.Value, r.Conclusions, r.Outcome, r.Reason, r.Detail = types.ResultKindReviewRequirement, []types.Ref{}, ptr(g.recordOf(first).Node.Params), types.OutcomeFound, vocab.ReasonCompletedWithFindings, "required"
+			g.must(raw(first, r, g.blobs))
+		}
+		gen, err := g.generate(QueueSpec{Task: tskID, Project: prjID, Branch: "main", Candidate: cand, Review: review}, "B1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.rebased(gen, g.ref(types.RefTypeGitTree, "T"), patch)
+		if r, err := g.carryOver(gen.CarryOver); err != nil || r.Outcome != types.OutcomeEmpty {
+			t.Fatalf("rerun %t: the carry_over: %+v (%v)", rerun, r, err)
+		}
+	}
+}
+
+// A carry_over whose reused review's holder ran again after the claim is
+// refused as a commit is, ErrRevalidated (stale_expected_state), not by a
+// role error: the carry_over is invalidated, and claims the fresh result.
+func TestCarryOverReusedHolderRerun(t *testing.T) {
+	g := openEffectStore(t)
+	patch := g.ref(types.RefTypeBlob, "P")
+	spec := g.queueSpec("main", patch)
+	like := g.recordOf(spec.Review)
+	like.Node.ID = types.NodeID(must(ids.New("nod")))
+	reused := g.record(like)
+	g.must(evaluate(g.env(noRequirement), reused))
+	holder := spec.Review
+	spec.Review = reused
+	gen, err := g.generate(spec, "B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.rebased(gen, g.ref(types.RefTypeGitTree, "T"), patch)
+	g.must(invalidate(holder)) // releases the reuse
+	g.must(commit(holder, g.reviewResult(holder), effectEnv))
+	var stale ErrRevalidated
+	if _, err := g.carryOver(gen.CarryOver); !errors.As(err, &stale) || stale.Reason != vocab.ReasonStaleExpectedState {
+		t.Fatalf("the carry_over of a re-run holder: %v", err)
 	}
 }

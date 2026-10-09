@@ -178,7 +178,10 @@ Result:                            # what was computed: immutable  [G1]
       - **Dependants.** A review whose selected result another node's claim took is not superseded: the dependant's
         claim could no longer commit. G6b-2 keeps this refusal (below). The exception is a queue generation's carry_over
         (G7b-2a): the review it carried is superseded, and its merge waits for the replacement review, since the
-        merge's requirement no longer serves. A dependant not yet claimed waits structurally.
+        merge's requirement no longer serves. The exception holds only while no merge of that carry_over has an
+        operation pending, uncertain, or completed without its result: an intended merge resumes without
+        re-validation, so its review is not superseded under it (the builder and the fold refuse). A dependant not yet
+        claimed waits structurally.
       - A review bound by reuse, or whose key another review reuses, is not superseded either.
     - *As delivered (G6b-2):*
       - **Holds move in the supersession event.** Each of the predecessor's holds is in exactly one of
@@ -554,6 +557,17 @@ As delivered (G7b-2a):
   (Operate re-validates, `stale_expected_state`); nothing is pushed. The roster change is G6b-1's supersession of
   the carried review, which a carry_over's claim does not block: the superseded review serves no later carry_over,
   and a later generation, whose carry_over takes the new revision, attests only the replacement review.
+- **Requirements match by what they require.** A carried review's requirement and the carry_over's are compared by
+  subject, roster, definition version and revision, never by result id: an identical requirement node selected
+  again, or a requirement re-run, keeps the match. A subject's revision keeps the node of its first selection (or
+  of its supersession), which the template takes.
+- **Before the apply.** A pending merge is applied only while its claimed inputs are still served to it (its
+  requirement at the subject's selected revision, its carry_over by the attestation it claimed). Otherwise the effect
+  fails, confirmed, with nothing applied. This backs up the supersession's refusal above.
+- **Stranded reviews are an operator's.** A review whose requirement revision was moved past without superseding
+  it (another review of the subject was superseded) never serves a carry_over again: it, its carry_overs and their
+  merges wait. Nothing moves them; the operator supersedes or re-records the review (an M1 action; in M0 a new task
+  re-queues the candidate).
 - **Not yet (G7b-2b).** The merge consumes the review's verdict, the refreshed gate, runtime and evidence receipts of
   the prospective tree, and lands by compare-and-set on the generation's base; a requirement change starts a
   generation of its own.

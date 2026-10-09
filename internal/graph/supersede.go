@@ -62,7 +62,10 @@ package graph
 //   - A review whose result a dependant claimed is not superseded. G6b-2
 //     keeps this refusal: re-pointing a claimed dependant would release its
 //     claim, which no event does yet. A queue generation's carry_over is the
-//     exception (G7b-2a): its merge waits for the replacement.
+//     exception (G7b-2a): its merge waits for the replacement. The
+//     exception holds only while no merge of that carry_over has an
+//     unsettled operation, checked by the builder and the fold
+//     (mergesSettled): an intended merge resumes without re-validation.
 
 import (
 	"encoding/json"
@@ -133,6 +136,8 @@ func selectRevision(tx *eventstore.Tx, task types.TaskID, node types.NodeID, req
 		return fmt.Errorf("revision %d of %s is another requirement", r.Revision, r.Subject)
 	case ok && cur.Revision != r.Revision && (!next || r.Revision != cur.Revision+1):
 		return fmt.Errorf("%s is at requirement revision %d: only a supersession moves it", r.Subject, cur.Revision)
+	case ok && cur.Revision == r.Revision && cur.Node != "":
+		node = cur.Node // the revision's node is its first selection's: an identical one selected again does not move it
 	}
 	return put(tx, RequirementProjection, index, revision{r.Revision, d, node})
 }
@@ -173,6 +178,9 @@ func SupersedeMoving(tx *eventstore.Tx, pred, requirement types.NodeID, attempts
 		return nil, err
 	}
 	if err := superseded(rec); err != nil && !mutation.Is(mutation.SupersedeTwice) {
+		return nil, err
+	}
+	if err := unclaimed(tx, rec); err != nil { // as the fold refuses it, before any attempt is stopped
 		return nil, err
 	}
 	p, err := req.Recorded.Node.ParamsAsReviewRequirement()
@@ -408,7 +416,10 @@ func unshared(tx *eventstore.Tx, rec nodeRecord) error {
 // unclaimed: no other node's claim took rec's selected result, but a queue
 // generation's carry_over: its merge consumes the review's requirement at
 // the subject's selected revision (serves), so it waits for the
-// replacement (G7b-2a).
+// replacement (G7b-2a). That exception holds only while no merge of that
+// carry_over has an unsettled operation: an intended merge is not
+// re-validated when it resumes, so the review it carries is not
+// superseded under it (mergesSettled).
 func unclaimed(tx *eventstore.Tx, rec nodeRecord) error {
 	if rec.State.Result == nil {
 		return nil
@@ -417,10 +428,39 @@ func unclaimed(tx *eventstore.Tx, rec nodeRecord) error {
 	for _, n := range nodes {
 		c, _, cerr := load[claim](tx, ClaimProjection, n)
 		claimant, lerr := loadNode(tx, types.NodeID(n))
-		if err = errors.Join(err, cerr, lerr); err == nil && n != string(rec.Recorded.Node.ID) && claimant.Recorded.Node.Kind != types.NodeKindCarryOver && slices.ContainsFunc(c.Inputs, func(in types.ClaimedInput) bool {
+		err = errors.Join(err, cerr, lerr)
+		took := err == nil && n != string(rec.Recorded.Node.ID) && slices.ContainsFunc(c.Inputs, func(in types.ClaimedInput) bool {
 			return in.Result != nil && *in.Result == *rec.State.Result
-		}) {
-			return fmt.Errorf("%s claimed the review's result: re-pointing a dependant is G6b-2's and G7b-2's", n)
+		})
+		switch {
+		case !took:
+		case claimant.Recorded.Node.Kind != types.NodeKindCarryOver:
+			return fmt.Errorf("%s claimed the review's result: re-pointing a dependant is G6b-2's", n)
+		default:
+			if err := mergesSettled(tx, claimant.Recorded.Node.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return err
+}
+
+// mergesSettled: no merge whose claim took a result of carry, a carry_over
+// node, has an operation pending, uncertain, or completed without its
+// result (settledOperation).
+func mergesSettled(tx *eventstore.Tx, carry types.NodeID) error {
+	nodes, err := tx.Keys(ClaimProjection, "")
+	for _, n := range nodes {
+		m, lerr := loadNode(tx, types.NodeID(n))
+		c, _, cerr := load[claim](tx, ClaimProjection, n)
+		if err = errors.Join(err, lerr, cerr); err != nil || m.Recorded.Node.Kind != types.NodeKindMerge {
+			continue
+		}
+		r, _, rerr := load[types.ResultRecorded](tx, ResultProjection, string(resolutions(c.Inputs)["carry_over"].Result))
+		if err = rerr; err == nil && r.Node == carry {
+			if err := settledOperation(tx, m.Recorded.Node.ID); err != nil {
+				return fmt.Errorf("the review's carry_over is merged by %s, whose operation is not settled: %w", n, err)
+			}
 		}
 	}
 	return err

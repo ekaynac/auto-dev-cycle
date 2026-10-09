@@ -19,7 +19,10 @@ package graph
 //     before its intent, as Commit does; a resume does not, since its
 //     reconciliation must finish.
 //   - RunEffect reconciles against the target before any egress, and its
-//     apply is a compare-and-set on the value it observed.
+//     apply is a compare-and-set on the value it observed. A pending merge
+//     is applied only while its claimed inputs are still served to it
+//     (mergeHolds): a requirement superseded or re-run after its intent
+//     fails the effect, confirmed, with nothing applied.
 //   - A kind that reconciles from its request keeps it (03 "Kept
 //     requests"): the caller publishes EffectRequestOf before Operate. The
 //     intent is recorded with node.operated, the graph's link from the node
@@ -312,8 +315,13 @@ func RunEffect(ctx context.Context, s *eventstore.Store, actor string, op Operat
 	// refused, by its builder and its fold (settledOperation), and only a
 	// pending or uncertain effect goes on past the state gate.
 	var cur []byte
+	var held error // a merge's inputs, which must still be served to it before its apply (mergeHolds)
 	if err == nil {
-		err = s.View(ctx, func(tx *eventstore.Tx) (err error) { cur, err = EffectRequestOf(tx, op.Node); return err })
+		err = s.View(ctx, func(tx *eventstore.Tx) (err error) {
+			cur, err = EffectRequestOf(tx, op.Node)
+			held = mergeHolds(tx, op.Node)
+			return err
+		})
 	}
 	if c, cerr := eventstore.ContentDigest(cur); err == nil && (cerr != nil || c != d) {
 		err = errors.Join(cerr, fmt.Errorf("graph: effect %s's request is not %s's current one", op.Effect, op.Node))
@@ -343,6 +351,10 @@ func RunEffect(ctx context.Context, s *eventstore.Store, actor string, op Operat
 	}
 	if holds == want && !mutation.Is(mutation.EffectPendingSkipsTarget) {
 		return record(eventstore.Transition{Kind: "observed", Observation: "the target already holds the request's want"})
+	}
+	if held != nil { // nothing was applied: the merge's requirement or attestation no longer serves it
+		e, rerr := record(eventstore.Transition{Kind: "failed", Observation: "the merge's inputs no longer hold: nothing was applied"})
+		return e, errors.Join(held, rerr)
 	}
 	expected := holds
 	if mutation.Is(mutation.EffectApplyBlind) {

@@ -495,7 +495,10 @@ func carryInputs(tx *eventstore.Tx, rec nodeRecord) (out carried, err error) {
 			return out, err
 		}
 		if src.ResultKind == types.ResultKindReviewRequirement {
-			out.required = r.Result.ID == qr.Result.ID
+			out.required, err = sameRequirement(r.Result, qr.Result)
+			if err != nil {
+				return out, err
+			}
 		} else {
 			out.reviewed = &r.Result
 		}
@@ -503,10 +506,29 @@ func carryInputs(tx *eventstore.Tx, rec nodeRecord) (out carried, err error) {
 	return out, nil
 }
 
+// sameRequirement: a and b, review_requirement results, are of one
+// requirement (subject, roster, definition version and revision), whichever
+// node or run recorded them.
+func sameRequirement(a, b types.Result) (bool, error) {
+	ra, err := requirementOf(a)
+	rb, rerr := requirementOf(b)
+	if err = errors.Join(err, rerr); err != nil {
+		return false, err
+	}
+	return ra.Subject == rb.Subject && ra.DefinitionVersion == rb.DefinitionVersion && ra.Revision == rb.Revision && slices.Equal(ra.Roster, rb.Roster), nil
+}
+
 // CarryOver commits the result of node, a claimed carry_over node, from
-// its claimed inputs (re-validated, as by Commit), and returns it.
+// its claimed inputs (re-validated first, as by Commit, so an input no
+// longer selected is ErrRevalidated), and returns it.
 func CarryOver(tx *eventstore.Tx, node types.NodeID, env Env) (types.Result, error) {
 	rec, err := loadNode(tx, node)
+	if err == nil && (rec.Recorded.Node.Kind != types.NodeKindCarryOver || rec.State.State != types.NodeStateStateClaimed) {
+		err = fmt.Errorf("graph: %s is not a claimed carry_over node", node)
+	}
+	if err == nil {
+		err = revalidate(tx, node, env)
+	}
 	if err != nil {
 		return types.Result{}, err
 	}
@@ -607,6 +629,23 @@ func CompleteEffect(tx *eventstore.Tx, node types.NodeID, blobs receipt.Blobs) e
 		return err
 	}
 	return tx.Emit(append(evs, sel...)...)
+}
+
+// mergeHolds: node, if a merge, still has its claimed result inputs
+// served: each is its producer's selected result and serves it
+// (selectedInputs: the requirement at its subject's selected revision, the
+// carry_over by its attestation). RunEffect checks it before a merge's
+// apply, as a guard behind the supersession's refusal (unclaimed).
+func mergeHolds(tx *eventstore.Tx, node types.NodeID) error {
+	rec, err := loadNode(tx, node)
+	if err != nil || rec.Recorded.Node.Kind != types.NodeKindMerge {
+		return err
+	}
+	c, _, err := load[claim](tx, ClaimProjection, string(node))
+	if err == nil {
+		err = selectedInputs(tx, rec, resolutions(c.Inputs))
+	}
+	return err
 }
 
 // operationCompleted: rec's operation at its current key has a completed

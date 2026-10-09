@@ -366,7 +366,7 @@ func TestSupersedeBindings(t *testing.T) {
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return Claim(tx, d, map[string]Resolved{"plan": {Result: g.planRes}, "review": {Result: *g.state(review).Result}}, 0)
 	})
-	if err := g.do(supersede(review, next)); err == nil || !strings.Contains(err.Error(), "G7b-2") {
+	if err := g.do(supersede(review, next)); err == nil || !strings.Contains(err.Error(), "re-pointing a dependant") {
 		t.Errorf("a review whose result a dependant claimed superseded: %v", err)
 	}
 	waiting := g.recordOf(review)
