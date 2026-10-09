@@ -85,15 +85,17 @@ func (g graphStore) receiptBlob(subject map[string]any, until *string) types.Dig
 
 // derived publishes the receipt doc derived under goTest, keeping its
 // conclusions document.
-func (g graphStore) derived(doc map[string]any) types.Digest {
+func (g graphStore) derived(doc map[string]any) types.Digest { return g.derivedUnder(goTest, doc) }
+
+// derivedUnder is derived under contract.
+func (g graphStore) derivedUnder(contract types.InstrumentContract, doc map[string]any) types.Digest {
 	g.t.Helper()
 	b, err := json.Marshal(doc)
 	var r types.Receipt
 	if err == nil {
 		err = json.Unmarshal(b, &r)
 	}
-	contract := goTest // at the doc's instrument version
-	contract.Version = r.Instrument.Version
+	contract.Version = r.Instrument.Version // at the doc's instrument version
 	d, derr := receipt.Derive(contract, r, g.blobs)
 	concl, _, cerr := receipt.Conclusions(r)
 	if err = errors.Join(err, derr, cerr); err != nil {
@@ -131,7 +133,7 @@ func (g graphStore) gated(receiptDigest types.Digest) (types.NodeID, types.Resul
 func (g graphStore) completedWith(kind types.NodeKind, rk types.ResultKind, value []types.Ref) (types.NodeID, types.Result) {
 	return g.completedAs(kind, rk, value, func(n types.NodeID, r types.Result) logic {
 		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
+			return recordResult(tx, g.published(n, r), g.blobs)
 		}
 	})
 }

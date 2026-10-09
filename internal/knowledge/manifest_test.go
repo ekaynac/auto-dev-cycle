@@ -388,3 +388,60 @@ func TestRefusalsCarryTheirReason(t *testing.T) {
 		}
 	}
 }
+
+// An input omitted as restricted is never delivered, nor anything derived
+// from it; one omitted for budget may still be delivered later (12
+// "Content").
+func TestRestrictedOmissionNeverDelivered(t *testing.T) {
+	f := fixture(t)
+	if err := CheckDelivery(f.intent, f.turn(1, f.old)); err != nil {
+		t.Fatalf("a budget-omitted input delivered later: %v", err)
+	}
+	f.intent.Omitted[0].Reason = types.ManifestIntentOmittedItemReasonRestricted
+	derived := seal(t, types.Ref{Type: types.RefTypeBlob, ID: "excerpt", ContentDigest: dgA, Lineage: []string{f.old.ID}})
+	for name, r := range map[string]types.Ref{"the restricted input": f.old, "a ref derived from it": derived} {
+		var refusal *Refusal
+		if err := CheckDelivery(f.intent, f.turn(1, f.spec, r)); !errors.As(err, &refusal) || refusal.Reason != vocab.ReasonRestrictionDropped {
+			t.Errorf("%s delivered: %v", name, err)
+		}
+	}
+	if err := CheckDelivery(f.intent, f.turn(1, f.spec, f.x)); err != nil {
+		t.Errorf("an included input and a ref derived from one: %v", err)
+	}
+}
+
+// Restricted ancestry propagates through the declared inputs at any depth,
+// a cycle included, for CheckDelivery and for CheckFinalized: A is omitted
+// as restricted, B (budget) derives from A, C (budget) from B; D and E
+// derive from each other, and E from C. None of them, nor a ref derived
+// from one, is delivered.
+func TestRestrictedAncestryMultiHop(t *testing.T) {
+	f := fixture(t)
+	mk := func(id string, lineage ...string) types.Ref {
+		return seal(t, types.Ref{Type: types.RefTypeBlob, ID: id, ContentDigest: dgA, Lineage: append([]string{}, lineage...)})
+	}
+	a, b, c := mk("a"), mk("b", "a"), mk("c", "b")
+	d, e := mk("d", "e"), mk("e", "d", "c")
+	f.intent.Inputs = append(f.intent.Inputs, e, d, c, b, a) // descendants first: one pass is not enough
+	f.intent.Omitted = append(f.intent.Omitted, types.ManifestIntentOmittedItem{Ref: a, Reason: types.ManifestIntentOmittedItemReasonRestricted})
+	for _, r := range []types.Ref{b, c, d, e} {
+		f.intent.Omitted = append(f.intent.Omitted, types.ManifestIntentOmittedItem{Ref: r, Reason: types.ManifestIntentOmittedItemReasonBudget})
+	}
+	if err := CheckIntent(f.intent); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]types.Ref{"two hops (b)": b, "three hops (c)": c, "derived from c": mk("x", "c"), "a cycle (d)": d, "derived from the cycle": mk("y", "e")}
+	for name, r := range cases {
+		var refusal *Refusal
+		if err := CheckDelivery(f.intent, f.turn(1, r)); !errors.As(err, &refusal) || refusal.Reason != vocab.ReasonRestrictionDropped {
+			t.Errorf("CheckDelivery, %s: %v", name, err)
+		}
+		fin := f.finalized(coverage(types.ManifestFinalizedCoveragePromptDelivered, n64(1), types.ManifestFinalizedCoverageStatusComplete))
+		if err := CheckFinalized(f.intent, []types.ManifestDelivery{f.turn(1, r)}, fin); !errors.As(err, &refusal) || refusal.Reason != vocab.ReasonRestrictionDropped {
+			t.Errorf("CheckFinalized, %s: %v", name, err)
+		}
+	}
+	if err := CheckDelivery(f.intent, f.turn(1, f.old)); err != nil {
+		t.Errorf("an unrelated budget-omitted input: %v", err)
+	}
+}

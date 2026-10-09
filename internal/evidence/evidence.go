@@ -15,16 +15,23 @@
 //   - The restore procedure is the instrument contract's. An evidence node's
 //     restore is exactly the contract's: required with its procedure, or not
 //     required when the contract has none.
+//   - Isolation is proven, never assumed (12 "Content"). A probe runs inside
+//     the run's own wrapper, so its proof names the run. It proves isolation
+//     when the setting it ran under is not empty, it saw loopback only, and
+//     it could not reach the host. An empty setting proves nothing, even
+//     when the probe happened to see no network.
 package evidence
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 )
 
 // RemoteProcess is the effect kind of remote steps (12 "Remote processes").
@@ -63,6 +70,25 @@ func CheckRestore(p types.EvidenceNodeParams, c types.InstrumentContract) error 
 		return fmt.Errorf("evidence: the restore is required exactly when contract %s has a procedure", c.Name)
 	case want != nil && (p.Restore.Procedure == nil || *p.Restore.Procedure != *want):
 		return errors.New("evidence: the restore procedure is not the contract's")
+	}
+	return nil
+}
+
+// Loopback is the one interface an isolated run's probe may see.
+const Loopback = "lo"
+
+// CheckIsolation checks that proof, observed by a probe inside run's
+// wrapper, proves the run isolated.
+func CheckIsolation(run types.EvidenceRunID, proof types.IsolationProof) error {
+	switch {
+	case mutation.Is(mutation.IsolationUnchecked):
+		return nil
+	case proof.Run != run:
+		return fmt.Errorf("evidence: the isolation probe ran in %s's wrapper, not %s's", proof.Run, run)
+	case len(proof.Setting) == 0:
+		return errors.New("evidence: the isolation setting is empty")
+	case !slices.Equal(proof.Interfaces, []string{Loopback}) || proof.HostReachable:
+		return fmt.Errorf("evidence: the isolation probe saw %v (host reachable: %t), not loopback only", proof.Interfaces, proof.HostReachable)
 	}
 	return nil
 }

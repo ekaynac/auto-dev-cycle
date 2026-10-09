@@ -4,7 +4,7 @@ Status: revision 3, 2026-10-03. Revision 1 came from the nöbetçi delta intake 
 review (`[PR5-#]`). **Revision 3 follows D40:** an evidence job is an **evidence node** in the artifact graph (13). Its
 target is a leased resource (05), and its run is an attempt with fencing (05). The separate evidence state machine of
 revision 2 is gone. This note keeps only what is specific to evidence. Amended by E1 (15), 2026-10-08: the params
-schema and the `remote_process` request.
+schema and the `remote_process` request. Amended by E3 (15), 2026-10-08: content classes and the isolation proof.
 
 An evidence node produces receipts by acting on something outside the sandbox:
 - an integration environment;
@@ -111,6 +111,42 @@ field is in the params digest and so in the node's key (13).
 - **Isolation is proven** by a probe inside the same wrapper. An empty isolation setting is never published.
 - **No production writes** unless the grant says so. Copies are read-only, size-capped and capacity-checked.
 - Consistency checks are part of the verdict.
+- **As delivered (E3).**
+  - *Isolation.* A probe runs in the run's own wrapper, so its proof (`schemas/records/isolation-proof.json`) names
+    the run: the setting the wrapper applied, the interfaces it saw, and whether it reached the host.
+    `evidence.CheckIsolation` accepts a proof only for the attempt's own run, with a setting that is not empty, and
+    with loopback only seen and the host unreachable. An empty setting proves nothing, even when the probe happened
+    to see no network.
+  - *Publication.* `graph.CommitEvidence` records the result with its attempt and proof (`result.recorded`'s
+    `isolation`). It records a result the proof does not prove as `could_not_run/isolation_unproven`, with no value,
+    never selected; a proof that is not a valid `records/isolation-proof` is left out of that record. The
+    `result.recorded` fold refuses, from the log alone, a published evidence result without such a proof, a proof on
+    any other kind's result, and a second result of one attempt (`graph_attempt_results`).
+  - *Trust.* M0 trusts the committer's proof. Nothing binds the attempt to the node, or the probe's output to a
+    digest, until M1 records attempts against nodes and keeps the probe's output as a blob. Until then the proof is
+    the controller's own statement, checked for shape and consistency only.
+  - *Spending.* `isolation_unproven` spends an attempt: the probe ran inside the wrapper (the conservative side of
+    "What counts"). It has no hold in M0; the environment owner's hold is M1's.
+  - *Content classes.* An artifact's class is the producing evidence node's instrument contract's
+    `artifact_classes`, and the result's receipt must be that instrument's: `recordResult` and `graph.Context` refuse
+    a receipt of another instrument (the fold cannot read blobs, so a raw event is caught by `Context`). In an
+    evidence result, every ref but the receipt itself, recognised by identity rather than by its Ref's type, is an
+    artifact. `graph.Context` renders it only when the receipt names its blob as an artifact the contract classes
+    `diagnostic`. It omits as `restricted` a restricted artifact, one the contract does not class, a blob the receipt
+    names under two classes, and a ref the receipt does not name, and names each in `Rendered.Omitted` (10: cuts are
+    named, never silent). No caller decides it. Without the contracts, or with a result whose receipt does not
+    resolve, the context is refused, never rendered whole.
+  - *Delivery.* An omission as `restricted` holds for the whole call: `knowledge.CheckDelivery`, and so
+    `CheckFinalized`, refuses as `failed/restriction_dropped` a tool result that is an input the intent omits as
+    restricted, or that derives from one at any depth: restricted ancestry propagates through the declared inputs'
+    lineage until nothing changes, so a cycle ends, and an input sharing a restricted input's id counts as restricted.
+    An input omitted for budget, policy or availability, and not derived from a restricted one, may still be delivered
+    later.
+  - *Not covered in M0.* Gate results are not classed: a gate runs in the sandbox, and `Env.Contracts` holds evidence
+    instruments only. A restricted artifact copied into another kind's result is not traced through lineage. The
+    receipt is rendered whole: its predicate and envelope `detail` text is not classed, so an instrument that writes
+    remote output into a detail leaks it (tracked for M1). The journal side of "never in prompts or the journal" is
+    not checked here: the event log holds refs, not bytes.
 
 ### Remote processes (nöbetçi Δ§8)
 
@@ -144,7 +180,7 @@ artifact classes, the `remote_process` effect kind, and fixtures:
 - a new demand gets new attempts; the same demand does not;
 - total-cap exhaustion;
 - a precondition failure spends no attempt and recovers on its probe;
-- an empty isolation setting is never published;
-- a restricted artifact never reaches a prompt.
+- an empty isolation setting is never published (`empty-isolation-never-published`);
+- a restricted artifact never reaches a prompt (`restricted-artifact-not-in-prompt`).
 
 The "cannot occur" fixtures for exclusion, publication and fencing live with note 13.

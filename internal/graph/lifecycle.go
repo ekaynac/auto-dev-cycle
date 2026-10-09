@@ -72,7 +72,7 @@ func recordResult(tx *eventstore.Tx, r types.ResultRecorded, blobs receipt.Blobs
 	if ref, rerr := receiptRef(r.Result); rerr == nil {
 		rcpt, err := readReceipt(ref, blobs)
 		if err == nil {
-			err = sinceRenewal(tx, r.Node, rcpt)
+			err = errors.Join(sameInstrument(rec, rcpt), sinceRenewal(tx, r.Node, rcpt))
 		}
 		if err != nil {
 			return nil, err
@@ -174,6 +174,9 @@ func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecor
 	}
 	if _, exists, err := load[types.ResultRecorded](tx, ResultProjection, string(p.Result.ID)); err != nil || exists {
 		return errors.Join(err, errors.New("the result is recorded"))
+	}
+	if err := isolated(tx, rec, p); err != nil {
+		return err
 	}
 	if err := countAttempt(tx, rec, p.Result); err != nil {
 		return err

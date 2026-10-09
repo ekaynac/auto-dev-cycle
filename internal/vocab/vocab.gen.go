@@ -79,6 +79,8 @@ var (
 	ReasonInconsistentUsage = types.ReasonCodeOf("inconsistent_usage")
 	// ReasonInstrumentChanged: The instrument digest changed; dependent requirements must be re-run.
 	ReasonInstrumentChanged = types.ReasonCodeOf("instrument_changed")
+	// ReasonIsolationUnproven: The isolation probe inside the evidence run's wrapper did not prove the run isolated: an empty setting, a probe from another run, or the host network seen. The result is never published; the attempt counts as spent.
+	ReasonIsolationUnproven = types.ReasonCodeOf("isolation_unproven")
 	// ReasonLineageUndeclared: A delivered tool result is not a declared input and names no lineage, or lineage outside the manifest's declared inputs.
 	ReasonLineageUndeclared = types.ReasonCodeOf("lineage_undeclared")
 	// ReasonLogIntegrityBroken: The event log fails verification: a gap, a broken hash link, an edited event, or (against a trusted head) truncation or a rewritten tail.

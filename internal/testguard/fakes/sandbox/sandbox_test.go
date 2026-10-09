@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/evidence"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 )
 
@@ -44,5 +45,24 @@ func TestTargets(t *testing.T) {
 	}
 	if got := ts.Restored(); !reflect.DeepEqual(got, []types.EvidenceTargetID{b, a}) {
 		t.Fatalf("restored %v", got)
+	}
+}
+
+// A probe inside a wrapper proves isolation only under a loopback setting:
+// an empty or other setting shows the host's network.
+func TestWrapperProbe(t *testing.T) {
+	const run = types.EvidenceRunID("run_01m3250v0aer9ss2097svmefj8")
+	for setting, isolated := range map[string]bool{"loopback": true, "": false, "host": false} {
+		w := Wrapper{Run: run, Setting: map[string]string{}}
+		if setting != "" {
+			w.Setting["network"] = setting
+		}
+		p := w.Probe()
+		if err := evidence.CheckIsolation(run, p); (err == nil) != isolated || p.Run != run || len(p.Setting) != len(w.Setting) {
+			t.Errorf("network %q: %v %+v", setting, err, p)
+		}
+	}
+	if p := (Wrapper{Run: run}).Probe(); p.Setting == nil {
+		t.Error("a nil setting is not the schema's empty one")
 	}
 }

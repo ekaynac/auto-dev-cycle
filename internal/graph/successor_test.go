@@ -246,8 +246,9 @@ func TestContext(t *testing.T) {
 	g.must(evaluate(g.env(gatesOn(treeA, demandA)), review, next))
 	context := func(n types.NodeID) ([]types.Ref, error) {
 		var refs []types.Ref
-		err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
-			refs, err = Context(tx, n, owedanswers.Authority{})
+		err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+			c, err := Context(tx, n, Env{Authority: owedanswers.Authority{}})
+			refs = c.Included
 			return err
 		})
 		return refs, err
@@ -497,8 +498,9 @@ func TestSuccessorRevisionBump(t *testing.T) {
 // contextOf is n's controller context.
 func (g graphStore) contextOf(n types.NodeID) ([]types.Ref, error) {
 	var refs []types.Ref
-	err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
-		refs, err = Context(tx, n, owedanswers.Authority{})
+	err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+		c, err := Context(tx, n, Env{Authority: owedanswers.Authority{}})
+		refs = c.Included
 		return err
 	})
 	return refs, err

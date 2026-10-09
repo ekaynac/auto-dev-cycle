@@ -133,3 +133,29 @@ func TestCheckRestore(t *testing.T) {
 		}
 	}
 }
+
+// A proof proves isolation only from the run's own wrapper, under a
+// setting that is not empty, with loopback only seen and the host
+// unreachable.
+func TestCheckIsolation(t *testing.T) {
+	const att = types.AttemptID("att_01m3250v0aer9ss2097svmefj8")
+	run := RunOf(att)
+	good := types.IsolationProof{Run: run, Setting: map[string]string{"network": "loopback"}, Interfaces: []string{Loopback}}
+	if err := CheckIsolation(run, good); err != nil {
+		t.Fatal(err)
+	}
+	for name, edit := range map[string]func(*types.IsolationProof){
+		"another run":      func(p *types.IsolationProof) { p.Run = "run_01m3250vz2ezn81cgvbkcn17jd" },
+		"an empty setting": func(p *types.IsolationProof) { p.Setting = map[string]string{} },
+		"no interfaces":    func(p *types.IsolationProof) { p.Interfaces = []string{} },
+		"the host's":       func(p *types.IsolationProof) { p.Interfaces = []string{Loopback, "eth0"} },
+		"the host reached": func(p *types.IsolationProof) { p.HostReachable = true },
+	} {
+		p := good
+		p.Setting = map[string]string{"network": "loopback"}
+		edit(&p)
+		if CheckIsolation(run, p) == nil {
+			t.Errorf("%s proved isolation", name)
+		}
+	}
+}

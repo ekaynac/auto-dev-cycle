@@ -187,13 +187,14 @@
       "description": "An immutable result of a claimed node, with the attempt that produced it (null for a controller node).",
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "node", "result", "attempt", "receipt_valid_until"],
+      "required": ["type", "node", "result", "attempt", "receipt_valid_until", "isolation"],
       "properties": {
         "type": {"const": "result_recorded"},
         "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
         "result": {"$ref": "result.json"},
         "receipt_valid_until": {"description": "The valid_until of the receipt the result's one receipt Ref names, bound once when the result is recorded (null: no such receipt, or no limit). Renewal checks expiry against it; the resolver refuses a receipt that differs.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Time"}]},
-        "attempt": {"description": "Checked by this schema only until M1 binds attempts to nodes.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]}
+        "attempt": {"description": "Checked by this schema only until M1 binds attempts to nodes.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/AttemptID"}]},
+        "isolation": {"description": "The isolation proof of the evidence run that produced the result (12 \"Content\"); null for every other kind. An evidence result that is not could_not_run needs its attempt and a proof from that attempt's run that proves its isolation (internal/evidence CheckIsolation).", "oneOf": [{"type": "null"}, {"$ref": "isolation-proof.json"}]}
       }
     },
     "ResultSelected": {

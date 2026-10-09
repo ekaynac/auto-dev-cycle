@@ -350,6 +350,8 @@ type ResultRecorded struct {
 	ReceiptValidUntil *Time `json:"receipt_valid_until"`
 	// Checked by this schema only until M1 binds attempts to nodes.
 	Attempt *AttemptID `json:"attempt"`
+	// The isolation proof of the evidence run that produced the result (12 "Content"); null for every other kind. An evidence result that is not could_not_run needs its attempt and a proof from that attempt's run that proves its isolation (internal/evidence CheckIsolation).
+	Isolation *IsolationProof `json:"isolation"`
 }
 
 // ResultSelected: The node selects its result: a completed result that is not could_not_run (13 [G2]), answering the node's current key, once per claim.

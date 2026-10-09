@@ -80,7 +80,11 @@ func CheckIntent(in types.ManifestIntent) error {
 // or a checked ref derived only from declared inputs (non-empty lineage of
 // declared input ids) that keeps every restriction of every declared input
 // its lineage names. Several inputs may share an id (identical bytes,
-// different history); a lineage id names all of them.
+// different history); a lineage id names all of them. An input the intent
+// omits as restricted is never delivered, nor anything derived from it at
+// any depth through the declared inputs (restrictedIDs); one omitted for
+// budget, policy or availability may still be delivered later (12
+// "Content").
 func CheckDelivery(in types.ManifestIntent, d types.ManifestDelivery) error {
 	if _, err := contract.Encode("records/manifest-delivery", d); err != nil {
 		return fmt.Errorf("knowledge: manifest delivery: %w", err)
@@ -94,6 +98,7 @@ func CheckDelivery(in types.ManifestIntent, d types.ManifestDelivery) error {
 		byIdentity[r.IdentityDigest] = true
 		byID[r.ID] = append(byID[r.ID], r)
 	}
+	restrictedID := restrictedIDs(in)
 	handles := map[string]bool{}
 	for _, t := range d.ToolResults {
 		if handles[t.Handle] {
@@ -102,6 +107,10 @@ func CheckDelivery(in types.ManifestIntent, d types.ManifestDelivery) error {
 		handles[t.Handle] = true
 		if err := CheckRef(t.Ref); err != nil {
 			return fmt.Errorf("knowledge: manifest %s turn %d: %w", in.ID, d.Turn, err)
+		}
+		if restrictedID[t.Ref.ID] || slices.ContainsFunc(t.Ref.Lineage, func(id string) bool { return restrictedID[id] }) {
+			return refuse(vocab.Failed, vocab.ReasonRestrictionDropped,
+				fmt.Errorf("knowledge: manifest %s turn %d: tool result %s is, or derives from, an input omitted as restricted", in.ID, d.Turn, t.Ref.ID))
 		}
 		if byIdentity[t.Ref.IdentityDigest] {
 			continue
@@ -112,6 +121,28 @@ func CheckDelivery(in types.ManifestIntent, d types.ManifestDelivery) error {
 		}
 	}
 	return nil
+}
+
+// restrictedIDs are the ids of the inputs in omitted as restricted and of
+// every declared input derived from one, through lineage at any depth: the
+// set grows until nothing changes, so a cycle ends. Ids are shared, so an
+// input sharing an id with a restricted one is restricted too.
+func restrictedIDs(in types.ManifestIntent) map[string]bool {
+	out := map[string]bool{}
+	for _, o := range in.Omitted {
+		if o.Reason == types.ManifestIntentOmittedItemReasonRestricted {
+			out[o.Ref.ID] = true
+		}
+	}
+	for grew := true; grew; {
+		grew = false
+		for _, r := range in.Inputs {
+			if !out[r.ID] && slices.ContainsFunc(r.Lineage, func(id string) bool { return out[id] }) {
+				out[r.ID], grew = true, true
+			}
+		}
+	}
+	return out
 }
 
 // derivedFrom: r was derived only from the inputs (its lineage is non-empty

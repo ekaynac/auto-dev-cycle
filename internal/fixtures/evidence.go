@@ -25,7 +25,8 @@ var walkDigest = types.Digest("sha256:" + strings.Repeat("a", 64))
 func walk() types.InstrumentContract {
 	return types.InstrumentContract{Name: "walk", Version: "1", Digest: walkDigest, SubjectType: types.InstrumentContractSubjectTypeTree,
 		RequiredPredicates: []types.InstrumentContractRequiredPredicatesItem{{Name: "steps", EvidenceRequired: []string{}}},
-		OptionalPredicates: []string{}, Preconditions: []types.Name{"dns"}, ArtifactClasses: map[string]types.InstrumentContractArtifactClassesValue{}}
+		OptionalPredicates: []string{}, Preconditions: []types.Name{"dns"}, ArtifactClasses: map[string]types.InstrumentContractArtifactClassesValue{
+			"trace": types.InstrumentContractArtifactClassesValueDiagnostic, "remote-stderr": types.InstrumentContractArtifactClassesValueRestricted}}
 }
 
 func walkContracts(ref types.InstrumentRef) (types.InstrumentContract, error) {
@@ -90,8 +91,7 @@ func (g *graphFix) attempt(n types.NodeID) (Step, error) {
 		return Step{}, err
 	}
 	if !exhausted {
-		_, err := g.selectResult(n, types.ResultKindEvidence, []types.Ref{}, ptrTo(json.RawMessage(`{"steps":"pass"}`)))
-		return Step{vocab.Empty, vocab.ReasonCompletedClean.String()}, err
+		return g.runIn(n, loopback, false, []types.Ref{}, ptrTo(json.RawMessage(`{"steps":"pass"}`)))
 	}
 	st, _, err := g.node(n)
 	rid, rerr := ids.New("res")

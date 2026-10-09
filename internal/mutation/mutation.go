@@ -159,6 +159,12 @@ const (
 	// so a replacement's successor cannot answer what the replaced review
 	// asked.
 	LineageIgnoresSupersession = "graph.lineage-ignores-supersession"
+	// IsolationUnchecked accepts any isolation proof, so an evidence result
+	// run under an empty isolation setting is published.
+	IsolationUnchecked = "evidence.isolation-unchecked"
+	// RestrictedArtifactRendered renders every ref of a result in a
+	// controller context, so a restricted artifact reaches a prompt.
+	RestrictedArtifactRendered = "graph.restricted-artifact-rendered"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -174,4 +180,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	RestoreFailureReleases, RuntimeOnSourceFacts,
 	SuccessorTakesAnyAnswer, AnswerLineageUnchecked, EquivalenceIgnoresRestrictions, EquivalenceIgnoresRoster,
 	GenerationKeepsBase, CarryOverIgnoresPatch, GenerationTakesStale,
-	SupersessionKeepsAttempts, SupersessionKeepsPredecessor, SupersedeTwice, LineageIgnoresSupersession}
+	SupersessionKeepsAttempts, SupersessionKeepsPredecessor, SupersedeTwice, LineageIgnoresSupersession,
+	IsolationUnchecked, RestrictedArtifactRendered}

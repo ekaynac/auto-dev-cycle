@@ -245,6 +245,7 @@ An immutable result of a claimed node, with the attempt that produced it (null f
 | `result` | yes | [result](records-result.md) |  |
 | `receipt_valid_until` | yes | null or [Time](common-defs.md#time) | The valid_until of the receipt the result's one receipt Ref names, bound once when the result is recorded (null: no such receipt, or no limit). Renewal checks expiry against it; the resolver refuses a receipt that differs. |
 | `attempt` | yes | null or [AttemptID](common-defs.md#attemptid) | Checked by this schema only until M1 binds attempts to nodes. |
+| `isolation` | yes | null or [isolation-proof](records-isolation-proof.md) | The isolation proof of the evidence run that produced the result (12 "Content"); null for every other kind. An evidence result that is not could_not_run needs its attempt and a proof from that attempt's run that proves its isolation (internal/evidence CheckIsolation). |
 
 No other fields are allowed.
 

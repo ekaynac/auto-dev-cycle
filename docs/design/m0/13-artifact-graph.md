@@ -242,6 +242,9 @@ The controller evaluates **goals** (e.g. "merge the candidate of task T", "close
   exact answer the claim fixed (an approval answers one owed input at one revision, and its artifact is immutable). An
   answer to an owed input the node did not declare never reaches it; the call's `manifest.intent` lists exactly these
   refs as its inputs (10).
+  - *Content classes (E3, 12 "Content").* An evidence result's artifacts are rendered by their instrument contract's
+    class: `graph.Context` returns the refs the manifest includes and, apart, the restricted ones it omits with reason
+    `restricted`. A restricted artifact never reaches a manifest's `included`, whoever builds the manifest.
 - **Waiting is structural for internal inputs.** A node with a missing input is `waiting(input)`, and its signal is
   that input's result. External waits (approval, quota, human act, probe) use the hold registry (02).
   - The evaluator walks from its goals through each node's producers first, once per node, and claims a node once all
