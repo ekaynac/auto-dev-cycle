@@ -25,17 +25,36 @@ package graph
 //   - Lineage follows supersession: a replacement's lineage includes what
 //     the review it replaced asked, so the replacement's successor answers
 //     it (lineageOwed).
-//   - Hold transfer and retirement are G6b-2: until then a held review is
-//     not superseded, and both hold lists are empty. So is a moved
-//     question: the replacement keeps every answer input.
+//   - Holds (G6b-2): each of the predecessor's holds transfers to the
+//     replacement, unchanged (id, since, owner, pages), or is retired with
+//     its reason, in the supersession event itself. Which one is derived,
+//     never chosen (holdsFor): a retry wait is of the predecessor's key, so
+//     it retires as invalidated; a reviewer_unavailable wait on
+//     registry:<executor>, a member of the predecessor's roster that the
+//     new roster drops, retires as member_removed; an awaiting_input wait
+//     on an answer the predecessor declares and the replacement no longer
+//     does retires as question_moved; every other wait transfers, matched
+//     or not. The fold derives the same lists and refuses any other.
+//   - A moved question (G6b-2): the caller may replace an answer input by
+//     an answer to another owed input (Moves), once its question moved:
+//     the builder requires that the lineage no longer asks the old owed
+//     input and asks the new one at its current revision, which the review
+//     declares no other answer to. The fold checks the shape only (an
+//     answer input replaced, under its name, by one to an owed input the
+//     review did not declare); as for a hold retired as revised, it cannot
+//     check the move until M1 records owed inputs. Removing an answer is
+//     refused in M0: it would drop a gate the fold cannot re-check, so it
+//     waits for M1, which re-checks each question_moved retirement against
+//     the recorded owed inputs.
 //   - M1 binds attempts to nodes. Until then the caller names the
 //     predecessor's attempts: the fold proves neither that the list is
 //     complete nor that the listed attempts are the predecessor's. An
 //     unlisted attempt is safe (nothing selects its result for either node)
 //     but holds its capacity until it ends.
-//   - A review whose result a dependant claimed is not superseded: its
-//     dependants are re-pointed by G6b-2 and G7b-2 (the merge waits for the
-//     replacement).
+//   - A review whose result a dependant claimed is not superseded. G6b-2
+//     keeps this refusal: re-pointing a claimed dependant would release its
+//     claim, which no event does yet; the merge's wait for the replacement
+//     is G7b-2's.
 
 import (
 	"encoding/json"
@@ -43,6 +62,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -118,13 +138,24 @@ func currentRevision(tx *eventstore.Tx, task types.TaskID, node types.NodeID, re
 	return nil
 }
 
+// Moves are the answer inputs, by name, whose question moved to another
+// owed input: the replacement answers the new one in their place. A nil
+// move (a removal) is refused until M1.
+type Moves map[types.Name]*types.AnswerSource
+
 // Supersede is the one transaction replacing review pred after a roster
 // change: a stop for each of attempts still running, then review.superseded
 // with the replacement, whose roster is that of requirement, the
-// review_requirement node of the subject's next revision, recorded before.
-// The replacement's roster is checked against families, as RecordReview
-// checks.
+// review_requirement node of the subject's next revision, recorded before,
+// and with pred's holds transferred or retired. The replacement's roster is
+// checked against families, as RecordReview checks.
 func Supersede(tx *eventstore.Tx, pred, requirement types.NodeID, attempts []types.AttemptID, families Families) ([]eventstore.Event, error) {
+	return SupersedeMoving(tx, pred, requirement, attempts, families, nil, nil)
+}
+
+// SupersedeMoving is Supersede, with the answer inputs of moves replaced;
+// auth tells which questions moved.
+func SupersedeMoving(tx *eventstore.Tx, pred, requirement types.NodeID, attempts []types.AttemptID, families Families, moves Moves, auth Authority) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, pred)
 	req, rerr := loadNode(tx, requirement)
 	id, ierr := ids.New("nod")
@@ -134,26 +165,23 @@ func Supersede(tx *eventstore.Tx, pred, requirement types.NodeID, attempts []typ
 	if err := superseded(rec); err != nil && !mutation.Is(mutation.SupersedeTwice) {
 		return nil, err
 	}
-	if len(rec.State.Holds) > 0 {
-		return nil, fmt.Errorf("graph: %s holds %s: a held review is superseded only once G6b-2 transfers or retires holds", pred, rec.State.Holds[0].ID)
-	}
 	p, err := req.Recorded.Node.ParamsAsReviewRequirement()
 	if err != nil || req.Recorded.Node.Kind != types.NodeKindReviewRequirement {
 		return nil, errors.Join(err, fmt.Errorf("graph: %s is no review requirement", requirement))
 	}
 	n := rec.Recorded.Node
-	n.ID, n.Inputs = types.NodeID(id), slices.Clone(n.Inputs)
+	n.ID = types.NodeID(id)
 	if n.Params, err = json.Marshal(types.ReviewNodeParams{Subject: p.Subject, Roster: p.Roster}); err != nil {
 		return nil, err
 	}
-	for i, in := range n.Inputs {
-		if src, ok := in.Source.Variant.(*types.ResultSource); ok && src.ResultKind == types.ResultKindReviewRequirement {
-			moved := *src
-			moved.Producer = requirement
-			n.Inputs[i].Source.Variant = &moved
-		}
+	if n.Inputs, err = moved(tx, rec, requirement, moves, auth); err != nil {
+		return nil, err
 	}
 	if err := registered(n, families); err != nil {
+		return nil, err
+	}
+	held, retired, err := holdsFor(tx, rec, n)
+	if err != nil {
 		return nil, err
 	}
 	var evs []eventstore.Event
@@ -168,8 +196,123 @@ func Supersede(tx *eventstore.Tx, pred, requirement types.NodeID, attempts []typ
 		}
 	}
 	s, err := event(ReviewSuperseded, string(pred), rec.Recorded.Project, &types.ReviewSuperseded{Type: "review_superseded", Predecessor: pred,
-		Replacement: n, StoppedAttempts: stopped, TransferredHolds: []types.HoldID{}, RetiredHolds: []types.HoldID{}})
+		Replacement: n, StoppedAttempts: stopped, TransferredHolds: holdIDs(held), RetiredHolds: retired})
 	return append(evs, s...), err
+}
+
+// moved are rec's inputs for its replacement: its review_requirement input
+// moved to requirement, and each answer input moves names replaced. A move
+// needs auth to show the question moved: rec's lineage no longer asks the
+// old owed input, and asks the new one at its current revision, which no
+// other answer of the replacement answers.
+func moved(tx *eventstore.Tx, rec nodeRecord, requirement types.NodeID, moves Moves, auth Authority) ([]types.InputSpec, error) {
+	var owed []types.AnswerSource
+	if len(moves) > 0 {
+		if auth == nil {
+			return nil, errors.New("graph: a moved question needs the authority")
+		}
+		var err error
+		if owed, err = lineageOwed(tx, rec.Recorded.Predecessor, auth); err != nil {
+			return nil, err
+		}
+	}
+	out, used := []types.InputSpec{}, 0
+	for _, in := range rec.Recorded.Node.Inputs {
+		to, move := moves[in.Name]
+		ask, answer := in.Source.Variant.(*types.AnswerSource)
+		src, result := in.Source.Variant.(*types.ResultSource)
+		switch {
+		case move && !answer:
+			return nil, fmt.Errorf("graph: %s is no answer input: only an answer moves", in.Name)
+		case result && src.ResultKind == types.ResultKindReviewRequirement:
+			next := *src
+			next.Producer = requirement
+			in.Source.Variant = &next
+		case !move || mutation.Is(mutation.ReplacementKeepsMovedAnswer):
+		case asks(owed, ask.OwedInput):
+			return nil, fmt.Errorf("graph: %s's question has not moved: its answer is not replaced", in.Name)
+		case to == nil:
+			return nil, fmt.Errorf("graph: %s's answer is not removed: a removal waits for M1 to record owed inputs", in.Name)
+		case !owedIn(owed, to): // the old owed input is no longer asked, so it is never to
+			return nil, ErrNotOwed{to.OwedInput}
+		case answeredBy(rec.Recorded.Node.Inputs, moves, in.Name, to.OwedInput):
+			return nil, fmt.Errorf("graph: %s moves to %s, which another answer of the review answers", in.Name, to.OwedInput)
+		default:
+			in.Source.Variant = &types.AnswerSource{Type: "answer", OwedInput: to.OwedInput, Revision: to.Revision}
+		}
+		if move {
+			used++
+		}
+		out = append(out, in)
+	}
+	if used != len(moves) && !mutation.Is(mutation.ReplacementKeepsMovedAnswer) {
+		return nil, errors.New("graph: a move names no answer input of the review")
+	}
+	return out, nil
+}
+
+// answeredBy: an answer input of inputs other than name answers owed, or
+// another move goes to it.
+func answeredBy(inputs []types.InputSpec, moves Moves, name types.Name, owed types.OwedInputID) bool {
+	return slices.ContainsFunc(inputs, func(in types.InputSpec) bool {
+		ask, ok := in.Source.Variant.(*types.AnswerSource)
+		to := moves[in.Name]
+		return in.Name != name && (ok && ask.OwedInput == owed || to != nil && to.OwedInput == owed)
+	})
+}
+
+// holdsFor splits rec's holds for its replacement n, in rec's order: a
+// wait on what rec depends on and n no longer does is retired with its
+// reason; every other hold, matched or not, transfers unchanged.
+func holdsFor(tx *eventstore.Tx, rec nodeRecord, n types.Node) ([]types.NodeHold, []types.RetiredHold, error) {
+	was, _, err := rosterOf(rec.Recorded.Node)
+	roster, _, nerr := rosterOf(n)
+	if err = errors.Join(err, nerr); err != nil {
+		return nil, nil, err
+	}
+	member := func(r []types.RosterMember, exe string) bool {
+		return slices.ContainsFunc(r, func(m types.RosterMember) bool { return string(m.Executor) == exe })
+	}
+	answers := func(x types.Node, signal string) bool {
+		return slices.ContainsFunc(x.Inputs, func(in types.InputSpec) bool {
+			ask, ok := in.Source.Variant.(*types.AnswerSource)
+			return ok && awaitSignal(ask) == signal
+		})
+	}
+	held, retired := []types.NodeHold{}, []types.RetiredHold{}
+	for _, h := range rec.State.Holds {
+		by, _, err := load[heldBy](tx, HoldProjection, string(h.ID))
+		if err != nil {
+			return nil, nil, err
+		}
+		exe, onExecutor := strings.CutPrefix(h.SignalInstance, "registry:")
+		var why types.RetiredHoldReason
+		switch {
+		case mutation.Is(mutation.SupersessionTransfersEveryHold):
+		case by.Result != nil:
+			why = types.RetiredHoldReasonInvalidated
+		// Raise does not check a reviewer_unavailable signal: one that is not
+		// registry:<member> matches nothing, and transfers.
+		case h.Hold == "reviewer_unavailable" && onExecutor && member(was, exe) && !member(roster, exe):
+			why = types.RetiredHoldReasonMemberRemoved
+		case h.Hold == "awaiting_input" && answers(rec.Recorded.Node, h.SignalInstance) && !answers(n, h.SignalInstance):
+			why = types.RetiredHoldReasonQuestionMoved
+		}
+		if why == "" {
+			held = append(held, h)
+		} else {
+			retired = append(retired, types.RetiredHold{Hold: h.ID, Reason: why})
+		}
+	}
+	return held, retired, nil
+}
+
+func holdIDs(hs []types.NodeHold) []types.HoldID {
+	out := []types.HoldID{}
+	for _, h := range hs {
+		out = append(out, h.ID)
+	}
+	return out
 }
 
 func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuperseded) error {
@@ -180,8 +323,8 @@ func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuper
 	if err := superseded(rec); err != nil && !mutation.Is(mutation.SupersedeTwice) {
 		return err
 	}
-	if rec.Recorded.Node.Kind != types.NodeKindReview || rec.State.State == types.NodeStateStateHeld {
-		return fmt.Errorf("a %s %s is not superseded: only a review holding nothing (holds move with G6b-2)", rec.State.State, rec.Recorded.Node.Kind)
+	if rec.Recorded.Node.Kind != types.NodeKindReview {
+		return fmt.Errorf("a %s is not superseded: only a review", rec.Recorded.Node.Kind)
 	}
 	if err := errors.Join(unshared(tx, rec), unclaimed(tx, rec)); err != nil {
 		return err
@@ -210,7 +353,20 @@ func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuper
 			return err
 		}
 	}
-	st := types.NodeState{Node: p.Replacement.ID, WaitingOn: waitingOn(p.Replacement), Holds: []types.NodeHold{}}
+	held, retired, err := holdsFor(tx, rec, p.Replacement)
+	if err != nil || !slices.Equal(p.TransferredHolds, holdIDs(held)) || !slices.Equal(p.RetiredHolds, retired) {
+		return errors.Join(err, errors.New("each of the review's holds transfers if its replacement still waits on it, or retires with its reason, once"))
+	}
+	for _, h := range held {
+		by, _, err := load[heldBy](tx, HoldProjection, string(h.ID))
+		if err = errors.Join(err, put(tx, HoldProjection, string(h.ID), heldBy{Node: p.Replacement.ID, Result: by.Result})); err != nil {
+			return err
+		}
+	}
+	if mutation.Is(mutation.SupersessionDropsHolds) {
+		held = []types.NodeHold{}
+	}
+	st := types.NodeState{Node: p.Replacement.ID, WaitingOn: waitingOn(p.Replacement), Holds: held}
 	settle(&st)
 	n := nodeRecord{Recorded: types.NodeRecorded{Type: "node_recorded", Task: rec.Recorded.Task, Project: rec.Recorded.Project, Node: p.Replacement,
 		Predecessor: rec.Recorded.Predecessor}, Replaces: &p.Predecessor, State: st}
@@ -220,7 +376,7 @@ func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuper
 	if mutation.Is(mutation.SupersessionKeepsPredecessor) {
 		return nil
 	}
-	rec.State.State, rec.State.WaitingOn, rec.State.SupersededBy = types.NodeStateStateSuperseded, []types.Name{}, &p.Replacement.ID
+	rec.State.State, rec.State.WaitingOn, rec.State.Holds, rec.State.SupersededBy = types.NodeStateStateSuperseded, []types.Name{}, []types.NodeHold{}, &p.Replacement.ID
 	return putNode(tx, rec)
 }
 
@@ -259,8 +415,10 @@ func unclaimed(tx *eventstore.Tx, rec nodeRecord) error {
 // replaces: n replaces rec, a review, after a roster change: the same kind,
 // definition version, round, requirements, effect and subject, another
 // roster, and the same inputs but for rec's one review_requirement input,
-// which moves to the requirement returned: a node of rec's task at the next
-// revision, with n's subject, roster and definition version.
+// which moves to the requirement returned (a node of rec's task at the next
+// revision, with n's subject, roster and definition version), and for the
+// answer inputs of moved questions, replaced under their name by one answer
+// to an owed input rec does not declare. Removing one is refused until M1.
 func replaces(tx *eventstore.Tx, ev eventstore.Event, rec nodeRecord, n types.Node) (nodeRecord, error) {
 	p := rec.Recorded.Node
 	roster, subject, err := rosterOf(p)
@@ -272,12 +430,14 @@ func replaces(tx *eventstore.Tx, ev eventstore.Event, rec nodeRecord, n types.No
 	}
 	var from, to *types.ResultSource
 	for i, in := range p.Inputs {
+		m := n.Inputs[i]
 		a, ok := in.Source.Variant.(*types.ResultSource)
-		b, ok2 := n.Inputs[i].Source.Variant.(*types.ResultSource)
+		b, ok2 := m.Source.Variant.(*types.ResultSource)
 		switch {
-		case ok && ok2 && from == nil && in.Name == n.Inputs[i].Name && a.ResultKind == types.ResultKindReviewRequirement && b.ResultKind == a.ResultKind:
+		case ok && ok2 && from == nil && in.Name == m.Name && a.ResultKind == types.ResultKindReviewRequirement && b.ResultKind == a.ResultKind:
 			from, to = a, b
-		case !reflect.DeepEqual(in, n.Inputs[i]):
+		case reflect.DeepEqual(in, m) || answeredAnew(p, n, in, m):
+		default:
 			return nodeRecord{}, fmt.Errorf("the replacement's input %d is not its review's", i)
 		}
 	}
@@ -297,4 +457,18 @@ func replaces(tx *eventstore.Tx, ev eventstore.Event, rec nodeRecord, n types.No
 		return nodeRecord{}, errors.Join(err, errors.New("the replacement's requirement is the next revision, of its subject, roster and definition version"))
 	}
 	return next, nil
+}
+
+// answeredAnew: m replaces p's answer input in, under its name, by n's one
+// answer to an owed input p does not declare.
+func answeredAnew(p, n types.Node, in, m types.InputSpec) bool {
+	_, ok := in.Source.Variant.(*types.AnswerSource)
+	b, ok2 := m.Source.Variant.(*types.AnswerSource)
+	declares := func(x types.Node) int {
+		return len(slices.DeleteFunc(slices.Clone(x.Inputs), func(i types.InputSpec) bool {
+			c, ok := i.Source.Variant.(*types.AnswerSource)
+			return !ok || c.OwedInput != b.OwedInput
+		}))
+	}
+	return ok && ok2 && in.Name == m.Name && declares(p) == 0 && declares(n) == 1
 }

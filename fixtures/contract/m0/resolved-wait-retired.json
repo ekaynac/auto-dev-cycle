@@ -1,0 +1,15 @@
+{
+  "name": "resolved-wait-retired",
+  "invariant": "A wait the replacement no longer has is retired in the supersession with its reason (13 \"Holds\"): an answer whose question moved (question_moved), a member the new roster drops (member_removed). The replacement then claims once its own waits clear. Steps: supersede, then evaluate and commit the replacement.",
+  "expected": [
+    {
+      "outcome": "empty",
+      "reason": "completed_clean"
+    },
+    {
+      "outcome": "empty",
+      "reason": "completed_clean"
+    }
+  ],
+  "mutation": "graph.supersession-transfers-every-hold"
+}

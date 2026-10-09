@@ -1,0 +1,15 @@
+{
+  "name": "moved-question-replaced",
+  "invariant": "A question that moved to another owed input is answered in the replacement in place of the old answer (13 \"Moved questions\"), so the replacement's lineage owes every answer it declares. Steps: supersede, then evaluate and commit the replacement.",
+  "expected": [
+    {
+      "outcome": "empty",
+      "reason": "completed_clean"
+    },
+    {
+      "outcome": "empty",
+      "reason": "completed_clean"
+    }
+  ],
+  "mutation": "graph.replacement-keeps-moved-answer"
+}

@@ -30,7 +30,7 @@ package graph
 //     the fold cannot check the revision until M1 records owed inputs). An
 //     invalidation retires its retry waits in the same command and keeps
 //     every other wait, with its id, since and pages.
-//   - Transferring a hold to a replacement is G6b's, inside its
+//   - Transferring a hold to a replacement is G6b-2's, inside its
 //     supersession. The evaluator ties awaiting_input to an owed input the
 //     node declares (evaluate.go); this fold does not, until M1 records owed
 //     inputs. As for Claim, M1's commands take the project from the actor's

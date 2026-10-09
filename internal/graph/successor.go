@@ -23,7 +23,7 @@ package graph
 //     structural wait, never an error for the command) and the commit
 //     refuses it as authority_revoked. The lineage moves on through a
 //     successor that answers the current revision.
-//   - Until G6b transfers holds, a successor is refused while its
+//   - Holds move only to a replacement (G6b-2): a successor is refused while its
 //     predecessor holds anything but an awaiting_input wait on an answer
 //     input it inherits: one the authority has given is cleared on its
 //     signal, one the successor moves to a newer revision is retired as

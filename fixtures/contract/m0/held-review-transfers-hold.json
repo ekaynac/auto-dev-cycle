@@ -1,0 +1,15 @@
+{
+  "name": "held-review-transfers-hold",
+  "invariant": "A held review's roster change transfers each wait the replacement still has, with its id, since and paging history, so escalation does not restart (13 \"Holds\"): the transferred wait's owner is not paged again and the predecessor holds nothing. Steps: supersede, then evaluate and commit the replacement once its waits clear.",
+  "expected": [
+    {
+      "outcome": "empty",
+      "reason": "completed_clean"
+    },
+    {
+      "outcome": "empty",
+      "reason": "completed_clean"
+    }
+  ],
+  "mutation": "graph.supersession-drops-holds"
+}
