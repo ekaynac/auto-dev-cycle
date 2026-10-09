@@ -72,13 +72,19 @@ func openQueue(ctx context.Context, dir, patch string) (*queueFix, types.Ref, fu
 // generate starts the generation the forge's base head calls for, if any:
 // the step of its command, and the generation (none: number 0).
 func (q *queueFix) generate(o *observe) (gen graph.Generation, err error) {
-	head, err := q.forge.Holds(q.spec.Branch)
-	if err == nil {
-		err = o.step(q.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			evs, g, err := graph.Generate(tx, q.spec, head)
-			gen = g
-			return evs, err
-		}))
+	head, version := q.forge.Observe(q.spec.Branch)
+	return q.generateAt(o, graph.Observation{Head: head, Version: version})
+}
+
+// generateAt is generate on obs, an observation made earlier.
+func (q *queueFix) generateAt(o *observe, obs graph.Observation) (gen graph.Generation, err error) {
+	err = q.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		evs, g, err := graph.Generate(tx, q.spec, obs)
+		gen = g
+		return evs, err
+	})
+	if !errors.As(err, new(graph.ErrStaleObservation)) {
+		err = o.step(err)
 	}
 	return gen, err
 }
@@ -197,5 +203,43 @@ func carryOverNeedsEqualPatch(ctx context.Context, dir string) (steps []Step, vi
 			o.check(len(r.Value) == 1 && r.Value[0].ContentDigest == tree.ContentDigest, "the attestation on %s does not bind its tree", c.base)
 		}
 	}
+	return o.steps, o.violations, nil
+}
+
+// staleObservationStartsNothing: an observation older than the current
+// generation's starts no generation (13 "Merge-queue generations"). A
+// caller observes A and pauses; another observes B and starts generation
+// 2; the delayed observation of A is refused, while a genuine return to A,
+// observed later, starts generation 3.
+func staleObservationStartsNothing(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
+	q, _, closeFn, err := openQueue(ctx, dir, "patch P")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { err = errors.Join(err, closeFn()) }()
+	var o observe
+	q.forge.Move("main", "A")
+	head, version := q.forge.Observe("main")
+	atA := graph.Observation{Head: head, Version: version}
+	gen1, err := q.generateAt(&o, atA)
+	q.forge.Move("main", "B")
+	var gen2, stale, gen3 graph.Generation
+	if err == nil {
+		gen2, err = q.generate(&o)
+	}
+	if err == nil {
+		stale, err = q.generateAt(&observe{}, atA)
+	}
+	staleErr := err
+	q.forge.Move("main", "A")
+	if errors.As(staleErr, new(graph.ErrStaleObservation)) || staleErr == nil {
+		gen3, err = q.generate(&o)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	o.check(gen1.Number == 1 && gen2.Number == 2, "A then B started generations %d and %d", gen1.Number, gen2.Number)
+	o.check(staleErr != nil && stale.Number == 0, "the delayed observation of A started generation %d", stale.Number)
+	o.check(gen3.Base == "A" && gen3.Number == map[bool]int64{true: 3, false: 4}[staleErr != nil], "the genuine return to A started generation %d", gen3.Number)
 	return o.steps, o.violations, nil
 }

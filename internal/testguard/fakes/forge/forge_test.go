@@ -32,3 +32,24 @@ func TestPushIsExpectedBase(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionRisesWithEveryMove(t *testing.T) {
+	f := New()
+	if h, v := f.Observe("main"); h != "" || v != 0 {
+		t.Fatalf("a fresh branch: %q at %d", h, v)
+	}
+	f.Move("main", "A")
+	f.Move("main", "B")
+	if _, err := f.Apply("main", "eff_a", "A", "B"); err != nil {
+		t.Fatal(err)
+	}
+	if h, v := f.Observe("main"); h != "A" || v != 3 {
+		t.Fatalf("after A, B and a push of A: %q at %d, want A at 3", h, v)
+	}
+	if _, err := f.Apply("main", "eff_b", "C", "B"); err != nil {
+		t.Fatal(err)
+	}
+	if _, v := f.Observe("main"); v != 3 {
+		t.Fatalf("a push that did not land moved the version to %d", v)
+	}
+}

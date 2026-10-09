@@ -386,7 +386,7 @@ verified (contract fixture `restore-failure-keeps-target-excluded`).
 
 ## Merge-queue generations [G6]
 
-The merge queue is serialized per project and base branch. Each attempt to merge a candidate is a **queue generation**:
+The merge queue is serialized per project and base branch. Each attempt to merge a candidate result onto a base head is a **queue generation**:
 
 | Node in the generation | Inputs | Result |
 |---|---|---|
@@ -399,11 +399,36 @@ If the base moves before the merge commits, the CAS fails, and a **new generatio
 generation's results remain as history.
 
 As delivered (G7b-1; the refreshed receipts and the merge are G7b-2):
-- **Generations are numbered** per task and branch, from 1. The `rebase` node pins its generation in its params
-  `{branch, base, generation}`. The graph admits a rebase node only as the next generation, and only on another base
-  head than the current generation's: a base move starts a generation, and nothing else does. The template records
-  the next generation, its `rebase` and `carry_over` nodes, whenever the base head observed on the forge is not the
-  current generation's, mid-generation included.
+- **Each attempt to merge a candidate result onto a base head is a generation.** Generations are numbered per task
+  and branch, from 1. The `rebase` node pins its generation in its params `{branch, base, version, candidate,
+  generation}`: the base head, the forge's version of the branch when that head was observed (it rises with every
+  move of the head), and the candidate's selected result. The graph admits a rebase node only as the next
+  generation, only for the candidate's currently selected result, only on an observation no older than the current
+  generation's, and only for another base head or another candidate result: a base move, or a rebuilt candidate on
+  the same base, starts a generation, and nothing else does. An observation older than the current generation's is
+  refused, so a delayed caller cannot start a generation on a head the forge has already left; a genuine return to
+  an earlier head is a newer observation, and starts one. The template records the next generation, its `rebase`
+  and `carry_over` nodes, whenever the observation calls for it, mid-generation included.
+- **The generation's candidate is pinned** through execution, not only when it is recorded: the claim of its `rebase`
+  must resolve the candidate to `params.candidate`, the rebase's result is accepted only for that result, and its
+  `carry_over` takes only that candidate. A candidate reselected after the generation was recorded is refused there
+  (the claim, or the carry-over, fails), and its attempt is the next generation's.
+- **The latest observation is kept** per task and branch, by `queue.observed/v1`, even when it starts no generation.
+  An older version, or another head at the latest version, is refused as `failed/stale_expected_state`, so a
+  delayed observation never moves the queue back.
+  - **Where a version comes from.** A real forge adapter takes it from a monotonic, per-branch source the forge
+    offers: a push-event sequence or a ref-log index. Where the forge offers none, the adapter keeps its own counter,
+    persisted with it and raised whenever it observes a new head; that counter cannot see a move it did not observe
+    (an unobserved A→B→A reads as A, unmoved), which is safe here, since the queue's merge is a compare-and-set on
+    the head.
+  - **Versions are trusted controller input.** The graph checks that versions rise; it does not authenticate them.
+    A fabricated higher version is accepted, so a version is only as good as the adapter that reports it. The fake
+    forge (`internal/testguard/fakes/forge`) keeps its counters in memory: they reset when it is recreated, so its
+    monotonicity does not survive a recreation, which reads to the queue as the wedge below.
+  - **A wedged queue.** If the source's versions go back (a forge restart that resets them, or a bogus far-future
+    version), every later observation is refused, visibly, with that reason; nothing moves silently. Recovery is
+    an operator's: re-basing the queue's observations is an M1 operator action, and in M0 a new task re-queues the
+    candidate.
 - **A rebase result** is a `tree` whose conflict status is its outcome, never the absence of a ref: a clean rebase
   (`empty/completed_clean`) holds the prospective tree (a git tree) and the rebased patch (of the candidate patch's
   ref type); one that found conflicts (`found`) holds their resolution too. Any other shape is refused when the

@@ -93,6 +93,7 @@ var runners = map[string]runner{
 	"roster-change-runs-review":             rosterChangeRunsReview,
 	"base-move-starts-a-generation":         baseMoveStartsAGeneration,
 	"carry-over-needs-equal-patch":          carryOverNeedsEqualPatch,
+	"stale-observation-starts-nothing":      staleObservationStartsNothing,
 }
 
 // Goldens loads and validates every golden, checking that each has a

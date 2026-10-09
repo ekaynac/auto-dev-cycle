@@ -39,10 +39,19 @@ func (g graphStore) queueSpec(branch string, refs ...types.Ref) QueueSpec {
 	return QueueSpec{Task: tskID, Project: prjID, Branch: branch, Candidate: cand, Review: g.reviewOn(cand)}
 }
 
+// observed numbers the observations generate makes, newest last.
+var observed int64
+
+// generate is generateAt head, newer than every observation before it.
 func (g graphStore) generate(spec QueueSpec, head string) (Generation, error) {
+	observed++
+	return g.generateAt(spec, Observation{Head: head, Version: observed})
+}
+
+func (g graphStore) generateAt(spec QueueSpec, obs Observation) (Generation, error) {
 	var gen Generation
 	err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		evs, gn, err := Generate(tx, spec, head)
+		evs, gn, err := Generate(tx, spec, obs)
 		gen = gn
 		return evs, err
 	})
@@ -130,8 +139,11 @@ func TestGenerations(t *testing.T) {
 		t.Fatalf("a base move: %+v (%v)", gen2, err)
 	}
 
+	cand := *g.state(spec.Candidate).Result
 	rebase := func(params string) logic {
 		rec := g.newNode(types.NodeKindRebase)
+		rec.Node.Inputs[0].Name, rec.Node.Inputs[0].Source.Variant = "candidate", &types.ResultSource{Type: "result", Producer: spec.Candidate, ResultKind: types.ResultKindPatch}
+		params = strings.Replace(params, `"generation"`, `"version":1000,"candidate":"`+string(cand)+`","generation"`, 1)
 		rec.Node.Params = json.RawMessage(params)
 		return func(*eventstore.Tx) ([]eventstore.Event, error) { return Record(rec) }
 	}
@@ -390,7 +402,7 @@ func TestCarryOverRoles(t *testing.T) {
 	treeReview := g.consumerOf(integration, types.ResultKindTree)
 	g.must(evaluate(effectEnv, treeReview))
 	g.must(commit(treeReview, g.reviewResult(treeReview), effectEnv))
-	rebase := substitute(gen.Rebase, `{"branch":"dev","base":"B1","generation":1}`, map[string]source{"candidate": {integration, types.ResultKindTree}})
+	rebase := substitute(gen.Rebase, `{"branch":"dev","base":"B1","version":1,"candidate":"`+string(ir.ID)+`","generation":1}`, map[string]source{"candidate": {integration, types.ResultKindTree}})
 	rr := unrecorded(t, *g.state(rebase).Key)
 	rr.Kind, rr.Value, rr.Outcome, rr.Reason, rr.Detail = types.ResultKindTree, []types.Ref{g.ref(types.RefTypeGitTree, "T2"), tree}, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
 	g.must(commit(rebase, rr, effectEnv))

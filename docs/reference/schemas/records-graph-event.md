@@ -4,9 +4,9 @@
 
 `schemas/records/graph-event.json`
 
-The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1, node.hold_cleared/v1 and node.operated/v1 under the node's id, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
+The payload of every artifact-graph event (docs/design/m0/13), discriminated by type: node.recorded/v1, node.claimed/v1, node.reused/v1, node.reuse_released/v1, node.renewed/v1, node.invalidated/v1, node.hold_raised/v1, node.hold_paged/v1, node.hold_cleared/v1 and node.operated/v1 under the node's id, queue.observed/v1 under its task, result.recorded/v1 and result.selected/v1 under the result's id; each in the node's project. internal/graph folds them into the graph projections in the writer transaction and refuses one its state does not derive.
 
-A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [NodeReused](#nodereused) or [NodeReuseReleased](#nodereusereleased) or [NodeRenewed](#noderenewed) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected) or [NodeOperated](#nodeoperated).
+A document is one of: [NodeRecorded](#noderecorded) or [NodeClaimed](#nodeclaimed) or [NodeInvalidated](#nodeinvalidated) or [NodeReused](#nodereused) or [NodeReuseReleased](#nodereusereleased) or [NodeRenewed](#noderenewed) or [HoldRaised](#holdraised) or [HoldPaged](#holdpaged) or [HoldCleared](#holdcleared) or [ResultRecorded](#resultrecorded) or [ResultSelected](#resultselected) or [NodeOperated](#nodeoperated) or [QueueObserved](#queueobserved).
 
 ## Definitions
 
@@ -127,6 +127,22 @@ An effect node's operation was intended (13 [G4], G7a): effect is the durable ef
 | `node` | yes | [NodeID](common-defs.md#nodeid) |  |
 | `key` | yes | [computation-key](records-computation-key.md) |  |
 | `effect` | yes | [EffectID](common-defs.md#effectid) |  |
+
+No other fields are allowed.
+
+### QueueObserved
+
+A merge queue's observation of its branch's base head (13 "Merge-queue generations", G7b-1b): the head with the forge's version of the branch, which rises with every move of the head. The latest observation of each task and branch is kept: an older version, or another head at the same version, is refused, so a delayed observation never moves the queue back.
+
+#### Fields of QueueObserved
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | `queue_observed` |  |
+| `task` | yes | [TaskID](common-defs.md#taskid) |  |
+| `branch` | yes | string (minLength `1`, maxLength `256`) |  |
+| `head` | yes | string (minLength `1`, maxLength `256`) |  |
+| `version` | yes | integer (minimum `0`, maximum `9007199254740991`) |  |
 
 No other fields are allowed.
 

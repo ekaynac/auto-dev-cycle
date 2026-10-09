@@ -7,8 +7,10 @@
 // M0 scope (15 D4, G7b): a head per branch; a push by compare-and-set on
 // the expected base, which lands only while the branch still has that head
 // (the shape graph.EffectTarget takes: Holds, Apply); and an external base
-// move, someone else's push. It logs every effect id pushed to a branch, in
-// order. Change requests and ambiguous remote outcomes are M1's.
+// move, someone else's push. Each branch has a version that rises with every
+// move of its head, so an observation can be ordered (Observe). It logs
+// every effect id pushed to a branch, in order. Change requests and
+// ambiguous remote outcomes are M1's.
 package forge
 
 import (
@@ -19,13 +21,23 @@ import (
 
 // Forge is safe for concurrent use.
 type Forge struct {
-	mu     sync.Mutex
-	heads  map[string]string
-	pushed map[string][]string
+	mu       sync.Mutex
+	heads    map[string]string
+	versions map[string]int64
+	pushed   map[string][]string
 }
 
 // New is a forge with no branches: every branch's head is "".
-func New() *Forge { return &Forge{heads: map[string]string{}, pushed: map[string][]string{}} }
+func New() *Forge {
+	return &Forge{heads: map[string]string{}, versions: map[string]int64{}, pushed: map[string][]string{}}
+}
+
+// Observe is branch's head with its version.
+func (f *Forge) Observe(branch string) (head string, version int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.heads[branch], f.versions[branch]
+}
 
 // Holds is branch's head.
 func (f *Forge) Holds(branch string) (string, error) {
@@ -46,6 +58,7 @@ func (f *Forge) Apply(branch, effect, head, expected string) (landed bool, err e
 		return false, nil
 	}
 	f.heads[branch] = head
+	f.versions[branch]++
 	f.pushed[branch] = append(f.pushed[branch], effect)
 	return true, nil
 }
@@ -56,6 +69,7 @@ func (f *Forge) Move(branch, head string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.heads[branch] = head
+	f.versions[branch]++
 }
 
 // Pushed lists the effect ids pushed to branch, in order.
