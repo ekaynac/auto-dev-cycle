@@ -1,6 +1,6 @@
 # auto-dev-cycle v1 — first open-source release plan
 
-Status: revision 3, 2026-10-02 (knowledge layer folded in, D35–D36). Revision 2, 2026-10-01: This revision applies Astra's review (`reviews/2026-10-01-astra-plan-review.md`) and
+Status: revision 4, 2026-10-09 (§4 M1–M6 as vertical slices with a deferral ledger, D45–D47). Revision 3, 2026-10-02 (knowledge layer folded in, D35–D36). Revision 2, 2026-10-01: This revision applies Astra's review (`reviews/2026-10-01-astra-plan-review.md`) and
 the operator's rulings on it (D23–D27 in `00-brainstorm-decisions.md`). It builds on decisions D1–D27 and on the
 know-how in `docs/handoff/01..03`. "nöbetçi" means the current framework (`/home/mega/nobetci-dev`). It is reference
 material only and is never modified. Astra finding numbers are cited as `[A#]`.
@@ -471,7 +471,7 @@ With no strict options, the simple gate's packet, schema and prompt are byte-ide
    - Its receipt is the integration evidence.
 
 The patch boundary and identity boundary are the trust anchor. Evidence is copied out before teardown. Phase 3 is
-proven on a small multi-service T0 fixture in **M1**, before anything depends on it.
+proven on a small multi-service T0 fixture before anything depends on it (after M6 unless a slice needs it earlier, §4.1).
 
 ### 2.11 Authority, CLI and dashboard (D14, D23, [A8])
 
@@ -575,7 +575,7 @@ proven on a small multi-service T0 fixture in **M1**, before anything depends on
 | Tier | Content | Purpose | Runs |
 |---|---|---|---|
 | **T0** | Tiny repos in Python, TypeScript, Go and PHP; one **multi-service fixture** (two services + a database + a bus) for the integration environment. Fault fixtures: lying test output, protected-path edit, test deletion, provider 4xx, idle cut, hostile repo for host roles, stale attempt, base moved externally, non-JUnit results, missing `.git` at runtime, non-English requirements. | Correctness of cycle, invariants, gate rules | Every PR (fakes); nightly with one real cheap source |
-| **T1** | ~20–30 standard tasks with known-good answers and hidden acceptance tests, across Py/TS/Go/PHP | Baseline for routes and costs; **established in M2, before shaping or classifier work** [A9]; source of reviewed classifier labels | Nightly / on demand |
+| **T1** | ~20–30 standard tasks with known-good answers and hidden acceptance tests, across Py/TS/Go/PHP | Baseline for routes and costs; **established before shaping or classifier work** (after M6, §4.1) [A9]; source of reviewed classifier labels | Nightly / on demand |
 | **T2** | CTIS-SIMS greenfield from its SRS/SDD/test design, v1 slice below | Release showcase | Milestone runs and the release run |
 
 ### 3.1 CTIS-SIMS v1 slice (D21) with its scope contract [A11]
@@ -633,16 +633,59 @@ It runs against installed artifacts, not the source tree [A9].
 | M | Name | Contents | Exit check |
 |---|---|---|---|
 | **M0** | Contracts & foundations | Repo layout (Go module + `adapters/` workspace), Apache-2.0, CI. Schemas: outcome + reason codes, authority/approval/grant, lease/attempt/fencing, receipt, event store, project profile, **`ContextManifest` with coverage levels + ref/fingerprint/source-restriction types; shared knowledge spec draft: schemas, invariants and fixture definitions only (K10, K12)**. **Artifact graph: Node/Artifact schemas, key computation, resolver and evaluator with fakes (`m0/13`); evidence node parameters (`m0/12`). Anonymised nöbetçi incident goldens in `fixtures/legacy/`.** Controller API skeleton + `adc` CLI. Test write-guard. Contract-faithful fakes. T0 fixtures | CI green; schema docs generated from code; fake-driven T0 dry run passes |
-| **M1** | One task, one source, safely | Three-phase sandbox (phase 3 proven on the multi-service fixture). Minimum gateway + accounting. Recovery (restart, interrupted, fencing). Accept/gate/review with the host-role profile; amended simple-gate checks; closure; `git` forge; CLI approvals; **task views fingerprinted by exact inputs, `AttemptRecord` as checkpoint schema sealed at every builder exit, protected-document change operation** | T0 Python delivered on GLM-5.3-flash or Qwen3.8 27B; fault fixtures yield the right outcome + reason; controller killed mid-build recovers without double charge; hostile-repo cases pass; **E0 manifest reconciliation passes** |
-| **M2** | Capacity layer (direct sources) | Source registry, resource groups, quota states, health, scheduler with atomic reserve/settle and fairness, fallback chains with re-checks, data placement + destinations, all v1 adapters + conformance kit + `AUTHORING.md`. **T1 suite established with baseline numbers**; **knowledge ablations E1, E1L (fixture lessons, the K3 gate), E2, E4, E5; `FailureSignature` as a derived aggregate**; **one-shot anonymised nöbetçi measurement export (usage, builds, context, terminals) as T1/footprint priors and classifier-eval data** | T0 task placed across ≥3 direct source kinds; shared-quota exhaustion waits on the right signal; builds cannot starve review; T1 baseline published; **ablation decisions published, including K3** |
-| **M3** | Remote capacity | Operator-only enrolment (CLI + minimal dashboard view), adc-agent on Linux then Windows/macOS, endpoint allowlist, live-tunnel revocation, graceful drain and abrupt-loss handling; the test sandbox for macOS and Windows hosts (the rootless-container fallback, D42) | An agent-relayed local model contributes accepted work; disconnect mid-attempt resumes elsewhere; a late stale result is rejected; revocation is immediate |
-| **M4** | Many tasks, projects, forges | Merge queue with tree-bound evidence and delta review, parallel tasks, multi-project fairness, `github` + `gitlab`, TS/Go/PHP toolchains | T0 in all four languages on two concurrent projects across three forges; external base move handled; parked candidate does not block the other project; **K11 exposure checks hold across the two projects** |
-| **M5** | Planning head, phase gate, dashboard | Plan schema, mechanical validators, approval through CLI and dashboard (full parity), shaping within approved units, amended simple phase gate with **strict options** (pair, `test_ids`, `proof_receipts`, dispositions), `docker-compose` integration plugin | A small SRS fixture compiles to a plan approved by a supervisor actor under a grant and executes; stale approval refused; phase gate closes on receipts; every dashboard action reproduced by CLI in a parity test; **planner/supervisor knowledge views and the curation queue (CLI + dashboard)** |
-| **M6** | Self-host | The project's own backlog runs through the cycle; independent review before self-install | ≥5 auto-dev-cycle changes delivered by the cycle (D15); **framework lessons turned into mechanisms; live E3 only if E1L was positive** |
+| **M1** | One real task | The installed daemon executes an explicitly approved task through constrained build, accept, gate, independent review, serial merge and deterministic closure. One builder route and one independent reviewer route; minimum gateway and accounting; durable effects and the reconciler for uncertain ones; safe restart (fencing, interrupted calls). Sandbox phases 1–2 (§2.10). `git` forge; CLI approvals. Wires what M0 left to fixtures: graph history checks (`CheckHistory`), attempts bound to nodes, recorded approvals and `input.answer`, the holds the slice raises (M0 exit record §4). The first M1 design note delivers an **invariant-enforcement inventory**: each relevant invariant (recorded approvals, moved questions, reuse, consumption, effect intent) mapped to its admission, fold/replay, consumption and effect checks, with the current gaps (D45). Existing checks stay until a reviewed replacement exists | On installed artifacts: an approved T0 task (`py-mini` or `go-mini`) runs from approval to a merged commit on a local `git` remote, its reviewer from a family that contributed nothing; fault fixtures yield the right outcome + reason; the controller killed mid-build recovers without double charge; hostile-repo cases pass; a **small measured end-to-end benchmark** (wall time, tokens, charge per stage) is recorded and re-run at every later exit |
+| **M2** | This repository | Go and TypeScript recipes build, test and package auto-dev-cycle. The real adapters its chosen builder/reviewer configuration needs, each passing the conformance kit. Fresh review context, contributor-family tracking, protected paths and the protected-document change operation, task views fingerprinted by exact inputs, `ContextManifest`s, `AttemptRecord` sealed at every builder exit. Host-side harnesses (D22) ship only with their confinement proven (R11) | A Go change and a TypeScript change to this repository built, gated by its own recipes and reviewed through the cycle on installed artifacts; a protected-path edit is refused; a builder exit resumes from its sealed continuation; **E0 manifest reconciliation passes**; the M1 benchmark re-run |
+| **M3** | Unattended recovery | Controller kill, interrupted calls, quota exhaustion, stale results and uncertain push outcomes, end to end. Bounded retry, hold/resume with named signals, accounting reconciliation, pager and external watchdog, isolation qualification of the D45 boundary. M1 and M2 already fail safely; this slice proves sustained recovery | A qualification run of at least five sequential T0 tasks on installed artifacts, one fault injected per task: the controller killed mid-build, an interrupted model call, quota exhaustion on the builder route, a result arriving after its attempt was revoked, and an uncertain push outcome on the `git` remote. The run finishes with **zero rescues** (D26's rule); each fault ends in its registered outcome + reason; a late stale result is rejected; exhaustion waits on the right signal; uncertain usage is reconciled, never dropped; the pager fires on an unattended stop; builders, tests, harnesses and the unattended supervisor are shown unable to reach controller storage, credentials or socket |
+| **M4** | Actual delivery | `github` delivery for `ekaynac/auto-dev-cycle`: serial merge queue, expected-base CAS, gates on the prospective tree, re-review when the delta requires it, required-configuration holds. Merges stay within 04 §4: a plan, decision or security-posture change still waits for the operator | Cycle-built changes land as GitHub PRs on this repository and merge through the queue; an external base move between gate and merge is re-gated (and re-reviewed when required); an uncertain push outcome causes no duplicate delivery; missing required configuration holds with its resume signal |
+| **M5** | Backlog to approved work | Minimal planning for bounded backlog items: plan schema, mechanical validators, typed acceptance producers, digest-bound approval and amendment, repair rounds, simple phase closure (§2.6, without the strict options). CLI is enough for ordinary actions; a human-policy action is enabled only with presence-verified confirmation (D37), otherwise it stays disabled | A backlog issue becomes an approved plan of bindable acceptance rows and executes; a stale approval is refused after an amendment; a failed row goes through a repair round; the phase closes on receipts |
+| **M6** | Controlled self-host | The project's own backlog runs through the cycle (D15). Independently reviewed, content-pinned self-install at an idle boundary; health checks; a recovery/rollback procedure; compatible state across the install. The reviewer stays independent of every contributing model family | **≥5 substantive auto-dev-cycle changes** (each with acceptance rows and a behaviour change, not docs or formatting alone) delivered by the cycle; one self-install and one rollback drill pass their health checks; the cycle operates after a restart from the installed artifacts |
 | **M7** | Background work + classifier shadow | Background-work contract, filler leases with downstream reservation, P3 surface live. systemone port, eval harness, sanitised datasets, Jev and small Kev in shadow mode | Filler uses idle capacity without delaying cycle work or flooding review; eval report per candidate surface (zero promotions is a valid result) |
 | **M8** | T2 + release | CTIS-SIMS slice, docs (quickstart, concepts, adapters, profiles, security model, supervisor operation), release run (§3.2), final name | Release run passes |
 
-M7 may run in parallel with M5–M6. It depends on T1 (M2) and read-only nöbetçi history.
+M1–M6 are **cumulative vertical slices** (D47, 2026-10-09): each ends in a usable result on installed artifacts, and
+each later slice keeps every earlier exit green. The rows state the result each exit must show; each slice's design
+note pins its exit check (command, fixtures, prerequisites and assertions) before implementation starts. Deferred surfaces stay disabled, not half-reachable. If a slice uses an
+evidence target or an integration environment, that resource's isolation, restore and publication obligations
+(`m0/12`) come forward into the same slice. M7 and M8 keep their contents; M7 depends on T1, which now follows M6
+(§4.1), and on read-only nöbetçi history. Before M6 exits, a plan amendment orders the deferred items below into M7,
+M8 and M7-S; the broader v1 requirements (§1, §3.2, D19, D26) are unchanged and remain later work.
+
+### 4.1 Deferral ledger
+
+Items of the pre-2026-10-09 M1–M6 contents and exits that move past M6 (D47). References elsewhere in this plan, in
+04 and in `docs/design/m0/` that name an old milestone for these items read as the new place below.
+
+| Item | Old | New place | Replacement exit before M6 |
+|---|---|---|---|
+| Sandbox phase 3 proven on the multi-service T0 fixture (§2.10, R9) | M1 | post-M6 | none; it comes forward with the first slice that uses an integration environment |
+| A specific open-model builder route (GLM-5.3-flash or Qwen3.8 27B) | M1 | post-M6 | M1's one builder route, any family; M3's quota-exhaustion exit |
+| Adapters beyond those the M2 configuration needs; broad provider discovery and optimisation; `AUTHORING.md`; R3, R4, R6 | M2 | post-M6 | M2: each adapter used passes the conformance kit |
+| Placement across ≥3 direct source kinds; scheduler fairness; "builds cannot starve review" | M2 | post-M6 | M1 minimum gateway; M3 exhaustion waits on the right signal |
+| T1 suite and published baseline (full T1 breadth) | M2 | post-M6 (before M7) | the M1 small measured benchmark, re-run at every exit |
+| Knowledge ablations E1, E1L (K3 gate), E2, E4, E5; `FailureSignature` aggregate; nöbetçi measurement export | M2 | post-M6 | none; K3 holds, so no durable curated knowledge ships before E1L |
+| Operator enrolment, dial-out adc-agent, live-tunnel revocation, drain/abrupt loss (R5) | M3 | post-M6 | M3: a late stale result is rejected (local routes) |
+| adc-agent and the test sandbox on Windows/macOS (rootless-container fallback, D42) | M3 | post-M6 | none; bubblewrap stays the only test sandbox |
+| `gitlab`, three forges, the multi-forge matrix; PHP toolchain (T0 in four languages); Python delivery, when M1 selects `go-mini` | M1, M4 | post-M6; the release run (§3.2) still needs all four languages | M4 `github` only; M2 Go and TypeScript |
+| Parallel tasks, multi-project fairness, two concurrent projects, parked candidate, K11 exposure checks, cross-project knowledge sharing (R7) | M4 | post-M6 | none; one project, serial queue |
+| Full dashboard with CLI parity test, advanced shaping within units, strict phase-gate options (pair, `test_ids`, `proof_receipts`, dispositions) | M5 | post-M6 | M5 CLI operation; human-policy actions disabled without presence-verified confirmation |
+| SRS fixture compiled to a plan approved by a supervisor actor under a grant | M5 | post-M6 (with T2) | M5 backlog issue to approved plan |
+| Planner/supervisor knowledge views, the curation queue; framework lessons turned into mechanisms; live E3 | M5, M6 | post-M6 | none |
+| Classifiers and filler work | M7 (on M2's T1) | M7, after T1 | none |
+| `docker-compose` integration plugin; general live-evidence and deploy plugins | M5 | post-M6, unless self-host uses them | none |
+| `evidence.run` action kind and scope (#187); recorded identities in the project profile (#191) | M1 (follow-ups) | the first slice that runs a live evidence node or remote process; M6 if self-install health checks run as one | that slice's evidence grant is checked at claim time |
+| Untrusted-history and import hardening (D45) | — | **M7-S**, before any store import, remote-storage trust change or additional writer | none; the controller principal is trusted until then |
+
+Moves within M1–M6: `AttemptRecord` sealing, the protected-document change operation, task-view fingerprints and E0
+go from M1 to M2; rejecting a late stale result stays in M3, on local routes instead of an agent.
+
+### 4.2 Forecast (not a commitment, D20)
+
+Astra's 2026-10-09 estimate for M1–M6 as amended: **75–120 PRs and 18–35 days** from M1 start (the unchanged M1–M6
+scope: 225–365 PRs, 30–60 days). It assumes intensive daily operation comparable to M0, one integrating lead, at most
+two review slots and prompt operator decisions; reusable M0 foundations; about 1–1.5 review rounds per PR under 04 §3
+as amended; fewer merges per day than M0 as real sandbox, provider, forge and recovery work replaces small foundation
+changes. Harness-confinement incompatibility, store-migration trouble or long review-credit shortages can add weeks.
+Milestones still close only on their exit checks.
 
 ---
 
@@ -712,15 +755,15 @@ M7 may run in parallel with M5–M6. It depends on T1 (M2) and read-only nöbet�
 | # | Item | When |
 |---|---|---|
 | R1 | Subscription harnesses inside a sandbox (API-key mode via gateway, per-run tokens) | v1.x |
-| R3 | Quota learning per provider: which expose remaining quota and reset | M2 |
-| R4 | Free-tier inventory under strict ToS: usage terms, data terms, rate limits | M2 |
-| R5 | Idle detection across OSes without invasive permissions | M3 |
-| R6 | Telemetry depth of opencode and omp (usage, upstream, stream deltas) | M2 |
-| R7 | Merge-queue cost with many parallel candidates (re-gates, delta reviews) | M4 |
+| R3 | Quota learning per provider: which expose remaining quota and reset | post-M6 (§4.1) |
+| R4 | Free-tier inventory under strict ToS: usage terms, data terms, rate limits | post-M6 (§4.1) |
+| R5 | Idle detection across OSes without invasive permissions | post-M6 (§4.1) |
+| R6 | Telemetry depth of opencode and omp (usage, upstream, stream deltas) | post-M6 (§4.1) |
+| R7 | Merge-queue cost with many parallel candidates (re-gates, delta reviews) | post-M6 (§4.1) |
 | R8 | Whether parallel execution of approved units beats sequential on T1/T2 | M5–M8 |
-| R9 | Rootless multi-service integration runtime (MySQL, Redis, PHP, Node, Python) without a host socket | M1 |
+| R9 | Rootless multi-service integration runtime (MySQL, Redis, PHP, Node, Python) without a host socket | post-M6 unless a slice needs phase 3 (§4.1) |
 | R10 | Name and brand availability | M8 |
-| R11 | Host-role confinement depth per OS (Landlock/bubblewrap availability) | M1 |
+| R11 | Host-role confinement depth per OS (Landlock/bubblewrap availability) | M2 |
 
 **Open operator decisions:**
 - ~~O1~~ Resolved by usage profiles (D28).
