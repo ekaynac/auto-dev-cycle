@@ -61,4 +61,5 @@ jobs:
       - name: Install the pinned Go toolchain (per user)
         run: scripts/bootstrap-go.sh
       - name: make fixtures-check
-        run: PATH="$HOME/.local/go/bin:$PATH" make fixtures-check
+        # The ci201 runner is a container without docker: php-mini reports SKIP there (its check.sh).
+        run: PATH="$HOME/.local/go/bin:$PATH" ADC_T0_SKIP_WITHOUT_DOCKER=1 make fixtures-check
