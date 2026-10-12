@@ -31,7 +31,9 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap curl
           # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # A container runner cannot set it; there the host already has it at 0, so write only when needed.
+          f=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [[ -r "$f" && "$(cat "$f")" != 0 ]]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
       - name: Install the pinned Go toolchain (per user)
         run: scripts/bootstrap-go.sh
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -57,8 +59,11 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
           # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # A container runner cannot set it; there the host already has it at 0, so write only when needed.
+          f=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [[ -r "$f" && "$(cat "$f")" != 0 ]]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
       - name: Install the pinned Go toolchain (per user)
         run: scripts/bootstrap-go.sh
       - name: make fixtures-check
-        run: PATH="$HOME/.local/go/bin:$PATH" make fixtures-check
+        # On a runner without docker, php-mini reports SKIP (its check.sh); with docker the flag changes nothing.
+        run: PATH="$HOME/.local/go/bin:$PATH" ADC_T0_SKIP_WITHOUT_DOCKER=1 make fixtures-check
