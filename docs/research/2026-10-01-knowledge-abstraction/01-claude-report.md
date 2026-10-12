@@ -39,7 +39,7 @@ fleets of small-medium (preferably local) LLMs, agents". The report serves two c
 I found **no document** that specifies the framework itself. Its entities, interfaces and package boundary are not
 written down, and nothing addresses "fleets of small-medium LLMs" as such. The vision exists as an intention plus
 invariants. The concrete design exists only in InfraMedic's domain vocabulary: device, platform, fleet group, Kobra
-session, LLMDAP gateway.
+session, governed MCP gateway.
 
 **Three readings of "abstractable":**
 
@@ -136,7 +136,7 @@ library extracted only by a rule of three (a third consumer, or both implementat
 - "Fleets of small-medium local LLMs" as the producer/consumer population of a knowledge-extraction network.
 - **[I]** The code does not yet support the "agnostic" claim. The knowledge package derives scoping from the device
   registry's identity facts (`knowledge/scoping.py`), its audience grammar is device groups, and retrieval is bound to
-  the LLMDAP gateway. These are good domain choices. They also show that **the kernel has never been separated from
+  the product's governed MCP gateway. These are good domain choices. They also show that **the kernel has never been separated from
   the domain**: nothing in the repo is importable without InfraMedic's registry.
 
 ### 2.4 Cost and measured benefit
@@ -306,7 +306,7 @@ kernel names a device, a repository, a role, an RBAC principal, an embedder or a
 - InfraMedic's subject grammar (device, entity, relation), device-group audiences, fleet notes data-scoping.
 - RBAC principals, quorum and declassification.
 - Kobra session pins and the recent shelf.
-- The LLMDAP gateway binding.
+- The governed MCP gateway binding.
 - Redaction/remask pipelines.
 - Multimodal doors.
 - ADC's role taxonomy, task/plan/receipt records and toolchain-specific code indexes.

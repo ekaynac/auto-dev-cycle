@@ -173,7 +173,7 @@ Conventions used below:
 | `separate <sev> <path:line> :: <claim>` | a finding split off as its own RR row (legacy, R-1.3-x era) | `SRC/etc/tasks/R-1.3-2-8.conf` |
 | `closes <id>` | ledger/finding ids this task closes | `closes RR-555-5` |
 | `answered <file>` / `answer <text>` | controller/operator answers to a reviewer's findings file (legacy) | — |
-| `context_reference` | `path`, `path#anchor` or `path:first-last`. Its CONTENT is rendered for every role | `…llmdap-mcp-doctrine.md#Q5` |
+| `context_reference` | `path`, `path#anchor` or `path:first-last`. Its CONTENT is rendered for every role | a labelled ruling in a product doctrine note, e.g. `#Q5` |
 | `gate_repair_paths` | where gate repairs may write | `tests/*` |
 
 - **Real examples.** Read the files themselves; they are not reproduced here.
@@ -297,7 +297,7 @@ controller digest (`50a20ba`), and is handed the gate's per-test results (`d7ba5
 - §7 Design intents; §8 Brainstorm series (each DECIDED with a PR and a doctrine note); §9 Operator rulings
   (verbatim); §10 Topic register (`| # | Topic | Phase | State | Steps | Canon |`).
 - **Doctrines:** `PRODUCT/docs/notes/2026-08-2x-*-doctrine.md` (silent-break, rbac, saga-and-kobra,
-  knowledge-center, cross-device-subjects, llmdap-mcp, model-change-resilience). They contain labelled rulings
+  knowledge-center, cross-device-subjects, governed MCP gateway, model-change-resilience). They contain labelled rulings
   (`Q5`, `M4`, `§0.2`) that `context_reference` anchors target.
 - **Review doctrine:** `PRODUCT/docs/notes/2026-09-03-development-review-doctrine.md` (layered review; Sol seam
   reviewer; §6.5 four audits).
