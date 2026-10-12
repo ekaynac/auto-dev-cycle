@@ -18,6 +18,10 @@
 # nothing may fail that did not already fail at base visible. A skipped test never counts as a pass.
 #
 # Requires: bash, git, docker (or a docker-compatible CLI), python3.
+#
+# Without docker the check fails, unless ADC_T0_SKIP_WITHOUT_DOCKER=1 is set: then it reports the whole
+# fixture as SKIP and exits 0. CI sets it on runners that cannot run containers (the PHP toolchain is
+# deferred past M6, 01 §4.1); a skip is printed, never counted as a pass.
 
 set -euo pipefail
 
@@ -25,6 +29,13 @@ FIXTURE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly FIXTURE_DIR
 readonly RESULTS_MOUNT="/results"
 readonly DOCKER="${DOCKER:-docker}"
+
+if ! command -v "$DOCKER" >/dev/null 2>&1 && [[ "${ADC_T0_SKIP_WITHOUT_DOCKER:-}" == 1 ]]; then
+    msg="SKIP php-mini: '$DOCKER' is not installed and ADC_T0_SKIP_WITHOUT_DOCKER=1 (PHP toolchain is post-M6, 01 §4.1)"
+    echo "$msg"
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::warning title=php-mini skipped::$msg"; fi
+    exit 0
+fi
 
 for tool in git python3 "$DOCKER"; do
     command -v "$tool" >/dev/null 2>&1 || { echo "FAIL setup: '$tool' is not installed" >&2; exit 2; }

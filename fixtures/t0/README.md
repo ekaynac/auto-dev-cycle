@@ -53,5 +53,8 @@ For every task, starting from a fresh copy of `repo/`:
    §2.5).
 4. The gate runs **offline** after the dependency recipe, and emits per-test results in the declared adapter format.
 
-Each fixture's `check.sh` runs 0–4 for all its tasks and exits non-zero on any deviation. Language tooling run from
+Each fixture's `check.sh` runs 0–4 for all its tasks and exits non-zero on any deviation. Two opt-in flags relax
+this, and each prints a `SKIP` line that never counts as a pass: `ADC_T0_ALLOW_NETWORK=1` runs a gate with the
+default network when a `--network none` container cannot run, and `ADC_T0_SKIP_WITHOUT_DOCKER=1` skips php-mini
+whole on a runner without docker (CI's fixtures job sets it; the PHP toolchain is post-M6, plan §4.1). Language tooling run from
 the repository root must not pick up fixture files; each fixture fences itself off (e.g. go-mini's `tasks/go.mod`).
