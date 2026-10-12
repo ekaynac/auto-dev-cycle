@@ -47,7 +47,7 @@ Key sources:
 - `docs/notes/2026-08-10-diagnosis-layers-gates-and-ground-truth.md` (if present), `2026-08-12-canonical-standards-and-knowledge-library.md`,
   `2026-08-13-knowledge-layer-backlog.md`, `2026-08-11-fleet-knowledge-and-telemetry.md`,
   `2026-08-28-cross-device-subjects-doctrine.md`, `2026-08-28-model-change-resilience-doctrine.md`,
-  `2026-08-28-llmdap-mcp-doctrine.md`, `2026-08-27-saga-and-kobra-doctrine.md`, `2026-08-26-silent-break-doctrine.md`.
+  the 2026-08-28 governed MCP gateway doctrine note, `2026-08-27-saga-and-kobra-doctrine.md`, `2026-08-26-silent-break-doctrine.md`.
 - Code: `inframedic/knowledge/` (catalog.py, broker.py, authz.py, scoping.py, projection.py, retrieval_audit.py,
   facts.py, entities.py, identity*.py, hygiene.py, retention.py), `inframedic/standards/`, `inframedic/patterns/`,
   `inframedic/chronic/`, `inframedic/trust/`, `inframedic/bundle/`, `inframedic/registry/evolution.py`.

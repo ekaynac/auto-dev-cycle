@@ -1,6 +1,6 @@
 # auto-dev-cycle v1 — first open-source release plan
 
-Status: revision 4, 2026-10-09 (§4 M1–M6 as vertical slices with a deferral ledger, D45–D47). Revision 3, 2026-10-02 (knowledge layer folded in, D35–D36). Revision 2, 2026-10-01: This revision applies Astra's review (`reviews/2026-10-01-astra-plan-review.md`) and
+Status: revision 5, 2026-10-12 (routing vision: the gateway enforces and the scheduler selects, governed upstreams, the `attested` tier, the routing-decision record, the adaptive model-choice experiment and the M6-R routing slice, D48). Revision 4, 2026-10-09 (§4 M1–M6 as vertical slices with a deferral ledger, D45–D47). Revision 3, 2026-10-02 (knowledge layer folded in, D35–D36). Revision 2, 2026-10-01: This revision applies Astra's review (`reviews/2026-10-01-astra-plan-review.md`) and
 the operator's rulings on it (D23–D27 in `00-brainstorm-decisions.md`). It builds on decisions D1–D27 and on the
 know-how in `docs/handoff/01..03`. "nöbetçi" means the current framework (`/home/mega/nobetci-dev`). It is reference
 material only and is never modified. Astra finding numbers are cited as `[A#]`.
@@ -161,9 +161,29 @@ Thresholds quarantine a source with a receipt. Health never comes from configura
   3. fsyncs the call id before egress;
   4. records every turn;
   5. enforces the lease.
-- **Routing is labelled `verified` or `reported`.** It is `verified` when the gateway itself chose the final
-  destination (a direct endpoint, an owned server through an allowlisted agent). It is `reported` when only the
-  provider says so (broker upstreams). Projects may require `verified` for private content.
+- **The gateway enforces policy; it never selects a model** (D48). It sends each call to the executor and destination
+  the scheduler's lease names, or refuses it. It never chooses, substitutes or silently changes the model or the
+  upstream. Selection belongs to the scheduler.
+- **Governed upstream** (D48; M2 or later, §4.1). A registered destination kind: an external governed gateway behind
+  ADC's gateway that adds identity-bound audit and model attestation. ADC's gateway keeps leases, fencing,
+  intent-before-egress, credential handling and accounting for every call through it. Any trust secret the upstream
+  requires is injected per destination at the gateway, never in the sandbox. ADC contains no code of a particular
+  upstream; its correlation or provenance id is attached to the `model_call` observation. M1's registry schema (P7)
+  and credential injection (P11) stay open to this kind; M1's supported-transport limit (Q8) does not narrow the
+  executor, lease or sovereignty abstractions.
+- **Routing is labelled `reported`, `verified` or `attested`.** The gateway verifies and enforces the destination
+  the scheduler selected; it never chooses one.
+  - `reported`: only the provider says where the data goes (broker upstreams).
+  - `verified`: the gateway itself establishes that the call reaches the final destination it enforces (a direct
+    endpoint, an owned server through an allowlisted agent).
+  - `attested` (D48, M2), a registry property of a destination: **cumulative**, the `verified` guarantee **plus**
+    validated evidence of the serving model's identity (for example a governed upstream's attestation).
+
+  Projects may require `verified` or `attested` for private content through the existing `data_policy`. A label never
+  replaces the other checks: trust class, every recipient, retention and allowed destinations are checked
+  independently. An attested external model never qualifies for `on-prem`. The project `data_policy`, trust classes,
+  allowed destinations and usage profiles (D9, D28) remain the single source of sovereignty policy; there is no
+  second sovereignty configuration.
 
 **Accounting.** One append-only per-call ledger:
 - tokens, including cache;
@@ -173,6 +193,19 @@ Thresholds quarantine a source with a receipt. Health never comes from configura
 - estimates calibrated against provider usage endpoints.
 
 Cancellation is never assumed to prevent billing. Counters and charges are never reset.
+
+**Routing-decision record (D48).** ADC's own record of each placement is the authoritative explanation of a routing
+choice. It holds:
+- the candidate set the scheduler considered;
+- each excluded candidate with its exclusion reason (data floor, destination, capability, independence, paid-fallback
+  authority, budget, health, quota);
+- the strategy version that ranked the admitted candidates;
+- the fallback cause, when the placement is a fallback step;
+- the selected executor and destination.
+
+It links by id to the lease, the attempt, the `model_call` observations, the `ContextManifest` and the effective
+policy and registry revisions; it never copies their contents. A governed upstream's correlation id lives on the
+`model_call` observation, not in the record. The record arrives **with the scheduler, in M6-R (§4), not in M1**.
 
 **Usage profiles (D28).** Model-usage settings start from one of three built-in profiles, chosen per installation
 (and overridable per project). Each profile has a recorded **intention**. Every usage setting, including every setting
@@ -433,6 +466,19 @@ With no strict options, the simple gate's packet, schema and prompt are byte-ide
 - **Datasets:** nöbetçi history (read-only) plus T1 decisions. Sanitised versions are published.
 - **"No classifier enabled" is a successful outcome** of the program.
 
+**Adaptive per-project model choice** (D48; an experiment in M6-R, after T1). Per project, routing strategies are
+compared in stages, each ranking **only among executors the deterministic policy already admitted**:
+1. a configured baseline (the role's preference and fallback chain);
+2. health- and cost-aware ranking;
+3. learned ranking, starting in shadow mode like every surface above.
+
+- **Metrics:** accepted work per total cost (K1), latency, repairs, and escaped defects as a guardrail.
+- **Promotion and rollback** of a strategy version are recorded, each citing the experiment report; every
+  placement names its strategy version in the routing-decision record (§2.2).
+- **Zero promotions is a valid result.**
+- **D6's limits hold:** a learned policy never authorizes a destination, a paid fallback, independence or
+  stop/continue.
+
 ### 2.9 Background work (D24: framework in v1, one surface live)
 
 - **The contract ships in v1:**
@@ -575,7 +621,7 @@ proven on a small multi-service T0 fixture before anything depends on it (after 
 | Tier | Content | Purpose | Runs |
 |---|---|---|---|
 | **T0** | Tiny repos in Python, TypeScript, Go and PHP; one **multi-service fixture** (two services + a database + a bus) for the integration environment. Fault fixtures: lying test output, protected-path edit, test deletion, provider 4xx, idle cut, hostile repo for host roles, stale attempt, base moved externally, non-JUnit results, missing `.git` at runtime, non-English requirements. | Correctness of cycle, invariants, gate rules | Every PR (fakes); nightly with one real cheap source |
-| **T1** | ~20–30 standard tasks with known-good answers and hidden acceptance tests, across Py/TS/Go/PHP | Baseline for routes and costs; **established before shaping or classifier work** (after M6, §4.1) [A9]; source of reviewed classifier labels | Nightly / on demand |
+| **T1** | ~20–30 standard tasks with known-good answers and hidden acceptance tests, across Py/TS/Go/PHP | Baseline for routes and costs; **established before shaping or classifier work** (M6-R, §4) [A9]; source of reviewed classifier labels | Nightly / on demand |
 | **T2** | CTIS-SIMS greenfield from its SRS/SDD/test design, v1 slice below | Release showcase | Milestone runs and the release run |
 
 ### 3.1 CTIS-SIMS v1 slice (D21) with its scope contract [A11]
@@ -634,11 +680,12 @@ It runs against installed artifacts, not the source tree [A9].
 |---|---|---|---|
 | **M0** | Contracts & foundations | Repo layout (Go module + `adapters/` workspace), Apache-2.0, CI. Schemas: outcome + reason codes, authority/approval/grant, lease/attempt/fencing, receipt, event store, project profile, **`ContextManifest` with coverage levels + ref/fingerprint/source-restriction types; shared knowledge spec draft: schemas, invariants and fixture definitions only (K10, K12)**. **Artifact graph: Node/Artifact schemas, key computation, resolver and evaluator with fakes (`m0/13`); evidence node parameters (`m0/12`). Anonymised nöbetçi incident goldens in `fixtures/legacy/`.** Controller API skeleton + `adc` CLI. Test write-guard. Contract-faithful fakes. T0 fixtures | CI green; schema docs generated from code; fake-driven T0 dry run passes |
 | **M1** | One real task | The installed daemon executes an explicitly approved task through constrained build, accept, gate, independent review, serial merge and deterministic closure. One builder route and one independent reviewer route; minimum gateway and accounting; durable effects and the reconciler for uncertain ones; safe restart (fencing, interrupted calls). Sandbox phases 1–2 (§2.10). `git` forge; CLI approvals. Wires what M0 left to fixtures: graph history checks (`CheckHistory`), attempts bound to nodes, recorded approvals and `input.answer`, the holds the slice raises (M0 exit record §4). The first M1 design note delivers an **invariant-enforcement inventory**: each relevant invariant (recorded approvals, moved questions, reuse, consumption, effect intent) mapped to its admission, fold/replay, consumption and effect checks, with the current gaps (D45). Existing checks stay until a reviewed replacement exists | On installed artifacts: an approved T0 task (`py-mini` or `go-mini`) runs from approval to a merged commit on a local `git` remote, its reviewer from a family that contributed nothing; fault fixtures yield the right outcome + reason; the controller killed mid-build recovers without double charge; hostile-repo cases pass; a **small measured end-to-end benchmark** (wall time, tokens, charge per stage) is recorded and re-run at every later exit |
-| **M2** | This repository | Go and TypeScript recipes build, test and package auto-dev-cycle. The real adapters its chosen builder/reviewer configuration needs, each passing the conformance kit. Fresh review context, contributor-family tracking, protected paths and the protected-document change operation, task views fingerprinted by exact inputs, `ContextManifest`s, `AttemptRecord` sealed at every builder exit. Host-side harnesses (D22) ship only with their confinement proven (R11) | A Go change and a TypeScript change to this repository built, gated by its own recipes and reviewed through the cycle on installed artifacts; a protected-path edit is refused; a builder exit resumes from its sealed continuation; **E0 manifest reconciliation passes**; the M1 benchmark re-run |
+| **M2** | This repository | Go and TypeScript recipes build, test and package auto-dev-cycle. The real adapters its chosen builder/reviewer configuration needs, each passing the conformance kit. Fresh review context, contributor-family tracking, protected paths and the protected-document change operation, task views fingerprinted by exact inputs, `ContextManifest`s, `AttemptRecord` sealed at every builder exit. Host-side harnesses (D22) ship only with their confinement proven (R11). The `attested` routing tier as a registry property, enforced at placement and at the gateway (§2.2, D48) | A Go change and a TypeScript change to this repository built, gated by its own recipes and reviewed through the cycle on installed artifacts; a protected-path edit is refused; a builder exit resumes from its sealed continuation; **E0 manifest reconciliation passes**; **a project requiring `attested` routing is placed only on a destination with valid model-identity evidence: a destination with unsupported, missing or invalid evidence is refused before egress with its reason, using fixture evidence and no proprietary upstream**; the M1 benchmark re-run |
 | **M3** | Unattended recovery | Controller kill, interrupted calls, quota exhaustion, stale results and uncertain push outcomes, end to end. Bounded retry, hold/resume with named signals, accounting reconciliation, pager and external watchdog, isolation qualification of the D45 boundary. M1 and M2 already fail safely; this slice proves sustained recovery | A qualification run of at least five sequential T0 tasks on installed artifacts, one fault injected per task: the controller killed mid-build, an interrupted model call, quota exhaustion on the builder route, a result arriving after its attempt was revoked, and an uncertain push outcome on the `git` remote. The run finishes with **zero rescues** (D26's rule); each fault ends in its registered outcome + reason; a late stale result is rejected; exhaustion waits on the right signal; uncertain usage is reconciled, never dropped; the pager fires on an unattended stop; builders, tests, harnesses and the unattended supervisor are shown unable to reach controller storage, credentials or socket |
 | **M4** | Actual delivery | `github` delivery for `ekaynac/auto-dev-cycle`: serial merge queue, expected-base CAS, gates on the prospective tree, re-review when the delta requires it, required-configuration holds. Merges stay within 04 §4: a plan, decision or security-posture change still waits for the operator | Cycle-built changes land as GitHub PRs on this repository and merge through the queue; an external base move between gate and merge is re-gated (and re-reviewed when required); an uncertain push outcome causes no duplicate delivery; missing required configuration holds with its resume signal |
 | **M5** | Backlog to approved work | Minimal planning for bounded backlog items: plan schema, mechanical validators, typed acceptance producers, digest-bound approval and amendment, repair rounds, simple phase closure (§2.6, without the strict options). CLI is enough for ordinary actions; a human-policy action is enabled only with presence-verified confirmation (D37), otherwise it stays disabled | A backlog issue becomes an approved plan of bindable acceptance rows and executes; a stale approval is refused after an amendment; a failed row goes through a repair round; the phase closes on receipts |
 | **M6** | Controlled self-host | The project's own backlog runs through the cycle (D15). Independently reviewed, content-pinned self-install at an idle boundary; health checks; a recovery/rollback procedure; compatible state across the install. The reviewer stays independent of every contributing model family | **≥5 substantive auto-dev-cycle changes** (each with acceptance rows and a behaviour change, not docs or formatting alone) delivered by the cycle; one self-install and one rollback drill pass their health checks; the cycle operates after a restart from the installed artifacts |
+| **M6-R** | Routing slice | The scheduler as the product (D5, D48): the T1 suite and its published baseline; placement across ≥3 direct source kinds; parallel tasks and two concurrent projects, with scheduler fairness by project weight and per-role reserved shares; builds cannot starve review; fallback optimisation beyond M2's ordered chains (every step re-checked, §2.2); the routing-decision record (§2.2); the adaptive per-project model-choice experiment (§2.8) after T1, with the shadow logging and evaluation machinery its learned stage needs | On installed artifacts: **T1 runs and its baseline is published**; **≥3 source kinds each contribute measured accepted work** on T1 tasks; under contention, weighted projects and roles keep making progress and **a build is not admitted when its reviewer capacity is not reservable**; an injected exhaustion is answered by a fallback step that widens nothing and records its cause; **every placement has a routing-decision record** linked to its lease, attempt and `model_call`s; the **adaptive experiment report** compares the baseline, health/cost-aware and learned strategies on accepted work per total cost, latency, repairs and escaped defects, with each promotion or rollback recorded (zero promotions is a valid result) |
 | **M7** | Background work + classifier shadow | Background-work contract, filler leases with downstream reservation, P3 surface live. systemone port, eval harness, sanitised datasets, Jev and small Kev in shadow mode | Filler uses idle capacity without delaying cycle work or flooding review; eval report per candidate surface (zero promotions is a valid result) |
 | **M8** | T2 + release | CTIS-SIMS slice, docs (quickstart, concepts, adapters, profiles, security model, supervisor operation), release run (§3.2), final name | Release run passes |
 
@@ -646,31 +693,40 @@ M1–M6 are **cumulative vertical slices** (D47, 2026-10-09): each ends in a usa
 each later slice keeps every earlier exit green. The rows state the result each exit must show; each slice's design
 note pins its exit check (command, fixtures, prerequisites and assertions) before implementation starts. Deferred surfaces stay disabled, not half-reachable. If a slice uses an
 evidence target or an integration environment, that resource's isolation, restore and publication obligations
-(`m0/12`) come forward into the same slice. M7 and M8 keep their contents; M7 depends on T1, which now follows M6
-(§4.1), and on read-only nöbetçi history. Before M6 exits, a plan amendment orders the deferred items below into M7,
-M8 and M7-S; the broader v1 requirements (§1, §3.2, D19, D26) are unchanged and remain later work.
+(`m0/12`) come forward into the same slice. **M6-R, the routing slice (D48), follows M6 and precedes M7:** it
+delivers T1, so it comes before the work that depends on T1. M7 and M8 keep their contents; M7 depends on M6-R's T1
+and on read-only nöbetçi history. Before M6 exits, a plan amendment orders the remaining deferred items below into
+M6-R, M7, M8 and M7-S; the broader v1 requirements (§1, §3.2, D19, D26) are unchanged and remain later work.
 
 ### 4.1 Deferral ledger
 
 Items of the pre-2026-10-09 M1–M6 contents and exits that move past M6 (D47). References elsewhere in this plan, in
-04 and in `docs/design/m0/` that name an old milestone for these items read as the new place below.
+04 and in `docs/design/m0/` that name an old milestone for these items read as the new place below. Rows whose old
+place is "—" were added later (D45, D48) to give an item a home; the `attested` tier lands in M2 and the
+governed upstream in M2 or later.
 
 | Item | Old | New place | Replacement exit before M6 |
 |---|---|---|---|
 | Sandbox phase 3 proven on the multi-service T0 fixture (§2.10, R9) | M1 | post-M6 | none; it comes forward with the first slice that uses an integration environment |
 | A specific open-model builder route (GLM-5.3-flash or Qwen3.8 27B) | M1 | post-M6 | M1's one builder route, any family; M3's quota-exhaustion exit |
-| Adapters beyond those the M2 configuration needs; broad provider discovery and optimisation; `AUTHORING.md`; R3, R4, R6 | M2 | post-M6 | M2: each adapter used passes the conformance kit |
-| Placement across ≥3 direct source kinds; scheduler fairness; "builds cannot starve review" | M2 | post-M6 | M1 minimum gateway; M3 exhaustion waits on the right signal |
-| T1 suite and published baseline (full T1 breadth) | M2 | post-M6 (before M7) | the M1 small measured benchmark, re-run at every exit |
+| Adapters beyond those the M2 configuration needs; broad provider discovery and optimisation; `AUTHORING.md`; R3, R4, R6 | M2 | post-M6; fallback optimisation in **M6-R** | M2: each adapter used passes the conformance kit |
+| Placement across ≥3 direct source kinds; scheduler fairness; "builds cannot starve review" | M2 | **M6-R** | M1 minimum gateway; M3 exhaustion waits on the right signal |
+| T1 suite and published baseline (full T1 breadth) | M2 | **M6-R** (before M7) | the M1 small measured benchmark, re-run at every exit |
+| Routing-decision record (§2.2, D48) | — | **M6-R**, with the scheduler | none; M1 records placement outcomes and reasons on the lease |
+| Adaptive per-project model-choice experiment (§2.8, D48) | — | **M6-R**, after T1 | none; roles use their configured chains |
+| Governed-upstream destination kind (§2.2, D48) | — | M2 or later | none; P7's registry schema and P11's gateway injection stay open to it |
+| `attested` verification tier as a registry property (§2.2, D48) | — | M2 | none; `verified`/`reported` routing labels apply |
 | Knowledge ablations E1, E1L (K3 gate), E2, E4, E5; `FailureSignature` aggregate; nöbetçi measurement export | M2 | post-M6 | none; K3 holds, so no durable curated knowledge ships before E1L |
 | Operator enrolment, dial-out adc-agent, live-tunnel revocation, drain/abrupt loss (R5) | M3 | post-M6 | M3: a late stale result is rejected (local routes) |
 | adc-agent and the test sandbox on Windows/macOS (rootless-container fallback, D42) | M3 | post-M6 | none; bubblewrap stays the only test sandbox |
 | `gitlab`, three forges, the multi-forge matrix; PHP toolchain (T0 in four languages); Python delivery, when M1 selects `go-mini` | M1, M4 | post-M6; the release run (§3.2) still needs all four languages | M4 `github` only; M2 Go and TypeScript |
-| Parallel tasks, multi-project fairness, two concurrent projects, parked candidate, K11 exposure checks, cross-project knowledge sharing (R7) | M4 | post-M6 | none; one project, serial queue |
+| Parallel tasks, multi-project fairness and two concurrent projects, as far as M6-R's contention exit needs them | M4 | **M6-R** | none; one project, serial queue |
+| Parked candidate, K11 exposure checks, cross-project knowledge sharing (R7) | M4 | post-M6 | none; one project, serial queue |
 | Full dashboard with CLI parity test, advanced shaping within units, strict phase-gate options (pair, `test_ids`, `proof_receipts`, dispositions) | M5 | post-M6 | M5 CLI operation; human-policy actions disabled without presence-verified confirmation |
 | SRS fixture compiled to a plan approved by a supervisor actor under a grant | M5 | post-M6 (with T2) | M5 backlog issue to approved plan |
 | Planner/supervisor knowledge views, the curation queue; framework lessons turned into mechanisms; live E3 | M5, M6 | post-M6 | none |
-| Classifiers and filler work | M7 (on M2's T1) | M7, after T1 | none |
+| Learned routing ranking for the adaptive experiment, with the shadow logging and evaluation machinery it needs (§2.8) | M7 (classifiers) | **M6-R**, after its T1 | none; roles use their configured chains |
+| Other classifier surfaces and filler work | M7 (on the T1 then planned for M2) | M7, after M6-R's T1 | none |
 | `docker-compose` integration plugin; general live-evidence and deploy plugins | M5 | post-M6, unless self-host uses them | none |
 | `evidence.run` action kind and scope (#187); recorded identities in the project profile (#191) | M1 (follow-ups) | the first slice that runs a live evidence node or remote process; M6 if self-install health checks run as one | that slice's evidence grant is checked at claim time |
 | Untrusted-history and import hardening (D45) | — | **M7-S**, before any store import, remote-storage trust change or additional writer | none; the controller principal is trusted until then |
@@ -685,7 +741,8 @@ scope: 225–365 PRs, 30–60 days). It assumes intensive daily operation compar
 two review slots and prompt operator decisions; reusable M0 foundations; about 1–1.5 review rounds per PR under 04 §3
 as amended; fewer merges per day than M0 as real sandbox, provider, forge and recovery work replaces small foundation
 changes. Harness-confinement incompatibility, store-migration trouble or long review-credit shortages can add weeks.
-Milestones still close only on their exit checks.
+Milestones still close only on their exit checks. The M6-R routing slice (D48) is outside this 75–120 PR M1–M6
+forecast.
 
 ---
 
