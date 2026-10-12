@@ -31,7 +31,9 @@ readonly RESULTS_MOUNT="/results"
 readonly DOCKER="${DOCKER:-docker}"
 
 if ! command -v "$DOCKER" >/dev/null 2>&1 && [[ "${ADC_T0_SKIP_WITHOUT_DOCKER:-}" == 1 ]]; then
-    echo "SKIP php-mini: '$DOCKER' is not installed and ADC_T0_SKIP_WITHOUT_DOCKER=1 (PHP toolchain is post-M6, 01 §4.1)"
+    msg="SKIP php-mini: '$DOCKER' is not installed and ADC_T0_SKIP_WITHOUT_DOCKER=1 (PHP toolchain is post-M6, 01 §4.1)"
+    echo "$msg"
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::warning title=php-mini skipped::$msg"; fi
     exit 0
 fi
 
