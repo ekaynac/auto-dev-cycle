@@ -1,18 +1,31 @@
 # Development workflow until self-host (M0–M6)
 
-Status: adopted 2026-10-03 (D38); §2–§3 amended 2026-10-09 (D45, D46). This document is written to be **self-sufficient for a fresh Claude session**: a
+Status: adopted 2026-10-03 (D38); §2–§3 amended 2026-10-09 (D45, D46); §1–§3 and §5 amended 2026-10-12 (D49, D53,
+D55: goal reconciliation instead of a fixed PR sequence, the gate cost ledger, the weekly review). This document is written to be **self-sufficient for a fresh Claude session**: a
 background session must be able to pick up the work from this file, the repository and the Development log issue
 alone.
 
 Until M6 the cycle cannot build itself, and nöbetçi is reserved for InfraMedic (`CLAUDE.md` scope). So auto-dev-cycle
 is built by a lead Claude session with subagents, reviewed as below, and merged through PRs.
 
-## 1. Roles
+## 1. Roles and the reconcile loop
+
+**Goal plus backlog (D49).** Work is chosen by reconciling **one current outcome goal** against observed evidence, not
+by working down a fixed PR sequence. The goal is an outcome with an exit check, normally the next milestone checkpoint
+(01 §4, e.g. M1's "useful approved merge"). The backlog is an ordered list of outcomes, not of mandatory PRs:
+- **When:** after every merge and after every failed live run, the lead reconciles: what did the evidence show, does
+  the goal still hold, and what is now the shortest safe path to it.
+- **Detail:** only the next **three to five** items are detailed (acceptance, owned paths, smoke check); the rest stay
+  one-line outcomes until they come within reach. Measured failures of live runs become backlog items.
+- **Record:** the goal and the next items are posted on the Development log (#3) with each reconcile that changes them,
+  and in the weekly review (§5).
+- **Limits:** a reconcile never changes a decision, the plan or an exit criterion by itself; those still wait for the
+  operator (§4). D45's threat model and D46's review and PR rules (§2–§3) apply unchanged.
 
 | Role | Who | Does |
 |---|---|---|
 | **Operator** | the human owner | decides; approves gated PRs; answers blocking decisions |
-| **Lead session** | one Claude Code session at a time (attended in the operator's terminal, or the background session `adc-dev`) | plans the next PRs, writes the core contracts itself, integrates subagent work, runs reviews, merges, reports |
+| **Lead session** | one Claude Code session at a time (attended in the operator's terminal, or the background session `adc-dev`) | reconciles the goal and details the next items (D49), writes the core contracts itself, integrates subagent work, runs reviews, merges, reports |
 | **Subagents** | spawned by the lead with `isolation: "worktree"` | build independent pieces (a package, a fixture set, an adapter) in their own worktree; return a branch with tests passing |
 | **Astra** | `codex exec -m gpt-6-astra -c model_reasoning_effort="high" --sandbox read-only` | reviews **contract PRs** |
 | **Fresh Opus reviewer** | a new subagent with no build context | reviews **mechanical PRs** |
@@ -27,6 +40,8 @@ The attended session writes a handover comment when it hands back. This is the s
 
 ## 2. PR rules
 
+- **A PR serves a detailed backlog item (D49).** Its description names the current goal and the item it advances.
+  Work outside the next three to five detailed items waits for the next reconcile.
 - **Branch per PR from `main`:** `feature/<scope>/<desc>`, `fix/<scope>/<desc>`, `chore/<desc>`. Conventional commits.
   Nothing is committed to `main` directly. The shell guard blocks pushing `main`, and that is intended.
 - **Size (D46):** typically 300–600 added plus deleted lines (`git diff --numstat main...HEAD`) of hand-written
@@ -113,6 +128,19 @@ PRs; they are picked up when their trigger arrives.
 3. the lead retries Astra later (credits have returned within hours before);
 4. if a contract PR waits more than 24 h, the lead asks the operator (§5).
 
+**Gate cost ledger (D55).** Every recurring gate keeps a ledger: in this workflow, CI, Astra review, fresh-Opus review
+and the operator gates (§4); in the cycle, from M1's first live attempt, every gate and review node (01 §2.6, recorded
+with the M1 benchmark). Each entry records:
+- elapsed time, and the actual or estimated charge (unknown cost is recorded as unknown, never as zero);
+- validated catches: findings that led to a change, unique to this gate;
+- false blocks: blocks later shown wrong;
+- repairs and review rounds caused, and escapes: defects found later that the gate should have caught.
+
+The ledger is reviewed after every 20 tasks or monthly, and summarised in the weekly review (§5). Retiring or
+weakening a gate is an **operator decision based on the ledger**; a gate that enforces a required safety property is
+retired only when an equivalent enforced replacement exists. A cheap ledger never justifies removing a safeguard by
+itself, and D46's blocking rules are unchanged.
+
 ## 4. Merge
 
 The lead merges (`gh pr merge --merge`) when **CI is green and the review is GO**, after applying any requested
@@ -132,6 +160,16 @@ These PRs **wait for the operator**:
   - **Per merge:** one comment: PR number and title, review verdict and reviewer, tests/CI result, what is next.
   - **Daily digest:** one comment, in the supervisor digest format (`02-supervisor-role.md` §4): done, open, decisions
     waiting for the operator, Codex/Claude usage, anomalies. Numbers, not adjectives.
+  - **Weekly review (D53), every Monday:** one comment that measures outcome progress against the week targets in
+    01 §4.2:
+    - days to the first useful merge (after it: days since the last useful merge, and useful merges this week);
+    - cost: total charge for the week and per useful merge, unknown cost shown separately;
+    - interventions: operator rescues and unplanned operator actions, each with its cause;
+    - the gate cost ledger (§3): per gate, time, charge, validated catches, false blocks and escapes;
+    - the current goal and the next three to five items (§1), and any proposed change to scope or targets.
+
+    A proposed change to the plan or a decision is asked as a blocking decision (below); the review itself changes
+    nothing.
 - **Blocking decisions:**
   - ask the operator with options and a recommended default;
   - attended: in the session;

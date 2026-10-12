@@ -27,7 +27,7 @@ Concrete sources the operator named:
 | D2 | Codebase | **Clean rewrite. Go core + TypeScript adapters.** nöbetçi is reference only. | TS adapters talk to the Go core over a process contract. |
 | D3 | Executors in v1 | Claude Code CLI, Codex CLI, opencode, **oh-my-pi (omp)**, OpenAI/Anthropic-compatible HTTP. | Operator: "there must be one central document on adding adapters." |
 | D4 | Neutrality proof | **Fixtures only** (no InfraMedic migration in v1), but meaningful. | Operator: use standard developments as benchmarks, or rebuild half-finished repos; CTIS-SIMS is a candidate (it has an SRS and is a polyglot microservice project). |
-| D5 | Routing layer | **Our own capacity scheduler + thin executor adapters.** freerouter's complexity tiering is at most one input. | The scheduler is the product. |
+| D5 | Routing layer | **Our own capacity scheduler + thin executor adapters.** freerouter's complexity tiering is at most one input. | The scheduler is the product. **Superseded by D50 (2026-10-12).** |
 | D6 | Classifiers ("Jev") | **Evaluation-first.** Use Jev now; test local alternatives (e.g. Kev). Enable a surface only where a structural, clear-cut decision is needed and tests show it beats the rule. | Operator: "no need to use it unless needed; only on really meaningful surfaces, after testing first." |
 | D7 | Benchmark | **Tiered:** T0 tiny Py/TS/Go fixtures (CI), T1 standard task set with known answers, T2 CTIS-SIMS greenfield from its SRS/SDD/test design. | |
 | D8 | Planning & capacity | **Plan once, re-shape at dispatch.** The plan is capacity-independent; the scheduler splits/merges units to live capacity. | |
@@ -47,7 +47,7 @@ Concrete sources the operator named:
 
 | # | Topic | Decision |
 |---|---|---|
-| D20 | Schedule | **No dates or durations.** Milestones are ordered and closed by their exit checks. |
+| D20 | Schedule | **No dates or durations.** Milestones are ordered and closed by their exit checks. **Superseded by D53 (2026-10-12).** |
 | D21 | CTIS-SIMS v1 slice | **Polyglot, several services:** Identity + Inventory (PHP/Laravel), Audit + Notification (Node/Fastify), AI + MCP (Python/FastAPI), Nginx gateway, Redis bus, React frontend. Detail in plan §3. |
 | D22 | Subscription harnesses | **Claude Code and Codex are used from outside the sandbox (host-side) in v1.** |
 
@@ -80,7 +80,7 @@ Concrete sources the operator named:
 
 | # | Topic | Decision |
 |---|---|---|
-| D38 | Building v1 until self-host | `04-development-workflow.md`: a lead Claude session plus parallel subagents in worktrees; PRs ≤ ~400 hand-written lines with criteria up front; **Astra reviews contract PRs**, a fresh Opus subagent reviews mechanical PRs; the lead merges on green CI + GO, while decision, plan, licensing and security-posture PRs wait for the operator; a line per merge plus a daily digest on the pinned **Development log issue (#3)**, with Telegram (openclaw) only for blocking decisions; ask with options and keep going when blocked; a **background self-paced session** in tmux `adc-dev`; GitHub-hosted CI with the container sandbox fallback. |
+| D38 | Building v1 until self-host | `04-development-workflow.md`: a lead Claude session plus parallel subagents in worktrees; PRs ≤ ~400 hand-written lines with criteria up front; **Astra reviews contract PRs**, a fresh Opus subagent reviews mechanical PRs; the lead merges on green CI + GO, while decision, plan, licensing and security-posture PRs wait for the operator; a line per merge plus a daily digest on the pinned **Development log issue (#3)**, with Telegram (openclaw) only for blocking decisions; ask with options and keep going when blocked; a **background self-paced session** in tmux `adc-dev`; GitHub-hosted CI with the container sandbox fallback. **Superseded by D49 (2026-10-12)** for how work is chosen and detailed; the roles, review, merge and reporting rules stay, as amended by D46. |
 | D39 | nöbetçi delta intake | The operator asked the planning session to filter the nöbetçi supervisor's 2026-10-03 reports. Accepted items A1–A14 (`docs/research/2026-10-03-nobetci-delta-intake.md`): owed inputs and re-keying; the evidence-job lifecycle (new `m0/12`); strict gate options (pair, test_ids, proof_receipts, dispositions); broker credit exhaustion; the producible-acceptance validator; environment facts and gate-output ownership; applicable inputs before review; role/mode-scoped fallback; approval lineage fields (the lexical new-identity ban was removed after review); no blocking prompts; legacy incident goldens; a measurement export and data-based `page_after`; per-executor footprints; pre-existing drift routing. Deferred and rejected items are listed there with reasons. |
 | D40 | Design out, don't patch | Operator: "we are in development, so instead of carrying the lessons as rules to watch, make suitable architectural choices." Adopted all six: **the cycle as an artifact graph** (nodes over content-addressed artifacts, demand-driven, structural waiting); **only the manifest reaches a model**; **outcomes from observed facts**; **evidence targets as leased resources**; **test what you ship** (revised after review: source-test workspace, hashed package deployed byte-exact, runtime verification on the package); **typed acceptance producers**. New `m0/13-artifact-graph.md`; note 12 reduced to evidence specifics; 02/04/05/06/07/10 and plan §2.5/§2.7 simplified. nöbetçi lessons remain as fixtures proving each class cannot occur. |
 | D41 | Rulings during M0 (2026-10-03) | Asked by the background lead session. **Copyright holder** in `NOTICE`: Mega Bilgisayar Tic. Ltd. Şti. (#7). **PR size:** the ~400-line limit counts hand-written non-test code; tests don't count; a cohesive package that still exceeds it may ship as one PR with the reason stated, rather than be split with temporary scaffolding (04 §2). **Test sandbox (#10):** a contract PR; the lead merges it on Astra GO, because it implements D37's boundary without changing it. |
@@ -97,7 +97,7 @@ stay as recorded above; where these rows differ, these rows apply from 2026-10-0
 |---|---|---|
 | D45 | Threat model, amending D43 | **The supported local deployment trusts controller-owned storage and approved controller code.** Arbitrary fabricated histories (direct store edits, events manufactured outside supported commands) are outside the current security claim. **Still in scope:** untrusted inputs (API clients, adapters, repositories, supervisors), invalid transitions the controller itself generates, crashes, stale authority and uncertain effects. Folds keep their deterministic transition and consistency checks; authority and applicability are checked transactionally at admission, at reuse and at effect intent, with consumption checks where a contract requires them. Existing safeguards stay. **Trust boundary:** the controller principal (a dedicated service uid plus enforced confinement) owns the storage, credentials, configuration and installed executable. Builders, tests, host-side model harnesses and the unattended supervisor cannot reach that authority through files, inherited descriptors, sockets or process control; they submit constrained commands or observations, never authoritative event payloads. Installing new controller code stays independently reviewed. A same-user developer installation is supported and treats that user's unrestricted processes as **controller administrators**. The hash chain detects changes to an anchored prefix; it is **not writer authentication**. D43's "normal filesystem access" and "processes that ignore a cooperative lock" stay in scope for every principal except the controller principal. **Deferred: M7-S, untrusted-history and import hardening** (authenticated writers, verified import, untrusted-history replay). M7-S must land **before** any store import, any change to remote-storage trust, or any additional store writer; remote model capacity alone is not a store writer. |
 | D46 | Review and PR rules | 04 §2–§3 as amended: blocking is Critical/High inside D45's threat model, plus four bounded acceptance obligations; every other Medium/Low goes to one deduplicated backlog issue per PR; one defect class gets one repair across its entry points; after two NO-GOs the contract is settled before more code is split; PRs are typically 300–600 hand-written lines with a ceiling of about 800 (D44's counting stands, and replaces D38's and D41's ~400); mutation or equivalent fault evidence is required only for the invariant classes 04 §2 lists, and the red-proof rule (11) stays. |
-| D47 | Milestones M1–M6 as vertical slices | 01 §4 as amended: M1 one real task, M2 this repository, M3 unattended recovery, M4 actual delivery, M5 backlog to approved work, M6 controlled self-host (≥5 substantive changes, D15). Exits that move past M6 are listed in 01 §4.1's deferral ledger. D19 and D26 (the v1 release bar) are unchanged. |
+| D47 | Milestones M1–M6 as vertical slices | 01 §4 as amended: M1 one real task (amended by D52, 2026-10-12: M1 progresses through three outcome checkpoints, a live reviewed candidate, a useful approved merge on this repository's GitHub and safe repetition, and minimal GitHub delivery moves forward from M4 into M1), M2 this repository, M3 unattended recovery, M4 actual delivery, M5 backlog to approved work, M6 controlled self-host (≥5 substantive changes, D15). Exits that move past M6 are listed in 01 §4.1's deferral ledger. D19 and D26 (the v1 release bar) are unchanged. |
 
 ### Routing vision (operator, 2026-10-12)
 
@@ -110,6 +110,62 @@ vision-fit review (2026-10-12) and an integration brief on an external governed 
 | # | Topic | Decision |
 |---|---|---|
 | D48 | Routing vision and governed upstreams (2026-10-12) | Refines D5, D6, D9, D28 and D47. **(1) Governed upstream, M2 or later.** An external governed gateway may sit as a registered destination **behind** ADC's model gateway, which keeps leases, fencing, intent-before-egress, credential handling and accounting; the upstream adds identity-bound audit and model attestation. No proprietary upstream implementation code enters ADC; product-specific adapters and setup notes are distributed separately. The upstream does not replace ADC's gateway, and its identity or policy engine does not enter ADC's authority; an export interface was not chosen. **(2) M1 unchanged.** The P7 registry schema stays open to a governed-upstream destination with an attestation tier; P11 does not preclude per-destination header or trust-secret injection at the gateway, never in the sandbox; Q8's narrowing is an M1 supported-transport limit, not a narrowing of the executor, lease or sovereignty abstractions. The gateway enforces policy and never selects or silently changes a model; selection belongs to the scheduler. **(3) Explainability.** ADC's own routing-decision record is authoritative: candidate set, exclusion reasons, strategy version, fallback cause, selected executor and destination; a governed upstream's correlation or provenance id is attached to the `model_call` observation. The record arrives **with the scheduler, not in M1** (operator's choice over a minimal M1 record). **(4) Adaptive per-project model choice** is a measured experiment after T1, ranking only among admitted executors: configured baseline, then health- and cost-aware ranking, then learned ranking. Metrics: accepted work per total cost, latency, repairs, escaped defects as a guardrail. Promotion and rollback are recorded; zero promotions is valid. D6 holds: learned policy never authorizes destinations, paid fallback, independence or stop/continue. **(5) A named routing slice, M6-R,** after M6 and before M7, with explicit exits: T1, placement across ≥3 source kinds, fairness, builds that cannot starve review, fallback optimisation, the routing-decision record and the adaptive experiment. D47's order stays; this replaces "post-M6" for those ledger rows (01 §4.1). **(6) Model sovereignty** keeps one source: project `data_policy`, trust classes, destination allowlists and the D28 usage profiles. An **`attested`** verification tier is added as a registry property (the model's identity is proven, e.g. by a governed upstream's attestation), in M2; 01 §2.2 defines it as cumulative over `verified`, with trust class, recipients, retention and allowed destinations still checked independently. No second sovereignty configuration. **(7) Naming.** ADC docs describe a generic governed-upstream and attestation interface and name no product; any product-specific adapter or setup note is distributed separately. |
+
+### Replan (operator, 2026-10-12)
+
+After field research on 31 working agent factories (2026-10-12) and Astra's re-evaluation of the plan, the operator
+adopted the decisions below, chose the validated-pull kanban (option C), made a bounded issue in this repository the
+first real target, and asked for a weekly Monday review on the Development log (#3). The wording follows Astra's
+re-evaluation; the D63 liveness rule was added in the operator-facing report. Where a row below differs from an
+earlier one, the row below applies from 2026-10-12.
+
+| # | Topic | Decision |
+|---|---|---|
+| D49 | Development (supersedes D38's planning) | Development reconciles one current outcome goal against observed evidence after every merge or failed live run. Detail the next three to five items; preserve D45–D46 and operator-gated changes. 04 §1–§2. |
+| D50 | Product (supersedes D5) | ADC's product is governed unattended delivery across heterogeneous harness, source and model capacity. Scheduling is measured by accepted work, total cost, latency, interventions and escaped defects. |
+| D51 | Kanban | The authoritative board is a projection of controller records. Executor slots may request ready work; only controller-validated claims authorize execution through leases, fencing, reservations and policy checks. Matching is done in batch. 01 §2.2. |
+| D52 | M1 checkpoints (amends D47) | M1 progresses through live reviewed candidate, useful approved merge and safe repetition. Each capability activates only after its reachable invariants are enforced; deferred capabilities remain inaccessible. 01 §4. |
+| D53 | Schedule (supersedes D20) | Milestones close on evidence. Weekly calendar reviews assess outcome progress and revise scope or forecasts; dates never waive exit criteria. 01 §4.2, 04 §5. |
+| D54 | Multi-harness | Before self-host, two distinct harnesses deliver accepted work under a published conformance matrix. Registration is configuration-driven within qualified compatibility constraints. |
+| D55 | Gate ledger | Every recurring gate records cost, validated catches and false blocks. Retirement requires an approved evidence-based decision; required safety properties retain equivalent enforcement. 04 §3. |
+| D56 | Review qualification | Reviewer configurations must discriminate planted defects from clean controls. Sealed-suite plurality and divergence-only opinions are measured, risk-scoped experiments. |
+| D57 | Delegation | Automated policy changes may only tighten the approved envelope. Standing delegations use existing scoped grants and carry `stop_on` and `max_actions`; widening retains human confirmation. |
+| D58 | Enforcement visibility | Every active invariant identifies its enforcement and qualification evidence. Required unenforced invariants block capability activation. |
+| D59 | Reconciliation | A pure reconciliation decision selects typed actions from snapshots; execution rechecks authority and revisions, persists effect intent and supports periodic resynchronization. |
+| D60 | Health | Health findings include evidence, owner, resume signal and a suggested authorized repair; findings never confer repair authority. |
+| D61 | Routing evidence (amends D48's order) | A small mixed-capacity comparison and placement explanations precede self-host. Full T1, fairness and learned ranking remain separately qualified; zero learned-policy promotions is valid. |
+| D62 | Fence assurance | Concurrent claim and recovery changes receive a bounded formal fence model and discriminating fault fixtures before activation. |
+| D63 | Liveness | Every non-terminal task carries a running attempt, a requested or granted lease, a registered hold, or a claimable producer; otherwise a `stalled` hold owned by the operator is raised and paged. 01 §2.2. |
+
+**Superseded:** D5 by D50, D20 by D53, D38 by D49 (D38's roles, review, merge and reporting rules stay, as amended by
+D46). The superseded rows above are kept as the record.
+
+**D1–D48 re-evaluated.** **KEEP is the default:** every decision not listed below stands unchanged. The verdicts
+concern decisions, not the removal of existing safeguards; an AMEND is carried out by the later plan change that
+applies it, not by this table.
+
+| # | Verdict | Reason |
+|---|---|---|
+| D3 | AMEND | A staged, measured compatibility matrix (D54). |
+| D4 | AMEND | Add useful real-project delivery. |
+| D5 | SUPERSEDE | Governed delivery is the outcome (D50). |
+| D6 | AMEND | Remove the implied need to deploy Jev now. |
+| D8 | AMEND | A versioned outer plan; bounded approved units. |
+| D14 | AMEND | Start with minimal board and confirmation surfaces. |
+| D15 | AMEND | Deliver ADC changes before self-install. |
+| D20 | SUPERSEDE | Calendar reviews expose stalled value (D53). |
+| D21 | DEFER | The full slice follows core delivery and self-host. |
+| D22 | AMEND | Conditional on installed-version confinement. |
+| D24 | DEFER | No demonstrated idle-capacity need yet. |
+| D33 | AMEND | Add repair packets and bounded delegations (D57, D60). |
+| D34 | DEFER | Wait for measured decision volume. |
+| D35 | AMEND | Portable continuity now; curation later. |
+| D38 | SUPERSEDE | Goal reconciliation (D49); review and accountability stay. |
+| D42 | AMEND | Tie delivery to actual platform activation. |
+| D43 | AMEND | Consolidate with D45 to remove ambiguity. |
+| D46 | AMEND | Track delay; prevent new invariant scope inflation. |
+| D47 | AMEND | Earlier activation and useful GitHub delivery (D52). |
+| D48 | AMEND | Earlier routing evidence (D61); learning and attestation later. |
 
 ## Defaults taken without a question (operator may overturn)
 
