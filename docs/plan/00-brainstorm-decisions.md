@@ -136,6 +136,7 @@ earlier one, the row below applies from 2026-10-12.
 | D61 | Routing evidence (amends D48's order) | A small mixed-capacity comparison and placement explanations precede self-host. Full T1, fairness and learned ranking remain separately qualified; zero learned-policy promotions is valid. |
 | D62 | Fence assurance | Concurrent claim and recovery changes receive a bounded formal fence model and discriminating fault fixtures before activation. |
 | D63 | Liveness | Every non-terminal task carries a running attempt, a requested or granted lease, a registered hold, or a claimable producer; otherwise a `stalled` hold owned by the operator is raised and paged. 01 §2.2. |
+| D64 | Review routing (amends D38's reviewer assignment) | Plan and docs PRs get one external review round; on GO with changes the lead verifies the fixes and merges with no second round (D46). Code and contract PRs get an Opus pre-review plus one external round; on NO-GO the lead settles the contract first, then repairs the PR (D46). Mechanical PRs and small Low fixes get Opus only. The default external reviewer is Mythos from 2026-10-13; Astra is reserved for high-risk contract PRs because its quota is limited; when one is unavailable, the other is used. Each review's cost and validated catches go into the gate cost ledger, and a review round that does not pay for itself is retired by D55's rule. 04 §3. |
 
 **Superseded:** D5 by D50, D20 by D53, D38 by D49 (D38's roles, review, merge and reporting rules stay, as amended by
 D46). The superseded rows above are kept as the record.

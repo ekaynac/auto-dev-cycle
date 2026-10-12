@@ -1,7 +1,7 @@
 # Development workflow until self-host (M0–M6)
 
 Status: adopted 2026-10-03 (D38); §2–§3 amended 2026-10-09 (D45, D46); §1–§3 and §5 amended 2026-10-12 (D49, D53,
-D55: goal reconciliation instead of a fixed PR sequence, the gate cost ledger, the weekly review). This document is written to be **self-sufficient for a fresh Claude session**: a
+D55, D64: goal reconciliation instead of a fixed PR sequence, the gate cost ledger, the weekly review, review routing). This document is written to be **self-sufficient for a fresh Claude session**: a
 background session must be able to pick up the work from this file, the repository and the Development log issue
 alone.
 
@@ -89,6 +89,17 @@ The attended session writes a handover comment when it hands back. This is the s
 
 **Mechanical PRs → a fresh Opus subagent:** generated output, fixtures, docs outside design/plan, tooling, CLI
 cosmetics, refactors with no contract change.
+
+**Review routing (operator, 2026-10-12; D64).** Where this differs from the two paragraphs above, it applies:
+- **Plan and docs PRs:** one external review round. On GO with changes, the lead verifies the fixes and merges with no
+  second round (D46; plan PRs still wait for the operator, §4).
+- **Code and contract PRs:** a fresh Opus pre-review, then one external round. On NO-GO, the lead settles the contract
+  first and only then repairs the PR (D46).
+- **Mechanical PRs and small Low fixes:** the fresh Opus reviewer only.
+- **Default external reviewer:** Mythos, from 2026-10-13. Astra is reserved for high-risk contract PRs because its
+  quota is limited. When one external reviewer is unavailable, the other is used.
+- **Measurement:** each review's cost and validated catches go into the gate cost ledger (below, D55). A review round
+  that does not pay for itself is retired by the D55 rule.
 
 **Brief format** for both: the PR diff (`git diff main...HEAD`), the design note it implements, the acceptance
 criteria. A contract-PR brief also states the threat model (D43 as amended by D45):
