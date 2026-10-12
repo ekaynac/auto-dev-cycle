@@ -1,6 +1,6 @@
 # auto-dev-cycle v1 — first open-source release plan
 
-Status: revision 5, 2026-10-12 (routing vision: the gateway enforces and the scheduler selects, governed upstreams, the `attested` tier, the routing-decision record, the adaptive model-choice experiment and the M6-R routing slice, D48). Revision 4, 2026-10-09 (§4 M1–M6 as vertical slices with a deferral ledger, D45–D47). Revision 3, 2026-10-02 (knowledge layer folded in, D35–D36). Revision 2, 2026-10-01: This revision applies Astra's review (`reviews/2026-10-01-astra-plan-review.md`) and
+Status: revision 6, 2026-10-12 (replan after field research, D49–D63: the board as a projection of controller records with validated pull, liveness and the launch readiness check in §2.2; M1 as three outcome checkpoints with minimal GitHub delivery, two harnesses before self-host, week targets and the weekly review in §4). Revision 5, 2026-10-12 (routing vision: the gateway enforces and the scheduler selects, governed upstreams, the `attested` tier, the routing-decision record, the adaptive model-choice experiment and the M6-R routing slice, D48). Revision 4, 2026-10-09 (§4 M1–M6 as vertical slices with a deferral ledger, D45–D47). Revision 3, 2026-10-02 (knowledge layer folded in, D35–D36). Revision 2, 2026-10-01: This revision applies Astra's review (`reviews/2026-10-01-astra-plan-review.md`) and
 the operator's rulings on it (D23–D27 in `00-brainstorm-decisions.md`). It builds on decisions D1–D27 and on the
 know-how in `docs/handoff/01..03`. "nöbetçi" means the current framework (`/home/mega/nobetci-dev`). It is reference
 material only and is never modified. Astra finding numbers are cited as `[A#]`.
@@ -221,6 +221,75 @@ values are profile defaults and which are overrides.
 
 A project's data policy and allowed destinations (D9) are evaluated **within** the active profile. A project can
 narrow the profile, and it can widen it only by an operator-only action.
+
+#### Board and validated pull (D51)
+
+The board is a **projection of controller records**: a read model derived from the event log, with columns computed
+from graph, lease and hold state. Nobody writes to it directly. It does not replace the artifact graph (D40) or the
+scheduler above: an executor slot can ask for work, but only the controller's existing claim → reserve → launch
+check → fencing path authorizes execution.
+
+**Columns and lanes.**
+- Columns: Backlog → Awaiting approval → Ready → Running → Verifying → Merge-ready → Done. They are derived task
+  summaries, not a replacement for node state. Cancelled and superseded work stays as history.
+- Lanes: per project, then standard or expedite. Running and Verifying expand into the build, gate and review work
+  queues. At most **one expedite item globally**, and expedite bypasses no policy.
+- Blocked work carries a badge that tells a structural `waiting(input)` from an external hold (`m0/02`), and shows the
+  exact dependency or signal, the owner and the age. A held task still counts as admitted WIP, although the execution
+  slots it released become reusable. Reservations and liabilities stay visible on their own.
+
+**Card schema.** One parent card per task, with expandable node cards; attempts are history under their node. Repairs
+append successor nodes; reuse references an existing result; **moving a card never fabricates evidence**. A card
+carries:
+- task and node ids; revision and generation; contract and approval digests;
+- input and result references; dependencies and owned paths;
+- role, capability, trust and independence requirements; priority and age; budget and footprint;
+- executor, lease, attempt and fencing token; outcome and reason; hold owner and signal;
+- timestamps and evidence links.
+
+Cards expose references, never hidden acceptance payloads.
+
+**Initial WIP limits.** One admitted task, one builder, one gate slot, one **reserved** independent-review slot and one
+merge per target branch; Ready holds at most five tasks per project. After recovery qualification, admitted tasks rise
+to two with disjoint owned paths. **Enforcement:** the executable stage limits (builder, gate, review and merge slots)
+are controller-owned **resource groups**, reserved through the existing lease machinery (`m0/05`) in the same
+transaction as the rest of the lease, and that reservation includes the downstream review capacity, so a build is not
+admitted when its review slot cannot be reserved (§2.2 progress and fairness). **Task admission is accounted
+separately from execution slots:** a held task keeps its admitted WIP, while the execution slots it released become
+reusable by other work.
+
+**Who moves cards.** Humans and granted supervisors **request**: approve, reprioritize, hold, amend, cancel. Executors
+offer capacity and submit observations. Only controller transactions derive Running, Verifying and Done. A claim
+combines the revision check, node eligibility and the reservation; a failed admission leaves no runnable claim.
+
+**Slot offers and batch matching.** A free executor slot sends `slot.offer`. An offer is a **signal, never a claim**:
+it names the slot and its executor and asks for work. The controller runs a **matching round** over all pending offers
+and all Ready cards together, so the first to ask does not win and priority, aging, per-role reserved shares and
+fairness are kept. Every match goes through claim → reserve → launch checks → fencing. A match that fails at any step
+leaves **no runnable assignment**: unused reservations are released through the lease state machine (`m0/05`), the
+offer stays unanswered, and the card is derived again from current controller state with the applicable hold and
+reason (for example a revoked approval, a missing credential or unreservable capacity). The card stays Ready only
+while it is still eligible. "Pull" thus means demand from an executor slot, never a model granting
+itself a lease. It runs inside the controller's adapter host; remote machines stay model-capacity providers (D1).
+Staging: in M1 the board is a **read-only view** (hold reads and `task show`) and dispatch goes through one
+`match(card, executor)` entry point; slot offers and per-stage WIP arrive with parallel tasks, after the bounded fence
+model and fault fixtures of D62.
+
+**CLI and dashboard parity (D23).** `adc board`, `show`, `explain` and `claim` and the matching dashboard gestures use the
+same controller API, the same reasons and the same event cursor (`m0/08`). D37's exception stands: the CLI starts a
+human-policy confirmation and opens the dashboard for WebAuthn.
+
+**Liveness (D63).** Every non-terminal task carries at least one of: a running attempt, a requested or granted lease, a
+registered hold, or a claimable producer. The reconcile driver (D59) checks this on every pass; a task with none of
+them gets a **`stalled` hold** naming its frontier, owned by the operator and paged. This closes the silent 4–17 h
+stalls nöbetçi showed (`m0/02` `page_after` data). The `stalled` hold joins the registry with M1's safe-repetition
+checkpoint (§4). Before it activates, its `m0/02` registry entry names a concrete resume signal and its paging
+behaviour (`page_after`, `escalate_to`); a hold that nothing can resume does not satisfy that contract.
+
+**Launch readiness check.** The transaction that records `attempt.started` (the launch authorization, `m0/05`) also
+checks that the gateway holds a credential for the lease's destination and that the pinned sandbox image digest is
+present. If either is missing, the launch is refused, the lease is released and a registered hold names the missing
+item; no rail allowance (attempts per round, rounds per task, spend) is consumed.
 
 ### 2.3 Executor adapters
 
@@ -673,25 +742,31 @@ The v1 release is declared on one **release run**:
 
 ## 4. Milestones
 
-No dates or durations (D20). Each exit check is written as **command + fixture + expected result + prerequisites**.
+Milestones close on their exit checks; dates are targets, reviewed weekly, and never waive an exit criterion (D53,
+§4.2). Each exit check is written as **command + fixture + expected result + prerequisites**.
 It runs against installed artifacts, not the source tree [A9].
 
 | M | Name | Contents | Exit check |
 |---|---|---|---|
 | **M0** | Contracts & foundations | Repo layout (Go module + `adapters/` workspace), Apache-2.0, CI. Schemas: outcome + reason codes, authority/approval/grant, lease/attempt/fencing, receipt, event store, project profile, **`ContextManifest` with coverage levels + ref/fingerprint/source-restriction types; shared knowledge spec draft: schemas, invariants and fixture definitions only (K10, K12)**. **Artifact graph: Node/Artifact schemas, key computation, resolver and evaluator with fakes (`m0/13`); evidence node parameters (`m0/12`). Anonymised nöbetçi incident goldens in `fixtures/legacy/`.** Controller API skeleton + `adc` CLI. Test write-guard. Contract-faithful fakes. T0 fixtures | CI green; schema docs generated from code; fake-driven T0 dry run passes |
-| **M1** | One real task | The installed daemon executes an explicitly approved task through constrained build, accept, gate, independent review, serial merge and deterministic closure. One builder route and one independent reviewer route; minimum gateway and accounting; durable effects and the reconciler for uncertain ones; safe restart (fencing, interrupted calls). Sandbox phases 1–2 (§2.10). `git` forge; CLI approvals. Wires what M0 left to fixtures: graph history checks (`CheckHistory`), attempts bound to nodes, recorded approvals and `input.answer`, the holds the slice raises (M0 exit record §4). The first M1 design note delivers an **invariant-enforcement inventory**: each relevant invariant (recorded approvals, moved questions, reuse, consumption, effect intent) mapped to its admission, fold/replay, consumption and effect checks, with the current gaps (D45). Existing checks stay until a reviewed replacement exists | On installed artifacts: an approved T0 task (`py-mini` or `go-mini`) runs from approval to a merged commit on a local `git` remote, its reviewer from a family that contributed nothing; fault fixtures yield the right outcome + reason; the controller killed mid-build recovers without double charge; hostile-repo cases pass; a **small measured end-to-end benchmark** (wall time, tokens, charge per stage) is recorded and re-run at every later exit |
+| **M1** | One real task, three checkpoints (D52) | M1 progresses through three outcome checkpoints on **a bounded issue in this repository** with exact acceptance and a recorded baseline. Each capability activates only after its reachable invariants are enforced; deferred node and effect kinds stay disabled. **(a) Live reviewed candidate:** installed task intake, digest-bound approval and revocation checks; the read-only board and first-attempt metrics (§2.2); the pinned sandbox image and controller-principal isolation; two independent HTTP routes, a builder and a reviewer family, through registry, reservation and the launch readiness check (§2.2); gateway intent-before-egress, usage and liability settlement, spend rails; build → accept → gate → qualified independent review. Merge stays disabled. **(b) Useful approved merge:** restart, stale-output and uncertain-effect handling qualified (fencing, interrupted calls, the reconciler); serial merge and deterministic closure to a local `git` remote, and **minimal `github` delivery to this repository, pulled forward from M4**: serial queue, expected-base CAS, gates on the prospective tree, every merge operator-approved at first. The safeguards this path reaches activate with it: reachable stale-output rejection, a fresh applicable review after any base move, and required-configuration checks. **(c) Safe repetition:** further bounded tasks of this repository through the same path; the liveness rule and its `stalled` hold (D63); the gate cost ledger from the first live attempt (04 §3, D55); measured failures replenish recovery work. One HTTP harness in M1; the second harness comes before self-host (D54). Sandbox phases 1–2 (§2.10); CLI approvals. Wires what M0 left to fixtures: graph history checks (`CheckHistory`), attempts bound to nodes, recorded approvals and `input.answer`, the holds the slice raises (M0 exit record §4). The first M1 design note delivers an **invariant-enforcement inventory**: each relevant invariant (recorded approvals, moved questions, reuse, consumption, effect intent) mapped to its admission, fold/replay, consumption and effect checks, with the current gaps (D45), its enforcement status, owner and activation trigger; a required unenforced invariant blocks its capability (D58). Existing checks stay until a reviewed replacement exists | On installed artifacts: **(a)** the approved issue yields a candidate with protected acceptance, reviewed by a family that contributed nothing, with merge disabled; **(b)** that change merges into `ekaynac/auto-dev-cycle` on GitHub through the guarded queue after operator approval; an external base move is re-gated; an uncertain push outcome causes no duplicate delivery; the controller killed mid-build recovers without double charge; **(c)** further bounded tasks of this repository are delivered without rescue (the M1 design note fixes their number), and a task left with no attempt, lease, hold or claimable producer raises `stalled` and pages. Throughout: fault fixtures yield the right outcome + reason; hostile-repo cases pass; an approved T0 task (`py-mini` or `go-mini`) still runs from approval to a merged commit on a local `git` remote; a **small measured end-to-end benchmark** (wall time, tokens, charge and interventions per stage) is recorded and re-run at every later exit |
 | **M2** | This repository | Go and TypeScript recipes build, test and package auto-dev-cycle. The real adapters its chosen builder/reviewer configuration needs, each passing the conformance kit. Fresh review context, contributor-family tracking, protected paths and the protected-document change operation, task views fingerprinted by exact inputs, `ContextManifest`s, `AttemptRecord` sealed at every builder exit. Host-side harnesses (D22) ship only with their confinement proven (R11). The `attested` routing tier as a registry property, enforced at placement and at the gateway (§2.2, D48) | A Go change and a TypeScript change to this repository built, gated by its own recipes and reviewed through the cycle on installed artifacts; a protected-path edit is refused; a builder exit resumes from its sealed continuation; **E0 manifest reconciliation passes**; **a project requiring `attested` routing is placed only on a destination with valid model-identity evidence: a destination with unsupported, missing or invalid evidence is refused before egress with its reason, using fixture evidence and no proprietary upstream**; the M1 benchmark re-run |
 | **M3** | Unattended recovery | Controller kill, interrupted calls, quota exhaustion, stale results and uncertain push outcomes, end to end. Bounded retry, hold/resume with named signals, accounting reconciliation, pager and external watchdog, isolation qualification of the D45 boundary. M1 and M2 already fail safely; this slice proves sustained recovery | A qualification run of at least five sequential T0 tasks on installed artifacts, one fault injected per task: the controller killed mid-build, an interrupted model call, quota exhaustion on the builder route, a result arriving after its attempt was revoked, and an uncertain push outcome on the `git` remote. The run finishes with **zero rescues** (D26's rule); each fault ends in its registered outcome + reason; a late stale result is rejected; exhaustion waits on the right signal; uncertain usage is reconciled, never dropped; the pager fires on an unattended stop; builders, tests, harnesses and the unattended supervisor are shown unable to reach controller storage, credentials or socket |
-| **M4** | Actual delivery | `github` delivery for `ekaynac/auto-dev-cycle`: serial merge queue, expected-base CAS, gates on the prospective tree, re-review when the delta requires it, required-configuration holds. Merges stay within 04 §4: a plan, decision or security-posture change still waits for the operator | Cycle-built changes land as GitHub PRs on this repository and merge through the queue; an external base move between gate and merge is re-gated (and re-reviewed when required); an uncertain push outcome causes no duplicate delivery; missing required configuration holds with its resume signal |
+| **M4** | Actual delivery | Broader `github` delivery for `ekaynac/auto-dev-cycle` on top of M1's minimal path (serial queue, expected-base CAS, gates on the prospective tree), whose safeguards already hold from M1: stale-output rejection, a fresh applicable review after a base move, required-configuration checks. M4 adds: cycle-built changes delivered as GitHub PRs with status reporting; re-review decided by the delta instead of M1's fresh review on every base move; required-configuration holds for the forge setup (branch protection, required checks, credential scope) with their resume signals; per-merge operator approval lifted only by a recorded operator decision on this exit's evidence. Merges stay within 04 §4: a plan, decision or security-posture change still waits for the operator | Cycle-built changes land as GitHub PRs on this repository and merge through the queue; an external base move between gate and merge is re-gated and re-reviewed when the delta requires it; an uncertain push outcome causes no duplicate delivery; missing required forge configuration holds with its resume signal |
 | **M5** | Backlog to approved work | Minimal planning for bounded backlog items: plan schema, mechanical validators, typed acceptance producers, digest-bound approval and amendment, repair rounds, simple phase closure (§2.6, without the strict options). CLI is enough for ordinary actions; a human-policy action is enabled only with presence-verified confirmation (D37), otherwise it stays disabled | A backlog issue becomes an approved plan of bindable acceptance rows and executes; a stale approval is refused after an amendment; a failed row goes through a repair round; the phase closes on receipts |
 | **M6** | Controlled self-host | The project's own backlog runs through the cycle (D15). Independently reviewed, content-pinned self-install at an idle boundary; health checks; a recovery/rollback procedure; compatible state across the install. The reviewer stays independent of every contributing model family | **≥5 substantive auto-dev-cycle changes** (each with acceptance rows and a behaviour change, not docs or formatting alone) delivered by the cycle; one self-install and one rollback drill pass their health checks; the cycle operates after a restart from the installed artifacts |
-| **M6-R** | Routing slice | The scheduler as the product (D5, D48): the T1 suite and its published baseline; placement across ≥3 direct source kinds; parallel tasks and two concurrent projects, with scheduler fairness by project weight and per-role reserved shares; builds cannot starve review; fallback optimisation beyond M2's ordered chains (every step re-checked, §2.2); the routing-decision record (§2.2); the adaptive per-project model-choice experiment (§2.8) after T1, with the shadow logging and evaluation machinery its learned stage needs | On installed artifacts: **T1 runs and its baseline is published**; **≥3 source kinds each contribute measured accepted work** on T1 tasks; under contention, weighted projects and roles keep making progress and **a build is not admitted when its reviewer capacity is not reservable**; an injected exhaustion is answered by a fallback step that widens nothing and records its cause; **every placement has a routing-decision record** linked to its lease, attempt and `model_call`s; the **adaptive experiment report** compares the baseline, health/cost-aware and learned strategies on accepted work per total cost, latency, repairs and escaped defects, with each promotion or rollback recorded (zero promotions is a valid result) |
+| **M6-R** | Routing slice | Routing as the subsystem that supports governed delivery (D50, D48, D61): the T1 suite and its published baseline; placement across ≥3 direct source kinds; parallel tasks and two concurrent projects, with scheduler fairness by project weight and per-role reserved shares; builds cannot starve review; fallback optimisation beyond M2's ordered chains (every step re-checked, §2.2); the routing-decision record (§2.2); the adaptive per-project model-choice experiment (§2.8) after T1, with the shadow logging and evaluation machinery its learned stage needs | On installed artifacts: **T1 runs and its baseline is published**; **≥3 source kinds each contribute measured accepted work** on T1 tasks; under contention, weighted projects and roles keep making progress and **a build is not admitted when its reviewer capacity is not reservable**; an injected exhaustion is answered by a fallback step that widens nothing and records its cause; **every placement has a routing-decision record** linked to its lease, attempt and `model_call`s; the **adaptive experiment report** compares the baseline, health/cost-aware and learned strategies on accepted work per total cost, latency, repairs and escaped defects, with each promotion or rollback recorded (zero promotions is a valid result) |
 | **M7** | Background work + classifier shadow | Background-work contract, filler leases with downstream reservation, P3 surface live. systemone port, eval harness, sanitised datasets, Jev and small Kev in shadow mode | Filler uses idle capacity without delaying cycle work or flooding review; eval report per candidate surface (zero promotions is a valid result) |
 | **M8** | T2 + release | CTIS-SIMS slice, docs (quickstart, concepts, adapters, profiles, security model, supervisor operation), release run (§3.2), final name | Release run passes |
 
 M1–M6 are **cumulative vertical slices** (D47, 2026-10-09): each ends in a usable result on installed artifacts, and
 each later slice keeps every earlier exit green. The rows state the result each exit must show; each slice's design
-note pins its exit check (command, fixtures, prerequisites and assertions) before implementation starts. Deferred surfaces stay disabled, not half-reachable. If a slice uses an
+note pins its exit check (command, fixtures, prerequisites and assertions) before implementation starts. Deferred surfaces stay disabled, not half-reachable.
+**Before M6 (self-host), two distinct harnesses deliver accepted work under a published conformance matrix (D54):**
+HTTP first (a direct API and a local endpoint), then omp or opencode as the second sandboxed harness, chosen by an
+early compatibility spike; confined Claude Code and Codex roles (D22) follow. Support is stated per harness, adapter,
+source or protocol, model, role and OS; an unqualified combination is refused even when its model name is
+configurable. Also before M6: a small mixed-capacity comparison and placement explanations (D61). If a slice uses an
 evidence target or an integration environment, that resource's isolation, restore and publication obligations
 (`m0/12`) come forward into the same slice. **M6-R, the routing slice (D48), follows M6 and precedes M7:** it
 delivers T1, so it comes before the work that depends on T1. M7 and M8 keep their contents; M7 depends on M6-R's T1
@@ -702,27 +777,29 @@ M6-R, M7, M8 and M7-S; the broader v1 requirements (§1, §3.2, D19, D26) are un
 
 Items of the pre-2026-10-09 M1–M6 contents and exits that move past M6 (D47). References elsewhere in this plan, in
 04 and in `docs/design/m0/` that name an old milestone for these items read as the new place below. Rows whose old
-place is "—" were added later (D45, D48) to give an item a home; the `attested` tier lands in M2 and the
-governed upstream in M2 or later.
+place is "—" were added later (D45, D48, D61) to give an item a home; the `attested` tier lands in M2 and the
+governed upstream in M2 or later. The 2026-10-12 replan (D52, D54, D61) moved minimal `github` delivery into M1 and
+brought a second harness, placement explanations and two-task validated pull forward to before M6; the rows below
+reflect it.
 
 | Item | Old | New place | Replacement exit before M6 |
 |---|---|---|---|
 | Sandbox phase 3 proven on the multi-service T0 fixture (§2.10, R9) | M1 | post-M6 | none; it comes forward with the first slice that uses an integration environment |
 | A specific open-model builder route (GLM-5.3-flash or Qwen3.8 27B) | M1 | post-M6 | M1's one builder route, any family; M3's quota-exhaustion exit |
-| Adapters beyond those the M2 configuration needs; broad provider discovery and optimisation; `AUTHORING.md`; R3, R4, R6 | M2 | post-M6; fallback optimisation in **M6-R** | M2: each adapter used passes the conformance kit |
-| Placement across ≥3 direct source kinds; scheduler fairness; "builds cannot starve review" | M2 | **M6-R** | M1 minimum gateway; M3 exhaustion waits on the right signal |
+| Adapters beyond those the M2 configuration needs and the second harness D54 requires; broad provider discovery and optimisation; `AUTHORING.md`; R3, R4, R6 | M2 | post-M6; fallback optimisation in **M6-R** | M2: each adapter used passes the conformance kit; before M6, two distinct harnesses deliver accepted work under a published conformance matrix (D54) |
+| Placement across ≥3 direct source kinds; scheduler fairness; "builds cannot starve review" | M2 | **M6-R** | M1 minimum gateway and reserved review slot (§2.2 WIP limits); M3 exhaustion waits on the right signal; before M6, a small mixed-capacity comparison (D61) |
 | T1 suite and published baseline (full T1 breadth) | M2 | **M6-R** (before M7) | the M1 small measured benchmark, re-run at every exit |
-| Routing-decision record (§2.2, D48) | — | **M6-R**, with the scheduler | none; M1 records placement outcomes and reasons on the lease |
+| Routing-decision record (§2.2, D48) | — | **M6-R**, with the scheduler | M1 records placement outcomes and reasons on the lease; before M6, placement explanations (D61) |
 | Adaptive per-project model-choice experiment (§2.8, D48) | — | **M6-R**, after T1 | none; roles use their configured chains |
 | Governed-upstream destination kind (§2.2, D48) | — | M2 or later | none; P7's registry schema and P11's gateway injection stay open to it |
 | `attested` verification tier as a registry property (§2.2, D48) | — | M2 | none; `verified`/`reported` routing labels apply |
 | Knowledge ablations E1, E1L (K3 gate), E2, E4, E5; `FailureSignature` aggregate; nöbetçi measurement export | M2 | post-M6 | none; K3 holds, so no durable curated knowledge ships before E1L |
 | Operator enrolment, dial-out adc-agent, live-tunnel revocation, drain/abrupt loss (R5) | M3 | post-M6 | M3: a late stale result is rejected (local routes) |
 | adc-agent and the test sandbox on Windows/macOS (rootless-container fallback, D42) | M3 | post-M6 | none; bubblewrap stays the only test sandbox |
-| `gitlab`, three forges, the multi-forge matrix; PHP toolchain (T0 in four languages); Python delivery, when M1 selects `go-mini` | M1, M4 | post-M6; the release run (§3.2) still needs all four languages | M4 `github` only; M2 Go and TypeScript |
-| Parallel tasks, multi-project fairness and two concurrent projects, as far as M6-R's contention exit needs them | M4 | **M6-R** | none; one project, serial queue |
+| `gitlab`, three forges, the multi-forge matrix; PHP toolchain (T0 in four languages); Python delivery, when M1 selects `go-mini` | M1, M4 | post-M6; the release run (§3.2) still needs all four languages | M1 minimal `github` delivery with its safeguards (D52); M4 the PR flow, delta-based re-review and forge-configuration holds; M2 Go and TypeScript |
+| Parallel tasks, multi-project fairness and two concurrent projects, as far as M6-R's contention exit needs them | M4 | **M6-R** | before M6, two-task validated pull on one project with disjoint owned paths and reserved review capacity (§2.2, D51), after the fence model and fixtures of D62; otherwise one project, serial queue |
 | Parked candidate, K11 exposure checks, cross-project knowledge sharing (R7) | M4 | post-M6 | none; one project, serial queue |
-| Full dashboard with CLI parity test, advanced shaping within units, strict phase-gate options (pair, `test_ids`, `proof_receipts`, dispositions) | M5 | post-M6 | M5 CLI operation; human-policy actions disabled without presence-verified confirmation |
+| Full dashboard with CLI parity test, advanced shaping within units, strict phase-gate options (pair, `test_ids`, `proof_receipts`, dispositions) | M5 | post-M6 | M1 read-only board (§2.2); M5 CLI operation; human-policy actions disabled without presence-verified confirmation |
 | SRS fixture compiled to a plan approved by a supervisor actor under a grant | M5 | post-M6 (with T2) | M5 backlog issue to approved plan |
 | Planner/supervisor knowledge views, the curation queue; framework lessons turned into mechanisms; live E3 | M5, M6 | post-M6 | none |
 | Learned routing ranking for the adaptive experiment, with the shadow logging and evaluation machinery it needs (§2.8) | M7 (classifiers) | **M6-R**, after its T1 | none; roles use their configured chains |
@@ -732,17 +809,40 @@ governed upstream in M2 or later.
 | Untrusted-history and import hardening (D45) | — | **M7-S**, before any store import, remote-storage trust change or additional writer | none; the controller principal is trusted until then |
 
 Moves within M1–M6: `AttemptRecord` sealing, the protected-document change operation, task-view fingerprints and E0
-go from M1 to M2; rejecting a late stale result stays in M3, on local routes instead of an agent.
+go from M1 to M2. Enforcement is separate from qualification breadth: rejecting a stale result is enforced wherever it
+is reachable from M1 on, and M3 adds the sustained recovery qualification, on local routes instead of an agent.
+Minimal `github` delivery (serial queue, expected-base CAS, gates on the prospective tree, operator-approved merges)
+moves from M4 into M1's useful-merge checkpoint (D52), together with the safeguards it reaches: stale-output
+rejection, a fresh applicable review after a base move and required-configuration checks. M4 keeps the broader
+delivery behaviour: the PR flow, delta-based re-review, forge-configuration holds and lifting per-merge approval. The CTIS-SIMS slice (D21) and the background-work framework (D24) are deferred behind core
+delivery and self-host; the supervisor classifiers (D34) wait for measured decision volume.
 
-### 4.2 Forecast (not a commitment, D20)
+### 4.2 Week targets and the weekly review (D53)
 
-Astra's 2026-10-09 estimate for M1–M6 as amended: **75–120 PRs and 18–35 days** from M1 start (the unchanged M1–M6
-scope: 225–365 PRs, 30–60 days). It assumes intensive daily operation comparable to M0, one integrating lead, at most
-two review slots and prompt operator decisions; reusable M0 foundations; about 1–1.5 review rounds per PR under 04 §3
-as amended; fewer merges per day than M0 as real sandbox, provider, forge and recovery work replaces small foundation
-changes. Harness-confinement incompatibility, store-migration trouble or long review-credit shortages can add weeks.
-Milestones still close only on their exit checks. The M6-R routing slice (D48) is outside this 75–120 PR M1–M6
-forecast.
+Milestones close on evidence. The weeks below are **targets under D53**, counted from 2026-10-12 and assuming usable
+routes and review capacity; they are not commitments, and a date never waives an exit criterion. They replace the
+2026-10-09 PR-count forecast.
+
+| Target | Outcome checkpoint |
+|---|---|
+| Week 1 | Installed task intake, read-only board and an instrumented live attempt; a fixed template, one project and one task |
+| Weeks 1–2 | M1 (a): an independently reviewed useful candidate with protected acceptance, confinement, fencing and conservative accounting; merge disabled until qualified |
+| Weeks 2–3 | M1 (b): the first substantive merge into this repository on GitHub through guarded delivery, operator-approved at first; local-forge regression coverage kept |
+| Weeks 3–5 | M1 (c) and M2–M3: several useful deliveries; Go and TypeScript recipes, portable continuation, the second harness, planted-defect reviewer checks; M3's five fault cases complete without rescue |
+| Weeks 5–6 | Two-task validated pull, reserved review capacity, a small direct/local comparison and placement explanations |
+| Weeks 6–8 | M5–M6: bounded backlog planning, grants and supervisor handover; ≥5 substantive changes to this repository, an independently reviewed self-install and a rollback |
+| Weeks 8–12 | M6-R: full T1, ≥3 source kinds, multi-project fairness, the remaining harnesses, dial-out capacity and an optional governed upstream |
+| Weeks 12–16+ | The CTIS-SIMS slice, integration isolation, the remaining release matrix and v1 qualification. M7-S activates before any import or additional writer, whatever the calendar |
+
+**Cut from the first path:** general dependency preparation where a pinned prepared image suffices; optimised review
+carry-over; arbitrary graph rewriting; rich knowledge curation; mandatory second opinions; learned routing; broad
+dashboard polish and unrelated M1 follow-ups. A base move first triggers recomputation and a fresh review. Every
+activated safety boundary, every existing regression check and the D19/D26 release bar stay.
+
+**Weekly review.** Every Monday the lead posts one review comment on the Development log (#3), as 04 §5 describes:
+days to the first useful merge (then since the last one), total cost, operator interventions, and the gate cost
+ledger (04 §3). The review compares progress with the targets above and may revise scope or the targets; a revision of
+this plan still goes through 04 §4's operator gate.
 
 ---
 
