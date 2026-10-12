@@ -312,6 +312,10 @@ for p in /bin /lib /lib64 /sbin; do [[ -d "$p" && ! -L "$p" ]] && mount_types+="
 for p in /etc/ld.so.cache /etc/ld.so.conf /etc/ld.so.conf.d /etc/alternatives /etc/passwd /etc/group /etc/nsswitch.conf /etc/localtime; do
   [[ -e "$p" ]] && mount_types+=" $p=$(fstype "$p")"
 done
+# bwrap --dev binds these host device nodes: devtmpfs on a host, tmpfs inside a container runner.
+for p in /dev/null /dev/zero /dev/full /dev/tty /dev/random /dev/urandom; do
+  mount_types+=" $p=$(fstype "$p")"
+done
 
 mutation_args=()
 case "$mutation" in

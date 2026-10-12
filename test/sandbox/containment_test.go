@@ -159,14 +159,13 @@ func TestNoProtectedOrRepoAlias(t *testing.T) {
 
 // Every mount is one the wrapper made, checked by mount point AND exact
 // filesystem type: each bind must show its source's type (the wrapper passes
-// them in ADC_SANDBOX_MOUNT_TYPES), and the sandbox's own tmpfs, proc and
-// device mounts have fixed types. There is no prefix exemption, so a bind
-// hidden under /dev, a configured extra mount or a wrong filesystem at an
-// allowed path all fail.
+// them in ADC_SANDBOX_MOUNT_TYPES, including the device nodes bwrap --dev binds
+// from the host: devtmpfs on a host, tmpfs inside a container runner), and the
+// sandbox's own tmpfs, proc and devpts mounts have fixed types. There is no
+// prefix exemption, so a bind hidden under /dev, a configured extra mount or a
+// wrong filesystem at an allowed path all fail.
 var fixedMounts = map[string]string{
 	"/": "tmpfs", "/tmp": "tmpfs", "/home": "tmpfs", "/proc": "proc", "/dev": "tmpfs", "/dev/pts": "devpts",
-	"/dev/null": "devtmpfs", "/dev/zero": "devtmpfs", "/dev/full": "devtmpfs", "/dev/tty": "devtmpfs",
-	"/dev/random": "devtmpfs", "/dev/urandom": "devtmpfs",
 }
 
 func TestOnlyExpectedMounts(t *testing.T) {
