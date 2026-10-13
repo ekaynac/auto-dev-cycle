@@ -2,7 +2,7 @@
 
 An unattended software-development cycle that turns requirements into merged, gated and reviewed changes on any git
 repository, harvesting model capacity from wherever it can find it. Working name; see `docs/plan/` for the first
-release plan and `docs/design/m0/` for the M0 contracts.
+release plan, `docs/design/m0/` for the M0 contracts and `docs/design/m1/` for the M1 slice plan.
 
 Status: **M0 (contracts and foundations)**, under construction. Nothing here runs a cycle yet.
 

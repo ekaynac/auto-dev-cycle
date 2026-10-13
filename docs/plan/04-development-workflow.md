@@ -44,6 +44,13 @@ The attended session writes a handover comment when it hands back. This is the s
   Work outside the next three to five detailed items waits for the next reconcile.
 - **Branch per PR from `main`:** `feature/<scope>/<desc>`, `fix/<scope>/<desc>`, `chore/<desc>`. Conventional commits.
   Nothing is committed to `main` directly. The shell guard blocks pushing `main`, and that is intended.
+  - **Exception (operator, 2026-10-13; M1(b) until M4):** the ADC controller may update `refs/heads/main` of
+    `ekaynac/auto-dev-cycle` only through P27's exact-old-SHA push, with each merge operator-approved (P28). It uses a
+    repository-scoped `contents:write` credential held only by the controller, and a ruleset on `main` admits that
+    delivery identity as its only bypass actor. Disruptive faults run only on the scratch ref. `merge-github`
+    activates (P22b) only after P20's settlement rules, `effect_uncertain` and `effect.settle` are enforced and
+    `github-delayed-apply` and `crash-unknown-github` pass. The lead's own pushes stay blocked. M4 revisits this with
+    the PR flow (`docs/design/m1/00-slice-plan.md` §8 item 5).
 - **Size (D46):** typically 300–600 added plus deleted lines (`git diff --numstat main...HEAD`) of hand-written
   non-test code, with a ceiling of about 800 for **one reviewable behaviour** with a clear acceptance story. Changes
   that interact with authority, replay, fencing or merge state stay smaller. Project-authored schemas under `schemas/`
