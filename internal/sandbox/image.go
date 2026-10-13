@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package sandbox
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"maps"
+	"os"
+	"regexp"
+	"slices"
+)
+
+// ManifestLabel is the prepared image's manifest (00 §8 item 2): a JSON
+// object naming the toolchain it was prepared for and the sha256 of each
+// lockfile its dependencies were baked from.
+const ManifestLabel = "dev.adc.prepared"
+
+const maxLockfile = 16 << 20
+
+var (
+	// ErrImage: the pinned image is absent, or its digest differs.
+	ErrImage = errors.New("sandbox: the pinned image is not present at its digest")
+	// ErrManifest: the image was not prepared for this toolchain and base.
+	ErrManifest = errors.New("sandbox: the image manifest does not match the pinned toolchain and the base's lockfiles")
+
+	pinned = regexp.MustCompile(`^[^@\t\n\f\r ]+@sha256:[0-9a-f]{64}$`)
+	imgID  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
+
+// Image is a pinned image resolved in the host's storage. A run starts the
+// resolved ID, so the reference cannot move between check and start.
+type Image struct {
+	Pinned   string
+	ID       string
+	Manifest Manifest
+}
+
+// Manifest is what ManifestLabel declares.
+type Manifest struct {
+	Toolchain string            `json:"toolchain"`
+	Lockfiles map[string]string `json:"lockfiles"` // repo path -> sha256:hex
+}
+
+// Resolve finds ref (name@sha256:hex) in the host's storage, never
+// pulling: an image whose digest differs from the pin is refused.
+func (h Host) Resolve(ctx context.Context, ref string) (Image, error) {
+	if !pinned.MatchString(ref) {
+		return Image{}, fmt.Errorf("%w: not a reference pinned by digest", ErrImage)
+	}
+	out, err := h.podman(ctx, "image", "inspect", "--", ref)
+	if err != nil {
+		return Image{}, fmt.Errorf("%w: %w", ErrImage, err)
+	}
+	var found []struct {
+		ID          string            `json:"Id"`
+		RepoDigests []string          `json:"RepoDigests"`
+		Labels      map[string]string `json:"Labels"`
+	}
+	if err := json.Unmarshal(out, &found); err != nil || len(found) != 1 || !imgID.MatchString(found[0].ID) ||
+		!slices.Contains(found[0].RepoDigests, ref) {
+		return Image{}, ErrImage
+	}
+	img := Image{Pinned: ref, ID: found[0].ID}
+	if raw, ok := found[0].Labels[ManifestLabel]; ok {
+		if err := json.Unmarshal([]byte(raw), &img.Manifest); err != nil {
+			return Image{}, fmt.Errorf("%w: the manifest label is not JSON", ErrManifest)
+		}
+	}
+	return img, nil
+}
+
+// CheckManifest refuses an image not prepared for toolchain (its key in
+// toolchain.images) from exactly the lockfiles at the base, read from
+// base, a controller-side copy, never following a symlink.
+func (img Image) CheckManifest(toolchain, base string, lockfiles []string) error {
+	m := img.Manifest
+	if m.Toolchain == "" || m.Toolchain != toolchain {
+		return fmt.Errorf("%w: prepared for another toolchain", ErrManifest)
+	}
+	if !slices.Equal(slices.Sorted(maps.Keys(m.Lockfiles)), slices.Sorted(slices.Values(lockfiles))) {
+		return fmt.Errorf("%w: another set of lockfiles", ErrManifest)
+	}
+	for _, p := range lockfiles {
+		sum, err := fileSum(base, p)
+		if err != nil {
+			return fmt.Errorf("%w: a lockfile at the base is unreadable", ErrManifest)
+		}
+		if m.Lockfiles[p] != sum {
+			return fmt.Errorf("%w: lockfile %s differs at the base", ErrManifest, p)
+		}
+	}
+	return nil
+}
+
+// fileSum is the sha256 of rel below dir: a regular file, not a symlink,
+// never reached outside dir.
+func fileSum(dir, rel string) (string, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	if st, err := root.Lstat(rel); err != nil || !st.Mode().IsRegular() {
+		return "", errors.New("not a regular file")
+	}
+	r, err := root.Open(rel)
+	if err != nil {
+		return "", err
+	}
+	defer r.Close()
+	h := sha256.New()
+	if n, err := io.Copy(h, io.LimitReader(r, maxLockfile+1)); err != nil || n > maxLockfile {
+		return "", errors.New("unreadable or too large")
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}

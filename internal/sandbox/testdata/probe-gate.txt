@@ -1,0 +1,46 @@
+iface lo
+routes 0
+mount / / overlay
+mount /workspace @ROOT@/runs/@ATTEMPT@/workspace ext4
+mount /results @ROOT@/runs/@ATTEMPT@/results ext4
+mount /tmp / tmpfs
+mount /sys / sysfs
+mount /proc / proc
+mount /dev / tmpfs
+mount /dev/pts / devpts
+mount /dev/mqueue / mqueue
+mount /home/adc / tmpfs
+mount /dev/shm / tmpfs
+mount /run/.containerenv @ROOT@/r/overlay-containers/0171c1045fd4914cb80eeb5ea5ab1411c57c4693169dd35a73bd95a026836119/userdata/.containerenv ext4
+mount /etc/hostname @ROOT@/r/overlay-containers/0171c1045fd4914cb80eeb5ea5ab1411c57c4693169dd35a73bd95a026836119/userdata/hostname ext4
+mount /sys/fs/cgroup / cgroup2
+mount /dev/null /null devtmpfs
+mount /dev/random /random devtmpfs
+mount /dev/full /full devtmpfs
+mount /dev/tty /tty devtmpfs
+mount /dev/zero /zero devtmpfs
+mount /dev/urandom /urandom devtmpfs
+mount /proc/asound /asound proc
+mount /proc/bus /bus proc
+mount /proc/fs /fs proc
+mount /proc/irq /irq proc
+mount /proc/sys /sys proc
+mount /proc/sysrq-trigger /sysrq-trigger proc
+mount /proc/acpi / tmpfs
+mount /proc/kcore /null devtmpfs
+mount /proc/keys /null devtmpfs
+mount /proc/latency_stats /null devtmpfs
+mount /proc/timer_list /null devtmpfs
+mount /proc/scsi / tmpfs
+mount /sys/firmware / tmpfs
+mount /sys/dev/block / tmpfs
+status CapInh 0000000000000000
+status CapPrm 0000000000000000
+status CapEff 0000000000000000
+status CapBnd 0000000000000000
+status CapAmb 0000000000000000
+status NoNewPrivs 1
+status Seccomp 2
+limit memory 268435456
+limit pids 64
+limit cpu 100000/100000

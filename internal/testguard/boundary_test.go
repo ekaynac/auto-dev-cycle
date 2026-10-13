@@ -59,10 +59,14 @@ func violations(rel string, src []byte) ([]string, error) {
 		return out, nil
 	}
 	homeKey := func(v string) bool { return v == "HOME" || strings.HasPrefix(v, "XDG_") }
+	// The product sandbox (P9) gives Podman and the controller's git a home
+	// of their own, inside its private root or none at all; its tests are
+	// still held to the rule.
+	productChild := dir == "internal/sandbox" && !strings.HasSuffix(rel, "_test.go")
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.BasicLit: // a child's environment: "HOME=…", "XDG_…"
-			if v, err := strconv.Unquote(n.Value); n.Kind == token.STRING && err == nil && (strings.HasPrefix(v, "HOME=") || strings.HasPrefix(v, "XDG_")) {
+			if v, err := strconv.Unquote(n.Value); !productChild && n.Kind == token.STRING && err == nil && (strings.HasPrefix(v, "HOME=") || strings.HasPrefix(v, "XDG_")) {
 				out = append(out, rel+" spells "+strings.SplitN(v, "=", 2)[0]+" for a child: use testguard.HomeEnv")
 			}
 		case *ast.CallExpr:
