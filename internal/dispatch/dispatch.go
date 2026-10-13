@@ -42,9 +42,10 @@
 //     raises is a node hold, which has its id and since.
 //   - Inert (§1's gating table): nothing in adcd constructs a Dispatcher,
 //     so match returns no assignment and no attempt starts until P22a
-//     activates `launch`. P11's credential seam (Credentials) has no
-//     implementation; without one, a destination that needs a credential
-//     never launches.
+//     activates `launch`. P11's gateway (internal/gateway) implements the
+//     credential seam (Credentials), and nothing in adcd constructs it
+//     either; without one, a destination that needs a credential never
+//     launches.
 //   - Only the first fallback step exists (fallback chains are M2); the
 //     rails (paid authority, budget) are P17's, and their checks say so.
 package dispatch

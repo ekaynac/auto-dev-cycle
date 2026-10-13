@@ -25,8 +25,8 @@ type Images interface {
 }
 
 // Credentials is P11's launch-readiness seam: whether the gateway holds
-// the named credential for a destination. Nothing implements it until
-// P11.
+// the named credential for a destination. gateway.Gateway implements it
+// (P11).
 type Credentials interface {
 	Holds(ctx context.Context, destination, credential types.Slug) (bool, error)
 }
