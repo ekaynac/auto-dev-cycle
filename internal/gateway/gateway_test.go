@@ -384,6 +384,24 @@ func TestResponseHeadersCarryNoCredential(t *testing.T) {
 	}
 }
 
+// The gateway's own refusals carry RefusalHeader with their code; an
+// upstream setting it, or sending a refusal-shaped body, never does.
+func TestOnlyTheGatewayMarksARefusal(t *testing.T) {
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(RefusalHeader, "lease_not_running_attempt")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"error":{"type":"gateway_refused","code":"lease_not_running_attempt"}}`)
+	})
+	g, token := rig(t, up, nil)
+	if w := call(g, token, "/chat/completions", good, nil); w.Code != http.StatusConflict || w.Header().Get(RefusalHeader) != "" {
+		t.Fatalf("an upstream's forged refusal: %d %v", w.Code, w.Header())
+	}
+	g, token = rig(t, up, func(c *Config) { c.Leases = leases{} })
+	if w := call(g, token, "/chat/completions", good, nil); w.Header().Get(RefusalHeader) != "lease_not_running_attempt" {
+		t.Fatalf("the gateway's refusal: %d %v", w.Code, w.Header())
+	}
+}
+
 // Mythos L-3 and L-4: a request body carrying the credential is refused and
 // recorded without a capture too; an empty credential value is not held.
 func TestACredentialInTheBodyOrEmptyIsRefused(t *testing.T) {

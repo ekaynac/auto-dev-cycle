@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Packages the fake adapter with its workspace dependencies, and fixtures/t0/py-mini, into OUTDIR (dist's
-# lib/adc; docs/design/m0/15 S2). The repository's own files are its committed content (git archive HEAD: never
+# Packages the fake adapter and the http-chat adapter (P13) with their workspace dependencies, and
+# fixtures/t0/py-mini, into OUTDIR (dist's lib/adc; docs/design/m0/15 S2). The repository's own files are its committed content (git archive HEAD: never
 # an untracked .env or .venv, nor an uncommitted edit), with its LICENSE and NOTICE. The workspace packages keep their source paths
-# (adapters/fake, adapters/contract, gen/ts): Node strips TypeScript types only outside node_modules, so
-# node_modules/@adc holds two relative symlinks to them. The third-party packages are the fake's production
+# (adapters/fake, adapters/http-chat, adapters/contract, gen/ts): Node strips TypeScript types only outside node_modules, so
+# node_modules/@adc holds two relative symlinks to them. The third-party packages are the adapters' production
 # closure as the lockfile installed it (make ts-deps), from a store pnpm finds unmodified, copied into
 # node_modules; each must carry a licence file, declare a licence on the allowlist and hold no nested
 # node_modules (which would shadow the flat layout). Nothing else.
@@ -24,25 +24,26 @@ git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$root is 
 (cd "$root/adapters" && pnpm store status >/dev/null) || die "pnpm store status failed: the store may hold modified packages"
 
 mkdir -p -- "$out/node_modules/@adc"
-committed=(LICENSE NOTICE adapters/fake/package.json adapters/fake/src adapters/contract/package.json adapters/contract/src
+committed=(LICENSE NOTICE adapters/fake/package.json adapters/fake/src adapters/http-chat/package.json adapters/http-chat/src
+  adapters/contract/package.json adapters/contract/src
   gen/ts/package.json gen/ts/validators.cjs gen/ts/formats.cjs fixtures/t0/py-mini)
 for p in "${committed[@]}"; do
   git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null || die "$p is not committed"
 done
 git -C "$root" archive --format=tar HEAD -- "${committed[@]}" | tar -C "$out" -xf - ||
   die "copying the committed files failed"
-for f in LICENSE NOTICE adapters/fake/src/main.ts adapters/contract/src/index.ts gen/ts/validators.cjs; do
+for f in LICENSE NOTICE adapters/fake/src/main.ts adapters/http-chat/src/main.ts adapters/contract/src/index.ts gen/ts/validators.cjs; do
   [[ -f "$out/$f" ]] || die "$f is missing"
 done
 [[ -f "$out/fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json" ]] || die "py-mini-feature-1 is missing"
 ln -s ../../adapters/contract "$out/node_modules/@adc/contract"
 ln -s ../../gen/ts "$out/node_modules/@adc/contract-gen"
 
-deps="$(cd "$root/adapters" && pnpm --filter @adc/fake list --prod --depth Infinity --parseable)" || die "pnpm list failed"
+deps="$(cd "$root/adapters" && pnpm --filter @adc/fake --filter @adc/http-chat list --prod --depth Infinity --parseable)" || die "pnpm list failed"
 third=0
 while IFS= read -r d; do
   case "$d" in
-    "$root/adapters/fake" | "$root/adapters/contract" | "$root/gen/ts") continue ;;
+    "$root/adapters/fake" | "$root/adapters/http-chat" | "$root/adapters/contract" | "$root/gen/ts") continue ;;
     "$root/adapters/node_modules/.pnpm/"*) ;;
     *) die "an unexpected production dependency: $d" ;;
   esac
@@ -65,4 +66,4 @@ done <<<"$deps"
 # The two @adc links are the only symlinks packaged.
 links="$(cd "$out" && find . -type l | sort)"
 [[ "$links" == $'./node_modules/@adc/contract\n./node_modules/@adc/contract-gen' ]] || die "unexpected symlinks: $links"
-echo "dist-adapters: the fake adapter, $third third-party packages and py-mini into $out"
+echo "dist-adapters: the fake and http-chat adapters, $third third-party packages and py-mini into $out"

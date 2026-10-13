@@ -335,6 +335,7 @@ func fakeRepo(t *testing.T, listing string, scripts ...string) (root string, env
 	for name, content := range map[string]string{
 		"LICENSE": "apache", "NOTICE": "notice", "adapters/fake/package.json": "{}", "adapters/fake/src/main.ts": "",
 		"adapters/fake/test/fake.test.ts": "", "adapters/fake/src/.keep": "", "adapters/contract/package.json": "{}", "adapters/contract/src/index.ts": "",
+		"adapters/http-chat/package.json": "{}", "adapters/http-chat/src/main.ts": "", "adapters/http-chat/test/http-chat.test.ts": "",
 		"gen/ts/package.json": "{}", "gen/ts/validators.cjs": "", "gen/ts/formats.cjs": "", "gen/ts/types/x.ts": "",
 		"fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json": "{}", "fixtures/t0/py-mini/repo/m.py": "",
 	} {
@@ -372,7 +373,7 @@ func fakeRepo(t *testing.T, listing string, scripts ...string) (root string, env
 	return root, append(env, "PATH="+bin+":"+filepath.Dir(node)+":/usr/bin:/bin", "ADC_TEST_LISTING="+listFile)
 }
 
-const goodListing = "ROOT/adapters/fake\nROOT/adapters/contract\nROOT/gen/ts\nROOT/adapters/node_modules/.pnpm/a@1.0.0/node_modules/a\n"
+const goodListing = "ROOT/adapters/fake\nROOT/adapters/http-chat\nROOT/adapters/contract\nROOT/gen/ts\nROOT/adapters/node_modules/.pnpm/a@1.0.0/node_modules/a\n"
 
 // files lists the regular files and symlinks under dir.
 func files(dir string) []string {
@@ -466,7 +467,7 @@ func TestDistAdaptersRefusals(t *testing.T) {
 				t.Fatalf("%v: %s", err, text)
 			}
 			want := []string{"LICENSE", "NOTICE", "adapters/contract/package.json", "adapters/contract/src/index.ts", "adapters/fake/package.json",
-				"adapters/fake/src/.keep", "adapters/fake/src/main.ts", "fixtures/t0/py-mini/repo/m.py", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json",
+				"adapters/fake/src/.keep", "adapters/fake/src/main.ts", "adapters/http-chat/package.json", "adapters/http-chat/src/main.ts", "fixtures/t0/py-mini/repo/m.py", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json",
 				"gen/ts/formats.cjs", "gen/ts/package.json", "gen/ts/validators.cjs", "node_modules/@adc/contract", "node_modules/@adc/contract-gen",
 				"node_modules/a/LICENSE", "node_modules/a/index.js", "node_modules/a/package.json"}
 			if got := files(out); !slices.Equal(got, want) {
@@ -567,7 +568,7 @@ func TestDistAdapters(t *testing.T) {
 	if want := []string{"@adc", "ajv", "fast-deep-equal", "fast-uri", "json-schema-traverse", "require-from-string"}; !slices.Equal(names, want) {
 		t.Errorf("third-party packages %v, want %v", names, want)
 	}
-	for _, f := range []string{"LICENSE", "NOTICE", "adapters/fake/src/main.ts", "adapters/contract/src/index.ts", "gen/ts/validators.cjs",
+	for _, f := range []string{"LICENSE", "NOTICE", "adapters/fake/src/main.ts", "adapters/http-chat/src/main.ts", "adapters/contract/src/index.ts", "gen/ts/validators.cjs",
 		"node_modules/require-from-string/license", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json"} {
 		if fi, err := os.Lstat(filepath.Join(out, f)); err != nil || !fi.Mode().IsRegular() {
 			t.Errorf("%s: %v", f, err)
@@ -577,11 +578,13 @@ func TestDistAdapters(t *testing.T) {
 	if err != nil {
 		t.Skip("node is not on PATH")
 	}
-	cmd := exec.Command(node, filepath.Join(out, "adapters/fake/src/main.ts"))
-	cmd.Dir, cmd.Env = t.TempDir(), []string{"PATH=/usr/bin:/bin"}
-	cmd.Stdin = strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"describe"}` + "\n")
-	if got, err := cmd.Output(); err != nil || !strings.Contains(string(got), `"harness":"fake"`) {
-		t.Fatalf("the packaged fake: %v %s", err, got)
+	for adapter, harness := range map[string]string{"fake": "fake", "http-chat": "http-chat"} {
+		cmd := exec.Command(node, filepath.Join(out, "adapters", adapter, "src/main.ts"))
+		cmd.Dir, cmd.Env = t.TempDir(), []string{"PATH=/usr/bin:/bin"}
+		cmd.Stdin = strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"describe"}` + "\n")
+		if got, err := cmd.Output(); err != nil || !strings.Contains(string(got), `"harness":"`+harness+`"`) {
+			t.Fatalf("the packaged %s adapter: %v %s", adapter, err, got)
+		}
 	}
 	if text, err := exec.Command("bash", "../../scripts/dist-adapters.sh", out).CombinedOutput(); err == nil || !strings.Contains(string(text), "already holds adapters") {
 		t.Errorf("a second packaging into the same directory: %v %s", err, text)

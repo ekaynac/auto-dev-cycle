@@ -56,6 +56,7 @@ const fakeNode = `#!/bin/sh
 [ -n "$ADC_INSTALLCHECK_MARKER" ] && { echo "the environment leaked" >&2; exit 3; }
 [ "$1" = "--version" ] && { echo v22.0.0; exit 0; }
 [ "$1" = "-e" ] && [ -f "$3" ] && exit 0
+case "$1" in */adapters/http-chat/src/main.ts) [ -f "$1" ] && { echo '{"jsonrpc":"2.0","id":1,"result":{"harness":"http-chat"}}'; exit 0; } ;; esac
 exit 4
 `
 
@@ -66,7 +67,7 @@ func lib(t *testing.T, root, dir string) {
 	l := filepath.Join(dir, "lib", "adc")
 	for name, content := range map[string]string{
 		"node/bin/node": fakeNode, "node/LICENSE": "node", "LICENSE": "apache", "NOTICE": "notice",
-		"adapters/fake/src/fake.ts": "export {};\n", "adapters/contract/package.json": "{}",
+		"adapters/fake/src/fake.ts": "export {};\n", "adapters/http-chat/src/main.ts": "", "adapters/contract/package.json": "{}",
 		"gen/ts/package.json": "{}", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json": "{}",
 	} {
 		write(t, filepath.Join(l, name), content, 0o755)
@@ -233,6 +234,10 @@ func TestInstallCheck(t *testing.T) {
 			rm(t, filepath.Join(root, arch, "lib/adc/adapters/fake/src/fake.ts"))
 			sums(t, filepath.Join(root, arch, "lib/adc"))
 		}, "does not load"},
+		"no http-chat adapter": {func(t *testing.T, root string) {
+			rm(t, filepath.Join(root, arch, "lib/adc/adapters/http-chat/src/main.ts"))
+			sums(t, filepath.Join(root, arch, "lib/adc"))
+		}, "the installed http-chat adapter does not run"},
 	} {
 		d := dist(t, good())
 		c.change(t, d)
