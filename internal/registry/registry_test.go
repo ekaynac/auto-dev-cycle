@@ -15,6 +15,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 )
 
@@ -109,6 +110,13 @@ func TestUnknownFamilyIsNeverIndependent(t *testing.T) {
 	if _, err := graph.Roster([]types.ExecutorID{stranger}, r); err == nil {
 		t.Fatal("an unregistered executor's roster was admitted")
 	}
+	if mutation.Enabled { // -tags adcmutation: with the mutation on, the checks above must turn red
+		t.Setenv("ADC_MUTATION", mutation.UnknownFamilyIndependent)
+		if _, err := graph.Roster([]types.ExecutorID{stranger}, r); err != nil || r.Family(stranger) == receipt.UnknownFamily {
+			t.Errorf("under %s an unregistered executor is still unknown (%v): the checks above would not see it", mutation.UnknownFamilyIndependent, err)
+		}
+		t.Setenv("ADC_MUTATION", "")
+	}
 	doc := clone(t, load(t, "registry-stub.json"))
 	doc.Executors[1].Family = receipt.UnknownFamily
 	if _, err := New(doc, groups(t)); refusedBy(err) != RuleUnknownFamily {
@@ -185,9 +193,11 @@ func TestNewRefuses(t *testing.T) {
 		"a broker balance group": {stubGroup(func(g *types.ResourceGroup) {
 			g.Kind, g.CapacityModel.Unit = types.ResourceGroupKindBrokerBalance, types.CapacityUnitUsdMicros
 		}), RuleGroupKind},
-		"whitespace":                  {endpoint("https://api.example.com/v1 x"), RuleEndpoint},
-		"backslash":                   {endpoint(`https://api.example.com\v1`), RuleEndpoint},
-		"a group mixing destinations": {reviewer(func(e *types.RegistryExecutor) { e.Destination.ID = "other" }), RuleGroup},
+		"whitespace": {endpoint("https://api.example.com/v1 x"), RuleEndpoint},
+		"backslash":  {endpoint(`https://api.example.com\v1`), RuleEndpoint},
+		"a group mixing destinations": {reviewer(func(e *types.RegistryExecutor) {
+			e.Destination.ID, e.Destination.Endpoint = "other", "http://127.0.0.2:18080/v1"
+		}), RuleGroup},
 		// One account (destination and credential) split across groups would
 		// draw its one limit twice.
 		"one account, two groups": {func(d *types.ExecutorRegistry, g []types.ResourceGroup) {
@@ -199,6 +209,11 @@ func TestNewRefuses(t *testing.T) {
 		}), RuleGroup},
 		// The builder's model under another family name.
 		"aliased family": {reviewer(func(e *types.RegistryExecutor) { e.Family, e.Model = "stub-other", "stub-builder-1" }), RuleSameFamily},
+		// Relabelling: the same endpoint (origin) under a second destination id.
+		"one endpoint, two destination ids": {func(d *types.ExecutorRegistry, g []types.ResourceGroup) {
+			d.Executors[1].Destination.ID, d.Executors[1].Destination.Endpoint = "other", "HTTP://127.0.0.1:18080/v2/"
+			d.Executors[1].Group, g[0].Members, g[2].Members = g[2].ID, g[0].Members[:1], []types.ExecutorID{d.Executors[1].ID}
+		}, RuleDestination},
 	} {
 		doc, g := clone(t, base), clone(t, gs)
 		c.edit(&doc, g)
@@ -302,12 +317,17 @@ func TestAdmits(t *testing.T) {
 	e.Destination.Verification = types.RegistryDestinationVerificationReported
 	odd, _ := r.Executor(api)
 	odd.ID, odd.Destination.TrustClass = local, "secret"
-	r2 := Registry{executors: map[types.ExecutorID]types.RegistryExecutor{api: e, local: odd}}
+	attested, unlabelled := e, e
+	attested.Destination.Verification, unlabelled.Destination.Verification = types.RegistryDestinationVerificationAttested, "rumoured"
+	const att, unl = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pa"), types.ExecutorID("exe_01m4tm99haemr8ajyf09v4ytzb")
+	r2 := Registry{executors: map[types.ExecutorID]types.RegistryExecutor{api: e, local: odd, att: attested, unl: unlabelled}}
 	for name, c := range map[string]struct {
 		dp   types.ProjectProfileDataPolicy
 		id   types.ExecutorID
 		want Rule
 	}{
+		"attested, verified asked": {types.ProjectProfileDataPolicy{Floor: "free_unknown", Routing: "verified", AllowedDestinations: both}, att, ""},
+		"an unknown label":         {types.ProjectProfileDataPolicy{Floor: "free_unknown", Routing: "reported_ok", AllowedDestinations: both}, unl, RuleRouting},
 		"reported, verified asked": {types.ProjectProfileDataPolicy{Floor: "free_unknown", Routing: "verified", AllowedDestinations: both}, api, RuleRouting},
 		"reported, reported_ok":    {types.ProjectProfileDataPolicy{Floor: "free_unknown", Routing: "reported_ok", AllowedDestinations: both}, api, ""},
 		"an unknown floor":         {types.ProjectProfileDataPolicy{Floor: "secret", Routing: "reported_ok", AllowedDestinations: both}, api, RuleFloor},
@@ -387,4 +407,21 @@ func TestLoadRefusesAFIFO(t *testing.T) {
 		t.Error("Load read from a FIFO")
 	}
 	w.Close() // ends a blocked read
+}
+
+// The aliasing rule keys on the origin, so a reviewer on the builder's
+// model stays refused under another destination id. New refuses the second
+// id first (RuleDestination); distinct is checked on its own here.
+func TestAliasedFamilyAcrossDestinationIDs(t *testing.T) {
+	doc := clone(t, load(t, "registry-stub.json"))
+	rev := &doc.Executors[1]
+	rev.Family, rev.Model = "stub-other", "stub-builder-1"
+	rev.Destination.ID, rev.Destination.Endpoint = "other", "http://127.0.0.1:18080/other"
+	if got := refusedBy(Registry{}.distinct(doc.Executors)); got != RuleSameFamily {
+		t.Fatalf("refused by %q, want %q", got, RuleSameFamily)
+	}
+	rev.Model = "stub-reviewer-1" // positive control: another model
+	if err := (Registry{}).distinct(doc.Executors); err != nil {
+		t.Fatal(err)
+	}
 }

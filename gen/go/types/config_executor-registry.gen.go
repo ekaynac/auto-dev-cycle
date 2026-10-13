@@ -4,7 +4,7 @@
 
 package types
 
-// ExecutorRegistry: The executors `adcd run --registry` places work on (docs/design/m1/00-slice-plan.md Q2, Q8; 01 §2.2 "Source registry"): each with its role, model family, pinned model, destination, credential reference, resource group and price basis. The enums stay open to later milestones (a governed_upstream destination, the attested tier, D48); internal/registry refuses at start whatever M1 does not implement.
+// ExecutorRegistry: The executors `adcd run --registry` places work on (docs/design/m1/00-slice-plan.md Q2, Q8; 01 §2.2 "Source registry"): each with its role, model family, pinned model, destination, credential reference, resource group and price basis. The enums stay open to later milestones (a governed_upstream destination, the attested tier, D48); internal/registry refuses at start whatever M1 does not implement. Kind, family and cost basis are the operator's declarations: the registry checks them for consistency and the gateway enforces them, but neither establishes them.
 type ExecutorRegistry struct {
 	Schema    string             `json:"schema"`
 	Executors []RegistryExecutor `json:"executors"`
@@ -45,7 +45,7 @@ type RegistryExecutor struct {
 	Price *RegistryPrice `json:"price"`
 }
 
-// RegistryDestinationKind: M1 admits direct_api and local_endpoint (no credential; a loopback or private IP; the only kind whose trust class can be own); broker and governed_upstream (M2 or later) are refused.
+// RegistryDestinationKind: M1 admits direct_api and local_endpoint (no credential; a loopback, RFC 1918 or fc00::/7 IP literal; the only kind whose trust class can be own); broker and governed_upstream (M2 or later) are refused.
 type RegistryDestinationKind string
 
 const (
@@ -74,15 +74,15 @@ const (
 )
 
 type RegistryDestination struct {
-	// What a project's data_policy.allowed_destinations names.
+	// What a project's data_policy.allowed_destinations names; one endpoint origin has one id.
 	ID Slug `json:"id"`
-	// M1 admits direct_api and local_endpoint (no credential; a loopback or private IP; the only kind whose trust class can be own); broker and governed_upstream (M2 or later) are refused.
+	// M1 admits direct_api and local_endpoint (no credential; a loopback, RFC 1918 or fc00::/7 IP literal; the only kind whose trust class can be own); broker and governed_upstream (M2 or later) are refused.
 	Kind RegistryDestinationKind `json:"kind"`
 	// The routing label (01 §2.2). M1 admits verified; attested is M2.
 	Verification RegistryDestinationVerification `json:"verification"`
 	// Compared with a project's data_policy.floor.
 	TrustClass RegistryDestinationTrustClass `json:"trust_class"`
-	// The OpenAI-compatible base URL, with no credential anywhere in it (userinfo, path, query or fragment), and no whitespace or backslash. A local endpoint's host is a loopback or private IP literal.
+	// The OpenAI-compatible base URL, with no credential anywhere in it (userinfo, path, query or fragment), and no whitespace or backslash. A local endpoint's host is a loopback, RFC 1918 or fc00::/7 IP literal.
 	Endpoint string `json:"endpoint"`
 	// The declared retention of request data; null is undeclared.
 	RetentionDays *int64 `json:"retention_days"`

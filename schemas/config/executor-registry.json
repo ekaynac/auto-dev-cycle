@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/config/executor-registry.json",
   "title": "ExecutorRegistry",
-  "description": "The executors `adcd run --registry` places work on (docs/design/m1/00-slice-plan.md Q2, Q8; 01 §2.2 \"Source registry\"): each with its role, model family, pinned model, destination, credential reference, resource group and price basis. The enums stay open to later milestones (a governed_upstream destination, the attested tier, D48); internal/registry refuses at start whatever M1 does not implement.",
+  "description": "The executors `adcd run --registry` places work on (docs/design/m1/00-slice-plan.md Q2, Q8; 01 §2.2 \"Source registry\"): each with its role, model family, pinned model, destination, credential reference, resource group and price basis. The enums stay open to later milestones (a governed_upstream destination, the attested tier, D48); internal/registry refuses at start whatever M1 does not implement. Kind, family and cost basis are the operator's declarations: the registry checks them for consistency and the gateway enforces them, but neither establishes them.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "executors"],
@@ -33,11 +33,11 @@
       "additionalProperties": false,
       "required": ["id", "kind", "verification", "trust_class", "endpoint", "retention_days"],
       "properties": {
-        "id": {"description": "What a project's data_policy.allowed_destinations names.", "$ref": "project-profile.json#/$defs/Slug"},
-        "kind": {"description": "M1 admits direct_api and local_endpoint (no credential; a loopback or private IP; the only kind whose trust class can be own); broker and governed_upstream (M2 or later) are refused.", "enum": ["direct_api", "local_endpoint", "broker", "governed_upstream"]},
+        "id": {"description": "What a project's data_policy.allowed_destinations names; one endpoint origin has one id.", "$ref": "project-profile.json#/$defs/Slug"},
+        "kind": {"description": "M1 admits direct_api and local_endpoint (no credential; a loopback, RFC 1918 or fc00::/7 IP literal; the only kind whose trust class can be own); broker and governed_upstream (M2 or later) are refused.", "enum": ["direct_api", "local_endpoint", "broker", "governed_upstream"]},
         "verification": {"description": "The routing label (01 §2.2). M1 admits verified; attested is M2.", "enum": ["reported", "verified", "attested"]},
         "trust_class": {"description": "Compared with a project's data_policy.floor.", "enum": ["own", "contracted", "free_unknown"]},
-        "endpoint": {"description": "The OpenAI-compatible base URL, with no credential anywhere in it (userinfo, path, query or fragment), and no whitespace or backslash. A local endpoint's host is a loopback or private IP literal.", "type": "string", "minLength": 1, "maxLength": 2048},
+        "endpoint": {"description": "The OpenAI-compatible base URL, with no credential anywhere in it (userinfo, path, query or fragment), and no whitespace or backslash. A local endpoint's host is a loopback, RFC 1918 or fc00::/7 IP literal.", "type": "string", "minLength": 1, "maxLength": 2048},
         "retention_days": {"description": "The declared retention of request data; null is undeclared.", "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 36500}]}
       }
     },
