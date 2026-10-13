@@ -37,6 +37,8 @@ func TestProbeVerdict(t *testing.T) {
 		want []string // violations, by prefix; nil is a pass
 	}{
 		{"gate, contained", Gate, base, nil},
+		{"a filesystem mounted at runs/", Gate, base + "mount /workspace /a1/workspace ext4\nmount /results /a1/results ext4\n", nil},
+		{"another attempt under a mount", Gate, base + "mount /workspace /a2/workspace ext4\n", []string{"a mount from the host: /workspace"}},
 		{"build, gateway only", Build, base + gw, nil},
 		{"a network interface", Gate, base + "iface eth0\n", []string{"network interface eth0"}},
 		{"a route", Gate, base + "routes 2\n", []string{"a network route"}},

@@ -14,6 +14,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 )
 
 // ManifestLabel is the prepared image's manifest (00 §8 item 2): a JSON
@@ -50,8 +51,11 @@ type Manifest struct {
 // Resolve finds ref (name@sha256:hex) in the host's storage, never
 // pulling: an image whose digest differs from the pin is refused.
 func (h Host) Resolve(ctx context.Context, ref string) (Image, error) {
-	if !pinned.MatchString(ref) {
-		return Image{}, fmt.Errorf("%w: not a reference pinned by digest", ErrImage)
+	// Podman's RepoDigests name the registry (docker.io/library/debian@…);
+	// a short name is refused rather than guessed.
+	registry, _, qualified := strings.Cut(ref, "/")
+	if !pinned.MatchString(ref) || !qualified || !strings.ContainsAny(registry, ".:") && registry != "localhost" {
+		return Image{}, fmt.Errorf("%w: not a fully qualified reference pinned by digest", ErrImage)
 	}
 	out, err := h.podman(ctx, "image", "inspect", "--", ref)
 	if err != nil {

@@ -667,6 +667,42 @@ paths:
           description: The request body is too large; nothing was decided.
         "503":
           description: Too many authentications in progress (Retry-After); nothing was decided.
+  /v1/dev/sandbox-probe:
+    post:
+      operationId: dev.sandbox_probe
+      tags:
+        - dev
+      summary: Run the fixed sandbox probe in a fresh run of a pinned image, with no task or lease; an operator's, one at a time.
+      parameters:
+        - name: image
+          in: query
+          required: true
+          description: A fully qualified reference pinned by digest.
+          schema:
+            type: string
+        - name: mode
+          in: query
+          required: true
+          description: gate (nothing reachable) or build (the gateway socket only).
+          schema:
+            enum:
+              - gate
+              - build
+      responses:
+        "200":
+          description: What the probe saw; an empty violations list is a pass.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.sandbox-probe'
+        "400":
+          description: A query parameter the read does not take, or a malformed one.
+        "401":
+          description: No valid bearer token on this listener.
+        "403":
+          description: 'failed/operator_only: not an operator.'
+        "503":
+          description: 'could_not_run/precondition_failed: no sandbox configured, the image not at its digest, or the probe incomplete; or busy (Retry-After).'
   /v1/events:
     get:
       operationId: read.events
@@ -1532,6 +1568,86 @@ components:
             description: One record, its fields the resource's allow-list; one schema per resource.
             type: object
             x-adc-open-payload: resource
+    api.sandbox-probe:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/sandbox-probe.json
+      title: SandboxProbe
+      description: 'What the fixed sandbox probe saw in one run (docs/design/m1/00-slice-plan.md P9), the answer to POST /v1/dev/sandbox-probe (operator only). An empty violations list is a pass: no network, an empty HOME, no controller path, no mount from the host but the run''s own, no capability, no_new_privs and seccomp, the limits in force, and no socket but the gateway''s, which a build run must have.'
+      type: object
+      additionalProperties: false
+      required:
+        - mode
+        - image
+        - interfaces
+        - routes
+        - home_entries
+        - forbidden_present
+        - mounts
+        - status
+        - limits
+        - sockets
+        - violations
+      properties:
+        mode:
+          enum:
+            - gate
+            - build
+        image:
+          description: The pin probed.
+          type: string
+        interfaces:
+          type: array
+          items:
+            type: string
+        routes:
+          description: Routing-table entries on interfaces other than lo.
+          type: integer
+          minimum: 0
+          maximum: 1000000
+        home_entries:
+          type: array
+          items:
+            type: string
+        forbidden_present:
+          description: Controller paths (and the controller's home) seen inside.
+          type: array
+          items:
+            type: string
+        mounts:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - point
+              - root
+              - type
+            properties:
+              point:
+                type: string
+              root:
+                description: 'The path within its filesystem: / unless a bind.'
+                type: string
+              type:
+                type: string
+        status:
+          description: Capability sets, NoNewPrivs and Seccomp, from /proc/self/status.
+          type: object
+          additionalProperties:
+            type: string
+        limits:
+          description: The cgroup's memory, pids and cpu limits in force.
+          type: object
+          additionalProperties:
+            type: string
+        sockets:
+          type: array
+          items:
+            type: string
+        violations:
+          type: array
+          items:
+            type: string
     api.seat:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/seat.json

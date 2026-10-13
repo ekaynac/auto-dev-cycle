@@ -48,7 +48,10 @@ echo done
 `
 
 // probeLimits are the probe run's limits, which the probe must find in force.
-var probeLimits = Limits{Memory: 256 << 20, CPUs: "1", PIDs: 64, Timeout: time.Minute}
+var probeLimits = Limits{Memory: 256 << 20, CPUs: "1", PIDs: 64, Timeout: ProbeTimeout, Disk: 1 << 20}
+
+// ProbeTimeout bounds the probe run itself.
+const ProbeTimeout = time.Minute
 
 // Mount is one mount the probe saw.
 type Mount struct {
@@ -155,7 +158,7 @@ var (
 func (r Report) allowed(m Mount) bool {
 	switch {
 	case m.Point == WorkspaceDir || m.Point == ResultsDir:
-		return r.attempt != "" && strings.HasSuffix(m.Root, "/runs/"+r.attempt+m.Point)
+		return r.attempt != "" && strings.HasSuffix(m.Root, "/"+r.attempt+m.Point) // relative to runs/ or to a mount at runs/
 	case m.Point == GatewaySocket && r.Mode == Build:
 		return r.gateway != "" && path.Base(m.Root) == path.Base(r.gateway)
 	case m.Type == "devtmpfs":

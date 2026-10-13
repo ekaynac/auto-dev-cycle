@@ -197,7 +197,7 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 		return err
 	}
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), log: logw,
-		blobs: d.blobs, clock: d.clock, authenticated: cfg.authenticated})
+		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated})
 	if err == nil && tc != nil {
 		if err = srv.listenHTTPS(d.store, cfg.HTTPS.Addr, tc); err != nil {
 			_ = srv.close() // the refusal is err

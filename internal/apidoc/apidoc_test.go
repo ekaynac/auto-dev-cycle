@@ -140,7 +140,7 @@ func TestReadPaths(t *testing.T) {
 	}
 	for p := range d.Paths {
 		_, resource := api.Registered()[strings.TrimPrefix(p, "/v1/")]
-		if _, read := want[p]; !read && !resource && !strings.HasPrefix(p, CommandPath("")) && p != BootstrapPath && p != api.BlobsPath {
+		if _, read := want[p]; !read && !resource && !strings.HasPrefix(p, CommandPath("")) && p != BootstrapPath && p != api.BlobsPath && p != api.SandboxProbePath {
 			t.Errorf("an unknown path %s", p)
 		}
 	}

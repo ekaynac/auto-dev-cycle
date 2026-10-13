@@ -56,6 +56,9 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 	if len(args) >= 2 && args[0] == "blob" && args[1] == "put" {
 		return blob(ctx, "adc blob put", true, args[2:], stdout, stderr, c)
 	}
+	if len(args) >= 3 && args[0] == "dev" && args[1] == "sandbox" && args[2] == "probe" {
+		return sandboxProbe(ctx, args[3:], stdout, stderr, c)
+	}
 	if len(args) >= 3 && args[0] == "dev" && args[1] == "blob" && args[2] == "uploads" {
 		return blob(ctx, "adc dev blob uploads", false, args[3:], stdout, stderr, c)
 	}

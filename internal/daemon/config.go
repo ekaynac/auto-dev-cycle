@@ -22,6 +22,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
 // Config is what the daemon runs with, validated at load and again by Start.
@@ -31,6 +32,7 @@ type Config struct {
 	TrustedHead *eventstore.Head      // optional: the log must reach it and carry its hash (03 rule 3)
 	Shared      *SharedSocket         // optional, off by default (14 R2)
 	HTTPS       *HTTPSListener        // optional, off by default (14 R2, R3)
+	Sandbox     *sandbox.Host         // optional (--sandbox-root): the probe route's sandbox (P9)
 	// clock is the store clock (eventstore.Config.Now) that every command
 	// and the bootstrap decide by; nil is time.Now. Only tests set it.
 	clock func() time.Time
@@ -70,7 +72,12 @@ var ErrConfig = errors.New("adcd: configuration")
 const (
 	maxGroupsFile = 1 << 20 // bytes
 	groupSchema   = "records/resource-group"
-	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP] [--https-addr IP:PORT --https-cert FILE --https-key FILE]"
+	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP] [--https-addr IP:PORT --https-cert FILE --https-key FILE] [--sandbox-root DIR [--podman PATH]]"
+	// sandboxRefusal is the one text for a refused sandbox (P9b).
+	sandboxRefusal = "the sandbox: --podman and --sandbox-root must be absolute, clean paths; the root short " +
+		"(Podman's runroot, <root>/r, is at most 50 characters) and apart from the state directory and the sockets; " +
+		"<root>/runs a directory on its own filesystem, apart from theirs and the home's; and the home not /home/adc. " +
+		"Run limits also need cgroup delegation: under a systemd service, Delegate=yes"
 )
 
 var headHash = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -82,6 +89,7 @@ func LoadConfig(args []string) (Config, error) {
 	return loadConfig("adcd run", usage, args, func(fs *flag.FlagSet) func(*Config) {
 		runDir, group := fs.String("shared-run-dir", "", ""), fs.String("shared-group", "", "")
 		addr, cert, key := fs.String("https-addr", "", ""), fs.String("https-cert", "", ""), fs.String("https-key", "", "")
+		root, podman := fs.String("sandbox-root", "", ""), fs.String("podman", "/usr/bin/podman", "")
 		return func(cfg *Config) {
 			if *runDir != "" || *group != "" {
 				cfg.Shared = &SharedSocket{RunDir: *runDir, Group: *group}
@@ -89,8 +97,31 @@ func LoadConfig(args []string) (Config, error) {
 			if *addr != "" || *cert != "" || *key != "" {
 				cfg.HTTPS = &HTTPSListener{Addr: *addr, CertFile: *cert, KeyFile: *key}
 			}
+			if *root != "" {
+				cfg.Sandbox = &sandbox.Host{Podman: *podman, Root: *root, Forbidden: cfg.controllerPaths(), Home: home()}
+			}
 		}
 	})
+}
+
+// controllerPaths are what no sandbox run may mount or see: the state
+// directory (with adcd's private socket), the shared socket and the
+// Podman API sockets.
+func (c Config) controllerPaths() []string {
+	out := []string{filepath.Clean(c.StateDir), fmt.Sprintf("/run/user/%d/podman/podman.sock", os.Getuid()), "/run/podman/podman.sock"}
+	if c.Shared != nil {
+		out = append(out, filepath.Join(c.Shared.RunDir, sharedSocket))
+	}
+	return out
+}
+
+// home is the daemon user's home from the user database; with none, ""
+// (refused).
+func home() string {
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		return filepath.Clean(u.HomeDir)
+	}
+	return ""
 }
 
 // loadConfig parses the flags of every command that opens the store, and
@@ -149,6 +180,9 @@ func (c Config) Validate() error {
 		if err := c.HTTPS.validate(absClean); err != nil {
 			return err
 		}
+	}
+	if c.Sandbox != nil && c.Sandbox.Validate() != nil {
+		return configError(sandboxRefusal)
 	}
 	for i, g := range c.Groups {
 		if _, err := contract.Encode(groupSchema, g); err != nil {

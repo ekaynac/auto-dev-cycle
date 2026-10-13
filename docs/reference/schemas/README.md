@@ -25,6 +25,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/project.json`](api-project.md) | ProjectRead |
 | [`api/proposal.json`](api-proposal.md) | ProposalRead |
 | [`api/read-list.json`](api-read-list.md) | ReadList |
+| [`api/sandbox-probe.json`](api-sandbox-probe.md) | SandboxProbe |
 | [`api/scope/actor-revoke.json`](api-scope-actor-revoke.md) | ActorRevokeScope |
 | [`api/scope/agent-enrol.json`](api-scope-agent-enrol.md) | AgentEnrolScope |
 | [`api/scope/grant-create.json`](api-scope-grant-create.md) | GrantCreateScope |

@@ -91,11 +91,15 @@ func TestGitIsHardened(t *testing.T) {
 	must(t, err)
 	tree := filepath.Join(t.TempDir(), "tree")
 	must(t, h.a.CopyTree(tree, 1<<20))
-	id := []string{"-c", "user.name=t", "-c", "user.email=t@t"}
+	// The controller's identity, recorded before the snapshot is retaken.
+	gitOK(t, git(ctx, repo.Dir, nil, "config", "user.name", "t"))
+	gitOK(t, git(ctx, repo.Dir, nil, "config", "user.email", "t@t"))
+	repo.snap, err = repo.snapshot()
+	must(t, err)
 	for _, args := range [][]string{
-		{"status", "--porcelain"}, {"add", "--all"}, {"diff", "--cached"}, append(id, "commit", "--quiet", "-m", "c"),
-		{"diff", "HEAD~1"}, {"log", "-p"}, {"checkout", "--quiet", "HEAD~1", "--", "a.txt"}, {"fetch", "--quiet", h.src, "main"},
-		append(id, "merge", "--no-edit", "FETCH_HEAD"), {"show", "HEAD"},
+		{"status", "--porcelain"}, {"add", "--all"}, {"diff", "--cached"}, {"commit", "--quiet", "-m", "c"},
+		{"diff", "HEAD~1"}, {"log", "-p"}, {"checkout", "--quiet", "HEAD~1", "--", "a.txt"}, {"fetch", h.src, "main"},
+		{"merge", "--no-edit", "FETCH_HEAD"}, {"show", "HEAD"},
 	} {
 		cmd, err := repo.Git(ctx, tree, args...)
 		must(t, err)
@@ -155,11 +159,11 @@ func TestCloneRefusesRunWrittenRepositories(t *testing.T) {
 	repo, err := h.host.Clone(ctx, h.src, "refs/heads/main", filepath.Join(t.TempDir(), "ctl"))
 	must(t, err)
 	for _, from := range []string{h.ws, "file://" + h.ws, link} {
-		if _, err := repo.Git(ctx, t.TempDir(), "fetch", "--quiet", from, "main"); !errors.Is(err, ErrSpec) {
+		if _, err := repo.Git(ctx, t.TempDir(), "fetch", from, "main"); !errors.Is(err, ErrSpec) {
 			t.Errorf("fetch from %s: %v, want ErrSpec", from, err)
 		}
 	}
-	if _, err := repo.Git(ctx, t.TempDir(), "fetch", "--quiet", "origin"); err != nil {
+	if _, err := repo.Git(ctx, t.TempDir(), "fetch", "origin"); err != nil {
 		t.Errorf("fetch from the clone's own remote: %v", err)
 	}
 }

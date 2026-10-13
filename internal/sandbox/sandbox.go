@@ -24,7 +24,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 )
 
 // Mode is what a run may reach.
@@ -63,6 +65,7 @@ type Host struct {
 	Home      string // the controller's home: never mounted, and absent inside
 	Runner    Runner // nil runs the command
 	mutate    func([]string) []string
+	anyDisk   bool // tests only: runs/ may share a filesystem
 }
 
 // Runner runs one command with exactly env and returns its stdout.
@@ -79,13 +82,59 @@ func (h Host) Validate() error {
 		return fmt.Errorf("%w: the controller's home is the sandbox's HOME", ErrHost)
 	case len(h.runRoot()) > maxRunRoot:
 		return fmt.Errorf("%w: the sandbox root is too long for Podman's runroot", ErrHost)
+	case resolve(h.Root) != h.Root: // so the overlap checks compare what the kernel sees
+		return fmt.Errorf("%w: the sandbox root must be its own canonical path, with no symlink", ErrHost)
 	}
 	for _, f := range h.Forbidden {
-		if !absClean(f) || overlaps(f, h.Root) {
+		if !absClean(f) || overlaps(resolve(f), h.Root) {
 			return fmt.Errorf("%w: a forbidden path is not absolute and clean, or overlaps the sandbox root", ErrHost)
 		}
 	}
+	return h.ownDisk()
+}
+
+// ownDisk: <root>/runs, where every run's workspace and results lie, is a
+// directory on a filesystem of its own (a host prerequisite: a mount,
+// sized by the operator), shared with no forbidden path and not the
+// home's. A run can fill it while it runs; it cannot fill the state
+// directory's. Start bounds what a run leaves afterwards (Limits.Disk).
+// Only tmpfs, ext2/3/4 and XFS are accepted: a btrfs subvolume, a ZFS
+// dataset or an overlay has a device of its own but shares a pool. That
+// a separate ext4 or XFS device is not thin LVM or a partition of a
+// shared device is the operator's to assert.
+func (h Host) ownDisk() error {
+	runs, err := devOf(filepath.Join(h.Root, "runs"), false)
+	if h.anyDisk {
+		return nil
+	}
+	var fs syscall.Statfs_t
+	if err == nil {
+		err = syscall.Statfs(filepath.Join(h.Root, "runs"), &fs)
+	}
+	if err == nil && !slices.Contains([]int64{0x01021994, 0xEF53, 0x58465342}, int64(fs.Type)) { // tmpfs, ext2/3/4, xfs
+		err = errors.New("filesystem type")
+	}
+	for _, p := range append([]string{h.Home}, h.Forbidden...) {
+		d, derr := devOf(p, true)
+		if err = errors.Join(err, derr); err == nil && d == runs {
+			err = errors.New("shared")
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("%w: <sandbox root>/runs must be a directory on its own filesystem, apart from the state directory, the sockets and the home", ErrHost)
+	}
 	return nil
+}
+
+// devOf is the device of p, or with up of its nearest existing ancestor.
+func devOf(p string, up bool) (uint64, error) {
+	var st syscall.Stat_t
+	err := syscall.Stat(p, &st)
+	for up && errors.Is(err, syscall.ENOENT) && p != "/" {
+		p = filepath.Dir(p)
+		err = syscall.Stat(p, &st)
+	}
+	return uint64(st.Dev), err
 }
 
 func (h Host) runRoot() string { return filepath.Join(h.Root, "r") }

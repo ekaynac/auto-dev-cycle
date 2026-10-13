@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -27,6 +29,7 @@ type Limits struct {
 	CPUs    string        // podman --cpus, e.g. "2"
 	PIDs    int           // podman --pids-limit
 	Timeout time.Duration // the run is removed after it
+	Disk    int64         // bytes the attempt may hold once the run ends
 }
 
 // Run is one container: its image, mode, attempt, gateway and command.
@@ -60,7 +63,7 @@ func (h Host) mounts(r Run) ([]string, error) {
 		return refuse("a run needs an attempt; a gate run has no gateway socket, a build run exactly one")
 	}
 	ws, res := resolve(r.Attempt.Workspace()), resolve(r.Attempt.Results())
-	dir := filepath.Join(resolve(h.Root), "runs", filepath.Base(r.Attempt.Dir))
+	dir := filepath.Join(resolve(filepath.Join(h.Root, "runs")), filepath.Base(r.Attempt.Dir)) // runs/ may be the operator's mount or link
 	if ws != filepath.Join(dir, "workspace") || res != filepath.Join(dir, "results") {
 		return refuse("the workspace and results are not one attempt's under the sandbox root")
 	}
@@ -95,7 +98,7 @@ func (h Host) args(r Run, name string) ([]string, error) {
 		return nil, err
 	}
 	l := r.Limits
-	if !imgID.MatchString(r.Image.ID) || len(r.Argv) == 0 || l.Memory <= 0 || l.CPUs == "" || l.PIDs <= 0 || l.Timeout <= 0 {
+	if !imgID.MatchString(r.Image.ID) || len(r.Argv) == 0 || l.Memory <= 0 || l.CPUs == "" || l.PIDs <= 0 || l.Timeout <= 0 || l.Disk <= 0 {
 		return nil, fmt.Errorf("%w: no resolved image, command or limits", ErrSpec)
 	}
 	args := []string{"run", "--rm", "--name=" + name, "--pull=never", "--network=none", "--no-hosts", "--hostname=sandbox",
@@ -135,7 +138,83 @@ func (h Host) Start(ctx context.Context, r Run) ([]byte, error) {
 	defer cancelRm()
 	_, rmErr := h.podman(rm, "rm", "--force", "--ignore", "--time=0", name)
 	r.Attempt.unsafe = rmErr != nil
-	return out, errors.Join(err, run.Err(), rmErr)
+	// What a run left is bounded whatever its outcome: a failed or
+	// timed-out run fills runs/ as well as a clean one.
+	return out, errors.Join(err, run.Err(), rmErr, r.Attempt.within(r.Limits.Disk))
+}
+
+// within refuses an attempt that holds more than disk bytes, maxEntries
+// entries or maxDepth levels, or one that cannot be measured.
+func (a *Attempt) within(disk int64) error {
+	root, err := os.OpenRoot(a.Dir)
+	if err == nil {
+		defer root.Close()
+		var size int64
+		err = walk(root.FS(), ".", maxEntries, func(p string, d fs.DirEntry) error {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			n := info.Size() // or the blocks allocated, if more (fallocate KEEP_SIZE, …)
+			if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Blocks > n/512 {
+				n = math.MaxInt64
+				if st.Blocks <= math.MaxInt64/512 {
+					n = st.Blocks * 512
+				}
+			}
+			if n > disk-size || strings.Count(p, "/") >= maxDepth {
+				return fmt.Errorf("%w: the run left more than %d bytes or %d levels", ErrSpec, disk, maxDepth)
+			}
+			size += n
+			return nil
+		})
+	}
+	if err != nil && !errors.Is(err, ErrSpec) {
+		err = fmt.Errorf("%w: the run left what cannot be measured: %w", ErrSpec, err)
+	}
+	return err
+}
+
+// walk calls fn for every entry below dir, depth first, reading each
+// directory maxBatch entries at a time (a huge directory is never held
+// whole) and refusing more than limit entries in all (0: no limit). It descends only into
+// directories (never through a symlink); fn returning fs.SkipDir skips one.
+func walk(fsys fs.FS, dir string, limit int, fn func(p string, d fs.DirEntry) error) error {
+	entries := 0
+	var rec func(dir string) error
+	rec = func(dir string) error {
+		f, err := fsys.Open(dir)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		rd, ok := f.(fs.ReadDirFile)
+		if !ok {
+			return fmt.Errorf("%w: %s is not a directory", ErrSpec, dir)
+		}
+		for {
+			batch, err := rd.ReadDir(maxBatch)
+			for _, d := range batch {
+				if entries++; limit > 0 && entries > limit {
+					return fmt.Errorf("%w: more than %d entries", ErrSpec, maxEntries)
+				}
+				p := path.Join(dir, d.Name())
+				ferr := fn(p, d)
+				if ferr == nil && d.IsDir() {
+					ferr = rec(p)
+				}
+				if ferr != nil && ferr != fs.SkipDir {
+					return ferr
+				}
+			}
+			if err == io.EOF {
+				return nil
+			} else if err != nil {
+				return err
+			}
+		}
+	}
+	return rec(dir)
 }
 
 // Attempt is one run's directories under the sandbox root's runs/.
@@ -182,7 +261,10 @@ func (a *Attempt) CopyTree(dst string, maxBytes int64) error {
 	return a.copy(a.Workspace(), dst, maxBytes, func(name string) bool { return name == ".git" })
 }
 
-// copy copies src to dst, which must not exist, at most maxBytes. A run's files are read only
+var maxEntries, maxDepth, maxBatch = 100_000, 64, 1024 // var: tests lower them
+
+// copy copies src to dst, which must not exist, at most maxBytes,
+// maxEntries entries and maxDepth levels. A run's files are read only
 // through src's root; devices, sockets and FIFOs are never opened, and
 // symlinks never followed (copied as links only for a tree).
 func (a *Attempt) copy(src, dst string, maxBytes int64, skip func(string) bool) error {
@@ -198,17 +280,12 @@ func (a *Attempt) copy(src, dst string, maxBytes int64, skip func(string) bool) 
 		return err
 	}
 	budget := maxBytes
-	return fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
+	return walk(root.FS(), ".", maxEntries, func(p string, d fs.DirEntry) error {
 		switch {
-		case err != nil:
-			return err
-		case p == ".":
-			return nil
+		case strings.Count(p, "/") >= maxDepth:
+			return fmt.Errorf("%w: more than %d levels", ErrSpec, maxDepth)
 		case skip != nil && skip(d.Name()):
-			if d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
+			return fs.SkipDir // a .git directory or file: neither is copied
 		case d.IsDir():
 			return os.Mkdir(filepath.Join(dst, p), 0o700)
 		case d.Type() == fs.ModeSymlink && skip != nil:
@@ -250,9 +327,12 @@ func (a *Attempt) copy(src, dst string, maxBytes int64, skip func(string) bool) 
 // image's process that changed user) is removed inside Podman's user
 // namespace.
 func (a *Attempt) Teardown() error {
-	_ = filepath.WalkDir(a.Dir, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && d.IsDir() {
-			_ = os.Chmod(p, 0o700)
+	// Batched like every walk here, with no entry cap: teardown must finish
+	// what a refused run left. A walk error is RemoveAll's to report.
+	_ = os.Chmod(a.Dir, 0o700)
+	_ = walk(os.DirFS(a.Dir), ".", 0, func(p string, d fs.DirEntry) error {
+		if d.IsDir() {
+			_ = os.Chmod(filepath.Join(a.Dir, p), 0o700)
 		}
 		return nil
 	})
