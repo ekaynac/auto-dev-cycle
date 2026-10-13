@@ -155,6 +155,12 @@ func TestReadResponses(t *testing.T) {
 		"since": "2026-10-07T00:00:00Z", "pages": []any{page}}
 	leaseHold := map[string]any{"id": nil, "held": "lease", "subject": "lea_01m3250vkwffc979nzjw0g2sf9", "project": nil, "hold": "quota_reset",
 		"reason": nil, "signal_instance": "2026-10-04T15:00:00Z", "owner": "system", "owner_ref": nil, "since": nil, "pages": []any{}}
+	badge := map[string]any{"id": "hld_01m3250vkwffc979nzjw0g2sf9", "hold": "awaiting_input", "signal_instance": "own_x@1", "owner": "operator",
+		"owner_ref": nil, "since": "2026-10-07T00:00:00Z", "age_seconds": 90}
+	wait := map[string]any{"input": "candidate", "producer": "nod_01m3250vkwffc979nzjw0g2sf9", "owed_input": nil}
+	nodeCard := map[string]any{"id": "nod_01m3250vkwffc979nzjw0g2sf9", "kind": "gate", "round": 1, "state": "held", "holds": []any{badge}, "waiting": []any{wait}}
+	card := map[string]any{"id": "tsk_01m3250vkwffc979nzjw0g2sf9", "project": prjID, "title": "fix the parser", "column": "verifying", "admitted": true,
+		"approval": "in_force", "created_at": "2026-10-07T00:00:00Z", "nodes": []any{nodeCard}}
 	for _, c := range []struct {
 		schema string
 		d      map[string]any
@@ -162,7 +168,8 @@ func TestReadResponses(t *testing.T) {
 		{"api/proposal", proposal}, {"api/proposal", with(proposal, "project", nil)},
 		{"api/seat", seat}, {"api/seat", with(with(seat, "holder", nil), "handover", nil)},
 		{"api/seat", with(seat, "handover", map[string]any{"requested_by": opID, "requested_at": "2026-10-07T00:00:00Z", "force_after": nil})},
-		{"api/note", note}, {"api/note", with(note, "subject", prpID)}, {"api/hold", nodeHold}, {"api/hold", leaseHold}} {
+		{"api/note", note}, {"api/note", with(note, "subject", prpID)}, {"api/hold", nodeHold}, {"api/hold", leaseHold},
+		{"api/board", card}, {"api/board", with(with(card, "nodes", []any{}), "column", "awaiting_approval")}} {
 		if err := valid(t, c.schema, c.d); err != nil {
 			t.Errorf("%s: %v", c.schema, err)
 		}
@@ -200,6 +207,11 @@ func TestReadResponses(t *testing.T) {
 		"a hold without pages":     {"api/hold", without(leaseHold, "pages")},
 		"a hold's escalation":      {"api/hold", with(nodeHold, "escalate_to", nil)},
 		"a page beyond its form":   {"api/hold", with(nodeHold, "pages", []any{with(page, "body", "x")})},
+		"a card's acceptance":      {"api/board", with(card, "acceptance", []any{})},
+		"a card's spec digest":     {"api/board", with(card, "spec_digest", dgA)},
+		"a column not derived":     {"api/board", with(card, "column", "merge_ready")},
+		"a deferred node kind":     {"api/board", with(card, "nodes", []any{with(nodeCard, "kind", "merge")})},
+		"a badge without its age":  {"api/board", with(card, "nodes", []any{with(nodeCard, "holds", []any{without(badge, "age_seconds")})})},
 	} {
 		if valid(t, c.schema, c.d) == nil {
 			t.Errorf("%s: accepted", name)

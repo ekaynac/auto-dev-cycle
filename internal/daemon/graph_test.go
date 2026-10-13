@@ -115,3 +115,21 @@ func TestHoldsList(t *testing.T) {
 		t.Errorf("a supervisor reading no holds: %d %s", code, out)
 	}
 }
+
+// adc board reads the installed board: empty before any task; over a node
+// of no recorded task, it fails could_not_run rather than place a card the
+// records do not determine.
+func TestBoardCommand(t *testing.T) {
+	c := runCommanded(t)
+	if code, out, errb := c.adc(c.op.Reveal(), "board", "--json"); code != entry.ExitOK || !strings.Contains(out, `"resource":"board"`) ||
+		!strings.Contains(out, `"outcome":"empty"`) {
+		t.Fatalf("board: %d %s %s", code, out, errb)
+	}
+	if code, out, errb := c.adc(c.op.Reveal(), "board"); code != entry.ExitOK || !strings.Contains(out, "board: none readable") {
+		t.Fatalf("board: %d %s %s", code, out, errb)
+	}
+	c = runCommanded(t, func(w *seeder, op types.ActorID) { heldNode(t, w, op) })
+	if code, out, errb := c.adc(c.op.Reveal(), "board", "--json"); code != entry.ExitCouldNotRun || out != "" {
+		t.Fatalf("a node of no task: %d %s %s", code, out, errb)
+	}
+}

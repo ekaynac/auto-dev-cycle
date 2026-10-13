@@ -34,8 +34,8 @@ type Resource struct {
 	// proposal, seat, note, project, hold, ...). It is declared here,
 	// never derived from the path.
 	Domain types.Name
-	// List is every record, read in the snapshot.
-	List func(tx *eventstore.Tx) ([]any, error)
+	// List is every record, read in the snapshot at now.
+	List func(tx *eventstore.Tx, now time.Time) ([]any, error)
 	// Project is a record's authoritative project in the same snapshot;
 	// nil is installation-wide, read only under an every-project read.
 	Project func(tx *eventstore.Tx, record any) (*types.ProjectID, error)
@@ -73,7 +73,7 @@ func (h Reads) Resource(w http.ResponseWriter, r *http.Request) {
 		if scope.Empty() {
 			return nil, errNotGranted
 		}
-		records, err := res.List(tx)
+		records, err := res.List(tx, Events{Now: h.Now}.now())
 		if err != nil {
 			return nil, err
 		}

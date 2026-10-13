@@ -27,8 +27,8 @@ func (f *fixture) registeredServer(wrap func(name string, rec map[string]any)) *
 	for name, r := range res {
 		if wrap != nil {
 			list := r.List
-			r.List = func(tx *eventstore.Tx) ([]any, error) {
-				recs, err := list(tx)
+			r.List = func(tx *eventstore.Tx, now time.Time) ([]any, error) {
+				recs, err := list(tx, now)
 				for _, rec := range recs {
 					wrap(name, rec.(map[string]any))
 				}
