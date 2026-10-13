@@ -102,9 +102,8 @@ func (g graphStore) selectGate(n types.NodeID) types.Result {
 	}
 	r.Kind, r.Outcome, r.Reason, r.Detail, r.Conclusions = produces[g.recordOf(n).Node.Kind][0], types.OutcomeEmpty, vocab.ReasonCompletedClean, "", ptr(g.conclusions[d])
 	r.Value = []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, d)}
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return recordResult(tx, g.published(n, r), g.blobs)
-	})
+	rr := g.published(n, r)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return recordResult(tx, rr, g.blobs) })
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, r.ID) })
 	return r
 }

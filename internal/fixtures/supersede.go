@@ -62,7 +62,7 @@ func (f *supersessionFix) open() error {
 		kinds := graph.Kinds()
 		maps.Copy(kinds, lease.Kinds())
 		maps.Copy(kinds, owedanswers.Kinds())
-		project := eventstore.ProjectEach(lease.Projector{Blobs: blobs, Holds: f.holds, Units: oneTask{}}.Project, f.crashing, graph.Project, owedanswers.Project)
+		project := eventstore.ProjectEach(lease.Projector{Blobs: blobs, Holds: f.holds, Units: graph.Units{}}.Project, f.crashing, graph.Project, owedanswers.Project)
 		s, err = eventstore.Open(f.ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: project}})
 	}
 	if err != nil {
@@ -169,27 +169,26 @@ var errCrash = errors.New("crash")
 
 // rosterChangeOneSupersession: a roster change is one recorded supersession
 // (13 "Replacement is a recorded supersession", "What M0 delivers"; plan 15
-// G6b-1). A review by exeA, under requirement revision 1, has three
-// attempts: one running, one finishing (its result submitted) and one whose
-// submission races the supersession. The roster changes to exeB (revision
-// 2). The steps:
+// G6b-1). A review by exeA, under requirement revision 1, has its attempt
+// running, bound to it (M1 P8a: its lease's unit is the review). The
+// roster changes to exeB (revision 2). The steps:
 //  1. the supersession, after a crash inside its first transaction (its
-//     stops appended and folded, the supersession not yet) recorded nothing
-//     that survives a restart: it stops the running attempt;
+//     stop appended and folded, the supersession not yet) recorded nothing
+//     that survives a restart: it stops the running attempt, whose
+//     submission then races it;
 //  2. after a restart, the same command replays;
 //  3. a second supersession of the review is refused;
-//  4. the stopped attempt's late result is refused;
-//  5. the finishing attempt's result is never selected: committing it to
-//     the superseded review is refused;
+//  4. the attempt's late result is refused, stopped or finishing;
+//  5. a result is never selected for the superseded review: committing one
+//     to it is refused;
 //  6. the replacement's successor answers what the superseded review
 //     asked.
 //
 // The log holds one supersession, the racing submission and the stop
 // ordered either way, and replay rebuilds the same state. A forged
-// supersession listing an attempt it did not stop for preemption (one an
-// earlier command preempted, one it revoked), or one another supersession
-// of the command listed, is refused. The running attempt, named twice, is
-// stopped once.
+// supersession listing the attempt it did not stop for preemption (or
+// that it revoked), one that another supersession of the command listed,
+// and one leaving the attempt running unlisted, are refused.
 func rosterChangeOneSupersession(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
 	reg, err := vocab.Load()
 	actor, aerr := ids.New("act")
@@ -201,15 +200,15 @@ func rosterChangeOneSupersession(ctx context.Context, dir string) (steps []Step,
 		return nil, nil, err
 	}
 	defer func() { err = errors.Join(err, f.close()) }()
-	review, second, next, attempts, err := f.superseding()
+	review, second, next, running, err := f.superseding()
 	if err != nil {
 		return nil, nil, err
 	}
-	running, finishing, racing, revoked, preempted := attempts[0], attempts[1], attempts[2], attempts[3], attempts[4]
-	attempts = append(attempts[:3], running) // named twice: stopped once
 	var o observe
+	_, err = f.startOn(second)
+	o.check(err != nil, "an attempt started on a review never claimed")
 	supersede := func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.Supersede(tx, review, next, attempts, reviewers)
+		return graph.Supersede(tx, review, next, reviewers)
 	}
 	key, err := ids.New("cmd")
 	if err != nil {
@@ -241,14 +240,15 @@ func rosterChangeOneSupersession(ctx context.Context, dir string) (steps []Step,
 	o.check(f.folded.Load(), "the crash came before the command's stops were folded")
 	o.check(a.Status == types.AttemptStatusRunning && by == nil && len(sups) == 0 && pre.State == types.NodeStateStateClaimed && rev.Revision == 1,
 		"the crashed supersession left a %s attempt (stopped by %v), %d supersessions, a %s review, revision %d", a.Status, by, len(sups), pre.State, rev.Revision)
-	// Forged supersessions listing an attempt this one did not stop for
-	// preemption are refused.
-	for _, listed := range []types.AttemptID{finishing, revoked, running, preempted} {
+	// Forged supersessions are refused: one listing the attempt it did not
+	// stop for preemption, and one leaving it running, unlisted (last: the
+	// fold's own check, graph.supersession-admits-running-attempt).
+	for _, listed := range [][]types.AttemptID{{running}, {}} {
 		forged, err := ids.New("cmd")
 		if err != nil {
 			return nil, nil, err
 		}
-		o.check(f.doKeyed(forged, listing(supersede, listed)) != nil, "a supersession listing attempt %s, not stopped by it, was recorded", listed)
+		o.check(f.doKeyed(forged, listing(supersede, listed...)) != nil, "a supersession listing %v, the running attempt not stopped, was recorded", listed)
 	}
 	// Nor is one listing the running attempt it stopped for another reason.
 	// Nor is a second supersession in the same command listing an attempt
@@ -258,9 +258,9 @@ func rosterChangeOneSupersession(ctx context.Context, dir string) (steps []Step,
 		return nil, nil, err
 	}
 	o.check(f.doKeyed(twice, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		evs, err := graph.Supersede(tx, review, next, []types.AttemptID{running}, reviewers)
+		evs, err := graph.Supersede(tx, review, next, reviewers)
 		other, oerr := listing(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return graph.Supersede(tx, second, next, nil, reviewers)
+			return graph.Supersede(tx, second, next, reviewers)
 		}, running)(tx)
 		return append(evs, other...), errors.Join(err, oerr)
 	}) != nil, "two supersessions listing one attempt were recorded")
@@ -275,7 +275,7 @@ func rosterChangeOneSupersession(ctx context.Context, dir string) (steps []Step,
 	}) != nil, "a supersession listing an attempt it revoked was recorded")
 	var wg sync.WaitGroup
 	var raced error
-	wg.Go(func() { raced = f.do(submitted(racing)) })
+	wg.Go(func() { raced = f.do(submitted(running)) })
 	first, err := f.submitKeyed(key, supersede)
 	o.steps = append(o.steps, supersessionStep(err))
 	o.check(err != nil || !first.Replayed, "the retry after the crash replayed a result")
@@ -313,19 +313,16 @@ func rosterChangeOneSupersession(ctx context.Context, dir string) (steps []Step,
 		return nil, nil, err
 	}
 	o.check(len(sups) == 1, "the log holds %d supersessions, want 1", len(sups))
-	stops := map[types.AttemptID]types.AttemptStatus{running: types.AttemptStatusStopping, finishing: types.AttemptStatusFinishing, racing: types.AttemptStatusStopping}
+	want := types.AttemptStatusStopping
 	if raced == nil { // the submission was ordered first
-		stops[racing] = types.AttemptStatusFinishing
+		want = types.AttemptStatusFinishing
 	}
-	for _, id := range attempts {
-		a, err := f.attempt(id)
-		if err != nil {
-			return nil, nil, err
-		}
-		stopped := len(sups) > 0 && slices.Contains(sups[0].StoppedAttempts, id)
-		o.check(a.Status == stops[id] && stopped == (stops[id] == types.AttemptStatusStopping),
-			"attempt %s is %s (stopped by the supersession: %t), want %s", id, a.Status, stopped, stops[id])
+	if a, err = f.attempt(running); err != nil {
+		return nil, nil, err
 	}
+	stopped := len(sups) > 0 && slices.Equal(sups[0].StoppedAttempts, []types.AttemptID{running})
+	o.check(a.Status == want && stopped == (want == types.AttemptStatusStopping),
+		"the attempt is %s (stopped by the supersession: %t), want %s", a.Status, stopped, want)
 	return o.steps, o.violations, nil
 }
 
@@ -341,16 +338,15 @@ func submitted(attempt types.AttemptID) func(*eventstore.Tx) ([]eventstore.Event
 }
 
 // superseding completes requirement revision 1 (exeA) and records a review
-// by exeA under it, which asks owedRuling, claimed, with five running
-// attempts, the second finishing, the fourth stopped by a revocation and
-// the fifth preempted by an earlier command;
-// it records revision 2 (exeB).
-func (f *supersessionFix) superseding() (review, second, next types.NodeID, attempts []types.AttemptID, err error) {
+// by exeA under it, which asks owedRuling, claimed, with its attempt
+// running; it records revision 2 (exeB), and another review of the
+// subject, not claimed.
+func (f *supersessionFix) superseding() (review, second, next types.NodeID, running types.AttemptID, err error) {
 	f.plan, f.planRes, err = f.complete(types.NodeKindPlan, json.RawMessage(`{}`), []types.InputSpec{}, map[string]graph.Resolved{}, types.ResultKindPlan, []types.Ref{}, nil)
 	one, err1 := requirementOf(1, exeA)
 	two, err2 := requirementOf(2, exeB)
 	if err = errors.Join(err, err1, err2); err != nil {
-		return "", "", "", nil, err
+		return "", "", "", "", err
 	}
 	req, err := f.record(types.NodeKindReviewRequirement, one, []types.InputSpec{})
 	if err == nil {
@@ -394,41 +390,34 @@ func (f *supersessionFix) superseding() (review, second, next types.NodeID, atte
 			return owedanswers.Record(owedanswers.Answer{Owed: owedRuling, Project: gProject, Asker: review, Owner: types.ActorID(f.actor), Revision: 1, Approval: ptrTo(approvalOne)})
 		})
 	}
-	base := types.AttemptBase{Tree: types.GitID(treeA), ContractRevision: "7"}
-	for range 5 {
-		l, att, lerr := freshLease()
-		err = errors.Join(err, lerr)
-		for _, step := range []func(*eventstore.Tx) ([]eventstore.Event, error){
-			func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) },
-			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-				return lease.ChangeLease(tx, l.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, f.holds)
-			},
-			func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StartAttempt(tx, l.ID, 2, att, base) },
-		} {
-			if err == nil {
-				err = f.do(step)
-			}
-		}
-		attempts = append(attempts, att)
-	}
 	if err == nil {
-		err = f.do(submitted(attempts[1]))
+		running, err = f.startOn(review)
 	}
-	if err == nil {
-		err = f.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return lease.ChangeAttempt(tx, attempts[3], 1, lease.AttemptEvent{Kind: lease.StopRequested, StopReason: types.AttemptStopReasonValueRevoke})
-		})
-	}
-	if err == nil {
-		err = f.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return lease.ChangeAttempt(tx, attempts[4], 1, lease.AttemptEvent{Kind: lease.StopRequested, StopReason: types.AttemptStopReasonValuePreempt})
-		})
-	}
-	return review, second, next, attempts, err
+	return review, second, next, running, err
 }
 
-// listing is fn's supersession alone, listing attempt as the one it stopped.
-func listing(fn func(*eventstore.Tx) ([]eventstore.Event, error), attempt types.AttemptID) func(*eventstore.Tx) ([]eventstore.Event, error) {
+// startOn starts the first attempt on node's unit, under a fresh lease.
+func (f *supersessionFix) startOn(node types.NodeID) (types.AttemptID, error) {
+	l, att, err := freshLease()
+	l.Unit = graph.UnitOf(node)
+	base := types.AttemptBase{Tree: types.GitID(treeA), ContractRevision: "7"}
+	for _, step := range []func(*eventstore.Tx) ([]eventstore.Event, error){
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) },
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.ChangeLease(tx, l.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, f.holds)
+		},
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StartAttempt(tx, l.ID, 2, att, base) },
+	} {
+		if err == nil {
+			err = f.do(step)
+		}
+	}
+	return att, err
+}
+
+// listing is fn's supersession alone, listing attempts as the ones it
+// stopped.
+func listing(fn func(*eventstore.Tx) ([]eventstore.Event, error), attempts ...types.AttemptID) func(*eventstore.Tx) ([]eventstore.Event, error) {
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		evs, err := fn(tx)
 		if err != nil {
@@ -439,7 +428,7 @@ func listing(fn func(*eventstore.Tx) ([]eventstore.Event, error), attempt types.
 		if err := json.Unmarshal(last.Payload, &g); err != nil {
 			return nil, err
 		}
-		g.Variant.(*types.ReviewSuperseded).StoppedAttempts = []types.AttemptID{attempt}
+		g.Variant.(*types.ReviewSuperseded).StoppedAttempts = append([]types.AttemptID{}, attempts...)
 		last.Payload, err = json.Marshal(g)
 		return []eventstore.Event{last}, err
 	}

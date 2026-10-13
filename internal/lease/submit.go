@@ -92,6 +92,12 @@ func AttemptOf(tx *eventstore.Tx, id types.AttemptID) (a types.Attempt, stoppedB
 	return a, stoppedBy, ok, err
 }
 
+// CurrentAttempt is unit's current attempt: its first, or the successor
+// that superseded the last one; false when none has started.
+func CurrentAttempt(tx *eventstore.Tx, unit types.UnitID) (types.AttemptID, bool, error) {
+	return unitAttempt(tx, unit)
+}
+
 func missing(ok bool, id types.AttemptID) error {
 	if ok {
 		return nil

@@ -595,7 +595,7 @@ func (g graphStore) rosterChange(review types.NodeID, exes ...types.ExecutorID) 
 	req := g.requirementNode(cur.Revision+1, "1", exes...)
 	n := g.record(req)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, n, map[string]Resolved{}, 1) })
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, review, n, nil, reviewers) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, review, n, reviewers) })
 	r := unrecorded(g.t, *g.state(n).Key)
 	r.Kind, r.Value, r.Conclusions, r.Outcome, r.Reason, r.Detail = types.ResultKindReviewRequirement, []types.Ref{}, &req.Node.Params, types.OutcomeFound, vocab.ReasonCompletedWithFindings, "required"
 	g.must(raw(n, r, g.blobs))
@@ -767,7 +767,7 @@ func TestMergeInputsFenced(t *testing.T) {
 	}
 	for name, review := range map[string]types.NodeID{"the carried review": spec.Review, "another review of the subject": otherReview} {
 		fenced(name+" superseded", g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return Supersede(tx, review, next, nil, reviewers)
+			return Supersede(tx, review, next, reviewers)
 		}), false)
 		fenced(name+" superseded by a raw event", g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			rec, err := loadNode(tx, review)
@@ -804,7 +804,7 @@ func TestMergeInputsFenced(t *testing.T) {
 		return nil, CompleteEffect(tx, gen.Merge, g.blobs)
 	})
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Supersede(tx, otherReview, next, nil, reviewers)
+		return Supersede(tx, otherReview, next, reviewers)
 	})
 }
 
@@ -940,7 +940,7 @@ func TestMergeFenceScope(t *testing.T) {
 	next.Task, next.Project = tskB, prjB
 	n := g.record(next)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return claimAny(tx, n, map[string]Resolved{}, 1) })
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, rid, n, nil, reviewers) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, rid, n, reviewers) })
 }
 
 // A queue generation takes only its own task's nodes: a candidate or a

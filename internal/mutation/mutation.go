@@ -158,9 +158,15 @@ const (
 	// their params and requirement (which binds the roster, G7b-2), so a
 	// review is reused across a roster change.
 	EquivalenceIgnoresRoster = "graph.equivalence-ignores-roster"
-	// SupersessionKeepsAttempts supersedes a review without stopping its
-	// running attempts, so their late output still lands.
+	// SupersessionKeepsAttempts makes the supersession builder neither stop
+	// nor list the review's running attempt, derived from its unit (M1
+	// P8a): the fold then refuses the supersession, and a crash inside the
+	// command finds no stop folded.
 	SupersessionKeepsAttempts = "graph.supersession-keeps-attempts"
+	// SupersessionAdmitsRunningAttempt lets the supersession fold admit an
+	// event that leaves the predecessor's attempt running (M1 P8a), so a
+	// forged supersession keeps an unlisted attempt running.
+	SupersessionAdmitsRunningAttempt = "graph.supersession-admits-running-attempt"
 	// SupersessionKeepsPredecessor records a replacement but leaves its
 	// predecessor as it was, so the old roster's result is still selected.
 	SupersessionKeepsPredecessor = "graph.supersession-keeps-predecessor"
@@ -212,6 +218,7 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	SuccessorTakesAnyAnswer, AnswerLineageUnchecked, EquivalenceIgnoresRestrictions, EquivalenceIgnoresRoster,
 	GenerationKeepsBase, CarryOverIgnoresPatch, GenerationTakesStale,
 	SupersessionKeepsAttempts, SupersessionKeepsPredecessor, SupersedeTwice, LineageIgnoresSupersession,
+	SupersessionAdmitsRunningAttempt,
 	IsolationUnchecked, RestrictedArtifactRendered,
 	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer, DisplacedQuestionUnchecked,
 	ReuseSkipsAuthority, ContextNeedsNoAuthority,

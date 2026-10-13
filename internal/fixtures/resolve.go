@@ -20,6 +20,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -130,8 +131,10 @@ func openGraphWith(ctx context.Context, dir string, effects eventstore.EffectKin
 	if err == nil {
 		kinds := graph.Kinds()
 		maps.Copy(kinds, owedanswers.Kinds())
+		maps.Copy(kinds, lease.Kinds())
+		leases := lease.Projector{Blobs: blobs, Units: graph.Units{}}.Project // attempts bound to nodes (M1 P8a)
 		s, err = eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Effects: effects,
-			Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(graph.Project, owedanswers.Project)}})
+			Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(leases, graph.Project, owedanswers.Project)}})
 	}
 	if err != nil {
 		return nil, nil, errors.Join(err, lock.Release())
@@ -301,7 +304,7 @@ func (g *graphFix) supersede(review types.NodeID, roster json.RawMessage) (types
 	}
 	if err == nil {
 		err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return graph.Supersede(tx, review, n, nil, reviewers)
+			return graph.Supersede(tx, review, n, reviewers)
 		})
 	}
 	if err == nil {

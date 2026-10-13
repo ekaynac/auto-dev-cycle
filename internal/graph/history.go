@@ -14,8 +14,9 @@ package graph
 //     outside its projections are cross-checked here, against those
 //     records: each operation's effect (its kind, target, request and
 //     state), and the hold index. The lease projections are replayed, and
-//     the supersession fold checks the attempts it names (lease.AttemptOf);
-//     a result's attempt is bound to its node with P8a.
+//     the supersession fold derives the attempt it stops, and the
+//     result.recorded fold checks that a result's attempt ran on its
+//     node's unit (units.go), so replay covers both.
 //   - Effect states are monotone, and a node's key never moves while its
 //     operation is live (an invalidation waits, settledOperation), so each
 //     rule reads the same at any start of a correct history.

@@ -132,9 +132,8 @@ func (g graphStore) gated(receiptDigest types.Digest) (types.NodeID, types.Resul
 // of its own, with a result of kind rk holding value.
 func (g graphStore) completedWith(kind types.NodeKind, rk types.ResultKind, value []types.Ref) (types.NodeID, types.Result) {
 	return g.completedAs(kind, rk, value, func(n types.NodeID, r types.Result) logic {
-		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return recordResult(tx, g.published(n, r), g.blobs)
-		}
+		rr := g.published(n, r)
+		return func(tx *eventstore.Tx) ([]eventstore.Event, error) { return recordResult(tx, rr, g.blobs) }
 	})
 }
 

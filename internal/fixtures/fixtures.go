@@ -98,6 +98,7 @@ var runners = map[string]runner{
 	"superseded-result-never-selected":       rosterChangeOneSupersession, // its fifth step, under its own mutation
 	"supersession-replays-once":              rosterChangeOneSupersession, // its third step, under its own mutation
 	"replaced-question-reaches-successor":    rosterChangeOneSupersession, // its sixth step, under its own mutation
+	"unlisted-running-attempt-refused":       rosterChangeOneSupersession, // its forged unlisted supersession, under its own mutation
 	"empty-isolation-never-published":        emptyIsolationNeverPublished,
 	"restricted-artifact-not-in-prompt":      restrictedArtifactNotInPrompt,
 	"held-review-transfers-hold":             supersessionMovesHolds,

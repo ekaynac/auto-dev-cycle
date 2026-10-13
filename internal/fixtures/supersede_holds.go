@@ -131,7 +131,7 @@ func supersessionMovesHolds(ctx context.Context, dir string) (steps []Step, viol
 	}
 	var o observe
 	o.steps = append(o.steps, supersessionStep(f.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.SupersedeMoving(tx, second, next, nil, reviewers, graph.Moves{"other": {OwedInput: owedMoved, Revision: 1}}, owedanswers.Authority{})
+		return graph.SupersedeMoving(tx, second, next, reviewers, graph.Moves{"other": {OwedInput: owedMoved, Revision: 1}}, owedanswers.Authority{})
 	})))
 	sups, err := f.supersessions()
 	pre, _, perr := f.node(second)

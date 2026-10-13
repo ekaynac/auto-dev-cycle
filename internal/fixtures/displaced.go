@@ -86,7 +86,7 @@ func displacedRun(ctx context.Context, dir string, reuse bool) (steps []Step, vi
 	}
 	var o observe
 	o.steps = append(o.steps, supersessionStep(f.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		evs, err := graph.Supersede(tx, second, next, nil, reviewers)
+		evs, err := graph.Supersede(tx, second, next, reviewers)
 		if err != nil {
 			return nil, err
 		}
