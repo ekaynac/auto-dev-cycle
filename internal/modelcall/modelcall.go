@@ -37,6 +37,7 @@ import (
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
@@ -49,8 +50,10 @@ const (
 	Schema   = "records/model-call"
 	Action   = "model_call.intend" // the Recorder's command
 
-	Projection      = "model_calls"       // the binding, by call
-	LeaseProjection = "model_call_leases" // the binding, by lease/call
+	// The binding's projections; internal/capacity/ledger, which reads them
+	// and cannot import this package, holds the names.
+	Projection      = ledger.BindingProjection      // the binding, by call
+	LeaseProjection = ledger.LeaseBindingProjection // the binding, by lease/call
 )
 
 // EffectKind declares model_call: never retried (not idempotent),
@@ -72,6 +75,16 @@ var ErrNotRunning = errors.New("modelcall: the lease is not running the bound at
 // ErrNoGroups: the lease reserves on no group, so the call would charge
 // nothing.
 var ErrNoGroups = errors.New("modelcall: the lease reserves on no group")
+
+// ErrNoPositiveReservation: a group of the lease is reserved at zero, so
+// the call's liability, were it never measured, would have nothing to stand
+// for it (internal/capacity).
+var ErrNoPositiveReservation = errors.New("modelcall: the lease reserves zero on a group")
+
+// ErrSecondCall: the lease, which runs one attempt, already binds another
+// call. One call per attempt is what lets the lease's reservation stand for
+// an unmeasured call (internal/capacity).
+var ErrSecondCall = errors.New("modelcall: the lease already binds another call")
 
 // ErrBound: the call is already bound, and not pending under the same
 // binding: it is never sent again.
@@ -113,6 +126,9 @@ func Intend(tx *eventstore.Tx, b gateway.Binding, destination types.Slug) ([]eve
 	}
 	m := types.ModelCall{Call: b.Call, Attempt: b.Attempt, Lease: b.Lease, Executor: l.Executor, Destination: destination, Groups: []types.ResourceGroupID{}}
 	for _, r := range l.Reservations {
+		if r.Amount <= 0 {
+			return nil, fmt.Errorf("%w: %s on %s", ErrNoPositiveReservation, b.Lease, r.Group)
+		}
 		if !slices.Contains(m.Groups, r.Group) {
 			m.Groups = append(m.Groups, r.Group)
 		}
@@ -136,6 +152,11 @@ func Intend(tx *eventstore.Tx, b gateway.Binding, destination types.Slug) ([]eve
 			return nil, fmt.Errorf("%w: %s is %s", ErrBound, b.Call, e.State)
 		}
 		return nil, nil
+	}
+	if others, err := tx.Keys(LeaseProjection, string(b.Lease)+"/"); err != nil {
+		return nil, err
+	} else if len(others) > 0 {
+		return nil, fmt.Errorf("%w: %s binds %s", ErrSecondCall, b.Lease, others[0])
 	}
 	if err := tx.IntendEffect(EffectOf(b.Call), Kind, string(b.Call), raw); err != nil {
 		return nil, err

@@ -252,6 +252,15 @@ func (r *attemptRun) finish(ctx context.Context, result *types.AdapterRunResult,
 	}))
 	if err != nil {
 		r.out.Refusals = pending
+		if len(usage) > 0 && errors.Is(err, ledger.ErrBindingMismatch) {
+			// Usage the call's binding refuses (a host or spec fault) is
+			// dropped, so the attempt still ends; the call, unmeasured,
+			// keeps its reservation as its liability (internal/capacity),
+			// and the returned fault names the refusal.
+			r.measured = []types.UsageMeasurement{}
+			out, ferr := r.finish(ctx, result, ErrRecord, false)
+			return out, errors.Join(hostFault(ErrRecord, err), ferr)
+		}
 		if submitting {
 			out, ferr := r.finish(ctx, result, ErrRecord, false)
 			return out, errors.Join(hostFault(ErrRecord, err), ferr)

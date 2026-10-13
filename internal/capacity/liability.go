@@ -13,19 +13,27 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 )
 
-// The liability ledger (docs/design/m1/00-slice-plan.md P12b; 05 "Usage and settlement"; 11 B5). A lease's
+// The liability ledger (docs/design/m1/00-slice-plan.md P12b, Q8; 05 "Usage and settlement"; 11 B5). A lease's
 // settlement names each call bound to it (records/model-call) exactly once: settled when the call ledger holds its
 // final or a provider reconciliation, otherwise an uncertain liability. At settlement the reservation returns and
 // what the uncertain calls owe moves onto the group's ledger, in the same fold:
-//   - in tokens, a measured call owes its reconciled figure (deltas deduplicated by (call, sequence));
-//   - an unmeasured call, with no report at all, owes the lease's positive reservation on the group, held once for
-//     all the lease's unmeasured calls (one call per attempt, P12a), never zero;
-//   - in another unit (slots), the reservation stays held while any call is uncertain.
+//   - in tokens, an uncertain call owes the larger of the lease's positive reservation and its reconciled tokens
+//     (deltas deduplicated by (call, sequence)): an unmeasured call owes the reservation, and no report, however
+//     small, lowers that until a final or a reconciliation settles the call (the lead's M1 reading of Q8). A lease
+//     has one attempt, which binds one call (modelcall.Intend), so the reservation is the call's;
+//   - in another unit (slots), the reservation stays held while the call is uncertain.
+//
+// Nothing a report says can refuse a settlement or a later report (ledger.StandingOf never fails), and amounts
+// saturate at the contract's integer range, so no input wedges a lease or a group.
 //
 // Late usage (a report after the settlement, or after its model_call effect left pending) is expected: each report
 // recomputes the lease's liability from the whole call ledger, so the amount does not depend on whether a report
 // came before or after the settlement, and a final or a reconciliation releases it. Amounts are a fold over the log
 // (lease and usage events), so a rebuild derives them; no price or configuration enters them.
+//
+// The fold reads earlier events' measurements from the ledger's projection, so it runs event by event
+// (eventstore.ProjectEach, as adcd composes it) or with the settlement in a command of its own: a projector over a
+// whole batch would settle before a measurement earlier in the same command is in the ledger.
 const (
 	// LiabilityProjection: what a settled lease's uncertain calls owe a group, under "group/lease".
 	LiabilityProjection = "capacity_liabilities"
@@ -35,6 +43,8 @@ const (
 
 type liability struct {
 	Amount int64 `json:"amount"`
+	// Inconsistent: a report conflicted (inconsistent_usage), or could not be reconciled at all.
+	Inconsistent bool `json:"inconsistent,omitempty"`
 }
 
 // Settlement is the settlement lease id's bound calls owe now, from the call ledger: a call with a final or a
@@ -44,11 +54,11 @@ func Settlement(tx *eventstore.Tx, id types.LeaseID) (types.LeaseSettlementValue
 	s := types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: []types.CallID{}}
 	calls, err := ledger.BoundTo(tx, id)
 	for _, c := range calls {
-		var settled bool
-		if settled, _, err = reconciled(tx, c, nil); err != nil {
+		var st ledger.Standing
+		if st, err = standing(tx, c, nil); err != nil {
 			return s, err
 		}
-		if settled {
+		if st.Settled {
 			s.Calls = append(s.Calls, c)
 		} else {
 			s.Liabilities = append(s.Liabilities, c)
@@ -57,30 +67,22 @@ func Settlement(tx *eventstore.Tx, id types.LeaseID) (types.LeaseSettlementValue
 	return s, err
 }
 
-// reconciled reads call's reports, with extra (a report being recorded) once: whether the call is settled, and,
-// for an uncertain call, its figure, nil when it has no report at all.
-func reconciled(tx *eventstore.Tx, call types.CallID, extra *types.UsageMeasurement) (bool, *ledger.Figure, error) {
+// standing reads call's reports, with extra (a report being recorded) once.
+func standing(tx *eventstore.Tx, call types.CallID, extra *types.UsageMeasurement) (ledger.Standing, error) {
 	ms, err := ledger.Measurements(tx, call)
 	if err != nil {
-		return false, nil, err
+		return ledger.Standing{}, err
 	}
 	if extra != nil && !slices.ContainsFunc(ms, func(m types.UsageMeasurement) bool { return m.ID == extra.ID }) {
 		ms = append(ms, *extra)
 	}
-	if len(ms) == 0 {
-		return false, nil, nil
-	}
-	got, err := ledger.Reconcile(ms)
-	if err != nil {
-		return false, nil, err
-	}
-	c := got[call]
-	return !c.Uncertain, &c.Usage, nil
+	return ledger.StandingOf(ms, call), nil
 }
 
 // checkSettlement refuses a settlement that does not name each call bound to l exactly once, in its place: a call
 // settled with no final or reconciliation (an unmeasured call among them), or one already settled kept as a
-// liability. Leaving a bound call out would drop its charge.
+// liability. Leaving a bound call out would drop its charge. Every reservation of a lease with a bound call is
+// positive (modelcall.Intend), so an uncertain call never owes zero.
 func checkSettlement(tx *eventstore.Tx, l types.Lease) error {
 	s := l.Settlement
 	bound, err := ledger.BoundTo(tx, l.ID)
@@ -92,14 +94,14 @@ func checkSettlement(tx *eventstore.Tx, l types.Lease) error {
 		return fmt.Errorf("lease %s settles calls %v, but its bound calls are %v", l.ID, named, bound)
 	}
 	for _, c := range named {
-		settled, _, err := reconciled(tx, c, nil)
+		st, err := standing(tx, c, nil)
 		listed := slices.Contains(s.Calls, c)
 		switch {
 		case err != nil:
 			return err
-		case settled && !listed:
+		case st.Settled && !listed:
 			return fmt.Errorf("lease %s keeps call %s as a liability, but its usage is settled", l.ID, c)
-		case !settled && listed:
+		case !st.Settled && listed:
 			return fmt.Errorf("lease %s settles call %s with no final usage: it stays an uncertain liability", l.ID, c)
 		}
 	}
@@ -141,28 +143,25 @@ func lateUsage(tx *eventstore.Tx, m types.UsageMeasurement) error {
 	return owe(tx, l, &m, map[types.ResourceGroupID]tally{})
 }
 
-// owe sets what settled lease l owes each of its groups, from the call ledger (with extra), adjusting each
-// group's tally in next, or its recorded one, by the change. A change advances the group's capacity revision,
-// once.
+// owe sets what settled lease l owes each of its groups, from the call ledger (with extra), and each changed
+// group's Liable, in next or from its recorded tally. A change advances the group's capacity revision, once.
 func owe(tx *eventstore.Tx, l types.Lease, extra *types.UsageMeasurement, next map[types.ResourceGroupID]tally) error {
-	settled := map[types.CallID]bool{}
-	figures := map[types.CallID]*ledger.Figure{}
+	var uncertain []ledger.Standing
 	for _, c := range l.Settlement.Liabilities {
 		var x *types.UsageMeasurement
 		if extra != nil && extra.Call == c {
 			x = extra
 		}
-		s, f, err := reconciled(tx, c, x)
+		st, err := standing(tx, c, x)
 		if err != nil {
 			return err
 		}
-		settled[c], figures[c] = s, f
+		if !st.Settled {
+			uncertain = append(uncertain, st)
+		}
 	}
 	for _, res := range l.Reservations {
-		amount, err := owed(res, l.Settlement.Liabilities, settled, figures)
-		if err != nil {
-			return fmt.Errorf("lease %s: %w", l.ID, err)
-		}
+		want := owed(res, uncertain)
 		key := string(res.Group) + "/" + string(l.ID)
 		var prev liability
 		if raw, ok, err := tx.Get(LiabilityProjection, key); err != nil {
@@ -173,64 +172,74 @@ func owe(tx *eventstore.Tx, l types.Lease, extra *types.UsageMeasurement, next m
 			}
 		}
 		t, bumped := next[res.Group]
-		if !bumped {
-			if amount == prev.Amount {
-				continue
-			}
-			if t, err = load(tx, res.Group); err != nil {
-				return err
-			}
-			t.Revision++
+		if !bumped && want == prev {
+			continue
 		}
-		t.Liable += amount - prev.Amount
-		next[res.Group] = t
-		if amount == 0 {
+		var err error
+		if want.Amount == 0 {
 			err = tx.Delete(LiabilityProjection, key)
 		} else {
-			raw, _ := json.Marshal(liability{amount})
+			raw, _ := json.Marshal(want)
 			err = tx.Put(LiabilityProjection, key, raw)
 		}
 		if err != nil {
 			return err
 		}
+		if !bumped {
+			if t, err = load(tx, res.Group); err != nil {
+				return err
+			}
+			t.Revision++
+		}
+		if t.Liable, err = liable(tx, res.Group); err != nil {
+			return err
+		}
+		next[res.Group] = t
 	}
 	return putAll(tx, next)
 }
 
-// owed is what the uncertain calls among calls owe res's group.
-func owed(res types.LeaseReservationsItem, calls []types.CallID, settled map[types.CallID]bool, figures map[types.CallID]*ledger.Figure) (int64, error) {
+// owed is what the uncertain calls owe res's group: nothing once none is left.
+func owed(res types.LeaseReservationsItem, uncertain []ledger.Standing) liability {
+	if len(uncertain) == 0 {
+		return liability{}
+	}
+	out := liability{Amount: res.Amount}
 	var measured int64
-	uncertain, unmeasured := false, false
-	for _, c := range calls {
-		if settled[c] {
-			continue
-		}
-		uncertain = true
-		f := figures[c]
-		if f == nil {
-			unmeasured = true
-			continue
-		}
-		measured += f.In + f.Out + f.CacheRead + f.CacheWrite
-		if measured > maxAmount {
-			return 0, fmt.Errorf("liabilities on group %s overflow", res.Group)
+	for _, st := range uncertain {
+		out.Inconsistent = out.Inconsistent || st.Inconsistent
+		if f := st.Usage; f != nil && res.Unit == types.CapacityUnitTokens {
+			measured = saturated(measured, f.In, f.Out, f.CacheRead, f.CacheWrite)
 		}
 	}
-	switch {
-	case unmeasured && res.Amount <= 0:
-		return 0, fmt.Errorf("an unmeasured call's liability on group %s needs a positive reservation", res.Group)
-	case res.Unit != types.CapacityUnitTokens:
-		if uncertain {
-			return res.Amount, nil
+	out.Amount = max(out.Amount, measured)
+	return out
+}
+
+// saturated adds the amounts, stopping at the contract's integer range.
+func saturated(a int64, more ...int64) int64 {
+	for _, b := range more {
+		a = min(maxAmount, a+min(maxAmount, max(b, 0)))
+	}
+	return a
+}
+
+// liable sums what settled leases owe group, saturating.
+func liable(tx *eventstore.Tx, group types.ResourceGroupID) (int64, error) {
+	keys, err := tx.Keys(LiabilityProjection, string(group)+"/")
+	var sum int64
+	for _, k := range keys {
+		raw, _, gerr := tx.Get(LiabilityProjection, k)
+		var v liability
+		if gerr == nil {
+			gerr = json.Unmarshal(raw, &v)
 		}
-		return 0, nil
-	case unmeasured:
-		measured += res.Amount
+		if gerr != nil {
+			return 0, gerr
+		}
+		sum = saturated(sum, v.Amount)
 	}
-	if measured > maxAmount {
-		return 0, fmt.Errorf("liabilities on group %s overflow", res.Group)
-	}
-	return measured, nil
+	return sum, err
 }
 
 // Liable is what settled leases' uncertain calls owe group: it counts against the group's limit like a
@@ -240,21 +249,21 @@ func Liable(tx *eventstore.Tx, group types.ResourceGroupID) (int64, error) {
 	return t.Liable, err
 }
 
-// LiabilitiesOf lists what lease id owes each group, by group.
-func LiabilitiesOf(tx *eventstore.Tx, id types.LeaseID, groups []types.ResourceGroupID) (map[types.ResourceGroupID]int64, error) {
-	out := map[types.ResourceGroupID]int64{}
+// LiabilitiesOf lists what lease id owes each of groups, and whether any of it is inconsistent_usage.
+func LiabilitiesOf(tx *eventstore.Tx, id types.LeaseID, groups []types.ResourceGroupID) (map[types.ResourceGroupID]int64, bool, error) {
+	out, inconsistent := map[types.ResourceGroupID]int64{}, false
 	for _, g := range groups {
 		raw, ok, err := tx.Get(LiabilityProjection, string(g)+"/"+string(id))
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		var v liability
 		if ok {
 			if err := json.Unmarshal(raw, &v); err != nil {
-				return nil, err
+				return nil, false, err
 			}
-			out[g] = v.Amount
+			out[g], inconsistent = v.Amount, inconsistent || v.Inconsistent
 		}
 	}
-	return out, nil
+	return out, inconsistent, nil
 }

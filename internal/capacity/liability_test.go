@@ -4,6 +4,7 @@ package capacity_test
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"path/filepath"
 	"strings"
@@ -111,9 +112,13 @@ func (w *world) settleDerived(r running) types.LeaseSettlementValue {
 }
 
 func (w *world) measure(r running, kind types.UsageMeasurementKind, seq, in, out int64) error {
+	return w.measureIn(r, "USD", kind, seq, in, out)
+}
+
+func (w *world) measureIn(r running, currency string, kind types.UsageMeasurementKind, seq, in, out int64) error {
 	m := types.UsageMeasurement{ID: types.MeasurementID(newID(w.t, "msr")), Call: r.call, Attempt: r.attempt, Lease: r.lease, Kind: kind,
 		Sequence: seq, Tokens: types.UsageMeasurementTokens{In: in, Out: out}, Turns: 1, Milliseconds: 5,
-		Cost:          types.UsageMeasurementCost{AmountMicros: 0, Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
+		Cost:          types.UsageMeasurementCost{AmountMicros: 0, Currency: currency, Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
 		SourceOfTruth: types.UsageMeasurementSourceOfTruthAdapterReport}
 	return w.record(m)
 }
@@ -203,7 +208,8 @@ func TestUnmeasuredCallSettlesAsItsReservation(t *testing.T) {
 
 // Late usage on a call left as a liability, after its model_call effect
 // left pending (#226 entry 59), is accepted, and recomputes the liability:
-// deltas replace the reservation's estimate, a final releases it.
+// deltas raise it past the reservation, never below it, and a final
+// releases it.
 func TestLateUsageRecomputesTheLiability(t *testing.T) {
 	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
 	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
@@ -217,10 +223,11 @@ func TestLateUsageRecomputesTheLiability(t *testing.T) {
 		seq, in, out int64
 		liable       int64
 	}{
-		{types.UsageMeasurementKindDelta, 0, 100, 20, 120},
-		{types.UsageMeasurementKindDelta, 0, 100, 20, 120}, // the same delta again: deduplicated
-		{types.UsageMeasurementKindDelta, 1, 100, 20, 240}, // equal figures at another sequence both count
-		{types.UsageMeasurementKindFinal, 0, 200, 50, 0},   // settled: the liability is released
+		{types.UsageMeasurementKindDelta, 0, 1, 0, 400},    // a tiny delta never lowers the reservation
+		{types.UsageMeasurementKindDelta, 1, 200, 20, 400}, // 221 tokens: still the reservation
+		{types.UsageMeasurementKindDelta, 2, 200, 20, 441}, // equal figures at another sequence both count
+		{types.UsageMeasurementKindDelta, 2, 200, 20, 441}, // the same delta again: deduplicated
+		{types.UsageMeasurementKindFinal, 0, 0, 0, 0},      // settled: the liability is released
 		{types.UsageMeasurementKindDelta, 2, 900, 900, 0},  // and stays released
 	}
 	for i, s := range steps {
@@ -245,8 +252,14 @@ func TestLiabilityIsOrderIndependent(t *testing.T) {
 	w.stop(r)
 	refused(t, w.settleAs(r, []types.CallID{r.call}, []types.CallID{}), "no final usage")
 	w.settleDerived(r)
-	if n, l := w.outstanding(quota), w.liable(quota); n != 0 || l != 120 {
-		t.Fatalf("outstanding %d, liable %d; want 0, 120", n, l)
+	if n, l := w.outstanding(quota), w.liable(quota); n != 0 || l != 400 {
+		t.Fatalf("outstanding %d, liable %d; want 0, 400", n, l)
+	}
+	if err := w.measure(r, types.UsageMeasurementKindDelta, 1, 400, 0); err != nil {
+		t.Fatal(err)
+	}
+	if l := w.liable(quota); l != 520 {
+		t.Fatalf("liable %d, want the 520 measured", l)
 	}
 	w.replays()
 }
@@ -290,14 +303,80 @@ func TestSlotLiabilityHoldsTheSlot(t *testing.T) {
 	w.replays()
 }
 
-// An unmeasured call's liability is never zero: with no positive
-// reservation to stand for it, the settlement is refused.
-func TestUnmeasuredCallNeedsAPositiveReservation(t *testing.T) {
-	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
-	r := w.running(reserve(quota, 0, types.CapacityUnitTokens))
-	w.stop(r)
-	refused(t, w.settleAs(r, []types.CallID{}, []types.CallID{r.call}), "positive reservation")
+// H1 (Opus pre-review of #253): no report wedges a settlement. Reports in
+// two currencies, or deltas past the contract's integers, leave the call an
+// uncertain liability, flagged; late reports are still accepted, and a
+// provider reconciliation releases it.
+func TestUnreconcilableReportsNeverWedge(t *testing.T) {
+	for name, reports := range map[string]func(w *world, r running) error{
+		"two currencies": func(w *world, r running) error {
+			return errors.Join(w.measureIn(r, "USD", types.UsageMeasurementKindDelta, 0, 100, 20),
+				w.measureIn(r, "EUR", types.UsageMeasurementKindDelta, 1, 100, 20))
+		},
+		"overflow": func(w *world, r running) error {
+			return errors.Join(w.measure(r, types.UsageMeasurementKindDelta, 0, maxTokens, 0),
+				w.measure(r, types.UsageMeasurementKindDelta, 1, maxTokens, 0))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+			r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
+			if err := reports(w, r); err != nil {
+				t.Fatal(err)
+			}
+			w.stop(r)
+			if s := w.settleDerived(r); len(s.Liabilities) != 1 {
+				t.Fatalf("derived settlement %+v, want the call as a liability", s)
+			}
+			want := int64(400)
+			if name == "overflow" {
+				want = maxTokens // saturated, never wrapped
+			}
+			var inconsistent bool
+			w.view(func(tx *eventstore.Tx) (err error) {
+				_, inconsistent, err = capacity.LiabilitiesOf(tx, r.lease, []types.ResourceGroupID{quota})
+				return err
+			})
+			if l := w.liable(quota); l != want || !inconsistent {
+				t.Fatalf("liable %d, inconsistent %v; want %d, flagged", l, inconsistent, want)
+			}
+			if err := w.measureIn(r, "GBP", types.UsageMeasurementKindDelta, 2, maxTokens, 0); err != nil {
+				t.Fatalf("a late report was refused: %v", err)
+			}
+			if err := w.measureIn(r, "JPY", types.UsageMeasurementKindProviderReconciliation, 0, 10, 1); err != nil {
+				t.Fatal(err)
+			}
+			if l := w.liable(quota); l != 0 {
+				t.Fatalf("liable %d after the provider reconciliation, want 0", l)
+			}
+			w.replays()
+		})
+	}
 }
+
+// L1: a group's liability saturates at the contract's integers, so the sum
+// over leases never wraps and admission stays closed.
+func TestLiableSaturates(t *testing.T) {
+	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+	var rs []running
+	for range 3 { // all granted before any liability
+		rs = append(rs, w.running(reserve(quota, 1, types.CapacityUnitTokens)))
+	}
+	for _, r := range rs {
+		if err := w.measure(r, types.UsageMeasurementKindDelta, 0, maxTokens, maxTokens); err != nil {
+			t.Fatal(err)
+		}
+		w.stop(r)
+		w.settleDerived(r)
+	}
+	if l := w.liable(quota); l != maxTokens {
+		t.Fatalf("liable %d, want it saturated at %d", l, int64(maxTokens))
+	}
+	exhausted(t, w.change(w.requested(reserve(quota, 1, types.CapacityUnitTokens)), 1, granted), vocab.ReasonCapacityReservedFull)
+	w.replays()
+}
+
+const maxTokens = 9007199254740991
 
 // A bound call's report names its binding's attempt and lease (#226 entry
 // 61): a report charging the call to another lease is refused.

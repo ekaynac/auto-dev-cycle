@@ -70,6 +70,49 @@ func maxOf(a, b Figure) (m Figure, lower bool) {
 
 const maxAmount = 9007199254740991
 
+// Standing is a call's standing for the liability ledger (internal/capacity).
+type Standing struct {
+	Settled bool    // a final or a provider reconciliation is recorded
+	Usage   *Figure // the reconciled figure; nil with no report at all
+	// Inconsistent: a report conflicted (inconsistent_usage), its currencies
+	// among them, or the reports could not be summed.
+	Inconsistent bool
+}
+
+// StandingOf is call's standing from its reports ms. Unlike Reconcile it
+// never fails, so no report can wedge a settlement:
+//   - token figures do not depend on currency, so reports in several
+//     currencies are reconciled as one and only flagged (pricing reads the
+//     executor's declared price, never the reported currency or cost);
+//   - reports Reconcile cannot sum (an overflow) leave the call uncertain at
+//     a saturated figure, flagged, unless a provider reconciliation, the one
+//     report that replaces all others, settles it.
+func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
+	if len(ms) == 0 {
+		return Standing{}
+	}
+	one, mixed := slices.Clone(ms), false
+	for i := range one {
+		mixed = mixed || one[i].Cost.Currency != ms[0].Cost.Currency
+		one[i].Cost.Currency = ms[0].Cost.Currency
+	}
+	if got, err := Reconcile(one); err == nil {
+		c := got[call]
+		return Standing{Settled: !c.Uncertain, Usage: &c.Usage, Inconsistent: mixed || c.Inconsistent}
+	}
+	var recon []types.UsageMeasurement
+	for _, m := range one {
+		if m.Kind == types.UsageMeasurementKindProviderReconciliation {
+			recon = append(recon, m)
+		}
+	}
+	if len(recon) > 0 {
+		f, _ := latest(recon)
+		return Standing{Settled: true, Usage: &f, Inconsistent: true}
+	}
+	return Standing{Usage: &Figure{In: maxAmount}, Inconsistent: true}
+}
+
 // PriceMicros prices a figure in USD micros at an executor's declared price
 // (config/executor-registry), from its tokens alone, rounding up: input and
 // cache tokens at the input rate, output at the output rate. It never reads

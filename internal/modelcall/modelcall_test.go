@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -674,5 +675,43 @@ func TestRequestsAdmittedBeforeAStop(t *testing.T) {
 	}
 	if rec := send(g, token); rec.Code == http.StatusOK || up.count() != 2 {
 		t.Fatalf("a request admitted after the stop: %d, upstream saw %d", rec.Code, up.count())
+	}
+}
+
+// Opus pre-review of #253, M2 and L3: a call binds only to a lease whose
+// every reservation is positive, so an unmeasured call's liability always
+// has its reservation to stand for it; and a lease, which runs one attempt,
+// binds one call, so that reservation is the call's.
+func TestIntendNeedsAPositiveReservationAndOneCall(t *testing.T) {
+	w := openWorld(t)
+	intend := func(b gateway.Binding) error {
+		return w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return modelcall.Intend(tx, b, "stub") })
+	}
+	w.start(rgB, rgA)
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		l, rev, _, err := lease.LeaseOf(tx, leaseID)
+		if err != nil {
+			return nil, err
+		}
+		l.Reservations = slices.Clone(l.Reservations)
+		l.Reservations[1].Amount = 0
+		raw, err := json.Marshal(map[string]any{"revision": rev, "record": l})
+		if err != nil {
+			return nil, err
+		}
+		return nil, tx.Put(lease.LeaseProjection, string(leaseID), raw)
+	})
+	if err := intend(binding); !errors.Is(err, modelcall.ErrNoPositiveReservation) {
+		t.Fatalf("a zero reservation: %v", err)
+	}
+	w.reserve(rgB, rgA)
+	if err := intend(binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := intend(gateway.Binding{Lease: leaseID, Attempt: attempt, Call: "cal_01m4tm99haemss9tvzd438vq8k"}); !errors.Is(err, modelcall.ErrSecondCall) {
+		t.Fatalf("a second call on the lease: %v", err)
+	}
+	if err := intend(binding); err != nil {
+		t.Fatalf("the bound call, intended again while pending: %v", err)
 	}
 }
