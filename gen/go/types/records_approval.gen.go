@@ -35,7 +35,7 @@ type ApprovalConfirmation struct {
 // Approval: An approval record (docs/design/m0/04 "Approval records"): who approved which action on which exact object state, under which grant and confirmation. change_class is computed by internal/authority from the effective change, never supplied. Approvals are append-only; supersedes is explicit lineage, and a revocation or narrower scope wins over an earlier, wider one.
 type Approval struct {
 	ID ApprovalID `json:"id"`
-	// The one proposal a confirmed approval answers (null only under policy none, which internal/authority does not persist in this build). Every field it shares with the proposal is copied from the proposal record, never supplied, and internal/authority admits it only while they match.
+	// The one proposal a confirmed approval answers; null only under policy none, which internal/authority persists only for an operator's task.create approving the spec it records, in the same command (M1 P3). Every field it shares with the proposal is copied from the proposal record, never supplied, and internal/authority admits it only while they match.
 	Proposal  *ProposalID       `json:"proposal"`
 	Actor     ActorID           `json:"actor"`
 	ActorKind ApprovalActorKind `json:"actor_kind"`

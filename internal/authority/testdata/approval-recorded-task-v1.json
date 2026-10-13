@@ -1,0 +1,42 @@
+{
+  "id": "apr_01m3250vkwffc979nzjw0gapr1",
+  "proposal": null,
+  "actor": "@ACTOR@",
+  "actor_kind": "operator",
+  "action": "task.create",
+  "change_class": [],
+  "project": "prj_01m3250vkwffc979nzjw0g2sa1",
+  "object": {
+    "type": "task",
+    "id": "tsk_01m3250vkwffc979nzjw0gtak1",
+    "version": 0,
+    "digest": "sha256:5dd5a565908444ed23ea6242aa43e574447cf4e79883d15d794eb28adc728a99"
+  },
+  "expected_state": {
+    "version": 0,
+    "digest": null
+  },
+  "scope": {
+    "project": "prj_01m3250vkwffc979nzjw0g2sa1",
+    "title": "split evenly",
+    "requirement": "make the hidden tests pass",
+    "attachments": [
+      {
+        "name": "tests/test_hidden.py",
+        "digest": "sha256:abababababababababababababababababababababababababababababababab"
+      }
+    ]
+  },
+  "grant": null,
+  "confirmation": {
+    "policy": "none",
+    "challenge": null,
+    "satisfied_by": []
+  },
+  "answers": [],
+  "supersedes": [],
+  "question": null,
+  "answer_verbatim": null,
+  "reason": "an operator's task.create approves the spec it records",
+  "at": "@AT@"
+}

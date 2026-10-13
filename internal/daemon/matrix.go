@@ -36,7 +36,7 @@ const Unassigned = "unassigned"
 var deferred = map[string]Owner{
 	"project.create":                      {Milestone: "M1", Ref: "design/m1/00 §1 intake: handler built (P1), activated by P22a"},
 	"profile.adopt":                       {Milestone: "M1", Ref: "design/m0/15 D1"},
-	"task.create":                         {Milestone: "M1", Ref: "design/m0/15 D1"},
+	"task.create":                         {Milestone: "M1", Ref: "design/m1/00 §1 intake: handler built (P3), activated by P22a"},
 	"review.request":                      {Milestone: "M1", Ref: "design/m0/15 D1"},
 	"input.answer":                        {Milestone: "M1", Ref: "design/m0/15 D1"},
 	"knowledge.change_protected_document": {Milestone: "M1", Ref: "plan/01 §4; plan/03 §4.6, §9"},

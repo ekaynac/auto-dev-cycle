@@ -33,7 +33,7 @@ and the generated API description (gen-check pins the committed `schemas/openapi
 | `review.request` | task | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/review.request` | `adc task request-review` | M5 |  |
 | `seat.release` | seat | wired (logic) |  | `POST /v1/commands/seat.release` | `adc seat release` | M5 |  |
 | `seat.take` | seat | wired (logic) |  | `POST /v1/commands/seat.take` | `adc seat take` | M5 |  |
-| `task.create` | task | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/task.create` | `adc task create` | M5 |  |
+| `task.create` | task | deferred | M1 (design/m1/00 §1 intake: handler built (P3), activated by P22a) | `POST /v1/commands/task.create` | `adc task create` | M5 |  |
 | `token.issue` | admin | wired (issuer) |  | `POST /v1/commands/token.issue` | `adc admin issue-token` | M5 |  |
 | `token.replace` | admin | wired (issuer) |  | `POST /v1/commands/token.replace` | `adc admin replace-token` | M5 |  |
 | `token.revoke` | admin | wired (logic) |  | `POST /v1/commands/token.revoke` | `adc admin revoke-token` | M5 |  |

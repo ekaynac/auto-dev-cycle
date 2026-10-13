@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/task.json",
+  "title": "Task",
+  "description": "The payload of task.created/v1 (M1 slice plan P3; D51): a task put in its project's Ready backlog, at most five per project. Creation is not admission. spec is the task.create scope as sent and spec_digest its content digest (RFC 8785), which an operator's create approves in the same command (approval.recorded/v1, proposal null, policy none). acceptance lists the spec's attachments, each classed restricted and withheld from builder and reviewer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "project", "spec", "spec_digest", "acceptance", "created_by", "created_at"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/TaskID"},
+    "project": {"$ref": "../common/defs.json#/$defs/ProjectID"},
+    "spec": {"$ref": "../api/scope/task-create.json"},
+    "spec_digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+    "acceptance": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/AcceptanceBlob"}},
+    "created_by": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "created_at": {"$ref": "../common/defs.json#/$defs/Time"}
+  },
+  "$defs": {
+    "AcceptanceBlob": {
+      "description": "An acceptance test: overlaid on the gate workspace only, never an input of a build or a review.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest", "class", "withheld_from"],
+      "properties": {
+        "name": {"$ref": "../api/scope/task-create.json#/$defs/AcceptancePath"},
+        "digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+        "class": {"enum": ["restricted"]},
+        "withheld_from": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"enum": ["builder", "reviewer"]}}
+      }
+    }
+  }
+}
