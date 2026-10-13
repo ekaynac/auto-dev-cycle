@@ -34,10 +34,10 @@
       "required": ["id", "kind", "verification", "trust_class", "endpoint", "retention_days"],
       "properties": {
         "id": {"description": "What a project's data_policy.allowed_destinations names.", "$ref": "project-profile.json#/$defs/Slug"},
-        "kind": {"description": "M1 admits direct_api and local_endpoint; broker and governed_upstream (M2 or later) are refused.", "enum": ["direct_api", "local_endpoint", "broker", "governed_upstream"]},
+        "kind": {"description": "M1 admits direct_api and local_endpoint (no credential; a loopback or private IP; the only kind whose trust class can be own); broker and governed_upstream (M2 or later) are refused.", "enum": ["direct_api", "local_endpoint", "broker", "governed_upstream"]},
         "verification": {"description": "The routing label (01 §2.2). M1 admits verified; attested is M2.", "enum": ["reported", "verified", "attested"]},
         "trust_class": {"description": "Compared with a project's data_policy.floor.", "enum": ["own", "contracted", "free_unknown"]},
-        "endpoint": {"description": "The OpenAI-compatible base URL, with no credential, query or fragment.", "type": "string", "minLength": 1, "maxLength": 2048},
+        "endpoint": {"description": "The OpenAI-compatible base URL, with no credential anywhere in it (userinfo, path, query or fragment), and no whitespace or backslash. A local endpoint's host is a loopback or private IP literal.", "type": "string", "minLength": 1, "maxLength": 2048},
         "retention_days": {"description": "The declared retention of request data; null is undeclared.", "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 36500}]}
       }
     },

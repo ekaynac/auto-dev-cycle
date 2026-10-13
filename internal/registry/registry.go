@@ -26,7 +26,9 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strings"
 	"syscall"
+	"unicode"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
@@ -50,19 +52,20 @@ const (
 	RuleDuplicate     Rule = "an executor id is registered twice"
 	RuleRoles         Rule = "the registry needs at least one builder and one reviewer"
 	RuleUnknownFamily Rule = "the family is unknown, which is never independent"
-	RuleSameFamily    Rule = "a reviewer's family equals a builder's family"
+	RuleSameFamily    Rule = "a reviewer's family, or its destination and model, equals a builder's"
 	RuleAdapter       Rule = "the adapter is not http-chat, the one M1 runs"
 	RuleKind          Rule = "the destination kind is not direct_api or local_endpoint (brokers are refused; a governed upstream is M2 or later)"
 	RuleVerification  Rule = "the routing label is not verified (attested is M2)"
-	RuleTrustClass    Rule = "an external API's trust class cannot be own"
+	RuleTrustClass    Rule = "only a local endpoint's trust class can be own"
 	RuleDestination   Rule = "one destination id is registered with different properties"
-	RuleEndpoint      Rule = "the endpoint is not an http(s) URL without credential, query or fragment, https unless on a loopback address"
-	RuleCredential    Rule = "a direct API needs a credential reference"
-	RuleGroup         Rule = "the group is not configured, does not list the executor, or another group lists it"
+	RuleEndpoint      Rule = "the endpoint is not an http(s) URL without credential, query, fragment, whitespace or backslash; a direct API's is https unless on a loopback address, a local endpoint's host a loopback or private IP"
+	RuleCredential    Rule = "a direct API needs a credential reference, and a local endpoint has none"
+	RuleGroup         Rule = "the group is not configured, does not list the executor, another group lists it, lists an unregistered executor or another destination, or one account or endpoint is split across groups"
 	RuleGroupKind     Rule = "the group is not a direct API's account_quota in tokens with a known or estimated limit, or a local endpoint's concurrency in slots with a known limit, released on_settle"
 	RulePriceBasis    Rule = "a price is given exactly for cash and subscription_equivalent; a local endpoint is local, a direct API is not"
 	RuleNotRegistered Rule = "the executor is not registered"
-	RuleFloor         Rule = "the destination's trust class is below the project's data floor"
+	RuleFloor         Rule = "the destination's trust class is below the project's data floor, or either is unknown"
+	RuleRouting       Rule = "the project requires verified routing"
 	RuleNotAllowed    Rule = "the destination is not among the project's allowed destinations"
 	RuleUsageProfile  Rule = "an empty allowed_destinations derives from a usage profile, which M1 does not have"
 )
@@ -86,15 +89,18 @@ type Registry struct {
 	executors map[types.ExecutorID]types.RegistryExecutor
 }
 
-// Load reads the registry file, without following a link, and checks it
+// Load reads the registry file, a regular file and never a link, and checks it
 // against its schema as written, so no field is dropped by decoding.
 func Load(path string) (types.ExecutorRegistry, error) {
 	refused := &Refusal{Executor: -1, Rule: RuleUnreadable}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return types.ExecutorRegistry{}, refused
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return types.ExecutorRegistry{}, refused
+	}
 	raw, err := io.ReadAll(io.LimitReader(f, maxFile+1))
 	if err != nil || len(raw) > maxFile {
 		return types.ExecutorRegistry{}, refused
@@ -128,22 +134,57 @@ func New(doc types.ExecutorRegistry, groups []types.ResourceGroup) (Registry, er
 		destinations[e.Destination.ID] = e.Destination
 		r.executors[e.ID] = e
 	}
+	if err := r.accounts(doc.Executors, groups); err != nil {
+		return Registry{}, err
+	}
 	return r, r.distinct(doc.Executors)
+}
+
+// accounts ties groups to what they limit (Q8): executors on one account
+// or endpoint (destination and credential) draw from one group, a group
+// limits one destination, and every member of a group the registry names
+// is registered, so nothing unseen draws from it.
+func (r Registry) accounts(all []types.RegistryExecutor, groups []types.ResourceGroup) error {
+	account := map[string]types.ResourceGroupID{}
+	limits := map[types.ResourceGroupID]types.Slug{}
+	for i, e := range all {
+		key := string(e.Destination.ID) + "\x00"
+		if e.CredentialRef != nil {
+			key += string(*e.CredentialRef)
+		}
+		g, seen := account[key]
+		d, named := limits[e.Group]
+		if (seen && g != e.Group) || (named && d != e.Destination.ID) {
+			return &Refusal{Executor: i, Rule: RuleGroup}
+		}
+		account[key], limits[e.Group] = e.Group, e.Destination.ID
+	}
+	for _, g := range groups {
+		for _, m := range g.Members {
+			if _, ok := r.executors[m]; !ok && limits[g.ID] != "" {
+				return &Refusal{Executor: -1, Rule: RuleGroup}
+			}
+		}
+	}
+	return nil
 }
 
 // distinct refuses a registry with no builder or no reviewer, or whose
 // reviewer shares a builder's family.
 func (r Registry) distinct(all []types.RegistryExecutor) error {
 	builders := map[types.Name]bool{}
+	served := map[string]bool{} // a builder's destination and model: one model under two family names
+	route := func(e types.RegistryExecutor) string { return string(e.Destination.ID) + "\x00" + e.Model }
 	for _, e := range all {
-		builders[e.Family] = builders[e.Family] || e.Role == types.RegistryExecutorRoleBuilder
+		builder := e.Role == types.RegistryExecutorRoleBuilder
+		builders[e.Family], served[route(e)] = builders[e.Family] || builder, served[route(e)] || builder
 	}
 	reviewers := 0
 	for i, e := range all {
 		if e.Role != types.RegistryExecutorRoleReviewer {
 			continue
 		}
-		if reviewers++; builders[e.Family] {
+		if reviewers++; builders[e.Family] || served[route(e)] {
 			return &Refusal{Executor: i, Rule: RuleSameFamily}
 		}
 	}
@@ -168,9 +209,9 @@ func check(e types.RegistryExecutor, groups []types.ResourceGroup) Rule {
 		return RuleVerification
 	case direct && e.Destination.TrustClass == types.RegistryDestinationTrustClassOwn:
 		return RuleTrustClass
-	case !endpointOK(e.Destination.Endpoint):
+	case !endpointOK(e.Destination.Endpoint, direct):
 		return RuleEndpoint
-	case direct && e.CredentialRef == nil:
+	case direct == (e.CredentialRef == nil):
 		return RuleCredential
 	}
 	priced := e.CostBasis == types.RegistryExecutorCostBasisCash || e.CostBasis == types.RegistryExecutorCostBasisSubscriptionEquivalent
@@ -206,19 +247,23 @@ func checkGroup(e types.RegistryExecutor, direct bool, groups []types.ResourceGr
 	return ""
 }
 
-// endpointOK: an absolute http(s) URL with a host and no userinfo, query or
-// fragment; plain http only to a loopback IP literal, whose traffic stays
-// on the host (a name could resolve elsewhere).
-func endpointOK(s string) bool {
+// endpointOK: an absolute http(s) URL with a host and no userinfo, query,
+// fragment, whitespace or backslash. A direct API's is https, or plain
+// http to a loopback IP literal, whose traffic stays on the host. A local
+// endpoint's host is a loopback or private IP literal: a name could
+// resolve elsewhere, and a public address is not local.
+func endpointOK(s string, direct bool) bool {
 	u, err := url.Parse(s)
-	if err != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || u.Hostname() == "" {
+	if err != nil || strings.ContainsFunc(s, func(c rune) bool { return c == '\\' || unicode.IsSpace(c) }) ||
+		u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || u.Hostname() == "" ||
+		(u.Scheme != "https" && u.Scheme != "http") {
 		return false
 	}
-	if u.Scheme == "https" {
-		return true
-	}
 	ip, err := netip.ParseAddr(u.Hostname())
-	return u.Scheme == "http" && err == nil && ip.IsLoopback()
+	if !direct {
+		return err == nil && (ip.IsLoopback() || ip.IsPrivate())
+	}
+	return u.Scheme == "https" || (err == nil && ip.IsLoopback())
 }
 
 // Family is the executor's model family, receipt.UnknownFamily for one the
@@ -241,19 +286,22 @@ func (r Registry) Executor(id types.ExecutorID) (types.RegistryExecutor, bool) {
 var floors = map[string]int{"own": 0, "contracted": 1, "free_unknown": 2}
 
 // Admits checks that a project's data policy admits the executor's
-// destination: its trust class meets the floor and the project allows it
-// by name. Either routing a project asks for admits a verified
-// destination, the only label New admits in M1. An empty
+// destination: its trust class meets the floor, its routing label the
+// project's routing, and the project allows it by name. An empty
 // allowed_destinations derives from a usage profile (07), which M1 has
 // not, so it is refused rather than read as "any".
 func (r Registry) Admits(dp types.ProjectProfileDataPolicy, id types.ExecutorID) error {
 	e, ok := r.executors[id]
+	has, hok := floors[string(e.Destination.TrustClass)]
+	needs, nok := floors[string(dp.Floor)]
 	rule := Rule("")
 	switch {
 	case !ok:
 		rule = RuleNotRegistered
-	case floors[string(e.Destination.TrustClass)] > floors[string(dp.Floor)]:
+	case !hok || !nok || has > needs:
 		rule = RuleFloor
+	case dp.Routing != types.ProjectProfileDataPolicyRoutingReportedOk && e.Destination.Verification != types.RegistryDestinationVerificationVerified:
+		rule = RuleRouting // anything but reported_ok asks for verified routing
 	case len(dp.AllowedDestinations) == 0:
 		rule = RuleUsageProfile
 	case !slices.Contains(dp.AllowedDestinations, e.Destination.ID):

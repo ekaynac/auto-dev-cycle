@@ -43,10 +43,10 @@ No other fields are allowed.
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `id` | yes | [Slug](config-project-profile.md#slug) | What a project's data_policy.allowed_destinations names. |
-| `kind` | yes | one of `direct_api`, `local_endpoint`, `broker`, `governed_upstream` | M1 admits direct_api and local_endpoint; broker and governed_upstream (M2 or later) are refused. |
+| `kind` | yes | one of `direct_api`, `local_endpoint`, `broker`, `governed_upstream` | M1 admits direct_api and local_endpoint (no credential; a loopback or private IP; the only kind whose trust class can be own); broker and governed_upstream (M2 or later) are refused. |
 | `verification` | yes | one of `reported`, `verified`, `attested` | The routing label (01 §2.2). M1 admits verified; attested is M2. |
 | `trust_class` | yes | one of `own`, `contracted`, `free_unknown` | Compared with a project's data_policy.floor. |
-| `endpoint` | yes | string (minLength `1`, maxLength `2048`) | The OpenAI-compatible base URL, with no credential, query or fragment. |
+| `endpoint` | yes | string (minLength `1`, maxLength `2048`) | The OpenAI-compatible base URL, with no credential anywhere in it (userinfo, path, query or fragment), and no whitespace or backslash. A local endpoint's host is a loopback or private IP literal. |
 | `retention_days` | yes | null or integer (minimum `0`, maximum `36500`) | The declared retention of request data; null is undeclared. |
 
 No other fields are allowed.

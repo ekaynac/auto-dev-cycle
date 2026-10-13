@@ -57,7 +57,7 @@ export interface RegistryDestination {
    */
   id: string;
   /**
-   * M1 admits direct_api and local_endpoint; broker and governed_upstream (M2 or later) are refused.
+   * M1 admits direct_api and local_endpoint (no credential; a loopback or private IP; the only kind whose trust class can be own); broker and governed_upstream (M2 or later) are refused.
    */
   kind: "direct_api" | "local_endpoint" | "broker" | "governed_upstream";
   /**
@@ -69,7 +69,7 @@ export interface RegistryDestination {
    */
   trust_class: "own" | "contracted" | "free_unknown";
   /**
-   * The OpenAI-compatible base URL, with no credential, query or fragment.
+   * The OpenAI-compatible base URL, with no credential anywhere in it (userinfo, path, query or fragment), and no whitespace or backslash. A local endpoint's host is a loopback or private IP literal.
    */
   endpoint: string;
   /**

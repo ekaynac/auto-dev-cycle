@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
@@ -183,7 +185,20 @@ func TestNewRefuses(t *testing.T) {
 		"a broker balance group": {stubGroup(func(g *types.ResourceGroup) {
 			g.Kind, g.CapacityModel.Unit = types.ResourceGroupKindBrokerBalance, types.CapacityUnitUsdMicros
 		}), RuleGroupKind},
-		"a second destination": {reviewer(func(e *types.RegistryExecutor) { e.Destination.ID = "other" }), ""},
+		"whitespace":                  {endpoint("https://api.example.com/v1 x"), RuleEndpoint},
+		"backslash":                   {endpoint(`https://api.example.com\v1`), RuleEndpoint},
+		"a group mixing destinations": {reviewer(func(e *types.RegistryExecutor) { e.Destination.ID = "other" }), RuleGroup},
+		// One account (destination and credential) split across groups would
+		// draw its one limit twice.
+		"one account, two groups": {func(d *types.ExecutorRegistry, g []types.ResourceGroup) {
+			d.Executors[1].Group = g[2].ID
+			g[0].Members, g[2].Members = g[0].Members[:1], []types.ExecutorID{d.Executors[1].ID}
+		}, RuleGroup},
+		"an unregistered member": {stubGroup(func(g *types.ResourceGroup) {
+			g.Members = append(g.Members, "exe_01m4tm99haemrs8zjs56wjm467")
+		}), RuleGroup},
+		// The builder's model under another family name.
+		"aliased family": {reviewer(func(e *types.RegistryExecutor) { e.Family, e.Model = "stub-other", "stub-builder-1" }), RuleSameFamily},
 	} {
 		doc, g := clone(t, base), clone(t, gs)
 		c.edit(&doc, g)
@@ -226,9 +241,23 @@ func TestLocalEndpoint(t *testing.T) {
 		"a governed upstream, as local": {func(e *types.RegistryExecutor, _ []types.ResourceGroup) {
 			e.Destination.Kind = types.RegistryDestinationKindGovernedUpstream
 		}, RuleKind},
-		"plain http on LAN": {func(e *types.RegistryExecutor, _ []types.ResourceGroup) {
+		"plain http on a private address": {func(e *types.RegistryExecutor, _ []types.ResourceGroup) {
 			e.Destination.Endpoint = "http://192.168.1.5:11434/v1"
+		}, ""},
+		// A local endpoint is local: no credential, a loopback or private IP.
+		"remote https as local": {func(e *types.RegistryExecutor, _ []types.ResourceGroup) {
+			e.Destination.Endpoint = "https://api.example.com/v1"
 		}, RuleEndpoint},
+		"a public IP as local": {func(e *types.RegistryExecutor, _ []types.ResourceGroup) {
+			e.Destination.Endpoint = "https://203.0.113.7/v1"
+		}, RuleEndpoint},
+		"a name as local": {func(e *types.RegistryExecutor, _ []types.ResourceGroup) {
+			e.Destination.Endpoint = "http://localhost:11434/v1"
+		}, RuleEndpoint},
+		"local with a credential": {func(e *types.RegistryExecutor, _ []types.ResourceGroup) {
+			ref := types.Slug("api-key")
+			e.CredentialRef = &ref
+		}, RuleCredential},
 	} {
 		doc, g := clone(t, base), clone(t, gs)
 		c.edit(&doc.Executors[0], g)
@@ -267,6 +296,28 @@ func TestAdmits(t *testing.T) {
 			t.Errorf("%s: refused by %q (%v), want %q", name, got, err, c.want)
 		}
 	}
+	// What New does not admit in M1, built directly: Admits still checks the
+	// routing label and refuses an unknown floor or trust class.
+	e, _ := r.Executor(api)
+	e.Destination.Verification = types.RegistryDestinationVerificationReported
+	odd, _ := r.Executor(api)
+	odd.ID, odd.Destination.TrustClass = local, "secret"
+	r2 := Registry{executors: map[types.ExecutorID]types.RegistryExecutor{api: e, local: odd}}
+	for name, c := range map[string]struct {
+		dp   types.ProjectProfileDataPolicy
+		id   types.ExecutorID
+		want Rule
+	}{
+		"reported, verified asked": {types.ProjectProfileDataPolicy{Floor: "free_unknown", Routing: "verified", AllowedDestinations: both}, api, RuleRouting},
+		"reported, reported_ok":    {types.ProjectProfileDataPolicy{Floor: "free_unknown", Routing: "reported_ok", AllowedDestinations: both}, api, ""},
+		"an unknown floor":         {types.ProjectProfileDataPolicy{Floor: "secret", Routing: "reported_ok", AllowedDestinations: both}, api, RuleFloor},
+		"an unknown trust class":   {types.ProjectProfileDataPolicy{Floor: "free_unknown", Routing: "reported_ok", AllowedDestinations: both}, local, RuleFloor},
+	} {
+		err := r2.Admits(c.dp, c.id)
+		if got := refusedBy(err); got != c.want || (c.want == "") != (err == nil) {
+			t.Errorf("%s: refused by %q (%v), want %q", name, got, err, c.want)
+		}
+	}
 }
 
 func TestLoadRefuses(t *testing.T) {
@@ -287,7 +338,13 @@ func TestLoadRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	extra := strings.Replace(string(good), `"schema"`, `"note": "x", "schema"`, 1)
+	fifo := filepath.Join(dir, "fifo.json")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for name, path := range map[string]string{
+		"an empty FIFO": fifo,
+		"a directory":   t.TempDir(),
 		"absent":        filepath.Join(dir, "absent.json"),
 		"a symlink":     link,
 		"not JSON":      write("bad.json", "{"),
@@ -299,4 +356,35 @@ func TestLoadRefuses(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+}
+
+// A FIFO whose writer holds a valid registry is refused unread: only a regular file
+// is read, and nothing waits on a writer.
+func TestLoadRefusesAFIFO(t *testing.T) {
+	good, err := os.ReadFile(fixtures + "registry-stub.json")
+	fifo := filepath.Join(t.TempDir(), "registry.json")
+	if err == nil {
+		err = syscall.Mkfifo(fifo, 0o600)
+	}
+	var w *os.File
+	if err == nil {
+		w, err = os.OpenFile(fifo, os.O_RDWR, 0) // a writer that never blocks
+	}
+	if err == nil {
+		_, err = w.Write(good)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := Load(fifo); done <- err }()
+	select {
+	case err := <-done:
+		if refusedBy(err) != RuleUnreadable {
+			t.Errorf("a FIFO: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("Load read from a FIFO")
+	}
+	w.Close() // ends a blocked read
 }

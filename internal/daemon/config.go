@@ -216,11 +216,14 @@ func (c Config) Validate() error {
 // readGroups reads a JSON array of resource groups, each checked against
 // its schema as written, so no field is dropped by decoding.
 func readGroups(path string) ([]types.ResourceGroup, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, configError("the resource-group file cannot be opened")
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return nil, configError("the resource-group file is not a regular file")
+	}
 	raw, err := io.ReadAll(io.LimitReader(f, maxGroupsFile+1))
 	if err != nil || len(raw) > maxGroupsFile {
 		return nil, configError("the resource-group file cannot be read, or is larger than 1 MiB")
