@@ -12,9 +12,10 @@ package graph
 //     with no value; a proof that is not a records/isolation-proof is
 //     dropped from that record. The result.recorded fold refuses, from the
 //     log alone, a published evidence result without such a proof, a proof
-//     on another kind's result, and a second result of one attempt.
-//   - M0 trusts the committer's proof: nothing binds the attempt to the node
-//     or the probe's output to a digest until M1.
+//     on another kind's result, a second result of one attempt, and an
+//     attempt not started on the node's unit (M1 P8a, units.go).
+//   - The committer's proof is trusted: nothing binds the probe's output
+//     to a digest until the evidence surface activates (#187, #191).
 //   - isolation_unproven spends an attempt: the probe ran inside the
 //     wrapper, so something ran (12 "What counts", the conservative side).
 //   - An artifact's class is the producing node's instrument contract's
@@ -89,6 +90,9 @@ func isolated(tx *eventstore.Tx, rec nodeRecord, p *types.ResultRecorded) error 
 	if p.Attempt != nil {
 		if _, used, err := load[types.ResultID](tx, AttemptResultProjection, string(*p.Attempt)); err != nil || used {
 			return errors.Join(err, fmt.Errorf("attempt %s already recorded a result", *p.Attempt))
+		}
+		if err := attemptBound(tx, p.Node, *p.Attempt); err != nil {
+			return err
 		}
 		if err := put(tx, AttemptResultProjection, string(*p.Attempt), p.Result.ID); err != nil {
 			return err

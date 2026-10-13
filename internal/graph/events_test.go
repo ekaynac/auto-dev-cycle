@@ -21,6 +21,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -70,8 +71,9 @@ func openStoreAt(t *testing.T, now func() time.Time) graphStore {
 	none := func(*eventstore.Tx, eventstore.Command) error { return nil }
 	kinds := Kinds()
 	maps.Copy(kinds, owedanswers.Kinds())
+	maps.Copy(kinds, lease.Kinds())
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: now,
-		Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(Project, owedanswers.Project)}})
+		Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(leases(blobs), Project, owedanswers.Project)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +84,50 @@ func openStoreAt(t *testing.T, now func() time.Time) graphStore {
 	}{}, req: new(types.NodeID)}
 	g.plan, g.planRes = g.planOf(tskID, prjID)
 	return g
+}
+
+// leases is the lease fold, its units the graph's nodes (M1 P8a).
+func leases(blobs *blobstore.Store) func(*eventstore.Tx, []eventstore.Event) error {
+	return lease.Projector{Blobs: blobs, Units: Units{}}.Project
+}
+
+// attemptOn starts n's next attempt under a fresh lease on n's unit: its
+// first, or the successor of its last, which the tests never end, so it
+// is still running at its first revision: it is lost, sealed with the
+// minimal record, then superseded.
+func (g graphStore) attemptOn(n types.NodeID) types.AttemptID {
+	g.t.Helper()
+	ok := types.PlacementCheck{Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean}
+	l := types.Lease{ID: types.LeaseID(must(ids.New("lea"))), Unit: UnitOf(n), Role: "builder", Executor: exeA, State: types.LeaseStateRequested,
+		Reservations: []types.LeaseReservationsItem{}, Footprint: types.LeaseFootprint{ContextTokens: 1, ExpectedTurns: 1}, Deadline: "2026-10-04T14:00:00Z",
+		PlacementChecks: types.LeasePlacementChecks{DataFloor: ok, Destinations: ok, Capability: ok, Independence: ok, PaidAuthority: ok, Budget: ok, FallbackScope: ok}}
+	a, base := newAttempt(), types.AttemptBase{Tree: types.GitID(treeA), ContractRevision: "7"}
+	var last types.AttemptID
+	var continues bool
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) {
+		last, continues, err = lease.CurrentAttempt(tx, l.Unit)
+		return err
+	}); err != nil {
+		g.t.Fatal(err)
+	}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, l.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, nil)
+	})
+	if !continues {
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StartAttempt(tx, l.ID, 2, a, base) })
+		return a
+	}
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.LoseRunning(tx, last, types.AttemptLostReasonValueAgentDisconnect)
+	})
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.SealMinimal(tx, last, 2, Units{}, g.blobs, nil, "act_01m3250v0aer9ss2097svmefj8")
+	})
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.SupersedeAttempt(tx, last, 3, l.ID, 2, a, base)
+	})
+	return a
 }
 
 type logic func(tx *eventstore.Tx) ([]eventstore.Event, error)

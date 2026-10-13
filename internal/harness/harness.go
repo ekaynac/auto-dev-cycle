@@ -164,6 +164,22 @@ func readPrompt(name string) ([]byte, error) {
 	return p, nil
 }
 
+// soleUnit is the run's unit binding (lease.Units): its throwaway store
+// holds no graph, so it admits an attempt on its own unit only, and binds
+// no project or task, so no seal is admitted.
+type soleUnit string
+
+func (soleUnit) ProjectTask(*eventstore.Tx, types.UnitID) (types.ProjectID, types.TaskID, bool, error) {
+	return "", "", false, nil
+}
+
+func (u soleUnit) Startable(_ *eventstore.Tx, unit types.UnitID) error {
+	if unit != types.UnitID(u) {
+		return fmt.Errorf("harness: unit %s is not the run's", unit)
+	}
+	return nil
+}
+
 // run grants a fresh lease on a throwaway store and runs one attempt.
 func run(ctx context.Context, command, env []string, workspace string, prompt []byte, b adapterhost.Bounds) (spec adapterhost.Spec, out adapterhost.Outcome, err error) {
 	dir, err := os.MkdirTemp("", "adc-harness-")
@@ -193,7 +209,11 @@ func run(ctx context.Context, command, env []string, workspace string, prompt []
 	}
 	kinds := lease.Kinds()
 	maps.Copy(kinds, ledger.Kinds())
-	project := lease.Projector{Blobs: blobs, Holds: reg.Holds}.Project
+	unit, err := ids.New("unt")
+	if err != nil {
+		return spec, out, err
+	}
+	project := lease.Projector{Blobs: blobs, Holds: reg.Holds, Units: soleUnit(unit)}.Project
 	allow := func(*eventstore.Tx, eventstore.Command) error { return nil } // the run's own store: no other actor writes it
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Hooks: eventstore.Hooks{Identify: allow, Authorize: allow,
 		Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
@@ -204,13 +224,13 @@ func run(ctx context.Context, command, env []string, workspace string, prompt []
 	}
 	defer func() { err = errors.Join(err, s.Close()) }()
 	idv := map[string]string{}
-	for _, p := range []string{"act", "lea", "unt", "exe", "att", "cal"} {
+	for _, p := range []string{"act", "lea", "exe", "att", "cal"} {
 		if idv[p], err = ids.New(p); err != nil {
 			return spec, out, err
 		}
 	}
 	ok := types.PlacementCheck{Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean}
-	l := types.Lease{ID: types.LeaseID(idv["lea"]), Unit: types.UnitID(idv["unt"]), Role: "builder", Executor: types.ExecutorID(idv["exe"]),
+	l := types.Lease{ID: types.LeaseID(idv["lea"]), Unit: types.UnitID(unit), Role: "builder", Executor: types.ExecutorID(idv["exe"]),
 		State:        types.LeaseStateRequested,
 		Reservations: []types.LeaseReservationsItem{{Group: "rg_01m3250vkwffc979nzjw0g2sf9", Amount: 1000, Unit: types.CapacityUnitTokens}},
 		Footprint:    types.LeaseFootprint{ContextTokens: 1000, ExpectedTurns: 5}, Deadline: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),

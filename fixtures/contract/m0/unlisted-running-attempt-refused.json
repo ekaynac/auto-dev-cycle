@@ -1,0 +1,13 @@
+{
+  "name": "unlisted-running-attempt-refused",
+  "invariant": "Attempts are bound to nodes (M1 P8a): a supersession stops its review's running attempt, derived from the review's unit, and the fold refuses one that leaves it running unlisted, from the log alone. Steps: supersede, replay after restart, supersede again, late result, commit to the predecessor, successor's answer.",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "failed", "reason": "stale_expected_state"},
+    {"outcome": "failed", "reason": "stale_attempt"},
+    {"outcome": "failed", "reason": "stale_expected_state"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "graph.supersession-admits-running-attempt"
+}

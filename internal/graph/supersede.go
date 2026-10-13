@@ -54,11 +54,14 @@ package graph
 //     never runs without it. The claim fold reads no authority, so it
 //     cannot refuse the claim; until M1 records owed inputs, the claim is
 //     inert, as an answer claimed directly at a stale revision is.
-//   - M1 binds attempts to nodes. Until then the caller names the
-//     predecessor's attempts: the fold proves neither that the list is
-//     complete nor that the listed attempts are the predecessor's. An
-//     unlisted attempt is safe (nothing selects its result for either node)
-//     but holds its capacity until it ends.
+//   - Attempts are bound to nodes (M1 P8a, units.go), so the attempts
+//     stopped are derived, never named. A node has one current attempt:
+//     the supersession stops it if it runs, and lists exactly that one. The
+//     fold derives the same list from the lease projections, after the
+//     command's stops are folded, and refuses any other list, and a
+//     supersession that leaves the predecessor's attempt running: an
+//     unlisted running attempt would hold its capacity, and could publish,
+//     after its node was replaced.
 //   - A review whose result a dependant claimed is not superseded. G6b-2
 //     keeps this refusal: re-pointing a claimed dependant would release its
 //     claim, which no event does yet. A queue generation's carry_over is the
@@ -160,18 +163,18 @@ func currentRevision(tx *eventstore.Tx, task types.TaskID, node types.NodeID, re
 type Moves map[types.Name]*types.AnswerSource
 
 // Supersede is the one transaction replacing review pred after a roster
-// change: a stop for each of attempts still running, then review.superseded
+// change: a stop for pred's attempt if it still runs, then review.superseded
 // with the replacement, whose roster is that of requirement, the
 // review_requirement node of the subject's next revision, recorded before,
 // and with pred's holds transferred or retired. The replacement's roster is
 // checked against families, as RecordReview checks.
-func Supersede(tx *eventstore.Tx, pred, requirement types.NodeID, attempts []types.AttemptID, families Families) ([]eventstore.Event, error) {
-	return SupersedeMoving(tx, pred, requirement, attempts, families, nil, nil)
+func Supersede(tx *eventstore.Tx, pred, requirement types.NodeID, families Families) ([]eventstore.Event, error) {
+	return SupersedeMoving(tx, pred, requirement, families, nil, nil)
 }
 
 // SupersedeMoving is Supersede, with the answer inputs of moves replaced;
 // auth tells which questions moved.
-func SupersedeMoving(tx *eventstore.Tx, pred, requirement types.NodeID, attempts []types.AttemptID, families Families, moves Moves, auth Authority) ([]eventstore.Event, error) {
+func SupersedeMoving(tx *eventstore.Tx, pred, requirement types.NodeID, families Families, moves Moves, auth Authority) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, pred)
 	req, rerr := loadNode(tx, requirement)
 	id, ierr := ids.New("nod")
@@ -205,14 +208,13 @@ func SupersedeMoving(tx *eventstore.Tx, pred, requirement types.NodeID, attempts
 	}
 	var evs []eventstore.Event
 	stopped := []types.AttemptID{}
-	for _, a := range slices.Compact(slices.Sorted(slices.Values(attempts))) {
-		stop, err := lease.StopRunning(tx, a, types.AttemptStopReasonValuePreempt)
-		if err != nil {
+	if a, running, err := runningAttempt(tx, pred); err != nil {
+		return nil, err
+	} else if running && !mutation.Is(mutation.SupersessionKeepsAttempts) {
+		if evs, err = lease.StopRunning(tx, a.ID, types.AttemptStopReasonValuePreempt); err != nil {
 			return nil, err
 		}
-		if len(stop) > 0 && !mutation.Is(mutation.SupersessionKeepsAttempts) {
-			evs, stopped = append(evs, stop...), append(stopped, a)
-		}
+		stopped = append(stopped, a.ID)
 	}
 	s, err := event(ReviewSuperseded, string(pred), rec.Recorded.Project, &types.ReviewSuperseded{Type: "review_superseded", Predecessor: pred,
 		Replacement: n, StoppedAttempts: stopped, TransferredHolds: holdIDs(held), RetiredHolds: retired})
@@ -361,16 +363,8 @@ func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuper
 	if _, forked, err := load[types.NodeID](tx, SuccessorProjection, string(p.Predecessor)); err != nil || forked && !mutation.Is(mutation.SupersedeTwice) {
 		return errors.Join(err, errors.New("the predecessor has a successor: supersede the lineage's last round"))
 	}
-	for _, a := range p.StoppedAttempts {
-		at, by, ok, err := lease.AttemptOf(tx, a)
-		_, listed, lerr := load[types.NodeID](tx, PreemptedProjection, string(a))
-		if err = errors.Join(err, lerr); err != nil || !ok || listed || at.Status != types.AttemptStatusStopping || at.StopReason == nil ||
-			*at.StopReason != types.AttemptStopReasonValuePreempt || by == nil || ev.Command == nil || *by != *ev.Command {
-			return errors.Join(err, fmt.Errorf("attempt %s is not stopped for preemption by this command", a))
-		}
-		if err := put(tx, PreemptedProjection, string(a), p.Predecessor); err != nil {
-			return err
-		}
+	if err := stoppedAttempts(tx, ev, p); err != nil {
+		return err
 	}
 	held, retired, err := holdsFor(tx, rec, p.Replacement)
 	if err != nil || !slices.Equal(p.TransferredHolds, holdIDs(held)) || !slices.Equal(p.RetiredHolds, retired) {
@@ -397,6 +391,40 @@ func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuper
 	}
 	rec.State.State, rec.State.WaitingOn, rec.State.Holds, rec.State.SupersededBy = types.NodeStateStateSuperseded, []types.Name{}, []types.NodeHold{}, &p.Replacement.ID
 	return putNode(tx, rec)
+}
+
+// stoppedAttempts: p lists exactly the predecessor's attempt that this
+// command stopped for preemption, if it did, and leaves none running. A
+// listed attempt is indexed to the supersession that stopped it.
+func stoppedAttempts(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuperseded) error {
+	a, running, err := runningAttempt(tx, p.Predecessor)
+	if err != nil {
+		return err
+	}
+	if running && !mutation.Is(mutation.SupersessionAdmitsRunningAttempt) {
+		return fmt.Errorf("attempt %s of %s still runs: its supersession stops it", a.ID, p.Predecessor)
+	}
+	want := []types.AttemptID{}
+	if a.ID != "" {
+		_, by, _, err := lease.AttemptOf(tx, a.ID)
+		_, listed, lerr := load[types.NodeID](tx, PreemptedProjection, string(a.ID))
+		if err = errors.Join(err, lerr); err != nil {
+			return err
+		}
+		if !listed && a.Status == types.AttemptStatusStopping && a.StopReason != nil && *a.StopReason == types.AttemptStopReasonValuePreempt &&
+			by != nil && ev.Command != nil && *by == *ev.Command {
+			want = append(want, a.ID)
+		}
+	}
+	if !slices.Equal(p.StoppedAttempts, want) {
+		return fmt.Errorf("the supersession lists %v, not %v, the attempt of %s this command stopped for preemption", p.StoppedAttempts, want, p.Predecessor)
+	}
+	for _, id := range want {
+		if err := put(tx, PreemptedProjection, string(id), p.Predecessor); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // unshared: rec neither reuses another node's key nor holds a key that

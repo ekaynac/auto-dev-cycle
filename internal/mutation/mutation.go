@@ -161,6 +161,10 @@ const (
 	// SupersessionKeepsAttempts supersedes a review without stopping its
 	// running attempts, so their late output still lands.
 	SupersessionKeepsAttempts = "graph.supersession-keeps-attempts"
+	// SupersessionAdmitsRunningAttempt lets the supersession fold admit an
+	// event that leaves the predecessor's attempt running (M1 P8a), so a
+	// forged supersession keeps an unlisted attempt running.
+	SupersessionAdmitsRunningAttempt = "graph.supersession-admits-running-attempt"
 	// SupersessionKeepsPredecessor records a replacement but leaves its
 	// predecessor as it was, so the old roster's result is still selected.
 	SupersessionKeepsPredecessor = "graph.supersession-keeps-predecessor"
@@ -212,6 +216,7 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	SuccessorTakesAnyAnswer, AnswerLineageUnchecked, EquivalenceIgnoresRestrictions, EquivalenceIgnoresRoster,
 	GenerationKeepsBase, CarryOverIgnoresPatch, GenerationTakesStale,
 	SupersessionKeepsAttempts, SupersessionKeepsPredecessor, SupersedeTwice, LineageIgnoresSupersession,
+	SupersessionAdmitsRunningAttempt,
 	IsolationUnchecked, RestrictedArtifactRendered,
 	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer, DisplacedQuestionUnchecked,
 	ReuseSkipsAuthority, ContextNeedsNoAuthority,

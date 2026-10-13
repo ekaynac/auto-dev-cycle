@@ -90,16 +90,23 @@ func TestHoldsList(t *testing.T) {
 	c := runCommanded(t, func(w *seeder, op types.ActorID) {
 		node = heldNode(t, w, op)
 		w.heldLease(op)
+		w.heldLease(op, graph.UnitOf(node)) // its unit is the node (M1 P8a): its hold has the node's project
 	})
 	code, out, errb := c.adc(c.op.Reveal(), "holds", "list", "--json")
 	var list struct {
 		Outcome string
 		Items   []types.HoldRead
 	}
-	if code != entry.ExitOK || json.Unmarshal([]byte(out), &list) != nil || len(list.Items) != 2 {
+	if code != entry.ExitOK || json.Unmarshal([]byte(out), &list) != nil || len(list.Items) != 3 {
 		t.Fatalf("holds list: %d %s %s", code, out, errb)
 	}
-	n, l := list.Items[0], list.Items[1]
+	n, l, bound := list.Items[0], list.Items[1], list.Items[2]
+	if l.Project != nil {
+		l, bound = bound, l
+	}
+	if bound.Held != types.HoldReadHeldLease || bound.Project == nil || *bound.Project != graphProject {
+		t.Errorf("the hold of a lease on the node's unit: %+v", bound)
+	}
 	if n.Held != types.HoldReadHeldNode || n.Subject != types.TypeID(node) || n.ID == nil || n.Project == nil || *n.Project != graphProject ||
 		n.Hold != "source_invalid_config" || n.Owner != types.OwnerOperator || n.Since == nil || n.Pages == nil {
 		t.Errorf("the node hold: %+v", n)

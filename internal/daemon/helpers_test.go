@@ -194,9 +194,12 @@ func fullHistory(t *testing.T, w *seeder) types.ActorID {
 }
 
 // heldLease requests a lease and parks it waiting on the quota_reset hold.
-func (w *seeder) heldLease(actor types.ActorID) {
+func (w *seeder) heldLease(actor types.ActorID, unit ...types.UnitID) {
 	w.t.Helper()
 	l := w.lease(1)
+	if len(unit) > 0 {
+		l.Unit = unit[0]
+	}
 	w.do(actor, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) })
 	w.do(actor, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.ChangeLease(tx, l.ID, 1, lease.LeaseEvent{Kind: lease.Waiting,

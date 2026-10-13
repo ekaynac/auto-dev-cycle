@@ -16,6 +16,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/sandbox"
@@ -30,7 +31,7 @@ var loopback = map[string]string{"network": "loopback"}
 func (g *graphFix) runIn(n types.NodeID, setting map[string]string, foreign bool, value []types.Ref, conclusions *json.RawMessage) (Step, error) {
 	st, _, err := g.node(n)
 	rid, rerr := ids.New("res")
-	aid, aerr := ids.New("att")
+	aid, aerr := g.nextAttempt(n)
 	other, oerr := ids.New("att")
 	if err = errors.Join(err, rerr, aerr, oerr); err != nil || st.Key == nil {
 		return Step{}, errors.Join(err, errors.New("the walk is not claimed"))
@@ -46,6 +47,50 @@ func (g *graphFix) runIn(n types.NodeID, setting map[string]string, foreign bool
 		return nil, err
 	})
 	return Step{vocab.Outcome(r.Outcome), r.Reason.String()}, err
+}
+
+// nextAttempt starts n's next attempt under a fresh lease on n's unit (M1
+// P8a): its first, or the successor of its last, which the fixture never
+// ended, so it is still running at its first revision; it is lost, then
+// sealed with the minimal record, then superseded.
+func (g *graphFix) nextAttempt(n types.NodeID) (types.AttemptID, error) {
+	l, att, err := freshLease()
+	l.Unit = graph.UnitOf(n)
+	var last types.AttemptID
+	var continues bool
+	if err == nil {
+		err = g.s.View(g.ctx, func(tx *eventstore.Tx) (err error) {
+			last, continues, err = lease.CurrentAttempt(tx, l.Unit)
+			return err
+		})
+	}
+	base := types.AttemptBase{Tree: types.GitID(treeA), ContractRevision: "7"}
+	steps := []func(*eventstore.Tx) ([]eventstore.Event, error){
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) },
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.ChangeLease(tx, l.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, nil)
+		},
+	}
+	if !continues {
+		steps = append(steps, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StartAttempt(tx, l.ID, 2, att, base) })
+	} else {
+		steps = append(steps,
+			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return lease.LoseRunning(tx, last, types.AttemptLostReasonValueAgentDisconnect)
+			},
+			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return lease.SealMinimal(tx, last, 2, graph.Units{}, g.blobs, nil, types.ActorID(g.actor))
+			},
+			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return lease.SupersedeAttempt(tx, last, 3, l.ID, 2, att, base)
+			})
+	}
+	for _, step := range steps {
+		if err == nil {
+			err = g.do(step)
+		}
+	}
+	return att, err
 }
 
 // emptyIsolationNeverPublished: an evidence result is published only with

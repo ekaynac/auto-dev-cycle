@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +38,8 @@ type testUnits struct{}
 func (testUnits) ProjectTask(*eventstore.Tx, types.UnitID) (types.ProjectID, types.TaskID, bool, error) {
 	return "prj_01m3250vkwffc979nzjw0g2sf9", "tsk_01m3250v9xft08ssr4ygq6g2np", true, nil
 }
+
+func (testUnits) Startable(*eventstore.Tx, types.UnitID) error { return nil }
 
 func openWorld(t *testing.T) *world {
 	t.Helper()
@@ -483,9 +486,117 @@ func TestSubmissionsAndSeals(t *testing.T) {
 	}
 }
 
-// Without the unit binding, no seal is admitted.
+// startOnly admits every start, and binds no unit to a project and task.
+type startOnly struct{}
+
+func (startOnly) ProjectTask(*eventstore.Tx, types.UnitID) (types.ProjectID, types.TaskID, bool, error) {
+	return "", "", false, nil
+}
+
+func (startOnly) Startable(*eventstore.Tx, types.UnitID) error { return nil }
+
+// refusing refuses every start, as graph.Units refuses a node not claimed.
+type refusing struct{ testUnits }
+
+func (refusing) Startable(*eventstore.Tx, types.UnitID) error { return errors.New("not claimed") }
+
+// An attempt starts only on a unit its binding admits (M1 P8a): without the
+// binding, and on a unit it refuses, neither a first attempt nor a
+// successor starts, and the lease stays granted.
+func TestStartNeedsBinding(t *testing.T) {
+	for name, units := range map[string]Units{"no binding": nil, "a refused unit": refusing{}} {
+		w := &world{t: t, dir: filepath.Join(t.TempDir(), "state"), h: holds(t), units: units}
+		w.open()
+		w.granted(requested())
+		if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return StartAttempt(tx, leaID, 2, attA, base) }); err == nil {
+			t.Errorf("%s: an attempt started", name)
+		}
+		if l, _ := get[types.Lease](w, LeaseProjection, string(leaID)); l.State != types.LeaseStateGranted {
+			t.Errorf("%s: the lease is %s", name, l.State)
+		}
+	}
+	// A successor too: the unit's binding is read when it starts.
+	w := openWorld(t)
+	w.granted(requested())
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return StartAttempt(tx, leaID, 2, attA, base) })
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return LoseRunning(tx, attA, types.AttemptLostReasonValueAgentDisconnect)
+	})
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return SealMinimal(tx, attA, 2, w.units, w.blobs, nil, "act_01m3250v0aer9ss2097svmefj8")
+	})
+	w.close()
+	w.units = refusing{}
+	w.open()
+	next := requested()
+	next.ID = leaB
+	w.granted(next)
+	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return SupersedeAttempt(tx, attA, 3, leaB, 2, attB, base)
+	}); err == nil || !strings.Contains(err.Error(), "not claimed") {
+		t.Errorf("a successor on a refused unit: %v", err)
+	}
+}
+
+// M1's minimal AttemptRecord (slice §6 L1): the seal's reason is derived
+// from the attempt; the record binds its attempt, token, base, project and
+// task, names the controller-side diff, holds nothing for a continuation,
+// and is not pinned. A running attempt is not sealed.
+func TestSealMinimal(t *testing.T) {
+	w := openWorld(t)
+	w.granted(requested())
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return StartAttempt(tx, leaID, 2, attA, base) })
+	by := types.ActorID("act_01m3250v0aer9ss2097svmefj8")
+	diff := w.put([]byte("diff --git a/x b/x"))
+	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return SealMinimal(tx, attA, 1, w.units, w.blobs, &diff, by)
+	}); !errors.Is(err, ErrTransition) {
+		t.Errorf("a running attempt sealed: %v", err)
+	}
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return LoseRunning(tx, attA, types.AttemptLostReasonValueControllerRestart)
+	})
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return SealMinimal(tx, attA, 2, w.units, w.blobs, &diff, by)
+	})
+	a, _ := get[types.Attempt](w, AttemptProjection, string(attA))
+	rc, err := w.blobs.Open(string(*a.Checkpoint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	raw, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := contract.Decode[types.AttemptRecord]("records/attempt-record", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Status != types.AttemptStatusSealed || r.Attempt != attA || r.FencingToken != 1 || r.BaseTree != base.Tree || r.ContractRevision != base.ContractRevision ||
+		r.Project != "prj_01m3250vkwffc979nzjw0g2sf9" || r.Task != "tsk_01m3250v9xft08ssr4ygq6g2np" || r.PartialDiff == nil || *r.PartialDiff != diff ||
+		r.Seal.Reason != types.AttemptRecordSealReasonHostRestart || r.Seal.SealedBy != by || r.Pinned || len(r.FailingTests) != 0 || r.BuilderNotes != nil ||
+		r.Trail != r.EvidenceManifest {
+		t.Errorf("the minimal record of a %s attempt: %+v", a.Status, r)
+	}
+	for _, c := range []struct {
+		a    types.Attempt
+		want types.AttemptRecordSealReason
+	}{
+		{types.Attempt{Status: types.AttemptStatusFinishing}, types.AttemptRecordSealReasonCompleted},
+		{types.Attempt{Status: types.AttemptStatusStopping, StopReason: ptr(types.AttemptStopReasonValueDrain)}, types.AttemptRecordSealReasonDrain},
+		{types.Attempt{Status: types.AttemptStatusStopping, StopReason: ptr(types.AttemptStopReasonValuePreempt)}, types.AttemptRecordSealReasonAbruptLoss},
+		{types.Attempt{Status: types.AttemptStatusLost, LostReason: ptr(types.AttemptLostReasonValueStreamDead)}, types.AttemptRecordSealReasonAbruptLoss},
+	} {
+		if got, err := SealReason(c.a); err != nil || got != c.want {
+			t.Errorf("a %s attempt seals as %s (%v), want %s", c.a.Status, got, err, c.want)
+		}
+	}
+}
+
+// Without the unit binding's project and task, no seal is admitted.
 func TestSealNeedsUnits(t *testing.T) {
-	w := &world{t: t, dir: filepath.Join(t.TempDir(), "state"), h: holds(t)}
+	w := &world{t: t, dir: filepath.Join(t.TempDir(), "state"), h: holds(t), units: startOnly{}}
 	w.open()
 	w.granted(requested())
 	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return StartAttempt(tx, leaID, 2, attA, base) })
