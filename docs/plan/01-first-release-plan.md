@@ -816,6 +816,8 @@ moves from M4 into M1's useful-merge checkpoint (D52), together with the safegua
 rejection, a fresh applicable review after a base move and required-configuration checks. M4 keeps the broader
 delivery behaviour: the PR flow, delta-based re-review, forge-configuration holds and lifting per-merge approval. The CTIS-SIMS slice (D21) and the background-work framework (D24) are deferred behind core
 delivery and self-host; the supervisor classifiers (D34) wait for measured decision volume.
+**L4** (operator, 2026-10-13): this repository's pinned Go image and the `go_test_json` result adapter come from M2
+to M1 (P32), for M1's first real target; M2 keeps the TypeScript recipe and the full Go build and package recipes.
 
 ### 4.2 Week targets and the weekly review (D53)
 
