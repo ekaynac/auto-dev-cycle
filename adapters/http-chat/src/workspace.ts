@@ -53,10 +53,15 @@ const code = (e: unknown) => (e as NodeJS.ErrnoException)?.code;
 const at = (d: FileHandle, name: string) => `/proc/self/fd/${d.fd}/${name}`;
 
 /** within: the directory open as d is root (a real path) or under it, by
- *  its descriptor's real path; without /proc it is not. */
+ *  its descriptor's real path, with no .git look-alike on the way; without
+ *  /proc it is not. Residuals (Astra, #250): a held directory moved out of
+ *  the root, or under .git, after this check still takes the operation.
+ *  That is acceptable only while the edit loop is the workspace's sole
+ *  writer; exclusive filesystem mutation must be an enforced launch
+ *  invariant before any executable or concurrent tool (#226). */
 export async function within(root: string, d: FileHandle): Promise<boolean> {
   const real = await realpath(`/proc/self/fd/${d.fd}`).catch(() => "");
-  return real === root || real.startsWith(root + sep);
+  return real === root || (real.startsWith(root + sep) && !real.slice(root.length + 1).split(sep).some(gitLike));
 }
 
 /** Walk holds a path's directories open, root first; made are the ones it created. */
@@ -74,10 +79,17 @@ export class Workspace {
   readonly writable: boolean;
   /** The original content of each changed path, null when it did not exist. */
   private readonly originals = new Map<string, string | null>();
+  private kept = 0; // the bytes of originals
+  /** budgets: the original bytes kept (32 MiB), and the patch's bytes,
+   *  under the controller's 64 MiB patch bound (60 MiB). */
+  readonly budgets: { originals: number; patch: number };
+  /** settle runs just before a walk's containment check: a test's sync point. */
+  private settle = async (_: FileHandle) => {};
 
-  constructor(root: string, writable: boolean) {
+  constructor(root: string, writable: boolean, budgets = { originals: 32 << 20, patch: 60 << 20 }) {
     this.root = root;
     this.writable = writable;
+    this.budgets = budgets;
   }
 
   /** walk opens dirs one by one from the root, creating missing ones when
@@ -97,6 +109,7 @@ export class Workspace {
         }
         w.dirs.push(d);
       }
+      await this.settle(w.dir);
       if (!(await within(root, w.dir))) throw new ConfinementError("the directory resolves outside the workspace");
       return w;
     } catch (e) {
@@ -126,23 +139,34 @@ export class Workspace {
     }
   }
 
+  /** inspect checks an open file: a regular file and its only link, so no
+   *  read or change reaches a hard link to a file elsewhere. */
+  private async inspect(f: FileHandle) {
+    const st = await f.stat();
+    if (!st.isFile()) throw new ConfinementError("not a regular file");
+    if (st.nlink !== 1) throw new ConfinementError("the file has another hard link, which a read or change would reach");
+    return st;
+  }
+
   /** pin opens name in w's directory, never blocking or following a link,
-   *  and checks it is a regular file and, for a change, its only link. */
-  private async pin(w: Walk, name: string, flags: number, change: boolean) {
+   *  and inspects it. A file it created (O_EXCL) that fails inspection is
+   *  removed, only while the name still holds that inode. */
+  private async pin(w: Walk, name: string, flags: number) {
     const f = await open(at(w.dir, name), flags | O_NOFOLLOW | O_NONBLOCK, 0o644);
     try {
-      const st = await f.stat();
-      if (!st.isFile()) throw new ConfinementError("not a regular file");
-      if (change && st.nlink > 1) throw new ConfinementError("the file has another hard link, which a change would reach");
-      return { f, st };
+      return { f, st: await this.inspect(f) };
     } catch (e) {
+      if (flags & O_EXCL) {
+        const [mine, now] = [await f.stat(), await lstat(at(w.dir, name)).catch(() => null)];
+        if (now && now.dev === mine.dev && now.ino === mine.ino) await unlink(at(w.dir, name)).catch(() => undefined);
+      }
       await f.close();
       throw e;
     }
   }
 
   private async readText(w: Walk, name: string): Promise<string> {
-    const { f, st } = await this.pin(w, name, O_RDONLY, false);
+    const { f, st } = await this.pin(w, name, O_RDONLY);
     try {
       if (st.size > maxFileBytes) throw new ConfinementError(`the file is over ${maxFileBytes} bytes`);
       try {
@@ -187,7 +211,12 @@ export class Workspace {
     const key = parts.join("/");
     await this.inside(parts, create, async (w, name, st) => {
       if (st && !st.isFile()) throw new ConfinementError(`${key} is not a regular file`);
-      if (!this.originals.has(key)) this.originals.set(key, st ? await this.readText(w, name) : null);
+      if (!this.originals.has(key)) {
+        if (st && this.kept + Number(st.size) > this.budgets.originals) throw new ConfinementError(`the run has changed files of ${this.kept} bytes; no more fit its budget`);
+        const original = st ? await this.readText(w, name) : null;
+        this.kept += original === null ? 0 : Buffer.byteLength(original);
+        this.originals.set(key, original);
+      }
       await f(w, name, st !== null);
     });
   }
@@ -196,9 +225,8 @@ export class Workspace {
     if (typeof content !== "string" || Buffer.byteLength(content) > maxFileBytes) throw new ConfinementError(`content is a string of at most ${maxFileBytes} bytes`);
     await this.change(rel, true, async (w, name, existed) => {
       // A new file is created exclusively, so an existing one is never adopted;
-      // only a file this call created is removed on a refusal.
-      const { f } = await this.pin(w, name, existed ? O_WRONLY : O_WRONLY | O_CREAT | O_EXCL, true).catch(async (e) => {
-        if (!existed && code(e) !== "EEXIST") await unlink(at(w.dir, name)).catch(() => undefined);
+      // a failed open removes nothing (pin removes only what it created).
+      const { f } = await this.pin(w, name, existed ? O_WRONLY : O_WRONLY | O_CREAT | O_EXCL).catch((e) => {
         throw code(e) === "EEXIST" ? new ConfinementError("the file appeared during the write") : e;
       });
       try {
@@ -213,22 +241,27 @@ export class Workspace {
   async remove(rel: unknown): Promise<void> {
     await this.change(rel, false, async (w, name, existed) => {
       if (!existed) throw new ConfinementError("the file does not exist");
-      const { f } = await this.pin(w, name, O_RDONLY, true);
+      const { f } = await this.pin(w, name, O_RDONLY);
       await f.close();
       await unlink(at(w.dir, name));
     });
   }
 
-  /** patch is the run's cumulative change as a unified diff ("" for none). */
+  /** patch is the run's cumulative change as a unified diff ("" for none).
+   *  A changed file it cannot read, or a patch over its budget, refuses. */
   async patch(): Promise<string> {
-    let out = "";
+    const out: string[] = [];
+    let size = 0;
     for (const key of [...this.originals.keys()].sort()) {
-      const now = await this.inside(key.split("/"), false, async (w, name, st) => (st?.isFile() ? this.readText(w, name) : null)).catch((e) =>
-        e instanceof ConfinementError ? null : Promise.reject(e),
+      const now = await this.inside(key.split("/"), false, async (w, name, st) => (st ? this.readText(w, name) : null)).catch((e) =>
+        e instanceof ConfinementError && /does not exist/.test(e.message) ? null : Promise.reject(e),
       );
-      out += fileDiff(key, this.originals.get(key) ?? null, now);
+      const d = fileDiff(key, this.originals.get(key) ?? null, now);
+      size += Buffer.byteLength(d);
+      if (size > this.budgets.patch) throw new ConfinementError(`the patch would pass its ${this.budgets.patch}-byte budget`);
+      out.push(d);
     }
-    return out;
+    return out.join("");
   }
 }
 

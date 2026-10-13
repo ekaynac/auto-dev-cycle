@@ -299,6 +299,26 @@ test("F: a turn reporting no usage counts its whole allowance against the output
   assert.equal(s.seen.length, 1);
 });
 
+test("F: a decision with a duplicated key or a lone surrogate is degenerate, never a GO", async (t) => {
+  const raw = '{"decision":"go","summary":"' + "\ud800" + '","findings":[]}'; // a raw lone surrogate
+  for (const content of ['{"decision":"no_go","decision":"go","summary":"x","findings":[]}', '{"decision":"go","summary":"\\ud800","findings":[]}', raw]) {
+    const d = dirs(t, "review");
+    const s = await withStub(t, [reply({ content })]);
+    const r = result(await session(new HttpChatAdapter(), prepare(d, s, "reviewer"), runParams(d)));
+    assert.deepEqual([r.outcome, r.reason], ["could_not_run", "degenerate_output"], content);
+    assert.ok(!existsSync(join(d.out, "decision.json")));
+  }
+});
+
+test("F: usage without its mandatory counters is unknown, and counts the whole allowance", async (t) => {
+  for (const usage of [{}, [], { prompt_tokens: 5 }, { prompt_tokens: 5, completion_tokens: -1 }]) {
+    const d = dirs(t);
+    const s = await withStub(t, [reply({ tool_calls: [call("c1", "list_dir", { path: "" })] }, usage), reply({ content: "done" }, usage)]);
+    const msgs = await session(new HttpChatAdapter(), prepare(d, s, "builder", { limits: { max_turns: 6, max_output_tokens: 100, wall_seconds: 60 } }), runParams(d));
+    assert.deepEqual([result(msgs).reason, result(msgs).usage_final, events(msgs, "usage").length, s.seen.length], ["executor_incomplete", null, 0, 1], JSON.stringify(usage));
+  }
+});
+
 test("prepare refuses what http-chat does not serve", async (t) => {
   const d = dirs(t);
   const s = await withStub(t, []);

@@ -63,12 +63,13 @@ test("a write and its undo leave no patch; a read-only workspace refuses writes"
   assert.equal(readFileSync(join(d, "f"), "utf8"), "a\n");
 });
 
-test("F: a file hard-linked to one outside is never written or removed", async (t) => {
+test("F: a file hard-linked to one outside is never read, written or removed", async (t) => {
   const d = scratch(t);
   mkdirSync(join(d, "ws"));
   writeFileSync(join(d, "outside.txt"), "outside\n");
   linkSync(join(d, "outside.txt"), join(d, "ws", "h"));
   const w = new Workspace(join(d, "ws"), true);
+  await assert.rejects(w.read("h"), /hard link/);
   await assert.rejects(w.write("h", "pwned"), /hard link/);
   await assert.rejects(w.remove("h"), /hard link/);
   assert.equal(readFileSync(join(d, "outside.txt"), "utf8"), "outside\n");
@@ -109,9 +110,9 @@ test("F: a parent swapped for a symlink after the walk redirects nothing: no wri
 
 test("F: a directory whose descriptor resolves outside the root is not within it", async (t) => {
   const d = scratch(t);
-  for (const p of ["ws/sub", "outside"]) mkdirSync(join(d, p), { recursive: true });
+  for (const p of ["ws/sub", "ws/.Git/sub", "outside"]) mkdirSync(join(d, p), { recursive: true });
   const root = realpathSync(join(d, "ws"));
-  for (const [p, want] of [["ws", true], ["ws/sub", true], ["outside", false], ["", false]] as const) {
+  for (const [p, want] of [["ws", true], ["ws/sub", true], ["outside", false], ["", false], ["ws/.Git/sub", false]] as const) {
     const h = await open(join(d, p), constants.O_RDONLY | constants.O_DIRECTORY);
     t.after(() => h.close());
     assert.equal(await within(root, h), want, p);
@@ -140,6 +141,61 @@ test("F: a file that appears during a write is never adopted, nor removed", asyn
   };
   await assert.rejects(w.write("f.txt", "pwned"), /appeared/);
   assert.equal(readFileSync(join(d, "f.txt"), "utf8"), "theirs\n");
+});
+
+test("F: a create whose open fails removes nothing, even a file now at the name", async (t) => {
+  const d = scratch(t);
+  const w = new Workspace(d, true);
+  (w as any).pin = async () => {
+    writeFileSync(join(d, "f.txt"), "theirs\n"); // another writer, then the open fails for another reason
+    throw Object.assign(new Error("too many open files"), { code: "EMFILE" });
+  };
+  await assert.rejects(w.write("f.txt", "x"), /too many open files/);
+  assert.equal(readFileSync(join(d, "f.txt"), "utf8"), "theirs\n");
+});
+
+test("F: a created file refused at inspection is removed only while the name still holds it", async (t) => {
+  const d = scratch(t);
+  const w = new Workspace(d, true);
+  const inspect = (w as any).inspect.bind(w);
+  // Its own inode, given a second link: refused, and its name removed (the other link stays).
+  (w as any).inspect = async (f: any) => (linkSync(join(d, "a.txt"), join(d, "a-link")), inspect(f));
+  await assert.rejects(w.write("a.txt", "x"), /hard link/);
+  assert.deepEqual(readdirSync(d).sort(), ["a-link"]);
+  // Replaced by another file before the refusal: the replacement stays.
+  (w as any).inspect = async () => {
+    renameSync(join(d, "b.txt"), join(d, "b-mine"));
+    writeFileSync(join(d, "b.txt"), "theirs\n");
+    throw new ConfinementError("refused");
+  };
+  await assert.rejects(w.write("b.txt", "x"), /refused/);
+  assert.equal(readFileSync(join(d, "b.txt"), "utf8"), "theirs\n");
+});
+
+test("F: a held directory moved out of the root, or under .git, before the containment check is refused", async (t) => {
+  const d = scratch(t);
+  for (const p of ["ws/sub", "ws/.git", "outside"]) mkdirSync(join(d, p), { recursive: true });
+  const w = new Workspace(join(d, "ws"), true);
+  // The sync point: the walk holds sub/, which moves just before the check.
+  for (const to of [join(d, "outside", "sub"), join(d, "ws", ".git", "sub")]) {
+    (w as any).settle = async () => renameSync(join(d, "ws", "sub"), to);
+    await assert.rejects(w.write("sub/x.txt", "pwned"), /outside the workspace/);
+    assert.deepEqual(readdirSync(to), [], to);
+    renameSync(to, join(d, "ws", "sub"));
+  }
+});
+
+test("F: the originals kept and the patch stay within their budgets", async (t) => {
+  const d = scratch(t);
+  writeFileSync(join(d, "a"), "12345678");
+  writeFileSync(join(d, "b"), "12345678");
+  const w = new Workspace(d, true, { originals: 10, patch: 1 << 20 });
+  await w.remove("a");
+  await assert.rejects(w.remove("b"), /budget/);
+  assert.ok(existsSync(join(d, "b")));
+  const p = new Workspace(d, true, { originals: 1 << 20, patch: 50 });
+  await p.write("c", "x".repeat(100));
+  await assert.rejects(p.patch(), /budget/);
 });
 
 test("list_dir stops at 1000 entries", async (t) => {

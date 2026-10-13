@@ -17,7 +17,7 @@ import type { AdapterOutcome } from "@adc/contract-gen/types/adapter/outcome.ts"
 import type { AdapterPrepareParams } from "@adc/contract-gen/types/adapter/prepare-params.ts";
 import type { AdapterRunParams } from "@adc/contract-gen/types/adapter/run-params.ts";
 import type { AdapterRunResult } from "@adc/contract-gen/types/adapter/run-result.ts";
-import { Adapter, digestOf, type EventBody, type Handle, handlePattern, writeOutput } from "@adc/contract";
+import { Adapter, digestOf, type EventBody, type Handle, handlePattern, parseStrict, writeOutput } from "@adc/contract";
 import { chat, classify, type ChatRequest, type Failure, type Gateway } from "./gateway.ts";
 import { ConfinementError, Workspace } from "./workspace.ts";
 
@@ -75,7 +75,9 @@ function toolCalls(raw: unknown): ToolCall[] | null {
  *  is the upstream's when reported (OpenRouter's usage.cost, in USD), else
  *  zero marked as an estimate: the controller prices the tokens. */
 function usageOf(u: any, ms: number): Usage | null {
-  if (typeof u !== "object" || u === null) return null;
+  const valid = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
+  // Without both mandatory counters the report is unknown: the caller counts the whole allowance.
+  if (typeof u !== "object" || u === null || !valid(u.prompt_tokens) || !valid(u.completion_tokens)) return null;
   const cached = Math.min(count(u.prompt_tokens_details?.cached_tokens), count(u.prompt_tokens));
   const cost = typeof u.cost === "number" && Number.isFinite(u.cost) && u.cost >= 0 ? Math.round(u.cost * 1e6) : null;
   return {
@@ -260,7 +262,8 @@ export class HttpChatAdapter extends Adapter {
       if (role === "reviewer") {
         let decision: unknown;
         try {
-          decision = JSON.parse(content ?? "");
+          // Strict: a duplicated key (two decisions), a lone surrogate or a non-integer number is refused.
+          decision = content?.isWellFormed() ? parseStrict(content, 100_000) : undefined;
         } catch {
           decision = undefined;
         }
@@ -268,7 +271,13 @@ export class HttpChatAdapter extends Adapter {
         const h = await writeOutput(p.exchange.out, p.attempt, "decision.json", JSON.stringify(decision));
         return { outcome: "found", reason: "completed_with_findings", detail: "the reviewer's decision", result: { kind: "decision", handle: h }, usage_final: final };
       }
-      const patch = await workspace.patch();
+      let patch: string;
+      try {
+        patch = await workspace.patch();
+      } catch (e) {
+        if (e instanceof ConfinementError) return ended("executor_incomplete", `no admissible patch: ${e.message}`);
+        throw e;
+      }
       if (patch === "") return { outcome: "empty", reason: "completed_clean", detail: "", result: null, usage_final: final };
       const h = await writeOutput(p.exchange.out, p.attempt, "patch.diff", patch);
       return { outcome: "found", reason: "completed_with_findings", detail: "the builder's patch", result: { kind: "patch", handle: h }, usage_final: final };
