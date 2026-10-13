@@ -990,141 +990,185 @@ components:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/board.json
       title: BoardCard
-      description: 'One record of GET /v1/board (docs/plan/01 §2.2 "Board and validated pull", D51; M1 slice plan P4b): a task''s card, derived only from its task record and its graph nodes in the read''s snapshot, with its node cards. Its column is never written: a card whose column the records do not determine fails the read. A card carries references only, never the task''s acceptance (its attachments'' names or digests) nor the spec digest computed over them. The title is untrusted text.'
-      type: object
-      additionalProperties: false
-      required:
-        - id
-        - project
-        - title
-        - column
-        - admitted
-        - approval
-        - created_at
-        - nodes
-      properties:
-        id:
-          $ref: ../common/defs.json#/$defs/TaskID
-        project:
-          $ref: ../common/defs.json#/$defs/ProjectID
-        title:
-          type: string
-          minLength: 1
-          maxLength: 200
-        column:
-          description: 'awaiting_approval: Ready, its spec''s approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node completed go, merge inactive.'
-          enum:
-            - awaiting_approval
-            - ready
-            - running
-            - verifying
-            - done_candidate
-        admitted:
-          description: 'The admitted badge: the task holds admitted WIP, held or not.'
-          type: boolean
-        approval:
-          description: 'Its spec''s approval: none, in force, or revoked.'
-          enum:
-            - none
-            - in_force
-            - revoked
-        created_at:
-          $ref: ../common/defs.json#/$defs/Time
-        nodes:
-          description: The task's nodes in node id order, superseded ones included as history.
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required:
-              - id
-              - kind
-              - round
-              - state
-              - holds
-              - waiting
-            properties:
-              id:
-                $ref: ../common/defs.json#/$defs/NodeID
-              kind:
-                enum:
-                  - plan
-                  - build
-                  - accept
-                  - gate
-                  - review
-                  - review_requirement
-              round:
-                type: integer
-                minimum: 1
-                maximum: 9007199254740991
-              state:
-                enum:
-                  - waiting
-                  - runnable
-                  - held
-                  - claimed
-                  - completed
-                  - superseded
-              holds:
-                description: 'The external waits, one badge per hold: what holds, the signal that resumes it, its owner and its age at the read.'
-                type: array
-                items:
-                  type: object
-                  additionalProperties: false
-                  required:
-                    - id
-                    - hold
-                    - signal_instance
-                    - owner
-                    - owner_ref
-                    - since
-                    - age_seconds
-                  properties:
-                    id:
-                      $ref: ../common/defs.json#/$defs/HoldID
-                    hold:
-                      type: string
-                      pattern: ^[a-z][a-z0-9_]*$
-                    signal_instance:
-                      type: string
-                      minLength: 1
-                      maxLength: 1024
-                    owner:
-                      $ref: ../vocab/registry.json#/$defs/Owner
-                    owner_ref:
-                      oneOf:
-                        - type: "null"
-                        - type: string
-                          minLength: 1
-                          maxLength: 256
-                    since:
-                      $ref: ../common/defs.json#/$defs/Time
-                    age_seconds:
-                      type: integer
-                      minimum: 0
-                      maximum: 9007199254740991
-              waiting:
-                description: The structural waits (waiting(input)), one badge per missing input, naming its producer node or the owed input it answers.
-                type: array
-                items:
-                  type: object
-                  additionalProperties: false
-                  required:
-                    - input
-                    - producer
-                    - owed_input
-                  properties:
-                    input:
-                      $ref: ../records/receipt.json#/$defs/Name
-                    producer:
-                      oneOf:
-                        - type: "null"
-                        - $ref: ../common/defs.json#/$defs/NodeID
-                    owed_input:
-                      oneOf:
-                        - type: "null"
-                        - $ref: ../common/defs.json#/$defs/OwedInputID
+      description: 'One record of GET /v1/board (docs/plan/01 §2.2 "Board and validated pull", D51; M1 slice plan P4b): a task''s card, derived only from its task record and its graph nodes in the read''s snapshot, placed in its column, or unplaced, with no column and a coarse reason, when its records do not determine one. A board read covers the task and hold data of the projects it reads, by design: a card carries the task''s id, project, title, state of approval and admission and creation time, and each node''s hold badges with the hold''s id, hold, signal instance, owner, since and age; owner_ref only when the reader''s scope also reads holds in that project. It never carries the task''s requirement or acceptance (its attachments'' names or digests), the spec digest computed over them, a hold''s reason, escalation or pages. The title is untrusted text.'
+      oneOf:
+        - $ref: '#/$defs/BoardPlacedCard'
+        - $ref: '#/$defs/BoardUnplacedCard'
+      $defs:
+        BoardPlacedCard:
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - id
+            - project
+            - title
+            - column
+            - admitted
+            - approval
+            - created_at
+            - nodes
+          properties:
+            type:
+              const: placed
+            id:
+              $ref: ../common/defs.json#/$defs/TaskID
+            project:
+              $ref: ../common/defs.json#/$defs/ProjectID
+            title:
+              type: string
+              minLength: 1
+              maxLength: 200
+            column:
+              description: 'awaiting_approval: Ready, its spec''s approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task''s latest round completed go, merge inactive.'
+              enum:
+                - awaiting_approval
+                - ready
+                - running
+                - verifying
+                - done_candidate
+            admitted:
+              description: 'The admitted badge: the task holds admitted WIP, held or not.'
+              type: boolean
+            approval:
+              description: 'Its spec''s approval: none, in force, or revoked.'
+              enum:
+                - none
+                - in_force
+                - revoked
+            created_at:
+              $ref: ../common/defs.json#/$defs/Time
+            nodes:
+              description: The task's nodes in node id order, superseded ones included as history.
+              type: array
+              items:
+                $ref: '#/$defs/BoardNodeCard'
+        BoardUnplacedCard:
+          description: 'A task whose column its records do not determine: never placed. Its project is its task record''s, else the one its nodes pinned; null (read only under an every-project read) when neither is readable.'
+          type: object
+          additionalProperties: false
+          required:
+            - type
+            - id
+            - project
+            - reason
+          properties:
+            type:
+              const: unplaced
+            id:
+              $ref: ../common/defs.json#/$defs/TaskID
+            project:
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/ProjectID
+            reason:
+              description: 'task_unrecorded: nodes of no task record; nodes_before_admission: nodes of a task not admitted; unknown_state: a task state or approval status the board does not know; deferred_node_kind: a node kind outside M1(a)''s template; node_in_another_project: a node outside its task''s project; undeclared_wait: a wait on an input the node does not declare; damaged_record: a record that cannot be read as one (a task record, a selected result, a hold''s since).'
+              enum:
+                - task_unrecorded
+                - nodes_before_admission
+                - unknown_state
+                - deferred_node_kind
+                - node_in_another_project
+                - undeclared_wait
+                - damaged_record
+        BoardNodeCard:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - kind
+            - round
+            - state
+            - holds
+            - waiting
+          properties:
+            id:
+              $ref: ../common/defs.json#/$defs/NodeID
+            kind:
+              enum:
+                - plan
+                - build
+                - accept
+                - gate
+                - review
+                - review_requirement
+            round:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+            state:
+              enum:
+                - waiting
+                - runnable
+                - held
+                - claimed
+                - completed
+                - superseded
+            holds:
+              description: The external waits, one badge per hold.
+              type: array
+              items:
+                $ref: '#/$defs/BoardHoldBadge'
+            waiting:
+              description: The structural waits (waiting(input)), one badge per missing input.
+              type: array
+              items:
+                $ref: '#/$defs/BoardWaitBadge'
+        BoardHoldBadge:
+          description: 'A hold''s badge: fields of api/hold.json (what holds, the signal that resumes it, its owner, since when) and its age at the read. owner_ref is null unless the reader also reads holds in the project.'
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - hold
+            - signal_instance
+            - owner
+            - owner_ref
+            - since
+            - age_seconds
+          properties:
+            id:
+              $ref: ../common/defs.json#/$defs/HoldID
+            hold:
+              type: string
+              pattern: ^[a-z][a-z0-9_]*$
+            signal_instance:
+              type: string
+              minLength: 1
+              maxLength: 1024
+            owner:
+              $ref: ../vocab/registry.json#/$defs/Owner
+            owner_ref:
+              oneOf:
+                - type: "null"
+                - type: string
+                  minLength: 1
+                  maxLength: 256
+            since:
+              $ref: ../common/defs.json#/$defs/Time
+            age_seconds:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+        BoardWaitBadge:
+          description: A missing input's badge, naming its producer node or the owed input it answers.
+          type: object
+          additionalProperties: false
+          required:
+            - input
+            - producer
+            - owed_input
+          properties:
+            input:
+              $ref: ../records/receipt.json#/$defs/Name
+            producer:
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/NodeID
+            owed_input:
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/OwedInputID
     api.bootstrap-request:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/bootstrap-request.json

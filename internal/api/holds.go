@@ -21,7 +21,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -35,7 +34,7 @@ import (
 var holds = Resource{
 	Domain: "hold",
 	Schema: "api/hold.json",
-	List: func(tx *eventstore.Tx, _ time.Time) ([]any, error) {
+	List: func(tx *eventstore.Tx, _ ReadAt) ([]any, error) {
 		nodes, err := graph.Held(tx)
 		if err != nil {
 			return nil, err

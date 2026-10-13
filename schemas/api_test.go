@@ -159,8 +159,9 @@ func TestReadResponses(t *testing.T) {
 		"owner_ref": nil, "since": "2026-10-07T00:00:00Z", "age_seconds": 90}
 	wait := map[string]any{"input": "candidate", "producer": "nod_01m3250vkwffc979nzjw0g2sf9", "owed_input": nil}
 	nodeCard := map[string]any{"id": "nod_01m3250vkwffc979nzjw0g2sf9", "kind": "gate", "round": 1, "state": "held", "holds": []any{badge}, "waiting": []any{wait}}
-	card := map[string]any{"id": "tsk_01m3250vkwffc979nzjw0g2sf9", "project": prjID, "title": "fix the parser", "column": "verifying", "admitted": true,
-		"approval": "in_force", "created_at": "2026-10-07T00:00:00Z", "nodes": []any{nodeCard}}
+	card := map[string]any{"type": "placed", "id": "tsk_01m3250vkwffc979nzjw0g2sf9", "project": prjID, "title": "fix the parser", "column": "verifying",
+		"admitted": true, "approval": "in_force", "created_at": "2026-10-07T00:00:00Z", "nodes": []any{nodeCard}}
+	unplaced := map[string]any{"type": "unplaced", "id": "tsk_01m3250vkwffc979nzjw0g2sf9", "project": nil, "reason": "task_unrecorded"}
 	for _, c := range []struct {
 		schema string
 		d      map[string]any
@@ -169,7 +170,8 @@ func TestReadResponses(t *testing.T) {
 		{"api/seat", seat}, {"api/seat", with(with(seat, "holder", nil), "handover", nil)},
 		{"api/seat", with(seat, "handover", map[string]any{"requested_by": opID, "requested_at": "2026-10-07T00:00:00Z", "force_after": nil})},
 		{"api/note", note}, {"api/note", with(note, "subject", prpID)}, {"api/hold", nodeHold}, {"api/hold", leaseHold},
-		{"api/board", card}, {"api/board", with(with(card, "nodes", []any{}), "column", "awaiting_approval")}} {
+		{"api/board", card}, {"api/board", with(with(card, "nodes", []any{}), "column", "awaiting_approval")},
+		{"api/board", unplaced}, {"api/board", with(unplaced, "project", prjID)}} {
 		if err := valid(t, c.schema, c.d); err != nil {
 			t.Errorf("%s: %v", c.schema, err)
 		}
@@ -178,40 +180,46 @@ func TestReadResponses(t *testing.T) {
 		schema string
 		d      map[string]any
 	}{
-		"a failed read":            {"api/read-list", with(list, "outcome", "failed")},
-		"a resource path":          {"api/read-list", with(list, "resource", "v1/grants")},
-		"no items":                 {"api/read-list", without(list, "items")},
-		"a scalar item":            {"api/read-list", with(list, "items", []any{"x"})},
-		"the system actor":         {"api/whoami", with(who, "kind", "system")},
-		"a token hash":             {"api/whoami", with(who, "token_hash", "$argon2id$")},
-		"an unknown listener":      {"api/whoami", with(who, "listener", "tcp")},
-		"reads without a summary":  {"api/whoami", with(who, "reads", map[string]any{"everything": true})},
-		"a grant's approval":       {"api/grant", with(grant, "approval", aprID)},
-		"a grant never revoked":    {"api/grant", without(grant, "revoked_at")},
-		"a proposal's scope":       {"api/proposal", with(proposal, "scope", map[string]any{})},
-		"a binding digest":         {"api/proposal", with(proposal, "binding_digest", dgA)},
-		"an expected state":        {"api/proposal", with(proposal, "expected_state", map[string]any{"version": 0})},
-		"an unknown status":        {"api/proposal", with(proposal, "status", "pending")},
-		"an object digest":         {"api/proposal", with(proposal, "object", map[string]any{"type": "grant", "id": grtID, "version": 0, "digest": dgA})},
-		"a seat in a project":      {"api/seat", with(seat, "project", prjID)},
-		"a seat's raw request":     {"api/seat", with(seat, "request", map[string]any{})},
-		"a seat without version":   {"api/seat", without(seat, "version")},
-		"a negative seat version":  {"api/seat", with(seat, "version", -1)},
-		"a handover's transition":  {"api/seat", with(seat, "handover", map[string]any{"requested_by": opID, "requested_at": "2026-10-07T00:00:00Z", "force_after": nil, "transition": "seat.handover_requested"})},
-		"a note outside projects":  {"api/note", with(note, "project", nil)},
-		"an empty note":            {"api/note", with(note, "body", "")},
-		"a note's escape code":     {"api/note", with(note, "body", "\x1b[2J")},
-		"a note beyond its form":   {"api/note", with(note, "rendered", "<b>x</b>")},
-		"a hold on another record": {"api/hold", with(nodeHold, "subject", grtID)},
-		"an unknown holder":        {"api/hold", with(leaseHold, "held", "task")},
-		"a hold without pages":     {"api/hold", without(leaseHold, "pages")},
-		"a hold's escalation":      {"api/hold", with(nodeHold, "escalate_to", nil)},
-		"a page beyond its form":   {"api/hold", with(nodeHold, "pages", []any{with(page, "body", "x")})},
-		"a card's acceptance":      {"api/board", with(card, "acceptance", []any{})},
-		"a card's spec digest":     {"api/board", with(card, "spec_digest", dgA)},
-		"a column not derived":     {"api/board", with(card, "column", "merge_ready")},
-		"a deferred node kind":     {"api/board", with(card, "nodes", []any{with(nodeCard, "kind", "merge")})},
-		"a badge without its age":  {"api/board", with(card, "nodes", []any{with(nodeCard, "holds", []any{without(badge, "age_seconds")})})},
+		"a failed read":              {"api/read-list", with(list, "outcome", "failed")},
+		"a resource path":            {"api/read-list", with(list, "resource", "v1/grants")},
+		"no items":                   {"api/read-list", without(list, "items")},
+		"a scalar item":              {"api/read-list", with(list, "items", []any{"x"})},
+		"the system actor":           {"api/whoami", with(who, "kind", "system")},
+		"a token hash":               {"api/whoami", with(who, "token_hash", "$argon2id$")},
+		"an unknown listener":        {"api/whoami", with(who, "listener", "tcp")},
+		"reads without a summary":    {"api/whoami", with(who, "reads", map[string]any{"everything": true})},
+		"a grant's approval":         {"api/grant", with(grant, "approval", aprID)},
+		"a grant never revoked":      {"api/grant", without(grant, "revoked_at")},
+		"a proposal's scope":         {"api/proposal", with(proposal, "scope", map[string]any{})},
+		"a binding digest":           {"api/proposal", with(proposal, "binding_digest", dgA)},
+		"an expected state":          {"api/proposal", with(proposal, "expected_state", map[string]any{"version": 0})},
+		"an unknown status":          {"api/proposal", with(proposal, "status", "pending")},
+		"an object digest":           {"api/proposal", with(proposal, "object", map[string]any{"type": "grant", "id": grtID, "version": 0, "digest": dgA})},
+		"a seat in a project":        {"api/seat", with(seat, "project", prjID)},
+		"a seat's raw request":       {"api/seat", with(seat, "request", map[string]any{})},
+		"a seat without version":     {"api/seat", without(seat, "version")},
+		"a negative seat version":    {"api/seat", with(seat, "version", -1)},
+		"a handover's transition":    {"api/seat", with(seat, "handover", map[string]any{"requested_by": opID, "requested_at": "2026-10-07T00:00:00Z", "force_after": nil, "transition": "seat.handover_requested"})},
+		"a note outside projects":    {"api/note", with(note, "project", nil)},
+		"an empty note":              {"api/note", with(note, "body", "")},
+		"a note's escape code":       {"api/note", with(note, "body", "\x1b[2J")},
+		"a note beyond its form":     {"api/note", with(note, "rendered", "<b>x</b>")},
+		"a hold on another record":   {"api/hold", with(nodeHold, "subject", grtID)},
+		"an unknown holder":          {"api/hold", with(leaseHold, "held", "task")},
+		"a hold without pages":       {"api/hold", without(leaseHold, "pages")},
+		"a hold's escalation":        {"api/hold", with(nodeHold, "escalate_to", nil)},
+		"a page beyond its form":     {"api/hold", with(nodeHold, "pages", []any{with(page, "body", "x")})},
+		"a card's acceptance":        {"api/board", with(card, "acceptance", []any{})},
+		"a card's spec digest":       {"api/board", with(card, "spec_digest", dgA)},
+		"a column not derived":       {"api/board", with(card, "column", "merge_ready")},
+		"a deferred node kind":       {"api/board", with(card, "nodes", []any{with(nodeCard, "kind", "merge")})},
+		"a badge without its age":    {"api/board", with(card, "nodes", []any{with(nodeCard, "holds", []any{without(badge, "age_seconds")})})},
+		"a badge's hold reason":      {"api/board", with(card, "nodes", []any{with(nodeCard, "holds", []any{with(badge, "reason", nil)})})},
+		"an unplaced card's column":  {"api/board", with(unplaced, "column", "ready")},
+		"an unplaced card's nodes":   {"api/board", with(unplaced, "nodes", []any{})},
+		"an unknown unplaced reason": {"api/board", with(unplaced, "reason", "other")},
+		"a placed card's reason":     {"api/board", with(card, "reason", "task_unrecorded")},
+		"a card of no type":          {"api/board", without(card, "type")},
 	} {
 		if valid(t, c.schema, c.d) == nil {
 			t.Errorf("%s: accepted", name)

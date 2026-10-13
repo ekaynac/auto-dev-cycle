@@ -76,6 +76,10 @@ type TaskApproval struct {
 	RevokedAt *types.Time      `json:"revoked_at"`
 }
 
+// TaskIDs is every recorded task's id, in id order: the keys under the
+// tsk_ prefix, never the ready/ and approver/ indexes.
+func TaskIDs(tx *eventstore.Tx) ([]types.TaskID, error) { return tx.Keys(TaskProjection, "tsk_") }
+
 // TaskKinds registers the task event kind; its payload is records/task.
 func TaskKinds() eventstore.Kinds { return eventstore.Kinds{TaskCreated: {Schema: "records/task"}} }
 

@@ -153,7 +153,8 @@ func Held(tx *eventstore.Tx) ([]NodeHolds, error) {
 }
 
 // NodeView is a node as recorded, with its task, project and state, and
-// the outcome of its selected result (nil: none selected).
+// the outcome of its selected result: nil when none is selected, or when
+// the results projection does not hold it (State.Result tells which).
 type NodeView struct {
 	Node    types.Node
 	Task    types.TaskID
@@ -162,8 +163,13 @@ type NodeView struct {
 	Outcome *types.Outcome
 }
 
-// Nodes is every node, in node id order (the board, M1 P4b). A selected
-// result the results projection does not hold is damage.
+// TaskProject is the project task's first node pinned (graph_tasks);
+// false: the task has no node.
+func TaskProject(tx *eventstore.Tx, task types.TaskID) (types.ProjectID, bool, error) {
+	return load[types.ProjectID](tx, TaskProjection, string(task))
+}
+
+// Nodes is every node, in node id order (the board, M1 P4b).
 func Nodes(tx *eventstore.Tx) ([]NodeView, error) {
 	keys, err := tx.Keys(NodeProjection, "")
 	var out []NodeView
@@ -175,10 +181,12 @@ func Nodes(tx *eventstore.Tx) ([]NodeView, error) {
 		v := NodeView{Node: rec.Recorded.Node, Task: rec.Recorded.Task, Project: rec.Recorded.Project, State: rec.State}
 		if id := rec.State.Result; id != nil {
 			r, ok, err := load[types.ResultRecorded](tx, ResultProjection, string(*id))
-			if err != nil || !ok {
-				return nil, errors.Join(err, fmt.Errorf("graph: node %s selects result %s, which is not recorded", k, *id))
+			if err != nil {
+				return nil, err
 			}
-			v.Outcome = &r.Result.Outcome
+			if ok {
+				v.Outcome = &r.Result.Outcome
+			}
 		}
 		out = append(out, v)
 	}

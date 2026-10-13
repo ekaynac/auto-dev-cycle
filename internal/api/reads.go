@@ -34,8 +34,10 @@ type Resource struct {
 	// proposal, seat, note, project, hold, ...). It is declared here,
 	// never derived from the path.
 	Domain types.Name
-	// List is every record, read in the snapshot at now.
-	List func(tx *eventstore.Tx, now time.Time) ([]any, error)
+	// List is every record, read in the snapshot at at. Reads still
+	// authorizes each record it returns; a List may also use the scope to
+	// skip, before it reads them, records the caller cannot read.
+	List func(tx *eventstore.Tx, at ReadAt) ([]any, error)
 	// Project is a record's authoritative project in the same snapshot;
 	// nil is installation-wide, read only under an every-project read.
 	Project func(tx *eventstore.Tx, record any) (*types.ProjectID, error)
@@ -45,6 +47,13 @@ type Resource struct {
 	// Schema is the schema file of one record as sent (api/<name>.json),
 	// which the API description lists the resource with.
 	Schema string
+}
+
+// ReadAt is what a read lists at: its time and the caller's read scope,
+// taken in its snapshot.
+type ReadAt struct {
+	Now   time.Time
+	Scope authority.ReadScope
 }
 
 // Reads serves ReadPath over Resources and WhoamiPath, from Store.
@@ -73,7 +82,7 @@ func (h Reads) Resource(w http.ResponseWriter, r *http.Request) {
 		if scope.Empty() {
 			return nil, errNotGranted
 		}
-		records, err := res.List(tx, Events{Now: h.Now}.now())
+		records, err := res.List(tx, ReadAt{Now: Events{Now: h.Now}.now(), Scope: scope})
 		if err != nil {
 			return nil, err
 		}

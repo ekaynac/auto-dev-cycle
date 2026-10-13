@@ -116,9 +116,8 @@ func TestHoldsList(t *testing.T) {
 	}
 }
 
-// adc board reads the installed board: empty before any task; over a node
-// of no recorded task, it fails could_not_run rather than place a card the
-// records do not determine.
+// adc board reads the installed board: empty before any task; a node of
+// no recorded task is listed unplaced, with no column, in its project.
 func TestBoardCommand(t *testing.T) {
 	c := runCommanded(t)
 	if code, out, errb := c.adc(c.op.Reveal(), "board", "--json"); code != entry.ExitOK || !strings.Contains(out, `"resource":"board"`) ||
@@ -129,7 +128,9 @@ func TestBoardCommand(t *testing.T) {
 		t.Fatalf("board: %d %s %s", code, out, errb)
 	}
 	c = runCommanded(t, func(w *seeder, op types.ActorID) { heldNode(t, w, op) })
-	if code, out, errb := c.adc(c.op.Reveal(), "board", "--json"); code != entry.ExitCouldNotRun || out != "" {
+	code, out, errb := c.adc(c.op.Reveal(), "board", "--json")
+	if code != entry.ExitOK || !strings.Contains(out, `"type":"unplaced"`) || !strings.Contains(out, `"reason":"task_unrecorded"`) ||
+		!strings.Contains(out, `"project":"`+string(graphProject)+`"`) || strings.Contains(out, `"column"`) {
 		t.Fatalf("a node of no task: %d %s %s", code, out, errb)
 	}
 }

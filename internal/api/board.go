@@ -12,23 +12,36 @@ package api
 //   - An admitted task's (authority.TaskAdmitted, written by P22a) column
 //     is its current (unsuperseded) nodes': running while a plan or build
 //     node is claimed or held; else verifying while an accept, gate or
-//     review node is; else done_candidate when a review node completed go
-//     (outcome empty: no blocking finding; merge is inactive in M1(a));
+//     review node is; else done_candidate when a review node of the task's
+//     latest round (the highest round of its current nodes, so no later
+//     repair) completed go (outcome empty; merge is inactive in M1(a));
 //     else ready, with the admitted badge. A held node keeps its stage's
 //     column and carries its hold badges.
-//   - A column is never guessed: a task state, a node kind outside M1(a)'s
-//     template, or a node whose task is unrecorded, not admitted or in
-//     another project fails the read.
-//   - A card exposes references only: never the spec's requirement, its
-//     attachments' names or digests, nor the spec digest (a digest over
-//     them, as the proposals read withholds its binding digest).
+//   - A column is never guessed. A task whose records do not determine one
+//     (an unknown state, a node kind outside M1(a)'s template, nodes of a
+//     task not admitted or not recorded, a damaged record, ...) is listed
+//     unplaced, with no column and a coarse reason; the other cards stand
+//     and the read succeeds.
+//   - Scope first: a task is derived only when the caller reads the board
+//     in its project (its task record's, else the one its nodes pinned,
+//     else none: installation-wide), so a record the caller cannot read
+//     never shapes what it is sent. Reads authorizes each card again.
+//   - A board read covers, by design, the task and hold data of the
+//     projects it reads: a card's id, project, title, approval and
+//     admission state and creation time, and per hold its id, hold, signal
+//     instance, owner, since and age. owner_ref (a concrete actor or owner)
+//     is sent only when the caller also reads holds in that project. Never
+//     sent: the spec's requirement, its attachments' names or digests, the
+//     spec digest (a digest over them, as the proposals read withholds its
+//     binding digest), and a hold's reason, escalation and pages.
 //   - Lease holds stay on GET /v1/holds: no lease is bound to a node
 //     before P8a.
 
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -37,20 +50,27 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 )
 
+// boardDomain and holdDomain are the read kinds a board read checks.
+const (
+	boardDomain types.Name = "board"
+	holdDomain  types.Name = "hold"
+)
+
 // stages is the column each node kind of M1(a)'s template moves its
 // task's card to while claimed or held ("": none, a controller node).
-var stages = map[types.NodeKind]types.BoardCardColumn{
-	types.NodeKindPlan: types.BoardCardColumnRunning, types.NodeKindBuild: types.BoardCardColumnRunning,
-	types.NodeKindAccept: types.BoardCardColumnVerifying, types.NodeKindGate: types.BoardCardColumnVerifying,
-	types.NodeKindReview: types.BoardCardColumnVerifying, types.NodeKindReviewRequirement: "",
+var stages = map[types.NodeKind]types.BoardPlacedCardColumn{
+	types.NodeKindPlan: types.BoardPlacedCardColumnRunning, types.NodeKindBuild: types.BoardPlacedCardColumnRunning,
+	types.NodeKindAccept: types.BoardPlacedCardColumnVerifying, types.NodeKindGate: types.BoardPlacedCardColumnVerifying,
+	types.NodeKindReview: types.BoardPlacedCardColumnVerifying, types.NodeKindReviewRequirement: "",
 }
 
-// board is every task's card, in task id order.
+// board is the card of every task the caller reads the board of, in task
+// id order, then the unplaced tasks of no record, in task id order.
 var board = Resource{
-	Domain: "board",
+	Domain: boardDomain,
 	Schema: "api/board.json",
-	List: func(tx *eventstore.Tx, now time.Time) ([]any, error) {
-		keys, err := tx.Keys(authority.TaskProjection, "")
+	List: func(tx *eventstore.Tx, at ReadAt) ([]any, error) {
+		ids, err := authority.TaskIDs(tx)
 		if err != nil {
 			return nil, err
 		}
@@ -63,123 +83,149 @@ var board = Resource{
 			byTask[n.Task] = append(byTask[n.Task], n)
 		}
 		out := []any{}
-		for _, k := range keys {
-			if strings.Contains(k, "/") { // the ready/ and approver/ indexes
-				continue
+		// The recorded tasks, then the nodes' tasks of no record.
+		for i, id := range append(ids, slices.Sorted(maps.Keys(byTask))...) {
+			ns, ok := byTask[id]
+			if i >= len(ids) && !ok {
+				continue // a recorded task's nodes, listed with it
 			}
-			t, err := taskRecord(tx, types.TaskID(k))
-			if err != nil {
+			delete(byTask, id)
+			t, recorded, project, err := boardTask(tx, id)
+			switch {
+			case err != nil:
 				return nil, err
+			case !at.Scope.ReadsRecord(boardDomain, project): // never derived
+			case i >= len(ids):
+				out = append(out, unplaced(id, project, types.BoardUnplacedCardReasonTaskUnrecorded))
+			case !recorded:
+				out = append(out, unplaced(id, project, types.BoardUnplacedCardReasonDamagedRecord))
+			default:
+				out = append(out, boardCard(t, ns, at.Now, at.Scope.ReadsRecord(holdDomain, project)))
 			}
-			card, err := boardCard(t, byTask[t.ID], now)
-			if err != nil {
-				return nil, err
-			}
-			delete(byTask, t.ID)
-			out = append(out, card)
-		}
-		for task, ns := range byTask {
-			return nil, underivable(task, "node %s's task is not recorded", ns[0].Node.ID)
 		}
 		return out, nil
 	},
 	Project: func(tx *eventstore.Tx, rec any) (*types.ProjectID, error) {
-		c, ok := rec.(types.BoardCard)
-		if !ok {
-			return nil, fmt.Errorf("api: a board record of type %T", rec)
+		var id types.TaskID
+		card, _ := rec.(types.BoardCard)
+		switch c := card.Variant.(type) {
+		case *types.BoardPlacedCard:
+			id = c.ID
+		case *types.BoardUnplacedCard:
+			id = c.ID
+		default:
+			return nil, fmt.Errorf("api: a board record of type %T", c)
 		}
-		t, err := taskRecord(tx, c.ID)
-		return &t.Project, err
+		_, _, project, err := boardTask(tx, id)
+		return project, err
 	},
-	Fields: []string{"id", "project", "title", "column", "admitted", "approval", "created_at", "nodes"},
+	Fields: []string{"type", "id", "project", "title", "column", "admitted", "approval", "created_at", "nodes", "reason"},
 }
 
-// taskRecord is task id's record; none is damage.
-func taskRecord(tx *eventstore.Tx, id types.TaskID) (authority.TaskRecord, error) {
-	var t authority.TaskRecord
+// boardTask is task id's record (recorded: it exists and reads as one)
+// and its project: its record's, else the one its nodes pinned, else nil.
+func boardTask(tx *eventstore.Tx, id types.TaskID) (t authority.TaskRecord, recorded bool, project *types.ProjectID, err error) {
 	raw, ok, err := tx.Get(authority.TaskProjection, id)
-	if err == nil && !ok {
-		err = fmt.Errorf("api: no task record %s", id)
-	}
 	if err != nil {
-		return t, err
+		return t, false, nil, err
 	}
-	if err := json.Unmarshal(raw, &t); err != nil || t.ID != id {
-		return t, fmt.Errorf("api: task record %s is damaged: %v", id, err)
+	if ok && json.Unmarshal(raw, &t) == nil && t.ID == id {
+		return t, true, &t.Project, nil
 	}
-	return t, nil
+	p, pinned, err := graph.TaskProject(tx, id)
+	if err != nil || !pinned {
+		return t, false, nil, err
+	}
+	return t, false, &p, nil
 }
 
-func underivable(task types.TaskID, format string, a ...any) error {
-	return fmt.Errorf("api: board: task %s's column is not derivable from its records: "+format, append([]any{task}, a...)...)
+func unplaced(id types.TaskID, project *types.ProjectID, reason types.BoardUnplacedCardReason) types.BoardCard {
+	return types.BoardCard{Variant: &types.BoardUnplacedCard{Type: "unplaced", ID: id, Project: project, Reason: reason}}
 }
 
 // boardCard is t's card over its nodes (node id order), its hold badges
-// aged at now.
-func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time) (types.BoardCard, error) {
-	c := types.BoardCard{ID: t.ID, Project: t.Project, Title: t.Spec.Title, Admitted: t.State == authority.TaskAdmitted,
-		Approval: types.BoardCardApprovalNone, CreatedAt: t.CreatedAt, Nodes: []types.BoardCardNodesItem{}}
+// aged at now, with their owner_ref only when ownerRefs; or t unplaced
+// when its records do not determine its column.
+func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ownerRefs bool) types.BoardCard {
+	project := t.Project
+	c := &types.BoardPlacedCard{Type: "placed", ID: t.ID, Project: t.Project, Title: t.Spec.Title, Admitted: t.State == authority.TaskAdmitted,
+		Approval: types.BoardPlacedCardApprovalNone, CreatedAt: t.CreatedAt, Nodes: []types.BoardNodeCard{}}
 	if a := t.Approval; a != nil {
 		if a.Status != authority.ApprovalInForce && a.Status != authority.ApprovalRevoked {
-			return c, underivable(t.ID, "approval status %q", a.Status)
+			return unplaced(t.ID, &project, types.BoardUnplacedCardReasonUnknownState)
 		}
-		c.Approval = types.BoardCardApproval(a.Status)
+		c.Approval = types.BoardPlacedCardApproval(a.Status)
 	}
 	switch {
 	case t.State == authority.TaskReady && len(nodes) > 0:
-		return c, underivable(t.ID, "a task not admitted has node %s", nodes[0].Node.ID)
-	case t.State == authority.TaskReady && c.Approval == types.BoardCardApprovalInForce:
-		c.Column = types.BoardCardColumnReady
-		return c, nil
+		return unplaced(t.ID, &project, types.BoardUnplacedCardReasonNodesBeforeAdmission)
+	case t.State == authority.TaskReady && c.Approval == types.BoardPlacedCardApprovalInForce:
+		c.Column = types.BoardPlacedCardColumnReady
+		return types.BoardCard{Variant: c}
 	case t.State == authority.TaskReady:
-		c.Column = types.BoardCardColumnAwaitingApproval
-		return c, nil
+		c.Column = types.BoardPlacedCardColumnAwaitingApproval
+		return types.BoardCard{Variant: c}
 	case !c.Admitted:
-		return c, underivable(t.ID, "task state %q", t.State)
+		return unplaced(t.ID, &project, types.BoardUnplacedCardReasonUnknownState)
 	}
-	active := map[types.BoardCardColumn]bool{}
+	latest, active, goRounds := int64(0), map[types.BoardPlacedCardColumn]bool{}, []int64{}
 	for _, n := range nodes {
 		stage, known := stages[n.Node.Kind]
-		if !known || n.Project != t.Project {
-			return c, underivable(t.ID, "node %s is a %s node in project %s", n.Node.ID, n.Node.Kind, n.Project)
+		switch {
+		case !known:
+			return unplaced(t.ID, &project, types.BoardUnplacedCardReasonDeferredNodeKind)
+		case n.Project != t.Project:
+			return unplaced(t.ID, &project, types.BoardUnplacedCardReasonNodeInAnotherProject)
+		case n.State.Result != nil && n.Outcome == nil:
+			return unplaced(t.ID, &project, types.BoardUnplacedCardReasonDamagedRecord)
 		}
-		card, err := nodeCard(t.ID, n, now)
-		if err != nil {
-			return c, err
+		card, reason := nodeCard(n, now, ownerRefs)
+		if reason != "" {
+			return unplaced(t.ID, &project, reason)
 		}
 		c.Nodes = append(c.Nodes, card)
-		switch s := n.State.State; {
+		s := n.State.State
+		if s != types.NodeStateStateSuperseded {
+			latest = max(latest, n.Node.Round)
+		}
+		switch {
 		case s == types.NodeStateStateClaimed || s == types.NodeStateStateHeld:
 			active[stage] = true
-		case s == types.NodeStateStateCompleted && n.Node.Kind == types.NodeKindReview && n.Outcome != nil && *n.Outcome == types.OutcomeEmpty:
-			active[types.BoardCardColumnDoneCandidate] = true
+		case s == types.NodeStateStateCompleted && n.Node.Kind == types.NodeKindReview && *n.Outcome == types.OutcomeEmpty:
+			goRounds = append(goRounds, n.Node.Round)
 		}
 	}
-	c.Column = types.BoardCardColumnReady
-	for _, col := range []types.BoardCardColumn{types.BoardCardColumnRunning, types.BoardCardColumnVerifying, types.BoardCardColumnDoneCandidate} {
+	active[types.BoardPlacedCardColumnDoneCandidate] = slices.Contains(goRounds, latest)
+	c.Column = types.BoardPlacedCardColumnReady
+	for _, col := range []types.BoardPlacedCardColumn{types.BoardPlacedCardColumnRunning, types.BoardPlacedCardColumnVerifying, types.BoardPlacedCardColumnDoneCandidate} {
 		if active[col] {
 			c.Column = col
 			break
 		}
 	}
-	return c, nil
+	return types.BoardCard{Variant: c}
 }
 
 // nodeCard is n's card: a badge per hold (hold, signal, owner, age at now)
-// and per structural wait (the input, and its producer or owed input).
-func nodeCard(task types.TaskID, n graph.NodeView, now time.Time) (types.BoardCardNodesItem, error) {
-	c := types.BoardCardNodesItem{ID: n.Node.ID, Kind: types.BoardCardNodesItemKind(n.Node.Kind), Round: n.Node.Round,
-		State: types.BoardCardNodesItemState(n.State.State), Holds: []types.BoardCardNodesItemHoldsItem{}, Waiting: []types.BoardCardNodesItemWaitingItem{}}
+// and per structural wait (the input, and its producer or owed input); or
+// the reason its records do not give one.
+func nodeCard(n graph.NodeView, now time.Time, ownerRefs bool) (types.BoardNodeCard, types.BoardUnplacedCardReason) {
+	c := types.BoardNodeCard{ID: n.Node.ID, Kind: types.BoardNodeCardKind(n.Node.Kind), Round: n.Node.Round,
+		State: types.BoardNodeCardState(n.State.State), Holds: []types.BoardHoldBadge{}, Waiting: []types.BoardWaitBadge{}}
 	for _, h := range n.State.Holds {
 		since, err := time.Parse(time.RFC3339Nano, string(h.Since))
 		if err != nil {
-			return c, underivable(task, "hold %s's since %q", h.ID, h.Since)
+			return c, types.BoardUnplacedCardReasonDamagedRecord
 		}
-		c.Holds = append(c.Holds, types.BoardCardNodesItemHoldsItem{ID: h.ID, Hold: h.Hold, SignalInstance: h.SignalInstance, Owner: h.Owner,
-			OwnerRef: h.OwnerRef, Since: h.Since, AgeSeconds: max(0, int64(now.Sub(since)/time.Second))})
+		b := types.BoardHoldBadge{ID: h.ID, Hold: h.Hold, SignalInstance: h.SignalInstance, Owner: h.Owner, Since: h.Since,
+			AgeSeconds: max(0, int64(now.Sub(since)/time.Second))}
+		if ownerRefs {
+			b.OwnerRef = h.OwnerRef
+		}
+		c.Holds = append(c.Holds, b)
 	}
 	for _, name := range n.State.WaitingOn {
-		w := types.BoardCardNodesItemWaitingItem{Input: name}
+		w := types.BoardWaitBadge{Input: name}
 		for _, in := range n.Node.Inputs {
 			switch src := in.Source.Variant.(type) {
 			case *types.ResultSource:
@@ -193,9 +239,9 @@ func nodeCard(task types.TaskID, n graph.NodeView, now time.Time) (types.BoardCa
 			}
 		}
 		if w.Producer == nil && w.OwedInput == nil {
-			return c, underivable(task, "node %s waits on %s, which it does not declare", n.Node.ID, name)
+			return c, types.BoardUnplacedCardReasonUndeclaredWait
 		}
 		c.Waiting = append(c.Waiting, w)
 	}
-	return c, nil
+	return c, ""
 }

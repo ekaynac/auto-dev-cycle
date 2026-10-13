@@ -4,24 +4,48 @@
 
 `schemas/api/board.json`
 
-One record of GET /v1/board (docs/plan/01 §2.2 "Board and validated pull", D51; M1 slice plan P4b): a task's card, derived only from its task record and its graph nodes in the read's snapshot, with its node cards. Its column is never written: a card whose column the records do not determine fails the read. A card carries references only, never the task's acceptance (its attachments' names or digests) nor the spec digest computed over them. The title is untrusted text.
+One record of GET /v1/board (docs/plan/01 §2.2 "Board and validated pull", D51; M1 slice plan P4b): a task's card, derived only from its task record and its graph nodes in the read's snapshot, placed in its column, or unplaced, with no column and a coarse reason, when its records do not determine one. A board read covers the task and hold data of the projects it reads, by design: a card carries the task's id, project, title, state of approval and admission and creation time, and each node's hold badges with the hold's id, hold, signal instance, owner, since and age; owner_ref only when the reader's scope also reads holds in that project. It never carries the task's requirement or acceptance (its attachments' names or digests), the spec digest computed over them, a hold's reason, escalation or pages. The title is untrusted text.
 
-## Fields of the document
+A document is one of: [BoardPlacedCard](#boardplacedcard) or [BoardUnplacedCard](#boardunplacedcard).
+
+## Definitions
+
+### BoardPlacedCard
+
+#### Fields of BoardPlacedCard
 
 | Field | Required | Type | Description |
 |---|---|---|---|
+| `type` | yes | `placed` |  |
 | `id` | yes | [TaskID](common-defs.md#taskid) |  |
 | `project` | yes | [ProjectID](common-defs.md#projectid) |  |
 | `title` | yes | string (minLength `1`, maxLength `200`) |  |
-| `column` | yes | one of `awaiting_approval`, `ready`, `running`, `verifying`, `done_candidate` | awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node completed go, merge inactive. |
+| `column` | yes | one of `awaiting_approval`, `ready`, `running`, `verifying`, `done_candidate` | awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task's latest round completed go, merge inactive. |
 | `admitted` | yes | boolean | The admitted badge: the task holds admitted WIP, held or not. |
 | `approval` | yes | one of `none`, `in_force`, `revoked` | Its spec's approval: none, in force, or revoked. |
 | `created_at` | yes | [Time](common-defs.md#time) |  |
-| `nodes` | yes | array of object ([fields](#fields-of-nodes)) | The task's nodes in node id order, superseded ones included as history. |
+| `nodes` | yes | array of [BoardNodeCard](#boardnodecard) | The task's nodes in node id order, superseded ones included as history. |
 
 No other fields are allowed.
 
-## Fields of nodes[]
+### BoardUnplacedCard
+
+A task whose column its records do not determine: never placed. Its project is its task record's, else the one its nodes pinned; null (read only under an every-project read) when neither is readable.
+
+#### Fields of BoardUnplacedCard
+
+| Field | Required | Type | Description |
+|---|---|---|---|
+| `type` | yes | `unplaced` |  |
+| `id` | yes | [TaskID](common-defs.md#taskid) |  |
+| `project` | yes | null or [ProjectID](common-defs.md#projectid) |  |
+| `reason` | yes | one of `task_unrecorded`, `nodes_before_admission`, `unknown_state`, `deferred_node_kind`, `node_in_another_project`, `undeclared_wait`, `damaged_record` | task_unrecorded: nodes of no task record; nodes_before_admission: nodes of a task not admitted; unknown_state: a task state or approval status the board does not know; deferred_node_kind: a node kind outside M1(a)'s template; node_in_another_project: a node outside its task's project; undeclared_wait: a wait on an input the node does not declare; damaged_record: a record that cannot be read as one (a task record, a selected result, a hold's since). |
+
+No other fields are allowed.
+
+### BoardNodeCard
+
+#### Fields of BoardNodeCard
 
 | Field | Required | Type | Description |
 |---|---|---|---|
@@ -29,12 +53,16 @@ No other fields are allowed.
 | `kind` | yes | one of `plan`, `build`, `accept`, `gate`, `review`, `review_requirement` |  |
 | `round` | yes | integer (minimum `1`, maximum `9007199254740991`) |  |
 | `state` | yes | one of `waiting`, `runnable`, `held`, `claimed`, `completed`, `superseded` |  |
-| `holds` | yes | array of object ([fields](#fields-of-nodesholds)) | The external waits, one badge per hold: what holds, the signal that resumes it, its owner and its age at the read. |
-| `waiting` | yes | array of object ([fields](#fields-of-nodeswaiting)) | The structural waits (waiting(input)), one badge per missing input, naming its producer node or the owed input it answers. |
+| `holds` | yes | array of [BoardHoldBadge](#boardholdbadge) | The external waits, one badge per hold. |
+| `waiting` | yes | array of [BoardWaitBadge](#boardwaitbadge) | The structural waits (waiting(input)), one badge per missing input. |
 
 No other fields are allowed.
 
-## Fields of nodes[].holds[]
+### BoardHoldBadge
+
+A hold's badge: fields of api/hold.json (what holds, the signal that resumes it, its owner, since when) and its age at the read. owner_ref is null unless the reader also reads holds in the project.
+
+#### Fields of BoardHoldBadge
 
 | Field | Required | Type | Description |
 |---|---|---|---|
@@ -48,7 +76,11 @@ No other fields are allowed.
 
 No other fields are allowed.
 
-## Fields of nodes[].waiting[]
+### BoardWaitBadge
+
+A missing input's badge, naming its producer node or the owed input it answers.
+
+#### Fields of BoardWaitBadge
 
 | Field | Required | Type | Description |
 |---|---|---|---|
