@@ -27,8 +27,15 @@ export const maxReplyBytes = 16 << 20;
 export const requestKeys = ["model", "messages", "tools", "tool_choice", "max_tokens", "response_format", "stream"] as const;
 export type ChatRequest = Partial<Record<(typeof requestKeys)[number], unknown>>;
 
+/** The header marking the gateway's own refusals (internal/gateway
+ *  RefusalHeader). No upstream header reaches the adapter, so only the
+ *  gateway sets it; a refusal-shaped body alone is an upstream's. */
+export const refusalHeader = "adc-gateway-refusal";
+
 export interface Reply {
   status: number;
+  /** The gateway's refusal code; "" for an upstream's reply. */
+  refusal: string;
   text: string;
 }
 
@@ -58,7 +65,7 @@ export function chat(g: Gateway, body: ChatRequest, signal: AbortSignal): Promis
           else chunks.push(c);
         });
         res.on("error", reject);
-        res.on("end", () => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8") }));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, refusal: String(res.headers[refusalHeader] ?? ""), text: Buffer.concat(chunks).toString("utf8") }));
       },
     );
     req.on("error", reject);
@@ -84,16 +91,10 @@ const stale = new Set(["unbound", "lease_not_running_attempt"]);
 /** The refusals of the route or model asked for: refused before egress. */
 const routing = new Set(["model_not_pinned", "destination_not_admitted", "executor_not_registered", "redirect", "credential_echoed", "credential_in_body"]);
 
-/** classify reads a non-2xx reply: the gateway's own refusal
- *  ({"error":{"type":"gateway_refused","code":…}}), or the upstream's status. */
+/** classify reads a non-2xx reply: the gateway's own refusal, by its
+ *  header only, or else the upstream's status. */
 export function classify(r: Reply): Failure {
-  let code = "";
-  try {
-    const e = JSON.parse(r.text)?.error;
-    if (e?.type === "gateway_refused" && typeof e.code === "string") code = e.code;
-  } catch {
-    // not JSON: an upstream body
-  }
+  const code = r.refusal;
   const s = r.status;
   if (stale.has(code)) return { outcome: "failed", reason: "stale_attempt", hint: null, detail: `the gateway refused the attempt (${code}): it is no longer current` };
   if (routing.has(code)) return { outcome: "failed", reason: "routing_violation", hint: null, detail: `the gateway refused the request before egress (${code})` };

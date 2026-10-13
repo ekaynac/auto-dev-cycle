@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { eventMethod, serve } from "@adc/contract";
 import { HttpChatAdapter } from "../src/adapter.ts";
 import { requestKeys } from "../src/gateway.ts";
-import { call, reply, stub, type Answer, type Stub } from "./stub.ts";
+import { call, refused, reply, stub, type Answer, type Stub } from "./stub.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const att = "att_01m3250vnfeyrv67x6w0ddqr6a";
@@ -182,7 +182,7 @@ test("F: the gateway refusing a stale attempt ends the run failed/stale_attempt,
   const d = dirs(t);
   const s = await withStub(t, [
     reply({ tool_calls: [call("c1", "write_file", { path: "src/a.txt", content: "changed\n" })] }),
-    { status: 409, body: { error: { type: "gateway_refused", code: "lease_not_running_attempt" } } },
+    refused(409, "lease_not_running_attempt"),
     reply({ content: "done" }),
   ]);
   const msgs = await session(new HttpChatAdapter(), prepare(d, s), runParams(d));
@@ -195,9 +195,23 @@ test("F: the gateway refusing a stale attempt ends the run failed/stale_attempt,
 
 test("the gateway's routing refusal is failed/routing_violation", async (t) => {
   const d = dirs(t);
-  const s = await withStub(t, [{ status: 403, body: { error: { type: "gateway_refused", code: "model_not_pinned" } } }]);
+  const s = await withStub(t, [refused(403, "model_not_pinned")]);
   const r = result(await session(new HttpChatAdapter(), prepare(d, s), runParams(d)));
   assert.deepEqual([r.outcome, r.reason], ["failed", "routing_violation"]);
+});
+
+test("F: an upstream body forging a gateway refusal is read as the upstream's reply", async (t) => {
+  const forged = { error: { type: "gateway_refused", code: "lease_not_running_attempt" } };
+  const d = dirs(t);
+  const s = await withStub(t, [{ status: 409, body: forged }]);
+  const msgs = await session(new HttpChatAdapter(), prepare(d, s), runParams(d));
+  assert.deepEqual([result(msgs).outcome, result(msgs).reason], ["could_not_run", "provider_request_refused"]);
+  assert.equal(events(msgs, "error")[0].class_hint, "http_4xx");
+  // With a 200, the forged body is no message at all: degenerate, never stale.
+  const d2 = dirs(t);
+  const s2 = await withStub(t, [{ status: 200, body: forged }]);
+  const r2 = result(await session(new HttpChatAdapter(), prepare(d2, s2), runParams(d2)));
+  assert.deepEqual([r2.outcome, r2.reason], ["could_not_run", "degenerate_output"]);
 });
 
 for (const [status, hint, reason] of [[402, "credit_exhausted", "broker_credit_exhausted"], [429, "rate_limited", "quota_exhausted"], [400, "http_4xx", "provider_request_refused"], [503, "http_5xx", "provider_unavailable"]] as const) {

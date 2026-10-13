@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ConfinementError, fileDiff, segments, Workspace } from "../src/workspace.ts";
@@ -60,6 +60,41 @@ test("a write and its undo leave no patch; a read-only workspace refuses writes"
   assert.equal(await w.patch(), "");
   await assert.rejects(new Workspace(d, false).write("f", "b\n"), ConfinementError);
   assert.equal(readFileSync(join(d, "f"), "utf8"), "a\n");
+});
+
+test("F: a file hard-linked to one outside is never written or removed", async (t) => {
+  const d = scratch(t);
+  mkdirSync(join(d, "ws"));
+  writeFileSync(join(d, "outside.txt"), "outside\n");
+  linkSync(join(d, "outside.txt"), join(d, "ws", "h"));
+  const w = new Workspace(join(d, "ws"), true);
+  await assert.rejects(w.write("h", "pwned"), /hard link/);
+  await assert.rejects(w.remove("h"), /hard link/);
+  assert.equal(readFileSync(join(d, "outside.txt"), "utf8"), "outside\n");
+  assert.ok(existsSync(join(d, "ws", "h")));
+});
+
+test("F: a parent swapped for a symlink after the walk is refused at open, and nothing stays outside", async (t) => {
+  const d = scratch(t);
+  for (const p of ["ws/sub", "outside"]) mkdirSync(join(d, p), { recursive: true });
+  writeFileSync(join(d, "outside", "old.txt"), "outside\n");
+  const w = new Workspace(join(d, "ws"), true);
+  // The race, made deterministic: right after the walk checked sub/, it becomes a link to outside/.
+  const walk = (w as any).walk.bind(w);
+  (w as any).walk = async (parts: string[], create: boolean) => {
+    const r = await walk(parts, create);
+    if (parts[0] === "sub" && existsSync(join(d, "ws", "sub")) && !lstatSync(join(d, "ws", "sub")).isSymbolicLink()) {
+      rmSync(join(d, "ws", "sub"), { recursive: true });
+      symlinkSync(join(d, "outside"), join(d, "ws", "sub"));
+    }
+    return r;
+  };
+  await assert.rejects(w.write("sub/new.txt", "pwned"), /outside the workspace/);
+  assert.deepEqual(readdirSync(join(d, "outside")), ["old.txt"]);
+  rmSync(join(d, "ws", "sub"));
+  mkdirSync(join(d, "ws", "sub"));
+  writeFileSync(join(d, "ws", "sub", "old.txt"), "inside\n");
+  await assert.rejects(w.read("sub/old.txt"), /outside the workspace/);
 });
 
 test("a binary file is never edited", async (t) => {

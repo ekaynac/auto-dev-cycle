@@ -8,8 +8,8 @@
 // whole run and names only the paths the run touched.
 
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
+import { join, sep } from "node:path";
 
 /** ConfinementError: a path the workspace refuses; nothing was touched. */
 export class ConfinementError extends Error {}
@@ -65,11 +65,30 @@ export class Workspace {
     return { path, st };
   }
 
-  private async readText(path: string): Promise<string> {
-    const f = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  /** pin opens path and checks what it opened, since a parent may have been
+   *  swapped for a symlink after the walk: a regular file whose real path,
+   *  read from the descriptor (/proc; none fails closed), is under the
+   *  root's; for a change, its only link, so a write never reaches a hard
+   *  link outside. On a refusal the descriptor is closed. */
+  private async pin(path: string, flags: number, change: boolean) {
+    const f = await open(path, flags | constants.O_NOFOLLOW, 0o644);
     try {
+      const root = await realpath(this.root);
+      const real = await realpath(`/proc/self/fd/${f.fd}`).catch(() => "");
       const st = await f.stat();
+      if (!real.startsWith(root + sep)) throw new ConfinementError("the file resolves outside the workspace");
       if (!st.isFile()) throw new ConfinementError("not a regular file");
+      if (change && st.nlink > 1) throw new ConfinementError("the file has another hard link, which a change would reach");
+      return { f, real, st };
+    } catch (e) {
+      await f.close();
+      throw e;
+    }
+  }
+
+  private async readText(path: string): Promise<string> {
+    const { f, st } = await this.pin(path, constants.O_RDONLY, false);
+    try {
       if (st.size > maxFileBytes) throw new ConfinementError(`the file is over ${maxFileBytes} bytes`);
       try {
         return utf8.decode(await f.readFile());
@@ -113,9 +132,14 @@ export class Workspace {
 
   async write(rel: unknown, content: unknown): Promise<void> {
     if (typeof content !== "string" || Buffer.byteLength(content) > maxFileBytes) throw new ConfinementError(`content is a string of at most ${maxFileBytes} bytes`);
-    const { path } = await this.changeable(rel, true);
-    const f = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o644);
+    const { path, st } = await this.changeable(rel, true);
+    // Truncated only once pinned: a refused file is never changed, and one this call created is removed.
+    const { f } = await this.pin(path, constants.O_WRONLY | constants.O_CREAT, true).catch(async (e) => {
+      if (!st) await unlink(path).catch(() => undefined);
+      throw e;
+    });
     try {
+      await f.truncate(0);
       await f.writeFile(content);
     } finally {
       await f.close();
@@ -125,7 +149,9 @@ export class Workspace {
   async remove(rel: unknown): Promise<void> {
     const { path, st } = await this.changeable(rel, false);
     if (!st) throw new ConfinementError("the file does not exist");
-    await unlink(path);
+    const { f, real } = await this.pin(path, constants.O_RDONLY, true);
+    await f.close();
+    await unlink(real);
   }
 
   /** patch is the run's cumulative change as a unified diff ("" for none). */

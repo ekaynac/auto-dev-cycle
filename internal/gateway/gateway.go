@@ -334,8 +334,14 @@ func (g *Gateway) observe(a types.AttemptID, status int, route string) {
 	g.observed[a] = o
 }
 
+// RefusalHeader marks the gateway's own refusals: an upstream's headers
+// never reach the adapter (only its parsed Content-Type), so an upstream
+// cannot forge it.
+const RefusalHeader = "Adc-Gateway-Refusal"
+
 func refuse(w http.ResponseWriter, no *refusal) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(RefusalHeader, no.code)
 	w.WriteHeader(no.status)
 	_, _ = fmt.Fprintf(w, `{"error":{"type":"gateway_refused","code":%q}}`, no.code)
 }

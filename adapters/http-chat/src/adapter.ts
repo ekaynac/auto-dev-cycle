@@ -34,25 +34,10 @@ const toolSpecs: Record<string, { description: string; properties: Record<string
 };
 
 /** The decision a reviewer returns when the run names no response schema. */
-export const defaultDecisionSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["decision", "summary", "findings"],
-  properties: {
-    decision: { enum: ["go", "no_go"] },
-    summary: { type: "string", maxLength: 4096 },
-    findings: {
-      type: "array",
-      maxItems: 100,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["severity", "title", "detail"],
-        properties: { severity: { enum: ["critical", "high", "medium", "low"] }, title: { type: "string", maxLength: 256 }, detail: { type: "string", maxLength: 4096 } },
-      },
-    },
-  },
-};
+const finding = { type: "object", additionalProperties: false, required: ["severity", "title", "detail"],
+  properties: { severity: { enum: ["critical", "high", "medium", "low"] }, title: { type: "string", maxLength: 256 }, detail: { type: "string", maxLength: 4096 } } };
+export const defaultDecisionSchema = { type: "object", additionalProperties: false, required: ["decision", "summary", "findings"],
+  properties: { decision: { enum: ["go", "no_go"] }, summary: { type: "string", maxLength: 4096 }, findings: { type: "array", maxItems: 100, items: finding } } };
 
 const system: Record<string, string> = {
   builder: "You change the repository in your workspace to meet the task. Use the tools to read and edit files; every path is relative to the repository root. When the change is complete, reply with a short summary and no tool call.",
@@ -95,16 +80,12 @@ function sum(us: Usage[]): Usage {
   };
 }
 
-export interface HttpChatOptions {
-  /** The gateway's Unix socket inside the sandbox (ADC_GATEWAY_SOCKET). */
-  socketPath?: string;
-}
-
 export class HttpChatAdapter extends Adapter {
   private readonly socketPath?: string;
   private prepared: { p: AdapterPrepareParams; gateway: Gateway; workspace: Workspace; tools: string[] } | null = null;
 
-  constructor(opts: HttpChatOptions = {}) {
+  /** socketPath: the gateway's Unix socket inside the sandbox (ADC_GATEWAY_SOCKET). */
+  constructor(opts: { socketPath?: string } = {}) {
     super();
     this.socketPath = opts.socketPath;
   }
