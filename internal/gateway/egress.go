@@ -98,24 +98,30 @@ func transportOK(kind types.RegistryDestinationKind, u *url.URL) bool {
 	return false // brokers and governed upstreams are not M1's
 }
 
-// selecting are the top-level keys besides model that pick a model at an
-// OpenAI-compatible upstream or router.
-var selecting = map[string]bool{"models": true, "fallbacks": true, "route": true}
+// allowed are the only top-level keys a request may carry: the OpenAI
+// chat-completions keys P13's http-chat adapter needs, matched exactly. A
+// denylist of model-selecting keys could never be complete (a router's
+// provider or transforms, a vendor passthrough), so every other key is
+// refused, a case variant included. P13 widens this list only with review.
+var allowed = map[string]bool{
+	"model": true, "messages": true, "temperature": true, "top_p": true, "max_tokens": true,
+	"max_completion_tokens": true, "stream": true, "stream_options": true, "stop": true, "n": true,
+	"seed": true, "presence_penalty": true, "frequency_penalty": true, "tools": true, "tool_choice": true,
+	"parallel_tool_calls": true, "response_format": true, "user": true, "logprobs": true, "top_logprobs": true,
+}
 
-// pinned is body with its model checked: body is one JSON object whose
-// "model" is exactly the lease's pinned model. It is forwarded re-encoded
-// from its decoded object, so a duplicated key cannot show the gateway one
-// model and the upstream another. Another key that selects a model is
-// refused: one spelling "model" in another case (an upstream may match
-// keys case-insensitively), or a fallback list or route. The model is
-// never rewritten.
+// pinned is body with its model checked: body is one JSON object of
+// allowed keys whose "model" is exactly the lease's pinned model. It is
+// forwarded re-encoded from its decoded object, so a duplicated key cannot
+// show the gateway one model and the upstream another. The model is never
+// rewritten.
 func pinned(body []byte, model string) ([]byte, bool) {
 	var top map[string]json.RawMessage
 	if json.Unmarshal(body, &top) != nil || top == nil {
 		return nil, false
 	}
 	for k := range top {
-		if k != "model" && (strings.EqualFold(k, "model") || selecting[strings.ToLower(k)]) {
+		if !allowed[k] {
 			return nil, false
 		}
 	}

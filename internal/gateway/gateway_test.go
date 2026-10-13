@@ -208,6 +208,11 @@ func TestAModelSwitchIsRefusedBeforeEgress(t *testing.T) {
 		"a fallback list":               `{"model":"stub-builder-1","models":["stub-reviewer-1"]}`,
 		"fallbacks":                     `{"model":"stub-builder-1","fallbacks":["stub-reviewer-1"]}`,
 		"a route":                       `{"model":"stub-builder-1","Route":"fallback"}`,
+		"a router's provider":           `{"model":"stub-builder-1","provider":{"order":["other"]}}`,
+		"a vendor passthrough":          `{"model":"stub-builder-1","extra_body":{"model":"stub-reviewer-1"}}`,
+		"an unknown key":                `{"model":"stub-builder-1","zz_unlisted":1}`,
+		"an upper-case allowed key":     `{"model":"stub-builder-1","MESSAGES":[]}`,
+		"logit_bias, not needed":        `{"model":"stub-builder-1","logit_bias":{}}`,
 		"null":                          `null`,
 	} {
 		if w := call(g, token, "/chat/completions", body, nil); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "model_not_pinned") {
@@ -224,6 +229,18 @@ func TestAModelSwitchIsRefusedBeforeEgress(t *testing.T) {
 	}
 	if body := string(up.got()[0].body); strings.Count(body, `"model"`) != 1 || strings.Contains(body, "stub-reviewer-1") {
 		t.Fatalf("the upstream got %s", body)
+	}
+	// A full legitimate request, every allowed key, passes unchanged.
+	full := `{"model":"stub-builder-1","messages":[{"role":"user","content":"hi"}],"temperature":0.2,"top_p":1,` +
+		`"max_tokens":100,"max_completion_tokens":100,"stream":true,"stream_options":{"include_usage":true},` +
+		`"stop":["END"],"n":1,"seed":7,"presence_penalty":0,"frequency_penalty":0,"tools":[],"tool_choice":"auto",` +
+		`"parallel_tool_calls":false,"response_format":{"type":"text"},"user":"att","logprobs":false,"top_logprobs":0}`
+	if w := call(g, token, "/chat/completions", full, nil); w.Code != http.StatusOK {
+		t.Fatalf("a full request: %d %s", w.Code, w.Body)
+	}
+	var sent, asked map[string]any
+	if json.Unmarshal(up.got()[1].body, &sent) != nil || json.Unmarshal([]byte(full), &asked) != nil || fmt.Sprint(sent) != fmt.Sprint(asked) {
+		t.Fatalf("the full request changed: %s", up.got()[1].body)
 	}
 }
 
