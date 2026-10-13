@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
@@ -57,10 +58,11 @@ func (e *Exhausted) Error() string {
 // admission checks against the groups and a rebuild reads from the log
 // alone, and the lease projector holds such a lease to the restore table,
 // so a failed restore keeps the target excluded, across restarts, until a
-// restore is verified. Broker balances wait for the ledger's affordability
-// rule, window resets for their events, and an uncertain liability for its
-// amount on the group's ledger; until then such a group or settlement is
-// refused. Capacity must be wired from a store's first grant (CheckHistory),
+// restore is verified. A settlement moves what its uncertain calls owe from
+// reservation to liability, which counts against the group's limit until
+// their usage settles (liability.go). Broker balances wait for the ledger's
+// affordability rule and window resets for their events; until then such a
+// group is refused. Capacity must be wired from a store's first grant (CheckHistory),
 // and its groups must still be the ones recorded grants name (CheckGroups).
 // Compose it with Hook.
 type Reservations struct {
@@ -232,6 +234,16 @@ func (r Reservations) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
 		var p leaseEvent
 		switch ev.Kind {
+		case ledger.Measured:
+			var m types.UsageMeasurement
+			err := json.Unmarshal(ev.Payload, &m)
+			if err == nil {
+				err = lateUsage(tx, m)
+			}
+			if err != nil {
+				return fmt.Errorf("capacity: event %s: %w", ev.ID, err)
+			}
+			continue
 		case lease.Granted + "/v1", lease.Settled + "/v1", lease.Released + "/v1":
 		case lease.RestoreFailed + "/v1":
 			if !mutation.Is(mutation.RestoreFailureReleases) {
@@ -256,11 +268,13 @@ func (r Reservations) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	return nil
 }
 
-// tally is a group's record: what is outstanding, and its capacity
-// revision, which every grant and return advances.
+// tally is a group's record: what is outstanding, its capacity revision,
+// which every grant, return and change of a liability advances, and what
+// settled leases' uncertain calls owe it (liability.go).
 type tally struct {
 	Reserved int64 `json:"reserved"`
 	Revision int64 `json:"revision"`
+	Liable   int64 `json:"liable,omitempty"` // omitted at zero, so a store from before replays byte for byte
 }
 
 // reserve admits every reservation of l against its group, then records
@@ -287,7 +301,7 @@ func (r Reservations) reserve(tx *eventstore.Tx, l types.Lease, targets []types.
 				return err
 			}
 		}
-		next[res.Group] = tally{cur.Reserved + int64(res.Amount), cur.Revision + 1}
+		next[res.Group] = tally{cur.Reserved + int64(res.Amount), cur.Revision + 1, cur.Liable}
 	}
 	if !tx.Replaying() && !slices.Equal(slices.Sorted(slices.Values(want)), slices.Sorted(slices.Values(targets))) {
 		return fmt.Errorf("lease %s's grant names evidence targets %v, its groups %v", l.ID, targets, want)
@@ -313,7 +327,7 @@ func (r Reservations) admit(id types.LeaseID, res types.LeaseReservationsItem, c
 	case g.CapacityModel.Limit == nil:
 		return &Exhausted{Lease: id, Group: res.Group, Revision: cur.Revision, Reason: vocab.ReasonQuotaUnknown}
 	}
-	held := cur.Reserved
+	held := cur.Reserved + cur.Liable
 	if mutation.Is(mutation.ReservationsUncounted) {
 		held = 0
 	}
@@ -324,12 +338,8 @@ func (r Reservations) admit(id types.LeaseID, res types.LeaseReservationsItem, c
 }
 
 // release returns l's reservations at settlement or release. A settlement
-// with an uncertain liability is refused: the liability must stay on the
-// group's ledger at its amount, which the log does not carry yet.
+// moves what its uncertain calls owe onto the groups (settle).
 func (r Reservations) release(tx *eventstore.Tx, l types.Lease) error {
-	if len(l.Reservations) > 0 && l.Settlement != nil && len(l.Settlement.Liabilities) > 0 {
-		return fmt.Errorf("lease %s settles with uncertain liabilities, which the group ledger cannot hold yet", l.ID)
-	}
 	if _, ok, err := tx.Get(GrantedProjection, string(l.ID)); err != nil || !ok {
 		return errors.Join(err, fmt.Errorf("lease %s was not granted by capacity", l.ID))
 	}
@@ -342,7 +352,10 @@ func (r Reservations) release(tx *eventstore.Tx, l types.Lease) error {
 		if cur.Reserved < int64(res.Amount) {
 			return fmt.Errorf("lease %s returns more of group %s than is outstanding", l.ID, res.Group)
 		}
-		next[res.Group] = tally{cur.Reserved - int64(res.Amount), cur.Revision + 1}
+		next[res.Group] = tally{cur.Reserved - int64(res.Amount), cur.Revision + 1, cur.Liable}
+	}
+	if l.Settlement != nil {
+		return settle(tx, l, next)
 	}
 	return putAll(tx, next)
 }

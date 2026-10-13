@@ -11,6 +11,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 )
 
 // Measured is the event kind of one UsageMeasurement, subject its call. It
@@ -52,6 +53,14 @@ func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		}
 		if ev.Subject != string(m.Call) {
 			return fmt.Errorf("ledger: event %s: subject %s is not its call %s", ev.ID, ev.Subject, m.Call)
+		}
+		// A bound call's report names the call's own attempt and lease
+		// (#226 entry 61), stale or not, so its charge lands where the
+		// binding put it.
+		if b, bound, err := modelcall.Of(tx, m.Call); err != nil {
+			return err
+		} else if bound && (b.Attempt != m.Attempt || b.Lease != m.Lease) {
+			return fmt.Errorf("ledger: event %s: call %s is bound to %s under %s, not %s under %s", ev.ID, m.Call, b.Attempt, b.Lease, m.Attempt, m.Lease)
 		}
 		// A measurement id is immutable: an identical replay changes
 		// nothing; another report under a used id is refused, never

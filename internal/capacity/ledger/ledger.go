@@ -13,6 +13,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"math/big"
 	"slices"
 	"sort"
 
@@ -68,6 +69,39 @@ func maxOf(a, b Figure) (m Figure, lower bool) {
 }
 
 const maxAmount = 9007199254740991
+
+// PriceMicros prices a figure in USD micros at an executor's declared price
+// (config/executor-registry), from its tokens alone, rounding up: input and
+// cache tokens at the input rate, output at the output rate. It never reads
+// CostMicros, the adapter-reported amount, estimated or not: an upstream can
+// report any cost, zero included (#226 entry 62).
+func PriceMicros(f Figure, p types.RegistryPrice) (int64, error) {
+	return priced([][2]int64{{f.In, p.InputUsdMicrosPerMtok}, {f.CacheRead, p.InputUsdMicrosPerMtok},
+		{f.CacheWrite, p.InputUsdMicrosPerMtok}, {f.Out, p.OutputUsdMicrosPerMtok}})
+}
+
+// PriceTokens prices tokens of unknown kind, such as an unmeasured call's
+// reservation, at the higher of the two rates.
+func PriceTokens(tokens int64, p types.RegistryPrice) (int64, error) {
+	return priced([][2]int64{{tokens, max(p.InputUsdMicrosPerMtok, p.OutputUsdMicrosPerMtok)}})
+}
+
+// priced sums tokens × micros-per-million-tokens over terms, rounding up,
+// refusing a negative term or a total past the contract's integers.
+func priced(terms [][2]int64) (int64, error) {
+	sum := new(big.Int)
+	for _, t := range terms {
+		if t[0] < 0 || t[1] < 0 {
+			return 0, errors.New("ledger: a negative amount is not priced")
+		}
+		sum.Add(sum, new(big.Int).Mul(big.NewInt(t[0]), big.NewInt(t[1])))
+	}
+	sum.Add(sum, big.NewInt(999_999)).Quo(sum, big.NewInt(1_000_000))
+	if !sum.IsInt64() || sum.Int64() > maxAmount {
+		return 0, errors.New("ledger: the price overflows the contract's integer range")
+	}
+	return sum.Int64(), nil
+}
 
 // Call is one call's reconciled usage.
 type Call struct {
