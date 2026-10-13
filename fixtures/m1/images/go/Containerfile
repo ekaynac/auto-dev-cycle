@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The prepared Go image for this repository (P32, 00 §8 item 2): the pinned
+# toolchain with the module cache for go.mod and go.sum baked in, so the gate
+# runs `go test -json` offline. Build it only through
+# scripts/prepare-go-image.sh, which puts exactly the two lockfiles and
+# warm.txt into the build context and sets the dev.adc.prepared manifest label
+# that the sandbox checks (sandbox.Image.CheckManifest).
+#
+# The base is go.mod's toolchain (go1.27.1), pinned by its multi-arch index
+# digest (linux/amd64 and linux/arm64). It is fixed here, not a build
+# argument: changing it is a reviewed change to this file.
+FROM docker.io/library/golang:1.27.1-bookworm@sha256:8d48e12ec56735e9358640898b9d9b9fcca110612ed8a5567438c0a1baa24e66
+
+# The sandbox runs with a read-only root, /tmp (256 MiB) and HOME on tmpfs,
+# and no network: no module fetch, no other toolchain. A cold build of the
+# dependencies does not fit in /tmp, so the build cache is warmed here and
+# read-only at run time (go reads it and compiles misses in /tmp).
+ENV GOTOOLCHAIN=local \
+    GOFLAGS=-mod=readonly \
+    GOTELEMETRY=off \
+    CGO_ENABLED=0 \
+    GOCACHE=/opt/adc/gocache
+
+WORKDIR /opt/adc/prepare
+COPY go.mod go.sum warm.txt ./
+# The only networked step: download and verify every module of the
+# lockfiles. Then compile the standard library and the third-party packages
+# the tests import (warm.txt, from go list at the base): a cache only, so a
+# stale list costs time, never correctness.
+RUN go mod download -x && go mod verify \
+ && mkdir -p "$GOCACHE" && go build std && xargs -r go build < warm.txt \
+ && rm -rf /root/.cache
+
+# goindex=0: the module index would be written into the read-only cache.
+ENV GOPROXY=off \
+    GOSUMDB=off \
+    GODEBUG=goindex=0
+WORKDIR /
