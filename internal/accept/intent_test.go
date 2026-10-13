@@ -45,12 +45,22 @@ func call(t *testing.T) types.ManifestIntent {
 		Destination: "stub", Routing: types.ManifestIntentRoutingVerified}
 }
 
+// records is an Ancestry over a fixed record set.
+func records(refs ...types.Ref) Ancestry {
+	m := map[string][]string{}
+	for _, r := range refs {
+		m[r.ID] = r.Lineage
+	}
+	return func(id string) ([]string, bool) { l, ok := m[id]; return l, ok }
+}
+
 // The builder's intent lists exactly its context: the included inputs in
 // order, the omitted ones with their reasons.
 func TestBuilderIntent(t *testing.T) {
-	spec, base, old := ref(t, "1"), ref(t, "2"), ref(t, "3")
+	root := ref(t, "4")
+	spec, base, old := ref(t, "1", root.ID), ref(t, "2"), ref(t, "3")
 	ctx := graph.Rendered{Included: []types.Ref{spec, base}, Omitted: []types.ManifestIntentOmittedItem{{Ref: old, Reason: types.ManifestIntentOmittedItemReasonBudget}}}
-	in, err := BuilderIntent(call(t), ctx, map[types.Digest]int64{spec.IdentityDigest: 10, base.IdentityDigest: 20}, nil)
+	in, err := BuilderIntent(call(t), ctx, map[types.Digest]int64{spec.IdentityDigest: 10, base.IdentityDigest: 20}, nil, records(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,31 +68,42 @@ func TestBuilderIntent(t *testing.T) {
 		t.Fatalf("intent %+v", in)
 	}
 	// L5: an included input without its size is an error, never 0 bytes.
-	if _, err := BuilderIntent(call(t), ctx, map[types.Digest]int64{spec.IdentityDigest: 10}, nil); err == nil {
+	if _, err := BuilderIntent(call(t), ctx, map[types.Digest]int64{spec.IdentityDigest: 10}, nil, records(root)); err == nil {
 		t.Error("an included input without its size was sized 0")
 	}
 }
 
-// I18: an acceptance blob, or anything derived from one, refuses the
-// builder's intent, included or omitted.
+// I18 (Astra H4): an acceptance blob, or anything derived from one at any
+// depth, refuses the builder's intent, included or omitted, whether or not
+// its intermediates are in the context; so does an unresolvable ancestor.
 func TestBuilderIntentRefusesAcceptance(t *testing.T) {
 	hidden := ref(t, "9")
 	derived := ref(t, "8", hidden.ID)
 	summary := ref(t, "6", derived.ID) // two hops from the acceptance blob
-	for name, ctx := range map[string]graph.Rendered{
-		"included": {Included: []types.Ref{ref(t, "1"), hidden}},
-		"omitted":  {Included: []types.Ref{}, Omitted: []types.ManifestIntentOmittedItem{{Ref: hidden, Reason: types.ManifestIntentOmittedItemReasonRestricted}}},
-		"derived":  {Included: []types.Ref{derived}},
-		"two hops": {Included: []types.Ref{summary}, Omitted: []types.ManifestIntentOmittedItem{{Ref: derived, Reason: types.ManifestIntentOmittedItemReasonRestricted}}},
+	known := records(hidden, derived, summary)
+	for name, c := range map[string]struct {
+		ctx  graph.Rendered
+		want error
+	}{
+		"included":       {graph.Rendered{Included: []types.Ref{ref(t, "1"), hidden}}, ErrAcceptanceInput},
+		"omitted":        {graph.Rendered{Included: []types.Ref{}, Omitted: []types.ManifestIntentOmittedItem{{Ref: hidden, Reason: types.ManifestIntentOmittedItemReasonRestricted}}}, ErrAcceptanceInput},
+		"derived":        {graph.Rendered{Included: []types.Ref{derived}}, ErrAcceptanceInput},
+		"summary only":   {graph.Rendered{Included: []types.Ref{summary}}, ErrAcceptanceInput},
+		"unresolvable":   {graph.Rendered{Included: []types.Ref{ref(t, "5", "sha256:unknown")}}, ErrAncestryUnresolved},
+		"no ancestry fn": {graph.Rendered{Included: []types.Ref{summary}}, ErrAncestryUnresolved},
 	} {
-		if _, err := BuilderIntent(call(t), ctx, nil, []types.Digest{hidden.ContentDigest}); !errors.Is(err, ErrAcceptanceInput) {
-			t.Errorf("%s: %v, want ErrAcceptanceInput", name, err)
+		anc := known
+		if name == "no ancestry fn" {
+			anc = nil
+		}
+		if _, err := BuilderIntent(call(t), c.ctx, nil, []types.Digest{hidden.ContentDigest}, anc); !errors.Is(err, c.want) {
+			t.Errorf("%s: %v, want %v", name, err, c.want)
 		}
 	}
-	// The closure reaches the summary itself, not only its parent: the
-	// refusal names the first input in it, the summary.
-	ctx := graph.Rendered{Included: []types.Ref{summary}, Omitted: []types.ManifestIntentOmittedItem{{Ref: derived, Reason: types.ManifestIntentOmittedItemReasonRestricted}}}
-	if _, err := BuilderIntent(call(t), ctx, nil, []types.Digest{hidden.ContentDigest}); err == nil || !strings.Contains(err.Error(), summary.ID) {
-		t.Errorf("two hops: %v, want the summary %s refused", err, summary.ID)
+	// The summary-only refusal comes from the ancestry records: with a
+	// record of its parent that names no acceptance blob, it passes.
+	clean := records(hidden, ref(t, "8"), summary)
+	if _, err := BuilderIntent(call(t), graph.Rendered{Included: []types.Ref{summary}}, map[types.Digest]int64{summary.IdentityDigest: 1}, []types.Digest{hidden.ContentDigest}, clean); err != nil {
+		t.Errorf("a summary of a clean ancestor: %v", err)
 	}
 }

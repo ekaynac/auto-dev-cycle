@@ -17,25 +17,56 @@ import (
 // reportSchema names the report's shape: P30's gate ledger reads it.
 const reportSchema = "adc.accept-report/v1"
 
-// maxReported bounds each of the report's lists; the rest are counted.
-const maxReported = 1000
+// Report bounds: entries per list, bytes per field (a path or a what),
+// and encoded bytes of all entries together.
+const (
+	maxReported = 1000
+	maxField    = 1024
+	maxEntries  = 1 << 20
+)
 
 // Report is the D55 record of one accept node, a blob its result holds
-// from the first live attempt: elapsed time, blocks, warnings (each list
-// at most maxReported, the rest counted in truncated), files, tree.
+// from the first live attempt: elapsed time, blocks, warnings, files,
+// tree. Each list keeps at most maxReported entries, and all entries
+// together at most maxEntries encoded bytes; the entries left out are
+// counted in truncated, and the fields cut to maxField bytes in clipped.
 func (v Verdict) Report() ([]byte, error) {
-	cut := func(bs []Block) []Block { return append([]Block{}, bs[:min(len(bs), maxReported)]...) }
+	budget, truncated, clipped := maxEntries, 0, 0
+	var err error
+	cut := func(bs []Block) []Block {
+		out := []Block{}
+		for _, b := range bs {
+			for _, f := range []*string{&b.Path, &b.What} {
+				if len(*f) > maxField {
+					*f, clipped = strings.ToValidUTF8((*f)[:maxField], ""), clipped+1
+				}
+			}
+			e, merr := json.Marshal(b)
+			err = errors.Join(err, merr)
+			if len(out) == maxReported || len(e)+1 > budget {
+				truncated++
+				continue
+			}
+			budget -= len(e) + 1
+			out = append(out, b)
+		}
+		return out
+	}
+	blocks, warnings := cut(v.Blocks), cut(v.Warnings)
+	if err != nil {
+		return nil, err
+	}
 	return json.Marshal(struct {
 		Schema     string       `json:"schema"`
 		ElapsedMS  int64        `json:"elapsed_ms"`
 		Blocks     []Block      `json:"blocks"`
 		Warnings   []Block      `json:"warnings"`
 		Truncated  int          `json:"truncated"`
+		Clipped    int          `json:"clipped"`
 		Files      int          `json:"files"`
 		Tree       string       `json:"tree"`
 		TreeDigest types.Digest `json:"tree_digest"`
-	}{reportSchema, v.Elapsed.Milliseconds(), cut(v.Blocks), cut(v.Warnings),
-		len(v.Blocks) + len(v.Warnings) - len(cut(v.Blocks)) - len(cut(v.Warnings)), v.Files, v.Tree, v.TreeDigest})
+	}{reportSchema, v.Elapsed.Milliseconds(), blocks, warnings, truncated, clipped, v.Files, v.Tree, v.TreeDigest})
 }
 
 // Result is the accept node's completed result for key, kind tree.

@@ -6,9 +6,10 @@
 // controller's own repository (sandbox.Repo: hardened git, never a .git a
 // run wrote) and takes the file list from git (01 §2.5 "Accept"). It
 // refuses, failed: unsafe_output (a patch git will not apply, a path that
-// is not plain, a symlink, a gitlink); protected_path; and
-// test_integrity_violation (the guard's conclusive findings). Warnings go
-// to the reviewer; each verdict keeps its elapsed time and blocks (D55).
+// is not plain, a symlink, a gitlink); protected_path; and, through the
+// Guard seam, test_integrity_violation (the integrity guard is P14b's).
+// Warnings go to the reviewer; each verdict keeps its elapsed time and
+// blocks (D55).
 package accept
 
 import (
@@ -18,10 +19,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,13 +33,9 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// Bounds: adapterhost's patch bound; the guard reads at most maxRead bytes
-// in all, maxFile per file (a larger one is left to the reviewer).
-const (
-	maxPatch = 64 << 20
-	maxRead  = 64 << 20
-	maxFile  = 4 << 20
-)
+// maxPatch is adapterhost's patch bound, and the bound on any git output
+// accept reads (a var: tests lower it).
+var maxPatch int64 = 64 << 20
 
 var objectID = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
@@ -47,6 +46,7 @@ type In struct {
 	Patch   []byte           // the build's diff
 	Policy  Policy           // PolicyOf's
 	Ignored []string         // Diff's ignored output files: warnings
+	Guard   Guard            // nil: no integrity guard (P14b's)
 	Now     func() time.Time // nil: time.Now
 }
 
@@ -82,11 +82,22 @@ func (v Verdict) Reason() (r vocab.Reason) {
 	return r
 }
 
-// change is one entry of git's raw diff of the candidate against the base.
-type change struct {
-	srcMode, dstMode, srcBlob, dstBlob, status string
-	src, dst                                   string // dst is src unless renamed or copied
+// Change is one entry of git's raw diff of the candidate against the base.
+type Change struct {
+	SrcMode, DstMode, SrcBlob, DstBlob, Status string
+	Src, Dst                                   string // Dst is Src unless renamed or copied
 }
+
+// Guard is the integrity guard's seam (P14b owns 01 §2.5's guard): it
+// sees the changes of a candidate that passed every structural and
+// protected-path check, and reads their blobs through read. Its blocks
+// refuse the candidate (test_integrity_violation); its warnings go to the
+// reviewer.
+type Guard func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, err error)
+
+// Reader reads a blob of the candidate's repository: ok false, and
+// nothing read, when it is over max bytes.
+type Reader func(ctx context.Context, blob string, max int64) (b []byte, ok bool, err error)
 
 // Accept checks in's patch. An error is the controller's own fault (git
 // unusable, the repository changed); a candidate's fault is a verdict.
@@ -102,7 +113,7 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 	for _, p := range in.Ignored {
 		v.Warnings = append(v.Warnings, Block{vocab.ReasonCompletedWithFindings, p, "output .gitignore kept out of the diff"})
 	}
-	if len(in.Patch) > maxPatch {
+	if int64(len(in.Patch)) > maxPatch {
 		v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", fmt.Sprintf("the patch is over %d bytes", maxPatch)})
 		return v, nil
 	}
@@ -121,6 +132,10 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 		}
 	}
 	raw, err := g.run(ctx, nil, "diff", "--cached", "--raw", "-z", "--no-abbrev", "-M", in.Base, "--")
+	if errors.Is(err, ErrTooLarge) {
+		v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", "the file list is over the patch bound"})
+		return v, nil
+	}
 	if err != nil {
 		return v, err
 	}
@@ -132,11 +147,15 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 	for _, c := range changes {
 		v.Blocks = append(v.Blocks, in.Policy.check(c)...)
 	}
-	blocks, warnings, err := guard(ctx, g, changes)
-	if err != nil {
-		return v, err
+	// A structural refusal is final: no blob of a refused candidate (a
+	// gitlink's commit id, say) is ever read.
+	if in.Guard != nil && v.Accepted() {
+		blocks, warnings, err := in.Guard(ctx, changes, g.blob)
+		if err != nil {
+			return v, err
+		}
+		v.Blocks, v.Warnings = append(v.Blocks, blocks...), append(v.Warnings, warnings...)
 	}
-	v.Blocks, v.Warnings = append(v.Blocks, blocks...), append(v.Warnings, warnings...)
 	if !v.Accepted() {
 		return v, nil
 	}
@@ -152,10 +171,10 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 }
 
 // check is the path and mode rules for one change: both its paths.
-func (pol Policy) check(c change) []Block {
-	paths := []string{c.src}
-	if c.dst != c.src {
-		paths = append(paths, c.dst)
+func (pol Policy) check(c Change) []Block {
+	paths := []string{c.Src}
+	if c.Dst != c.Src {
+		paths = append(paths, c.Dst)
 	}
 	var out []Block
 	for _, p := range paths {
@@ -167,31 +186,31 @@ func (pol Policy) check(c change) []Block {
 		}
 	}
 	switch {
-	case c.dstMode == "120000":
-		return []Block{{vocab.ReasonUnsafeOutput, c.dst, "a symlink"}}
-	case c.srcMode == "160000" || c.dstMode == "160000":
-		return []Block{{vocab.ReasonUnsafeOutput, c.dst, "a gitlink (submodule)"}}
+	case c.DstMode == "120000":
+		return []Block{{vocab.ReasonUnsafeOutput, c.Dst, "a symlink"}}
+	case c.SrcMode == "160000" || c.DstMode == "160000":
+		return []Block{{vocab.ReasonUnsafeOutput, c.Dst, "a gitlink (submodule)"}}
 	}
 	return out
 }
 
 // parseRaw reads `git diff --raw -z`: ":srcmode dstmode src dst status",
 // then the path, and a second path for a rename or a copy.
-func parseRaw(raw []byte) ([]change, error) {
+func parseRaw(raw []byte) ([]Change, error) {
 	fields := strings.Split(string(raw), "\x00")
-	var out []change
+	var out []Change
 	for i := 0; i < len(fields) && fields[i] != ""; {
 		meta := strings.Fields(strings.TrimPrefix(fields[i], ":"))
 		if len(meta) != 5 || i+1 >= len(fields) {
 			return nil, fmt.Errorf("accept: unreadable raw diff entry %q", fields[i])
 		}
-		c := change{srcMode: meta[0], dstMode: meta[1], srcBlob: meta[2], dstBlob: meta[3], status: meta[4][:1], src: fields[i+1]}
-		c.dst, i = c.src, i+2
-		if c.status == "R" || c.status == "C" {
+		c := Change{SrcMode: meta[0], DstMode: meta[1], SrcBlob: meta[2], DstBlob: meta[3], Status: meta[4][:1], Src: fields[i+1]}
+		c.Dst, i = c.Src, i+2
+		if c.Status == "R" || c.Status == "C" {
 			if i >= len(fields) {
 				return nil, fmt.Errorf("accept: a rename without its new path")
 			}
-			c.dst, i = fields[i], i+1
+			c.Dst, i = fields[i], i+1
 		}
 		out = append(out, c)
 	}
@@ -230,7 +249,9 @@ func newIndex(ctx context.Context, repo sandbox.Repo, base string) (index, func(
 	return g, cleanup, nil
 }
 
-// run runs the hardened git on the temporary index, with stdin.
+// run runs the hardened git on the temporary index, with stdin, reading
+// at most maxPatch bytes of its output: past that, git is killed and
+// reaped, and run returns ErrTooLarge, never the whole output buffered.
 func (g index) run(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	cmd, err := g.repo.Git(ctx, g.tree, args...)
 	if err != nil {
@@ -240,12 +261,44 @@ func (g index) run(ctx context.Context, stdin []byte, args ...string) ([]byte, e
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	out, err := cmd.Output()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	pipe, err := cmd.StdoutPipe()
+	if err == nil {
+		err = cmd.Start()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("accept: git %s: %w", args[0], err)
+	}
+	out, rerr := io.ReadAll(io.LimitReader(pipe, maxPatch+1))
+	if int64(len(out)) > maxPatch {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait() // reaped; its error is the kill's
+		return nil, fmt.Errorf("%w (git %s)", ErrTooLarge, args[0])
+	}
+	err = errors.Join(cmd.Wait(), rerr)
 	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() > 0 {
-		return nil, fmt.Errorf("%w: %s: %w: %s", errFailed, args[0], err, bytes.TrimSpace(exit.Stderr))
+		return nil, fmt.Errorf("%w: %s: %w: %s", errFailed, args[0], err, bytes.TrimSpace(stderr.Bytes()))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("accept: git %s: %w", args[0], err)
 	}
 	return out, nil
+}
+
+// blob is a Reader on the index's repository.
+func (g index) blob(ctx context.Context, id string, max int64) ([]byte, bool, error) {
+	if !objectID.MatchString(id) {
+		return nil, false, fmt.Errorf("accept: %q is not an object id", id)
+	}
+	size, err := g.run(ctx, nil, "cat-file", "-s", id)
+	if err != nil {
+		return nil, false, err
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(size)), 10, 64)
+	if err != nil || n > max {
+		return nil, false, err
+	}
+	b, err := g.run(ctx, nil, "cat-file", "blob", id)
+	return b, err == nil, err
 }

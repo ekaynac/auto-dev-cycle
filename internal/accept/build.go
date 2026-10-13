@@ -19,6 +19,10 @@ import (
 // controller's (so no hold, no page).
 var ErrUnsafeTree = errors.New("accept: the output tree is unsafe")
 
+// ErrTooLarge: a git output (the build's diff, deletions of the base
+// included) is over maxPatch. It is an ErrUnsafeTree: the candidate's.
+var ErrTooLarge = fmt.Errorf("%w: a git output is over the patch bound", ErrUnsafeTree)
+
 // maxIgnored bounds the ignored output files Diff reports.
 const maxIgnored = 100
 
@@ -28,8 +32,8 @@ const maxIgnored = 100
 // empty when nothing changed, and is what graph.BuildFacts.Diff digests.
 // The adapter's own patch is a claim and is never read for it. ignored
 // are output files .gitignore kept out of the diff (at most maxIgnored),
-// for In.Ignored. Diff holds the whole diff in memory: its size is bounded
-// by the tree's, which CopyTree's maxBytes bounds; over maxPatch it fails.
+// for In.Ignored. Diff reads at most maxPatch bytes of the diff, however
+// large the tree or the base's deletions: past that it is ErrTooLarge.
 func Diff(ctx context.Context, repo sandbox.Repo, base, tree string) (patch []byte, ignored []string, err error) {
 	// Before git reads the tree: a .git look-alike (case, NTFS and HFS+
 	// forms) that CopyTree's exact ".git" left in.
@@ -63,8 +67,5 @@ func Diff(ctx context.Context, repo sandbox.Repo, base, tree string) (patch []by
 		}
 	}
 	patch, err = g.run(ctx, nil, "diff", "--cached", "--binary", "--full-index", "--no-renames", base, "--")
-	if err == nil && len(patch) > maxPatch {
-		return nil, nil, fmt.Errorf("accept: the build's diff is over %d bytes", maxPatch)
-	}
 	return patch, ignored, err
 }

@@ -66,7 +66,11 @@ type fixture struct {
 	policy    Policy
 }
 
-func newFixture(t *testing.T) fixture {
+func newFixture(t *testing.T) fixture { return newFixtureWith(t, nil) }
+
+// newFixtureWith runs prep in the base's source repository before its
+// commit (a hostile or large base).
+func newFixtureWith(t *testing.T, prep func(src string)) fixture {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
@@ -75,6 +79,9 @@ func newFixture(t *testing.T) fixture {
 	plain(t, filepath.Dir(src), "init", "--quiet", "--initial-branch=main", src)
 	write(t, src, baseFiles)
 	plain(t, src, "add", "--all")
+	if prep != nil {
+		prep(src)
+	}
 	plain(t, src, "commit", "--quiet", "-m", "base")
 	f := fixture{src: src, base: strings.TrimSpace(plain(t, src, "rev-parse", "HEAD"))}
 	var err error
@@ -178,23 +185,23 @@ func TestRefusesProtectedPaths(t *testing.T) {
 func TestCheckPaths(t *testing.T) {
 	var pol Policy
 	for _, c := range []struct {
-		c    change
+		c    Change
 		want vocab.Reason
 	}{
-		{change{src: "docs/../../outside.txt", dst: "docs/../../outside.txt", dstMode: "100644"}, vocab.ReasonUnsafeOutput},
-		{change{src: "/etc/passwd", dst: "/etc/passwd", dstMode: "100644"}, vocab.ReasonUnsafeOutput},
-		{change{src: "a/./b", dst: "a/./b", dstMode: "100644"}, vocab.ReasonUnsafeOutput},
-		{change{src: "a\\..\\b", dst: "a\\..\\b", dstMode: "100644"}, vocab.ReasonUnsafeOutput},
-		{change{src: ".gitmodules", dst: ".gitmodules", dstMode: "120000"}, vocab.ReasonUnsafeOutput},
-		{change{src: "a.txt", dst: ".git/config", dstMode: "100644", status: "R"}, vocab.ReasonProtectedPath},
-		{change{src: "x/.GIT./hooks/pre-commit", dst: "x/.GIT./hooks/pre-commit", dstMode: "100755"}, vocab.ReasonProtectedPath},
+		{Change{Src: "docs/../../outside.txt", Dst: "docs/../../outside.txt", DstMode: "100644"}, vocab.ReasonUnsafeOutput},
+		{Change{Src: "/etc/passwd", Dst: "/etc/passwd", DstMode: "100644"}, vocab.ReasonUnsafeOutput},
+		{Change{Src: "a/./b", Dst: "a/./b", DstMode: "100644"}, vocab.ReasonUnsafeOutput},
+		{Change{Src: "a\\..\\b", Dst: "a\\..\\b", DstMode: "100644"}, vocab.ReasonUnsafeOutput},
+		{Change{Src: ".gitmodules", Dst: ".gitmodules", DstMode: "120000"}, vocab.ReasonUnsafeOutput},
+		{Change{Src: "a.txt", Dst: ".git/config", DstMode: "100644", Status: "R"}, vocab.ReasonProtectedPath},
+		{Change{Src: "x/.GIT./hooks/pre-commit", Dst: "x/.GIT./hooks/pre-commit", DstMode: "100755"}, vocab.ReasonProtectedPath},
 	} {
 		got := pol.check(c.c)
 		if len(got) == 0 || got[0].Reason != c.want {
 			t.Errorf("%+v: %v, want %s", c.c, reasons(got), c.want)
 		}
 	}
-	if got := pol.check(change{src: "docs/key", dst: "docs/key", srcMode: "120000", dstMode: "000000", status: "D"}); len(got) != 0 {
+	if got := pol.check(Change{Src: "docs/key", Dst: "docs/key", SrcMode: "120000", DstMode: "000000", Status: "D"}); len(got) != 0 {
 		t.Errorf("deleting a symlink: %v", reasons(got))
 	}
 }
@@ -243,57 +250,6 @@ func TestRefusesUnsafeOutput(t *testing.T) {
 	}
 	if strings.Contains(plain(t, f.repo.Dir, "status", "--porcelain"), "outside") {
 		t.Error("the controller's repository was written")
-	}
-}
-
-// The integrity guard's conclusive findings (00 §2.6 fault-test-deletion,
-// -skip; #226 entry 32) block; its heuristics warn the reviewer.
-func TestIntegrityGuard(t *testing.T) {
-	f := newFixture(t)
-	test, goTest := baseFiles["tests/test_money.py"], baseFiles["pkg/calc_test.go"]
-	// why is the block each row must raise (the rule it discriminates).
-	why := map[string]string{"deleted test file": "no longer collected", "skip added": "skipped", "go skip added": "skipped",
-		"assertion removed": "fewer assertions", "test removed": "a test deleted", "testing.Testing": "forge", "0x16 written": "forge",
-		"renamed to non-test": "no longer collected", "go:build ignore": "build constraint", "renamed, uncollected": "no longer collected",
-		"go test renamed .test": "no longer collected", "importorskip": "skip", "deleted, comment pad": "a test deleted",
-		"assert moved to new": "fewer assertions", "padded over the bound": "unverifiable", "go skip in a helper": "skip"}
-	for name, c := range map[string]struct {
-		files map[string]string
-		gone  []string
-	}{
-		"deleted test file":   {gone: []string{"tests/test_money.py"}},
-		"skip added":          {files: map[string]string{"tests/test_money.py": strings.Replace(test, "def test_add", "@pytest.mark.skip\ndef test_add", 1)}},
-		"go skip added":       {files: map[string]string{"pkg/calc_test.go": strings.Replace(baseFiles["pkg/calc_test.go"], "{\n\tif", "{\n\tt.Skip()\n\tif", 1)}},
-		"assertion removed":   {files: map[string]string{"tests/test_money.py": strings.Replace(test, "assert add(0, 0) == 0", "pass", 1)}},
-		"test removed":        {files: map[string]string{"tests/test_money.py": strings.SplitAfter(test, "== 3\n")[0]}},
-		"testing.Testing":     {files: map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\nvar _ = testing.Testing()\n"}},
-		"0x16 written":        {files: map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\nconst x = \"\\x16\"\n"}},
-		"renamed to non-test": {files: map[string]string{"tests_old.txt": test}, gone: []string{"tests/test_money.py"}},
-		// The Opus pre-review's probes (#252).
-		"go:build ignore":       {files: map[string]string{"pkg/calc_test.go": "//go:build ignore\n\n" + goTest}},
-		"renamed, uncollected":  {files: map[string]string{"tests/money_cases.py": test}, gone: []string{"tests/test_money.py"}},
-		"go test renamed .test": {files: map[string]string{"pkg/calc.test.go": goTest}, gone: []string{"pkg/calc_test.go"}},
-		"importorskip":          {files: map[string]string{"tests/test_money.py": "import pytest\npytest.importorskip('nope')\n" + test}},
-		"deleted, comment pad":  {files: map[string]string{"tests/test_money.py": strings.SplitAfter(test, "== 3\n")[0] + "\n# def test assert\n"}},
-		"assert moved to new":   {files: map[string]string{"tests/test_money.py": strings.Replace(test, "assert add(0, 0) == 0", "pass", 1), "tests/test_x.py": "def test_x():\n    assert True\n"}},
-		"padded over the bound": {files: map[string]string{"tests/test_money.py": strings.Replace(test, "assert add(0, 0) == 0", "pass", 1) + "#" + strings.Repeat("x", 5<<20) + "\n"}},
-		"go skip in a helper":   {files: map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\nfunc skip(t interface{ Skip(...any) }) { t.Skip() }\n"}},
-	} {
-		v := f.accept(t, f.patch(t, c.files, c.gone...))
-		found := slices.ContainsFunc(v.Blocks, func(b Block) bool { return strings.Contains(b.What, why[name]) })
-		if v.Reason() != vocab.ReasonTestIntegrityViolation || !found {
-			t.Errorf("%s: %+v, want test_integrity_violation (%s)", name, v.Blocks, why[name])
-		}
-	}
-	for name, files := range map[string]map[string]string{
-		"an added TestMain":            {"pkg/main_test.go": "package pkg\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(m.Run()) }\n"},
-		"os.Exit in init beside tests": {"pkg/calc.go": baseFiles["pkg/calc.go"] + "\nfunc init() { os.Exit(0) }\n"},
-		"a large fixture under tests":  {"tests/data.json": strings.Repeat("x", 5<<20)},
-	} {
-		v := f.accept(t, f.patch(t, files))
-		if !v.Accepted() || len(v.Warnings) == 0 {
-			t.Errorf("%s: blocks %v, warnings %v; want accepted with a warning", name, reasons(v.Blocks), reasons(v.Warnings))
-		}
 	}
 }
 
@@ -371,6 +327,75 @@ func TestReportBounded(t *testing.T) {
 	if err != nil || json.Unmarshal(b, &rep) != nil || len(rep.Blocks) != maxReported || rep.Truncated != 5 ||
 		rep.Warnings == nil || !strings.Contains(string(b), `"warnings":[]`) {
 		t.Fatalf("report: %d blocks, truncated %d, %v", len(rep.Blocks), rep.Truncated, err)
+	}
+	// L8 (Astra): a megabyte path is clipped, and long entries stop at the
+	// byte bound, the rest counted.
+	long := Block{vocab.ReasonProtectedPath, strings.Repeat("p", 2<<20), "w"}
+	wide := slices.Repeat([]Block{{vocab.ReasonProtectedPath, strings.Repeat("q", maxField), "w"}}, maxReported)
+	b, err = Verdict{Blocks: append([]Block{long}, wide...)}.Report()
+	var cut struct{ Truncated, Clipped int }
+	if err != nil || json.Unmarshal(b, &cut) != nil || len(b) > maxEntries+4096 || cut.Clipped != 1 || cut.Truncated == 0 {
+		t.Fatalf("report of %d bytes: truncated %d, clipped %d, %v", len(b), cut.Truncated, cut.Clipped, err)
+	}
+}
+
+// The Guard seam (P14b's integrity guard): it runs on a structurally
+// clean candidate, reads its blobs within a bound, and its blocks refuse.
+func TestGuardSeam(t *testing.T) {
+	f := newFixture(t)
+	calls := 0
+	guard := func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
+		calls++
+		b, ok, err := read(ctx, changes[0].DstBlob, 1<<20)
+		if _, small, _ := read(ctx, changes[0].DstBlob, 1); err != nil || !ok || string(b) != "x = 1\n" || small {
+			t.Errorf("read: %q, %t, %v", b, ok, err)
+		}
+		return []Block{{vocab.ReasonTestIntegrityViolation, changes[0].Dst, "guarded"}}, nil, nil
+	}
+	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, map[string]string{"money.py": "x = 1\n"}), Policy: f.policy, Guard: guard})
+	if err != nil || calls != 1 || v.Reason() != vocab.ReasonTestIntegrityViolation {
+		t.Fatalf("guarded: %v, %d calls, %v", reasons(v.Blocks), calls, err)
+	}
+}
+
+// Astra M5: a structural refusal is final. A hostile base's gitlink the
+// builder removes is refused unsafe_output through the controller's Diff,
+// and no guard reads its commit id as a blob.
+func TestStructuralRefusalSkipsGuard(t *testing.T) {
+	f := newFixtureWith(t, func(src string) {
+		plain(t, src, "update-index", "--add", "--cacheinfo", "160000,"+strings.Repeat("1", 40)+",pkg/sub_test.go")
+	})
+	tree := filepath.Join(t.TempDir(), "tree")
+	write(t, tree, baseFiles) // the gitlink removed
+	d, _, err := Diff(context.Background(), f.repo, f.base, tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
+		_, _, err := read(ctx, changes[0].SrcBlob, 1<<20)
+		return nil, nil, err
+	}
+	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: d, Policy: f.policy, Guard: guard})
+	if err != nil || v.Reason() != vocab.ReasonUnsafeOutput {
+		t.Fatalf("a removed gitlink: %v, %v; want unsafe_output and no error", reasons(v.Blocks), err)
+	}
+}
+
+// Astra M6: Diff reads at most maxPatch bytes, deletions of the base
+// included, and its overflow is the candidate's (ErrTooLarge, an
+// ErrUnsafeTree), not a controller fault.
+func TestDiffBoundedDeletions(t *testing.T) {
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"big.txt": strings.Repeat("a line of the base\n", 1<<16)}) // 1.2 MiB
+		plain(t, src, "add", "big.txt")
+	})
+	old := maxPatch
+	maxPatch = 256 << 10
+	t.Cleanup(func() { maxPatch = old })
+	tree := filepath.Join(t.TempDir(), "tree")
+	write(t, tree, baseFiles) // big.txt deleted
+	if _, _, err := Diff(context.Background(), f.repo, f.base, tree); !errors.Is(err, ErrTooLarge) || !errors.Is(err, ErrUnsafeTree) {
+		t.Fatalf("a deletion-heavy diff: %v, want ErrTooLarge", err)
 	}
 }
 
