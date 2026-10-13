@@ -66,6 +66,57 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+// TestLoadConfigRegistry: `adcd run --registry` checks the registry
+// against the resource groups at load, and Start checks it again.
+func TestLoadConfigRegistry(t *testing.T) {
+	state := stateDir(t)
+	const fx = "../../fixtures/m1/config/"
+	groups, stub := fx+"groups.json", fx+"registry-stub.json"
+	cfg, err := LoadConfig([]string{"--state-dir", state, "--resource-groups", groups, "--registry", stub})
+	if err != nil || cfg.Registry == nil || len(cfg.Registry.Executors) != 2 {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	if cfg, err := LoadConfig([]string{"--state-dir", state, "--resource-groups", groups, "--registry", fx + "registry-live.example.json"}); err != nil {
+		t.Fatalf("the live example: %+v %v", cfg, err)
+	}
+	raw, err := os.ReadFile(stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same := writeFile(t, strings.Replace(string(raw), `"family": "stub-reviewer"`, `"family": "stub-builder"`, 1))
+	for name, c := range map[string]struct {
+		args []string
+		rule string
+	}{
+		"no groups":      {[]string{"--registry", stub}, "the group is not configured"},
+		"same family":    {[]string{"--resource-groups", groups, "--registry", same}, "executor 1: a reviewer's family equals a builder's family"},
+		"missing file":   {[]string{"--resource-groups", groups, "--registry", filepath.Join(t.TempDir(), "absent.json")}, "the registry cannot be opened"},
+		"not a registry": {[]string{"--resource-groups", groups, "--registry", groups}, "does not satisfy config/executor-registry"},
+	} {
+		_, err := LoadConfig(append([]string{"--state-dir", state}, c.args...))
+		if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), c.rule) {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		for _, leak := range []string{state, "secret-name", "absent", "stub-builder"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Errorf("%s: the error echoes %q: %v", name, leak, err)
+			}
+		}
+	}
+	cfg.Registry.Executors[1].Family = cfg.Registry.Executors[0].Family // edited after load: Start checks again
+	if d, err := Start(t.Context(), cfg); !errors.Is(err, ErrConfig) {
+		if d != nil {
+			d.Close()
+		}
+		t.Fatalf("Start ran a registry whose families are equal: %v", err)
+	}
+	var stderr bytes.Buffer
+	if code := RunCommand([]string{"--state-dir", state, "--resource-groups", groups, "--registry", same}, &stderr); code != entry.ExitUsage {
+		t.Fatalf("adcd run with equal families: exit %d: %s", code, stderr.String())
+	}
+}
+
 func TestRunCommandUsage(t *testing.T) {
 	var stderr bytes.Buffer
 	if code := RunCommand([]string{"--state-dir", "relative"}, &stderr); code != entry.ExitUsage {

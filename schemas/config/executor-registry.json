@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/config/executor-registry.json",
+  "title": "ExecutorRegistry",
+  "description": "The executors `adcd run --registry` places work on (docs/design/m1/00-slice-plan.md Q2, Q8; 01 §2.2 \"Source registry\"): each with its role, model family, pinned model, destination, credential reference, resource group and price basis. The enums stay open to later milestones (a governed_upstream destination, the attested tier, D48); internal/registry refuses at start whatever M1 does not implement.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "executors"],
+  "properties": {
+    "schema": {"const": "adc.executor-registry/v1"},
+    "executors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/RegistryExecutor"}}
+  },
+  "$defs": {
+    "RegistryExecutor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "family", "adapter", "model", "destination", "credential_ref", "group", "cost_basis", "price"],
+      "properties": {
+        "id": {"$ref": "../common/defs.json#/$defs/ExecutorID"},
+        "role": {"enum": ["builder", "reviewer"]},
+        "family": {"description": "The model family review independence compares (06 rule 3); never `unknown`.", "$ref": "../records/receipt.json#/$defs/Name"},
+        "adapter": {"description": "The harness kind; M1 runs `http-chat` only.", "$ref": "project-profile.json#/$defs/Slug"},
+        "model": {"description": "The pinned model the gateway sends to; it never selects or changes it (D48).", "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$"},
+        "destination": {"$ref": "#/$defs/RegistryDestination"},
+        "credential_ref": {"description": "The name of the credential the gateway injects (P11); never the credential. Null for an endpoint without one.", "oneOf": [{"type": "null"}, {"$ref": "project-profile.json#/$defs/Slug"}]},
+        "group": {"description": "The one resource group the executor draws from; the group's members name it.", "$ref": "../common/defs.json#/$defs/ResourceGroupID"},
+        "cost_basis": {"enum": ["cash", "subscription_equivalent", "free", "local"]},
+        "price": {"description": "The price basis of the USD rails; null exactly when the cost basis is free or local (zero cost).", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/RegistryPrice"}]}
+      }
+    },
+    "RegistryDestination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "verification", "trust_class", "endpoint", "retention_days"],
+      "properties": {
+        "id": {"description": "What a project's data_policy.allowed_destinations names.", "$ref": "project-profile.json#/$defs/Slug"},
+        "kind": {"description": "M1 admits direct_api and local_endpoint; broker and governed_upstream (M2 or later) are refused.", "enum": ["direct_api", "local_endpoint", "broker", "governed_upstream"]},
+        "verification": {"description": "The routing label (01 §2.2). M1 admits verified; attested is M2.", "enum": ["reported", "verified", "attested"]},
+        "trust_class": {"description": "Compared with a project's data_policy.floor.", "enum": ["own", "contracted", "free_unknown"]},
+        "endpoint": {"description": "The OpenAI-compatible base URL, with no credential, query or fragment.", "type": "string", "minLength": 1, "maxLength": 2048},
+        "retention_days": {"description": "The declared retention of request data; null is undeclared.", "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 36500}]}
+      }
+    },
+    "RegistryPrice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_usd_micros_per_mtok", "output_usd_micros_per_mtok"],
+      "properties": {
+        "input_usd_micros_per_mtok": {"$ref": "../records/resource-group.json#/$defs/Amount"},
+        "output_usd_micros_per_mtok": {"$ref": "../records/resource-group.json#/$defs/Amount"}
+      }
+    }
+  }
+}

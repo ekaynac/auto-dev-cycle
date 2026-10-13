@@ -1,0 +1,29 @@
+{
+  "schema": "adc.executor-registry/v1",
+  "executors": [
+    {
+      "id": "exe_01m4tm99haemrs8zjs56wjm467",
+      "role": "builder",
+      "family": "local-coder",
+      "adapter": "http-chat",
+      "model": "local-coder:32b",
+      "destination": {"id": "local", "kind": "local_endpoint", "verification": "verified", "trust_class": "own", "endpoint": "http://127.0.0.1:11434/v1", "retention_days": 0},
+      "credential_ref": null,
+      "group": "rg_01m4tm99haemtbemfkdve21grg",
+      "cost_basis": "local",
+      "price": null
+    },
+    {
+      "id": "exe_01m4tm99haemsbebz0rbxsgv6r",
+      "role": "reviewer",
+      "family": "api-reviewer",
+      "adapter": "http-chat",
+      "model": "api-reviewer-2026-01",
+      "destination": {"id": "api", "kind": "direct_api", "verification": "verified", "trust_class": "contracted", "endpoint": "https://api.example.com/v1", "retention_days": 30},
+      "credential_ref": "api-reviewer",
+      "group": "rg_01m4tm99haemts9wqw2ch5m488",
+      "cost_basis": "cash",
+      "price": {"input_usd_micros_per_mtok": 3000000, "output_usd_micros_per_mtok": 15000000}
+    }
+  ]
+}

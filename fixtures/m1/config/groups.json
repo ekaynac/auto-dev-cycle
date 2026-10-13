@@ -1,0 +1,23 @@
+[
+  {
+    "id": "rg_01m4tm99haemss9tvzd438vq8j",
+    "kind": "account_quota",
+    "capacity_model": {"unit": "tokens", "limit": 2000000, "window": null, "reset_at": null, "quota_state": "known"},
+    "release_rule": "on_settle",
+    "members": ["exe_01m4tm99haemqt8es2qfbwj8pa", "exe_01m4tm99haemr8ajyf09v4ytzb"]
+  },
+  {
+    "id": "rg_01m4tm99haemtbemfkdve21grg",
+    "kind": "concurrency",
+    "capacity_model": {"unit": "slots", "limit": 1, "window": null, "reset_at": null, "quota_state": "known"},
+    "release_rule": "on_settle",
+    "members": ["exe_01m4tm99haemrs8zjs56wjm467"]
+  },
+  {
+    "id": "rg_01m4tm99haemts9wqw2ch5m488",
+    "kind": "account_quota",
+    "capacity_model": {"unit": "tokens", "limit": 5000000, "window": null, "reset_at": null, "quota_state": "estimated"},
+    "release_rule": "on_settle",
+    "members": ["exe_01m4tm99haemsbebz0rbxsgv6r"]
+  }
+]

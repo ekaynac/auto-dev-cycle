@@ -43,6 +43,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/seat.json`](api-seat.md) | SeatRead |
 | [`api/whoami.json`](api-whoami.md) | Whoami |
 | [`common/defs.json`](common-defs.md) | Common definitions |
+| [`config/executor-registry.json`](config-executor-registry.md) | ExecutorRegistry |
 | [`config/project-profile.json`](config-project-profile.md) | ProjectProfile |
 | [`records/actor.json`](records-actor.md) | Actor |
 | [`records/approval.json`](records-approval.md) | Approval |

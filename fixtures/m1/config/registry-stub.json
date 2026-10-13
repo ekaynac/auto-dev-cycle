@@ -1,0 +1,29 @@
+{
+  "schema": "adc.executor-registry/v1",
+  "executors": [
+    {
+      "id": "exe_01m4tm99haemqt8es2qfbwj8pa",
+      "role": "builder",
+      "family": "stub-builder",
+      "adapter": "http-chat",
+      "model": "stub-builder-1",
+      "destination": {"id": "stub", "kind": "direct_api", "verification": "verified", "trust_class": "contracted", "endpoint": "http://127.0.0.1:18080/v1", "retention_days": 0},
+      "credential_ref": "stub",
+      "group": "rg_01m4tm99haemss9tvzd438vq8j",
+      "cost_basis": "cash",
+      "price": {"input_usd_micros_per_mtok": 1000000, "output_usd_micros_per_mtok": 4000000}
+    },
+    {
+      "id": "exe_01m4tm99haemr8ajyf09v4ytzb",
+      "role": "reviewer",
+      "family": "stub-reviewer",
+      "adapter": "http-chat",
+      "model": "stub-reviewer-1",
+      "destination": {"id": "stub", "kind": "direct_api", "verification": "verified", "trust_class": "contracted", "endpoint": "http://127.0.0.1:18080/v1", "retention_days": 0},
+      "credential_ref": "stub",
+      "group": "rg_01m4tm99haemss9tvzd438vq8j",
+      "cost_basis": "cash",
+      "price": {"input_usd_micros_per_mtok": 2000000, "output_usd_micros_per_mtok": 8000000}
+    }
+  ]
+}
