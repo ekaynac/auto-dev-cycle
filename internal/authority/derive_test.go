@@ -128,7 +128,7 @@ func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary
 		}
 		return suiteNow().Add(storeShift)
 	},
-		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, authority.ProposalProjector{}.Project, notesProjection, authority.ProjectProjector{}.Project, authority.TaskProjector{}.Project, authority.OwedProjector{}.Project, graph.Project, b.record),
+		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, authority.ProposalProjector{}.Project, notesProjection, authority.ProjectProjector{}.Project, authority.TaskProjector{}.Project, authority.OwedProjector{}.Project, graph.Projector{Answers: authority.Answers{}}.Project, b.record),
 			Authorize: func(tx *eventstore.Tx, c eventstore.Command) error {
 				if c.Action == "test.seed" {
 					return nil

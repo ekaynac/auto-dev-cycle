@@ -440,7 +440,7 @@ func TestFoldClock(t *testing.T) {
 		evs, err := recordResult(tx, types.ResultRecorded{Node: consumer, Result: r}, g.blobs)
 		if err == nil {
 			evs[0].At = future
-			late = Project(tx, evs)
+			late = ProjectM0(tx, evs)
 		}
 		return nil, errors.Join(err, rollback)
 	})

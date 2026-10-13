@@ -134,7 +134,7 @@ func openGraphWith(ctx context.Context, dir string, effects eventstore.EffectKin
 		maps.Copy(kinds, lease.Kinds())
 		leases := lease.Projector{Blobs: blobs, Units: graph.Units{}}.Project // attempts bound to nodes (M1 P8a)
 		s, err = eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Effects: effects,
-			Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(leases, graph.Project, owedanswers.Project)}})
+			Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(leases, graph.ProjectM0, owedanswers.Project)}})
 	}
 	if err != nil {
 		return nil, nil, errors.Join(err, lock.Release())

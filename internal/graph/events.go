@@ -297,17 +297,27 @@ func claimNode(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved, 
 	return event(NodeClaimed, string(node), rec.Recorded.Project, &c)
 }
 
-// Project is the eventstore.Hooks.Project fold for the graph projections;
-// other kinds pass through.
-func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
+// ProjectM0 is M0's eventstore.Hooks.Project fold for the graph
+// projections; other kinds pass through. It reads no authority, so it
+// checks no recorded answer: only the M0 fixtures, whose answers are the
+// owed-answer fake's, and tests use it. adcd folds with Projector
+// (eligible.go).
+func ProjectM0(tx *eventstore.Tx, evs []eventstore.Event) error { return project(tx, evs, nil) }
+
+// project folds evs, checking each event's answers first under auth (nil:
+// none, M0's fold).
+func project(tx *eventstore.Tx, evs []eventstore.Event, auth Authority) error {
 	for _, ev := range evs {
 		if !slices.Contains(kinds, ev.Kind) {
 			continue
 		}
 		var g types.GraphEvent
 		err := json.Unmarshal(ev.Payload, &g)
+		if err == nil && auth != nil {
+			err = eligible(tx, ev, g.Variant, auth)
+		}
 		if err == nil {
-			err = fold(tx, ev, g.Variant)
+			err = fold(tx, ev, g.Variant, auth != nil)
 		}
 		if err != nil {
 			return fmt.Errorf("graph: event %s (%s): %w", ev.ID, ev.Kind, err)
@@ -316,7 +326,9 @@ func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	return nil
 }
 
-func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant) error {
+// fold folds v; removals: a supersession may remove an answer, whose
+// question eligible has checked moved.
+func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant, removals bool) error {
 	switch p := v.(type) {
 	case *types.NodeRecorded:
 		return recorded(tx, ev, p)
@@ -345,7 +357,7 @@ func fold(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant) err
 	case *types.QueueObserved:
 		return queueObserved(tx, ev, p)
 	case *types.ReviewSuperseded:
-		return supersededFold(tx, ev, p)
+		return supersededFold(tx, ev, p, removals)
 	}
 	return errors.New("no payload")
 }

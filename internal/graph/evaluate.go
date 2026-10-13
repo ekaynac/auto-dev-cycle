@@ -33,8 +33,8 @@ package graph
 //     hands none back, so no caller holds validated events past their
 //     transaction; it is the only exported way to record a result. The
 //     result folds refuse a result whose claim's result inputs are no
-//     longer selected; the authority is not checked by a fold until M1
-//     records approvals.
+//     longer selected and, through the authority (M1 P6, eligible.go), one
+//     whose claimed answers are no longer in force.
 //   - Owed inputs and their answers are the authority's (04): an Authority
 //     the caller passes, until M1's input.answer binds them (15 D1). A
 //     receipt owed input is not an answer: its node declares the evidence
@@ -382,7 +382,7 @@ func revalidate(tx *eventstore.Tx, node types.NodeID, env Env) error {
 	if err := superseded(rec); err != nil {
 		return err
 	}
-	answered, _, err := answers(tx, rec, env.Authority) // a stale answer is unanswered: authority_revoked
+	answered, stale, err := answers(tx, rec, env.Authority) // a stale answer is unanswered: authority_revoked
 	if err != nil {
 		return err
 	}
@@ -406,6 +406,9 @@ func revalidate(tx *eventstore.Tx, node types.NodeID, env Env) error {
 			reason = vocab.ReasonAuthorityRevoked
 		}
 		return ErrRevalidated{Input: types.Name(name), Reason: reason, Detail: detail}
+	}
+	if stale { // a displaced question the node declares no answer to (inForce)
+		return ErrRevalidated{Reason: vocab.ReasonAuthorityRevoked, Detail: "a question a supersession replaced is still owed"}
 	}
 	return nil
 }

@@ -27,13 +27,15 @@ package graph
 //     or retired: as invalidated, a retry wait of a key the node no longer
 //     holds, or as revised, an awaiting_input wait on an answer its
 //     successor moves to a newer revision of the owed input (successor.go;
-//     the fold cannot check the revision until M1 records owed inputs). An
+//     M0's fold cannot check the revision, the M1 fold checks it through
+//     the authority, eligible.go). An
 //     invalidation retires its retry waits in the same command and keeps
 //     every other wait, with its id, since and pages.
 //   - Transferring a hold to a replacement is G6b-2's, inside its
 //     supersession. The evaluator ties awaiting_input to an owed input the
-//     node declares (evaluate.go); this fold does not, until M1 records owed
-//     inputs. As for Claim, M1's commands take the project from the actor's
+//     node declares (evaluate.go); M0's fold does not, and the M1 fold
+//     clears one on its signal only once its answer is given (eligible.go).
+//     As for Claim, M1's commands take the project from the actor's
 //     authorization before they call these builders.
 
 import (

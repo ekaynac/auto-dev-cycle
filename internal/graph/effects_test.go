@@ -46,7 +46,7 @@ func openEffectStoreAt(t *testing.T, state string) graphStore {
 	maps.Copy(kinds, lease.Kinds())
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
 		Effects: eventstore.EffectKinds{"deploy": {Idempotent: true, RequestBlob: true}, "merge": {}},
-		Hooks:   eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(leases(blobs), Project)}})
+		Hooks:   eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(leases(blobs), ProjectM0)}})
 	if err != nil {
 		t.Fatal(err)
 	}

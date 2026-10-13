@@ -49,7 +49,7 @@ func (f *effectFix) open() error {
 	if err == nil {
 		s, err = eventstore.Open(f.ctx, lock, eventstore.Config{Kinds: graph.Kinds(), Blobs: blobs,
 			Effects: eventstore.EffectKinds{"deploy": {Idempotent: true, RequestBlob: true}},
-			Hooks:   eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(graph.Project)}})
+			Hooks:   eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(graph.ProjectM0)}})
 	}
 	if err != nil {
 		return errors.Join(err, lock.Release())

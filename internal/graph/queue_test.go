@@ -430,7 +430,7 @@ func TestCarryOverRoles(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		return nil, Project(tx, evs)
+		return nil, ProjectM0(tx, evs)
 	}); err == nil || !strings.Contains(err.Error(), "a carry_over's review") {
 		t.Fatalf("a replayed attestation over an integration's tree as the review: %v", err)
 	}

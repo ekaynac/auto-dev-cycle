@@ -62,7 +62,7 @@ func (f *supersessionFix) open() error {
 		kinds := graph.Kinds()
 		maps.Copy(kinds, lease.Kinds())
 		maps.Copy(kinds, owedanswers.Kinds())
-		project := eventstore.ProjectEach(lease.Projector{Blobs: blobs, Holds: f.holds, Units: graph.Units{}}.Project, f.crashing, graph.Project, owedanswers.Project)
+		project := eventstore.ProjectEach(lease.Projector{Blobs: blobs, Holds: f.holds, Units: graph.Units{}}.Project, f.crashing, graph.ProjectM0, owedanswers.Project)
 		s, err = eventstore.Open(f.ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: project}})
 	}
 	if err != nil {

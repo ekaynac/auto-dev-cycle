@@ -23,7 +23,7 @@ const graphDemands = 4
 // a command through the real writer and the graph fold; the steps are the
 // demands, and the log must hold one node.claimed for the node.
 func duplicateDemandsShareOneClaim(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
-	s, done, err := storeWith(ctx, dir, graph.Kinds(), eventstore.ProjectEach(graph.Project))
+	s, done, err := storeWith(ctx, dir, graph.Kinds(), eventstore.ProjectEach(graph.ProjectM0))
 	if err != nil {
 		return nil, nil, err
 	}
