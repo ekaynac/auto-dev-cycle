@@ -107,25 +107,33 @@ func TestCommitEvidenceIsolation(t *testing.T) {
 
 	// The fold refuses, from the log alone, an evidence result with no or a
 	// failing proof, and a proof on another kind's result.
-	m := g.walk("forged", 9, 9)
-	bare := types.ResultRecorded{Node: m, Result: g.evidence(m, nil)}
-	empty := g.published(m, g.evidence(m, nil))
+	// Each case is on a node of its own, whose attempt is its current,
+	// finishing one unless the case says otherwise, so each is refused for
+	// its own reason.
+	fresh := func(name string) types.ResultRecorded {
+		n := g.walk(name, 9, 9)
+		return g.published(n, g.evidence(n, nil))
+	}
+	bare := fresh("bare")
+	bare.Attempt, bare.Isolation = nil, nil
+	empty := fresh("empty")
 	empty.Isolation.Setting = map[string]string{}
-	foreign := g.published(m, g.evidence(m, nil))
+	foreign := fresh("foreign")
 	foreign.Isolation.Run = evidence.RunOf(newAttempt())
-	unattempted := g.published(m, g.evidence(m, nil))
+	unattempted := fresh("unattempted")
 	unattempted.Attempt = nil
 	gate := g.record(g.newNode(types.NodeKindGate))
 	g.must(g.claimOf(gate))
-	onGate := g.published(m, g.evidence(m, nil))
-	onGate.Node, onGate.Result.Computation, onGate.Result.Kind, onGate.Result.Conclusions = gate, g.state(gate).Key.Key, types.ResultKindGateResult, ptr(conclusions)
+	gated := g.attemptOn(gate) // the gate's own attempt: only the proof is wrong
+	onGate := types.ResultRecorded{Node: gate, Result: g.evidence(gate, nil), Attempt: &gated, Isolation: ptr(isolatedProof(gated))}
+	onGate.Result.Kind, onGate.Result.Conclusions = types.ResultKindGateResult, ptr(conclusions)
 	// Nor an attempt never started, or started on another node's unit
 	// (#226 entry 3): its result is refused on replay as at admission.
-	unstarted := g.published(m, g.evidence(m, nil))
+	unstarted := fresh("unstarted")
 	unstarted.Attempt = ptr(newAttempt())
 	unstarted.Isolation.Run = evidence.RunOf(*unstarted.Attempt)
-	elsewhere := g.published(m, g.evidence(m, nil))
-	elsewhere.Attempt = ptr(g.attemptOn(g.walk("elsewhere", 9, 9)))
+	elsewhere := fresh("elsewhere")
+	elsewhere.Attempt = ptr(g.attemptOn(g.walk("elsewhere-run", 9, 9)))
 	elsewhere.Isolation.Run = evidence.RunOf(*elsewhere.Attempt)
 	// Nor the result of an attempt that did not submit one: stopped, or
 	// superseded by its node's next attempt.
@@ -136,21 +144,30 @@ func TestCommitEvidenceIsolation(t *testing.T) {
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.StopRunning(tx, *stopped.Attempt, types.AttemptStopReasonValueRevoke)
 	})
-	retired := g.published(m, g.evidence(m, nil))
-	g.attemptOn(m)
-	for name, rr := range map[string]types.ResultRecorded{"no proof": bare, "an empty setting": empty, "a proof from another run": foreign,
-		"a proof without its attempt": unattempted, "a proof on a gate result": onGate, "an attempt never started": unstarted,
-		"another node's attempt": elsewhere, "a stopped attempt's": stopped, "a superseded attempt's": retired} {
+	retired := fresh("retired")
+	g.attemptOn(retired.Node)
+	for name, c := range map[string]struct {
+		rr   types.ResultRecorded
+		want string
+	}{
+		"no proof":                    {bare, "published only with its run's isolation proof"},
+		"an empty setting":            {empty, "the isolation setting is empty"},
+		"a proof from another run":    {foreign, "the isolation probe ran in"},
+		"a proof without its attempt": {unattempted, "published only with its run's isolation proof"},
+		"a proof on a gate result":    {onGate, "only an evidence result carries an isolation proof"},
+		"an attempt never started":    {unstarted, "never started"},
+		"another node's attempt":      {elsewhere, "not node"},
+		"a stopped attempt's":         {stopped, "is stopping"},
+		"a superseded attempt's":      {retired, "is superseded"},
+	} {
+		rr := c.rr
 		rr.Type = "result_recorded"
-		err := g.do(forge(ResultRecorded, string(rr.Result.ID), prjID, &rr))
-		if want := map[string]string{"an attempt never started": "never started", "another node's attempt": "not node",
-			"a stopped attempt's": "is stopping", "a superseded attempt's": "is superseded"}[name]; err == nil ||
-			!strings.Contains(err.Error(), want) {
-			t.Errorf("%s: the fold published it, or refused it for another reason: %v", name, err)
+		if err := g.do(forge(ResultRecorded, string(rr.Result.ID), prjID, &rr)); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: the fold published it, or refused it for another reason than %q: %v", name, c.want, err)
 		}
 	}
-	// The bound attempt's own result is published.
-	own := g.published(m, g.evidence(m, nil))
+	// A bound, submitted attempt's own result with its proof is published.
+	own := fresh("own")
 	own.Type = "result_recorded"
 	g.must(forge(ResultRecorded, string(own.Result.ID), prjID, &own))
 }
