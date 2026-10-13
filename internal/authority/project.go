@@ -20,10 +20,12 @@ package authority
 //   - project.create is no Applier in M1, so a proposal of it could never be
 //     applied: a create a grant's override would make a proposal is refused
 //     (Derived.NotProposable, action_not_proposable).
-//   - The event's payload is the profile as submitted; its fold re-runs
-//     profile.Load, so a rebuild admits exactly what the command did.
-//     Profile additions must therefore stay optional for stored events; a
-//     profile that a stored one would fail needs project.created/v2.
+//   - The event's payload is the profile as submitted, validated by
+//     profile.Load at command time only. The fold reads just the id and
+//     name, so a stored v1 event keeps replaying when the profile schema
+//     or profile.Check later tighten (its payload schema stays
+//     config/project-profile: additions to it must stay optional, or a
+//     stricter profile needs project.created/v2).
 //   - Inert until P22a: adcd projects project.created but does not wire
 //     this handler; project.create stays deferred (the intake capability).
 
@@ -81,12 +83,12 @@ type ProjectCreateHandler struct{}
 // Derive loads the profile, then derives its project as the object, in
 // that project.
 func (ProjectCreateHandler) Derive(_ *eventstore.Tx, by types.Actor, input json.RawMessage) (Derived, error) {
+	if by.Kind != types.ActorKindOperator && by.Kind != types.ActorKindSupervisor {
+		return Derived{}, refusal(vocab.ReasonActorKindRefused, "actor %s is a %s; only operators and supervisors create projects", by.ID, by.Kind)
+	}
 	p, err := profileOf(input)
 	if err != nil {
 		return Derived{}, err
-	}
-	if by.Kind != types.ActorKindOperator && by.Kind != types.ActorKindSupervisor {
-		return Derived{}, refusal(vocab.ReasonActorKindRefused, "actor %s is a %s; only operators and supervisors create projects", by.ID, by.Kind)
 	}
 	return Derived{Object: p.ID, Project: &p.ID, Record: ProjectRecordOf(p.ID), NotProposable: projectNotProposable}, nil
 }
@@ -159,14 +161,18 @@ func (ProjectProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) error
 	return nil
 }
 
-// addProject admits a new project whose profile passes profile.Load, under
-// its event's subject and project, by a live operator or supervisor.
+// addProject admits a new project under its event's subject and project,
+// by a live operator or supervisor. It never re-runs profile.Load: a
+// profile accepted when its command ran stays accepted on replay.
 func addProject(tx *eventstore.Tx, ev eventstore.Event) error {
-	p, err := profiles.Load(ev.Payload)
-	if err != nil {
+	var p struct {
+		ID   types.ProjectID `json:"id"`
+		Name string          `json:"name"`
+	}
+	if err := json.Unmarshal(ev.Payload, &p); err != nil {
 		return err
 	}
-	if ev.Subject != p.ID || ev.Project == nil || *ev.Project != p.ID {
+	if p.ID == "" || ev.Subject != p.ID || ev.Project == nil || *ev.Project != p.ID {
 		return errors.New("a project's event is under its id, in its project")
 	}
 	by, err := liveActor(tx, types.ActorID(ev.Actor))

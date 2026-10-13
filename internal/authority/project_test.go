@@ -313,16 +313,9 @@ func TestProjectCreateLogicAndFold(t *testing.T) {
 			return []eventstore.Event{{ID: newID(t, "evt"), Kind: authority.ProjectCreated, Subject: p.ID, Project: &p.ID, Payload: payload}}, nil
 		}
 	}
-	// A payload profile.Check refuses (the schema admits it), and one by the
-	// system, are refused by the fold.
-	bad := profileDoc(t, func(d map[string]any) { d["repo"].(map[string]any)["base_ref"] = "refs/heads/a..b" })
-	for name, c := range map[string]struct {
-		by      identity.Principal
-		payload []byte
-	}{"an invalid profile": {b.op, bad}, "by the system": {b.sys, raw}} {
-		if err := b.trySeed(c.by, created(c.payload)); err == nil || b.head() != h {
-			t.Errorf("%s: admitted: %v", name, err)
-		}
+	// One by the system is refused by the fold.
+	if err := b.trySeed(b.sys, created(raw)); err == nil || b.head() != h {
+		t.Errorf("by the system: admitted: %v", err)
 	}
 	// A duplicate project.created is refused.
 	b.seed(b.op, created(raw))
@@ -348,6 +341,25 @@ func TestProjectCreatedV1Replays(t *testing.T) {
 	})
 	if r, ok := b.storedProject(id); !ok || r.Name != "py-mini" || r.Revision != 1 {
 		t.Fatalf("the golden project %+v", r)
+	}
+	b.rebuilds()
+}
+
+// Replay never re-runs profile.Load: a stored v1 payload that today's
+// profile.Check refuses (a well-formed profile with a bad base ref, as a
+// later tightening would leave behind) still replays to its record.
+func TestProjectCreatedReplaysWithoutProfileCheck(t *testing.T) {
+	b := openProjects(t, true)
+	bad := profileDoc(t, func(d map[string]any) { d["repo"].(map[string]any)["base_ref"] = "refs/heads/a..b" })
+	if _, err := profile.Load(bad); err == nil {
+		t.Fatal("profile.Load admits the payload; it proves nothing")
+	}
+	id := "prj_01m3250vkwffc979nzjw0gpym1"
+	b.seed(b.op, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		return []eventstore.Event{{ID: newID(t, "evt"), Kind: authority.ProjectCreated, Subject: id, Project: &id, Payload: bad}}, nil
+	})
+	if r, ok := b.storedProject(id); !ok || r.Name != "py-mini" || r.Revision != 1 {
+		t.Fatalf("the stored project %+v", r)
 	}
 	b.rebuilds()
 }
