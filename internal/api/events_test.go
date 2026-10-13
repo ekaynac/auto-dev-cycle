@@ -128,7 +128,7 @@ func open(t *testing.T) *fixture {
 		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.ProposalProjector{}.Project,
 				authority.SeatProjector{}.Project, authority.NoteProjector{}.Project, authority.ProjectProjector{}.Project,
-				authority.TaskProjector{}.Project, graph.Project)}})
+				authority.TaskProjector{}.Project, graph.ProjectM0)}})
 	if err != nil {
 		t.Fatal(err)
 	}

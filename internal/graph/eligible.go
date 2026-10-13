@@ -19,12 +19,13 @@ package graph
 //     their current revisions (Successor's ErrNotOwed); a supersession's
 //     moved or removed answers are to questions its lineage no longer asks
 //     (movedQuestion, shared with the builder); an awaiting_input wait is
-//     cleared on its signal only once its answer is given, and retired as
+//     raised only on an answer the node declares, cleared on its signal
+//     only once that answer is in force (inForce's rule), and retired as
 //     revised only once its owed input has moved past the revision.
 //   - The fold reads the authority in its transaction, at the event's
 //     position in the log, so a rebuild reaches the same verdict. Only
 //     Projector, which adcd composes with authority.Answers, runs these
-//     checks; Project is M0's fold, which reads no authority, kept for the
+//     checks; ProjectM0 is M0's fold, which reads no authority, kept for the
 //     M0 fixtures and their owed-answer fake.
 
 import (
@@ -78,6 +79,10 @@ func eligible(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant,
 	case *types.ReviewSuperseded:
 		if !mutation.Is(mutation.SupersessionFoldSkipsMoves) {
 			return movesHold(tx, ev, p, auth)
+		}
+	case *types.HoldRaised:
+		if !mutation.Is(mutation.HoldRaiseSkipsAnswer) {
+			return answerWaitRaised(tx, ev, p)
 		}
 	case *types.HoldCleared:
 		if !mutation.Is(mutation.HoldFoldSkipsAnswers) {
@@ -193,17 +198,17 @@ func answerWaitEnds(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldCleared
 		return err // not an answer wait: the hold fold decides
 	}
 	signal := rec.State.Holds[i].SignalInstance
-	j := slices.IndexFunc(rec.Recorded.Node.Inputs, func(in types.InputSpec) bool {
-		ask, ok := in.Source.Variant.(*types.AnswerSource)
-		return ok && awaitSignal(ask) == signal
-	})
-	if j < 0 {
-		return fmt.Errorf("the wait on %s is on no answer the node declares", signal)
+	in, ask, err := declaredAnswer(rec, signal)
+	if err != nil {
+		return err
 	}
-	ask := rec.Recorded.Node.Inputs[j].Source.Variant.(*types.AnswerSource)
 	switch c := p.Cause.Variant.(type) {
 	case *types.Signalled:
-		if _, given, err := auth.Answer(tx, rec.Recorded, ask.OwedInput, ask.Revision); err != nil || !given {
+		// The rule inForce applies to this one input, as the evaluator clears
+		// a wait (evaluate.go:clear): its answer is the one in force, for a
+		// question the lineage asks at its current revision, not displaced.
+		answered, _, err := answers(tx, rec, auth)
+		if err != nil || answered[string(in.Name)].Approval == "" {
 			return errors.Join(err, fmt.Errorf("the wait on %s clears only once its answer is given", signal))
 		}
 	case *types.Retired:
@@ -216,4 +221,26 @@ func answerWaitEnds(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldCleared
 		}
 	}
 	return nil
+}
+
+// declaredAnswer is rec's answer input whose awaiting_input signal is
+// signal; a wait on no declared answer is refused, raised or cleared.
+func declaredAnswer(rec nodeRecord, signal string) (types.InputSpec, *types.AnswerSource, error) {
+	for _, in := range rec.Recorded.Node.Inputs {
+		if ask, ok := in.Source.Variant.(*types.AnswerSource); ok && awaitSignal(ask) == signal {
+			return in, ask, nil
+		}
+	}
+	return types.InputSpec{}, nil, fmt.Errorf("the wait on %s is on no answer the node declares", signal)
+}
+
+// answerWaitRaised: an awaiting_input wait is raised only on an answer the
+// node declares (evaluate.go:await), so its answer can always end it.
+func answerWaitRaised(tx *eventstore.Tx, ev eventstore.Event, p *types.HoldRaised) error {
+	rec, err := nodeOf(tx, ev, p.Node)
+	if err != nil || p.Hold.Hold != "awaiting_input" {
+		return err // the hold fold decides
+	}
+	_, _, err = declaredAnswer(rec, p.Hold.SignalInstance)
+	return err
 }

@@ -75,6 +75,8 @@ and is never edited apart from it.
 | I21 Launch readiness (D51) | unenforced | P8b, P11, P17 | `launch`: all |
 | I22 One admitted task, held included (D51) | unenforced | P22a | `admission`, `launch`, `repeat`: all |
 
+**Lead decision (#245, M1 review of P6).** `answers` is activated by P6 with I15's admission row still a P22a gap: no template is reachable through `answers` (adcd wires no producer of graph events or owed inputs before P16). P22a must re-check this before activating any capability that reaches a template.
+
 **Effect implementations land inert.** The `model_call` kind (P12a) and the `git` and GitHub targets (P18, P27) are
 built and tested in their own items. Only P22a registers `model_call`, and only P22b registers `merge` and constructs
 the targets. So I6's and I14's effect rows gate their capabilities through the activation item, never through the
@@ -87,7 +89,7 @@ implementation item.
 | admission | `authority.Authorizer.Authorize` (`authority/derive.go`) decides each command against actor and grants. A task's approval is recorded with `task.create` (`authority/task.go`, P3; deferred until P22a); an answer's with `input.answer` (`authority/answer.go:InputAnswer`, `answerable`, P5; wired by P6) | kept | — |
 | fold/replay | `recordApproval` (`authority/proposals.go`) hands a task's approval to `recordTaskApproval` (`authority/task.go`, P3) and an answer to `recordAnswer` (`authority/answer.go`, P5); the graph folds check the answers a claim, reuse or result takes (`graph/eligible.go:eligible`, P6) | kept | — |
 | consumption | graph answers come from `authority.Answers` (`authority/owed.go`, P5), the real `graph.Authority`; nothing consumes a task's approval | kept + GAP | P22a (the first build claim requires the task approval in force) |
-| effect | `graph.Operate` → `revalidate` re-checks a merge's answer inputs before its intent; the task's approval is not re-checked | kept + GAP | P22b (the merge intent re-checks the task approval) |
+| effect | `graph.Operate` → `revalidate` re-checks a merge's answer inputs before its intent; the task's approval is not re-checked; the fold does not check a raw `node.operated` (P6 checks claims, reuses and results) | kept + GAP | P22b (the merge intent re-checks the task approval; a fold check of `node.operated` by `inForce`, so a raw intent does not replay once merge is registered) |
 
 ## I2. An answer binds its owed input's revision and reaches only the node that declared it
 

@@ -45,7 +45,7 @@ package graph
 //     that the question moved. A removal (13:206) drops the answer input of
 //     a question the lineage no longer asks, and retires its wait as
 //     question_moved; only the fold that reads the authority admits it, so
-//     M0's fold (Project) still refuses one.
+//     M0's fold (ProjectM0) still refuses one.
 //   - A replaced question is checked again before the replacement runs
 //     (displaced): the evaluator leaves a node waiting, and Commit refuses
 //     it (authority_revoked), while its lineage still asks an owed input

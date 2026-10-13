@@ -220,6 +220,9 @@ const (
 	// HoldFoldSkipsAnswers admits an awaiting_input wait cleared with no
 	// answer, or retired as revised at its current revision.
 	HoldFoldSkipsAnswers = "graph.hold-fold-skips-answers"
+	// HoldRaiseSkipsAnswer admits an awaiting_input wait on no answer its
+	// node declares, which nothing can then end.
+	HoldRaiseSkipsAnswer = "graph.hold-raise-skips-answer"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -242,4 +245,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	ReuseSkipsAuthority, ContextNeedsNoAuthority,
 	RequirementRevisionUnchecked,
 	GenerationKeepsReview, MergeCASOnHead,
-	RecordedFoldSkipsOwed, ClaimFoldSkipsAnswers, ReuseFoldSkipsAnswers, ResultFoldSkipsAnswers, SupersessionFoldSkipsMoves, HoldFoldSkipsAnswers}
+	RecordedFoldSkipsOwed, ClaimFoldSkipsAnswers, ReuseFoldSkipsAnswers, ResultFoldSkipsAnswers, SupersessionFoldSkipsMoves, HoldFoldSkipsAnswers,
+	HoldRaiseSkipsAnswer}

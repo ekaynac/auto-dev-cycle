@@ -198,6 +198,14 @@ func TestFoldRefusesRawAnswerWaitEnd(t *testing.T) {
 	}
 }
 
+// An awaiting_input wait on no answer its node declares could never end
+// (its clear is refused): the M1 fold refuses its raise.
+func TestFoldRefusesRawAnswerWaitRaise(t *testing.T) {
+	g, checked := openFolds(t)
+	n := g.answering() // declares ownID@2 only
+	refusedOnReplay(t, g, checked, raised(n, on(t, "awaiting_input", ownB+"@2"), nil), "the wait on "+ownB+"@2")
+}
+
 // A removal (13:206, M1 P6): once its question left the lineage, a
 // supersession removes an answer input, and retires its wait as
 // question_moved; the M1 fold admits it, and the log rebuilds. M0's fold

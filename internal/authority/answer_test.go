@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -508,6 +509,53 @@ func TestAnswerFoldsReadTheAuthority(t *testing.T) {
 		t.Fatalf("after the answer: %s", b.lastEvent().Kind)
 	}
 	b.rebuilds()
+}
+
+// oneFamily is a registry in which every executor is of the claude family.
+type oneFamily struct{}
+
+func (oneFamily) Family(types.ExecutorID) string { return "claude" }
+
+// Under the real authority a question never leaves its asker's lineage
+// (recordOwed keeps requested_by across revisions), so a supersession
+// neither removes nor moves an answer: both are refused, "has not moved"
+// (M1 P6, review L3).
+func TestSupersedeMovingUnderTheAuthority(t *testing.T) {
+	b := openAnswers(t)
+	task := types.TaskID(newID(t, "tsk"))
+	member := func(exe string) json.RawMessage {
+		return json.RawMessage(`[{"executor":"` + exe + `","family":"claude"}]`)
+	}
+	const exeA, exeB = "exe_01m3250v9xft08ssr4ygq6g2np", "exe_01m3250vkwffc979nzjw0g2sf9"
+	record := func(kind types.NodeKind, params string, inputs []types.InputSpec) types.NodeID {
+		id := types.NodeID(newID(t, "nod"))
+		b.seed(b.op, func(*eventstore.Tx) ([]eventstore.Event, error) {
+			return graph.RecordReview(types.NodeRecorded{Task: task, Project: prjA, Node: types.Node{ID: id, Kind: kind, DefinitionVersion: "1", Round: 1,
+				Params: json.RawMessage(params), Inputs: inputs, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}}, oneFamily{})
+		})
+		return id
+	}
+	requirement := func(rev, exe string) types.NodeID {
+		return record(types.NodeKindReviewRequirement, `{"subject":"candidate","roster":`+string(member(exe))+`,"definition_version":"1","revision":`+rev+`}`, []types.InputSpec{})
+	}
+	req, next := requirement("1", exeA), requirement("2", exeB)
+	first := record(types.NodeKindReview, `{"subject":"candidate","roster":`+string(member(exeA))+`}`, []types.InputSpec{{Name: "required",
+		Source: types.InputSpecSource{Variant: &types.ResultSource{Type: "result", Producer: req, ResultKind: types.ResultKindReviewRequirement}}}})
+	o, other := b.owed, b.owed
+	o.ID, o.RequestedBy = types.OwedInputID(newID(t, "own")), first
+	other.ID, other.RequestedBy = types.OwedInputID(newID(t, "own")), first
+	b.seed(b.op, owe(o))
+	b.seed(b.op, owe(other))
+	second := b.node(prjA, &first, []types.InputSpec{{Name: "ruling", Source: types.InputSpecSource{Variant: &types.AnswerSource{Type: "answer", OwedInput: o.ID, Revision: 1}}}})
+	for name, move := range map[string]*types.AnswerSource{"a removal": nil, "a move": {Type: "answer", OwedInput: other.ID, Revision: 1}} {
+		b.view(func(tx *eventstore.Tx) error {
+			_, err := graph.SupersedeMoving(tx, second, next, nil, graph.Moves{"ruling": move}, authority.Answers{})
+			if err == nil || !strings.Contains(err.Error(), "has not moved") {
+				t.Errorf("%s: %v", name, err)
+			}
+			return nil
+		})
+	}
 }
 
 // The fold binds the grant from the log alone: a supervisor's answer

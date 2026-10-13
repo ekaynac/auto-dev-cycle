@@ -297,11 +297,12 @@ func claimNode(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved, 
 	return event(NodeClaimed, string(node), rec.Recorded.Project, &c)
 }
 
-// Project is M0's eventstore.Hooks.Project fold for the graph
+// ProjectM0 is M0's eventstore.Hooks.Project fold for the graph
 // projections; other kinds pass through. It reads no authority, so it
 // checks no recorded answer: only the M0 fixtures, whose answers are the
-// owed-answer fake's, use it. adcd folds with Projector (eligible.go).
-func Project(tx *eventstore.Tx, evs []eventstore.Event) error { return project(tx, evs, nil) }
+// owed-answer fake's, and tests use it. adcd folds with Projector
+// (eligible.go).
+func ProjectM0(tx *eventstore.Tx, evs []eventstore.Event) error { return project(tx, evs, nil) }
 
 // project folds evs, checking each event's answers first under auth (nil:
 // none, M0's fold).

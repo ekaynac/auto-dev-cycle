@@ -73,7 +73,7 @@ func openStoreAt(t *testing.T, now func() time.Time) graphStore {
 	maps.Copy(kinds, owedanswers.Kinds())
 	maps.Copy(kinds, lease.Kinds())
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: now,
-		Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(leases(blobs), Project, owedanswers.Project)}})
+		Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(leases(blobs), ProjectM0, owedanswers.Project)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -756,7 +756,7 @@ func TestDeprecatedReasonsReplay(t *testing.T) {
 func TestOtherKindsPassThrough(t *testing.T) {
 	g := openStore(t)
 	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
-		return Project(tx, []eventstore.Event{{Kind: "lease.granted/v1", Payload: json.RawMessage(`not json`)}})
+		return ProjectM0(tx, []eventstore.Event{{Kind: "lease.granted/v1", Payload: json.RawMessage(`not json`)}})
 	}); err != nil {
 		t.Fatal(err)
 	}
