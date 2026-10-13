@@ -11,7 +11,7 @@ An approval record (docs/design/m0/04 "Approval records"): who approved which ac
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `id` | yes | [ApprovalID](common-defs.md#approvalid) |  |
-| `proposal` | yes | null or [ProposalID](common-defs.md#proposalid) | The one proposal a confirmed approval answers (null only under policy none, which internal/authority does not persist in this build). Every field it shares with the proposal is copied from the proposal record, never supplied, and internal/authority admits it only while they match. |
+| `proposal` | yes | null or [ProposalID](common-defs.md#proposalid) | The one proposal a confirmed approval answers; null only under policy none, which internal/authority persists only for an operator's task.create approving the spec it records, in the same command (M1 P3). Every field it shares with the proposal is copied from the proposal record, never supplied, and internal/authority admits it only while they match. |
 | `actor` | yes | [ActorID](common-defs.md#actorid) |  |
 | `actor_kind` | yes | one of `operator`, `supervisor`, `system` |  |
 | `action` | yes | [ActionKind](records-grant.md#actionkind) |  |

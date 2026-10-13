@@ -111,6 +111,8 @@ var (
 	ReasonQuotaExhausted = types.ReasonCodeOf("quota_exhausted")
 	// ReasonQuotaUnknown: The source's remaining quota cannot be determined; the probe schedule applies.
 	ReasonQuotaUnknown = types.ReasonCodeOf("quota_unknown")
+	// ReasonReadyBacklogFull: A task.create would put a sixth task in its project's Ready backlog (at most five, D51); nothing was recorded.
+	ReasonReadyBacklogFull = types.ReasonCodeOf("ready_backlog_full")
 	// ReasonReceiptIncomplete: A required predicate or its evidence media is missing; never derives empty.
 	ReasonReceiptIncomplete = types.ReasonCodeOf("receipt_incomplete")
 	// ReasonRecipientNotOperator: An offline operator-credential recovery named a recipient that is not a live operator (missing, revoked or of another kind); nothing is issued or revoked.

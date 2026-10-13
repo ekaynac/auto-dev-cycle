@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/task-create.json",
+  "title": "TaskCreateScope",
+  "description": "The scope of task.create (M1 slice plan P3): the task's spec, whose content digest (RFC 8785) is the spec digest an operator's create approves. The attachments are the task's acceptance tests, each an upload by the same actor (POST /v1/blobs) named by the clean relative path the gate overlays it at; they are recorded restricted from builder and reviewer. The task's id, state, creator and time are the controller's, never the request's.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project", "title", "requirement", "attachments"],
+  "properties": {
+    "project": {"$ref": "../../common/defs.json#/$defs/ProjectID"},
+    "title": {"type": "string", "minLength": 1, "maxLength": 200},
+    "requirement": {"type": "string", "minLength": 1, "maxLength": 20000},
+    "attachments": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/Attachment"}}
+  },
+  "$defs": {
+    "Attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest"],
+      "properties": {
+        "name": {"$ref": "#/$defs/AcceptancePath"},
+        "digest": {"$ref": "../../common/defs.json#/$defs/Digest"}
+      }
+    },
+    "AcceptancePath": {
+      "description": "A clean relative path, unique within the task: segments of letters, digits, _, . and -, none starting with a dot, so no absolute path, no . or .. segment and no hidden file.",
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$"
+    }
+  }
+}
