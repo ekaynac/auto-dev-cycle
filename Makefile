@@ -150,6 +150,7 @@ test: go-check ts-deps ## Run all tests inside the test sandbox (refuses to run 
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/contract && node --test "test/*.test.mjs" "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/fake && node --test "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/conformance && node --test "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
+	@scripts/test-sandbox.sh -- bash -c 'cd adapters/http-chat && node --test "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
 
 # The contract fixtures (00 "M0 exit check"): green through the real
 # components with the ordinary adc, and each red under its named mutation

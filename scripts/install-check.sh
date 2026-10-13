@@ -8,7 +8,8 @@
 # platform, one commit, and one schema-set digest (equal to --expect when
 # given). lib/adc (15 S2) is installed too: the pinned Node, whose bin/node
 # is re-verified against its pin on the installed file and must report the
-# pinned version, the fake adapter, which must load with it, and py-mini.
+# pinned version, the fake adapter, which must load with it, the http-chat
+# adapter, which must answer describe with it, and py-mini.
 #
 # Usage: scripts/install-check.sh [--dist DIR] [--expect sha256:HEX] [--node-pins FILE] PREFIX
 set -euo pipefail
@@ -94,4 +95,9 @@ v="$(cd "$scratch" && env -i PATH=/usr/bin:/bin HOME="$scratch" "$node" --versio
 (cd "$scratch" && env -i PATH=/usr/bin:/bin HOME="$scratch" "$node" \
   -e 'import(require("node:url").pathToFileURL(process.argv[1]).href).catch((e) => { console.error(e.message); process.exit(1); })' \
   "$prefix/lib/adc/adapters/fake/src/fake.ts") || die "the installed fake adapter does not load with the installed node"
-echo "install-check: adcd, adc, adc-harness and adc-agent installed into $prefix ($platform, commit $commit, schema set $schemaset), with node $node_version (sha256:$node_sum), the fake adapter and py-mini"
+# The http-chat adapter (P13) runs from the prefix alone: it answers describe and shuts down.
+described="$(cd "$scratch" && printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"describe"}' '{"jsonrpc":"2.0","id":2,"method":"shutdown"}' |
+  env -i PATH=/usr/bin:/bin HOME="$scratch" "$node" "$prefix/lib/adc/adapters/http-chat/src/main.ts")" ||
+  die "the installed http-chat adapter does not run with the installed node"
+[[ "$(field harness "$described")" == "http-chat" ]] || die "the installed http-chat adapter does not describe itself"
+echo "install-check: adcd, adc, adc-harness and adc-agent installed into $prefix ($platform, commit $commit, schema set $schemaset), with node $node_version (sha256:$node_sum), the fake and http-chat adapters and py-mini"

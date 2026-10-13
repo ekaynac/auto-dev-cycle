@@ -1,0 +1,26 @@
+{
+  "name": "@adc/http-chat",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "auto-dev-cycle's http-chat adapter: OpenAI-compatible chat completions through the controller's gateway (docs/design/m1/00-slice-plan.md P13).",
+  "type": "module",
+  "exports": {
+    ".": "./src/adapter.ts"
+  },
+  "bin": {
+    "adc-http-chat-adapter": "./src/main.ts"
+  },
+  "scripts": {
+    "test": "node --test 'test/*.test.ts' && tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@adc/contract": "workspace:*",
+    "@adc/contract-gen": "workspace:*",
+    "ajv": "8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "7.0.2"
+  }
+}
