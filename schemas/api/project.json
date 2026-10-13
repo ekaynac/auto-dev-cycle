@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/project.json",
+  "title": "ProjectRead",
+  "description": "One record of GET /v1/projects (docs/design/m0/07; M1 slice plan P1): a registered project, its adopted profile revision and that revision's content digest. Never the profile itself: its repository URL may carry a credential.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "revision", "profile_digest", "created_by", "created_at"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/ProjectID"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 200},
+    "revision": {"description": "The adopted profile revision; 1 is the profile project.create registered.", "type": "integer", "minimum": 1, "maximum": 1000000},
+    "profile_digest": {"description": "The adopted revision's content digest (RFC 8785).", "$ref": "../common/defs.json#/$defs/Digest"},
+    "created_by": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "created_at": {"$ref": "../common/defs.json#/$defs/Time"}
+  }
+}

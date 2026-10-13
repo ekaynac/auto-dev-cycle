@@ -20,6 +20,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/command-response.json`](api-command-response.md) | CommandResponse |
 | [`api/grant.json`](api-grant.md) | GrantRead |
 | [`api/note.json`](api-note.md) | NoteRead |
+| [`api/project.json`](api-project.md) | ProjectRead |
 | [`api/proposal.json`](api-proposal.md) | ProposalRead |
 | [`api/read-list.json`](api-read-list.md) | ReadList |
 | [`api/scope/actor-revoke.json`](api-scope-actor-revoke.md) | ActorRevokeScope |
@@ -28,6 +29,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/scope/grant-extend.json`](api-scope-grant-extend.md) | GrantExtendScope |
 | [`api/scope/grant-revoke.json`](api-scope-grant-revoke.md) | GrantRevokeScope |
 | [`api/scope/note-add.json`](api-scope-note-add.md) | NoteAddScope |
+| [`api/scope/project-create.json`](api-scope-project-create.md) | ProjectCreateScope |
 | [`api/scope/proposal-withdraw.json`](api-scope-proposal-withdraw.md) | ProposalWithdrawScope |
 | [`api/scope/seat-release.json`](api-scope-seat-release.md) | SeatReleaseScope |
 | [`api/scope/seat-take.json`](api-scope-seat-take.md) | SeatTakeScope |

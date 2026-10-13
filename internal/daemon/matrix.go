@@ -34,7 +34,7 @@ const Unassigned = "unassigned"
 // deferred to its owning milestone (14 D1). An action is wired or listed
 // here in the PR that registers it: Matrix refuses one that is neither.
 var deferred = map[string]Owner{
-	"project.create":                      {Milestone: "M1", Ref: "design/m0/15 D1"},
+	"project.create":                      {Milestone: "M1", Ref: "design/m1/00 §1 intake: handler built (P1), activated by P22a"},
 	"profile.adopt":                       {Milestone: "M1", Ref: "design/m0/15 D1"},
 	"task.create":                         {Milestone: "M1", Ref: "design/m0/15 D1"},
 	"review.request":                      {Milestone: "M1", Ref: "design/m0/15 D1"},

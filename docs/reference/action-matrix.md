@@ -27,7 +27,7 @@ and the generated API description (gen-check pins the committed `schemas/openapi
 | `knowledge.change_protected_document` | project | deferred | M1 (plan/01 §4; plan/03 §4.6, §9) | `POST /v1/commands/knowledge.change_protected_document` | `adc project change-protected-document` | M5 |  |
 | `note.add` | notes | wired (logic) |  | `POST /v1/commands/note.add` | `adc notes add` | M5 |  |
 | `profile.adopt` | project | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/profile.adopt` | `adc project adopt-profile` | M5 |  |
-| `project.create` | project | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/project.create` | `adc project create` | M5 |  |
+| `project.create` | project | deferred | M1 (design/m1/00 §1 intake: handler built (P1), activated by P22a) | `POST /v1/commands/project.create` | `adc project create` | M5 |  |
 | `proposal.confirm` | approve | wired (logic) |  | `POST /v1/commands/proposal.confirm` | `adc approve confirm` | M5 | every confirmation is refused: no source of review receipts (authority.NoReviewSource); human confirmation waits for WebAuthn (14 R6) |
 | `proposal.withdraw` | propose | wired (logic) |  | `POST /v1/commands/proposal.withdraw` | `adc propose withdraw` | M5 |  |
 | `review.request` | task | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/review.request` | `adc task request-review` | M5 |  |
@@ -45,6 +45,7 @@ and the generated API description (gen-check pins the committed `schemas/openapi
 | events | `GET /v1/events` | `adc events --follow` |
 | grants | `GET /v1/grants` | `adc grant list` |
 | notes | `GET /v1/notes` | `adc notes list` |
+| projects | `GET /v1/projects` | `adc project list` |
 | proposals | `GET /v1/proposals` | `adc propose list` |
 | seat | `GET /v1/seat` | `adc seat status` |
 | whoami | `GET /v1/whoami` | `adc admin whoami` |

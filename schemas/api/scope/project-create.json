@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/project-create.json",
+  "title": "ProjectCreateScope",
+  "description": "The scope of project.create (docs/design/m0/07; M1 slice plan P1): the project's first profile revision, a complete project profile whose id names the project. internal/profile's semantic checks run on it before anything is written. The revision, its digest, the creator and the time are the controller's, never the request's.",
+  "oneOf": [{"$ref": "../../config/project-profile.json"}]
+}

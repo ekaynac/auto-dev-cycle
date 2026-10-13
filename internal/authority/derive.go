@@ -48,6 +48,10 @@ type Derived struct {
 	// revalidated, and a command Decide would propose is refused instead
 	// (action_not_proposable).
 	Minted bool
+	// NotProposable, when set, is why the action is never proposed: a
+	// command Decide would propose is refused (action_not_proposable) with
+	// it as the detail.
+	NotProposable string
 }
 
 // Handler derives one action's Derived. It runs inside the writer
@@ -122,6 +126,9 @@ func (a Authorizer) Authorize(t *eventstore.Tx, c eventstore.Command) error {
 	case Propose:
 		if d.Minted {
 			return refusal(vocab.ReasonActionNotProposable, "%s mints its object, so a proposal of it could never be revalidated", c.Action)
+		}
+		if d.NotProposable != "" {
+			return refusal(vocab.ReasonActionNotProposable, "%s", d.NotProposable)
 		}
 		// A proposal is committed, not an error (14 H2 item 4): the command
 		// records it with the proposed disposition and its logic never runs.
