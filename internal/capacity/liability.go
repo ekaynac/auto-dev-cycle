@@ -6,13 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
-	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 )
 
 // The liability ledger (docs/design/m1/00-slice-plan.md P12b; 05 "Usage and settlement"; 11 B5). A lease's
@@ -44,7 +42,7 @@ type liability struct {
 // else.
 func Settlement(tx *eventstore.Tx, id types.LeaseID) (types.LeaseSettlementValue, error) {
 	s := types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: []types.CallID{}}
-	calls, err := boundTo(tx, id)
+	calls, err := ledger.BoundTo(tx, id)
 	for _, c := range calls {
 		var settled bool
 		if settled, _, err = reconciled(tx, c, nil); err != nil {
@@ -57,17 +55,6 @@ func Settlement(tx *eventstore.Tx, id types.LeaseID) (types.LeaseSettlementValue
 		}
 	}
 	return s, err
-}
-
-// boundTo lists the calls bound to lease id, sorted.
-func boundTo(tx *eventstore.Tx, id types.LeaseID) ([]types.CallID, error) {
-	keys, err := tx.Keys(modelcall.LeaseProjection, string(id)+"/")
-	out := make([]types.CallID, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, types.CallID(strings.TrimPrefix(k, string(id)+"/")))
-	}
-	slices.Sort(out)
-	return out, err
 }
 
 // reconciled reads call's reports, with extra (a report being recorded) once: whether the call is settled, and,
@@ -96,7 +83,7 @@ func reconciled(tx *eventstore.Tx, call types.CallID, extra *types.UsageMeasurem
 // liability. Leaving a bound call out would drop its charge.
 func checkSettlement(tx *eventstore.Tx, l types.Lease) error {
 	s := l.Settlement
-	bound, err := boundTo(tx, l.ID)
+	bound, err := ledger.BoundTo(tx, l.ID)
 	if err != nil {
 		return err
 	}
