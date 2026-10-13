@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -111,6 +112,9 @@ func TestPyMiniProfileFixture(t *testing.T) {
 		p.Integration.Plugin != "none" || p.Integration.Topology != nil || p.RuntimeVerification.Command != nil {
 		t.Fatalf("the fixture: %+v", p)
 	}
+	if !slices.Equal(p.ProtectedPaths, []string{"conftest.py", "pyproject.toml", "requirements-dev.txt"}) || p.Plugins.Records != "json_ledger" {
+		t.Fatalf("the fixture's protected paths %v, records %s", p.ProtectedPaths, p.Plugins.Records)
+	}
 }
 
 // An operator registers py-mini at --expect 0: one project.created event,
@@ -209,16 +213,28 @@ func TestProjectCreateRefusesInvalidProfiles(t *testing.T) {
 // The same supervisor creates the project once a grant covers it.
 func TestProjectCreateNeedsAGrant(t *testing.T) {
 	b := openProjects(t, true)
+	// The operator's prjB exists: an ungranted create of it is refused
+	// action_not_granted, never stale, so it learns nothing of prjB.
+	if out, _, err := b.createProject(b.createCmd(b.op, "prjB", profileDoc(t, withID(prjB)))); err != nil || out.Disposition != eventstore.DispositionApplied {
+		t.Fatalf("the operator's prjB: %+v %v", out, err)
+	}
 	// b.supGrant covers note.add on prjA only.
-	for name, id := range map[string]types.ProjectID{"another action on the project": prjA, "no grant on the project": prjB} {
-		h := b.head()
-		_, ran, err := b.createProject(b.createCmd(b.sup, name, profileDoc(t, withID(id))))
-		if !isReason(vocab.ReasonActionNotGranted)(err) || ran || b.head() != h {
-			t.Errorf("%s: %v (logic ran: %t)", name, err, ran)
+	for name, id := range map[string]types.ProjectID{"another action on the project": prjA, "no grant on the existing project": prjB} {
+		for xname, x := range map[string]*eventstore.State{"--expect 0": version(0), "no expectation": nil} {
+			h := b.head()
+			c := b.createCmd(b.sup, name+xname, profileDoc(t, withID(id)))
+			c.Expect = x
+			_, ran, err := b.createProject(c)
+			if !isReason(vocab.ReasonActionNotGranted)(err) || ran || b.head() != h {
+				t.Errorf("%s, %s: %v (logic ran: %t)", name, xname, err, ran)
+			}
 		}
-		if _, ok := b.storedProject(id); ok {
-			t.Errorf("%s: the project was recorded", name)
-		}
+	}
+	if _, ok := b.storedProject(prjA); ok {
+		t.Error("prjA was recorded")
+	}
+	if r, _ := b.storedProject(prjB); r.CreatedBy != b.op.Actor() {
+		t.Errorf("prjB was changed: %+v", r)
 	}
 	g := b.supGrant
 	g.ID, g.Actions = types.GrantID(newID(t, "grt")), []types.ActionKind{authority.ProjectCreateAction}
@@ -253,12 +269,21 @@ func TestProjectCreateIsNeverProposed(t *testing.T) {
 	tight.ID, tight.Actions = types.GrantID(newID(t, "grt")), []types.ActionKind{authority.ProjectCreateAction}
 	tight.ConfirmationOverrides = map[string]types.GrantConfirmationOverridesValue{authority.ProjectCreateAction: "independent_review"}
 	b.seed(b.op, createGrant(tight))
-	if _, ran, err := b.createProject(b.createCmd(b.sup, "tight", profileDoc(t, withID(prjA)))); !isReason(vocab.ReasonActionNotProposable)(err) || ran {
+	_, ran, err := b.createProject(b.createCmd(b.sup, "tight", profileDoc(t, withID(prjA))))
+	var r *authority.Refusal
+	if !isReason(vocab.ReasonActionNotProposable)(err) || ran || !errors.As(err, &r) ||
+		r.Detail != "project.create has no Applier in M1, so a proposal of it could never be applied" {
 		t.Errorf("a tightened create: %v", err)
 	}
 	if _, ok := b.storedProject(prjA); ok {
 		t.Error("the project was recorded")
 	}
+	b.view(func(tx *eventstore.Tx) error {
+		if keys, err := tx.Keys(authority.ProposalProjection, ""); err != nil || len(keys) != 0 {
+			t.Errorf("a proposal was recorded: %v %v", keys, err)
+		}
+		return nil
+	})
 }
 
 // The logic is project.create's alone, writes only under the derived id,
@@ -281,4 +306,48 @@ func TestProjectCreateLogicAndFold(t *testing.T) {
 	if err == nil || b.head() != h {
 		t.Errorf("a misfiled project event was admitted: %v", err)
 	}
+	created := func(payload []byte) applyFn {
+		return func(*eventstore.Tx) ([]eventstore.Event, error) {
+			var p struct{ ID string }
+			_ = json.Unmarshal(payload, &p)
+			return []eventstore.Event{{ID: newID(t, "evt"), Kind: authority.ProjectCreated, Subject: p.ID, Project: &p.ID, Payload: payload}}, nil
+		}
+	}
+	// A payload profile.Check refuses (the schema admits it), and one by the
+	// system, are refused by the fold.
+	bad := profileDoc(t, func(d map[string]any) { d["repo"].(map[string]any)["base_ref"] = "refs/heads/a..b" })
+	for name, c := range map[string]struct {
+		by      identity.Principal
+		payload []byte
+	}{"an invalid profile": {b.op, bad}, "by the system": {b.sys, raw}} {
+		if err := b.trySeed(c.by, created(c.payload)); err == nil || b.head() != h {
+			t.Errorf("%s: admitted: %v", name, err)
+		}
+	}
+	// A duplicate project.created is refused.
+	b.seed(b.op, created(raw))
+	h = b.head()
+	if err := b.trySeed(b.op, created(raw)); err == nil || !strings.Contains(err.Error(), "the project exists") || b.head() != h {
+		t.Errorf("a duplicate project.created was admitted: %v", err)
+	}
+}
+
+// project.created/v1 events already stored must keep replaying: a golden
+// payload, frozen apart from the fixture, is admitted and rebuilt. A later
+// change to the profile schema or profile.Check that refuses it fails here;
+// such a change needs project.created/v2.
+func TestProjectCreatedV1Replays(t *testing.T) {
+	golden, err := os.ReadFile("testdata/project-created-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := openProjects(t, true)
+	id := "prj_01m3250vkwffc979nzjw0gpym1"
+	b.seed(b.op, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		return []eventstore.Event{{ID: newID(t, "evt"), Kind: authority.ProjectCreated, Subject: id, Project: &id, Payload: golden}}, nil
+	})
+	if r, ok := b.storedProject(id); !ok || r.Name != "py-mini" || r.Revision != 1 {
+		t.Fatalf("the golden project %+v", r)
+	}
+	b.rebuilds()
 }

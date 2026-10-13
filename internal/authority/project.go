@@ -19,9 +19,11 @@ package authority
 //     expectation (checked by the logic, after authority).
 //   - project.create is no Applier in M1, so a proposal of it could never be
 //     applied: a create a grant's override would make a proposal is refused
-//     (Derived.Minted, action_not_proposable), as note.add is.
+//     (Derived.NotProposable, action_not_proposable).
 //   - The event's payload is the profile as submitted; its fold re-runs
 //     profile.Load, so a rebuild admits exactly what the command did.
+//     Profile additions must therefore stay optional for stored events; a
+//     profile that a stored one would fail needs project.created/v2.
 //   - Inert until P22a: adcd projects project.created but does not wire
 //     this handler; project.create stays deferred (the intake capability).
 
@@ -45,6 +47,9 @@ const (
 	ProjectCreated      = "project.created/v1"
 	ProjectProjection   = "projects"
 )
+
+// projectNotProposable is why a project.create is never proposed.
+const projectNotProposable = "project.create has no Applier in M1, so a proposal of it could never be applied"
 
 // ProjectRecord is a registered project: its profile's adopted revision,
 // that revision's content digest and the profile itself.
@@ -83,7 +88,7 @@ func (ProjectCreateHandler) Derive(_ *eventstore.Tx, by types.Actor, input json.
 	if by.Kind != types.ActorKindOperator && by.Kind != types.ActorKindSupervisor {
 		return Derived{}, refusal(vocab.ReasonActorKindRefused, "actor %s is a %s; only operators and supervisors create projects", by.ID, by.Kind)
 	}
-	return Derived{Object: p.ID, Minted: true, Project: &p.ID, Record: ProjectRecordOf(p.ID)}, nil
+	return Derived{Object: p.ID, Project: &p.ID, Record: ProjectRecordOf(p.ID), NotProposable: projectNotProposable}, nil
 }
 
 // profileOf is the scope's profile, refused as ErrInvalidScope unless the
@@ -128,8 +133,11 @@ func CreateProject(c eventstore.Command) eventstore.Decide {
 			return nil, nil, err
 		}
 		dg, err := eventstore.ContentDigest(c.Input)
-		res, err2 := json.Marshal(map[string]any{"project": id, "revision": 1, "profile_digest": dg})
-		return evs, res, errors.Join(err, err2)
+		if err != nil {
+			return nil, nil, err
+		}
+		res, err := json.Marshal(map[string]any{"project": id, "revision": 1, "profile_digest": dg})
+		return evs, res, err
 	})
 }
 

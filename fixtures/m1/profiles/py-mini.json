@@ -9,7 +9,7 @@
     "settings": {}
   },
   "source_tests": {"dev_dependencies": true, "vcs_metadata": false},
-  "package": {"recipe": [["python", "-m", "compileall", "-q", "invoicekit"]], "outputs": ["invoicekit"]},
+  "package": {"recipe": [["python", "-m", "pip", "wheel", "--no-deps", "-w", "dist", "."]], "outputs": ["dist"]},
   "runtime_verification": {"command": null, "facts_from": null},
   "toolchain": {
     "images": {"python": "localhost/adc/py-mini@sha256:0000000000000000000000000000000000000000000000000000000000000000"},
@@ -33,13 +33,13 @@
     "ownership_rules": "default"
   },
   "integration": {"plugin": "none", "topology": null, "receipts_required": []},
-  "plugins": {"deploy": "none", "records": "none"},
-  "protected_paths": ["tests/**"],
+  "plugins": {"deploy": "none", "records": "json_ledger"},
+  "protected_paths": ["conftest.py", "pyproject.toml", "requirements-dev.txt"],
   "protected_documents": [],
   "data_policy": {"floor": "contracted", "routing": "verified", "allowed_destinations": []},
   "usage_profile_override": null,
-  "priority": 10,
-  "budget": {"rails": {"per_task_usd": "2", "per_day_usd": "10"}},
-  "retention": {"attempt_continuity_post_closure_ttl": "P30D", "supervisor_notes_ttl": null, "blob_payload_ttl": "P90D"},
+  "priority": 100,
+  "budget": {"rails": {"per_task_usd": "5", "per_day_usd": "20"}},
+  "retention": {"attempt_continuity_post_closure_ttl": "P7D", "supervisor_notes_ttl": null, "blob_payload_ttl": null},
   "vocabulary": {"task_id_pattern": null, "branch_prefix": "adc/", "language": "en"}
 }

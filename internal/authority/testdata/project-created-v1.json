@@ -1,0 +1,45 @@
+{
+  "schema": "adc.project-profile/v1",
+  "id": "prj_01m3250vkwffc979nzjw0gpym1",
+  "name": "py-mini",
+  "repo": {"url": "file:///var/lib/adc/remotes/py-mini.git", "base_ref": "refs/heads/main"},
+  "forge": {
+    "kind": "git",
+    "capabilities": {"change_requests": false, "protected_branches": false, "required_checks": false},
+    "settings": {}
+  },
+  "source_tests": {"dev_dependencies": true, "vcs_metadata": false},
+  "package": {"recipe": [["python", "-m", "pip", "wheel", "--no-deps", "-w", "dist", "."]], "outputs": ["dist"]},
+  "runtime_verification": {"command": null, "facts_from": null},
+  "toolchain": {
+    "images": {"python": "localhost/adc/py-mini@sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+    "dependency_recipe": {
+      "lockfiles": ["requirements-dev.txt"],
+      "command": ["python", "-m", "pip", "install", "--require-hashes", "--only-binary=:all:", "-r", "requirements-dev.txt"],
+      "registries": ["pypi"]
+    }
+  },
+  "gate": {
+    "command": ["python", "-m", "pytest", "-q", "--junitxml={results_path}"],
+    "result_adapter": "junit_xml",
+    "baseline": {"kind": "measured", "relock_requires": "approval"},
+    "environments": [
+      {
+        "name": "ci",
+        "facts": {"vcs_metadata": false, "network": "none", "runtime": {"language_version": "3.12", "os": "linux", "arch": "any"}},
+        "owner": "operator"
+      }
+    ],
+    "ownership_rules": "default"
+  },
+  "integration": {"plugin": "none", "topology": null, "receipts_required": []},
+  "plugins": {"deploy": "none", "records": "json_ledger"},
+  "protected_paths": ["conftest.py", "pyproject.toml", "requirements-dev.txt"],
+  "protected_documents": [],
+  "data_policy": {"floor": "contracted", "routing": "verified", "allowed_destinations": []},
+  "usage_profile_override": null,
+  "priority": 100,
+  "budget": {"rails": {"per_task_usd": "5", "per_day_usd": "20"}},
+  "retention": {"attempt_continuity_post_closure_ttl": "P7D", "supervisor_notes_ttl": null, "blob_payload_ttl": null},
+  "vocabulary": {"task_id_pattern": null, "branch_prefix": "adc/", "language": "en"}
+}
