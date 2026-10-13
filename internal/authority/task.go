@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -70,7 +71,7 @@ type TaskApproval struct {
 	Digest    types.Digest     `json:"digest"`
 	At        types.Time       `json:"at"`
 	Status    string           `json:"status"`
-	RevokedAt *string          `json:"revoked_at"`
+	RevokedAt *types.Time      `json:"revoked_at"`
 }
 
 // TaskKinds registers the task event kind; its payload is records/task.
@@ -221,7 +222,7 @@ func (TaskProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		case identity.ActorRevoked + "/v1":
 			var a types.IdentityEvent
 			if err = json.Unmarshal(ev.Payload, &a); err == nil && a.Actor != nil {
-				err = revokeApprovals(tx, a.Actor.ID, ev.At)
+				err = revokeApprovals(tx, a.Actor.ID, types.Time(ev.At))
 			}
 		}
 		if err != nil {
@@ -233,7 +234,7 @@ func (TaskProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 
 // addTask admits a new task in a registered project with room in its
 // backlog, by a live operator or supervisor, at its event, its spec
-// digest and its acceptance exactly as its spec gives them.
+// digest its spec's and its acceptance classed as its spec's attachments.
 func addTask(tx *eventstore.Tx, ev eventstore.Event) error {
 	var t types.Task
 	var raw struct{ Spec json.RawMessage }
@@ -245,7 +246,7 @@ func addTask(tx *eventstore.Tx, ev eventstore.Event) error {
 		string(t.CreatedBy) != ev.Actor || t.CreatedAt != types.Time(ev.At) || ev.Command == nil {
 		return errors.Join(err, errors.New("a task's event is under its id, in its spec's project, by its creator, at its time"))
 	}
-	if dg != t.SpecDigest || !sameCanonical(t.Acceptance, acceptanceOf(t.Spec)) {
+	if dg != t.SpecDigest || !classed(t) {
 		return errors.New("the spec digest or the acceptance classing is not the spec's")
 	}
 	by, err := liveActor(tx, t.CreatedBy)
@@ -264,25 +265,46 @@ func addTask(tx *eventstore.Tx, ev eventstore.Event) error {
 	return putJSON(tx, TaskProjection, "ready/"+string(t.Project)+"/"+t.ID, t.ID)
 }
 
+// classed: t's acceptance is its spec's attachments, each restricted and
+// withheld from builder and reviewer.
+func classed(t types.Task) bool {
+	ok := len(t.Acceptance) == len(t.Spec.Attachments)
+	for i, x := range t.Acceptance {
+		ok = ok && x.Name == t.Spec.Attachments[i].Name && x.Digest == t.Spec.Attachments[i].Digest && x.Class == types.AcceptanceBlobClassRestricted &&
+			slices.Contains(x.WithheldFrom, types.AcceptanceBlobWithheldFromItemBuilder) && slices.Contains(x.WithheldFrom, types.AcceptanceBlobWithheldFromItemReviewer)
+	}
+	return ok
+}
+
 // recordTaskApproval admits a, an approval with no proposal, only as the
-// approval its live operator's create of the task records in the same
-// command: exactly TaskApprovalOf the task, its spec digest included.
+// approval of the task's creating operator in its creating command, under
+// a fresh approval id, binding the task's spec digest. It checks the
+// binding fields only, so a stored approval replays whatever else a later
+// TaskApprovalOf would write.
 func recordTaskApproval(tx *eventstore.Tx, ev eventstore.Event, a types.Approval) error {
 	t, ok, err := loadJSON[TaskRecord](tx, TaskProjection, a.Object.ID)
 	if err != nil || !ok || strings.Contains(a.Object.ID, "/") {
 		return errors.Join(err, fmt.Errorf("an approval with no proposal approves a task's spec; %s is none", a.Object.ID))
 	}
+	id := "approval_id/" + string(a.ID) // shared with proposal approvals; approvalOf finds no proposal under it
+	if _, dup, err := tx.Get(ProposalProjection, id); err != nil || dup {
+		return errors.Join(err, fmt.Errorf("approval %s is already recorded", a.ID))
+	}
 	by, err := liveActor(tx, a.Actor)
-	if err != nil || by.Kind != types.ActorKindOperator || t.Approval != nil || ev.Command == nil || *ev.Command != t.Command ||
-		a.At != types.Time(ev.At) {
+	if err != nil || by.Kind != types.ActorKindOperator || a.Actor != t.CreatedBy || t.Approval != nil || ev.Command == nil ||
+		*ev.Command != t.Command || a.At != types.Time(ev.At) {
 		return errors.Join(err, errors.New("a task's approval is its operator's, once, in its creating command"))
 	}
-	spec, err := json.Marshal(t.Spec)
-	if err != nil {
-		return err
+	dg, err := eventstore.ContentDigest(a.Scope)
+	o, x := a.Object, a.ExpectedState
+	if err != nil || o.Type != TaskObjectType || o.ID != t.ID || o.Version == nil || *o.Version != 0 || o.Digest == nil ||
+		*o.Digest != t.SpecDigest || dg != t.SpecDigest || a.Action != TaskCreateAction || a.ActorKind != types.ApprovalActorKindOperator ||
+		a.Project == nil || *a.Project != t.Project || x.Version == nil || *x.Version != 0 || a.Grant != nil ||
+		a.Confirmation.Policy != types.ApprovalConfirmationPolicyNone {
+		return errors.Join(err, fmt.Errorf("the approval does not bind task %s's spec digest %s", t.ID, t.SpecDigest))
 	}
-	if !sameCanonical(TaskApprovalOf(t.Task, spec, a.ID, a.At), a) {
-		return fmt.Errorf("the approval does not bind task %s's spec digest %s", t.ID, t.SpecDigest)
+	if err := putJSON(tx, ProposalProjection, id, t.ID); err != nil {
+		return err
 	}
 	t.Approval = &TaskApproval{ID: a.ID, Actor: a.Actor, Digest: t.SpecDigest, At: a.At, Status: ApprovalInForce}
 	if err := putJSON(tx, TaskProjection, t.ID, t); err != nil {
@@ -293,7 +315,7 @@ func recordTaskApproval(tx *eventstore.Tx, ev eventstore.Event, a types.Approval
 
 // revokeApprovals marks revoked, at at, every task approval in force by
 // actor.
-func revokeApprovals(tx *eventstore.Tx, actor types.ActorID, at string) error {
+func revokeApprovals(tx *eventstore.Tx, actor types.ActorID, at types.Time) error {
 	prefix := "approver/" + string(actor) + "/"
 	keys, err := tx.Keys(TaskProjection, prefix)
 	for _, k := range keys {

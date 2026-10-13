@@ -1,0 +1,29 @@
+{
+  "id": "tsk_01m3250vkwffc979nzjw0gtak1",
+  "project": "prj_01m3250vkwffc979nzjw0g2sa1",
+  "spec": {
+    "project": "prj_01m3250vkwffc979nzjw0g2sa1",
+    "title": "split evenly",
+    "requirement": "make the hidden tests pass",
+    "attachments": [
+      {
+        "name": "tests/test_hidden.py",
+        "digest": "sha256:abababababababababababababababababababababababababababababababab"
+      }
+    ]
+  },
+  "spec_digest": "sha256:5dd5a565908444ed23ea6242aa43e574447cf4e79883d15d794eb28adc728a99",
+  "acceptance": [
+    {
+      "name": "tests/test_hidden.py",
+      "digest": "sha256:abababababababababababababababababababababababababababababababab",
+      "class": "restricted",
+      "withheld_from": [
+        "builder",
+        "reviewer"
+      ]
+    }
+  ],
+  "created_by": "@ACTOR@",
+  "created_at": "@AT@"
+}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +145,10 @@ func TestTaskCreate(t *testing.T) {
 	if !ok || r.State != authority.TaskReady || string(r.SpecDigest) != string(dg) || r.Project != prjA || r.CreatedBy != b.op.Actor() ||
 		r.Approval == nil || r.Approval.ID != apr.ID || string(r.Approval.Digest) != string(dg) || r.Approval.Status != authority.ApprovalInForce {
 		t.Fatalf("the task %+v", r)
+	}
+	// The logic writes exactly TaskApprovalOf the task.
+	if want := must(json.Marshal(authority.TaskApprovalOf(r.Task, raw, apr.ID, apr.At))); string(want) != string(must(json.Marshal(apr))) {
+		t.Errorf("the approval %s, want %s", must(json.Marshal(apr)), want)
 	}
 	// The acceptance blobs are classed restricted, withheld from builder
 	// and reviewer, as recorded.
@@ -310,7 +315,7 @@ func TestTaskApprovalOfAnotherDigest(t *testing.T) {
 	}
 	// created is the task.created event of raw, with the approval edit
 	// makes of it (none: nil).
-	created := func(id string, edit func(*types.Approval)) applyFn {
+	created := func(by identity.Principal, id string, edit func(*types.Approval)) applyFn {
 		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			var in types.TaskCreateScope
 			dg, err := eventstore.ContentDigest(raw)
@@ -318,7 +323,7 @@ func TestTaskApprovalOfAnotherDigest(t *testing.T) {
 				return nil, err
 			}
 			at := types.Time(tx.Now().Format(time.RFC3339Nano))
-			task := types.Task{ID: id, Project: prjA, Spec: in, SpecDigest: dg, CreatedBy: b.op.Actor(), CreatedAt: at,
+			task := types.Task{ID: id, Project: prjA, Spec: in, SpecDigest: dg, CreatedBy: by.Actor(), CreatedAt: at,
 				Acceptance: []types.AcceptanceBlob{{Name: "test.py", Digest: d, Class: types.AcceptanceBlobClassRestricted,
 					WithheldFrom: []types.AcceptanceBlobWithheldFromItem{types.AcceptanceBlobWithheldFromItemBuilder, types.AcceptanceBlobWithheldFromItemReviewer}}}}
 			p := string(prjA)
@@ -340,13 +345,13 @@ func TestTaskApprovalOfAnotherDigest(t *testing.T) {
 		},
 		"a version other than 0": func(a *types.Approval) { v := int64(1); a.Object.Version = &v },
 	} {
-		if err := b.trySeed(b.op, created(newID(t, "tsk"), edit)); err == nil || !strings.Contains(err.Error(), "does not bind task") || b.head() != h {
+		if err := b.trySeed(b.op, created(b.op, newID(t, "tsk"), edit)); err == nil || !strings.Contains(err.Error(), "does not bind task") || b.head() != h {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	// The task alone, then its approval in a later command: refused.
 	id := newID(t, "tsk")
-	b.seed(b.op, created(id, nil))
+	b.seed(b.op, created(b.op, id, nil))
 	late := func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		r, _ := b.task(id)
 		a := authority.TaskApprovalOf(r.Task, raw, types.ApprovalID(newID(t, "apr")), types.Time(tx.Now().Format(time.RFC3339Nano)))
@@ -366,11 +371,31 @@ func TestTaskApprovalOfAnotherDigest(t *testing.T) {
 	if err := b.trySeed(b.op, noTask); err == nil || b.head() != h {
 		t.Errorf("an approval of no task: admitted: %v", err)
 	}
-	// The exact approval, in the creating command, is admitted.
-	exact := newID(t, "tsk")
-	b.seed(b.op, created(exact, func(*types.Approval) {}))
+	// Another live operator's approval in the creating command, and a
+	// supervisor's own approval of its own task: refused.
+	second := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindOperator, Name: "second", CreatedBy: b.op.Actor()}
+	b.seed(b.op, create(second))
+	g := b.supGrant
+	g.ID, g.Actions = types.GrantID(newID(t, "grt")), []types.ActionKind{authority.TaskCreateAction}
+	b.seed(b.op, createGrant(g))
+	h = b.head()
+	if err := b.trySeed(b.op, created(b.op, newID(t, "tsk"), func(a *types.Approval) { a.Actor = second.ID })); err == nil || b.head() != h {
+		t.Errorf("another operator's approval: admitted: %v", err)
+	}
+	if err := b.trySeed(b.sup, created(b.sup, newID(t, "tsk"), func(*types.Approval) {})); err == nil || b.head() != h {
+		t.Errorf("a supervisor's own approval: admitted: %v", err)
+	}
+	// The exact approval, in the creating command, is admitted; another
+	// task's approval under the same id is refused.
+	exact, apr := newID(t, "tsk"), types.ApprovalID(newID(t, "apr"))
+	b.seed(b.op, created(b.op, exact, func(a *types.Approval) { a.ID = apr }))
 	if r, _ := b.task(exact); r.Approval == nil || r.Approval.Status != authority.ApprovalInForce {
 		t.Fatalf("the exact approval: %+v", r)
+	}
+	h = b.head()
+	if err := b.trySeed(b.op, created(b.op, newID(t, "tsk"), func(a *types.Approval) { a.ID = apr })); err == nil ||
+		!strings.Contains(err.Error(), "already recorded") || b.head() != h {
+		t.Errorf("a reused approval id: %v", err)
 	}
 	b.rebuilds()
 }
@@ -399,10 +424,8 @@ func TestTaskFoldRefusesMisclassedAcceptance(t *testing.T) {
 	}
 	h := b.head()
 	for name, edit := range map[string]func(*types.Task){
-		"another spec digest": func(x *types.Task) { x.SpecDigest = types.Digest("sha256:" + strings.Repeat("1", 64)) },
-		"withheld from one order": func(x *types.Task) {
-			x.Acceptance[0].WithheldFrom[0], x.Acceptance[0].WithheldFrom[1] = x.Acceptance[0].WithheldFrom[1], x.Acceptance[0].WithheldFrom[0]
-		},
+		"another spec digest":     func(x *types.Task) { x.SpecDigest = types.Digest("sha256:" + strings.Repeat("1", 64)) },
+		"another name":            func(x *types.Task) { x.Acceptance[0].Name = "other.py" },
 		"another acceptance blob": func(x *types.Task) { x.Acceptance[0].Digest = types.Digest("sha256:" + strings.Repeat("2", 64)) },
 	} {
 		if err := b.trySeed(b.op, seedTask(edit)); err == nil || b.head() != h {
@@ -410,4 +433,39 @@ func TestTaskFoldRefusesMisclassedAcceptance(t *testing.T) {
 		}
 	}
 	b.seed(b.op, seedTask(func(*types.Task) {}))
+}
+
+// task.created/v1 and its approval.recorded/v1, as stored, must keep
+// replaying: frozen goldens (the actor and time filled in, as the fold
+// requires them to be the command's) are admitted and rebuilt. A stored
+// approval whose reason text differs from what TaskApprovalOf writes today
+// replays too: the fold checks the binding fields, not today's builder.
+func TestTaskGoldensReplay(t *testing.T) {
+	task, err1 := os.ReadFile("testdata/task-created-v1.json")
+	apr, err2 := os.ReadFile("testdata/approval-recorded-task-v1.json")
+	if err := errors.Join(err1, err2); err != nil {
+		t.Fatal(err)
+	}
+	const id, aprID = "tsk_01m3250vkwffc979nzjw0gtak1", "apr_01m3250vkwffc979nzjw0gapr1"
+	for name, reason := range map[string]string{"as frozen": "", "another reason": "approved before the wording changed"} {
+		t.Run(name, func(t *testing.T) {
+			b := openTasks(t)
+			b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				fill := strings.NewReplacer("@ACTOR@", string(b.op.Actor()), "@AT@", tx.Now().Format(time.RFC3339Nano))
+				a := fill.Replace(string(apr))
+				if reason != "" {
+					a = strings.Replace(a, "an operator's task.create approves the spec it records", reason, 1)
+				}
+				p := string(prjA)
+				return []eventstore.Event{
+					{ID: newID(t, "evt"), Kind: authority.TaskCreated, Subject: id, Project: &p, Payload: []byte(fill.Replace(string(task)))},
+					{ID: newID(t, "evt"), Kind: authority.ApprovalRecorded, Subject: aprID, Project: &p, Payload: []byte(a)},
+				}, nil
+			})
+			if r, ok := b.task(id); !ok || r.Approval == nil || r.Approval.Status != authority.ApprovalInForce || string(r.Approval.ID) != aprID {
+				t.Fatalf("the golden task %+v", r)
+			}
+			b.rebuilds()
+		})
+	}
 }
