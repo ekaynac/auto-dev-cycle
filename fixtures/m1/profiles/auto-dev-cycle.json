@@ -20,7 +20,7 @@
     }
   },
   "gate": {
-    "command": ["go", "test", "-json", "./..."],
+    "command": ["go", "test", "-count=1", "-json", "./..."],
     "result_adapter": "go_test_json",
     "baseline": {"kind": "measured", "relock_requires": "approval"},
     "environments": [
@@ -44,6 +44,8 @@
     "gen/**",
     "go.mod",
     "go.sum",
+    "go.work",
+    "go.work.sum",
     "internal/adapterhost/**",
     "internal/attempt/**",
     "internal/authority/**",
@@ -59,7 +61,8 @@
     "scripts/bootstrap-go.sh",
     "scripts/prepare-go-image.sh",
     "scripts/test-sandbox*",
-    "spec/**"
+    "spec/**",
+    "vendor/**"
   ],
   "protected_documents": [],
   "data_policy": {"floor": "contracted", "routing": "verified", "allowed_destinations": []},

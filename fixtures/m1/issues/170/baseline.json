@@ -5,8 +5,17 @@
   "package": "./internal/cli/...",
   "base": "0d3e81dba68473ecbe4e8cb5f2c0665a28e0cbeb",
   "command": ["go", "test", "-count=1", "-json", "./internal/cli/..."],
-  "environment": {"go": "go1.27.1 linux/arm64", "GOPROXY": "off", "GOFLAGS": "-mod=readonly", "image": "host toolchain (provisional); re-record in the pinned image"},
-  "result": {"exit": 0, "tests_passed": 72, "top_level_tests": 52, "failed": 0, "skipped": 0},
+  "environment": {
+    "go": "go1.27.1 linux/arm64",
+    "GOPROXY": "off",
+    "GOFLAGS": "-mod=readonly -buildvcs=false",
+    "GOWORK": "off",
+    "image": "the prepared Go image (P32): fixtures/m1/images/go/Containerfile built by scripts/prepare-go-image.sh, a local linux/arm64 build with no registry digest yet (provisional)",
+    "image_label": {"dev.adc.prepared": {"toolchain": "go", "lockfiles": {"go.mod": "sha256:da34c313f1ddc72389060fcfe4ce0019ab769f4878fbc593e290bbbf131a1aeb", "go.sum": "sha256:078e20cd152d09fffa7455bf9a9babe1c74e0850701e60ddea4a17cdfc4097cf"}}},
+    "sandbox": "--network=none, read-only root, 256 MiB /tmp tmpfs, HOME on tmpfs, --cap-drop=all, uid 0",
+    "report": "baseline-report.json"
+  },
+  "result": {"exit": 0, "tests_passed": 69, "top_level_tests": 52, "failed": 0, "skipped": 3, "skipped_root_only": ["TestTokenOutSystemErrorCouldNotRun", "TestVerifyLogCouldNotRun", "TestVerifyLogReadOnlyState"]},
   "acceptance": {
     "attachment_digest": "sha256:45acb24235d176c8bbd15e6675fc018fd1cb6512ec9263934f8b267363d74a24",
     "tests": 5,

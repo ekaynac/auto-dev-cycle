@@ -46,7 +46,7 @@ func TestSelfProfile(t *testing.T) {
 	}
 	if p.ID != "prj_01m4tmb43hefctwv52nmq34fdj" || p.Name != "auto-dev-cycle" || p.Forge.Kind != "github" ||
 		p.Repo.BaseRef != "refs/heads/main" || p.Gate.ResultAdapter != results.GoTestJSON ||
-		!slices.Equal(p.Gate.Command[:3], []string{"go", "test", "-json"}) ||
+		!slices.Equal(p.Gate.Command, []string{"go", "test", "-count=1", "-json", "./..."}) ||
 		len(p.Gate.Environments) != 1 || p.Gate.Environments[0].Facts.Network != "none" ||
 		!slices.Equal(p.Toolchain.DependencyRecipe.Lockfiles, []string{"go.mod", "go.sum"}) {
 		t.Fatalf("the profile: %+v", p)
@@ -64,7 +64,8 @@ func TestSelfProfile(t *testing.T) {
 }
 
 // Every path of 00 §2.2 criterion 2, the contract packages of 04 §3, the
-// lockfiles (00 §8 item 2), the recipe and the adapter are protected; an
+// lockfiles and what bypasses them (go.work, vendor/: 00 §8 item 2), the
+// recipe and the adapter are protected; an
 // ordinary package is not.
 func TestSelfProfileProtectedPaths(t *testing.T) {
 	p, err := Load(loadSelf(t))
@@ -89,6 +90,8 @@ func TestSelfProfileProtectedPaths(t *testing.T) {
 		"scripts/bootstrap-go.sh", "scripts/prepare-go-image.sh", "fixtures/m1/images/go/Containerfile",
 		"fixtures/m1/issues/170/task.json", "internal/results/gotest.go", "internal/testguard/fakes/x.go",
 		"internal/profile/profile.go", "internal/contract/contract.go",
+		// What would bypass the lockfiles offline (the image also sets GOWORK=off).
+		"go.work", "go.work.sum", "vendor/modules.txt", "vendor/example.com/x/x.go",
 	} {
 		if !protected(path) {
 			t.Errorf("%s is not protected", path)

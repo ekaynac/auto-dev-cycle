@@ -48,10 +48,14 @@ import (
 // The adapter's name in a profile's gate.result_adapter.
 const GoTestJSON = "go_test_json"
 
-// Bounds on a stream: its size and one event line.
+// Bounds on a stream: its size and one event line. test2json splits a
+// test's output into events of at most 1 KiB of text, so a test that prints
+// a large diff never makes a long line; only cmd/go's build-output events
+// (one compiler or vet message each) are unsplit. MaxLine leaves those a
+// wide margin, and MaxStream bounds the memory either way.
 const (
 	MaxStream = 64 << 20
-	MaxLine   = 1 << 20
+	MaxLine   = 4 << 20
 )
 
 // ErrUnreadable: the stream is not a go test -json stream within bounds.
@@ -122,9 +126,33 @@ func (r Report) Clean() bool {
 		!slices.ContainsFunc(r.Results, func(x Result) bool { return !x.Counts() })
 }
 
-// Blocking lists every result that does not count.
+// Blocking lists every result that does not count. With BlockingPackages
+// and a pass, it explains Clean: Clean holds exactly when both are empty
+// and some test passed.
 func (r Report) Blocking() []Result {
 	return slices.DeleteFunc(slices.Clone(r.Results), Result.Counts)
+}
+
+// BlockingPackages holds every package that neither passed nor had no test
+// files: failed (a build failure included), incomplete or missing.
+func (r Report) BlockingPackages() map[string]Outcome {
+	return maps.Collect(func(yield func(string, Outcome) bool) {
+		for p, o := range r.Packages {
+			if o != Pass && o != Skip && !yield(p, o) {
+				return
+			}
+		}
+	})
+}
+
+// Green is the baseline predicate (00 §2.2 criterion 4): some test passed
+// and every test and package passed or skipped. A base is recorded only
+// when it is green; skips stay in it, so the head's skips are judged
+// against them.
+func (r Report) Green() bool {
+	return slices.ContainsFunc(r.Results, func(x Result) bool { return x.Outcome == Pass }) &&
+		!slices.ContainsFunc(r.Results, func(x Result) bool { return x.Outcome != Pass && x.Outcome != Skip }) &&
+		len(r.BlockingPackages()) == 0
 }
 
 type event struct {

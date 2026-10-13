@@ -3,7 +3,10 @@
 package results
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -234,5 +237,111 @@ func TestUnreadableStreams(t *testing.T) {
 	}
 	if _, err := ParseGoTestJSON(strings.NewReader(okStream), []Test{{Package: "m/ok"}}, nil); err == nil {
 		t.Error("an expected test without a name was accepted")
+	}
+}
+
+// Clean holds exactly when Blocking and BlockingPackages are empty and a
+// test passed, so a failed gate always has something to show (build
+// failures, a start with no end, a base package that never ran, no tests).
+func TestCleanIsExplained(t *testing.T) {
+	full := parse(t, okStream+skipStream)
+	withEmpty := parse(t, okStream+noTestsStream)
+	cut := strings.Join(strings.SplitAfter(okStream, "\n")[:5], "")
+	for name, c := range map[string]struct {
+		base   *Report
+		stream string
+	}{
+		"green":         {nil, okStream},
+		"build fail":    {nil, okStream + buildFailStream},
+		"bare build":    {nil, strings.SplitAfter(buildFailStream, "\n")[1]},
+		"no tests":      {nil, noTestsStream},
+		"start, no end": {nil, `{"Action":"start","Package":"m/x"}` + "\n"},
+		"cut":           {nil, cut},
+		"panic":         {nil, panicStream},
+		"never ran":     {&full, okStream},
+		"skip at base":  {&full, okStream + skipStream},
+		// Only a package blocks, beside passing tests.
+		"build fail, passes":    {nil, okStream + buildFailStream},
+		"start, no end, passes": {nil, okStream + `{"Action":"start","Package":"m/x"}` + "\n"},
+		"empty package gone":    {&withEmpty, okStream},
+	} {
+		r := parseOn(t, c.base, c.stream)
+		anyPass := slices.ContainsFunc(r.Results, func(x Result) bool { return x.Outcome == Pass })
+		if r.Clean() != (len(r.Blocking()) == 0 && len(r.BlockingPackages()) == 0 && anyPass) {
+			t.Errorf("%s: Clean %v, Blocking %v, BlockingPackages %v, a pass %v", name, r.Clean(), r.Blocking(), r.BlockingPackages(), anyPass)
+		}
+	}
+	if r := parseOn(t, &withEmpty, okStream); r.BlockingPackages()["m/notests"] != Missing {
+		t.Fatalf("a base package that never ran: %v", r.BlockingPackages())
+	}
+	if r := parse(t, okStream+buildFailStream); r.BlockingPackages()["m/broken"] != Fail || len(r.Blocking()) != 0 {
+		t.Fatalf("a build failure shows only as its package: %+v", r)
+	}
+}
+
+// #170's recorded base decodes as a Report and is green, with exactly the
+// three root-only skips; a head that skips them too is clean against it,
+// and one that passes one of them at the base and skips it now is not.
+func TestIssue170BaseReport(t *testing.T) {
+	raw, err := os.ReadFile("../../fixtures/m1/issues/170/baseline-report.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var base Report
+	if err := json.Unmarshal(raw, &base); err != nil {
+		t.Fatal(err)
+	}
+	const pkg = "github.com/ekaynac/auto-dev-cycle/internal/cli"
+	var skips []string
+	for _, x := range base.Results {
+		if x.Outcome == Skip {
+			skips = append(skips, x.Name)
+		}
+	}
+	want := []string{"TestTokenOutSystemErrorCouldNotRun", "TestVerifyLogCouldNotRun", "TestVerifyLogReadOnlyState"}
+	if !base.Green() || base.Packages[pkg] != Pass || len(base.Results) != 72 || !slices.Equal(skips, want) {
+		t.Fatalf("the base report: green %v, %d results, skips %v", base.Green(), len(base.Results), skips)
+	}
+	var head strings.Builder
+	fmt.Fprintf(&head, "{\"Action\":\"start\",\"Package\":%q}\n", pkg)
+	for _, x := range base.Results {
+		fmt.Fprintf(&head, "{\"Action\":%q,\"Package\":%q,\"Test\":%q}\n", x.Outcome, pkg, x.Name)
+	}
+	fmt.Fprintf(&head, "{\"Action\":\"pass\",\"Package\":%q}\n", pkg)
+	if r := parseOn(t, &base, head.String()); !r.Clean() {
+		t.Fatalf("the base replayed as head: %+v", r.Blocking())
+	}
+	base.Results[slices.IndexFunc(base.Results, func(x Result) bool { return x.Name == want[0] })].Outcome = Pass
+	if r := parseOn(t, &base, head.String()); r.Clean() {
+		t.Fatal("a pass at the base that skips at head was clean")
+	}
+}
+
+// Green, the baseline predicate, admits skips but nothing else that is not
+// a pass, and needs a pass.
+func TestGreen(t *testing.T) {
+	for name, c := range map[string]struct {
+		stream string
+		green  bool
+	}{
+		"pass":       {okStream, true},
+		"with skips": {okStream + skipStream + noTestsStream, true},
+		"no tests":   {noTestsStream, false},
+		"panic":      {okStream + panicStream, false},
+		"build fail": {okStream + buildFailStream, false},
+		"cut":        {strings.Join(strings.SplitAfter(okStream, "\n")[:5], ""), false},
+	} {
+		if r := parse(t, c.stream); r.Green() != c.green {
+			t.Errorf("%s: Green %v, want %v", name, r.Green(), c.green)
+		}
+	}
+	// A missing test, in packages that all passed, is not green.
+	if r := parse(t, okStream, Test{"m/ok", "TestHidden"}); r.Green() {
+		t.Error("a missing test was green")
+	}
+	// A green base with skips gives a clean head that skips the same tests.
+	base := parse(t, okStream+skipStream)
+	if !base.Green() || base.Clean() || !parseOn(t, &base, okStream+skipStream).Clean() {
+		t.Fatal("a green base with skips")
 	}
 }

@@ -17,7 +17,7 @@ FROM docker.io/library/golang:1.27.1-bookworm@sha256:8d48e12ec56735e9358640898b9
 # dependencies does not fit in /tmp, so the build cache is warmed here and
 # read-only at run time (go reads it and compiles misses in /tmp).
 ENV GOTOOLCHAIN=local \
-    GOFLAGS=-mod=readonly \
+    GOFLAGS="-mod=readonly -buildvcs=false" \
     GOTELEMETRY=off \
     CGO_ENABLED=0 \
     GOCACHE=/opt/adc/gocache
@@ -33,7 +33,11 @@ RUN go mod download -x && go mod verify \
  && rm -rf /root/.cache
 
 # goindex=0: the module index would be written into the read-only cache.
+# GOWORK=off: a go.work in the candidate would redirect dependencies around
+# go.mod, go.sum and the module cache. -buildvcs=false (above): the image's
+# git never runs on the workspace.
 ENV GOPROXY=off \
     GOSUMDB=off \
+    GOWORK=off \
     GODEBUG=goindex=0
 WORKDIR /

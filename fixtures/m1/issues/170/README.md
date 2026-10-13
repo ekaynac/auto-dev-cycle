@@ -6,6 +6,7 @@ This is the first real target for M1's checkpoint (a), chosen under slice plan ย
 |---|---|
 | `task.json` | The `task.create` scope: project, title, an exact requirement, and the acceptance attachment by path and digest. |
 | `baseline.json` | A provisional `go test -json ./internal/cli/...` record at the base, and the acceptance tests' expected results, as counts only. |
+| `baseline-report.json` | The same run as the gate's base: `results.ParseGoTestJSON`'s own `Report` encoding, recorded in the prepared Go image (P32), with its command and the three tests that skip as root. Provisional until the image digest is pushed. |
 
 ## Selection evidence (ยง2.2)
 
@@ -14,7 +15,7 @@ This is the first real target for M1's checkpoint (a), chosen under slice plan ย
 | 1. Useful and open | #170 is open. Item 3 is a finding from the Mythos review of #169: independent-review output prints no `requested:` line, so an operator cannot compare what was asked with what is bound. `at its digest` names a digest that is never shown. |
 | 2. Bounded | One file in `internal/cli`, a package that already has tests, about 10โ€“25 lines. It touches no schema, gen, spec, docs, `.github`, Makefile or test-sandbox script. `internal/cli` is not a contract package. Item 2 of #170 edits a schema and is excluded. Item 1 qualifies too; item 3 was chosen as the smaller, safer first run. |
 | 3. Exact acceptance | Hidden Go tests that fail at the base and pass with a known-good reference change, both kept outside the repository (see below). Every assertion is stated in `task.json`'s requirement. |
-| 4. Recorded baseline | Green at the base, offline, on the host toolchain. Provisional until it is re-recorded in the pinned Go image (P32). |
+| 4. Recorded baseline | Green at the base, offline: first on the host toolchain, then in P32's prepared Go image (`results.Report.Green`, with three root-only skips). Provisional until the image digest is pushed and the run is re-recorded in the pinned image. |
 | 5. No dependency, network or gen | Output formatting only. `make gen` is not needed. |
 | 6. Not D7, not a migration | #170 is not in 15's D7 table. It follows #169, which delivered a D7 item, but it is itself a review follow-up. It is not a migration. |
 

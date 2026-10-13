@@ -1,0 +1,454 @@
+{
+  "note": "The base Report for #170's gate (results.ParseGoTestJSON's own encoding; decode it as a results.Report, whose fields are results and packages). Recorded in the prepared Go image, offline, with the sandbox's flags (--network=none, read-only root, 256 MiB /tmp tmpfs, HOME on tmpfs, --cap-drop=all, uid 0). The three skips are tests that skip as root; a head that skips them too is not blocked by them. Provisional until the image digest is pushed (P32's operator steps); re-record then.",
+  "base": "0d3e81dba68473ecbe4e8cb5f2c0665a28e0cbeb",
+  "command": [
+    "go",
+    "test",
+    "-count=1",
+    "-json",
+    "./internal/cli/..."
+  ],
+  "image": "fixtures/m1/images/go/Containerfile via scripts/prepare-go-image.sh (linux/arm64, a local build; no registry digest yet), dev.adc.prepared={\"toolchain\":\"go\",\"lockfiles\":{\"go.mod\":\"sha256:da34c313f1ddc72389060fcfe4ce0019ab769f4878fbc593e290bbbf131a1aeb\",\"go.sum\":\"sha256:078e20cd152d09fffa7455bf9a9babe1c74e0850701e60ddea4a17cdfc4097cf\"}}",
+  "skipped_root_only": [
+    "TestTokenOutSystemErrorCouldNotRun",
+    "TestVerifyLogCouldNotRun",
+    "TestVerifyLogReadOnlyState"
+  ],
+  "results": [
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestAdminBootstrap",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestAdminBootstrapMalformedResponse",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestAdminBootstrapSecretFile",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestAdminBootstrapSecretFile/a_FIFO",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestAdminBootstrapSecretFile/a_directory",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestAdminBootstrapSecretFile/a_symlink",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestAdminBootstrapTokenWriteFails",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestBadRequest",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestBootstrapNotOverHTTPS",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestClientFromEnv",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestClientFromEnvHTTPS",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestCommandOverTheSocket",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestCommandsReachTheirActions",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDevFixtures",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorFailures",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorOperator",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorProbe",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorProbe/fifo_token",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorProbe/missing",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorProbe/symlinks",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorProbe/wrong_kinds",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorSeparated",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorTransportPeer",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorUnseen",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorWarnings",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorWarnings/daemon_uid",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorWarnings/operator_token",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestDoctorWarnings/state_directory",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestEnvelope",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestEventsEdges",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestEventsFollow",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestEventsMalformed",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestEventsResumeBounded",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestEventsUsage",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestEveryActionHasOneCommand",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestExitCodes",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestHostileCommandFields",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestHostileCommandLocalFields",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestHostileCommandMessages",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestHostileEventFields",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestHostileReadFields",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestHumanProposal",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestInvalidResponseNotQuoted",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestIssuedCredentialToTokenOut",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestJSONControls",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestOutput",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestReadCommands",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestReadExitCodes",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestSafe",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestScopeFileAndAttach",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestTokenNotDelivered",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestTokenOutSystemErrorCouldNotRun",
+      "outcome": "skip",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestTokenOutUnencodableResponse",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestTokenOutUsage",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestUnauthenticated",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestUsage",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLog",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogCouldNotRun",
+      "outcome": "skip",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogNeverRepairs",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogNeverRepairs/a_dropped_automatic_index",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogNeverRepairs/a_dropped_trigger",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogNeverRepairs/a_rewritten_trigger",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogNeverRepairs/an_empty_file",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogNeverRepairs/an_extra_trigger",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogNeverRepairs/an_index_entry_that_disagrees_with_its_row",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogNeverRepairs/an_index_on_another_index's_pages",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogNeverRepairs/an_unrelated_database",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogNeverRepairs/no_meta_table",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogNeverRepairs/not_a_database",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogReadOnlyState",
+      "outcome": "skip",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogRefusesAnOversizedStore",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "github.com/ekaynac/auto-dev-cycle/internal/cli",
+      "name": "TestVerifyLogUsage",
+      "outcome": "pass",
+      "expected": false
+    }
+  ],
+  "packages": {
+    "github.com/ekaynac/auto-dev-cycle/internal/cli": "pass"
+  }
+}
