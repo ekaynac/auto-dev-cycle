@@ -152,6 +152,47 @@ func Held(tx *eventstore.Tx) ([]NodeHolds, error) {
 	return out, err
 }
 
+// NodeView is a node as recorded, with its task, project and state, and
+// the outcome of its selected result: nil when none is selected, or when
+// the results projection does not hold it (State.Result tells which).
+type NodeView struct {
+	Node    types.Node
+	Task    types.TaskID
+	Project types.ProjectID
+	State   types.NodeState
+	Outcome *types.Outcome
+}
+
+// TaskProject is the project task's first node pinned (graph_tasks);
+// false: the task has no node.
+func TaskProject(tx *eventstore.Tx, task types.TaskID) (types.ProjectID, bool, error) {
+	return load[types.ProjectID](tx, TaskProjection, string(task))
+}
+
+// Nodes is every node, in node id order (the board, M1 P4b).
+func Nodes(tx *eventstore.Tx) ([]NodeView, error) {
+	keys, err := tx.Keys(NodeProjection, "")
+	var out []NodeView
+	for _, k := range keys {
+		rec, lerr := loadNode(tx, types.NodeID(k))
+		if err = errors.Join(err, lerr); err != nil {
+			return nil, err
+		}
+		v := NodeView{Node: rec.Recorded.Node, Task: rec.Recorded.Task, Project: rec.Recorded.Project, State: rec.State}
+		if id := rec.State.Result; id != nil {
+			r, ok, err := load[types.ResultRecorded](tx, ResultProjection, string(*id))
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				v.Outcome = &r.Result.Outcome
+			}
+		}
+		out = append(out, v)
+	}
+	return out, err
+}
+
 // ProjectOf is node's project, as its record holds it.
 func ProjectOf(tx *eventstore.Tx, node types.NodeID) (types.ProjectID, error) {
 	rec, err := loadNode(tx, node)

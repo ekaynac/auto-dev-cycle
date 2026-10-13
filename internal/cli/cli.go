@@ -50,6 +50,9 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 	if len(args) >= 1 && args[0] == "events" {
 		return events(ctx, args[1:], stdout, stderr, c)
 	}
+	if len(args) >= 1 && args[0] == "board" {
+		return read(ctx, "adc board", "board", args[1:], stdout, stderr, c)
+	}
 	if len(args) >= 1 && args[0] == "doctor" {
 		return doctor(ctx, args[1:], stdout, stderr, c, hostSystem())
 	}

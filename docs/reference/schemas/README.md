@@ -15,6 +15,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`adapter/run-result.json`](adapter-run-result.md) | AdapterRunResult |
 | [`adapter/tool-response-params.json`](adapter-tool-response-params.md) | AdapterToolResponseParams |
 | [`api/blob-upload.json`](api-blob-upload.md) | BlobUpload |
+| [`api/board.json`](api-board.md) | BoardCard |
 | [`api/bootstrap-request.json`](api-bootstrap-request.md) | BootstrapRequest |
 | [`api/bootstrap-response.json`](api-bootstrap-response.md) | BootstrapResponse |
 | [`api/command-request.json`](api-command-request.md) | CommandRequest |
