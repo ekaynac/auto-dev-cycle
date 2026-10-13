@@ -291,7 +291,11 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 	}
 	// An active lease does not prove its attempt runs: a stop leaves the
 	// lease active on a stopping attempt. Checked on every request, cached
-	// intent or not.
+	// intent or not, when it is admitted. The residual: all requests already
+	// admitted before a stop, including those whose body is read after it,
+	// may still send (a first one is refused by the Recorder's own check);
+	// P22a bounds them (#226 entry 57), and their late usage is accepted
+	// (#226 entry 59).
 	a, current, ok, err := g.cfg.Attempts.Attempt(ctx, b.Attempt)
 	switch {
 	case err != nil:

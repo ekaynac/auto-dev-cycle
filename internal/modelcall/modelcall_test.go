@@ -139,6 +139,12 @@ func (w *world) must(fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) {
 // running attempt, through internal/lease's commands and projector.
 func (w *world) start(groups ...types.ResourceGroupID) {
 	w.t.Helper()
+	w.startOn(leaseID, unit, attempt, groups...)
+}
+
+// startOn is start for another lease, unit and attempt.
+func (w *world) startOn(leaseID types.LeaseID, unit types.UnitID, attempt types.AttemptID, groups ...types.ResourceGroupID) {
+	w.t.Helper()
 	ok := types.PlacementCheck{Outcome: types.Outcome(vocab.Empty), Reason: vocab.ReasonCompletedClean}
 	l := types.Lease{ID: leaseID, Unit: unit, Role: "builder", Executor: builder, State: types.LeaseStateRequested,
 		Reservations: []types.LeaseReservationsItem{}, Footprint: types.LeaseFootprint{ContextTokens: 1000, ExpectedTurns: 5},
@@ -242,6 +248,11 @@ func (u *upstream) count() int {
 // newGateway is a gateway over the stub registry pointed at up, recording
 // intents through in, with binding bound.
 func newGateway(t *testing.T, w *world, up *upstream, in gateway.Intents) (*gateway.Gateway, string) {
+	return newGatewayWith(t, w, up, in, modelcall.Reader{Store: w.s})
+}
+
+// newGatewayWith is newGateway with attempts as its attempt reader.
+func newGatewayWith(t *testing.T, w *world, up *upstream, in gateway.Intents, attempts gateway.Attempts) (*gateway.Gateway, string) {
 	t.Helper()
 	doc, err := registry.Load(config + "registry-stub.json")
 	if err != nil {
@@ -264,7 +275,7 @@ func newGateway(t *testing.T, w *world, up *upstream, in gateway.Intents) (*gate
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := gateway.New(gateway.Config{Registry: r, Leases: modelcall.Reader{Store: w.s}, Attempts: modelcall.Reader{Store: w.s}, Secrets: secrets{}, Intents: in})
+	g, err := gateway.New(gateway.Config{Registry: r, Leases: modelcall.Reader{Store: w.s}, Attempts: attempts, Secrets: secrets{}, Intents: in})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,5 +568,111 @@ func TestAStoppedAttemptSendsNothing(t *testing.T) {
 	}
 	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return modelcall.Intend(tx, other, "stub") }); !errors.Is(err, modelcall.ErrNotRunning) {
 		t.Fatalf("the Recorder bound a stopped attempt: %v", err)
+	}
+}
+
+// Astra round 2 M1: a call is never rebound to another eligible attempt
+// and lease. A second attempt, running and current under another lease and
+// unit at the same destination, binds the existing call: Intend refuses
+// it, the gateway sends nothing, and the first binding stays.
+func TestACallIsNeverRebound(t *testing.T) {
+	w := openWorld(t)
+	w.start(rgB, rgA)
+	const (
+		lease2   = types.LeaseID("lea_01m4tm99haemss9tvzd438vq8k")
+		unit2    = types.UnitID("unt_01m3250vz2ezn81cgvbkcn17jk")
+		attempt2 = types.AttemptID("att_01m4tm99haemss9tvzd438vq8k")
+	)
+	w.startOn(lease2, unit2, attempt2, rgA)
+	up := newUpstream(t, nil)
+	g, token := newGateway(t, w, up, modelcall.Recorder{Store: w.s, Actor: actor})
+	if rec := send(g, token); rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	first := w.ofLease()
+	g.Unbind(token)
+	moved := gateway.Binding{Lease: lease2, Attempt: attempt2, Call: callID}
+	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return modelcall.Intend(tx, moved, "stub") }); !errors.Is(err, modelcall.ErrBound) {
+		t.Fatalf("the call rebound to another running attempt and lease: %v", err)
+	}
+	token2, err := g.Bind(moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := send(g, token2); rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "intent_unrecorded") || up.count() != 1 {
+		t.Fatalf("the call sent under another attempt and lease: %d %s, upstream saw %d", rec.Code, rec.Body, up.count())
+	}
+	var after modelcall.Bound
+	w.view(func(tx *eventstore.Tx) (err error) {
+		after.Call, _, err = modelcall.Of(tx, callID)
+		return err
+	})
+	if len(first) != 1 || !same(after.Call, first[0].Call) {
+		t.Fatalf("the binding changed: %+v, then %+v", first, after.Call)
+	}
+}
+
+// admitting signals each attempt check the gateway makes.
+type admitting struct {
+	gateway.Attempts
+	checked chan struct{}
+}
+
+func (a admitting) Attempt(ctx context.Context, id types.AttemptID) (types.Attempt, bool, bool, error) {
+	v, current, ok, err := a.Attempts.Attempt(ctx, id)
+	a.checked <- struct{}{}
+	return v, current, ok, err
+}
+
+// Astra round 2 L1, the residual, documented: eligibility is checked when a
+// request is admitted, before its body is read. A request admitted before
+// a stop, whose body arrives after it, still sends when its token's intent
+// is cached; a first request so admitted is refused by the Recorder, which
+// checks again in its transaction. Every request admitted before the stop
+// is in this window, however many; P22a bounds them (#226 entry 57), and
+// their late usage is accepted (#226 entry 59).
+func TestRequestsAdmittedBeforeAStop(t *testing.T) {
+	w := openWorld(t)
+	w.start(rgB, rgA)
+	up := newUpstream(t, nil)
+	at := admitting{modelcall.Reader{Store: w.s}, make(chan struct{}, 4)}
+	g, token := newGatewayWith(t, w, up, modelcall.Recorder{Store: w.s, Actor: actor}, at)
+	if rec := send(g, token); rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	<-at.checked
+	fresh, err := g.Bind(gateway.Binding{Lease: leaseID, Attempt: attempt, Call: "cal_01m4tm99haemss9tvzd438vq8k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type held struct {
+		body *io.PipeWriter
+		rec  *httptest.ResponseRecorder
+		done chan struct{}
+	}
+	admit := func(tk string) held {
+		pr, pw := io.Pipe()
+		h := held{pw, httptest.NewRecorder(), make(chan struct{})}
+		r := httptest.NewRequest(http.MethodPost, "/chat/completions", pr)
+		r.Header.Set("Authorization", "Bearer "+tk)
+		go func() { g.ServeHTTP(h.rec, r); close(h.done) }()
+		<-at.checked // admitted: the attempt was running; the body is not read yet
+		return h
+	}
+	cached, first := admit(token), admit(fresh)
+	w.stop()
+	for _, h := range []held{cached, first} {
+		_, _ = io.WriteString(h.body, good)
+		_ = h.body.Close()
+		<-h.done
+	}
+	if cached.rec.Code != http.StatusOK || up.count() != 2 {
+		t.Fatalf("the admitted request on a cached token: %d, upstream saw %d", cached.rec.Code, up.count())
+	}
+	if first.rec.Code != http.StatusServiceUnavailable || len(w.ofLease()) != 1 {
+		t.Fatalf("the admitted first request: %d %s", first.rec.Code, first.rec.Body)
+	}
+	if rec := send(g, token); rec.Code == http.StatusOK || up.count() != 2 {
+		t.Fatalf("a request admitted after the stop: %d, upstream saw %d", rec.Code, up.count())
 	}
 }
