@@ -158,8 +158,10 @@ const (
 	// their params and requirement (which binds the roster, G7b-2), so a
 	// review is reused across a roster change.
 	EquivalenceIgnoresRoster = "graph.equivalence-ignores-roster"
-	// SupersessionKeepsAttempts supersedes a review without stopping its
-	// running attempts, so their late output still lands.
+	// SupersessionKeepsAttempts makes the supersession builder neither stop
+	// nor list the review's running attempt, derived from its unit (M1
+	// P8a): the fold then refuses the supersession, and a crash inside the
+	// command finds no stop folded.
 	SupersessionKeepsAttempts = "graph.supersession-keeps-attempts"
 	// SupersessionAdmitsRunningAttempt lets the supersession fold admit an
 	// event that leaves the predecessor's attempt running (M1 P8a), so a

@@ -50,9 +50,9 @@ func (g *graphFix) runIn(n types.NodeID, setting map[string]string, foreign bool
 }
 
 // nextAttempt starts n's next attempt under a fresh lease on n's unit (M1
-// P8a): its first, or the successor of its last, which the fixture never
-// ended, so it is still running at its first revision; it is lost, then
-// sealed with the minimal record, then superseded.
+// P8a), with its result submitted (finishing): its first, or the successor
+// of its last, finishing at its second revision, which is sealed with the
+// minimal record, then superseded.
 func (g *graphFix) nextAttempt(n types.NodeID) (types.AttemptID, error) {
 	l, att, err := freshLease()
 	l.Unit = graph.UnitOf(n)
@@ -76,15 +76,20 @@ func (g *graphFix) nextAttempt(n types.NodeID) (types.AttemptID, error) {
 	} else {
 		steps = append(steps,
 			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-				return lease.LoseRunning(tx, last, types.AttemptLostReasonValueAgentDisconnect)
-			},
-			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 				return lease.SealMinimal(tx, last, 2, graph.Units{}, g.blobs, nil, types.ActorID(g.actor))
 			},
 			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 				return lease.SupersedeAttempt(tx, last, 3, l.ID, 2, att, base)
 			})
 	}
+	steps = append(steps, func(tx *eventstore.Tx) ([]eventstore.Event, error) { // its result is submitted: it records one
+		a, _, _, err := lease.AttemptOf(tx, att)
+		call, cerr := ids.New("cal")
+		if err = errors.Join(err, cerr); err != nil {
+			return nil, err
+		}
+		return lease.SubmitResult(tx, att, a.FencingToken, types.SubmittedResult{Call: types.CallID(call), Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean})
+	})
 	for _, step := range steps {
 		if err == nil {
 			err = g.do(step)

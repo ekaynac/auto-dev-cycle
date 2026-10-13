@@ -122,13 +122,23 @@ func (w *world) put(b []byte) types.Digest {
 	return types.Digest(d)
 }
 
+// reason is the seal reason a, the attempt before its seal, derives.
+func (w *world) reason(a types.Attempt) types.AttemptRecordSealReason {
+	w.t.Helper()
+	r, err := SealReason(a)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return r
+}
+
 // record publishes a valid AttemptRecord for a, with its named blobs.
 func (w *world) record(a types.Attempt, edit func(*types.AttemptRecord)) types.Digest {
 	w.t.Helper()
 	r := types.AttemptRecord{Attempt: a.ID, Project: "prj_01m3250vkwffc979nzjw0g2sf9", Task: "tsk_01m3250v9xft08ssr4ygq6g2np",
 		ContractRevision: a.Base.ContractRevision, FencingToken: a.FencingToken, BaseTree: a.Base.Tree, FailingTests: []string{},
 		Trail: w.put([]byte("trail")), EvidenceManifest: w.put([]byte("manifest")),
-		Seal: types.AttemptRecordSeal{Reason: "drain", At: "2026-10-05T12:00:00Z", SealedBy: "act_01m3250v0aer9ss2097svmefj8"}}
+		Seal: types.AttemptRecordSeal{Reason: w.reason(a), At: "2026-10-05T12:00:00Z", SealedBy: "act_01m3250v0aer9ss2097svmefj8"}}
 	if edit != nil {
 		edit(&r)
 	}
@@ -479,6 +489,22 @@ func TestSubmissionsAndSeals(t *testing.T) {
 	} {
 		if err := seal(d); err == nil {
 			t.Errorf("a seal with %s: accepted", name)
+		}
+	}
+	// M1 P8a: the seal reason is the attempt's (a revoked stop is
+	// abrupt_loss), and the record is minimal.
+	notes := w.put([]byte("notes"))
+	for name, c := range map[string]struct {
+		d    types.Digest
+		want string
+	}{
+		"a forged reason": {w.record(a, func(r *types.AttemptRecord) { r.Seal.Reason = types.AttemptRecordSealReasonCompleted }), "seals abrupt_loss"},
+		"a pinned record": {w.record(a, func(r *types.AttemptRecord) { r.Pinned = true }), "minimal"},
+		"failing tests":   {w.record(a, func(r *types.AttemptRecord) { r.FailingTests = []string{"TestX"} }), "minimal"},
+		"builder notes":   {w.record(a, func(r *types.AttemptRecord) { r.BuilderNotes = &notes }), "minimal"},
+	} {
+		if err := seal(c.d); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("a seal with %s: %v", name, err)
 		}
 	}
 	if err := seal(w.record(a, nil)); err != nil {

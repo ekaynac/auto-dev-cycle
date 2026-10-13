@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -120,5 +123,50 @@ func TestHoldsList(t *testing.T) {
 	}
 	if code, out, _ := c.adc(c.sup.Reveal(), "holds", "list", "--json"); code != entry.ExitOK || !strings.Contains(out, `"items":[]`) {
 		t.Errorf("a supervisor reading no holds: %d %s", code, out)
+	}
+}
+
+// A lease hold on a node's unit is its node's project's (M1 P8a; #226
+// entry 13): a reader scoped to that project sees it, one scoped to another
+// project does not, and neither sees the hold of a lease bound to no node.
+func TestLeaseHoldProjectIsolation(t *testing.T) {
+	readers := map[types.ProjectID]identity.Secret{}
+	c := runCommanded(t, func(w *seeder, op types.ActorID) {
+		node := heldNode(t, w, op)
+		w.heldLease(op)
+		w.heldLease(op, graph.UnitOf(node))
+		now := time.Now().UTC()
+		for _, p := range []types.ProjectID{graphProject, "prj_01m3250vkwffc979nzjw0g2sb2"} {
+			a := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "reader", CreatedBy: op}
+			g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: a.ID, Projects: types.ProjectScope{List: []types.ProjectID{p}},
+				Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{"hold"}},
+				ValidFrom: types.Time(now.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(now.Add(time.Hour).Format(time.RFC3339)),
+				ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op}
+			w.do(op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				evs, err := identity.CreateActor(a)
+				if err != nil {
+					return nil, err
+				}
+				gr, err := authority.CreateGrant(tx, g)
+				return append(evs, gr...), err
+			})
+			w.do(op, func(*eventstore.Tx) ([]eventstore.Event, error) {
+				evs, s, err := identity.IssueToken(a.ID, op, now)
+				readers[p] = s
+				return evs, err
+			})
+		}
+	})
+	for p, want := range map[types.ProjectID]int{graphProject: 2, "prj_01m3250vkwffc979nzjw0g2sb2": 0} {
+		code, out, errb := c.adc(readers[p].Reveal(), "holds", "list", "--json")
+		var list struct{ Items []types.HoldRead }
+		if code != entry.ExitOK || json.Unmarshal([]byte(out), &list) != nil || len(list.Items) != want {
+			t.Fatalf("a reader of %s: %d %s %s", p, code, out, errb)
+		}
+		for _, h := range list.Items {
+			if h.Project == nil || *h.Project != p {
+				t.Errorf("a reader of %s read %+v", p, h)
+			}
+		}
 	}
 }

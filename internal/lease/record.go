@@ -15,7 +15,13 @@ package lease
 //     trail and evidence manifest. Sealing at every builder exit, and
 //     continuation, stay in M2.
 //   - The seal's reason is derived from the attempt, never chosen
-//     (SealReason). repair_handoff is M2's.
+//     (SealReason). A stop for preemption, revocation, expiry or
+//     cancellation seals as abrupt_loss: the attempt was cut, not drained.
+//     repair_handoff is M2's.
+//   - The projector's checkpoint check admits only such a record: the
+//     reason the attempt derives, not pinned, no failing tests, no builder
+//     notes. Like the rest of that check (it reads blobs), it runs at
+//     admission and is skipped on replay, as before M1.
 //   - The record and its blobs are published before the event that names
 //     them (03): a refused seal leaves only blobs nothing references.
 

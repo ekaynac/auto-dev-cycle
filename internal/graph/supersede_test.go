@@ -155,7 +155,7 @@ func TestSupersedeStopsBoundAttempt(t *testing.T) {
 	if _, ok := NodeOf("lea_01m3250vm7f6ktw39dszqnyddr"); ok {
 		t.Error("a lease id read as a unit")
 	}
-	a := g.attemptOn(review)
+	a := g.runningOn(review)
 	alone := func(edit func(*types.ReviewSuperseded)) logic { // the supersession without its stop
 		inner := edited(review, next, edit)
 		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {

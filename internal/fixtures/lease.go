@@ -24,7 +24,9 @@ func (oneTask) ProjectTask(*eventstore.Tx, types.UnitID) (types.ProjectID, types
 }
 
 // Startable admits an attempt on every unit: the M0 fixtures run leases
-// with no graph.
+// with no graph, each on fresh random units (freshLease), so no single
+// unit can be named. oneTask binds nothing real: it must never be wired
+// to a real store; adcd's projector takes graph.Units.
 func (oneTask) Startable(*eventstore.Tx, types.UnitID) error { return nil }
 
 // outputKind is the event an attempt's output appends in this fixture.

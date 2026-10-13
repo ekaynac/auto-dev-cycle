@@ -557,7 +557,7 @@ func (p Projector) changeAttempt(tx *eventstore.Tx, transition string, n types.A
 		return errors.Join(err, fmt.Errorf("attempt %s is not what %s derives", n.ID, transition))
 	}
 	if transition == Sealed && !tx.Replaying() {
-		if err := p.checkpoint(tx, n); err != nil {
+		if err := p.checkpoint(tx, prev, n); err != nil {
 			return err
 		}
 	}
@@ -566,8 +566,11 @@ func (p Projector) changeAttempt(tx *eventstore.Tx, transition string, n types.A
 
 // checkpoint admits a seal's AttemptRecord: a valid record of this attempt,
 // its token and base, of the unit's project and task, with every blob it
-// names published.
-func (p Projector) checkpoint(tx *eventstore.Tx, a types.Attempt) error {
+// names published, sealed for the reason prev, the attempt before the
+// seal, derives, and minimal (M1 L1: not pinned, no failing tests, no
+// builder notes). It runs at admission only: replay skips it, since it
+// reads blobs (record.go).
+func (p Projector) checkpoint(tx *eventstore.Tx, prev, a types.Attempt) error {
 	if p.Blobs == nil || p.Units == nil {
 		return errors.New("a seal needs the blob store and the unit binding to check its checkpoint")
 	}
@@ -591,6 +594,16 @@ func (p Projector) checkpoint(tx *eventstore.Tx, a types.Attempt) error {
 	if r.Attempt != a.ID || r.FencingToken != a.FencingToken || r.BaseTree != a.Base.Tree || r.ContractRevision != a.Base.ContractRevision ||
 		r.Project != project || r.Task != task {
 		return fmt.Errorf("checkpoint %s is not attempt %s's (token %d, base %s)", *a.Checkpoint, a.ID, a.FencingToken, a.Base.Tree)
+	}
+	reason, err := SealReason(prev)
+	if err != nil {
+		return err
+	}
+	if r.Seal.Reason != reason {
+		return fmt.Errorf("checkpoint %s is sealed %s, but a %s attempt seals %s", *a.Checkpoint, r.Seal.Reason, prev.Status, reason)
+	}
+	if r.Pinned || len(r.FailingTests) != 0 || r.BuilderNotes != nil {
+		return fmt.Errorf("checkpoint %s is not M1's minimal record: pinned, or holding failing tests or builder notes", *a.Checkpoint)
 	}
 	named := []types.Digest{r.Trail, r.EvidenceManifest}
 	for _, d := range []*types.Digest{r.PartialDiff, r.BuilderNotes} {

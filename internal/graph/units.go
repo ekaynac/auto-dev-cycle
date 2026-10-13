@@ -19,7 +19,8 @@ package graph
 //     the caller (Supersede); the fold refuses one that leaves it running.
 //   - A result recorded with its attempt is that attempt's node's
 //     (attemptBound): the result.recorded fold refuses an attempt never
-//     started, or started on another node's unit, on replay as at admission.
+//     started, started on another node's unit, or that did not submit its
+//     result (stopped, lost or superseded), on replay as at admission.
 
 import (
 	"errors"
@@ -98,7 +99,11 @@ func runningAttempt(tx *eventstore.Tx, node types.NodeID) (types.Attempt, bool, 
 	return a, a.Status == types.AttemptStatusRunning, nil
 }
 
-// attemptBound: attempt was started, on node's unit.
+// attemptBound: attempt was started, on node's unit, and submitted its
+// result: it is finishing, or sealed or completed from finishing. Only a
+// stop or a loss sets a stop or lost reason, and neither leaves finishing,
+// so an attempt sealed with neither reason was finishing. A superseded
+// attempt's result is never recorded: its successor runs.
 func attemptBound(tx *eventstore.Tx, node types.NodeID, attempt types.AttemptID) error {
 	a, _, ok, err := lease.AttemptOf(tx, attempt)
 	switch {
@@ -108,6 +113,11 @@ func attemptBound(tx *eventstore.Tx, node types.NodeID, attempt types.AttemptID)
 		return fmt.Errorf("attempt %s was never started", attempt)
 	case a.Unit != UnitOf(node):
 		return fmt.Errorf("attempt %s ran for unit %s, not node %s's", attempt, a.Unit, node)
+	}
+	submitted := a.Status == types.AttemptStatusFinishing ||
+		(a.Status == types.AttemptStatusSealed || a.Status == types.AttemptStatusCompleted) && a.StopReason == nil && a.LostReason == nil
+	if !submitted {
+		return fmt.Errorf("attempt %s is %s: only an attempt that submitted its result records one", attempt, a.Status)
 	}
 	return nil
 }

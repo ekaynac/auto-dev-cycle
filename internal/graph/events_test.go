@@ -91,11 +91,11 @@ func leases(blobs *blobstore.Store) func(*eventstore.Tx, []eventstore.Event) err
 	return lease.Projector{Blobs: blobs, Units: Units{}}.Project
 }
 
-// attemptOn starts n's next attempt under a fresh lease on n's unit: its
-// first, or the successor of its last, which the tests never end, so it
-// is still running at its first revision: it is lost, sealed with the
-// minimal record, then superseded.
-func (g graphStore) attemptOn(n types.NodeID) types.AttemptID {
+// runningOn starts n's next attempt under a fresh lease on n's unit: its
+// first, or the successor of its last, which the tests never end: running
+// (lost first) or finishing, it is sealed with the minimal record, then
+// superseded.
+func (g graphStore) runningOn(n types.NodeID) types.AttemptID {
 	g.t.Helper()
 	ok := types.PlacementCheck{Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean}
 	l := types.Lease{ID: types.LeaseID(must(ids.New("lea"))), Unit: UnitOf(n), Role: "builder", Executor: exeA, State: types.LeaseStateRequested,
@@ -118,16 +118,44 @@ func (g graphStore) attemptOn(n types.NodeID) types.AttemptID {
 		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StartAttempt(tx, l.ID, 2, a, base) })
 		return a
 	}
+	var prev types.Attempt
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) { prev, _, _, err = lease.AttemptOf(tx, last); return err }); err != nil {
+		g.t.Fatal(err)
+	}
+	rev := int64(2) // finishing: started, then submitted
+	if prev.Status == types.AttemptStatusRunning {
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.LoseRunning(tx, last, types.AttemptLostReasonValueAgentDisconnect)
+		})
+	}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return lease.LoseRunning(tx, last, types.AttemptLostReasonValueAgentDisconnect)
+		return lease.SealMinimal(tx, last, rev, Units{}, g.blobs, nil, "act_01m3250v0aer9ss2097svmefj8")
 	})
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return lease.SealMinimal(tx, last, 2, Units{}, g.blobs, nil, "act_01m3250v0aer9ss2097svmefj8")
-	})
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return lease.SupersedeAttempt(tx, last, 3, l.ID, 2, a, base)
+		return lease.SupersedeAttempt(tx, last, rev+1, l.ID, 2, a, base)
 	})
 	return a
+}
+
+// attemptOn is runningOn's attempt with its result submitted (finishing),
+// so a result it records is admitted.
+func (g graphStore) attemptOn(n types.NodeID) types.AttemptID {
+	g.t.Helper()
+	a := g.runningOn(n)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.SubmitResult(tx, a, g.token(a), types.SubmittedResult{Call: types.CallID(must(ids.New("cal"))), Outcome: types.OutcomeEmpty,
+			Reason: vocab.ReasonCompletedClean})
+	})
+	return a
+}
+
+// token is attempt a's fencing token.
+func (g graphStore) token(a types.AttemptID) int64 {
+	var at types.Attempt
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) { at, _, _, err = lease.AttemptOf(tx, a); return err }); err != nil {
+		g.t.Fatal(err)
+	}
+	return at.FencingToken
 }
 
 type logic func(tx *eventstore.Tx) ([]eventstore.Event, error)

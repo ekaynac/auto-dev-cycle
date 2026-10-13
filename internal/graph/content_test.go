@@ -13,6 +13,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/evidence"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -126,12 +127,24 @@ func TestCommitEvidenceIsolation(t *testing.T) {
 	elsewhere := g.published(m, g.evidence(m, nil))
 	elsewhere.Attempt = ptr(g.attemptOn(g.walk("elsewhere", 9, 9)))
 	elsewhere.Isolation.Run = evidence.RunOf(*elsewhere.Attempt)
+	// Nor the result of an attempt that did not submit one: stopped, or
+	// superseded by its node's next attempt.
+	cut := g.walk("stopped", 9, 9)
+	stopped := g.published(cut, g.evidence(cut, nil))
+	stopped.Attempt = ptr(g.runningOn(cut))
+	stopped.Isolation.Run = evidence.RunOf(*stopped.Attempt)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StopRunning(tx, *stopped.Attempt, types.AttemptStopReasonValueRevoke)
+	})
+	retired := g.published(m, g.evidence(m, nil))
+	g.attemptOn(m)
 	for name, rr := range map[string]types.ResultRecorded{"no proof": bare, "an empty setting": empty, "a proof from another run": foreign,
 		"a proof without its attempt": unattempted, "a proof on a gate result": onGate, "an attempt never started": unstarted,
-		"another node's attempt": elsewhere} {
+		"another node's attempt": elsewhere, "a stopped attempt's": stopped, "a superseded attempt's": retired} {
 		rr.Type = "result_recorded"
 		err := g.do(forge(ResultRecorded, string(rr.Result.ID), prjID, &rr))
-		if want := map[string]string{"an attempt never started": "never started", "another node's attempt": "not node"}[name]; err == nil ||
+		if want := map[string]string{"an attempt never started": "never started", "another node's attempt": "not node",
+			"a stopped attempt's": "is stopping", "a superseded attempt's": "is superseded"}[name]; err == nil ||
 			!strings.Contains(err.Error(), want) {
 			t.Errorf("%s: the fold published it, or refused it for another reason: %v", name, err)
 		}
