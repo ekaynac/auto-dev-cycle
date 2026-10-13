@@ -346,6 +346,69 @@ func TestAnEchoedCredentialNeverReachesTheAdapter(t *testing.T) {
 	if _ = r.Close(); out.String() != "abc fake-cred" || r.hit {
 		t.Fatalf("tail %q", out.String())
 	}
+	// Mythos M-2: a key split across two writes, deterministically. After
+	// the first write exactly len(key)-1 bytes are held back.
+	out.Reset()
+	r = &redacting{w: &out, secret: []byte(fakeKey)}
+	_, _ = r.Write([]byte("data: fake-credential-0123"))
+	if out.String() != "d" || len(r.held) != len(fakeKey)-1 {
+		t.Fatalf("after one write: %q, held %d", out.String(), len(r.held))
+	}
+	_, _ = r.Write([]byte("456789 tail"))
+	if _ = r.Close(); strings.Contains(out.String(), "0123456789") || out.String() != "data: "+redacted+" tail" || !r.hit {
+		t.Fatalf("split: %q hit %v", out.String(), r.hit)
+	}
+}
+
+// Mythos M-1 and L-1: a response with an encoding the gateway did not ask
+// for is refused, its status recorded; a Content-Type reaches the adapter
+// as its media type and charset only.
+func TestResponseHeadersCarryNoCredential(t *testing.T) {
+	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "br")
+		_, _ = io.WriteString(w, r.Header.Get("Authorization"))
+	})
+	g, token := rig(t, up, nil)
+	if w := call(g, token, "/chat/completions", good, nil); w.Code != http.StatusBadGateway || strings.Contains(w.Body.String(), fakeKey) || !strings.Contains(w.Body.String(), `"encoding"`) {
+		t.Fatalf("br: %d %q", w.Code, w.Body)
+	}
+	if o := g.Unbind(token); len(o.Statuses) != 1 || o.Statuses[0] != 200 {
+		t.Fatalf("observed %+v", o)
+	}
+	up = newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", `text/event-stream; charset=utf-8; leak="`+r.Header.Get("Authorization")+`"`)
+	})
+	g, token = rig(t, up, nil)
+	if w := call(g, token, "/chat/completions", good, nil); w.Header().Get("Content-Type") != "text/event-stream; charset=utf-8" {
+		t.Fatalf("content type %q", w.Header().Get("Content-Type"))
+	}
+}
+
+// Mythos L-3 and L-4: a request body carrying the credential is refused and
+// recorded without a capture too; an empty credential value is not held.
+func TestACredentialInTheBodyOrEmptyIsRefused(t *testing.T) {
+	up := newUpstream(t, nil)
+	g, token := rig(t, up, nil)
+	if w := call(g, token, "/chat/completions", `{"model":"stub-builder-1","user":"`+fakeKey+`"}`, nil); w.Code != http.StatusForbidden {
+		t.Fatalf("a body with the credential: %d", w.Code)
+	}
+	if o := g.Unbind(token); len(o.Refusals) != 1 || o.Refusals[0] != RouteInBody {
+		t.Fatalf("observed %+v", o)
+	}
+	g, token = rig(t, up, func(c *Config) { c.Secrets = emptyHeld{} })
+	if w := call(g, token, "/chat/completions", good, nil); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("an empty credential: %d", w.Code)
+	}
+	if n := len(up.got()); n != 0 {
+		t.Fatalf("upstream saw %d refused requests", n)
+	}
+}
+
+// emptyHeld is a store that reports an empty value as held.
+type emptyHeld struct{}
+
+func (emptyHeld) Credential(types.Slug) (Credential, bool, error) {
+	return NewCredential(""), true, nil
 }
 
 // L4: a status landing after Unbind is dropped, never kept for a
@@ -571,7 +634,7 @@ func TestCaptureKeepsTheSentBodyAsARestrictedBlob(t *testing.T) {
 	if !bytes.Equal(body, up.got()[0].body) || bytes.Contains(body, []byte(fakeKey)) {
 		t.Fatalf("captured %s", body)
 	}
-	if w := call(g, token, "/chat/completions", `{"model":"stub-builder-1","x":"`+fakeKey+`"}`, nil); w.Code != http.StatusForbidden {
+	if w := call(g, token, "/chat/completions", `{"model":"stub-builder-1","user":"`+fakeKey+`"}`, nil); w.Code != http.StatusForbidden {
 		t.Fatalf("a body with the credential: %d", w.Code)
 	}
 	if len(kept) != 1 || len(up.got()) != 1 {

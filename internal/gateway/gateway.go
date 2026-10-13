@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"mime"
 	"net/http"
 	"slices"
 	"strings"
@@ -94,10 +95,12 @@ var paths = map[string]bool{"/chat/completions": true}
 
 const maxBody = 8 << 20 // bytes of one request body
 
-// The route refusals: a redirect, and a response echoing the credential.
+// The route refusals: a redirect, a response echoing the credential, and
+// a request body carrying it (the strongest leak signal the controller sees).
 const (
 	RouteRedirect = "redirect"
 	RouteEchoed   = "credential_echoed"
+	RouteInBody   = "credential_in_body"
 )
 
 // Bind mints the token an attempt's adapter calls the gateway with.
@@ -159,8 +162,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
+	// The media type and charset only: no parameter carries a value past the redaction.
+	if mt, params, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err == nil {
+		if cs, ok := params["charset"]; ok {
+			mt = mime.FormatMediaType(mt, map[string]string{"charset": cs})
+		}
+		w.Header().Set("Content-Type", mt)
 	}
 	w.WriteHeader(resp.StatusCode)
 	out := &redacting{w: flushing{w}, secret: []byte(cred.Reveal())}
@@ -262,19 +269,20 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 	}
 	var cred Credential
 	if e.CredentialRef != nil {
-		c, held, err := Credential{}, false, errNoSecrets
+		c, held, err := Credential{}, false, errors.New("gateway: no secrets")
 		if g.cfg.Secrets != nil {
 			c, held, err = g.cfg.Secrets.Credential(*e.CredentialRef)
 		}
-		if err != nil || !held {
+		if err != nil || !held || c.Reveal() == "" {
 			return nil, none, &refusal{http.StatusServiceUnavailable, "credential_not_held"}
 		}
 		cred = c
 	}
+	if v := cred.Reveal(); v != "" && bytes.Contains(out, []byte(v)) {
+		g.observe(b.Attempt, 0, RouteInBody)
+		return nil, none, &refusal{http.StatusForbidden, RouteInBody}
+	}
 	if g.cfg.Capture != nil {
-		if v := cred.Reveal(); v != "" && bytes.Contains(out, []byte(v)) {
-			return nil, none, &refusal{http.StatusForbidden, "credential_in_body"}
-		}
 		if g.cfg.Capture.Keep(ctx, b, out) != nil {
 			return nil, none, &refusal{http.StatusServiceUnavailable, "capture_failed"}
 		}
@@ -301,11 +309,13 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 		return nil, none, &refusal{http.StatusBadGateway, RouteRedirect}
 	case err != nil:
 		return nil, none, &refusal{http.StatusBadGateway, "upstream_unreachable"}
+	case resp.Header.Get("Content-Encoding") != "":
+		// Go decoded its own gzip and cleared the header; another hides the credential.
+		resp.Body.Close()
+		return nil, none, &refusal{http.StatusBadGateway, "encoding"}
 	}
 	return resp, cred, nil
 }
-
-var errNoSecrets = errors.New("gateway: no secrets")
 
 // observe records for a while its attempt is bound.
 func (g *Gateway) observe(a types.AttemptID, status int, route string) {
