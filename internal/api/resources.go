@@ -24,7 +24,26 @@ import (
 // Registered is the daemon's resources, by path segment; each resource
 // family joins it with its projection.
 func Registered() map[string]Resource {
-	return map[string]Resource{"grants": grants, "proposals": proposals, "seat": seat, "notes": notes}
+	return map[string]Resource{"grants": grants, "proposals": proposals, "seat": seat, "notes": notes, "projects": projects}
+}
+
+// projects are every registered project, in id order. A project's project
+// is itself. Never its profile: the repository URL may carry a credential.
+var projects = Resource{
+	Domain: "project",
+	Schema: "api/project.json",
+	List: func(tx *eventstore.Tx) ([]any, error) {
+		return listed(tx, authority.ProjectProjection, func(doc map[string]any) (map[string]any, error) { return doc, nil })
+	},
+	Project: func(tx *eventstore.Tx, rec any) (*types.ProjectID, error) {
+		var p authority.ProjectRecord
+		err := reread(tx, authority.ProjectProjection, rec, func(doc map[string]any) string {
+			id, _ := doc["id"].(string)
+			return id
+		}, &p)
+		return &p.ID, err
+	},
+	Fields: []string{"id", "name", "revision", "profile_digest", "created_by", "created_at"},
 }
 
 // grants are every grant record, revoked ones included: a narrowing is a

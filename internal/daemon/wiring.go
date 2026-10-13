@@ -50,7 +50,9 @@ func authorizer(reg *vocab.Registry) authority.Authorizer {
 // proposal.withdraw, note.add, the seat's, agent.enrol and actor.revoke
 // (14 PR 7a), grant.create, grant.revoke and grant.extend (14 PR 7c, 7d),
 // and token.issue, token.revoke and token.replace (14 M4, PR 7b). Every
-// other registered action has none and is refused.
+// other registered action has none and is refused. project.create has a
+// handler (authority.ProjectCreateHandler) that is not wired here: it stays
+// deferred until P22a activates the intake capability (M1 slice plan §1).
 func handlers() map[string]authority.Handler {
 	hs := authority.SeatHandlers(0)
 	maps.Copy(hs, authority.AdminHandlers())
@@ -99,7 +101,7 @@ func logics(az authority.Authorizer) map[string]logic {
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {
 	all := eventstore.Kinds{}
-	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), lease.Kinds(), ledger.Kinds()} {
+	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), lease.Kinds(), ledger.Kinds()} {
 		for k := range ks {
 			if _, dup := all[k]; dup {
 				return nil, fmt.Errorf("daemon: event kind %s is registered twice", k)
@@ -112,7 +114,7 @@ func eventKinds() (eventstore.Kinds, error) {
 
 // projector is the writer's Project hook, composed as a rebuild replays
 // it: each event goes through identity, then grants, the seat, proposals,
-// notes, leases with their capacity reservations, then the usage ledger,
+// notes, projects, leases with their capacity reservations, then the usage ledger,
 // before the next event (eventstore.ProjectEach). A lease projector without Units admits
 // no seal until units are wired (fail closed).
 func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reservations) func(*eventstore.Tx, []eventstore.Event) error {
@@ -123,6 +125,7 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		authority.SeatProjector{}.Project,
 		authority.ProposalProjector{}.Project,
 		authority.NoteProjector{}.Project,
+		authority.ProjectProjector{}.Project,
 		capacity.Hook(leases, r),
 		ledger.Project,
 	)

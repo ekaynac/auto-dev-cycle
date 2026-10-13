@@ -44,7 +44,7 @@ func refusal(o vocab.Outcome, reason vocab.Reason) error {
 // byte (untrusted text included), human output escapes it.
 func TestReadCommands(t *testing.T) {
 	for args, resource := range map[string]string{"grant list": "grants", "propose list": "proposals", "seat status": "seat",
-		"notes list": "notes", "admin whoami": client.Whoami} {
+		"notes list": "notes", "project list": "projects", "admin whoami": client.Whoami} {
 		r := &reader{body: `{"resource":"x","outcome":"empty","items":[]}`}
 		if code, _, errb := run2(r, append(strings.Fields(args), "--json")...); code != entry.ExitOK || r.resource != resource {
 			t.Errorf("%s: %d %q %s", args, code, r.resource, errb)
