@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/model-call.json",
+  "title": "ModelCall",
+  "description": "A model call's durable binding (docs/design/m1/00-slice-plan.md P12a; 03 \"External effects\"; 05 \"Usage and settlement\"): the call to its attempt, the attempt's lease, and the resource groups that lease reserves on. It is the request of the call's model_call effect, and the payload of the model_call.intended event that commits with that intent, before the gateway sends anything for the call. A call is bound once: its binding never changes. Recovery reads it to keep an uncertain call's charge on its groups.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["call", "attempt", "lease", "executor", "destination", "groups"],
+  "properties": {
+    "call": {"description": "The call-ledger id; its model_call effect has the same suffix under eff_.", "$ref": "../common/defs.json#/$defs/CallID"},
+    "attempt": {"description": "The attempt the call is made for, the one its lease is running.", "$ref": "../common/defs.json#/$defs/AttemptID"},
+    "lease": {"$ref": "../common/defs.json#/$defs/LeaseID"},
+    "executor": {"description": "The lease's executor.", "$ref": "../common/defs.json#/$defs/ExecutorID"},
+    "destination": {"description": "The registry's destination for that executor; also the intent's target.", "$ref": "../config/project-profile.json#/$defs/Slug"},
+    "groups": {
+      "description": "The groups of the lease's reservations, sorted: where the call's usage, or its liability, is charged.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "../common/defs.json#/$defs/ResourceGroupID"}
+    }
+  }
+}

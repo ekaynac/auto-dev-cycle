@@ -73,6 +73,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/manifest-delivery.json`](records-manifest-delivery.md) | ManifestDelivery |
 | [`records/manifest-finalized.json`](records-manifest-finalized.md) | ManifestFinalized |
 | [`records/manifest-intent.json`](records-manifest-intent.md) | ManifestIntent |
+| [`records/model-call.json`](records-model-call.md) | ModelCall |
 | [`records/node-hold.json`](records-node-hold.md) | NodeHold |
 | [`records/node-state.json`](records-node-state.md) | NodeState |
 | [`records/node.json`](records-node.md) | Node |
