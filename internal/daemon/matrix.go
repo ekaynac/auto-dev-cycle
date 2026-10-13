@@ -35,12 +35,12 @@ const Unassigned = "unassigned"
 // here in the PR that registers it: Matrix refuses one that is neither.
 var deferred = map[string]Owner{
 	"project.create":                      {Milestone: "M1", Ref: "design/m1/00 §1 intake: handler built (P1), activated by P22a"},
-	"profile.adopt":                       {Milestone: "M1", Ref: "design/m0/15 D1"},
+	"profile.adopt":                       {Milestone: "M4", Ref: "design/m1/00 Q7: with B2's required-configuration holds"},
 	"task.create":                         {Milestone: "M1", Ref: "design/m1/00 §1 intake: handler built (P3), activated by P22a"},
-	"review.request":                      {Milestone: "M1", Ref: "design/m0/15 D1"},
+	"review.request":                      {Milestone: "M5", Ref: "design/m1/00 Q7: where planning first asks for an ad-hoc review"},
 	"input.answer":                        {Milestone: "M1", Ref: "design/m0/15 D1"},
-	"knowledge.change_protected_document": {Milestone: "M1", Ref: "plan/01 §4; plan/03 §4.6, §9"},
-	"integration.change_topology":         {Milestone: "M1", Ref: "design/m0/15 D1"},
+	"knowledge.change_protected_document": {Milestone: "M2", Ref: "design/m1/00 Q7: with the protected-document operation (plan/01 §4.1; plan/03 §4.6, §9)"},
+	"integration.change_topology":         {Milestone: "post-M6", Ref: "design/m1/00 Q7: with sandbox phase 3 (plan/01 §4.1)"},
 }
 
 // wiredNotes are the wired actions whose handler, in this build, refuses
