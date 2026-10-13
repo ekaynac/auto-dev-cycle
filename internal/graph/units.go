@@ -71,17 +71,23 @@ func (Units) ProjectTask(tx *eventstore.Tx, unit types.UnitID) (types.ProjectID,
 	return rec.Recorded.Project, rec.Recorded.Task, true, nil
 }
 
+// ErrNotStartable is Startable's refusal of the unit itself, apart from an
+// error reading the store.
+type ErrNotStartable struct{ Detail string }
+
+func (e ErrNotStartable) Error() string { return "graph: " + e.Detail }
+
 // Startable refuses an attempt starting on unit unless its node is
-// recorded and claimed.
+// recorded and claimed (ErrNotStartable).
 func (Units) Startable(tx *eventstore.Tx, unit types.UnitID) error {
 	rec, ok, err := unitNode(tx, unit)
 	switch {
 	case err != nil:
 		return err
 	case !ok:
-		return fmt.Errorf("graph: unit %s is no recorded node's: an attempt runs for a node", unit)
+		return ErrNotStartable{fmt.Sprintf("unit %s is no recorded node's: an attempt runs for a node", unit)}
 	case rec.State.State != types.NodeStateStateClaimed:
-		return fmt.Errorf("graph: node %s is %s: an attempt starts only on a claimed node", rec.Recorded.Node.ID, rec.State.State)
+		return ErrNotStartable{fmt.Sprintf("node %s is %s: an attempt starts only on a claimed node", rec.Recorded.Node.ID, rec.State.State)}
 	}
 	return nil
 }

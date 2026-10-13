@@ -152,6 +152,25 @@ func LeaseOf(tx *eventstore.Tx, id types.LeaseID) (types.Lease, int64, bool, err
 	return load[types.Lease](tx, LeaseProjection, string(id))
 }
 
+// LiveOn is a lease on unit that is requested, waiting, granted or active,
+// if any. It scans every lease: M1 runs one admitted task.
+func LiveOn(tx *eventstore.Tx, unit types.UnitID) (types.LeaseID, bool, error) {
+	keys, err := tx.Keys(LeaseProjection, "")
+	for _, k := range keys {
+		l, _, _, lerr := load[types.Lease](tx, LeaseProjection, k)
+		if lerr != nil {
+			return "", false, lerr
+		}
+		switch l.State {
+		case types.LeaseStateRequested, types.LeaseStateWaiting, types.LeaseStateGranted, types.LeaseStateActive:
+			if l.Unit == unit {
+				return l.ID, true, nil
+			}
+		}
+	}
+	return "", false, err
+}
+
 // RequestGranted requests l and grants it, holding no evidence target, in
 // one command (lease.requested, then lease.granted): capacity reserves at
 // the grant or refuses the command, so a refused grant records no lease.

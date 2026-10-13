@@ -25,12 +25,19 @@
 //     before the command (Observe); the registry, roster and placement are
 //     re-derived inside it and compared with what the lease recorded, so a
 //     registry change between claim and start is a miss (13:106).
+//   - The launch fails closed: an observation (Readiness) is opaque, bound
+//     to the executor, destination, credential reference and image it was
+//     made for, and its zero value is never ready; with no image store, or
+//     no gateway for a credentialed destination, nothing launches.
 //   - A miss refuses the start and releases the lease in one command, with
 //     a registered node hold naming the missing item: source_invalid_config
-//     for a credential or a changed registry, wrong_owner for an image. No
-//     attempt starts, so no rail allowance is spent (P17 counts attempts).
-//     A node no longer claimed gets no hold: its own state says what is
-//     next.
+//     for a credential or a changed placement, reviewer_unavailable for a
+//     roster the registry no longer gives (as graph.Evaluate holds it),
+//     wrong_owner for an image. No attempt starts, so no rail allowance is
+//     spent (P17 counts attempts). A node no longer claimed or of another
+//     project, or a readiness observed for something else, gets no hold.
+//   - A unit already placed (a live lease, or a running attempt) is not
+//     matched again.
 //   - Lease holds (#226 entry 4) are not written here: every hold P8b
 //     raises is a node hold, which has its id and since.
 //   - Inert (§1's gating table): nothing in adcd constructs a Dispatcher,
@@ -46,6 +53,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -101,6 +109,9 @@ func (d Dispatcher) Match(tx *eventstore.Tx, card Card, executor types.ExecutorI
 	if project != card.Project {
 		return nil, "", fmt.Errorf("dispatch: node %s is of project %s, not the card's %s", card.Node, project, card.Project)
 	}
+	if err := placed(tx, unit); err != nil {
+		return nil, "", err
+	}
 	checks := d.checks(card, executor, roster)
 	if name, c, ok := blocked(checks); ok {
 		return nil, "", &Refused{Check: name, PlacementCheck: c}
@@ -109,6 +120,8 @@ func (d Dispatcher) Match(tx *eventstore.Tx, card Card, executor types.ExecutorI
 	res := types.LeaseReservationsItem{Group: e.Group, Amount: card.Tokens, Unit: types.CapacityUnitTokens}
 	if e.Destination.Kind == types.RegistryDestinationKindLocalEndpoint { // one slot (Q8)
 		res.Amount, res.Unit = 1, types.CapacityUnitSlots
+	} else if card.Tokens <= 0 {
+		return nil, "", fmt.Errorf("dispatch: card %s reserves %d tokens; an attempt's footprint is positive", card.Node, card.Tokens)
 	}
 	id, err := ids.New("lea")
 	if err != nil {
@@ -119,6 +132,23 @@ func (d Dispatcher) Match(tx *eventstore.Tx, card Card, executor types.ExecutorI
 		Deadline: card.Deadline, PlacementChecks: checks}
 	evs, err := lease.RequestGranted(tx, l)
 	return evs, l.ID, err
+}
+
+// placed refuses a unit already placed: a live lease (requested, waiting,
+// granted or active) or a running attempt, so one node is matched once.
+func placed(tx *eventstore.Tx, unit types.UnitID) error {
+	if id, live, err := lease.LiveOn(tx, unit); err != nil || live {
+		return errors.Join(err, fmt.Errorf("dispatch: unit %s already has live lease %s", unit, id))
+	}
+	cur, ok, err := lease.CurrentAttempt(tx, unit)
+	if err != nil || !ok {
+		return err
+	}
+	a, _, _, err := lease.AttemptOf(tx, cur)
+	if err == nil && a.Status == types.AttemptStatusRunning {
+		err = fmt.Errorf("dispatch: unit %s's attempt %s is running", unit, cur)
+	}
+	return err
 }
 
 // checks derives the placement of card on executor from the registry now,
@@ -177,7 +207,8 @@ func named(c types.LeasePlacementChecks) []namedCheck {
 		{"independence", c.Independence}, {"paid_authority", c.PaidAuthority}, {"budget", c.Budget}, {"fallback_scope", c.FallbackScope}}
 }
 
-// digest is the sha256 of v's JSON.
+// digest is the sha256 of v's JSON as Go's encoding/json writes it (not a
+// canonical form): stable within one build, compared only by Launch.
 func digest(v any) string {
 	raw, err := json.Marshal(v)
 	if err != nil {

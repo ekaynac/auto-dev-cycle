@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
@@ -166,14 +167,28 @@ func (e env) match(d Dispatcher, c Card, exe types.ExecutorID) (types.LeaseID, e
 // launch launches lease id (granted: revision 2) with what d observes.
 func (e env) launch(d Dispatcher, id types.LeaseID, c Card, exe types.ExecutorID) (types.AttemptID, *Miss) {
 	e.t.Helper()
-	a, ready := types.AttemptID(must(ids.New("att"))), d.Observe(context.Background(), c, exe)
+	return e.launchWith(d, id, c, d.Observe(context.Background(), c, exe))
+}
+
+// launchWith launches lease id with the readiness ready.
+func (e env) launchWith(d Dispatcher, id types.LeaseID, c Card, ready Readiness) (types.AttemptID, *Miss) {
+	e.t.Helper()
+	a, miss, err := e.tryLaunch(d, id, c, ready)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return a, miss
+}
+
+func (e env) tryLaunch(d Dispatcher, id types.LeaseID, c Card, ready Readiness) (types.AttemptID, *Miss, error) {
+	a := types.AttemptID(must(ids.New("att")))
 	var miss *Miss
-	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	err := e.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		evs, m, err := d.Launch(tx, id, 2, c, a, types.AttemptBase{Tree: "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904", ContractRevision: "1"}, ready)
 		miss = m
 		return evs, err
 	})
-	return a, miss
+	return a, miss, err
 }
 
 type images struct{ err error }
@@ -240,6 +255,17 @@ func TestMatchAndLaunch(t *testing.T) {
 	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.SealMinimal(tx, first, 2, graph.Units{}, e.blobs, nil, actor)
 	})
+	// While the first lease is live, the node is not matched again.
+	if _, err := e.match(d, card(n), builder); err == nil || !strings.Contains(err.Error(), "already has live lease") {
+		t.Fatalf("a second match on a live lease: %v", err)
+	}
+	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, id, 3, lease.LeaseEvent{Kind: lease.Revoked, Reason: "test"}, nil)
+	})
+	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, id, 4, lease.LeaseEvent{Kind: lease.Settled,
+			Settlement: &types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: []types.CallID{}}}, nil)
+	})
 	second, err := e.match(d, card(n), builder)
 	if err != nil {
 		t.Fatal(err)
@@ -271,6 +297,7 @@ func TestMatchRefusesBeforeReserving(t *testing.T) {
 		"no pinned image":                          {edit(card(plan), func(c *Card) { c.Image = "" }), builder, "capability"},
 		"another project's card":                   {edit(card(plan), func(c *Card) { c.Project = other }), builder, ""},
 		"an unclaimed node":                        {card(unclaimed), builder, ""},
+		"no tokens to reserve":                     {edit(card(plan), func(c *Card) { c.Tokens = 0 }), builder, ""},
 	} {
 		_, err := e.match(d, c.card, c.exe)
 		var r *Refused
@@ -391,6 +418,10 @@ func TestLaunchRechecksRegistry(t *testing.T) {
 				}
 				return
 			}
+			if c.kind == types.NodeKindReviewRequirement { // as graph.Evaluate holds it
+				e.missed(id, n, miss, "reviewer_unavailable", "registry:"+string(c.exe))
+				return
+			}
 			e.missed(id, n, miss, "source_invalid_config", "executor "+string(c.exe))
 		})
 	}
@@ -411,5 +442,105 @@ func TestLaunchRechecksRegistry(t *testing.T) {
 	_, miss := e.launch(d, id, card(n), builder)
 	if l, out, cur := e.state(id, n); miss == nil || miss.Hold != nil || l.State != types.LeaseStateReleased || out != 0 || cur != nil {
 		t.Fatalf("held node: miss %+v, lease %s, outstanding %d, attempt %v", miss, l.State, out, cur)
+	}
+}
+
+// The launch fails closed (pre-review H1): a readiness never observed, or
+// observed for another executor, launches nothing, nor does a dispatcher
+// with no image store, or no gateway for a credentialed destination, even
+// with a good observation in hand.
+func TestLaunchFailsClosed(t *testing.T) {
+	reg, gs := stub(t, nil)
+	full := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true)}
+	ctx := context.Background()
+	for name, c := range map[string]struct {
+		d            Dispatcher
+		ready        func(Card) Readiness
+		hold, signal string
+	}{
+		"no dispatcher, no readiness":      {Dispatcher{}, func(Card) Readiness { return Readiness{} }, "source_invalid_config", "executor " + string(builder)},
+		"no readiness":                     {full, func(Card) Readiness { return Readiness{} }, "", ""},
+		"a readiness for another executor": {full, func(c Card) Readiness { return full.Observe(ctx, c, reviewer) }, "", ""},
+		"a readiness for another image":    {full, func(c Card) Readiness { c.Image += "x"; return full.Observe(ctx, c, builder) }, "", ""},
+		"no image store, a good readiness": {Dispatcher{Registry: reg, Credentials: creds(true)}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "wrong_owner", "image " + image},
+		"no gateway, a good readiness":     {Dispatcher{Registry: reg, Images: images{}}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "source_invalid_config", "destination stub"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := open(t, gs)
+			n := e.node(types.NodeKindPlan, reg, false)
+			id, err := e.match(full, card(n), builder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, miss := e.launchWith(c.d, id, card(n), c.ready(card(n)))
+			e.missed(id, n, miss, c.hold, c.signal)
+		})
+	}
+}
+
+// Two matches of one node (pre-review M1): the second is refused and
+// reserves nothing.
+func TestMatchOncePerUnit(t *testing.T) {
+	reg, gs := stub(t, nil)
+	e := open(t, gs)
+	d := Dispatcher{Registry: reg}
+	n := e.node(types.NodeKindPlan, reg, false)
+	id, err := e.match(d, card(n), builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.match(d, card(n), builder); err == nil {
+		t.Fatal("a second match of a placed node")
+	}
+	e.view(func(tx *eventstore.Tx) error {
+		keys, err := tx.Keys(lease.LeaseProjection, "")
+		out, oerr := capacity.Outstanding(tx, quota)
+		if len(keys) != 1 || keys[0] != string(id) || out != 1000 {
+			t.Errorf("leases %v, %d reserved; want only %s's 1000", keys, out, id)
+		}
+		return errors.Join(err, oerr)
+	})
+}
+
+// Only a refusal of the node is a miss (pre-review M3): a node record the
+// store cannot decode is an error, and the lease stays granted. A node of
+// another project than the card's is refused and released (L4).
+func TestLaunchErrorsAndProjects(t *testing.T) {
+	reg, gs := stub(t, nil)
+	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true)}
+	e := open(t, gs)
+	n := e.node(types.NodeKindPlan, reg, false)
+	id, err := e.match(d, card(n), builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return nil, tx.Put(graph.NodeProjection, string(n), json.RawMessage(`{"recorded":5}`))
+	})
+	if _, miss, err := e.tryLaunch(d, id, card(n), d.Observe(context.Background(), card(n), builder)); err == nil || miss != nil {
+		t.Fatalf("an undecodable node: miss %v, error %v", miss, err)
+	}
+	if l, out, _ := e.state(id, n); l.State != types.LeaseStateGranted || out != 1000 {
+		t.Fatalf("after a store error: lease %s, outstanding %d", l.State, out)
+	}
+
+	e = open(t, gs)
+	n = e.node(types.NodeKindPlan, reg, false)
+	if id, err = e.match(d, card(n), builder); err != nil {
+		t.Fatal(err)
+	}
+	moved := edit(card(n), func(c *Card) { c.Project = other })
+	_, miss := e.launchWith(d, id, moved, d.Observe(context.Background(), moved, builder))
+	e.missed(id, n, miss, "", "")
+}
+
+// A refusal's reason fits lease-event's 1024 bytes (pre-review L1).
+func TestReasonFits(t *testing.T) {
+	long := strings.Repeat("é", 600) // 1200 bytes
+	if r := reason(long); len(r) > 1024 || !strings.HasSuffix(r, "...") || !utf8.ValidString(r) {
+		t.Fatalf("reason of %d bytes: %d bytes, valid %v", len(long), len(r), utf8.ValidString(r))
+	}
+	if reason("short") != "short" {
+		t.Fatal("a short reason changed")
 	}
 }
