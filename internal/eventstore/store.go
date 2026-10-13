@@ -158,6 +158,8 @@ type Store struct {
 	effects   EffectKinds
 	// systemClaimed: ClaimSystem has handed out the system claim.
 	systemClaimed atomic.Bool
+	// restartMarked: MarkPendingUncertain has run on this open store.
+	restartMarked atomic.Bool
 
 	// Operation tracking: each operation is admitted while the store is
 	// open and counted; Close stops admissions and waits for the count to

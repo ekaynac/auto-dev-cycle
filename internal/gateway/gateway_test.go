@@ -33,6 +33,7 @@ const (
 	local    = types.ExecutorID("exe_01m4tm99haemrs8zjs56wjm467") // registry-live.example.json: a local endpoint
 	leaseID  = types.LeaseID("lea_01m4tm99haemss9tvzd438vq8j")
 	attempt  = types.AttemptID("att_01m4tm99haemss9tvzd438vq8j")
+	callID   = types.CallID("cal_01m4tm99haemss9tvzd438vq8j")
 	fakeKey  = "fake-credential-0123456789" // a test value, never a real credential
 )
 
@@ -121,16 +122,50 @@ func (s secrets) Credential(ref types.Slug) (Credential, bool, error) {
 	return NewCredential(v), ok && v != "", nil
 }
 
+// attempts are the current attempts, by id.
+type attempts map[types.AttemptID]types.Attempt
+
+func (a attempts) Attempt(_ context.Context, id types.AttemptID) (types.Attempt, bool, bool, error) {
+	v, ok := a[id]
+	return v, ok, ok, nil
+}
+
 func running(executor types.ExecutorID) leases {
 	a := attempt
 	return leases{leaseID: {ID: leaseID, Executor: executor, State: types.LeaseStateActive, Attempt: &a}}
+}
+
+// intents records the intents asked for (internal/modelcall's Recorder in
+// adcd), failing with err when set.
+type intents struct {
+	mu   sync.Mutex
+	got  []Binding
+	dest []types.Slug
+	err  error
+}
+
+func (i *intents) Intend(_ context.Context, b Binding, destination types.Slug) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.err != nil {
+		return i.err
+	}
+	i.got, i.dest = append(i.got, b), append(i.dest, destination)
+	return nil
+}
+
+func (i *intents) n() int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return len(i.got)
 }
 
 // rig is a gateway over the stub registry pointed at up, with the builder's
 // lease running and its credential held, and a bound token.
 func rig(t *testing.T, up *upstream, edit func(*Config)) (*Gateway, string) {
 	t.Helper()
-	cfg := Config{Registry: reg(t, "registry-stub.json", up.URL+"/v1"), Leases: running(builder), Secrets: secrets{"stub": fakeKey}}
+	cfg := Config{Registry: reg(t, "registry-stub.json", up.URL+"/v1"), Leases: running(builder), Secrets: secrets{"stub": fakeKey}, Intents: &intents{},
+		Attempts: attempts{attempt: {ID: attempt, Lease: leaseID, Status: types.AttemptStatusRunning}}}
 	if edit != nil {
 		edit(&cfg)
 	}
@@ -138,7 +173,7 @@ func rig(t *testing.T, up *upstream, edit func(*Config)) (*Gateway, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := g.Bind(Binding{Lease: leaseID, Attempt: attempt})
+	token, err := g.Bind(Binding{Lease: leaseID, Attempt: attempt, Call: callID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,6 +341,12 @@ func TestNewNeedsLeasesAndSecrets(t *testing.T) {
 	}
 	if _, err := New(Config{Leases: leases{}}); err == nil {
 		t.Error("no secrets")
+	}
+	if _, err := New(Config{Leases: leases{}, Attempts: attempts{}, Secrets: secrets{}}); err == nil {
+		t.Error("no intents")
+	}
+	if _, err := New(Config{Leases: leases{}, Secrets: secrets{}, Intents: &intents{}}); err == nil {
+		t.Error("no attempt reader")
 	}
 	up := newUpstream(t, nil)
 	g, token := rig(t, up, nil)
