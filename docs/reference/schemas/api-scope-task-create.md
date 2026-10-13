@@ -34,4 +34,4 @@ No other fields are allowed.
 
 A clean relative path, unique within the task: segments of letters, digits, _, . and -, none starting with a dot, so no absolute path, no . or .. segment and no hidden file.
 
-Type: string (pattern `^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$`, maxLength `256`)
+Type: string (pattern `^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$`, maxLength `255`)

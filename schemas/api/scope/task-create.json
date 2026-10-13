@@ -25,7 +25,7 @@
     "AcceptancePath": {
       "description": "A clean relative path, unique within the task: segments of letters, digits, _, . and -, none starting with a dot, so no absolute path, no . or .. segment and no hidden file.",
       "type": "string",
-      "maxLength": 256,
+      "maxLength": 255,
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$"
     }
   }

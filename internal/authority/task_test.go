@@ -261,12 +261,15 @@ func TestTaskCreateRefusals(t *testing.T) {
 		}
 	}
 	for name, raw := range map[string][]byte{
-		"a name twice":        spec(prjA, "t", "a.py", mine, "a.py", mine),
-		"a parent segment":    spec(prjA, "t", "../a.py", mine),
-		"an absolute path":    spec(prjA, "t", "/a.py", mine),
-		"a hidden file":       spec(prjA, "t", "tests/.a.py", mine),
-		"no attachments":      spec(prjA, "t"),
-		"an unknown property": []byte(`{"project":"` + string(prjA) + `","title":"t","requirement":"r","attachments":[],"admitted":true}`),
+		"a name twice":          spec(prjA, "t", "a.py", mine, "a.py", mine),
+		"a file, then under it": spec(prjA, "t", "a", mine, "a/b.py", mine),
+		"under a file, then it": spec(prjA, "t", "a/b/c.py", mine, "a/b", mine),
+		"a 256-byte path":       spec(prjA, "t", strings.Repeat("a", 256), mine),
+		"a parent segment":      spec(prjA, "t", "../a.py", mine),
+		"an absolute path":      spec(prjA, "t", "/a.py", mine),
+		"a hidden file":         spec(prjA, "t", "tests/.a.py", mine),
+		"no attachments":        spec(prjA, "t"),
+		"an unknown property":   []byte(`{"project":"` + string(prjA) + `","title":"t","requirement":"r","attachments":[],"admitted":true}`),
 	} {
 		if _, ran, err := b.create(b.op, name, raw); !errors.Is(err, authority.ErrInvalidScope) || ran || b.head() != h {
 			t.Errorf("%s: %v (logic ran: %t)", name, err, ran)
@@ -384,6 +387,18 @@ func TestTaskApprovalOfAnotherDigest(t *testing.T) {
 	}
 	if err := b.trySeed(b.sup, created(b.sup, newID(t, "tsk"), func(*types.Approval) {})); err == nil || b.head() != h {
 		t.Errorf("a supervisor's own approval: admitted: %v", err)
+	}
+	// The approval event filed under another project: refused.
+	misfiled := func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		evs, err := created(b.op, newID(t, "tsk"), func(*types.Approval) {})(tx)
+		if err == nil {
+			other := string(prjB)
+			evs[1].Project = &other
+		}
+		return evs, err
+	}
+	if err := b.trySeed(b.op, misfiled); err == nil || !strings.Contains(err.Error(), "creating command") || b.head() != h {
+		t.Errorf("an approval event in another project: %v", err)
 	}
 	// The exact approval, in the creating command, is admitted; another
 	// task's approval under the same id is refused.

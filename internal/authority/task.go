@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -100,15 +101,23 @@ func (TaskCreateHandler) Derive(_ *eventstore.Tx, by types.Actor, input json.Raw
 }
 
 // taskInputOf is the scope, refused as ErrInvalidScope unless its schema
-// admits it and its attachment names are unique.
+// admits it and its attachment paths can coexist: none twice, none
+// another's ancestor directory.
 func taskInputOf(raw json.RawMessage) (types.TaskCreateScope, error) {
 	in, err := contract.Decode[types.TaskCreateScope](TaskCreateScope, raw)
-	seen := map[string]bool{}
+	seen := map[string]bool{} // path: true for a file, false for a directory
 	for _, a := range in.Attachments {
-		if seen[a.Name] && err == nil {
-			err = fmt.Errorf("attachment %s is named twice", a.Name)
+		if _, taken := seen[a.Name]; taken && err == nil {
+			err = fmt.Errorf("attachment %s is named twice or is another's directory", a.Name)
 		}
 		seen[a.Name] = true
+		for d := path.Dir(a.Name); d != "."; d = path.Dir(d) {
+			if file, ok := seen[d]; file && err == nil {
+				err = fmt.Errorf("attachment %s is under attachment %s", a.Name, d)
+			} else if !ok {
+				seen[d] = false
+			}
+		}
 	}
 	if err != nil {
 		return in, fmt.Errorf("%w: %s input: %w", ErrInvalidScope, TaskCreateAction, err)
@@ -140,11 +149,15 @@ func (h TaskCreate) Request(c eventstore.Command) (eventstore.Decide, func(event
 		if err := errors.Join(err, err2, ids.Check(id, "tsk")); err != nil {
 			return nil, nil, err
 		}
-		if _, ok, err := tx.Get(ProjectProjection, in.Project); err != nil || !ok {
-			return nil, nil, errors.Join(err, fmt.Errorf("authority: %w: project %s is not registered", eventstore.ErrStaleExpectedState, in.Project))
+		if _, ok, err := tx.Get(ProjectProjection, in.Project); err != nil {
+			return nil, nil, err
+		} else if !ok {
+			return nil, nil, fmt.Errorf("authority: %w: project %s is not registered", eventstore.ErrStaleExpectedState, in.Project)
 		}
-		if ready, err := tx.Keys(TaskProjection, "ready/"+string(in.Project)+"/"); err != nil || len(ready) >= MaxReadyTasks {
-			return nil, nil, errors.Join(err, refusal(vocab.ReasonReadyBacklogFull, "project %s holds %d Ready tasks, at most %d", in.Project, len(ready), MaxReadyTasks))
+		if ready, err := tx.Keys(TaskProjection, "ready/"+string(in.Project)+"/"); err != nil {
+			return nil, nil, err
+		} else if len(ready) >= MaxReadyTasks {
+			return nil, nil, refusal(vocab.ReasonReadyBacklogFull, "project %s holds %d Ready tasks, at most %d", in.Project, len(ready), MaxReadyTasks)
 		}
 		for _, a := range in.Attachments {
 			at, err := h.Uploads.Publish(c.Actor, a.Digest, tx.Now())
@@ -292,7 +305,7 @@ func recordTaskApproval(tx *eventstore.Tx, ev eventstore.Event, a types.Approval
 	}
 	by, err := liveActor(tx, a.Actor)
 	if err != nil || by.Kind != types.ActorKindOperator || a.Actor != t.CreatedBy || t.Approval != nil || ev.Command == nil ||
-		*ev.Command != t.Command || a.At != types.Time(ev.At) {
+		*ev.Command != t.Command || a.At != types.Time(ev.At) || ev.Project == nil || *ev.Project != string(t.Project) {
 		return errors.Join(err, errors.New("a task's approval is its operator's, once, in its creating command"))
 	}
 	dg, err := eventstore.ContentDigest(a.Scope)
