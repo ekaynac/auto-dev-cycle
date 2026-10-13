@@ -39,21 +39,21 @@ package graph
 //     an answer to another owed input (Moves), once its question moved:
 //     the builder requires that the lineage no longer asks the old owed
 //     input and asks the new one at its current revision, which the review
-//     declares no other answer to. The fold checks the shape only (an
-//     answer input replaced, under its name, by one to an owed input the
-//     review did not declare); as for a hold retired as revised, it cannot
-//     check the move until M1 records owed inputs. Removing an answer is
-//     refused in M0: it would drop a gate the fold cannot re-check, so it
-//     waits for M1, which re-checks each question_moved retirement against
-//     the recorded owed inputs.
+//     declares no other answer to. The fold checks the shape (an answer
+//     input replaced, under its name, by one to an owed input the review
+//     did not declare) and, through the authority (M1 P6, eligible.go),
+//     that the question moved. A removal (13:206) drops the answer input of
+//     a question the lineage no longer asks, and retires its wait as
+//     question_moved; only the fold that reads the authority admits it, so
+//     M0's fold (Project) still refuses one.
 //   - A replaced question is checked again before the replacement runs
 //     (displaced): the evaluator leaves a node waiting, and Commit refuses
 //     it (authority_revoked), while its lineage still asks an owed input
 //     that a supersession in that lineage replaced and the node does not
 //     answer. So a raw supersession that replaces an answer still owed
-//     never runs without it. The claim fold reads no authority, so it
-//     cannot refuse the claim; until M1 records owed inputs, the claim is
-//     inert, as an answer claimed directly at a stale revision is.
+//     never runs without it. M0's claim fold reads no authority, so there
+//     the claim is inert, as an answer claimed directly at a stale revision
+//     is; the fold that reads it refuses the claim (M1 P6, eligible.go).
 //   - Attempts are bound to nodes (M1 P8a, units.go), so the attempts
 //     stopped are derived, never named. A node has one current attempt:
 //     the supersession stops it if it runs, and lists exactly that one. The
@@ -159,7 +159,8 @@ func currentRevision(tx *eventstore.Tx, task types.TaskID, node types.NodeID, re
 
 // Moves are the answer inputs, by name, whose question moved to another
 // owed input: the replacement answers the new one in their place. A nil
-// move (a removal) is refused until M1.
+// move removes the answer input, once its question left the lineage (M1
+// P6): the fold re-checks it against the recorded owed inputs.
 type Moves map[types.Name]*types.AnswerSource
 
 // Supersede is the one transaction replacing review pred after a roster
@@ -250,21 +251,23 @@ func moved(tx *eventstore.Tx, rec nodeRecord, requirement types.NodeID, moves Mo
 			next.Producer = requirement
 			in.Source.Variant = &next
 		case !move || mutation.Is(mutation.ReplacementKeepsMovedAnswer):
-		case asks(owed, ask.OwedInput):
-			return nil, fmt.Errorf("graph: %s's question has not moved: its answer is not replaced", in.Name)
-		case to == nil:
-			return nil, fmt.Errorf("graph: %s's answer is not removed: a removal waits for M1 to record owed inputs", in.Name)
-		case !owedIn(owed, to): // the old owed input is no longer asked, so it is never to
-			return nil, ErrNotOwed{to.OwedInput}
-		case answeredBy(rec.Recorded.Node.Inputs, moves, in.Name, to.OwedInput):
-			return nil, fmt.Errorf("graph: %s moves to %s, which another answer of the review answers", in.Name, to.OwedInput)
 		default:
-			in.Source.Variant = &types.AnswerSource{Type: "answer", OwedInput: to.OwedInput, Revision: to.Revision}
+			if err := movedQuestion(owed, in.Name, ask, to); err != nil {
+				return nil, err
+			}
+			if to != nil && answeredBy(rec.Recorded.Node.Inputs, moves, in.Name, to.OwedInput) {
+				return nil, fmt.Errorf("graph: %s moves to %s, which another answer of the review answers", in.Name, to.OwedInput)
+			}
+			if to != nil {
+				in.Source.Variant = &types.AnswerSource{Type: "answer", OwedInput: to.OwedInput, Revision: to.Revision}
+			}
 		}
 		if move {
 			used++
 		}
-		out = append(out, in)
+		if !move || to != nil || mutation.Is(mutation.ReplacementKeepsMovedAnswer) {
+			out = append(out, in) // a removal drops the answer input (13:206, M1 P6)
+		}
 	}
 	if used != len(moves) && !mutation.Is(mutation.ReplacementKeepsMovedAnswer) {
 		return nil, errors.New("graph: a move names no answer input of the review")
@@ -336,7 +339,7 @@ func holdIDs(hs []types.NodeHold) []types.HoldID {
 	return out
 }
 
-func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuperseded) error {
+func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuperseded, removals bool) error {
 	rec, err := nodeOf(tx, ev, p.Predecessor)
 	if err != nil || ev.Kind != ReviewSuperseded || ev.Subject != string(p.Predecessor) {
 		return errors.Join(err, errors.New("a supersession is under its predecessor"))
@@ -353,7 +356,7 @@ func supersededFold(tx *eventstore.Tx, ev eventstore.Event, p *types.ReviewSuper
 	if _, exists, err := load[nodeRecord](tx, NodeProjection, string(p.Replacement.ID)); err != nil || exists {
 		return errors.Join(err, errors.New("the replacement is recorded"))
 	}
-	requirement, err := replaces(tx, ev, rec, p.Replacement)
+	requirement, err := replaces(tx, ev, rec, p.Replacement, removals)
 	if err != nil {
 		return err
 	}
@@ -487,19 +490,27 @@ func revisionFenced(tx *eventstore.Tx, rec nodeRecord) error {
 // which moves to the requirement returned (a node of rec's task at the next
 // revision, with n's subject, roster and definition version), and for the
 // answer inputs of moved questions, replaced under their name by one answer
-// to an owed input rec does not declare. Removing one is refused until M1.
-func replaces(tx *eventstore.Tx, ev eventstore.Event, rec nodeRecord, n types.Node) (nodeRecord, error) {
+// to an owed input rec does not declare. A removed answer input is admitted
+// only with removals, by the fold that checks its question moved (M1 P6).
+func replaces(tx *eventstore.Tx, ev eventstore.Event, rec nodeRecord, n types.Node, removals bool) (nodeRecord, error) {
 	p := rec.Recorded.Node
 	roster, subject, err := rosterOf(p)
 	nRoster, nSubject, nerr := rosterOf(n)
 	if err = errors.Join(err, nerr); err != nil || n.Kind != p.Kind || n.DefinitionVersion != p.DefinitionVersion || n.Round != p.Round ||
-		!reflect.DeepEqual(n.Requires, p.Requires) || !reflect.DeepEqual(n.Effect, p.Effect) || len(n.Inputs) != len(p.Inputs) ||
-		nSubject != subject || slices.Equal(nRoster, roster) {
-		return nodeRecord{}, errors.Join(err, errors.New("a replacement keeps its review's definition, round, requirements, effect, subject and inputs, with another roster"))
+		!reflect.DeepEqual(n.Requires, p.Requires) || !reflect.DeepEqual(n.Effect, p.Effect) || nSubject != subject || slices.Equal(nRoster, roster) {
+		return nodeRecord{}, errors.Join(err, errors.New(keeps))
 	}
 	var from, to *types.ResultSource
+	j := 0
 	for i, in := range p.Inputs {
-		m := n.Inputs[i]
+		if j == len(n.Inputs) || n.Inputs[j].Name != in.Name {
+			if _, answer := in.Source.Variant.(*types.AnswerSource); !answer || !removals {
+				return nodeRecord{}, fmt.Errorf("%s: its input %d is missing (only an answer is removed, by a fold that reads the owed inputs, M1)", keeps, i)
+			}
+			continue // a removed answer, whose question moved (eligible)
+		}
+		m := n.Inputs[j]
+		j++
 		a, ok := in.Source.Variant.(*types.ResultSource)
 		b, ok2 := m.Source.Variant.(*types.ResultSource)
 		switch {
@@ -509,6 +520,9 @@ func replaces(tx *eventstore.Tx, ev eventstore.Event, rec nodeRecord, n types.No
 		default:
 			return nodeRecord{}, fmt.Errorf("the replacement's input %d is not its review's", i)
 		}
+	}
+	if j != len(n.Inputs) {
+		return nodeRecord{}, fmt.Errorf("%s: it adds an input", keeps)
 	}
 	if from == nil {
 		return nodeRecord{}, errors.New("a superseded review declares its review_requirement input")
@@ -527,6 +541,9 @@ func replaces(tx *eventstore.Tx, ev eventstore.Event, rec nodeRecord, n types.No
 	}
 	return next, nil
 }
+
+// keeps is what a replacement keeps of its review.
+const keeps = "a replacement keeps its review's definition, round, requirements, effect, subject and inputs, with another roster"
 
 // answeredAnew: m replaces p's answer input in, under its name, by n's one
 // answer to an owed input p does not declare.

@@ -15,41 +15,50 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 )
 
-// M1 P5: adcd registers owed_input.recorded and projects owed inputs and
-// their answers, but input.answer stays deferred until P6 activates the
-// answers capability: a daemon over a store holding an owed input and its
-// answer starts, and the installed `adc holds answer` is refused
-// action_deferred, recording nothing.
-func TestInputAnswerStaysDeferred(t *testing.T) {
+// M1 P6 activates the answers capability: over a store holding an owed
+// input (stored by P5's binary, an operator's answer to another), the
+// installed `adc holds answer --expect 1` records the operator's answer;
+// a second answer at that revision is refused stale_expected_state, and an
+// answer at revision 0 too, each recording nothing.
+func TestInputAnswerActive(t *testing.T) {
 	var owed types.OwedInputID
 	c := runCommanded(t, func(w *seeder, op types.ActorID) {
 		node := heldNodeIn(t, w, op, graphProject)
-		o := types.OwedInput{ID: types.OwedInputID(newID(t, "own")), Project: graphProject, RequestedBy: node, Owner: op,
-			Kind: types.OwedInputKindRuling, Question: "q", Subject: types.ObjectRef{Type: "node", ID: string(node), Version: new(int64)}, Revision: 1}
-		owed = o.ID
-		w.do(op, func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.RecordOwed(o) })
-		w.do(op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			scope := json.RawMessage(`{"owed_input":"` + string(o.ID) + `","owed_revision":1,"answer":{"ruling":"yes"}}`)
-			a := authority.AnswerApprovalOf(authority.OwedRecord{OwedInput: o}, types.Actor{ID: op, Kind: types.ActorKindOperator}, nil, scope,
-				types.ApprovalID(newID(t, "apr")), types.Time(tx.Now().Format(time.RFC3339Nano)))
-			return authority.ApprovalEvent(a)
-		})
+		for i := range 2 {
+			o := types.OwedInput{ID: types.OwedInputID(newID(t, "own")), Project: graphProject, RequestedBy: node, Owner: op,
+				Kind: types.OwedInputKindRuling, Question: "q", Subject: types.ObjectRef{Type: "node", ID: string(node), Version: new(int64)}, Revision: 1}
+			w.do(op, func(*eventstore.Tx) ([]eventstore.Event, error) { return authority.RecordOwed(o) })
+			if owed = o.ID; i == 1 {
+				break
+			}
+			w.do(op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				scope := json.RawMessage(`{"owed_input":"` + string(o.ID) + `","owed_revision":1,"answer":{"ruling":"yes"}}`)
+				a := authority.AnswerApprovalOf(authority.OwedRecord{OwedInput: o}, types.Actor{ID: op, Kind: types.ActorKindOperator}, nil, scope,
+					types.ApprovalID(newID(t, "apr")), types.Time(tx.Now().Format(time.RFC3339Nano)))
+				return authority.ApprovalEvent(a)
+			})
+		}
 	})
+	answer := func(expect, revision string) (int, string) {
+		scope := `{"owed_input":"` + string(owed) + `","owed_revision":` + revision + `,"answer":{"ruling":"no"}}`
+		code, out, errb := c.adc(c.op.Reveal(), "holds", "answer", "--expect", expect, "--reason", "smoke", "--scope", scope)
+		return code, out + errb
+	}
 	head := lastSeq(t, c.dir)
-	scope := `{"owed_input":"` + string(owed) + `","owed_revision":1,"answer":{"ruling":"no"}}`
-	code, out, errb := c.adc(c.op.Reveal(), "holds", "answer", "--expect", "1", "--reason", "smoke", "--scope", scope)
-	if code != entry.ExitCouldNotRun || !strings.Contains(out+errb, "action_deferred") {
-		t.Fatalf("holds answer: %d %s %s", code, out, errb)
+	if code, out := answer("1", "1"); code != entry.ExitOK || !strings.Contains(out, "applied") || lastSeq(t, c.dir) == head {
+		t.Fatalf("holds answer: %d %s", code, out)
+	}
+	head = lastSeq(t, c.dir)
+	for _, at := range []string{"1", "0"} {
+		if code, out := answer("1", at); code != entry.ExitStale || !strings.Contains(out, "stale_expected_state") {
+			t.Errorf("an answer at revision %s: %d %s", at, code, out)
+		}
 	}
 	if lastSeq(t, c.dir) != head {
-		t.Error("a deferred answer appended to the log")
+		t.Error("a refused answer appended to the log")
 	}
-	if _, ok := handlers()[authority.InputAnswerAction]; ok {
-		t.Error("input.answer has a handler in adcd")
-	}
-	kinds, err := eventKinds()
-	if _, ok := kinds[authority.OwedInputRecorded]; err != nil || !ok {
-		t.Errorf("owed_input.recorded is not registered: %v", err)
+	if _, ok := handlers()[authority.InputAnswerAction]; !ok {
+		t.Error("input.answer has no handler in adcd")
 	}
 }
 

@@ -52,10 +52,10 @@ and is never edited apart from it.
 
 | Invariant | Enforcement status | Owner (items) | Required by (capability: rows) |
 |---|---|---|---|
-| I1 Recorded approvals | partial | P3, P5, P6, P22a, P22b | `intake`: admission, fold (with P5's recorded answers); `merge-local`, `merge-github`: effect |
-| I2 Answer binding and delivery | partial | P5, P6 | `answers`: all |
-| I3 Moved questions | partial | P6 | `answers`: all |
-| I4 Reuse | partial | P6 | `answers`: all |
+| I1 Recorded approvals | partial | P22a, P22b | `intake`: admission, fold (with P5's recorded answers); `merge-local`, `merge-github`: effect |
+| I2 Answer binding and delivery | enforced | P5, P6 | `answers`: all |
+| I3 Moved questions | enforced | P6 | `answers`: all |
+| I4 Reuse | enforced | P6 | `answers`: all |
 | I5 Consumption | partial | P8b, P15, P16 | `launch`: admission; `review`: all |
 | I6 Effect intent | partial | P12a, P12b, P18, P20, P27 | `launch`: the `model_call` rows; `merge-local`, `merge-github`: the merge rows, including P20's GitHub settlement for `merge-github` |
 | I7 Review independence | partial | P7, P8b, P16 | `launch`: consumption; `review`: all |
@@ -84,27 +84,27 @@ implementation item.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `authority.Authorizer.Authorize` (`authority/derive.go`) decides each command against actor and grants. Approvals are recorded only by proposal confirmation (`authority.Authorizer.Confirm`, `authority/confirm.go:147`, → `ApprovalEvent`, `authority/proposals.go`). `task.create` and `input.answer` are deferred (`daemon/matrix.go:deferred`) | GAP | P3 (the task's approval), P5 (answer approvals) |
-| fold/replay | `recordApproval` (`authority/proposals.go`) folds proposal approvals only; no fold checks a task's or an answer's approval (13:324-327) | GAP | P3, P6 |
-| consumption | graph answers come from a caller-passed `graph.Authority` (`graph/evaluate.go:answers`), backed only by the fake; nothing consumes a task's approval | GAP | P5 (the real `graph.Authority`), P22a (the first build claim requires the task approval in force) |
+| admission | `authority.Authorizer.Authorize` (`authority/derive.go`) decides each command against actor and grants. A task's approval is recorded with `task.create` (`authority/task.go`, P3; deferred until P22a); an answer's with `input.answer` (`authority/answer.go:InputAnswer`, `answerable`, P5; wired by P6) | kept | — |
+| fold/replay | `recordApproval` (`authority/proposals.go`) hands a task's approval to `recordTaskApproval` (`authority/task.go`, P3) and an answer to `recordAnswer` (`authority/answer.go`, P5); the graph folds check the answers a claim, reuse or result takes (`graph/eligible.go:eligible`, P6) | kept | — |
+| consumption | graph answers come from `authority.Answers` (`authority/owed.go`, P5), the real `graph.Authority`; nothing consumes a task's approval | kept + GAP | P22a (the first build claim requires the task approval in force) |
 | effect | `graph.Operate` → `revalidate` re-checks a merge's answer inputs before its intent; the task's approval is not re-checked | kept + GAP | P22b (the merge intent re-checks the task approval) |
 
 ## I2. An answer binds its owed input's revision and reaches only the node that declared it
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | none: there is no `input.answer` handler. 04 "Owed inputs" requires that the responder may answer, that the owed input is open, and that its subject and revision match | GAP | P5 |
-| fold/replay | `recorded`, `succeeds` (`graph/events.go`) refuse an answer input on a first round and check a successor's shape; whether the owed input was asked, at that revision, is unchecked (13:366-367) | kept + GAP | P6 |
-| consumption | `graph/evaluate.go:answers` with `lineageOwed`, `owedIn` (`graph/successor.go`); `graph.Context` renders only claimed inputs (`renderContext`). The only `graph.Authority` is the fake, so `adcd` has none | kept + GAP | P5 |
+| admission | `authority.InputAnswerHandler.Derive`, `answerable` (`authority/answer.go`, P5): the responder may answer, the owed input is open, at that revision; wired in `adcd` (P6) | kept | — |
+| fold/replay | `recorded`, `succeeds` (`graph/events.go`) refuse an answer input on a first round and check a successor's shape; `recordAnswer` (`authority/answer.go`) binds an answer to its owed input's revision; `eligible` (`graph/eligible.go`, P6): a successor's new answer is to an owed input its lineage asks at its current revision (`successorOwed`), and a claim, reuse or result takes only answers in force (`inForce`) | kept | — |
+| consumption | `graph/evaluate.go:answers` with `lineageOwed`, `owedIn` (`graph/successor.go`); `graph.Context` renders only claimed inputs (`renderContext`); `authority.Answers` is `adcd`'s `graph.Authority` (P5) | kept | — |
 | effect | n/a: an answer is no effect; the merge intent's re-validation is I1's effect row | n/a | — |
 
 ## I3. Moved questions
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `graph.SupersedeMoving` → `moved` (`graph/supersede.go`): through the authority, the lineage no longer asks the old owed input and asks the new one; a removal is refused | kept + GAP (removal, 13:206) | P6 |
-| fold/replay | `supersededFold` (`graph/supersede.go`) checks only the shape and re-derives the hold lists; a `question_moved` or `revised` retirement is not re-checked against owed inputs (13:203-209) | GAP | P6 |
-| consumption | `displaced` (`graph/supersede.go`) via `answers`: the evaluator waits and Commit refuses `authority_revoked`. The `claimed` fold reads no authority, so a raw claim is not refused (fixture `displaced-question-waits`) | kept + GAP | P6 |
+| admission | `graph.SupersedeMoving` → `moved` (`graph/supersede.go`) → `movedQuestion` (`graph/eligible.go`): through the authority, the lineage no longer asks the old owed input; a move asks the new one at its current revision, and a removal (13:206, P6) drops the answer input | kept | — |
+| fold/replay | `supersededFold` (`graph/supersede.go`) checks the shape and re-derives the hold lists; `eligible` (`graph/eligible.go`, P6) re-checks each replaced or removed answer, so each `question_moved` retirement, against the owed inputs (`movesHold`), and a `revised` retirement or a signalled clear of an `awaiting_input` wait against them (`answerWaitEnds`). M0's fold (`graph.Project`) still refuses a removal | kept | — |
+| consumption | `displaced` (`graph/supersede.go`) via `answers`: the evaluator waits and Commit refuses `authority_revoked`; the claim fold refuses a raw claim the same way (`inForce`, P6) | kept | — |
 | effect | `revalidate` in `graph.Operate` refuses a displaced question | kept | — |
 
 ## I4. Reuse
@@ -112,7 +112,7 @@ implementation item.
 | Check | Today | Status | Item |
 |---|---|---|---|
 | admission | `graph.Reuse` → `bindsRequirement` (`graph/roster.go`), `answeredNow` (`graph/reuse.go`), the holder at its current generation (`KeyProjection`) | kept | — |
-| fold/replay | `reused` (`graph/reuse.go`) re-derives the inputs and the key, requires a completed holder and binds the requirement. It reads no authority, so a raw `node.reused` is not refused on its answers (fixture `reuse-displaced-question`) | kept + GAP | P6 |
+| fold/replay | `reused` (`graph/reuse.go`) re-derives the inputs and the key, requires a completed holder and binds the requirement; `eligible` (`graph/eligible.go`, P6) refuses a raw `node.reused` whose answers are not in force (`inForce`, shared with the `Reuse` builder) | kept | — |
 | consumption | `selectedOf` (`graph/events.go`); `holderServes` (`graph/requirement.go`); `graph.ReviewReusable` (`graph/roster.go`), `graph.Equivalent` (`graph/equivalence.go`) | kept | — |
 | effect | `verdict` (`graph/requirement.go`) through `selectedOf` at the merge intent; `mergeHolds` (`graph/queue.go`) before the apply | kept | — |
 
@@ -287,6 +287,6 @@ through `lease.completed`. P21 keeps this check.
 
 ## Count
 
-88 rows across 22 invariants. **63 rows have a gap**: 34 are GAP and 29 are kept + GAP. 19 are kept and 6 are n/a.
+88 rows across 22 invariants. **54 rows have a gap**: 29 are GAP and 25 are kept + GAP. 28 are kept and 6 are n/a (after P6, which also flipped P3's and P5's I1 and I2 rows, #226 entry 45).
 Every gap is closed by an item of `00-slice-plan.md` §5. None is left to a later milestone, except where 01 §4.1 or
 §6's clarifications place it. The evidence rows of 12 follow #187's trigger (slice plan §4).

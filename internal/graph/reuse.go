@@ -22,10 +22,9 @@ package graph
 //     re-validates its answer inputs as Commit does (13 [G4]): each is the
 //     answer the authority holds in force now, for a question its lineage
 //     asks at its current revision, and no question a supersession in its
-//     lineage replaced is still owed (displaced). The fold reads no
-//     authority, so a raw node.reused is not refused on its answers; until
-//     M1 records approvals and owed inputs, only the builder checks them,
-//     as only Commit checks a claim's.
+//     lineage replaced is still owed (displaced). Since M1 (P6) the fold
+//     checks the same, through the authority (eligible.go), so a raw
+//     node.reused is refused on its answers.
 //   - A reused node is never invalidated on its own (ErrReused): the
 //     holder's invalidation releases it in the same command
 //     (node.reuse_released), which drops its claim and result and returns
@@ -40,7 +39,6 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
-	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // Reuse is the event binding node to the result of the node that holds its
@@ -146,15 +144,5 @@ func answeredNow(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved
 	if auth == nil {
 		return errors.New("graph: a reuse needs the authority to answer its answer inputs")
 	}
-	answered, _, err := answers(tx, rec, auth)
-	if err != nil {
-		return err
-	}
-	for _, in := range rec.Recorded.Node.Inputs {
-		got, want := resolved[string(in.Name)], answered[string(in.Name)]
-		if _, ok := in.Source.Variant.(*types.AnswerSource); ok && (want.Approval == "" || got != want) {
-			return ErrRevalidated{Input: in.Name, Reason: vocab.ReasonAuthorityRevoked, Detail: "the answer is not the one in force for a question its lineage asks"}
-		}
-	}
-	return nil
+	return inForce(tx, rec, resolved, auth) // as the reuse fold checks it (eligible.go)
 }

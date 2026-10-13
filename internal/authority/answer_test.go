@@ -454,6 +454,62 @@ func TestAnswersUnderEvaluation(t *testing.T) {
 	b.rebuilds()
 }
 
+// M1 P6, adcd's composition: the graph fold reads authority.Answers. Before
+// the answer, a raw claim of the successor on an approval that answers
+// nothing is refused authority_revoked, and, once the evaluation holds it
+// on awaiting_input, a raw clear of that wait is refused; once answered,
+// the evaluation clears the wait and claims, and the log rebuilds.
+func TestAnswerFoldsReadTheAuthority(t *testing.T) {
+	b := openAnswers(t)
+	ask := &types.AnswerSource{Type: "answer", OwedInput: b.owed.ID, Revision: 1}
+	next := b.node(prjA, &b.asker, []types.InputSpec{{Name: "ruling", Source: types.InputSpecSource{Variant: ask}}})
+	none := func(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
+	env := graph.Env{Need: none, Authority: authority.Answers{}}
+	try := func(apply applyFn) error {
+		cmd := newID(t, "cmd")
+		_, err := b.s.SubmitApplied(context.Background(), b.op.Command(cmd, "test.seed", cmd, []byte(`{}`), nil), eventstore.Applies(
+			func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+				evs, err := apply(tx)
+				return evs, json.RawMessage(`{}`), err
+			}))
+		return err
+	}
+	var stale graph.ErrRevalidated
+	if err := try(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Claim(tx, next, map[string]graph.Resolved{"ruling": {Approval: types.ApprovalID(newID(t, "apr")), Revision: 1}}, 0)
+	}); !errors.As(err, &stale) || stale.Reason != vocab.ReasonAuthorityRevoked {
+		t.Errorf("a raw claim before the answer: %v", err)
+	}
+	b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Evaluate(tx, []types.NodeID{next}, env)
+	})
+	var hold types.NodeHold
+	b.view(func(tx *eventstore.Tx) error {
+		held, err := graph.Held(tx)
+		for _, h := range held {
+			if h.Node == next {
+				hold = h.Holds[0]
+			}
+		}
+		return err
+	})
+	if err := try(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Clear(tx, next, hold.ID, hold.SignalInstance)
+	}); err == nil {
+		t.Error("a raw clear before the answer")
+	}
+	if _, _, err := b.answer(b.op, "r1", answerScope(b.owed.ID, 1), 1); err != nil {
+		t.Fatal(err)
+	}
+	b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Evaluate(tx, []types.NodeID{next}, env)
+	})
+	if b.lastEvent().Kind != graph.NodeClaimed {
+		t.Fatalf("after the answer: %s", b.lastEvent().Kind)
+	}
+	b.rebuilds()
+}
+
 // The fold binds the grant from the log alone: a supervisor's answer
 // names its own grant covering input.answer on the project, in force at
 // the answer; an operator's none. Refused: a supervisor's answer with no

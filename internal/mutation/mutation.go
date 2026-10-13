@@ -202,6 +202,24 @@ const (
 	// ContextNeedsNoAuthority renders a controller context with no
 	// authority, so its lineage's questions are never read.
 	ContextNeedsNoAuthority = "graph.context-needs-no-authority"
+	// The answer folds (M1 P6): each drops one fold's check of the recorded
+	// answers an event takes, so a raw event of its kind replays.
+	// RecordedFoldSkipsOwed admits a successor answering what its lineage
+	// does not ask.
+	RecordedFoldSkipsOwed = "graph.recorded-fold-skips-owed"
+	// ClaimFoldSkipsAnswers admits a claim of an answer not in force.
+	ClaimFoldSkipsAnswers = "graph.claim-fold-skips-answers"
+	// ReuseFoldSkipsAnswers admits a reuse of an answer not in force.
+	ReuseFoldSkipsAnswers = "graph.reuse-fold-skips-answers"
+	// ResultFoldSkipsAnswers admits a result whose claimed answer is no
+	// longer in force.
+	ResultFoldSkipsAnswers = "graph.result-fold-skips-answers"
+	// SupersessionFoldSkipsMoves admits a supersession replacing or
+	// removing an answer whose question its lineage still asks.
+	SupersessionFoldSkipsMoves = "graph.supersession-fold-skips-moves"
+	// HoldFoldSkipsAnswers admits an awaiting_input wait cleared with no
+	// answer, or retired as revised at its current revision.
+	HoldFoldSkipsAnswers = "graph.hold-fold-skips-answers"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -223,4 +241,5 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer, DisplacedQuestionUnchecked,
 	ReuseSkipsAuthority, ContextNeedsNoAuthority,
 	RequirementRevisionUnchecked,
-	GenerationKeepsReview, MergeCASOnHead}
+	GenerationKeepsReview, MergeCASOnHead,
+	RecordedFoldSkipsOwed, ClaimFoldSkipsAnswers, ReuseFoldSkipsAnswers, ResultFoldSkipsAnswers, SupersessionFoldSkipsMoves, HoldFoldSkipsAnswers}

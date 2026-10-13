@@ -502,7 +502,7 @@ Repair rounds count as their kind.
 
 ## 3. Invariant-enforcement inventory (D45, D58)
 
-`01-invariant-inventory.md` covers 22 invariants in 88 rows, 63 of them with a gap. It holds the four D45 check points per invariant, each with its status, where it lives, and
+`01-invariant-inventory.md` covers 22 invariants in 88 rows, 54 of them with a gap (after P6). It holds the four D45 check points per invariant, each with its status, where it lives, and
 its item. Its summary adds D58's columns: enforcement status, owner, and the activation trigger as "required by". The
 activation trigger is derived from §1's gating table, which is authoritative.
 - **A required, unenforced invariant blocks the capability that reaches it** (§1's activation table).

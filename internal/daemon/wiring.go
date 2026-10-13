@@ -55,9 +55,9 @@ func authorizer(reg *vocab.Registry) authority.Authorizer {
 // other registered action has none and is refused. project.create has a
 // handler (authority.ProjectCreateHandler) that is not wired here: it stays
 // deferred until P22a activates the intake capability (M1 slice plan §1);
-// so does task.create's (authority.TaskCreateHandler, P3). input.answer's
-// (authority.InputAnswerHandler, P5) stays deferred until P6 activates the
-// answers capability.
+// so does task.create's (authority.TaskCreateHandler, P3). input.answer
+// (authority.InputAnswerHandler, P5) is wired: P6 activates the answers
+// capability, with the graph fold checking the recorded answers.
 func handlers() map[string]authority.Handler {
 	hs := authority.SeatHandlers(0)
 	maps.Copy(hs, authority.AdminHandlers())
@@ -68,6 +68,7 @@ func handlers() map[string]authority.Handler {
 	hs[authority.GrantCreateAction] = authority.GrantCreateHandler{}
 	hs[authority.GrantRevokeAction] = authority.GrantRevokeHandler{}
 	hs[authority.GrantExtendAction] = authority.GrantExtendHandler{}
+	hs[authority.InputAnswerAction] = authority.InputAnswerHandler{}
 	return hs
 }
 
@@ -93,7 +94,7 @@ func issuers(az authority.Authorizer) map[string]issuer {
 func logics(az authority.Authorizer) map[string]logic {
 	out := map[string]logic{authority.ConfirmAction: az.Confirm, authority.WithdrawAction: az.Withdraw, authority.NoteAction: authority.AddNote, authority.RevokeActorAction: az.RevokeActor,
 		authority.GrantCreateAction: authority.GrantCreateHandler{}.Logic, authority.GrantRevokeAction: authority.GrantRevokeHandler{}.Logic,
-		authority.GrantExtendAction: authority.GrantExtendHandler{}.Logic, authority.TokenRevokeAction: az.RevokeToken}
+		authority.GrantExtendAction: authority.GrantExtendHandler{}.Logic, authority.TokenRevokeAction: az.RevokeToken, authority.InputAnswerAction: authority.InputAnswer}
 	for action, h := range az.Handlers {
 		if s, ok := h.(authority.SeatHandler); ok {
 			out[action] = s.Logic
@@ -140,6 +141,6 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		authority.OwedProjector{}.Project,
 		capacity.Hook(leases, r),
 		ledger.Project,
-		graph.Project,
+		graph.Projector{Answers: authority.Answers{}}.Project, // the folds check the recorded answers (M1 P6)
 	)
 }
