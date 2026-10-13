@@ -3,10 +3,13 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 )
 
 // F (P12a): the intent precedes egress. When the upstream first sees a
@@ -91,5 +94,51 @@ func TestTheIntentIsPerBinding(t *testing.T) {
 	g.Unbind(token)
 	if w := call(g, twin, "/chat/completions", good, nil); w.Code != http.StatusOK || in.n() != 2 {
 		t.Fatalf("after unbinding the other token: %d, %d intents", w.Code, in.n())
+	}
+}
+
+// flipAttempts is an attempt reader whose answer a test changes between
+// requests.
+type flipAttempts struct {
+	a       types.Attempt
+	current bool
+	err     error
+}
+
+func (f *flipAttempts) Attempt(_ context.Context, id types.AttemptID) (types.Attempt, bool, bool, error) {
+	return f.a, f.current, f.a.ID == id, f.err
+}
+
+// Astra H1: an active lease does not prove its attempt runs. Every request,
+// a token with a cached intent included, is refused once its attempt is
+// stopping, not current, of another lease or unit, missing or unreadable.
+func TestEveryRequestNeedsTheAttemptRunning(t *testing.T) {
+	ok := types.Attempt{ID: attempt, Lease: leaseID, Status: types.AttemptStatusRunning}
+	for name, edit := range map[string]func(*flipAttempts){
+		"stopping":       func(f *flipAttempts) { f.a.Status = types.AttemptStatusStopping },
+		"not current":    func(f *flipAttempts) { f.current = false },
+		"another lease":  func(f *flipAttempts) { f.a.Lease = "lea_01m4tm99haemss9tvzd438vq8k" },
+		"another unit's": func(f *flipAttempts) { f.a.Unit = "unt_01m3250vz2ezn81cgvbkcn17jd" },
+		"missing":        func(f *flipAttempts) { f.a.ID = "" },
+		"unreadable":     func(f *flipAttempts) { f.err = errors.New("io") },
+	} {
+		in, at := &intents{}, &flipAttempts{a: ok, current: true}
+		up := newUpstream(t, nil)
+		g, token := rig(t, up, func(c *Config) { c.Intents, c.Attempts = in, at })
+		if w := call(g, token, "/chat/completions", good, nil); w.Code != http.StatusOK {
+			t.Fatalf("%s: running: %d", name, w.Code)
+		}
+		edit(at)
+		if w := call(g, token, "/chat/completions", good, nil); w.Code == http.StatusOK || len(up.got()) != 1 {
+			t.Errorf("%s: a cached token sent: %d, upstream saw %d", name, w.Code, len(up.got()))
+		}
+		g.Unbind(token)
+		fresh, err := g.Bind(Binding{Lease: leaseID, Attempt: attempt, Call: "cal_01m4tm99haemss9tvzd438vq8k"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w := call(g, fresh, "/chat/completions", good, nil); w.Code == http.StatusOK || len(up.got()) != 1 || in.n() != 1 {
+			t.Errorf("%s: a first request sent: %d, upstream saw %d, %d intents", name, w.Code, len(up.got()), in.n())
+		}
 	}
 }

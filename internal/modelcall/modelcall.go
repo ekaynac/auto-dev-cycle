@@ -14,8 +14,10 @@
 //     writer transaction; the store runs synchronous=FULL, so the binding is on disk when Submit returns, and only
 //     then may the gateway send (Recorder implements gateway.Intents). The fold admits the event only with its own
 //     command's intent of the same request.
-//   - The binding is checked inside the command against the lease's projection: active, and running the bound
-//     attempt. The groups are the lease's, never the caller's.
+//   - The binding is checked inside the command against the lease and attempt projections: the lease is active on
+//     the bound attempt, and that attempt is running, its unit's current attempt and the lease's (a stop leaves the
+//     lease active on a stopping attempt). The groups are the lease's, never the caller's. The gateway checks the
+//     same on every request (Reader), since a token's later requests skip the Recorder.
 //   - A call is bound once. Intending it again is a no-op only while its effect is still pending under the same call,
 //     attempt, lease and destination: a pending effect was intended since this start, because the Recorder refuses
 //     to run on a store where MarkPendingUncertain has not run (eventstore.Store.RestartMarked). An
@@ -106,6 +108,9 @@ func Intend(tx *eventstore.Tx, b gateway.Binding, destination types.Slug) ([]eve
 	case !ok || l.State != types.LeaseStateActive || l.Attempt == nil || *l.Attempt != b.Attempt:
 		return nil, fmt.Errorf("%w: %s, %s", ErrNotRunning, b.Lease, b.Attempt)
 	}
+	if err := running(tx, l, b.Attempt); err != nil {
+		return nil, err
+	}
 	m := types.ModelCall{Call: b.Call, Attempt: b.Attempt, Lease: b.Lease, Executor: l.Executor, Destination: destination, Groups: []types.ResourceGroupID{}}
 	for _, r := range l.Reservations {
 		if !slices.Contains(m.Groups, r.Group) {
@@ -137,6 +142,55 @@ func Intend(tx *eventstore.Tx, b gateway.Binding, destination types.Slug) ([]eve
 	}
 	id, err := ids.New("evt")
 	return []eventstore.Event{{ID: id, Kind: Intended, Subject: string(b.Call), Payload: raw}}, err
+}
+
+// running: the attempt, under its active lease l, is running, its unit's
+// current attempt, and l's. An active lease alone does not prove it: a stop
+// leaves the lease active on a stopping attempt.
+func running(tx *eventstore.Tx, l types.Lease, id types.AttemptID) error {
+	a, current, ok, err := attemptOf(tx, id)
+	switch {
+	case err != nil:
+		return err
+	case !ok || !current || a.Status != types.AttemptStatusRunning || a.Lease != l.ID || a.Unit != l.Unit:
+		return fmt.Errorf("%w: %s is not running", ErrNotRunning, id)
+	}
+	return nil
+}
+
+// attemptOf is the attempt and whether it is its unit's current one.
+func attemptOf(tx *eventstore.Tx, id types.AttemptID) (types.Attempt, bool, bool, error) {
+	a, _, ok, err := lease.AttemptOf(tx, id)
+	if err != nil || !ok {
+		return a, false, false, err
+	}
+	cur, has, err := lease.CurrentAttempt(tx, a.Unit)
+	return a, has && cur == id, true, err
+}
+
+// Reader is the gateway's lease and attempt reader over the store's
+// projections (gateway.Leases, gateway.Attempts).
+type Reader struct{ Store *eventstore.Store }
+
+var (
+	_ gateway.Leases   = Reader{}
+	_ gateway.Attempts = Reader{}
+)
+
+func (r Reader) Lease(ctx context.Context, id types.LeaseID) (l types.Lease, ok bool, err error) {
+	err = r.Store.View(ctx, func(tx *eventstore.Tx) (err error) {
+		l, _, ok, err = lease.LeaseOf(tx, id)
+		return err
+	})
+	return l, ok, err
+}
+
+func (r Reader) Attempt(ctx context.Context, id types.AttemptID) (a types.Attempt, current, ok bool, err error) {
+	err = r.Store.View(ctx, func(tx *eventstore.Tx) (err error) {
+		a, current, ok, err = attemptOf(tx, id)
+		return err
+	})
+	return a, current, ok, err
 }
 
 // same: the binding's identity, not its groups, which Intend re-derives

@@ -122,6 +122,14 @@ func (s secrets) Credential(ref types.Slug) (Credential, bool, error) {
 	return NewCredential(v), ok && v != "", nil
 }
 
+// attempts are the current attempts, by id.
+type attempts map[types.AttemptID]types.Attempt
+
+func (a attempts) Attempt(_ context.Context, id types.AttemptID) (types.Attempt, bool, bool, error) {
+	v, ok := a[id]
+	return v, ok, ok, nil
+}
+
 func running(executor types.ExecutorID) leases {
 	a := attempt
 	return leases{leaseID: {ID: leaseID, Executor: executor, State: types.LeaseStateActive, Attempt: &a}}
@@ -156,7 +164,8 @@ func (i *intents) n() int {
 // lease running and its credential held, and a bound token.
 func rig(t *testing.T, up *upstream, edit func(*Config)) (*Gateway, string) {
 	t.Helper()
-	cfg := Config{Registry: reg(t, "registry-stub.json", up.URL+"/v1"), Leases: running(builder), Secrets: secrets{"stub": fakeKey}, Intents: &intents{}}
+	cfg := Config{Registry: reg(t, "registry-stub.json", up.URL+"/v1"), Leases: running(builder), Secrets: secrets{"stub": fakeKey}, Intents: &intents{},
+		Attempts: attempts{attempt: {ID: attempt, Lease: leaseID, Status: types.AttemptStatusRunning}}}
 	if edit != nil {
 		edit(&cfg)
 	}
@@ -333,8 +342,11 @@ func TestNewNeedsLeasesAndSecrets(t *testing.T) {
 	if _, err := New(Config{Leases: leases{}}); err == nil {
 		t.Error("no secrets")
 	}
-	if _, err := New(Config{Leases: leases{}, Secrets: secrets{}}); err == nil {
+	if _, err := New(Config{Leases: leases{}, Attempts: attempts{}, Secrets: secrets{}}); err == nil {
 		t.Error("no intents")
+	}
+	if _, err := New(Config{Leases: leases{}, Secrets: secrets{}, Intents: &intents{}}); err == nil {
+		t.Error("no attempt reader")
 	}
 	up := newUpstream(t, nil)
 	g, token := rig(t, up, nil)

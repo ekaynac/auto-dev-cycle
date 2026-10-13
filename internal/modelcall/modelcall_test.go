@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 const (
@@ -31,6 +33,7 @@ const (
 	builder = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pa") // registry-stub.json: destination stub
 	leaseID = types.LeaseID("lea_01m4tm99haemss9tvzd438vq8j")
 	attempt = types.AttemptID("att_01m4tm99haemss9tvzd438vq8j")
+	unit    = types.UnitID("unt_01m3250vz2ezn81cgvbkcn17jd")
 	callID  = types.CallID("cal_01m4tm99haemss9tvzd438vq8j")
 	rgB     = types.ResourceGroupID("rg_01m4tm99haemtbemfkdve21grg")
 	rgA     = types.ResourceGroupID("rg_01m4tm99haemss9tvzd438vq8j")
@@ -41,15 +44,20 @@ var binding = gateway.Binding{Lease: leaseID, Attempt: attempt, Call: callID}
 
 // world is a controller's state directory, opened and closed like adcd's.
 type world struct {
-	t    *testing.T
-	dir  string
-	lock *eventstore.Lock
-	s    *eventstore.Store
+	t     *testing.T
+	dir   string
+	lock  *eventstore.Lock
+	s     *eventstore.Store
+	holds map[string]types.Hold
 }
 
 func openWorld(t *testing.T) *world {
 	t.Helper()
-	w := &world{t: t, dir: filepath.Join(t.TempDir(), "state")}
+	reg, err := vocab.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &world{t: t, dir: filepath.Join(t.TempDir(), "state"), holds: reg.Holds}
 	w.open()
 	t.Cleanup(w.close)
 	w.restart()
@@ -77,8 +85,11 @@ func (w *world) open() {
 		w.t.Fatal(err)
 	}
 	ok := func(*eventstore.Tx, eventstore.Command) error { return nil }
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: modelcall.Kinds(), Blobs: blobs, Effects: modelcall.Effects(),
-		Hooks: eventstore.Hooks{Identify: ok, Authorize: ok, Project: modelcall.Project}})
+	kinds := lease.Kinds()
+	maps.Copy(kinds, modelcall.Kinds())
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Effects: modelcall.Effects(),
+		Hooks: eventstore.Hooks{Identify: ok, Authorize: ok, Project: eventstore.ProjectEach(
+			lease.Projector{Blobs: blobs, Holds: w.holds, Units: units{}}.Project, modelcall.Project)}})
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -108,33 +119,72 @@ func (w *world) do(fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) error
 	return err
 }
 
-// setLease puts l in the lease projection, as internal/lease's projector
-// keeps it (its folds are its own tests').
-func (w *world) setLease(state types.LeaseState, running types.AttemptID) {
-	w.t.Helper()
-	w.setLeaseOn(state, running, rgB, rgA)
+// units binds every unit to one project and task, and lets it start.
+type units struct{}
+
+func (units) ProjectTask(*eventstore.Tx, types.UnitID) (types.ProjectID, types.TaskID, bool, error) {
+	return "prj_01m3250vkwffc979nzjw0g2sf9", "tsk_01m3250v9xft08ssr4ygq6g2np", true, nil
 }
 
-// setLeaseOn is setLease with the lease reserving on groups, in order.
-func (w *world) setLeaseOn(state types.LeaseState, running types.AttemptID, groups ...types.ResourceGroupID) {
+func (units) Startable(*eventstore.Tx, types.UnitID) error { return nil }
+
+func (w *world) must(fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) {
 	w.t.Helper()
-	res := []any{}
+	if err := w.do(fn); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+// start records the lease, reserving on groups in order, granted and
+// running attempt, through internal/lease's commands and projector.
+func (w *world) start(groups ...types.ResourceGroupID) {
+	w.t.Helper()
+	ok := types.PlacementCheck{Outcome: types.Outcome(vocab.Empty), Reason: vocab.ReasonCompletedClean}
+	l := types.Lease{ID: leaseID, Unit: unit, Role: "builder", Executor: builder, State: types.LeaseStateRequested,
+		Reservations: []types.LeaseReservationsItem{}, Footprint: types.LeaseFootprint{ContextTokens: 1000, ExpectedTurns: 5},
+		Deadline: "2026-10-14T14:00:00Z", PlacementChecks: types.LeasePlacementChecks{DataFloor: ok, Destinations: ok, Capability: ok,
+			Independence: ok, PaidAuthority: ok, Budget: ok, FallbackScope: ok}}
 	for _, g := range groups {
-		res = append(res, map[string]any{"group": g, "amount": 1000, "unit": "tokens"})
+		l.Reservations = append(l.Reservations, types.LeaseReservationsItem{Group: g, Amount: 1000, Unit: types.CapacityUnitTokens})
 	}
-	l := map[string]any{"id": leaseID, "unit": "unt_01m3250vz2ezn81cgvbkcn17jd", "role": "builder", "executor": builder, "state": state,
-		"reservations": res,
-		"priority":     0, "footprint": map[string]any{"context_tokens": 1, "expected_turns": 1, "gpu_seconds": nil}, "deadline": "2026-10-14T00:00:00Z",
-		"fallback_step": 0, "placement_checks": map[string]any{}, "hold": nil, "attempt": running, "restore_receipt": nil, "settlement": nil}
-	raw, err := json.Marshal(map[string]any{"revision": 1, "record": l})
-	if err != nil {
-		w.t.Fatal(err)
-	}
-	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) })
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, leaseID, 1, lease.LeaseEvent{Kind: lease.Granted}, w.holds)
+	})
+	base := types.AttemptBase{Tree: types.GitID("git:" + strings.Repeat("c", 40)), ContractRevision: "7"}
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StartAttempt(tx, leaseID, 2, attempt, base)
+	})
+}
+
+// stop commits a stop of the running attempt, as graph.SupersedeMoving
+// does: the attempt is stopping, and the lease stays active on it.
+func (w *world) stop() {
+	w.t.Helper()
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StopRunning(tx, attempt, types.AttemptStopReasonValuePreempt)
+	})
+}
+
+// reserve rewrites the lease's reservations in its projection, outside its
+// events: only to show what a binding keeps once made.
+func (w *world) reserve(groups ...types.ResourceGroupID) {
+	w.t.Helper()
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		l, rev, _, err := lease.LeaseOf(tx, leaseID)
+		if err != nil {
+			return nil, err
+		}
+		l.Reservations = nil
+		for _, g := range groups {
+			l.Reservations = append(l.Reservations, types.LeaseReservationsItem{Group: g, Amount: 1, Unit: types.CapacityUnitTokens})
+		}
+		raw, err := json.Marshal(map[string]any{"revision": rev, "record": l})
+		if err != nil {
+			return nil, err
+		}
 		return nil, tx.Put(lease.LeaseProjection, string(leaseID), raw)
-	}); err != nil {
-		w.t.Fatal(err)
-	}
+	})
 }
 
 func (w *world) view(fn func(tx *eventstore.Tx) error) {
@@ -152,15 +202,6 @@ func (w *world) ofLease() []modelcall.Bound {
 		return err
 	})
 	return out
-}
-
-// Lease is the gateway's lease reader over the store.
-func (w *world) Lease(ctx context.Context, id types.LeaseID) (l types.Lease, ok bool, err error) {
-	err = w.s.View(ctx, func(tx *eventstore.Tx) error {
-		l, _, ok, err = lease.LeaseOf(tx, id)
-		return err
-	})
-	return l, ok, err
 }
 
 type secrets struct{}
@@ -223,7 +264,7 @@ func newGateway(t *testing.T, w *world, up *upstream, in gateway.Intents) (*gate
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := gateway.New(gateway.Config{Registry: r, Leases: w, Secrets: secrets{}, Intents: in})
+	g, err := gateway.New(gateway.Config{Registry: r, Leases: modelcall.Reader{Store: w.s}, Attempts: modelcall.Reader{Store: w.s}, Secrets: secrets{}, Intents: in})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +288,7 @@ func send(g *gateway.Gateway, token string) *httptest.ResponseRecorder {
 // groups, sorted. A second request of the call adds no intent.
 func TestTheIntentIsCommittedBeforeTheGatewaySends(t *testing.T) {
 	w := openWorld(t)
-	w.setLease(types.LeaseStateActive, attempt)
+	w.start(rgB, rgA)
 	var atSend [][]modelcall.Bound
 	up := newUpstream(t, func() { atSend = append(atSend, w.ofLease()) })
 	g, token := newGateway(t, w, up, modelcall.Recorder{Store: w.s, Actor: actor})
@@ -266,14 +307,8 @@ func TestTheIntentIsCommittedBeforeTheGatewaySends(t *testing.T) {
 			t.Fatalf("bound at send %d: %+v", i, b)
 		}
 	}
-	if diffs, err := w.s.RebuildProjections(context.Background()); err != nil {
-		t.Fatal(err)
-	} else {
-		for _, d := range diffs {
-			if d.Projection != lease.LeaseProjection { // the test's own seed
-				t.Fatalf("the binding is not a fold of the log: %+v", d)
-			}
-		}
+	if diffs, err := w.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("the binding is not a fold of the log: %v %+v", err, diffs)
 	}
 }
 
@@ -306,7 +341,7 @@ func (c crashing) Intend(ctx context.Context, b gateway.Binding, destination typ
 // retry it.
 func TestACrashBetweenIntentAndSend(t *testing.T) {
 	w := openWorld(t)
-	w.setLease(types.LeaseStateActive, attempt)
+	w.start(rgB, rgA)
 	up := newUpstream(t, nil)
 	g, token := newGateway(t, w, up, crashing{modelcall.Recorder{Store: w.s, Actor: actor}, w})
 	if rec := send(g, token); rec.Code == http.StatusOK || up.count() != 0 {
@@ -345,19 +380,15 @@ func TestIntendChecksTheLeaseAndBindsOnce(t *testing.T) {
 	if err := intend(binding); !errors.Is(err, modelcall.ErrNotRunning) {
 		t.Fatalf("no lease: %v", err)
 	}
-	w.setLease(types.LeaseStateSettling, attempt)
-	if err := intend(binding); !errors.Is(err, modelcall.ErrNotRunning) {
-		t.Fatalf("a settling lease: %v", err)
-	}
-	w.setLease(types.LeaseStateActive, "att_01m4tm99haemss9tvzd438vq8k")
-	if err := intend(binding); !errors.Is(err, modelcall.ErrNotRunning) {
+	w.start(rgB, rgA)
+	if err := intend(gateway.Binding{Lease: leaseID, Attempt: "att_01m4tm99haemss9tvzd438vq8k", Call: callID}); !errors.Is(err, modelcall.ErrNotRunning) {
 		t.Fatalf("another attempt: %v", err)
 	}
-	w.setLeaseOn(types.LeaseStateActive, attempt)
+	w.reserve()
 	if err := intend(binding); !errors.Is(err, modelcall.ErrNoGroups) {
 		t.Fatalf("a lease with no reservation: %v", err)
 	}
-	w.setLease(types.LeaseStateActive, attempt)
+	w.reserve(rgB, rgA)
 	if err := intend(gateway.Binding{Lease: leaseID, Attempt: attempt, Call: "msr_01m4tm99haemss9tvzd438vq8j"}); err == nil {
 		t.Fatal("a call id of another prefix")
 	}
@@ -365,7 +396,7 @@ func TestIntendChecksTheLeaseAndBindsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	// L3: a pending call is the same binding whatever its lease reserves now.
-	w.setLeaseOn(types.LeaseStateActive, attempt, rgA)
+	w.reserve(rgA)
 	var evs []eventstore.Event
 	if err := w.do(func(tx *eventstore.Tx) (e []eventstore.Event, err error) {
 		evs, err = modelcall.Intend(tx, binding, "stub")
@@ -456,7 +487,7 @@ func TestTheRequestAndTheFold(t *testing.T) {
 // a pending call it finds was intended since this open.
 func TestTheRecorderNeedsTheRestartRule(t *testing.T) {
 	w := openWorld(t)
-	w.setLease(types.LeaseStateActive, attempt)
+	w.start(rgB, rgA)
 	w.close()
 	w.open() // no restart rule
 	up := newUpstream(t, nil)
@@ -472,17 +503,18 @@ func TestTheRecorderNeedsTheRestartRule(t *testing.T) {
 
 // H1: a call bound under one binding is never sent under another. The
 // gateway refuses a second binding of a bound call; once the first is
-// unbound, the new binding reaches the Recorder, which refuses it.
+// unbound, the new binding names an attempt its lease does not run, and
+// is refused before egress (the Recorder's own refusal of a rebinding is
+// TestIntendChecksTheLeaseAndBindsOnce's).
 func TestACallIsSentUnderOneBindingOnly(t *testing.T) {
 	w := openWorld(t)
-	w.setLease(types.LeaseStateActive, attempt)
+	w.start(rgB, rgA)
 	up := newUpstream(t, nil)
 	g, token := newGateway(t, w, up, modelcall.Recorder{Store: w.s, Actor: actor})
 	if rec := send(g, token); rec.Code != http.StatusOK {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 	a2 := types.AttemptID("att_01m4tm99haemss9tvzd438vq8k")
-	w.setLease(types.LeaseStateActive, a2)
 	moved := gateway.Binding{Lease: leaseID, Attempt: a2, Call: callID}
 	if _, err := g.Bind(moved); err == nil {
 		t.Fatal("a bound call bound again under another attempt")
@@ -492,7 +524,38 @@ func TestACallIsSentUnderOneBindingOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec := send(g, token2); rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "intent_unrecorded") || up.count() != 1 {
+	if rec := send(g, token2); rec.Code == http.StatusOK || up.count() != 1 || len(w.ofLease()) != 1 {
 		t.Fatalf("the call sent under another attempt: %d %s, upstream saw %d", rec.Code, rec.Body, up.count())
+	}
+}
+
+// Astra H1: a stop leaves the lease active on a stopping attempt. Neither a
+// token whose intent is cached nor a first request on a new token sends
+// anything after it, and the Recorder refuses the stopped attempt.
+func TestAStoppedAttemptSendsNothing(t *testing.T) {
+	w := openWorld(t)
+	w.start(rgB, rgA)
+	up := newUpstream(t, nil)
+	g, token := newGateway(t, w, up, modelcall.Recorder{Store: w.s, Actor: actor})
+	if rec := send(g, token); rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	w.stop()
+	if l, ok, err := (modelcall.Reader{Store: w.s}).Lease(context.Background(), leaseID); err != nil || !ok || l.State != types.LeaseStateActive {
+		t.Fatalf("the stop left the lease %v: %v", l.State, err)
+	}
+	if rec := send(g, token); rec.Code == http.StatusOK || up.count() != 1 {
+		t.Fatalf("a cached token sent after the stop: %d, upstream saw %d", rec.Code, up.count())
+	}
+	other := gateway.Binding{Lease: leaseID, Attempt: attempt, Call: "cal_01m4tm99haemss9tvzd438vq8k"}
+	fresh, err := g.Bind(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := send(g, fresh); rec.Code == http.StatusOK || up.count() != 1 || len(w.ofLease()) != 1 {
+		t.Fatalf("a first request sent after the stop: %d, upstream saw %d", rec.Code, up.count())
+	}
+	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return modelcall.Intend(tx, other, "stub") }); !errors.Is(err, modelcall.ErrNotRunning) {
+		t.Fatalf("the Recorder bound a stopped attempt: %v", err)
 	}
 }

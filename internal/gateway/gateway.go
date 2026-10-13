@@ -6,7 +6,9 @@
 // Decisions:
 //   - An attempt reaches the gateway with a token bound to its lease and attempt (Bind). The sandbox never holds a
 //     credential, and no inbound header is forwarded: only the checked body, under one of the gateway's paths.
-//   - Before egress, against the lease: it is active and running the bound attempt; its executor is registered; the
+//   - Before egress, against the lease, on every request: it is active on the bound attempt, and that attempt is
+//     running, its unit's current attempt and the lease's (an active lease alone does not prove it: a stop leaves
+//     the lease active on a stopping attempt); its executor is registered; the
 //     destination is the registry's for that executor, over an admitted transport (#226 entry 37); and the
 //     request's model is exactly the executor's pinned model. The gateway never selects or changes a model (D48): a
 //     request naming another, or none, or carrying another model-selecting key, is refused, never rewritten.
@@ -67,6 +69,12 @@ type Leases interface {
 	Lease(ctx context.Context, id types.LeaseID) (l types.Lease, ok bool, err error)
 }
 
+// Attempts reads an attempt as the store's projection holds it, with
+// whether it is its unit's current attempt.
+type Attempts interface {
+	Attempt(ctx context.Context, id types.AttemptID) (a types.Attempt, current, ok bool, err error)
+}
+
 // Observed is what the gateway saw of an attempt's upstream requests: the
 // HTTP statuses received, and the route refusals (a redirect) it recorded.
 type Observed struct {
@@ -78,6 +86,7 @@ type Observed struct {
 type Config struct {
 	Registry registry.Registry
 	Leases   Leases
+	Attempts Attempts
 	Secrets  Secrets
 	Intents  Intents
 	Inject   map[types.Slug]Injector // by destination id; Bearer when absent
@@ -97,8 +106,8 @@ type Gateway struct {
 // New is a gateway with no binding. A zero Registry registers nothing, so
 // it refuses every call.
 func New(cfg Config) (*Gateway, error) {
-	if cfg.Leases == nil || cfg.Secrets == nil || cfg.Intents == nil {
-		return nil, errors.New("gateway: a gateway needs the lease reader, the secrets and the intents")
+	if cfg.Leases == nil || cfg.Attempts == nil || cfg.Secrets == nil || cfg.Intents == nil {
+		return nil, errors.New("gateway: a gateway needs the lease and attempt readers, the secrets and the intents")
 	}
 	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, intended: map[[32]byte]bool{},
 		observed: map[types.AttemptID]Observed{}}, nil
@@ -278,6 +287,16 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 	case err != nil:
 		return nil, none, &refusal{http.StatusServiceUnavailable, "lease_unreadable"}
 	case !ok || l.State != types.LeaseStateActive || l.Attempt == nil || *l.Attempt != b.Attempt:
+		return nil, none, &refusal{http.StatusConflict, "lease_not_running_attempt"}
+	}
+	// An active lease does not prove its attempt runs: a stop leaves the
+	// lease active on a stopping attempt. Checked on every request, cached
+	// intent or not.
+	a, current, ok, err := g.cfg.Attempts.Attempt(ctx, b.Attempt)
+	switch {
+	case err != nil:
+		return nil, none, &refusal{http.StatusServiceUnavailable, "lease_unreadable"}
+	case !ok || !current || a.Status != types.AttemptStatusRunning || a.Lease != b.Lease || a.Unit != l.Unit:
 		return nil, none, &refusal{http.StatusConflict, "lease_not_running_attempt"}
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
