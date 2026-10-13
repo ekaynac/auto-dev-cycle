@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eventMethod, serve } from "@adc/contract";
-import { HttpChatAdapter } from "../src/adapter.ts";
+import { HttpChatAdapter, maxCallsPerTurn } from "../src/adapter.ts";
 import { requestKeys } from "../src/gateway.ts";
 import { call, refused, reply, stub, type Answer, type Stub } from "./stub.ts";
 
@@ -259,6 +259,44 @@ test("the gateway is reached through its Unix socket, under the base_url's path"
   assert.equal(r.outcome, "empty");
   // base_url is the OpenAI-style prefix: the gateway itself serves /chat/completions at its root.
   assert.equal(s.seen[0].path, "/v1/chat/completions");
+});
+
+test("F: at most 64 tool calls run per turn; the rest are answered with an error", async (t) => {
+  const d = dirs(t);
+  const s = await withStub(t, [reply({ tool_calls: Array.from({ length: 70 }, (_, i) => call(`c${i}`, "list_dir", { path: "" })) }), reply({ content: "done" })]);
+  const msgs = await session(new HttpChatAdapter(), prepare(d, s), runParams(d));
+  assert.equal(result(msgs).outcome, "empty");
+  assert.equal(events(msgs, "tool.result").length, maxCallsPerTurn);
+  const answers = s.seen[1].body.messages.filter((m: any) => m.role === "tool");
+  assert.equal(answers.length, 70, "every call gets an answer");
+  assert.match(answers[69].content, /at most 64 tool calls/);
+});
+
+test("F: the run ends before a request would pass the gateway's 8 MiB bound", async (t) => {
+  const d = dirs(t);
+  writeFileSync(join(d.ws, "big.txt"), "x".repeat(250 << 10));
+  const s = await withStub(t, [reply({ tool_calls: Array.from({ length: 40 }, (_, i) => call(`c${i}`, "read_file", { path: "big.txt" })) }), reply({ content: "done" })]);
+  const r = result(await session(new HttpChatAdapter(), prepare(d, s), runParams(d)));
+  assert.deepEqual([r.outcome, r.reason], ["could_not_run", "executor_incomplete"]);
+  assert.match(r.detail, /request bound/);
+  assert.equal(s.seen.length, 1, "the oversized request is never sent");
+});
+
+test("upstream tool calls are rebuilt to their known fields; one that is not an object is degenerate", async (t) => {
+  const d = dirs(t);
+  const odd = { ...call("c1", "list_dir", { path: "" }), extra: "x", function: { name: "list_dir", arguments: "{}", provider: "other" } };
+  const s = await withStub(t, [reply({ tool_calls: [odd, { id: 7 }] }), reply({ tool_calls: [null] })]);
+  const msgs = await session(new HttpChatAdapter(), prepare(d, s), runParams(d));
+  assert.deepEqual(s.seen[1].body.messages.at(-2).tool_calls, [{ id: "c1", type: "function", function: { name: "list_dir", arguments: "{}" } }]);
+  assert.deepEqual([result(msgs).outcome, result(msgs).reason], ["could_not_run", "degenerate_output"]);
+});
+
+test("F: a turn reporting no usage counts its whole allowance against the output limit", async (t) => {
+  const d = dirs(t);
+  const s = await withStub(t, [reply({ tool_calls: [call("c1", "list_dir", { path: "" })] }, null), reply({ content: "done" }, null)]);
+  const r = result(await session(new HttpChatAdapter(), prepare(d, s, "builder", { limits: { max_turns: 6, max_output_tokens: 100, wall_seconds: 60 } }), runParams(d)));
+  assert.deepEqual([r.outcome, r.reason, r.usage_final], ["could_not_run", "executor_incomplete", null]);
+  assert.equal(s.seen.length, 1);
 });
 
 test("prepare refuses what http-chat does not serve", async (t) => {

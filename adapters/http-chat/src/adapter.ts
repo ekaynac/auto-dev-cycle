@@ -52,7 +52,24 @@ type Usage = Omit<Extract<EventBody, { event: "usage" }>, "event" | "sub_call" |
 type Message = { role: string; content: string | null; tool_calls?: ToolCall[]; tool_call_id?: string };
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
 
+/** The tool calls handled per turn; the rest are answered with an error. */
+export const maxCallsPerTurn = 64;
+/** The gateway's bound on one request body (internal/gateway maxBody). */
+export const maxRequestBytes = 8 << 20;
+
 const count = (v: unknown) => (Number.isSafeInteger(v) && (v as number) >= 0 ? (v as number) : 0);
+const cap = (v: unknown, n: number) => (typeof v === "string" ? v.slice(0, n) : null);
+
+/** toolCalls keeps a reply's well-formed tool calls, rebuilt with capped
+ *  strings and nothing else; null when one is not an object. */
+function toolCalls(raw: unknown): ToolCall[] | null {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.some((c) => typeof c !== "object" || c === null)) return null;
+  return raw.flatMap((c) => {
+    const [id, name, args] = [cap(c.id, 256), cap(c.function?.name, 128), cap(c.function?.arguments, maxRequestBytes)];
+    return id !== null && name !== null && args !== null ? [{ id, type: "function" as const, function: { name, arguments: args } }] : [];
+  });
+}
 
 /** usageOf is a response's usage report, or null when it has none. Its cost
  *  is the upstream's when reported (OpenRouter's usage.cost, in USD), else
@@ -137,7 +154,7 @@ export class HttpChatAdapter extends Adapter {
   /** tool runs one workspace tool call; its result is the model's to read. */
   private async tool(c: ToolCall): Promise<string> {
     const { workspace: w, tools } = this.prepared!;
-    const name = c.function?.name;
+    const name = c.function.name;
     if (!tools.includes(name)) return `error: there is no tool ${JSON.stringify(name)}`;
     let a: any;
     try {
@@ -166,9 +183,12 @@ export class HttpChatAdapter extends Adapter {
     const ended = (reason: string, detail: string, outcome: "could_not_run" | "failed" = "could_not_run"): AdapterRunResult => ({ outcome, reason, detail, result: null, usage_final: null });
     let schema: unknown = defaultDecisionSchema;
     let check: Validator;
-    const messages: Message[] = [{ role: "system", content: system[role] }];
+    const messages: Message[] = [];
+    let size = 0; // the bytes of messages, kept as they grow
+    const push = (m: Message) => void (messages.push(m), (size += Buffer.byteLength(JSON.stringify(m)) + 1));
+    push({ role: "system", content: system[role] });
     try {
-      messages.push({ role: "user", content: await this.input(r.prompt) });
+      push({ role: "user", content: await this.input(r.prompt) });
       if (role === "reviewer" && r.response_schema) schema = JSON.parse(await this.input(r.response_schema));
       check = new Ajv2020({ allErrors: false, strict: false }).compile(schema);
     } catch (e) {
@@ -185,6 +205,7 @@ export class HttpChatAdapter extends Adapter {
       const body: ChatRequest = { model: p.model, messages, max_tokens: Math.max(1, p.limits.max_output_tokens - outTokens), stream: false };
       if (tools.length) Object.assign(body, { tools: tools.map((t) => ({ type: "function", function: { name: t, description: toolSpecs[t].description, parameters: { type: "object", properties: toolSpecs[t].properties, required: Object.keys(toolSpecs[t].properties) } } })), tool_choice: "auto" });
       if (role === "reviewer") body.response_format = { type: "json_schema", json_schema: { name: "decision", schema } };
+      if (Buffer.byteLength(JSON.stringify({ ...body, messages: [] })) + size > maxRequestBytes) return ended("executor_incomplete", `the conversation would pass the gateway's ${maxRequestBytes}-byte request bound`);
       const began = Date.now();
       let reply;
       try {
@@ -203,7 +224,8 @@ export class HttpChatAdapter extends Adapter {
       const msg = res?.choices?.[0]?.message;
       if (typeof msg !== "object" || msg === null) return yield* this.failed({ outcome: "could_not_run", reason: "degenerate_output", hint: "degenerate", detail: "the reply holds no message" }, reply.text, turn);
       const content = typeof msg.content === "string" ? msg.content : null;
-      const calls: ToolCall[] = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+      const calls = toolCalls(msg.tool_calls);
+      if (calls === null) return yield* this.failed({ outcome: "could_not_run", reason: "degenerate_output", hint: "degenerate", detail: "a tool call is not an object" }, reply.text, turn);
       const model = typeof res.model === "string" && res.model.length > 0 ? res.model.slice(0, 256) : "unreported";
       const provider = typeof res.provider === "string" && res.provider.length > 0 ? res.provider.slice(0, 256) : "openai-compatible";
       yield { event: "upstream", turn, sub_call: sub, provider, model_reported: model };
@@ -214,12 +236,20 @@ export class HttpChatAdapter extends Adapter {
         yield { event: "usage", sub_call: sub, sequence: usages.length, ...u };
         usages.push(u);
         outTokens += u.tokens.out;
-      } else complete = false;
-      messages.push({ role: "assistant", content, ...(calls.length ? { tool_calls: calls } : {}) });
-      for (const c of calls) {
+      } else {
+        // Unreported usage counts as the whole allowance asked for: the limit still ends the loop.
+        complete = false;
+        outTokens += body.max_tokens as number;
+      }
+      push({ role: "assistant", content, ...(calls.length ? { tool_calls: calls } : {}) });
+      for (const [i, c] of calls.entries()) {
+        if (i >= maxCallsPerTurn) {
+          push({ role: "tool", tool_call_id: c.id, content: `error: at most ${maxCallsPerTurn} tool calls are run per turn` });
+          continue;
+        }
         const out = await this.tool(c);
-        messages.push({ role: "tool", tool_call_id: String(c.id), content: out });
-        yield { event: "tool.result", turn, tool: tools.includes(c.function?.name) ? c.function.name : "unknown", mediated_by_controller: false, delivered: null, bytes: Buffer.byteLength(out) };
+        push({ role: "tool", tool_call_id: c.id, content: out });
+        yield { event: "tool.result", turn, tool: tools.includes(c.function.name) ? c.function.name : "unknown", mediated_by_controller: false, delivered: null, bytes: Buffer.byteLength(out) };
       }
       yield { event: "coverage", turn, observable: calls.length ? "partial" : "complete", unobservable: calls.length ? ["harness_tool"] : [] };
       yield { event: "turn.end", turn, sub_call: sub, reported_at: new Date().toISOString() };
