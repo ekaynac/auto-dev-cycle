@@ -204,7 +204,7 @@ func TestDurability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"blobs/sha256", "blobs/tmp", "blobs", "."}; !equal(*syncs, want) {
+	if want := []string{"blobs/sha256", "blobs/tmp", "blobs/uploads", "blobs", "."}; !equal(*syncs, want) {
 		t.Fatalf("Open synced %v, want %v", *syncs, want)
 	}
 	*syncs = nil

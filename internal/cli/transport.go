@@ -68,4 +68,6 @@ func (f failing) Bootstrap(context.Context, []byte) ([]byte, error) { return nil
 
 func (f failing) Read(context.Context, string) ([]byte, error) { return nil, f.err }
 
+func (f failing) Blob(context.Context, []byte) ([]byte, error) { return nil, f.err }
+
 func (f failing) Follow(context.Context, int64) (io.ReadCloser, error) { return nil, f.err }

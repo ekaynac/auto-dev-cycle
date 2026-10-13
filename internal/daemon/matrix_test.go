@@ -142,7 +142,7 @@ func TestMatrixRefusesMisclassification(t *testing.T) {
 // each pattern routes as before, the bootstrap only with a bootstrapper,
 // and nothing else is served.
 func TestRoutesUnchanged(t *testing.T) {
-	want := []string{"POST /v1/bootstrap", "GET /v1/events", "GET /v1/version", "POST /v1/commands/{action}", "GET /v1/whoami", "GET /v1/{resource}"}
+	want := []string{"POST /v1/bootstrap", "GET /v1/events", "GET /v1/version", "POST /v1/commands/{action}", "GET /v1/whoami", "GET /v1/{resource}", "POST /v1/blobs", "GET /v1/blobs"}
 	if !slices.Equal(Routes(), want) {
 		t.Fatalf("routes %v", Routes())
 	}
@@ -151,7 +151,7 @@ func TestRoutesUnchanged(t *testing.T) {
 		return p
 	}
 	for route, path := range map[string]string{want[0]: "/v1/bootstrap", want[1]: "/v1/events", want[2]: "/v1/version",
-		want[3]: "/v1/commands/seat.take", want[4]: "/v1/whoami", want[5]: "/v1/grants"} {
+		want[3]: "/v1/commands/seat.take", want[4]: "/v1/whoami", want[5]: "/v1/grants", want[6]: "/v1/blobs", want[7]: "/v1/blobs"} {
 		method, _, _ := strings.Cut(route, " ")
 		if got := pattern(&bootstrapper{}, method, path); got != route {
 			t.Errorf("%s %s routes to %q", method, path, got)

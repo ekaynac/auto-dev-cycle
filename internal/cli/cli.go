@@ -16,10 +16,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
@@ -50,6 +53,12 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 	if len(args) >= 1 && args[0] == "doctor" {
 		return doctor(ctx, args[1:], stdout, stderr, c, hostSystem())
 	}
+	if len(args) >= 2 && args[0] == "blob" && args[1] == "put" {
+		return blob(ctx, "adc blob put", true, args[2:], stdout, stderr, c)
+	}
+	if len(args) >= 3 && args[0] == "dev" && args[1] == "blob" && args[2] == "uploads" {
+		return blob(ctx, "adc dev blob uploads", false, args[3:], stdout, stderr, c)
+	}
 	if len(args) == 0 || !isNoun(args[0]) {
 		return entry.Main("adc", args, stdout, stderr)
 	}
@@ -79,12 +88,39 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 	key := fs.String("idempotency-key", "", "repeat a command safely with the same key (default: a new key)")
 	asJSON := fs.Bool("json", false, "print the response as one JSON document")
 	tokenOut := fs.String("token-out", "", "a command that issues a token: the new file it is written to, 0600 (required; never an existing file)")
+	scopeFile := fs.String("scope-file", "", "read the scope from this JSON file instead of --scope")
+	var attach []string
+	fs.Func("attach", "upload this file (at most 1 MiB) first and list it in the scope's attachments, as {name, digest}; repeatable",
+		func(s string) error { attach = append(attach, s); return nil })
 	if code, ok := parse(fs, args, stderr); !ok {
 		return code
 	}
 	usage := func(format string, a ...any) int {
 		say(stderr, "%s: %s\n", name, fmt.Sprintf(format, a...))
 		return entry.ExitUsage
+	}
+	if *scopeFile != "" {
+		b, err := os.ReadFile(*scopeFile)
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "scope" {
+				err = errors.New("--scope is given too")
+			}
+		})
+		if err != nil {
+			return usage("--scope-file needs a readable file and no --scope")
+		}
+		*scope = string(b)
+	}
+	var obj map[string]json.RawMessage
+	if len(attach) > 0 && (json.Unmarshal([]byte(*scope), &obj) != nil || obj == nil || obj["attachments"] != nil) {
+		return usage("--attach needs a scope that is a JSON object without attachments")
+	}
+	names := map[string]bool{}
+	for _, f := range attach {
+		if names[filepath.Base(f)] {
+			return usage("--attach names %s twice", filepath.Base(f))
+		}
+		names[filepath.Base(f)] = true
 	}
 	if fs.NArg() > 0 {
 		return usage("unexpected argument %s", fs.Arg(0))
@@ -106,6 +142,25 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 			say(stderr, "%s: could_not_run: %s\n", name, err)
 			return entry.ExitCouldNotRun
 		}
+	}
+	if len(attach) > 0 {
+		list := make([]map[string]string, 0, len(attach))
+		for _, f := range attach {
+			u, _, err := put(ctx, c, f)
+			if err != nil {
+				return failed(stderr, name+" --attach", err) // nothing was sent
+			}
+			list = append(list, map[string]string{"name": filepath.Base(f), "digest": string(u.Digest)})
+		}
+		b, err := json.Marshal(list)
+		if err == nil {
+			obj["attachments"] = b
+			b, err = json.Marshal(obj)
+		}
+		if err != nil {
+			return usage("--attach: %v", err)
+		}
+		*scope = string(b)
 	}
 	req := types.CommandRequest{IdempotencyKey: *key, Expected: expected, Scope: json.RawMessage(*scope), Reason: *reason}
 	// The bytes validated are the bytes sent.
@@ -286,4 +341,81 @@ type NoTransport struct{}
 // Command always fails with ErrNoTransport.
 func (NoTransport) Command(context.Context, string, []byte) ([]byte, error) {
 	return nil, ErrNoTransport
+}
+
+// Uploader is a Client that also uploads a blob (POST /v1/blobs), or with
+// nil data lists the uploads.
+type Uploader interface {
+	Blob(ctx context.Context, data []byte) ([]byte, error)
+}
+
+// put uploads the file at path; the server refuses one over its bound, so
+// no more than one byte past it is read or sent.
+func put(ctx context.Context, c Client, path string) (types.BlobUpload, []byte, error) {
+	var u types.BlobUpload
+	up, ok := c.(Uploader)
+	if !ok {
+		return u, nil, ErrNoTransport
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return u, nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(f, blobstore.MaxUploadBytes+1))
+	if err = errors.Join(err, f.Close()); err != nil {
+		return u, nil, err
+	}
+	raw, err := up.Blob(ctx, append([]byte{}, data...))
+	if err == nil {
+		err = json.Unmarshal(raw, &u)
+	}
+	return u, raw, err
+}
+
+// blob is `adc blob put --file F` (isPut) and `adc dev blob uploads`.
+func blob(ctx context.Context, name string, isPut bool, args []string, stdout, stderr io.Writer, c Client) int {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "print the controller's response as one JSON document")
+	file := new(string)
+	if isPut {
+		file = fs.String("file", "", "the file to upload, at most 1 MiB (required)")
+	}
+	if code, ok := parse(fs, args, stderr); !ok {
+		return code
+	}
+	if fs.NArg() > 0 || (isPut && *file == "") {
+		say(stderr, "%s: unexpected argument, or no --file\n", name)
+		return entry.ExitUsage
+	}
+	var raw []byte
+	var err error
+	if isPut {
+		_, raw, err = put(ctx, c, *file)
+	} else if up, ok := c.(Uploader); ok {
+		raw, err = up.Blob(ctx, nil)
+	} else {
+		err = ErrNoTransport
+	}
+	if err != nil {
+		return failed(stderr, name, err)
+	}
+	var list types.ReadList
+	if *asJSON {
+		err = sayJSON(stdout, raw)
+	} else if !isPut {
+		err = json.Unmarshal(raw, &list)
+	} else {
+		list.Items = []json.RawMessage{raw}
+	}
+	for _, it := range list.Items {
+		var u types.BlobUpload
+		if err = errors.Join(err, json.Unmarshal(it, &u)); err == nil {
+			err = say(stdout, "%s by %s: %d bytes, expires at %s\n", u.Digest, u.Actor, u.Size, u.ExpiresAt)
+		}
+	}
+	if err != nil {
+		say(stderr, "%s: could_not_run: writing the result: %s\n", name, err)
+		return entry.ExitCouldNotRun
+	}
+	return entry.ExitOK
 }

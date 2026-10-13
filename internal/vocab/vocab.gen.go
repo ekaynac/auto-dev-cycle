@@ -145,6 +145,8 @@ var (
 	ReasonTokenNotLive = types.ReasonCodeOf("token_not_live")
 	// ReasonUnsafeOutput: An adapter output violated the ingestion boundary (symlink, special file, digest mismatch, foreign handle).
 	ReasonUnsafeOutput = types.ReasonCodeOf("unsafe_output")
+	// ReasonUploadBoundExceeded: A blob upload is over 1 MiB, or would put its actor over 64 unclaimed uploads or 32 MiB (POST /v1/blobs); nothing was stored.
+	ReasonUploadBoundExceeded = types.ReasonCodeOf("upload_bound_exceeded")
 	// ReasonViewStale: A cached view's recorded fingerprint differs from the one recomputed over its current inputs, so it is not served but regenerated.
 	ReasonViewStale = types.ReasonCodeOf("view_stale")
 )

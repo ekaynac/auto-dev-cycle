@@ -51,6 +51,8 @@ and the generated API description (gen-check pins the committed `schemas/openapi
 | seat | `GET /v1/seat` | `adc seat status` |
 | whoami | `GET /v1/whoami` | `adc admin whoami` |
 | bootstrap | `POST /v1/bootstrap` | `adc admin bootstrap` |
+| blob upload | `POST /v1/blobs` | `adc blob put` |
+| blob-uploads | `GET /v1/blobs` | `adc dev blob uploads` |
 
 ## Served, not in the API description
 

@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/ekaynac/auto-dev-cycle/internal/api"
 	"github.com/ekaynac/auto-dev-cycle/internal/apidoc"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
@@ -133,7 +134,9 @@ func (t Transport) do(ctx context.Context, method, path string, body io.Reader, 
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.Reveal())
-	if body != nil {
+	if body != nil && path == api.BlobsPath {
+		req.Header.Set("Content-Type", "application/octet-stream")
+	} else if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := t.httpClient(stream).Do(req)

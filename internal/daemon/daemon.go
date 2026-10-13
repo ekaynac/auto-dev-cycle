@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ekaynac/auto-dev-cycle/internal/api"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
@@ -30,6 +31,7 @@ import (
 type Daemon struct {
 	lock     *eventstore.Lock
 	store    *eventstore.Store
+	blobs    *blobstore.Store
 	head     eventstore.Head    // verified at start
 	system   identity.Principal // the system actor's, held only here
 	boot     *bootstrapper
@@ -158,7 +160,7 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	if err != nil {
 		return nil, err
 	}
-	return &Daemon{lock: lock, store: store, head: head, system: system, boot: boot, clock: clock, note: note, az: az}, nil
+	return &Daemon{lock: lock, store: store, blobs: blobs, head: head, system: system, boot: boot, clock: clock, note: note, az: az}, nil
 }
 
 // Head is the event log's head verified at start.
@@ -195,7 +197,7 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 		return err
 	}
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), log: logw,
-		authenticated: cfg.authenticated})
+		blobs: d.blobs, clock: d.clock, authenticated: cfg.authenticated})
 	if err == nil && tc != nil {
 		if err = srv.listenHTTPS(d.store, cfg.HTTPS.Addr, tc); err != nil {
 			_ = srv.close() // the refusal is err
@@ -217,11 +219,16 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	if ready != nil {
 		ready(d)
 	}
+	purging, stopPurge := context.WithCancel(ctx)
+	purged := make(chan struct{})
+	go func() { defer close(purged); d.purgeUploads(purging, purgeEvery, logw) }()
 	var failed error
 	select {
 	case <-ctx.Done():
 	case failed = <-srv.failed:
 	}
+	stopPurge()
+	<-purged
 	serr := srv.close()
 	if err := d.Close(); err != nil {
 		return couldNotRun(vocab.ReasonStoreUnreadable, "the event store did not close cleanly", err)
@@ -231,4 +238,24 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	}
 	fmt.Fprintln(logw, "adcd: stopped")
 	return nil
+}
+
+// purgeEvery is how often expired uploads are purged.
+const purgeEvery = time.Minute
+
+// purgeUploads purges expired uploads now and then every period until ctx
+// ends; a failure is logged and retried at the next period.
+func (d *Daemon) purgeUploads(ctx context.Context, period time.Duration, logw io.Writer) {
+	t := time.NewTicker(period)
+	defer t.Stop()
+	for {
+		if _, err := api.PurgeExpired(ctx, d.store, d.blobs, d.system, d.clock(), logw); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(logw, "adcd: purging expired uploads: %v\n", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

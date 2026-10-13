@@ -41,6 +41,7 @@ const (
 	bootstrapResponse = "api/bootstrap-response.json"
 	readSchema        = "api/read-list.json"
 	whoamiSchema      = "api/whoami.json"
+	blobSchema        = "api/blob-upload.json"
 )
 
 // ComponentName is the component a schema file is embedded under
@@ -136,6 +137,14 @@ func reads() map[string]map[string]operation {
 			[]parameter{{Name: "resource", In: "path", Required: true, Description: "A registered resource.", Schema: str}},
 			readResponses(body{Description: "The readable records.", Content: jsonOf(readSchema)}, "403", notGranted, "404", "No such resource.")),
 	}
+	out[api.BlobsPath] = map[string]operation{
+		"post": {OperationID: "blob.upload", Tags: []string{"blob"}, Summary: "Store the body (at most 1 MiB) as the caller's upload, for a later command of the same caller to reference before it expires; an operator's or a supervisor's.",
+			RequestBody: &body{Required: true, Content: map[string]media{"application/octet-stream": {}}},
+			Responses: readResponses(body{Description: "The upload.", Content: jsonOf(blobSchema)}, "403", "failed/actor_kind_refused: not an operator or a supervisor.",
+				"413", "failed/upload_bound_exceeded: over 1 MiB, or over the caller's 64 uploads or 32 MiB; nothing was stored.")},
+		"get": op("blob-uploads", "The unclaimed uploads, never their bytes; an operator's.", nil,
+			readResponses(body{Description: "The uploads.", Content: jsonOf(readSchema)}, "403", "failed/operator_only: not an operator."))["get"],
+	}
 	for name, res := range api.Registered() {
 		list := &ref{AllOf: []any{map[string]string{"$ref": "#/components/schemas/" + ComponentName(readSchema)},
 			map[string]any{"properties": map[string]any{"resource": map[string]string{"const": name},
@@ -149,7 +158,7 @@ func reads() map[string]map[string]operation {
 // readSchemas are the schema files of the reads: the list, whoami and each
 // registered resource's record.
 func readSchemas() []string {
-	out := []string{readSchema, whoamiSchema}
+	out := []string{readSchema, whoamiSchema, blobSchema}
 	for _, res := range api.Registered() {
 		out = append(out, res.Schema)
 	}
