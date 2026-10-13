@@ -34,8 +34,10 @@ type Resource struct {
 	// proposal, seat, note, project, hold, ...). It is declared here,
 	// never derived from the path.
 	Domain types.Name
-	// List is every record, read in the snapshot.
-	List func(tx *eventstore.Tx) ([]any, error)
+	// List is every record, read in the snapshot at at. Reads still
+	// authorizes each record it returns; a List may also use the scope to
+	// skip, before it reads them, records the caller cannot read.
+	List func(tx *eventstore.Tx, at ReadAt) ([]any, error)
 	// Project is a record's authoritative project in the same snapshot;
 	// nil is installation-wide, read only under an every-project read.
 	Project func(tx *eventstore.Tx, record any) (*types.ProjectID, error)
@@ -45,6 +47,13 @@ type Resource struct {
 	// Schema is the schema file of one record as sent (api/<name>.json),
 	// which the API description lists the resource with.
 	Schema string
+}
+
+// ReadAt is what a read lists at: its time and the caller's read scope,
+// taken in its snapshot.
+type ReadAt struct {
+	Now   time.Time
+	Scope authority.ReadScope
 }
 
 // Reads serves ReadPath over Resources and WhoamiPath, from Store.
@@ -69,11 +78,12 @@ func (h Reads) Resource(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	h.view(w, r, func(tx *eventstore.Tx, _ identity.Principal, _ types.Actor, scope authority.ReadScope) (any, error) {
+	h.view(w, r, func(tx *eventstore.Tx, _ identity.Principal, _ types.Actor, at ReadAt) (any, error) {
+		scope := at.Scope
 		if scope.Empty() {
 			return nil, errNotGranted
 		}
-		records, err := res.List(tx)
+		records, err := res.List(tx, at)
 		if err != nil {
 			return nil, err
 		}
@@ -112,7 +122,8 @@ func allowed(rec any, fields []string) (json.RawMessage, error) {
 
 // Whoami serves WhoamiPath: any authenticated caller reads its own.
 func (h Reads) Whoami(w http.ResponseWriter, r *http.Request) {
-	h.view(w, r, func(_ *eventstore.Tx, p identity.Principal, a types.Actor, scope authority.ReadScope) (any, error) {
+	h.view(w, r, func(_ *eventstore.Tx, p identity.Principal, a types.Actor, at ReadAt) (any, error) {
+		scope := at.Scope
 		out := types.Whoami{Actor: a.ID, Kind: types.WhoamiKind(a.Kind), Token: p.Token(), Listener: listeners[p.Via()],
 			Reads: types.WhoamiReads{Everything: scope.Everything(), Grants: []types.WhoamiReadsGrantsItem{}}}
 		for _, g := range scope.Reach() {
@@ -123,10 +134,11 @@ func (h Reads) Whoami(w http.ResponseWriter, r *http.Request) {
 }
 
 // view authenticates r's bearer on the listener that admitted it (through
-// that listener's verification slots), takes the caller's read scope and
-// runs read, all in one store snapshot, and writes what read returns.
+// that listener's verification slots), takes the read's one clock reading
+// and the caller's read scope at it, and runs read, all in one store
+// snapshot, and writes what read returns.
 func (h Reads) view(w http.ResponseWriter, r *http.Request,
-	read func(*eventstore.Tx, identity.Principal, types.Actor, authority.ReadScope) (any, error)) {
+	read func(*eventstore.Tx, identity.Principal, types.Actor, ReadAt) (any, error)) {
 	if r.URL.RawQuery != "" {
 		http.Error(w, "reads take no query parameters", http.StatusBadRequest)
 		return
@@ -156,11 +168,12 @@ func (h Reads) view(w http.ResponseWriter, r *http.Request,
 				authErr = err
 				return nil
 			}
-			scope, err := authority.ReadScopeOf(tx, a, Events{Now: h.Now}.now())
+			now := Events{Now: h.Now}.now()
+			scope, err := authority.ReadScopeOf(tx, a, now)
 			if err != nil {
 				return err
 			}
-			out, err = read(tx, p, a, scope)
+			out, err = read(tx, p, a, ReadAt{Now: now, Scope: scope})
 			return err
 		})
 	}()

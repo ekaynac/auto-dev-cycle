@@ -1,0 +1,258 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package api
+
+// The read-only board (docs/plan/01 §2.2 "Board and validated pull", D51;
+// M1 P4b): one card per task, a projection of the task and graph records
+// in the read's snapshot. Nobody writes it, and nothing on it is stored.
+//
+// Decisions:
+//   - A Ready task's column is its approval's: ready while its spec's
+//     approval is in force, else awaiting_approval (none, or revoked).
+//   - An admitted task's (authority.TaskAdmitted, written by P22a) column
+//     is its current (unsuperseded) nodes': running while a plan or build
+//     node is claimed or held; else verifying while an accept, gate or
+//     review node is; else done_candidate when a review node of the task's
+//     latest round (the highest round of its current nodes, so no later
+//     repair) completed go (outcome empty; merge is inactive in M1(a));
+//     else ready, with the admitted badge. A held node keeps its stage's
+//     column and carries its hold badges.
+//   - A column is never guessed. A task whose records do not determine one
+//     (an unknown state, a node kind outside M1(a)'s template, nodes of a
+//     task not admitted or not recorded, a damaged record, ...) is listed
+//     unplaced, with no column and a coarse reason; the other cards stand
+//     and the read succeeds.
+//   - Scope first: a task is derived only when the caller reads the board
+//     in its project (its task record's, else the one its nodes pinned,
+//     else none: installation-wide), so a record the caller cannot read
+//     never shapes what it is sent. Reads authorizes each card again.
+//   - A board read covers, by design, the task and hold data of the
+//     projects it reads: a card's id, project, title, approval and
+//     admission state and creation time, and per hold its id, hold, signal
+//     instance, owner, since and age. owner_ref (a concrete actor or owner)
+//     is sent only when the caller also reads holds in that project. Never
+//     sent: the spec's requirement, its attachments' names or digests, the
+//     spec digest (a digest over them, as the proposals read withholds its
+//     binding digest), and a hold's reason, escalation and pages.
+//   - Lease holds stay on GET /v1/holds: no lease is bound to a node
+//     before P8a.
+
+import (
+	"encoding/json"
+	"fmt"
+	"maps"
+	"slices"
+	"time"
+
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/authority"
+	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+)
+
+// boardDomain and holdDomain are the read kinds a board read checks.
+const (
+	boardDomain types.Name = "board"
+	holdDomain  types.Name = "hold"
+)
+
+// stages is the column each node kind of M1(a)'s template moves its
+// task's card to while claimed or held ("": none, a controller node).
+var stages = map[types.NodeKind]types.BoardPlacedCardColumn{
+	types.NodeKindPlan: types.BoardPlacedCardColumnRunning, types.NodeKindBuild: types.BoardPlacedCardColumnRunning,
+	types.NodeKindAccept: types.BoardPlacedCardColumnVerifying, types.NodeKindGate: types.BoardPlacedCardColumnVerifying,
+	types.NodeKindReview: types.BoardPlacedCardColumnVerifying, types.NodeKindReviewRequirement: "",
+}
+
+// board is the card of every task the caller reads the board of, in task
+// id order, then the unplaced tasks of no record, in task id order.
+var board = Resource{
+	Domain: boardDomain,
+	Schema: "api/board.json",
+	List: func(tx *eventstore.Tx, at ReadAt) ([]any, error) {
+		ids, err := authority.TaskIDs(tx)
+		if err != nil {
+			return nil, err
+		}
+		nodes, err := graph.Nodes(tx)
+		if err != nil {
+			return nil, err
+		}
+		byTask := map[types.TaskID][]graph.NodeView{}
+		for _, n := range nodes {
+			byTask[n.Task] = append(byTask[n.Task], n)
+		}
+		out := []any{}
+		// The recorded tasks, then the nodes' tasks of no record.
+		for i, id := range append(ids, slices.Sorted(maps.Keys(byTask))...) {
+			ns, ok := byTask[id]
+			if i >= len(ids) && !ok {
+				continue // a recorded task's nodes, listed with it
+			}
+			delete(byTask, id)
+			t, recorded, project, err := boardTask(tx, id)
+			switch {
+			case err != nil:
+				return nil, err
+			case !at.Scope.ReadsRecord(boardDomain, project): // never derived
+			case i >= len(ids):
+				out = append(out, unplaced(id, project, types.BoardUnplacedCardReasonTaskUnrecorded))
+			case !recorded:
+				out = append(out, unplaced(id, project, types.BoardUnplacedCardReasonDamagedRecord))
+			default:
+				out = append(out, boardCard(t, ns, at.Now, at.Scope.ReadsRecord(holdDomain, project)))
+			}
+		}
+		return out, nil
+	},
+	Project: func(tx *eventstore.Tx, rec any) (*types.ProjectID, error) {
+		var id types.TaskID
+		card, _ := rec.(types.BoardCard)
+		switch c := card.Variant.(type) {
+		case *types.BoardPlacedCard:
+			id = c.ID
+		case *types.BoardUnplacedCard:
+			id = c.ID
+		default:
+			return nil, fmt.Errorf("api: a board record of type %T", c)
+		}
+		_, _, project, err := boardTask(tx, id)
+		return project, err
+	},
+	Fields: []string{"type", "id", "project", "title", "column", "admitted", "approval", "created_at", "nodes", "reason"},
+}
+
+// boardTask is task id's record (recorded: it exists and reads as one)
+// and its project: its record's; for a record that does not read as one,
+// the registered project its project field alone names, else the one its
+// nodes pinned; else nil.
+func boardTask(tx *eventstore.Tx, id types.TaskID) (t authority.TaskRecord, recorded bool, project *types.ProjectID, err error) {
+	raw, ok, err := tx.Get(authority.TaskProjection, id)
+	if err != nil {
+		return t, false, nil, err
+	}
+	if ok && json.Unmarshal(raw, &t) == nil && t.ID == id {
+		return t, true, &t.Project, nil
+	}
+	var named struct {
+		Project types.ProjectID `json:"project"`
+	}
+	if ok && json.Unmarshal(raw, &named) == nil && named.Project != "" {
+		_, registered, err := tx.Get(authority.ProjectProjection, named.Project)
+		if err != nil || registered {
+			return t, false, &named.Project, err
+		}
+	}
+	p, pinned, err := graph.TaskProject(tx, id)
+	if err != nil || !pinned {
+		return t, false, nil, err
+	}
+	return t, false, &p, nil
+}
+
+func unplaced(id types.TaskID, project *types.ProjectID, reason types.BoardUnplacedCardReason) types.BoardCard {
+	return types.BoardCard{Variant: &types.BoardUnplacedCard{Type: "unplaced", ID: id, Project: project, Reason: reason}}
+}
+
+// boardCard is t's card over its nodes (node id order), its hold badges
+// aged at now, with their owner_ref only when ownerRefs; or t unplaced
+// when its records do not determine its column.
+func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ownerRefs bool) types.BoardCard {
+	project := t.Project
+	c := &types.BoardPlacedCard{Type: "placed", ID: t.ID, Project: t.Project, Title: t.Spec.Title, Admitted: t.State == authority.TaskAdmitted,
+		Approval: types.BoardPlacedCardApprovalNone, CreatedAt: t.CreatedAt, Nodes: []types.BoardNodeCard{}}
+	if a := t.Approval; a != nil {
+		if a.Status != authority.ApprovalInForce && a.Status != authority.ApprovalRevoked {
+			return unplaced(t.ID, &project, types.BoardUnplacedCardReasonUnknownState)
+		}
+		c.Approval = types.BoardPlacedCardApproval(a.Status)
+	}
+	switch {
+	case t.State == authority.TaskReady && len(nodes) > 0:
+		return unplaced(t.ID, &project, types.BoardUnplacedCardReasonNodesBeforeAdmission)
+	case t.State == authority.TaskReady && c.Approval == types.BoardPlacedCardApprovalInForce:
+		c.Column = types.BoardPlacedCardColumnReady
+		return types.BoardCard{Variant: c}
+	case t.State == authority.TaskReady:
+		c.Column = types.BoardPlacedCardColumnAwaitingApproval
+		return types.BoardCard{Variant: c}
+	case !c.Admitted:
+		return unplaced(t.ID, &project, types.BoardUnplacedCardReasonUnknownState)
+	}
+	latest, active, goRounds := int64(0), map[types.BoardPlacedCardColumn]bool{}, []int64{}
+	for _, n := range nodes {
+		stage, known := stages[n.Node.Kind]
+		switch {
+		case !known:
+			return unplaced(t.ID, &project, types.BoardUnplacedCardReasonDeferredNodeKind)
+		case n.Project != t.Project:
+			return unplaced(t.ID, &project, types.BoardUnplacedCardReasonNodeInAnotherProject)
+		case n.State.Result != nil && n.Outcome == nil:
+			return unplaced(t.ID, &project, types.BoardUnplacedCardReasonDamagedRecord)
+		}
+		card, reason := nodeCard(n, now, ownerRefs)
+		if reason != "" {
+			return unplaced(t.ID, &project, reason)
+		}
+		c.Nodes = append(c.Nodes, card)
+		s := n.State.State
+		if s != types.NodeStateStateSuperseded {
+			latest = max(latest, n.Node.Round)
+		}
+		switch {
+		case s == types.NodeStateStateClaimed || s == types.NodeStateStateHeld:
+			active[stage] = true
+		case s == types.NodeStateStateCompleted && n.Node.Kind == types.NodeKindReview && *n.Outcome == types.OutcomeEmpty:
+			goRounds = append(goRounds, n.Node.Round)
+		}
+	}
+	active[types.BoardPlacedCardColumnDoneCandidate] = slices.Contains(goRounds, latest)
+	c.Column = types.BoardPlacedCardColumnReady
+	for _, col := range []types.BoardPlacedCardColumn{types.BoardPlacedCardColumnRunning, types.BoardPlacedCardColumnVerifying, types.BoardPlacedCardColumnDoneCandidate} {
+		if active[col] {
+			c.Column = col
+			break
+		}
+	}
+	return types.BoardCard{Variant: c}
+}
+
+// nodeCard is n's card: a badge per hold (hold, signal, owner, age at now)
+// and per structural wait (the input, and its producer or owed input); or
+// the reason its records do not give one.
+func nodeCard(n graph.NodeView, now time.Time, ownerRefs bool) (types.BoardNodeCard, types.BoardUnplacedCardReason) {
+	c := types.BoardNodeCard{ID: n.Node.ID, Kind: types.BoardNodeCardKind(n.Node.Kind), Round: n.Node.Round,
+		State: types.BoardNodeCardState(n.State.State), Holds: []types.BoardHoldBadge{}, Waiting: []types.BoardWaitBadge{}}
+	for _, h := range n.State.Holds {
+		since, err := time.Parse(time.RFC3339Nano, string(h.Since))
+		if err != nil {
+			return c, types.BoardUnplacedCardReasonDamagedRecord
+		}
+		b := types.BoardHoldBadge{ID: h.ID, Hold: h.Hold, SignalInstance: h.SignalInstance, Owner: h.Owner, Since: h.Since,
+			AgeSeconds: max(0, int64(now.Sub(since)/time.Second))}
+		if ownerRefs {
+			b.OwnerRef = h.OwnerRef
+		}
+		c.Holds = append(c.Holds, b)
+	}
+	for _, name := range n.State.WaitingOn {
+		w := types.BoardWaitBadge{Input: name}
+		for _, in := range n.Node.Inputs {
+			switch src := in.Source.Variant.(type) {
+			case *types.ResultSource:
+				if in.Name == name {
+					w.Producer = &src.Producer
+				}
+			case *types.AnswerSource:
+				if in.Name == name {
+					w.OwedInput = &src.OwedInput
+				}
+			}
+		}
+		if w.Producer == nil && w.OwedInput == nil {
+			return c, types.BoardUnplacedCardReasonUndeclaredWait
+		}
+		c.Waiting = append(c.Waiting, w)
+	}
+	return c, ""
+}

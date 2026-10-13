@@ -34,7 +34,7 @@ import (
 var holds = Resource{
 	Domain: "hold",
 	Schema: "api/hold.json",
-	List: func(tx *eventstore.Tx) ([]any, error) {
+	List: func(tx *eventstore.Tx, _ ReadAt) ([]any, error) {
 		nodes, err := graph.Held(tx)
 		if err != nil {
 			return nil, err

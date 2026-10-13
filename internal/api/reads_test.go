@@ -27,7 +27,7 @@ import (
 // from the snapshot, its project the event's; its subject is never sent.
 var fixtures = api.Resource{
 	Domain: "fixture",
-	List: func(tx *eventstore.Tx) ([]any, error) {
+	List: func(tx *eventstore.Tx, _ api.ReadAt) ([]any, error) {
 		evs, err := tx.EventsAfter(0, 1000)
 		var out []any
 		for _, e := range evs {
@@ -297,7 +297,7 @@ func TestReadRefusesANonObjectRecord(t *testing.T) {
 	const good = "fixture-good-record"
 	for name, bad := range map[string]any{"null": nil, "a string": "x", "a number": 3, "an array": []any{map[string]any{"id": good}}} {
 		res := api.Resource{Domain: "fixture", Fields: []string{"id"},
-			List: func(*eventstore.Tx) ([]any, error) { return []any{map[string]any{"id": good}, bad}, nil },
+			List: func(*eventstore.Tx, api.ReadAt) ([]any, error) { return []any{map[string]any{"id": good}, bad}, nil },
 			Project: func(*eventstore.Tx, any) (*types.ProjectID, error) {
 				p := types.ProjectID(prjA)
 				return &p, nil

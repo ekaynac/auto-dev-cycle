@@ -24,7 +24,7 @@ import (
 // Registered is the daemon's resources, by path segment; each resource
 // family joins it with its projection.
 func Registered() map[string]Resource {
-	return map[string]Resource{"grants": grants, "proposals": proposals, "seat": seat, "notes": notes, "projects": projects, "holds": holds}
+	return map[string]Resource{"grants": grants, "proposals": proposals, "seat": seat, "notes": notes, "projects": projects, "holds": holds, "board": board}
 }
 
 // projects are every registered project, in id order. A project's project
@@ -32,7 +32,7 @@ func Registered() map[string]Resource {
 var projects = Resource{
 	Domain: "project",
 	Schema: "api/project.json",
-	List: func(tx *eventstore.Tx) ([]any, error) {
+	List: func(tx *eventstore.Tx, _ ReadAt) ([]any, error) {
 		return listed(tx, authority.ProjectProjection, func(doc map[string]any) (map[string]any, error) { return doc, nil })
 	},
 	Project: func(tx *eventstore.Tx, rec any) (*types.ProjectID, error) {
@@ -52,7 +52,7 @@ var projects = Resource{
 var grants = Resource{
 	Domain: "grant",
 	Schema: "api/grant.json",
-	List: func(tx *eventstore.Tx) ([]any, error) {
+	List: func(tx *eventstore.Tx, _ ReadAt) ([]any, error) {
 		return listed(tx, authority.GrantProjection, func(doc map[string]any) (map[string]any, error) {
 			g, ok := doc["grant"].(map[string]any)
 			if !ok {
@@ -89,7 +89,7 @@ var grants = Resource{
 var proposals = Resource{
 	Domain: "proposal",
 	Schema: "api/proposal.json",
-	List: func(tx *eventstore.Tx) ([]any, error) {
+	List: func(tx *eventstore.Tx, _ ReadAt) ([]any, error) {
 		return listed(tx, authority.ProposalProjection, func(doc map[string]any) (map[string]any, error) { return doc, nil })
 	},
 	Project: func(tx *eventstore.Tx, rec any) (*types.ProjectID, error) {
@@ -108,7 +108,7 @@ var proposals = Resource{
 var seat = Resource{
 	Domain: "seat",
 	Schema: "api/seat.json",
-	List: func(tx *eventstore.Tx) ([]any, error) {
+	List: func(tx *eventstore.Tx, _ ReadAt) ([]any, error) {
 		raw, recorded, err := authority.SeatRecord(tx)
 		version, err2 := authority.SeatVersion(tx)
 		if err := errors.Join(err, err2); err != nil {
@@ -150,7 +150,7 @@ var seat = Resource{
 var notes = Resource{
 	Domain: "note",
 	Schema: "api/note.json",
-	List: func(tx *eventstore.Tx) ([]any, error) {
+	List: func(tx *eventstore.Tx, _ ReadAt) ([]any, error) {
 		return listed(tx, authority.NoteProjection, func(doc map[string]any) (map[string]any, error) { return doc, nil })
 	},
 	Project: func(tx *eventstore.Tx, rec any) (*types.ProjectID, error) {
