@@ -214,6 +214,16 @@ func TestNewRefuses(t *testing.T) {
 			d.Executors[1].Destination.ID, d.Executors[1].Destination.Endpoint = "other", "HTTP://127.0.0.1:18080/v2/"
 			d.Executors[1].Group, g[0].Members, g[2].Members = g[2].ID, g[0].Members[:1], []types.ExecutorID{d.Executors[1].ID}
 		}, RuleDestination},
+		// One IP literal in two spellings is one origin (#226 entry 41).
+		"one endpoint, an IPv4-mapped literal": {func(d *types.ExecutorRegistry, g []types.ResourceGroup) {
+			d.Executors[1].Destination.ID, d.Executors[1].Destination.Endpoint = "other", "http://[::ffff:127.0.0.1]:18080/v2"
+			d.Executors[1].Group, g[0].Members, g[2].Members = g[2].ID, g[0].Members[:1], []types.ExecutorID{d.Executors[1].ID}
+		}, RuleDestination},
+		"one endpoint, two IPv6 spellings": {func(d *types.ExecutorRegistry, g []types.ResourceGroup) {
+			d.Executors[0].Destination.Endpoint, d.Executors[1].Destination.Endpoint = "http://[::1]:18080/v1", "http://[0:0::1]:18080/v1"
+			d.Executors[1].Destination.ID = "other"
+			d.Executors[1].Group, g[0].Members, g[2].Members = g[2].ID, g[0].Members[:1], []types.ExecutorID{d.Executors[1].ID}
+		}, RuleDestination},
 	} {
 		doc, g := clone(t, base), clone(t, gs)
 		c.edit(&doc, g)
@@ -423,5 +433,24 @@ func TestAliasedFamilyAcrossDestinationIDs(t *testing.T) {
 	rev.Model = "stub-reviewer-1" // positive control: another model
 	if err := (Registry{}).distinct(doc.Executors); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A registry cannot change once built (Astra, #246): nothing the caller
+// does to the document it passed, or to an executor Executor returned,
+// reaches it.
+func TestRegistryIsImmutable(t *testing.T) {
+	doc := load(t, "registry-stub.json")
+	r, err := New(doc, groups(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := doc.Executors[0].ID
+	*doc.Executors[0].CredentialRef = "changed-in-doc"
+	got, _ := r.Executor(id)
+	*got.CredentialRef = "changed-in-copy"
+	got.Price.InputUsdMicrosPerMtok = 1
+	if again, _ := r.Executor(id); *again.CredentialRef != "stub" || again.Price.InputUsdMicrosPerMtok != 1000000 {
+		t.Fatalf("the registry changed under it: credential %s, price %d", *again.CredentialRef, again.Price.InputUsdMicrosPerMtok)
 	}
 }

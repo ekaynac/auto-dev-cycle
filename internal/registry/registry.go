@@ -144,7 +144,7 @@ func New(doc types.ExecutorRegistry, groups []types.ResourceGroup) (Registry, er
 			return Registry{}, &Refusal{Executor: i, Rule: rule}
 		}
 		destinations[e.Destination.ID], ids[origin(e)] = e.Destination, e.Destination.ID
-		r.executors[e.ID] = e
+		r.executors[e.ID] = copyOf(e) // the caller keeps doc: nothing it changes reaches r
 	}
 	if err := r.accounts(doc.Executors, groups); err != nil {
 		return Registry{}, err
@@ -153,18 +153,23 @@ func New(doc types.ExecutorRegistry, groups []types.ResourceGroup) (Registry, er
 }
 
 // origin is the destination's normalised origin, scheme://host:port in
-// lower case with the scheme's default port made explicit. check has
-// already parsed the endpoint.
+// lower case with the scheme's default port made explicit, and an IP
+// literal in its one canonical form (IPv4-mapped IPv6 unmapped), so
+// [::1] and [0:0::1] are one origin. check has already parsed the
+// endpoint.
 func origin(e types.RegistryExecutor) string {
 	u, err := url.Parse(e.Destination.Endpoint)
 	if err != nil {
 		return "\x00" + e.Destination.Endpoint // never reached after check
 	}
-	scheme, port := strings.ToLower(u.Scheme), u.Port()
+	scheme, port, host := strings.ToLower(u.Scheme), u.Port(), strings.ToLower(u.Hostname())
 	if port == "" {
 		port = map[string]string{"http": "80", "https": "443"}[scheme]
 	}
-	return scheme + "://" + net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.Unmap().String()
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
 }
 
 // accounts ties groups to what they limit (Q8): executors on one account
@@ -307,10 +312,23 @@ func (r Registry) Family(id types.ExecutorID) string {
 	return receipt.UnknownFamily
 }
 
-// Executor is the registered executor.
+// Executor is the registered executor, a deep copy: a caller changing it
+// (its credential reference, price or retention) changes nothing here.
 func (r Registry) Executor(id types.ExecutorID) (types.RegistryExecutor, bool) {
 	e, ok := r.executors[id]
-	return e, ok
+	if !ok {
+		return types.RegistryExecutor{}, false
+	}
+	return copyOf(e), true
+}
+
+// copyOf deep-copies an executor through its JSON, so no pointer is shared.
+func copyOf(e types.RegistryExecutor) types.RegistryExecutor {
+	var c types.RegistryExecutor
+	if err := json.Unmarshal(mustJSON(e), &c); err != nil {
+		panic(err) // a generated type round-trips
+	}
+	return c
 }
 
 // floors orders trust classes and data floors: a destination meets a floor
