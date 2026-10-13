@@ -82,7 +82,14 @@ func git(ctx context.Context, dir string, env []string, args ...string) *exec.Cm
 	return cmd
 }
 
+// subcommands are what Repo.Git runs.
+var subcommands = []string{"status", "add", "rm", "diff", "show", "log", "commit", "checkout", "merge", "fetch", "pull",
+	"rev-parse", "ls-files", "cat-file", "read-tree", "write-tree", "update-index", "apply", "hash-object",
+	"for-each-ref", "symbolic-ref", "update-ref"}
+
 // Repo is a repository the controller cloned; its .git is never mounted.
+// A controller commit identity (user.name, user.email) must be set in it
+// before its snapshot is taken (P14): a later config change is refused.
 type Repo struct {
 	Dir     string
 	snap    string
@@ -212,8 +219,11 @@ func (r Repo) Git(ctx context.Context, tree string, args ...string) (*exec.Cmd, 
 	if snap, err := r.snapshot(); err != nil || r.snap == "" || snap != r.snap || r.refused == nil {
 		return nil, fmt.Errorf("%w: the controller repository's configuration changed", ErrGit)
 	}
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") { // a global option (-c, --no-pager, …) could hide the subcommand
-		return nil, fmt.Errorf("%w: an option before the subcommand", ErrSpec)
+	// Only allowlisted subcommands, never a global option first (-c,
+	// --no-pager, … could hide the subcommand): ls-remote, archive
+	// --remote, clone, submodule and remote reach other repositories.
+	if len(args) == 0 || !slices.Contains(subcommands, args[0]) {
+		return nil, fmt.Errorf("%w: a subcommand the controller's git does not run", ErrSpec)
 	}
 	if len(args) > 1 && (args[0] == "fetch" || args[0] == "pull") {
 		// No option at all (-u, --upload-pack, --exec name commands), and a

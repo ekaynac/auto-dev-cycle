@@ -112,7 +112,7 @@ func TestGitIsHardened(t *testing.T) {
 		t.Errorf("a submodule was fetched: %v", err)
 	}
 	// The base's executable script keeps its mode through CopyTree, add and commit.
-	cmd, err := repo.Git(ctx, tree, "ls-tree", "HEAD", "run.sh")
+	cmd, err := repo.Git(ctx, tree, "ls-files", "--stage", "run.sh") // the index, as committed
 	must(t, err)
 	if out, err := cmd.Output(); err != nil || !strings.HasPrefix(string(out), "100755 ") {
 		t.Errorf("run.sh at HEAD = %q, %v; want mode 100755", out, err)

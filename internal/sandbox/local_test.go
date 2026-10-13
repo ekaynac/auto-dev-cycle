@@ -46,8 +46,13 @@ func TestLocalPathBypasses(t *testing.T) {
 			t.Errorf("fetch through %s: %v, want ErrSpec", name, err)
 		}
 	}
-	if _, err := repo.Git(ctx, t.TempDir(), "--no-pager", "fetch", "--upload-pack=touch x", "origin"); !errors.Is(err, ErrSpec) {
-		t.Errorf("a global option before fetch: %v, want ErrSpec", err)
+	// Subcommands outside the allowlist reach other repositories without
+	// the fetch guard: refused, as is a global option before any.
+	for _, args := range [][]string{{"--no-pager", "fetch", "--upload-pack=touch x", "origin"}, {"ls-remote", h.ws},
+		{"archive", "--remote=" + h.ws, "HEAD"}, {"clone", h.ws, "x"}, {"remote", "add", "w", h.ws}, {"submodule", "update", "--init"}} {
+		if _, err := repo.Git(ctx, t.TempDir(), args...); !errors.Is(err, ErrSpec) {
+			t.Errorf("%q: %v, want ErrSpec", args, err)
+		}
 	}
 }
 
