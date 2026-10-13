@@ -68,6 +68,7 @@ const (
 	RuleDestination   Rule = "one destination id is registered with different properties, or one endpoint origin under two ids"
 	RuleEndpoint      Rule = "the endpoint is not an http(s) URL without credential, query, fragment, whitespace or backslash; a direct API's is https unless on a loopback address, a local endpoint's host a loopback, RFC 1918 or fc00::/7 IP literal"
 	RuleCredential    Rule = "a direct API needs a credential reference, and a local endpoint has none"
+	RuleCredentialRef Rule = "one credential reference is registered at two endpoint origins"
 	RuleGroup         Rule = "the group is not configured, does not list the executor, another group lists it, lists an unregistered executor or another destination, or one account or endpoint is split across groups"
 	RuleGroupKind     Rule = "the group is not a direct API's account_quota in tokens with a known or estimated limit, or a local endpoint's concurrency in slots with a known limit, released on_settle"
 	RulePriceBasis    Rule = "a price is given exactly for cash and subscription_equivalent; a local endpoint is local, a direct API is not"
@@ -176,13 +177,19 @@ func origin(e types.RegistryExecutor) string {
 // (a direct API's origin and credential) or one local endpoint (its
 // origin) draw from one group, a group
 // limits one destination, and every member of a group the registry names
-// is registered, so nothing unseen draws from it.
+// is registered, so nothing unseen draws from it. A credential reference
+// names one origin's credential: the gateway injects it there only (P11).
 func (r Registry) accounts(all []types.RegistryExecutor, groups []types.ResourceGroup) error {
 	account := map[string]types.ResourceGroupID{}
 	limits := map[types.ResourceGroupID]types.Slug{}
+	refs := map[types.Slug]string{} // credential reference → origin
 	for i, e := range all {
 		key := origin(e) // a local endpoint has no credential
 		if e.CredentialRef != nil {
+			if o, seen := refs[*e.CredentialRef]; seen && o != origin(e) {
+				return &Refusal{Executor: i, Rule: RuleCredentialRef}
+			}
+			refs[*e.CredentialRef] = origin(e)
 			key += "\x00" + string(*e.CredentialRef)
 		}
 		g, seen := account[key]
