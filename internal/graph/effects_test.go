@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/effecttarget"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -40,9 +42,11 @@ func openEffectStoreAt(t *testing.T, state string) graphStore {
 		t.Fatal(err)
 	}
 	none := func(*eventstore.Tx, eventstore.Command) error { return nil }
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: Kinds(), Blobs: blobs,
+	kinds := Kinds()
+	maps.Copy(kinds, lease.Kinds())
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
 		Effects: eventstore.EffectKinds{"deploy": {Idempotent: true, RequestBlob: true}, "merge": {}},
-		Hooks:   eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(Project)}})
+		Hooks:   eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(leases(blobs), Project)}})
 	if err != nil {
 		t.Fatal(err)
 	}

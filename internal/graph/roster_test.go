@@ -276,7 +276,7 @@ func TestReviewRequirement(t *testing.T) {
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return claimAny(tx, next, map[string]Resolved{}, 1)
 	})
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, first, next, nil, reviewers) })
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, first, next, reviewers) })
 	if err != nil {
 		t.Fatal(err)
 	}

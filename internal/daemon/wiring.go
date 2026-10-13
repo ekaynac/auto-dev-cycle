@@ -122,12 +122,13 @@ func eventKinds() (eventstore.Kinds, error) {
 // notes, projects, tasks, owed inputs, leases with their capacity reservations, the usage
 // ledger, then the graph, before the next event (eventstore.ProjectEach).
 // The graph comes after leases, whose projections its supersession fold
-// reads. A lease projector without Units admits no seal until units are
-// wired (fail closed). No graph event is admitted yet: no wired action
-// builds one, so the graph's projections stay empty until its actions are
+// reads. Units are nodes (graph.Units): an attempt starts only on a claimed
+// node's unit, and a seal binds its node's project and task. No graph
+// event is admitted yet: no wired action builds one, so the graph's
+// projections stay empty, and no attempt starts, until its actions are
 // wired.
 func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reservations) func(*eventstore.Tx, []eventstore.Event) error {
-	leases := lease.Projector{Blobs: blobs, Holds: holds}
+	leases := lease.Projector{Blobs: blobs, Holds: holds, Units: graph.Units{}}
 	return eventstore.ProjectEach(
 		identity.Projector{}.Project,
 		authority.GrantProjector{}.Project,

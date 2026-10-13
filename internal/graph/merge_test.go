@@ -456,7 +456,7 @@ func TestRefreshedEvidence(t *testing.T) {
 	if st := g.state(walk); st.State != types.NodeStateStateClaimed {
 		t.Fatalf("the refreshed walk is %s", st.State)
 	}
-	attempt := newAttempt()
+	attempt := g.attemptOn(walk)
 	g.must(func(tx *eventstore.Tx) (_ []eventstore.Event, err error) {
 		r := g.evidence(walk, nil)
 		r.Value = []types.Ref{g.sealed(types.RefTypeBlob, "trace", g.blob("trace"))}

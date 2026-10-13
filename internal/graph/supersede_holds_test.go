@@ -57,7 +57,7 @@ func on(t *testing.T, name, signal string) types.NodeHold {
 // moving is SupersedeMoving of pred to req with moves.
 func moving(pred, req types.NodeID, moves Moves) logic {
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return SupersedeMoving(tx, pred, req, nil, reviewers, moves, owedanswers.Authority{})
+		return SupersedeMoving(tx, pred, req, reviewers, moves, owedanswers.Authority{})
 	}
 }
 
@@ -246,7 +246,7 @@ func TestSupersedeHoldsRefused(t *testing.T) {
 		}
 	}
 	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return SupersedeMoving(tx, second, next, nil, reviewers, Moves{"data": nil}, nil)
+		return SupersedeMoving(tx, second, next, reviewers, Moves{"data": nil}, nil)
 	}); err == nil || !strings.Contains(err.Error(), "authority") {
 		t.Errorf("a move with no authority: %v", err)
 	}

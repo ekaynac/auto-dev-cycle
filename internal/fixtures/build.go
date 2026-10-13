@@ -245,7 +245,7 @@ func seal(do func(func(*eventstore.Tx) ([]eventstore.Event, error)) error, blobs
 		return err
 	}
 	rec := types.AttemptRecord{Attempt: att, Project: "prj_01m3250vkwffc979nzjw0g2sf9", Task: "tsk_01m3250v9xft08ssr4ygq6g2np", ContractRevision: "7",
-		FencingToken: 1, BaseTree: base, PartialDiff: partial, FailingTests: []string{}, Trail: trail, EvidenceManifest: manifest, Pinned: true,
+		FencingToken: 1, BaseTree: base, PartialDiff: partial, FailingTests: []string{}, Trail: trail, EvidenceManifest: manifest, Pinned: false, // M1 L1: nothing continues from it
 		Seal: types.AttemptRecordSeal{Reason: types.AttemptRecordSealReasonCompleted, At: time.Now().UTC().Format(time.RFC3339), SealedBy: types.ActorID(actor)}}
 	b, err := json.Marshal(rec)
 	if err != nil {

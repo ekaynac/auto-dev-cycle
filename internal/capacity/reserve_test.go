@@ -92,7 +92,7 @@ func openKinds(t *testing.T, dir string, how wiring, kinds eventstore.Kinds, gro
 	if err != nil {
 		t.Fatal(err)
 	}
-	lp := lease.Projector{Blobs: blobs, Holds: reg.Holds}
+	lp := lease.Projector{Blobs: blobs, Holds: reg.Holds, Units: anyUnit{}}
 	project := capacity.Hook(lp, r)
 	switch how {
 	case noneAtAll:
@@ -498,3 +498,13 @@ func TestGrantBeforeWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// anyUnit admits an attempt on every unit and binds none to a project and
+// task: these tests run leases with no graph (M1 P8a's binding).
+type anyUnit struct{}
+
+func (anyUnit) ProjectTask(*eventstore.Tx, types.UnitID) (types.ProjectID, types.TaskID, bool, error) {
+	return "", "", false, nil
+}
+
+func (anyUnit) Startable(*eventstore.Tx, types.UnitID) error { return nil }

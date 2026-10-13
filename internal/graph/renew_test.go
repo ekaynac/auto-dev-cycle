@@ -22,9 +22,8 @@ var (
 
 // recordResult records r for n.
 func (g graphStore) recordResult(n types.NodeID, r types.Result) error {
-	return g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return recordResult(tx, g.published(n, r), g.blobs)
-	})
+	rr := g.published(n, r)
+	return g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return recordResult(tx, rr, g.blobs) })
 }
 
 // A could_not_run evidence result retries on its probe: the retry wait's

@@ -12,11 +12,11 @@ package api
 //   - A lease records only the hold and its signal instance (05), so a
 //     lease hold has no id, since or concrete owner yet (null), and no
 //     pages. Its owner is the hold's registry owner; a hold the registry no
-//     longer lists is the operator's. A lease records no project, so its
-//     hold is installation-wide: read only under an every-project read.
-//     TODO(P8a): once attempts are bound to nodes, a lease hold's project
-//     is derivable from Lease.Unit (its node), so a project-scoped reader
-//     can see it.
+//     longer lists is the operator's.
+//   - A lease's unit is a node (M1 P8a, graph.Units), so its hold's project
+//     is its node's, re-read by the lease's id, and a project-scoped reader
+//     sees it. A lease whose unit no recorded node binds has no project: its
+//     hold is installation-wide, read only under an every-project read.
 
 import (
 	"encoding/json"
@@ -59,7 +59,11 @@ var holds = Resource{
 		case !ok:
 			return nil, fmt.Errorf("api: a hold record of type %T", rec)
 		case h.Held == types.HoldReadHeldLease:
-			return nil, nil
+			l, err := leaseRecord(tx, string(h.Subject))
+			if err != nil {
+				return nil, err
+			}
+			return unitProject(tx, l.Unit)
 		}
 		project, err := graph.ProjectOf(tx, types.NodeID(h.Subject))
 		return &project, err
@@ -76,19 +80,16 @@ func leaseHolds(tx *eventstore.Tx) ([]any, error) {
 	var reg *vocab.Registry
 	out := []any{}
 	for _, k := range keys {
-		raw, _, err := tx.Get(lease.LeaseProjection, k)
+		l, err := leaseRecord(tx, k)
 		if err != nil {
 			return nil, err
 		}
-		var stored struct {
-			Record types.Lease `json:"record"`
-		}
-		if err := json.Unmarshal(raw, &stored); err != nil {
-			return nil, fmt.Errorf("api: lease record %s is damaged: %w", k, err)
-		}
-		l := stored.Record
 		if l.Hold == nil {
 			continue
+		}
+		project, err := unitProject(tx, l.Unit)
+		if err != nil {
+			return nil, err
 		}
 		if reg == nil {
 			if reg, err = vocab.Load(); err != nil {
@@ -99,8 +100,36 @@ func leaseHolds(tx *eventstore.Tx) ([]any, error) {
 		if entry, ok := reg.Holds[l.Hold.Hold]; ok {
 			owner = entry.Owner
 		}
-		out = append(out, types.HoldRead{Held: types.HoldReadHeldLease, Subject: types.TypeID(l.ID), Hold: l.Hold.Hold, SignalInstance: l.Hold.SignalInstance,
-			Owner: owner, Pages: []types.HoldReadPagesItem{}})
+		out = append(out, types.HoldRead{Held: types.HoldReadHeldLease, Subject: types.TypeID(l.ID), Project: project, Hold: l.Hold.Hold,
+			SignalInstance: l.Hold.SignalInstance, Owner: owner, Pages: []types.HoldReadPagesItem{}})
 	}
 	return out, nil
+}
+
+// leaseRecord is lease id's projected record.
+func leaseRecord(tx *eventstore.Tx, id string) (types.Lease, error) {
+	var stored struct {
+		Record types.Lease `json:"record"`
+	}
+	raw, ok, err := tx.Get(lease.LeaseProjection, id)
+	switch {
+	case err != nil:
+		return types.Lease{}, err
+	case !ok:
+		return types.Lease{}, fmt.Errorf("api: no lease %s", id)
+	}
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return types.Lease{}, fmt.Errorf("api: lease record %s is damaged: %w", id, err)
+	}
+	return stored.Record, nil
+}
+
+// unitProject is the project of unit's node, nil for a unit no recorded
+// node binds.
+func unitProject(tx *eventstore.Tx, unit types.UnitID) (*types.ProjectID, error) {
+	project, _, ok, err := graph.Units{}.ProjectTask(tx, unit)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return &project, nil
 }

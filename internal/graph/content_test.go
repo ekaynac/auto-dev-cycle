@@ -13,6 +13,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/evidence"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -24,12 +25,13 @@ func isolatedProof(attempt types.AttemptID) types.IsolationProof {
 
 func newAttempt() types.AttemptID { return types.AttemptID(must(ids.New("att"))) }
 
-// published is r for n, with an attempt of its own and the proof of its
-// isolation when n is an evidence node.
+// published is r for n, with an attempt of its own, started on n's unit,
+// and the proof of its isolation when n is an evidence node. It runs
+// commands: call it outside a transaction.
 func (g graphStore) published(n types.NodeID, r types.Result) types.ResultRecorded {
 	rr := types.ResultRecorded{Node: n, Result: r}
 	if g.recordOf(n).Node.Kind == types.NodeKindEvidence {
-		attempt := newAttempt()
+		attempt := g.attemptOn(n)
 		rr.Attempt, rr.Isolation = &attempt, ptr(isolatedProof(attempt))
 	}
 	return rr
@@ -85,7 +87,7 @@ func TestCommitEvidenceIsolation(t *testing.T) {
 		"no setting at all":            func(p *types.IsolationProof) { p.Setting, p.Interfaces = nil, nil },
 		"an option without a value":    func(p *types.IsolationProof) { p.Setting = map[string]string{"network": ""} },
 	} {
-		attempt := newAttempt()
+		attempt := g.attemptOn(n)
 		proof := isolatedProof(attempt)
 		edit(&proof)
 		got, err := commitWith(n, attempt, proof)
@@ -93,7 +95,7 @@ func TestCommitEvidenceIsolation(t *testing.T) {
 			t.Errorf("%s: %v, published %+v, node %s", name, err, got, g.state(n).State)
 		}
 	}
-	attempt := newAttempt()
+	attempt := g.attemptOn(n)
 	if got, err := commitWith(n, attempt, isolatedProof(attempt)); err != nil || got.Outcome != types.OutcomeEmpty || g.state(n).State != types.NodeStateStateCompleted {
 		t.Fatalf("the isolated run: %v %+v, node %s", err, got, g.state(n).State)
 	}
@@ -105,34 +107,77 @@ func TestCommitEvidenceIsolation(t *testing.T) {
 
 	// The fold refuses, from the log alone, an evidence result with no or a
 	// failing proof, and a proof on another kind's result.
-	m := g.walk("forged", 9, 9)
-	bare := types.ResultRecorded{Node: m, Result: g.evidence(m, nil)}
-	empty := g.published(m, g.evidence(m, nil))
+	// Each case is on a node of its own, whose attempt is its current,
+	// finishing one unless the case says otherwise, so each is refused for
+	// its own reason.
+	fresh := func(name string) types.ResultRecorded {
+		n := g.walk(name, 9, 9)
+		return g.published(n, g.evidence(n, nil))
+	}
+	bare := fresh("bare")
+	bare.Attempt, bare.Isolation = nil, nil
+	empty := fresh("empty")
 	empty.Isolation.Setting = map[string]string{}
-	foreign := g.published(m, g.evidence(m, nil))
+	foreign := fresh("foreign")
 	foreign.Isolation.Run = evidence.RunOf(newAttempt())
-	unattempted := g.published(m, g.evidence(m, nil))
+	unattempted := fresh("unattempted")
 	unattempted.Attempt = nil
 	gate := g.record(g.newNode(types.NodeKindGate))
 	g.must(g.claimOf(gate))
-	onGate := g.published(m, g.evidence(m, nil))
-	onGate.Node, onGate.Result.Computation, onGate.Result.Kind, onGate.Result.Conclusions = gate, g.state(gate).Key.Key, types.ResultKindGateResult, ptr(conclusions)
-	for name, rr := range map[string]types.ResultRecorded{"no proof": bare, "an empty setting": empty, "a proof from another run": foreign,
-		"a proof without its attempt": unattempted, "a proof on a gate result": onGate} {
+	gated := g.attemptOn(gate) // the gate's own attempt: only the proof is wrong
+	onGate := types.ResultRecorded{Node: gate, Result: g.evidence(gate, nil), Attempt: &gated, Isolation: ptr(isolatedProof(gated))}
+	onGate.Result.Kind, onGate.Result.Conclusions = types.ResultKindGateResult, ptr(conclusions)
+	// Nor an attempt never started, or started on another node's unit
+	// (#226 entry 3): its result is refused on replay as at admission.
+	unstarted := fresh("unstarted")
+	unstarted.Attempt = ptr(newAttempt())
+	unstarted.Isolation.Run = evidence.RunOf(*unstarted.Attempt)
+	elsewhere := fresh("elsewhere")
+	elsewhere.Attempt = ptr(g.attemptOn(g.walk("elsewhere-run", 9, 9)))
+	elsewhere.Isolation.Run = evidence.RunOf(*elsewhere.Attempt)
+	// Nor the result of an attempt that did not submit one: stopped, or
+	// superseded by its node's next attempt.
+	cut := g.walk("stopped", 9, 9)
+	stopped := g.published(cut, g.evidence(cut, nil))
+	stopped.Attempt = ptr(g.runningOn(cut))
+	stopped.Isolation.Run = evidence.RunOf(*stopped.Attempt)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StopRunning(tx, *stopped.Attempt, types.AttemptStopReasonValueRevoke)
+	})
+	retired := fresh("retired")
+	g.attemptOn(retired.Node)
+	for name, c := range map[string]struct {
+		rr   types.ResultRecorded
+		want string
+	}{
+		"no proof":                    {bare, "published only with its run's isolation proof"},
+		"an empty setting":            {empty, "the isolation setting is empty"},
+		"a proof from another run":    {foreign, "the isolation probe ran in"},
+		"a proof without its attempt": {unattempted, "published only with its run's isolation proof"},
+		"a proof on a gate result":    {onGate, "only an evidence result carries an isolation proof"},
+		"an attempt never started":    {unstarted, "never started"},
+		"another node's attempt":      {elsewhere, "not node"},
+		"a stopped attempt's":         {stopped, "is stopping"},
+		"a superseded attempt's":      {retired, "is superseded"},
+	} {
+		rr := c.rr
 		rr.Type = "result_recorded"
-		if err := g.do(forge(ResultRecorded, string(rr.Result.ID), prjID, &rr)); err == nil {
-			t.Errorf("%s: the fold published it", name)
+		if err := g.do(forge(ResultRecorded, string(rr.Result.ID), prjID, &rr)); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: the fold published it, or refused it for another reason than %q: %v", name, c.want, err)
 		}
 	}
+	// A bound, submitted attempt's own result with its proof is published.
+	own := fresh("own")
+	own.Type = "result_recorded"
+	g.must(forge(ResultRecorded, string(own.Result.ID), prjID, &own))
 }
 
 // renderOn records r on walk n, selects it, claims a review taking it and
 // renders the review's controller context under contracts.
 func (g graphStore) renderOn(n types.NodeID, r types.Result, c Contracts) (Rendered, error) {
 	g.t.Helper()
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return recordResult(tx, g.published(n, r), g.blobs)
-	})
+	rr := g.published(n, r)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return recordResult(tx, rr, g.blobs) })
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, r.ID) })
 	review := g.consumerOf(n, types.ResultKindEvidence)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
@@ -221,9 +266,8 @@ func TestContextReceiptIdentity(t *testing.T) {
 	other := g.derivedUnder(lax, doc)
 	s := g.evidence(m, nil)
 	s.Conclusions, s.Value = ptr(g.conclusions[other]), []types.Ref{g.sealed(types.RefTypeReceipt, rcpID, other), g.sealed(types.RefTypeBlob, "stderr", stderr)}
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return recordResult(tx, g.published(m, s), g.blobs)
-	}); err == nil {
+	held := g.published(m, s)
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return recordResult(tx, held, g.blobs) }); err == nil {
 		t.Error("an evidence result holding another instrument's receipt was recorded")
 	}
 	// The fold reads no blobs: a raw event holding it is refused by Context.

@@ -260,10 +260,14 @@ func FenceOutput(tx *eventstore.Tx, unit types.UnitID, id types.AttemptID, token
 	return Fence(a, id, token)
 }
 
-// Units binds a unit to its project and task: authoritative state a seal's
-// AttemptRecord must match. Without it, no seal is admitted.
+// Units binds a unit to its node (M1: a unit is a node, graph.Units): the
+// project and task a seal's AttemptRecord must match, and whether an
+// attempt may start on it. Without it, no attempt starts and no seal is
+// admitted.
 type Units interface {
 	ProjectTask(tx *eventstore.Tx, unit types.UnitID) (types.ProjectID, types.TaskID, bool, error)
+	// Startable refuses an attempt starting on unit now.
+	Startable(tx *eventstore.Tx, unit types.UnitID) error
 }
 
 // Blobs is what the projector reads to check a seal's AttemptRecord.
@@ -276,7 +280,8 @@ type Blobs interface {
 // one place that accepts them. Each event is checked on its own, so a rebuild
 // replays it the same way: its kind is its payload's transition and its
 // subject its record; every record it carries is exactly what the state
-// machines derive from the projected one; a first attempt is the unit's
+// machines derive from the projected one; an attempt starts only on a unit
+// its binding admits (Units.Startable); a first attempt is the unit's
 // token-1 attempt under its lease, a successor the next token in the same
 // event as its predecessor's retirement; a lease leaves active only once its
 // attempt stopped publishing (completed: once it completed); a seal names a
@@ -490,6 +495,14 @@ func (p Projector) start(tx *eventstore.Tx, l types.Lease, next types.Attempt, r
 	if _, _, exists, err := load[types.Attempt](tx, AttemptProjection, string(next.ID)); err != nil || exists {
 		return errors.Join(err, fmt.Errorf("attempt %s already exists", next.ID))
 	}
+	// The binding is read from projections the log derives (graph.Units),
+	// so replay checks it again, at the same point of the log.
+	if p.Units == nil {
+		return fmt.Errorf("attempt %s: no unit binding, so no attempt starts", next.ID)
+	}
+	if err := p.Units.Startable(tx, l.Unit); err != nil {
+		return err
+	}
 	cur, hasCur, err := unitAttempt(tx, l.Unit)
 	if err != nil {
 		return err
@@ -544,7 +557,7 @@ func (p Projector) changeAttempt(tx *eventstore.Tx, transition string, n types.A
 		return errors.Join(err, fmt.Errorf("attempt %s is not what %s derives", n.ID, transition))
 	}
 	if transition == Sealed && !tx.Replaying() {
-		if err := p.checkpoint(tx, n); err != nil {
+		if err := p.checkpoint(tx, prev, n); err != nil {
 			return err
 		}
 	}
@@ -553,8 +566,11 @@ func (p Projector) changeAttempt(tx *eventstore.Tx, transition string, n types.A
 
 // checkpoint admits a seal's AttemptRecord: a valid record of this attempt,
 // its token and base, of the unit's project and task, with every blob it
-// names published.
-func (p Projector) checkpoint(tx *eventstore.Tx, a types.Attempt) error {
+// names published, sealed for the reason prev, the attempt before the
+// seal, derives, and minimal (M1 L1: not pinned, no failing tests, no
+// builder notes). It runs at admission only: replay skips it, since it
+// reads blobs (record.go).
+func (p Projector) checkpoint(tx *eventstore.Tx, prev, a types.Attempt) error {
 	if p.Blobs == nil || p.Units == nil {
 		return errors.New("a seal needs the blob store and the unit binding to check its checkpoint")
 	}
@@ -578,6 +594,16 @@ func (p Projector) checkpoint(tx *eventstore.Tx, a types.Attempt) error {
 	if r.Attempt != a.ID || r.FencingToken != a.FencingToken || r.BaseTree != a.Base.Tree || r.ContractRevision != a.Base.ContractRevision ||
 		r.Project != project || r.Task != task {
 		return fmt.Errorf("checkpoint %s is not attempt %s's (token %d, base %s)", *a.Checkpoint, a.ID, a.FencingToken, a.Base.Tree)
+	}
+	reason, err := SealReason(prev)
+	if err != nil {
+		return err
+	}
+	if r.Seal.Reason != reason {
+		return fmt.Errorf("checkpoint %s is sealed %s, but a %s attempt seals %s", *a.Checkpoint, r.Seal.Reason, prev.Status, reason)
+	}
+	if r.Pinned || len(r.FailingTests) != 0 || r.BuilderNotes != nil {
+		return fmt.Errorf("checkpoint %s is not M1's minimal record: pinned, or holding failing tests or builder notes", *a.Checkpoint)
 	}
 	named := []types.Digest{r.Trail, r.EvidenceManifest}
 	for _, d := range []*types.Digest{r.PartialDiff, r.BuilderNotes} {

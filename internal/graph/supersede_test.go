@@ -13,6 +13,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/executors"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard/fakes/owedanswers"
 )
@@ -41,7 +42,7 @@ func (g graphStore) superseding() (review types.NodeID, res types.ResultID, next
 }
 
 func supersede(pred, req types.NodeID) logic {
-	return func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, pred, req, nil, reviewers) }
+	return func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, pred, req, reviewers) }
 }
 
 // A roster change is one supersession: the replacement keeps the review's
@@ -123,7 +124,7 @@ func TestSupersede(t *testing.T) {
 // edited is Supersede(pred, req) with its review.superseded payload edited.
 func edited(pred, req types.NodeID, edit func(*types.ReviewSuperseded)) logic {
 	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		evs, err := Supersede(tx, pred, req, nil, reviewers)
+		evs, err := Supersede(tx, pred, req, reviewers)
 		if err != nil {
 			return nil, err
 		}
@@ -136,6 +137,64 @@ func edited(pred, req types.NodeID, edit func(*types.ReviewSuperseded)) logic {
 		evs[len(evs)-1].Subject = string(p.Predecessor)
 		evs[len(evs)-1].Payload, err = json.Marshal(e)
 		return evs, err
+	}
+}
+
+// Attempts are bound to nodes (M1 P8a): a unit is its node. A supersession
+// stops its review's running attempt, derived from the review's unit, and
+// lists exactly it. The fold refuses one leaving that attempt running,
+// listed or not, and one listing nothing after stopping it. No attempt
+// starts on the superseded review, or on a node not claimed. The log
+// rebuilds.
+func TestSupersedeStopsBoundAttempt(t *testing.T) {
+	g := openStore(t)
+	review, _, next := g.superseding()
+	if n, ok := NodeOf(UnitOf(review)); !ok || n != review {
+		t.Fatalf("the unit of %s is %s's", review, n)
+	}
+	if _, ok := NodeOf("lea_01m3250vm7f6ktw39dszqnyddr"); ok {
+		t.Error("a lease id read as a unit")
+	}
+	a := g.runningOn(review)
+	alone := func(edit func(*types.ReviewSuperseded)) logic { // the supersession without its stop
+		inner := edited(review, next, edit)
+		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			evs, err := inner(tx)
+			if err != nil {
+				return nil, err
+			}
+			return evs[len(evs)-1:], nil
+		}
+	}
+	for name, c := range map[string]struct {
+		fn   logic
+		want string
+	}{
+		"unlisted, left running":       {alone(func(p *types.ReviewSuperseded) { p.StoppedAttempts = []types.AttemptID{} }), "still runs"},
+		"listed, left running":         {alone(func(*types.ReviewSuperseded) {}), "still runs"},
+		"stopped, unlisted":            {edited(review, next, func(p *types.ReviewSuperseded) { p.StoppedAttempts = []types.AttemptID{} }), "lists"},
+		"stopped, listed with another": {edited(review, next, func(p *types.ReviewSuperseded) { p.StoppedAttempts = append(p.StoppedAttempts, newAttempt()) }), "lists"},
+	} {
+		if err := g.do(c.fn); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	g.must(supersede(review, next))
+	var at types.Attempt
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) { at, _, _, err = lease.AttemptOf(tx, a); return err }); err != nil {
+		t.Fatal(err)
+	}
+	if by, _ := view[types.NodeID](g, PreemptedProjection, string(a)); at.Status != types.AttemptStatusStopping || *at.StopReason != types.AttemptStopReasonValuePreempt || by != review {
+		t.Errorf("the review's attempt is %s, listed by %s", at.Status, by)
+	}
+	for node, want := range map[types.NodeID]string{review: "is superseded", next: "only on a claimed node"} {
+		err := g.s.View(context.Background(), func(tx *eventstore.Tx) error { return Units{}.Startable(tx, UnitOf(node)) })
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("an attempt on %s: %v", node, err)
+		}
+	}
+	if diffs, err := g.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("rebuild: %v %+v", err, diffs)
 	}
 }
 
@@ -202,7 +261,7 @@ func TestSupersededFold(t *testing.T) {
 		"a review as requirement": {input(1, review), "of its task"},
 		"an attempt not stopped": {func(p *types.ReviewSuperseded) {
 			p.StoppedAttempts = []types.AttemptID{"att_01m3250vnfeyrv67x6w0ddqr6a"}
-		}, "not stopped"},
+		}, "lists"},
 		"a transferred hold":       {func(p *types.ReviewSuperseded) { p.TransferredHolds = []types.HoldID{"hld_01m3250vnfeyrv67x6w0ddqr6a"} }, "each of the review's holds"},
 		"a recorded replacement":   {func(p *types.ReviewSuperseded) { p.Replacement.ID = review }, "is recorded"},
 		"of a requirement":         {func(p *types.ReviewSuperseded) { p.Predecessor = next }, "only a review"},
@@ -215,7 +274,7 @@ func TestSupersededFold(t *testing.T) {
 	var again []eventstore.Event
 	g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		var err error
-		again, err = Supersede(tx, review, next, nil, reviewers)
+		again, err = Supersede(tx, review, next, reviewers)
 		return nil, errors.Join(err, errors.New("kept, not recorded"))
 	})
 	g.must(edited(review, next, func(*types.ReviewSuperseded) {}))
@@ -262,7 +321,7 @@ func TestSupersedeRefused(t *testing.T) {
 	}
 	noB := must(executors.New(map[types.ExecutorID]string{exeA: "claude"}))
 	var notIndependent ErrNotIndependent
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, waiting, next, nil, noB) }); !errors.As(err, &notIndependent) {
+	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Supersede(tx, waiting, next, noB) }); !errors.As(err, &notIndependent) {
 		t.Errorf("a replacement the registry does not derive: %v", err)
 	}
 	// A review on revision 2, never selected, is not superseded to revision
@@ -321,7 +380,7 @@ func TestSupersedeSuccessor(t *testing.T) {
 // neither the review's requirement nor the replacement's may be another
 // task's or of another subject. A review whose result a dependant claimed
 // is not superseded (G6b-2, G7b-2), and no hold is raised on a superseded
-// review. An unknown attempt refuses the supersession.
+// review. A listed attempt not the review's refuses the supersession.
 func TestSupersedeBindings(t *testing.T) {
 	g := openStore(t)
 	env := g.env(gatesOn(treeA, demandA))
@@ -354,10 +413,10 @@ func TestSupersedeBindings(t *testing.T) {
 			t.Errorf("a review on %s requirement superseded: %v", name, err)
 		}
 	}
-	if err := g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return Supersede(tx, review, next, []types.AttemptID{"att_01m3250vnfeyrv67x6w0ddqr6a"}, reviewers)
-	}); err == nil {
-		t.Error("a supersession stopping an unknown attempt")
+	if err := g.do(edited(review, next, func(p *types.ReviewSuperseded) {
+		p.StoppedAttempts = []types.AttemptID{"att_01m3250vnfeyrv67x6w0ddqr6a"}
+	})); err == nil || !strings.Contains(err.Error(), "lists") {
+		t.Errorf("a supersession listing an attempt not its review's: %v", err)
 	}
 	g.must(commit(review, g.reviewResult(review), env))
 	dep := g.newNode(types.NodeKindIntegration)

@@ -68,7 +68,7 @@ func newWorld(t *testing.T) *world {
 	}
 	kinds := lease.Kinds()
 	maps.Copy(kinds, ledger.Kinds())
-	project := lease.Projector{Blobs: blobs, Holds: reg.Holds}.Project
+	project := lease.Projector{Blobs: blobs, Holds: reg.Holds, Units: anyUnit{}}.Project
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
 		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
@@ -395,3 +395,13 @@ func TestACommittedRefusalBeforeStartLaunchesNothing(t *testing.T) {
 		t.Fatal("something ran")
 	}
 }
+
+// anyUnit admits an attempt on every unit and binds none to a project and
+// task: these tests run leases with no graph (M1 P8a's binding).
+type anyUnit struct{}
+
+func (anyUnit) ProjectTask(*eventstore.Tx, types.UnitID) (types.ProjectID, types.TaskID, bool, error) {
+	return "", "", false, nil
+}
+
+func (anyUnit) Startable(*eventstore.Tx, types.UnitID) error { return nil }
