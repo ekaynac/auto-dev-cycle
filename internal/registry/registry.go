@@ -144,7 +144,7 @@ func New(doc types.ExecutorRegistry, groups []types.ResourceGroup) (Registry, er
 			return Registry{}, &Refusal{Executor: i, Rule: rule}
 		}
 		destinations[e.Destination.ID], ids[origin(e)] = e.Destination, e.Destination.ID
-		r.executors[e.ID] = e
+		r.executors[e.ID] = copyOf(e) // the caller keeps doc: nothing it changes reaches r
 	}
 	if err := r.accounts(doc.Executors, groups); err != nil {
 		return Registry{}, err
@@ -312,10 +312,23 @@ func (r Registry) Family(id types.ExecutorID) string {
 	return receipt.UnknownFamily
 }
 
-// Executor is the registered executor.
+// Executor is the registered executor, a deep copy: a caller changing it
+// (its credential reference, price or retention) changes nothing here.
 func (r Registry) Executor(id types.ExecutorID) (types.RegistryExecutor, bool) {
 	e, ok := r.executors[id]
-	return e, ok
+	if !ok {
+		return types.RegistryExecutor{}, false
+	}
+	return copyOf(e), true
+}
+
+// copyOf deep-copies an executor through its JSON, so no pointer is shared.
+func copyOf(e types.RegistryExecutor) types.RegistryExecutor {
+	var c types.RegistryExecutor
+	if err := json.Unmarshal(mustJSON(e), &c); err != nil {
+		panic(err) // a generated type round-trips
+	}
+	return c
 }
 
 // floors orders trust classes and data floors: a destination meets a floor

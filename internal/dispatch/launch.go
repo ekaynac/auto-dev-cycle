@@ -4,6 +4,8 @@ package dispatch
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -35,11 +37,16 @@ type Credentials interface {
 // observed for nothing, so it is never ready. image and credential are nil
 // when the pinned image is present at its digest, and when the gateway
 // holds the destination's credential (or it needs none).
+//
+// Every binding is a value snapshot taken once, never a pointer into the
+// registry, so the credential the gateway was asked about is the one the
+// launch compares (Astra, #246).
 type Readiness struct {
 	observed          bool
 	executor          types.ExecutorID
 	destination       types.Slug
-	credentialRef     *types.Slug
+	hasCredential     bool
+	credentialRef     types.Slug
 	imageRef          string
 	image, credential error
 }
@@ -56,21 +63,36 @@ func (d Dispatcher) Observe(ctx context.Context, card Card, executor types.Execu
 		r.image = err
 	}
 	e, ok := d.Registry.Executor(executor)
-	r.destination, r.credentialRef = e.Destination.ID, e.CredentialRef
+	r.destination = e.Destination.ID
+	if e.CredentialRef != nil {
+		r.hasCredential, r.credentialRef = true, *e.CredentialRef
+	}
 	switch {
 	case !ok:
 		r.credential = fmt.Errorf("dispatch: executor %s is not registered", executor)
-	case e.CredentialRef == nil: // a local endpoint has none
+	case !r.hasCredential: // a local endpoint has none
 	case d.Credentials == nil:
 		r.credential = errNoGateway
 	default:
-		held, err := d.Credentials.Holds(ctx, e.Destination.ID, *e.CredentialRef)
+		held, err := d.Credentials.Holds(ctx, r.destination, r.credentialRef)
 		if err == nil && !held {
-			err = fmt.Errorf("dispatch: the gateway holds no credential %s for destination %s", *e.CredentialRef, e.Destination.ID)
+			err = fmt.Errorf("dispatch: the gateway holds no credential %s for destination %s", r.credentialRef, r.destination)
 		}
 		r.credential = err
 	}
 	return r
+}
+
+// boundTo: r was observed for exactly e's destination and credential
+// reference, and for image.
+func (r Readiness) boundTo(executor types.ExecutorID, e types.RegistryExecutor, image string) bool {
+	if !r.observed || r.executor != executor || r.imageRef != image {
+		return false
+	}
+	if r.destination != e.Destination.ID {
+		return false
+	}
+	return r.hasCredential == (e.CredentialRef != nil) && (!r.hasCredential || r.credentialRef == *e.CredentialRef)
 }
 
 // Miss is a launch the readiness check refused: why, and the node hold
@@ -145,7 +167,7 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 	e, _ := d.Registry.Executor(l.Executor) // registered: the placement still holds
 	image := func() (*Miss, error) {
 		ref := "toolchain image"
-		return held("the pinned image is not present at its digest", "wrong_owner", "image "+card.Image, types.OwnerNamedOwner, &ref)
+		return held("the pinned image is not present at its digest", "wrong_owner", imageSignal(card.Image), types.OwnerNamedOwner, &ref)
 	}
 	credential := func() (*Miss, error) {
 		return held("no credential for destination "+string(e.Destination.ID), "source_invalid_config",
@@ -156,8 +178,7 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 		return image()
 	case e.CredentialRef != nil && d.Credentials == nil:
 		return credential()
-	case !ready.observed || ready.executor != l.Executor || ready.destination != e.Destination.ID ||
-		!sameRef(ready.credentialRef, e.CredentialRef) || ready.imageRef != card.Image:
+	case !ready.boundTo(l.Executor, e, card.Image):
 		return &Miss{Reason: "the readiness was not observed for this lease's executor, destination, credential and image"}, nil
 	case ready.image != nil:
 		return image()
@@ -167,7 +188,20 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 	return nil, nil
 }
 
-func sameRef(a, b *types.Slug) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+// maxSignal is records/node-hold's bound on a signal instance.
+const maxSignal = 1024
+
+// imageSignal names image in a hold's signal: "image <ref>", or, for a
+// reference too long for the signal (the pinned-image schema has no
+// bound), "image sha256:<hex of the ref>", so a miss always fits and
+// releases its lease.
+func imageSignal(image string) string {
+	if s := "image " + image; len(s) <= maxSignal {
+		return s
+	}
+	sum := sha256.Sum256([]byte(image))
+	return "image sha256:" + hex.EncodeToString(sum[:])
+}
 
 // reason fits a refusal's reason to lease-event's 1024 bytes.
 func reason(s string) string {

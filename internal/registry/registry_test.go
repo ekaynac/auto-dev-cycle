@@ -435,3 +435,22 @@ func TestAliasedFamilyAcrossDestinationIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A registry cannot change once built (Astra, #246): nothing the caller
+// does to the document it passed, or to an executor Executor returned,
+// reaches it.
+func TestRegistryIsImmutable(t *testing.T) {
+	doc := load(t, "registry-stub.json")
+	r, err := New(doc, groups(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := doc.Executors[0].ID
+	*doc.Executors[0].CredentialRef = "changed-in-doc"
+	got, _ := r.Executor(id)
+	*got.CredentialRef = "changed-in-copy"
+	got.Price.InputUsdMicrosPerMtok = 1
+	if again, _ := r.Executor(id); *again.CredentialRef != "stub" || again.Price.InputUsdMicrosPerMtok != 1000000 {
+		t.Fatalf("the registry changed under it: credential %s, price %d", *again.CredentialRef, again.Price.InputUsdMicrosPerMtok)
+	}
+}

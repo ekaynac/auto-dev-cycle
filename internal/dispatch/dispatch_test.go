@@ -453,6 +453,16 @@ func TestLaunchFailsClosed(t *testing.T) {
 	reg, gs := stub(t, nil)
 	full := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true)}
 	ctx := context.Background()
+	// Observations made under another registry, for the same executor and
+	// image, differing in one binding each; the launch runs under reg, the
+	// registry the lease was matched under, so its placement still holds
+	// and only the binding check can refuse (Astra, #246 finding 3).
+	dest, _ := stub(t, func(doc *types.ExecutorRegistry) {
+		for i := range doc.Executors {
+			doc.Executors[i].Destination.ID = "stub2"
+		}
+	})
+	cred, _ := stub(t, func(doc *types.ExecutorRegistry) { *doc.Executors[0].CredentialRef = "other" })
 	for name, c := range map[string]struct {
 		d            Dispatcher
 		ready        func(Card) Readiness
@@ -462,6 +472,12 @@ func TestLaunchFailsClosed(t *testing.T) {
 		"no readiness":                     {full, func(Card) Readiness { return Readiness{} }, "", ""},
 		"a readiness for another executor": {full, func(c Card) Readiness { return full.Observe(ctx, c, reviewer) }, "", ""},
 		"a readiness for another image":    {full, func(c Card) Readiness { c.Image += "x"; return full.Observe(ctx, c, builder) }, "", ""},
+		"a readiness for another destination": {full, func(c Card) Readiness {
+			return Dispatcher{Registry: dest, Images: images{}, Credentials: creds(true)}.Observe(ctx, c, builder)
+		}, "", ""},
+		"a readiness for another credential": {full, func(c Card) Readiness {
+			return Dispatcher{Registry: cred, Images: images{}, Credentials: creds(true)}.Observe(ctx, c, builder)
+		}, "", ""},
 		"no image store, a good readiness": {Dispatcher{Registry: reg, Credentials: creds(true)}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "wrong_owner", "image " + image},
 		"no gateway, a good readiness":     {Dispatcher{Registry: reg, Images: images{}}, func(c Card) Readiness { return full.Observe(ctx, c, builder) }, "source_invalid_config", "destination stub"},
 	} {
@@ -535,6 +551,69 @@ func TestLaunchErrorsAndProjects(t *testing.T) {
 }
 
 // A refusal's reason fits lease-event's 1024 bytes (pre-review L1).
+// credSet holds exactly the named credentials.
+type credSet map[types.Slug]bool
+
+func (c credSet) Holds(_ context.Context, _, credential types.Slug) (bool, error) {
+	return c[credential], nil
+}
+
+// Astra's sequence (#246 finding 1): observe credential A, change the
+// registry document's credential to B, build a registry from it, match
+// under it, and launch with the old observation. The observation still
+// names A, which the gateway checked, so the launch is refused and the
+// lease released, with no attempt.
+func TestReadinessSnapshotsCredential(t *testing.T) {
+	doc, err := registry.Load(config + "registry-stub.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, gs := stub(t, nil)
+	regA, err := registry.New(doc, gs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway := credSet{"stub": true} // A only
+	e := open(t, gs)
+	n := e.node(types.NodeKindPlan, regA, false)
+	observed := Dispatcher{Registry: regA, Images: images{}, Credentials: gateway}.Observe(context.Background(), card(n), builder)
+
+	*doc.Executors[0].CredentialRef = "other" // B, through the document's pointer
+	regB, err := registry.New(doc, gs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dB := Dispatcher{Registry: regB, Images: images{}, Credentials: gateway}
+	id, err := e.match(dB, card(n), builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, miss := e.launchWith(dB, id, card(n), observed)
+	e.missed(id, n, miss, "", "")
+}
+
+// A missing image whose reference is longer than a hold's signal holds
+// (#246 finding 2): the signal is the reference's digest, so the hold is
+// raised and the refusal, release and hold all commit.
+func TestLaunchMissingImagePastSignal(t *testing.T) {
+	reg, gs := stub(t, nil)
+	long := "registry.example/adc/" + strings.Repeat("a", 1100) + "@sha256:" + strings.Repeat("0", 64)
+	d := Dispatcher{Registry: reg, Images: images{sandbox.ErrImage}, Credentials: creds(true)}
+	e := open(t, gs)
+	n := e.node(types.NodeKindPlan, reg, false)
+	c := edit(card(n), func(c *Card) { c.Image = long })
+	id, err := e.match(d, c, builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, miss := e.launch(d, id, c, builder)
+	signal := imageSignal(long)
+	if len(signal) > maxSignal || !strings.HasPrefix(signal, "image sha256:") {
+		t.Fatalf("signal %q", signal)
+	}
+	e.missed(id, n, miss, "wrong_owner", signal)
+}
+
 func TestReasonFits(t *testing.T) {
 	long := strings.Repeat("é", 600) // 1200 bytes
 	if r := reason(long); len(r) > 1024 || !strings.HasSuffix(r, "...") || !utf8.ValidString(r) {

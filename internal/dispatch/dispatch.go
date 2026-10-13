@@ -164,7 +164,7 @@ func (d Dispatcher) checks(card Card, executor types.ExecutorID, roster []types.
 	c := types.LeasePlacementChecks{
 		DataFloor:     pass("policy " + digest(card.Policy)),
 		Destinations:  pass("executor " + string(executor) + " " + digest(e)),
-		Capability:    pass("image " + card.Image),
+		Capability:    pass(imageSignal(card.Image)), // bounded: the detail holds 4096
 		Independence:  pass("roster " + digest(roster)),
 		PaidAuthority: pass("not checked here: the rails are P17's"),
 		Budget:        pass("not checked here: the rails are P17's"),
