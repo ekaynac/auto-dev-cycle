@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -597,21 +598,31 @@ func TestReadinessSnapshotsCredential(t *testing.T) {
 // raised and the refusal, release and hold all commit.
 func TestLaunchMissingImagePastSignal(t *testing.T) {
 	reg, gs := stub(t, nil)
-	long := "registry.example/adc/" + strings.Repeat("a", 1100) + "@sha256:" + strings.Repeat("0", 64)
 	d := Dispatcher{Registry: reg, Images: images{sandbox.ErrImage}, Credentials: creds(true)}
-	e := open(t, gs)
-	n := e.node(types.NodeKindPlan, reg, false)
-	c := edit(card(n), func(c *Card) { c.Image = long })
-	id, err := e.match(d, c, builder)
-	if err != nil {
-		t.Fatal(err)
+	// Past the signal's 1024 characters; and past the placement detail's
+	// 4096, which only the capability check's bounded detail lets match
+	// (Astra, #246 round 2).
+	for _, size := range []int{1100, 4200} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			long := "registry.example/adc/" + strings.Repeat("a", size) + "@sha256:" + strings.Repeat("0", 64)
+			e := open(t, gs)
+			n := e.node(types.NodeKindPlan, reg, false)
+			c := edit(card(n), func(c *Card) { c.Image = long })
+			id, err := e.match(d, c, builder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			signal := imageSignal(long)
+			if len(signal) > maxSignal || !strings.HasPrefix(signal, "image sha256:") {
+				t.Fatalf("signal %q", signal)
+			}
+			if l, _, _ := e.state(id, n); l.PlacementChecks.Capability.Detail != signal {
+				t.Fatalf("capability detail %q, want %q", l.PlacementChecks.Capability.Detail, signal)
+			}
+			_, miss := e.launch(d, id, c, builder)
+			e.missed(id, n, miss, "wrong_owner", signal)
+		})
 	}
-	_, miss := e.launch(d, id, c, builder)
-	signal := imageSignal(long)
-	if len(signal) > maxSignal || !strings.HasPrefix(signal, "image sha256:") {
-		t.Fatalf("signal %q", signal)
-	}
-	e.missed(id, n, miss, "wrong_owner", signal)
 }
 
 func TestReasonFits(t *testing.T) {
