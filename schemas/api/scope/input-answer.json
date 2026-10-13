@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/input-answer.json",
+  "title": "InputAnswerScope",
+  "description": "The scope of input.answer (docs/design/m0/04 \"Owed inputs\" [PR5-1]): the owed input, the revision the answer binds, and the typed answer. The approval's answers list is derived from it. Only an operator or the owed input's owner answers (failed/action_not_granted). An owed input of kind receipt is refused as an invalid scope: only an applicable receipt satisfies it. Otherwise it is refused unless unanswered and at exactly that revision (failed/stale_expected_state).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["owed_input", "owed_revision", "answer"],
+  "properties": {
+    "owed_input": {"$ref": "../../common/defs.json#/$defs/OwedInputID"},
+    "owed_revision": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "answer": {"description": "The answer, typed by the owed input's kind.", "type": "object", "x-adc-open-payload": "owed_input.answer"}
+  }
+}

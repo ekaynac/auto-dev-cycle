@@ -16,6 +16,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -117,6 +118,8 @@ func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary
 	maps.Copy(kinds, authority.NoteKinds())
 	maps.Copy(kinds, authority.ProjectKinds())
 	maps.Copy(kinds, authority.TaskKinds())
+	maps.Copy(kinds, authority.OwedKinds())
+	maps.Copy(kinds, graph.Kinds())
 	kinds["test.noted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	kinds["test.unnoted/v1"] = eventstore.Kind{Schema: "common/defs"}
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Now: func() time.Time {
@@ -125,7 +128,7 @@ func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary
 		}
 		return suiteNow().Add(storeShift)
 	},
-		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, authority.ProposalProjector{}.Project, notesProjection, authority.ProjectProjector{}.Project, authority.TaskProjector{}.Project, b.record),
+		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, authority.ProposalProjector{}.Project, notesProjection, authority.ProjectProjector{}.Project, authority.TaskProjector{}.Project, authority.OwedProjector{}.Project, graph.Project, b.record),
 			Authorize: func(tx *eventstore.Tx, c eventstore.Command) error {
 				if c.Action == "test.seed" {
 					return nil

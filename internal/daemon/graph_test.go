@@ -20,10 +20,16 @@ const graphProject = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sa1")
 // source_invalid_config on it, the operator's hold. It returns the node.
 func heldNode(t *testing.T, w *seeder, actor types.ActorID) types.NodeID {
 	t.Helper()
+	return heldNodeIn(t, w, actor, graphProject)
+}
+
+// heldNodeIn is heldNode, in project.
+func heldNodeIn(t *testing.T, w *seeder, actor types.ActorID, project types.ProjectID) types.NodeID {
+	t.Helper()
 	n := types.Node{ID: types.NodeID(newID(t, "nod")), Kind: types.NodeKindPlan, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{}`),
 		Inputs: []types.InputSpec{}, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
 	w.do(actor, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.Record(types.NodeRecorded{Task: types.TaskID(newID(t, "tsk")), Project: graphProject, Node: n})
+		return graph.Record(types.NodeRecorded{Task: types.TaskID(newID(t, "tsk")), Project: project, Node: n})
 	})
 	w.do(actor, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return graph.Raise(tx, n.ID, types.NodeHold{ID: types.HoldID(newID(t, "hld")), Hold: "source_invalid_config", SignalInstance: "cfg@2",

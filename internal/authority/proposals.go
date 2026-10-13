@@ -366,7 +366,8 @@ func pendingKeys(p types.Proposal) []string {
 
 // recordApproval admits an approval of one live proposal, by a live
 // actor (an operator for a human policy), matching ApprovalOf exactly,
-// and only the first one; one with no proposal only as a task's.
+// and only the first one; one with no proposal only as an answer or a
+// task's.
 func recordApproval(tx *eventstore.Tx, ev eventstore.Event) error {
 	var a types.Approval
 	if err := json.Unmarshal(ev.Payload, &a); err != nil {
@@ -375,7 +376,10 @@ func recordApproval(tx *eventstore.Tx, ev eventstore.Event) error {
 	if ev.Subject != string(a.ID) || a.Actor != types.ActorID(ev.Actor) {
 		return errors.New("an approval is its subject's, by its actor")
 	}
-	if a.Proposal == nil { // only a task's approval, in its creating command (task.go)
+	switch {
+	case a.Proposal == nil && a.Action == InputAnswerAction: // an answer (answer.go)
+		return recordAnswer(tx, ev, a)
+	case a.Proposal == nil: // only a task's approval, in its creating command (task.go)
 		return recordTaskApproval(tx, ev, a)
 	}
 	by, err := liveActor(tx, a.Actor)

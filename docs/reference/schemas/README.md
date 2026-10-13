@@ -31,6 +31,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/scope/grant-create.json`](api-scope-grant-create.md) | GrantCreateScope |
 | [`api/scope/grant-extend.json`](api-scope-grant-extend.md) | GrantExtendScope |
 | [`api/scope/grant-revoke.json`](api-scope-grant-revoke.md) | GrantRevokeScope |
+| [`api/scope/input-answer.json`](api-scope-input-answer.md) | InputAnswerScope |
 | [`api/scope/note-add.json`](api-scope-note-add.md) | NoteAddScope |
 | [`api/scope/project-create.json`](api-scope-project-create.md) | ProjectCreateScope |
 | [`api/scope/proposal-withdraw.json`](api-scope-proposal-withdraw.md) | ProposalWithdrawScope |

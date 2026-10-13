@@ -4,14 +4,16 @@
 
 `schemas/records/owed-input.json`
 
-Something only an outside party can give, recorded by a reviewer or an evidence requirement (docs/design/m0/04 "Owed inputs"). The dependent work holds on awaiting_input. A ruling or data input is answered by an input.answer approval binding its revision; a receipt input is satisfied only by an applicable receipt, never by a ruling.
+Something only an outside party can give, recorded by a reviewer or an evidence requirement (docs/design/m0/04 "Owed inputs"). The dependent work holds on awaiting_input. A ruling or data input is answered by an input.answer approval binding its revision; a receipt input is satisfied only by an applicable receipt, never by a ruling. It is the payload of owed_input.recorded/v1: a later record of the same id is its next revision, of the same project, node and kind.
 
 ## Fields of the document
 
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `id` | yes | [OwedInputID](common-defs.md#owedinputid) |  |
-| `requested_by` | yes | [ActorID](common-defs.md#actorid) |  |
+| `project` | yes | [ProjectID](common-defs.md#projectid) | The asking node's project. |
+| `requested_by` | yes | [NodeID](common-defs.md#nodeid) | The graph node that asked: only an answer input of a node in its lineage takes the answer (docs/design/m0/13 "Successor rounds"). |
+| `owner` | yes | [ActorID](common-defs.md#actorid) | The grant holder the awaiting_input hold waits on (schemas/vocab/holds.yaml): a live operator or supervisor. |
 | `kind` | yes | one of `ruling`, `data`, `receipt` |  |
 | `question` | yes | string (minLength `1`) |  |
 | `subject` | yes | [ObjectRef](records-approval.md#objectref) |  |

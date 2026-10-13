@@ -2,13 +2,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/owed-input.json",
   "title": "OwedInput",
-  "description": "Something only an outside party can give, recorded by a reviewer or an evidence requirement (docs/design/m0/04 \"Owed inputs\"). The dependent work holds on awaiting_input. A ruling or data input is answered by an input.answer approval binding its revision; a receipt input is satisfied only by an applicable receipt, never by a ruling.",
+  "description": "Something only an outside party can give, recorded by a reviewer or an evidence requirement (docs/design/m0/04 \"Owed inputs\"). The dependent work holds on awaiting_input. A ruling or data input is answered by an input.answer approval binding its revision; a receipt input is satisfied only by an applicable receipt, never by a ruling. It is the payload of owed_input.recorded/v1: a later record of the same id is its next revision, of the same project, node and kind.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "requested_by", "kind", "question", "subject", "revision"],
+  "required": ["id", "project", "requested_by", "owner", "kind", "question", "subject", "revision"],
   "properties": {
     "id": {"$ref": "../common/defs.json#/$defs/OwedInputID"},
-    "requested_by": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "project": {"description": "The asking node's project.", "$ref": "../common/defs.json#/$defs/ProjectID"},
+    "requested_by": {
+      "description": "The graph node that asked: only an answer input of a node in its lineage takes the answer (docs/design/m0/13 \"Successor rounds\").",
+      "$ref": "../common/defs.json#/$defs/NodeID"
+    },
+    "owner": {
+      "description": "The grant holder the awaiting_input hold waits on (schemas/vocab/holds.yaml): a live operator or supervisor.",
+      "$ref": "../common/defs.json#/$defs/ActorID"
+    },
     "kind": {"enum": ["ruling", "data", "receipt"]},
     "question": {"type": "string", "minLength": 1},
     "subject": {"$ref": "approval.json#/$defs/ObjectRef"},

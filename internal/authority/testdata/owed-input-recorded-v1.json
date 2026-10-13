@@ -1,0 +1,15 @@
+{
+  "id": "own_01m3250vkwffc979nzjw0gwnn1",
+  "project": "prj_01m3250vkwffc979nzjw0g2sa1",
+  "requested_by": "@NODE@",
+  "owner": "@ACTOR@",
+  "kind": "ruling",
+  "question": "Is the vendor licence compatible?",
+  "subject": {
+    "type": "task",
+    "id": "tsk_01m3250vkwffc979nzjw0gtak1",
+    "version": 0,
+    "digest": null
+  },
+  "revision": 1
+}
