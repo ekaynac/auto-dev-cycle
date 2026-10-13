@@ -50,7 +50,7 @@ func newLive(t *testing.T) live {
 		must(t, err)
 		t.Cleanup(func() { ln.Close() })
 	}
-	l.h = Host{Podman: "/usr/bin/podman", Root: root, Forbidden: []string{l.state, l.adcd}, Home: filepath.Clean(os.Getenv("HOME"))}
+	l.h = Host{Podman: "/usr/bin/podman", Root: root, Forbidden: []string{l.state, l.adcd}, Home: filepath.Clean(os.Getenv("HOME")), anyDisk: true}
 	ctx := context.Background()
 	t.Cleanup(func() {
 		_, _ = l.h.podman(ctx, "system", "reset", "--force")
@@ -173,7 +173,9 @@ func TestLiveTeardownOtherUID(t *testing.T) {
 	must(t, os.Chmod(a.Workspace(), 0o777))
 	_, err = h.Start(context.Background(), Run{Image: l.img, Mode: Gate, Attempt: a, Limits: probeLimits,
 		Argv: []string{"/bin/sh", "-c", "mkdir /workspace/d && touch /workspace/d/f && chmod 500 /workspace/d"}})
-	must(t, err)
+	if !errors.Is(err, ErrSpec) { // what the controller cannot read, it cannot bound: the run fails
+		t.Fatalf("a run leaving unmeasurable files: %v, want ErrSpec", err)
+	}
 	if err := os.RemoveAll(filepath.Join(a.Workspace(), "d")); err == nil {
 		t.Fatal("the controller's uid removed a run's other uid's files, so this test proves nothing")
 	}

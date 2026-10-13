@@ -26,6 +26,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -44,6 +45,7 @@ type commands struct {
 	log   io.Writer
 	blobs *blobstore.Store // the uploads' store, which BlobsPath serves beside the commands (api.Blobs)
 	clock func() time.Time // the store clock, which uploads are timed by (nil: time.Now)
+	probe *sandbox.Host    // the sandbox SandboxProbePath runs in (nil: none configured)
 	// authenticated, when set, runs after a request is authenticated and
 	// before its command is submitted: a test revokes the caller there.
 	authenticated func(identity.Principal)

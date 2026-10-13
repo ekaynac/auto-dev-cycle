@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
@@ -139,7 +140,12 @@ func (t Transport) do(ctx context.Context, method, path string, body io.Reader, 
 	} else if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := t.httpClient(stream).Do(req)
+	c := t.httpClient(stream)
+	if strings.HasPrefix(path, api.SandboxProbePath) { // headers come only after the probe
+		c.Timeout = api.ProbeBudget + time.Minute
+		c.Transport.(*http.Transport).ResponseHeaderTimeout = c.Timeout
+	}
+	resp, err := c.Do(req)
 	if err != nil {
 		return nil, t.fixed(err)
 	}

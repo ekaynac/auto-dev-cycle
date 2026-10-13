@@ -42,6 +42,7 @@ const (
 	readSchema        = "api/read-list.json"
 	whoamiSchema      = "api/whoami.json"
 	blobSchema        = "api/blob-upload.json"
+	probeSchema       = "api/sandbox-probe.json"
 )
 
 // ComponentName is the component a schema file is embedded under
@@ -145,6 +146,13 @@ func reads() map[string]map[string]operation {
 		"get": op("blob-uploads", "The unclaimed uploads, never their bytes; an operator's.", nil,
 			readResponses(body{Description: "The uploads.", Content: jsonOf(readSchema)}, "403", "failed/operator_only: not an operator."))["get"],
 	}
+	mode := map[string]any{"enum": []string{"gate", "build"}}
+	out[api.SandboxProbePath] = map[string]operation{"post": {OperationID: "dev.sandbox_probe", Tags: []string{"dev"},
+		Summary: "Run the fixed sandbox probe in a fresh run of a pinned image, with no task or lease; an operator's, one at a time.",
+		Parameters: []parameter{{Name: "image", In: "query", Required: true, Description: "A fully qualified reference pinned by digest.", Schema: str},
+			{Name: "mode", In: "query", Required: true, Description: "gate (nothing reachable) or build (the gateway socket only).", Schema: mode}},
+		Responses: readResponses(body{Description: "What the probe saw; an empty violations list is a pass.", Content: jsonOf(probeSchema)},
+			"403", "failed/operator_only: not an operator.", "503", "could_not_run/precondition_failed: no sandbox configured, the image not at its digest, or the probe incomplete; or busy (Retry-After).")}}
 	for name, res := range api.Registered() {
 		list := &ref{AllOf: []any{map[string]string{"$ref": "#/components/schemas/" + ComponentName(readSchema)},
 			map[string]any{"properties": map[string]any{"resource": map[string]string{"const": name},
@@ -158,7 +166,7 @@ func reads() map[string]map[string]operation {
 // readSchemas are the schema files of the reads: the list, whoami and each
 // registered resource's record.
 func readSchemas() []string {
-	out := []string{readSchema, whoamiSchema, blobSchema}
+	out := []string{readSchema, whoamiSchema, blobSchema, probeSchema}
 	for _, res := range api.Registered() {
 		out = append(out, res.Schema)
 	}

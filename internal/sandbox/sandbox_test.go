@@ -41,7 +41,7 @@ func testHost(t *testing.T, f *fake) Host {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
-	return Host{Podman: "/usr/bin/podman", Root: root, Runner: f, Home: "/home/op",
+	return Host{Podman: "/usr/bin/podman", Root: root, Runner: f, Home: "/home/op", anyDisk: true,
 		Forbidden: []string{"/srv/adc/state", "/srv/adc/state/adcd.sock", "/run/adc/adcd-shared.sock", "/run/user/1000/podman/podman.sock"}}
 }
 
@@ -62,7 +62,7 @@ func testRun(t *testing.T, h Host, mode Mode) Run {
 	a, err := h.NewAttempt()
 	must(t, err)
 	r := Run{Image: Image{Pinned: "x@sha256:" + testID, ID: testID}, Mode: mode, Attempt: a,
-		Limits: Limits{Memory: 1 << 30, CPUs: "1", PIDs: 10, Timeout: time.Minute}, Argv: []string{"true"}}
+		Limits: Limits{Memory: 1 << 30, CPUs: "1", PIDs: 10, Timeout: time.Minute, Disk: 1 << 20}, Argv: []string{"true"}}
 	if mode == Build {
 		r.Gateway = socket(t)
 	}
@@ -173,8 +173,8 @@ func TestArgsRefuseControllerMounts(t *testing.T) {
 	for name, mutate := range cases {
 		r, hh := testRun(t, h, Build), h
 		mutate(&r, &hh)
-		if _, err := hh.Start(context.Background(), r); !errors.Is(err, ErrSpec) {
-			t.Errorf("%s: %v, want ErrSpec", name, err)
+		if _, err := hh.Start(context.Background(), r); !errors.Is(err, ErrSpec) && !errors.Is(err, ErrHost) {
+			t.Errorf("%s: %v, want ErrSpec (or ErrHost, for a host refused whole)", name, err)
 		}
 	}
 	if len(f.calls) != 0 {

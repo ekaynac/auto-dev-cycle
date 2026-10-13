@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
@@ -119,6 +120,17 @@ func (t Transport) Blob(ctx context.Context, data []byte) ([]byte, error) {
 		}
 		return validList(raw, api.BlobUploads, "api/blob-upload")
 	})
+}
+
+// SandboxProbe runs the sandbox probe (operator only) on image in mode
+// and returns the report once it validates.
+func (t Transport) SandboxProbe(ctx context.Context, image, mode string) ([]byte, error) {
+	q := url.Values{"image": {image}, "mode": {mode}}
+	resp, err := t.do(ctx, http.MethodPost, api.SandboxProbePath+"?"+q.Encode(), nil, false)
+	if err := refusal(resp, err); err != nil {
+		return nil, err
+	}
+	return answer(resp, nil, "a sandbox probe", func(raw []byte) error { return orInvalid(contract.Validate("api/sandbox-probe", raw)) })
 }
 
 func orInvalid(err error) error {

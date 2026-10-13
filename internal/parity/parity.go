@@ -80,9 +80,11 @@ func Reads() []Read {
 // Bootstrap is the one command that is neither an action nor a read.
 var Bootstrap = Read{Resource: "bootstrap", Endpoint: "POST " + apidoc.BootstrapPath, CLI: "adc admin bootstrap"}
 
-// Blobs are the upload endpoints (00-slice-plan P2), neither actions nor reads.
+// Blobs are the upload endpoints (00-slice-plan P2) and the sandbox probe
+// (P9), neither actions nor reads.
 var Blobs = []Read{{Resource: "blob upload", Endpoint: "POST " + api.BlobsPath, CLI: "adc blob put"},
-	{Resource: api.BlobUploads, Endpoint: "GET " + api.BlobsPath, CLI: "adc dev blob uploads"}}
+	{Resource: api.BlobUploads, Endpoint: "GET " + api.BlobsPath, CLI: "adc dev blob uploads"},
+	{Resource: "sandbox probe", Endpoint: "POST " + api.SandboxProbePath, CLI: "adc dev sandbox probe"}}
 
 // Markdown renders the matrix; the same inputs give the same bytes. A read
 // without a CLI command is refused.

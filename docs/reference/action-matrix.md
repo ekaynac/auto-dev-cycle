@@ -53,6 +53,7 @@ and the generated API description (gen-check pins the committed `schemas/openapi
 | bootstrap | `POST /v1/bootstrap` | `adc admin bootstrap` |
 | blob upload | `POST /v1/blobs` | `adc blob put` |
 | blob-uploads | `GET /v1/blobs` | `adc dev blob uploads` |
+| sandbox probe | `POST /v1/dev/sandbox-probe` | `adc dev sandbox probe` |
 
 ## Served, not in the API description
 

@@ -142,7 +142,7 @@ func TestMatrixRefusesMisclassification(t *testing.T) {
 // each pattern routes as before, the bootstrap only with a bootstrapper,
 // and nothing else is served.
 func TestRoutesUnchanged(t *testing.T) {
-	want := []string{"POST /v1/bootstrap", "GET /v1/events", "GET /v1/version", "POST /v1/commands/{action}", "GET /v1/whoami", "GET /v1/{resource}", "POST /v1/blobs", "GET /v1/blobs"}
+	want := []string{"POST /v1/bootstrap", "GET /v1/events", "GET /v1/version", "POST /v1/commands/{action}", "GET /v1/whoami", "GET /v1/{resource}", "POST /v1/blobs", "GET /v1/blobs", "POST /v1/dev/sandbox-probe"}
 	if !slices.Equal(Routes(), want) {
 		t.Fatalf("routes %v", Routes())
 	}
