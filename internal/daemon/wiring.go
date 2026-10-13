@@ -55,7 +55,9 @@ func authorizer(reg *vocab.Registry) authority.Authorizer {
 // other registered action has none and is refused. project.create has a
 // handler (authority.ProjectCreateHandler) that is not wired here: it stays
 // deferred until P22a activates the intake capability (M1 slice plan §1);
-// so does task.create's (authority.TaskCreateHandler, P3).
+// so does task.create's (authority.TaskCreateHandler, P3). input.answer's
+// (authority.InputAnswerHandler, P5) stays deferred until P6 activates the
+// answers capability.
 func handlers() map[string]authority.Handler {
 	hs := authority.SeatHandlers(0)
 	maps.Copy(hs, authority.AdminHandlers())
@@ -104,7 +106,7 @@ func logics(az authority.Authorizer) map[string]logic {
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {
 	all := eventstore.Kinds{}
-	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), lease.Kinds(), ledger.Kinds(), graph.Kinds(), api.BlobKinds()} {
+	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), authority.OwedKinds(), lease.Kinds(), ledger.Kinds(), graph.Kinds(), api.BlobKinds()} {
 		for k := range ks {
 			if _, dup := all[k]; dup {
 				return nil, fmt.Errorf("daemon: event kind %s is registered twice", k)
@@ -117,7 +119,7 @@ func eventKinds() (eventstore.Kinds, error) {
 
 // projector is the writer's Project hook, composed as a rebuild replays
 // it: each event goes through identity, then grants, the seat, proposals,
-// notes, projects, tasks, leases with their capacity reservations, the usage
+// notes, projects, tasks, owed inputs, leases with their capacity reservations, the usage
 // ledger, then the graph, before the next event (eventstore.ProjectEach).
 // The graph comes after leases, whose projections its supersession fold
 // reads. A lease projector without Units admits no seal until units are
@@ -134,6 +136,7 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		authority.NoteProjector{}.Project,
 		authority.ProjectProjector{}.Project,
 		authority.TaskProjector{}.Project,
+		authority.OwedProjector{}.Project,
 		capacity.Hook(leases, r),
 		ledger.Project,
 		graph.Project,

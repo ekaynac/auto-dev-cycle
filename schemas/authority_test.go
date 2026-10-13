@@ -50,7 +50,7 @@ func authorityDocs() map[string]map[string]any {
 		"records/challenge": {"id": chlID, "proposal": prpID, "binding_digest": dgB, "nonce": strings.Repeat("ab", 32),
 			"allowed_confirmers": []any{opID}, "expires_at": "2026-10-04T10:15:00Z", "used_at": nil},
 		"records/seat-event": {"transition": "seat.handover_requested", "from": opID, "to": actID, "force_after": "2026-10-05T00:15:00Z"},
-		"records/owed-input": {"id": ownID, "requested_by": actID, "kind": "ruling", "question": "Is the vendor licence compatible?",
+		"records/owed-input": {"id": ownID, "project": prjID, "requested_by": "nod_01m3250vnfeyrv67x6w0ddqr6a", "owner": opID, "kind": "ruling", "question": "Is the vendor licence compatible?",
 			"subject": object(), "revision": 1},
 	}
 }
@@ -146,7 +146,8 @@ func TestAuthorityRecords(t *testing.T) {
 		"review without evidence": {"records/approval", func(d map[string]any) {
 			d["confirmation"] = map[string]any{"policy": "independent_review", "challenge": nil, "satisfied_by": []any{}}
 		}},
-		"owed input revision": {"records/owed-input", func(d map[string]any) { d["revision"] = 0 }},
+		"owed input revision":          {"records/owed-input", func(d map[string]any) { d["revision"] = 0 }},
+		"owed input asked by an actor": {"records/owed-input", func(d map[string]any) { d["requested_by"] = actID }},
 	}
 	for name, c := range cases {
 		d := authorityDocs()[c.schema]

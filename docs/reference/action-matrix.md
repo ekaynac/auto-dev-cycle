@@ -22,7 +22,7 @@ and the generated API description (gen-check pins the committed `schemas/openapi
 | `grant.create` | grant | wired (logic) |  | `POST /v1/commands/grant.create` | `adc grant create` | M5 |  |
 | `grant.extend` | grant | wired (logic) |  | `POST /v1/commands/grant.extend` | `adc grant extend` | M5 |  |
 | `grant.revoke` | grant | wired (logic) |  | `POST /v1/commands/grant.revoke` | `adc grant revoke` | M5 |  |
-| `input.answer` | holds | deferred | M1 (design/m0/15 D1) | `POST /v1/commands/input.answer` | `adc holds answer` | M5 |  |
+| `input.answer` | holds | deferred | M1 (design/m1/00 §1 answers: handler built (P5), activated by P6) | `POST /v1/commands/input.answer` | `adc holds answer` | M5 |  |
 | `integration.change_topology` | project | deferred | post-M6 (design/m1/00 Q7: with sandbox phase 3 (plan/01 §4.1)) | `POST /v1/commands/integration.change_topology` | `adc project change-topology` | M5 |  |
 | `knowledge.change_protected_document` | project | deferred | M2 (design/m1/00 Q7: with the protected-document operation (plan/01 §4.1; plan/03 §4.6, §9)) | `POST /v1/commands/knowledge.change_protected_document` | `adc project change-protected-document` | M5 |  |
 | `note.add` | notes | wired (logic) |  | `POST /v1/commands/note.add` | `adc notes add` | M5 |  |

@@ -1,0 +1,40 @@
+{
+  "id": "apr_01m3250vkwffc979nzjw0gans1",
+  "proposal": null,
+  "actor": "@ACTOR@",
+  "actor_kind": "operator",
+  "action": "input.answer",
+  "change_class": [],
+  "project": "prj_01m3250vkwffc979nzjw0g2sa1",
+  "object": {
+    "type": "owed_input",
+    "id": "own_01m3250vkwffc979nzjw0gwnn1",
+    "version": 1,
+    "digest": null
+  },
+  "expected_state": {
+    "version": 1,
+    "digest": null
+  },
+  "scope": {
+    "owed_input": "own_01m3250vkwffc979nzjw0gwnn1",
+    "owed_revision": 1,
+    "answer": {
+      "ruling": "compatible"
+    }
+  },
+  "grant": null,
+  "confirmation": {
+    "policy": "none",
+    "challenge": null,
+    "satisfied_by": []
+  },
+  "answers": [
+    "own_01m3250vkwffc979nzjw0gwnn1"
+  ],
+  "supersedes": [],
+  "question": "Is the vendor licence compatible?",
+  "answer_verbatim": null,
+  "reason": "input.answer answers the owed input at the revision it binds",
+  "at": "@AT@"
+}
