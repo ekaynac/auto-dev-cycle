@@ -42,11 +42,12 @@ var objectID = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // In is one accept.
 type In struct {
-	Repo   sandbox.Repo
-	Base   string // the base commit, a full sha1 id
-	Patch  []byte // the build's diff
-	Policy Policy
-	Now    func() time.Time // nil: time.Now
+	Repo    sandbox.Repo
+	Base    string           // the base commit, a full sha1 id
+	Patch   []byte           // the build's diff
+	Policy  Policy           // PolicyOf's
+	Ignored []string         // Diff's ignored output files: warnings
+	Now     func() time.Time // nil: time.Now
 }
 
 // Block is one finding: a block refusing the candidate, or a warning.
@@ -95,6 +96,12 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 	}
 	start := in.Now()
 	defer func() { v.Elapsed = in.Now().Sub(start) }()
+	if !in.Policy.ok {
+		return v, errors.New("accept: a policy PolicyOf did not build")
+	}
+	for _, p := range in.Ignored {
+		v.Warnings = append(v.Warnings, Block{vocab.ReasonCompletedWithFindings, p, "output .gitignore kept out of the diff"})
+	}
 	if len(in.Patch) > maxPatch {
 		v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", fmt.Sprintf("the patch is over %d bytes", maxPatch)})
 		return v, nil
@@ -129,7 +136,7 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 	if err != nil {
 		return v, err
 	}
-	v.Blocks, v.Warnings = append(v.Blocks, blocks...), warnings
+	v.Blocks, v.Warnings = append(v.Blocks, blocks...), append(v.Warnings, warnings...)
 	if !v.Accepted() {
 		return v, nil
 	}

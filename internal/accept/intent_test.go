@@ -50,12 +50,16 @@ func call(t *testing.T) types.ManifestIntent {
 func TestBuilderIntent(t *testing.T) {
 	spec, base, old := ref(t, "1"), ref(t, "2"), ref(t, "3")
 	ctx := graph.Rendered{Included: []types.Ref{spec, base}, Omitted: []types.ManifestIntentOmittedItem{{Ref: old, Reason: types.ManifestIntentOmittedItemReasonBudget}}}
-	in, err := BuilderIntent(call(t), ctx, map[types.Digest]int64{spec.IdentityDigest: 10}, nil)
+	in, err := BuilderIntent(call(t), ctx, map[types.Digest]int64{spec.IdentityDigest: 10, base.IdentityDigest: 20}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if in.Consumer.Role != "builder" || len(in.Inputs) != 3 || in.Included[1].Ref.ID != base.ID || in.Included[0].Bytes != 10 || len(in.Omitted) != 1 {
 		t.Fatalf("intent %+v", in)
+	}
+	// L5: an included input without its size is an error, never 0 bytes.
+	if _, err := BuilderIntent(call(t), ctx, map[types.Digest]int64{spec.IdentityDigest: 10}, nil); err == nil {
+		t.Error("an included input without its size was sized 0")
 	}
 }
 
@@ -64,13 +68,21 @@ func TestBuilderIntent(t *testing.T) {
 func TestBuilderIntentRefusesAcceptance(t *testing.T) {
 	hidden := ref(t, "9")
 	derived := ref(t, "8", hidden.ID)
+	summary := ref(t, "6", derived.ID) // two hops from the acceptance blob
 	for name, ctx := range map[string]graph.Rendered{
 		"included": {Included: []types.Ref{ref(t, "1"), hidden}},
 		"omitted":  {Included: []types.Ref{}, Omitted: []types.ManifestIntentOmittedItem{{Ref: hidden, Reason: types.ManifestIntentOmittedItemReasonRestricted}}},
 		"derived":  {Included: []types.Ref{derived}},
+		"two hops": {Included: []types.Ref{summary}, Omitted: []types.ManifestIntentOmittedItem{{Ref: derived, Reason: types.ManifestIntentOmittedItemReasonRestricted}}},
 	} {
 		if _, err := BuilderIntent(call(t), ctx, nil, []types.Digest{hidden.ContentDigest}); !errors.Is(err, ErrAcceptanceInput) {
 			t.Errorf("%s: %v, want ErrAcceptanceInput", name, err)
 		}
+	}
+	// The closure reaches the summary itself, not only its parent: the
+	// refusal names the first input in it, the summary.
+	ctx := graph.Rendered{Included: []types.Ref{summary}, Omitted: []types.ManifestIntentOmittedItem{{Ref: derived, Reason: types.ManifestIntentOmittedItemReasonRestricted}}}
+	if _, err := BuilderIntent(call(t), ctx, nil, []types.Digest{hidden.ContentDigest}); err == nil || !strings.Contains(err.Error(), summary.ID) {
+		t.Errorf("two hops: %v, want the summary %s refused", err, summary.ID)
 	}
 }

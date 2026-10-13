@@ -3,7 +3,6 @@
 package accept
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,43 +11,31 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
-	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
-
-// Diff is the build's change (13 "Facts, not claims"): the controller's
-// own diff, in git's binary patch form, of tree (a sandbox output tree
-// copied without any .git, sandbox.Attempt.CopyTree) against base. It is
-// empty when nothing changed, and is what graph.BuildFacts.Diff digests.
-// The adapter's own patch is a claim and is never read for it.
-func Diff(ctx context.Context, repo sandbox.Repo, base, tree string) ([]byte, error) {
-	g, cleanup, err := newIndex(ctx, repo, base)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-	g.tree = tree
-	if _, err := g.run(ctx, nil, "add", "--all", "--", "."); err != nil {
-		return nil, err
-	}
-	out, err := g.run(ctx, nil, "diff", "--cached", "--binary", "--full-index", "--no-renames", base, "--")
-	if err == nil && len(out) > maxPatch {
-		return nil, fmt.Errorf("accept: the build's diff is over %d bytes", maxPatch)
-	}
-	return out, err
-}
 
 // reportSchema names the report's shape: P30's gate ledger reads it.
 const reportSchema = "adc.accept-report/v1"
 
+// maxReported bounds each of the report's lists; the rest are counted.
+const maxReported = 1000
+
 // Report is the D55 record of one accept node, a blob its result holds
-// from the first live attempt: elapsed time, blocks, warnings, files.
+// from the first live attempt: elapsed time, blocks, warnings (each list
+// at most maxReported, the rest counted in truncated), files, tree.
 func (v Verdict) Report() ([]byte, error) {
+	cut := func(bs []Block) []Block { return append([]Block{}, bs[:min(len(bs), maxReported)]...) }
 	return json.Marshal(struct {
-		Schema    string `json:"schema"`
-		ElapsedMS int64  `json:"elapsed_ms"`
-		Verdict
-	}{reportSchema, v.Elapsed.Milliseconds(), v})
+		Schema     string       `json:"schema"`
+		ElapsedMS  int64        `json:"elapsed_ms"`
+		Blocks     []Block      `json:"blocks"`
+		Warnings   []Block      `json:"warnings"`
+		Truncated  int          `json:"truncated"`
+		Files      int          `json:"files"`
+		Tree       string       `json:"tree"`
+		TreeDigest types.Digest `json:"tree_digest"`
+	}{reportSchema, v.Elapsed.Milliseconds(), cut(v.Blocks), cut(v.Warnings),
+		len(v.Blocks) + len(v.Warnings) - len(cut(v.Blocks)) - len(cut(v.Warnings)), v.Files, v.Tree, v.TreeDigest})
 }
 
 // Result is the accept node's completed result for key, kind tree.

@@ -5,9 +5,11 @@ package accept
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -132,8 +134,13 @@ func TestAcceptsAnOrdinaryChange(t *testing.T) {
 	if !v.Accepted() || v.Files != 2 || len(v.Tree) != 40 || !strings.HasPrefix(string(v.TreeDigest), "sha256:") {
 		t.Fatalf("verdict %+v, want accepted with its tree", v)
 	}
-	// A test moved within the changed files is no loss: tests/test_money.py
-	// renamed, assertions kept.
+	// A test moved between the changed files is no loss.
+	split := f.patch(t, map[string]string{"tests/test_money.py": strings.SplitAfter(baseFiles["tests/test_money.py"], "== 3\n")[0],
+		"tests/test_zero.py": "from money import add\n\ndef test_zero():\n    assert add(0, 0) == 0\n"})
+	if v := f.accept(t, split); !v.Accepted() {
+		t.Errorf("a test moved to a new file: %v", reasons(v.Blocks))
+	}
+	// A test file renamed, assertions kept.
 	moved := f.patch(t, map[string]string{"tests/test_money2.py": baseFiles["tests/test_money.py"]}, "tests/test_money.py")
 	if v := f.accept(t, moved); !v.Accepted() {
 		t.Errorf("a renamed test file: %v", reasons(v.Blocks))
@@ -194,12 +201,13 @@ func TestCheckPaths(t *testing.T) {
 
 func TestGitControlLookAlikes(t *testing.T) {
 	for _, c := range []string{".git", ".GIT", ".git.", ".git ", ".git::$INDEX_ALLOCATION", "git~1", ".g\u200cit",
-		".gitattributes", ".GitAttributes", "gitatt~1", ".gitmodules", "gitmod~1", ".githooks", ".gitmodules\ufeff"} {
+		".gitattributes", ".GitAttributes", "gitatt~1", ".gitmodules", "gitmod~1", ".githooks", ".gitmodules\ufeff",
+		"gi7eba~1", "gi7d29~1", "GI7EBA~9", "gitmod~4", "gitatt~2 .", "githoo~1", "gi7e~123", "gi7d29~1:x"} {
 		if !gitControl(c) {
 			t.Errorf("%q is not a git control name", c)
 		}
 	}
-	for _, c := range []string{".gitignore", "git", ".gitx", "x.git", "github"} {
+	for _, c := range []string{".gitignore", "git", ".gitx", "x.git", "github", "git~2", "gitmod~5", "gi7eba~0", "gi7eba~1x", "gi7ebb~1"} {
 		if gitControl(c) {
 			t.Errorf("%q is a git control name", c)
 		}
@@ -242,7 +250,13 @@ func TestRefusesUnsafeOutput(t *testing.T) {
 // -skip; #226 entry 32) block; its heuristics warn the reviewer.
 func TestIntegrityGuard(t *testing.T) {
 	f := newFixture(t)
-	test := baseFiles["tests/test_money.py"]
+	test, goTest := baseFiles["tests/test_money.py"], baseFiles["pkg/calc_test.go"]
+	// why is the block each row must raise (the rule it discriminates).
+	why := map[string]string{"deleted test file": "no longer collected", "skip added": "skipped", "go skip added": "skipped",
+		"assertion removed": "fewer assertions", "test removed": "a test deleted", "testing.Testing": "forge", "0x16 written": "forge",
+		"renamed to non-test": "no longer collected", "go:build ignore": "build constraint", "renamed, uncollected": "no longer collected",
+		"go test renamed .test": "no longer collected", "importorskip": "skip", "deleted, comment pad": "a test deleted",
+		"assert moved to new": "fewer assertions", "padded over the bound": "unverifiable", "go skip in a helper": "skip"}
 	for name, c := range map[string]struct {
 		files map[string]string
 		gone  []string
@@ -255,15 +269,31 @@ func TestIntegrityGuard(t *testing.T) {
 		"testing.Testing":     {files: map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\nvar _ = testing.Testing()\n"}},
 		"0x16 written":        {files: map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\nconst x = \"\\x16\"\n"}},
 		"renamed to non-test": {files: map[string]string{"tests_old.txt": test}, gone: []string{"tests/test_money.py"}},
+		// The Opus pre-review's probes (#252).
+		"go:build ignore":       {files: map[string]string{"pkg/calc_test.go": "//go:build ignore\n\n" + goTest}},
+		"renamed, uncollected":  {files: map[string]string{"tests/money_cases.py": test}, gone: []string{"tests/test_money.py"}},
+		"go test renamed .test": {files: map[string]string{"pkg/calc.test.go": goTest}, gone: []string{"pkg/calc_test.go"}},
+		"importorskip":          {files: map[string]string{"tests/test_money.py": "import pytest\npytest.importorskip('nope')\n" + test}},
+		"deleted, comment pad":  {files: map[string]string{"tests/test_money.py": strings.SplitAfter(test, "== 3\n")[0] + "\n# def test assert\n"}},
+		"assert moved to new":   {files: map[string]string{"tests/test_money.py": strings.Replace(test, "assert add(0, 0) == 0", "pass", 1), "tests/test_x.py": "def test_x():\n    assert True\n"}},
+		"padded over the bound": {files: map[string]string{"tests/test_money.py": strings.Replace(test, "assert add(0, 0) == 0", "pass", 1) + "#" + strings.Repeat("x", 5<<20) + "\n"}},
+		"go skip in a helper":   {files: map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\nfunc skip(t interface{ Skip(...any) }) { t.Skip() }\n"}},
 	} {
 		v := f.accept(t, f.patch(t, c.files, c.gone...))
-		if v.Reason() != vocab.ReasonTestIntegrityViolation {
-			t.Errorf("%s: %v, want test_integrity_violation", name, reasons(v.Blocks))
+		found := slices.ContainsFunc(v.Blocks, func(b Block) bool { return strings.Contains(b.What, why[name]) })
+		if v.Reason() != vocab.ReasonTestIntegrityViolation || !found {
+			t.Errorf("%s: %+v, want test_integrity_violation (%s)", name, v.Blocks, why[name])
 		}
 	}
-	v := f.accept(t, f.patch(t, map[string]string{"pkg/main_test.go": "package pkg\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(m.Run()) }\n"}))
-	if !v.Accepted() || len(v.Warnings) == 0 {
-		t.Errorf("an added TestMain: blocks %v, warnings %v; want accepted with a warning", reasons(v.Blocks), reasons(v.Warnings))
+	for name, files := range map[string]map[string]string{
+		"an added TestMain":            {"pkg/main_test.go": "package pkg\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(m.Run()) }\n"},
+		"os.Exit in init beside tests": {"pkg/calc.go": baseFiles["pkg/calc.go"] + "\nfunc init() { os.Exit(0) }\n"},
+		"a large fixture under tests":  {"tests/data.json": strings.Repeat("x", 5<<20)},
+	} {
+		v := f.accept(t, f.patch(t, files))
+		if !v.Accepted() || len(v.Warnings) == 0 {
+			t.Errorf("%s: blocks %v, warnings %v; want accepted with a warning", name, reasons(v.Blocks), reasons(v.Warnings))
+		}
 	}
 }
 
@@ -273,26 +303,74 @@ func TestDiffOfTheOutputTree(t *testing.T) {
 	f := newFixture(t)
 	tree := filepath.Join(t.TempDir(), "tree")
 	write(t, tree, baseFiles)
-	if d, err := Diff(context.Background(), f.repo, f.base, tree); err != nil || len(d) != 0 {
+	if d, _, err := Diff(context.Background(), f.repo, f.base, tree); err != nil || len(d) != 0 {
 		t.Fatalf("an unchanged tree: %q, %v", d, err)
 	}
-	write(t, tree, map[string]string{"money.py": "def add(a, b):\n    return b + a\n", ".git/config": "[core]\n\tfsmonitor = x\n"})
-	d, err := Diff(context.Background(), f.repo, f.base, tree)
-	if err != nil || !strings.Contains(string(d), "b/money.py") || strings.Contains(string(d), ".git/config") {
-		t.Fatalf("diff %q, %v", d, err)
+	write(t, tree, map[string]string{"money.py": "def add(a, b):\n    return b + a\n", ".gitignore": "*.log\n", "out.log": "x\n"})
+	d, ignored, err := Diff(context.Background(), f.repo, f.base, tree)
+	if err != nil || !strings.Contains(string(d), "b/money.py") || strings.Contains(string(d), "out.log") || !slices.Equal(ignored, []string{"out.log"}) {
+		t.Fatalf("diff %q, ignored %q, %v", d, ignored, err)
 	}
-	if v := f.accept(t, d); !v.Accepted() {
-		t.Fatalf("the controller's own diff: %v", reasons(v.Blocks))
+	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: d, Policy: f.policy, Ignored: ignored})
+	if err != nil || !v.Accepted() || len(v.Warnings) != 1 {
+		t.Fatalf("the controller's own diff: %v, warnings %v, %v", reasons(v.Blocks), reasons(v.Warnings), err)
 	}
 	if err := os.Symlink("/etc/passwd", filepath.Join(tree, "key")); err != nil {
 		t.Fatal(err)
 	}
-	d, err = Diff(context.Background(), f.repo, f.base, tree)
+	d, _, err = Diff(context.Background(), f.repo, f.base, tree)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if v := f.accept(t, d); v.Reason() != vocab.ReasonUnsafeOutput {
 		t.Fatalf("a symlink in the tree: %v", reasons(v.Blocks))
+	}
+}
+
+// A .git look-alike in the output tree is the candidate's unsafe output,
+// refused before git reads the tree, never a controller fault.
+func TestDiffRefusesGitDirectories(t *testing.T) {
+	f := newFixture(t)
+	for _, p := range []string{".git/config", "sub/.GIT/config", "x/Git~1/HEAD", "y/.git. /x"} {
+		tree := filepath.Join(t.TempDir(), "tree")
+		write(t, tree, map[string]string{"money.py": "x = 1\n", p: "[core]\n"})
+		if _, _, err := Diff(context.Background(), f.repo, f.base, tree); !errors.Is(err, ErrUnsafeTree) {
+			t.Errorf("%s: %v, want ErrUnsafeTree", p, err)
+		}
+	}
+	// A path git itself refuses to add (a .gitmodules symlink) is unsafe
+	// too, never a controller fault.
+	tree := filepath.Join(t.TempDir(), "tree")
+	write(t, tree, map[string]string{"money.py": "x = 1\n"})
+	if err := os.Symlink("money.py", filepath.Join(tree, ".gitmodules")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Diff(context.Background(), f.repo, f.base, tree); !errors.Is(err, ErrUnsafeTree) {
+		t.Errorf("a .gitmodules symlink: %v, want ErrUnsafeTree", err)
+	}
+}
+
+// L4: only PolicyOf's policy is accepted, and a bad glob gives none.
+func TestPolicyOfOnly(t *testing.T) {
+	f := newFixture(t)
+	if _, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Policy: Policy{}}); err == nil {
+		t.Error("a zero policy was accepted")
+	}
+	if pol, err := PolicyOf(types.ProjectProfile{ProtectedPaths: []types.Glob{"../x"}}); err == nil || pol.ok {
+		t.Errorf("a bad glob: %v, %+v", err, pol)
+	}
+}
+
+// L2: the report's lists are bounded, counted beyond, and never null.
+func TestReportBounded(t *testing.T) {
+	b, err := Verdict{Blocks: slices.Repeat([]Block{{vocab.ReasonProtectedPath, "p", "w"}}, maxReported+5)}.Report()
+	var rep struct {
+		Blocks, Warnings []json.RawMessage
+		Truncated        int
+	}
+	if err != nil || json.Unmarshal(b, &rep) != nil || len(rep.Blocks) != maxReported || rep.Truncated != 5 ||
+		rep.Warnings == nil || !strings.Contains(string(b), `"warnings":[]`) {
+		t.Fatalf("report: %d blocks, truncated %d, %v", len(rep.Blocks), rep.Truncated, err)
 	}
 }
 
