@@ -123,7 +123,9 @@ var board = Resource{
 }
 
 // boardTask is task id's record (recorded: it exists and reads as one)
-// and its project: its record's, else the one its nodes pinned, else nil.
+// and its project: its record's; for a record that does not read as one,
+// the registered project its project field alone names, else the one its
+// nodes pinned; else nil.
 func boardTask(tx *eventstore.Tx, id types.TaskID) (t authority.TaskRecord, recorded bool, project *types.ProjectID, err error) {
 	raw, ok, err := tx.Get(authority.TaskProjection, id)
 	if err != nil {
@@ -131,6 +133,15 @@ func boardTask(tx *eventstore.Tx, id types.TaskID) (t authority.TaskRecord, reco
 	}
 	if ok && json.Unmarshal(raw, &t) == nil && t.ID == id {
 		return t, true, &t.Project, nil
+	}
+	var named struct {
+		Project types.ProjectID `json:"project"`
+	}
+	if ok && json.Unmarshal(raw, &named) == nil && named.Project != "" {
+		_, registered, err := tx.Get(authority.ProjectProjection, named.Project)
+		if err != nil || registered {
+			return t, false, &named.Project, err
+		}
 	}
 	p, pinned, err := graph.TaskProject(tx, id)
 	if err != nil || !pinned {

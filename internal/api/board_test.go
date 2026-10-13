@@ -120,16 +120,21 @@ func TestBoardRead(t *testing.T) {
 	}
 }
 
-// F, around damage: A holds a good task, a Ready task with a node and a
-// node of no recorded task. A reader of B's board reads B's card as ever;
-// a reader of A's reads A's good card and the two unplaced, with no
+// F, around damage: A holds a good task, a Ready task with a node, a node
+// of no recorded task, and a task record overwritten so it no longer
+// reads as one (no node). A reader of B's board reads B's card as ever; a
+// reader of A's reads A's good card and the three unplaced, with no
 // column; the read stays 200.
 func TestBoardAroundDamage(t *testing.T) {
 	f := open(t)
 	f.project(f.op.ID, prjA)
 	f.project(f.op.ID, prjB)
-	good, early, onB := f.task(prjA, true), f.task(prjA, true), f.task(prjB, true)
+	good, early, onB, broken := f.task(prjA, true), f.task(prjA, true), f.task(prjB, true), f.task(prjA, true)
 	orphan := types.TaskID(newID(t, "tsk"))
+	f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) { // a record that no longer reads as one, with no node
+		err := tx.Put(authority.TaskProjection, broken.ID, json.RawMessage(`{"id":"`+string(broken.ID)+`","project":"`+prjA+`","state":5}`))
+		return []eventstore.Event{{ID: newID(f.t, "evt"), Kind: "fixture.appended/v1", Subject: prjA, Payload: []byte(`{}`)}}, err
+	})
 	f.recordNode(early.ID, prjA, types.NodeKindBuild)
 	f.recordNode(orphan, prjA, types.NodeKindBuild)
 	_, readsB := f.another([]string{prjB}, "board")
@@ -142,10 +147,10 @@ func TestBoardAroundDamage(t *testing.T) {
 		t.Errorf("B's board: %v", b)
 	}
 	a := items(t, srv, "board", readsA)
-	if !slices.Equal(keysOf(a), sorted(string(good.ID), string(early.ID), string(orphan))) || a[string(good.ID)]["column"] != "ready" {
+	if !slices.Equal(keysOf(a), sorted(string(good.ID), string(early.ID), string(orphan), string(broken.ID))) || a[string(good.ID)]["column"] != "ready" {
 		t.Fatalf("A's board: %v", a)
 	}
-	for id, reason := range map[types.TaskID]string{early.ID: "nodes_before_admission", orphan: "task_unrecorded"} {
+	for id, reason := range map[types.TaskID]string{early.ID: "nodes_before_admission", orphan: "task_unrecorded", broken.ID: "damaged_record"} {
 		u := a[string(id)]
 		if _, placed := u["column"]; placed || u["type"] != "unplaced" || u["reason"] != reason || u["project"] != prjA {
 			t.Errorf("%s: %v", id, u)
@@ -168,8 +173,10 @@ func TestBoardOwnerRef(t *testing.T) {
 	})
 	_, boardOnly := f.another([]string{prjA}, "board")
 	_, withHolds := f.another([]string{prjA}, "board", "hold")
+	holdsElsewhere, holdsOnB := f.another([]string{prjA}, "board")
+	f.grantWith(func(g *types.Grant) { g.Actor = holdsElsewhere.ID }, []string{prjB}, nil, "hold")
 	srv := f.registeredServer(nil)
-	for bearer, want := range map[string]any{f.opTok.Reveal(): ref, withHolds: ref, boardOnly: nil} {
+	for bearer, want := range map[string]any{f.opTok.Reveal(): ref, withHolds: ref, boardOnly: nil, holdsOnB: nil} {
 		c := items(t, srv, "board", bearer)[string(task.ID)]
 		nodes, _ := c["nodes"].([]any)
 		if c["column"] != "running" || c["admitted"] != true || len(nodes) != 1 {

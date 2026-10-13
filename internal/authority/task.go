@@ -49,7 +49,7 @@ const (
 	TaskProjection     = "tasks"
 	TaskObjectType     = "task"
 	TaskReady          = "ready"
-	TaskAdmitted       = "admitted" // P22a's task.admitted; the board reads it
+	TaskAdmitted       = "admitted" // P22a's task.admitted; the board reads it (P22a's obligations: backlog #226 entry 42)
 	MaxReadyTasks      = 5
 	ApprovalInForce    = "in_force"
 	ApprovalRevoked    = "revoked"

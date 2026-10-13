@@ -78,11 +78,12 @@ func (h Reads) Resource(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	h.view(w, r, func(tx *eventstore.Tx, _ identity.Principal, _ types.Actor, scope authority.ReadScope) (any, error) {
+	h.view(w, r, func(tx *eventstore.Tx, _ identity.Principal, _ types.Actor, at ReadAt) (any, error) {
+		scope := at.Scope
 		if scope.Empty() {
 			return nil, errNotGranted
 		}
-		records, err := res.List(tx, ReadAt{Now: Events{Now: h.Now}.now(), Scope: scope})
+		records, err := res.List(tx, at)
 		if err != nil {
 			return nil, err
 		}
@@ -121,7 +122,8 @@ func allowed(rec any, fields []string) (json.RawMessage, error) {
 
 // Whoami serves WhoamiPath: any authenticated caller reads its own.
 func (h Reads) Whoami(w http.ResponseWriter, r *http.Request) {
-	h.view(w, r, func(_ *eventstore.Tx, p identity.Principal, a types.Actor, scope authority.ReadScope) (any, error) {
+	h.view(w, r, func(_ *eventstore.Tx, p identity.Principal, a types.Actor, at ReadAt) (any, error) {
+		scope := at.Scope
 		out := types.Whoami{Actor: a.ID, Kind: types.WhoamiKind(a.Kind), Token: p.Token(), Listener: listeners[p.Via()],
 			Reads: types.WhoamiReads{Everything: scope.Everything(), Grants: []types.WhoamiReadsGrantsItem{}}}
 		for _, g := range scope.Reach() {
@@ -132,10 +134,11 @@ func (h Reads) Whoami(w http.ResponseWriter, r *http.Request) {
 }
 
 // view authenticates r's bearer on the listener that admitted it (through
-// that listener's verification slots), takes the caller's read scope and
-// runs read, all in one store snapshot, and writes what read returns.
+// that listener's verification slots), takes the read's one clock reading
+// and the caller's read scope at it, and runs read, all in one store
+// snapshot, and writes what read returns.
 func (h Reads) view(w http.ResponseWriter, r *http.Request,
-	read func(*eventstore.Tx, identity.Principal, types.Actor, authority.ReadScope) (any, error)) {
+	read func(*eventstore.Tx, identity.Principal, types.Actor, ReadAt) (any, error)) {
 	if r.URL.RawQuery != "" {
 		http.Error(w, "reads take no query parameters", http.StatusBadRequest)
 		return
@@ -165,11 +168,12 @@ func (h Reads) view(w http.ResponseWriter, r *http.Request,
 				authErr = err
 				return nil
 			}
-			scope, err := authority.ReadScopeOf(tx, a, Events{Now: h.Now}.now())
+			now := Events{Now: h.Now}.now()
+			scope, err := authority.ReadScopeOf(tx, a, now)
 			if err != nil {
 				return err
 			}
-			out, err = read(tx, p, a, scope)
+			out, err = read(tx, p, a, ReadAt{Now: now, Scope: scope})
 			return err
 		})
 	}()
