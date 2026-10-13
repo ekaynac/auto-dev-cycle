@@ -1,0 +1,19 @@
+{
+  "issue": 170,
+  "item": 3,
+  "provisional": true,
+  "package": "./internal/cli/...",
+  "base": "0d3e81dba68473ecbe4e8cb5f2c0665a28e0cbeb",
+  "command": ["go", "test", "-count=1", "-json", "./internal/cli/..."],
+  "environment": {"go": "go1.27.1 linux/arm64", "GOPROXY": "off", "GOFLAGS": "-mod=readonly", "image": "host toolchain (provisional); re-record in the pinned image"},
+  "result": {"exit": 0, "tests_passed": 72, "top_level_tests": 52, "failed": 0, "skipped": 0},
+  "acceptance": {
+    "attachment_digest": "sha256:45acb24235d176c8bbd15e6675fc018fd1cb6512ec9263934f8b267363d74a24",
+    "tests": 5,
+    "at_base": {"fail": 4, "pass": 1},
+    "with_reference": {"fail": 0, "pass": 5},
+    "reference_digest": "sha256:4d0ea3462d33090d9933c3b7c3e2a469776d899b57b25acdf003aac0c2ee563f",
+    "canary": "the attachment holds an unpublished canary line, kept in the lead's store"
+  },
+  "re_record": "whenever the commit the task is created on differs from base, and in the pinned Go image once P32 merges (backlog #226)"
+}
