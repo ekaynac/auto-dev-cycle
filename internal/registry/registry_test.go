@@ -196,7 +196,8 @@ func TestNewRefuses(t *testing.T) {
 		"whitespace": {endpoint("https://api.example.com/v1 x"), RuleEndpoint},
 		"backslash":  {endpoint(`https://api.example.com\v1`), RuleEndpoint},
 		"a group mixing destinations": {reviewer(func(e *types.RegistryExecutor) {
-			e.Destination.ID, e.Destination.Endpoint = "other", "http://127.0.0.2:18080/v1"
+			ref := types.Slug("other") // its own credential: only the group rule refuses
+			e.Destination.ID, e.Destination.Endpoint, e.CredentialRef = "other", "http://127.0.0.2:18080/v1", &ref
 		}), RuleGroup},
 		// One account (destination and credential) split across groups would
 		// draw its one limit twice.
@@ -207,6 +208,12 @@ func TestNewRefuses(t *testing.T) {
 		"an unregistered member": {stubGroup(func(g *types.ResourceGroup) {
 			g.Members = append(g.Members, "exe_01m4tm99haemrs8zjs56wjm467")
 		}), RuleGroup},
+		// One credential reference at two origins: one account's key would
+		// be injected at another endpoint (Opus review of #248, M1).
+		"one credential, two origins": {func(d *types.ExecutorRegistry, g []types.ResourceGroup) {
+			d.Executors[1].Destination.ID, d.Executors[1].Destination.Endpoint = "other", "https://other.example/v1"
+			d.Executors[1].Group, g[0].Members, g[2].Members = g[2].ID, g[0].Members[:1], []types.ExecutorID{d.Executors[1].ID}
+		}, RuleCredentialRef},
 		// The builder's model under another family name.
 		"aliased family": {reviewer(func(e *types.RegistryExecutor) { e.Family, e.Model = "stub-other", "stub-builder-1" }), RuleSameFamily},
 		// Relabelling: the same endpoint (origin) under a second destination id.

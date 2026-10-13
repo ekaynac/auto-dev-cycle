@@ -9,13 +9,14 @@
 //   - Before egress, against the lease: it is active and running the bound attempt; its executor is registered; the
 //     destination is the registry's for that executor, over an admitted transport (#226 entry 37); and the
 //     request's model is exactly the executor's pinned model. The gateway never selects or changes a model (D48): a
-//     request naming another, or none, is refused, never rewritten.
+//     request naming another, or none, or carrying another model-selecting key, is refused, never rewritten.
 //   - Egress dials only the registered origin, ignores proxy settings and refuses every redirect (#226 entries 34
 //     and 38). A redirect is recorded as a route refusal; nothing is sent to its target.
 //   - The credential is injected per destination (Injector; Bearer by default), the point a governed upstream's
-//     trust secret uses later. It is never logged, returned, or put in an error, a refusal or a capture.
-//   - Launch readiness (dispatch.Credentials): Holds reports whether the gateway holds the credential a
-//     destination's executors name, read afresh at every check.
+//     trust secret uses later. It is never logged, or put in an error, a refusal or a capture; an upstream response
+//     echoing it reaches the adapter with the value replaced, recorded as a route refusal.
+//   - Launch readiness (dispatch.Credentials): Holds reports whether the gateway holds the named credential, read
+//     afresh at every check. The registry binds a credential reference to one origin (RuleCredentialRef).
 //   - Capture is configured only for exit runs (§8 item 4): the body as sent, before injection, as a restricted
 //     blob.
 //   - The upstream statuses and route refusals it observed are kept per attempt, for the exit map
@@ -33,7 +34,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 
@@ -77,9 +80,13 @@ type Gateway struct {
 	observed map[types.AttemptID]Observed
 }
 
-// New is a gateway with no binding.
-func New(cfg Config) *Gateway {
-	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, observed: map[types.AttemptID]Observed{}}
+// New is a gateway with no binding. A zero Registry registers nothing, so
+// it refuses every call.
+func New(cfg Config) (*Gateway, error) {
+	if cfg.Leases == nil || cfg.Secrets == nil {
+		return nil, errors.New("gateway: a gateway needs the lease reader and the secrets")
+	}
+	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, observed: map[types.AttemptID]Observed{}}, nil
 }
 
 // The paths an attempt may call, under its destination's endpoint.
@@ -87,8 +94,11 @@ var paths = map[string]bool{"/chat/completions": true}
 
 const maxBody = 8 << 20 // bytes of one request body
 
-// RouteRedirect is the route refusal a redirect records.
-const RouteRedirect = "redirect"
+// The route refusals: a redirect, and a response echoing the credential.
+const (
+	RouteRedirect = "redirect"
+	RouteEchoed   = "credential_echoed"
+)
 
 // Bind mints the token an attempt's adapter calls the gateway with.
 func (g *Gateway) Bind(b Binding) (string, error) {
@@ -143,7 +153,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(w, &refusal{http.StatusUnauthorized, "unbound"})
 		return
 	}
-	resp, no := g.forward(r, b)
+	resp, cred, no := g.forward(r, b)
 	if no != nil {
 		refuse(w, no)
 		return
@@ -153,7 +163,55 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(flushing{w}, resp.Body)
+	out := &redacting{w: flushing{w}, secret: []byte(cred.Reveal())}
+	_, _ = io.Copy(out, resp.Body)
+	_ = out.Close()
+	if out.hit {
+		g.observe(b.Attempt, 0, RouteEchoed)
+	}
+}
+
+// redacting writes to w with every occurrence of secret replaced by the
+// placeholder, so an upstream echoing the credential (in an auth error,
+// say) never hands it to the sandbox. It holds back the last
+// len(secret)-1 bytes, which may begin a match split across writes, until
+// the next write or Close. The stream goes on rather than being cut: what
+// arrived stays usable and its status reaches the exit map, and the echo
+// is recorded as a route refusal.
+type redacting struct {
+	w      io.Writer
+	secret []byte
+	held   []byte
+	hit    bool
+}
+
+func (r *redacting) Write(p []byte) (int, error) {
+	if len(r.secret) == 0 {
+		return r.w.Write(p)
+	}
+	buf, out := append(r.held, p...), []byte(nil)
+	for i := bytes.Index(buf, r.secret); i >= 0; i = bytes.Index(buf, r.secret) {
+		out = append(append(out, buf[:i]...), redacted...)
+		buf, r.hit = buf[i+len(r.secret):], true
+	}
+	keep := min(len(r.secret)-1, len(buf))
+	out, r.held = append(out, buf[:len(buf)-keep]...), append([]byte(nil), buf[len(buf)-keep:]...)
+	if len(out) > 0 {
+		if _, err := r.w.Write(out); err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
+}
+
+// Close writes the held-back tail, which holds no match.
+func (r *redacting) Close() error {
+	if len(r.held) == 0 {
+		return nil
+	}
+	_, err := r.w.Write(r.held)
+	r.held = nil
+	return err
 }
 
 func (g *Gateway) binding(r *http.Request) (Binding, bool) {
@@ -167,58 +225,63 @@ func (g *Gateway) binding(r *http.Request) (Binding, bool) {
 	return b, ok
 }
 
-// forward checks r against b's lease and sends it, or refuses it with
-// nothing sent.
-func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, *refusal) {
-	ctx := r.Context()
+// forward checks r against b's lease and sends it, returning the response
+// and the credential it injected, or refuses it with nothing sent. The
+// lease is checked before the body is read, so only a running attempt can
+// make the gateway buffer one.
+func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credential, *refusal) {
+	ctx, none := r.Context(), Credential{}
 	if r.Method != http.MethodPost {
-		return nil, &refusal{http.StatusMethodNotAllowed, "method"}
+		return nil, none, &refusal{http.StatusMethodNotAllowed, "method"}
 	}
 	if !paths[r.URL.Path] {
-		return nil, &refusal{http.StatusNotFound, "path"}
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
-	if err != nil {
-		return nil, &refusal{http.StatusRequestEntityTooLarge, "body"}
+		return nil, none, &refusal{http.StatusNotFound, "path"}
 	}
 	l, ok, err := g.cfg.Leases.Lease(ctx, b.Lease)
 	switch {
 	case err != nil:
-		return nil, &refusal{http.StatusServiceUnavailable, "lease_unreadable"}
+		return nil, none, &refusal{http.StatusServiceUnavailable, "lease_unreadable"}
 	case !ok || l.State != types.LeaseStateActive || l.Attempt == nil || *l.Attempt != b.Attempt:
-		return nil, &refusal{http.StatusConflict, "lease_not_running_attempt"}
+		return nil, none, &refusal{http.StatusConflict, "lease_not_running_attempt"}
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
+	if err != nil {
+		return nil, none, &refusal{http.StatusRequestEntityTooLarge, "body"}
 	}
 	e, ok := g.cfg.Registry.Executor(l.Executor)
 	if !ok {
-		return nil, &refusal{http.StatusForbidden, "executor_not_registered"}
+		return nil, none, &refusal{http.StatusForbidden, "executor_not_registered"}
 	}
 	target, ok := route(e.Destination, r.URL.Path)
 	if !ok {
-		return nil, &refusal{http.StatusForbidden, "destination_not_admitted"}
+		return nil, none, &refusal{http.StatusForbidden, "destination_not_admitted"}
 	}
 	out, ok := pinned(body, e.Model)
 	if !ok {
-		return nil, &refusal{http.StatusForbidden, "model_not_pinned"}
+		return nil, none, &refusal{http.StatusForbidden, "model_not_pinned"}
 	}
 	var cred Credential
 	if e.CredentialRef != nil {
-		c, held, err := g.cfg.Secrets.Credential(*e.CredentialRef)
+		c, held, err := Credential{}, false, errNoSecrets
+		if g.cfg.Secrets != nil {
+			c, held, err = g.cfg.Secrets.Credential(*e.CredentialRef)
+		}
 		if err != nil || !held {
-			return nil, &refusal{http.StatusServiceUnavailable, "credential_not_held"}
+			return nil, none, &refusal{http.StatusServiceUnavailable, "credential_not_held"}
 		}
 		cred = c
 	}
 	if g.cfg.Capture != nil {
 		if v := cred.Reveal(); v != "" && bytes.Contains(out, []byte(v)) {
-			return nil, &refusal{http.StatusForbidden, "credential_in_body"}
+			return nil, none, &refusal{http.StatusForbidden, "credential_in_body"}
 		}
 		if g.cfg.Capture.Keep(ctx, b, out) != nil {
-			return nil, &refusal{http.StatusServiceUnavailable, "capture_failed"}
+			return nil, none, &refusal{http.StatusServiceUnavailable, "capture_failed"}
 		}
 	}
 	req, err := http.NewRequestWithContext(context.WithValue(ctx, originKey{}, dialAddr(target)), http.MethodPost, target.String(), bytes.NewReader(out))
 	if err != nil {
-		return nil, &refusal{http.StatusForbidden, "destination_not_admitted"}
+		return nil, none, &refusal{http.StatusForbidden, "destination_not_admitted"}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if e.CredentialRef != nil {
@@ -235,16 +298,22 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, *refusal)
 	switch {
 	case errors.Is(err, errRedirect):
 		g.observe(b.Attempt, 0, RouteRedirect)
-		return nil, &refusal{http.StatusBadGateway, RouteRedirect}
+		return nil, none, &refusal{http.StatusBadGateway, RouteRedirect}
 	case err != nil:
-		return nil, &refusal{http.StatusBadGateway, "upstream_unreachable"}
+		return nil, none, &refusal{http.StatusBadGateway, "upstream_unreachable"}
 	}
-	return resp, nil
+	return resp, cred, nil
 }
 
+var errNoSecrets = errors.New("gateway: no secrets")
+
+// observe records for a while its attempt is bound.
 func (g *Gateway) observe(a types.AttemptID, status int, route string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if !slices.ContainsFunc(slices.Collect(maps.Values(g.bound)), func(b Binding) bool { return b.Attempt == a }) {
+		return // unbound: Unbind has handed the attempt's observations over
+	}
 	o := g.observed[a]
 	if status != 0 {
 		o.Statuses = append(o.Statuses, status)

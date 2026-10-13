@@ -88,8 +88,7 @@ func transportOK(kind types.RegistryDestinationKind, u *url.URL) bool {
 		return false
 	}
 	ip, err := netip.ParseAddr(u.Hostname())
-	literal := err == nil && ip.Zone() == ""
-	ip = ip.Unmap()
+	literal := err == nil && ip.Zone() == "" // netip's IsLoopback and IsPrivate read an IPv4-mapped address as IPv4
 	switch kind {
 	case types.RegistryDestinationKindDirectApi:
 		return u.Scheme == "https" || (literal && ip.IsLoopback())
@@ -99,14 +98,26 @@ func transportOK(kind types.RegistryDestinationKind, u *url.URL) bool {
 	return false // brokers and governed upstreams are not M1's
 }
 
+// selecting are the top-level keys besides model that pick a model at an
+// OpenAI-compatible upstream or router.
+var selecting = map[string]bool{"models": true, "fallbacks": true, "route": true}
+
 // pinned is body with its model checked: body is one JSON object whose
 // "model" is exactly the lease's pinned model. It is forwarded re-encoded
 // from its decoded object, so a duplicated key cannot show the gateway one
-// model and the upstream another. The model is never rewritten.
+// model and the upstream another. Another key that selects a model is
+// refused: one spelling "model" in another case (an upstream may match
+// keys case-insensitively), or a fallback list or route. The model is
+// never rewritten.
 func pinned(body []byte, model string) ([]byte, bool) {
 	var top map[string]json.RawMessage
 	if json.Unmarshal(body, &top) != nil || top == nil {
 		return nil, false
+	}
+	for k := range top {
+		if k != "model" && (strings.EqualFold(k, "model") || selecting[strings.ToLower(k)]) {
+			return nil, false
+		}
 	}
 	var named string
 	if raw, ok := top["model"]; !ok || json.Unmarshal(raw, &named) != nil || named != model {

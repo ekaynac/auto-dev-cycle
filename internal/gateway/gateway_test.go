@@ -134,7 +134,10 @@ func rig(t *testing.T, up *upstream, edit func(*Config)) (*Gateway, string) {
 	if edit != nil {
 		edit(&cfg)
 	}
-	g := New(cfg)
+	g, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	token, err := g.Bind(Binding{Lease: leaseID, Attempt: attempt})
 	if err != nil {
 		t.Fatal(err)
@@ -200,6 +203,11 @@ func TestAModelSwitchIsRefusedBeforeEgress(t *testing.T) {
 		"case variant":                  `{"model":"Stub-Builder-1"}`,
 		"the pinned model, then others": `{"model":"stub-builder-1","model":"stub-reviewer-1"}`,
 		"not an object":                 `["stub-builder-1"]`,
+		"a case variant of the key":     `{"model":"stub-builder-1","Model":"stub-reviewer-1"}`,
+		"an upper-case key":             `{"model":"stub-builder-1","MODEL":"stub-reviewer-1"}`,
+		"a fallback list":               `{"model":"stub-builder-1","models":["stub-reviewer-1"]}`,
+		"fallbacks":                     `{"model":"stub-builder-1","fallbacks":["stub-reviewer-1"]}`,
+		"a route":                       `{"model":"stub-builder-1","Route":"fallback"}`,
 		"null":                          `null`,
 	} {
 		if w := call(g, token, "/chat/completions", body, nil); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "model_not_pinned") {
@@ -234,11 +242,11 @@ func TestTheLeaseIsCheckedBeforeEgress(t *testing.T) {
 			l.State = types.LeaseStateSettling
 			c.Leases = leases{leaseID: l}
 		}, "", 409},
-		"another attempt running":  {func(c *Config) { l := c.Leases.(leases)[leaseID]; l.Attempt = &other; c.Leases = leases{leaseID: l} }, "", 409},
-		"no such lease":            {func(c *Config) { c.Leases = leases{} }, "", 409},
-		"an unregistered executor": {func(c *Config) { c.Leases = running(local) }, "", 403},
-		"a path off the list":      {nil, "/models", 404},
-		"a proxy-form target":      {nil, "http://127.0.0.2:1/elsewhere", 404},
+		"another attempt running":                   {func(c *Config) { l := c.Leases.(leases)[leaseID]; l.Attempt = &other; c.Leases = leases{leaseID: l} }, "", 409},
+		"no such lease":                             {func(c *Config) { c.Leases = leases{} }, "", 409},
+		"an unregistered executor":                  {func(c *Config) { c.Leases = running(local) }, "", 403},
+		"a path off the list":                       {nil, "/models", 404},
+		"an absolute-form target off the path list": {nil, "http://127.0.0.2:1/elsewhere", 404},
 	}
 	for name, c := range cases {
 		g, token := rig(t, up, c.edit)
@@ -254,8 +262,83 @@ func TestTheLeaseIsCheckedBeforeEgress(t *testing.T) {
 	if w := call(g, "not-a-token", "/chat/completions", good, nil); w.Code != http.StatusUnauthorized {
 		t.Errorf("a forged token: %d", w.Code)
 	}
+	// L6: the lease is checked before the body is read; an oversized body
+	// to a lease not running is a lease refusal, not a read.
+	g, token := rig(t, up, cases["no such lease"].edit)
+	if w := call(g, token, "/chat/completions", strings.Repeat("x", maxBody+1), nil); w.Code != http.StatusConflict {
+		t.Errorf("an oversized body to no lease: %d", w.Code)
+	}
 	if n := len(up.got()); n != 0 {
 		t.Fatalf("upstream saw %d refused requests", n)
+	}
+	// An absolute-form request target: its host is never used; the call
+	// goes to the registered origin only.
+	g, token = rig(t, up, nil)
+	if w := call(g, token, "http://evil.example/chat/completions", good, nil); w.Code != http.StatusOK {
+		t.Fatalf("absolute form: %d %s", w.Code, w.Body)
+	}
+	if got := up.got(); len(got) != 1 || got[0].path != "/v1/chat/completions" {
+		t.Fatalf("absolute form reached %+v", got)
+	}
+}
+
+// L1: a gateway without its lease reader or secrets is never built.
+func TestNewNeedsLeasesAndSecrets(t *testing.T) {
+	if _, err := New(Config{Secrets: secrets{}}); err == nil {
+		t.Error("no lease reader")
+	}
+	if _, err := New(Config{Leases: leases{}}); err == nil {
+		t.Error("no secrets")
+	}
+	up := newUpstream(t, nil)
+	g, token := rig(t, up, nil)
+	g.cfg.Secrets = nil // forward refuses on its own too
+	if w := call(g, token, "/chat/completions", good, nil); w.Code != http.StatusServiceUnavailable || len(up.got()) != 0 {
+		t.Fatalf("no secrets: %d", w.Code)
+	}
+}
+
+// H1: an upstream echoing the credential, in an error body or in a stream
+// chunk split across writes, never hands it to the adapter.
+func TestAnEchoedCredentialNeverReachesTheAdapter(t *testing.T) {
+	for name, h := range map[string]http.HandlerFunc{
+		"a 401 body": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":"bad key `+r.Header.Get("Authorization")+`"}`)
+		},
+		"an SSE chunk split across two writes": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"x\":\"fake-credential-0123")
+			w.(http.Flusher).Flush()
+			_, _ = io.WriteString(w, "456789 tail\"}\n\ndata: [DONE]\n\n")
+		},
+	} {
+		g, token := rig(t, newUpstream(t, h), nil)
+		w := call(g, token, "/chat/completions", good, nil)
+		body := w.Body.String()
+		if strings.Contains(body, fakeKey) || strings.Contains(body, "0123456789") || !strings.Contains(body, redacted) {
+			t.Errorf("%s: the adapter got %q", name, body)
+		}
+		if o := g.Unbind(token); len(o.Refusals) != 1 || o.Refusals[0] != RouteEchoed {
+			t.Errorf("%s: observed %+v", name, o)
+		}
+	}
+	var out bytes.Buffer // the held-back tail reaches the adapter at EOF
+	r := &redacting{w: &out, secret: []byte(fakeKey)}
+	_, _ = r.Write([]byte("abc fake-cred"))
+	if _ = r.Close(); out.String() != "abc fake-cred" || r.hit {
+		t.Fatalf("tail %q", out.String())
+	}
+}
+
+// L4: a status landing after Unbind is dropped, never kept for a
+// finished attempt.
+func TestAStatusAfterUnbindIsDropped(t *testing.T) {
+	g, token := rig(t, newUpstream(t, nil), nil)
+	g.Unbind(token)
+	g.observe(attempt, 500, "")
+	if len(g.observed) != 0 {
+		t.Fatalf("observed %+v", g.observed)
 	}
 }
 
@@ -335,6 +418,8 @@ func TestTransportDecision(t *testing.T) {
 		{localEP, "http://[2001:db8::1]/v1", false},
 		{localEP, "http://localhost:11434/v1", false},
 		{localEP, "http://[fe80::1%25eth0]/v1", false},
+		{localEP, "http://[fd00::1%25eth0]/v1", false},
+		{localEP, "http://[::ffff:10.0.0.1]/v1", true},
 		{types.RegistryDestinationKindBroker, "https://broker.example.com/v1", false},
 		{types.RegistryDestinationKindGovernedUpstream, "https://gov.example.com/v1", false},
 	} {
@@ -402,11 +487,25 @@ func TestHoldsAndAMissingCredential(t *testing.T) {
 
 func TestEnvSecrets(t *testing.T) {
 	t.Setenv("ADC_CREDENTIAL_API_REVIEWER", fakeKey)
-	if EnvName("api-reviewer") != "ADC_CREDENTIAL_API_REVIEWER" {
-		t.Fatal(EnvName("api-reviewer"))
+	if name, ok := EnvName("api-reviewer"); !ok || name != "ADC_CREDENTIAL_API_REVIEWER" {
+		t.Fatal(name)
 	}
 	if c, ok, _ := (EnvSecrets{}).Credential("api-reviewer"); !ok || c.Reveal() != fakeKey {
 		t.Fatal("env credential not read")
+	}
+	// M3: two references never share a variable; "api_reviewer" would
+	// read the key of "api-reviewer".
+	if c, ok, err := (EnvSecrets{}).Credential("api_reviewer"); ok || err == nil || c.Reveal() == fakeKey {
+		t.Fatalf("a colliding reference read another's credential: %v %v", ok, err)
+	}
+	seen := map[string]types.Slug{}
+	for _, ref := range []types.Slug{"a-b", "a_b", "a-_b", "a_-b", "a--b", "a__b", "ab", "a-b-c"} {
+		if name, ok := EnvName(ref); ok {
+			if prev, dup := seen[name]; dup {
+				t.Errorf("%s and %s share %s", prev, ref, name)
+			}
+			seen[name] = ref
+		}
 	}
 	if _, ok, _ := (EnvSecrets{}).Credential("absent"); ok {
 		t.Fatal("an absent env credential is held")

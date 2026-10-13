@@ -53,15 +53,27 @@ type Secrets interface {
 }
 
 // EnvSecrets reads ADC_CREDENTIAL_<REF> from the controller's environment,
-// the reference upper-cased with every '-' and '.' as '_'.
+// the reference upper-cased with every '-' as '_'.
 type EnvSecrets struct{}
 
-// EnvName is the variable that holds ref.
-func EnvName(ref types.Slug) string {
-	return "ADC_CREDENTIAL_" + strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(ref))
+// EnvName is the variable that holds ref. A reference holding '_' has
+// none: it would share one with the reference spelling it '-', and no
+// spelling of '_' in a portable variable name keeps the map one-to-one and
+// readable.
+func EnvName(ref types.Slug) (string, bool) {
+	if strings.Contains(ref, "_") {
+		return "", false
+	}
+	return "ADC_CREDENTIAL_" + strings.ToUpper(strings.ReplaceAll(ref, "-", "_")), true
 }
 
+var errNoEnvName = errors.New("gateway: a credential reference holding '_' has no environment variable")
+
 func (EnvSecrets) Credential(ref types.Slug) (Credential, bool, error) {
-	v, ok := os.LookupEnv(EnvName(ref))
+	name, ok := EnvName(ref)
+	if !ok {
+		return Credential{}, false, errNoEnvName
+	}
+	v, ok := os.LookupEnv(name)
 	return NewCredential(v), ok && v != "", nil
 }
