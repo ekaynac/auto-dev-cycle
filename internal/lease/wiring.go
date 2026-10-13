@@ -147,6 +147,72 @@ func ChangeLease(tx *eventstore.Tx, id types.LeaseID, expected int64, e LeaseEve
 	return []eventstore.Event{ev}, err
 }
 
+// LeaseOf is the lease and its projection revision.
+func LeaseOf(tx *eventstore.Tx, id types.LeaseID) (types.Lease, int64, bool, error) {
+	return load[types.Lease](tx, LeaseProjection, string(id))
+}
+
+// RequestGranted requests l and grants it, holding no evidence target, in
+// one command (lease.requested, then lease.granted): capacity reserves at
+// the grant or refuses the command, so a refused grant records no lease.
+func RequestGranted(tx *eventstore.Tx, l types.Lease) ([]eventstore.Event, error) {
+	req, err := RequestLease(tx, l)
+	if err != nil {
+		return nil, err
+	}
+	g, err := ApplyLease(l, LeaseEvent{Kind: Granted}, false, nil)
+	if err != nil {
+		return nil, err
+	}
+	e, err := newEvent(string(l.ID), payload{Transition: Granted, Lease: &g, Targets: &[]types.ResourceGroupID{}})
+	return append(req, e), err
+}
+
+// RefuseStart is the launch boundary's refusal of a granted lease before
+// any attempt (lease.start_refused for reason), and its release, which
+// returns its reservations, in one command.
+func RefuseStart(tx *eventstore.Tx, id types.LeaseID, expected int64, reason string) ([]eventstore.Event, error) {
+	l, err := current[types.Lease](tx, LeaseProjection, string(id), expected)
+	if err != nil {
+		return nil, err
+	}
+	var evs []eventstore.Event
+	for _, e := range []LeaseEvent{{Kind: StartRefused, Reason: reason}, {Kind: Released}} {
+		if l, err = ApplyLease(l, e, false, nil); err != nil {
+			return nil, err
+		}
+		next := l
+		ev, err := newEvent(string(id), payload{Transition: e.Kind, Reason: reasonOf(e.Reason), Lease: &next})
+		if err != nil {
+			return nil, err
+		}
+		evs = append(evs, ev)
+	}
+	return evs, nil
+}
+
+// StartNext starts the unit's next attempt under a granted lease: its
+// first (token 1), or the successor of its sealed current attempt (the
+// next token), as the unit's attempts say, never the caller.
+func StartNext(tx *eventstore.Tx, leaseID types.LeaseID, expected int64, id types.AttemptID, base types.AttemptBase) ([]eventstore.Event, error) {
+	l, err := current[types.Lease](tx, LeaseProjection, string(leaseID), expected)
+	if err != nil {
+		return nil, err
+	}
+	cur, ok, err := unitAttempt(tx, l.Unit)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return StartAttempt(tx, leaseID, expected, id, base)
+	}
+	_, rev, _, err := load[types.Attempt](tx, AttemptProjection, string(cur))
+	if err != nil {
+		return nil, err
+	}
+	return SupersedeAttempt(tx, cur, rev, leaseID, expected, id, base)
+}
+
 // RecordRestore records the outcome of a restore of a lease's evidence
 // target (lease.restore_recorded), which lease.restore_verified then names.
 func RecordRestore(tx *eventstore.Tx, r types.RestoreEvidence) ([]eventstore.Event, error) {

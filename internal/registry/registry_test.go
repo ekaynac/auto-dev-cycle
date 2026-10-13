@@ -214,6 +214,16 @@ func TestNewRefuses(t *testing.T) {
 			d.Executors[1].Destination.ID, d.Executors[1].Destination.Endpoint = "other", "HTTP://127.0.0.1:18080/v2/"
 			d.Executors[1].Group, g[0].Members, g[2].Members = g[2].ID, g[0].Members[:1], []types.ExecutorID{d.Executors[1].ID}
 		}, RuleDestination},
+		// One IP literal in two spellings is one origin (#226 entry 41).
+		"one endpoint, an IPv4-mapped literal": {func(d *types.ExecutorRegistry, g []types.ResourceGroup) {
+			d.Executors[1].Destination.ID, d.Executors[1].Destination.Endpoint = "other", "http://[::ffff:127.0.0.1]:18080/v2"
+			d.Executors[1].Group, g[0].Members, g[2].Members = g[2].ID, g[0].Members[:1], []types.ExecutorID{d.Executors[1].ID}
+		}, RuleDestination},
+		"one endpoint, two IPv6 spellings": {func(d *types.ExecutorRegistry, g []types.ResourceGroup) {
+			d.Executors[0].Destination.Endpoint, d.Executors[1].Destination.Endpoint = "http://[::1]:18080/v1", "http://[0:0::1]:18080/v1"
+			d.Executors[1].Destination.ID = "other"
+			d.Executors[1].Group, g[0].Members, g[2].Members = g[2].ID, g[0].Members[:1], []types.ExecutorID{d.Executors[1].ID}
+		}, RuleDestination},
 	} {
 		doc, g := clone(t, base), clone(t, gs)
 		c.edit(&doc, g)

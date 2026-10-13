@@ -86,6 +86,30 @@ func (Units) Startable(tx *eventstore.Tx, unit types.UnitID) error {
 	return nil
 }
 
+// Placement is what dispatch (M1 P8b) places unit's node by: its project,
+// and its roster, nil for a kind with none. It refuses as Startable does,
+// and a rostered node whose roster is not the one families now derives
+// (ErrNotIndependent): 13's re-check of the registry before an attempt,
+// which the fold cannot make.
+func (u Units) Placement(tx *eventstore.Tx, unit types.UnitID, families Families) (types.ProjectID, []types.RosterMember, error) {
+	if err := u.Startable(tx, unit); err != nil {
+		return "", nil, err
+	}
+	rec, _, err := unitNode(tx, unit)
+	if err != nil {
+		return "", nil, err
+	}
+	n := rec.Recorded.Node
+	if !rostered(n.Kind) {
+		return rec.Recorded.Project, nil, nil
+	}
+	if err := registered(n, families); err != nil {
+		return "", nil, err
+	}
+	roster, _, err := rosterOf(n)
+	return rec.Recorded.Project, roster, err
+}
+
 // runningAttempt is node's current attempt when it is still running.
 func runningAttempt(tx *eventstore.Tx, node types.NodeID) (types.Attempt, bool, error) {
 	id, ok, err := lease.CurrentAttempt(tx, UnitOf(node))

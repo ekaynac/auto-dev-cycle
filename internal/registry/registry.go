@@ -153,18 +153,23 @@ func New(doc types.ExecutorRegistry, groups []types.ResourceGroup) (Registry, er
 }
 
 // origin is the destination's normalised origin, scheme://host:port in
-// lower case with the scheme's default port made explicit. check has
-// already parsed the endpoint.
+// lower case with the scheme's default port made explicit, and an IP
+// literal in its one canonical form (IPv4-mapped IPv6 unmapped), so
+// [::1] and [0:0::1] are one origin. check has already parsed the
+// endpoint.
 func origin(e types.RegistryExecutor) string {
 	u, err := url.Parse(e.Destination.Endpoint)
 	if err != nil {
 		return "\x00" + e.Destination.Endpoint // never reached after check
 	}
-	scheme, port := strings.ToLower(u.Scheme), u.Port()
+	scheme, port, host := strings.ToLower(u.Scheme), u.Port(), strings.ToLower(u.Hostname())
 	if port == "" {
 		port = map[string]string{"http": "80", "https": "443"}[scheme]
 	}
-	return scheme + "://" + net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.Unmap().String()
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
 }
 
 // accounts ties groups to what they limit (Q8): executors on one account
