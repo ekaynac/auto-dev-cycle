@@ -22,6 +22,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
@@ -33,6 +34,10 @@ type Config struct {
 	Shared      *SharedSocket         // optional, off by default (14 R2)
 	HTTPS       *HTTPSListener        // optional, off by default (14 R2, R3)
 	Sandbox     *sandbox.Host         // optional (--sandbox-root): the probe route's sandbox (P9)
+	// Registry (--registry, optional) is the executors, checked against
+	// Groups (P7); registryErr is its file's refusal, reported at load.
+	Registry    *types.ExecutorRegistry
+	registryErr error
 	// clock is the store clock (eventstore.Config.Now) that every command
 	// and the bootstrap decide by; nil is time.Now. Only tests set it.
 	clock func() time.Time
@@ -72,7 +77,7 @@ var ErrConfig = errors.New("adcd: configuration")
 const (
 	maxGroupsFile = 1 << 20 // bytes
 	groupSchema   = "records/resource-group"
-	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP] [--https-addr IP:PORT --https-cert FILE --https-key FILE] [--sandbox-root DIR [--podman PATH]]"
+	usage         = "usage: adcd run --state-dir DIR [--resource-groups FILE [--registry FILE]] [--trusted-head SEQ:sha256:HEX] [--shared-run-dir DIR --shared-group GROUP] [--https-addr IP:PORT --https-cert FILE --https-key FILE] [--sandbox-root DIR [--podman PATH]]"
 	// sandboxRefusal is the one text for a refused sandbox (P9b).
 	sandboxRefusal = "the sandbox: --podman and --sandbox-root must be absolute, clean paths; the root short " +
 		"(Podman's runroot, <root>/r, is at most 50 characters) and apart from the state directory and the sockets; " +
@@ -90,7 +95,12 @@ func LoadConfig(args []string) (Config, error) {
 		runDir, group := fs.String("shared-run-dir", "", ""), fs.String("shared-group", "", "")
 		addr, cert, key := fs.String("https-addr", "", ""), fs.String("https-cert", "", ""), fs.String("https-key", "", "")
 		root, podman := fs.String("sandbox-root", "", ""), fs.String("podman", "/usr/bin/podman", "")
+		reg := fs.String("registry", "", "")
 		return func(cfg *Config) {
+			if *reg != "" {
+				doc, err := registry.Load(*reg)
+				cfg.Registry, cfg.registryErr = &doc, err
+			}
 			if *runDir != "" || *group != "" {
 				cfg.Shared = &SharedSocket{RunDir: *runDir, Group: *group}
 			}
@@ -136,6 +146,9 @@ func loadConfig(name, usage string, args []string, more func(*flag.FlagSet) func
 	}
 	cfg := Config{StateDir: *state, Groups: []types.ResourceGroup{}}
 	apply(&cfg)
+	if cfg.registryErr != nil {
+		return Config{}, configError(cfg.registryErr.Error())
+	}
 	if *trusted != "" {
 		seq, hash, _ := strings.Cut(*trusted, ":")
 		n, err := strconv.ParseInt(seq, 10, 64)
@@ -192,17 +205,25 @@ func (c Config) Validate() error {
 	if _, err := capacity.NewReservations(c.Groups); err != nil {
 		return configError("the resource groups break a capacity rule or use one not wired yet")
 	}
+	if c.Registry != nil {
+		if _, err := registry.New(*c.Registry, c.Groups); err != nil {
+			return configError(err.Error()) // fixed text: a rule and an index
+		}
+	}
 	return nil
 }
 
 // readGroups reads a JSON array of resource groups, each checked against
 // its schema as written, so no field is dropped by decoding.
 func readGroups(path string) ([]types.ResourceGroup, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, configError("the resource-group file cannot be opened")
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return nil, configError("the resource-group file is not a regular file")
+	}
 	raw, err := io.ReadAll(io.LimitReader(f, maxGroupsFile+1))
 	if err != nil || len(raw) > maxGroupsFile {
 		return nil, configError("the resource-group file cannot be read, or is larger than 1 MiB")
