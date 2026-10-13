@@ -354,8 +354,16 @@ func (s *Store) MarkPendingUncertain(ctx context.Context, actor string) (int, er
 		n = len(pending)
 		return nil
 	})
+	if err == nil {
+		s.restartMarked.Store(true)
+	}
 	return n, err
 }
+
+// RestartMarked reports whether MarkPendingUncertain has run on this open
+// store, so a pending effect was intended since it opened: an effect kind
+// that resumes a pending effect (model_call's re-intend) requires it.
+func (s *Store) RestartMarked() bool { return s.restartMarked.Load() }
 
 // LoadEffect returns an effect's current state.
 func (s *Store) LoadEffect(ctx context.Context, id string) (e Effect, err error) {

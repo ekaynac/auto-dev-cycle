@@ -6,7 +6,9 @@
 // Decisions:
 //   - An attempt reaches the gateway with a token bound to its lease and attempt (Bind). The sandbox never holds a
 //     credential, and no inbound header is forwarded: only the checked body, under one of the gateway's paths.
-//   - Before egress, against the lease: it is active and running the bound attempt; its executor is registered; the
+//   - Before egress, against the lease, on every request: it is active on the bound attempt, and that attempt is
+//     running, its unit's current attempt and the lease's (an active lease alone does not prove it: a stop leaves
+//     the lease active on a stopping attempt); its executor is registered; the
 //     destination is the registry's for that executor, over an admitted transport (#226 entry 37); and the
 //     request's model is exactly the executor's pinned model. The gateway never selects or changes a model (D48): a
 //     request naming another, or none, or carrying another model-selecting key, is refused, never rewritten.
@@ -21,8 +23,10 @@
 //     blob.
 //   - The upstream statuses and route refusals it observed are kept per attempt, for the exit map
 //     (exitmap.Exit.Statuses); Unbind hands them over.
-//   - Inert (§1's gating table): nothing in adcd constructs a Gateway; P22a does, when it activates `launch`. The
-//     `model_call` intent before egress is P12a's.
+//   - Intent before egress (P12a): a binding names its call, and nothing is sent for the call until its
+//     `model_call` intent is durable (Intents, internal/modelcall). It is intended once per binding, as the last step
+//     before the first send, so a refused request leaves no intent. A gateway without Intents sends nothing.
+//   - Inert (§1's gating table): nothing in adcd constructs a Gateway; P22a does, when it activates `launch`.
 package gateway
 
 import (
@@ -42,18 +46,33 @@ import (
 	"sync"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 )
 
-// Binding is what a gateway token stands for: one attempt under one lease.
+// Binding is what a gateway token stands for: one call of one attempt under
+// one lease.
 type Binding struct {
 	Lease   types.LeaseID
 	Attempt types.AttemptID
+	Call    types.CallID
+}
+
+// Intents records a call's model_call intent. Intend returns only once the
+// intent is durable; an error means it is not, and nothing is sent.
+type Intents interface {
+	Intend(ctx context.Context, b Binding, destination types.Slug) error
 }
 
 // Leases reads a lease as the store's projection holds it.
 type Leases interface {
 	Lease(ctx context.Context, id types.LeaseID) (l types.Lease, ok bool, err error)
+}
+
+// Attempts reads an attempt as the store's projection holds it, with
+// whether it is its unit's current attempt.
+type Attempts interface {
+	Attempt(ctx context.Context, id types.AttemptID) (a types.Attempt, current, ok bool, err error)
 }
 
 // Observed is what the gateway saw of an attempt's upstream requests: the
@@ -67,7 +86,9 @@ type Observed struct {
 type Config struct {
 	Registry registry.Registry
 	Leases   Leases
+	Attempts Attempts
 	Secrets  Secrets
+	Intents  Intents
 	Inject   map[types.Slug]Injector // by destination id; Bearer when absent
 	Capture  Capture                 // nil except in exit runs
 }
@@ -78,16 +99,18 @@ type Gateway struct {
 	client   *http.Client
 	mu       sync.Mutex
 	bound    map[[32]byte]Binding // by the token's hash
+	intended map[[32]byte]bool    // tokens whose call's intent is durable, by the token's hash
 	observed map[types.AttemptID]Observed
 }
 
 // New is a gateway with no binding. A zero Registry registers nothing, so
 // it refuses every call.
 func New(cfg Config) (*Gateway, error) {
-	if cfg.Leases == nil || cfg.Secrets == nil {
-		return nil, errors.New("gateway: a gateway needs the lease reader and the secrets")
+	if cfg.Leases == nil || cfg.Attempts == nil || cfg.Secrets == nil || cfg.Intents == nil {
+		return nil, errors.New("gateway: a gateway needs the lease and attempt readers, the secrets and the intents")
 	}
-	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, observed: map[types.AttemptID]Observed{}}, nil
+	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, intended: map[[32]byte]bool{},
+		observed: map[types.AttemptID]Observed{}}, nil
 }
 
 // The paths an attempt may call, under its destination's endpoint.
@@ -105,6 +128,9 @@ const (
 
 // Bind mints the token an attempt's adapter calls the gateway with.
 func (g *Gateway) Bind(b Binding) (string, error) {
+	if err := ids.Check(string(b.Call), "cal"); err != nil {
+		return "", fmt.Errorf("gateway: a binding names its call: %w", err)
+	}
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
@@ -112,6 +138,11 @@ func (g *Gateway) Bind(b Binding) (string, error) {
 	token := hex.EncodeToString(raw[:])
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	for _, other := range g.bound {
+		if other.Call == b.Call && other != b {
+			return "", errors.New("gateway: the call is bound under another binding")
+		}
+	}
 	g.bound[sha256.Sum256([]byte(token))] = b
 	return token, nil
 }
@@ -129,6 +160,7 @@ func (g *Gateway) Unbind(token string) Observed {
 	o := g.observed[b.Attempt]
 	delete(g.bound, key)
 	delete(g.observed, b.Attempt)
+	delete(g.intended, key)
 	return o
 }
 
@@ -221,14 +253,20 @@ func (r *redacting) Close() error {
 	return err
 }
 
-func (g *Gateway) binding(r *http.Request) (Binding, bool) {
+// tokenKey is the hash of r's bearer token, the key of its binding.
+func tokenKey(r *http.Request) ([32]byte, bool) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok || token == "" {
+	return sha256.Sum256([]byte(token)), ok && token != ""
+}
+
+func (g *Gateway) binding(r *http.Request) (Binding, bool) {
+	key, ok := tokenKey(r)
+	if !ok {
 		return Binding{}, false
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	b, ok := g.bound[sha256.Sum256([]byte(token))]
+	b, ok := g.bound[key]
 	return b, ok
 }
 
@@ -249,6 +287,20 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 	case err != nil:
 		return nil, none, &refusal{http.StatusServiceUnavailable, "lease_unreadable"}
 	case !ok || l.State != types.LeaseStateActive || l.Attempt == nil || *l.Attempt != b.Attempt:
+		return nil, none, &refusal{http.StatusConflict, "lease_not_running_attempt"}
+	}
+	// An active lease does not prove its attempt runs: a stop leaves the
+	// lease active on a stopping attempt. Checked on every request, cached
+	// intent or not, when it is admitted. The residual: all requests already
+	// admitted before a stop, including those whose body is read after it,
+	// may still send (a first one is refused by the Recorder's own check);
+	// P22a bounds them (#226 entry 57), and their late usage is accepted
+	// (#226 entry 59).
+	a, current, ok, err := g.cfg.Attempts.Attempt(ctx, b.Attempt)
+	switch {
+	case err != nil:
+		return nil, none, &refusal{http.StatusServiceUnavailable, "lease_unreadable"}
+	case !ok || !current || a.Status != types.AttemptStatusRunning || a.Lease != b.Lease || a.Unit != l.Unit:
 		return nil, none, &refusal{http.StatusConflict, "lease_not_running_attempt"}
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
@@ -287,6 +339,9 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 			return nil, none, &refusal{http.StatusServiceUnavailable, "capture_failed"}
 		}
 	}
+	if err := g.intend(r, b, e.Destination.ID); err != nil {
+		return nil, none, &refusal{http.StatusServiceUnavailable, "intent_unrecorded"}
+	}
 	req, err := http.NewRequestWithContext(context.WithValue(ctx, originKey{}, dialAddr(target)), http.MethodPost, target.String(), bytes.NewReader(out))
 	if err != nil {
 		return nil, none, &refusal{http.StatusForbidden, "destination_not_admitted"}
@@ -315,6 +370,29 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 		return nil, none, &refusal{http.StatusBadGateway, "encoding"}
 	}
 	return resp, cred, nil
+}
+
+// intend makes the call's intent durable before r's token first sends.
+// The cache is per token, never per call: another binding of a call always
+// reaches Intents, which refuses it. Concurrent first requests may both
+// reach Intents, which keeps one intent per call.
+func (g *Gateway) intend(r *http.Request, b Binding, destination types.Slug) error {
+	key, _ := tokenKey(r)
+	g.mu.Lock()
+	done := g.intended[key]
+	g.mu.Unlock()
+	if done {
+		return nil
+	}
+	if err := g.cfg.Intents.Intend(r.Context(), b, destination); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.bound[key] == b {
+		g.intended[key] = true // only while bound: Unbind forgets it
+	}
+	return nil
 }
 
 // observe records for a while its attempt is bound.
