@@ -25,7 +25,12 @@ import (
 // at the target) and merge (reconciled first) effects.
 func openEffectStore(t *testing.T) graphStore {
 	t.Helper()
-	state := filepath.Join(t.TempDir(), "state")
+	return openEffectStoreAt(t, filepath.Join(t.TempDir(), "state"))
+}
+
+// openEffectStoreAt is openEffectStore in the state directory state.
+func openEffectStoreAt(t *testing.T, state string) graphStore {
+	t.Helper()
 	lock, err := eventstore.AcquireLock(state)
 	if err != nil {
 		t.Fatal(err)

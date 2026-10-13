@@ -13,6 +13,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -101,7 +102,7 @@ func logics(az authority.Authorizer) map[string]logic {
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {
 	all := eventstore.Kinds{}
-	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), lease.Kinds(), ledger.Kinds()} {
+	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), lease.Kinds(), ledger.Kinds(), graph.Kinds()} {
 		for k := range ks {
 			if _, dup := all[k]; dup {
 				return nil, fmt.Errorf("daemon: event kind %s is registered twice", k)
@@ -114,9 +115,13 @@ func eventKinds() (eventstore.Kinds, error) {
 
 // projector is the writer's Project hook, composed as a rebuild replays
 // it: each event goes through identity, then grants, the seat, proposals,
-// notes, projects, leases with their capacity reservations, then the usage ledger,
-// before the next event (eventstore.ProjectEach). A lease projector without Units admits
-// no seal until units are wired (fail closed).
+// notes, projects, leases with their capacity reservations, the usage
+// ledger, then the graph, before the next event (eventstore.ProjectEach).
+// The graph comes after leases, whose projections its supersession fold
+// reads. A lease projector without Units admits no seal until units are
+// wired (fail closed). No graph event is admitted yet: no wired action
+// builds one, so the graph's projections stay empty until its actions are
+// wired.
 func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reservations) func(*eventstore.Tx, []eventstore.Event) error {
 	leases := lease.Projector{Blobs: blobs, Holds: holds}
 	return eventstore.ProjectEach(
@@ -128,5 +133,6 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		authority.ProjectProjector{}.Project,
 		capacity.Hook(leases, r),
 		ledger.Project,
+		graph.Project,
 	)
 }

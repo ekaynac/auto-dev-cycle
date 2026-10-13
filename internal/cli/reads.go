@@ -5,7 +5,7 @@ package cli
 // The read commands (08 "Reads"): one per resource the controller
 // registers, and the caller's own whoami. --json prints the controller's
 // body as is, once the transport has validated it; human output escapes
-// every string (render.go). Holds wait for their read (14 9e; M1 P4a).
+// every string (render.go).
 
 import (
 	"context"
@@ -30,6 +30,7 @@ var reads = map[command]string{
 	{"seat", "status"}:  "seat",
 	{"notes", "list"}:   "notes",
 	{"project", "list"}: "projects",
+	{"holds", "list"}:   "holds",
 	{"admin", "whoami"}: client.Whoami,
 }
 

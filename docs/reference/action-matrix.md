@@ -44,6 +44,7 @@ and the generated API description (gen-check pins the committed `schemas/openapi
 |---|---|---|
 | events | `GET /v1/events` | `adc events --follow` |
 | grants | `GET /v1/grants` | `adc grant list` |
+| holds | `GET /v1/holds` | `adc holds list` |
 | notes | `GET /v1/notes` | `adc notes list` |
 | projects | `GET /v1/projects` | `adc project list` |
 | proposals | `GET /v1/proposals` | `adc propose list` |

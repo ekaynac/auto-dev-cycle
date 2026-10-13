@@ -121,6 +121,9 @@ func (t *Tx) IntendEffect(id, kind, target string, request json.RawMessage) erro
 	return nil
 }
 
+// ErrNoEffect: no effect is recorded under the id asked for.
+var ErrNoEffect = errors.New("eventstore: no effect")
+
 // ErrAmbiguousEffect: two recorded effects where one is allowed (rule 2:
 // could_not_run/ambiguous_state, never a pick).
 var ErrAmbiguousEffect = errors.New("ambiguous_state")
@@ -376,7 +379,7 @@ func loadEffect(ctx context.Context, q querier, id string) (Effect, error) {
 	err := q.QueryRowContext(ctx, `SELECT id, kind, command, target, request_digest, state, attempts, last_observation, result_ref FROM effects WHERE id = ?`, id).
 		Scan(&e.ID, &e.Kind, &e.Command, &e.Target, &e.RequestDigest, &state, &e.Attempts, &e.LastObservation, &result)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Effect{}, fmt.Errorf("eventstore: no effect %s", id)
+		return Effect{}, fmt.Errorf("%w %s", ErrNoEffect, id)
 	}
 	if err != nil {
 		return Effect{}, err
