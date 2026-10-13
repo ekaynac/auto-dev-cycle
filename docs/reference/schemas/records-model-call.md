@@ -14,7 +14,7 @@ A model call's durable binding (docs/design/m1/00-slice-plan.md P12a; 03 "Extern
 | `attempt` | yes | [AttemptID](common-defs.md#attemptid) | The attempt the call is made for, the one its lease is running. |
 | `lease` | yes | [LeaseID](common-defs.md#leaseid) |  |
 | `executor` | yes | [ExecutorID](common-defs.md#executorid) | The lease's executor. |
-| `destination` | yes | [Slug](config-project-profile.md#slug) | The registry's destination for that executor; also the intent's target. |
-| `groups` | yes | array of [ResourceGroupID](common-defs.md#resourcegroupid) (unique items) | The groups of the lease's reservations, sorted: where the call's usage, or its liability, is charged. |
+| `destination` | yes | [Slug](config-project-profile.md#slug) | The registry's destination for that executor. The intent's target is the call, never the destination, so calls to one destination are separate targets. |
+| `groups` | yes | array of [ResourceGroupID](common-defs.md#resourcegroupid) (minItems `1`, maxItems `64`, unique items) | The groups of the lease's reservations, sorted: where the call's usage, or its liability, is charged. |
 
 No other fields are allowed.

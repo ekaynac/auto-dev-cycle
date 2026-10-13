@@ -6,15 +6,19 @@
 // Decisions:
 //   - One effect per call (cal_), whose id is the call's suffix under eff_ (EffectOf). The call is the adapter's run
 //     (09 `run`); the requests the gateway forwards for it are its sub-calls, sent under the one intent.
-//   - The intent's request is the call's binding (records/model-call): call → attempt → lease → the lease's groups,
-//     with the executor and the destination, which is also the intent's target. The command that intends the effect
-//     also appends model_call.intended with the same binding, and a projection keeps it by call and by lease. Both
-//     commit in one writer transaction; the store runs synchronous=FULL, so the binding is on disk when Submit
-//     returns, and only then may the gateway send (Recorder implements gateway.Intents).
+//   - The intent's request is the call's binding (records/model-call): call → attempt → lease → the lease's groups
+//     (at least one), with the executor and the destination. The intent's target is the call itself, never the
+//     shared destination, so I6's "one live operation per target" holds: calls to one destination are separate
+//     targets, and a call is exclusive by its own id. The command that intends the effect also appends
+//     model_call.intended with the same binding, and a projection keeps it by call and by lease. Both commit in one
+//     writer transaction; the store runs synchronous=FULL, so the binding is on disk when Submit returns, and only
+//     then may the gateway send (Recorder implements gateway.Intents). The fold admits the event only with its own
+//     command's intent of the same request.
 //   - The binding is checked inside the command against the lease's projection: active, and running the bound
 //     attempt. The groups are the lease's, never the caller's.
-//   - A call is bound once. Intending it again is a no-op only while its effect is still pending with the same
-//     binding: a pending effect was intended since this start, as the start marks every pending effect uncertain. An
+//   - A call is bound once. Intending it again is a no-op only while its effect is still pending under the same call,
+//     attempt, lease and destination: a pending effect was intended since this start, because the Recorder refuses
+//     to run on a store where MarkPendingUncertain has not run (eventstore.Store.RestartMarked). An
 //     uncertain, completed or failed call is refused (ErrBound), so a call whose intent outlived a crash is never
 //     sent again; and model_call is not idempotent, so the store never retries it either.
 //   - Recovery reads the binding (OfLease): each call of a lease with its effect's current state, so an uncertain
@@ -63,19 +67,24 @@ func EffectOf(call types.CallID) string { return "eff_" + strings.TrimPrefix(str
 // ErrNotRunning: the lease is not active running the bound attempt.
 var ErrNotRunning = errors.New("modelcall: the lease is not running the bound attempt")
 
+// ErrNoGroups: the lease reserves on no group, so the call would charge
+// nothing.
+var ErrNoGroups = errors.New("modelcall: the lease reserves on no group")
+
 // ErrBound: the call is already bound, and not pending under the same
 // binding: it is never sent again.
 var ErrBound = errors.New("modelcall: the call is already bound")
 
-// check: the request, a valid records/model-call, names the intent's target
-// as its destination, with its groups sorted, so one binding has one digest.
+// check: the request, a valid records/model-call, is the binding of the
+// call the intent's target names, with its groups sorted, so one binding
+// has one digest.
 func check(target string, request json.RawMessage) error {
 	var m types.ModelCall
 	if err := json.Unmarshal(request, &m); err != nil {
 		return err
 	}
-	if m.Destination != target {
-		return fmt.Errorf("modelcall: the destination %s is not the intent's target %s", m.Destination, target)
+	if string(m.Call) != target {
+		return fmt.Errorf("modelcall: the call %s is not the intent's target %s", m.Call, target)
 	}
 	if !slices.IsSorted(m.Groups) {
 		return errors.New("modelcall: the groups are not sorted")
@@ -103,6 +112,9 @@ func Intend(tx *eventstore.Tx, b gateway.Binding, destination types.Slug) ([]eve
 			m.Groups = append(m.Groups, r.Group)
 		}
 	}
+	if len(m.Groups) == 0 {
+		return nil, fmt.Errorf("%w: %s", ErrNoGroups, b.Lease)
+	}
 	slices.Sort(m.Groups)
 	raw, err := json.Marshal(m)
 	if err != nil {
@@ -120,21 +132,22 @@ func Intend(tx *eventstore.Tx, b gateway.Binding, destination types.Slug) ([]eve
 		}
 		return nil, nil
 	}
-	if err := tx.IntendEffect(EffectOf(b.Call), Kind, destination, raw); err != nil {
+	if err := tx.IntendEffect(EffectOf(b.Call), Kind, string(b.Call), raw); err != nil {
 		return nil, err
 	}
 	id, err := ids.New("evt")
 	return []eventstore.Event{{ID: id, Kind: Intended, Subject: string(b.Call), Payload: raw}}, err
 }
 
+// same: the binding's identity, not its groups, which Intend re-derives
+// from a lease whose reservations may have changed since.
 func same(a, b types.ModelCall) bool {
-	x, _ := json.Marshal(a)
-	y, _ := json.Marshal(b)
-	return string(x) == string(y)
+	return a.Call == b.Call && a.Attempt == b.Attempt && a.Lease == b.Lease && a.Destination == b.Destination
 }
 
 // Project is an event store Project hook: it keeps each binding by call and
-// by lease. A call is bound once; a second binding is refused.
+// by lease. A call is bound once; a second binding is refused, and so is a
+// binding without its command's model_call intent of the same request.
 func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
 		if ev.Kind != Intended {
@@ -147,6 +160,9 @@ func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		if ev.Subject != string(m.Call) {
 			return fmt.Errorf("modelcall: event %s: subject %s is not its call %s", ev.ID, ev.Subject, m.Call)
 		}
+		if err := intended(tx, ev); err != nil {
+			return fmt.Errorf("modelcall: event %s: %w", ev.ID, err)
+		}
 		if _, seen, err := tx.Get(Projection, string(m.Call)); err != nil {
 			return err
 		} else if seen {
@@ -156,6 +172,23 @@ func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 			tx.Put(LeaseProjection, string(m.Lease)+"/"+string(m.Call), ev.Payload)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// intended: ev has its call's model_call effect, intended by ev's command,
+// on the call, with ev's payload as its request.
+func intended(tx *eventstore.Tx, ev eventstore.Event) error {
+	e, err := tx.LoadEffect(EffectOf(types.CallID(ev.Subject)))
+	if err != nil {
+		return err
+	}
+	d, err := eventstore.ContentDigest(ev.Payload)
+	if err != nil {
+		return err
+	}
+	if e.Kind != Kind || e.Target != ev.Subject || e.RequestDigest != d || ev.Command == nil || e.Command != *ev.Command {
+		return errors.New("the binding is not its effect's request")
 	}
 	return nil
 }
@@ -214,8 +247,8 @@ type Recorder struct {
 var _ gateway.Intents = Recorder{}
 
 func (r Recorder) Intend(ctx context.Context, b gateway.Binding, destination types.Slug) error {
-	if r.Store == nil {
-		return errors.New("modelcall: no store")
+	if r.Store == nil || !r.Store.RestartMarked() {
+		return errors.New("modelcall: no store on which the restart rule has run")
 	}
 	id, err := ids.New("cmd")
 	if err != nil {

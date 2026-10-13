@@ -52,7 +52,18 @@ func openWorld(t *testing.T) *world {
 	w := &world{t: t, dir: filepath.Join(t.TempDir(), "state")}
 	w.open()
 	t.Cleanup(w.close)
+	w.restart()
 	return w
+}
+
+// restart is adcd's start rule: every pending effect becomes uncertain.
+func (w *world) restart() int {
+	w.t.Helper()
+	n, err := w.s.MarkPendingUncertain(context.Background(), actor)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return n
 }
 
 func (w *world) open() {
@@ -101,8 +112,18 @@ func (w *world) do(fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) error
 // keeps it (its folds are its own tests').
 func (w *world) setLease(state types.LeaseState, running types.AttemptID) {
 	w.t.Helper()
+	w.setLeaseOn(state, running, rgB, rgA)
+}
+
+// setLeaseOn is setLease with the lease reserving on groups, in order.
+func (w *world) setLeaseOn(state types.LeaseState, running types.AttemptID, groups ...types.ResourceGroupID) {
+	w.t.Helper()
+	res := []any{}
+	for _, g := range groups {
+		res = append(res, map[string]any{"group": g, "amount": 1000, "unit": "tokens"})
+	}
 	l := map[string]any{"id": leaseID, "unit": "unt_01m3250vz2ezn81cgvbkcn17jd", "role": "builder", "executor": builder, "state": state,
-		"reservations": []any{map[string]any{"group": rgB, "amount": 1000, "unit": "tokens"}, map[string]any{"group": rgA, "amount": 1, "unit": "requests"}},
+		"reservations": res,
 		"priority":     0, "footprint": map[string]any{"context_tokens": 1, "expected_turns": 1, "gpu_seconds": nil}, "deadline": "2026-10-14T00:00:00Z",
 		"fallback_step": 0, "placement_checks": map[string]any{}, "hold": nil, "attempt": running, "restore_receipt": nil, "settlement": nil}
 	raw, err := json.Marshal(map[string]any{"revision": 1, "record": l})
@@ -241,7 +262,7 @@ func TestTheIntentIsCommittedBeforeTheGatewaySends(t *testing.T) {
 	}
 	for i, b := range atSend {
 		if len(b) != 1 || !same(b[0].Call, want) || b[0].Effect.State != eventstore.EffectPending ||
-			b[0].Effect.ID != modelcall.EffectOf(callID) || b[0].Effect.Kind != modelcall.Kind || b[0].Effect.Target != "stub" {
+			b[0].Effect.ID != modelcall.EffectOf(callID) || b[0].Effect.Kind != modelcall.Kind || b[0].Effect.Target != string(callID) {
 			t.Fatalf("bound at send %d: %+v", i, b)
 		}
 	}
@@ -293,8 +314,8 @@ func TestACrashBetweenIntentAndSend(t *testing.T) {
 	}
 
 	w.open() // the restart, as adcd's start runs it
-	if n, err := w.s.MarkPendingUncertain(context.Background(), actor); err != nil || n != 1 {
-		t.Fatalf("marked %d: %v", n, err)
+	if n := w.restart(); n != 1 {
+		t.Fatalf("marked %d", n)
 	}
 	bound := w.ofLease()
 	want := types.ModelCall{Call: callID, Attempt: attempt, Lease: leaseID, Executor: builder, Destination: "stub", Groups: []types.ResourceGroupID{rgA, rgB}}
@@ -314,7 +335,8 @@ func TestACrashBetweenIntentAndSend(t *testing.T) {
 	}
 }
 
-// Intend binds a running lease's attempt only, and a call once.
+// Intend binds a running lease's attempt only, with at least one group,
+// and a call once.
 func TestIntendChecksTheLeaseAndBindsOnce(t *testing.T) {
 	w := openWorld(t)
 	intend := func(b gateway.Binding) error {
@@ -331,6 +353,10 @@ func TestIntendChecksTheLeaseAndBindsOnce(t *testing.T) {
 	if err := intend(binding); !errors.Is(err, modelcall.ErrNotRunning) {
 		t.Fatalf("another attempt: %v", err)
 	}
+	w.setLeaseOn(types.LeaseStateActive, attempt)
+	if err := intend(binding); !errors.Is(err, modelcall.ErrNoGroups) {
+		t.Fatalf("a lease with no reservation: %v", err)
+	}
 	w.setLease(types.LeaseStateActive, attempt)
 	if err := intend(gateway.Binding{Lease: leaseID, Attempt: attempt, Call: "msr_01m4tm99haemss9tvzd438vq8j"}); err == nil {
 		t.Fatal("a call id of another prefix")
@@ -338,15 +364,14 @@ func TestIntendChecksTheLeaseAndBindsOnce(t *testing.T) {
 	if err := intend(binding); err != nil {
 		t.Fatal(err)
 	}
+	// L3: a pending call is the same binding whatever its lease reserves now.
+	w.setLeaseOn(types.LeaseStateActive, attempt, rgA)
 	var evs []eventstore.Event
 	if err := w.do(func(tx *eventstore.Tx) (e []eventstore.Event, err error) {
 		evs, err = modelcall.Intend(tx, binding, "stub")
 		return evs, err
 	}); err != nil || len(evs) != 0 {
 		t.Fatalf("a pending call intended again: %v, %d events", err, len(evs))
-	}
-	if err := intend(gateway.Binding{Lease: leaseID, Attempt: attempt, Call: callID}); err != nil {
-		t.Fatal(err)
 	}
 	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return modelcall.Intend(tx, binding, "other") }); !errors.Is(err, modelcall.ErrBound) {
 		t.Fatalf("a pending call bound again to another destination: %v", err)
@@ -359,22 +384,26 @@ func TestIntendChecksTheLeaseAndBindsOnce(t *testing.T) {
 	}
 }
 
-// The kind's request is the binding, naming the intent's target, with its
-// groups sorted; a second binding event for one call is refused on fold.
+// The kind's request is the binding of the call the intent targets, with
+// its groups sorted; the fold admits a binding only with its own command's
+// intent of the same request, once per call.
 func TestTheRequestAndTheFold(t *testing.T) {
 	w := openWorld(t)
-	req := func(dest string, groups ...types.ResourceGroupID) json.RawMessage {
-		raw, _ := json.Marshal(types.ModelCall{Call: callID, Attempt: attempt, Lease: leaseID, Executor: builder, Destination: dest, Groups: groups})
+	other := types.CallID("cal_01m4tm99haemss9tvzd438vq8k")
+	req := func(call types.CallID, groups ...types.ResourceGroupID) json.RawMessage {
+		raw, _ := json.Marshal(types.ModelCall{Call: call, Attempt: attempt, Lease: leaseID, Executor: builder, Destination: "stub", Groups: groups})
 		return raw
 	}
 	for name, c := range map[string]struct {
 		target string
 		req    json.RawMessage
 	}{
-		"another target":    {"other", req("stub", rgA)},
-		"unsorted groups":   {"stub", req("stub", rgB, rgA)},
-		"not a binding":     {"stub", json.RawMessage(`{"call":"x"}`)},
-		"duplicated groups": {"stub", req("stub", rgA, rgA)},
+		"the destination as target": {"stub", req(callID, rgA)},
+		"another call's target":     {string(other), req(callID, rgA)},
+		"unsorted groups":           {string(callID), req(callID, rgB, rgA)},
+		"not a binding":             {string(callID), json.RawMessage(`{"call":"x"}`)},
+		"duplicated groups":         {string(callID), req(callID, rgA, rgA)},
+		"no group":                  {string(callID), req(callID)},
 	} {
 		if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return nil, tx.IntendEffect(modelcall.EffectOf(callID), modelcall.Kind, c.target, c.req)
@@ -382,19 +411,88 @@ func TestTheRequestAndTheFold(t *testing.T) {
 			t.Errorf("%s: intended", name)
 		}
 	}
-	ev := func() eventstore.Event {
+	ev := func(call types.CallID, payload json.RawMessage) eventstore.Event {
 		id, _ := ids.New("evt")
-		return eventstore.Event{ID: id, Kind: modelcall.Intended, Subject: string(callID), Payload: req("stub", rgA)}
+		return eventstore.Event{ID: id, Kind: modelcall.Intended, Subject: string(call), Payload: payload}
 	}
-	if err := w.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return []eventstore.Event{ev()}, nil }); err != nil {
+	bind := func(intend, payload json.RawMessage) error {
+		return w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			if intend != nil {
+				if err := tx.IntendEffect(modelcall.EffectOf(callID), modelcall.Kind, string(callID), intend); err != nil {
+					return nil, err
+				}
+			}
+			return []eventstore.Event{ev(callID, payload)}, nil
+		})
+	}
+	if err := bind(nil, req(callID, rgA)); err == nil {
+		t.Fatal("an orphan binding")
+	}
+	if err := bind(req(callID, rgA), req(callID, rgB)); err == nil {
+		t.Fatal("a binding that is not its intent's request")
+	}
+	if err := bind(req(callID, rgA), req(callID, rgA)); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return []eventstore.Event{ev()}, nil }); err == nil {
+	if err := bind(nil, req(callID, rgA)); err == nil {
 		t.Fatal("a call bound twice")
 	}
-	other := ev()
-	other.Subject = "cal_01m4tm99haemss9tvzd438vq8k"
-	if err := w.do(func(*eventstore.Tx) ([]eventstore.Event, error) { return []eventstore.Event{other}, nil }); err == nil {
-		t.Fatal("a binding under another call's subject")
+	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return nil, tx.IntendEffect(modelcall.EffectOf(other), modelcall.Kind, string(other), req(other, rgA))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.do(func(*eventstore.Tx) ([]eventstore.Event, error) {
+		return []eventstore.Event{ev(other, req(other, rgA))}, nil
+	}); err == nil {
+		t.Fatal("a binding by another command than its intent's")
+	}
+	if diffs, err := w.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("replay: %v %+v", err, diffs)
+	}
+}
+
+// M2: the Recorder runs only on a store where the restart rule has run, so
+// a pending call it finds was intended since this open.
+func TestTheRecorderNeedsTheRestartRule(t *testing.T) {
+	w := openWorld(t)
+	w.setLease(types.LeaseStateActive, attempt)
+	w.close()
+	w.open() // no restart rule
+	up := newUpstream(t, nil)
+	g, token := newGateway(t, w, up, modelcall.Recorder{Store: w.s, Actor: actor})
+	if rec := send(g, token); rec.Code != http.StatusServiceUnavailable || up.count() != 0 || len(w.ofLease()) != 0 {
+		t.Fatalf("intended before the restart rule: %d, upstream saw %d", rec.Code, up.count())
+	}
+	w.restart()
+	if rec := send(g, token); rec.Code != http.StatusOK || up.count() != 1 {
+		t.Fatalf("after the restart rule: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// H1: a call bound under one binding is never sent under another. The
+// gateway refuses a second binding of a bound call; once the first is
+// unbound, the new binding reaches the Recorder, which refuses it.
+func TestACallIsSentUnderOneBindingOnly(t *testing.T) {
+	w := openWorld(t)
+	w.setLease(types.LeaseStateActive, attempt)
+	up := newUpstream(t, nil)
+	g, token := newGateway(t, w, up, modelcall.Recorder{Store: w.s, Actor: actor})
+	if rec := send(g, token); rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	a2 := types.AttemptID("att_01m4tm99haemss9tvzd438vq8k")
+	w.setLease(types.LeaseStateActive, a2)
+	moved := gateway.Binding{Lease: leaseID, Attempt: a2, Call: callID}
+	if _, err := g.Bind(moved); err == nil {
+		t.Fatal("a bound call bound again under another attempt")
+	}
+	g.Unbind(token)
+	token2, err := g.Bind(moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := send(g, token2); rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "intent_unrecorded") || up.count() != 1 {
+		t.Fatalf("the call sent under another attempt: %d %s, upstream saw %d", rec.Code, rec.Body, up.count())
 	}
 }

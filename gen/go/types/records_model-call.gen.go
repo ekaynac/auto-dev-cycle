@@ -13,7 +13,7 @@ type ModelCall struct {
 	Lease   LeaseID   `json:"lease"`
 	// The lease's executor.
 	Executor ExecutorID `json:"executor"`
-	// The registry's destination for that executor; also the intent's target.
+	// The registry's destination for that executor. The intent's target is the call, never the destination, so calls to one destination are separate targets.
 	Destination Slug `json:"destination"`
 	// The groups of the lease's reservations, sorted: where the call's usage, or its liability, is charged.
 	Groups []ResourceGroupID `json:"groups"`

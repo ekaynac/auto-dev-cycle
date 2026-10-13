@@ -11,10 +11,12 @@
     "attempt": {"description": "The attempt the call is made for, the one its lease is running.", "$ref": "../common/defs.json#/$defs/AttemptID"},
     "lease": {"$ref": "../common/defs.json#/$defs/LeaseID"},
     "executor": {"description": "The lease's executor.", "$ref": "../common/defs.json#/$defs/ExecutorID"},
-    "destination": {"description": "The registry's destination for that executor; also the intent's target.", "$ref": "../config/project-profile.json#/$defs/Slug"},
+    "destination": {"description": "The registry's destination for that executor. The intent's target is the call, never the destination, so calls to one destination are separate targets.", "$ref": "../config/project-profile.json#/$defs/Slug"},
     "groups": {
       "description": "The groups of the lease's reservations, sorted: where the call's usage, or its liability, is charged.",
       "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
       "uniqueItems": true,
       "items": {"$ref": "../common/defs.json#/$defs/ResourceGroupID"}
     }

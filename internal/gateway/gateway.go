@@ -44,6 +44,7 @@ import (
 	"sync"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 )
 
@@ -88,8 +89,8 @@ type Gateway struct {
 	cfg      Config
 	client   *http.Client
 	mu       sync.Mutex
-	bound    map[[32]byte]Binding  // by the token's hash
-	intended map[types.CallID]bool // calls whose intent is durable, while bound
+	bound    map[[32]byte]Binding // by the token's hash
+	intended map[[32]byte]bool    // tokens whose call's intent is durable, by the token's hash
 	observed map[types.AttemptID]Observed
 }
 
@@ -99,7 +100,7 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.Leases == nil || cfg.Secrets == nil || cfg.Intents == nil {
 		return nil, errors.New("gateway: a gateway needs the lease reader, the secrets and the intents")
 	}
-	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, intended: map[types.CallID]bool{},
+	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, intended: map[[32]byte]bool{},
 		observed: map[types.AttemptID]Observed{}}, nil
 }
 
@@ -118,8 +119,8 @@ const (
 
 // Bind mints the token an attempt's adapter calls the gateway with.
 func (g *Gateway) Bind(b Binding) (string, error) {
-	if b.Call == "" {
-		return "", errors.New("gateway: a binding names its call")
+	if err := ids.Check(string(b.Call), "cal"); err != nil {
+		return "", fmt.Errorf("gateway: a binding names its call: %w", err)
 	}
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -128,6 +129,11 @@ func (g *Gateway) Bind(b Binding) (string, error) {
 	token := hex.EncodeToString(raw[:])
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	for _, other := range g.bound {
+		if other.Call == b.Call && other != b {
+			return "", errors.New("gateway: the call is bound under another binding")
+		}
+	}
 	g.bound[sha256.Sum256([]byte(token))] = b
 	return token, nil
 }
@@ -145,7 +151,7 @@ func (g *Gateway) Unbind(token string) Observed {
 	o := g.observed[b.Attempt]
 	delete(g.bound, key)
 	delete(g.observed, b.Attempt)
-	delete(g.intended, b.Call)
+	delete(g.intended, key)
 	return o
 }
 
@@ -238,14 +244,20 @@ func (r *redacting) Close() error {
 	return err
 }
 
-func (g *Gateway) binding(r *http.Request) (Binding, bool) {
+// tokenKey is the hash of r's bearer token, the key of its binding.
+func tokenKey(r *http.Request) ([32]byte, bool) {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if !ok || token == "" {
+	return sha256.Sum256([]byte(token)), ok && token != ""
+}
+
+func (g *Gateway) binding(r *http.Request) (Binding, bool) {
+	key, ok := tokenKey(r)
+	if !ok {
 		return Binding{}, false
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	b, ok := g.bound[sha256.Sum256([]byte(token))]
+	b, ok := g.bound[key]
 	return b, ok
 }
 
@@ -304,7 +316,7 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 			return nil, none, &refusal{http.StatusServiceUnavailable, "capture_failed"}
 		}
 	}
-	if err := g.intend(ctx, b, e.Destination.ID); err != nil {
+	if err := g.intend(r, b, e.Destination.ID); err != nil {
 		return nil, none, &refusal{http.StatusServiceUnavailable, "intent_unrecorded"}
 	}
 	req, err := http.NewRequestWithContext(context.WithValue(ctx, originKey{}, dialAddr(target)), http.MethodPost, target.String(), bytes.NewReader(out))
@@ -337,22 +349,25 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 	return resp, cred, nil
 }
 
-// intend makes b's call's intent durable before its first send. Concurrent
-// first requests may both reach Intents, which keeps one intent per call.
-func (g *Gateway) intend(ctx context.Context, b Binding, destination types.Slug) error {
+// intend makes the call's intent durable before r's token first sends.
+// The cache is per token, never per call: another binding of a call always
+// reaches Intents, which refuses it. Concurrent first requests may both
+// reach Intents, which keeps one intent per call.
+func (g *Gateway) intend(r *http.Request, b Binding, destination types.Slug) error {
+	key, _ := tokenKey(r)
 	g.mu.Lock()
-	done := g.intended[b.Call]
+	done := g.intended[key]
 	g.mu.Unlock()
 	if done {
 		return nil
 	}
-	if err := g.cfg.Intents.Intend(ctx, b, destination); err != nil {
+	if err := g.cfg.Intents.Intend(r.Context(), b, destination); err != nil {
 		return err
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if slices.Contains(slices.Collect(maps.Values(g.bound)), b) {
-		g.intended[b.Call] = true // only while bound: Unbind forgets it
+	if g.bound[key] == b {
+		g.intended[key] = true // only while bound: Unbind forgets it
 	}
 	return nil
 }

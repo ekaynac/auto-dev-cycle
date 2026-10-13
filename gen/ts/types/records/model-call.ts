@@ -21,13 +21,16 @@ export interface ModelCall {
    */
   executor: string;
   /**
-   * The registry's destination for that executor; also the intent's target.
+   * The registry's destination for that executor. The intent's target is the call, never the destination, so calls to one destination are separate targets.
    */
   destination: string;
   /**
    * The groups of the lease's reservations, sorted: where the call's usage, or its liability, is charged.
    *
+   * @minItems 1
+   * @maxItems 64
+   *
    * Items: Standard TypeID: prefix, underscore, 26-char lowercase base32 of a UUIDv7 (adc-typeid checks the version and variant). Fields use the entity-specific definitions below.
    */
-  groups: string[];
+  groups: [string, ...string[]];
 }

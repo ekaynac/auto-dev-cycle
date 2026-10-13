@@ -62,3 +62,34 @@ func TestNoIntentNoEgress(t *testing.T) {
 		t.Fatal("a binding with no call")
 	}
 }
+
+// H1: the intent cache is per token. A call bound under one binding cannot
+// be bound under another while bound; two tokens of one binding each reach
+// Intents once, and unbinding one leaves the other's entry.
+func TestTheIntentIsPerBinding(t *testing.T) {
+	in := &intents{}
+	up := newUpstream(t, nil)
+	g, token := rig(t, up, func(c *Config) { c.Intents = in })
+	if _, err := g.Bind(Binding{Lease: leaseID, Attempt: "att_01m4tm99haemss9tvzd438vq8k", Call: callID}); err == nil {
+		t.Fatal("a bound call bound under another attempt")
+	}
+	if _, err := g.Bind(Binding{Lease: leaseID, Attempt: attempt, Call: "msr_01m4tm99haemss9tvzd438vq8j"}); err == nil {
+		t.Fatal("a call id of another prefix")
+	}
+	twin, err := g.Bind(Binding{Lease: leaseID, Attempt: attempt, Call: callID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range []string{token, twin, token, twin} {
+		if w := call(g, tk, "/chat/completions", good, nil); w.Code != http.StatusOK {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+	}
+	if in.n() != 2 {
+		t.Fatalf("%d intents for two tokens", in.n())
+	}
+	g.Unbind(token)
+	if w := call(g, twin, "/chat/completions", good, nil); w.Code != http.StatusOK || in.n() != 2 {
+		t.Fatalf("after unbinding the other token: %d, %d intents", w.Code, in.n())
+	}
+}
