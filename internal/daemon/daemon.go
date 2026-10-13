@@ -43,7 +43,8 @@ type Daemon struct {
 // Start brings the daemon up (03): validate the configuration and the
 // state directory; take the lock before the store is opened; verify the
 // full hash chain, against the trusted head if one is given; run
-// capacity.CheckHistory on the existing projections; refuse event kinds
+// capacity.CheckHistory and graph.CheckHistory on the existing
+// projections; refuse event kinds
 // this build does not read; replay the log and refuse projections that
 // differ from the replay (nothing is repaired); load or create the
 // system actor; mark pending effects uncertain, unless this start created
@@ -129,7 +130,7 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	// Capacity history and groups are checked on the existing projections
 	// before any replay could manufacture them; then the log's kinds and a
 	// full replay.
-	for _, check := range []func(context.Context, *eventstore.Store) error{checkCapacityHistory, checkCapacityGroups(reservations), checkKinds, checkProjections} {
+	for _, check := range []func(context.Context, *eventstore.Store) error{checkCapacityHistory, checkGraphHistory, checkCapacityGroups(reservations), checkKinds, checkProjections} {
 		if err := check(ctx, store); err != nil {
 			return nil, err
 		}

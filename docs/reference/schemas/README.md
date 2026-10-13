@@ -19,6 +19,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/command-request.json`](api-command-request.md) | CommandRequest |
 | [`api/command-response.json`](api-command-response.md) | CommandResponse |
 | [`api/grant.json`](api-grant.md) | GrantRead |
+| [`api/hold.json`](api-hold.md) | HoldRead |
 | [`api/note.json`](api-note.md) | NoteRead |
 | [`api/project.json`](api-project.md) | ProjectRead |
 | [`api/proposal.json`](api-proposal.md) | ProposalRead |

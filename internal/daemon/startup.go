@@ -15,6 +15,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -74,6 +75,23 @@ func checkCapacityHistory(ctx context.Context, s *eventstore.Store) error {
 	switch {
 	case errors.Is(err, capacity.ErrGrantedBeforeWiring):
 		return couldNotRun(vocab.ReasonAmbiguousState, "a lease was granted before capacity was wired; capacity cannot account for it", err)
+	case err != nil:
+		return couldNotRun(vocab.ReasonStoreUnreadable, "the projections cannot be read", err)
+	}
+	return nil
+}
+
+// checkGraphHistory runs graph.CheckHistory on the existing projections,
+// before anything is replayed: graph projections whose operations or
+// holds disagree with the effect and hold records they name are
+// ambiguous_state (a replay reads the effects table as it is, so
+// it cannot see the disagreement); a projection that cannot be read is
+// store_unreadable.
+func checkGraphHistory(ctx context.Context, s *eventstore.Store) error {
+	err := s.View(ctx, graph.CheckHistory)
+	switch {
+	case errors.Is(err, graph.ErrHistory):
+		return couldNotRun(vocab.ReasonAmbiguousState, "the graph history disagrees with the effect or hold records it names", err)
 	case err != nil:
 		return couldNotRun(vocab.ReasonStoreUnreadable, "the projections cannot be read", err)
 	}

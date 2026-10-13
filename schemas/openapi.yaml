@@ -684,6 +684,34 @@ paths:
           description: 'failed/action_not_granted: no grant in force grants reads.'
         "503":
           description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
+  /v1/holds:
+    get:
+      operationId: read.holds
+      tags:
+        - read
+      summary: The hold records the caller's read scope covers, each authorized in one snapshot.
+      responses:
+        "200":
+          description: The readable records.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/api.read-list'
+                  - properties:
+                      items:
+                        items:
+                          $ref: '#/components/schemas/api.hold'
+                      resource:
+                        const: holds
+        "400":
+          description: A query parameter the read does not take, or a malformed one.
+        "401":
+          description: No valid bearer token on this listener.
+        "403":
+          description: 'failed/action_not_granted: no grant in force grants reads.'
+        "503":
+          description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
   /v1/notes:
     get:
       operationId: read.notes
@@ -1158,6 +1186,104 @@ components:
           oneOf:
             - type: "null"
             - $ref: ../common/defs.json#/$defs/Time
+    api.hold:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/hold.json
+      title: HoldRead
+      description: 'One record of GET /v1/holds (docs/design/m0/15 D2; 02 "Hold reasons and resume signals"): a hold in force, on a node (records/node-hold) or on a lease (lease.waiting, lease.restore_failed; 05), in one shape. A lease records only the hold and its signal instance, so a lease hold has no id, project, reason, concrete owner or since (null) and no pages; its owner is the hold''s registry owner. A node hold''s project is its node''s.'
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - held
+        - subject
+        - project
+        - hold
+        - reason
+        - signal_instance
+        - owner
+        - owner_ref
+        - since
+        - pages
+      properties:
+        id:
+          description: The node hold's id; null for a lease hold.
+          oneOf:
+            - type: "null"
+            - $ref: ../common/defs.json#/$defs/HoldID
+        held:
+          description: 'What holds: a graph node or a lease.'
+          enum:
+            - node
+            - lease
+        subject:
+          description: The node's (nod_) or the lease's (lea_) id.
+          $ref: ../common/defs.json#/$defs/TypeID
+          pattern: ^(nod|lea)_
+        project:
+          description: The node's project; null for a lease hold, read only under an every-project read.
+          oneOf:
+            - type: "null"
+            - $ref: ../common/defs.json#/$defs/ProjectID
+        hold:
+          description: The hold (schemas/vocab/holds.yaml).
+          type: string
+          pattern: ^[a-z][a-z0-9_]*$
+        reason:
+          description: The reason of the result that raised a node hold; null otherwise.
+          oneOf:
+            - type: "null"
+            - $ref: ../common/defs.json#/$defs/ReasonCode
+        signal_instance:
+          description: The concrete signal that resumes it.
+          type: string
+          minLength: 1
+          maxLength: 1024
+        owner:
+          $ref: ../vocab/registry.json#/$defs/Owner
+        owner_ref:
+          description: The concrete owner, as records/node-hold has it; null for a lease hold.
+          oneOf:
+            - type: "null"
+            - type: string
+              minLength: 1
+              maxLength: 256
+        since:
+          description: When a node hold's wait began; null for a lease hold.
+          oneOf:
+            - type: "null"
+            - $ref: ../common/defs.json#/$defs/Time
+        pages:
+          description: A node hold's paging history, oldest first, as records/node-hold has it; a lease hold is not paged yet.
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - at
+              - owner
+              - owner_ref
+              - channel
+              - signal_instance
+            properties:
+              at:
+                $ref: ../common/defs.json#/$defs/Time
+              owner:
+                $ref: ../vocab/registry.json#/$defs/Owner
+              owner_ref:
+                oneOf:
+                  - type: "null"
+                  - type: string
+                    minLength: 1
+                    maxLength: 256
+              channel:
+                oneOf:
+                  - type: "null"
+                  - $ref: ../records/receipt.json#/$defs/Name
+              signal_instance:
+                type: string
+                minLength: 1
+                maxLength: 1024
     api.note:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/note.json
@@ -2239,3 +2365,282 @@ components:
               $ref: ../common/defs.json#/$defs/CallID
             demand:
               $ref: '#/$defs/Demand'
+    vocab.registry:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/vocab/registry.json
+      title: VocabRegistry
+      description: One vocabulary registry file (schemas/vocab/*.yaml, docs/design/m0/02), discriminated by its schema field. Cross-file rules (a reason's hold exists, codes are unique) are checked by internal/vocab.
+      oneOf:
+        - $ref: '#/$defs/OutcomesFile'
+        - $ref: '#/$defs/ReasonsFile'
+        - $ref: '#/$defs/HoldsFile'
+        - $ref: '#/$defs/ActionsFile'
+      $defs:
+        Code:
+          type: string
+          pattern: ^[a-z][a-z0-9_]*$
+        Owner:
+          enum:
+            - system
+            - operator
+            - grant_holder
+            - confirmation_policy
+            - named_owner
+            - environment_owner
+        Semver:
+          type: string
+          pattern: ^[0-9]+\.[0-9]+\.[0-9]+$
+        OutcomesFile:
+          type: object
+          additionalProperties: false
+          required:
+            - schema
+            - outcomes
+          properties:
+            schema:
+              const: adc.vocab.outcomes/v1
+            outcomes:
+              type: array
+              minItems: 4
+              maxItems: 4
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - outcome
+                  - description
+                properties:
+                  outcome:
+                    enum:
+                      - found
+                      - empty
+                      - could_not_run
+                      - failed
+                  description:
+                    type: string
+                    minLength: 1
+        ReasonsFile:
+          type: object
+          additionalProperties: false
+          required:
+            - schema
+            - reasons
+          properties:
+            schema:
+              const: adc.vocab.reasons/v1
+            reasons:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/$defs/Reason'
+        Reason:
+          type: object
+          additionalProperties: false
+          required:
+            - code
+            - outcomes
+            - domain
+            - description
+            - introduced
+            - deprecated
+            - source
+          properties:
+            code:
+              $ref: '#/$defs/Code'
+            outcomes:
+              type: array
+              minItems: 1
+              uniqueItems: true
+              items:
+                enum:
+                  - found
+                  - empty
+                  - could_not_run
+                  - failed
+            domain:
+              enum:
+                - capacity
+                - cycle
+                - gate
+                - review
+                - authority
+                - knowledge
+                - forge
+                - sandbox
+                - adapter
+                - ops
+            description:
+              type: string
+              minLength: 1
+            hold:
+              $ref: '#/$defs/Code'
+            introduced:
+              $ref: '#/$defs/Semver'
+            deprecated:
+              description: The version that deprecated the code; null while current.
+              oneOf:
+                - type: "null"
+                - $ref: '#/$defs/Semver'
+            source:
+              description: 'Where the code was introduced: a design note number, or legacy:<golden>.'
+              type: string
+              pattern: ^([0-9]{2}|legacy:[a-z0-9-]+)$
+        HoldsFile:
+          type: object
+          additionalProperties: false
+          required:
+            - schema
+            - holds
+          properties:
+            schema:
+              const: adc.vocab.holds/v1
+            holds:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/$defs/Hold'
+        ActionsFile:
+          description: 'The action registry (docs/design/m0/04 "Action registry"): every mutating action kind, one command endpoint each (08), and the supervisor confirmation default of every sensitive change class. An action whose effective change is in no class needs no confirmation (none). Authority computes the class from the effective change and never trusts the action''s name.'
+          type: object
+          additionalProperties: false
+          required:
+            - schema
+            - actions
+            - change_classes
+          properties:
+            schema:
+              const: adc.vocab.actions/v1
+            actions:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/$defs/Action'
+            change_classes:
+              type: array
+              minItems: 1
+              items:
+                $ref: '#/$defs/ChangeClassDefault'
+        Action:
+          type: object
+          additionalProperties: false
+          required:
+            - action
+            - family
+            - description
+            - introduced
+            - deprecated
+            - source
+          properties:
+            action:
+              $ref: ../records/grant.json#/$defs/ActionKind
+            family:
+              description: The CLI noun that carries it (08 "CLI rules"); the parity test maps each action to a CLI command and a dashboard control.
+              enum:
+                - project
+                - task
+                - holds
+                - approve
+                - propose
+                - grant
+                - seat
+                - packet
+                - digest
+                - notes
+                - sources
+                - admin
+            description:
+              type: string
+              minLength: 1
+            introduced:
+              $ref: '#/$defs/Semver'
+            deprecated:
+              oneOf:
+                - type: "null"
+                - $ref: '#/$defs/Semver'
+            source:
+              type: string
+              pattern: ^[0-9]{2}$
+        ChangeClassDefault:
+          type: object
+          additionalProperties: false
+          required:
+            - class
+            - confirmation
+            - settable_to_human
+            - every_actor_kind
+            - description
+            - source
+          properties:
+            class:
+              $ref: ../records/approval.json#/$defs/ChangeClass
+            confirmation:
+              description: The supervisor default (D32).
+              enum:
+                - independent_review
+                - human
+            settable_to_human:
+              description: Whether a grant may tighten it to human (a human default is already the tightest).
+              type: boolean
+            every_actor_kind:
+              description: 'True only where an operator token also needs a presence-verified confirmation (KA1: framework prose export).'
+              type: boolean
+            description:
+              type: string
+              minLength: 1
+            source:
+              description: The decision or review item that set it.
+              type: string
+              minLength: 1
+          allOf:
+            - if:
+                properties:
+                  confirmation:
+                    const: human
+              then:
+                properties:
+                  settable_to_human:
+                    const: false
+            - if:
+                properties:
+                  every_actor_kind:
+                    const: true
+              then:
+                properties:
+                  confirmation:
+                    const: human
+        Hold:
+          type: object
+          additionalProperties: false
+          required:
+            - hold
+            - signal
+            - signal_detail
+            - owner
+            - page_after
+            - escalate_to
+          properties:
+            hold:
+              $ref: '#/$defs/Code'
+            signal:
+              enum:
+                - time
+                - receipt
+                - revision
+                - approval
+                - human_act
+                - probe
+                - config_change
+            signal_detail:
+              type: string
+              minLength: 1
+            owner:
+              $ref: '#/$defs/Owner'
+            page_after:
+              oneOf:
+                - type: "null"
+                - $ref: ../common/defs.json#/$defs/Duration
+            escalate_to:
+              description: Who owns the hold once page_after passes without the signal; null keeps the owner.
+              oneOf:
+                - type: "null"
+                - $ref: '#/$defs/Owner'

@@ -48,7 +48,9 @@ type commanded struct {
 	hook                  atomic.Pointer[func(identity.Principal)] // the endpoint's hook, when set
 }
 
-func runCommanded(t *testing.T) *commanded {
+// runCommanded starts the daemon over the seeded store; each extra seeds
+// more history through the seeder, as the operator, before the start.
+func runCommanded(t *testing.T, extra ...func(w *seeder, op types.ActorID)) *commanded {
 	t.Helper()
 	testguard.Home(t) // never the user's real ~/.config/adc
 	c := &commanded{dir: shortDir(t), logs: &logBuffer{}}
@@ -100,6 +102,9 @@ func runCommanded(t *testing.T) *commanded {
 		return identity.RevokeToken(tx, types.TokenID(id), now)
 	})
 	w.do(op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return identity.RevokeActor(tx, goneID, now) })
+	for _, more := range extra {
+		more(w, op.ID)
+	}
 	w.done()
 	ctx, cancel := context.WithCancel(context.Background())
 	done, ready := make(chan error, 1), make(chan *Daemon, 1)
