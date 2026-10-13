@@ -131,7 +131,12 @@ func TestLiveProbeDetectsFaults(t *testing.T) {
 		mutate func([]string) []string
 		want   string
 	}{
-		"network":             {replace("--network=none", "--network=slirp4netns"), "network interface"},
+		"network": {replace("--network=none", "--network=slirp4netns"), "network interface"},
+		"workspace from the state dir": {func(args []string) []string {
+			i := slices.IndexFunc(args, func(a string) bool { return strings.HasSuffix(a, ",dst="+WorkspaceDir) })
+			args[i] = "--mount=type=bind,src=" + l.state + ",dst=" + WorkspaceDir
+			return args
+		}, "a mount from the host: " + WorkspaceDir},
 		"state directory":     {add("--mount=type=bind,src=" + l.state + ",dst=" + l.state), "controller path present: " + l.state},
 		"controller socket":   {add("--mount=type=bind,src=" + l.adcd + ",dst=/mnt/adcd.sock"), "socket reachable: /mnt/adcd.sock"},
 		"a populated HOME":    {add("--env=HOME=/etc"), "HOME is not empty"},
@@ -151,6 +156,30 @@ func TestLiveProbeDetectsFaults(t *testing.T) {
 				t.Errorf("%s (%s): violations %q, want %q", name, mode, r.Violations, f.want)
 			}
 		}
+	}
+}
+
+// A run whose process changed user leaves files the controller's uid
+// cannot remove; Teardown removes them inside Podman's user namespace.
+func TestLiveTeardownOtherUID(t *testing.T) {
+	l := newLive(t)
+	h := l.h
+	h.mutate = func(args []string) []string {
+		args[slices.Index(args, "--user=0:0")] = "--user=1000:1000"
+		return args
+	}
+	a, err := h.NewAttempt()
+	must(t, err)
+	must(t, os.Chmod(a.Workspace(), 0o777))
+	_, err = h.Start(context.Background(), Run{Image: l.img, Mode: Gate, Attempt: a, Limits: probeLimits,
+		Argv: []string{"/bin/sh", "-c", "mkdir /workspace/d && touch /workspace/d/f && chmod 500 /workspace/d"}})
+	must(t, err)
+	if err := os.RemoveAll(filepath.Join(a.Workspace(), "d")); err == nil {
+		t.Fatal("the controller's uid removed a run's other uid's files, so this test proves nothing")
+	}
+	must(t, a.Teardown())
+	if _, err := os.Lstat(a.Dir); !os.IsNotExist(err) {
+		t.Fatalf("teardown left %s: %v", a.Dir, err)
 	}
 }
 

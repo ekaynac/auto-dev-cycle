@@ -48,23 +48,40 @@ func git(ctx context.Context, dir string, env []string, args ...string) *exec.Cm
 
 // Repo is a repository the controller cloned; its .git is never mounted.
 type Repo struct {
-	Dir  string
-	snap string
+	Dir     string
+	snap    string
+	refused func(url string) bool
+}
+
+// refused: url is a local repository a run may have written (one that
+// overlaps the sandbox root, where every run's workspace lies, or a
+// forbidden path), or a relative or scp-like one this cannot judge.
+func (h Host) refused(url string) bool {
+	p, isFile := strings.CutPrefix(url, "file://")
+	switch {
+	case isFile || filepath.IsAbs(url):
+		p = resolve(filepath.Clean(p))
+		return slices.ContainsFunc(append([]string{h.Root}, h.Forbidden...), func(f string) bool { return overlaps(p, resolve(f)) })
+	case strings.Contains(url, "://"):
+		return false
+	}
+	return true
 }
 
 // Clone makes a fresh controller-side clone of url's branch (a
 // refs/heads/ name) at dst, without a checkout: one branch, no
-// submodules, never sharing files with a local source.
-func Clone(ctx context.Context, url, ref, dst string) (Repo, error) {
+// submodules, never sharing files with a local source, and never from a
+// repository a run may have written.
+func (h Host) Clone(ctx context.Context, url, ref, dst string) (Repo, error) {
 	branch, ok := strings.CutPrefix(ref, "refs/heads/")
-	if !ok || branch == "" || strings.HasPrefix(url, "-") {
+	if !ok || branch == "" || strings.HasPrefix(url, "-") || h.refused(url) {
 		return Repo{}, ErrSpec
 	}
 	if out, err := git(ctx, "/", nil, "clone", "--quiet", "--no-local", "--no-checkout", "--no-recurse-submodules",
 		"--single-branch", "--branch", branch, "--", url, dst).CombinedOutput(); err != nil {
 		return Repo{}, fmt.Errorf("%w: clone: %w: %s", ErrGit, err, strings.TrimSpace(string(out)))
 	}
-	r := Repo{Dir: dst}
+	r := Repo{Dir: dst, refused: h.refused}
 	var err error
 	r.snap, err = r.snapshot()
 	return r, err
@@ -95,10 +112,18 @@ func (r Repo) snapshot() (string, error) {
 
 // Git is a hardened git on the controller's repository with tree (a
 // CopyTree copy) as its work tree, refused if the repository's config or
-// info/ changed since Clone. diff, show and log never run a diff driver.
+// info/ changed since Clone. diff, show and log never run a diff driver;
+// fetch and pull never reach a repository a run may have written (a
+// remote's name is taken as is: its URL was Clone's).
 func (r Repo) Git(ctx context.Context, tree string, args ...string) (*exec.Cmd, error) {
-	if snap, err := r.snapshot(); err != nil || r.snap == "" || snap != r.snap {
+	if snap, err := r.snapshot(); err != nil || r.snap == "" || snap != r.snap || r.refused == nil {
 		return nil, fmt.Errorf("%w: the controller repository's configuration changed", ErrGit)
+	}
+	if len(args) > 0 && (args[0] == "fetch" || args[0] == "pull") {
+		i := slices.IndexFunc(args[1:], func(a string) bool { return !strings.HasPrefix(a, "-") })
+		if i >= 0 && strings.ContainsAny(args[i+1], "/:") && r.refused(args[i+1]) {
+			return nil, fmt.Errorf("%w: fetch from a repository a run may have written", ErrSpec)
+		}
 	}
 	if len(args) > 0 && slices.Contains([]string{"diff", "show", "log"}, args[0]) {
 		args = append([]string{args[0], "--no-ext-diff", "--no-textconv"}, args[1:]...)

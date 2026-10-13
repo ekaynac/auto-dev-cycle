@@ -75,6 +75,8 @@ func (h Host) Validate() error {
 	switch {
 	case !absClean(h.Podman) || !absClean(h.Root) || !absClean(h.Home):
 		return fmt.Errorf("%w: podman, the sandbox root and the home must be absolute, clean paths", ErrHost)
+	case h.Home == homeDir: // the run's own HOME: the probe could not tell the two apart
+		return fmt.Errorf("%w: the controller's home is the sandbox's HOME", ErrHost)
 	case len(h.runRoot()) > maxRunRoot:
 		return fmt.Errorf("%w: the sandbox root is too long for Podman's runroot", ErrHost)
 	}

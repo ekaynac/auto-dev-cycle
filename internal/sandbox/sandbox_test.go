@@ -76,6 +76,7 @@ func TestValidateRefuses(t *testing.T) {
 		"root too long for Podman": {Podman: "/usr/bin/podman", Root: "/" + strings.Repeat("r", 60), Home: "/home/op"},
 		"forbidden inside root":    {Podman: "/usr/bin/podman", Root: "/sbx", Home: "/home/op", Forbidden: []string{"/sbx/state"}},
 		"forbidden is /":           {Podman: "/usr/bin/podman", Root: "/sbx", Home: "/home/op", Forbidden: []string{"/"}},
+		"home is the sandbox HOME": {Podman: "/usr/bin/podman", Root: "/sbx", Home: homeDir},
 	} {
 		if err := h.Validate(); !errors.Is(err, ErrHost) {
 			t.Errorf("%s: %v, want ErrHost", name, err)
@@ -115,7 +116,7 @@ func TestArgsContainment(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"--network=none", "--pull=never", "--cap-drop=all", "--env-host=false", "--read-only", testID} {
+		for _, want := range []string{"--network=none", "--pull=never", "--cap-drop=all", "--user=0:0", "--env-host=false", "--read-only", testID} {
 			if !slices.Contains(args, want) {
 				t.Errorf("%s: args lack %s: %q", mode, want, args)
 			}

@@ -99,7 +99,7 @@ func (h Host) args(r Run, name string) ([]string, error) {
 		return nil, fmt.Errorf("%w: no resolved image, command or limits", ErrSpec)
 	}
 	args := []string{"run", "--rm", "--name=" + name, "--pull=never", "--network=none", "--no-hosts", "--hostname=sandbox",
-		"--cap-drop=all", "--security-opt=no-new-privileges", "--read-only", "--read-only-tmpfs=false",
+		"--user=0:0", "--cap-drop=all", "--security-opt=no-new-privileges", "--read-only", "--read-only-tmpfs=false",
 		"--systemd=false", "--env-host=false", "--http-proxy=false", "--log-driver=none",
 		"--memory=" + strconv.FormatInt(l.Memory, 10), "--cpus=" + l.CPUs, "--pids-limit=" + strconv.Itoa(l.PIDs),
 		"--tmpfs=/tmp:rw,nosuid,nodev,size=256m", "--tmpfs=" + homeDir + ":rw,nosuid,nodev,mode=0700,size=64m",
@@ -115,9 +115,11 @@ func (h Host) args(r Run, name string) ([]string, error) {
 }
 
 // Start runs r to its end, or removes it at its timeout, and returns its
-// stdout. --rm removes the container; the workspace and results stay on
-// the controller's side for copy-out. A removal that fails marks the
-// attempt unsafe: a container may still be writing it.
+// stdout. The workspace and results stay on the controller's side for
+// copy-out. Whatever the run's outcome (a client killed at the timeout or
+// dead for any reason leaves the container running), the container is
+// then removed by name; a removal that fails marks the attempt unsafe: a
+// container may still be writing it.
 func (h Host) Start(ctx context.Context, r Run) ([]byte, error) {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
@@ -129,21 +131,18 @@ func (h Host) Start(ctx context.Context, r Run) ([]byte, error) {
 	run, cancel := context.WithTimeout(ctx, r.Limits.Timeout)
 	defer cancel()
 	out, err := h.podman(run, args...)
-	if run.Err() != nil {
-		// Killing the client does not stop the container; removing it does.
-		rm, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		_, rmErr := h.podman(rm, "rm", "--force", "--ignore", "--time=0", name)
-		r.Attempt.unsafe = rmErr != nil
-		err = errors.Join(err, run.Err(), rmErr)
-	}
-	return out, err
+	rm, cancelRm := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancelRm()
+	_, rmErr := h.podman(rm, "rm", "--force", "--ignore", "--time=0", name)
+	r.Attempt.unsafe = rmErr != nil
+	return out, errors.Join(err, run.Err(), rmErr)
 }
 
 // Attempt is one run's directories under the sandbox root's runs/.
 type Attempt struct {
-	Dir    string
-	unsafe bool
+	Dir     string
+	unsafe  bool
+	unshare func(dir string) error // removes what a run's other uids left
 }
 
 // NewAttempt makes a private directory for one run.
@@ -155,7 +154,12 @@ func (h Host) NewAttempt() (*Attempt, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &Attempt{Dir: dir}
+	a := &Attempt{Dir: dir, unshare: func(dir string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_, err := h.podman(ctx, "unshare", "rm", "-rf", "--", dir)
+		return err
+	}}
 	for _, d := range []string{a.Workspace(), a.Results()} {
 		if err := os.Mkdir(d, 0o700); err != nil {
 			return nil, errors.Join(err, a.Teardown())
@@ -221,10 +225,15 @@ func (a *Attempt) copy(src, dst string, maxBytes int64, skip func(string) bool) 
 			return err
 		}
 		defer in.Close()
-		if st, err := in.Stat(); err != nil || !st.Mode().IsRegular() {
+		st, err := in.Stat()
+		if err != nil || !st.Mode().IsRegular() {
 			return fmt.Errorf("%w: %s changed type", ErrSpec, p)
 		}
-		out, err := os.OpenFile(filepath.Join(dst, p), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		mode := os.FileMode(0o600)
+		if st.Mode()&0o111 != 0 { // git records only the execute bit
+			mode = 0o700
+		}
+		out, err := os.OpenFile(filepath.Join(dst, p), os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 		if err != nil {
 			return err
 		}
@@ -237,7 +246,9 @@ func (a *Attempt) copy(src, dst string, maxBytes int64, skip func(string) bool) 
 }
 
 // Teardown removes the attempt's directories, first making every
-// directory a run left writable again.
+// directory a run left writable again. What a run's other uids own (an
+// image's process that changed user) is removed inside Podman's user
+// namespace.
 func (a *Attempt) Teardown() error {
 	_ = filepath.WalkDir(a.Dir, func(p string, d fs.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
@@ -245,5 +256,9 @@ func (a *Attempt) Teardown() error {
 		}
 		return nil
 	})
-	return os.RemoveAll(a.Dir)
+	err := os.RemoveAll(a.Dir)
+	if err != nil && a.unshare != nil {
+		err = errors.Join(a.unshare(a.Dir), os.RemoveAll(a.Dir))
+	}
+	return err
 }

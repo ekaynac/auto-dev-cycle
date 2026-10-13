@@ -8,6 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +26,10 @@ import (
 // outside /proc and /sys. Sockets are found by stat (test -S), never by
 // find -type s: a socket bind-mounted over a placeholder file reads as a
 // regular file in its directory. "done" proves it ran to its end.
+//
+// Trust: the probe proves the runtime's configuration, not the image's
+// honesty. It assumes an honest image, prepared by the controller and
+// pinned by digest; a hostile image's shell could print a clean report.
 const probeScript = `set -u
 command -v find >/dev/null && command -v sed >/dev/null || exit 3
 for i in /sys/class/net/*; do [ -e "$i" ] && echo "iface ${i##*/}"; done
@@ -33,8 +40,9 @@ echo "routes $n"
 for f in "$HOME"/* "$HOME"/.[!.]* "$HOME"/..?*; do { [ -e "$f" ] || [ -L "$f" ]; } && echo "home ${f##*/}"; done
 for p in "$@"; do { [ -e "$p" ] || [ -L "$p" ]; } && echo "present $p"; done
 sed -E 's/^[0-9]+ [0-9]+ [0-9:]+ ([^ ]+) ([^ ]+) .* - ([^ ]+) .*$/mount \2 \1 \3/' /proc/self/mountinfo
-while IFS=: read -r k v; do case "$k" in CapEff|NoNewPrivs|Seccomp) echo "status $k" $v ;; esac; done </proc/self/status
+while IFS=: read -r k v; do case "$k" in Cap*|NoNewPrivs|Seccomp) echo "status $k" $v ;; esac; done </proc/self/status
 echo "limit memory $(cat /sys/fs/cgroup/memory.max)"; echo "limit pids $(cat /sys/fs/cgroup/pids.max)"
+read -r q p </sys/fs/cgroup/cpu.max; echo "limit cpu $q/$p"
 find / \( -path /proc -o -path /sys \) -prune -o -print 2>/dev/null | while IFS= read -r f; do [ -S "$f" ] && echo "socket $f"; done
 echo done
 `
@@ -63,6 +71,8 @@ type Report struct {
 	Limits     map[string]string `json:"limits"`
 	Sockets    []string          `json:"sockets"`
 	Violations []string          `json:"violations"`
+
+	attempt, gateway string // the run's own mount sources: its attempt's id, the gateway's host path
 }
 
 // ErrProbe: the probe did not run to its end; nothing is proven.
@@ -88,7 +98,7 @@ func (h Host) Probe(ctx context.Context, img Image, mode Mode, gateway string) (
 	if err != nil {
 		return Report{}, err
 	}
-	r.Mode, r.Image = mode, img.Pinned
+	r.Mode, r.Image, r.attempt, r.gateway = mode, img.Pinned, filepath.Base(a.Dir), gateway
 	r.Violations = r.check()
 	return r, nil
 }
@@ -128,12 +138,37 @@ func parse(out []byte) (Report, error) {
 	return r, nil
 }
 
-// Podman's own file mounts (from its runroot) and the filesystems it
-// mounts whole.
+// The mounts Podman makes itself: its file mounts from its runroot, the
+// device nodes it binds, and the filesystems it mounts whole, by point.
 var (
-	podmanFiles = []string{"/run/.containerenv", "/etc/hostname", "/etc/resolv.conf", "/etc/hosts"}
-	whole       = []string{"proc", "sysfs", "tmpfs", "cgroup2", "devpts", "mqueue"}
+	podmanFiles = map[string]string{"/run/.containerenv": ".containerenv", "/etc/hostname": "hostname",
+		"/etc/resolv.conf": "resolv.conf", "/etc/hosts": "hosts"}
+	devices = []string{"null", "zero", "full", "random", "urandom", "tty"}
+	whole   = map[string]string{"/": "overlay", "/proc": "proc", "/dev": "tmpfs", "/dev/pts": "devpts",
+		"/dev/mqueue": "mqueue", "/dev/shm": "tmpfs", "/sys": "sysfs", "/sys/fs/cgroup": "cgroup2", "/tmp": "tmpfs",
+		homeDir: "tmpfs", "/proc/acpi": "tmpfs", "/proc/scsi": "tmpfs", "/sys/firmware": "tmpfs", "/sys/dev/block": "tmpfs"}
+	userdata = regexp.MustCompile(`/overlay-containers/[0-9a-f]+/userdata/([^/]+)$`)
 )
+
+// allowed: m is the run's own (from its attempt or the gateway, by
+// source), or one Podman makes itself.
+func (r Report) allowed(m Mount) bool {
+	switch {
+	case m.Point == WorkspaceDir || m.Point == ResultsDir:
+		return r.attempt != "" && strings.HasSuffix(m.Root, "/runs/"+r.attempt+m.Point)
+	case m.Point == GatewaySocket && r.Mode == Build:
+		return r.gateway != "" && path.Base(m.Root) == path.Base(r.gateway)
+	case m.Type == "devtmpfs":
+		return m.Point == "/dev"+m.Root && slices.Contains(devices, path.Base(m.Root)) ||
+			strings.HasPrefix(m.Point, "/proc/") && m.Root == "/null"
+	case m.Root == "/":
+		return whole[m.Point] == m.Type
+	case m.Type == "proc":
+		return m.Point == "/proc"+m.Root
+	}
+	f := userdata.FindStringSubmatch(m.Root)
+	return f != nil && podmanFiles[m.Point] == f[1]
+}
 
 // check is the acceptance (00 §5.1, P9): no network route, an empty HOME,
 // no forbidden path, no mount from the host but the run's own, no
@@ -155,25 +190,19 @@ func (r Report) check() []string {
 	for _, p := range r.Present {
 		v = append(v, "controller path present: "+p)
 	}
-	own := []string{WorkspaceDir, ResultsDir}
-	if r.Mode == Build {
-		own = append(own, GatewaySocket)
-	}
 	for _, m := range r.Mounts {
-		pseudo := (m.Type == "proc" || m.Type == "devtmpfs") && (strings.HasPrefix(m.Point, "/proc/") || strings.HasPrefix(m.Point, "/dev/"))
-		ok := slices.Contains(own, m.Point) || pseudo ||
-			slices.Contains(podmanFiles, m.Point) && strings.Contains(m.Root, "/userdata/") ||
-			m.Root == "/" && (slices.Contains(whole, m.Type) || m.Type == "overlay" && m.Point == "/")
-		if !ok {
+		if !r.allowed(m) {
 			v = append(v, "a mount from the host: "+m.Point+" ("+m.Type+" "+m.Root+")")
 		}
 	}
-	for k, want := range map[string]string{"CapEff": "0000000000000000", "NoNewPrivs": "1", "Seccomp": "2"} {
+	none := "0000000000000000"
+	for k, want := range map[string]string{"CapEff": none, "CapPrm": none, "CapBnd": none, "CapAmb": none, "NoNewPrivs": "1", "Seccomp": "2"} {
 		if r.Status[k] != want {
 			v = append(v, k+" is "+r.Status[k]+", want "+want)
 		}
 	}
-	for k, want := range map[string]string{"memory": strconv.FormatInt(probeLimits.Memory, 10), "pids": strconv.Itoa(probeLimits.PIDs)} {
+	for k, want := range map[string]string{"memory": strconv.FormatInt(probeLimits.Memory, 10),
+		"pids": strconv.Itoa(probeLimits.PIDs), "cpu": "100000/100000"} { // probeLimits.CPUs, one CPU
 		if r.Limits[k] != want {
 			v = append(v, "the "+k+" limit is "+r.Limits[k]+", want "+want)
 		}
