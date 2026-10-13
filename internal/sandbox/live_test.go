@@ -50,7 +50,7 @@ func newLive(t *testing.T) live {
 		must(t, err)
 		t.Cleanup(func() { ln.Close() })
 	}
-	l.h = Host{Podman: "/usr/bin/podman", Root: root, Forbidden: []string{l.state, l.adcd}}
+	l.h = Host{Podman: "/usr/bin/podman", Root: root, Forbidden: []string{l.state, l.adcd}, Home: filepath.Clean(os.Getenv("HOME"))}
 	ctx := context.Background()
 	t.Cleanup(func() {
 		_, _ = l.h.podman(ctx, "system", "reset", "--force")
@@ -93,7 +93,7 @@ func (l live) probe(t *testing.T, mode Mode, mutate func([]string) []string) Rep
 	if mode == Build {
 		gw = l.gateway
 	}
-	r, err := h.Probe(context.Background(), l.img, mode, gw, os.Getenv("HOME"))
+	r, err := h.Probe(context.Background(), l.img, mode, gw)
 	must(t, err)
 	return r
 }
@@ -121,17 +121,28 @@ func TestLiveProbeDetectsFaults(t *testing.T) {
 	add := func(extra string) func([]string) []string {
 		return func(args []string) []string { return append(args, extra) }
 	}
+	replace := func(old, new string) func([]string) []string {
+		return func(args []string) []string {
+			args[slices.Index(args, old)] = new
+			return args
+		}
+	}
 	faults := map[string]struct {
 		mutate func([]string) []string
 		want   string
 	}{
-		"network": {func(args []string) []string {
-			args[slices.Index(args, "--network=none")] = "--network=slirp4netns"
-			return args
-		}, "network interface"},
-		"state directory":   {add("--mount=type=bind,src=" + l.state + ",dst=" + l.state), "controller path present: " + l.state},
-		"controller socket": {add("--mount=type=bind,src=" + l.adcd + ",dst=/mnt/adcd.sock"), "socket reachable: /mnt/adcd.sock"},
-		"a populated HOME":  {add("--env=HOME=/etc"), "HOME is not empty"},
+		"network":             {replace("--network=none", "--network=slirp4netns"), "network interface"},
+		"state directory":     {add("--mount=type=bind,src=" + l.state + ",dst=" + l.state), "controller path present: " + l.state},
+		"controller socket":   {add("--mount=type=bind,src=" + l.adcd + ",dst=/mnt/adcd.sock"), "socket reachable: /mnt/adcd.sock"},
+		"a populated HOME":    {add("--env=HOME=/etc"), "HOME is not empty"},
+		"state dir elsewhere": {add("--mount=type=bind,src=" + l.state + ",dst=/mnt/state"), "a mount from the host: /mnt/state"},
+		"privileged":          {replace("--cap-drop=all", "--privileged"), "CapEff is "},
+		"all capabilities":    {replace("--cap-drop=all", "--cap-add=ALL"), "CapEff is "},
+		"no seccomp":          {add("--security-opt=seccomp=unconfined"), "Seccomp is 0"},
+		"no pids limit":       {add("--pids-limit=-1"), "the pids limit is max"},
+		"no memory limit": {func(args []string) []string {
+			return slices.DeleteFunc(args, func(a string) bool { return strings.HasPrefix(a, "--memory=") })
+		}, "the memory limit is max"},
 	}
 	for name, f := range faults {
 		for _, mode := range []Mode{Gate, Build} {

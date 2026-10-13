@@ -60,6 +60,7 @@ type Host struct {
 	// see: the state directory, adcd's private and shared sockets, the
 	// Podman API socket.
 	Forbidden []string
+	Home      string // the controller's home: never mounted, and absent inside
 	Runner    Runner // nil runs the command
 	mutate    func([]string) []string
 }
@@ -72,8 +73,8 @@ type Runner interface {
 // Validate checks the host's paths.
 func (h Host) Validate() error {
 	switch {
-	case !absClean(h.Podman) || !absClean(h.Root):
-		return fmt.Errorf("%w: podman and the sandbox root must be absolute, clean paths", ErrHost)
+	case !absClean(h.Podman) || !absClean(h.Root) || !absClean(h.Home):
+		return fmt.Errorf("%w: podman, the sandbox root and the home must be absolute, clean paths", ErrHost)
 	case len(h.runRoot()) > maxRunRoot:
 		return fmt.Errorf("%w: the sandbox root is too long for Podman's runroot", ErrHost)
 	}
