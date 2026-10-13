@@ -80,6 +80,10 @@ func Reads() []Read {
 // Bootstrap is the one command that is neither an action nor a read.
 var Bootstrap = Read{Resource: "bootstrap", Endpoint: "POST " + apidoc.BootstrapPath, CLI: "adc admin bootstrap"}
 
+// Blobs are the upload endpoints (00-slice-plan P2), neither actions nor reads.
+var Blobs = []Read{{Resource: "blob upload", Endpoint: "POST " + api.BlobsPath, CLI: "adc blob put"},
+	{Resource: api.BlobUploads, Endpoint: "GET " + api.BlobsPath, CLI: "adc dev blob uploads"}}
+
 // Markdown renders the matrix; the same inputs give the same bytes. A read
 // without a CLI command is refused.
 func Markdown(actions []Action, reads []Read) ([]byte, error) {
@@ -106,7 +110,7 @@ func Markdown(actions []Action, reads []Read) ([]byte, error) {
 		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | `%s` | `%s` | %s | %s |\n", a.Action, a.Family, class, owner, a.Endpoint, a.CLI, Dashboard, a.Note)
 	}
 	b.WriteString("\n## Reads and other endpoints\n\n| Resource | Endpoint | CLI |\n|---|---|---|\n")
-	for _, r := range append(slices.Clone(reads), Bootstrap) {
+	for _, r := range append(append(slices.Clone(reads), Bootstrap), Blobs...) {
 		if r.CLI == "" {
 			return nil, fmt.Errorf("parity: read %s has no CLI command", r.Resource)
 		}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/blob-upload.json",
+  "title": "BlobUpload",
+  "description": "One unclaimed upload (docs/design/m1/00-slice-plan.md P2): the answer to POST /v1/blobs, an item of GET /v1/blobs (operator only), and the payload of blob.upload_purged. Only a later command by the same actor may reference it, before expires_at; its bytes are never served back.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["digest", "size", "actor", "uploaded_at", "expires_at"],
+  "properties": {
+    "digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+    "size": {"type": "integer", "minimum": 0, "maximum": 1048576},
+    "actor": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "uploaded_at": {"$ref": "../common/defs.json#/$defs/Time"},
+    "expires_at": {"$ref": "../common/defs.json#/$defs/Time"}
+  }
+}

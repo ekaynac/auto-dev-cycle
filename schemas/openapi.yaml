@@ -38,6 +38,53 @@ paths:
           description: No such resource.
         "503":
           description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
+  /v1/blobs:
+    get:
+      operationId: read.blob-uploads
+      tags:
+        - read
+      summary: The unclaimed uploads, never their bytes; an operator's.
+      responses:
+        "200":
+          description: The uploads.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.read-list'
+        "400":
+          description: A query parameter the read does not take, or a malformed one.
+        "401":
+          description: No valid bearer token on this listener.
+        "403":
+          description: 'failed/operator_only: not an operator.'
+        "503":
+          description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
+    post:
+      operationId: blob.upload
+      tags:
+        - blob
+      summary: Store the body (at most 1 MiB) as the caller's upload, for a later command of the same caller to reference before it expires; an operator's or a supervisor's.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream: {}
+      responses:
+        "200":
+          description: The upload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.blob-upload'
+        "400":
+          description: A query parameter the read does not take, or a malformed one.
+        "401":
+          description: No valid bearer token on this listener.
+        "403":
+          description: 'failed/actor_kind_refused: not an operator or a supervisor.'
+        "413":
+          description: 'failed/upload_bound_exceeded: over 1 MiB, or over the caller''s 64 uploads or 32 MiB; nothing was stored.'
+        "503":
+          description: could_not_run/store_unreadable, or too many authentications in progress (Retry-After).
   /v1/bootstrap:
     post:
       operationId: bootstrap
@@ -849,6 +896,32 @@ components:
       scheme: bearer
       type: http
   schemas:
+    api.blob-upload:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/blob-upload.json
+      title: BlobUpload
+      description: 'One unclaimed upload (docs/design/m1/00-slice-plan.md P2): the answer to POST /v1/blobs, an item of GET /v1/blobs (operator only), and the payload of blob.upload_purged. Only a later command by the same actor may reference it, before expires_at; its bytes are never served back.'
+      type: object
+      additionalProperties: false
+      required:
+        - digest
+        - size
+        - actor
+        - uploaded_at
+        - expires_at
+      properties:
+        digest:
+          $ref: ../common/defs.json#/$defs/Digest
+        size:
+          type: integer
+          minimum: 0
+          maximum: 1048576
+        actor:
+          $ref: ../common/defs.json#/$defs/ActorID
+        uploaded_at:
+          $ref: ../common/defs.json#/$defs/Time
+        expires_at:
+          $ref: ../common/defs.json#/$defs/Time
     api.bootstrap-request:
       $schema: https://json-schema.org/draft/2020-12/schema
       $id: https://github.com/ekaynac/auto-dev-cycle/schemas/api/bootstrap-request.json

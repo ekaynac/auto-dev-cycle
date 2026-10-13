@@ -8,6 +8,7 @@ package client
 // refusal is returned only as a registered result.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -79,19 +80,44 @@ func (t Transport) Read(ctx context.Context, resource string) ([]byte, error) {
 		if !ok {
 			return orInvalid(contract.Validate(schema, raw))
 		}
-		var list struct {
-			Resource string            `json:"resource"`
-			Items    []json.RawMessage `json:"items"`
-		}
-		if contract.Validate("api/read-list", raw) != nil || json.Unmarshal(raw, &list) != nil || list.Resource != resource {
+		return validList(raw, resource, schema)
+	})
+}
+
+// validList checks a read list of resource, every item against schema.
+func validList(raw []byte, resource, schema string) error {
+	var list struct {
+		Resource string            `json:"resource"`
+		Items    []json.RawMessage `json:"items"`
+	}
+	if contract.Validate("api/read-list", raw) != nil || json.Unmarshal(raw, &list) != nil || list.Resource != resource {
+		return ErrInvalidRead
+	}
+	for _, item := range list.Items {
+		if contract.Validate(schema, item) != nil {
 			return ErrInvalidRead
 		}
-		for _, item := range list.Items {
-			if contract.Validate(schema, item) != nil {
-				return ErrInvalidRead
-			}
+	}
+	return nil
+}
+
+// Blob uploads data to /v1/blobs and returns the upload, or with nil data
+// lists the uploads (operator only); either body is returned once it
+// validates, and a refusal only as a registered result.
+func (t Transport) Blob(ctx context.Context, data []byte) ([]byte, error) {
+	method, body := http.MethodGet, io.Reader(nil)
+	if data != nil {
+		method, body = http.MethodPost, bytes.NewReader(data)
+	}
+	resp, err := t.do(ctx, method, api.BlobsPath, body, false)
+	if err := refusal(resp, err); err != nil {
+		return nil, err
+	}
+	return answer(resp, nil, "a blob response", func(raw []byte) error {
+		if data != nil {
+			return orInvalid(contract.Validate("api/blob-upload", raw))
 		}
-		return nil
+		return validList(raw, api.BlobUploads, "api/blob-upload")
 	})
 }
 

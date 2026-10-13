@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/api"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
@@ -33,7 +34,7 @@ var ErrCommandsRefused = authority.ErrActionNotWired
 // (authority.NoReviewSource) until receipts are recorded.
 func hooks(az authority.Authorizer, project func(*eventstore.Tx, []eventstore.Event) error) eventstore.Hooks {
 	authorize := func(t *eventstore.Tx, c eventstore.Command) error {
-		if slices.Contains([]string{bootstrapAction, issueAction, renewAction, recoverAction}, c.Action) {
+		if slices.Contains([]string{bootstrapAction, issueAction, renewAction, recoverAction, api.PurgeAction}, c.Action) {
 			return authorizeSystem(t, c)
 		}
 		return az.Authorize(t, c)
@@ -102,7 +103,7 @@ func logics(az authority.Authorizer) map[string]logic {
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {
 	all := eventstore.Kinds{}
-	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), lease.Kinds(), ledger.Kinds(), graph.Kinds()} {
+	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), lease.Kinds(), ledger.Kinds(), graph.Kinds(), api.BlobKinds()} {
 		for k := range ks {
 			if _, dup := all[k]; dup {
 				return nil, fmt.Errorf("daemon: event kind %s is registered twice", k)

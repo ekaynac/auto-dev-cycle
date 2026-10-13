@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/blob-upload-purged.json",
+  "title": "BlobUploadPurged",
+  "description": "The payload of blob.upload_purged/v1 (docs/design/m1/00-slice-plan.md P2): an expired upload the system actor purged, as it was when set aside (the fields of api/blob-upload). Its upload bytes are gone; the digest may remain in the store if a command published it before the purge.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["digest", "size", "actor", "uploaded_at", "expires_at"],
+  "properties": {
+    "digest": {"$ref": "../common/defs.json#/$defs/Digest"},
+    "size": {"type": "integer", "minimum": 0, "maximum": 1048576},
+    "actor": {"$ref": "../common/defs.json#/$defs/ActorID"},
+    "uploaded_at": {"$ref": "../common/defs.json#/$defs/Time"},
+    "expires_at": {"$ref": "../common/defs.json#/$defs/Time"}
+  }
+}

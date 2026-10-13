@@ -30,6 +30,7 @@ import (
 type Store struct {
 	root string
 	mu   sync.Mutex // serialises publication, so a concurrent Put never returns before the blob is durable
+	up   sync.Mutex // serialises the uploads (uploads.go)
 }
 
 // ErrDigestMismatch: the bytes do not hash to the declared digest, or a
@@ -61,7 +62,8 @@ var digestRe = regexp.MustCompile(`^sha256:([0-9a-f]{64})$`)
 // directory lock; leftover temp files from a crash are removed here.
 func Open(stateDir string) (*Store, error) {
 	root := filepath.Join(stateDir, "blobs")
-	for _, d := range []string{filepath.Join(root, "sha256"), filepath.Join(root, "tmp")} {
+	dirs := []string{filepath.Join(root, "sha256"), filepath.Join(root, "tmp"), filepath.Join(root, "uploads")}
+	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, err
 		}
@@ -77,7 +79,7 @@ func Open(stateDir string) (*Store, error) {
 	}
 	// Make the store's own directories durable. The state directory's entry
 	// in its parent belongs to whoever created the state directory.
-	for _, d := range []string{filepath.Join(root, "sha256"), filepath.Join(root, "tmp"), root, stateDir} {
+	for _, d := range append(dirs, root, stateDir) {
 		if err := syncDir(d); err != nil {
 			return nil, err
 		}

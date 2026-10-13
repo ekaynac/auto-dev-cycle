@@ -14,6 +14,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`adapter/run-params.json`](adapter-run-params.md) | AdapterRunParams |
 | [`adapter/run-result.json`](adapter-run-result.md) | AdapterRunResult |
 | [`adapter/tool-response-params.json`](adapter-tool-response-params.md) | AdapterToolResponseParams |
+| [`api/blob-upload.json`](api-blob-upload.md) | BlobUpload |
 | [`api/bootstrap-request.json`](api-bootstrap-request.md) | BootstrapRequest |
 | [`api/bootstrap-response.json`](api-bootstrap-response.md) | BootstrapResponse |
 | [`api/command-request.json`](api-command-request.md) | CommandRequest |
@@ -46,6 +47,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/attempt-output-refusal.json`](records-attempt-output-refusal.md) | AttemptOutputRefusal |
 | [`records/attempt-record.json`](records-attempt-record.md) | AttemptRecord |
 | [`records/attempt.json`](records-attempt.md) | Attempt |
+| [`records/blob-upload-purged.json`](records-blob-upload-purged.md) | BlobUploadPurged |
 | [`records/bootstrap-renewed.json`](records-bootstrap-renewed.md) | BootstrapRenewed |
 | [`records/challenge.json`](records-challenge.md) | Challenge |
 | [`records/claim.json`](records-claim.md) | Claim |

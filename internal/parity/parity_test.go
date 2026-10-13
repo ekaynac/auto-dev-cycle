@@ -128,7 +128,7 @@ func TestReadParity(t *testing.T) {
 	for action := range reg.Actions {
 		known["POST "+apidoc.CommandPath(action)] = true
 	}
-	for _, r := range Reads() {
+	for _, r := range append(Reads(), Blobs...) {
 		known[r.Endpoint] = true
 		if _, ok := ops[r.Endpoint]; !ok {
 			t.Errorf("%s: no %s in the API description", r.Resource, r.Endpoint)

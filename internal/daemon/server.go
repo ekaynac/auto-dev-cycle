@@ -204,7 +204,7 @@ const bootstrapRoute = "POST " + apidoc.BootstrapPath
 
 // routeList is every pattern the daemon serves, in registration order.
 var routeList = []string{bootstrapRoute, "GET " + api.EventsPath, "GET " + api.VersionPath,
-	"POST " + CommandsPath, "GET " + api.WhoamiPath, "GET " + api.ReadPath}
+	"POST " + CommandsPath, "GET " + api.WhoamiPath, "GET " + api.ReadPath, "POST " + api.BlobsPath, "GET " + api.BlobsPath}
 
 // Routes are the patterns the daemon serves (the parity harness,
 // internal/parity, checks each against the API description).
@@ -216,12 +216,15 @@ func Routes() []string { return slices.Clone(routeList) }
 func routes(store *eventstore.Store, boot *bootstrapper, lim limits, gate *api.Slots, cmds commands) *http.ServeMux {
 	cmds.gate = gate
 	reads := api.Reads{Store: store, Gate: gate, Resources: api.Registered()}
+	blobs := api.Blobs{Store: store, Blobs: cmds.blobs, Gate: gate, Now: cmds.clock, Log: cmds.log}
 	served := map[string]http.Handler{
 		"GET " + api.EventsPath:  api.Events{Store: store, Poll: lim.poll, Gate: gate},
 		"GET " + api.VersionPath: http.HandlerFunc(api.Version),
 		"POST " + CommandsPath:   cmds,
 		"GET " + api.WhoamiPath:  http.HandlerFunc(reads.Whoami),
 		"GET " + api.ReadPath:    http.HandlerFunc(reads.Resource),
+		"POST " + api.BlobsPath:  blobs,
+		"GET " + api.BlobsPath:   blobs,
 	}
 	if boot != nil {
 		served[bootstrapRoute] = boot.handler(gate)
@@ -248,11 +251,17 @@ func routes(store *eventstore.Store, boot *bootstrapper, lim limits, gate *api.S
 func handler(store *eventstore.Store, boot *bootstrapper, lim limits, gate *api.Slots, cmds commands) http.Handler {
 	mux := routes(store, boot, lim, gate, cmds)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ContentLength > lim.bodyBytes {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
+		// The blobs route bounds its own body (blobstore.MaxUploadBytes),
+		// read up to the bound before it is refused, so a client that sends
+		// no more than one byte past it (adc) reads the refusal rather than
+		// a broken pipe.
+		if r.URL.Path != api.BlobsPath {
+			if r.ContentLength > lim.bodyBytes {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, lim.bodyBytes)
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, lim.bodyBytes)
 		mux.ServeHTTP(w, r)
 	})
 }
