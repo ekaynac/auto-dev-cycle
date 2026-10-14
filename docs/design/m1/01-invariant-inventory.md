@@ -57,13 +57,13 @@ and is never edited apart from it.
 | I3 Moved questions | enforced | P6 | `answers`: all |
 | I4 Reuse | enforced | P6 | `answers`: all |
 | I5 Consumption | partial | P8b, P15, P16 | `launch`: admission; `review`: all |
-| I6 Effect intent | partial | P18, P20, P22a, P27 (P12a, P12b done) | `launch`: the `model_call` rows; `merge-local`, `merge-github`: the merge rows, including P20's GitHub settlement for `merge-github` |
+| I6 Effect intent | partial | P18, P20 (merge half), P22a, P27 (P12a, P12b and P20's `model_call` half done) | `launch`: the `model_call` rows; `merge-local`, `merge-github`: the merge rows, including P20's GitHub settlement for `merge-github` |
 | I7 Review independence | partial | P7, P8b, P16 | `launch`: consumption; `review`: all |
 | I8 Fencing and attempt binding | partial | P8a, P22a (P21a, P21b done, inert) | `launch`: all |
-| I9 Accounting | partial | P11b, P20, P22a (P12a, P12b done) | `launch`: all |
-| I10 Egress, data policy, context | partial | P7, P8b, P11, P11b, P16 | `launch`: all |
+| I9 Accounting | partial | P22a (P11b, P12a, P12b, P20's `model_call` half and P21a done, inert) | `launch`: all |
+| I10 Egress, data policy, context | partial | P7, P8b, P16, P22a (P11, P11b done, inert) | `launch`: all |
 | I11 Restart and replay | partial | P4a, P22a (P21a done, inert) | `launch`: all |
-| I12 Build facts and accept | partial | P14a, P14b, P14b-out, P14c-1, P14c-2a, P14c-2b, P14d, P22a | `launch`: all |
+| I12 Build facts and accept | partial | P14b-out, P14c-2a, P14c-2a2, P14c-2b, P14d, P22a (P14a, P14b, P14c-1 done, inert) | `launch`: all |
 | I13 Gate verdict and receipts | partial | P15 | `review`: all |
 | I14 Single merge delivery | partial | P18, P19, P27 | `merge-local`: all but the GitHub effect check; `merge-github`: all |
 | I15 Deferred surfaces | partial | P22a | `intake`: admission (the guard); every other capability: all |
@@ -134,7 +134,7 @@ implementation item.
 | admission | merge: `graph.Operate` → `eventstore.Tx.IntendEffect` (refuses an unregistered kind), `Tx.LiveEffect`. `adcd` registers no kind. `model_call`: `modelcall.Intend` (P12a, #251) records one effect per call (target = the call id) inside the writer transaction, after checking that the attempt is current, running and on the lease and unit; the gateway sends nothing before it is committed. Inert until P22a registers the kind | kept + GAP | P18 (`merge`); P22a (register `model_call`; run `MarkPendingUncertain` on every start, #226 entry 64) |
 | fold/replay | `operated`, `settledOperation` (`graph/effects.go`); the store's transitions (`eventstore/effects.go:next`), which cover both kinds | kept | — |
 | consumption | merge: `graph.CompleteEffect` → `operationCompleted` (`graph/queue.go`). `model_call`: a settlement names every bound call once and takes each call's figure or liability (I9; P12b, #253) | kept | — |
-| effect | merge: `graph.RunEffect` reconciles before egress and applies by compare-and-set; `unapplied` with `Landed`. At start, `MarkPendingUncertain` (`daemon/daemon.go:start`) for both kinds. Settling `uncertain` and one runner per effect are M1's (13:445-450) | kept + GAP | P20 (one runner per effect; for a GitHub push, settlement only by a received response or by P20's three history rules; an unchanged ref keeps `uncertain` and the fence, with `effect_uncertain` after `PT10M`; nothing re-fires the push) |
+| effect | merge: `graph.RunEffect` reconciles before egress and applies by compare-and-set; `unapplied` with `Landed`. At start, `MarkPendingUncertain` (`daemon/daemon.go:start`) for both kinds. Settling `uncertain` and one runner per effect are M1's (13:445-450). `model_call`: `modelcall.Reconciler` (P20's `model_call` half, #258) runs one settlement per effect at a time and settles `uncertain` (I9's effect row); kept in code, inert until P22a constructs it | kept + GAP | P22a (one `Reconciler` per store, #258); P20's merge half (one runner per merge effect; for a GitHub push, settlement only by a received response or by P20's three history rules; an unchanged ref keeps `uncertain` and the fence, with `effect_uncertain` after `PT10M`; nothing re-fires the push) |
 
 ## I7. Review independence
 
@@ -166,8 +166,8 @@ through `lease.completed`. P21a keeps this check.
 |---|---|---|---|
 | admission | `capacity.Reservations.reserve` (`capacity/reserve.go`), all-or-nothing, wired; admission counts liabilities like reservations (saturating). The durable binding call → attempt → lease → groups is `model_call.intended` (P12a, #251); `Intend` refuses a non-positive reservation and a second call on a lease (P12b, #253) | kept + GAP | P22a (wire `modelcall.Project` and its lease projection, with the start check of #226 entry 70; until then the binding is inert in `adcd`) |
 | fold/replay | `ledger.Project` (`capacity/ledger`): deduplicated by `(call, sequence)`; refuses a report whose attempt or lease is not the call's binding. `ledger.StandingOf` never fails: mixed currencies or an overflow leave the call uncertain at a saturated figure, flagged `inconsistent_usage`. Liability records replay; a zero liability is omitted, so older stores replay unchanged. Every command must be folded event by event (`ProjectEach`) | kept + GAP | P22a (as above: `ledger.Binding` finds nothing until the binding projections are wired) |
-| consumption | A settlement names every bound call once (`capacity.Settlement`). A call is settled by a `final` or a `provider_reconciliation`; any other owes `max(positive reservation, deduplicated delta sum)` (Q8, approved 2026-10-14). Late usage recomputes the liability over every call of the settled lease, in any order. Token figures are still the adapter's report: a hostile zero `final` settles at zero until P11b (#226 entry 69), which gates `launch`. P21a's step 4 (`recovery.settle`, #259) settles a restart-cut call this way, at the field-wise maximum of its deltas and the gateway's per-request counts (X3(b)); inert until P22a | kept + GAP | P11b (gateway token count or conservative bound); P22a (start check, #226 entry 70; run recovery at start, #226 entry 81) |
-| effect | `model_call` reconciliation (03: query usage, else keep the liability) | GAP | P20 (with P12b's ledger) |
+| consumption | A settlement names every bound call once (`capacity.Settlement`). A call is settled by a `final` or a `provider_reconciliation`; any other owes `max(positive reservation, deduplicated delta sum)` (Q8, approved 2026-10-14). Late usage recomputes the liability over every call of the settled lease, in any order. **P11b (#256):** the gateway counts every request it sends. Before the send it commits a floor (`gateway_floor`: request bytes ÷ 16 input, `max_tokens` or the reservation output), and it refuses the send if the floor is not recorded. The count read from the forwarded response supersedes the floor. A `final` settles only when every request has a count and the final is not below it (input+cache and output apart); otherwise the call stays uncertain at `max(positive reservation, the field-wise maximum of the reports and the gateway's counts)`, so a hostile zero `final` keeps a conservative charge (#226 entry 69). P21a's step 4 (`recovery.settle`, #259) settles a restart-cut call this way (X3(b)). Kept in code, inert until P22a | kept + GAP | P22a (start check, #226 entry 70; run recovery at start, #226 entry 81) |
+| effect | `model_call` reconciliation (03: query usage, else keep the liability): `modelcall.Reconciler` (P20's `model_call` half, #258). It queries the provider only when every floor-only request is older than `FloorGrace`. It never releases a call at zero (no query, no usage found, or a failed query leave the liability), and a reconciliation never settles below the gateway's observed counts or floor inputs (flagged `inconsistent_usage`). Kept in code, inert until P22a | kept + GAP | P22a (one `Reconciler` per store; authorise `model_call.reconcile` for the system actor; qualify each production `Query.Usage` to honour cancellation; #226 entries 60 and 78) |
 
 ## I10. Egress, data policy and context delivery
 
@@ -176,7 +176,7 @@ through `lease.completed`. P21a keeps this check.
 | admission | none. No registry ties routes to data floor, routing class or usage profile, and `Lease.placement_checks` exists only in the schema. Unsupported policies must be refused, never approximated | GAP | P7 (data floor and usage-profile compatibility, and Q8's envelope, at start), P8b (destination at the launch boundary) |
 | fold/replay | none: no lease records the registry or profile revisions its placement decided on | GAP | P8b |
 | consumption | `graph.Context` / `renderContext` (`graph/successor.go`) render only claimed inputs. `knowledge.CheckDelivery` exists for manifests, but no model node in `adcd` records a `manifest.intent` | kept + GAP | P16 (the builder's and the reviewer's `manifest.intent`, #226 entry 71) |
-| effect | none: there is no gateway. 01 §2.2 requires, before egress, the destination check, credential injection and the model checked against the lease | GAP | P11 |
+| effect | 01 §2.2 requires, before egress, the destination check, credential injection and the model checked against the lease: `internal/gateway` (P11, #248). P11b (#256) widens the response redaction: every JSON spelling of the credential and a tail cut at EOF are redacted, and only known media types and charsets are forwarded. Kept in code, inert: `adcd` constructs no gateway | kept + GAP | P22a (construct the gateway; its socket server's write timeout, #226 entry 78) |
 
 ## I11. Restart and replay
 
@@ -191,7 +191,7 @@ through `lease.completed`. P21a keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `graph.Build` (`graph/build.go`) from `BuildFacts`; ingestion via `attemptRun.admit` (`adapterhost/submit.go`); protected paths and unsafe output refused at accept (`internal/accept`, P14a, #252); no integrity guard yet | kept + GAP | P14b (Go), P14b-out (Go, outside init), P14c-1, P14c-2a and P14c-2b (Python), P14d (Go table rows, subtests, helper skips); P22a (wires `accept.Accept` into the build path) |
+| admission | `graph.Build` (`graph/build.go`) from `BuildFacts`; ingestion via `attemptRun.admit` (`adapterhost/submit.go`); protected paths and unsafe output refused at accept (`internal/accept`, P14a, #252). P14b-init's Go integrity guard (#255) and P14c-1's Python tokenizer and encoding gate (#260) are kept in code, inert until P22a; P14b's fail-closed Python rule holds until P14c-2b | kept + GAP | P14b-out (Go, outside init), P14c-2a, P14c-2a2 and P14c-2b (Python), P14d (Go table rows, subtests, helper skips); P22a (wires `accept.Accept` into the build path) |
 | fold/replay | `graph.Check`, `CheckRead` (`graph/build.go`) | kept | — |
 | consumption | the gate must take only an accepted tree; no template wires that | GAP | P22a (P14a provides the accepted tree) |
 | effect | n/a | n/a | — |
@@ -289,6 +289,6 @@ through `lease.completed`. P21a keeps this check.
 
 ## Count
 
-88 rows across 22 invariants. **53 rows have a gap**: 26 are GAP and 27 are kept + GAP. 29 are kept and 6 are n/a (after P6, which also flipped P3's and P5's I1 and I2 rows, #226 entry 45; and after P21a and P21b, whose I8 effect and I11 consumption rows are kept in code, with the wiring left to P22a). A recount on 2026-10-14 corrected the earlier figures (29 GAP, 28 kept).
+88 rows across 22 invariants. **53 rows have a gap**: 24 are GAP and 29 are kept + GAP. 29 are kept and 6 are n/a (after P6, which also flipped P3's and P5's I1 and I2 rows, #226 entry 45; and after P11, P11b, P20's `model_call` half, P21a and P21b, whose I8 effect, I9 effect, I10 effect and I11 consumption rows are kept in code, with the wiring left to P22a). A recount on 2026-10-14 corrected the earlier figures (29 GAP, 28 kept).
 Every gap is closed by an item of `00-slice-plan.md` §5. None is left to a later milestone, except where 01 §4.1 or
 §6's clarifications place it. The evidence rows of 12 follow #187's trigger (slice plan §4).
