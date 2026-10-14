@@ -99,9 +99,23 @@ func TestPyGuardBlocks(t *testing.T) {
 		"gc.get_objects in a fixture":     {map[string]string{"tests/conftest.py": pyFix + "    import gc\n    gc.get_objects()\n"}, nil, "get_objects in forge"},
 		"__eq__ from a conftest fixture":  {map[string]string{"tests/conftest.py": pyFix + "    class A:\n        def __eq__(self, o):\n            return True\n    return A()\n"}, nil, "tests/conftest.py: __eq__ in forge"},
 		"print at a test's import":        {map[string]string{"tests/test_money.py": pyT + "print('PASSED')\n"}, nil, "tests/test_money.py: print in module level"},
-		"a builtin fixture overridden":    {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture\ndef capsys():\n    return None\n"}, nil, "a builtin fixture overridden (capsys) in capsys"},
-		"pytest.main":                     {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
-		"record_xml_attribute":            {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
+		"a builtin fixture overridden":    {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture\ndef capsys():\n    return None\n"}, nil, "a builtin fixture overridden (capsys) in module level"},
+		// Opus #263 H2: an exact __main__ guard only; decorators, def lines and class bodies run at import (MD, ME).
+		"MD a guard not exact":  {map[string]string{"money.py": baseFiles["money.py"] + "import os\nif __name__ != '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
+		"MD a guard or True":    {map[string]string{"money.py": baseFiles["money.py"] + "import sys\nif __name__ == '__main__' or True:\n    sys.modules['money'].__dict__\n"}, nil, "money.py: modules in module level"},
+		"a default at import":   {map[string]string{"money.py": baseFiles["money.py"] + "import os\ndef _f(x=os._exit(0)):\n    pass\n"}, nil, "money.py: _exit in module level"},
+		"a decorator at import": {map[string]string{"money.py": baseFiles["money.py"] + "import os\n@(lambda f: os._exit(0))\ndef _g():\n    pass\n"}, nil, "money.py: _exit in module level"},
+		"ME a class body":       {map[string]string{"money.py": baseFiles["money.py"] + "import os\nclass C:\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
+		"a thread in a test's default": {map[string]string{"tests/test_money.py": pyT + "import threading\n\ndef test_t(_=threading.Thread(target=print).start()):\n    pass\n"}, nil,
+			"tests/test_money.py: Thread in module level"},
+		// Opus #263 H3 (by name=, in any file) and M3 (pytest aliased in a conftest).
+		"H3 a builtin fixture by name=":     {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(name='capsys')\ndef _c():\n    return None\n"}, nil, "a builtin fixture overridden by name="},
+		"H3 a builtin fixture in a helper":  {map[string]string{"tests/helpers.py": "import pytest\n\n@pytest.fixture\ndef capsys():\n    return None\n"}, nil, "tests/helpers.py: a builtin fixture overridden (capsys) in module level"},
+		"M3 pytest aliased in a conftest":   {map[string]string{"tests/conftest.py": "import helpers as pytest\n\n@pytest.fixture\ndef db():\n    return 1\n"}, nil, "plain data ([import helpers as pytest"},
+		"M3 import pytest as in a conftest": {map[string]string{"tests/conftest.py": "import pytest as pt\n"}, nil, "plain data ([import pytest as pt"},
+		"L1 a pyproject added":              {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
+		"pytest.main":                       {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
+		"record_xml_attribute":              {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
 	} {
 		pyBlocks(t, f, name, c.files, c.why)
 	}
@@ -116,6 +130,7 @@ func TestPyGuardBaseConfig(t *testing.T) {
 		"setup.cfg\x00[tool:pytest]\naddopts = -p myplugin\n":                                                           true,
 		"tox.ini\x00[pytest]\naddopts = --deselect tests/test_money.py::test_add\n":                                     true,
 		"tox.ini\x00[pytest]\ntestpaths = tests\n":                                                                      true,
+		"pytest.ini\x00[pytest]\naddopts = -q tests/unit\n":                                                             true, // Opus #263 L3
 		"setup.cfg\x00[tool:pytest]\naddopts = -ra -q --strict-markers --tb=short\n\n[flake8]\nmax-line-length = 100\n": false,
 	} {
 		p, body, _ := strings.Cut(conf, "\x00")
@@ -153,16 +168,17 @@ func TestPyGuardAcceptsAndWarns(t *testing.T) {
 		"fixtures in a nested conftest": {map[string]string{"tests/conftest.py": "\"\"\"Fixtures.\"\"\"\nimport pytest\nfrom pytest import fixture\n\nLIMIT = 3\nNAMES = ['a', \"b\"]\n\n" +
 			"@pytest.fixture(params=[1, 2])\ndef n(request):\n    return request.param\n\n@fixture\ndef db(tmp_path, request):\n    request.cls.db = tmp_path\n    yield tmp_path\n\n" +
 			"@pytest.fixture(autouse=True)\ndef opt(request):\n    return request.config.getoption('-q')\n"}, nil, ""},
-		"a __main__ guard":           {map[string]string{"money.py": baseFiles["money.py"] + "\nif __name__ == '__main__':\n    import sys\n    sys.exit(0)\n"}, nil, "money.py: exit in __main__"},
-		"print in a test":            {map[string]string{"tests/test_money.py": pyT + "\ndef test_p():\n    print('x')\n    assert add(1, 1) == 2\n"}, nil, "tests/test_money.py: print in test_p"},
-		"subprocess in a helper":     {map[string]string{"money.py": baseFiles["money.py"] + "\ndef run():\n    import subprocess\n    return subprocess.run(['true'])\n"}, nil, "money.py: subprocess in run"},
-		"an import of subprocess":    {map[string]string{"money.py": "import subprocess\n" + baseFiles["money.py"]}, nil, "money.py: subprocess in (import)"},
-		"mock":                       {map[string]string{"tests/test_money.py": pyT + "\nfrom unittest import mock\n\n@mock.patch('money.add')\ndef test_m(m):\n    m.return_value = 1\n    assert m(1, 2) == 1\n"}, nil, ""},
-		"raises and params":          {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ncases = [pytest.param(1)]\ncases.append(pytest.param(2))\n\n@pytest.mark.parametrize('x', cases)\ndef test_c(x):\n    with pytest.raises(ZeroDivisionError) as e:\n        1 / x\n    assert e.value\n"}, nil, ""},
-		"a unittest case":            {map[string]string{"tests/test_money.py": pyT + "\nimport unittest\n\nclass T(unittest.TestCase):\n    def setUp(self):\n        self.x = 1\n\n    def test_t(self):\n        self.assertEqual(self.x, 1)\n"}, nil, ""},
-		"a pyproject without pytest": {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, ""},
-		"f-string fields":            {map[string]string{"money.py": baseFiles["money.py"] + "\ndef fmt(x, w):\n    return f'{x!r:>{w}} {x=}'\n"}, nil, ""},
-		"a test deleted":             {nil, []string{"tests/test_money.py"}, ""},
+		"a __main__ guard":             {map[string]string{"money.py": baseFiles["money.py"] + "\nif __name__ == '__main__':\n    import sys\n    sys.exit(0)\n"}, nil, "money.py: exit in __main__"},
+		"print in a test":              {map[string]string{"tests/test_money.py": pyT + "\ndef test_p():\n    print('x')\n    assert add(1, 1) == 2\n"}, nil, "tests/test_money.py: print in test_p"},
+		"subprocess in a helper":       {map[string]string{"money.py": baseFiles["money.py"] + "\ndef run():\n    import subprocess\n    return subprocess.run(['true'])\n"}, nil, "money.py: subprocess in run"},
+		"an import of subprocess":      {map[string]string{"money.py": "import subprocess\n" + baseFiles["money.py"]}, nil, "money.py: subprocess in (import)"},
+		"mock":                         {map[string]string{"tests/test_money.py": pyT + "\nfrom unittest import mock\n\n@mock.patch('money.add')\ndef test_m(m):\n    m.return_value = 1\n    assert m(1, 2) == 1\n"}, nil, ""},
+		"raises and params":            {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ncases = [pytest.param(1)]\ncases.append(pytest.param(2))\n\n@pytest.mark.parametrize('x', cases)\ndef test_c(x):\n    with pytest.raises(ZeroDivisionError) as e:\n        1 / x\n    assert e.value\n"}, nil, ""},
+		"a unittest case":              {map[string]string{"tests/test_money.py": pyT + "\nimport unittest\n\nclass T(unittest.TestCase):\n    def setUp(self):\n        self.x = 1\n\n    def test_t(self):\n        self.assertEqual(self.x, 1)\n"}, nil, ""},
+		"walked: an exit under build/": {map[string]string{"build/test_x.py": "import os\n\ndef test_x():\n    os._exit(0)\n"}, nil, "build/test_x.py: _exit in test_x"},
+		"an exact __main__ guard":      {map[string]string{"money.py": baseFiles["money.py"] + "\nif '__main__' == __name__:\n    import sys\n    sys.exit(0)\n"}, nil, "money.py: exit in __main__"},
+		"f-string fields":              {map[string]string{"money.py": baseFiles["money.py"] + "\ndef fmt(x, w):\n    return f'{x!r:>{w}} {x=}'\n"}, nil, ""},
+		"a test deleted":               {nil, []string{"tests/test_money.py"}, ""},
 	} {
 		if c.gone != nil {
 			v := f.guarded(t, nil, c.gone...)

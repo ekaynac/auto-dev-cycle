@@ -21,14 +21,15 @@ import (
 // internals and builtin fixtures overridden block anywhere; namespace,
 // frame, comparison, exit and process references in test modules and
 // conftests and at import; output at their import; other changes warn.
-// Test identities are P14c-2b's: until then P14b's rule blocks every .py.
+// Until P14c-2a-allow, 2a3 and 2b, P14b's rule blocks every .py change.
 var (
 	pyConfs   = []string{"pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg", "pyproject.toml"}
 	pyCollect = strings.Fields("python_files python_classes python_functions norecursedirs testpaths confcutdir " +
 		"collect_imported_tests consider_namespace_packages usefixtures empty_parameter_set_mark")
 	// pyOpt: the options a base may set (collection and results untouched).
 	pyOpt   = regexp.MustCompile(`^-(q+|v+|r\w*|l|s|W|-(strict|strict-markers|strict-config|showlocals|tb|color|durations|capture))$`)
-	pyWords = regexp.MustCompile(`[\s"',\[\]=]+`)
+	pyWords = regexp.MustCompile(`[\s"',\[\]=:]+`)
+	pyKey   = regexp.MustCompile(`\n(\[|[A-Za-z_][\w.-]*[ \t]*[=:])`) // the next key or section
 	// splitLines breaks lines where str.splitlines does (iniconfig's lines).
 	splitLines = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n", "\x1c", "\n", "\x1d", "\n", "\x1e", "\n",
 		"\u0085", "\n", "\u2028", "\n", "\u2029", "\n")
@@ -74,7 +75,7 @@ func pyTested(p string) bool {
 
 // python is the guard for a base holding Python.
 func (r *run) python(changes []Change) error {
-	custom, err := r.pyCustom()
+	custom, configured, err := r.pyCustom()
 	if err != nil {
 		return err
 	}
@@ -93,6 +94,8 @@ func (r *run) python(changes []Change) error {
 					return err
 				} else if ok && ok2 && pyConf(p, b, src && p == c.Src) != pyConf(p, a, dst && p == c.Dst) {
 					add(&r.blocks, p, "a pytest configuration changed (collection, options or plugins)")
+				} else if base == "pyproject.toml" && !configured && (src && p == c.Src) != (dst && p == c.Dst) { // Opus #263 L1
+					add(&r.blocks, p, "a pyproject.toml added or removed in a base without pytest configuration (rootdir moves)")
 				}
 			}
 		}
@@ -114,19 +117,31 @@ func (r *run) python(changes []Change) error {
 }
 
 // pyCustom: a base configuration moves collection or selection off the
-// defaults (Opus #255 M3: a setting, an option outside pyOpt), or is unread.
-func (r *run) pyCustom() (bool, error) {
+// defaults (Opus #255 M3: a setting, an option outside pyOpt, a positional
+// word in addopts), or is unread; configured: the base configures pytest.
+func (r *run) pyCustom() (custom, configured bool, err error) {
 	for _, p := range slices.Sorted(maps.Keys(r.files)) {
 		if !slices.Contains(pyConfs, path.Base(p)) {
 			continue
 		} else if b, why, err := r.file(r.files[p]); err != nil || why != "" {
-			return err == nil, err
+			return err == nil, true, err
 		} else if conf := pyConf(p, b, true); slices.ContainsFunc(pyCollect, func(s string) bool { return strings.Contains(conf, s) }) ||
 			slices.ContainsFunc(pyWords.Split(conf, -1), func(w string) bool { return strings.HasPrefix(w, "-") && !pyOpt.MatchString(w) }) {
-			return true, nil
+			return true, true, nil
+		} else {
+			configured = configured || conf != ""
+			for _, v := range strings.Split(conf, "addopts")[1:] { // Opus #263 L3
+				prev := ""
+				for _, w := range pyWords.Split(pyKey.Split(v, 2)[0], -1) {
+					if w != "" && !strings.HasPrefix(w, "-") && !slices.Contains([]string{"--tb", "--color", "--durations", "--capture", "-W"}, prev) {
+						return true, true, nil
+					}
+					prev = w
+				}
+			}
 		}
 	}
-	return false, nil
+	return false, configured, nil
 }
 
 // pyRead reads p's blob when want; unread, it blocks p.
@@ -204,7 +219,8 @@ func named(t []ptok, name string) bool {
 }
 
 // pyScan reads one version of p when want; unverifiable, it blocks p. A
-// def or a __main__ guard is a scope; the rest, class bodies too, is import.
+// def body or an exact __main__ guard is a scope; the rest, class bodies,
+// decorators and def lines too, runs at import (Opus #263 H2).
 func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error) {
 	fa = &pyFile{refs: map[string]int{}}
 	src, ok, err := r.pyRead(want, p, blob)
@@ -235,10 +251,13 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 		for l.indent <= stack[len(stack)-1].indent {
 			stack = stack[:len(stack)-1]
 		}
-		t, b := l.toks, block{l.indent, stack[len(stack)-1].fn}
+		t, fn := l.toks, stack[len(stack)-1].fn
+		b, code := block{l.indent, fn}, append(append(deco, t...), l.inner...)
 		if t[0].text == "@" {
 			fixture = fixture && len(t) > 1 && (t[1].text == "fixture" || len(t) > 3 && t[1].text == "pytest" && t[3].text == "fixture")
-			deco = append(append(deco, t...), l.inner...)
+			if deco = code; named(t, "fixture") && slices.ContainsFunc(t, func(k ptok) bool { return k.kind == 's' && slices.Contains(pyFixtures, strings.Trim(k.text, `"'`)) }) {
+				fa.refs["p\x00a builtin fixture overridden by name=\x00"+fn]++ // Opus #263 H3
+			}
 			continue
 		}
 		kw, name, d := "", "", t[b2i(t[0].text == "async"):]
@@ -249,14 +268,13 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 			fa.plain = fmt.Sprint(t[:min(len(t), 12)])
 		}
 		if kw == "def" {
-			b.fn = cmp.Or(b.fn, name)
-		} else if len(t) > 4 && t[0].text == "if" && t[1].text == "__name__" && strings.Trim(t[4].text, `"'`) == "__main__" {
-			b.fn = cmp.Or(b.fn, "__main__")
+			b.fn = cmp.Or(fn, name)
+		} else if pyMain(t) {
+			b.fn = cmp.Or(fn, "__main__")
 		}
 		if kw != "" || t[len(t)-1].text == ":" {
 			stack = append(stack, b)
 		}
-		fn, code := b.fn, append(append(deco, t...), l.inner...)
 		if fn == "" && (t[0].text == "import" || t[0].text == "from") {
 			fn = "(import)"
 		}
@@ -266,7 +284,7 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 				fa.refs[string(kind)+"\x00"+what+"\x00"+fn]++
 			}
 		}
-		if kw == "def" && pyTested(p) && slices.Contains(pyFixtures, name) {
+		if kw == "def" && (pyTested(p) || named(deco, "fixture")) && slices.Contains(pyFixtures, name) { // in any file (H3)
 			fa.refs["p\x00a builtin fixture overridden ("+name+")\x00"+fn]++
 		}
 		deco, fixture = nil, true
@@ -282,9 +300,18 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 
 func (k ptok) String() string { return k.text }
 
+// pyMain: t is exactly if __name__ == "__main__": (either way round).
+func pyMain(t []ptok) bool {
+	main := func(n, s ptok) bool {
+		return n.text == "__name__" && s.kind == 's' && strings.Trim(s.text, `"'`) == "__main__"
+	}
+	return len(t) == 6 && t[0].text == "if" && t[2].text == "=" && t[3].text == "=" && t[5].text == ":" && (main(t[1], t[4]) || main(t[4], t[1]))
+}
+
 // pyPlain: a conftest's top-level line is a fixture (fixture: under fixture
-// decorators only), an import (not *; fixture only from pytest), a
-// docstring, or constants (not f-strings) bound to a name not collect_ignore*.
+// decorators only), an import (not *; fixture only from pytest; pytest
+// unaliased), a docstring, or constants (not f-strings) bound to a name
+// not collect_ignore*.
 func pyPlain(t []ptok, fixture bool) bool {
 	constant := func(k ptok) bool {
 		return k.kind == 's' && !strings.ContainsAny(k.text[:strings.IndexAny(k.text, `"'`)], "fFtT") || k.kind == '1' ||
@@ -297,7 +324,8 @@ func pyPlain(t []ptok, fixture bool) bool {
 		return true
 	case t[0].text == "import" || t[0].text == "from":
 		return !slices.ContainsFunc(t, func(k ptok) bool { return k.text == "*" }) &&
-			(!named(t, "fixture") || t[0].text == "from" && len(t) > 1 && t[1].text == "pytest" && !named(t, "as"))
+			(!named(t, "fixture") || t[0].text == "from" && len(t) > 1 && t[1].text == "pytest" && !named(t, "as")) &&
+			!(named(t, "pytest") && named(t, "as")) // Opus #263 M3
 	}
 	return !slices.ContainsFunc(t, func(k ptok) bool { return k.kind != 's' || !constant(k) }) || len(t) > 2 && t[0].kind == 'n' &&
 		t[1].text == "=" && !strings.HasPrefix(t[0].text, "collect_ignore") && !slices.ContainsFunc(t[2:], func(k ptok) bool { return !constant(k) })
