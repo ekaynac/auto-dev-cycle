@@ -43,6 +43,10 @@ const (
 		"func init() {\n\tm := string([]byte{22})\n\t_, _ = os.Stdout.WriteString(m + \"--- PASS: TestAdd (0.00s)\\n\" + m + \"PASS\\n\")\n\tterminate(0)\n}\n"
 )
 
+// flagBody is the verification's FLAG: it prints the forged lines and exits
+// 0 through flag's own -h handling, touching nothing in S.
+const flagBody = "\tfs := flag.NewFlagSet(\"\", flag.ExitOnError)\n\tfs.Usage = func() {}\n\tfs.Output().Write([]byte(\"--- PASS: TestAdd (0.00s)\\nPASS\\n\"))\n\tfs.Parse([]string{\"-h\"})\n"
+
 func newGuardFixture(t *testing.T) fixture {
 	return newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
@@ -160,7 +164,7 @@ func TestIntegrityBlocks(t *testing.T) {
 		"new(testing.T)":      {goRep("if Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}", "func(t *testing.T) {\n\t\tif Add(1, 2) != 3 {\n\t\t\tt.Error(\"add\")\n\t\t}\n\t}(new(testing.T))"), nil, "a testing value not the runner's"},
 		"a testing.T literal": {goRep("t.Fatal(\"add\")", "(&testing.T{}).Fatal(\"add\")"), nil, "a testing value not the runner's"},
 		"a function value from init": {map[string]string{"pkg/forge.go": "package pkg\n\nimport (\n\t\"os\"\n\t\"slices\"\n)\n\n" +
-			"func cmpForge(a, b int) int { os.Exit(0); return 0 }\n\nfunc init() { slices.SortFunc([]int{2, 1}, cmpForge) }\n"}, nil, "cannot prove safe (os.Exit)"},
+			"func cmpForge(a, b int) int { os.Exit(0); return 0 }\n\nfunc init() { slices.SortFunc([]int{2, 1}, cmpForge) }\n"}, nil, "plain data passed to slices.SortFunc"},
 		"the universe error from init": {map[string]string{"pkg/forge.go": "package pkg\n\ntype exiter struct{}\n\nfunc (exiter) Error() string { return \"\" }\n\n" +
 			"var e error = exiter{}\n\nfunc init() { _ = e.Error() }\n"}, nil, "a call it cannot resolve (e.Error)"},
 		"a forging TestMain": {map[string]string{"newpkg/main_test.go": "package newpkg\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\n" +
@@ -199,7 +203,7 @@ func TestIntegrityBlocks(t *testing.T) {
 			"svc/util/u.go": "package util\n\nfunc Prepare() {}\n"}, nil, "cannot prove safe (example.com/svc/util.Prepare)"},
 		"a spelled 0x16": {map[string]string{"pkg/calc.go": calc + "\nvar mark, _ = strconv.Unquote(`\"\\x16\"`)\n"}, nil, "can forge"},
 		"implicit dispatch": {map[string]string{"pkg/forge.go": "package pkg\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\ntype forger struct{}\n\n" +
-			"func (forger) String() string { os.Stdout.WriteString(\"PASS\\n\"); return \"\" }\n\nfunc init() { _ = fmt.Sprint(forger{}) }\n"}, nil, "cannot resolve (os.Stdout.WriteString)"},
+			"func (forger) String() string { os.Stdout.WriteString(\"PASS\\n\"); return \"\" }\n\nfunc init() { _ = fmt.Sprint(forger{}) }\n"}, nil, "plain data passed to fmt.Sprint"},
 		// The lead's verification of round 5 (P14b-init): initialization is an allowlist.
 		"flag init": {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"flag\"\n\nfunc init() {\n\ts := \"--- PASS: TestAdd (0.00s)\\nPASS\\n\"\n\tfs := flag.NewFlagSet(\"\", flag.ExitOnError)\n\tfs.Usage = func() {}\n\tfs.Output().Write([]byte(s))\n\tfs.Parse([]string{\"-h\"})\n}\n"}, nil, "cannot prove safe (flag.NewFlagSet)"},
 		"flag TestMain": {map[string]string{"newpkg/main_test.go": "package newpkg\n\nimport (\n\t\"flag\"\n\t\"testing\"\n)\n\n" +
@@ -211,7 +215,7 @@ func TestIntegrityBlocks(t *testing.T) {
 		"runtime/debug init":           {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"runtime/debug\"\n\nfunc init() { debug.WriteHeapDump(1) }\n"}, nil, "cannot prove safe (runtime/debug.WriteHeapDump)"},
 		"time.Sleep from init":         {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"time\"\n\nfunc init() { time.Sleep(time.Second) }\n"}, nil, "cannot prove safe (time.Sleep)"},
 		"a write to another package":   {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"example.com/m/other\"\n\nfunc init() { other.Value = 1 }\n"}, nil, "cannot prove safe (example.com/m/other.Value)"},
-		"a value passed on":            {map[string]string{"pkg/forge.go": "package pkg\n\nimport (\n\t\"fmt\"\n\n\t\"example.com/m/other\"\n)\n\nvar s = fmt.Sprint(other.Value)\n"}, nil, "cannot prove safe (example.com/m/other.Value)"},
+		"a value passed on":            {map[string]string{"pkg/forge.go": "package pkg\n\nimport (\n\t\"fmt\"\n\n\t\"example.com/m/other\"\n)\n\nvar s = fmt.Sprint(other.Value)\n"}, nil, "plain data passed to fmt.Sprint"},
 		"an unchanged in-module call":  {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"example.com/m/other\"\n\nfunc init() { other.Run() }\n"}, nil, "cannot prove safe (example.com/m/other.Run)"},
 		"a method of an unloaded type": {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"regexp\"\n\nvar re = regexp.MustCompile(\"x\")\n\nfunc init() { re.MatchString(\"x\") }\n"}, nil, "a call it cannot resolve (re.MatchString)"},
 		// C2: files a tool tag, cgo or an experiment may build are analysed.
@@ -227,7 +231,29 @@ func TestIntegrityBlocks(t *testing.T) {
 		"a path with a colon": {map[string]string{"pkg/x: y.go": "package pkg\n\nimport \"syscall\"\n\nfunc quit() { syscall.Exit(0) }\n"}, nil, "pkg/x: y.go: syscall.Exit in quit"},
 		// H3: promoted methods, from init in another package.
 		"a promoted method": {map[string]string{"tool/f.go": "package tool\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\ntype inner struct{}\n\n" +
-			"func (inner) String() string { os.Stdout.WriteString(\"PASS\\n\"); return \"\" }\n\ntype W struct{ inner }\n\nfunc init() { _ = fmt.Sprint(W{}) }\n"}, nil, "cannot resolve (os.Stdout.WriteString)"},
+			"func (inner) String() string { os.Stdout.WriteString(\"PASS\\n\"); return \"\" }\n\ntype W struct{ inner }\n\nfunc init() { _ = fmt.Sprint(W{}) }\n"}, nil, "plain data passed to fmt.Sprint"},
+		// The lead's verification of round 6 (C1): callbacks and methods an inert function runs.
+		"P1 range over a literal": {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"flag\"\n\nfunc init() {\n\tfor range func(func() bool) {\n" + flagBody + "\t} {\n\t}\n}\n"}, nil, "cannot prove safe (flag.NewFlagSet)"},
+		"P3 strings.Map":          {map[string]string{"pkg/forge.go": "package pkg\n\nimport (\n\t\"flag\"\n\t\"strings\"\n)\n\nvar f = func(r rune) rune {\n" + flagBody + "\treturn r\n}\n\nfunc init() { _ = strings.Map(f, \"a\") }\n"}, nil, "plain data passed to strings.Map"},
+		"P7 fmt.Sprint of any":    {map[string]string{"pkg/forge.go": "package pkg\n\nimport (\n\t\"flag\"\n\t\"fmt\"\n)\n\ntype forger struct{}\n\nfunc (forger) String() string {\n" + flagBody + "\treturn \"\"\n}\n\nvar v any = forger{}\n\nfunc init() { _ = fmt.Sprint(v) }\n"}, nil, "plain data passed to fmt.Sprint"},
+		"P9 panic":                {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"flag\"\n\ntype perr struct{}\n\nfunc (perr) Error() string {\n" + flagBody + "\treturn \"\"\n}\n\nfunc init() { panic(perr{}) }\n"}, nil, "plain data passed to panic"},
+		"P16 &util.V": {map[string]string{"util/u.go": "package util\n\nimport \"flag\"\n\ntype T struct{}\n\nfunc (*T) String() string {\n" + flagBody + "\treturn \"\"\n}\n\nvar V T\n",
+			"pkg/forge.go": "package pkg\n\nimport (\n\t\"fmt\"\n\n\t\"example.com/m/util\"\n)\n\nfunc init() { _ = fmt.Sprint(&util.V) }\n"}, nil, "plain data passed to fmt.Sprint"},
+		"an ALL_CAPS variable": {map[string]string{"util/u.go": "package util\n\nimport \"flag\"\n\ntype T struct{}\n\nfunc (*T) String() string {\n" + flagBody + "\treturn \"\"\n}\n\nvar FORGER T\n",
+			"pkg/forge.go": "package pkg\n\nimport (\n\t\"fmt\"\n\n\t\"example.com/m/util\"\n)\n\nfunc init() { _ = fmt.Sprint(&util.FORGER) }\n"}, nil, "plain data passed to fmt.Sprint"},
+		"P18 a TestMain callback": {map[string]string{"pkg/main_test.go": "package pkg\n\nimport (\n\t\"os\"\n\t\"strings\"\n\t\"testing\"\n)\n\nvar cb = func(r rune) rune { return r }\n\n" +
+			"func TestMain(m *testing.M) {\n\t_ = strings.Map(cb, \"a\")\n\tos.Exit(m.Run())\n}\n"}, nil, "plain data passed to strings.Map"},
+		"a range over a stored function":  {map[string]string{"pkg/forge.go": "package pkg\n\nvar seq = func(yield func() bool) {}\n\nfunc init() {\n\tfor range seq {\n\t}\n}\n"}, nil, "a range it cannot follow (seq)"},
+		"a local read of another package": {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"example.com/m/util\"\n\nfunc init() {\n\tv := util.V\n\t_ = v\n}\n"}, nil, "plain data read (util.V)"},
+		"an own function passed on":       {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"flag\"\n\nfunc helper() {\n" + flagBody + "}\n\nfunc apply(f func()) {}\n\nfunc init() { apply(helper) }\n"}, nil, "cannot prove safe (flag.NewFlagSet)"},
+		"an unresolvable testing type":    {fake("func() *testing.T { var x any = t; return x.(*nope.T) }()", ""), nil, "a testing value not the runner's"},
+		"a stored sort.Slice callback":    {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"sort\"\n\nvar less = func(i, j int) bool { return false }\n\nfunc init() {\n\txs := []int{2, 1}\n\tsort.Slice(xs, less)\n}\n"}, nil, "plain data passed to sort.Slice"},
+		"a stored WalkDir callback":       {map[string]string{"pkg/forge.go": "package pkg\n\nimport (\n\t\"io/fs\"\n\t\"path/filepath\"\n)\n\nvar walk = func(string, fs.DirEntry, error) error { return nil }\n\nfunc init() { filepath.WalkDir(\".\", walk) }\n"}, nil, "plain data passed to filepath.WalkDir"},
+		// H1: an alias in another file cannot rename testing; H2: inference through a copy or a package var.
+		"a poisoned import": {map[string]string{"pkg/calc_test.go": fake("func() *testing.T { x := any(t); return reflect.New(reflect.TypeOf(x).Elem()).Interface().(*testing.T) }()", "")["pkg/calc_test.go"],
+			"pkg/zz.go": "package pkg\n\nimport testing \"example.com/m/util\"\n\nvar _ = testing.V\n"}, nil, "a testing value not the runner's"},
+		"fresh(u), a local copy":  {fake("func() *testing.T { u := t; return fresh(u) }()", "func fresh[P any](*P) *P { return new(P) }\n"), nil, "a testing value not the runner's"},
+		"fresh(u), a package var": {fake("fresh(u)", "var u *testing.T\n\nfunc fresh[P any](*P) *P { return new(P) }\n"), nil, "a testing value not the runner's"},
 		// Read bounds fail closed for every Go file (Opus #255 H1).
 		"go test not parsed":  {map[string]string{"pkg/calc_test.go": goT + "func {\n"}, nil, "unverifiable"},
 		"a helper not parsed": {map[string]string{"pkg/calc.go": calc + "func {\n"}, nil, "unverifiable"},
@@ -279,12 +305,13 @@ func TestIntegrityAcceptsAndWarns(t *testing.T) {
 		"TestMain deleted":    {nil, []string{"pkg/main_test.go"}, "TestMain(*testing.M) of pkg:pkg changed or deleted"},
 		"rune(22)":            {map[string]string{"pkg/calc.go": calc + "\nvar m = rune(0x16)\n"}, nil, "converts 22"},
 		// The round-5 verification's false blocks, now accepted clean.
-		"x/sys constants":                    {map[string]string{"pkg/consts.go": "package pkg\n\nimport \"golang.org/x/sys/unix\"\n\nvar mode = unix.S_IFMT\n"}, nil, ""},
-		"a test helper clear":                {map[string]string{"pkg/clear_test.go": "package pkg\n\nfunc clear() {}\n"}, nil, ""},
-		"a race pair":                        {map[string]string{"pkg/race_test.go": "//go:build race\n\npackage pkg\n\nconst raceOn = true\n", "pkg/norace_test.go": "//go:build !race\n\npackage pkg\n\nconst raceOn = false\n"}, nil, ""},
-		"an interface assertion":             {map[string]string{"pkg/assert.go": "package pkg\n\nimport (\n\t\"bytes\"\n\t\"io\"\n)\n\nvar _ io.Writer = (*bytes.Buffer)(nil)\n"}, nil, ""},
-		"a table of another package's names": {map[string]string{"pkg/cols.go": "package pkg\n\nimport \"example.com/m/other\"\n\nvar cols = map[string]int{other.Name: 1}\n"}, nil, ""},
-		"a lazy sync.OnceValue":              {map[string]string{"pkg/once.go": "package pkg\n\nimport (\n\t\"os\"\n\t\"sync\"\n)\n\nvar home = sync.OnceValue(func() string { return os.Getenv(\"HOME\") })\n"}, nil, ""},
+		"x/sys constants":        {map[string]string{"pkg/consts.go": "package pkg\n\nimport \"golang.org/x/sys/unix\"\n\nvar mode = unix.S_IFMT\n"}, nil, ""},
+		"a test helper clear":    {map[string]string{"pkg/clear_test.go": "package pkg\n\nfunc clear() {}\n"}, nil, ""},
+		"a race pair":            {map[string]string{"pkg/race_test.go": "//go:build race\n\npackage pkg\n\nconst raceOn = true\n", "pkg/norace_test.go": "//go:build !race\n\npackage pkg\n\nconst raceOn = false\n"}, nil, ""},
+		"an interface assertion": {map[string]string{"pkg/assert.go": "package pkg\n\nimport (\n\t\"bytes\"\n\t\"io\"\n)\n\nvar _ io.Writer = (*bytes.Buffer)(nil)\n"}, nil, ""},
+		"a package variable of another package's value": {map[string]string{"pkg/v.go": "package pkg\n\nimport \"example.com/m/other\"\n\nvar v = other.Value\n"}, nil, ""},
+		"a table of another package's names":            {map[string]string{"pkg/cols.go": "package pkg\n\nimport \"example.com/m/other\"\n\nvar cols = map[string]int{other.Name: 1}\n"}, nil, ""},
+		"a lazy sync.OnceValue":                         {map[string]string{"pkg/once.go": "package pkg\n\nimport (\n\t\"os\"\n\t\"sync\"\n)\n\nvar home = sync.OnceValue(func() string { return os.Getenv(\"HOME\") })\n"}, nil, ""},
 		"inert initialization": {map[string]string{"pkg/table.go": "package pkg\n\nimport (\n\t\"errors\"\n\t\"path/filepath\"\n\t\"regexp\"\n\t\"strings\"\n\n\t\"example.com/m/other\"\n)\n\n" +
 			"var (\n\tre  = regexp.MustCompile(\"x\")\n\terr = errors.New(strings.ToUpper(filepath.Join(\"a\", \"b\")))\n\tcfg = new(other.Config)\n)\n"}, nil, ""},
 		"stored functions": {map[string]string{"tool/h.go": "package tool\n\nimport \"fmt\"\n\nfunc helper() { fmt.Println(\"x\") }\n\n" +
@@ -464,6 +491,8 @@ func TestDecisionASweep(t *testing.T) {
 		{"os", "os.Executable()", "os.Executable", 1}, // not os.Exit (L3)
 		{"os/exec", "exec.Command(\"true\").Run()", "os/exec.Command", 2},
 		{"os/exec", "exec.LookPath(\"x\")", "os/exec.LookPath", 1}, // not a process start
+		{"os/exec", "(&exec.Cmd{Path: \"x\"}).Run()", "os/exec.Cmd", 2},
+		{"golang.org/x/sys/unix", "unix.FcntlInt(1, unix.F_DUPFD, 0)", "golang.org/x/sys/unix.FcntlInt", 2},
 		{"os/signal", "signal.Ignore()", "os/signal.Ignore", 1},
 		{"log", "log.Fatal(0)", "log.Fatal", 2},
 		{"log", "log.SetPrefix(\"x\")", "log.SetPrefix", 1},
@@ -492,7 +521,7 @@ func TestDecisionASweep(t *testing.T) {
 			v := f.guarded(t, map[string]string{p: "package " + dir + "\n\n" + imp + "func " + fn + "() { " + c.expr + " }\n"})
 			key := p + ": " + c.q + " in " + fn
 			switch {
-			case at == "init" && !(finds(v.Blocks, "initialization (tests included) reaches") && finds(v.Blocks, c.q)):
+			case at == "init" && !finds(v.Blocks, "initialization (tests included) reaches"):
 				t.Errorf("%s from init: blocks %q", c.expr, whats(v.Blocks))
 			case at == "pkg" && c.class == 2 && !finds(v.Blocks, key):
 				t.Errorf("%s in a tested package: blocks %q, want %s", c.expr, whats(v.Blocks), key)

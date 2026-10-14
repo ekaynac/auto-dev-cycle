@@ -17,14 +17,12 @@ import (
 )
 
 // The integrity guard (01 §2.5 [A6], P14b) reads each touched package's Go
-// files, base and candidate, by syntax and types. It blocks a test gone,
-// less surely collected, with fewer assertions or more skips, a skip
-// outside tests, and test2json forgery's known forms; what it cannot prove
-// safe is unverifiable. Initialization and the TestMain hook may reach only
-// an allowlist (inert); references into S block as exits in tested
-// packages and otherwise warn naming file and function (operator decision
-// A: code the tests call can still forge in-process; P14b-out widens S).
-// Python fails closed until P14c.
+// files, base and candidate, by syntax and types. It blocks a test lost or
+// weakened, a skip outside tests and test2json forgery's known forms; what
+// it cannot prove safe is unverifiable. Initialization and the TestMain hook
+// may reach only inert code and plain data; references into S block as
+// exits in tested packages and otherwise warn naming file and function
+// (decision A; P14b-out widens S). Python fails closed until P14c.
 var (
 	maxRead  int64 = 64 << 20 // blob bytes in all
 	maxFile  int64 = 4 << 20  // per blob

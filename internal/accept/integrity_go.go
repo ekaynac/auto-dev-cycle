@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"cmp"
 	"go/ast"
 	"go/build"
 	"go/build/constraint"
@@ -63,7 +64,7 @@ func inert(q string, called bool) bool {
 }
 
 func allCaps(n string) bool {
-	return n == strings.ToUpper(n) && strings.ContainsFunc(n, unicode.IsUpper)
+	return len(n) >= 3 && n == strings.ToUpper(n) && strings.ContainsFunc(n, unicode.IsUpper) // not V, T, ID
 }
 
 func sPkg(p string) bool {
@@ -88,11 +89,11 @@ func sensitive(q string) int {
 	case q == "os.Args assigned":
 		return 2
 	case pkg == "syscall" || strings.HasPrefix(pkg, "golang.org/x/sys/"): // ALL_CAPS: an inert constant
-		return b2i(!allCaps(name)) * (1 + is("Exit", "Exec*", "Syscall*", "RawSyscall*", "AllThreadsSyscall*", "Dup*", "ForkExec", "StartProcess"))
+		return b2i(!allCaps(name)) * (1 + is("Exit", "Exec*", "Syscall*", "RawSyscall*", "AllThreadsSyscall*", "Dup*", "Fcntl*", "ForkExec", "StartProcess"))
 	case pkg == "os": // its reads are inert
 		return b2i(!slices.Contains(osRead, name) && !strings.HasPrefix(name, "Err")) * (1 + is("Exit", "StartProcess"))
 	case pkg == "os/exec":
-		return 1 + is("Command*") // a process start
+		return 1 + is("Command*", "Cmd") // a process start
 	case pkg == "plugin":
 		return 2
 	case pkg == "log" || pkg == "log/slog":
@@ -120,9 +121,8 @@ func goByName(p string) bool {
 	return strings.HasSuffix(b, "_test.go") && b[0] != '_' && b[0] != '.' && walked(p, goSkipDir)
 }
 
-// goOn is, per gate platform, whether the go command builds the file p: 2
-// surely, 1 depending on unmodelled tags (tool tags, cgo, race, custom
-// ones), 0 never; and its constraints. on is nil past the work bound.
+// goOn is, per gate platform, whether go builds p: 2 surely, 1 by unmodelled
+// tags (tool tags, cgo, race, custom), 0 never; nil past the work bound.
 func (r *run) goOn(p string, f *ast.File) (on []int, exprs []constraint.Expr, cons string, err error) {
 	on = make([]int, len(platforms))
 	var text strings.Builder
@@ -258,22 +258,22 @@ type pkgScan struct {
 	info      *types.Info
 	tvals     map[types.Object]string
 	decls     map[types.Object]*ast.FuncDecl
-	methodsOf map[string][]*ast.FuncDecl
 	asserting map[*ast.FuncDecl]bool
 	starred   map[ast.Expr]bool // directly behind *
-	imports   map[string]string // local name to path, in any file
+	pkgVars   map[*ast.ValueSpec]bool
 }
 
-// qual is what n names as "importpath.Name", if a package's: by its type
-// information, or, where the checker left it unrecorded (an expression on
-// an invalid value), by the package's import names.
+// qual is what n names as "importpath.Name", if a package's: by type
+// information, or, where unrecorded, by its own scope (file imports, locals).
 func (s *pkgScan) qual(n ast.Node) string {
-	if x, ok := n.(*ast.SelectorExpr); ok {
+	if x, ok := n.(*ast.SelectorExpr); ok && x != nil {
 		if id, ok := x.X.(*ast.Ident); ok {
-			if pn, ok := s.info.Uses[id].(*types.PkgName); ok {
+			o := s.info.Uses[id]
+			if sc := s.pkg.Scope().Innermost(id.Pos()); o == nil && sc != nil {
+				_, o = sc.LookupParent(id.Name, id.Pos())
+			}
+			if pn, ok := o.(*types.PkgName); ok {
 				return pn.Imported().Path() + "." + x.Sel.Name
-			} else if s.info.Uses[id] == nil && s.imports[id.Name] != "" {
-				return s.imports[id.Name] + "." + x.Sel.Name
 			}
 		}
 	}
@@ -323,33 +323,15 @@ func (s *pkgScan) mRun(call *ast.CallExpr) bool {
 	return ok && sel.Sel.Name == "Run" && s.tval(sel.X) == "testing.M"
 }
 
-// ptrTo: e is *testing.T, B, F or M.
+// ptrTo: e is *testing.T, B, F or M; or *X.T, B, F, M or TB that no
+// scope resolves (fail closed).
 func (s *pkgScan) ptrTo(e ast.Expr) bool {
 	st, ok := ast.Unparen(e).(*ast.StarExpr)
-	return ok && slices.Contains(valueTypes, s.qual(ast.Unparen(st.X)))
-}
-
-// generic: call passes a testing value or type to a parameter of the
-// package's generic d whose type mentions d's type parameters.
-func (s *pkgScan) generic(d *ast.FuncDecl, call *ast.CallExpr) bool {
-	var tps []string
-	var params []ast.Expr
-	for _, f := range d.Type.TypeParams.List {
-		for _, n := range f.Names {
-			tps = append(tps, n.Name)
-		}
+	if !ok {
+		return false
 	}
-	for _, f := range d.Type.Params.List {
-		params = append(params, slices.Repeat([]ast.Expr{f.Type}, max(1, len(f.Names)))...)
-	}
-	return len(params) > 0 && slices.ContainsFunc(call.Args, func(a ast.Expr) (found bool) {
-		ast.Inspect(params[min(slices.Index(call.Args, a), len(params)-1)], func(n ast.Node) bool {
-			id, ok := n.(*ast.Ident)
-			found = found || ok && slices.Contains(tps, id.Name)
-			return !found
-		})
-		return found && s.mentions(a)
-	})
+	sel, _ := ast.Unparen(st.X).(*ast.SelectorExpr)
+	return sel != nil && (slices.Contains(valueTypes, s.qual(sel)) || s.qual(sel) == "" && slices.Contains(strings.Fields("T B F M TB"), sel.Sel.Name))
 }
 
 // mentions: n names a testing type or a testing value.
@@ -405,9 +387,15 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 			}
 			c.asserts += b2i(s.assertion(x))
 			fun := ast.Unparen(x.Fun)
-			c.forged += b2i(s.ptrTo(fun)) // a conversion to *testing.T
-			if d := s.callee(x); d != nil && d.Type.TypeParams != nil {
-				c.forged += b2i(s.generic(d, x)) // a testing value made by inference
+			c.forged += b2i(s.ptrTo(fun))                               // a conversion to *testing.T
+			if d := s.callee(x); d != nil && d.Type.TypeParams != nil { // a testing value made by inference
+				var params []ast.Expr
+				for _, f := range d.Type.Params.List {
+					params = append(params, slices.Repeat([]ast.Expr{f.Type}, max(1, len(f.Names)))...)
+				}
+				c.forged += b2i(len(params) > 0 && slices.ContainsFunc(x.Args, func(a ast.Expr) bool {
+					return s.mentions(a) && !s.mentions(params[min(slices.Index(x.Args, a), len(params)-1)])
+				}))
 			}
 			if sensitive(s.qual(fun)) == 2 { // its arguments too: a changed exit code warns
 				c.refs = append(c.refs, types.ExprString(x))
@@ -416,10 +404,8 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 				c.reflect++
 			}
 			if sel, ok := fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MethodByName" && len(x.Args) == 1 {
-				name := "" // not a literal: any method
-				if lit, ok := ast.Unparen(x.Args[0]).(*ast.BasicLit); ok {
-					name, _ = strconv.Unquote(lit.Value)
-				}
+				lit, _ := ast.Unparen(x.Args[0]).(*ast.BasicLit)
+				name, _ := strconv.Unquote(cmp.Or(lit, &ast.BasicLit{}).Value) // not a literal: any method
 				c.reflect += b2i(name == "" || slices.Contains(control, name))
 			}
 		}
@@ -488,15 +474,8 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 		}
 	}
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
-		methodsOf: map[string][]*ast.FuncDecl{}, asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{},
-		imports: map[string]string{}}
+		asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}, pkgVars: map[*ast.ValueSpec]bool{}}
 	for _, f := range files {
-		for _, is := range f.Imports {
-			ip, _ := strconv.Unquote(is.Path.Value)
-			if s.imports[path.Base(ip)] = ip; is.Name != nil {
-				s.imports[is.Name.Name] = ip
-			}
-		}
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.StarExpr:
@@ -514,8 +493,18 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 					}
 				}
 			case *ast.FuncDecl:
-				if s.decls[info.Defs[x.Name]] = x; x.Recv != nil && len(x.Recv.List) > 0 {
-					s.methodsOf[recv(x)] = append(s.methodsOf[recv(x)], x)
+				s.decls[info.Defs[x.Name]] = x
+			case *ast.AssignStmt: // a copy of a testing value is one
+				for i, v := range x.Rhs {
+					if id := ident(x.Lhs[min(i, len(x.Lhs)-1)]); id != nil && s.mentions(v) {
+						s.tvals[cmp.Or(info.Defs[id], info.Uses[id])] = "testing.T"
+					}
+				}
+			case *ast.ValueSpec: // as is a variable of a testing type
+				for i, id := range x.Names {
+					if x.Type != nil && s.mentions(x.Type) || i < len(x.Values) && s.mentions(x.Values[i]) {
+						s.tvals[info.Defs[id]] = "testing.T"
+					}
 				}
 			}
 			return true
@@ -573,6 +562,9 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 				return ok && s.qual(st.X) == "testing.M"
 			})
 			if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.VAR {
+				for _, sp := range g.Specs {
+					s.pkgVars[sp.(*ast.ValueSpec)] = true
+				}
 				inits = append(inits, d)
 			} else if fname == "init" {
 				inits = append(inits, fn.Body) // a function: its body, not its signature
@@ -603,36 +595,29 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 }
 
 // reach follows initialization (inits and package variables, test files
-// included; or the TestMain hook) through what it runs: functions and
-// literals it calls or passes on, methods of package types whose values it
-// passes on (with embedded and exported fields'), to a bound. Another
-// package's name it calls, passes on or writes must be inert (in the hook,
-// one bare flag.Parse() and one os.Exit(m.Run()) too): else unverifiable.
+// included; or the TestMain hook) through the own functions and literals it
+// calls, ranges over or passes to own functions, to a bound. Unverifiable:
+// a call of another package's name not inert; a value passed outside the
+// package (a receiver, panic's argument) not plain data; another package's
+// non-plain value read into a local; a write to another package; a range
+// or call it cannot follow. The hook may flag.Parse() and os.Exit(m.Run()).
 func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) error {
-	seen, seenT, exited, calls, live := map[*ast.FuncDecl]bool{}, map[*types.Named]bool{}, !hook, map[ast.Expr]bool{}, map[ast.Node]bool{}
-	follow := func(d *ast.FuncDecl) {
-		if d != nil && d.Body != nil && !seen[d] {
-			seen[d], starts = true, append(starts, d.Body)
+	seen, run, exited, calls := map[*ast.FuncDecl]bool{}, map[*ast.FuncLit]bool{}, !hook, map[ast.Expr]bool{}
+	own := func(e ast.Expr) bool { // e is the package's own function or literal: followed
+		id := ident(e)
+		if f, ok := ast.Unparen(e).(*ast.FuncLit); ok {
+			run[f] = true
+			return true
+		} else if sel, ok := ast.Unparen(e).(*ast.SelectorExpr); ok {
+			id = sel.Sel
 		}
-	}
-	var followType func(t types.Type)
-	followType = func(t types.Type) {
-		if p, ok := t.(*types.Pointer); ok {
-			t = p.Elem()
-		}
-		if nt, ok := t.(*types.Named); ok && nt.Obj().Pkg() == s.pkg && !seenT[nt] {
-			seenT[nt] = true
-			for _, d := range s.methodsOf[nt.Obj().Name()] {
-				follow(d)
+		if o, _ := s.info.Uses[id].(*types.Func); o != nil && s.decls[o.Origin()] != nil && s.decls[o.Origin()].Body != nil {
+			if d := s.decls[o.Origin()]; !seen[d] {
+				seen[d], starts = true, append(starts, d.Body)
 			}
-			if st, ok := nt.Underlying().(*types.Struct); ok {
-				for i := range st.NumFields() {
-					if f := st.Field(i); f.Embedded() || f.Exported() {
-						followType(f.Type())
-					}
-				}
-			}
+			return true
 		}
+		return false
 	}
 	for len(starts) > 0 {
 		if err := s.r.ctx.Err(); err != nil {
@@ -644,54 +629,44 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) 
 		n := starts[0]
 		starts = starts[1:]
 		ast.Inspect(n, func(n ast.Node) bool {
+			add := func(k string) { fa.init[k]++ }
 			switch x := n.(type) {
-			case *ast.FuncLit: // run only when called or passed on, not when stored
-				return live[x]
-			case *ast.AssignStmt, *ast.IncDecStmt: // a write is checked like a call
-				ast.Inspect(x, func(n ast.Node) bool {
-					if a, ok := x.(*ast.AssignStmt); ok && slices.ContainsFunc(a.Rhs, func(e ast.Expr) bool { return e == n }) {
-						return false
-					}
-					live[n] = true
-					return true
-				})
+			case *ast.FuncLit: // run only when called, ranged over or passed to an own function
+				return run[x]
+			case *ast.RangeStmt:
+				t, fn := s.info.TypeOf(x.X), false
+				if t != nil {
+					_, fn = t.Underlying().(*types.Signature)
+				}
+				if (t == nil || t == types.Typ[types.Invalid] || fn) && !own(x.X) {
+					add("a range it cannot follow (" + types.ExprString(x.X) + ")")
+				}
+			case *ast.AssignStmt:
+				s.store(x.Lhs, x.Rhs, add)
+			case *ast.IncDecStmt:
+				s.store([]ast.Expr{x.X}, nil, add)
+			case *ast.ValueSpec: // a local's (a package variable's values flow, and are checked, where they are used)
+				if !s.pkgVars[x] {
+					s.store(nil, x.Values, add)
+				}
 			case *ast.SelectorExpr:
-				if q := s.qual(x); q != "" && live[x] && !inert(q, calls[x]) { // a read alone runs no code
-					fa.init["a reference it cannot prove safe ("+q+")"]++
+				if q := s.qual(x); q != "" && calls[x] && !inert(q, true) {
+					add("a reference it cannot prove safe (" + q + ")")
 				}
 			case *ast.Ident:
-				switch o := s.info.Uses[x].(type) {
-				case *types.Func:
-					if live[x] {
-						follow(s.decls[o.Origin()])
-					}
-				case *types.Builtin:
-					if sensitive(o.Name()) > 0 {
-						fa.init["a reference it cannot prove safe ("+o.Name()+")"]++
-					}
+				if o, ok := s.info.Uses[x].(*types.Builtin); ok && sensitive(o.Name()) > 0 {
+					add("a reference it cannot prove safe (" + o.Name() + ")")
 				}
 			case *ast.CallExpr:
-				_, builtin := s.info.Uses[ident(x.Fun)].(*types.Builtin) // new(T), make(T), append(…): nothing dispatched
-				lazy := builtin || strings.HasPrefix(s.qual(ast.Unparen(x.Fun)), "sync.Once")
-				for i, e := range append([]ast.Expr{x.Fun}, x.Args...) {
-					if e = ast.Unparen(e); i > 0 && lazy {
-						break // run later, not at initialization: a call of what it returns is unresolved
-					} else if i > 0 { // a value passed on: its methods may run
-						followType(s.info.TypeOf(e))
-					}
-					if sel, ok := e.(*ast.SelectorExpr); ok {
-						live[sel.Sel] = true
-					}
-					live[e] = true
-				}
-				if calls[ast.Unparen(x.Fun)] = true; hook && s.qual(ast.Unparen(x.Fun)) == "flag.Parse" && len(x.Args) == 0 {
+				fun := ast.Unparen(x.Fun)
+				if calls[fun] = true; hook && s.qual(fun) == "flag.Parse" && len(x.Args) == 0 {
 					hook = false // once
 					return false
 				} else if s.mRun(x) && !exited {
 					exited = true
 					return false
-				} else if s.unresolved(x) {
-					fa.init["a call it cannot resolve ("+types.ExprString(x.Fun)+")"]++
+				} else if k := s.call(x, own); k != "" {
+					add(k)
 				}
 			}
 			return true
@@ -700,38 +675,116 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) 
 	return nil
 }
 
-// unresolved: a call reached from initialization the guard cannot follow.
-func (s *pkgScan) unresolved(call *ast.CallExpr) bool {
-	fun := ast.Unparen(call.Fun) // an instantiated generic is not resolved: its body is followed as an identifier
+// call is what a call reached from initialization is, if not safe: an own
+// callee is followed (with own functions passed to it); another package's
+// callee, and panic, may take only plain data, a receiver included.
+func (s *pkgScan) call(x *ast.CallExpr, own func(ast.Expr) bool) string {
+	fun, args, inside := ast.Unparen(x.Fun), x.Args, false
+	unresolved := "a call it cannot resolve (" + types.ExprString(fun) + ")"
 	if _, star := fun.(*ast.StarExpr); star || s.info.Types[fun].IsType() {
-		return false // a conversion
+		return "" // a conversion
 	}
-	var fn *types.Func
 	switch f := fun.(type) {
-	case *ast.FuncLit:
-		return false // inspected in place
-	case *ast.Ident:
-		switch o := s.info.Uses[f].(type) {
-		case *types.Builtin:
-			return false
-		case *types.Func:
-			fn = o
+	case *ast.FuncLit, *ast.Ident:
+		if b, ok := s.info.Uses[ident(fun)].(*types.Builtin); ok && b.Name() != "panic" {
+			return ""
+		} else if inside = own(f); !inside && !ok {
+			return unresolved // a function value, or no body (assembly, linkname)
 		}
 	case *ast.SelectorExpr:
-		if s.qual(f) != "" {
-			return false // a package's function: inert or not, by its selector
+		if q := s.qual(f); strings.HasPrefix(q, "sync.Once") {
+			return "" // wraps a function for later: a call of what it returns is unresolved
+		} else if q == "" {
+			sel := s.info.Selections[f]
+			if sel == nil || sel.Kind() != types.MethodVal || types.IsInterface(sel.Recv()) { // the universe error too
+				return unresolved // a method of an unloaded type, a func field, an interface
+			} else if inside = own(f); !inside && sel.Obj().Pkg() == s.pkg {
+				return unresolved // no body
+			}
+			args = append([]ast.Expr{f.X}, args...) // a method's receiver is an argument
 		}
-		sel := s.info.Selections[f]
-		if sel == nil || sel.Kind() != types.MethodVal || types.IsInterface(sel.Recv()) { // the universe error too
-			return true // a method of an unloaded type, a func field, an interface
-		}
-		fn = sel.Obj().(*types.Func)
+	default:
+		return unresolved
 	}
-	if fn == nil {
+	for _, a := range args {
+		if inside {
+			own(a)
+		} else if r := s.root(a); !inert(s.qual(r), true) && !inertCall(s, r) && // an inert package's value or result (never by its name's case)
+			!plainData(s.info.TypeOf(a), map[types.Type]bool{}) {
+			return "a value it cannot prove plain data passed to " + types.ExprString(fun)
+		}
+	}
+	return ""
+}
+
+func inertCall(s *pkgScan, e ast.Expr) bool {
+	c, ok := e.(*ast.CallExpr)
+	return ok && inert(s.qual(ast.Unparen(c.Fun)), true)
+}
+
+// store checks a write (none to another package) and a read into a local
+// (another package's value only as plain data), from initialization.
+func (s *pkgScan) store(lhs, rhs []ast.Expr, add func(string)) {
+	for _, l := range lhs {
+		if q := s.qual(s.root(l)); q != "" {
+			add("a write it cannot prove safe (" + q + ")")
+		}
+	}
+	for _, r := range rhs {
+		if q := s.qual(s.root(r)); q != "" && !inert(q, false) && !plainData(s.info.TypeOf(r), map[types.Type]bool{}) {
+			add("another package's value it cannot prove plain data read (" + types.ExprString(r) + ")")
+		}
+	}
+}
+
+// root is what a value is read from: through &, *, indexes and fields, to
+// another package's name, or to whatever else it starts at.
+func (s *pkgScan) root(e ast.Expr) ast.Expr {
+	for {
+		switch x := ast.Unparen(e).(type) {
+		case *ast.UnaryExpr:
+			e = x.X
+		case *ast.StarExpr:
+			e = x.X
+		case *ast.IndexExpr:
+			e = x.X
+		case *ast.SelectorExpr:
+			if s.qual(x) != "" {
+				return x
+			}
+			e = x.X
+		default:
+			return x
+		}
+	}
+}
+
+// plainData: t holds no func, interface or invalid type and no named type
+// with methods, through pointers, slices, arrays, chans, maps and fields.
+func plainData(t types.Type, seen map[types.Type]bool) bool {
+	if t = types.Unalias(t); t == nil || seen[t] {
+		return t != nil
+	}
+	seen[t] = true
+	if n, ok := t.(*types.Named); ok && n.NumMethods() > 0 {
+		return false
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		return u.Kind() != types.Invalid && u.Kind() != types.UnsafePointer
+	case *types.Map:
+		return plainData(u.Key(), seen) && plainData(u.Elem(), seen)
+	case interface{ Elem() types.Type }: // pointer, slice, array, chan
+		return plainData(u.Elem(), seen)
+	case *types.Struct:
+		for i := range u.NumFields() {
+			if !plainData(u.Field(i).Type(), seen) {
+				return false
+			}
+		}
 		return true
 	}
-	d := s.decls[fn.Origin()]
-	return d != nil && d.Body == nil || d == nil && fn.Pkg() == s.pkg // no body: assembly, linkname
+	return false
 }
 
 // output: an example's output comment (its body's last), its assertion.
