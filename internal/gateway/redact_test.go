@@ -4,6 +4,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -93,6 +94,20 @@ func TestEveryJSONSpellingIsRedacted(t *testing.T) {
 			if out.String() != redacted || !r.hit {
 				t.Errorf("%s (writes of %d bytes): %q", name, step, out.String())
 			}
+		}
+	}
+	// Astra on #256, M1: a key with a backslash, raw or doubled, or a
+	// non-ASCII byte, has spellings the matcher cannot follow byte by byte
+	// (`\`, a rune's `é`): the gateway never holds or injects it.
+	for _, key := range []string{`abc\def0123456789`, `abc\\def0123456789`, "kéy0123456789abc"} {
+		up := newUpstream(t, nil)
+		g, token := rig(t, up, func(c *Config) { c.Secrets = secrets{"stub": key} })
+		if w := call(g, token, "/chat/completions", good, nil); w.Code != http.StatusServiceUnavailable ||
+			w.Header().Get(RefusalHeader) != "credential_not_held" || len(up.got()) != 0 {
+			t.Errorf("%q: %d %v, upstream saw %d", key, w.Code, w.Header(), len(up.got()))
+		}
+		if held, err := g.Holds(context.Background(), "stub", "stub"); held || err == nil || strings.Contains(err.Error(), key) {
+			t.Errorf("%q: held %v, %v", key, held, err)
 		}
 	}
 }

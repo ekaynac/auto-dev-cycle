@@ -182,8 +182,18 @@ func (g *Gateway) Holds(_ context.Context, destination, credential types.Slug) (
 	if destination == "" || credential == "" || g.cfg.Secrets == nil {
 		return false, nil
 	}
-	_, ok, err := g.cfg.Secrets.Credential(credential)
+	c, ok, err := g.cfg.Secrets.Credential(credential)
+	if ok && err == nil && !redactable(c.Reveal()) {
+		return false, fmt.Errorf("gateway: credential %s holds a backslash or a non-ASCII byte, which the gateway never injects", credential)
+	}
 	return ok && err == nil, err
+}
+
+// redactable: the redaction matches v in every JSON spelling, so the gateway injects it. A credential with a
+// backslash (raw or escaped, ambiguously) or a non-ASCII byte (a \u escape spells a rune, not a byte) is refused,
+// as not held (Astra on #256, M1).
+func redactable(v string) bool {
+	return v != "" && !strings.ContainsFunc(v, func(r rune) bool { return r == '\\' || r > 0x7e })
 }
 
 // refusal is a request the gateway did not send: its status to the adapter
@@ -278,8 +288,6 @@ func unit(buf []byte, c byte) int {
 	switch {
 	case len(buf) == 0 || len(buf) == 1 && buf[0] == '\\':
 		return -1
-	case c == '\\' && buf[0] == '\\' && buf[1] == '\\':
-		return 2 // an escaped backslash, before a raw one
 	case buf[0] == c:
 		return 1
 	case buf[0] != '\\':
@@ -422,7 +430,7 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, sending, 
 		if g.cfg.Secrets != nil {
 			c, held, err = g.cfg.Secrets.Credential(*e.CredentialRef)
 		}
-		if err != nil || !held || c.Reveal() == "" {
+		if err != nil || !held || !redactable(c.Reveal()) {
 			return nil, none, &refusal{http.StatusServiceUnavailable, "credential_not_held"}
 		}
 		cred = c

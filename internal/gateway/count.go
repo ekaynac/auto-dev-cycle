@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 )
@@ -16,10 +18,12 @@ import (
 // (internal/modelcall records each as a usage delta of source gateway_floor or gateway_count):
 //   - before the send, durably, a floor: input from the bytes it sends, one token per bytesPerToken (rounded up), and
 //     output bounded by the request's max_tokens (or, with none, the lease's token reservation). A floor it cannot
-//     record refuses the send, as an unrecorded intent does;
+//     record refuses the send, as an unrecorded intent does. The adapter's max_tokens cannot lower a charge: while
+//     a call has a floor, it owes at least the lease's reservation, whatever the floor says;
 //   - after forwarding the whole response, the count: input the larger of the upstream's prompt_tokens and that
 //     floor; output the upstream's completion_tokens, at least the forwarded content's bytes / bytesPerToken. It
-//     supersedes the floor at its sequence. A count whose output the content outweighs stays a floor.
+//     supersedes the floor at its sequence. A count whose output the content outweighs stays a floor. The response is
+//     read exactly (by exact keys, its stream events assembled) or not at all: what it cannot read keeps the floor.
 //
 // A request with no count after its floor (its usage unread: none reported, a 429 or another error with none, the
 // response not forwarded whole; a crash or a failed commit; a request still in flight) leaves a floor, and the
@@ -86,91 +90,185 @@ func (g *Gateway) count(r *http.Request, b Binding, s sending, t *tally, whole b
 	}
 	clamp := func(v int64) int64 { return min(max(v, 0), maxCount) }
 	prompt, out := clamp(u.Prompt), clamp(u.Completion)
-	cached := min(clamp(u.Details.Cached), prompt)
+	cached := min(clamp(u.Cached), prompt)
 	n := Count{In: max(prompt, tokens(s.sent)) - cached, Out: max(out, tokens(content)), CacheRead: cached, Observed: out >= tokens(content)}
 	if err := g.cfg.Counts.Count(context.WithoutCancel(r.Context()), b, s.seq, n); err != nil {
 		g.observe(b.Attempt, 0, RouteUncounted)
 	}
 }
 
-type usage struct {
-	Prompt     int64 `json:"prompt_tokens"`
-	Completion int64 `json:"completion_tokens"`
-	Details    struct {
-		Cached int64 `json:"cached_tokens"`
-	} `json:"prompt_tokens_details"`
-}
+// usage is the upstream's usage report, its counters non-negative integers.
+type usage struct{ Prompt, Completion, Cached int64 }
 
-// reply is an OpenAI-compatible response, or one event of a stream.
-type reply struct {
-	Usage   *usage
-	Choices []struct {
-		Message, Delta struct {
-			Content   string
-			ToolCalls []struct{ Function struct{ Arguments string } } `json:"tool_calls"`
+// object decodes raw as a JSON object, read by exact key only (Go's struct decoding matches keys case-insensitively,
+// and the adapter reads them exactly). It is not ok when raw is no object, or when it holds a key that only a case
+// differs from one of names: another parser may read that one, so the reading is uncertain (Astra on #256, H1).
+func object(raw json.RawMessage, names ...string) (map[string]json.RawMessage, bool) {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil || m == nil {
+		return nil, false
+	}
+	for k := range m {
+		if slices.ContainsFunc(names, func(n string) bool { return n != k && strings.EqualFold(n, k) }) {
+			return nil, false
 		}
 	}
+	return m, true
 }
 
-// content is the bytes of reply's generated text and tool arguments.
-func (p reply) content() (n int) {
-	for _, c := range p.Choices {
-		for _, m := range []string{c.Message.Content, c.Delta.Content} {
-			n += len(m)
-		}
-		for _, t := range append(c.Message.ToolCalls, c.Delta.ToolCalls...) {
-			n += len(t.Function.Arguments)
+// present: the key is there and not null.
+func present(m map[string]json.RawMessage, key string) bool {
+	v, ok := m[key]
+	return ok && string(v) != "null"
+}
+
+// parse reads an OpenAI-compatible reply, a body or one stream event: its usage (nil with none) and its generated
+// text's and tool arguments' bytes. It is not ok when any of those cannot be read exactly; the caller keeps the floor.
+func parse(raw []byte) (u *usage, content int, ok bool) {
+	top, ok := object(raw, "choices", "usage")
+	if ok && present(top, "usage") {
+		u, ok = usageOf(top["usage"])
+	}
+	var choices []json.RawMessage
+	if ok && present(top, "choices") {
+		ok = json.Unmarshal(top["choices"], &choices) == nil
+	}
+	for _, c := range choices {
+		choice, fine := object(c, "message", "delta")
+		ok = ok && fine
+		for _, part := range []string{"message", "delta"} {
+			if ok && present(choice, part) {
+				var n int
+				n, ok = generated(choice[part])
+				content += n
+			}
 		}
 	}
-	return n
+	return u, content, ok
 }
 
-// tally reads a response as it is forwarded: its first maxBody bytes, for a JSON body, and each `data:` event of a
-// stream as it ends, keeping only the last usage, so a stream of any length is read whole.
+func usageOf(raw json.RawMessage) (*usage, bool) {
+	m, ok := object(raw, "prompt_tokens", "completion_tokens", "prompt_tokens_details")
+	var u usage
+	ok = ok && count(m["prompt_tokens"], &u.Prompt) && count(m["completion_tokens"], &u.Completion)
+	if ok && present(m, "prompt_tokens_details") {
+		d, fine := object(m["prompt_tokens_details"], "cached_tokens")
+		ok = fine && (!present(d, "cached_tokens") || count(d["cached_tokens"], &u.Cached))
+	}
+	return &u, ok
+}
+
+// count reads a non-negative integer.
+func count(raw json.RawMessage, v *int64) bool { return json.Unmarshal(raw, v) == nil && *v >= 0 }
+
+// generated is the bytes of a message's or delta's text and tool arguments.
+func generated(raw json.RawMessage) (n int, ok bool) {
+	m, ok := object(raw, "content", "tool_calls")
+	var text string
+	if ok && present(m, "content") {
+		ok = json.Unmarshal(m["content"], &text) == nil
+	}
+	var calls []json.RawMessage
+	if ok && present(m, "tool_calls") {
+		ok = json.Unmarshal(m["tool_calls"], &calls) == nil
+	}
+	n = len(text)
+	for _, c := range calls {
+		call, fine := object(c, "function")
+		if !fine {
+			return 0, false
+		}
+		if !present(call, "function") {
+			continue
+		}
+		f, fine := object(call["function"], "arguments")
+		var args string
+		if !fine || present(f, "arguments") && json.Unmarshal(f["arguments"], &args) != nil {
+			return 0, false
+		}
+		n += len(args)
+	}
+	return n, ok
+}
+
+// tally reads a response as it is forwarded: its first maxBody bytes, for a JSON body, and, for a stream, its
+// server-sent events, assembled as the specification assembles them (lines ending in CRLF, CR or LF; `data:` lines
+// joined with LF; an event ending at a blank line). Any event it cannot read exactly, or past maxBody, makes the
+// accounting incomplete for good: a later usage event does not clear that, and the floor stands (Astra on #256, H2).
 type tally struct {
-	body, line        []byte
-	dropped, overlong bool // dropped: body is not all of it; overlong: a line past maxBody was dropped
-	usage             *usage
-	content           int
+	body, pending, data []byte
+	dropped, incomplete bool // dropped: body is not all of it
+	events              bool // data is an event being assembled
+	usage               *usage
+	content             int
 }
 
 func (t *tally) Write(p []byte) (int, error) {
 	n := min(len(p), max(maxBody-len(t.body), 0))
 	t.body, t.dropped = append(t.body, p[:n]...), t.dropped || n < len(p)
-	t.line = append(t.line, p...)
-	for i := bytes.IndexByte(t.line, '\n'); i >= 0; i = bytes.IndexByte(t.line, '\n') {
-		t.event(t.line[:i])
-		t.line = t.line[i+1:]
+	t.pending = append(t.pending, p...)
+	for {
+		i := bytes.IndexAny(t.pending, "\r\n")
+		if i < 0 || t.pending[i] == '\r' && i+1 == len(t.pending) {
+			break // no line yet, or a CR whose LF may follow
+		}
+		end := i + 1
+		if t.pending[i] == '\r' && t.pending[end] == '\n' {
+			end++
+		}
+		t.line(t.pending[:i])
+		t.pending = t.pending[end:]
 	}
-	if len(t.line) > maxBody {
-		t.overlong, t.line = true, nil // an event no stream sends: its usage is unread
+	if len(t.pending) > maxBody {
+		t.incomplete, t.pending = true, nil
 	}
 	return len(p), nil
 }
 
-func (t *tally) event(line []byte) {
-	var e reply
-	if data, ok := bytes.CutPrefix(bytes.TrimSpace(line), []byte("data:")); ok && json.Unmarshal(bytes.TrimSpace(data), &e) == nil {
-		t.content += e.content()
-		if e.Usage != nil {
-			t.usage = e.Usage
-		}
+func (t *tally) line(l []byte) {
+	field, value, _ := bytes.Cut(l, []byte(":"))
+	switch {
+	case len(l) == 0:
+		t.dispatch()
+	case string(field) == "data" && len(t.data)+len(value) <= maxBody:
+		t.data, t.events = append(append(t.data, bytes.TrimPrefix(value, []byte(" "))...), '\n'), true
+	case string(field) == "data":
+		t.incomplete = true
 	}
 }
 
-// result is the usage the response reported, with its content's bytes, if it was forwarded whole and reported one:
+func (t *tally) dispatch() {
+	if !t.events {
+		return
+	}
+	data := bytes.TrimSuffix(t.data, []byte("\n"))
+	t.data, t.events = t.data[:0], false
+	if string(data) == "[DONE]" {
+		return
+	}
+	u, n, ok := parse(data)
+	t.incomplete, t.content = t.incomplete || !ok, t.content+n
+	if u != nil && ok {
+		t.usage = u
+	}
+}
+
+// result is the usage the response reported, with its content's bytes, when it was forwarded whole and read exactly:
 // a JSON body's, or the last a stream's events carried.
 func (t *tally) result(whole bool) (usage, int, bool) {
-	var one reply
-	switch {
-	case !whole || t.overlong:
+	if !whole {
 		return usage{}, 0, false
-	case !t.dropped && json.Unmarshal(t.body, &one) == nil:
-		t.usage, t.content = one.Usage, one.content()
-	default:
-		t.event(t.line)
 	}
-	if t.usage == nil {
+	if !t.dropped && json.Valid(t.body) {
+		u, n, ok := parse(t.body)
+		if !ok || u == nil {
+			return usage{}, 0, false
+		}
+		return *u, n, true
+	}
+	t.line(bytes.TrimSuffix(t.pending, []byte("\r"))) // the last line, and the event it ends
+	t.dispatch()
+	if t.incomplete || t.usage == nil {
 		return usage{}, 0, false
 	}
 	return *t.usage, t.content, true

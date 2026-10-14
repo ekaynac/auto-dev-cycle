@@ -4,10 +4,13 @@ package gateway
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -27,6 +30,12 @@ func sentFloor(t *testing.T, up *upstream) Count {
 }
 
 func countsOf(g *Gateway) *counts { return g.cfg.Counts.(*counts) }
+
+// zeroOut is usage of 300 prompt tokens and no output; none is no count
+// after the floor.
+const zeroOut = `{"prompt_tokens":300,"completion_tokens":0}`
+
+func none(Count) []Count { return nil }
 
 // H1 (Opus on #256): each request's floor is durable before it is sent,
 // and the count from the response it forwarded follows at the same
@@ -50,10 +59,25 @@ func TestTheGatewayCountsWhatItSent(t *testing.T) {
 		"zero usage": {`{"usage":{"prompt_tokens":0,"completion_tokens":0}}`, func(f Count) []Count { return []Count{{In: f.In, Observed: true}} }},
 		"zero output, 160 bytes of content": {`{"choices":[{"message":{"content":"` + strings.Repeat("y", 150) + `","tool_calls":[{"function":{"arguments":"0123456789"}}]}}],"usage":{"prompt_tokens":300,"completion_tokens":0}}`,
 			func(Count) []Count { return []Count{{In: 300, Out: 10}} }},
-		"negative usage, more cached than prompted": {`{"usage":{"prompt_tokens":3,"completion_tokens":-5,"prompt_tokens_details":{"cached_tokens":9}}}`,
-			func(f Count) []Count { return []Count{{In: f.In - 3, CacheRead: 3, Observed: true}} }},
-		"no usage": {`{"choices":[]}`, func(Count) []Count { return nil }},
-		"not JSON": {`<html>busy</html>`, func(Count) []Count { return nil }},
+		"more cached than prompted": {`{"usage":{"prompt_tokens":3,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":9}}}`,
+			func(f Count) []Count { return []Count{{In: f.In - 3, Out: 5, CacheRead: 3, Observed: true}} }},
+		// Astra on #256: whatever a reader cannot read exactly keeps the floor.
+		"negative usage":                        {`{"usage":{"prompt_tokens":3,"completion_tokens":-5}}`, none},
+		"usage half there":                      {`{"usage":{"prompt_tokens":3}}`, none},
+		"content not text":                      {`{"choices":[{"message":{"content":[{"text":"x"}]}}],"usage":` + zeroOut + `}`, none},
+		"H1: Choices empty":                     {`{"choices":[{"message":{"content":"` + strings.Repeat("y", 1600) + `"}}],"Choices":[],"usage":` + zeroOut + `}`, none},
+		"H1: a case variant in a choice":        {`{"choices":[{"message":{"content":"` + strings.Repeat("y", 1600) + `"},"Message":{}}],"usage":` + zeroOut + `}`, none},
+		"H1: content under a case variant only": {`{"choices":[],"Choices":[{"message":{"content":"` + strings.Repeat("y", 1600) + `"}}],"usage":` + zeroOut + `}`, none},
+		"H1: a case variant in a message":       {`{"choices":[{"message":{"content":"` + strings.Repeat("y", 1600) + `","Content":""}}],"usage":` + zeroOut + `}`, none},
+		"H1: tool arguments under a case variant": {`{"choices":[{"message":{"tool_calls":[{"function":{"arguments":"` +
+			strings.Repeat("y", 1600) + `","Arguments":""}}]}}],"usage":` + zeroOut + `}`, none},
+		"H2: an event over several data lines, any line ending": {"data: {\"choices\":[\r\ndata: {\"delta\":{\"content\":\"" +
+			strings.Repeat("y", 1600) + "\"}}]}\r\rdata: {\"usage\":" + zeroOut + "}\n\ndata: [DONE]\n\n",
+			func(Count) []Count { return []Count{{In: 300, Out: 100}} }},
+		"H2: malformed content, then valid usage": {"data: {\"choices\":[{\"delta\":{\"content\":7}}]}\n\ndata: {\"usage\":" + zeroOut + "}\n\n", none},
+		"H2: a cut event, then valid usage":       {"data: {\"choices\":[\n\ndata: {\"usage\":" + zeroOut + "}\n\n", none},
+		"no usage":                                {`{"choices":[]}`, func(Count) []Count { return nil }},
+		"not JSON":                                {`<html>busy</html>`, func(Count) []Count { return nil }},
 	} {
 		up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, c.body) })
 		g, token := rig(t, up, nil)
@@ -128,7 +152,7 @@ func TestCountingFailsClosed(t *testing.T) {
 		t.Fatalf("an unrecorded floor: %d %v, upstream saw %d", w.Code, w.Header(), len(up.got()))
 	}
 	up = newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"usage":{"prompt_tokens":1}}`)
+		_, _ = io.WriteString(w, `{"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
 	})
 	g, token = rig(t, up, func(c *Config) { c.Counts = &counts{observed: errors.New("disk full")} })
 	if w := call(g, token, "/chat/completions", good, nil); w.Code != http.StatusOK {
@@ -164,4 +188,48 @@ func TestAResponseNotForwardedWholeIsUnobserved(t *testing.T) {
 func withTokens(l types.Lease, amount int64) types.Lease {
 	l.Reservations = []types.LeaseReservationsItem{{Group: "rg_01m4tm99haemss9tvzd438vq8j", Amount: types.Amount(amount), Unit: types.CapacityUnitTokens}}
 	return l
+}
+
+// Astra on #256: concurrent requests take distinct sequences, and a count
+// lands at its own request's sequence whatever order the requests end in.
+func TestCountsKeepTheirRequestsSequence(t *testing.T) {
+	var n atomic.Int32
+	arrived, first := make(chan bool), make(chan bool)
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		k := n.Add(1)
+		if k == 1 {
+			arrived <- true
+			<-first // the first request ends last
+		}
+		_, _ = fmt.Fprintf(w, `{"usage":{"prompt_tokens":%d,"completion_tokens":1}}`, 100+k)
+	})
+	g, token := rig(t, up, nil)
+	done := make(chan bool)
+	go func() { call(g, token, "/chat/completions", good, nil); close(done) }()
+	<-arrived
+	call(g, token, "/chat/completions", good, nil)
+	close(first)
+	<-done
+	var order []counted
+	for _, c := range countsOf(g).all() {
+		if c.n.Observed {
+			order = append(order, c)
+		}
+	}
+	if len(order) != 2 || order[0].n.In != 102 || order[0].seq != 1 || order[1].n.In != 101 || order[1].seq != 0 {
+		t.Fatalf("counts in completion order %+v; want request 1's at 1, then request 0's at 0", order)
+	}
+	g, token = rig(t, newUpstream(t, nil), nil)
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() { call(g, token, "/chat/completions", good, nil) })
+	}
+	wg.Wait()
+	seqs := map[int64]bool{}
+	for _, c := range countsOf(g).all() {
+		seqs[c.seq] = true
+	}
+	if len(seqs) != 16 {
+		t.Fatalf("16 concurrent requests took %d sequences", len(seqs))
+	}
 }

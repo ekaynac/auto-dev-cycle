@@ -127,6 +127,12 @@ func (w *world) sendThroughGateway(r running, body string) {
 // final that agrees with the count settles, unless the gateway read no
 // usage (the request keeps its floor), and a provider reconciliation still
 // settles whatever the count.
+// zeroOut is usage of 300 prompt tokens and no output; y1600 is 1600
+// content bytes, 100 tokens by the content floor.
+const zeroOut = `{"prompt_tokens":300,"completion_tokens":0}`
+
+var y1600 = strings.Repeat("y", 1600)
+
 func TestAHostileZeroFinalKeepsAConservativeCharge(t *testing.T) {
 	const usage = `{"choices":[],"usage":{"prompt_tokens":300,"completion_tokens":200}}`
 	for name, c := range map[string]struct {
@@ -141,6 +147,13 @@ func TestAHostileZeroFinalKeepsAConservativeCharge(t *testing.T) {
 		// No usage reported: the request keeps its floor, so no final settles.
 		"a final, usage unread":      {`{"choices":[]}`, 300, 200, 500},
 		"a zero final, usage unread": {`{"choices":[]}`, 0, 0, 400},
+		// Astra on #256: 1600 content bytes the adapter reads, hidden from a
+		// case-insensitive or line-by-line reader, never settle at zero output.
+		"H1: content behind a case-variant Choices": {`{"choices":[{"message":{"content":"` + y1600 + `"}}],"Choices":[],"usage":` + zeroOut + `}`, 300, 0, 400},
+		"H1: tool arguments behind a case variant": {`{"choices":[{"message":{"tool_calls":[{"function":{"arguments":"` + y1600 +
+			`","Arguments":""}}]}}],"usage":` + zeroOut + `}`, 300, 0, 400},
+		"H2: content over several data lines": {"data: {\"choices\":[\ndata: {\"delta\":{\"content\":\"" + y1600 + "\"}}]}\n\ndata: {\"usage\":" + zeroOut + "}\n\n", 300, 0, 400},
+		"H2: malformed content, then usage":   {"data: {\"choices\":[{\"delta\":{\"content\":7}}]}\n\ndata: {\"usage\":" + zeroOut + "}\n\n", 300, 0, 400},
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
