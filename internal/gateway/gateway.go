@@ -204,8 +204,9 @@ type refusal struct {
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// The whole request, its floor's commit included, ends within RequestDeadline of its start, so of its floor's
-	// commit (modelcall.Clock, #259 round 3).
+	// The outbound request keeps this deadline, set before its floor is submitted: the upstream exchange ends within
+	// RequestDeadline of the floor's commit (modelcall.Clock). The floor's own commit and a blocked downstream write
+	// are not bounded by it (#226 entry 78).
 	ctx, cancel := context.WithTimeout(r.Context(), RequestDeadline)
 	defer cancel()
 	r = r.WithContext(ctx)

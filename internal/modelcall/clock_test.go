@@ -68,3 +68,24 @@ func TestOverlappingSubmissionsOfOneFloor(t *testing.T) {
 		t.Fatal("a nil Clock notes")
 	}
 }
+
+// Astra on #259, r2 L1: a committed floor past its grace with no submission pending is evicted at the next note or
+// commit of any key, without young being asked about it. A floor whose second submission is still pending survives
+// its expiry, and goes once that submission ends.
+func TestStaleFloorsAreEvicted(t *testing.T) {
+	var at time.Duration
+	c, stale := clockAt(&at)
+	other := floorKey("cal_1", 1)
+	c.noting("cal_1", 0, false)(true)
+	pending := c.noting("cal_1", 1, false)
+	c.noting("cal_1", 1, false)(true)
+	held := func(key string) bool { c.mu.Lock(); defer c.mu.Unlock(); return c.at[key] != nil }
+	at = FloorGrace + time.Minute
+	c.noting("cal_2", 0, false)(false)
+	if held(stale) || !held(other) || !c.young(other) {
+		t.Fatalf("after the grace: stale floor kept %v, pending floor kept %v", held(stale), held(other))
+	}
+	if pending(false); held(other) {
+		t.Fatal("an expired floor is kept once nothing is pending")
+	}
+}

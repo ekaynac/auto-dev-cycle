@@ -287,44 +287,115 @@ func TestEveryRequestHasADeadline(t *testing.T) {
 	}
 }
 
-// deadlines records the deadline of the context each lease read gets.
-type deadlines struct {
-	Leases
+// outgoing records the deadline of each outbound request's context, then sends it.
+type outgoing struct {
+	http.RoundTripper
 	mu  sync.Mutex
 	got []time.Time
 }
 
-func (d *deadlines) Lease(ctx context.Context, id types.LeaseID) (types.Lease, bool, error) {
-	at, _ := ctx.Deadline()
-	d.mu.Lock()
-	d.got = append(d.got, at)
-	d.mu.Unlock()
-	return d.Leases.Lease(ctx, id)
+func (o *outgoing) RoundTrip(r *http.Request) (*http.Response, error) {
+	at, _ := r.Context().Deadline()
+	o.mu.Lock()
+	o.got = append(o.got, at)
+	o.mu.Unlock()
+	return o.RoundTripper.RoundTrip(r)
 }
 
-// Astra on #259, H1: the request's deadline starts when the gateway takes it, before its floor is noted and
-// committed, so the request ends within RequestDeadline of the floor's commit, however long the writer made it wait.
-func TestTheRequestDeadlineStartsBeforeTheFloor(t *testing.T) {
+// Astra on #259, H1 and r2 L2: the outbound request keeps the deadline the gateway set before its floor was
+// submitted, so the upstream exchange ends within RequestDeadline of the floor's commit, however long the writer
+// made it wait.
+func TestTheOutboundRequestKeepsTheDeadlineSetBeforeItsFloor(t *testing.T) {
 	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"choices":[]}`) })
-	d, floored := &deadlines{}, &floorTime{}
-	g, token := rig(t, up, func(c *Config) { d.Leases, floored.Counts = c.Leases, c.Counts; c.Leases, c.Counts = d, floored })
+	floored := &floorTime{}
+	g, token := rig(t, up, func(c *Config) { floored.Counts = c.Counts; c.Counts = floored })
+	out := &outgoing{RoundTripper: g.client.Transport}
+	g.client.Transport = out
 	if w := call(g, token, "/chat/completions", asked, nil); w.Code != http.StatusOK {
 		t.Fatalf("answered %d", w.Code)
 	}
-	if len(d.got) == 0 || d.got[0].IsZero() || floored.at.IsZero() || d.got[0].After(floored.at.Add(RequestDeadline)) {
-		t.Fatalf("the request's deadlines %v; want set, at most %v", d.got, floored.at.Add(RequestDeadline))
+	if len(out.got) != 1 || out.got[0].IsZero() || floored.at.IsZero() || out.got[0].After(floored.at.Add(RequestDeadline)) {
+		t.Fatalf("the outbound deadlines %v; want one, at most %v", out.got, floored.at.Add(RequestDeadline))
 	}
 }
 
-// floorTime records when the first floor's submission began.
+// floorTime records when the first floor's submission began; with release set, it holds that submission until
+// release is closed, signalling entered.
 type floorTime struct {
 	Counts
-	at time.Time
+	at               time.Time
+	entered, release chan struct{}
 }
 
 func (f *floorTime) Count(ctx context.Context, b Binding, seq int64, n Count) error {
 	if f.at.IsZero() && !n.Observed {
-		f.at = time.Now()
+		if f.at = time.Now(); f.release != nil {
+			close(f.entered)
+			<-f.release
+		}
 	}
 	return f.Counts.Count(ctx, b, seq, n)
+}
+
+// serve runs g.ServeHTTP on a request whose context is ctx, and returns its recorder and a channel closed when it
+// returns.
+func serve(ctx context.Context, g *Gateway, token, body string) (*httptest.ResponseRecorder, chan struct{}) {
+	r := httptest.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(body)).WithContext(ctx)
+	r.Header.Set("Authorization", "Bearer "+token)
+	w, done := httptest.NewRecorder(), make(chan struct{})
+	go func() { defer close(done); g.ServeHTTP(w, r) }()
+	return w, done
+}
+
+func within(t *testing.T, done chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s did not end", what)
+	}
+}
+
+// Astra on #259, r2 L2: a request cancelled while its floor's submission is blocked is never sent once that
+// submission is released; its floor stands.
+func TestARequestCancelledDuringItsFloorIsNeverSent(t *testing.T) {
+	up := newUpstream(t, nil)
+	floored := &floorTime{entered: make(chan struct{}), release: make(chan struct{})}
+	g, token := rig(t, up, func(c *Config) { floored.Counts = c.Counts; c.Counts = floored })
+	ctx, cancel := context.WithCancel(context.Background())
+	w, done := serve(ctx, g, token, asked)
+	<-floored.entered
+	cancel()
+	close(floored.release)
+	within(t, done, "the cancelled request")
+	if n := len(up.got()); n != 0 || w.Code == http.StatusOK {
+		t.Fatalf("sent %d requests, answered %d, after the cancellation", n, w.Code)
+	}
+	if all := floored.Counts.(*counts).all(); len(all) != 1 || all[0].n.Observed {
+		t.Fatalf("counts %+v; want the floor alone", all)
+	}
+}
+
+// Astra on #259, r2 L2: with the egress client's timeout disabled, cancelling the request ends a streamed upstream
+// read: the outbound request keeps the request's context.
+func TestACancelledStreamEnds(t *testing.T) {
+	streamed, ended := make(chan struct{}), make(chan struct{})
+	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[]}\n\n")
+		w.(http.Flusher).Flush()
+		close(streamed)
+		select {
+		case <-r.Context().Done():
+		case <-ended: // the test ended: never hold the server's close
+		}
+	})
+	t.Cleanup(func() { close(ended) }) // runs before the server closes
+	g, token := rig(t, up, nil)
+	g.client.Timeout = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	_, done := serve(ctx, g, token, asked)
+	<-streamed
+	cancel()
+	within(t, done, "the cancelled stream")
 }

@@ -46,6 +46,7 @@ func (c *Clock) noting(call types.CallID, sequence int64, counted bool) func(com
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.evict()
 	if counted {
 		return func(ok bool) {
 			c.mu.Lock()
@@ -73,6 +74,22 @@ func (c *Clock) noting(call types.CallID, sequence int64, counted bool) func(com
 		if n.pending == 0 && !n.committed && c.at[key] == n {
 			delete(c.at, key)
 		}
+		c.evict()
+	}
+}
+
+// evict drops every committed floor past FloorGrace with no submission pending, which young reads as old already, so
+// a floor never counted is not kept for the life of the process (Astra on #259, r2 L1). The caller holds c.mu; noting
+// and each commit run it, since the Reconciler may never ask young about a key.
+func (c *Clock) evict() {
+	if len(c.at) == 0 {
+		return
+	}
+	now := c.now()
+	for k, n := range c.at {
+		if n.committed && n.pending == 0 && now.Sub(n.at) >= FloorGrace {
+			delete(c.at, k)
+		}
 	}
 }
 
@@ -83,6 +100,7 @@ func (c *Clock) young(key string) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.evict()
 	n := c.at[key]
 	return n != nil && (n.pending > 0 || n.committed && c.now().Sub(n.at) < FloorGrace)
 }
