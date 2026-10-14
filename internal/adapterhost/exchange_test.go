@@ -8,10 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
-
-	"golang.org/x/sys/unix"
 )
 
 // M2 (Opus on #259; P21b): the root is made exclusively at its attempt's own name, mode 0700, and removing it
@@ -51,45 +48,5 @@ func TestTheExchangeRootFollowsNoSymlink(t *testing.T) {
 	_, kerr := os.Lstat(filepath.Join(dir, "kept"))
 	if err = errors.Join(err, derr, kerr); err != nil || st.Mode() != 0o600 || dst.Mode() != os.ModeDir|0o500 {
 		t.Fatalf("outside the root: %v and %v, %v", st.Mode(), dst.Mode(), err)
-	}
-}
-
-// L2 (Opus on #261): RemoveAt removes a tree of any depth with a bounded number of descriptors and a bounded stack.
-// Under a descriptor limit only 32 above those open, a chain 200 directories deep, 300 entries wide at its top, is
-// removed: each subtree past maxDepth is lifted beneath the parent and removed in turn.
-func TestRemoveAtTakesBoundedDescriptors(t *testing.T) {
-	parent := t.TempDir()
-	p := filepath.Join(parent, "deep")
-	for range 200 {
-		p = filepath.Join(p, "d")
-	}
-	if err := os.MkdirAll(p, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for i := range 300 {
-		if err := os.WriteFile(filepath.Join(parent, "deep", strconv.Itoa(i)), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	dir, err := unix.Open(parent, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unix.Close(dir)
-	var lim unix.Rlimit
-	if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &lim); err != nil {
-		t.Fatal(err)
-	}
-	tight := lim
-	tight.Cur = uint64(openFDs(t) + 32)
-	if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &tight); err != nil {
-		t.Fatal(err)
-	}
-	err = RemoveAt(dir, "deep")
-	if serr := unix.Setrlimit(unix.RLIMIT_NOFILE, &lim); serr != nil {
-		t.Fatal(serr)
-	}
-	if entries, rerr := os.ReadDir(parent); err != nil || rerr != nil || len(entries) != 0 {
-		t.Fatalf("RemoveAt: %v; left %v, %v", err, entries, rerr)
 	}
 }

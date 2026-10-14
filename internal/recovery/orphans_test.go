@@ -135,14 +135,18 @@ func TestOrphanedOutputIsRefusedNeverRead(t *testing.T) {
 
 // F (P21b; M1, M2, M3 of Opus on #259): a root is bound through the store, never through its name. No event is
 // recorded, and every root is removed, for: A1's root renamed after F, an attempt that is finishing (its output was
-// admitted); a root named after an attempt never minted; and the cut attempt's own root, either at mode 0755 or
-// replaced by a symlink to a directory outside (0700, the controller's), which is not followed: its entries stay.
+// admitted), or stopping (M4 of Astra on #261: outside the cut set, a recorded residual); a root named after an
+// attempt never minted; and the cut attempt's own root, either at mode 0755 or replaced by a symlink to a directory
+// outside (0700, the controller's), which is not followed: its entries stay.
 func TestARootIsBoundThroughTheStore(t *testing.T) {
 	for _, symlink := range []bool{false, true} {
 		t.Run(fmt.Sprint("symlink ", symlink), func(t *testing.T) {
 			w, ex, outside := restarted(t, t.TempDir()), t.TempDir(), t.TempDir()
 			cut, finishing := w.midCall(t), w.midCall(t)
 			w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				if !symlink {
+					return lease.StopRunning(tx, finishing.Attempt, types.AttemptStopReasonValueRevoke)
+				}
 				return lease.SubmitResult(tx, finishing.Attempt, 1, types.SubmittedResult{Call: finishing.Call, Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean})
 			})
 			root(t, ex, finishing.Attempt, map[string]string{"renamed": "A1's"})
@@ -262,37 +266,81 @@ func TestTheOrphanStageNeverBlocksRecovery(t *testing.T) {
 	}
 }
 
-// M1 and L4 (Opus on #261): at most maxRoots roots a start are refused, and a root that fails takes no slot: with one
-// slot, the first root's rename fails and the second root is still refused in the same start; the next start takes
-// the first. An attempt stopped without a result (stop_reason set) is in the cut set: its output is refused too.
-func TestARootThatFailsTakesNoSlot(t *testing.T) {
-	old, oldRename := *recovery.MaxRoots, *recovery.Renameat
-	t.Cleanup(func() { *recovery.MaxRoots, *recovery.Renameat = old, oldRename })
+// twoCut is a world with two cut attempts, each with a root holding one entry, and the orphan stage's budget at one
+// root a start; the variables are restored after the test.
+func twoCut(t *testing.T) (*world, string, cut, cut) {
+	old, oldRename, oldSubmit := *recovery.MaxRoots, *recovery.Renameat, *recovery.Submit
+	t.Cleanup(func() { *recovery.MaxRoots, *recovery.Renameat, *recovery.Submit = old, oldRename, oldSubmit })
 	*recovery.MaxRoots = 1
 	w, ex := restarted(t, t.TempDir()), t.TempDir()
-	first := w.midCall(t)
-	stopped := w.midCall(t)
-	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return lease.StopRunning(tx, stopped.Attempt, types.AttemptStopReasonValueRevoke)
-	})
+	first, second := w.midCall(t), w.midCall(t)
 	root(t, ex, first.Attempt, map[string]string{"a": "1"})
-	root(t, ex, stopped.Attempt, map[string]string{"b": "22"})
-	*recovery.Renameat = func(fd int, from string, tfd int, to string) error {
-		if from == adapterhost.ExchangeName(first.Attempt) {
-			return unix.EIO
-		}
-		return oldRename(fd, from, tfd, to)
-	}
+	root(t, ex, second.Attempt, map[string]string{"b": "22"})
 	w.run()
-	if err := w.orphans(ex); err == nil {
-		t.Fatal("the first root's failed rename is not reported")
+	return w, ex, first, second
+}
+
+// attempts is the attempts the refusals after seq name, each once, sorted.
+func (w *world) attempts(after int64) []string {
+	var got []string
+	for _, r := range w.refusals(after) {
+		got = append(got, strings.Fields(r)[0])
 	}
-	if got := w.refusals(0); len(got) != 2 || !strings.HasPrefix(got[1], string(stopped.Attempt)+" b 2 attempt "+string(stopped.Attempt)+" is sealed") {
-		t.Fatalf("refused %q; want both roots' outputs, the stopped attempt's included", got)
+	return slices.Compact(got)
+}
+
+// M5 (Astra on #261): at most maxRoots roots' refusals are newly recorded a start, whether or not their renames
+// succeed; a replay records nothing and takes no slot. With one slot: a start whose renames all fail records one root,
+// the next records the other (the first replays), and a start whose renames succeed then removes both without a new
+// record. With renames succeeding, the second root waits for the next start.
+func TestTheRecordingBudget(t *testing.T) {
+	for _, failing := range []bool{true, false} {
+		t.Run(fmt.Sprint("renames fail ", failing), func(t *testing.T) {
+			w, ex, first, second := twoCut(t)
+			if failing {
+				*recovery.Renameat = func(int, string, int, string) error { return unix.EIO }
+			}
+			for start, want := range [][]string{{string(first.Attempt)}, {string(first.Attempt), string(second.Attempt)}} {
+				if err := w.orphans(ex); (err != nil) != failing {
+					t.Fatalf("start %d: %v", start+1, err)
+				}
+				if got := w.attempts(0); !slices.Equal(got, want) {
+					t.Fatalf("start %d refused for %v; want %v", start+1, got, want)
+				}
+			}
+			*recovery.Renameat = unix.Renameat
+			mark := head(w)
+			if err := w.orphans(ex); err != nil || head(w) != mark {
+				t.Fatalf("the cleanup start: %v, recorded %q", err, w.refusals(mark))
+			}
+			empty(t, ex)
+		})
 	}
-	*recovery.Renameat = oldRename
-	if err := w.orphans(ex); err != nil || len(w.refusals(0)) != 2 {
-		t.Fatalf("the next start: %v, refused %q", err, w.refusals(0))
+}
+
+// M6 (Astra on #261): only the contract's refusal of a record falls back to the summary refusal. A storage fault in
+// the refusal command (here once, on the first root) keeps the root and is reported, takes no slot (the second root
+// is recorded in that start), and the next start records the first root's detailed refusals.
+func TestAStorageFaultKeepsTheDetailedRecord(t *testing.T) {
+	w, ex, first, second := twoCut(t)
+	submit := *recovery.Submit
+	*recovery.Submit = func(r recovery.Recovery, ctx context.Context, action, key string, a *types.AttemptID,
+		decide func(*eventstore.Tx) ([]eventstore.Event, error)) error {
+		*recovery.Submit = submit
+		return errors.New("disk I/O error") // the transaction rolled back
+	}
+	if err := w.orphans(ex); err == nil || !strings.Contains(err.Error(), "disk I/O error") {
+		t.Fatalf("the storage fault: %v", err)
+	}
+	if got := w.attempts(0); !slices.Equal(got, []string{string(second.Attempt)}) {
+		t.Fatalf("the faulted start refused for %v; want only the second root", got)
+	}
+	if err := w.orphans(ex); err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("%[1]s a 1 attempt %[1]s is sealed; its publication is closed; not read", first.Attempt)
+	if got := w.refusals(0); !slices.Contains(got, want) || len(got) != 2 {
+		t.Fatalf("refused %q; want %q among two", got, want)
 	}
 	empty(t, ex)
 }

@@ -5,13 +5,12 @@
 package adapterhost
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"golang.org/x/sys/unix"
 
@@ -99,76 +98,12 @@ func (x *exchange) remove() error {
 	}
 	dir, perr := unix.Open(filepath.Dir(x.root), unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if perr == nil {
-		perr = RemoveAt(dir, filepath.Base(x.root))
-		unix.Close(dir)
+		c := &Cleanup{Ctx: context.Background(), Left: MaxWork} // what is left waits for restart recovery's sweep
+		c.RemoveAt(dir, filepath.Base(x.root))
+		perr = errors.Join(c.Err(), unix.Close(dir))
 	}
 	if err = errors.Join(err, perr); err != nil {
 		return ErrExchange
 	}
 	return nil
-}
-
-// RefusedPrefix starts a name RemoveAt lifts a subtree to, and restart
-// recovery a refused root's: the next start sweeps every such entry.
-const RefusedPrefix = "refused-"
-
-// maxDepth: the root, in/ and out/, their entries; anything deeper is lifted.
-const maxDepth = 3
-
-// RemoveAt removes name beneath directory dir, following no symlink: a
-// directory is pinned (O_PATH|O_NOFOLLOW), made 0700 through it (an adapter
-// may have changed any mode), emptied beneath it, removed. Gone is no error.
-// A directory past maxDepth is lifted to dir (RefusedPrefix+"lift-<inode>")
-// and removed in turn, so any depth takes bounded descriptors and stack.
-func RemoveAt(dir int, name string) error {
-	var err error
-	for todo := []string{name}; len(todo) > 0; todo = todo[1:] {
-		lifted, rerr := removeTree(dir, dir, todo[0], 0)
-		err, todo = errors.Join(err, rerr), append(todo, lifted...)
-	}
-	return err
-}
-
-func removeTree(top, dir int, name string, depth int) (lifted []string, err error) {
-	if err := unix.Unlinkat(dir, name, 0); err == nil || err == unix.ENOENT {
-		return nil, nil
-	} else if err != unix.EISDIR {
-		return nil, err
-	}
-	fd, err := unix.Openat(dir, name, unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer unix.Close(fd)
-	if depth == maxDepth {
-		var st unix.Stat_t
-		if err := unix.Fstat(fd, &st); err != nil {
-			return nil, err
-		}
-		to := RefusedPrefix + "lift-" + strconv.FormatUint(st.Ino, 10)
-		return []string{to}, unix.Renameat(dir, name, top, to)
-	}
-	// An O_PATH descriptor has no fchmod; its /proc link reaches the pinned inode, never a name.
-	if err := unix.Chmod("/proc/self/fd/"+strconv.Itoa(fd), 0o700); err != nil {
-		return nil, err
-	}
-	lfd, err := unix.Openat(fd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	list := os.NewFile(uintptr(lfd), name)
-	defer list.Close()
-	for {
-		names, rerr := list.Readdirnames(256)
-		for _, n := range names {
-			l, e := removeTree(top, fd, n, depth+1)
-			lifted, err = append(lifted, l...), errors.Join(err, e)
-		}
-		if rerr != nil {
-			if rerr != io.EOF {
-				err = errors.Join(err, rerr)
-			}
-			return lifted, errors.Join(err, unix.Unlinkat(dir, name, unix.AT_REMOVEDIR))
-		}
-	}
 }
