@@ -27,7 +27,7 @@
 //   - The cut calls' effects are uncertain by the restart rule (MarkPendingUncertain); P20's Reconciler settles them,
 //     and late usage recomputes the liability (P12b). Recovery queries no provider.
 //   - Inert: P22a constructs it, runs it at start after MarkPendingUncertain and before any other command, and
-//     authorises its actions for the system actor only. The refusal record of an orphaned exchange output is P21b's.
+//     authorises its actions for the system actor only. It then runs RefuseOrphans, whose failure never blocks start.
 package recovery
 
 import (
@@ -81,11 +81,13 @@ type Recovery struct {
 	Actor types.ActorID   // the controller's system actor
 	Units lease.Units     // the seal's project and task (graph.Units)
 	Blobs lease.Publisher // where the seal's record is published
+	// Exchanges is where exchange roots are made (adapterhost.Host.Root); empty: RefuseOrphans does nothing.
+	Exchanges string
 }
 
 // Run runs step 1, then steps 2 to 4 for every attempt cut, each to its end; it reports every failure.
 func (r Recovery) Run(ctx context.Context) error {
-	if err := r.submit(ctx, ActionLose, nil, lease.RecoverAfterRestart); err != nil {
+	if err := r.submit(ctx, ActionLose, "", nil, lease.RecoverAfterRestart); err != nil {
 		return err
 	}
 	var all []string
@@ -114,7 +116,7 @@ func (r Recovery) step(ctx context.Context, id types.AttemptID) (bool, error) {
 	}); err != nil || planned == Done {
 		return true, err
 	}
-	return false, r.submit(ctx, string(planned), &id, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	return false, r.submit(ctx, string(planned), "", &id, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		arev, lrev, a, l, err := records(tx, id)
 		switch {
 		case err != nil || Next(a, l) != planned:
@@ -144,12 +146,16 @@ func records(tx *eventstore.Tx, id types.AttemptID) (arev, lrev int64, a types.A
 	return arev, lrev, a, l, err
 }
 
-// submit records one recovery command of action, about attempt (nil: every attempt), applying what decide proposes.
-func (r Recovery) submit(ctx context.Context, action string, attempt *types.AttemptID, decide func(*eventstore.Tx) ([]eventstore.Event, error)) error {
+// submit records one recovery command of action, about attempt (nil: every attempt), applying what decide proposes;
+// a repeat of key replays the first (empty: the command's own id).
+func (r Recovery) submit(ctx context.Context, action, key string, attempt *types.AttemptID, decide func(*eventstore.Tx) ([]eventstore.Event, error)) error {
 	cmd, err := ids.New("cmd")
 	input, merr := json.Marshal(map[string]any{"attempt": attempt})
+	if key == "" {
+		key = cmd
+	}
 	if err = errors.Join(err, merr); err == nil {
-		_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: string(r.Actor), Action: action, IdempotencyKey: cmd, Input: input},
+		_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: string(r.Actor), Action: action, IdempotencyKey: key, Input: input},
 			eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 				evs, err := decide(tx)
 				return evs, json.RawMessage(`{}`), err

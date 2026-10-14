@@ -5,16 +5,17 @@
 package adapterhost
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 )
 
 // ErrExchange: the exchange root could not be made or removed. Its text is
@@ -39,14 +40,21 @@ type exchange struct {
 	prompt        types.AdapterHandle
 }
 
-// newExchange makes the root under parent; on any failure it removes what
-// it made.
+// ExchangePrefix starts every exchange root's name.
+const ExchangePrefix = "exchange-"
+
+// ExchangeName is attempt's exchange root under Host.Root: restart recovery
+// finds a cut attempt's root from its record, never a name it reads (P21b).
+func ExchangeName(attempt types.AttemptID) string { return ExchangePrefix + string(attempt) }
+
+// newExchange makes the root under parent, exclusively and mode 0700; on any
+// failure it removes what it made.
 func newExchange(parent string, attempt types.AttemptID, prompt []byte) (*exchange, error) {
-	root, err := os.MkdirTemp(parent, "exchange-")
-	if err != nil {
+	x := &exchange{root: filepath.Join(parent, ExchangeName(attempt))}
+	if ids.Check(string(attempt), "att") != nil || os.Mkdir(x.root, 0o700) != nil { // EEXIST: never a root found
 		return nil, ErrExchange
 	}
-	x := &exchange{root: root, in: filepath.Join(root, "in"), out: filepath.Join(root, "out")}
+	x.in, x.out = filepath.Join(x.root, "in"), filepath.Join(x.root, "out")
 	if err := x.setup(attempt, prompt); err != nil {
 		return nil, errors.Join(ErrExchange, x.remove())
 	}
@@ -80,18 +88,21 @@ func (x *exchange) setup(attempt types.AttemptID, prompt []byte) error {
 	return nil
 }
 
-// remove closes out/ and removes the root. A failure is reported with a
-// fixed text (wrapping ErrExchange): the paths in it are the adapter's.
+// remove closes out/ and removes the root (RemoveAt). A failure is reported
+// with a fixed text (wrapping ErrExchange): the paths in it are the adapter's.
 func (x *exchange) remove() error {
 	var err error
 	if x.outDir != nil {
 		err = x.outDir.Close()
 		x.outDir = nil
 	}
-	if cerr := os.Chmod(x.in, 0o755); cerr != nil && !errors.Is(cerr, fs.ErrNotExist) {
-		err = errors.Join(err, cerr)
+	dir, perr := unix.Open(filepath.Dir(x.root), unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if perr == nil {
+		c := &Cleanup{Ctx: context.Background(), Left: MaxWork} // what is left waits for restart recovery's sweep
+		c.RemoveAt(dir, filepath.Base(x.root))
+		perr = errors.Join(c.Err(), unix.Close(dir))
 	}
-	if err = errors.Join(err, os.RemoveAll(x.root)); err != nil {
+	if err = errors.Join(err, perr); err != nil {
 		return ErrExchange
 	}
 	return nil
