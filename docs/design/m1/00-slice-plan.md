@@ -688,9 +688,11 @@ D49-D64 leave L1-L3 standing. L2's "fresh review context per round" also holds f
   - **Cumulative USD rail:** P17 enforces `per_task_usd` and `per_day_usd` at lease admission. It counts settled
     charges, plus outstanding liabilities, plus the new lease's priced reservation, at the registry's declared price
     basis (P7). A route with no price basis is `local` or `free`, at zero cost, and still reserves its slots.
-  - **When usage cannot be queried:** the call's liability is kept, at the deduplicated persisted delta sum or its
-    positive reservation, until a `provider_reconciliation`. It is never dropped and never assumed zero, and it counts
-    against the USD rail meanwhile.
+  - **When usage cannot be queried:** the call's liability is kept, at the larger of its positive reservation and its
+    deduplicated persisted delta sum (P12b), until a `final` or a `provider_reconciliation` settles the call. It is
+    never dropped and never assumed zero, and it counts against the USD rail meanwhile. The adapter-reported `final`
+    is trusted only until P11b's gateway-side bound: per #226 entry 69, P17 and P22a do not activate `launch` until a
+    hostile-zero-final fixture keeps a conservative charge.
 
   Every supported choice preserves liability, as X3's no-query variant shows.
 

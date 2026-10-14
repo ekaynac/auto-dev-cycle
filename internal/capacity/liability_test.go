@@ -5,6 +5,7 @@ package capacity_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"path/filepath"
 	"strings"
@@ -395,4 +396,77 @@ func TestReportMatchesTheBinding(t *testing.T) {
 	if err := w.measure(a, types.UsageMeasurementKindDelta, 0, 1, 1); err != nil {
 		t.Fatalf("the binding's own report was refused: %v", err)
 	}
+}
+
+// Astra on #253, H1: a call settled on a small final becomes uncertain when
+// later deltas overflow, and owes again. The liability is the same whether
+// the lease settles after the final, after every report, or before any;
+// a provider reconciliation then releases it.
+func TestSettledCallOwesAgainWhateverTheOrder(t *testing.T) {
+	type report struct {
+		kind    types.UsageMeasurementKind
+		seq, in int64
+	}
+	reports := []report{{types.UsageMeasurementKindFinal, 0, 1}, {types.UsageMeasurementKindDelta, 0, maxTokens}, {types.UsageMeasurementKindDelta, 1, 1}}
+	for _, settleAfter := range []int{1, 3, 0} {
+		t.Run(fmt.Sprintf("settled after %d reports", settleAfter), func(t *testing.T) {
+			w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+			r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
+			w.stop(r)
+			for i, m := range reports {
+				if i == settleAfter {
+					w.settleDerived(r)
+				}
+				if err := w.measure(r, m.kind, m.seq, m.in, 0); err != nil {
+					t.Fatalf("report %d refused: %v", i, err)
+				}
+			}
+			if settleAfter == len(reports) {
+				w.settleDerived(r)
+			}
+			var inconsistent bool
+			w.view(func(tx *eventstore.Tx) (err error) {
+				_, inconsistent, err = capacity.LiabilitiesOf(tx, r.lease, []types.ResourceGroupID{quota})
+				return err
+			})
+			if l := w.liable(quota); l != maxTokens || !inconsistent {
+				t.Fatalf("liable %d, inconsistent %v; want %d, flagged", l, inconsistent, int64(maxTokens))
+			}
+			if err := w.measure(r, types.UsageMeasurementKindProviderReconciliation, 0, 10, 1); err != nil {
+				t.Fatal(err)
+			}
+			if l := w.liable(quota); l != 0 {
+				t.Fatalf("liable %d after the provider reconciliation, want 0", l)
+			}
+			w.replays()
+		})
+	}
+}
+
+// Astra on #253, L1: two late deltas in one command both count, as replay
+// counts them, only because every event is projected on its own
+// (eventstore.ProjectEach) through capacity, the bindings and the ledger.
+func TestLateDeltasInOneCommand(t *testing.T) {
+	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
+	w.stop(r)
+	w.settleDerived(r)
+	w.must(func(*eventstore.Tx) ([]eventstore.Event, error) {
+		var evs []eventstore.Event
+		for seq := range int64(2) {
+			ev, err := ledger.Measure(types.UsageMeasurement{ID: types.MeasurementID(newID(t, "msr")), Call: r.call, Attempt: r.attempt,
+				Lease: r.lease, Kind: types.UsageMeasurementKindDelta, Sequence: seq, Tokens: types.UsageMeasurementTokens{In: 300},
+				Cost:          types.UsageMeasurementCost{Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
+				SourceOfTruth: types.UsageMeasurementSourceOfTruthAdapterReport})
+			if err != nil {
+				return nil, err
+			}
+			evs = append(evs, ev)
+		}
+		return evs, nil
+	})
+	if l := w.liable(quota); l != 600 {
+		t.Fatalf("liable %d, want both deltas' 600", l)
+	}
+	w.replays()
 }

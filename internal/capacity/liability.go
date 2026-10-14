@@ -27,17 +27,19 @@ import (
 // saturate at the contract's integer range, so no input wedges a lease or a group.
 //
 // Late usage (a report after the settlement, or after its model_call effect left pending) is expected: each report
-// recomputes the lease's liability from the whole call ledger, so the amount does not depend on whether a report
-// came before or after the settlement, and a final or a reconciliation releases it. Amounts are a fold over the log
-// (lease and usage events), so a rebuild derives them; no price or configuration enters them.
+// on any call of a settled lease, the ones it settled included, recomputes the lease's liability from the whole call
+// ledger. So the amount does not depend on whether a report came before or after the settlement: a call settled on
+// a final becomes a liability again when later reports make it uncertain (Astra on #253, H1), and a final or a
+// reconciliation releases it. Amounts are a fold over the log (lease and usage events), so a rebuild derives them;
+// no price or configuration enters them.
 //
-// The fold reads earlier events' measurements from the ledger's projection, so it runs event by event
-// (eventstore.ProjectEach, as adcd composes it) or with the settlement in a command of its own: a projector over a
-// whole batch would settle before a measurement earlier in the same command is in the ledger.
+// The fold reads earlier events' measurements from the ledger's projection, so every command's events must be
+// projected one at a time through capacity, the bindings and the ledger (eventstore.ProjectEach, as adcd composes
+// it). A projector over a whole batch derives other amounts than replay does, whatever the command holds.
 const (
 	// LiabilityProjection: what a settled lease's uncertain calls owe a group, under "group/lease".
 	LiabilityProjection = "capacity_liabilities"
-	// LiableProjection: each call settled as a liability, with its lease.
+	// LiableProjection: each call of a settled lease, with its lease.
 	LiableProjection = "capacity_liable_calls"
 )
 
@@ -114,7 +116,7 @@ func settle(tx *eventstore.Tx, l types.Lease, next map[types.ResourceGroupID]tal
 	if err := checkSettlement(tx, l); err != nil {
 		return err
 	}
-	for _, c := range l.Settlement.Liabilities {
+	for _, c := range calls(l) {
 		if err := tx.Put(LiableProjection, string(c), json.RawMessage(fmt.Sprintf("%q", l.ID))); err != nil {
 			return err
 		}
@@ -122,8 +124,8 @@ func settle(tx *eventstore.Tx, l types.Lease, next map[types.ResourceGroupID]tal
 	return owe(tx, l, nil, next)
 }
 
-// lateUsage: a report on a call settled as a liability recomputes its lease's liability. A report on any other
-// call changes nothing here: its lease has not settled yet, or the call was settled.
+// lateUsage: a report on a call of a settled lease recomputes its lease's liability. A report on any other call
+// changes nothing here: its lease has not settled yet.
 func lateUsage(tx *eventstore.Tx, m types.UsageMeasurement) error {
 	raw, ok, err := tx.Get(LiableProjection, string(m.Call))
 	if err != nil || !ok {
@@ -147,7 +149,7 @@ func lateUsage(tx *eventstore.Tx, m types.UsageMeasurement) error {
 // group's Liable, in next or from its recorded tally. A change advances the group's capacity revision, once.
 func owe(tx *eventstore.Tx, l types.Lease, extra *types.UsageMeasurement, next map[types.ResourceGroupID]tally) error {
 	var uncertain []ledger.Standing
-	for _, c := range l.Settlement.Liabilities {
+	for _, c := range calls(l) {
 		var x *types.UsageMeasurement
 		if extra != nil && extra.Call == c {
 			x = extra
@@ -197,6 +199,11 @@ func owe(tx *eventstore.Tx, l types.Lease, extra *types.UsageMeasurement, next m
 		next[res.Group] = t
 	}
 	return putAll(tx, next)
+}
+
+// calls is every call settled lease l binds: its settled calls and its liabilities (checkSettlement).
+func calls(l types.Lease) []types.CallID {
+	return append(slices.Clone(l.Settlement.Calls), l.Settlement.Liabilities...)
 }
 
 // owed is what the uncertain calls owe res's group: nothing once none is left.
