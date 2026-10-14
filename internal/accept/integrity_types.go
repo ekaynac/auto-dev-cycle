@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -299,10 +300,6 @@ func (ty *typer) parse(dir string) ([]*ast.File, string) {
 	case ty.r.ctx.Err() != nil:
 		why = ty.r.ctx.Err().Error()
 	}
-	bctx := build.Context{GOOS: typePlatform[0], GOARCH: typePlatform[1], Compiler: "gc", ReleaseTags: release}
-	if typePlatform[1] == runtime.GOARCH {
-		bctx.ToolTags = build.Default.ToolTags
-	}
 	name := ""
 	for _, p := range ty.t.dirs[dir] {
 		if why != "" || path.Ext(p) != ".go" || strings.HasSuffix(p, "_test.go") {
@@ -312,9 +309,7 @@ func (ty *typer) parse(dir string) ([]*ast.File, string) {
 		if why = cmp.Or(unread, errText(err)); why != "" {
 			break
 		}
-		bctx.OpenFile = func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }
-		ok, err := bctx.MatchFile(dir, path.Base(p))
-		if !ok || err != nil {
+		if !builds(p, b) {
 			continue
 		}
 		f, err := parser.ParseFile(ty.fset, p, b, parser.SkipObjectResolution)
@@ -335,6 +330,18 @@ func (ty *typer) parse(dir string) ([]*ast.File, string) {
 		ty.failed["dir "+dir] = why
 	}
 	return ty.parsed[dir], why
+}
+
+// builds: the gate builds p (src) on typePlatform, by go/build's rules (no
+// tag the guard does not model).
+func builds(p string, src []byte) bool {
+	c := build.Context{GOOS: typePlatform[0], GOARCH: typePlatform[1], Compiler: "gc", ReleaseTags: release,
+		OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(src)), nil }}
+	if typePlatform[1] == runtime.GOARCH {
+		c.ToolTags = build.Default.ToolTags
+	}
+	ok, err := c.MatchFile(path.Dir(p), path.Base(p))
+	return ok && err == nil
 }
 
 // need lists, once, what files import outside the module, through the own
@@ -471,10 +478,13 @@ func (r *run) typed(dir, name string, fset *token.FileSet, files []*ast.File, me
 	}
 	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
 		Instances: map[*ast.Ident]types.Instance{}}
+	built := map[string]bool{} // a type error elsewhere is another platform's (its own export data differ)
+	for _, f := range files {
+		built[meta[f].path] = builds(meta[f].path, meta[f].src)
+	}
 	conf := types.Config{FakeImportC: true, Error: func(err error) { // not a redeclaration across platforms' files
-		if m := err.Error(); typeErr == "" && !strings.Contains(m, "redeclared") && !strings.Contains(m, "other declaration of") &&
-			!strings.Contains(m, "already declared") {
-			typeErr = m
+		if te, ok := err.(types.Error); ok && typeErr == "" && built[te.Fset.Position(te.Pos).Filename] && !redeclared.MatchString(te.Msg) {
+			typeErr = te.Error()
 		}
 	}, Importer: importFunc(func(p string) (*types.Package, error) {
 		pkg, err := ty.Import(p)
@@ -520,6 +530,7 @@ const (
 )
 
 var (
+	redeclared   = regexp.MustCompile(`^(\S+ redeclared in this block|\tother declaration of \S+|\S+ already declared (at|through) .*)$`)
 	reflectMakes = strings.Fields("New NewAt Zero MakeSlice MakeMap MakeMapWithSize MakeChan MakeFunc Append AppendSlice Copy")
 	valueMakes   = strings.Fields("Call CallSlice Method MethodByName Convert Grow Slice Slice3")
 )

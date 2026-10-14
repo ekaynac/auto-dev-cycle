@@ -298,8 +298,8 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.warnings, at, "a reference into S (exit, output, process, testing control) added, removed, moved or changed: review it")
 		}
 	}
-	anyTest := slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), goByName) // a helper anywhere the tests may call
-	for _, k := range keys(b.typed, a.typed) {                                   // by identity, so no fact is traded for another
+	anyTest := slices.ContainsFunc(keys(r.files, r.cand), goByName) // a helper anywhere the tests may call
+	for _, k := range keys(b.typed, a.typed) {                      // by identity, so no fact is traded for another
 		f := strings.Split(k, "\x00") // file, function, fact
 		if at := f[0] + ": " + f[2] + " in " + f[1]; a.typed[k] > b.typed[k] && (r.tested(dir) || anyTest || !strings.HasPrefix(f[2], factMakes)) {
 			add(&r.blocks, at, "can forge go test2json results (real types)")

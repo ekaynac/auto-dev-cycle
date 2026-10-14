@@ -106,6 +106,8 @@ func TestIntegrityRealTypes(t *testing.T) {
 			"\tif Add(1, 2) != 3 {\n\t\ty.Error(\"add\")\n\t}\n}\n"}, nil, forgedWhy + " (json.Unmarshal("},
 		// H2: an assertion on a value not an interface; the gate cannot compile it.
 		"H2 t.(*testing.T)": {map[string]string{"pkg/x_test.go": "package pkg\n\nimport \"testing\"\n\nfunc keep(t *testing.T) { _ = t.(*testing.T) }\n"}, nil, "it does not type-check"},
+		// Round 4 (the background fail-open flag): an error whose text holds "redeclared" is still an error.
+		"an error naming redeclared": {map[string]string{"pkg/x_test.go": "package pkg\n\nvar _ = redeclared\n"}, nil, "it does not type-check (pkg/x_test.go:3:9: undefined: redeclared)"},
 		// M2: value-making reflection in an untested helper of a repository with tests.
 		"M2 util.Run": {map[string]string{"util/u.go": "package util\n\nimport \"reflect\"\n\nfunc Run(fn, v any) { reflect.ValueOf(fn).Call([]reflect.Value{reflect.New(reflect.TypeOf(v).Elem())}) }\n",
 			"pkg/calc_test.go": strings.Replace(strings.Replace(baseFiles["pkg/calc_test.go"], "import \"testing\"", "import (\n\t\"testing\"\n\n\t\"example.com/m/util\"\n)", 1),
@@ -158,6 +160,19 @@ func TestIntegrityRealTypes(t *testing.T) {
 		}
 	}
 
+	// Round 4 (the background detection-bypass flag in integrity.go): a base
+	// with no Go test; the candidate adds one, and an untested helper that
+	// makes values by reflection.
+	none := newFixtureWith(t, func(src string) {
+		plain(t, src, "rm", "-q", "--cached", "pkg/calc_test.go")
+		write(t, src, map[string]string{"go.mod": guardBase["go.mod"], "go.sum": guardBase["go.sum"]})
+		plain(t, src, "add", "go.mod", "go.sum")
+	})
+	if v := none.guarded(t, map[string]string{"pkg/calc_test.go": baseFiles["pkg/calc_test.go"], "util/u.go": "package util\n\nimport \"reflect\"\n\n" +
+		"func Run(fn, v any) { reflect.ValueOf(fn).Call([]reflect.Value{reflect.New(reflect.TypeOf(v).Elem())}) }\n"}); !finds(v.Blocks, "util/u.go: reflection that makes") {
+		t.Errorf("tests added to a base with none: %q", whats(v.Blocks))
+	}
+
 	// M1 (Mythos #265): a shadowed operand is another fact (its type is in
 	// the key), though the expression reads the same.
 	pick := newFixtureWith(t, func(src string) {
@@ -207,6 +222,9 @@ func TestIntegrityRealTypesAccepts(t *testing.T) {
 			"\ntype fixture struct{ t *testing.T }\n"},
 		"an interface holding t": {"pkg/calc_test.go": strings.Replace(goT, "t.Fatal(\"add\")", "check(t)\n\t\tt.Fatal(\"add\")", 1) +
 			"\nfunc check(tb testing.TB) { tb.Helper() }\n"},
+		// Round 4 (Mythos #265 r2, M1): a type error in a file the gate builds only on the other platform.
+		"files for each platform": {"pkg/x_amd64.go": "package pkg\n\nimport \"syscall\"\n\nconst archAMD = syscall.SYS_ARCH_PRCTL\n",
+			"pkg/x_arm64.go": "package pkg\n\nimport \"syscall\"\n\nconst archARM = syscall.SYS_ARCH_SPECIFIC_SYSCALL\n"},
 		"an own and a module-cache import": {"pkg/x.go": "package pkg\n\nimport (\n\t\"example.com/m/other\"\n\t\"golang.org/x/sys/unix\"\n)\n\nvar mode, v = unix.S_IFMT, other.Value\n"},
 	} {
 		if v := f.guarded(t, files); !v.Accepted() || len(v.Warnings) > 0 {
