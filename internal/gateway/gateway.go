@@ -16,7 +16,8 @@
 //     and 38). A redirect is recorded as a route refusal; nothing is sent to its target.
 //   - The credential is injected per destination (Injector; Bearer by default), the point a governed upstream's
 //     trust secret uses later. It is never logged, or put in an error, a refusal or a capture; an upstream response
-//     echoing it reaches the adapter with the value replaced, recorded as a route refusal.
+//     echoing it (raw or JSON-escaped, or cut at EOF) reaches the adapter with the value replaced, recorded as a route
+//     refusal. A response header reaches the adapter only as a known media type and charset.
 //   - Launch readiness (dispatch.Credentials): Holds reports whether the gateway holds the named credential, read
 //     afresh at every check. The registry binds a credential reference to one origin (RuleCredentialRef).
 //   - Capture is configured only for exit runs (§8 item 4): the body as sent, before injection, as a restricted
@@ -26,6 +27,9 @@
 //   - Intent before egress (P12a): a binding names its call, and nothing is sent for the call until its
 //     `model_call` intent is durable (Intents, internal/modelcall). It is intended once per binding, as the last step
 //     before the first send, so a refused request leaves no intent. A gateway without Intents sends nothing.
+//   - Counting (P11b, count.go): the gateway counts every request it sends itself (Counts): a floor durable before
+//     the send (none, none sent), then the usage the upstream reported, so an adapter's final never settles a call on
+//     less than was sent.
 //   - Inert (§1's gating table): nothing in adcd constructs a Gateway; P22a does, when it activates `launch`.
 package gateway
 
@@ -40,8 +44,11 @@ import (
 	"io"
 	"maps"
 	"mime"
+	"net"
 	"net/http"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -89,6 +96,7 @@ type Config struct {
 	Attempts Attempts
 	Secrets  Secrets
 	Intents  Intents
+	Counts   Counts
 	Inject   map[types.Slug]Injector // by destination id; Bearer when absent
 	Capture  Capture                 // nil except in exit runs
 }
@@ -101,13 +109,16 @@ type Gateway struct {
 	bound    map[[32]byte]Binding // by the token's hash
 	intended map[[32]byte]bool    // tokens whose call's intent is durable, by the token's hash
 	observed map[types.AttemptID]Observed
+	// seq numbers every request's count, across calls, so a call's are distinct however often it is bound. A
+	// restart resets it, but no call sends again after one: its effect is then uncertain, and Intend refuses it.
+	seq int64
 }
 
 // New is a gateway with no binding. A zero Registry registers nothing, so
 // it refuses every call.
 func New(cfg Config) (*Gateway, error) {
-	if cfg.Leases == nil || cfg.Attempts == nil || cfg.Secrets == nil || cfg.Intents == nil {
-		return nil, errors.New("gateway: a gateway needs the lease and attempt readers, the secrets and the intents")
+	if cfg.Leases == nil || cfg.Attempts == nil || cfg.Secrets == nil || cfg.Intents == nil || cfg.Counts == nil {
+		return nil, errors.New("gateway: a gateway needs the lease and attempt readers, the secrets, the intents and the counts")
 	}
 	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, intended: map[[32]byte]bool{},
 		observed: map[types.AttemptID]Observed{}}, nil
@@ -171,8 +182,18 @@ func (g *Gateway) Holds(_ context.Context, destination, credential types.Slug) (
 	if destination == "" || credential == "" || g.cfg.Secrets == nil {
 		return false, nil
 	}
-	_, ok, err := g.cfg.Secrets.Credential(credential)
+	c, ok, err := g.cfg.Secrets.Credential(credential)
+	if ok && err == nil && !redactable(c.Reveal()) {
+		return false, fmt.Errorf("gateway: credential %s holds a backslash or a non-ASCII byte, which the gateway never injects", credential)
+	}
 	return ok && err == nil, err
+}
+
+// redactable: the redaction matches v in every JSON spelling, so the gateway injects it. A credential with a
+// backslash (raw or escaped, ambiguously) or a non-ASCII byte (a \u escape spells a rune, not a byte) is refused,
+// as not held (Astra on #256, M1).
+func redactable(v string) bool {
+	return v != "" && !strings.ContainsFunc(v, func(r rune) bool { return r == '\\' || r > 0x7e })
 }
 
 // refusal is a request the gateway did not send: its status to the adapter
@@ -188,35 +209,60 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(w, &refusal{http.StatusUnauthorized, "unbound"})
 		return
 	}
-	resp, cred, no := g.forward(r, b)
+	resp, s, no := g.forward(r, b)
 	if no != nil {
 		refuse(w, no)
 		return
 	}
 	defer resp.Body.Close()
-	// The media type and charset only: no parameter carries a value past the redaction.
-	if mt, params, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err == nil {
-		if cs, ok := params["charset"]; ok {
-			mt = mime.FormatMediaType(mt, map[string]string{"charset": cs})
-		}
-		w.Header().Set("Content-Type", mt)
+	if ct, ok := contentType(resp.Header.Get("Content-Type")); ok {
+		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	out := &redacting{w: flushing{w}, secret: []byte(cred.Reveal())}
-	_, _ = io.Copy(out, resp.Body)
-	_ = out.Close()
+	out := &redacting{w: flushing{w}, secret: []byte(s.cred.Reveal())}
+	var t tally
+	_, err := io.Copy(out, io.TeeReader(resp.Body, &t))
+	err = errors.Join(err, out.Close())
 	if out.hit {
 		g.observe(b.Attempt, 0, RouteEchoed)
 	}
+	g.count(r, b, s, &t, err == nil)
 }
 
-// redacting writes to w with every occurrence of secret replaced by the
+// The response media types and charsets the gateway forwards: a header is
+// never a channel past the redaction, so any other value, or any other
+// parameter, is dropped rather than scanned (#226 entry 56).
+var (
+	mediaTypes = map[string]bool{"application/json": true, "text/event-stream": true, "text/plain": true, "text/html": true}
+	charsets   = map[string]bool{"utf-8": true, "us-ascii": true, "iso-8859-1": true}
+)
+
+// contentType is the Content-Type v forwarded as: a known media type, with
+// its charset when that is known too.
+func contentType(v string) (string, bool) {
+	mt, params, err := mime.ParseMediaType(v)
+	if err != nil || !mediaTypes[mt] {
+		return "", false
+	}
+	if cs := strings.ToLower(params["charset"]); charsets[cs] {
+		return mime.FormatMediaType(mt, map[string]string{"charset": cs}), true
+	}
+	return mt, true
+}
+
+// redacting writes to w with every spelling of secret replaced by the
 // placeholder, so an upstream echoing the credential (in an auth error,
-// say) never hands it to the sandbox. It holds back the last
-// len(secret)-1 bytes, which may begin a match split across writes, until
-// the next write or Close. The stream goes on rather than being cut: what
-// arrived stays usable and its status reaches the exit map, and the echo
-// is recorded as a route refusal.
+// say) never hands it to the sandbox. It holds back the last bytes that may
+// begin a spelling split across writes, until the next write or Close. The
+// stream goes on rather than being cut: what arrived stays usable and its
+// status reaches the exit map, and the echo is recorded as a route refusal.
+//
+// A spelling is the key with each byte raw or JSON-escaped, however an
+// honest encoder escapes it (#226 entry 56): `\uXXXX` in either case of
+// hex, or a short escape (`\/`, `\"`, `\b`, `\f`, `\n`, `\r`, `\t`).
+// Base64, URL-encoded, partial and masked echoes are not scanned: only a
+// hostile upstream makes them, and it already holds the key (an accepted
+// M1 residual).
 type redacting struct {
 	w      io.Writer
 	secret []byte
@@ -224,17 +270,68 @@ type redacting struct {
 	hit    bool
 }
 
+// minTail is how many bytes of the key past its public prefix (publicPrefix,
+// such as `sk-proj-`) a tail held at EOF must spell for Close to drop it as
+// an echo (#226 entry 55): a coincidental run that long of a random key is
+// negligible. A key under minTail+1 bytes past its prefix is never detected
+// cut at EOF.
+const minTail = 8
+
+var publicPrefix = regexp.MustCompile(`^[a-z]+(-[a-z0-9]+)*-`)
+
+// shortEscapes are JSON's two-character escapes, by the byte they stand for; `\\` is left out, since a key
+// holding a backslash is never injected (redactable).
+var shortEscapes = map[byte]byte{'/': '/', '"': '"', '\b': 'b', '\f': 'f', '\n': 'n', '\r': 'r', '\t': 't'}
+
+// unit is how many bytes of buf's start spell c: 0 when they do not, -1
+// when buf ends inside what may still.
+func unit(buf []byte, c byte) int {
+	switch {
+	case len(buf) == 0 || len(buf) == 1 && buf[0] == '\\':
+		return -1
+	case buf[0] == c:
+		return 1
+	case buf[0] != '\\':
+		return 0
+	case buf[1] == 'u':
+		if len(buf) < 6 {
+			return -1
+		}
+		if v, err := strconv.ParseUint(string(buf[2:6]), 16, 16); err == nil && v == uint64(c) {
+			return 6
+		}
+	case shortEscapes[c] != 0 && buf[1] == shortEscapes[c]:
+		return 2
+	}
+	return 0
+}
+
+// spell reads secret at buf's start: the bytes spanned and the key bytes
+// spelled, and whether buf ended first.
+func spell(buf, secret []byte) (n, spelled int, cut bool) {
+	for _, c := range secret {
+		u := unit(buf[n:], c)
+		if u <= 0 {
+			return n, spelled, u < 0
+		}
+		n, spelled = n+u, spelled+1
+	}
+	return n, spelled, false
+}
+
 func (r *redacting) Write(p []byte) (int, error) {
 	if len(r.secret) == 0 {
 		return r.w.Write(p)
 	}
-	buf, out := append(r.held, p...), []byte(nil)
-	for i := bytes.Index(buf, r.secret); i >= 0; i = bytes.Index(buf, r.secret) {
-		out = append(append(out, buf[:i]...), redacted...)
-		buf, r.hit = buf[i+len(r.secret):], true
+	buf, out, from := append(r.held, p...), []byte(nil), 0
+	for i := 0; i < len(buf); i++ {
+		if n, spelled, _ := spell(buf[i:], r.secret); spelled == len(r.secret) {
+			out, r.hit = append(append(out, buf[from:i]...), redacted...), true
+			from, i = i+n, i+n-1
+		}
 	}
-	keep := min(len(r.secret)-1, len(buf))
-	out, r.held = append(out, buf[:len(buf)-keep]...), append([]byte(nil), buf[len(buf)-keep:]...)
+	keep := min(6*len(r.secret)-1, len(buf)-from)
+	out, r.held = append(out, buf[from:len(buf)-keep]...), append([]byte(nil), buf[len(buf)-keep:]...)
 	if len(out) > 0 {
 		if _, err := r.w.Write(out); err != nil {
 			return 0, err
@@ -243,13 +340,22 @@ func (r *redacting) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Close writes the held-back tail, which holds no match.
+// Close writes the held-back tail, which spells no whole key. A tail
+// ending in a spelling of minTail key bytes or more past its public prefix
+// is an echo cut at EOF: it is replaced, and the echo recorded.
 func (r *redacting) Close() error {
-	if len(r.held) == 0 {
+	tail, enough := r.held, len(publicPrefix.Find(r.secret))+minTail
+	for i := range tail {
+		if _, spelled, cut := spell(tail[i:], r.secret); cut && spelled >= enough {
+			tail, r.hit = append(tail[:i:i], redacted...), true
+			break
+		}
+	}
+	r.held = nil
+	if len(tail) == 0 {
 		return nil
 	}
-	_, err := r.w.Write(r.held)
-	r.held = nil
+	_, err := r.w.Write(tail)
 	return err
 }
 
@@ -274,8 +380,8 @@ func (g *Gateway) binding(r *http.Request) (Binding, bool) {
 // and the credential it injected, or refuses it with nothing sent. The
 // lease is checked before the body is read, so only a running attempt can
 // make the gateway buffer one.
-func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credential, *refusal) {
-	ctx, none := r.Context(), Credential{}
+func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, sending, *refusal) {
+	ctx, none := r.Context(), sending{}
 	if r.Method != http.MethodPost {
 		return nil, none, &refusal{http.StatusMethodNotAllowed, "method"}
 	}
@@ -325,7 +431,7 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 		if g.cfg.Secrets != nil {
 			c, held, err = g.cfg.Secrets.Credential(*e.CredentialRef)
 		}
-		if err != nil || !held || c.Reveal() == "" {
+		if err != nil || !held || !redactable(c.Reveal()) {
 			return nil, none, &refusal{http.StatusServiceUnavailable, "credential_not_held"}
 		}
 		cred = c
@@ -346,6 +452,14 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 	if err != nil {
 		return nil, none, &refusal{http.StatusForbidden, "destination_not_admitted"}
 	}
+	g.mu.Lock()
+	s := sending{cred, g.seq, len(out)}
+	g.seq++
+	g.mu.Unlock()
+	if g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, floor(out, l)) != nil {
+		g.observe(b.Attempt, 0, RouteUncounted)
+		return nil, none, &refusal{http.StatusServiceUnavailable, RouteUncounted}
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if e.CredentialRef != nil {
 		inject := g.cfg.Inject[e.Destination.ID]
@@ -358,6 +472,11 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 	if resp != nil {
 		g.observe(b.Attempt, resp.StatusCode, "")
 	}
+	if op := (*net.OpError)(nil); errors.As(err, &op) && op.Op == "dial" || errors.Is(err, errOffOrigin) {
+		if g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, Count{Observed: true}) != nil {
+			g.observe(b.Attempt, 0, RouteUncounted) // never sent, but its floor stands
+		}
+	}
 	switch {
 	case errors.Is(err, errRedirect):
 		g.observe(b.Attempt, 0, RouteRedirect)
@@ -369,7 +488,7 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 		resp.Body.Close()
 		return nil, none, &refusal{http.StatusBadGateway, "encoding"}
 	}
-	return resp, cred, nil
+	return resp, s, nil
 }
 
 // intend makes the call's intent durable before r's token first sends.

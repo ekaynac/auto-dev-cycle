@@ -20,13 +20,14 @@ One usage report for one call (docs/design/m0/05 "Usage and settlement" [M7]). O
 | `turns` | yes | [Amount](records-resource-group.md#amount) |  |
 | `milliseconds` | yes | [Amount](records-resource-group.md#amount) |  |
 | `cost` | yes | [UsageMeasurementCost](#usagemeasurementcost) |  |
-| `source_of_truth` | yes | one of `provider_usage`, `adapter_report`, `gateway_count`, `none` |  |
+| `source_of_truth` | yes | one of `provider_usage`, `adapter_report`, `gateway_count`, `gateway_floor`, `none` | gateway_count and gateway_floor are the gateway's own count of one request it sent (P11b), kept apart from the adapter's reports: gateway_floor recorded before the request is sent, gateway_count after its response is forwarded whole with its usage read, superseding the floor at the same sequence. An adapter's final settles a call only when no request of it has a floor alone and the final is not below the counts. |
 
 No other fields are allowed.
 
-Conditional rules (1, `if`/`then`/`else` in the schema):
+Conditional rules (2, `if`/`then`/`else` in the schema):
 
 - when `kind` `provider_reconciliation`, then `source_of_truth` `provider_usage`
+- when `source_of_truth` one of `gateway_count`, `gateway_floor`, then `kind` `delta`
 
 ## Definitions
 

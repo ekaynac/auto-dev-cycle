@@ -124,6 +124,19 @@ func (w *world) measureIn(r running, currency string, kind types.UsageMeasuremen
 	return w.record(m)
 }
 
+// count records the gateway's count of r's call's request seq, as
+// modelcall.Recorder does.
+func (w *world) count(r running, seq, in, out int64) {
+	w.t.Helper()
+	m := types.UsageMeasurement{ID: types.MeasurementID(newID(w.t, "msr")), Call: r.call, Attempt: r.attempt, Lease: r.lease,
+		Kind: types.UsageMeasurementKindDelta, Sequence: seq, Tokens: types.UsageMeasurementTokens{In: in, Out: out},
+		Cost:          types.UsageMeasurementCost{Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
+		SourceOfTruth: types.UsageMeasurementSourceOfTruthGatewayCount}
+	if err := w.record(m); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
 func (w *world) record(m types.UsageMeasurement) error {
 	if kind := m.Kind; kind == types.UsageMeasurementKindProviderReconciliation {
 		m.SourceOfTruth = types.UsageMeasurementSourceOfTruthProviderUsage
@@ -231,6 +244,7 @@ func TestLateUsageRecomputesTheLiability(t *testing.T) {
 		{types.UsageMeasurementKindFinal, 0, 0, 0, 0},      // settled: the liability is released
 		{types.UsageMeasurementKindDelta, 2, 900, 900, 0},  // and stays released
 	}
+	w.count(r, 0, 1, 0) // the gateway's count of the call, which the final below bears out
 	for i, s := range steps {
 		if err := w.measure(r, s.kind, s.seq, s.in, s.out); err != nil {
 			t.Fatalf("step %d: late usage refused: %v", i, err)
@@ -295,6 +309,7 @@ func TestSlotLiabilityHoldsTheSlot(t *testing.T) {
 	if n, l := w.outstanding(gpu), w.liable(gpu); n != 0 || l != 1 {
 		t.Fatalf("outstanding %d, liable %d; want 0, 1", n, l)
 	}
+	w.count(r, 0, 100, 20)
 	if err := w.measure(r, types.UsageMeasurementKindFinal, 0, 100, 20); err != nil {
 		t.Fatal(err)
 	}
@@ -413,6 +428,7 @@ func TestSettledCallOwesAgainWhateverTheOrder(t *testing.T) {
 			w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
 			r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
 			w.stop(r)
+			w.count(r, 0, 1, 0) // the gateway's count, which the small final settles
 			for i, m := range reports {
 				if i == settleAfter {
 					w.settleDerived(r)

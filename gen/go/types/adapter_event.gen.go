@@ -287,7 +287,7 @@ type CoverageEvent struct {
 	Unobservable []CoverageEventUnobservableItem `json:"unobservable"`
 }
 
-// UsageEvent: A usage delta the adapter observed for the call or a sub-call, numbered per call from 0 (05). It is a report, not a record: the controller mints the measurement id, takes the lease and attempt from the envelope it fenced, records kind delta, and sets source_of_truth itself (gateway_count when its gateway counted the call, adapter_report otherwise). Accepted even from a stale attempt: accounting is not fenced.
+// UsageEvent: A usage delta the adapter observed for the call or a sub-call, numbered per call from 0 (05). It is a report, not a record: the controller mints the measurement id, takes the lease and attempt from the envelope it fenced, records kind delta, and sets source_of_truth itself, always adapter_report: the gateway records its own count of each request it sent as a measurement of its own (gateway_floor before the send, then gateway_count once it read the usage), which an adapter final must not fall below to settle the call. Accepted even from a stale attempt: accounting is not fenced.
 type UsageEvent struct {
 	Event        string                 `json:"event"`
 	Attempt      AttemptID              `json:"attempt"`

@@ -4,6 +4,7 @@ package gateway
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -160,12 +161,43 @@ func (i *intents) n() int {
 	return len(i.got)
 }
 
+// counts records the gateway's counts (internal/modelcall's Recorder in
+// adcd), failing with err when set.
+type counts struct {
+	mu       sync.Mutex
+	got      []counted
+	err      error // for every count
+	observed error // for counts after a response, not floors
+}
+
+type counted struct {
+	b   Binding
+	seq int64
+	n   Count
+}
+
+func (c *counts) Count(_ context.Context, b Binding, seq int64, n Count) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err != nil || n.Observed && c.observed != nil {
+		return cmp.Or(c.err, c.observed)
+	}
+	c.got = append(c.got, counted{b, seq, n})
+	return nil
+}
+
+func (c *counts) all() []counted {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]counted(nil), c.got...)
+}
+
 // rig is a gateway over the stub registry pointed at up, with the builder's
 // lease running and its credential held, and a bound token.
 func rig(t *testing.T, up *upstream, edit func(*Config)) (*Gateway, string) {
 	t.Helper()
 	cfg := Config{Registry: reg(t, "registry-stub.json", up.URL+"/v1"), Leases: running(builder), Secrets: secrets{"stub": fakeKey}, Intents: &intents{},
-		Attempts: attempts{attempt: {ID: attempt, Lease: leaseID, Status: types.AttemptStatusRunning}}}
+		Counts: &counts{}, Attempts: attempts{attempt: {ID: attempt, Lease: leaseID, Status: types.AttemptStatusRunning}}}
 	if edit != nil {
 		edit(&cfg)
 	}
@@ -345,8 +377,11 @@ func TestNewNeedsLeasesAndSecrets(t *testing.T) {
 	if _, err := New(Config{Leases: leases{}, Attempts: attempts{}, Secrets: secrets{}}); err == nil {
 		t.Error("no intents")
 	}
-	if _, err := New(Config{Leases: leases{}, Secrets: secrets{}, Intents: &intents{}}); err == nil {
+	if _, err := New(Config{Leases: leases{}, Secrets: secrets{}, Intents: &intents{}, Counts: &counts{}}); err == nil {
 		t.Error("no attempt reader")
+	}
+	if _, err := New(Config{Leases: leases{}, Attempts: attempts{}, Secrets: secrets{}, Intents: &intents{}}); err == nil {
+		t.Error("no counts")
 	}
 	up := newUpstream(t, nil)
 	g, token := rig(t, up, nil)
@@ -381,22 +416,23 @@ func TestAnEchoedCredentialNeverReachesTheAdapter(t *testing.T) {
 			t.Errorf("%s: observed %+v", name, o)
 		}
 	}
-	var out bytes.Buffer // the held-back tail reaches the adapter at EOF
+	var out bytes.Buffer // a held-back tail shorter than minTail reaches the adapter at EOF
 	r := &redacting{w: &out, secret: []byte(fakeKey)}
-	_, _ = r.Write([]byte("abc fake-cred"))
-	if _ = r.Close(); out.String() != "abc fake-cred" || r.hit {
+	_, _ = r.Write([]byte("abc fake-cr"))
+	if _ = r.Close(); out.String() != "abc fake-cr" || r.hit {
 		t.Fatalf("tail %q", out.String())
 	}
 	// Mythos M-2: a key split across two writes, deterministically. After
-	// the first write exactly len(key)-1 bytes are held back.
+	// the first write exactly 6*len(key)-1 bytes are held back, the longest
+	// spelling but one byte (every byte escaped as \uXXXX).
 	out.Reset()
 	r = &redacting{w: &out, secret: []byte(fakeKey)}
-	_, _ = r.Write([]byte("data: fake-credential-0123"))
-	if out.String() != "d" || len(r.held) != len(fakeKey)-1 {
+	_, _ = r.Write([]byte(strings.Repeat("a", 200) + "data: fake-credential-0123"))
+	if out.String() != strings.Repeat("a", 226-6*len(fakeKey)+1) || len(r.held) != 6*len(fakeKey)-1 {
 		t.Fatalf("after one write: %q, held %d", out.String(), len(r.held))
 	}
 	_, _ = r.Write([]byte("456789 tail"))
-	if _ = r.Close(); strings.Contains(out.String(), "0123456789") || out.String() != "data: "+redacted+" tail" || !r.hit {
+	if _ = r.Close(); strings.Contains(out.String(), "0123456789") || out.String() != strings.Repeat("a", 200)+"data: "+redacted+" tail" || !r.hit {
 		t.Fatalf("split: %q hit %v", out.String(), r.hit)
 	}
 }
