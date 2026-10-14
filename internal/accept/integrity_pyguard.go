@@ -73,6 +73,15 @@ func (r *run) python(changes []Change) error {
 	if err != nil {
 		return err
 	}
+	var cache []pyBaseTest // the base's test files, read once (Mythos #267 L3)
+	var cacheErr error
+	tests := func() ([]pyBaseTest, error) {
+		if cache == nil && cacheErr == nil {
+			cache, cacheErr = r.pyBaseTests()
+			cache = append(cache, pyBaseTest{}) // read, even when empty
+		}
+		return cache, cacheErr
+	}
 	var changed []string // the changed modules' paths
 	for _, c := range changes {
 		for _, q := range []string{c.Src, c.Dst} {
@@ -108,7 +117,7 @@ func (r *run) python(changes []Change) error {
 			continue
 		}
 		judged := pyTested(c.Dst) || r.pyTestDir(c.Dst)
-		if why, err := r.pyShadow(c, judged, paths); err != nil {
+		if why, err := r.pyShadow(c, judged, paths, tests); err != nil {
 			return err
 		} else if why != "" {
 			add(&r.blocks, c.Dst, why)
@@ -118,6 +127,13 @@ func (r *run) python(changes []Change) error {
 		if err = cmp.Or(err, err2); err != nil {
 			return err
 		} else if ok && ok2 {
+			if src && dst && path.Ext(c.Src) == ".py" && path.Ext(c.Dst) == ".py" { // a changed module a base condition reads (Mythos #267 H4)
+				if all, err := tests(); err != nil {
+					return err
+				} else if why := pyReach(c, b, a, all); why != "" {
+					add(&r.blocks, c.Dst, why)
+				}
+			}
 			r.pyFileCompare(c.Dst, b, a, judged, changed)
 		}
 	}
@@ -219,7 +235,8 @@ type pyFind struct {
 	strict bool
 	n      int
 	calls  []string // the names its statement calls ("": not a plain name); a condition's: the names it reads
-	cond   bool     // a skipif or xfail condition: blocks in every file (Opus #267 H1)
+	cond   bool     // a skipif or xfail condition (Opus #267 H1)
+	always bool     // blocks in every file: a condition, __path__ (Mythos #267 H3)
 }
 
 // passes: a's finding k is unchanged from the base b, its imports
@@ -230,7 +247,7 @@ func (a *pyFile) passes(k string, b *pyFile, changed []string) bool {
 		return false
 	} else if f.cond { // each name bound at import as in the base, no import naming a changed module (Opus #267 M4)
 		return !slices.ContainsFunc(f.calls, func(n string) bool { // a def's or class's body may change under its line
-			return !a.imported[n] && (!a.local[n] || a.binds[n] != b.binds[n] || strings.Contains(a.binds[n], "[def ") ||
+			return (!a.imported[n] || a.local[n]) && (!a.local[n] || a.binds[n] != b.binds[n] || strings.Contains(a.binds[n], "[def ") || // Mythos #267 H1
 				strings.Contains(a.binds[n], "[class ") || strings.Contains(a.binds[n], "[async "))
 		}) &&
 			!slices.ContainsFunc(changed, func(q string) bool { return slices.Contains(a.mods, path.Base(q)) })
@@ -289,12 +306,13 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 		meta   bool   // a class that may be a metaclass (Mythos #263 L1, Opus #266 L1)
 	}
 	stack, deco, conftest, tested := []block{{indent: -1}}, []ptok(nil), path.Base(p) == "conftest.py", pyTested(p)
-	rebound, classes, pure := pyRebound(lines), map[string]bool{}, pyPure(lines) // Opus #266 M2: a pre-pass
+	rebound, classes := pyRebound(lines), map[string]bool{} // Opus #266 M2: a pre-pass
+	pure, aliases := pyPure(lines)
 	find := func(st []ptok, why string, strict bool) {
 		if f := fa.finds[fmt.Sprint(st)]; f != nil {
 			f.n, f.strict = f.n+1, f.strict || strict // Mythos #266 L2
 		} else {
-			fa.finds[fmt.Sprint(st)] = &pyFind{why, strict, 1, pyCalls(st), false}
+			fa.finds[fmt.Sprint(st)] = &pyFind{why, strict, 1, pyCalls(st), false, false}
 		}
 	}
 	for _, l := range lines {
@@ -315,6 +333,10 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 				}
 				binds, imported := pyBinds(slices.Concat(st, l.inner)) // a walrus in an f-string binds too (Mythos #266 H1)
 				for _, n := range binds {
+					if slices.Contains([]string{"__path__", "__spec__", "__loader__"}, n) { // in every file (Mythos #267 H3)
+						find(st, "a package's import path, spec or loader bound at import ("+n+")", false)
+						fa.finds[fmt.Sprint(st)].always = true
+					}
 					if judged && (strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__" || !imported && pyBound[n] != "") {
 						find(st, "a dunder or an allowlisted name bound at import ("+n+")", true) // Opus #266 H1
 					}
@@ -331,11 +353,11 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 				find(slices.Concat(t, l.inner), "code run at import in an f-string field ("+ptext(t)+")", false)
 			}
 		}
-		if line := slices.Concat(t, l.inner); pySkipString(line, pure) { // in every file (Opus #267 H1)
+		if line := slices.Concat(t, l.inner); pySkipString(line, pure, aliases) { // in every file (Opus #267 H1)
 			if f := fa.finds["cond "+fmt.Sprint(t)]; f != nil {
 				f.n++
 			} else {
-				fa.finds["cond "+fmt.Sprint(t)] = &pyFind{"a skipif or xfail condition that may be a string, code pytest runs (" + ptext(t) + ")", false, 1, pyNames(line), true}
+				fa.finds["cond "+fmt.Sprint(t)] = &pyFind{"a skipif or xfail condition that may be a string, code pytest runs (" + ptext(t) + ")", false, 1, pyNames(line), true, true}
 			}
 		}
 		if why := pyFixtureName(t); (t[0].text == "@" || fn == "") && named(t, "fixture") && why != "" {
@@ -428,7 +450,7 @@ func pyMain(t []ptok) bool {
 // pyFileCompare: the change at p from b to a; a reference added blocks by class and place.
 func (r *run) pyFileCompare(p string, b, a *pyFile, judged bool, changed []string) {
 	for _, k := range slices.Sorted(maps.Keys(a.finds)) { // new findings: blocks where judged, else warnings (Opus #266 M1)
-		if f := a.finds[k]; !a.passes(k, b, changed) && (judged || f.cond) {
+		if f := a.finds[k]; !a.passes(k, b, changed) && (judged || f.always) {
 			add(&r.blocks, p, "unverifiable: "+f.why)
 		} else if !a.passes(k, b, changed) {
 			add(&r.warnings, p, f.why+": review it (decision A)")

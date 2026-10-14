@@ -94,8 +94,10 @@ func pyCalls(t []ptok) (calls []string) {
 
 // pyBinds are the names t binds: by an import (imported), def, class, = or :=.
 func pyBinds(t []ptok) (names []string, imported bool) {
+	target := false // for … in, and as: bindings too (Mythos #267 M3)
 	for i, k := range t {
-		if k.kind == 'n' && i+2 < len(t) && t[i+1].text == ":" && t[i+2].text == "=" {
+		target = k.text == "for" || target && k.text != "in"
+		if k.kind == 'n' && (i+2 < len(t) && t[i+1].text == ":" && t[i+2].text == "=" || target && k.text != "for" || i > 0 && t[i-1].text == "as") {
 			names = append(names, k.text)
 		}
 	}
