@@ -63,7 +63,7 @@ and is never edited apart from it.
 | I9 Accounting | partial | P22a (P11b, P12a, P12b, P20's `model_call` half and P21a done, inert) | `launch`: all |
 | I10 Egress, data policy, context | partial | P16, P22a (P7, P8b, P11, P11b done, inert) | `launch`: all |
 | I11 Restart and replay | partial | P4a, P22a (P21a done, inert) | `launch`: all |
-| I12 Build facts and accept | partial | P14b-out, P14c-2a, P14c-2a2, P14c-2b, P14d, P22a (P14a, P14b, P14c-1 done, inert) | `launch`: all |
+| I12 Build facts and accept | partial | P14b-out, P14c-2a, P14c-2a-allow, P14c-2a2, P14c-2a3, P14c-2b, P14d, P22a (P14a, P14b, P14c-1 done, inert) | `launch`: all |
 | I13 Gate verdict and receipts | partial | P15 | `review`: all |
 | I14 Single merge delivery | partial | P18, P19, P27 | `merge-local`: all but the GitHub effect check; `merge-github`: all |
 | I15 Deferred surfaces | partial | P22a | `intake`: admission (the guard); every other capability: all |
@@ -191,7 +191,7 @@ through `lease.completed`. P21a keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `graph.Build` (`graph/build.go`) from `BuildFacts`; ingestion via `attemptRun.admit` (`adapterhost/submit.go`); protected paths and unsafe output refused at accept (`internal/accept`, P14a, #252). P14b-init's Go integrity guard (#255) and P14c-1's Python tokenizer and encoding gate (#260) are kept in code, inert until P22a; P14b's fail-closed Python rule holds until P14c-2b | kept + GAP | P14b-out (Go, outside init), P14c-2a, P14c-2a2 and P14c-2b (Python), P14d (Go table rows, subtests, helper skips); P22a (wires `accept.Accept` into the build path) |
+| admission | `graph.Build` (`graph/build.go`) from `BuildFacts`; ingestion via `attemptRun.admit` (`adapterhost/submit.go`); protected paths and unsafe output refused at accept (`internal/accept`, P14a, #252). P14b-init's Go integrity guard (#255) and P14c-1's Python tokenizer and encoding gate (#260) are kept in code, inert until P22a; P14b's fail-closed Python rule holds until P14c-2b | kept + GAP | P14b-out (Go, outside init), P14c-2a, P14c-2a-allow, P14c-2a2, P14c-2a3 and P14c-2b (Python), P14d (Go table rows, subtests, helper skips); P22a (wires `accept.Accept` into the build path) |
 | fold/replay | `graph.Check`, `CheckRead` (`graph/build.go`) | kept | — |
 | consumption | the gate must take only an accepted tree; no template wires that | GAP | P22a (P14a provides the accepted tree) |
 | effect | n/a | n/a | — |
