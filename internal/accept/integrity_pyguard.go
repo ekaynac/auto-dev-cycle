@@ -225,7 +225,7 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 		indent int
 		fn     string // the outermost function: "" at import
 	}
-	stack, deco, fixture := []block{{indent: -1}}, []ptok(nil), true
+	stack, deco, fixture, roots := []block{{indent: -1}}, []ptok(nil), true, pyRoots()
 	for _, l := range lines {
 		if r.work += 2 * (len(l.toks) + len(l.inner)); r.work > maxWork {
 			break
@@ -268,6 +268,9 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 		}
 		if kw == "def" && pyTested(p) && slices.Contains(pyFixtures, name) {
 			fa.refs["p\x00a builtin fixture overridden ("+name+")\x00"+fn]++
+		}
+		for _, root := range pyWrites(t, code, roots, kw, name, &r.work) { // integrity_pywrites.go
+			fa.refs["p\x00a pytest object written or handed out ("+root+")\x00"+fn]++
 		}
 		deco, fixture = nil, true
 	}
