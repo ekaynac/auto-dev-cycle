@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -357,7 +359,10 @@ func TestPyTokensBounded(t *testing.T) {
 		"one logical line of many tokens": func(n int) string { return "x = [\n" + strings.Repeat("1,\n", n/3) + "]\n" },
 		"nested f-strings":                func(n int) string { return strings.Repeat(`x = f"{f'{f"{y!r:>{w}}"}'}"`+"\n", n/28) },
 	} {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		// Generous: a slow CI runner ran this test about 13× slower than a
+		// developer machine (#261), and a deadline here would read as "not
+		// linear"; the 8× ratio below is what catches non-linearity (Opus #262 L1).
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		var took [2]time.Duration // the median of three runs (Mythos #260 L4)
 		for i, size := range []int{1 << 20, 4 << 20} {
 			src, runs := []byte(gen(size)), []time.Duration{}
@@ -377,14 +382,30 @@ func TestPyTokensBounded(t *testing.T) {
 		}
 	}
 	// Opus #260 H3: f-string format specs nested 2M deep at the 4 MiB blob
-	// bound, unterminated, are refused at maxNest, at once.
-	specs := []byte("x = f'" + strings.Repeat("{:", 2<<20-4))
-	ctx0, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	start := time.Now()
-	if _, why, err := pyTokens(ctx0, specs); err != nil || why == "" || time.Since(start) > 100*time.Millisecond {
-		t.Errorf("nested specs: %q %v in %v", why, err, time.Since(start))
+	// bound, unterminated, are refused at maxNest, at once: before the scan
+	// reaches the end, so no slower than a flat unterminated f-string of the
+	// same size, which must be read to its end (about 5 ms against 25 ms;
+	// without the bound, about 440 ms). Relative, so a loaded runner slows
+	// both sides (a fixed 100 ms bound flaked in CI on #261). The two are
+	// interleaved, each after a GC, and the fastest of five is kept: load only
+	// adds time, and a burst then hits both sides (Opus #262 M1).
+	refusedIn := func(src []byte) time.Duration {
+		runtime.GC()
+		start := time.Now()
+		if _, why, err := pyTokens(context.Background(), src); err != nil || why == "" {
+			t.Fatalf("%.12q…: %q %v, want refused", src, why, err)
+		}
+		return time.Since(start)
 	}
-	cancel()
+	flatSrc := []byte("x = f'" + strings.Repeat("ab", 2<<20-4))
+	nestedSrc := []byte("x = f'" + strings.Repeat("{:", 2<<20-4))
+	flat, nested := time.Duration(math.MaxInt64), time.Duration(math.MaxInt64)
+	for range 5 {
+		flat, nested = min(flat, refusedIn(flatSrc)), min(nested, refusedIn(nestedSrc))
+	}
+	if nested > flat {
+		t.Errorf("nested specs refused in %v, a flat f-string of the same size in %v: not at once", nested, flat)
+	}
 	src := []byte(strings.Repeat("def test_a():\n    assert 1\n", 4<<20/27))
 	ctx := &countCtx{Context: context.Background()}
 	ctx.n.Store(100)
