@@ -4,6 +4,7 @@ package ledger
 
 import (
 	"math/rand"
+	"slices"
 	"strings"
 	"testing"
 
@@ -159,5 +160,80 @@ func TestRefusals(t *testing.T) {
 	big.Tokens.In = maxAmount
 	if _, err := Reconcile([]types.UsageMeasurement{big, report(calA, delta, 1, 1)}); err == nil {
 		t.Error("an overflowing sum")
+	}
+}
+
+// counted is the gateway's count of one request of call: in tokens of
+// input, out of output.
+func counted(call types.CallID, seq, in, out int64) types.UsageMeasurement {
+	m := report(call, delta, seq, in)
+	m.Tokens.Out, m.Turns, m.Milliseconds, m.Cost.AmountMicros = types.Amount(out), 0, 0, 0
+	m.SourceOfTruth = types.UsageMeasurementSourceOfTruthGatewayCount
+	return m
+}
+
+// floor is the gateway's floor for a request whose usage it did not read.
+func floor(call types.CallID, seq, in int64) types.UsageMeasurement {
+	m := counted(call, seq, in, 0)
+	m.SourceOfTruth = types.UsageMeasurementSourceOfTruthGatewayFloor
+	return m
+}
+
+func standing(t *testing.T, ms ...types.UsageMeasurement) Standing {
+	t.Helper()
+	reconcile(t, ms...) // schema-valid, and reconcilable
+	return StandingOf(ms, calA)
+}
+
+// P11b (#226 entry 69): a final settles a call only when it is not below
+// the gateway's own count (input and cache tokens summed, output apart);
+// a final with no count, under it, or with a floor among the counts (usage
+// the gateway did not read), leaves the call uncertain at the
+// larger of the reports and the count. A provider reconciliation settles
+// it whatever the count. The count never enters Reconcile's usage, and
+// counts replayed under one sequence are one count.
+func TestAFinalSettlesOnlyOnTheGatewaysCount(t *testing.T) {
+	zero := report(calA, final, 0, 0)
+	agreeing := report(calA, final, 0, 300)
+	agreeing.Tokens.Out = 30
+	split := agreeing // the same input total, split into cache reads
+	split.Tokens.In, split.Tokens.CacheRead = 100, 200
+	shortOut := agreeing
+	shortOut.Tokens.Out = 29
+	for name, c := range map[string]struct {
+		ms      []types.UsageMeasurement
+		settled bool
+		in, out int64
+	}{
+		"a final, no count":             {[]types.UsageMeasurement{agreeing}, false, 300, 30},
+		"a zero final under the count":  {[]types.UsageMeasurement{zero, counted(calA, 0, 200, 20), counted(calA, 1, 100, 10)}, false, 300, 30},
+		"zero deltas, a zero final":     {[]types.UsageMeasurement{report(calA, delta, 0, 0), zero, counted(calA, 0, 300, 30)}, false, 300, 30},
+		"a final agreeing":              {[]types.UsageMeasurement{agreeing, counted(calA, 0, 300, 30)}, true, 300, 30},
+		"a final split otherwise":       {[]types.UsageMeasurement{split, counted(calA, 0, 300, 30)}, true, 100, 30},
+		"a final short in output":       {[]types.UsageMeasurement{shortOut, counted(calA, 0, 300, 30)}, false, 300, 30},
+		"a count replayed":              {[]types.UsageMeasurement{agreeing, counted(calA, 0, 300, 30), counted(calA, 0, 300, 30)}, true, 300, 30},
+		"deltas and a count":            {[]types.UsageMeasurement{report(calA, delta, 0, 50), counted(calA, 0, 300, 30)}, false, 300, 30},
+		"a reconciliation under it":     {[]types.UsageMeasurement{zero, report(calA, recon, 0, 10), counted(calA, 0, 300, 30)}, true, 10, 1},
+		"a final over a floor":          {[]types.UsageMeasurement{agreeing, counted(calA, 0, 200, 30), floor(calA, 1, 5)}, false, 300, 30},
+		"a reconciliation over a floor": {[]types.UsageMeasurement{report(calA, recon, 0, 10), floor(calA, 0, 50)}, true, 10, 1},
+	} {
+		st := standing(t, c.ms...)
+		if st.Settled != c.settled || st.Usage == nil || st.Usage.In != c.in || st.Usage.Out != c.out {
+			t.Errorf("%s: %+v (usage %+v), want settled %v at %d in, %d out", name, st, st.Usage, c.settled, c.in, c.out)
+		}
+		hasFinal := slices.ContainsFunc(c.ms, func(m types.UsageMeasurement) bool { return m.Kind == final })
+		under := !c.settled && hasFinal && len(c.ms) > 1 && !strings.Contains(name, "floor")
+		if st.Inconsistent != under && !strings.Contains(name, "reconciliation") {
+			t.Errorf("%s: inconsistent %v, want %v", name, st.Inconsistent, under)
+		}
+	}
+	got := reconcile(t, report(calA, delta, 0, 50), counted(calA, 0, 300, 30), counted(calA, 1, 1, 0))[calA]
+	if got.Usage.In != 50 || got.Counted == nil || got.Counted.In != 301 || got.Counted.Out != 30 {
+		t.Fatalf("reconciled %+v, counted %+v", got, got.Counted)
+	}
+	eur := counted(calA, 0, 300, 30)
+	eur.Cost.Currency = "EUR"
+	if _, err := Reconcile([]types.UsageMeasurement{report(calA, final, 0, 300), eur}); err != nil {
+		t.Fatalf("a count's currency is not the call's: %v", err)
 	}
 }

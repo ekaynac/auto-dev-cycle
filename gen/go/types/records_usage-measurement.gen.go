@@ -12,12 +12,14 @@ const (
 	UsageMeasurementKindProviderReconciliation UsageMeasurementKind = "provider_reconciliation"
 )
 
+// UsageMeasurementSourceOfTruth: gateway_count and gateway_floor are the gateway's own count of one request it sent (P11b), kept apart from the adapter's reports: gateway_count when it read the upstream's usage in the response it forwarded, gateway_floor when it did not (a floor from the request's size alone). An adapter's final settles a call only when it is not below the gateway's counts and none of them is a floor.
 type UsageMeasurementSourceOfTruth string
 
 const (
 	UsageMeasurementSourceOfTruthProviderUsage UsageMeasurementSourceOfTruth = "provider_usage"
 	UsageMeasurementSourceOfTruthAdapterReport UsageMeasurementSourceOfTruth = "adapter_report"
 	UsageMeasurementSourceOfTruthGatewayCount  UsageMeasurementSourceOfTruth = "gateway_count"
+	UsageMeasurementSourceOfTruthGatewayFloor  UsageMeasurementSourceOfTruth = "gateway_floor"
 	UsageMeasurementSourceOfTruthNone          UsageMeasurementSourceOfTruth = "none"
 )
 
@@ -30,11 +32,12 @@ type UsageMeasurement struct {
 	Lease   LeaseID              `json:"lease"`
 	Kind    UsageMeasurementKind `json:"kind"`
 	// Per call: deltas are numbered from 0; a final or reconciliation also carries one, so a later report of the same kind supersedes an earlier.
-	Sequence      int64                         `json:"sequence"`
-	Tokens        UsageMeasurementTokens        `json:"tokens"`
-	Turns         Amount                        `json:"turns"`
-	Milliseconds  Amount                        `json:"milliseconds"`
-	Cost          UsageMeasurementCost          `json:"cost"`
+	Sequence     int64                  `json:"sequence"`
+	Tokens       UsageMeasurementTokens `json:"tokens"`
+	Turns        Amount                 `json:"turns"`
+	Milliseconds Amount                 `json:"milliseconds"`
+	Cost         UsageMeasurementCost   `json:"cost"`
+	// gateway_count and gateway_floor are the gateway's own count of one request it sent (P11b), kept apart from the adapter's reports: gateway_count when it read the upstream's usage in the response it forwarded, gateway_floor when it did not (a floor from the request's size alone). An adapter's final settles a call only when it is not below the gateway's counts and none of them is a floor.
 	SourceOfTruth UsageMeasurementSourceOfTruth `json:"source_of_truth"`
 }
 

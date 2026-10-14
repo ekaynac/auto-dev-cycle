@@ -25,6 +25,9 @@
 //     sent again; and model_call is not idempotent, so the store never retries it either.
 //   - Recovery reads the binding (OfLease): each call of a lease with its effect's current state, so an uncertain
 //     call's charge stays on its groups (P12b keeps the liability; P20 reconciles).
+//   - The Recorder also records the gateway's own count of each request it sent (gateway.Counts, P11b) as a usage
+//     report of source gateway_count (gateway_floor when it read no usage), which an adapter's final must not fall
+//     below to settle the call.
 //   - Inert (§1's gating table): nothing in adcd registers the kind, the event or the projector; P22a does.
 package modelcall
 
@@ -49,6 +52,7 @@ const (
 	Intended = "model_call.intended/v1" // the binding's event, subject the call
 	Schema   = "records/model-call"
 	Action   = "model_call.intend" // the Recorder's command
+	Counted  = "model_call.count"  // the Recorder's command recording the gateway's count (P22a authorises both)
 
 	// The binding's projections; internal/capacity/ledger, which reads them
 	// and cannot import this package, holds the names.
@@ -319,7 +323,10 @@ type Recorder struct {
 	Actor string // the controller's system actor
 }
 
-var _ gateway.Intents = Recorder{}
+var (
+	_ gateway.Intents = Recorder{}
+	_ gateway.Counts  = Recorder{}
+)
 
 func (r Recorder) Intend(ctx context.Context, b gateway.Binding, destination types.Slug) error {
 	if r.Store == nil || !r.Store.RestartMarked() {
@@ -342,6 +349,41 @@ func (r Recorder) Intend(ctx context.Context, b gateway.Binding, destination typ
 		eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, err := Intend(tx, b, destination)
 			return evs, json.RawMessage(`{}`), err
+		}))
+	return err
+}
+
+// Count records the gateway's count of one request it sent for b's call: a usage delta of source gateway_count (or
+// gateway_floor, when the gateway read no usage), under the gateway's sequence for the call (internal/capacity/ledger
+// keeps it apart from the adapter's reports). It returns once the report is committed. Usage is never fenced, so it
+// needs no running attempt.
+func (r Recorder) Count(ctx context.Context, b gateway.Binding, sequence int64, n gateway.Count) error {
+	if r.Store == nil {
+		return errors.New("modelcall: no store")
+	}
+	msr, err := ids.New("msr")
+	if err != nil {
+		return err
+	}
+	src := types.UsageMeasurementSourceOfTruthGatewayFloor // the upstream's usage unread: a floor only
+	if n.Observed {
+		src = types.UsageMeasurementSourceOfTruthGatewayCount
+	}
+	ev, err := ledger.Measure(types.UsageMeasurement{ID: types.MeasurementID(msr), Call: b.Call, Attempt: b.Attempt, Lease: b.Lease,
+		Kind: types.UsageMeasurementKindDelta, Sequence: sequence,
+		Tokens:        types.UsageMeasurementTokens{In: n.In, Out: n.Out, CacheRead: n.CacheRead},
+		Cost:          types.UsageMeasurementCost{Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
+		SourceOfTruth: src})
+	if err != nil {
+		return err
+	}
+	id, err := ids.New("cmd")
+	if err != nil {
+		return err
+	}
+	_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: r.Actor, Action: Counted, IdempotencyKey: id, Input: ev.Payload},
+		eventstore.Applies(func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+			return []eventstore.Event{ev}, json.RawMessage(`{}`), nil
 		}))
 	return err
 }

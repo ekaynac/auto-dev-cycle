@@ -19,6 +19,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
@@ -88,9 +89,10 @@ func (w *world) open() {
 	ok := func(*eventstore.Tx, eventstore.Command) error { return nil }
 	kinds := lease.Kinds()
 	maps.Copy(kinds, modelcall.Kinds())
+	maps.Copy(kinds, ledger.Kinds())
 	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Effects: modelcall.Effects(),
 		Hooks: eventstore.Hooks{Identify: ok, Authorize: ok, Project: eventstore.ProjectEach(
-			lease.Projector{Blobs: blobs, Holds: w.holds, Units: units{}}.Project, modelcall.Project)}})
+			lease.Projector{Blobs: blobs, Holds: w.holds, Units: units{}}.Project, modelcall.Project, ledger.Project)}})
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -276,7 +278,8 @@ func newGatewayWith(t *testing.T, w *world, up *upstream, in gateway.Intents, at
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := gateway.New(gateway.Config{Registry: r, Leases: modelcall.Reader{Store: w.s}, Attempts: attempts, Secrets: secrets{}, Intents: in})
+	g, err := gateway.New(gateway.Config{Registry: r, Leases: modelcall.Reader{Store: w.s}, Attempts: attempts, Secrets: secrets{}, Intents: in,
+		Counts: modelcall.Recorder{Store: w.s, Actor: actor}})
 	if err != nil {
 		t.Fatal(err)
 	}

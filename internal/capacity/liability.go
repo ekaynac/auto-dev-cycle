@@ -14,13 +14,14 @@ import (
 )
 
 // The liability ledger (docs/design/m1/00-slice-plan.md P12b, Q8; 05 "Usage and settlement"; 11 B5). A lease's
-// settlement names each call bound to it (records/model-call) exactly once: settled when the call ledger holds its
-// final or a provider reconciliation, otherwise an uncertain liability. At settlement the reservation returns and
-// what the uncertain calls owe moves onto the group's ledger, in the same fold:
-//   - in tokens, an uncertain call owes the larger of the lease's positive reservation and its reconciled tokens
-//     (deltas deduplicated by (call, sequence)): an unmeasured call owes the reservation, and no report, however
-//     small, lowers that until a final or a reconciliation settles the call (the lead's M1 reading of Q8). A lease
-//     has one attempt, which binds one call (modelcall.Intend), so the reservation is the call's;
+// settlement names each call bound to it (records/model-call) exactly once: settled when the call ledger holds a
+// provider reconciliation, or a final not below the gateway's own count of the call (P11b, ledger.StandingOf),
+// otherwise an uncertain liability. At settlement the reservation returns and what the uncertain calls owe moves onto
+// the group's ledger, in the same fold:
+//   - in tokens, an uncertain call owes the larger of the lease's positive reservation, its reconciled tokens (deltas
+//     deduplicated by (call, sequence)) and the gateway's count: an unmeasured call owes the reservation, and no
+//     report, however small, lowers that until a final or a reconciliation settles the call (the lead's M1 reading
+//     of Q8). A lease has one attempt, which binds one call (modelcall.Intend), so the reservation is the call's;
 //   - in another unit (slots), the reservation stays held while the call is uncertain.
 //
 // Nothing a report says can refuse a settlement or a later report (ledger.StandingOf never fails), and amounts
@@ -49,8 +50,8 @@ type liability struct {
 	Inconsistent bool `json:"inconsistent,omitempty"`
 }
 
-// Settlement is the settlement lease id's bound calls owe now, from the call ledger: a call with a final or a
-// provider reconciliation is settled, every other one an uncertain liability. The settlement fold accepts nothing
+// Settlement is the settlement lease id's bound calls owe now, from the call ledger: a call ledger.StandingOf
+// settles is settled, every other one an uncertain liability. The settlement fold accepts nothing
 // else.
 func Settlement(tx *eventstore.Tx, id types.LeaseID) (types.LeaseSettlementValue, error) {
 	s := types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: []types.CallID{}}

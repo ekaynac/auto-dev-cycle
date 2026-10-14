@@ -20,7 +20,7 @@ One usage report for one call (docs/design/m0/05 "Usage and settlement" [M7]). O
 | `turns` | yes | [Amount](records-resource-group.md#amount) |  |
 | `milliseconds` | yes | [Amount](records-resource-group.md#amount) |  |
 | `cost` | yes | [UsageMeasurementCost](#usagemeasurementcost) |  |
-| `source_of_truth` | yes | one of `provider_usage`, `adapter_report`, `gateway_count`, `none` |  |
+| `source_of_truth` | yes | one of `provider_usage`, `adapter_report`, `gateway_count`, `gateway_floor`, `none` | gateway_count and gateway_floor are the gateway's own count of one request it sent (P11b), kept apart from the adapter's reports: gateway_count when it read the upstream's usage in the response it forwarded, gateway_floor when it did not (a floor from the request's size alone). An adapter's final settles a call only when it is not below the gateway's counts and none of them is a floor. |
 
 No other fields are allowed.
 

@@ -5,8 +5,10 @@
 // accepted from any attempt, stale or not. Deltas are deduplicated by
 // (call, sequence); a final replaces their sum only where it is not lower;
 // only a provider reconciliation can lower a figure; a call with neither
-// stays an uncertain liability at its best estimate. The result does not
-// depend on the order reports arrive in.
+// stays an uncertain liability at its best estimate. The gateway's own
+// counts (gateway_count, gateway_floor) are kept apart from the adapter's reports, and the
+// liability ledger settles a call on a final only when it is not below them
+// (StandingOf). The result does not depend on the order reports arrive in.
 package ledger
 
 import (
@@ -72,15 +74,16 @@ const maxAmount = 9007199254740991
 
 // Standing is a call's standing for the liability ledger (internal/capacity).
 type Standing struct {
-	Settled bool    // a final or a provider reconciliation is recorded
-	Usage   *Figure // the reconciled figure; nil with no report at all
+	Settled bool    // a provider reconciliation, or a final the gateway's count bears out (trusted)
+	Usage   *Figure // the reconciled figure, the gateway's count included while unsettled; nil with no report at all
 	// Inconsistent: a report conflicted (inconsistent_usage), its currencies
 	// among them, or the reports could not be summed.
 	Inconsistent bool
 }
 
 // StandingOf is call's standing from its reports ms. Unlike Reconcile it
-// never fails, so no report can wedge a settlement:
+// never fails, so no report can wedge a settlement (and trusted decides
+// what settles):
 //   - token figures do not depend on currency, so reports in several
 //     currencies are reconciled as one and only flagged (pricing reads the
 //     executor's declared price, never the reported currency or cost);
@@ -97,8 +100,7 @@ func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
 		one[i].Cost.Currency = ms[0].Cost.Currency
 	}
 	if got, err := Reconcile(one); err == nil {
-		c := got[call]
-		return Standing{Settled: !c.Uncertain, Usage: &c.Usage, Inconsistent: mixed || c.Inconsistent}
+		return trusted(got[call], mixed)
 	}
 	var recon []types.UsageMeasurement
 	for _, m := range one {
@@ -111,6 +113,34 @@ func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
 		return Standing{Settled: true, Usage: &f, Inconsistent: true}
 	}
 	return Standing{Usage: &Figure{In: maxAmount}, Inconsistent: true}
+}
+
+// trusted is c's standing (#226 entry 69): a provider reconciliation settles
+// it, and so does a final, but only one not below the gateway's own count of
+// the call, none of it a floor. A final with no count, with a floor, or
+// under the count, is the adapter's word alone (a hostile one reports zero):
+// the call stays uncertain at the larger of the reports and the count, a
+// final under the count flagged.
+func trusted(c Call, mixed bool) Standing {
+	st := Standing{Settled: c.Reconciled, Usage: &c.Usage, Inconsistent: mixed || c.Inconsistent}
+	if c.Reconciled || c.Counted == nil {
+		return st
+	}
+	under := !covers(c.Usage, *c.Counted)
+	st.Settled = !c.Uncertain && !c.Floored && !under
+	if !st.Settled {
+		u, _ := maxOf(c.Usage, *c.Counted)
+		st.Usage, st.Inconsistent = &u, st.Inconsistent || !c.Uncertain && under
+	}
+	return st
+}
+
+// covers: f is not below count in input tokens (input and cache, priced
+// alike) or in output tokens. Comparing the input sum keeps an honest
+// final whose cache split differs from the gateway's.
+func covers(f, count Figure) bool {
+	in := func(f Figure) int64 { return f.In + f.CacheRead + f.CacheWrite }
+	return in(f) >= in(count) && f.Out >= count.Out
 }
 
 // PriceMicros prices a figure in USD micros at an executor's declared price
@@ -158,6 +188,13 @@ type Call struct {
 	// provider reconciliation; the larger figure was kept (inconsistent_usage).
 	Inconsistent bool
 	Reason       vocab.Reason
+	// Counted is the gateway's own count (gateway_count and gateway_floor
+	// reports, summed over its sequences), nil when it counted none; Usage
+	// leaves it out. Floored: some of it is a floor, its usage unread.
+	Counted *Figure
+	Floored bool
+	// Reconciled: a provider reconciliation is recorded.
+	Reconciled bool
 }
 
 type key struct {
@@ -172,8 +209,18 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 	recon := map[types.CallID][]types.UsageMeasurement{}
 	conflict := map[types.CallID]bool{}
 	currency := map[types.CallID]string{}
+	counts, floored := map[key]Figure{}, map[types.CallID]bool{}
 	for _, m := range ms {
 		if mutation.Is(mutation.StaleAttemptUsageDropped) && m.Attempt != ms[len(ms)-1].Attempt {
+			continue
+		}
+		switch m.SourceOfTruth {
+		case types.UsageMeasurementSourceOfTruthGatewayCount, types.UsageMeasurementSourceOfTruthGatewayFloor:
+			// The gateway numbers its counts per call; a replay is the same
+			// count, and a clash keeps the larger.
+			k := key{m.Call, m.Sequence}
+			counts[k], _ = maxOf(counts[k], figureOf(m))
+			floored[m.Call] = floored[m.Call] || m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayFloor
 			continue
 		}
 		if c, ok := currency[m.Call]; ok && c != m.Cost.Currency {
@@ -201,27 +248,21 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 			return nil, fmt.Errorf("ledger: report %s has kind %q", m.ID, m.Kind)
 		}
 	}
-	sums := map[types.CallID]Figure{}
-	keys := make([]key, 0, len(deltas))
-	for k := range deltas {
-		keys = append(keys, k)
+	sums, err := sum(deltas)
+	if err != nil {
+		return nil, err
 	}
-	sort.Slice(keys, func(i, j int) bool { // a deterministic sum
-		if keys[i].call != keys[j].call {
-			return keys[i].call < keys[j].call
-		}
-		return keys[i].seq < keys[j].seq
-	})
-	for _, k := range keys {
-		s, err := add(sums[k.call], deltas[k])
-		if err != nil {
-			return nil, err
-		}
-		sums[k.call] = s
+	counted, err := sum(counts)
+	if err != nil {
+		return nil, err
 	}
 	out := map[types.CallID]Call{}
+	for call, f := range counted {
+		out[call] = Call{Call: call, Uncertain: true, Counted: &f, Floored: floored[call]}
+	}
 	for call, cur := range currency {
-		c := Call{Call: call, Usage: sums[call], Currency: cur, Uncertain: true, Inconsistent: conflict[call]}
+		c := Call{Call: call, Usage: sums[call], Currency: cur, Uncertain: true, Inconsistent: conflict[call],
+			Counted: out[call].Counted, Floored: floored[call]}
 		if fs := finals[call]; len(fs) > 0 {
 			f, clash := finalFigure(fs)
 			var lower bool
@@ -232,7 +273,7 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 		if rs := recon[call]; len(rs) > 0 {
 			// The only report that can lower a figure: it replaces the rest.
 			c.Usage, c.Inconsistent = latest(rs)
-			c.Uncertain = false
+			c.Uncertain, c.Reconciled = false, true
 		}
 		if c.Inconsistent {
 			c.Reason = vocab.ReasonInconsistentUsage
@@ -240,6 +281,29 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 		out[call] = c
 	}
 	return out, nil
+}
+
+// sum adds each call's figures, deterministically.
+func sum(figures map[key]Figure) (map[types.CallID]Figure, error) {
+	keys := make([]key, 0, len(figures))
+	for k := range figures {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].call != keys[j].call {
+			return keys[i].call < keys[j].call
+		}
+		return keys[i].seq < keys[j].seq
+	})
+	sums := map[types.CallID]Figure{}
+	for _, k := range keys {
+		s, err := add(sums[k.call], figures[k])
+		if err != nil {
+			return nil, err
+		}
+		sums[k.call] = s
+	}
+	return sums, nil
 }
 
 // finalFigure combines a call's finals: no final can lower another's
