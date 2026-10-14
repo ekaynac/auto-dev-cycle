@@ -265,6 +265,12 @@ func TestMatchAndLaunch(t *testing.T) {
 	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.ChangeLease(tx, id, 3, lease.LeaseEvent{Kind: lease.Revoked, Reason: "test"}, nil)
 	})
+	// F (P21, X3 step 4 before step 5): while the first lease settles, its
+	// reservation not yet returned or moved to its liability, the node is not
+	// placed again.
+	if _, err := e.match(d, card(n), builder); err == nil || !strings.Contains(err.Error(), "has not settled") {
+		t.Fatalf("a match while the last lease settles: %v", err)
+	}
 	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.ChangeLease(tx, id, 4, lease.LeaseEvent{Kind: lease.Settled,
 			Settlement: &types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: []types.CallID{}}}, nil)

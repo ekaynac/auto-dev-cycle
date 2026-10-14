@@ -37,7 +37,7 @@
 //     spent (P17 counts attempts). A node no longer claimed or of another
 //     project, or a readiness observed for something else, gets no hold.
 //   - A unit already placed (a live lease, or a running attempt) is not
-//     matched again.
+//     matched again, nor one whose last lease has not settled (P21).
 //   - Lease holds (#226 entry 4) are not written here: every hold P8b
 //     raises is a node hold, which has its id and since.
 //   - Inert (§1's gating table): nothing in adcd constructs a Dispatcher,
@@ -136,7 +136,8 @@ func (d Dispatcher) Match(tx *eventstore.Tx, card Card, executor types.ExecutorI
 }
 
 // placed refuses a unit already placed: a live lease (requested, waiting,
-// granted or active) or a running attempt, so one node is matched once.
+// granted or active), a running attempt, or a last lease not yet settled,
+// so one node is matched once.
 func placed(tx *eventstore.Tx, unit types.UnitID) error {
 	if id, live, err := lease.LiveOn(tx, unit); err != nil || live {
 		return errors.Join(err, fmt.Errorf("dispatch: unit %s already has live lease %s", unit, id))
@@ -148,6 +149,11 @@ func placed(tx *eventstore.Tx, unit types.UnitID) error {
 	a, _, _, err := lease.AttemptOf(tx, cur)
 	if err == nil && a.Status == types.AttemptStatusRunning {
 		err = fmt.Errorf("dispatch: unit %s's attempt %s is running", unit, cur)
+	}
+	// A replacement waits until its predecessor's lease settled (X3: step 4
+	// before step 5), so it is sized against what that settlement returned.
+	if l, _, ok, lerr := lease.LeaseOf(tx, a.Lease); err == nil && (lerr != nil || !ok || !lease.Ended(l.State)) {
+		err = errors.Join(lerr, fmt.Errorf("dispatch: unit %s's last lease %s has not settled", unit, a.Lease))
 	}
 	return err
 }

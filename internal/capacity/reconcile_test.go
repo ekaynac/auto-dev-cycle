@@ -628,3 +628,33 @@ func TestOnlyTheReconcilerRecordsAReconciliation(t *testing.T) {
 		t.Fatalf("%d reconciliations recorded", n)
 	}
 }
+
+// #226 entry 77 (P21): a wall-clock step forward never ages a floor this process sent. The Recorder and the
+// Reconciler share a Clock. The reconciler's wall clock is past the floor's grace, as after a step forward, but the
+// Clock's monotonic reading is not: the effect stays uncertain and the provider is not asked. Once the Clock passes
+// the grace, it is asked. A second request, counted, keeps nothing young.
+func TestAClockStepNeverAgesAFloorThisProcessSent(t *testing.T) {
+	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
+	mono := time.Now()
+	clock := &modelcall.Clock{Now: func() time.Time { return mono }}
+	rec := modelcall.Recorder{Store: w.s, Actor: testActor, Clock: clock}
+	b := gateway.Binding{Lease: r.lease, Attempt: r.attempt, Call: r.call}
+	if err := errors.Join(rec.Count(context.Background(), b, 0, gateway.Count{In: 50, Out: 10}),
+		rec.Count(context.Background(), b, 1, gateway.Count{In: 5, Out: 5}),
+		rec.Count(context.Background(), b, 1, gateway.Count{In: 5, Out: 5, Observed: true})); err != nil {
+		t.Fatal(err)
+	}
+	w.stop(r)
+	w.settleDerived(r)
+	q := &query{u: modelcall.Usage{In: 60, Out: 20}, found: true}
+	rc := w.reconciler(q) // its wall clock is past every floor's grace
+	rc.Clock = clock
+	if e, err := rc.Ended(context.Background(), r.call); err != nil || e.State != eventstore.EffectUncertain || e.LastObservation != modelcall.ObservedYoung || q.times() != 0 {
+		t.Fatalf("a floor young by the monotonic clock: %+v, %v, asked %d times", e, err, q.times())
+	}
+	mono = mono.Add(modelcall.FloorGrace)
+	if e, err := rc.Reconcile(context.Background(), r.call); err != nil || e.State != eventstore.EffectCompleted || q.times() != 1 {
+		t.Fatalf("past the grace: %+v, %v, asked %d times", e, err, q.times())
+	}
+}

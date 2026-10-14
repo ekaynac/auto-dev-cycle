@@ -356,6 +356,7 @@ func OfLease(tx *eventstore.Tx, l types.LeaseID) ([]Bound, error) {
 type Recorder struct {
 	Store *eventstore.Store
 	Actor string // the controller's system actor
+	Clock *Clock // the Reconciler's: notes each floor committed (nil: none)
 }
 
 var (
@@ -420,6 +421,9 @@ func (r Recorder) Count(ctx context.Context, b gateway.Binding, sequence int64, 
 		eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			return []eventstore.Event{ev}, json.RawMessage(`{}`), sends(tx, b.Call, sequence)
 		}))
+	if err == nil {
+		r.Clock.floored(b.Call, sequence, n.Observed)
+	}
 	return err
 }
 
