@@ -213,6 +213,20 @@ func TestRetryCountsAttempts(t *testing.T) {
 	}
 }
 
+// A transition's Check reads in the transition's transaction and writes nothing (Mythos on #258, M2): a Put refuses
+// ErrReadOnly, and a refusing Check leaves the effect as it was.
+func TestATransitionCheckIsReadOnly(t *testing.T) {
+	ctx := context.Background()
+	e := openEffectsAt(t, stateDir(t))
+	id := intend(t, e, "model_call")
+	_, err := e.s.RecordEffect(ctx, sysActor, id, Transition{Kind: "uncertain", Check: func(tx *Tx) error {
+		return tx.Put("seen", "x", json.RawMessage(`{}`))
+	}})
+	if !errors.Is(err, ErrReadOnly) || state(t, e, id) != EffectPending {
+		t.Fatalf("a writing Check: %v, the effect %s", err, state(t, e, id))
+	}
+}
+
 func TestResultRefIsPublishedFirst(t *testing.T) {
 	ctx := context.Background()
 	e := openEffectsAt(t, stateDir(t))

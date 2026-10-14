@@ -27,7 +27,9 @@
 //     call's charge stays on its groups (P12b keeps the liability; P20 reconciles).
 //   - The Recorder also records the gateway's own count of each request (gateway.Counts, P11b): a usage report of
 //     source gateway_floor before the send, then gateway_count once the usage is read, which an adapter's final must
-//     not fall below to settle the call.
+//     not fall below to settle the call. A floor, which precedes its request's send, is refused once the call's
+//     effect has left pending; a count at a floored sequence is always accepted, late or not.
+//   - The reconciler (reconcile.go, P20) moves the effect out of pending at run end and settles it.
 //   - Inert (§1's gating table): nothing in adcd registers the kind, the event or the projector; P22a does.
 package modelcall
 
@@ -37,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -229,6 +232,12 @@ func same(a, b types.ModelCall) bool {
 // binding without its command's model_call intent of the same request.
 func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
+		if ev.Kind == ledger.Measured {
+			if err := floored(tx, ev); err != nil {
+				return fmt.Errorf("modelcall: event %s: %w", ev.ID, err)
+			}
+			continue
+		}
 		if ev.Kind != Intended {
 			continue
 		}
@@ -253,6 +262,32 @@ func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		}
 	}
 	return nil
+}
+
+// FloorProjection keeps when each request's first floor was recorded, under "call/sequence" (P20): Recorder.Count
+// admits a late count at a floored sequence, and the reconciler asks the provider only once every request with a
+// floor and no count is older than FloorGrace.
+const FloorProjection = "model_call_floors"
+
+// floored records the time of ev, a gateway floor, unless its request's floor is recorded already.
+func floored(tx *eventstore.Tx, ev eventstore.Event) error {
+	var m types.UsageMeasurement
+	if err := json.Unmarshal(ev.Payload, &m); err != nil || m.SourceOfTruth != types.UsageMeasurementSourceOfTruthGatewayFloor {
+		return err
+	}
+	key := floorKey(m.Call, m.Sequence)
+	if _, seen, err := tx.Get(FloorProjection, key); err != nil || seen {
+		return err
+	}
+	at, err := json.Marshal(ev.At)
+	if err != nil {
+		return err
+	}
+	return tx.Put(FloorProjection, key, at)
+}
+
+func floorKey(call types.CallID, sequence int64) string {
+	return string(call) + "/" + strconv.FormatInt(sequence, 10)
 }
 
 // intended: ev has its call's model_call effect, intended by ev's command,
@@ -382,8 +417,26 @@ func (r Recorder) Count(ctx context.Context, b gateway.Binding, sequence int64, 
 		return err
 	}
 	_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: r.Actor, Action: Counted, IdempotencyKey: id, Input: ev.Payload},
-		eventstore.Applies(func(*eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
-			return []eventstore.Event{ev}, json.RawMessage(`{}`), nil
+		eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
+			return []eventstore.Event{ev}, json.RawMessage(`{}`), sends(tx, b.Call, sequence)
 		}))
+	return err
+}
+
+// ErrNotPending: the call's effect has left pending, so nothing more is sent for it.
+var ErrNotPending = errors.New("modelcall: the call's effect is not pending")
+
+// sends admits the gateway's report at sequence. A report at a new sequence is a request's floor, before its send:
+// refused once the call's effect has left pending (P20), so the gateway sends nothing more for the call and its
+// reconciliation covers every request. A report at a sequence already floored is that request's own count, accepted
+// late (#226 entry 59).
+func sends(tx *eventstore.Tx, call types.CallID, sequence int64) error {
+	if _, floored, err := tx.Get(FloorProjection, floorKey(call, sequence)); err != nil || floored {
+		return err
+	}
+	e, err := tx.LoadEffect(EffectOf(call))
+	if err == nil && e.State != eventstore.EffectPending {
+		err = fmt.Errorf("%w: %s is %s", ErrNotPending, call, e.State)
+	}
 	return err
 }

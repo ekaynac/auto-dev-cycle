@@ -15,6 +15,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"slices"
 	"sort"
@@ -79,6 +80,9 @@ type Standing struct {
 	// Inconsistent: a report conflicted (inconsistent_usage), its currencies
 	// among them, or the reports could not be summed.
 	Inconsistent bool
+	// Below: the latest provider reconciliation is below the gateway's observed counts, so the call settles at the
+	// counts (P20, H1), flagged; a later reconciliation may correct it.
+	Below bool
 }
 
 // StandingOf is call's standing from its reports ms. Unlike Reconcile it
@@ -88,8 +92,8 @@ type Standing struct {
 //     currencies are reconciled as one and only flagged (pricing reads the
 //     executor's declared price, never the reported currency or cost);
 //   - reports Reconcile cannot sum (an overflow) leave the call uncertain at
-//     a saturated figure, flagged, unless a provider reconciliation, the one
-//     report that replaces all others, settles it.
+//     a saturated figure, flagged, unless a provider reconciliation settles
+//     it, never below the gateway's observed counts (trusted).
 func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
 	if len(ms) == 0 {
 		return Standing{}
@@ -107,16 +111,30 @@ func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
 		return trusted(got[call], mixed)
 	}
 	var recon []types.UsageMeasurement
+	seen, floors := map[key]Figure{}, map[key]Figure{}
 	for _, m := range one {
-		if m.Kind == types.UsageMeasurementKindProviderReconciliation {
+		at, k := floors, key{call, m.Sequence}
+		switch {
+		case m.Kind == types.UsageMeasurementKindProviderReconciliation:
 			recon = append(recon, m)
+		case m.Call == call && m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayCount:
+			at = seen
+			fallthrough
+		case m.Call == call && m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayFloor:
+			at[k], _ = maxOf(at[k], figureOf(m))
 		}
 	}
-	if len(recon) > 0 {
-		f, _ := latest(recon)
-		return Standing{Settled: true, Usage: &f, Inconsistent: true}
+	counted, err := sum(bound(seen, floors))
+	if len(recon) == 0 || err != nil {
+		return Standing{Usage: &Figure{In: maxAmount}, Inconsistent: true}
 	}
-	return Standing{Usage: &Figure{In: maxAmount}, Inconsistent: true}
+	f, _ := latest(recon)
+	st := Standing{Settled: true, Usage: &f, Inconsistent: true}
+	if c, ok := counted[call]; ok && !covers(f, c) {
+		u, _ := maxOf(f, c)
+		st.Usage, st.Below = &u, true
+	}
+	return st
 }
 
 // trusted is c's standing (#226 entry 69): a provider reconciliation settles
@@ -124,9 +142,18 @@ func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
 // the call, none of it a floor. A final with no count, with a floor, or
 // under the count, is the adapter's word alone (a hostile one reports zero):
 // the call stays uncertain at the larger of the reports and the count, a
-// final under the count flagged.
+// final under the count flagged. A reconciliation replaces the adapter's
+// reports and the floors' output (max_tokens, never observed), but never
+// settles below what the gateway observed (P20, bound): an upstream answering
+// its own usage query is no more trusted than its in-band usage, and a usage
+// API may lag. Below it, the call settles at the larger of the two, flagged,
+// so a count that lands after the reconciliation still raises the figure.
 func trusted(c Call, mixed bool) Standing {
 	st := Standing{Settled: c.Reconciled, Usage: &c.Usage, Inconsistent: mixed || c.Inconsistent}
+	if c.Reconciled && c.Seen != nil && !covers(c.Usage, *c.Seen) {
+		u, _ := maxOf(c.Usage, *c.Seen)
+		st.Usage, st.Inconsistent, st.Below = &u, true, true
+	}
 	if c.Reconciled || c.Counted == nil {
 		return st
 	}
@@ -199,6 +226,9 @@ type Call struct {
 	// leaves it out. Floored: some request has a floor and no count.
 	Counted *Figure
 	Floored bool
+	// Seen is what the gateway observed (bound), summed over its sequences, nil with no gateway report: no
+	// reconciliation settles the call below it.
+	Seen *Figure
 	// Reconciled: a provider reconciliation is recorded.
 	Reconciled bool
 }
@@ -260,6 +290,10 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 	if err != nil {
 		return nil, err
 	}
+	seen, err := sum(bound(observed, floors))
+	if err != nil {
+		return nil, err
+	}
 	floored := map[types.CallID]bool{}
 	for k, f := range floors {
 		if _, ok := observed[k]; !ok {
@@ -272,11 +306,12 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 	}
 	out := map[types.CallID]Call{}
 	for call, f := range counted {
-		out[call] = Call{Call: call, Uncertain: true, Counted: &f, Floored: floored[call]}
+		s := seen[call]
+		out[call] = Call{Call: call, Uncertain: true, Counted: &f, Floored: floored[call], Seen: &s}
 	}
 	for call, cur := range currency {
 		c := Call{Call: call, Usage: sums[call], Currency: cur, Uncertain: true, Inconsistent: conflict[call],
-			Counted: out[call].Counted, Floored: floored[call]}
+			Counted: out[call].Counted, Floored: floored[call], Seen: out[call].Seen}
 		if fs := finals[call]; len(fs) > 0 {
 			f, clash := finalFigure(fs)
 			var lower bool
@@ -295,6 +330,19 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 		out[call] = c
 	}
 	return out, nil
+}
+
+// bound is what no reconciliation settles a request under: its observed count, else its floor's input, the bytes the
+// gateway sent. A floor's output part, max_tokens, is no observation.
+func bound(observed, floors map[key]Figure) map[key]Figure {
+	out := map[key]Figure{}
+	maps.Copy(out, observed)
+	for k, f := range floors {
+		if _, ok := observed[k]; !ok {
+			out[k] = Figure{In: f.In, CacheRead: f.CacheRead, CacheWrite: f.CacheWrite}
+		}
+	}
+	return out
 }
 
 // counts: m is the gateway's own count of a request, or its floor.

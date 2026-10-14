@@ -166,7 +166,14 @@ type Tx struct {
 	fault error
 	// at is when a command's events are recorded (Tx.Now).
 	at time.Time
+	// action is the action of the command being submitted (Tx.Action).
+	action string
 }
+
+// Action is the action of the command being submitted, in its transaction's hooks and logic; "" in a view, a rebuild
+// or an effect transition. The log does not record a command's action, so a fold that checks it checks at commit
+// only.
+func (t *Tx) Action() string { return t.action }
 
 // Emit records evs as the command's own events, ahead of those its logic
 // returns, so a logic can write events it never hands back to a caller
@@ -472,7 +479,7 @@ func (s *Store) submit(ctx context.Context, c Command, decide Decide, authorize 
 		if aterr != nil {
 			return aterr
 		}
-		t := &Tx{ctx: ctx, tx: tx, store: s, owner: s, at: at}
+		t := &Tx{ctx: ctx, tx: tx, store: s, owner: s, at: at, action: c.Action}
 		// 0. The writer-boundary identity recheck (14 "Replay
 		// authentication"), before the idempotency lookup, so it covers new
 		// commands, reused keys and replays alike. Bootstrap (authorize

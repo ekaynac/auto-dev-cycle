@@ -138,10 +138,11 @@ func (w *world) count(r running, seq, in, out int64) {
 }
 
 func (w *world) record(m types.UsageMeasurement) error {
+	action := "test.command"
 	if kind := m.Kind; kind == types.UsageMeasurementKindProviderReconciliation {
-		m.SourceOfTruth = types.UsageMeasurementSourceOfTruthProviderUsage
+		m.SourceOfTruth, action = types.UsageMeasurementSourceOfTruthProviderUsage, ledger.ReconcileAction
 	}
-	return w.do(func(*eventstore.Tx) ([]eventstore.Event, error) {
+	return w.doAs(action, func(*eventstore.Tx) ([]eventstore.Event, error) {
 		ev, err := ledger.Measure(m)
 		return []eventstore.Event{ev}, err
 	})

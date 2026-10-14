@@ -276,3 +276,11 @@ func TestAStreamReadByteByByte(t *testing.T) {
 		t.Fatalf("read %+v, %d content bytes, ok %v", u, n, ok)
 	}
 }
+
+// P20 (Opus on #258, H2 and L3): every upstream request ends within RequestDeadline, its response read included,
+// however slowly the adapter reads it, so a floor older than that has no request in flight.
+func TestEveryRequestHasADeadline(t *testing.T) {
+	if c := client(); c.Timeout != RequestDeadline || RequestDeadline <= 0 {
+		t.Fatalf("the egress client's deadline is %v, want %v", c.Timeout, RequestDeadline)
+	}
+}
