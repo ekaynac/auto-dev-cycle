@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -53,6 +55,14 @@ func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		if ev.Subject != string(m.Call) {
 			return fmt.Errorf("ledger: event %s: subject %s is not its call %s", ev.ID, ev.Subject, m.Call)
 		}
+		// A bound call's report names the call's own attempt and lease
+		// (#226 entry 61), stale or not, so its charge lands where the
+		// binding put it.
+		if b, bound, err := Binding(tx, m.Call); err != nil {
+			return err
+		} else if bound && (b.Attempt != m.Attempt || b.Lease != m.Lease) {
+			return fmt.Errorf("ledger: event %s: %w: call %s is bound to %s under %s, not %s under %s", ev.ID, ErrBindingMismatch, m.Call, b.Attempt, b.Lease, m.Attempt, m.Lease)
+		}
 		// A measurement id is immutable: an identical replay changes
 		// nothing; another report under a used id is refused, never
 		// written over the first (which could lower usage).
@@ -76,6 +86,40 @@ func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		}
 	}
 	return nil
+}
+
+// The model_call binding's projections, which internal/modelcall writes
+// under these names (modelcall.Projection, modelcall.LeaseProjection). They
+// are defined here because this package cannot import modelcall: it imports
+// the gateway, which imports the registry, whose tests import capacity.
+const (
+	BindingProjection      = "model_calls"       // call → binding
+	LeaseBindingProjection = "model_call_leases" // lease/call → binding
+)
+
+// ErrBindingMismatch: a report on a bound call names another attempt or
+// lease than the binding's.
+var ErrBindingMismatch = errors.New("ledger: the report is not its call's binding")
+
+// Binding is call's model_call binding (records/model-call), if it is bound.
+func Binding(tx *eventstore.Tx, call types.CallID) (types.ModelCall, bool, error) {
+	var m types.ModelCall
+	raw, ok, err := tx.Get(BindingProjection, string(call))
+	if err == nil && ok {
+		err = json.Unmarshal(raw, &m)
+	}
+	return m, ok && err == nil, err
+}
+
+// BoundTo lists the calls bound to lease, sorted.
+func BoundTo(tx *eventstore.Tx, lease types.LeaseID) ([]types.CallID, error) {
+	keys, err := tx.Keys(LeaseBindingProjection, string(lease)+"/")
+	out := make([]types.CallID, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, types.CallID(strings.TrimPrefix(k, string(lease)+"/")))
+	}
+	slices.Sort(out)
+	return out, err
 }
 
 // Measurements lists a call's recorded measurements, from every attempt.

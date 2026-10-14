@@ -6,6 +6,7 @@ package adapterhost
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -455,5 +456,31 @@ func TestARefusalWithACleanupFailure(t *testing.T) {
 			}
 			ended(t, w, 2)
 		})
+	}
+}
+
+// Opus pre-review of #253, L2: usage the call's binding refuses (a host or
+// spec fault: its attempt or lease is not the binding's) is dropped, and
+// the attempt still ends, with the refusal as the run's host fault.
+func TestUsageOffItsBindingStillEndsTheAttempt(t *testing.T) {
+	w := newWorld(t)
+	bound, err := json.Marshal(types.ModelCall{Call: calID, Attempt: types.AttemptID(att[:len(att)-1] + "b"), Lease: leaID,
+		Executor: "exe_01m3250vnfeyrv67x6w0ddqr6a", Destination: "stub", Groups: []types.ResourceGroupID{"rg_01m3250vkwffc979nzjw0g2sf9"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return nil, tx.Put(ledger.BindingProjection, string(calID), bound)
+	})
+	_, err = w.host.Run(context.Background(), spec(stub(t, stubPlan{
+		Files:  map[string]string{"patch.diff": patch},
+		Events: []string{usageEvent(10)},
+		Result: resultJSON("patch", handleJSON(att, "patch.diff", patch), 500),
+	})))
+	if !errors.Is(err, ErrRecord) {
+		t.Fatalf("run: %v, want the record fault", err)
+	}
+	if a := ended(t, w, 0); a.Status != types.AttemptStatusLost {
+		t.Fatalf("attempt %s, want lost", a.Status)
 	}
 }

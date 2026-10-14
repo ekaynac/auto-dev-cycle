@@ -13,6 +13,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"math/big"
 	"slices"
 	"sort"
 
@@ -68,6 +69,82 @@ func maxOf(a, b Figure) (m Figure, lower bool) {
 }
 
 const maxAmount = 9007199254740991
+
+// Standing is a call's standing for the liability ledger (internal/capacity).
+type Standing struct {
+	Settled bool    // a final or a provider reconciliation is recorded
+	Usage   *Figure // the reconciled figure; nil with no report at all
+	// Inconsistent: a report conflicted (inconsistent_usage), its currencies
+	// among them, or the reports could not be summed.
+	Inconsistent bool
+}
+
+// StandingOf is call's standing from its reports ms. Unlike Reconcile it
+// never fails, so no report can wedge a settlement:
+//   - token figures do not depend on currency, so reports in several
+//     currencies are reconciled as one and only flagged (pricing reads the
+//     executor's declared price, never the reported currency or cost);
+//   - reports Reconcile cannot sum (an overflow) leave the call uncertain at
+//     a saturated figure, flagged, unless a provider reconciliation, the one
+//     report that replaces all others, settles it.
+func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
+	if len(ms) == 0 {
+		return Standing{}
+	}
+	one, mixed := slices.Clone(ms), false
+	for i := range one {
+		mixed = mixed || one[i].Cost.Currency != ms[0].Cost.Currency
+		one[i].Cost.Currency = ms[0].Cost.Currency
+	}
+	if got, err := Reconcile(one); err == nil {
+		c := got[call]
+		return Standing{Settled: !c.Uncertain, Usage: &c.Usage, Inconsistent: mixed || c.Inconsistent}
+	}
+	var recon []types.UsageMeasurement
+	for _, m := range one {
+		if m.Kind == types.UsageMeasurementKindProviderReconciliation {
+			recon = append(recon, m)
+		}
+	}
+	if len(recon) > 0 {
+		f, _ := latest(recon)
+		return Standing{Settled: true, Usage: &f, Inconsistent: true}
+	}
+	return Standing{Usage: &Figure{In: maxAmount}, Inconsistent: true}
+}
+
+// PriceMicros prices a figure in USD micros at an executor's declared price
+// (config/executor-registry), from its tokens alone, rounding up: input and
+// cache tokens at the input rate, output at the output rate. It never reads
+// CostMicros, the adapter-reported amount, estimated or not: an upstream can
+// report any cost, zero included (#226 entry 62).
+func PriceMicros(f Figure, p types.RegistryPrice) (int64, error) {
+	return priced([][2]int64{{f.In, p.InputUsdMicrosPerMtok}, {f.CacheRead, p.InputUsdMicrosPerMtok},
+		{f.CacheWrite, p.InputUsdMicrosPerMtok}, {f.Out, p.OutputUsdMicrosPerMtok}})
+}
+
+// PriceTokens prices tokens of unknown kind, such as an unmeasured call's
+// reservation, at the higher of the two rates.
+func PriceTokens(tokens int64, p types.RegistryPrice) (int64, error) {
+	return priced([][2]int64{{tokens, max(p.InputUsdMicrosPerMtok, p.OutputUsdMicrosPerMtok)}})
+}
+
+// priced sums tokens × micros-per-million-tokens over terms, rounding up,
+// refusing a negative term or a total past the contract's integers.
+func priced(terms [][2]int64) (int64, error) {
+	sum := new(big.Int)
+	for _, t := range terms {
+		if t[0] < 0 || t[1] < 0 {
+			return 0, errors.New("ledger: a negative amount is not priced")
+		}
+		sum.Add(sum, new(big.Int).Mul(big.NewInt(t[0]), big.NewInt(t[1])))
+	}
+	sum.Add(sum, big.NewInt(999_999)).Quo(sum, big.NewInt(1_000_000))
+	if !sum.IsInt64() || sum.Int64() > maxAmount {
+		return 0, errors.New("ledger: the price overflows the contract's integer range")
+	}
+	return sum.Int64(), nil
+}
 
 // Call is one call's reconciled usage.
 type Call struct {
