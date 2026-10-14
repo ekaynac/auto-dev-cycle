@@ -53,8 +53,10 @@ const flagBody = "\tfs := flag.NewFlagSet(\"\", flag.ExitOnError)\n\tfs.Usage = 
 const (
 	perrGo = "package pkg\n\nimport (\n\t\"errors\"\n\t\"flag\"\n\t\"fmt\"\n\t\"path/filepath\"\n\n\t\"example.com/m/util\"\n)\n\n" +
 		"type perr struct{}\n\nfunc (perr) Error() string {\n" + flagBody + "\treturn \"\"\n}\n\ntype forger struct{}\n\nfunc (forger) String() string { return perr{}.Error() }\n\n"
-	utilGo  = "package util\n\nvar (\n\tCh  = make(chan any, 1)\n\tS   = make([]any, 1)\n\tFOO any\n)\n"
+	utilGo  = "package util\n\nvar (\n\tCh   = make(chan any, 1)\n\tS    = make([]any, 1)\n\tFOO  any\n\tPF   any = new(any)\n\tCAPS = []any{nil}\n)\n"
 	freshGo = "func fresh[P any](*P) *P { return new(P) }\n"
+	mkGo    = "func mk(v any) any { return reflect.New(reflect.TypeOf(v).Elem()).Interface() }\n"
+	argsGo  = "package pkg\n\nimport \"os\"\n\n"
 )
 
 func newGuardFixture(t *testing.T) fixture {
@@ -287,6 +289,25 @@ func TestIntegrityBlocks(t *testing.T) {
 		"an alias asserted":      {fake("reflect.New(reflect.TypeOf(TP(nil)).Elem()).Interface().(TP)", "type TP = *testing.T\n"), nil, "a testing value not the runner's"},
 		"an alias in a case":     {fake("func() *testing.T {\n\t\tvar x any = t\n\t\tswitch y := x.(type) {\n\t\tcase TP:\n\t\t\treturn y\n\t\t}\n\t\treturn nil\n\t}()", "type TP = *testing.T\n"), nil, "a testing value not the runner's"},
 		"a variable of an alias": {fake("func() *testing.T {\n\t\tvar x TP\n\t\treturn fresh(x)\n\t}()", "type TP = *testing.T\n\n"+freshGo), nil, "a testing value not the runner's"},
+		// The lead's verification of round 8 (C1, H1, M1): conversions, assertions and returns; aliases anywhere.
+		"C1 a converted os.Args in init": {map[string]string{"pkg/forge.go": argsGo + "func init() { copy([]string(os.Args)[1:], []string{\"-h\"}) }\n"}, nil, "a write it cannot prove safe (os.Args)"},
+		"C1 a converted os.Args in the hook": {map[string]string{"pkg/main_test.go": "package pkg\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\n" +
+			"func TestMain(m *testing.M) {\n\tcopy([]string(os.Args)[1:], []string{\"-h\"})\n\tos.Exit(m.Run())\n}\n"}, nil, "a write it cannot prove safe (os.Args)"},
+		"C1 append([]string(os.Args)[:1])": {map[string]string{"pkg/forge.go": argsGo + "func init() { _ = append([]string(os.Args)[:1], \"-h\") }\n"}, nil, "a write it cannot prove safe (os.Args)"},
+		"C1 &[]string(os.Args)[1]":         {map[string]string{"pkg/forge.go": argsGo + "func init() {\n\tp := &[]string(os.Args)[1]\n\t*p = \"-h\"\n}\n"}, nil, "variable addressed (&[]string(os.Args)[1])"},
+		"C1 set([]string(os.Args))":        {map[string]string{"pkg/forge.go": argsGo + "func set(a []string) { a[1] = \"-h\" }\n\nfunc init() { set([]string(os.Args)) }\n"}, nil, "variable passed to set"},
+		"C1 args() returns os.Args":        {map[string]string{"pkg/forge.go": argsGo + "func args() []string { return os.Args }\n\nfunc init() { copy(args()[1:], []string{\"-h\"}) }\n"}, nil, "plain data returned (os.Args)"},
+		"C1 a converted os.Args local":     {map[string]string{"pkg/forge.go": argsGo + "func init() {\n\ta := []string(os.Args)\n\ta[1] = \"-h\"\n}\n"}, nil, "plain data read ([]string(os.Args))"},
+		"C1 a converted os.Args anywhere":  {map[string]string{"pkg/args.go": argsGo + "func reset() { copy([]string(os.Args), []string{\"x\", \"-h\"}) }\n"}, nil, "pkg/args.go: os.Args assigned in reset"},
+		"C1 a conversion read":             {map[string]string{"util/u.go": utilGo, "pkg/forge.go": perrGo + "type holder struct{ s []any }\n\nfunc init() {\n\th := holder{[]any(util.S)}\n\th.s[0] = forger{}\n}\n"}, nil, "plain data converted ([]any(util.S))"},
+		"M1 copy([]any(util.S))":           {map[string]string{"util/u.go": utilGo, "pkg/forge.go": perrGo + "func init() { copy([]any(util.S), []any{forger{}}) }\n"}, nil, "a write it cannot prove safe (example.com/m/util.S)"},
+		"M1 *util.PF.(*any)":               {map[string]string{"util/u.go": utilGo, "pkg/forge.go": perrGo + "func init() { *util.PF.(*any) = forger{} }\n"}, nil, "a write it cannot prove safe (example.com/m/util.PF)"},
+		"M1 get()[0]":                      {map[string]string{"util/u.go": utilGo, "pkg/forge.go": perrGo + "func get() []any { return util.S }\n\nfunc init() { get()[0] = forger{} }\n"}, nil, "plain data returned (util.S)"},
+		"M1 v := util.CAPS":                {map[string]string{"util/u.go": utilGo, "pkg/forge.go": perrGo + "func init() {\n\tv := util.CAPS\n\tv[0] = forger{}\n}\n"}, nil, "plain data read (util.CAPS)"},
+		"H1 a generic alias":               {fake("mk(t).(TG[int])", mkGo+"\ntype TG[P any] = *testing.T\n"), nil, "a testing value not the runner's"},
+		"H1 another package's alias": {map[string]string{"util/u.go": "package util\n\nimport \"testing\"\n\ntype TP = *testing.T\n",
+			"pkg/calc_test.go": "package pkg\n\nimport (\n\t\"reflect\"\n\t\"testing\"\n\n\t\"example.com/m/util\"\n)\n\nfunc TestAdd(t *testing.T) {\n\tfunc(t *testing.T) {\n\t\tif Add(1, 2) != 3 {\n\t\t\tt.Error(\"add\")\n\t\t}\n" +
+				"\t}(reflect.New(reflect.TypeOf(util.TP(nil)).Elem()).Interface().(util.TP))\n}\n"}, nil, "a testing value not the runner's"},
 		// Read bounds fail closed for every Go file (Opus #255 H1).
 		"go test not parsed":  {map[string]string{"pkg/calc_test.go": goT + "func {\n"}, nil, "unverifiable"},
 		"a helper not parsed": {map[string]string{"pkg/calc.go": calc + "func {\n"}, nil, "unverifiable"},
@@ -304,6 +325,17 @@ func TestIntegrityBlocks(t *testing.T) {
 		v := f.guarded(t, c.files, c.gone...)
 		if v.Reason() != vocab.ReasonTestIntegrityViolation || !finds(v.Blocks, c.why) {
 			t.Errorf("%s: %q, want test_integrity_violation (%s)", name, whats(v.Blocks), c.why)
+		}
+	}
+	// H1: aliases already in the base; only their use is new.
+	a := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"pkg/zz_alias_test.go": "package pkg\n\nimport \"testing\"\n\ntype TP = *testing.T\n\ntype TG[P any] = *testing.T\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, x := range map[string]string{"mk(t).(TG[int])": "mk(t).(TG[int])", "case TG[int]": "func() *testing.T {\n\t\tswitch y := mk(t).(type) {\n\t\tcase TG[int]:\n\t\t\treturn y\n\t\t}\n\t\treturn nil\n\t}()",
+		"var x TP": "func() *testing.T {\n\t\tvar x TP\n\t\treturn fresh(x)\n\t}()"} {
+		if v := a.guarded(t, fake(x, mkGo+freshGo)); !finds(v.Blocks, "a testing value not the runner's") {
+			t.Errorf("a base alias, %s: %q", name, whats(v.Blocks))
 		}
 	}
 	// Astra #255 H7: a base whose only Python tests are named by a custom
@@ -346,7 +378,8 @@ func TestIntegrityAcceptsAndWarns(t *testing.T) {
 		"a table of another package's names":            {map[string]string{"pkg/cols.go": "package pkg\n\nimport \"example.com/m/other\"\n\nvar cols = map[string]int{other.Name: 1}\n"}, nil, ""},
 		"os.Args read":                                  {map[string]string{"pkg/args.go": "package pkg\n\nimport \"os\"\n\nfunc name() string { return base(os.Args[0]) }\n\nfunc base(s string) string { return s }\n\nfunc args() []string { return append([]string{}, os.Args...) }\n"}, nil, "pkg/args.go: os.Args in name"},
 		"an inert value to own code":                    {map[string]string{"pkg/tz.go": "package pkg\n\nimport \"time\"\n\nfunc init() { at(time.UTC) }\n\nfunc at(*time.Location) {}\n"}, nil, ""},
-		"an inert value passed on":                      {map[string]string{"pkg/tz.go": "package pkg\n\nimport (\n\t\"strings\"\n\t\"time\"\n\t\"unicode\"\n)\n\nvar epoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)\n\nvar up = strings.Map(unicode.ToUpper, \"a\")\n"}, nil, ""},
+		"an inert value passed on":                      {map[string]string{"pkg/tz.go": "package pkg\n\nimport (\n\t\"strings\"\n\t\"time\"\n\t\"unicode\"\n)\n\nvar epoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)\n\nvar up = strings.Map(unicode.ToUpper, \"a\")\n\nfunc init() {\n\tloc := time.UTC\n\t_ = loc\n}\n"}, nil, ""},
+		"a basic value converted":                       {map[string]string{"pkg/n.go": "package pkg\n\nimport \"example.com/m/other\"\n\nfunc init() {\n\tn := int(other.Count)\n\t_ = n\n}\n"}, nil, ""},
 		"an explicit instantiation": {map[string]string{"pkg/view_test.go": "package pkg\n\nimport \"testing\"\n\ntype helper struct{ t *testing.T }\n\nfunc view[T any](*helper) T {\n\tvar v T\n\treturn v\n}\n\n" +
 			"func TestView(t *testing.T) {\n\th := &helper{t}\n\tif view[int](h) != 0 {\n\t\tt.Fatal(\"view\")\n\t}\n}\n"}, nil, ""},
 		"a blank assignment of t": {map[string]string{"pkg/ptr_test.go": "package pkg\n\nimport \"testing\"\n\nfunc ptr[T any](v T) *T { return &v }\n\n" +

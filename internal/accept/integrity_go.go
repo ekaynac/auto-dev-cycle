@@ -44,15 +44,13 @@ var (
 	initPkgs = []string{"strings", "strconv", "bytes", "errors", "sort", "slices", "maps", "regexp", "embed", "path", "path/filepath"}
 )
 
-// inert: initialization may call or pass on q ("importpath.Name"): a
-// constant (ALL_CAPS), or a function of an inert package.
-func inert(q string, called bool) bool {
+// inert: initialization may call or pass on q ("importpath.Name"), a
+// function or value of an inert package (never by its name's case).
+func inert(q string) bool {
 	i := strings.LastIndex(q, ".")
 	pkg, name := q[:max(i, 0)], q[i+1:]
 	root, _, _ := strings.Cut(pkg, "/")
 	switch {
-	case allCaps(name) && !called:
-		return true
 	case pkg == "fmt":
 		return strings.HasPrefix(name, "Sprint") || name == "Errorf"
 	case pkg == "time":
@@ -319,8 +317,10 @@ func fn(e ast.Expr) (ast.Expr, []ast.Expr) {
 
 // alias is what e names through its own aliases (type TP = *testing.T), if one.
 func (s *pkgScan) alias(e ast.Expr) (rhs ast.Expr) {
-	for i := 0; i < 8 && ident(e) != nil && s.aliases[s.info.Uses[ident(e)]] != nil; i++ {
-		e, rhs = s.aliases[s.info.Uses[ident(e)]], s.aliases[s.info.Uses[ident(e)]]
+	for i := 0; i < 8; i++ {
+		if f, _ := fn(e); s.aliases[s.info.Uses[ident(f)]] != nil { // TG[int] too
+			e, rhs = s.aliases[s.info.Uses[ident(f)]], s.aliases[s.info.Uses[ident(f)]]
+		}
 	}
 	return rhs
 }
@@ -406,6 +406,8 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 					c.refs = append(c.refs, "os.Args assigned")
 				}
 			}
+		case *ast.TypeSpec: // an alias of a testing type: plain, generic or exported
+			c.forged += b2i(x.Assign.IsValid() && s.mentions(x.Type))
 		case *ast.TypeAssertExpr: // to *testing.T: laundered through any
 			c.forged += b2i(s.ptrTo(x.Type))
 		case *ast.CaseClause:
@@ -697,6 +699,12 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) 
 				if q := s.qual(s.root(x.X)); x.Op == token.AND && q != "" {
 					add("another package's variable addressed (" + types.ExprString(x) + ")")
 				}
+			case *ast.ReturnStmt: // a value own code returns is read where it is used
+				for _, r := range x.Results {
+					if !s.read(r) {
+						add("another package's value it cannot prove plain data returned (" + types.ExprString(r) + ")")
+					}
+				}
 			case *ast.SendStmt:
 				if s.qual(s.root(x.Chan)) != "" && !s.shared(x.Value) {
 					add("a value it cannot prove plain data sent to " + types.ExprString(x.Chan))
@@ -706,7 +714,7 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) 
 					s.store(nil, x.Values, add)
 				}
 			case *ast.SelectorExpr:
-				if q := s.qual(x); q != "" && calls[x] && !inert(q, true) {
+				if q := s.qual(x); q != "" && calls[x] && !inert(q) {
 					add("a reference it cannot prove safe (" + q + ")")
 				}
 			case *ast.Ident:
@@ -737,8 +745,10 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) 
 func (s *pkgScan) call(x *ast.CallExpr, own func(ast.Expr) bool) string {
 	fun, args, inside := ast.Unparen(x.Fun), x.Args, false
 	unresolved := "a call it cannot resolve (" + types.ExprString(fun) + ")"
-	if _, star := fun.(*ast.StarExpr); star || s.info.Types[fun].IsType() {
-		return "" // a conversion
+	if s.conversion(x) && !s.read(x) {
+		return "another package's value it cannot prove plain data converted (" + types.ExprString(x) + ")"
+	} else if s.conversion(x) {
+		return ""
 	}
 	switch f := fun.(type) {
 	case *ast.FuncLit, *ast.Ident:
@@ -766,7 +776,7 @@ func (s *pkgScan) call(x *ast.CallExpr, own func(ast.Expr) bool) string {
 		return unresolved
 	}
 	for _, a := range args {
-		if q := s.qual(s.root(a)); inside && q != "" && !inert(q, true) { // a slice, map or chan aliases
+		if q := s.qual(s.root(a)); inside && q != "" && !inert(q) { // a slice, map or chan aliases
 			return "another package's variable passed to " + types.ExprString(fun)
 		} else if inside {
 			own(a)
@@ -785,7 +795,7 @@ func (s *pkgScan) shared(a ast.Expr) bool {
 	name := q[strings.LastIndex(q, ".")+1:]
 	errVar := strings.HasPrefix(name, "Skip") || strings.HasPrefix(name, "Err") && len(name) > 3 && unicode.IsUpper(rune(name[3]))
 	c, call := r.(*ast.CallExpr)
-	return inert(q, true) && !errVar || call && inert(s.qual(ast.Unparen(c.Fun)), true) || plainData(s.info.TypeOf(a), map[types.Type]bool{})
+	return inert(q) && !errVar || call && inert(s.qual(ast.Unparen(c.Fun))) || plainData(s.info.TypeOf(a), map[types.Type]bool{})
 }
 
 // store checks a write (none to another package) and a read into a local
@@ -797,14 +807,31 @@ func (s *pkgScan) store(lhs, rhs []ast.Expr, add func(string)) {
 		}
 	}
 	for _, r := range rhs {
-		if q := s.qual(s.root(r)); q != "" && !inert(q, false) && !plainData(s.info.TypeOf(r), map[types.Type]bool{}) {
+		if !s.read(r) {
 			add("another package's value it cannot prove plain data read (" + types.ExprString(r) + ")")
 		}
 	}
 }
 
-// root is what a value is read from: through &, *, indexes and fields, to
-// another package's name, or to whatever else it starts at.
+// read: r is not another package's, or is an inert package's, or a copy
+// of a basic value (a slice, map, chan, pointer or struct may alias it).
+func (s *pkgScan) read(r ast.Expr) bool {
+	t, q := s.info.TypeOf(r), s.qual(s.root(r))
+	if c, ok := ast.Unparen(r).(*ast.CallExpr); ok && s.conversion(c) {
+		t = s.info.TypeOf(c.Fun) // what it converts to (an unloaded operand leaves the result invalid)
+	}
+	_, basic := types.Unalias(cmp.Or(t, types.Type(types.Typ[types.Invalid]))).Underlying().(*types.Basic)
+	return q == "" || inert(q) || basic && plainData(t, map[types.Type]bool{})
+}
+
+func (s *pkgScan) conversion(x *ast.CallExpr) bool {
+	_, star := ast.Unparen(x.Fun).(*ast.StarExpr)
+	return len(x.Args) == 1 && (star || s.info.Types[ast.Unparen(x.Fun)].IsType())
+}
+
+// root is what a value is read from: through &, *, indexes, slices, fields,
+// conversions and assertions, to another package's name, or to whatever else
+// it starts at.
 func (s *pkgScan) root(e ast.Expr) ast.Expr {
 	for {
 		switch x := ast.Unparen(e).(type) {
@@ -816,6 +843,13 @@ func (s *pkgScan) root(e ast.Expr) ast.Expr {
 			e = x.X
 		case *ast.SliceExpr:
 			e = x.X
+		case *ast.TypeAssertExpr:
+			e = x.X
+		case *ast.CallExpr:
+			if !s.conversion(x) {
+				return x
+			}
+			e = x.Args[0]
 		case *ast.SelectorExpr:
 			if s.qual(x) != "" {
 				return x
