@@ -152,6 +152,29 @@ func LeaseOf(tx *eventstore.Tx, id types.LeaseID) (types.Lease, int64, bool, err
 	return load[types.Lease](tx, LeaseProjection, string(id))
 }
 
+// AttemptAt is the attempt and its projection revision.
+func AttemptAt(tx *eventstore.Tx, id types.AttemptID) (types.Attempt, int64, bool, error) {
+	return load[types.Attempt](tx, AttemptProjection, string(id))
+}
+
+// Ended: a lease in s holds nothing any more (settled or released), so its
+// unit may be placed again (P21: settlement before replacement).
+func Ended(s types.LeaseState) bool {
+	return s == types.LeaseStateSettled || s == types.LeaseStateReleased
+}
+
+// Replaceable refuses to replace an attempt whose lease old is settling (or
+// restoring): its settlement comes first (P21: X3's step 4 before steps 5
+// and 6). SupersedeAttempt checks it at admission; replay does not. An
+// active old lease is M0's continuation, which its contract fixtures keep;
+// dispatch.placed refuses it for M1's placement.
+func Replaceable(old types.Lease) error {
+	if !Ended(old.State) && old.State != types.LeaseStateActive {
+		return fmt.Errorf("lease: lease %s is %s; it settles before its attempt is replaced", old.ID, old.State)
+	}
+	return nil
+}
+
 // LiveOn is a lease on unit that is requested, waiting, granted or active,
 // if any. It scans every lease: M1 runs one admitted task.
 func LiveOn(tx *eventstore.Tx, unit types.UnitID) (types.LeaseID, bool, error) {
@@ -267,6 +290,9 @@ func SupersedeAttempt(tx *eventstore.Tx, old types.AttemptID, oldExpected int64,
 	l, err := current[types.Lease](tx, LeaseProjection, string(leaseID), leaseExpected)
 	if err != nil {
 		return nil, err
+	}
+	if was, _, ok, err := LeaseOf(tx, a.Lease); err != nil || !ok || Replaceable(was) != nil {
+		return nil, errors.Join(err, Replaceable(was))
 	}
 	retired, next, err := Supersede(a, id, leaseID, base)
 	if err != nil {

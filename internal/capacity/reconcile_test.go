@@ -628,3 +628,48 @@ func TestOnlyTheReconcilerRecordsAReconciliation(t *testing.T) {
 		t.Fatalf("%d reconciliations recorded", n)
 	}
 }
+
+// #226 entry 77 (P21), with Astra's delayed commit (#259 round 3): a wall-clock step forward never ages a floor this
+// process sent. The Recorder and the Reconciler share a Clock. The floor's age is stamped only once it committed,
+// here at 2 min after the request began (a writer that made it wait). At 11 min, with the reconciler's wall clock past
+// the floor's grace (a step forward) and the request still outstanding, the effect stays uncertain and the provider
+// is not asked. Past the grace from the commit (13 min), it is asked. A second request, counted, keeps nothing young.
+func TestAClockStepNeverAgesAFloorThisProcessSent(t *testing.T) {
+	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
+	t0, at := time.Now(), 2*time.Minute
+	stamped := map[string]bool{} // whether the floor was committed when the Clock first stamped it
+	clock := &modelcall.Clock{Now: func() time.Time {
+		if len(stamped) == 0 {
+			w.view(func(tx *eventstore.Tx) error {
+				_, ok, err := tx.Get(modelcall.FloorProjection, string(r.call)+"/0")
+				stamped["committed"] = ok
+				return err
+			})
+		}
+		return t0.Add(at)
+	}}
+	rec := modelcall.Recorder{Store: w.s, Actor: testActor, Clock: clock}
+	b := gateway.Binding{Lease: r.lease, Attempt: r.attempt, Call: r.call}
+	if err := errors.Join(rec.Count(context.Background(), b, 0, gateway.Count{In: 50, Out: 10}),
+		rec.Count(context.Background(), b, 1, gateway.Count{In: 5, Out: 5}),
+		rec.Count(context.Background(), b, 1, gateway.Count{In: 5, Out: 5, Observed: true})); err != nil {
+		t.Fatal(err)
+	}
+	if !stamped["committed"] {
+		t.Fatal("the Clock stamped the floor's age before its commit")
+	}
+	w.stop(r)
+	w.settleDerived(r)
+	q := &query{u: modelcall.Usage{In: 60, Out: 20}, found: true}
+	rc := w.reconciler(q) // its wall clock is past every floor's grace
+	rc.Clock = clock
+	at = 11 * time.Minute
+	if e, err := rc.Ended(context.Background(), r.call); err != nil || e.State != eventstore.EffectUncertain || e.LastObservation != modelcall.ObservedYoung || q.times() != 0 {
+		t.Fatalf("a floor young by the monotonic clock: %+v, %v, asked %d times", e, err, q.times())
+	}
+	at = 2*time.Minute + modelcall.FloorGrace
+	if e, err := rc.Reconcile(context.Background(), r.call); err != nil || e.State != eventstore.EffectCompleted || q.times() != 1 {
+		t.Fatalf("past the grace: %+v, %v, asked %d times", e, err, q.times())
+	}
+}

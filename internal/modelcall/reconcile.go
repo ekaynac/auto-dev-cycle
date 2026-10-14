@@ -15,7 +15,8 @@ package modelcall
 //     settles the call below what the gateway observed (ledger.bound): below it, the call settles there, flagged
 //     (Standing.Below), and is asked again only after a later gateway count; an unchanged answer is not recorded.
 //   - It is asked only once every request with a floor and no count is older than FloorGrace, by the floor's
-//     recorded time: the gateway ends each request within gateway.RequestDeadline, in process or across a restart.
+//     recorded time and, for a floor this process sent, by the monotonic Clock too (#226 entry 77): the gateway ends
+//     each request within gateway.RequestDeadline, in process or across a restart.
 //   - Otherwise the effect stays uncertain and P12b keeps the liability: never dropped, never zero. Late usage (#226
 //     entry 59) is expected. Inert: P22a constructs it and authorises Reconciled for the system actor only.
 
@@ -76,6 +77,7 @@ type Reconciler struct {
 	Actor   string               // the controller's system actor
 	Queries map[types.Slug]Query // by destination: the routes whose usage can be queried
 	Now     func() time.Time     // nil: time.Now
+	Clock   *Clock               // the Recorder's: ages this process's floors monotonically (#226 entry 77)
 
 	mu      sync.Mutex
 	running map[types.CallID]chan struct{} // closed when the call's runner ends
@@ -200,14 +202,16 @@ func (r *Reconciler) read(ctx context.Context, call types.CallID) (v view, err e
 				continue
 			}
 			var at time.Time
-			raw, ok, err := tx.Get(FloorProjection, floorKey(call, m.Sequence))
+			key := floorKey(call, m.Sequence)
+			raw, ok, err := tx.Get(FloorProjection, key)
 			if err == nil && ok {
 				err = json.Unmarshal(raw, &at)
 			}
 			if err != nil {
 				return err
 			}
-			v.young = v.young || at.IsZero() || at0.Sub(at) < FloorGrace // no recorded time: assume in flight
+			// No recorded time: assume in flight. A wall-clock step never ages a floor this process sent (Clock).
+			v.young = v.young || at.IsZero() || at0.Sub(at) < FloorGrace || r.Clock.young(key)
 		}
 		return nil
 	})
