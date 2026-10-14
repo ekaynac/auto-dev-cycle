@@ -21,6 +21,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/recovery"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -40,6 +41,7 @@ func root(t *testing.T, ex string, id types.AttemptID, out map[string]string) st
 	r := filepath.Join(ex, adapterhost.ExchangeName(id))
 	err := errors.Join(os.Mkdir(r, 0o700), os.Mkdir(filepath.Join(r, "in"), 0o755), os.WriteFile(filepath.Join(r, "in", "prompt"), []byte("p"), 0o444),
 		os.Chmod(filepath.Join(r, "in"), 0o555), os.Mkdir(filepath.Join(r, "out"), 0o755))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(r, "in"), 0o755) }) // a skipped test leaves the root to TempDir
 	for n, body := range out {
 		err = errors.Join(err, os.WriteFile(filepath.Join(r, "out", n), []byte(body), 0o644))
 	}
@@ -171,14 +173,29 @@ func TestARootIsBoundThroughTheStore(t *testing.T) {
 	}
 }
 
-// F (P21b; H1 and M6 of Opus on #259): the orphan stage never blocks recovery. An out/ at mode 000, or a symlink, is
-// one refusal, handle "out", with the errno, and its root is still removed; a failed rename is reported, and the next
-// start removes the root without recording its refusal again, as after a crash between the commit and the rename.
-// Each ends with the lease settled.
+// sparse makes out/huge a sparse file of 2^54 bytes in root r (no space used), or skips where the file system refuses
+// that size (ext4; the test sandbox's /tmp is a tmpfs).
+func sparse(t *testing.T, r string) {
+	t.Helper()
+	p := filepath.Join(r, "out", "huge")
+	if err := errors.Join(os.WriteFile(p, nil, 0o644), os.Truncate(p, 1<<54)); errors.Is(err, unix.EFBIG) {
+		t.Skip("this file system refuses a 2^54-byte file")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// F (P21b; H1 and M6 of Opus on #259, M1, M2 and L6 of Opus on #261): the orphan stage never blocks recovery. Run,
+// with the hostile root in its exchange directory, settles L1 and never touches the directory. The stage then records
+// the refusals and clears the directory: an out/ at mode 000, or a symlink, is one refusal "out/" with the errno; a
+// sparse 2^54-byte file is recorded at Amount's maximum, saying so; a refusal the store rejects (the clamp off) falls
+// back to one refusal "out/"; a failed rename is reported, and the next start removes the root without recording its
+// refusal again, as after a crash between the commit and the rename; a leftover refused-<name> never blocks it.
 func TestTheOrphanStageNeverBlocksRecovery(t *testing.T) {
+	const partial = "%[1]s partial 4 %[2]s; not read"
 	for name, c := range map[string]struct {
-		fault  func(t *testing.T, ex, root string)
-		detail string
+		fault func(t *testing.T, ex, root string)
+		want  []string
 	}{
 		"out/ at mode 000": {func(t *testing.T, _, r string) {
 			if os.Geteuid() == 0 {
@@ -187,37 +204,95 @@ func TestTheOrphanStageNeverBlocksRecovery(t *testing.T) {
 			if err := os.Chmod(filepath.Join(r, "out"), 0); err != nil {
 				t.Fatal(err)
 			}
-		}, " out 0 %s; not read; out/ not listed: EACCES"},
+		}, []string{"%[1]s out/ 0 %[2]s; not read; out/ not listed: EACCES"}},
 		"out/ a symlink": {func(t *testing.T, _, r string) {
 			if err := errors.Join(os.Rename(filepath.Join(r, "out"), filepath.Join(r, "elsewhere")), os.Symlink("elsewhere", filepath.Join(r, "out"))); err != nil {
 				t.Fatal(err)
 			}
-		}, " out 0 %s; not read; out/ not listed: ENOTDIR"},
+		}, []string{"%[1]s out/ 0 %[2]s; not read; out/ not listed: ENOTDIR"}},
+		"a sparse file": {func(t *testing.T, _, r string) { sparse(t, r) },
+			[]string{"%[1]s huge 9007199254740991 %[2]s; not read; lstat size 18014398509481984, recorded as 9007199254740991", partial}},
+		"a refusal the store rejects": {func(t *testing.T, _, r string) {
+			old := *recovery.MaxSize
+			*recovery.MaxSize = 1 << 62
+			t.Cleanup(func() { *recovery.MaxSize = old })
+			sparse(t, r)
+		}, []string{"%[1]s out/ 0 %[2]s; not read; out/ not recorded entry by entry"}},
 		"a failed rename": {func(t *testing.T, ex, r string) {
+			old := *recovery.Renameat
+			*recovery.Renameat = func(int, string, int, string) error { *recovery.Renameat = old; return unix.EIO }
+			t.Cleanup(func() { *recovery.Renameat = old })
+		}, []string{partial}},
+		"a leftover refused-<name>": {func(t *testing.T, ex, r string) {
 			if err := os.MkdirAll(filepath.Join(ex, "refused-"+filepath.Base(r), "x"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-		}, " partial 4 %s; not read"},
+		}, []string{partial}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			w, ex := restarted(t, t.TempDir()), t.TempDir()
 			cut := w.midCall(t)
 			r := root(t, ex, cut.Attempt, map[string]string{"partial": "part"})
 			c.fault(t, ex, r)
-			w.run()
-			err := w.orphans(ex)
+			rec := w.recovery()
+			rec.Exchanges = ex
+			if err := rec.Run(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			w.settled(cut.Lease)
+			if _, err := os.Lstat(r); err != nil || len(w.refusals(0)) != 0 {
+				t.Fatalf("Run touched the exchange directory: %v, refused %q", err, w.refusals(0))
+			}
+			err := rec.RefuseOrphans(context.Background())
 			if name == "a failed rename" {
 				if err == nil || !strings.Contains(err.Error(), "the orphaned output of "+string(cut.Attempt)) {
 					t.Fatalf("the failed rename: %v", err)
 				}
-				err = w.orphans(ex) // the next start
+				err = rec.RefuseOrphans(context.Background()) // the next start
 			}
-			want := string(cut.Attempt) + fmt.Sprintf(c.detail, fmt.Sprintf("attempt %s is sealed; its publication is closed", cut.Attempt))
-			if got := w.refusals(0); err != nil || !slices.Equal(got, []string{want}) {
+			var want []string
+			for _, f := range c.want {
+				want = append(want, fmt.Sprintf(f, cut.Attempt, fmt.Sprintf("attempt %s is sealed; its publication is closed", cut.Attempt)))
+			}
+			if got := w.refusals(0); err != nil || !slices.Equal(got, want) {
 				t.Fatalf("%v: refused %q; want %q", err, got, want)
 			}
 			empty(t, ex)
-			w.settled(cut.Lease)
 		})
 	}
+}
+
+// M1 and L4 (Opus on #261): at most maxRoots roots a start are refused, and a root that fails takes no slot: with one
+// slot, the first root's rename fails and the second root is still refused in the same start; the next start takes
+// the first. An attempt stopped without a result (stop_reason set) is in the cut set: its output is refused too.
+func TestARootThatFailsTakesNoSlot(t *testing.T) {
+	old, oldRename := *recovery.MaxRoots, *recovery.Renameat
+	t.Cleanup(func() { *recovery.MaxRoots, *recovery.Renameat = old, oldRename })
+	*recovery.MaxRoots = 1
+	w, ex := restarted(t, t.TempDir()), t.TempDir()
+	first := w.midCall(t)
+	stopped := w.midCall(t)
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StopRunning(tx, stopped.Attempt, types.AttemptStopReasonValueRevoke)
+	})
+	root(t, ex, first.Attempt, map[string]string{"a": "1"})
+	root(t, ex, stopped.Attempt, map[string]string{"b": "22"})
+	*recovery.Renameat = func(fd int, from string, tfd int, to string) error {
+		if from == adapterhost.ExchangeName(first.Attempt) {
+			return unix.EIO
+		}
+		return oldRename(fd, from, tfd, to)
+	}
+	w.run()
+	if err := w.orphans(ex); err == nil {
+		t.Fatal("the first root's failed rename is not reported")
+	}
+	if got := w.refusals(0); len(got) != 2 || !strings.HasPrefix(got[1], string(stopped.Attempt)+" b 2 attempt "+string(stopped.Attempt)+" is sealed") {
+		t.Fatalf("refused %q; want both roots' outputs, the stopped attempt's included", got)
+	}
+	*recovery.Renameat = oldRename
+	if err := w.orphans(ex); err != nil || len(w.refusals(0)) != 2 {
+		t.Fatalf("the next start: %v, refused %q", err, w.refusals(0))
+	}
+	empty(t, ex)
 }

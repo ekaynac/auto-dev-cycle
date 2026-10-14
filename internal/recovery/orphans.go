@@ -6,12 +6,15 @@ package recovery
 
 // Orphaned output (X3 "Late output"; 09). RefuseOrphans runs at start, after Run, before any launch; Run never waits
 // for it (H1): step 1 fenced the cut attempts, so a refusal is a record, not a precondition. A root is bound through
-// the store, never a name read: for each attempt lost{controller_restart} (perhaps sealed or superseded since),
-// exactly its adapterhost.ExchangeName, opened O_PATH|O_NOFOLLOW, if a directory of the controller's euid at mode
-// 0700. Each entry of its out/ is refused (stale_attempt) by lstat size beneath out/'s descriptor, digest of no bytes,
-// never opened; an out/ not listed whole (a symlink, mode 000, past maxEntries) adds a refusal "out" saying why. The
-// idempotency key is the root's name: a crash before the rename to refused-<name> replays it. At most maxRoots roots a
-// start. Any other exchange-* entry is removed with no event, and refused-* swept (adapterhost.RemoveAt).
+// the store, never a name read: for each attempt a restart cut (lost{controller_restart}) or a stop left without a
+// result (stop_reason set), perhaps sealed or superseded since, exactly its adapterhost.ExchangeName, opened
+// O_PATH|O_NOFOLLOW, if a directory of the controller's euid at mode 0700. Each entry of its out/ is refused
+// (stale_attempt) by lstat size (clamped to the schema's bound) beneath out/'s descriptor, digest of no bytes, never
+// opened; an out/ not listed whole (a symlink, mode 000, past maxEntries) adds a refusal "out/", a name no entry has,
+// saying why. If that command fails, one refusal "out/" with a fixed detail takes its place (a storage fault fails it
+// too, and the root waits). The idempotency key is the root's name: a crash before the rename to refused-<name>
+// replays it. At most maxRoots roots a start are refused; a root that fails takes no slot. Any other exchange-* entry
+// is removed with no event, and refused-* swept (adapterhost.RemoveAt).
 
 import (
 	"context"
@@ -32,10 +35,17 @@ import (
 const (
 	ActionRefuse = "recovery.refuse_output"
 
-	refusedPrefix = "refused-"
-	maxRoots      = 16
-	maxEntries    = 64
-	emptyDigest   = types.Digest("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+	maxEntries  = 64
+	dirHandle   = "out/" // out/ itself: no entry of it has a "/" in its name
+	emptyDigest = types.Digest("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+)
+
+// Variables for tests (export_test.go): the roots refused a start, the largest size recorded (Amount's maximum), and
+// the rename of a refused root.
+var (
+	maxRoots       = 16
+	maxSize  int64 = 1<<53 - 1
+	renameat       = unix.Renameat
 )
 
 // RefuseOrphans refuses the output each attempt a restart cut left in its exchange root, then clears the exchange
@@ -60,20 +70,31 @@ func (r Recovery) RefuseOrphans(ctx context.Context) error {
 	for _, id := range cut {
 		name := adapterhost.ExchangeName(id)
 		claimed[name] = true
-		if roots < maxRoots {
+		if roots < maxRoots && ctx.Err() == nil {
 			found, rerr := r.refuseRoot(ctx, dir, name, id)
-			if found {
+			if found && rerr == nil {
 				roots++
 			}
 			err = errors.Join(err, rerr)
 		}
 	}
-	names, lerr := parent.Readdirnames(-1)
-	err = errors.Join(err, lerr)
-	for _, n := range names {
-		if strings.HasPrefix(n, refusedPrefix) || strings.HasPrefix(n, adapterhost.ExchangePrefix) && !claimed[n] {
-			err = errors.Join(err, adapterhost.RemoveAt(dir, n))
+	for ctx.Err() == nil {
+		names, lerr := parent.Readdirnames(256)
+		for _, n := range names {
+			if strings.HasPrefix(n, adapterhost.RefusedPrefix) || strings.HasPrefix(n, adapterhost.ExchangePrefix) && !claimed[n] {
+				err = errors.Join(err, adapterhost.RemoveAt(dir, n))
+			}
 		}
+		if lerr != nil {
+			return errors.Join(err, ignore(lerr, io.EOF))
+		}
+	}
+	return errors.Join(err, ctx.Err())
+}
+
+func ignore(err, target error) error {
+	if errors.Is(err, target) {
+		return nil
 	}
 	return err
 }
@@ -90,7 +111,7 @@ func (r Recovery) cutAttempts(ctx context.Context) (cut []types.AttemptID, err e
 				return aerr
 			case a.Status == types.AttemptStatusRunning:
 				return fmt.Errorf("recovery: attempt %s is running: orphaned output is refused after step 1", k)
-			case a.LostReason != nil && *a.LostReason == restart:
+			case a.LostReason != nil && *a.LostReason == restart || a.StopReason != nil:
 				cut = append(cut, a.ID)
 			}
 		}
@@ -113,29 +134,37 @@ func (r Recovery) refuseRoot(ctx context.Context, dir int, name string, id types
 	if err != nil || st.Uid != uint32(os.Geteuid()) || st.Mode&0o7777 != 0o700 {
 		return true, adapterhost.RemoveAt(dir, name) // not a root the controller made: no event
 	}
-	if handles, note := listOut(fd, id); len(handles) > 0 {
-		err = r.submit(ctx, ActionRefuse, ActionRefuse+"/"+name, &id, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	refuse := func(orphans []orphan) error {
+		return r.submit(ctx, ActionRefuse, ActionRefuse+"/"+name, &id, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			var stale *lease.Stale
 			a, _, _, err := lease.AttemptAt(tx, id)
 			if err == nil {
 				err = lease.FenceAttempt(tx, id, a.FencingToken)
 			}
-			if !errors.As(err, &stale) { // never for a cut attempt: its publication closed at step 1
+			if !errors.As(err, &stale) { // never for a cut attempt: its publication closed
 				return nil, errors.Join(err, fmt.Errorf("recovery: attempt %s may still publish", id))
 			}
-			evs, errs := make([]eventstore.Event, len(handles)), make([]error, len(handles))
-			for i, h := range handles {
-				detail := stale.Detail + "; not read"
-				if i == len(handles)-1 {
-					detail += note
-				}
-				evs[i], _, errs[i] = lease.Refusal(id, h, types.AttemptOutputRefusalCheckStaleAttempt, detail)
+			evs, errs := make([]eventstore.Event, len(orphans)), make([]error, len(orphans))
+			for i, o := range orphans {
+				evs[i], _, errs[i] = lease.Refusal(id, o.handle, types.AttemptOutputRefusalCheckStaleAttempt, stale.Detail+"; not read"+o.note)
 			}
 			return evs, errors.Join(errs...)
 		})
 	}
+	if orphans := listOut(fd, id); len(orphans) > 0 {
+		if err = refuse(orphans); err != nil {
+			if ferr := refuse([]orphan{entry(id, dirHandle, 0, "; out/ not recorded entry by entry")}); ferr == nil {
+				err = nil
+			} else {
+				err = errors.Join(err, ferr)
+			}
+		}
+	}
 	if err == nil {
-		err = unix.Renameat(dir, name, dir, refusedPrefix+name)
+		err = adapterhost.RemoveAt(dir, adapterhost.RefusedPrefix+name) // a leftover never blocks the rename
+	}
+	if err == nil {
+		err = renameat(dir, name, dir, adapterhost.RefusedPrefix+name)
 	}
 	if err != nil {
 		return true, fmt.Errorf("recovery: the orphaned output of %s: %w", id, err)
@@ -143,39 +172,46 @@ func (r Recovery) refuseRoot(ctx context.Context, dir int, name string, id types
 	return true, nil
 }
 
-// listOut names out/'s entries beneath root, at most maxEntries, by lstat beneath out/'s descriptor, opening none.
-// When out/ was not listed whole, a last handle "out" stands for the rest, and note says why.
-func listOut(root int, id types.AttemptID) (found []types.AttemptOutputRefusalHandle, note string) {
-	handle := func(name string, size int64) types.AttemptOutputRefusalHandle {
-		return types.AttemptOutputRefusalHandle{Attempt: id, Handle: name, Digest: emptyDigest, Size: types.Amount(max(size, 0))}
+// orphan is one refused output, with what its refusal's detail adds.
+type orphan struct {
+	handle types.AttemptOutputRefusalHandle
+	note   string
+}
+
+func entry(id types.AttemptID, name string, size int64, note string) orphan {
+	if size > maxSize {
+		size, note = maxSize, note+fmt.Sprintf("; lstat size %d, recorded as %d", size, maxSize)
 	}
+	return orphan{types.AttemptOutputRefusalHandle{Attempt: id, Handle: name, Digest: emptyDigest, Size: types.Amount(max(size, 0))}, note}
+}
+
+// listOut names out/'s entries beneath root, at most maxEntries, by lstat beneath out/'s descriptor, opening none.
+// When out/ was not listed whole, a last orphan "out/" says why.
+func listOut(root int, id types.AttemptID) (found []orphan) {
 	fd, err := unix.Openat(root, "out", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err == unix.ENOENT {
-		return nil, ""
+		return nil
 	}
 	var names []string
 	if err == nil {
 		out := os.NewFile(uintptr(fd), "out")
 		defer out.Close()
-		if names, err = out.Readdirnames(maxEntries + 1); errors.Is(err, io.EOF) {
-			err = nil
-		}
+		names, err = out.Readdirnames(maxEntries + 1)
+		err = ignore(err, io.EOF)
 	}
 	for _, n := range names[:min(len(names), maxEntries)] {
 		var st unix.Stat_t // an entry gone meanwhile is still refused, by name, at size 0
 		_ = unix.Fstatat(fd, n, &st, unix.AT_SYMLINK_NOFOLLOW)
-		found = append(found, handle(n, st.Size))
+		found = append(found, entry(id, n, st.Size, ""))
 	}
 	var errno unix.Errno
 	switch {
 	case errors.As(err, &errno):
-		note = "; out/ not listed: " + unix.ErrnoName(errno)
+		return append(found, entry(id, dirHandle, 0, "; out/ not listed: "+unix.ErrnoName(errno)))
 	case err != nil:
-		note = "; out/ not listed"
+		return append(found, entry(id, dirHandle, 0, "; out/ not listed"))
 	case len(names) > maxEntries:
-		note = fmt.Sprintf("; out/ truncated at %d entries", maxEntries)
-	default:
-		return found, ""
+		return append(found, entry(id, dirHandle, 0, fmt.Sprintf("; out/ truncated at %d entries", maxEntries)))
 	}
-	return append(found, handle("out", 0)), note
+	return found
 }
