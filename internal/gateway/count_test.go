@@ -3,6 +3,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 )
@@ -283,4 +285,46 @@ func TestEveryRequestHasADeadline(t *testing.T) {
 	if c := client(); c.Timeout != RequestDeadline || RequestDeadline <= 0 {
 		t.Fatalf("the egress client's deadline is %v, want %v", c.Timeout, RequestDeadline)
 	}
+}
+
+// deadlines records the deadline of the context each lease read gets.
+type deadlines struct {
+	Leases
+	mu  sync.Mutex
+	got []time.Time
+}
+
+func (d *deadlines) Lease(ctx context.Context, id types.LeaseID) (types.Lease, bool, error) {
+	at, _ := ctx.Deadline()
+	d.mu.Lock()
+	d.got = append(d.got, at)
+	d.mu.Unlock()
+	return d.Leases.Lease(ctx, id)
+}
+
+// Astra on #259, H1: the request's deadline starts when the gateway takes it, before its floor is noted and
+// committed, so the request ends within RequestDeadline of the floor's commit, however long the writer made it wait.
+func TestTheRequestDeadlineStartsBeforeTheFloor(t *testing.T) {
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"choices":[]}`) })
+	d, floored := &deadlines{}, &floorTime{}
+	g, token := rig(t, up, func(c *Config) { d.Leases, floored.Counts = c.Leases, c.Counts; c.Leases, c.Counts = d, floored })
+	if w := call(g, token, "/chat/completions", asked, nil); w.Code != http.StatusOK {
+		t.Fatalf("answered %d", w.Code)
+	}
+	if len(d.got) == 0 || d.got[0].IsZero() || floored.at.IsZero() || d.got[0].After(floored.at.Add(RequestDeadline)) {
+		t.Fatalf("the request's deadlines %v; want set, at most %v", d.got, floored.at.Add(RequestDeadline))
+	}
+}
+
+// floorTime records when the first floor's submission began.
+type floorTime struct {
+	Counts
+	at time.Time
+}
+
+func (f *floorTime) Count(ctx context.Context, b Binding, seq int64, n Count) error {
+	if f.at.IsZero() && !n.Observed {
+		f.at = time.Now()
+	}
+	return f.Counts.Count(ctx, b, seq, n)
 }

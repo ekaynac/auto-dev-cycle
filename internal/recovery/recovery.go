@@ -17,11 +17,13 @@
 //     would. Its seal is abrupt_loss (drain for a drain stop, lease.SealReason). A finishing attempt, or one sealed
 //     from finishing, holds an admitted result: it is the completion path's (P22a), never revoked here.
 //   - Steps 5 and 6 are placement: dispatch.Match refuses a unit whose last lease has not settled, and
-//     lease.SupersedeAttempt refuses a replacement while the old attempt's lease has not ended, so the replacement is
+//     lease.SupersedeAttempt refuses a replacement while the old attempt's lease settles, so the replacement is
 //     sized after step 4 and supersedes the sealed attempt with the next token in one event. No lease.completed occurs.
 //   - Next decides each step from the records alone, again inside its command, so a crash between steps resumes
-//     where it stopped, and a run with nothing left records no event. Steps 2-4 never touch the filesystem, and one
-//     attempt's failure does not stop another's recovery.
+//     where it stopped, and a run with nothing left records no event.
+//   - Recovery never inspects the adapter's workspace or exchange directory. Step 3 publishes the seal's record to
+//     the controller's own, trusted blob store, which the seal's admission reads back: a failure there stops that
+//     attempt's recovery only (it stays at its last step until the next run), never another attempt's.
 //   - The cut calls' effects are uncertain by the restart rule (MarkPendingUncertain); P20's Reconciler settles them,
 //     and late usage recomputes the liability (P12b). Recovery queries no provider.
 //   - Inert: P22a constructs it, runs it at start after MarkPendingUncertain and before any other command, and

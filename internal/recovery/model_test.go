@@ -29,7 +29,8 @@ package recovery_test
 // The invariants, checked in every reachable state:
 //   - I1 fencing: no output of A1 lands once the controller died;
 //   - I2 one publisher: at most one attempt of the unit has its publication open;
-//   - I3 settle before replace: A2 starts only once L1 has settled, so it is sized after step 4;
+//   - I3 settle before replace: A2 starts only once L1 is settled or released and its reservation returned or moved,
+//     checked on the states themselves, never through lease.Ended;
 //   - I4 one transaction: A2 supersedes A1 with the next token, and A1 is superseded by A2, in the same step;
 //   - I5 no dropped charge: the call is held by L1's reservation, settled, or kept as a liability;
 //   - I6 recovery completes: from any state, step 1 then recovery's own steps alone end with A1 sealed or superseded,
@@ -76,11 +77,12 @@ type mstate struct {
 
 // faults are the model's fault fixtures; next is the step decision (recovery.Next unless mutated).
 type faults struct {
-	skipLose       bool // step 1 loses nothing
-	beforeLose     bool // the controller acts before step 1
-	placeEarly     bool // placement does not wait for L1 to settle (a grant outside dispatch)
-	ignoreOldLease bool // the supersession does not check the old lease (lease.Replaceable)
-	dropLiability  bool // the settlement names no call
+	skipLose       bool                        // step 1 loses nothing
+	beforeLose     bool                        // the controller acts before step 1
+	placeEarly     bool                        // placement does not wait for L1 to settle (a grant outside dispatch)
+	ignoreOldLease bool                        // the supersession does not check the old lease (lease.Replaceable)
+	ended          func(types.LeaseState) bool // a mutated terminal-state predicate, used where lease.Ended is
+	dropLiability  bool                        // the settlement names no call
 	next           func(types.Attempt, types.Lease) recovery.Step
 	reach          func(mstate) // sees every reachable state
 	from           []mstate     // the initial states (nil: initials())
@@ -159,18 +161,23 @@ func (f faults) moves(s mstate) []move {
 			out = append(out, move{"recover " + string(id[len(id)-1:]), n})
 		}
 	}
-	if s.A2.ID == "" && s.L2.State == "" && s.A1.Status != types.AttemptStatusRunning && (f.placeEarly || lease.Ended(s.L1.State)) {
+	ended, replaceable := lease.Ended, lease.Replaceable(s.L1) == nil
+	if f.ended != nil { // as dispatch and lease.Replaceable would use it
+		ended, replaceable = f.ended, f.ended(s.L1.State) || s.L1.State == types.LeaseStateActive
+	}
+	if s.A2.ID == "" && s.L2.State == "" && s.A1.Status != types.AttemptStatusRunning && (f.placeEarly || ended(s.L1.State)) {
 		n := s
 		n.L2 = types.Lease{ID: l2, Unit: unit, Role: "builder", Executor: s.L1.Executor, State: types.LeaseStateGranted, Reservations: s.L1.Reservations,
 			PlacementChecks: s.L1.PlacementChecks}
 		out = append(out, move{"grant L2", n})
 	}
-	if s.A2.ID == "" && s.L2.State == types.LeaseStateGranted && (f.ignoreOldLease || lease.Replaceable(s.L1) == nil) {
+	if s.A2.ID == "" && s.L2.State == types.LeaseStateGranted && (f.ignoreOldLease || replaceable) {
 		if retired, next, err := lease.Supersede(s.A1, a2, l2, base); err == nil {
 			if active, err := lease.ApplyLease(s.L2, lease.LeaseEvent{Kind: lease.AttemptStarted, Attempt: ptr(a2)}, false, nil); err == nil {
 				n := s
 				n.A1, n.A2, n.L2, n.Current = retired, next, active, a2
-				n.StartedEarly = s.StartedEarly || !lease.Ended(s.L1.State)
+				// The oracle is independent of lease.Ended: L1 in a terminal state, its reservation returned or moved.
+				n.StartedEarly = s.StartedEarly || s.Reserved || s.L1.State != types.LeaseStateSettled && s.L1.State != types.LeaseStateReleased
 				n.SupersededBad = s.SupersededBad || next.FencingToken != s.A1.FencingToken+1 || next.Supersedes == nil ||
 					*next.Supersedes != a1 || retired.SupersededBy == nil || *retired.SupersededBy != a2
 				out = append(out, move{"start A2", n})
@@ -279,7 +286,7 @@ func (f faults) completes(s mstate) bool {
 		return s
 	}
 	d := drain(s)
-	done := (d.A1.Status == types.AttemptStatusSealed || d.A1.Status == types.AttemptStatusSuperseded) && lease.Ended(d.L1.State) &&
+	done := (d.A1.Status == types.AttemptStatusSealed || d.A1.Status == types.AttemptStatusSuperseded) && d.L1.State == types.LeaseStateSettled && !d.Reserved &&
 		f.next(d.A1, d.L1) == recovery.Done && (d.A2.ID == "" || f.next(d.A2, d.L2) == recovery.Done)
 	if !done || d.A2.Status == types.AttemptStatusRunning {
 		return done
@@ -369,6 +376,7 @@ func TestTheRecoveryModelsFaults(t *testing.T) {
 		"the controller acts before step 1":                                    {faults{beforeLose: true}, "I1 fencing"},
 		"placement does not wait for L1":                                       {faults{placeEarly: true}, "I3 settle before replace"},
 		"a grant outside dispatch, and the supersession ignores the old lease": {faults{placeEarly: true, ignoreOldLease: true, from: initials()[:1]}, "I3 settle before replace"},
+		"the terminal-state predicate admits settling":                         {faults{ended: func(s types.LeaseState) bool { return lease.Ended(s) || s == types.LeaseStateSettling }}, "I3 settle before replace"},
 		"the settlement names no call":                                         {faults{dropLiability: true}, "I5 no dropped charge"},
 		"the lease settles before its attempt":                                 {faults{next: sealLast}, "I6 recovery completes"},
 		"recovery revokes, then stops":                                         {faults{next: onlyRevoke}, "I6 recovery completes"},

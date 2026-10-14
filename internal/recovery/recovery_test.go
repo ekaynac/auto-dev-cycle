@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -550,6 +551,52 @@ func TestRecoveryConvergesEveryCutAttempt(t *testing.T) {
 				t.Fatalf("attempt %s sealed %q, lease %s; want sealed %s, settled", a.Status, reason, l.State, k.seal)
 			}
 		})
+	}
+}
+
+// failingOnce is the blob store, failing its first publication.
+type failingOnce struct {
+	lease.Publisher
+	calls *int
+}
+
+func (f failingOnce) Put(r io.Reader, declared string) (string, error) {
+	if *f.calls++; *f.calls == 1 {
+		return "", errors.New("blob store unavailable")
+	}
+	return f.Publisher.Put(r, declared)
+}
+
+// L4 (Astra on #259): a failed seal stops that attempt only. Two attempts are cut; the blob store fails the first
+// one's seal (Run takes the attempts in key order). The second still settles; Run reports the failure; the first
+// stays revoked (settling) and settles at the next run.
+func TestAFailedSealStopsThatAttemptOnly(t *testing.T) {
+	w := restarted(t, t.TempDir())
+	first, second := w.midCall(t), w.midCall(t)
+	if first.Attempt > second.Attempt {
+		first, second = second, first
+	}
+	r, calls := w.recovery(), 0
+	r.Blobs = failingOnce{w.blobs, &calls}
+	if err := r.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "blob store unavailable") {
+		t.Fatalf("Run reported %v; want the failed seal", err)
+	}
+	states := func() (types.LeaseState, types.LeaseState) {
+		var a, b types.Lease
+		w.view(func(tx *eventstore.Tx) error {
+			var err, berr error
+			a, _, _, err = lease.LeaseOf(tx, first.Lease)
+			b, _, _, berr = lease.LeaseOf(tx, second.Lease)
+			return errors.Join(err, berr)
+		})
+		return a.State, b.State
+	}
+	if a, b := states(); a != types.LeaseStateSettling || b != types.LeaseStateSettled {
+		t.Fatalf("leases %s and %s; want the failed one settling, the other settled", a, b)
+	}
+	w.run()
+	if a, b := states(); a != types.LeaseStateSettled || b != types.LeaseStateSettled {
+		t.Fatalf("after the next run, leases %s and %s; want both settled", a, b)
 	}
 }
 

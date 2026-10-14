@@ -10,12 +10,23 @@ import (
 )
 
 // Clock ages this process's floors by its monotonic clock (#226 entry 77): a wall-clock step forward never makes an
-// in-flight request's floor look older than FloorGrace. The Recorder notes each floor as it commits, before its
-// send; the Reconciler asks only once a floor this process recorded is old by the Clock too. An older floor's sender
-// died with its process. P22a shares one Clock between them; nil keeps the recorded time alone.
+// in-flight request's floor look older than FloorGrace. The Recorder notes each floor before it commits: a pending
+// floor is young, whatever its age, and its age starts when its commit succeeds. The gateway's request deadline
+// starts before the floor (gateway.ServeHTTP), so the request ends within RequestDeadline of that stamp. The
+// Reconciler asks only once a floor this process recorded is old by the Clock too. An older floor's sender died with
+// its process. P22a shares one Clock between them; nil keeps the recorded time alone.
 type Clock struct {
 	Now func() time.Time // nil: time.Now, with its monotonic reading
-	at  sync.Map         // floor key → the time.Time this process committed it
+
+	mu sync.Mutex
+	at map[string]*note // floor key → its submissions in flight and its commit
+}
+
+// note is a floor key's state: submissions pending, and when one first committed.
+type note struct {
+	pending   int
+	committed bool
+	at        time.Time
 }
 
 func (c *Clock) now() time.Time {
@@ -25,34 +36,53 @@ func (c *Clock) now() time.Time {
 	return c.Now()
 }
 
-// noting notes the first floor of call's request sequence before it commits, so no read between the commit and the
-// note finds it unnoted, and returns what follows the commit: a floor that failed is forgotten, and a committed
-// count ends the request.
+// noting registers a submission of call's request sequence before it commits, and returns what follows the commit:
+// a floor's first successful commit stamps its age; a failure withdraws only its own submission, never another's
+// commit; a committed count ends the request.
 func (c *Clock) noting(call types.CallID, sequence int64, counted bool) func(committed bool) {
 	key := floorKey(call, sequence)
-	switch {
-	case c == nil:
+	if c == nil {
 		return func(bool) {}
-	case counted:
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if counted {
 		return func(ok bool) {
+			c.mu.Lock()
+			defer c.mu.Unlock()
 			if ok {
-				c.at.Delete(key)
+				delete(c.at, key)
 			}
 		}
 	}
-	_, loaded := c.at.LoadOrStore(key, c.now())
+	if c.at == nil {
+		c.at = map[string]*note{}
+	}
+	n := c.at[key]
+	if n == nil {
+		n = &note{}
+		c.at[key] = n
+	}
+	n.pending++
 	return func(ok bool) {
-		if !ok && !loaded {
-			c.at.Delete(key)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if n.pending--; ok && !n.committed {
+			n.committed, n.at = true, c.now()
+		}
+		if n.pending == 0 && !n.committed && c.at[key] == n {
+			delete(c.at, key)
 		}
 	}
 }
 
-// young: this process committed the floor at key less than FloorGrace ago.
+// young: a floor of this process at key is pending, or committed less than FloorGrace ago.
 func (c *Clock) young(key string) bool {
 	if c == nil {
 		return false
 	}
-	at, ok := c.at.Load(key)
-	return ok && c.now().Sub(at.(time.Time)) < FloorGrace
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := c.at[key]
+	return n != nil && (n.pending > 0 || n.committed && c.now().Sub(n.at) < FloorGrace)
 }
