@@ -22,11 +22,13 @@ import (
 // it cannot prove safe is unverifiable. Initialization and the TestMain hook
 // may reach only inert code and plain data; references into S block as
 // exits in tested packages and otherwise warn naming file and function
-// (decision A; P14b-out widens S). Python fails closed until P14c.
+// (decision A; P14b-out widens S). Python: integrity_pyguard.go blocks
+// forgery (P14c-2a); every changed .py file still fails closed until
+// P14c-2b compares test identities.
 var (
 	maxRead  int64 = 64 << 20 // blob bytes in all
 	maxFile  int64 = 4 << 20  // per blob
-	maxWork        = 1 << 24  // build-constraint tag evaluations in all
+	maxWork        = 1 << 24  // build-constraint tag evaluations and Python tokens in all
 	maxReach       = 4096     // functions followed from a package's initialization
 	// pyFiles change what pytest collects or how (P14c reads them).
 	pyFiles = []string{"conftest.py", "pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg",
@@ -110,6 +112,10 @@ func (r *run) check(changes []Change) error {
 	}
 	if err := r.goMod(); err != nil {
 		return err
+	} else if py {
+		if err := r.python(changes); err != nil {
+			return err
+		}
 	}
 	for _, dir := range slices.Sorted(maps.Keys(r.touched)) {
 		b, err := r.pkg(dir, r.files, r.baseDirs)
