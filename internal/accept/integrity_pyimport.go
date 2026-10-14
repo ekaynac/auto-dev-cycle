@@ -143,45 +143,6 @@ func pyMeta(h []ptok, classes map[string]bool) bool {
 	return false
 }
 
-// pySkipString: a skipif or xfail mark's condition may be a string, which
-// pytest runs as code (Opus and Mythos #266 H2): each must surely be a bool.
-func pySkipString(t []ptok) bool {
-	for i := 0; i+1 < len(t); i++ {
-		if t[i].text != "skipif" && t[i].text != "xfail" || t[i+1].text != "(" || i > 1 && t[i-1].text == "." && t[i-2].text == "pytest" {
-			continue
-		}
-		end, depth := i+1, 0
-		for ; end < len(t); end++ {
-			if depth += strings.Count("([{", t[end].text) - strings.Count(")]}", t[end].text); depth == 0 {
-				break
-			}
-		}
-		for _, a := range pySplit(t[i+2:min(end, len(t))], ",") {
-			if kw := len(a) > 1 && a[0].kind == 'n' && a[1].text == "=" && (len(a) < 3 || a[2].text != "="); kw && a[0].text == "condition" && !pyBool(a[2:]) || !kw && len(a) > 0 && !pyBool(a) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// pyBool: True, False, or and/or of comparisons or nots (no if or else).
-func pyBool(t []ptok) bool {
-	for _, op := range pySplit(t, "and", "or") {
-		depth, sure := 0, len(op) == 1 && (op[0].text == "True" || op[0].text == "False") || len(op) > 1 && op[0].text == "not"
-		for _, k := range op {
-			if depth -= strings.Count(")]}", k.text); depth == 0 && (k.text == "if" || k.text == "else") {
-				return false
-			}
-			sure, depth = sure || depth == 0 && (strings.Contains("<>=!", k.text) && k.kind == 'o' || k.text == "is" || k.text == "in"), depth+strings.Count("([{", k.text)
-		}
-		if !sure {
-			return false
-		}
-	}
-	return len(t) > 0
-}
-
 // pyAllowed is why the statement t, run at import, is outside the
 // allowlist, or "".
 func pyAllowed(t []ptok, conftest bool) string {

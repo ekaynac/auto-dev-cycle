@@ -312,9 +312,6 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 				find(slices.Concat(t, l.inner), "code run at import in an f-string field ("+ptext(t)+")", false)
 			}
 		}
-		if judged && pySkipString(code) {
-			find(t, "a skipif or xfail condition that may be a string, code pytest runs ("+ptext(t)+")", true) // Opus #266 H2
-		}
 		if why := pyFixtureName(t); (t[0].text == "@" || fn == "") && named(t, "fixture") && why != "" {
 			fa.refs["p\x00"+why+"\x00"+fn]++ // Opus #263 H3, Mythos #263 H2
 		}
