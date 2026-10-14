@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build linux
+
 package accept
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -27,26 +34,93 @@ func sh(t *testing.T, ctx context.Context, script string) *exec.Cmd {
 // stderr with little stdout, is cut at its 64 KiB bound, keeps nothing,
 // and the overflow is ErrTooLarge. The command then outlives the closed
 // pipe (SIGPIPE ignored, a sleep holding the pipes), so only the kill
-// ends it promptly, well within the deadline. The writer is finite, so a
-// mutation that buffers without a bound fails here instead of exhausting
+// ends it promptly, well within the deadline. Consumption is bounded: the
+// writer is killed mid-flood, so it never reaches the line after it (an
+// unbounded read followed by a size check lets the flood finish). The
+// writer is finite, so such a mutation fails here instead of exhausting
 // memory.
 func TestDrainBoundsBothStreams(t *testing.T) {
 	for name, script := range map[string]string{
-		"stdout": "trap '' PIPE; head -c 67108864 /dev/zero; sleep 20",
-		"stderr": "trap '' PIPE; echo little; head -c 67108864 /dev/zero >&2; sleep 20",
+		"stdout": `trap '' PIPE; head -c 67108864 /dev/zero; touch "$M"; sleep 20`,
+		"stderr": `trap '' PIPE; echo little; head -c 67108864 /dev/zero >&2; touch "$M"; sleep 20`,
 	} {
+		marker := filepath.Join(t.TempDir(), "flooded")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		start := time.Now()
-		out, stderr, err := drain(sh(t, ctx, script), 64<<10, 64<<10)
+		out, stderr, err := drain(sh(t, ctx, "M="+marker+"; "+script), 64<<10, 64<<10)
 		cancel()
 		if took := time.Since(start); !errors.Is(err, ErrTooLarge) || out != nil || stderr != nil || took > 3*time.Second {
 			t.Errorf("%s: %v after %v (%d, %d bytes kept); want ErrTooLarge promptly", name, err, took, len(out), len(stderr))
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Errorf("%s: the whole 64 MiB flood was consumed", name)
 		}
 	}
 	out, stderr, err := drain(sh(t, context.Background(), "echo out; echo err >&2"), 64<<10, 64<<10)
 	if err != nil || string(out) != "out\n" || string(stderr) != "err\n" {
 		t.Errorf("an ordinary command: %q, %q, %v", out, stderr, err)
 	}
+}
+
+// descendant starts script with $P naming a file its shell writes a
+// descendant's pid into, and returns a way to read that pid. Every pid it
+// reads is killed when the test ends.
+func descendant(t *testing.T, script string) (*exec.Cmd, func() int) {
+	t.Helper()
+	pidfile := filepath.Join(t.TempDir(), "pid")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	cmd := sh(t, ctx, "P="+pidfile+"; "+script)
+	var pid int
+	t.Cleanup(func() {
+		cancel()
+		if pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	return cmd, func() int {
+		b, err := os.ReadFile(pidfile)
+		if pid, err = strconv.Atoi(strings.TrimSpace(string(b))); err != nil || pid <= 1 {
+			t.Fatalf("the fixture wrote no pid: %q, %v", b, err)
+		}
+		return pid
+	}
+}
+
+// gone: pid has exited and been reaped, within a few seconds.
+func gone(pid int) bool {
+	for range 60 {
+		if syscall.Kill(pid, 0) == syscall.ESRCH {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// Astra round 3 (Low): an overflow kills the whole process group, not
+// only the leader. The descendant holds no pipe (it is not ended by a
+// closed pipe) and recorded its pid before the flood.
+func TestDrainKillsTheGroup(t *testing.T) {
+	cmd, pid := descendant(t, `sleep 30 </dev/null >/dev/null 2>&1 & echo $! > "$P"; head -c 67108864 /dev/zero; sleep 30`)
+	if _, _, err := drain(cmd, 64<<10, 64<<10); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("drain: %v, want ErrTooLarge", err)
+	}
+	if p := pid(); !gone(p) {
+		t.Errorf("the group's descendant %d survived the overflow", p)
+	}
+}
+
+// Astra round 3 (Low): a leader that exits while a descendant holds its
+// pipe ends drain within pipeDelay, with its output, not when the
+// descendant exits.
+func TestDrainCutsInheritedPipes(t *testing.T) {
+	cmd, pid := descendant(t, `sleep 10 & echo $! > "$P"; echo done`)
+	start := time.Now()
+	out, _, err := drain(cmd, 64<<10, 64<<10)
+	if took := time.Since(start); err != nil || string(out) != "done\n" || took > 4*time.Second {
+		t.Errorf("drain: %q, %v after %v; want done within pipeDelay", out, err, took)
+	}
+	pid() // read for cleanup
 }
 
 // Astra round 2 (M4): a tree object over the bound, with the file list
