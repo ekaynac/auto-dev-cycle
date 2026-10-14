@@ -1,0 +1,13 @@
+if True:
+	if True:
+		x = 1
+	    # a comment, odd indent
+	y = 2
+
+class A:
+    def m(self):
+        return 1
+    
+    def n(self):
+    	pass
+z = 3

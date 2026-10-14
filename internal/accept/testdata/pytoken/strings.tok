@@ -1,0 +1,42 @@
+0,0-0,0:            ENCODING       'utf-8'        
+1,0-1,1:            NAME           'a'            
+1,2-1,3:            OP             '='            
+1,4-1,12:           STRING         "'single'"     
+1,13-1,14:          OP             '+'            
+1,15-1,23:          STRING         '"double"'     
+1,24-1,25:          OP             '+'            
+1,26-2,23:          STRING         '\'\'\'triple\nspans "lines" \' here\'\'\''
+2,24-2,25:          OP             '+'            
+2,26-4,3:           STRING         '"""another\n# not a comment\n"""'
+4,3-4,4:            NEWLINE        '\n'           
+5,0-5,1:            NAME           'b'            
+5,2-5,3:            OP             '='            
+5,4-5,12:           STRING         "b'bytes'"     
+5,13-5,14:          OP             '+'            
+5,15-5,28:          STRING         "rb'raw\\bytes'"
+5,29-5,30:          OP             '+'            
+5,31-5,36:          STRING         'BR"x"'        
+5,37-5,38:          OP             '+'            
+5,39-5,49:          STRING         "u'unicode'"   
+5,49-5,50:          NEWLINE        '\n'           
+6,0-6,1:            NAME           'c'            
+6,2-6,3:            OP             '='            
+6,4-6,17:           STRING         "r'raw\\'quote'"
+6,18-6,19:          OP             '+'            
+6,20-6,25:          STRING         'r"\\\\"'      
+6,26-6,27:          OP             '+'            
+6,28-6,39:          STRING         "'esc\\'aped'" 
+6,40-6,41:          OP             '+'            
+6,42-6,48:          STRING         '"a\\"b"'      
+6,48-6,49:          NEWLINE        '\n'           
+7,0-7,1:            NAME           'd'            
+7,2-7,3:            OP             '='            
+7,4-7,19:           STRING         "'hash # inside'"
+7,21-7,63:          COMMENT        '# a comment with "quotes" and \'apostrophes'
+7,63-7,64:          NEWLINE        '\n'           
+8,0-8,1:            NAME           'e'            
+8,2-8,3:            OP             '='            
+8,4-8,15:           STRING         "'café → ok'"  
+8,17-8,55:          COMMENT        '# non-ASCII in strings and comments: é'
+8,55-8,56:          NEWLINE        '\n'           
+9,0-9,0:            ENDMARKER      ''             

@@ -1,0 +1,12 @@
+a = "x y"  # line sep and  next
+b = """q\"""" + '''p\'''' + """r\\"""
+c = (1,  # ) ] } brackets in a comment
+     [2,  # ( [ {
+      3])
+if c:
+    d = 1
+  e = 2
+if d:
+	f = 3
+	if f:
+		g = 4
