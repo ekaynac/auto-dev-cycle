@@ -195,12 +195,34 @@ func TestPyGuardBlocks(t *testing.T) {
 		"H1m __init_subclass__ by an f-string walrus": {pyG("class Base:\n    X = f\"{(__init_subclass__ := g)}\"\n\nclass T(Base):\n    pass\n"), nil, "a dunder or an allowlisted name bound at import (__init_subclass__)"},
 		"M1m for (__name__)":                          {map[string]string{"money.py": baseFiles["money.py"] + "import os\nfor (__name__) in ('__main__',):\n    pass\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
 		"M1m with … as (__name__)":                    {map[string]string{"money.py": baseFiles["money.py"] + "import os\nwith open('x') as (__name__):\n    pass\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
-		"M3 a shadow of money":                        {map[string]string{"tests/money.py": "def add(a, b):\n    return a + b\n"}, nil, "tests/money.py: a module added under a test directory shadows a base module"},
-		"M3 tests/__init__.py added":                  {map[string]string{"tests/__init__.py": ""}, nil, "tests/__init__.py: a module added under a test directory shadows a base module, or its __init__.py moved"},
-		"M2 pytest from the package":                  {map[string]string{"tests/conftest.py": "from . import pytest\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
-		"L1 a pyproject added":                        {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
-		"pytest.main":                                 {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
-		"record_xml_attribute":                        {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
+		"M3 a shadow of money":                        {map[string]string{"tests/money.py": "def add(a, b):\n    return a + b\n"}, nil, "tests/money.py: a module added under a test directory shadows the base module money.py"},
+		"M3 tests/__init__.py added":                  {map[string]string{"tests/__init__.py": ""}, nil, "tests/__init__.py: an __init__.py added, removed or renamed in a test directory"},
+		// P14c-2a-cond: the condition rule (Opus and Mythos #266 H2) with Mythos r2's forms.
+		"H2 a skipif string":              {pyG("import pytest\n\n@pytest.mark.skipif(\"config.pluginmanager.register(1) and False\", reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2 xfail(condition=)":            {pyG("import pytest\n\n@pytest.mark.xfail(condition='x', reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2 pytestmark":                   {pyG("import pytest\n\npytestmark = pytest.mark.skipif('x')\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2 pytest.param(marks=)":         {pyG("import pytest\n\n@pytest.mark.parametrize('x', [pytest.param(1, marks=pytest.mark.xfail('x'))])\ndef test_s(x):\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2 applied in a body":            {pyG("import pytest\n\ndef test_s(request):\n    request.applymarker(pytest.mark.xfail('x'))\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2m skipif(COND)":                {pyG("import pytest\nCOND = 'x'\n\n@pytest.mark.skipif(COND, reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2m skipif((string))":            {pyG("import pytest\n\n@pytest.mark.skipif(('x'), reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2m an or operand":               {pyG("import pytest\nimport sys\n\n@pytest.mark.skipif(sys.platform == 'nope' or 'x', reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2m a conditional":               {pyG("import pytest\nX = 0\n\n@pytest.mark.skipif(1 == 1 if X else 'x', reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2m skipif(*ARGS)":               {pyG("import pytest\nARGS = ('x',)\n\n@pytest.mark.skipif(*ARGS, reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2m skipif(**{condition})":       {pyG("import pytest\n\n@pytest.mark.skipif(**{'condition': 'x'})\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2m xfail(condition=COND)":       {pyG("import pytest\nCOND = 'x'\n\n@pytest.mark.xfail(condition=COND, reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2m pytestmark = skipif(C)":      {pyG("import pytest\nCOND = 'x'\npytestmark = pytest.mark.skipif(COND, reason='r')\n"), nil, "a skipif or xfail condition that may be a string"},
+		"H2m param marks=xfail(C)":        {pyG("import pytest\nCOND = 'x'\n\n@pytest.mark.parametrize('x', [pytest.param(1, marks=pytest.mark.xfail(COND))])\ndef test_s(x):\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"r2 skipif(p := string)":          {pyG("import pytest\n\n@pytest.mark.skipif(p := 'x', reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"r2 pytestmark = skipif(p := …)":  {pyG("import pytest\n\npytestmark = pytest.mark.skipif(p := 'x', reason='r')\n"), nil, "a skipif or xfail condition that may be a string"},
+		"r2 skipif.with_args(string)":     {pyG("import pytest\n\n@pytest.mark.skipif.with_args('x', reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"r2 xfail.with_args(condition=…)": {pyG("import pytest\n\n@pytest.mark.xfail.with_args(condition='x', reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"a bare name (a D55 false block)": {pyG("import pytest\nIS_WINDOWS = False\n\n@pytest.mark.skipif(IS_WINDOWS, reason='w')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
+		"r2 M1 case str(__name__)":        {map[string]string{"money.py": baseFiles["money.py"] + "import os\nmatch '__main__':\n    case str(__name__):\n        pass\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
+		"r2 L4 an ordering dunder":        {map[string]string{"money.py": baseFiles["money.py"] + "class K:\n    def __lt__(self, o):\n        return 'x'\n"}, nil, "money.py: __lt__ in module level"},
+		"M2 pytest from the package":      {map[string]string{"tests/conftest.py": "from . import pytest\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
+		"L1 a pyproject added":            {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
+		"pytest.main":                     {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
+		"record_xml_attribute":            {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
 	} {
 		pyBlocks(t, f, name, c.files, c.why)
 	}
@@ -289,6 +311,28 @@ func TestPyGuardBaseFindings(t *testing.T) {
 	}
 }
 
+// P14c-2a-cond (Mythos #266 r2 M3, L1, L2, L5): a module added under a
+// test directory, or in a base pythonpath directory, shadowing what the
+// tests import; tests' __init__.py renamed out.
+func TestPyGuardShadows(t *testing.T) {
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"tests/test_requests.py": "import os, requests as rq\n\ndef test_r():\n    assert rq\n",
+			"tests/__init__.py": "X = 1\n", "app/utils.py": "X = 1\n", "pytest.ini": "[pytest]\npythonpath = src\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]guardCase{
+		"a third-party shadow":             {map[string]string{"tests/requests.py": "def get(url):\n    return None\n"}, nil, "tests/requests.py: a module added under a test directory shadows a module tests/test_requests.py imports"},
+		"a pythonpath shadow":              {map[string]string{"src/money.py": "def add(a, b):\n    return a + b\n"}, nil, "src/money.py: a module added under a test directory shadows the base module money.py"},
+		"__init__.py renamed out":          {map[string]string{"tests/x.py": "X = 1\n"}, []string{"tests/__init__.py"}, "tests/x.py: an __init__.py added, removed or renamed in a test directory"},
+		"a module beside an unrelated one": {map[string]string{"tests/utils.py": "X = 1\n"}, nil, ""},
+	} {
+		v := f.guarded(t, c.files, c.gone...)
+		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
+			t.Errorf("%s: %q, want %q", name, whats(own), c.why)
+		}
+	}
+}
+
 // The controls: ordinary Python changes raise nothing of P14c-2a's but
 // the warnings decision A names (Astra #255 finding 10's exact warnings).
 func TestPyGuardAcceptsAndWarns(t *testing.T) {
@@ -305,6 +349,7 @@ func TestPyGuardAcceptsAndWarns(t *testing.T) {
 		"mock":                            {map[string]string{"tests/test_money.py": pyT + "\nfrom unittest import mock\n\n@mock.patch('money.add')\ndef test_m(m):\n    m.return_value = 1\n    assert m(1, 2) == 1\n"}, nil, ""},
 		"a helper def in a conftest":      {map[string]string{"tests/conftest.py": "def helper():\n    return 1\n"}, nil, ""},
 		"a def taking *args and **kwargs": {map[string]string{"tests/conftest.py": "def helper(*args, **kwargs):\n    return args\n"}, nil, ""},
+		"comparison decorators":           {map[string]string{"tests/test_money.py": pyT + "\nimport sys\nimport pytest\n\n@pytest.mark.skipif(sys.platform == 'win32' or sys.version_info < (3, 8), reason='old')\n@pytest.mark.xfail(not True, reason='x', strict=True)\ndef test_b():\n    pytest.xfail('not yet')\n"}, nil, ""},
 		"mock and patch decorators":       {map[string]string{"tests/test_money.py": pyT + "\nimport unittest.mock\nfrom unittest import mock\nfrom unittest.mock import patch\n\n@mock.patch('money.add')\n@patch.object(mock, 'ANY')\n@unittest.mock.patch.dict('os.environ', {'X': '1'})\ndef test_p(a, b):\n    pass\n"}, nil, ""},
 		"raises and params":               {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\npytestmark = pytest.mark.slow\nCASES = [(1, 2), (3, 4)]\n\n@pytest.mark.parametrize('x', [pytest.param(1, id='one'), 2])\n@pytest.mark.skipif(1 > 2, reason='never')\ndef test_c(x):\n    with pytest.raises(ZeroDivisionError) as e:\n        1 / (x - x)\n    assert e.value\n\nclass TestK:\n    \"\"\"Doc.\"\"\"\n    k = 1\n\n    def test_k(self):\n        assert self.k\n"}, nil, ""},
 		"a unittest case":                 {map[string]string{"tests/test_money.py": pyT + "\nimport unittest\n\nclass T(unittest.TestCase):\n    def setUp(self):\n        self.x = 1\n\n    def test_t(self):\n        self.assertEqual(self.x, 1)\n"}, nil, ""},

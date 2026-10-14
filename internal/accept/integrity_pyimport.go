@@ -124,7 +124,7 @@ func pyRebound(lines []pline) bool {
 	for _, l := range lines {
 		t := slices.Concat(l.toks, l.inner)
 		for i := range t {
-			if t[i].text == "*" && (t[0].text == "from" || t[0].text == "import") || t[i].text == "__name__" && !pyMain(l.toks) &&
+			if t[i].text == "*" && (t[0].text == "from" || t[0].text == "import") || t[i].text == "__name__" && t[0].text == "case" || t[i].text == "__name__" && !pyMain(l.toks) &&
 				!(i > 1 && i+1 < len(t) && t[i-1].text == "(" && t[i+1].text == ")" && t[i-2].kind == 'n' && !slices.Contains(pyKeywords, t[i-2].text)) {
 				return true
 			}
