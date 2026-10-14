@@ -7,8 +7,8 @@ package modelcall
 //
 // Decisions:
 //   - One runner per effect (one Reconciler per store, P22a): Ended waits for it while its context allows; Reconcile
-//     returns ErrRunning. Queries are bounded (QueryDeadline). A reconciliation records only at the sequence it asked
-//     for, and a transition to completed rechecks the standing in its own transaction.
+//     returns ErrRunning. A query honouring its context ends by QueryDeadline. A reconciliation records only at the
+//     sequence it asked for, and a transition to completed rechecks the standing in its own transaction.
 //   - Ended moves the effect out of pending (Recorder.Count then refuses a new floor), and reconciles it from a read
 //     taken after that fence.
 //   - The provider's answer (Queries, by destination) is recorded as the next provider_reconciliation, and never
@@ -41,7 +41,7 @@ const Reconciled = ledger.ReconcileAction
 // a margin for the floor's commit before the send.
 const FloorGrace = gateway.RequestDeadline + time.Minute
 
-// QueryDeadline bounds one usage query.
+// QueryDeadline is the deadline of one usage query's context.
 const QueryDeadline = time.Minute
 
 // What the reconciler observes, as recorded on the effect.
@@ -59,7 +59,8 @@ const (
 type Usage struct{ In, Out, CacheRead, CacheWrite int64 }
 
 // Query asks a route's provider for a call's usage, over every request sent for it. found is false when the provider
-// holds no usage for the call: that is no evidence it used nothing.
+// holds no usage for the call: that is no evidence it used nothing. Usage must return once ctx is done: the call's
+// runner waits for it.
 type Query interface {
 	Usage(ctx context.Context, call types.ModelCall) (u Usage, found bool, err error)
 }
@@ -233,17 +234,17 @@ func (r *Reconciler) query(ctx context.Context, v view) (string, error) {
 	case !found:
 		return ObservedNotFound, nil
 	}
+	recorded, err := r.reconciled(ctx, v.m, u, v.next)
+	if err != nil {
+		return ObservedFailed, err
+	}
 	r.mu.Lock()
 	if r.asked == nil {
 		r.asked = map[types.CallID]int{}
 	}
-	r.asked[v.m.Call] = v.counts
+	r.asked[v.m.Call] = v.counts // answered and recorded, or unchanged
 	r.mu.Unlock()
-	recorded, err := r.reconciled(ctx, v.m, u, v.next)
-	switch {
-	case err != nil:
-		return ObservedFailed, err
-	case !recorded:
+	if !recorded {
 		return ObservedSettled, nil
 	}
 	return ObservedQueried, nil

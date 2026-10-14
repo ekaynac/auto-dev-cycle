@@ -295,4 +295,9 @@ func TestAReconciliationNeverSettlesBelowTheCounts(t *testing.T) {
 	if st := StandingOf(over, calA); !st.Settled || !st.Below || st.Usage.In != 300 || st.Usage.Out != 30 {
 		t.Errorf("an overflow: %+v (usage %+v), want settled at the count", st, st.Usage)
 	}
+	// Astra round 2: and through floors, at a floor-only request's input alone.
+	over = []types.UsageMeasurement{big, report(calA, delta, 1, 1), report(calA, recon, 0, 10), withOut(floor(calA, 0, 900), 64)}
+	if st := StandingOf(over, calA); !st.Settled || !st.Below || st.Usage.In != 900 || st.Usage.Out != 1 {
+		t.Errorf("an overflow over a floor: %+v (usage %+v), want settled at the floor's input", st, st.Usage)
+	}
 }

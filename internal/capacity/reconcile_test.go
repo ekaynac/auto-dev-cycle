@@ -285,21 +285,67 @@ func TestAFoundZeroNeverSettlesUnderAFloorsInput(t *testing.T) {
 // F (Mythos on #258, H1): the run end reads the floors again once its fence is up. A floor that commits after the
 // first read (inside it, through the clock) and before the fence is seen: the provider is not asked.
 func TestARunEndReadsTheFloorsAfterItsFence(t *testing.T) {
+	// Astra round 2, L3: one clock for both reads, and a first request counted (no floor alone), so only the new
+	// floor can keep the provider from being asked.
 	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
 	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
-	w.floor(r, 0, 5, 5)
-	q := &query{u: modelcall.Usage{In: 30, Out: 20}, found: true}
-	rc, reads := w.reconciler(q), 0
+	w.sendThroughGateway(r, `{"choices":[],"usage":{"prompt_tokens":300,"completion_tokens":200}}`)
+	q := &query{u: modelcall.Usage{In: 300, Out: 200}, found: true}
+	rc := w.reconciler(q)
+	var once sync.Once
 	rc.Now = func() time.Time {
-		if reads++; reads > 1 {
-			return time.Now() // after the fence: the second floor is young
-		}
-		w.floor(r, 1, 5, 5) // a request floored and sent before the fence
-		return later()
+		once.Do(func() { w.floor(r, 1, 5, 5) }) // a request floored and sent before the fence
+		return time.Now()
 	}
 	if e, err := rc.Ended(context.Background(), r.call); err != nil || e.State != eventstore.EffectUncertain ||
 		e.LastObservation != modelcall.ObservedYoung || q.times() != 0 {
 		t.Fatalf("%+v, %v, asked %d", e, err, q.times())
+	}
+}
+
+// Astra round 2, M1: an answer that fails to record leaves the call to be asked again, with no new count.
+func TestAFailedRecordingLeavesTheCallToAsk(t *testing.T) {
+	const usage = `{"choices":[],"usage":{"prompt_tokens":300,"completion_tokens":200}}`
+	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
+	w.sendThroughGateway(r, usage)
+	q := &query{found: true}
+	rc := w.reconciler(q)
+	if e, err := rc.Ended(context.Background(), r.call); err != nil || e.State != eventstore.EffectCompleted {
+		t.Fatalf("run end: %+v, %v", e, err)
+	}
+	w.count(r, 0, 310, 205)
+	q.answer(modelcall.Usage{In: -1}) // refused by the schema: nothing recorded
+	if _, err := rc.Reconcile(context.Background(), r.call); err == nil || q.times() != 2 {
+		t.Fatalf("an unrecordable answer: %v, asked %d", err, q.times())
+	}
+	q.answer(modelcall.Usage{In: 320, Out: 210})
+	if _, err := rc.Reconcile(context.Background(), r.call); err != nil || q.times() != 3 {
+		t.Fatalf("asked again: %v, asked %d", err, q.times())
+	}
+	if st, n := w.standing(r); n != 2 || st.Below || st.Usage.In != 320 {
+		t.Fatalf("%+v (usage %+v), %d reconciliations", st, st.Usage, n)
+	}
+}
+
+// Astra round 2, M2: a query honouring its context ends when the runner's context does, and the call is free for
+// the next runner. (A query that ignores its context holds its runner: Query requires it not to.)
+func TestACooperativeQueryFreesTheCall(t *testing.T) {
+	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
+	w.floor(r, 0, 5, 5)
+	waits := queryFunc(func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
+	rc := &modelcall.Reconciler{Store: w.s, Actor: testActor, Queries: map[types.Slug]modelcall.Query{"stub": waits}, Now: later}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := rc.Ended(ctx, r.call); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
+		t.Fatalf("a cancelled query: %v after %v", err, time.Since(start))
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel2()
+	if _, err := rc.Reconcile(ctx2, r.call); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, modelcall.ErrRunning) {
+		t.Fatalf("the call is still held, or not asked again: %v", err)
 	}
 }
 
@@ -325,9 +371,9 @@ func TestTheNextReconciliationSupersedesTheHighest(t *testing.T) {
 	}
 }
 
-// Mythos on #258, M3: a run end waits for a running runner only while its context allows, and a query that never
-// answers is bounded by QueryDeadline, so the runner always ends.
-func TestARunnerAlwaysEnds(t *testing.T) {
+// Mythos on #258, M3: a run end waits for a running runner only while its context allows, and a query's context
+// carries QueryDeadline (whether the query honours it is TestACooperativeQueryFreesTheCall's, and Query's contract).
+func TestAWaitingRunEndLeavesAndAQueryHasADeadline(t *testing.T) {
 	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
 	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
 	w.floor(r, 0, 5, 5)
