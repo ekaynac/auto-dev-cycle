@@ -61,7 +61,7 @@ and is never edited apart from it.
 | I7 Review independence | partial | P7, P8b, P16 | `launch`: consumption; `review`: all |
 | I8 Fencing and attempt binding | partial | P8a, P21 | `launch`: all |
 | I9 Accounting | partial | P11b, P20, P22a (P12a, P12b done) | `launch`: all |
-| I10 Egress, data policy, context | partial | P7, P8b, P11, P11b, P14a, P16 | `launch`: all |
+| I10 Egress, data policy, context | partial | P7, P8b, P11, P11b, P16 | `launch`: all |
 | I11 Restart and replay | partial | P4a, P21 | `launch`: all |
 | I12 Build facts and accept | partial | P14a, P14b, P22a | `launch`: all |
 | I13 Gate verdict and receipts | partial | P15 | `review`: all |
@@ -164,8 +164,8 @@ through `lease.completed`. P21 keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `capacity.Reservations.reserve` (`capacity/reserve.go`), all-or-nothing, wired; admission counts liabilities like reservations (saturating). The durable binding call → attempt → lease → groups is `model_call.intended` (P12a, #251); `Intend` refuses a non-positive reservation and a second call on a lease (P12b, #253) | kept | — |
-| fold/replay | `ledger.Project` (`capacity/ledger`): deduplicated by `(call, sequence)`; refuses a report whose attempt or lease is not the call's binding. `ledger.StandingOf` never fails: mixed currencies or an overflow leave the call uncertain at a saturated figure, flagged `inconsistent_usage`. Liability records replay; a zero liability is omitted, so older stores replay unchanged. Every command must be folded event by event (`ProjectEach`) | kept | — |
+| admission | `capacity.Reservations.reserve` (`capacity/reserve.go`), all-or-nothing, wired; admission counts liabilities like reservations (saturating). The durable binding call → attempt → lease → groups is `model_call.intended` (P12a, #251); `Intend` refuses a non-positive reservation and a second call on a lease (P12b, #253) | kept + GAP | P22a (wire `modelcall.Project` and its lease projection, with the start check of #226 entry 70; until then the binding is inert in `adcd`) |
+| fold/replay | `ledger.Project` (`capacity/ledger`): deduplicated by `(call, sequence)`; refuses a report whose attempt or lease is not the call's binding. `ledger.StandingOf` never fails: mixed currencies or an overflow leave the call uncertain at a saturated figure, flagged `inconsistent_usage`. Liability records replay; a zero liability is omitted, so older stores replay unchanged. Every command must be folded event by event (`ProjectEach`) | kept + GAP | P22a (as above: `ledger.Binding` finds nothing until the binding projections are wired) |
 | consumption | A settlement names every bound call once (`capacity.Settlement`). A call is settled by a `final` or a `provider_reconciliation`; any other owes `max(positive reservation, deduplicated delta sum)` (Q8, approved 2026-10-14). Late usage recomputes the liability over every call of the settled lease, in any order. Token figures are still the adapter's report: a hostile zero `final` settles at zero until P11b (#226 entry 69), which gates `launch` | kept + GAP | P11b (gateway token count or conservative bound); P22a (start check, #226 entry 70) |
 | effect | `model_call` reconciliation (03: query usage, else keep the liability) | GAP | P20 (with P12b's ledger) |
 
@@ -175,7 +175,7 @@ through `lease.completed`. P21 keeps this check.
 |---|---|---|---|
 | admission | none. No registry ties routes to data floor, routing class or usage profile, and `Lease.placement_checks` exists only in the schema. Unsupported policies must be refused, never approximated | GAP | P7 (data floor and usage-profile compatibility, and Q8's envelope, at start), P8b (destination at the launch boundary) |
 | fold/replay | none: no lease records the registry or profile revisions its placement decided on | GAP | P8b |
-| consumption | `graph.Context` / `renderContext` (`graph/successor.go`) render only claimed inputs. `knowledge.CheckDelivery` exists for manifests, but no model node in `adcd` records a `manifest.intent` | kept + GAP | P14 (the builder's minimal `manifest.intent`), P16 (the reviewer's) |
+| consumption | `graph.Context` / `renderContext` (`graph/successor.go`) render only claimed inputs. `knowledge.CheckDelivery` exists for manifests, but no model node in `adcd` records a `manifest.intent` | kept + GAP | P16 (the builder's and the reviewer's `manifest.intent`, #226 entry 71) |
 | effect | none: there is no gateway. 01 §2.2 requires, before egress, the destination check, credential injection and the model checked against the lease | GAP | P11 |
 
 ## I11. Restart and replay
@@ -191,7 +191,7 @@ through `lease.completed`. P21 keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `graph.Build` (`graph/build.go`) from `BuildFacts`; ingestion via `attemptRun.admit` (`adapterhost/submit.go`); protected paths and unsafe output refused at accept (`internal/accept`, P14a, #252); no integrity guard yet | kept + GAP | P14b |
+| admission | `graph.Build` (`graph/build.go`) from `BuildFacts`; ingestion via `attemptRun.admit` (`adapterhost/submit.go`); protected paths and unsafe output refused at accept (`internal/accept`, P14a, #252); no integrity guard yet | kept + GAP | P14b; P22a (wires `accept.Accept` into the build path) |
 | fold/replay | `graph.Check`, `CheckRead` (`graph/build.go`) | kept | — |
 | consumption | the gate must take only an accepted tree; no template wires that | GAP | P22a (P14a provides the accepted tree) |
 | effect | n/a | n/a | — |
@@ -247,7 +247,7 @@ through `lease.completed`. P21 keeps this check.
 |---|---|---|---|
 | admission | none: there are no task acceptance blobs | GAP | P3 (classed restricted from builder and reviewer) |
 | fold/replay | none: no `manifest.intent` of a build or review exists to check | GAP | P16 (the builder's and reviewer's intent; I18 moved from P14, #226 entry 71; the folds refuse an acceptance ref in a build's or review's intent) |
-| consumption | `graph.Context` renders only claimed inputs. `graph/content.go:classed` filters **evidence results only**; every other result kind is rendered whole, so it establishes nothing for acceptance blobs or gate results | kept + GAP | P3 (acceptance blobs classed), P22a (acceptance refs refused as build or review inputs, with consumption-path fault evidence), P15 (gate results sanitised for consumers: failure text kept as a diagnostic blob), P14, P16 (manifests and renderers take ids and statuses only); plus X1's stub-log canary |
+| consumption | `graph.Context` renders only claimed inputs. `graph/content.go:classed` filters **evidence results only**; every other result kind is rendered whole, so it establishes nothing for acceptance blobs or gate results | kept + GAP | P3 (acceptance blobs classed), P22a (acceptance refs refused as build or review inputs, with consumption-path fault evidence), P15 (gate results sanitised for consumers: failure text kept as a diagnostic blob), P16 (manifests and renderers take ids and statuses only); plus X1's stub-log canary |
 | effect | n/a: the stub-log canary assertion (X1) is the check | n/a | — |
 
 ## I19. Liveness: every non-terminal task has a frontier (D63)
