@@ -259,7 +259,7 @@ func contentType(v string) (string, bool) {
 //
 // A spelling is the key with each byte raw or JSON-escaped, however an
 // honest encoder escapes it (#226 entry 56): `\uXXXX` in either case of
-// hex, or a short escape (`\/`, `\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`).
+// hex, or a short escape (`\/`, `\"`, `\b`, `\f`, `\n`, `\r`, `\t`).
 // Base64, URL-encoded, partial and masked echoes are not scanned: only a
 // hostile upstream makes them, and it already holds the key (an accepted
 // M1 residual).
@@ -279,8 +279,9 @@ const minTail = 8
 
 var publicPrefix = regexp.MustCompile(`^[a-z]+(-[a-z0-9]+)*-`)
 
-// shortEscapes are JSON's two-character escapes, by the byte they stand for.
-var shortEscapes = map[byte]byte{'/': '/', '"': '"', '\\': '\\', '\b': 'b', '\f': 'f', '\n': 'n', '\r': 'r', '\t': 't'}
+// shortEscapes are JSON's two-character escapes, by the byte they stand for; `\\` is left out, since a key
+// holding a backslash is never injected (redactable).
+var shortEscapes = map[byte]byte{'/': '/', '"': '"', '\b': 'b', '\f': 'f', '\n': 'n', '\r': 'r', '\t': 't'}
 
 // unit is how many bytes of buf's start spell c: 0 when they do not, -1
 // when buf ends inside what may still.

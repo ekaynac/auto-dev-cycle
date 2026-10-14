@@ -76,8 +76,14 @@ func TestTheGatewayCountsWhatItSent(t *testing.T) {
 			func(Count) []Count { return []Count{{In: 300, Out: 100}} }},
 		"H2: malformed content, then valid usage": {"data: {\"choices\":[{\"delta\":{\"content\":7}}]}\n\ndata: {\"usage\":" + zeroOut + "}\n\n", none},
 		"H2: a cut event, then valid usage":       {"data: {\"choices\":[\n\ndata: {\"usage\":" + zeroOut + "}\n\n", none},
-		"no usage":                                {`{"choices":[]}`, func(Count) []Count { return nil }},
-		"not JSON":                                {`<html>busy</html>`, func(Count) []Count { return nil }},
+		// Mythos on #256, M1 and L4: a leading BOM is stripped, so the
+		// first event is read; a usage event cut at EOF is still read.
+		"M1: a BOM before the first event": {"\xEF\xBB\xBFdata: {\"choices\":[{\"delta\":{\"content\":\"" + strings.Repeat("y", 1600) +
+			"\"}}]}\n\ndata: {\"usage\":" + zeroOut + "}\n\n", func(Count) []Count { return []Count{{In: 300, Out: 100}} }},
+		"L4: usage with no blank line after it": {"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: {\"usage\":{\"prompt_tokens\":300,\"completion_tokens\":30}}",
+			func(Count) []Count { return []Count{{In: 300, Out: 30, Observed: true}} }},
+		"no usage": {`{"choices":[]}`, func(Count) []Count { return nil }},
+		"not JSON": {`<html>busy</html>`, func(Count) []Count { return nil }},
 	} {
 		up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, c.body) })
 		g, token := rig(t, up, nil)
@@ -231,5 +237,20 @@ func TestCountsKeepTheirRequestsSequence(t *testing.T) {
 	}
 	if len(seqs) != 16 {
 		t.Fatalf("16 concurrent requests took %d sequences", len(seqs))
+	}
+}
+
+// Mythos on #256, L4: a stream fed one byte at a time, its BOM and every
+// CRLF split across writes, is read whole: a CR is not taken for a line end
+// before its LF arrives.
+func TestAStreamReadByteByByte(t *testing.T) {
+	stream := "\xEF\xBB\xBFdata: {\"choices\":[\r\ndata: {\"delta\":{\"content\":\"hello\"}}]}\r\n\r\n" +
+		"data: {\"usage\":{\"prompt_tokens\":300,\"completion_tokens\":30}}\r\n\r\n"
+	var tl tally
+	for i := range len(stream) {
+		_, _ = tl.Write([]byte{stream[i]})
+	}
+	if u, n, ok := tl.result(true); !ok || u.Prompt != 300 || u.Completion != 30 || n != 5 {
+		t.Fatalf("read %+v, %d content bytes, ok %v", u, n, ok)
 	}
 }

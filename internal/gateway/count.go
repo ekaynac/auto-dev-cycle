@@ -65,13 +65,13 @@ func tokens(n int) int64 { return (int64(n) + bytesPerToken - 1) / bytesPerToken
 
 // floor is the count of body before it is sent, under l.
 func floor(body []byte, l types.Lease) Count {
-	var req struct {
-		MaxTokens           int64 `json:"max_tokens"`
-		MaxCompletionTokens int64 `json:"max_completion_tokens"`
-	}
 	out := int64(0)
-	if json.Unmarshal(body, &req) == nil {
-		out = max(req.MaxTokens, req.MaxCompletionTokens)
+	if req, ok := object(body, "max_tokens", "max_completion_tokens"); ok {
+		for _, k := range []string{"max_tokens", "max_completion_tokens"} {
+			if v := int64(0); present(req, k) && count(req[k], &v) {
+				out = max(out, v)
+			}
+		}
 	}
 	for _, r := range l.Reservations {
 		if out <= 0 && r.Unit == types.CapacityUnitTokens {
@@ -198,7 +198,8 @@ func generated(raw json.RawMessage) (n int, ok bool) {
 type tally struct {
 	body, pending, data []byte
 	dropped, incomplete bool // dropped: body is not all of it
-	events              bool // data is an event being assembled
+	events, started     bool // events: data is an event being assembled; started: past a leading BOM
+	scanned             int  // pending[:scanned] holds no line ending
 	usage               *usage
 	content             int
 }
@@ -207,17 +208,25 @@ func (t *tally) Write(p []byte) (int, error) {
 	n := min(len(p), max(maxBody-len(t.body), 0))
 	t.body, t.dropped = append(t.body, p[:n]...), t.dropped || n < len(p)
 	t.pending = append(t.pending, p...)
-	for {
-		i := bytes.IndexAny(t.pending, "\r\n")
-		if i < 0 || t.pending[i] == '\r' && i+1 == len(t.pending) {
-			break // no line yet, or a CR whose LF may follow
+	if bom := []byte("\xEF\xBB\xBF"); !t.started && (len(t.pending) >= len(bom) || !bytes.HasPrefix(bom, t.pending)) {
+		t.pending, t.started = bytes.TrimPrefix(t.pending, bom), true // the specification strips one (Mythos on #256, M1)
+	}
+	for t.started {
+		i := bytes.IndexAny(t.pending[t.scanned:], "\r\n")
+		if i < 0 {
+			t.scanned = len(t.pending)
+			break
+		}
+		if i += t.scanned; t.pending[i] == '\r' && i+1 == len(t.pending) {
+			t.scanned = i // a CR whose LF may follow
+			break
 		}
 		end := i + 1
 		if t.pending[i] == '\r' && t.pending[end] == '\n' {
 			end++
 		}
 		t.line(t.pending[:i])
-		t.pending = t.pending[end:]
+		t.pending, t.scanned = t.pending[end:], 0
 	}
 	if len(t.pending) > maxBody {
 		t.incomplete, t.pending = true, nil
