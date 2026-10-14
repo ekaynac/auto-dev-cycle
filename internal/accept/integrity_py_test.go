@@ -239,7 +239,10 @@ func TestPyTokensDifferential(t *testing.T) {
 		if strings.HasPrefix(c, "#SKIP") {
 			continue
 		}
+		triple := strings.Contains(srcs[i], "'''") || strings.Contains(srcs[i], `"""`)
 		switch d := pyDiff(t, srcs[i], c); {
+		case strings.Contains(srcs[i], ":d\n") && !triple && !strings.HasPrefix(d, "refused"):
+			t.Errorf("%q: a newline in a single-quoted spec read (%s), want refused", srcs[i], d)
 		case strings.HasPrefix(d, "refused"):
 			refused++
 		case d != "":
@@ -263,7 +266,7 @@ func pyGenerated() (srcs []string) {
 	}
 	for _, p := range []string{"", "r", "u", "R", "U", "b", "B", "br", "Rb", "bR", "f", "F", "fr", "Rf", "rF", "fR"} {
 		for _, q := range []string{"'", `"`, "'''", `"""`} {
-			for _, b := range []string{"a", `\\`, `\'`, `\"`, "{x}", "{{x}}", `\N{BULLET}`, "# h", "{x!r:>{w}}", "{x:{w}.{p}}", "{x=}", `{'a' if x else "b"}`, "a\\\nb", `\{x}`, "{x:{'>'}{10}}", "{ {'a': 1}['a'] }", "{x:#x}"} {
+			for _, b := range []string{"a", `\\`, `\'`, `\"`, "{x}", "{{x}}", `\N{BULLET}`, "# h", "{x!r:>{w}}", "{x:{w}.{p}}", "{x=}", `{'a' if x else "b"}`, "a\\\nb", `\{x}`, "{x:{'>'}{10}}", "{ {'a': 1}['a'] }", "{x:#x}", "{x:d\n}", "{x:d\n#}\n}", `{x:{"}"}}`} {
 				srcs = append(srcs, "x = "+p+q+b+q+"\n")
 			}
 		}
@@ -295,6 +298,7 @@ func ptexts(t []ptok) string {
 func TestPyTokensRefuses(t *testing.T) {
 	deep := func(n int) string { return "x = " + strings.Repeat("(", n) + "1" + strings.Repeat(")", n) + "\n" }
 	fdeep := func(n int) string { return "x = " + strings.Repeat("f'{", n) + "1" + strings.Repeat("}'", n) + "\n" }
+	specDeep := func(n int) string { return "x = f'" + strings.Repeat("{a:", n) + "1" + strings.Repeat("}", n) + "'\n" }
 	for src, want := range map[string]string{
 		"# coding: utf-7\nX = +ACIAIgAi-\ndef test_zero():\n    assert 1\n+ACIAIgAi-\n": "coding cookie other than utf-8 or ascii (utf-7)",
 		"#!/usr/bin/env python3\n# -*- coding: latin-1 -*-\nx = 1\n":                    "coding cookie other than utf-8 or ascii (latin-1)",
@@ -312,7 +316,14 @@ func TestPyTokensRefuses(t *testing.T) {
 		"x = 1 \\ + 2\n":          "not tokenizable",
 		deep(201):                 "not tokenizable",
 		fdeep(maxNest + 1):        "not tokenizable",
-		"x = f'" + strings.Repeat("{a:", maxNest) + "1" + strings.Repeat("}", maxNest) + "'\n": "not tokenizable",
+		specDeep(maxNest/2 + 1):   "not tokenizable",
+		// Mythos #260 H1: a newline in a single-quoted f-string's spec sends
+		// CPython back to code mode (here, test_zero rebound after a comment
+		// the spec would hide): refused, a D55 false block. Triple quotes read.
+		"x = 1\ndef test_zero():\n    assert 1 == 2\ny = [f\"{x:d\n#}\"\n}\"]; test_zero = None  # \"\n": "not tokenizable",
+		"x = 1\ny = f\"{x:d\n}\"\n":        "not tokenizable",
+		"\ufeff# coding: latin-1\nx = 1\n": "coding cookie other than utf-8 or ascii (latin-1)", // Mythos #260 L1
+		"x = 1\ndef test_zero():\n    assert 1 == 2\ny = [f\"\"\"{f\"{x:d\n#}\"\n}\"}\"\"\"]; test_zero = None  # \"\"\"\n": "not tokenizable",
 		// Opus #260 H1: CPython nests a line after a backslash at column 0
 		// (cont_line_col) where a reading by column would not: refused, as any
 		// line starting with a backslash continuation (a D55 false block).
@@ -324,7 +335,8 @@ func TestPyTokensRefuses(t *testing.T) {
 			t.Errorf("%q: %q %v, want %q", src, why, err, want)
 		}
 	}
-	for _, src := range []string{"# -*- coding: UTF_8 -*-\nx = 1\n", "# coding=ascii\n", "x = 'caf\u00e9'  # \u00e9\n", deep(200), fdeep(maxNest), "x = 1\ny = 2\n# coding: latin-1\n", "x = 1 + \\\n    2\n"} {
+	for _, src := range []string{"# -*- coding: UTF_8 -*-\nx = 1\n", "# coding=ascii\n", "x = 'caf\u00e9'  # \u00e9\n", deep(200), fdeep(maxNest), specDeep(maxNest / 2), "x = 1\ny = 2\n# coding: latin-1\n", "x = 1 + \\\n    2\n",
+		"x = 1\ny = f\"\"\"{x:d\n}\"\"\"\n", "\ufeff# coding: utf-8\nx = 1\n"} {
 		if _, why, err := pyTokens(context.Background(), []byte(src)); err != nil || why != "" {
 			t.Errorf("%q: %q %v, want read", src, why, err)
 		}
@@ -346,16 +358,21 @@ func TestPyTokensBounded(t *testing.T) {
 		"nested f-strings":                func(n int) string { return strings.Repeat(`x = f"{f'{f"{y!r:>{w}}"}'}"`+"\n", n/28) },
 	} {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		var took [2]time.Duration
+		var took [2]time.Duration // the median of three runs (Mythos #260 L4)
 		for i, size := range []int{1 << 20, 4 << 20} {
-			start := time.Now()
-			if _, _, err := pyTokens(ctx, []byte(gen(size))); err != nil {
-				t.Fatalf("%s, %d bytes: %v (not linear)", name, size, err)
+			src, runs := []byte(gen(size)), []time.Duration{}
+			for range 3 {
+				start := time.Now()
+				if _, _, err := pyTokens(ctx, src); err != nil {
+					t.Fatalf("%s, %d bytes: %v (not linear)", name, size, err)
+				}
+				runs = append(runs, time.Since(start))
 			}
-			took[i] = time.Since(start)
+			slices.Sort(runs)
+			took[i] = runs[1]
 		}
 		cancel()
-		if took[1] > 8*took[0]+250*time.Millisecond {
+		if took[1] > 8*took[0]+500*time.Millisecond {
 			t.Errorf("%s: 1 MiB in %v, 4 MiB in %v: not linear", name, took[0], took[1])
 		}
 	}
@@ -373,5 +390,18 @@ func TestPyTokensBounded(t *testing.T) {
 	ctx.n.Store(100)
 	if _, _, err := pyTokens(ctx, src); !errors.Is(err, context.Canceled) || ctx.calls.Load() > 102 {
 		t.Errorf("cancelled: %v after %d checks", err, ctx.calls.Load())
+	}
+}
+
+// panicCtx panics with a value that is not an error: a bug's panic.
+type panicCtx struct{ context.Context }
+
+func (panicCtx) Err() error { panic("boom") }
+
+// Mythos #260 L2: a panic that is neither errLex nor ctx's error is still
+// an error (unverifiable), named, and never re-panics in the recover.
+func TestPyLexInternalPanic(t *testing.T) {
+	if _, err := pyLex(panicCtx{context.Background()}, []byte("x\n")); err == nil || !strings.Contains(err.Error(), "internal tokenizer error: boom") {
+		t.Errorf("an internal panic: %v", err)
 	}
 }

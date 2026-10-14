@@ -16,3 +16,6 @@ f10 = f"{3.14:.2f} {(lambda: 1)()}"
 f11 = f"{name!s}" f'{f"{f'{name}'}"}'
 f12 = f"{'#'}" + f"{name:#x}" if 0 else 1
 def test_hidden(): f"{(lambda: 'def test_fake(): pass')()}"
+f13 = f"""{name:>{10}
+}"""
+f14 = f"{name:{"}"}}"
