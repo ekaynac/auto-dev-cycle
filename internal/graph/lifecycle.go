@@ -40,12 +40,14 @@ import (
 
 // produces binds a node kind to the result kinds it records, deny by
 // default: a kind without a row records nothing until its PR adds the row
-// (accept, closure, deploy, record, phase_gate). runtime_verify records a
+// (closure, deploy, record, phase_gate). accept records the accepted tree
+// (internal/accept, P14). runtime_verify records a
 // gate_result: its facts differ from a gate's (DeclaredFacts, G8), not what
 // it records.
 var produces = map[types.NodeKind][]types.ResultKind{
 	types.NodeKindPlan:              {types.ResultKindPlan},
 	types.NodeKindBuild:             {types.ResultKindPatch, types.ResultKindPartialPatch},
+	types.NodeKindAccept:            {types.ResultKindTree},
 	types.NodeKindGate:              {types.ResultKindGateResult},
 	types.NodeKindRuntimeVerify:     {types.ResultKindGateResult},
 	types.NodeKindIntegration:       {types.ResultKindTree, types.ResultKindPackage},

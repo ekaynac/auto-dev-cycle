@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"path"
 	"strings"
+
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 )
 
 // Glob bounds: a protected glob is short, and the coverage checks of a whole
@@ -119,6 +121,21 @@ func anyCovers(globs [][]string, d []string) bool {
 		}
 	}
 	return false
+}
+
+// Matcher compiles globs (a checked profile's protected_paths) into a
+// test of a slash-separated repository path, matched segment by segment
+// as profile.Check reads them (P14's accept).
+func Matcher(globs []types.Glob) (func(path string) bool, error) {
+	var compiled [][]string
+	for _, g := range globs {
+		segs, err := compileGlob(string(g))
+		if err != nil {
+			return nil, fmt.Errorf("profile: %q: %w", g, err)
+		}
+		compiled = append(compiled, segs)
+	}
+	return func(p string) bool { return anyMatches(compiled, strings.Split(p, "/")) }, nil
 }
 
 func anyMatches(globs [][]string, segs []string) bool {
