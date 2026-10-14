@@ -271,7 +271,7 @@ func (s *Store) RecordEffect(ctx context.Context, actor, id string, tr Transitio
 	var out Effect
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		if tr.Check != nil {
-			if err := tr.Check(&Tx{ctx: ctx, tx: tx}); err != nil {
+			if err := tr.Check(&Tx{ctx: ctx, tx: tx, readOnly: true, owner: s}); err != nil {
 				return err
 			}
 		}

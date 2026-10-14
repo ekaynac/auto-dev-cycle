@@ -6,24 +6,18 @@ package modelcall
 // the provider's usage, otherwise keep the usage as an uncertain liability; Q8; X3).
 //
 // Decisions:
-//   - One runner per effect: Ended waits for a running one (a run end is never lost); Reconcile, while one runs,
-//     returns ErrRunning. adcd holds one Reconciler per store (P22a). A reconciliation is recorded only at the sequence
-//     its query was asked for, and a transition to completed rechecks the standing in its own transaction, so another
-//     runner settles nothing twice and no run completes on a stale read.
-//   - Run end (Ended): the effect leaves pending, completed when the call's usage settles (ledger.StandingOf), else
-//     uncertain and reconciled. The gateway then sends nothing more for the call (Recorder.Count refuses a new floor).
-//   - Reconcile: where the route has a usage query (Queries, by destination), the provider's answer is recorded as the
-//     call's next provider_reconciliation, and the effect completes. It releases what the gateway's floors over-hold (an
-//     image, a 4xx or 429 without usage, unread usage), never the gateway's observed counts: below them the call settles
-//     at the counts, flagged (Standing.Below), and is asked again, the later answer superseding.
-//   - The answer covers every request sent: the provider is asked only while no request with a floor and no count is
-//     younger than FloorGrace, by the floor's recorded time. The gateway ends every request within
-//     gateway.RequestDeadline, and a request still being served has such a floor (its count follows within the
-//     deadline), so this holds in process and after a restart alike, with no in-memory flag.
-//   - Otherwise (no query, a request possibly in flight, no usage found, which is never read as zero, a failed
-//     query) the effect stays uncertain, and P12b keeps the liability: never dropped and never zero.
-//   - Late usage (#226 entry 59) is expected: the ledger records it and the liability recomputes, whatever the effect.
-//   - Inert: P22a constructs the Reconciler and authorises Reconciled for the system actor only.
+//   - One runner per effect (one Reconciler per store, P22a): Ended waits for it while its context allows; Reconcile
+//     returns ErrRunning. Queries are bounded (QueryDeadline). A reconciliation records only at the sequence it asked
+//     for, and a transition to completed rechecks the standing in its own transaction.
+//   - Ended moves the effect out of pending (Recorder.Count then refuses a new floor), and reconciles it from a read
+//     taken after that fence.
+//   - The provider's answer (Queries, by destination) is recorded as the next provider_reconciliation, and never
+//     settles the call below what the gateway observed (ledger.bound): below it, the call settles there, flagged
+//     (Standing.Below), and is asked again only after a later gateway count; an unchanged answer is not recorded.
+//   - It is asked only once every request with a floor and no count is older than FloorGrace, by the floor's
+//     recorded time: the gateway ends each request within gateway.RequestDeadline, in process or across a restart.
+//   - Otherwise the effect stays uncertain and P12b keeps the liability: never dropped, never zero. Late usage (#226
+//     entry 59) is expected. Inert: P22a constructs it and authorises Reconciled for the system actor only.
 
 import (
 	"context"
@@ -46,6 +40,9 @@ const Reconciled = ledger.ReconcileAction
 // FloorGrace is how long after its floor a request with no count may still be in flight: the gateway's deadline, with
 // a margin for the floor's commit before the send.
 const FloorGrace = gateway.RequestDeadline + time.Minute
+
+// QueryDeadline bounds one usage query.
+const QueryDeadline = time.Minute
 
 // What the reconciler observes, as recorded on the effect.
 const (
@@ -80,38 +77,42 @@ type Reconciler struct {
 	Now     func() time.Time     // nil: time.Now
 
 	mu      sync.Mutex
-	done    *sync.Cond
-	running map[types.CallID]bool
+	running map[types.CallID]chan struct{} // closed when the call's runner ends
+	// asked is, by call, how many gateway counts were recorded when the provider was last asked: a call settled
+	// below the gateway's observation is asked again only after a later count (in memory: after a restart, once more).
+	asked map[types.CallID]int
 }
 
-// Ended settles call's effect once its run is over, waiting for a runner already settling it. An effect out of
-// pending is reconciled as Reconcile does.
+// Ended settles call's effect once its run is over, waiting for a runner already settling it while ctx allows. An
+// effect out of pending is reconciled as Reconcile does.
 func (r *Reconciler) Ended(ctx context.Context, call types.CallID) (eventstore.Effect, error) {
-	r.lock(call, true)
-	defer r.unlock(call)
 	return r.run(ctx, call, true)
 }
 
 // Reconcile settles call's uncertain effect, and asks again for a completed one whose usage no longer settles, or
-// settles below the gateway's counts. A pending effect is left alone: Ended moves it.
+// settles below the gateway's observation with a count newer than its last answer. A pending effect is left alone.
 func (r *Reconciler) Reconcile(ctx context.Context, call types.CallID) (eventstore.Effect, error) {
-	if !r.lock(call, false) {
-		return eventstore.Effect{}, fmt.Errorf("%w: %s", ErrRunning, call)
-	}
-	defer r.unlock(call)
 	return r.run(ctx, call, false)
 }
 
-// view is what a run reads of a call at its start.
+// view is what a run reads of a call.
 type view struct {
-	m      types.ModelCall
-	e      eventstore.Effect
-	st     ledger.Standing
-	recons int64 // the provider reconciliations recorded
-	young  bool  // a request with a floor and no count is younger than FloorGrace
+	m         types.ModelCall
+	e         eventstore.Effect
+	st        ledger.Standing
+	next      int64 // the sequence the next reconciliation takes
+	young     bool  // a request with a floor and no count is younger than FloorGrace
+	counts    int   // the gateway counts recorded
+	recounted bool  // one was recorded since the provider was last asked
 }
 
+// run settles call's effect as its one runner: Ended waits for another, Reconcile does not (lock).
 func (r *Reconciler) run(ctx context.Context, call types.CallID, ended bool) (eventstore.Effect, error) {
+	unlock, err := r.lock(ctx, call, ended)
+	if err != nil {
+		return eventstore.Effect{}, err
+	}
+	defer unlock()
 	v, err := r.read(ctx, call)
 	e := v.e
 	switch {
@@ -123,15 +124,19 @@ func (r *Reconciler) run(ctx context.Context, call types.CallID, ended bool) (ev
 				return done, err
 			}
 		}
-		if e, err = r.record(ctx, call, "uncertain", "", ObservedOpen); err != nil {
+		if _, err = r.record(ctx, call, "uncertain", "", ObservedOpen); err == nil {
+			v, err = r.read(ctx, call) // the fence is up: no floor commits after this read
+		}
+		if e = v.e; err != nil {
 			return e, err
 		}
 	}
-	if e.State != eventstore.EffectUncertain && (e.State != eventstore.EffectCompleted || v.st.Settled && !v.st.Below) {
+	ask := !v.st.Settled || v.st.Below && v.recounted
+	if e.State != eventstore.EffectUncertain && (e.State != eventstore.EffectCompleted || !ask) {
 		return e, nil
 	}
 	why := ObservedSettled
-	if !v.st.Settled || v.st.Below {
+	if ask {
 		var asked string
 		if asked, err = r.query(ctx, v); asked == ObservedQueried || !v.st.Settled {
 			why = asked
@@ -154,7 +159,7 @@ func (r *Reconciler) run(ctx context.Context, call types.CallID, ended bool) (ev
 	return e, errors.Join(err, rerr)
 }
 
-// read is call's binding, effect and standing, with its reconciliations and whether a floor is young.
+// read is call's binding, effect and standing, with its reconciliations, counts and floors.
 func (r *Reconciler) read(ctx context.Context, call types.CallID) (v view, err error) {
 	now := r.Now
 	if now == nil {
@@ -176,13 +181,21 @@ func (r *Reconciler) read(ctx context.Context, call types.CallID) (v view, err e
 		if err != nil {
 			return err
 		}
-		v.st, v.recons = ledger.StandingOf(ms, call), reconciliations(ms)
-		at0, counted := now(), map[int64]bool{}
+		v.st = ledger.StandingOf(ms, call)
+		_, v.next = latestOf(ms)
+		at0, counts := now(), map[int64]bool{}
 		for _, m := range ms {
-			counted[m.Sequence] = counted[m.Sequence] || m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayCount
+			c := m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayCount
+			counts[m.Sequence] = counts[m.Sequence] || c
+			if c {
+				v.counts++
+			}
 		}
+		r.mu.Lock()
+		v.recounted = v.counts > r.asked[call]
+		r.mu.Unlock()
 		for _, m := range ms {
-			if m.SourceOfTruth != types.UsageMeasurementSourceOfTruthGatewayFloor || counted[m.Sequence] {
+			if m.SourceOfTruth != types.UsageMeasurementSourceOfTruthGatewayFloor || counts[m.Sequence] {
 				continue
 			}
 			var at time.Time
@@ -200,9 +213,9 @@ func (r *Reconciler) read(ctx context.Context, call types.CallID) (v view, err e
 	return v, err
 }
 
-// query asks v's route for its call's usage and records the answer as the call's next provider reconciliation,
-// returning what was observed: ObservedQueried once it is recorded, ObservedSettled when another runner recorded one
-// meanwhile.
+// query asks v's route for its call's usage, within QueryDeadline, and records the answer as the call's next provider
+// reconciliation, returning what was observed: ObservedQueried once it is recorded, ObservedSettled when another
+// runner recorded one meanwhile or the answer is the latest one's.
 func (r *Reconciler) query(ctx context.Context, v view) (string, error) {
 	q, ok := r.Queries[v.m.Destination]
 	switch {
@@ -211,14 +224,22 @@ func (r *Reconciler) query(ctx context.Context, v view) (string, error) {
 	case v.young:
 		return ObservedYoung, nil
 	}
-	u, found, err := q.Usage(ctx, v.m)
+	qctx, cancel := context.WithTimeout(ctx, QueryDeadline)
+	defer cancel()
+	u, found, err := q.Usage(qctx, v.m)
 	switch {
 	case err != nil:
 		return ObservedFailed, err
 	case !found:
 		return ObservedNotFound, nil
 	}
-	recorded, err := r.reconciled(ctx, v.m, u, v.recons)
+	r.mu.Lock()
+	if r.asked == nil {
+		r.asked = map[types.CallID]int{}
+	}
+	r.asked[v.m.Call] = v.counts
+	r.mu.Unlock()
+	recorded, err := r.reconciled(ctx, v.m, u, v.next)
 	switch {
 	case err != nil:
 		return ObservedFailed, err
@@ -229,7 +250,7 @@ func (r *Reconciler) query(ctx context.Context, v view) (string, error) {
 }
 
 // reconciled records u as m's provider reconciliation at sequence seq, superseding the earlier ones, and reports
-// whether it did: not when another was recorded since the query was asked.
+// whether it did: not when another was recorded since the query was asked, nor when u is the latest one's figure.
 func (r *Reconciler) reconciled(ctx context.Context, m types.ModelCall, u Usage, seq int64) (bool, error) {
 	msr, err := ids.New("msr")
 	if err != nil {
@@ -248,7 +269,8 @@ func (r *Reconciler) reconciled(ctx context.Context, m types.ModelCall, u Usage,
 	_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: r.Actor, Action: Reconciled, IdempotencyKey: id, Input: ev.Payload},
 		eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			ms, err := ledger.Measurements(tx, m.Call)
-			if recorded = err == nil && reconciliations(ms) == seq; !recorded {
+			last, next := latestOf(ms)
+			if recorded = err == nil && next == seq && (last == nil || *last != u); !recorded {
 				return nil, json.RawMessage(`{}`), err
 			}
 			return []eventstore.Event{ev}, json.RawMessage(`{}`), nil
@@ -256,14 +278,15 @@ func (r *Reconciler) reconciled(ctx context.Context, m types.ModelCall, u Usage,
 	return recorded && err == nil, err
 }
 
-// reconciliations counts the provider reconciliations among ms.
-func reconciliations(ms []types.UsageMeasurement) (n int64) {
+// latestOf is the latest provider reconciliation among ms, and the sequence the next one takes: one past the highest.
+func latestOf(ms []types.UsageMeasurement) (last *Usage, next int64) {
 	for _, m := range ms {
-		if m.Kind == types.UsageMeasurementKindProviderReconciliation {
-			n++
+		if m.Kind == types.UsageMeasurementKindProviderReconciliation && m.Sequence >= next {
+			t := m.Tokens
+			last, next = &Usage{int64(t.In), int64(t.Out), int64(t.CacheRead), int64(t.CacheWrite)}, m.Sequence+1
 		}
 	}
-	return n
+	return last, next
 }
 
 // record applies a transition to call's effect; one to completed only while the call's usage settles, rechecked in
@@ -282,26 +305,29 @@ func (r *Reconciler) record(ctx context.Context, call types.CallID, kind, outcom
 	return r.Store.RecordEffect(ctx, r.Actor, EffectOf(call), tr)
 }
 
-// lock makes the caller call's one runner, waiting for another when wait is set, else failing while one runs.
-func (r *Reconciler) lock(call types.CallID, wait bool) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.done == nil {
-		r.done, r.running = sync.NewCond(&r.mu), map[types.CallID]bool{}
-	}
-	for r.running[call] {
-		if !wait {
-			return false
+// lock makes the caller call's one runner, waiting for another while wait is set and ctx allows, else failing
+// (ErrRunning) while one runs. The func it returns ends the run.
+func (r *Reconciler) lock(ctx context.Context, call types.CallID, wait bool) (func(), error) {
+	for {
+		r.mu.Lock()
+		if r.running == nil {
+			r.running = map[types.CallID]chan struct{}{}
 		}
-		r.done.Wait()
+		busy, held := r.running[call]
+		if !held {
+			done := make(chan struct{})
+			r.running[call] = done
+			r.mu.Unlock()
+			return func() { r.mu.Lock(); delete(r.running, call); r.mu.Unlock(); close(done) }, nil
+		}
+		r.mu.Unlock()
+		if !wait {
+			return nil, fmt.Errorf("%w: %s", ErrRunning, call)
+		}
+		select {
+		case <-busy:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	r.running[call] = true
-	return true
-}
-
-func (r *Reconciler) unlock(call types.CallID) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.running, call)
-	r.done.Broadcast()
 }

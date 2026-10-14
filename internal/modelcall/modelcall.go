@@ -233,7 +233,7 @@ func same(a, b types.ModelCall) bool {
 func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
 		if ev.Kind == ledger.Measured {
-			if err := floored(tx, ev); err != nil {
+			if err := measured(tx, ev); err != nil {
 				return fmt.Errorf("modelcall: event %s: %w", ev.ID, err)
 			}
 			continue
@@ -269,8 +269,8 @@ func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 // floor and no count is older than FloorGrace.
 const FloorProjection = "model_call_floors"
 
-// floored records the time of ev, a gateway floor, unless its request's floor is recorded already.
-func floored(tx *eventstore.Tx, ev eventstore.Event) error {
+// measured keeps the time of ev, a gateway floor, unless its request's floor is recorded already.
+func measured(tx *eventstore.Tx, ev eventstore.Event) error {
 	var m types.UsageMeasurement
 	if err := json.Unmarshal(ev.Payload, &m); err != nil || m.SourceOfTruth != types.UsageMeasurementSourceOfTruthGatewayFloor {
 		return err

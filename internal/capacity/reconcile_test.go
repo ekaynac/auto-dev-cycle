@@ -221,7 +221,8 @@ func TestAnUncertainCallIsNeverReleasedAtZero(t *testing.T) {
 
 // F (P20, Opus on #258 H1): a found zero never settles a call below the gateway's count. The gateway counted the
 // response's usage (300 in, 200 out); the provider then answers zero for the call. The call settles at the count,
-// flagged as below it, so its charge is the count; Reconcile asks again, and a later answer supersedes the first.
+// flagged as below it, so its charge is the count. Mythos on #258, M1: a second sweep with nothing new asks nothing; a
+// new count makes the next sweep ask, but the same low answer is not recorded again; a higher answer supersedes.
 func TestAFoundZeroNeverSettlesUnderTheCount(t *testing.T) {
 	const usage = `{"choices":[],"usage":{"prompt_tokens":300,"completion_tokens":200}}`
 	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
@@ -235,14 +236,138 @@ func TestAFoundZeroNeverSettlesUnderTheCount(t *testing.T) {
 	if st, n := w.standing(r); n != 1 || !st.Settled || !st.Below || !st.Inconsistent || st.Usage.In < 300 || st.Usage.Out < 200 {
 		t.Fatalf("after a zero answer: %+v (usage %+v), %d reconciliations; want settled at the count, flagged", st, st.Usage, n)
 	}
-	q.answer(modelcall.Usage{In: 320, Out: 210})
-	if e, err := rc.Reconcile(context.Background(), r.call); err != nil || e.State != eventstore.EffectCompleted || q.times() != 2 {
-		t.Fatalf("asked again: %+v, %v, asked %d", e, err, q.times())
+	sweep := func(asked, recorded int) {
+		t.Helper()
+		e, err := rc.Reconcile(context.Background(), r.call)
+		if _, n := w.standing(r); err != nil || e.State != eventstore.EffectCompleted || q.times() != asked || n != recorded {
+			t.Fatalf("a sweep: %+v, %v, asked %d, %d reconciliations; want %d, %d", e, err, q.times(), n, asked, recorded)
+		}
 	}
-	if st, n := w.standing(r); n != 2 || !st.Settled || st.Below || st.Inconsistent || st.Usage.In != 320 || st.Usage.Out != 210 {
-		t.Fatalf("after the later answer: %+v (usage %+v), %d reconciliations", st, st.Usage, n)
+	sweep(1, 1) // nothing new: not asked
+	w.count(r, 0, 310, 205)
+	sweep(2, 1) // a new count: asked, the same answer not recorded
+	sweep(2, 1)
+	q.answer(modelcall.Usage{In: 320, Out: 210})
+	w.count(r, 0, 315, 205)
+	sweep(3, 2)
+	if st, _ := w.standing(r); !st.Settled || st.Below || st.Inconsistent || st.Usage.In != 320 || st.Usage.Out != 210 {
+		t.Fatalf("after the later answer: %+v (usage %+v)", st, st.Usage)
 	}
 	w.replays()
+}
+
+// F (Mythos on #258, H2): a floor's input, the bytes the gateway sent, bounds a reconciliation; its output, max_tokens,
+// does not. A floor-only call (usage unread) answered with a found zero settles at the floor's input, flagged; an
+// answer over that input settles at the answer.
+func TestAFoundZeroNeverSettlesUnderAFloorsInput(t *testing.T) {
+	for name, c := range map[string]struct {
+		answer  modelcall.Usage
+		in, out int64
+		below   bool
+	}{
+		"a found zero":       {modelcall.Usage{}, 900, 0, true},
+		"an answer above it": {modelcall.Usage{In: 1000, Out: 30}, 1000, 30, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+			r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
+			w.floor(r, 0, 900, 64)
+			if e, err := w.reconciler(&query{u: c.answer, found: true}).Ended(context.Background(), r.call); err != nil || e.State != eventstore.EffectCompleted {
+				t.Fatalf("run end: %+v, %v", e, err)
+			}
+			if st, _ := w.standing(r); !st.Settled || st.Below != c.below || st.Inconsistent != c.below || st.Usage.In != c.in || st.Usage.Out != c.out {
+				t.Fatalf("%+v (usage %+v), want %d in, %d out, below %v", st, st.Usage, c.in, c.out, c.below)
+			}
+		})
+	}
+}
+
+// F (Mythos on #258, H1): the run end reads the floors again once its fence is up. A floor that commits after the
+// first read (inside it, through the clock) and before the fence is seen: the provider is not asked.
+func TestARunEndReadsTheFloorsAfterItsFence(t *testing.T) {
+	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
+	w.floor(r, 0, 5, 5)
+	q := &query{u: modelcall.Usage{In: 30, Out: 20}, found: true}
+	rc, reads := w.reconciler(q), 0
+	rc.Now = func() time.Time {
+		if reads++; reads > 1 {
+			return time.Now() // after the fence: the second floor is young
+		}
+		w.floor(r, 1, 5, 5) // a request floored and sent before the fence
+		return later()
+	}
+	if e, err := rc.Ended(context.Background(), r.call); err != nil || e.State != eventstore.EffectUncertain ||
+		e.LastObservation != modelcall.ObservedYoung || q.times() != 0 {
+		t.Fatalf("%+v, %v, asked %d", e, err, q.times())
+	}
+}
+
+// Mythos on #258, L1: a reconciliation takes the sequence past the highest, so it supersedes whatever is recorded.
+func TestTheNextReconciliationSupersedesTheHighest(t *testing.T) {
+	const usage = `{"choices":[],"usage":{"prompt_tokens":300,"completion_tokens":200}}`
+	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
+	w.sendThroughGateway(r, usage)
+	if err := w.measure(r, types.UsageMeasurementKindProviderReconciliation, 5, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	w.count(r, 0, 310, 205)
+	rc := w.reconciler(&query{u: modelcall.Usage{In: 320, Out: 210}, found: true})
+	if e, err := rc.Ended(context.Background(), r.call); err != nil || e.State != eventstore.EffectCompleted {
+		t.Fatalf("run end: %+v, %v", e, err)
+	}
+	if e, err := rc.Reconcile(context.Background(), r.call); err != nil || e.State != eventstore.EffectCompleted {
+		t.Fatalf("a sweep: %+v, %v", e, err)
+	}
+	if st, n := w.standing(r); n != 2 || st.Below || st.Usage.In != 320 {
+		t.Fatalf("%+v (usage %+v), %d reconciliations", st, st.Usage, n)
+	}
+}
+
+// Mythos on #258, M3: a run end waits for a running runner only while its context allows, and a query that never
+// answers is bounded by QueryDeadline, so the runner always ends.
+func TestARunnerAlwaysEnds(t *testing.T) {
+	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
+	w.floor(r, 0, 5, 5)
+	held := &query{entered: make(chan bool, 1), release: make(chan bool)}
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(held.release) }) })
+	rc := w.reconciler(held)
+	go func() { _, _ = rc.Ended(context.Background(), r.call) }()
+	<-held.entered
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	waited := make(chan error, 1)
+	go func() { _, err := rc.Ended(ctx, r.call); waited <- err }()
+	select {
+	case err := <-waited:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("a waiting run end returned %v, want its context's end", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a waiting run end outlived its context")
+	}
+	var deadline time.Time
+	bounded := queryFunc(func(ctx context.Context) error {
+		deadline, _ = ctx.Deadline()
+		return errors.New("unanswered")
+	})
+	w2 := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
+	r2 := w2.running(reserve(quota, 400, types.CapacityUnitTokens))
+	w2.floor(r2, 0, 5, 5)
+	rc2 := &modelcall.Reconciler{Store: w2.s, Actor: testActor, Queries: map[types.Slug]modelcall.Query{"stub": bounded}, Now: later}
+	if _, err := rc2.Ended(context.Background(), r2.call); err == nil || deadline.IsZero() || time.Until(deadline) > modelcall.QueryDeadline {
+		t.Fatalf("an unbounded query: %v, deadline %v", err, deadline)
+	}
+}
+
+// queryFunc is a usage query that only fails, after fn sees its context.
+type queryFunc func(ctx context.Context) error
+
+func (f queryFunc) Usage(ctx context.Context, _ types.ModelCall) (modelcall.Usage, bool, error) {
+	return modelcall.Usage{}, false, f(ctx)
 }
 
 // F (P20, Opus on #258 H2): a restarted reconciler, whose new gateway serves nothing, never settles out a request
@@ -328,7 +453,7 @@ func TestARunEndRechecksTheStanding(t *testing.T) {
 		once.Do(func() { w.floor(r, 7, 5, 5) })
 		return later()
 	}
-	if e, err := rc.Ended(context.Background(), r.call); err != nil || e.State != eventstore.EffectUncertain || e.LastObservation != modelcall.ObservedOpen {
+	if e, err := rc.Ended(context.Background(), r.call); err != nil || e.State != eventstore.EffectUncertain || e.LastObservation != modelcall.ObservedNoQuery {
 		t.Fatalf("a stale settlement: %+v, %v", e, err)
 	}
 	w.replays()

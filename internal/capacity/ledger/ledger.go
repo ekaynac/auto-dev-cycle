@@ -15,6 +15,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"slices"
 	"sort"
@@ -110,16 +111,20 @@ func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
 		return trusted(got[call], mixed)
 	}
 	var recon []types.UsageMeasurement
-	seen := map[key]Figure{}
+	seen, floors := map[key]Figure{}, map[key]Figure{}
 	for _, m := range one {
-		if m.Kind == types.UsageMeasurementKindProviderReconciliation {
+		at, k := floors, key{call, m.Sequence}
+		switch {
+		case m.Kind == types.UsageMeasurementKindProviderReconciliation:
 			recon = append(recon, m)
-		}
-		if m.Call == call && m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayCount {
-			seen[key{call, m.Sequence}], _ = maxOf(seen[key{call, m.Sequence}], figureOf(m))
+		case m.Call == call && m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayCount:
+			at = seen
+			fallthrough
+		case m.Call == call && m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayFloor:
+			at[k], _ = maxOf(at[k], figureOf(m))
 		}
 	}
-	counted, err := sum(seen)
+	counted, err := sum(bound(seen, floors))
 	if len(recon) == 0 || err != nil {
 		return Standing{Usage: &Figure{In: maxAmount}, Inconsistent: true}
 	}
@@ -138,11 +143,11 @@ func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
 // under the count, is the adapter's word alone (a hostile one reports zero):
 // the call stays uncertain at the larger of the reports and the count, a
 // final under the count flagged. A reconciliation replaces the adapter's
-// reports and the floors, but never settles below the counts the gateway
-// observed (P20): an upstream answering its own usage query is no more
-// trusted than its in-band usage, and a usage API may lag. Below them, the
-// call settles at the larger of the two, flagged, so a count that lands
-// after the reconciliation still raises the figure.
+// reports and the floors' output (max_tokens, never observed), but never
+// settles below what the gateway observed (P20, bound): an upstream answering
+// its own usage query is no more trusted than its in-band usage, and a usage
+// API may lag. Below it, the call settles at the larger of the two, flagged,
+// so a count that lands after the reconciliation still raises the figure.
 func trusted(c Call, mixed bool) Standing {
 	st := Standing{Settled: c.Reconciled, Usage: &c.Usage, Inconsistent: mixed || c.Inconsistent}
 	if c.Reconciled && c.Seen != nil && !covers(c.Usage, *c.Seen) {
@@ -221,8 +226,8 @@ type Call struct {
 	// leaves it out. Floored: some request has a floor and no count.
 	Counted *Figure
 	Floored bool
-	// Seen is the gateway's observed counts alone (gateway_count, summed over the sequences it counted), nil with
-	// none: no reconciliation settles the call below it.
+	// Seen is what the gateway observed (bound), summed over its sequences, nil with no gateway report: no
+	// reconciliation settles the call below it.
 	Seen *Figure
 	// Reconciled: a provider reconciliation is recorded.
 	Reconciled bool
@@ -285,7 +290,7 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 	if err != nil {
 		return nil, err
 	}
-	seen, err := sum(observed)
+	seen, err := sum(bound(observed, floors))
 	if err != nil {
 		return nil, err
 	}
@@ -301,12 +306,8 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 	}
 	out := map[types.CallID]Call{}
 	for call, f := range counted {
-		out[call] = Call{Call: call, Uncertain: true, Counted: &f, Floored: floored[call]}
-		if s, ok := seen[call]; ok {
-			c := out[call]
-			c.Seen = &s
-			out[call] = c
-		}
+		s := seen[call]
+		out[call] = Call{Call: call, Uncertain: true, Counted: &f, Floored: floored[call], Seen: &s}
 	}
 	for call, cur := range currency {
 		c := Call{Call: call, Usage: sums[call], Currency: cur, Uncertain: true, Inconsistent: conflict[call],
@@ -329,6 +330,19 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 		out[call] = c
 	}
 	return out, nil
+}
+
+// bound is what no reconciliation settles a request under: its observed count, else its floor's input, the bytes the
+// gateway sent. A floor's output part, max_tokens, is no observation.
+func bound(observed, floors map[key]Figure) map[key]Figure {
+	out := map[key]Figure{}
+	maps.Copy(out, observed)
+	for k, f := range floors {
+		if _, ok := observed[k]; !ok {
+			out[k] = Figure{In: f.In, CacheRead: f.CacheRead, CacheWrite: f.CacheWrite}
+		}
+	}
+	return out
 }
 
 // counts: m is the gateway's own count of a request, or its floor.
