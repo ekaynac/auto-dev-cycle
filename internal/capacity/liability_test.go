@@ -420,6 +420,9 @@ func TestSettledCallOwesAgainWhateverTheOrder(t *testing.T) {
 				if err := w.measure(r, m.kind, m.seq, m.in, 0); err != nil {
 					t.Fatalf("report %d refused: %v", i, err)
 				}
+				if l := w.liable(quota); i == 0 && l != 0 {
+					t.Fatalf("liable %d after the small final, before the deltas; want 0", l)
+				}
 			}
 			if settleAfter == len(reports) {
 				w.settleDerived(r)
@@ -432,6 +435,7 @@ func TestSettledCallOwesAgainWhateverTheOrder(t *testing.T) {
 			if l := w.liable(quota); l != maxTokens || !inconsistent {
 				t.Fatalf("liable %d, inconsistent %v; want %d, flagged", l, inconsistent, int64(maxTokens))
 			}
+			w.replays() // the overflowed liability is what replay derives
 			if err := w.measure(r, types.UsageMeasurementKindProviderReconciliation, 0, 10, 1); err != nil {
 				t.Fatal(err)
 			}
