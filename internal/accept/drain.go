@@ -6,6 +6,7 @@ package accept
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os/exec"
 	"sync"
@@ -26,7 +27,7 @@ var pipeDelay = time.Second
 // drain runs cmd in its own process group, its stdout bounded by maxOut
 // and its stderr by maxErr, both drained concurrently. On either overflow
 // the group is killed once, and drain returns ErrTooLarge: never more than
-// the bounds are held.
+// the bounds are held. When ctx is done the group is killed too.
 //
 // Ordering, so no signal reaches a reused group: the leader is reaped
 // (Wait) only after both streams are drained and the leader is waitable
@@ -35,7 +36,7 @@ var pipeDelay = time.Second
 // After the leader exits, a descendant still holding a pipe delays the end
 // by pipeDelay at most. A descendant that leaves the group (setsid,
 // setpgid) is not contained: the group kill does not reach it.
-func drain(cmd *exec.Cmd, maxOut, maxErr int64) (out, stderr []byte, err error) {
+func drain(ctx context.Context, cmd *exec.Cmd, maxOut, maxErr int64) (out, stderr []byte, err error) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
@@ -58,6 +59,7 @@ func drain(cmd *exec.Cmd, maxOut, maxErr int64) (out, stderr []byte, err error) 
 		bufs       [2]bytes.Buffer
 		readersEnd = make(chan struct{})
 		leaderEnd  = make(chan struct{})
+		watchEnd   = make(chan struct{})
 	)
 	pgid := cmd.Process.Pid
 	kill := func() { once.Do(func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) }) }
@@ -76,6 +78,16 @@ func drain(cmd *exec.Cmd, maxOut, maxErr int64) (out, stderr []byte, err error) 
 		}()
 	}
 	go func() { wg.Wait(); close(readersEnd) }()
+	go func() { // before Wait: the leader, exited or not, is unreaped
+		defer close(watchEnd)
+		select {
+		case <-ctx.Done():
+		case <-leaderEnd:
+		}
+		if ctx.Err() != nil {
+			kill()
+		}
+	}()
 	go func() {
 		defer close(leaderEnd)
 		waitable(pgid)
@@ -87,6 +99,7 @@ func drain(cmd *exec.Cmd, maxOut, maxErr int64) (out, stderr []byte, err error) 
 	}()
 	<-readersEnd
 	<-leaderEnd
+	<-watchEnd
 	err = cmd.Wait() // reaps the leader: no kill follows
 	if over.Load() {
 		return nil, nil, ErrTooLarge

@@ -11,6 +11,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -50,14 +51,23 @@ type pkgFacts struct {
 	warn                        map[string]string   // TestMain(*testing.M), compared whole
 	flags                       map[string][]string // per file: linkname, unsafe, …
 	bad                         map[string]string   // per file: why it is not verified
+	untyped                     map[string]string   // per package: why its real types are not read (P14e)
+	typed                       map[string]int      // "file\x00function\x00fact" the real types show (P14e)
+	tree                        *tree               // the version read
 }
 
 // Integrity is the integrity guard for a candidate of base in repo, for
-// Accept's In.Guard. It lists the base's files through a temporary index.
-func Integrity(repo sandbox.Repo, base string) Guard {
-	return func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
-		r := &run{ctx: ctx, repo: repo, base: base, read: read, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{}}
-		err := r.check(changes)
+// Accept's In.Guard. It lists the base's files through a temporary index,
+// and imports' types through list (nil: every Go package unverifiable).
+func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
+	return func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, err error) {
+		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{}}
+		defer func() { // fail closed: a guard fault blocks, never crashes the controller
+			if p := recover(); p != nil {
+				blocks, warnings, err = append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p)}), r.warnings, nil
+			}
+		}()
+		err = r.check(changes)
 		return r.blocks, r.warnings, err
 	}
 }
@@ -67,12 +77,16 @@ type run struct {
 	repo               sandbox.Repo
 	base               string
 	read               Reader
+	lister             Lister
+	listEnd            time.Time // every go list run ends by then
+	listRuns           int
 	budget             int64
 	work               int
 	blobs              map[string][]byte   // blobs read, once
 	files, cand        map[string]string   // the base's and the candidate's paths, to blobs
 	baseDirs, candDirs map[string][]string // their files by directory
 	touched            map[string]bool     // directories of changed Go files
+	trees              [2]*tree            // the base and the candidate
 	blocks, warnings   []Block
 }
 
@@ -94,6 +108,7 @@ func (r *run) check(changes []Change) error {
 		}
 	}
 	r.baseDirs, r.candDirs = byDir(r.files), byDir(r.cand)
+	r.trees = [2]*tree{{r.files, r.baseDirs, map[string]*typer{}}, {r.cand, r.candDirs, map[string]*typer{}}}
 	py := slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), func(p string) bool { return path.Ext(p) == ".py" })
 	for _, c := range changes {
 		for _, p := range slices.Compact([]string{c.Src, c.Dst}) {
@@ -118,8 +133,8 @@ func (r *run) check(changes []Change) error {
 		}
 	}
 	for _, dir := range slices.Sorted(maps.Keys(r.touched)) {
-		b, err := r.pkg(dir, r.files, r.baseDirs)
-		a, err2 := r.pkg(dir, r.cand, r.candDirs)
+		b, err := r.pkg(dir, r.trees[0])
+		a, err2 := r.pkg(dir, r.trees[1])
 		if err = cmp.Or(err, err2); err != nil {
 			return err
 		}
@@ -200,15 +215,15 @@ func (r *run) goMod() error {
 }
 
 // pkg reads one version of the package directory dir.
-func (r *run) pkg(dir string, files map[string]string, dirs map[string][]string) (pkgFacts, error) {
+func (r *run) pkg(dir string, t *tree) (pkgFacts, error) {
 	fa := pkgFacts{tests: map[string]*stat{}, refs: map[string]int{}, init: map[string]int{}, warn: map[string]string{},
-		flags: map[string][]string{}, bad: map[string]string{}}
+		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, tree: t}
 	srcs := map[string][]byte{}
-	for _, p := range dirs[dir] {
+	for _, p := range t.dirs[dir] {
 		if path.Ext(p) != ".go" {
 			continue
 		}
-		b, why, err := r.file(files[p])
+		b, why, err := r.file(t.files[p])
 		if err != nil {
 			return fa, err
 		} else if why != "" {
@@ -237,6 +252,9 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 	maps.Copy(bad, a.bad)
 	for _, p := range slices.Sorted(maps.Keys(bad)) {
 		add(&r.blocks, p, "unverifiable: "+bad[p])
+	}
+	for _, k := range keys(b.untyped, a.untyped) {
+		add(&r.blocks, k, "unverifiable: "+cmp.Or(a.untyped[k], b.untyped[k]))
 	}
 	if len(bad) > 0 {
 		return // the facts are incomplete
@@ -284,6 +302,15 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.blocks, at, "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
 		} else if a.refs[k] != b.refs[k] {
 			add(&r.warnings, at, "a reference into S (exit, output, process, testing control) added, removed, moved or changed: review it")
+		}
+	}
+	anyTest := slices.ContainsFunc(keys(r.files, r.cand), goByName) // a helper anywhere the tests may call
+	for _, k := range keys(b.typed, a.typed) {                      // by identity, so no fact is traded for another
+		f := strings.Split(k, "\x00") // file, function, fact
+		if at := f[0] + ": " + f[2] + " in " + f[1]; a.typed[k] > b.typed[k] && (r.tested(dir) || anyTest || !strings.HasPrefix(f[2], factMakes)) {
+			add(&r.blocks, at, "can forge go test2json results (real types)")
+		} else if a.typed[k] > b.typed[k] {
+			add(&r.warnings, at, "reflection that makes values, in a package without tests: review it")
 		}
 	}
 	if a.twentyTwos > b.twentyTwos {
