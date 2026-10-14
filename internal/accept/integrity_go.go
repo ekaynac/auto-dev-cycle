@@ -3,10 +3,10 @@
 package accept
 
 import (
-	"bytes"
 	"go/ast"
 	"go/build"
 	"go/build/constraint"
+	"go/constant"
 	"go/parser"
 	"go/token"
 	"go/types"
@@ -36,15 +36,32 @@ var (
 	control   = append(slices.Clone(goSkips), append(slices.Clone(goFails), "Run", "Helper", "Cleanup")...)
 	testify   = []string{"github.com/stretchr/testify/assert", "github.com/stretchr/testify/require"}
 	testTypes = []string{"testing.T", "testing.B", "testing.F", "testing.TB", "testing.M"}
-	exitFns   = []string{"os.Exit", "syscall.Exit", "runtime.Goexit", "log.Fatal", "log.Fatalf", "log.Fatalln", "log.Panic",
-		"log.Panicf", "log.Panicln"}
-	outputs = []string{"os.Stdout", "os.Stderr", "fmt.Print", "fmt.Printf", "fmt.Println", "log.Print", "log.Printf",
-		"log.Println", "syscall.Write"}
+	// danger are the prefixes of references that exit, exec or drive
+	// testing's own runner: new ones block in a package with tests. New
+	// output references warn.
+	danger = []string{"syscall.Exit", "syscall.Exec", "syscall.RawSyscall", "syscall.Syscall", "os.Exit", "runtime.Goexit",
+		"log.Fatal", "log.Panic", "testing.Main", "testing.Init", "testing.RunTests", "os.Args assigned"}
+	outputs = []string{"os.Stdout", "os.Stderr", "os.NewFile", "os.OpenFile", "os.Create", "os.WriteFile", "log.Writer",
+		"log.Output", "log.Default", "log.New", "log.SetOutput", "log.Print", "fmt.Print", "syscall.Write"}
+	// initDeny are the packages initialization may not reach: os only
+	// outside osRead (and its Err* values); fmt's printing too.
+	initDeny = []string{"syscall", "testing", "os/exec", "plugin", "runtime", "log", "flag", "reflect", "unsafe", "os"}
+	osRead   = []string{"Getenv", "LookupEnv", "Environ", "Getwd", "Stat", "Open", "ReadFile", "ReadDir", "Stdin", "PathSeparator"}
 	// sensitive packages must not be dot-imported: their names would not resolve.
-	sensitive = []string{"testing", "os", "syscall", "runtime", "log", "reflect", "unsafe", "fmt"}
-	// forged are the spellings of 0x16 (test2json's marker) in Go source.
-	forged = []string{"\x16", `\x16`, `\026`, `\u0016`, `\U00000016`}
+	sensitive = append(slices.Clone(initDeny), "fmt")
 )
+
+func dangerous(q string) bool {
+	return slices.ContainsFunc(danger, func(p string) bool { return strings.HasPrefix(q, p) })
+}
+
+// unprovable: initialization reaching q ("importpath.Name") is not shown safe.
+func unprovable(q string) bool {
+	i := strings.LastIndex(q, ".")
+	pkg, name := q[:max(i, 0)], q[i+1:]
+	return slices.Contains(initDeny, pkg) && !(pkg == "os" && (slices.Contains(osRead, name) || strings.HasPrefix(name, "Err"))) ||
+		q == "fmt.Print" || q == "fmt.Printf" || q == "fmt.Println"
+}
 
 // goSkipDir: go test ./... never walks dir (vendor, testdata, a leading _
 // or .).
@@ -137,13 +154,10 @@ func (r *run) holds(exprs []constraint.Expr, pl [2]string) (int, error) {
 		}
 		all, some = all && ok, some || ok
 	}
-	switch {
-	case all:
+	if all {
 		return 2, nil
-	case some:
-		return 1, nil
 	}
-	return 0, nil
+	return b2i(some), nil
 }
 
 // goTest: name is a function go test runs (TestXxx, FuzzXxx, ExampleXxx).
@@ -174,9 +188,6 @@ func (r *run) analyse(dir string, srcs map[string][]byte, fa *pkgFacts) error {
 		} else if on == nil {
 			fa.bad[p] = "its build constraints are over the guard's work bound"
 			continue
-		}
-		for _, m := range forged {
-			fa.forged += bytes.Count(srcs[p], []byte(m))
 		}
 		meta[f] = fileMeta{p, cons, on, srcs[p]}
 		groups[f.Name.Name] = append(groups[f.Name.Name], f)
@@ -224,24 +235,18 @@ func (s *pkgScan) tval(e ast.Expr) string {
 	if u, ok := ast.Unparen(e).(*ast.UnaryExpr); ok {
 		e = u.X
 	}
-	id, ok := ast.Unparen(e).(*ast.Ident)
-	if !ok {
-		return ""
-	}
-	return s.tvals[s.info.Uses[id]]
+	id, _ := ast.Unparen(e).(*ast.Ident)
+	return s.tvals[s.info.Uses[id]] // Uses[nil] is nil
 }
 
 // callee is the function call reaches in this package, if any.
 func (s *pkgScan) callee(call *ast.CallExpr) *ast.FuncDecl {
-	switch f := ast.Unparen(call.Fun).(type) {
-	case *ast.Ident:
-		if o, ok := s.info.Uses[f].(*types.Func); ok {
-			return s.decls[o.Origin()]
-		}
-	case *ast.SelectorExpr:
-		if sel := s.info.Selections[f]; sel != nil && sel.Kind() == types.MethodVal {
-			return s.decls[sel.Obj().(*types.Func).Origin()]
-		}
+	id, _ := ast.Unparen(call.Fun).(*ast.Ident)
+	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
+		id = sel.Sel // a method's identifier uses the method
+	}
+	if o, ok := s.info.Uses[id].(*types.Func); ok {
+		return s.decls[o.Origin()]
 	}
 	return nil
 }
@@ -255,8 +260,30 @@ func (s *pkgScan) assertion(call *ast.CallExpr) bool {
 		passes && s.asserting[s.callee(call)]
 }
 
-// counts are a declaration's references.
-type counts struct{ asserts, skips, exits, forged, twentyTwos, reflect int }
+// testType: e names a testing value type (a T, B, F or M, not a pointer).
+func (s *pkgScan) testType(e ast.Expr) bool {
+	q := s.qual(e)
+	return q != "testing.TB" && slices.Contains(testTypes, q)
+}
+
+// mRun: call is os.Exit(m.Run()) on a testing.M, TestMain's one allowed exit.
+func (s *pkgScan) mRun(call *ast.CallExpr) bool {
+	if s.qual(call.Fun) != "os.Exit" || len(call.Args) != 1 {
+		return false
+	}
+	run, ok := call.Args[0].(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := run.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "Run" && s.tval(sel.X) == "testing.M"
+}
+
+// counts are a declaration's references; danger, the ones it may not gain.
+type counts struct {
+	asserts, skips, forged, reflect int
+	danger                          []string
+}
 
 func (s *pkgScan) count(n ast.Node) (c counts) {
 	ast.Inspect(n, func(n ast.Node) bool {
@@ -264,9 +291,32 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 		case *ast.SelectorExpr:
 			q := s.qual(x)
 			c.skips += b2i(slices.Contains(goSkips, x.Sel.Name)) // called or not
-			c.exits += b2i(slices.Contains(exitFns, q))
 			c.forged += b2i(q == "testing.Testing")
+			if q != "" && (dangerous(q) || slices.ContainsFunc(outputs, func(p string) bool { return strings.HasPrefix(q, p) })) {
+				c.danger = append(c.danger, q)
+			}
+		case *ast.AssignStmt:
+			for _, l := range x.Lhs {
+				if ix, ok := l.(*ast.IndexExpr); ok {
+					l = ix.X
+				}
+				if s.qual(l) == "os.Args" {
+					c.danger = append(c.danger, "os.Args assigned")
+				}
+			}
+		case *ast.CompositeLit: // a testing value not the runner's
+			c.forged += b2i(s.testType(x.Type))
+		case *ast.ValueSpec:
+			c.forged += b2i(x.Type != nil && s.testType(x.Type))
+		case *ast.Field:
+			c.forged += b2i(s.testType(x.Type))
 		case *ast.CallExpr:
+			if s.mRun(x) {
+				return false
+			}
+			if id, ok := x.Fun.(*ast.Ident); ok && s.info.Uses[id] == types.Universe.Lookup("new") && len(x.Args) == 1 {
+				c.forged += b2i(s.testType(x.Args[0]))
+			}
 			c.asserts += b2i(s.assertion(x))
 			q := s.qual(x.Fun)
 			if strings.HasPrefix(q, "reflect.") && slices.ContainsFunc(x.Args, func(a ast.Expr) bool { return s.tval(a) != "" }) {
@@ -278,12 +328,6 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 					name, _ = strconv.Unquote(lit.Value)
 				}
 				c.reflect += b2i(name == "" || slices.Contains(control, name))
-			}
-			if id, ok := x.Fun.(*ast.Ident); ok && len(x.Args) == 1 && slices.Contains([]string{"byte", "rune", "uint8", "int32"}, id.Name) {
-				if lit, ok := x.Args[0].(*ast.BasicLit); ok && lit.Kind == token.INT {
-					v, err := strconv.ParseInt(lit.Value, 0, 64)
-					c.twentyTwos += b2i(err == nil && v == 22)
-				}
 			}
 		}
 		return true
@@ -302,7 +346,20 @@ func b2i(b bool) int {
 func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, meta map[*ast.File]fileMeta, fa *pkgFacts) error {
 	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
 		Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
-	pkg, _ := (&types.Config{Error: func(error) {}, FakeImportC: true}).Check(dir, fset, files, info)
+	pkg, _ := (&types.Config{FakeImportC: true, Error: func(err error) {
+		if te, ok := err.(types.Error); ok && (strings.Contains(te.Msg, "redeclared") || strings.Contains(te.Msg, "already declared")) {
+			fa.bad[fset.Position(te.Pos).Filename] = "a name declared twice (in files the gate never builds together?)"
+		}
+	}}).Check(dir, fset, files, info)
+	for _, tv := range info.Types { // constants: a 0x16 in a string forges; a byte or rune 22 warns
+		b, _ := tv.Type.(*types.Basic)
+		switch {
+		case tv.Value != nil && tv.Value.Kind() == constant.String:
+			fa.forged += b2i(strings.Contains(constant.StringVal(tv.Value), "\x16"))
+		case tv.Value != nil && b != nil && slices.Contains([]types.BasicKind{types.Int32, types.Uint8, types.UntypedRune}, b.Kind()):
+			fa.twentyTwos += b2i(constant.Compare(tv.Value, token.EQL, constant.MakeInt64(22)))
+		}
+	}
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{}, asserting: map[*ast.FuncDecl]bool{}, methods: map[string]bool{}}
 	for _, f := range files {
 		ast.Inspect(f, func(n ast.Node) bool {
@@ -340,12 +397,10 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 	for _, f := range files {
 		m := meta[f]
 		test, flags := strings.HasSuffix(m.path, "_test.go"), []string{}
-		for _, cg := range f.Comments {
-			for _, c := range cg.List {
-				if strings.HasPrefix(c.Text, "//go:linkname") && !slices.Contains(flags, "a //go:linkname directive") {
-					flags = append(flags, "a //go:linkname directive")
-				}
-			}
+		if slices.ContainsFunc(f.Comments, func(cg *ast.CommentGroup) bool {
+			return slices.ContainsFunc(cg.List, func(c *ast.Comment) bool { return strings.HasPrefix(c.Text, "//go:linkname") })
+		}) {
+			flags = append(flags, "a //go:linkname directive")
 		}
 		for _, is := range f.Imports {
 			switch ip, _ := strconv.Unquote(is.Path.Value); {
@@ -360,23 +415,31 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 				return err
 			}
 			c := s.count(d)
-			fa.exits, fa.forged, fa.twentyTwos = fa.exits+c.exits, fa.forged+c.forged, fa.twentyTwos+c.twentyTwos
+			fa.forged += c.forged
 			if c.reflect > 0 && !slices.Contains(flags, "reflection on a testing value") {
 				flags = append(flags, "reflection on a testing value")
 			}
 			fn, _ := d.(*ast.FuncDecl)
-			fname := ""
-			if fn != nil && fn.Recv == nil && fn.Body != nil {
-				fname = fn.Name.Name
+			fname, where := "", "package level"
+			if fn != nil && fn.Body != nil {
+				if where = fn.Name.Name; fn.Recv == nil {
+					fname = where
+				}
 			}
-			if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.VAR || fname == "init" {
-				inits = append(inits, d)
+			for _, q := range c.danger {
+				fa.danger[m.path+": "+q+" in "+where]++
 			}
-			switch {
-			case test && fname == "TestMain" && slices.ContainsFunc(fn.Type.Params.List, func(f *ast.Field) bool {
+			hook := test && fname == "TestMain" && slices.ContainsFunc(fn.Type.Params.List, func(f *ast.Field) bool {
 				st, ok := f.Type.(*ast.StarExpr)
 				return ok && s.qual(st.X) == "testing.M"
-			}):
+			})
+			if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.VAR || fname == "init" || hook {
+				if inits = append(inits, d); fn != nil {
+					inits[len(inits)-1] = fn.Body // a function: its body, not its signature
+				}
+			}
+			switch {
+			case hook:
 				fa.warn["TestMain(*testing.M) of "+dir+":"+name] = string(m.src[fset.Position(d.Pos()).Offset:fset.Position(d.End()).Offset])
 			case test && goTest(fname):
 				for i, pl := range platforms {
@@ -395,13 +458,14 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 	return s.reach(inits, fa)
 }
 
-// reach follows initialization (inits and package variables, test files
-// included) through the package's functions, to a bound, counting exits,
-// output and calls it cannot resolve (interfaces, function values, no body,
-// a changed in-module package). Other packages' calls are taken not to
-// exit, except the known exits.
+// reach follows initialization (inits, package variables and the TestMain
+// hook, test files included) through every function of the package it
+// references, to a bound. It counts what it cannot prove safe: a reference
+// into a package initialization may not reach (unprovable), output, and a
+// call it cannot resolve (an interface, a function value, no body, a
+// changed in-module package). TestMain may exit once, with m.Run().
 func (s *pkgScan) reach(starts []ast.Node, fa *pkgFacts) error {
-	seen := map[*ast.FuncDecl]bool{}
+	seen, exited := map[*ast.FuncDecl]bool{}, false
 	for len(starts) > 0 {
 		if err := s.r.ctx.Err(); err != nil {
 			return err
@@ -414,16 +478,20 @@ func (s *pkgScan) reach(starts []ast.Node, fa *pkgFacts) error {
 		ast.Inspect(n, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.SelectorExpr:
-				if q := s.qual(x); slices.Contains(exitFns, q) || slices.Contains(outputs, q) {
-					fa.init[map[bool]string{true: "an exit", false: "output"}[slices.Contains(exitFns, q)]+" ("+q+")"]++
+				if q := s.qual(x); unprovable(q) {
+					fa.init["a reference it cannot prove safe ("+q+")"]++
 				}
-			case *ast.CallExpr:
-				switch k, d := s.resolve(x); k {
-				case "follow":
-					if !seen[d] {
+			case *ast.Ident:
+				if o, ok := s.info.Uses[x].(*types.Func); ok {
+					if d := s.decls[o.Origin()]; d != nil && d.Body != nil && !seen[d] {
 						seen[d], starts = true, append(starts, d.Body)
 					}
-				case "output", "a call it cannot resolve":
+				}
+			case *ast.CallExpr:
+				if s.mRun(x) && !exited {
+					exited = true
+					return false
+				} else if k := s.resolve(x); k != "" {
 					fa.init[k+" ("+types.ExprString(x.Fun)+")"]++
 				}
 			}
@@ -433,25 +501,20 @@ func (s *pkgScan) reach(starts []ast.Node, fa *pkgFacts) error {
 	return nil
 }
 
-func (s *pkgScan) resolve(call *ast.CallExpr) (string, *ast.FuncDecl) {
-	fun := ast.Unparen(call.Fun)
-	switch ix := fun.(type) {
-	case *ast.IndexExpr:
-		fun = ix.X
-	case *ast.IndexListExpr:
-		fun = ix.X
-	}
+// resolve is what a call reached from initialization is, if not safe.
+func (s *pkgScan) resolve(call *ast.CallExpr) string {
+	fun := ast.Unparen(call.Fun) // an instantiated generic is not resolved: its body is followed as an identifier
 	if tv, ok := s.info.Types[fun]; ok && tv.IsType() {
-		return "", nil // a conversion
+		return "" // a conversion
 	}
 	var fn *types.Func
 	switch f := fun.(type) {
 	case *ast.FuncLit:
-		return "", nil // inspected in place
+		return "" // inspected in place
 	case *ast.Ident:
 		switch o := s.info.Uses[f].(type) {
 		case *types.Builtin:
-			return map[bool]string{true: "output"}[o.Name() == "print" || o.Name() == "println"], nil
+			return map[bool]string{true: "output"}[o.Name() == "print" || o.Name() == "println"]
 		case *types.Func:
 			fn = o
 		}
@@ -460,28 +523,26 @@ func (s *pkgScan) resolve(call *ast.CallExpr) (string, *ast.FuncDecl) {
 			if pn, ok := s.info.Uses[id].(*types.PkgName); ok {
 				p := pn.Imported().Path()
 				if dir, ok := strings.CutPrefix(p, s.r.mod+"/"); s.r.mod != "" && (ok && s.r.touched[dir] || p == s.r.mod && s.r.touched["."]) {
-					return "a call it cannot resolve", nil
+					return "a call it cannot resolve"
 				}
-				return "", nil
+				return ""
 			}
 		}
 		sel := s.info.Selections[f]
 		if sel == nil && !s.methods[f.Sel.Name] {
-			return "", nil // a method of a type from an import the guard does not load
-		} else if sel == nil || sel.Kind() != types.MethodVal { // perhaps this package's method, or a func field
-			return "a call it cannot resolve", nil
+			return "" // a method of a type from an import the guard does not load
+		} else if sel == nil || sel.Kind() != types.MethodVal || types.IsInterface(sel.Recv()) { // the universe error too
+			return "a call it cannot resolve"
 		}
 		fn = sel.Obj().(*types.Func)
 	}
 	if fn == nil {
-		return "a call it cannot resolve", nil
+		return "a call it cannot resolve"
 	}
-	if d := s.decls[fn.Origin()]; d != nil && d.Body != nil {
-		return "follow", d
-	} else if d != nil || fn.Pkg() == s.pkg {
-		return "a call it cannot resolve", nil // no body (assembly, linkname), or an interface method
+	if d := s.decls[fn.Origin()]; d != nil && d.Body == nil || d == nil && fn.Pkg() == s.pkg {
+		return "a call it cannot resolve" // no body (assembly, linkname), or an interface method
 	}
-	return "", nil
+	return "" // followed as an identifier
 }
 
 // output: an example's output comment (its body's last comment), its

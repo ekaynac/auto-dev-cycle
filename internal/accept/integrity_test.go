@@ -128,17 +128,42 @@ func TestIntegrityBlocks(t *testing.T) {
 		"testing.Testing":           {map[string]string{"pkg/calc.go": "package pkg\n\nimport tt \"testing\"\n\nvar _ = tt.Testing()\n"}, nil, "forge"},
 		"testing.Testing a value":   {map[string]string{"pkg/calc.go": "package pkg\n\nimport \"testing\"\n\nvar isT = testing.Testing\n"}, nil, "forge"},
 		"0x16 written":              {map[string]string{"pkg/calc.go": calc + "\nconst x = \"\\026\"\n"}, nil, "forge"},
-		"forge.go":                  {map[string]string{"pkg/forge.go": forgeGo}, nil, "initialization (tests included) reaches an exit (syscall.Exit)"},
+		"forge.go":                  {map[string]string{"pkg/forge.go": forgeGo}, nil, "cannot prove safe (syscall.Exit)"},
 		"linkname forgery":          {map[string]string{"pkg/forge.go": linkGo}, nil, "a //go:linkname directive"},
 		"an unsafe import":          {map[string]string{"pkg/u.go": "package pkg\n\nimport \"unsafe\"\n\nvar _ = unsafe.Sizeof(0)\n"}, nil, "an import of unsafe"},
 		"linkname reached":          {map[string]string{"pkg/forge.go": linkGo}, nil, "a call it cannot resolve (terminate)"},
-		"init in a _test.go":        {map[string]string{"pkg/zz_test.go": "package pkg\n\nimport \"os\"\n\nfunc init() { os.Stdout.WriteString(\"PASS\\n\"); os.Exit(0) }\n"}, nil, "reaches output (os.Stdout)"},
-		"split across files":        {map[string]string{"pkg/a.go": "package pkg\n\nfunc init() { quit() }\n", "pkg/b.go": "package pkg\n\nimport \"log\"\n\nfunc quit() { log.Fatal(\"PASS\") }\n"}, nil, "reaches an exit (log.Fatal)"},
+		"init in a _test.go":        {map[string]string{"pkg/zz_test.go": "package pkg\n\nimport \"os\"\n\nfunc init() { os.Stdout.WriteString(\"PASS\\n\"); os.Exit(0) }\n"}, nil, "cannot prove safe (os.Stdout)"},
+		"split across files":        {map[string]string{"pkg/a.go": "package pkg\n\nfunc init() { quit() }\n", "pkg/b.go": "package pkg\n\nimport \"log\"\n\nfunc quit() { log.Fatal(\"PASS\") }\n"}, nil, "cannot prove safe (log.Fatal)"},
 		"init through an interface": {map[string]string{"pkg/a.go": "package pkg\n\ntype q interface{ quit() }\n\nvar Q q\n\nfunc init() { Q.quit() }\n"}, nil, "a call it cannot resolve (Q.quit)"},
 		"init through an imported interface": {map[string]string{"pkg/a.go": "package pkg\n\nimport (\n\t\"io\"\n\t\"os\"\n)\n\ntype exiter struct{}\n\n" +
 			"func (exiter) Write(p []byte) (int, error) { os.Exit(0); return 0, nil }\n\nvar w io.Writer = exiter{}\n\nfunc init() { w.Write(nil) }\n"}, nil, "a call it cannot resolve (w.Write)"},
 		"assembly": {map[string]string{"pkg/exit_amd64.s": "TEXT ·terminate(SB),$0\n\tRET\n"}, nil, "assembly"},
 		"a forged init through a changed package": {map[string]string{"pkg/a.go": "package pkg\n\nimport \"example.com/m/util\"\n\nfunc init() { util.Prepare() }\n", "util/u.go": "package util\n\nfunc Prepare() {}\n"}, nil, "a call it cannot resolve (util.Prepare)"},
+		// Mythos #255 round 2: C1's three probes, from init and from code the tests call.
+		"os.NewFile and RawSyscall": {map[string]string{"pkg/forge.go": "package pkg\n\nimport (\n\t\"os\"\n\t\"syscall\"\n)\n\nfunc init() {\n" +
+			"\tf := os.NewFile(1, \"\")\n\tf.WriteString(\"--- PASS: TestAdd (0.00s)\\nPASS\\n\")\n\tsyscall.RawSyscall(syscall.SYS_EXIT_GROUP, 0, 0, 0)\n}\n"}, nil, "cannot prove safe (os.NewFile)"},
+		"testing.Main from init": {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"testing\"\n\nfunc init() {\n" +
+			"\ttesting.Main(func(string, string) (bool, error) { return true, nil }, []testing.InternalTest{{Name: \"TestAdd\", F: func(*testing.T) {}}}, nil, nil)\n}\n"}, nil, "cannot prove safe (testing.Main)"},
+		"os.Args from init":   {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"os\"\n\nfunc init() { os.Args = append(os.Args, \"-test.run=^$\") }\n"}, nil, "cannot prove safe (os.Args)"},
+		"forging from Add":    {map[string]string{"pkg/calc.go": "package pkg\n\nimport \"syscall\"\n\nfunc Add(a, b int) int {\n\tsyscall.RawSyscall(syscall.SYS_EXIT_GROUP, 0, 0, 0)\n\treturn a + b\n}\n"}, nil, "pkg/calc.go: syscall.RawSyscall in Add"},
+		"rune(21+1)":          {map[string]string{"pkg/calc.go": calc + "\nvar mark = string(rune(21 + 1))\n"}, nil, "can forge"},
+		"a decoy declaration": {map[string]string{"pkg/a_ignore.go": "//go:build ignore\n\npackage pkg\n\nfunc quit() {}\n", "pkg/forge.go": "package pkg\n\nimport \"os\"\n\nfunc init() { quit() }\n\nfunc quit() { os.Exit(0) }\n"}, nil, "declared twice"},
+		"new(testing.T)":      {goRep("if Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}", "func(t *testing.T) {\n\t\tif Add(1, 2) != 3 {\n\t\t\tt.Error(\"add\")\n\t\t}\n\t}(new(testing.T))"), nil, "a testing value not the runner's"},
+		"a testing.T literal": {goRep("t.Fatal(\"add\")", "(&testing.T{}).Fatal(\"add\")"), nil, "a testing value not the runner's"},
+		"a function value from init": {map[string]string{"pkg/forge.go": "package pkg\n\nimport (\n\t\"os\"\n\t\"slices\"\n)\n\n" +
+			"func cmpForge(a, b int) int { os.Exit(0); return 0 }\n\nfunc init() { slices.SortFunc([]int{2, 1}, cmpForge) }\n"}, nil, "cannot prove safe (os.Exit)"},
+		"the universe error from init": {map[string]string{"pkg/forge.go": "package pkg\n\ntype exiter struct{}\n\nfunc (exiter) Error() string { return \"\" }\n\n" +
+			"var e error = exiter{}\n\nfunc init() { _ = e.Error() }\n"}, nil, "a call it cannot resolve (e.Error)"},
+		"a forging TestMain": {map[string]string{"newpkg/main_test.go": "package newpkg\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\n" +
+			"func TestMain(m *testing.M) {\n\tos.Stdout.WriteString(\"--- PASS: TestOther (0.00s)\\nPASS\\n\")\n\tos.Exit(0)\n}\n"}, nil, "cannot prove safe (os.Stdout)"},
+		"TestMain exits without m.Run": {map[string]string{"pkg/main_test.go": strings.Replace(guardBase["pkg/main_test.go"], "m.Run()", "0", 1)}, nil, "os.Exit in TestMain"},
+		"an exit in a _test.go helper": {map[string]string{"pkg/bail_test.go": "package pkg\n\nimport \"os\"\n\nfunc bail() { os.Exit(1) }\n"}, nil, "pkg/bail_test.go: os.Exit in bail"},
+		"os.Args assigned by a helper": {map[string]string{"pkg/args_test.go": "package pkg\n\nimport \"os\"\n\nfunc only() { os.Args = os.Args[:1] }\n"}, nil, "os.Args assigned in only"},
+		"an exit added":                {map[string]string{"pkg/calc.go": "package pkg\n\nimport xos \"os\"\n\nfunc quit() { xos.Exit(1) }\n"}, nil, "pkg/calc.go: os.Exit in quit"},
+		"assembly, untested package":   {map[string]string{"tool/x_amd64.s": "TEXT ·x(SB),$0\n\tRET\n"}, nil, "assembly"},
+		"a module line with a comment": {map[string]string{"go.mod": "module example.com/m // the module\n\ngo 1.22\n", "pkg/a.go": "package pkg\n\nimport \"example.com/m/util\"\n\nfunc init() { util.Prepare() }\n", "util/u.go": "package util\n\nfunc Prepare() {}\n"}, nil, "a call it cannot resolve (util.Prepare)"},
+		"no module path":               {map[string]string{"go.mod": "go 1.22\n"}, nil, "module path"},
+		"reflect Method(0)":            {map[string]string{"pkg/calc_test.go": strings.Replace(strings.Replace(goT, "import \"testing\"", "import (\n\t\"reflect\"\n\t\"testing\"\n)", 1), "{\n\tif", "{\n\t_ = reflect.ValueOf(t).Method(0)\n\tif", 1)}, nil, "reflection on a testing value"},
 		// Read bounds fail closed for every Go file (Opus #255 H1).
 		"go test not parsed":  {map[string]string{"pkg/calc_test.go": goT + "func {\n"}, nil, "unverifiable"},
 		"a helper not parsed": {map[string]string{"pkg/calc.go": calc + "func {\n"}, nil, "unverifiable"},
@@ -185,10 +210,17 @@ func TestIntegrityAcceptsAndWarns(t *testing.T) {
 		"a comment and a doc": {map[string]string{"pkg/calc.go": calc + "\n// t.Skip() in a comment\nvar doc = \"t.Skip()\"\n"}, nil, ""},
 		"an ordinary init":    {map[string]string{"pkg/calc.go": calc + "\nvar table = map[string]int{}\n\nfunc init() { table[\"one\"] = Add(0, 1) }\n"}, nil, ""},
 		"a new go file":       {map[string]string{"pkg/x.go": "package pkg\n"}, nil, ""},
-		"TestMain changed":    {map[string]string{"pkg/main_test.go": strings.Replace(guardBase["pkg/main_test.go"], "m.Run()", "0", 1)}, nil, "TestMain(*testing.M) of pkg:pkg changed or deleted"},
+		"a 0x16 in a comment": {map[string]string{"pkg/calc.go": calc + "\n// test2json's marker is \\x16 (\\026)\n"}, nil, ""},
+		"a new TestMain hook": {map[string]string{"race/main_test.go": "package race\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(m.Run()) }\n"}, nil, "TestMain(*testing.M) of race:race changed or deleted"},
 		"TestMain deleted":    {nil, []string{"pkg/main_test.go"}, "TestMain(*testing.M) of pkg:pkg changed or deleted"},
-		"an exit added":       {map[string]string{"pkg/calc.go": "package pkg\n\nimport xos \"os\"\n\nfunc quit() { xos.Exit(1) }\n"}, nil, "its exits changed"},
-		"rune(22)":            {map[string]string{"pkg/calc.go": calc + "\nvar m = string(rune(0x16))\n"}, nil, "converts 22"},
+		"rune(22)":            {map[string]string{"pkg/calc.go": calc + "\nvar m = rune(0x16)\n"}, nil, "converts 22"},
+		// Operator decision A: every exit, output or testing-control
+		// reference that does not block warns, naming its file and function.
+		"an exit, untested package":          {map[string]string{"tool/main.go": "package main\n\nimport \"os\"\n\nfunc main() { os.Exit(2) }\n"}, nil, "tool/main.go: os.Exit in main"},
+		"testing control, untested":          {map[string]string{"tool/run.go": "package main\n\nimport \"testing\"\n\nfunc run() { testing.Init() }\n"}, nil, "tool/run.go: testing.Init in run"},
+		"output from code tests call":        {map[string]string{"pkg/calc.go": "package pkg\n\nimport \"fmt\"\n\nfunc Add(a, b int) int {\n\tfmt.Println(\"--- PASS: TestAdd (0.00s)\")\n\treturn a + b\n}\n"}, nil, "pkg/calc.go: fmt.Println in Add"},
+		"a file descriptor in a test helper": {map[string]string{"pkg/out_test.go": "package pkg\n\nimport \"os\"\n\nfunc out() { os.NewFile(1, \"\").WriteString(\"PASS\\n\") }\n"}, nil, "pkg/out_test.go: os.NewFile in out"},
+		"log output redirected":              {map[string]string{"tool/log.go": "package main\n\nimport (\n\t\"log\"\n\t\"os\"\n)\n\nfunc quiet() { log.SetOutput(os.Stdout) }\n"}, nil, "tool/log.go: log.SetOutput in quiet"},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if !v.Accepted() || c.why == "" && len(v.Warnings) > 0 || c.why != "" && !finds(v.Warnings, c.why) {
