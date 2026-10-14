@@ -19,8 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
@@ -135,7 +133,7 @@ func (w *world) view(fn func(tx *eventstore.Tx) error) {
 }
 
 func (w *world) recovery() recovery.Recovery {
-	return recovery.Recovery{Store: w.s, Actor: actor, Units: units{}, Blobs: w.blobs, Exchanges: filepath.Join(w.dir, "exchanges")}
+	return recovery.Recovery{Store: w.s, Actor: actor, Units: units{}, Blobs: w.blobs}
 }
 
 func (w *world) run() {
@@ -163,8 +161,11 @@ func newID(t testing.TB, prefix string) string {
 
 // midCall records, in w, what a controller has durable mid-call (X3's barrier-builder scenario): L1 granted with its
 // reservation, A1 running under it, A1's call intended, its request's floor recorded before the send (the gateway
-// sent it), and two usage deltas; and A1's exchange root, as the adapter host made it.
-func (w *world) midCall(t testing.TB) cut {
+// sent it, here 4 input and 64 output tokens), and two usage deltas (350 input, 200 output in all).
+func (w *world) midCall(t testing.TB) cut { return w.midCallFloored(t, gateway.Count{In: 4, Out: 64}) }
+
+// midCallFloored is midCall with the request's floor.
+func (w *world) midCallFloored(t testing.TB, floor gateway.Count) cut {
 	c := cut{Lease: types.LeaseID(newID(t, "lea")), Attempt: types.AttemptID(newID(t, "att")), Call: types.CallID(newID(t, "cal")),
 		Unit: types.UnitID(newID(t, "unt"))}
 	l := types.Lease{ID: c.Lease, Unit: c.Unit, Role: "builder", Executor: types.ExecutorID(newID(t, "exe")), State: types.LeaseStateRequested,
@@ -199,17 +200,10 @@ func (w *world) midCall(t testing.TB) cut {
 		}
 	}
 	if err := (modelcall.Recorder{Store: w.s, Actor: string(actor)}).Count(context.Background(),
-		gateway.Binding{Lease: c.Lease, Attempt: c.Attempt, Call: c.Call}, 0, gateway.Count{In: 4, Out: 64}); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(w.exchange(c.Attempt), "out"), 0o755); err != nil {
+		gateway.Binding{Lease: c.Lease, Attempt: c.Attempt, Call: c.Call}, 0, floor); err != nil {
 		t.Fatal(err)
 	}
 	return c
-}
-
-func (w *world) exchange(a types.AttemptID) string {
-	return filepath.Join(w.dir, "exchanges", "exchange-"+string(a)+"-0123")
 }
 
 // The killed controller: it records a call in flight, reports it, and waits for its kill -9.
@@ -230,8 +224,7 @@ type fatal struct{ testing.TB }
 
 func (fatal) Fatal(args ...any) { panic(fmt.Sprint(args...)) }
 
-// killMidCall runs a controller in a child process until its call is in flight, kills it with SIGKILL, and lets its
-// adapter, which outlives it, write partial output into A1's exchange root.
+// killMidCall runs a controller in a child process until its call is in flight, and kills it with SIGKILL.
 func killMidCall(t *testing.T) (string, cut) {
 	t.Helper()
 	dir := t.TempDir()
@@ -258,10 +251,6 @@ func killMidCall(t *testing.T) (string, cut) {
 	}
 	if err := cmd.Wait(); err == nil || !strings.Contains(err.Error(), "killed") {
 		t.Fatalf("the child ended %v, not killed", err)
-	}
-	partial := filepath.Join(dir, "exchanges", "exchange-"+string(c.Attempt)+"-0123", "out", "partial.patch")
-	if err := os.WriteFile(partial, []byte("diff --git a/x b/x\n"), 0o644); err != nil {
-		t.Fatal(err)
 	}
 	return dir, c
 }
@@ -319,11 +308,29 @@ func head(w *world) int64 {
 	return evs[len(evs)-1].Seq
 }
 
+// stale is A1's late result, refused by the fence (stale_attempt) or not.
+func (w *world) stale(c cut) error {
+	return w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.SubmitResult(tx, c.Attempt, 1, types.SubmittedResult{Call: c.Call, Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean})
+	})
+}
+
+// liable is the quota group's liability and outstanding reservation.
+func (w *world) liable() (liable, outstanding int64) {
+	w.view(func(tx *eventstore.Tx) error {
+		var lerr, oerr error
+		liable, lerr = capacity.Liable(tx, quota)
+		outstanding, oerr = capacity.Outstanding(tx, quota)
+		return errors.Join(lerr, oerr)
+	})
+	return liable, outstanding
+}
+
 // F (P21, X3): kill -9 mid-call. A controller is killed while A1's call is in flight (its floor and two deltas
-// durable); A1's adapter then writes partial output. After the restart, recovery runs X3's steps 1 to 4, each its own
-// command, in order; the partial output is refused after step 1 and never ingested; the lease settles the call as a
-// liability of max(reservation, deltas); placement may then start A2 under L2, superseding A1 with token 2. A second
-// restart changes nothing, and projections equal replay.
+// durable). After the restart, recovery runs X3's steps 1 to 4, each its own command, in order. From step 1 on, A1's
+// late output is refused (stale_attempt). The lease settles the call as a liability of the field-wise maximum of the
+// deltas (350/200) and the floor (4/64), 550, over the reservation (400). Placement then starts A2 under L2,
+// superseding A1 with token 2. A second restart changes nothing, and projections equal replay.
 func TestKillMidCall(t *testing.T) {
 	if dir := os.Getenv(child); dir != "" {
 		killedChild(dir)
@@ -335,7 +342,6 @@ func TestKillMidCall(t *testing.T) {
 	w.run()
 	want := []string{
 		"attempt.lost/v1 lost",
-		"attempt.output_refused/v1 partial.patch stale_attempt",
 		"lease.revoked/v1 settling controller_restart",
 		"attempt.sealed/v1 sealed",
 		"lease.settled/v1 settled",
@@ -343,20 +349,12 @@ func TestKillMidCall(t *testing.T) {
 	if got := recoverySteps(w, before); !slices.Equal(got, want) {
 		t.Fatalf("the recovery sequence is\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if _, err := os.Stat(w.exchange(c.Attempt)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("A1's exchange root is left: %v", err)
+	if err := w.stale(c); !errors.As(err, new(*lease.Stale)) {
+		t.Fatalf("A1's late result after step 1: %v; want stale_attempt", err)
 	}
 	var l1 types.Lease
-	var liable, outstanding int64
-	w.view(func(tx *eventstore.Tx) error {
-		var err, lerr, oerr error
-		l1, _, _, err = lease.LeaseOf(tx, c.Lease)
-		liable, lerr = capacity.Liable(tx, quota)
-		outstanding, oerr = capacity.Outstanding(tx, quota)
-		return errors.Join(err, lerr, oerr)
-	})
-	// The call's usage is unsettled (no final, a floor alone): its liability is the larger of the reservation (400)
-	// and its deltas (350 in, 200 out); the reservation returned.
+	w.view(func(tx *eventstore.Tx) (err error) { l1, _, _, err = lease.LeaseOf(tx, c.Lease); return err })
+	liable, outstanding := w.liable()
 	if s := l1.Settlement; s == nil || len(s.Calls) != 0 || !slices.Equal(s.Liabilities, []types.CallID{c.Call}) || liable != 550 || outstanding != 0 {
 		t.Fatalf("L1 settled %+v, liable %d, outstanding %d; want the call a liability of 550, nothing reserved", l1.Settlement, liable, outstanding)
 	}
@@ -367,101 +365,70 @@ func TestKillMidCall(t *testing.T) {
 	// A second restart changes no figure.
 	mark := head(w)
 	w.run()
-	var again int64
-	w.view(func(tx *eventstore.Tx) (err error) { again, err = capacity.Liable(tx, quota); return err })
-	if head(w) != mark || again != liable {
+	if again, _ := w.liable(); head(w) != mark || again != liable {
 		t.Fatalf("a second recovery recorded %v, liable %d", recoverySteps(w, mark), again)
 	}
 
-	// Steps 5 and 6: L2 placed and granted, A2 started under it, superseding A1.
-	l2 := l1
-	l2.ID, l2.State, l2.Attempt, l2.Settlement = types.LeaseID(newID(t, "lea")), types.LeaseStateRequested, nil, nil
-	a2 := types.AttemptID(newID(t, "att"))
+	// Steps 5 and 6: L2 granted, A2 started under it, superseding A1.
 	mark = head(w)
-	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestGranted(tx, l2) })
-	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StartNext(tx, l2.ID, 2, a2, base) })
+	a2 := w.replace(c)
 	if got := recoverySteps(w, mark); !slices.Equal(got[2:], []string{"attempt.superseded/v1 running token 2"}) {
-		t.Fatalf("the replacement: %v", got)
+		t.Fatalf("the replacement %s: %v", a2, got)
 	}
-
-	// The old attempt publishing after its replacement started is refused.
-	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return lease.SubmitResult(tx, c.Attempt, 1, types.SubmittedResult{Call: c.Call, Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean})
-	}); !errors.As(err, new(*lease.Stale)) {
-		t.Fatalf("A1's late result: %v; want stale_attempt", err)
-	}
-
 	diffs, err := w.s.RebuildProjections(context.Background())
 	if err != nil || len(diffs) != 0 {
 		t.Fatalf("projections differ from replay: %v %+v", err, diffs)
 	}
 }
 
-// replaced is a world after a controller died mid-call, recovery ran, and the replacement started: A2 running
-// under L2, superseding A1.
-func replaced(t *testing.T) (*world, cut, types.AttemptID) {
-	w := restarted(t, t.TempDir())
-	c := w.midCall(t)
-	w.run()
+// replace grants L2, like L1, and starts A2 under it (lease.StartNext): steps 5 and 6.
+func (w *world) replace(c cut) types.AttemptID {
+	w.t.Helper()
 	var l1 types.Lease
 	w.view(func(tx *eventstore.Tx) (err error) { l1, _, _, err = lease.LeaseOf(tx, c.Lease); return err })
 	l2 := l1
-	l2.ID, l2.State, l2.Attempt, l2.Settlement = types.LeaseID(newID(t, "lea")), types.LeaseStateRequested, nil, nil
-	a2 := types.AttemptID(newID(t, "att"))
+	l2.ID, l2.State, l2.Attempt, l2.Settlement = types.LeaseID(newID(w.t, "lea")), types.LeaseStateRequested, nil, nil
+	a2 := types.AttemptID(newID(w.t, "att"))
 	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestGranted(tx, l2) })
-	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StartNext(tx, l2.ID, 2, a2, base) })
-	return w, c, a2
+	if err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StartNext(tx, l2.ID, 2, a2, base) }); err != nil {
+		w.t.Fatal(err)
+	}
+	return a2
 }
 
-const emptyDigest = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-
-// F (P21): the old attempt publishing after its replacement starts. A1's adapter, which outlived the controller,
-// leaves output after A2 started under L2: a file, a link to a file outside, a FIFO and a directory. At the next
-// start each is refused by the fence (A1 is not the unit's current attempt), recorded as stale_attempt, and never
-// ingested: nothing is published, the link is not followed, the FIFO is not opened. A2, cut by that restart, is lost
-// and its lease settled; A1 stays superseded.
+// F (P21): the old attempt publishing after its replacement starts. After A2 started under L2, A1's adapter, which
+// outlived the controller, publishes its result: the fence refuses it (stale_attempt), as it refuses an output of A1
+// at A2's token. A2's own output lands. Usage is not fenced: A1's late usage report is recorded. A restart then cuts
+// A2, whose lease settles, and A1 stays superseded.
 func TestTheOldAttemptPublishingAfterItsReplacementStarts(t *testing.T) {
-	w, c, a2 := replaced(t)
-	out := filepath.Join(w.exchange(c.Attempt), "out")
-	outside := filepath.Join(w.dir, "outside")
-	if err := errors.Join(os.MkdirAll(out, 0o755), os.WriteFile(filepath.Join(out, "result.json"), []byte(`{"late":true}`), 0o644),
-		os.WriteFile(outside, []byte("not the adapter's"), 0o600), os.Symlink(outside, filepath.Join(out, "link")),
-		unix.Mkfifo(filepath.Join(out, "fifo"), 0o644), os.Mkdir(filepath.Join(out, "dir"), 0o755)); err != nil {
-		t.Fatal(err)
+	w := restarted(t, t.TempDir())
+	c := w.midCall(t)
+	w.run()
+	a2 := w.replace(c)
+	if err := w.stale(c); !errors.As(err, new(*lease.Stale)) || !strings.Contains(err.Error(), "is not the unit's current attempt") {
+		t.Fatalf("A1's result after A2 started: %v; want stale_attempt", err)
+	}
+	w.view(func(tx *eventstore.Tx) error {
+		if err := lease.FenceAttempt(tx, c.Attempt, 2); !errors.As(err, new(*lease.Stale)) {
+			t.Errorf("A1's output at A2's token: %v", err)
+		}
+		return lease.FenceAttempt(tx, a2, 2)
+	})
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		ev, err := ledger.Measure(types.UsageMeasurement{ID: types.MeasurementID(newID(t, "msr")), Call: c.Call, Attempt: c.Attempt, Lease: c.Lease,
+			Kind: types.UsageMeasurementKindDelta, Sequence: 3, Tokens: types.UsageMeasurementTokens{In: 500, Out: 0},
+			Cost:          types.UsageMeasurementCost{Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
+			SourceOfTruth: types.UsageMeasurementSourceOfTruthAdapterReport})
+		return []eventstore.Event{ev}, err
+	})
+	if liable, _ := w.liable(); liable != 1050 { // late usage recomputes L1's liability: 850 in, 200 out
+		t.Fatalf("liable %d after A1's late usage; want 1050", liable)
 	}
 	mark := head(w)
-	done := make(chan error, 1)
-	go func() { done <- w.recovery().Run(context.Background()) }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("recovery blocked on an orphaned entry")
-	}
-	var names []string
-	for _, ev := range w.events() {
-		if ev.Seq <= mark || ev.Kind != lease.OutputRefused {
-			continue
-		}
-		var r types.AttemptOutputRefusal
-		if err := json.Unmarshal(ev.Payload, &r); err != nil {
-			t.Fatal(err)
-		}
-		names = append(names, r.Handle.Handle)
-		if r.Attempt != c.Attempt || r.Check != types.AttemptOutputRefusalCheckStaleAttempt || !strings.Contains(r.Detail, "is not the unit's current attempt") {
-			t.Errorf("refusal %+v", r)
-		}
-		if has, err := w.blobs.Has(string(r.Handle.Digest)); err != nil || has || !strings.HasSuffix(r.Detail, "; not read") || r.Handle.Digest != emptyDigest {
-			t.Errorf("%s was read or ingested: %+v, %v", r.Handle.Handle, r, err)
-		}
-	}
-	if slices.Sort(names); !slices.Equal(names, []string{"dir", "fifo", "link", "result.json"}) {
-		t.Fatalf("refused %v", names)
-	}
-	if got := recoverySteps(w, mark); got[0] != "attempt.lost/v1 lost" || got[len(got)-1] != "lease.settled/v1 settled" {
-		t.Fatalf("the second restart: %v", got)
+	w.run()
+	if got := recoverySteps(w, mark); !slices.Equal(got, []string{"attempt.lost/v1 lost", "lease.revoked/v1 settling controller_restart",
+		"attempt.sealed/v1 sealed", "lease.settled/v1 settled"}) {
+		t.Fatalf("the restart after the replacement: %v", got)
 	}
 	w.view(func(tx *eventstore.Tx) error {
 		a1, _, _, err := lease.AttemptAt(tx, c.Attempt)
@@ -471,6 +438,137 @@ func TestTheOldAttemptPublishingAfterItsReplacementStarts(t *testing.T) {
 		}
 		return errors.Join(err, cerr)
 	})
+}
+
+// M7 (Opus on #259): a replacement while the old attempt's lease settles is refused at admission, whatever path
+// granted L2: a crash after the seal left L1 settling, and a direct grant does not go through dispatch.
+func TestNoReplacementBeforeTheOldLeaseSettles(t *testing.T) {
+	w := restarted(t, t.TempDir())
+	c := w.midCall(t)
+	for _, step := range []func(tx *eventstore.Tx) ([]eventstore.Event, error){
+		lease.RecoverAfterRestart,
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.ChangeLease(tx, c.Lease, 3, lease.LeaseEvent{Kind: lease.Revoked, Reason: "controller_restart"}, nil)
+		},
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.SealMinimal(tx, c.Attempt, 2, units{}, w.blobs, nil, actor)
+		},
+	} {
+		w.must(step)
+	}
+	var l1 types.Lease
+	w.view(func(tx *eventstore.Tx) (err error) { l1, _, _, err = lease.LeaseOf(tx, c.Lease); return err })
+	l2 := l1
+	l2.ID, l2.State, l2.Attempt, l2.Settlement = types.LeaseID(newID(t, "lea")), types.LeaseStateRequested, nil, nil
+	w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestGranted(tx, l2) })
+	err := w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StartNext(tx, l2.ID, 2, types.AttemptID(newID(t, "att")), base)
+	})
+	if err == nil || !strings.Contains(err.Error(), "settles before its attempt is replaced") {
+		t.Fatalf("a replacement while L1 settles: %v", err)
+	}
+}
+
+// M5 (Opus on #259): the liability is the token total of the field-wise maximum of the deltas (350 in, 200 out) and
+// the gateway's floors (8 in, 1064 out): 350 + 1064 = 1414, over both sums (550, 1072) and the reservation (400).
+func TestTheLiabilityIsTheFieldWiseMaximum(t *testing.T) {
+	w := restarted(t, t.TempDir())
+	w.midCallFloored(t, gateway.Count{In: 8, Out: 1064})
+	w.run()
+	if liable, outstanding := w.liable(); liable != 1414 || outstanding != 0 {
+		t.Fatalf("liable %d, outstanding %d; want 1414 and 0", liable, outstanding)
+	}
+}
+
+// M4 (Opus on #259): a crash may leave an attempt stopping, lost for another reason, or sealed from either, with its
+// lease still active. At start, recovery converges each: revoked, sealed (abrupt_loss, or drain for a drain stop),
+// settled. A finishing attempt holds an admitted result: it is the completion path's (P22a), left alone.
+func TestRecoveryConvergesEveryCutAttempt(t *testing.T) {
+	stop := func(r types.AttemptStopReasonValue) func(*world, cut) func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return func(_ *world, c cut) func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StopRunning(tx, c.Attempt, r) }
+		}
+	}
+	lose := func(_ *world, c cut) func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.LoseRunning(tx, c.Attempt, types.AttemptLostReasonValueAgentDisconnect)
+		}
+	}
+	seal := func(w *world, c cut) func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.SealMinimal(tx, c.Attempt, 2, units{}, w.blobs, nil, actor)
+		}
+	}
+	finish := func(_ *world, c cut) func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.SubmitResult(tx, c.Attempt, 1, types.SubmittedResult{Call: c.Call, Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean})
+		}
+	}
+	for name, k := range map[string]struct {
+		crash []func(*world, cut) func(tx *eventstore.Tx) ([]eventstore.Event, error)
+		seal  types.AttemptRecordSealReason // "": left alone
+	}{
+		"stopping (revoke)":       {crash: []func(*world, cut) func(tx *eventstore.Tx) ([]eventstore.Event, error){stop(types.AttemptStopReasonValueRevoke)}, seal: types.AttemptRecordSealReasonAbruptLoss},
+		"stopping (drain)":        {crash: []func(*world, cut) func(tx *eventstore.Tx) ([]eventstore.Event, error){stop(types.AttemptStopReasonValueDrain)}, seal: types.AttemptRecordSealReasonDrain},
+		"lost (agent_disconnect)": {crash: []func(*world, cut) func(tx *eventstore.Tx) ([]eventstore.Event, error){lose}, seal: types.AttemptRecordSealReasonAbruptLoss},
+		"sealed after a loss":     {crash: []func(*world, cut) func(tx *eventstore.Tx) ([]eventstore.Event, error){lose, seal}, seal: types.AttemptRecordSealReasonAbruptLoss},
+		"finishing":               {crash: []func(*world, cut) func(tx *eventstore.Tx) ([]eventstore.Event, error){finish}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := restarted(t, t.TempDir())
+			c := w.midCall(t)
+			for _, s := range k.crash {
+				w.must(s(w, c))
+			}
+			w.run()
+			var a types.Attempt
+			var l types.Lease
+			var reason types.AttemptRecordSealReason
+			w.view(func(tx *eventstore.Tx) error {
+				var err, lerr error
+				a, _, _, err = lease.AttemptAt(tx, c.Attempt)
+				l, _, _, lerr = lease.LeaseOf(tx, c.Lease)
+				if err == nil && a.Checkpoint != nil {
+					rc, oerr := w.blobs.Open(string(*a.Checkpoint))
+					if oerr != nil {
+						return oerr
+					}
+					defer rc.Close()
+					var rec types.AttemptRecord
+					err = json.NewDecoder(rc).Decode(&rec)
+					reason = rec.Seal.Reason
+				}
+				return errors.Join(err, lerr)
+			})
+			if k.seal == "" {
+				if a.Status != types.AttemptStatusFinishing || l.State != types.LeaseStateActive {
+					t.Fatalf("a finishing attempt was touched: %s, lease %s", a.Status, l.State)
+				}
+				return
+			}
+			if a.Status != types.AttemptStatusSealed || reason != k.seal || l.State != types.LeaseStateSettled {
+				t.Fatalf("attempt %s sealed %q, lease %s; want sealed %s, settled", a.Status, reason, l.State, k.seal)
+			}
+		})
+	}
+}
+
+// L5 (Opus on #259): Next acts only on its lease's own attempt.
+func TestNextActsOnlyOnItsLeasesAttempt(t *testing.T) {
+	a := lease.LoseOnRestart(lease.Start("att_01m3250vm7f6ktw39dszqnydd1", "unt_01m3250vm7f6ktw39dszqnydd1", "lea_01m3250vm7f6ktw39dszqnydd1", base))
+	l := types.Lease{ID: a.Lease, State: types.LeaseStateActive, Attempt: ptr(a.ID)}
+	if got := recovery.Next(a, l); got != recovery.Revoke {
+		t.Fatalf("Next on its lease: %q", got)
+	}
+	other := l
+	other.ID = "lea_01m3250vm7f6ktw39dszqnydd2"
+	moved := l
+	moved.Attempt = ptr(types.AttemptID("att_01m3250vm7f6ktw39dszqnydd2"))
+	for name, l := range map[string]types.Lease{"another lease": other, "another attempt on the lease": moved, "no attempt": {ID: a.Lease, State: types.LeaseStateActive}} {
+		if got := recovery.Next(a, l); got != recovery.Done {
+			t.Errorf("%s: Next is %q", name, got)
+		}
+	}
 }
 
 // A crash between any two steps: recovery resumes from the records, and the sequence is recorded once.

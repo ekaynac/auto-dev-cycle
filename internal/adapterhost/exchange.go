@@ -39,15 +39,10 @@ type exchange struct {
 	prompt        types.AdapterHandle
 }
 
-// ExchangePrefix starts an exchange root's name, followed by its attempt's
-// id and a dash: a root a crash left behind names its attempt, whose output
-// restart recovery refuses (internal/recovery, P21).
-const ExchangePrefix = "exchange-"
-
 // newExchange makes the root under parent; on any failure it removes what
 // it made.
 func newExchange(parent string, attempt types.AttemptID, prompt []byte) (*exchange, error) {
-	root, err := os.MkdirTemp(parent, ExchangePrefix+string(attempt)+"-")
+	root, err := os.MkdirTemp(parent, "exchange-")
 	if err != nil {
 		return nil, ErrExchange
 	}

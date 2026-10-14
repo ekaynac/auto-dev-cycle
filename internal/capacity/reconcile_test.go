@@ -637,13 +637,26 @@ func TestAClockStepNeverAgesAFloorThisProcessSent(t *testing.T) {
 	w := openLedger(t, grp(quota, types.ResourceGroupKindAccountQuota, types.CapacityUnitTokens, lim(1000)))
 	r := w.running(reserve(quota, 400, types.CapacityUnitTokens))
 	mono := time.Now()
-	clock := &modelcall.Clock{Now: func() time.Time { return mono }}
+	noted := map[string]bool{} // L1 (Opus on #259): whether the floor was committed when the Clock first noted it
+	clock := &modelcall.Clock{Now: func() time.Time {
+		if len(noted) == 0 {
+			w.view(func(tx *eventstore.Tx) error {
+				_, ok, err := tx.Get(modelcall.FloorProjection, string(r.call)+"/0")
+				noted["committed"] = ok
+				return err
+			})
+		}
+		return mono
+	}}
 	rec := modelcall.Recorder{Store: w.s, Actor: testActor, Clock: clock}
 	b := gateway.Binding{Lease: r.lease, Attempt: r.attempt, Call: r.call}
 	if err := errors.Join(rec.Count(context.Background(), b, 0, gateway.Count{In: 50, Out: 10}),
 		rec.Count(context.Background(), b, 1, gateway.Count{In: 5, Out: 5}),
 		rec.Count(context.Background(), b, 1, gateway.Count{In: 5, Out: 5, Observed: true})); err != nil {
 		t.Fatal(err)
+	}
+	if committed, ok := noted["committed"]; !ok || committed {
+		t.Fatalf("the Clock noted the floor after its commit (%v, %v)", committed, ok)
 	}
 	w.stop(r)
 	w.settleDerived(r)

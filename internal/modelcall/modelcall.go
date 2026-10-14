@@ -417,13 +417,12 @@ func (r Recorder) Count(ctx context.Context, b gateway.Binding, sequence int64, 
 	if err != nil {
 		return err
 	}
+	committed := r.Clock.noting(b.Call, sequence, n.Observed)
 	_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: id, Actor: r.Actor, Action: Counted, IdempotencyKey: id, Input: ev.Payload},
 		eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			return []eventstore.Event{ev}, json.RawMessage(`{}`), sends(tx, b.Call, sequence)
 		}))
-	if err == nil {
-		r.Clock.floored(b.Call, sequence, n.Observed)
-	}
+	committed(err == nil)
 	return err
 }
 

@@ -8,13 +8,15 @@ package recovery_test
 // settlement and replacement after a controller died mid-call, explored exhaustively.
 //
 // What it is. An explicit-state model checker over one unit, its cut attempt A1 under L1 with one model call, and its
-// replacement A2 under L2. Each action is one writer transaction. Every interleaving is explored of:
+// replacement A2 under L2, from every state a crash leaves A1 in (initials: running, stopping for a revocation or a
+// drain, lost for another reason, sealed after a loss). Each action is one writer transaction. Every interleaving is
+// explored of:
 //   - crash: the controller dies again (at most maxCrashes times), at any point, and a new process starts;
 //   - lose: X3 step 1 in that process (lease.LoseOnRestart on every running attempt);
 //   - recover A1, recover A2: the step recovery.Next decides, applied with the real state machines
 //     (lease.ApplyLease, lease.ApplyAttempt): revoke, seal, settle;
-//   - grant L2, start A2: placement (dispatch.Match's guard, as lease.Ended decides it), then the launch, minting A2
-//     with the real lease.Supersede;
+//   - grant L2, start A2: placement (dispatch.Match's guard, as lease.Ended decides it), then the launch, admitted
+//     by the real lease.Replaceable (SupersedeAttempt's check) and minting A2 with the real lease.Supersede;
 //   - old output: A1's adapter, which outlived the controller, publishes; it lands only if the real lease.Fence
 //     admits it;
 //   - late usage: the call's final or reconciliation arrives (at most once), at any time (P12b).
@@ -74,21 +76,40 @@ type mstate struct {
 
 // faults are the model's fault fixtures; next is the step decision (recovery.Next unless mutated).
 type faults struct {
-	skipLose      bool // step 1 loses nothing
-	beforeLose    bool // the controller acts before step 1
-	placeEarly    bool // placement does not wait for L1 to settle
-	dropLiability bool // the settlement names no call
-	next          func(types.Attempt, types.Lease) recovery.Step
-	reach         func(mstate) // sees every reachable state
+	skipLose       bool // step 1 loses nothing
+	beforeLose     bool // the controller acts before step 1
+	placeEarly     bool // placement does not wait for L1 to settle (a grant outside dispatch)
+	ignoreOldLease bool // the supersession does not check the old lease (lease.Replaceable)
+	dropLiability  bool // the settlement names no call
+	next           func(types.Attempt, types.Lease) recovery.Step
+	reach          func(mstate) // sees every reachable state
+	from           []mstate     // the initial states (nil: initials())
 }
 
-func initial() mstate {
-	a := lease.Start(a1, unit, l1, base)
+// initials are the states a crash leaves A1 in under its active L1, as a new process starts (L2 not requested yet):
+// running mid-call; stopping, for a revocation or a drain; lost for another reason; sealed after a loss (M4). A
+// finishing attempt is the completion path's (P22a), outside the model.
+func initials() []mstate {
+	running := lease.Start(a1, unit, l1, base)
 	l := types.Lease{ID: l1, Unit: unit, Role: "builder", Executor: "exe_01m3250vm7f6ktw39dszqnydd1", State: types.LeaseStateActive,
 		Reservations: []types.LeaseReservationsItem{{Group: quota, Amount: reserve, Unit: types.CapacityUnitTokens}}, Attempt: ptr(a1),
 		PlacementChecks: passing()}
-	// The controller died mid-call: a new process starts. L2 is not requested yet.
-	return mstate{A1: a, L1: l, L2: types.Lease{PlacementChecks: passing()}, Current: a1, Reserved: true}
+	must := func(a types.Attempt, err error) types.Attempt {
+		if err != nil {
+			panic(err)
+		}
+		return a
+	}
+	lost := must(lease.ApplyAttempt(running, lease.AttemptEvent{Kind: lease.Lost, LostReason: types.AttemptLostReasonValueAgentDisconnect}))
+	var out []mstate
+	for _, a := range []types.Attempt{running,
+		must(lease.ApplyAttempt(running, lease.AttemptEvent{Kind: lease.StopRequested, StopReason: types.AttemptStopReasonValueRevoke})),
+		must(lease.ApplyAttempt(running, lease.AttemptEvent{Kind: lease.StopRequested, StopReason: types.AttemptStopReasonValueDrain})),
+		lost, must(lease.ApplyAttempt(lost, lease.AttemptEvent{Kind: lease.Sealed, Checkpoint: record})),
+	} {
+		out = append(out, mstate{A1: a, L1: l, L2: types.Lease{PlacementChecks: passing()}, Current: a1, Reserved: true})
+	}
+	return out
 }
 
 func (s mstate) key() string {
@@ -144,7 +165,7 @@ func (f faults) moves(s mstate) []move {
 			PlacementChecks: s.L1.PlacementChecks}
 		out = append(out, move{"grant L2", n})
 	}
-	if s.A2.ID == "" && s.L2.State == types.LeaseStateGranted {
+	if s.A2.ID == "" && s.L2.State == types.LeaseStateGranted && (f.ignoreOldLease || lease.Replaceable(s.L1) == nil) {
 		if retired, next, err := lease.Supersede(s.A1, a2, l2, base); err == nil {
 			if active, err := lease.ApplyLease(s.L2, lease.LeaseEvent{Kind: lease.AttemptStarted, Attempt: ptr(a2)}, false, nil); err == nil {
 				n := s
@@ -270,7 +291,7 @@ func (f faults) completes(s mstate) bool {
 	return again.key() == d.key()
 }
 
-// explore visits every state reachable from the initial one, and returns the count and each invariant broken, with
+// explore visits every state reachable from the initial ones, and returns the count and each invariant broken, with
 // the shortest path to a state breaking it.
 func (f faults) explore() (int, map[string]string) {
 	if f.next == nil {
@@ -280,9 +301,15 @@ func (f faults) explore() (int, map[string]string) {
 		s    mstate
 		path []string
 	}
-	start := initial()
-	seen, broken := map[string]bool{start.key(): true}, map[string]string{}
-	queue := []node{{start, nil}}
+	if f.from == nil {
+		f.from = initials()
+	}
+	seen, broken := map[string]bool{}, map[string]string{}
+	var queue []node
+	for _, s := range f.from {
+		seen[s.key()] = true
+		queue = append(queue, node{s, []string{"A1 " + string(s.A1.Status)}})
+	}
 	for len(queue) > 0 {
 		n := queue[0]
 		queue = queue[1:]
@@ -338,12 +365,13 @@ func TestTheRecoveryModelsFaults(t *testing.T) {
 		f    faults
 		want string
 	}{
-		"step 1 loses nothing":                 {faults{skipLose: true}, "I1 fencing"},
-		"the controller acts before step 1":    {faults{beforeLose: true}, "I1 fencing"},
-		"placement does not wait for L1":       {faults{placeEarly: true}, "I3 settle before replace"},
-		"the settlement names no call":         {faults{dropLiability: true}, "I5 no dropped charge"},
-		"the lease settles before its attempt": {faults{next: sealLast}, "I6 recovery completes"},
-		"recovery revokes, then stops":         {faults{next: onlyRevoke}, "I6 recovery completes"},
+		"step 1 loses nothing":                                                 {faults{skipLose: true}, "I1 fencing"},
+		"the controller acts before step 1":                                    {faults{beforeLose: true}, "I1 fencing"},
+		"placement does not wait for L1":                                       {faults{placeEarly: true}, "I3 settle before replace"},
+		"a grant outside dispatch, and the supersession ignores the old lease": {faults{placeEarly: true, ignoreOldLease: true, from: initials()[:1]}, "I3 settle before replace"},
+		"the settlement names no call":                                         {faults{dropLiability: true}, "I5 no dropped charge"},
+		"the lease settles before its attempt":                                 {faults{next: sealLast}, "I6 recovery completes"},
+		"recovery revokes, then stops":                                         {faults{next: onlyRevoke}, "I6 recovery completes"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, broken := c.f.explore(); broken[c.want] == "" {
@@ -352,6 +380,15 @@ func TestTheRecoveryModelsFaults(t *testing.T) {
 				t.Logf("%s after %s", c.want, broken[c.want])
 			}
 		})
+	}
+}
+
+// M7: a grant outside dispatch, while L1 settles after a cut run, still never starts A2 early: the supersession
+// refuses it (lease.Replaceable). Only an attempt sealed under its still-active lease, which no step of recovery
+// leaves, is replaceable early that way; dispatch.placed refuses it.
+func TestTheSupersessionWaitsForTheOldLease(t *testing.T) {
+	if _, broken := (faults{placeEarly: true, from: initials()[:1]}).explore(); len(broken) > 0 {
+		t.Fatalf("a grant outside dispatch breaks %v", broken)
 	}
 }
 
