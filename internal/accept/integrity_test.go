@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,16 +22,20 @@ import (
 
 // guardBase adds to baseFiles a TestMain, an example, a root test, an
 // external test package, an ordinary test named TestMain, a test file
-// under a constraint the guard does not model, and a root go.mod.
+// under a constraint the guard does not model, a root go.mod requiring
+// x/sys (from this repository's module cache) and an in-module package.
 var guardBase = map[string]string{
 	"pkg/main_test.go":    "package pkg\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(m.Run()) }\n",
 	"pkg/example_test.go": "package pkg\n\nimport \"fmt\"\n\nfunc ExampleAdd() {\n\tfmt.Println(Add(1, 2))\n\t// Output: 3\n}\n",
 	"pkg/ext_test.go":     "package pkg_test\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif 1+2 != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n}\n",
 	"other/a_test.go":     "package other\n\nimport \"testing\"\n\nfunc TestMain(t *testing.T) { t.Fatal() }\n\nfunc TestOther(t *testing.T) { t.Fatal() }\n",
 	"race/r_test.go":      "//go:build !race\n\npackage race\n\nimport \"testing\"\n\nfunc TestR(t *testing.T) { t.Fatal() }\n",
-	"go.mod":              "module example.com/m\n\ngo 1.22\n",
-	"root_test.go":        "package m\n\nimport \"testing\"\n\nfunc TestRoot(t *testing.T) { t.Fatal() }\n",
-	"cmd/x/main.go":       "package main\n\nimport \"os\"\n\nfunc main() { os.Exit(1) }\n",
+	"go.mod":              "module example.com/m\n\ngo 1.26.0\n\nrequire golang.org/x/sys v0.48.0\n",
+	"go.sum": "golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=\n" +
+		"golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=\n",
+	"other/other.go": "package other\n\nvar (\n\tValue int\n\tCount int32\n)\n\nconst Name = \"n\"\n\ntype Config struct{}\n\nfunc Run() {}\n",
+	"root_test.go":   "package m\n\nimport \"testing\"\n\nfunc TestRoot(t *testing.T) { t.Fatal() }\n",
+	"cmd/x/main.go":  "package main\n\nimport \"os\"\n\nfunc main() { os.Exit(1) }\n",
 }
 
 // The forgeries of the #255 reviews: a failing TestAdd reads pass under
@@ -59,6 +66,19 @@ const (
 	argsGo  = "package pkg\n\nimport \"os\"\n\n"
 )
 
+// testLister reads export data with the toolchain the tests run with, and
+// its caches (the test sandbox's).
+var testLister = sync.OnceValue(func() Lister {
+	gobin, _ := exec.LookPath("go")
+	var env []string
+	for _, k := range []string{"GOCACHE", "GOMODCACHE", "HOME"} {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	return LocalLister(gobin, env, 5*time.Minute, 8<<30)
+})
+
 func newGuardFixture(t *testing.T) fixture {
 	return newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
@@ -70,7 +90,7 @@ func newGuardFixture(t *testing.T) fixture {
 func (f fixture) guarded(t *testing.T, files map[string]string, gone ...string) Verdict {
 	t.Helper()
 	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, files, gone...), Policy: f.policy,
-		Guard: Integrity(f.repo, f.base)})
+		Guard: Integrity(f.repo, f.base, testLister())})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +494,7 @@ func TestIntegrityBounds(t *testing.T) {
 	}
 	ctx := &countCtx{Context: context.Background()}
 	ctx.n.Store(1 << 40)
-	in := In{Repo: f.repo, Base: f.base, Patch: f.patch(t, map[string]string{"pkg/h_test.go": heavy}), Policy: f.policy, Guard: Integrity(f.repo, f.base)}
+	in := In{Repo: f.repo, Base: f.base, Patch: f.patch(t, map[string]string{"pkg/h_test.go": heavy}), Policy: f.policy, Guard: Integrity(f.repo, f.base, testLister())}
 	start := time.Now()
 	if _, err := Accept(ctx, in); err != nil {
 		t.Fatal(err)

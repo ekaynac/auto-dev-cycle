@@ -638,7 +638,9 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 			fa.flags[m.path] = flags
 		}
 	}
-	if err := s.reach(dir, inits, false, fa); err != nil {
+	if err := r.typed(dir, name, fset, files, meta, fa); err != nil {
+		return err
+	} else if err := s.reach(dir, inits, false, fa); err != nil {
 		return err
 	}
 	return s.reach(dir, hooks, true, fa)
