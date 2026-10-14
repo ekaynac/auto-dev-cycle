@@ -20,14 +20,14 @@ import (
 // refuses what it could read differently: source not UTF-8, a NUL, a
 // coding cookie naming another encoding (PEP 263), a non-ASCII name
 // (CPython folds names by NFKC), a line starting with a backslash
-// continuation (CPython's cont_line_col), a newline in a format spec of a
-// single-quoted f-string, brackets nested past CPython's 200, f-strings
-// nested past 64 (about 32 through format specs). Tokenizable is not
-// compilable: it accepts some source CPython rejects (Opus #260 L3; a
-// quote in a single-quoted spec, unlike a newline). Its work and
-// recursion are bounded by the source, and it stops when its context is
-// cancelled. A panic of its own is unverifiable too, and named. Until
-// P14c-2, P14b's rule fails closed.
+// continuation (CPython's cont_line_col), a newline, escaped or not, in a
+// format spec of a single-quoted f-string, brackets nested past CPython's
+// 200, f-strings nested past 64 (about 32 through format specs).
+// Tokenizable is not compilable: it accepts some source CPython rejects
+// (Opus #260 L3; a quote in a single-quoted spec, unlike a newline). Its
+// work and recursion are bounded by the source, and it stops when its
+// context is cancelled. A panic of its own is unverifiable too, and named.
+// Until P14c-2, P14b's rule fails closed.
 
 // ptok is a Python code token: a name ('n'), a string ('s'), a number
 // ('1') or an operator ('o', one byte).
@@ -64,8 +64,6 @@ func pyTokens(ctx context.Context, src []byte) ([]pline, string, error) {
 	lines, err := pyLex(ctx, src)
 	if cerr := ctx.Err(); cerr != nil {
 		return nil, "", cerr
-	} else if err == errLex {
-		return nil, "not tokenizable as Python", nil
 	} else if err != nil {
 		return nil, err.Error(), nil
 	}
@@ -79,14 +77,20 @@ func pyCookie(src []byte) string {
 	if !utf8.Valid(src) || slices.Contains(src, 0) {
 		return "not UTF-8 source"
 	}
-	s := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(string(src), "\ufeff"), "\r\n", "\n"), "\r", "\n")
-	lines := strings.SplitN(s, "\n", 3)
+	lines := strings.SplitN(pyNorm(src), "\n", 3)
 	for _, l := range lines[:min(2, len(lines))] {
 		if m := cookie.FindStringSubmatch(l); m != nil && !slices.Contains([]string{"utf-8", "utf8", "ascii", "us-ascii"}, strings.ReplaceAll(strings.ToLower(m[1]), "_", "-")) {
 			return "a coding cookie other than utf-8 or ascii (" + m[1] + ")"
 		}
 	}
 	return ""
+}
+
+// pyNorm is src as CPython's decoder hands it to the tokenizer: a BOM
+// stripped, CRLF and a lone CR read as LF. The gate and the lexer share it
+// (Mythos #260 L3).
+func pyNorm(src []byte) string {
+	return strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(string(src), "\ufeff"), "\r\n", "\n"), "\r", "\n")
 }
 
 func word(c byte) bool {
@@ -115,7 +119,7 @@ func pyLex(ctx context.Context, src []byte) (lines []pline, err error) {
 			panic(err)
 		}
 	}
-	s := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(string(src), "\ufeff"), "\r\n", "\n"), "\r", "\n") + "\n"
+	s := pyNorm(src) + "\n"
 	cur, depth, start := pline{}, 0, true
 	for i := 0; i < len(s); {
 		if start {
@@ -276,7 +280,8 @@ func pyString(s, prefix string, depth int) int {
 // then a conversion (!r) and a format spec (spec), which is text that may
 // hold nested fields. Every descent counts toward maxNest (Opus #260 H3).
 // In a single-quoted f-string (single), a newline in a spec sends CPython
-// back to code mode: refused (Mythos #260 H1; a D55 false block).
+// back to code mode: refused, escaped or not (Mythos #260 H1 and r2 L1;
+// a D55 false block where CPython 3.12 reads an escaped one).
 func pyField(s string, depth int, spec, single bool) int {
 	need(depth <= maxNest)
 	nest := 0
