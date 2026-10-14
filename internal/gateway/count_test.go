@@ -240,6 +240,28 @@ func TestCountsKeepTheirRequestsSequence(t *testing.T) {
 	}
 }
 
+// A line past maxBody, then more bytes: no panic (the scanned offset is
+// reset with what was pending), the accounting incomplete, and through the
+// gateway the request keeps its floor.
+func TestALineOverMaxBodyThenMore(t *testing.T) {
+	var tl tally
+	_, _ = tl.Write([]byte(strings.Repeat("x", maxBody+1)))
+	_, _ = tl.Write([]byte("xx\ndata: {\"usage\":{\"prompt_tokens\":300,\"completion_tokens\":30}}\n\n"))
+	if _, _, ok := tl.result(true); ok || !tl.incomplete {
+		t.Fatalf("read ok %v, incomplete %v; want the floor", ok, tl.incomplete)
+	}
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, strings.Repeat("x", maxBody+1))
+		w.(http.Flusher).Flush()
+		_, _ = io.WriteString(w, "xx\ndata: {\"usage\":{\"prompt_tokens\":300,\"completion_tokens\":30}}\n\n")
+	})
+	g, token := rig(t, up, nil)
+	call(g, token, "/chat/completions", asked, nil)
+	if got := countsOf(g).all(); len(got) != 1 || got[0].n != sentFloor(t, up) {
+		t.Fatalf("counted %+v, want the floor alone", got)
+	}
+}
+
 // Mythos on #256, L4: a stream fed one byte at a time, its BOM and every
 // CRLF split across writes, is read whole: a CR is not taken for a line end
 // before its LF arrives.

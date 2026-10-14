@@ -212,6 +212,7 @@ func (t *tally) Write(p []byte) (int, error) {
 		t.pending, t.started = bytes.TrimPrefix(t.pending, bom), true // the specification strips one (Mythos on #256, M1)
 	}
 	for t.started {
+		t.scanned = min(t.scanned, len(t.pending)) // never past what is pending
 		i := bytes.IndexAny(t.pending[t.scanned:], "\r\n")
 		if i < 0 {
 			t.scanned = len(t.pending)
@@ -229,7 +230,7 @@ func (t *tally) Write(p []byte) (int, error) {
 		t.pending, t.scanned = t.pending[end:], 0
 	}
 	if len(t.pending) > maxBody {
-		t.incomplete, t.pending = true, nil
+		t.incomplete, t.pending, t.scanned = true, nil, 0
 	}
 	return len(p), nil
 }
@@ -237,6 +238,8 @@ func (t *tally) Write(p []byte) (int, error) {
 func (t *tally) line(l []byte) {
 	field, value, _ := bytes.Cut(l, []byte(":"))
 	switch {
+	case len(l) > maxBody: // as a line overflowing pending is, however the reads split it
+		t.incomplete = true
 	case len(l) == 0:
 		t.dispatch()
 	case string(field) == "data" && len(t.data)+len(value) <= maxBody:
