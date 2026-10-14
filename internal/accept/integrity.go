@@ -22,15 +22,12 @@ import (
 // it cannot prove safe is unverifiable. Initialization and the TestMain hook
 // may reach only inert code and plain data; references into S block as
 // exits in tested packages and otherwise warn naming file and function
-// (decision A; P14b-out widens S). Python fails closed until P14c.
+// (decision A; P14b-out widens S). Python is integrity_py.go's (P14c).
 var (
 	maxRead  int64 = 64 << 20 // blob bytes in all
 	maxFile  int64 = 4 << 20  // per blob
-	maxWork        = 1 << 24  // build-constraint tag evaluations in all
+	maxWork        = 1 << 24  // build-constraint tag evaluations and Python tokens in all
 	maxReach       = 4096     // functions followed from a package's initialization
-	// pyFiles change what pytest collects or how (P14c reads them).
-	pyFiles = []string{"conftest.py", "pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg",
-		"pyproject.toml", "pyvenv.cfg"}
 )
 
 // stat is one test's evidence on one platform (cert: goOn's).
@@ -96,8 +93,6 @@ func (r *run) check(changes []Change) error {
 	for _, c := range changes {
 		for _, p := range slices.Compact([]string{c.Src, c.Dst}) {
 			switch dir, new := path.Dir(p), c.Status != "D" && p == c.Dst; {
-			case py && (path.Ext(p) == ".py" || slices.Contains(pyFiles, path.Base(p)) || p == "conda-meta/history" || strings.HasSuffix(p, "/conda-meta/history")):
-				add(&r.blocks, p, "python integrity not verified (P14c)")
 			case path.Ext(p) == ".go":
 				r.touched[dir] = true
 			case new && slices.Contains([]string{".s", ".S", ".syso"}, path.Ext(p)): // linked into any test binary importing it
@@ -110,6 +105,10 @@ func (r *run) check(changes []Change) error {
 	}
 	if err := r.goMod(); err != nil {
 		return err
+	} else if py {
+		if err := r.python(changes); err != nil {
+			return err
+		}
 	}
 	for _, dir := range slices.Sorted(maps.Keys(r.touched)) {
 		b, err := r.pkg(dir, r.files, r.baseDirs)
