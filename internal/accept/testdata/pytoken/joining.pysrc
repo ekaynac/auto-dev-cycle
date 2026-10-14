@@ -1,0 +1,28 @@
+total = 1 + \
+    2 + \
+    3
+items = [
+    1,  # one
+    2,
+    (3,
+  4),
+]
+def f(a,
+      b):
+    return {a:
+            b}
+x = 1e-5 + .5 + 1_000.0e+3 + 0x1F + 0o17 + 0b10 + 3j + 1.
+y = 1if True else 2
+z = 1or 2
+w = 0x1for_ = 1
+assert x ==1or True
+class TestA:
+    def test_b(self): assert 1; pass
+    async def test_c(self):
+        await f(1,
+2)
+if x: \
+   pass
+@deco(
+    arg)
+def g(): return x**-1 >> 2 != 3 -> None

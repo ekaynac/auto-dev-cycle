@@ -1,0 +1,8 @@
+0,0-0,0:            ENCODING       'utf-8'        
+1,0-1,23:           COMMENT        '# -*- coding: utf-8 -*-'
+1,23-1,24:          NL             '\n'           
+2,0-2,1:            NAME           'x'            
+2,2-2,3:            OP             '='            
+2,4-2,5:            NUMBER         '1'            
+2,5-2,6:            NEWLINE        '\n'           
+3,0-3,0:            ENDMARKER      ''             

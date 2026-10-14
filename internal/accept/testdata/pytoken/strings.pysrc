@@ -1,0 +1,8 @@
+a = 'single' + "double" + '''triple
+spans "lines" ' here''' + """another
+# not a comment
+"""
+b = b'bytes' + rb'raw\bytes' + BR"x" + u'unicode'
+c = r'raw\'quote' + r"\\" + 'esc\'aped' + "a\"b"
+d = 'hash # inside'  # a comment with "quotes" and 'apostrophes
+e = 'café → ok'  # non-ASCII in strings and comments: é
