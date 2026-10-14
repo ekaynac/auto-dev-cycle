@@ -13,12 +13,17 @@ import (
 
 // The Python tokenizer (P14c-1, Opus #255 H5 and H8): the controller runs
 // no Python, so the Python guard (P14c-2) reads Python source through this
-// Go-side tokenizer. It splits source as CPython 3.12 does (PEP 701
-// f-strings included), and refuses what it could read differently: source
-// not UTF-8, a NUL, a coding cookie naming another encoding (PEP 263), a
-// non-ASCII name (CPython folds names by NFKC), brackets nested past
-// CPython's limit. Its work is linear in the source, and it stops when
-// its context is cancelled. Until P14c-2, P14b's rule fails closed.
+// Go-side tokenizer. It assumes CPython 3.12 (its goldens' interpreter)
+// and splits source as it does (PEP 701 f-strings included; a 3.14
+// t-string is read as an f-string, which 3.12 does not compile). It
+// refuses what it could read differently: source not UTF-8, a NUL, a
+// coding cookie naming another encoding (PEP 263), a non-ASCII name
+// (CPython folds names by NFKC), a line starting with a backslash
+// continuation (CPython's cont_line_col), brackets or f-string fields
+// nested past a limit. Tokenizable is not compilable: it accepts some
+// source CPython rejects (Opus #260 L3). Its work and recursion are
+// bounded by the source, and it stops when its context is cancelled.
+// Until P14c-2, P14b's rule fails closed.
 
 // ptok is a Python code token: a name ('n'), a string ('s'), a number
 // ('1') or an operator ('o', one byte).
@@ -116,6 +121,7 @@ func pyLex(ctx context.Context, src []byte) (lines []pline, err error) {
 				}
 			}
 			cur.indent, start = col, false
+			need(s[i] != '\\') // CPython indents it by cont_line_col: fail closed
 			continue
 		}
 		switch c := s[i]; {
@@ -193,7 +199,11 @@ func pyToken(s string, depth int) (byte, int) {
 func pyNumber(s string) int {
 	n := 0
 	if len(s) > 1 && s[0] == '0' && strings.IndexByte("xXoObB", s[1]) >= 0 {
-		for n = 2; n < len(s) && strings.IndexByte("0123456789abcdefABCDEF_", s[n]) >= 0; n++ {
+		body := "0123456789_" // octal, binary: CPython ends them at a letter (0b1for)
+		if s[1] == 'x' || s[1] == 'X' {
+			body += "abcdefABCDEF"
+		}
+		for n = 2; n < len(s) && strings.IndexByte(body, s[n]) >= 0; n++ {
 		}
 		return n
 	}
@@ -254,8 +264,9 @@ func pyString(s, prefix string, depth int) int {
 
 // pyField scans an f-string field after its '{', up to its '}': code,
 // then a conversion (!r) and a format spec (spec), which is text that may
-// hold nested fields.
+// hold nested fields. Every descent counts toward maxNest (Opus #260 H3).
 func pyField(s string, depth int, spec bool) int {
+	need(depth <= maxNest)
 	nest := 0
 	for i := 0; i < len(s); {
 		switch c := s[i]; {
@@ -268,7 +279,7 @@ func pyField(s string, depth int, spec bool) int {
 		case c == '#':
 			i += eol(s[i:])
 		case c == ':' && nest == 0:
-			return i + 1 + pyField(s[i+1:], depth, true)
+			return i + 1 + pyField(s[i+1:], depth+1, true)
 		case strings.IndexByte("([{", c) >= 0:
 			nest, i = nest+1, i+1
 		case strings.IndexByte(")]}", c) >= 0:

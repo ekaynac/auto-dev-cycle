@@ -14,7 +14,6 @@ def f(a,
 x = 1e-5 + .5 + 1_000.0e+3 + 0x1F + 0o17 + 0b10 + 3j + 1.
 y = 1if True else 2
 z = 1or 2
-w = 0x1for_ = 1
 assert x ==1or True
 class TestA:
     def test_b(self): assert 1; pass
@@ -25,4 +24,4 @@ if x: \
    pass
 @deco(
     arg)
-def g(): return x**-1 >> 2 != 3 -> None
+def g() -> None: return x**-1 >> 2 != 3

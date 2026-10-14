@@ -1,0 +1,9 @@
+assert check() if 0b0else True
+y = [0b1for i in range(2)]
+z = 0o1and 0
+w = 0xEor 1
+v = [0o7if 1 else 2, 0B1in [1], 0O1or 2, 0XaBif 1 else 0]
+u = 1.0.real + 1..real + 0x_f + 1_0j + 1e+5 + 1E-5j + .5e1 + 0b_1 + 0o_7
+t = 1jif 1 else 2
+s = 1.if 1 else 2
+r = 1e5or 2

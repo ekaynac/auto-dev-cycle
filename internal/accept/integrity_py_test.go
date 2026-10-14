@@ -3,9 +3,13 @@
 package accept
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -16,21 +20,41 @@ import (
 )
 
 // The goldens in testdata/pytoken are CPython 3.12.3's own tokens of each
-// .pysrc, made once with
+// .pysrc, which compiles under it:
 //
-//	for f in testdata/pytoken/*.pysrc; do python3 -I -m tokenize "$f" > "${f%.pysrc}.tok"; done
+//	python3 -I -m tokenize x.pysrc > x.tok
 //
 // except cr.tok: the importer reads a lone CR as a line end, the tokenize
 // module's byte reader does not, so cr.pysrc is decoded first:
 //
 //	python3 -I -c 'import sys; sys.stdout.write(open(sys.argv[1], encoding="utf-8").read())' cr.pysrc | python3 -I -m tokenize > cr.tok
 //
-// Every .pysrc compiles under that CPython. The test needs no Python.
+// TestPyTokensDifferential, where python3 is 3.12, checks that every
+// .pysrc compiles and its .tok is reproduced. The other tests need no
+// Python.
 var tokLine = regexp.MustCompile(`^(\d+),(\d+)-(\d+),(\d+):\s+([A-Z_]+)\s`)
+
+// pyHelper reads a JSON list of sources on stdin and prints, per source,
+// "#CASE" and either "#SKIP" (it does not compile) or its tokens as
+// python -m tokenize prints them.
+const pyHelper = `import io, json, sys, tokenize, warnings
+warnings.simplefilter("ignore")
+for src in json.load(sys.stdin):
+    print("#CASE")
+    try:
+        compile(src, "case", "exec")
+        toks = list(tokenize.generate_tokens(io.StringIO(src).readline))
+    except Exception:
+        print("#SKIP")
+        continue
+    for t in toks:
+        print("%d,%d-%d,%d:\t%s\t%r" % (t.start + t.end + (tokenize.tok_name[t.type], t.string)))
+`
 
 // golden is CPython's tokens of src (its tokenize output tok) in pyLex's
 // form: logical lines of names, strings (an f-string whole), numbers and
-// one-byte operators, with each line's indentation level.
+// one-byte operators, with each line's indentation level. A line that is
+// not a token, an ERRORTOKEN or a type it does not know fails the test.
 func golden(t *testing.T, src, tok string) (levels []int, lines [][]ptok) {
 	t.Helper()
 	s := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(src, "\ufeff"), "\r\n", "\n"), "\r", "\n")
@@ -38,6 +62,9 @@ func golden(t *testing.T, src, tok string) (levels []int, lines [][]ptok) {
 	off := func(row, col string) int { // a 1-based row and a column in characters, as a byte offset
 		r, _ := strconv.Atoi(row)
 		c, _ := strconv.Atoi(col)
+		if r < 1 || r > len(rows) { // ENCODING, ENDMARKER
+			return 0
+		}
 		n := 0
 		for _, l := range rows[:r-1] {
 			n += len(l)
@@ -48,7 +75,9 @@ func golden(t *testing.T, src, tok string) (levels []int, lines [][]ptok) {
 	level, at, fdepth, fstart := 0, 0, 0, 0
 	for _, l := range strings.Split(tok, "\n") {
 		m := tokLine.FindStringSubmatch(l)
-		if m == nil || m[5] == "ENCODING" || m[5] == "ENDMARKER" {
+		if m == nil && strings.TrimSpace(l) != "" || m != nil && m[5] == "ERRORTOKEN" {
+			t.Fatalf("not a token: %q", l)
+		} else if m == nil {
 			continue
 		}
 		from, to := off(m[1], m[2]), off(m[3], m[4])
@@ -79,9 +108,34 @@ func golden(t *testing.T, src, tok string) (levels []int, lines [][]ptok) {
 			for i := from; i < to; i++ {
 				cur = append(cur, ptok{'o', s[i : i+1]})
 			}
+		case typ == "ENCODING", typ == "ENDMARKER", typ == "NL", typ == "COMMENT":
+		default:
+			t.Fatalf("an unknown token type: %q", l)
 		}
 	}
 	return levels, lines
+}
+
+// pyCompare is where pyTokens' reading of src differs from CPython's
+// tokens tok, or "".
+func pyDiff(t *testing.T, src, tok string) string {
+	t.Helper()
+	levels, want := golden(t, src, tok)
+	got, why, err := pyTokens(context.Background(), []byte(src))
+	switch {
+	case err != nil || why != "":
+		return fmt.Sprintf("refused: %q %v", why, err)
+	case len(got) != len(want):
+		return fmt.Sprintf("%d logical lines, CPython %d", len(got), len(want))
+	case !slices.Equal(levelsOf(got), levels):
+		return fmt.Sprintf("indentation levels %v, CPython %v", levelsOf(got), levels)
+	}
+	for i := range got {
+		if g, w := ptexts(got[i].toks), ptexts(want[i]); g != w {
+			return fmt.Sprintf("line %d:\n got  %s\n want %s", i+1, g, w)
+		}
+	}
+	return ""
 }
 
 // levelsOf turns pyLex's indentation columns into nesting levels.
@@ -103,37 +157,124 @@ func levelsOf(lines []pline) (levels []int) {
 // does: strings (prefixed, raw, bytes, triple-quoted, PEP 701 f-strings
 // nested and reusing quotes, comments in their fields), comments,
 // backslash and bracket joining, tabs and form feeds in indentation,
-// numbers before names (1if, 1or), cookies on lines 1 to 3, a BOM, CRLF
-// and a lone CR.
+// numbers before names (1if, 1or; 0b1for, 0o1and: Opus #260 H2), cookies
+// on lines 1 to 3, a BOM, CRLF and a lone CR, and the review's clean
+// inputs (U+2028 and U+0085 in strings and comments, a form feed inside
+// an indentation, brackets in comments inside brackets).
 func TestPyTokensMatchCPython(t *testing.T) {
-	srcs, err := filepath.Glob(filepath.Join("testdata", "pytoken", "*.pysrc"))
-	if err != nil || len(srcs) < 10 {
-		t.Fatalf("goldens: %v %v", srcs, err)
-	}
+	srcs := goldens(t)
 	for _, p := range srcs {
 		src, err := os.ReadFile(p)
 		tok, err2 := os.ReadFile(strings.TrimSuffix(p, ".pysrc") + ".tok")
 		if err != nil || err2 != nil {
 			t.Fatal(err, err2)
 		}
-		levels, want := golden(t, string(src), string(tok))
-		got, why, err := pyTokens(context.Background(), src)
-		if err != nil || why != "" {
-			t.Errorf("%s: %q %v", p, why, err)
-			continue
-		}
-		if len(got) != len(want) {
-			t.Errorf("%s: %d logical lines, CPython %d", p, len(got), len(want))
-		}
-		for i := range min(len(got), len(want)) {
-			if g, w := ptexts(got[i].toks), ptexts(want[i]); g != w || len(got[i].toks) != len(want[i]) {
-				t.Errorf("%s line %d:\n got  %s\n want %s", p, i+1, g, w)
-			}
-		}
-		if g := levelsOf(got); !slices.Equal(g, levels) {
-			t.Errorf("%s: indentation levels %v, CPython %v", p, g, levels)
+		if d := pyDiff(t, string(src), string(tok)); d != "" {
+			t.Errorf("%s: %s", p, d)
 		}
 	}
+}
+
+func goldens(t *testing.T) []string {
+	srcs, err := filepath.Glob(filepath.Join("testdata", "pytoken", "*.pysrc"))
+	if err != nil || len(srcs) < 12 {
+		t.Fatalf("goldens: %v %v", srcs, err)
+	}
+	return srcs
+}
+
+// Opus #260 M1, M2 (dev-only: where python3 is CPython 3.12): every golden
+// compiles and its .tok is reproduced (ADC_PYTOKEN_REGEN=1 rewrites it);
+// and pyTokens reads every generated input that compiles as CPython does,
+// or refuses it: string prefixes and bodies, number and keyword joins,
+// backslashes in and after indentation, nested f-string specs.
+func TestPyTokensDifferential(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3")
+	} else if v, err := exec.Command(py, "-I", "-c", "import sys; print(sys.version_info[:2] == (3, 12))").Output(); err != nil || strings.TrimSpace(string(v)) != "True" {
+		t.Skip("python3 is not CPython 3.12")
+	}
+	for _, p := range goldens(t) {
+		src, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(py, "-I", "-c", "import sys; compile(sys.stdin.buffer.read(), sys.argv[1], 'exec')", p)
+		if cmd.Stdin = bytes.NewReader(src); cmd.Run() != nil {
+			t.Errorf("%s does not compile", p)
+			continue
+		}
+		cmd = exec.Command(py, "-I", "-m", "tokenize", p)
+		if filepath.Base(p) == "cr.pysrc" { // the importer's universal newlines: decoded first
+			dec, err := exec.Command(py, "-I", "-c", "import sys; sys.stdout.write(open(sys.argv[1], encoding='utf-8').read())", p).Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd = exec.Command(py, "-I", "-m", "tokenize")
+			cmd.Stdin = bytes.NewReader(dec)
+		}
+		tok, err := cmd.Output()
+		want := strings.TrimSuffix(p, ".pysrc") + ".tok"
+		if err != nil {
+			t.Fatal(err)
+		} else if old, err := os.ReadFile(want); err != nil || string(tok) != string(old) {
+			t.Errorf("%s: not CPython's tokens now", want)
+		}
+	}
+	srcs := pyGenerated()
+	in, err := json.Marshal(srcs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(py, "-I", "-c", pyHelper)
+	cmd.Stdin = strings.NewReader(string(in))
+	out, err := cmd.Output()
+	cases := strings.Split(string(out), "#CASE\n")[1:]
+	if err != nil || len(cases) != len(srcs) {
+		t.Fatalf("python3: %v, %d of %d cases", err, len(cases), len(srcs))
+	}
+	compared, refused := 0, 0
+	for i, c := range cases {
+		if strings.HasPrefix(c, "#SKIP") {
+			continue
+		}
+		switch d := pyDiff(t, srcs[i], c); {
+		case strings.HasPrefix(d, "refused"):
+			refused++
+		case d != "":
+			t.Errorf("%q: %s", srcs[i], d)
+		default:
+			compared++
+		}
+	}
+	t.Logf("%d generated inputs: %d read as CPython does, %d refused, the rest do not compile", len(srcs), compared, refused)
+	if compared < 500 {
+		t.Errorf("only %d inputs compared", compared)
+	}
+}
+
+// pyGenerated are the differential's inputs (Opus #260 M2's list).
+func pyGenerated() (srcs []string) {
+	for _, n := range []string{"0", "1", "0x1f", "0XaB", "0xE", "0o17", "0O7", "0b1", "0B0", "0b0", "0o1", "1.5", "1.", ".5", "1e5", "1E-5", "1_0", "1j", "1.5j", "0b_1", "0x_f"} {
+		for _, f := range []string{"x = %sif 1 else 2\n", "x = %sor 1\n", "x = %sand 1\n", "x = [%sfor i in ()]\n", "x = %sin ()\n", "x = %snot in ()\n", "x = %sis 1\n", "assert f() if %selse True\n"} {
+			srcs = append(srcs, fmt.Sprintf(f, n))
+		}
+	}
+	for _, p := range []string{"", "r", "u", "R", "U", "b", "B", "br", "Rb", "bR", "f", "F", "fr", "Rf", "rF", "fR"} {
+		for _, q := range []string{"'", `"`, "'''", `"""`} {
+			for _, b := range []string{"a", `\\`, `\'`, `\"`, "{x}", "{{x}}", `\N{BULLET}`, "# h", "{x!r:>{w}}", "{x:{w}.{p}}", "{x=}", `{'a' if x else "b"}`, "a\\\nb", `\{x}`, "{x:{'>'}{10}}", "{ {'a': 1}['a'] }", "{x:#x}"} {
+				srcs = append(srcs, "x = "+p+q+b+q+"\n")
+			}
+		}
+	}
+	for _, s := range []string{"f'{a:{b:{c}}}'", "f'{a:{b}{c}}'", "f'{a!r:{b!s:{c}}}'", "f'{a:{f\"{b:{c}}\"}}'", `f"{a:{'{'}}}"`, "f'{a:=^{w}}'", "f'{a:{w}{\"x\"}}'"} {
+		srcs = append(srcs, "x = "+s+"\n")
+	}
+	return append(srcs,
+		"if x:\n    y = 1\n\\\n    z = 2\n", "if x:\n  \f\\\n  y = 1\n", "if x:\n    \\\n    y = 1\n", "\\\nx = 1\n",
+		"x = 1 + \\\n    2\n", "if x and \\\n        y:\n    pass\n", "def f():\n    return 1 + \\\n2\n", "x = (1 +\\\n 2)\n",
+		"if x:\n\ty = 1\n\tif y:\n\t\tz = 2\n", "if x:\n\f    y = 1\n", "if x:\n  \f  y = 1\n  z = 2\n", "if x:\n        y = 1\n\tz = 2\n")
 }
 
 func ptexts(t []ptok) string {
@@ -170,13 +311,20 @@ func TestPyTokensRefuses(t *testing.T) {
 		"x = )\n":                 "not tokenizable",
 		"x = 1 \\ + 2\n":          "not tokenizable",
 		deep(201):                 "not tokenizable",
-		fdeep(maxNest + 2):        "not tokenizable",
+		fdeep(maxNest + 1):        "not tokenizable",
+		"x = f'" + strings.Repeat("{a:", maxNest) + "1" + strings.Repeat("}", maxNest) + "'\n": "not tokenizable",
+		// Opus #260 H1: CPython nests a line after a backslash at column 0
+		// (cont_line_col) where a reading by column would not: refused, as any
+		// line starting with a backslash continuation (a D55 false block).
+		"if False:\n    pass\n\\\n    def test_zero():\n        assert 1 == 2\n":     "not tokenizable",
+		"if False:\n    pass\n  \f\\\n    def test_zero():\n        assert 1 == 2\n": "not tokenizable",
+		"if x:\n    \\\n    y = 1\n": "not tokenizable",
 	} {
 		if _, why, err := pyTokens(context.Background(), []byte(src)); err != nil || !strings.Contains(why, want) {
 			t.Errorf("%q: %q %v, want %q", src, why, err, want)
 		}
 	}
-	for _, src := range []string{"# -*- coding: UTF_8 -*-\nx = 1\n", "# coding=ascii\n", "x = 'caf\u00e9'  # \u00e9\n", deep(200), fdeep(maxNest + 1), "x = 1\ny = 2\n# coding: latin-1\n"} {
+	for _, src := range []string{"# -*- coding: UTF_8 -*-\nx = 1\n", "# coding=ascii\n", "x = 'caf\u00e9'  # \u00e9\n", deep(200), fdeep(maxNest), "x = 1\ny = 2\n# coding: latin-1\n", "x = 1 + \\\n    2\n"} {
 		if _, why, err := pyTokens(context.Background(), []byte(src)); err != nil || why != "" {
 			t.Errorf("%q: %q %v, want read", src, why, err)
 		}
@@ -211,6 +359,15 @@ func TestPyTokensBounded(t *testing.T) {
 			t.Errorf("%s: 1 MiB in %v, 4 MiB in %v: not linear", name, took[0], took[1])
 		}
 	}
+	// Opus #260 H3: f-string format specs nested 2M deep at the 4 MiB blob
+	// bound, unterminated, are refused at maxNest, at once.
+	specs := []byte("x = f'" + strings.Repeat("{:", 2<<20-4))
+	ctx0, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	start := time.Now()
+	if _, why, err := pyTokens(ctx0, specs); err != nil || why == "" || time.Since(start) > 100*time.Millisecond {
+		t.Errorf("nested specs: %q %v in %v", why, err, time.Since(start))
+	}
+	cancel()
 	src := []byte(strings.Repeat("def test_a():\n    assert 1\n", 4<<20/27))
 	ctx := &countCtx{Context: context.Background()}
 	ctx.n.Store(100)
