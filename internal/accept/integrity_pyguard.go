@@ -99,12 +99,13 @@ func (r *run) python(changes []Change) error {
 			add(&r.blocks, c.Dst, "unverifiable: a pytest configuration of the base moves collection off its defaults or is unread")
 			continue
 		}
-		b, ok, err := r.pyScan(src && path.Ext(c.Src) == ".py", c.Src, c.SrcBlob)
-		a, ok2, err2 := r.pyScan(dst && path.Ext(c.Dst) == ".py", c.Dst, c.DstBlob)
+		judged := pyTested(c.Dst) || r.pyTestDir(c.Dst)
+		b, ok, err := r.pyScan(src && path.Ext(c.Src) == ".py", c.Src, c.SrcBlob, judged)
+		a, ok2, err2 := r.pyScan(dst && path.Ext(c.Dst) == ".py", c.Dst, c.DstBlob, judged)
 		if err = cmp.Or(err, err2); err != nil {
 			return err
 		} else if ok && ok2 {
-			r.pyFileCompare(c.Dst, b, a, pyTested(c.Dst) || r.pyTestDir(c.Dst))
+			r.pyFileCompare(c.Dst, b, a, judged)
 		}
 	}
 	return nil
@@ -179,9 +180,28 @@ func pyConf(p string, b []byte, present bool) string {
 
 // pyFile is what the guard reads of one version of a Python file.
 type pyFile struct {
-	hooks bool           // it mentions a pytest hook, hookimpl or pytest_plugins
-	bad   string         // why its code at import is outside the allowlist (blocks where judged)
-	refs  map[string]int // "kind\x00reference\x00function"
+	hooks bool               // it mentions a pytest hook, hookimpl or pytest_plugins
+	finds map[string]*pyFind // findings at import, by statement
+	// its import statements; the names they bind, and the names defined at import
+	imports         string
+	imported, local map[string]bool
+	refs            map[string]int // "kind\x00reference\x00function"
+}
+
+// pyFind is one import-time finding: strict ones never pass on the base.
+type pyFind struct {
+	why    string
+	strict bool
+	n      int
+	calls  []string // the names its statement calls ("": not a plain name)
+}
+
+// passes: a's finding k is unchanged from the base b, its imports
+// unchanged, and it calls only imported names (Opus #266 widening 1).
+func (a *pyFile) passes(k string, b *pyFile) bool {
+	f, base := a.finds[k], b.finds[k]
+	return base != nil && base.n >= f.n && !f.strict && a.imports == b.imports &&
+		!slices.ContainsFunc(f.calls, func(c string) bool { return !a.imported[c] || a.local[c] })
 }
 
 func isHook(k ptok) bool {
@@ -213,8 +233,8 @@ func named(t []ptok, name string) bool {
 // def body or an exact __main__ guard is not import code (Opus #263 H2);
 // __init_subclass__, __set_name__ and a type subclass's methods run when a
 // class is made, so are (Mythos #263 L1).
-func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error) {
-	fa = &pyFile{refs: map[string]int{}}
+func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok bool, err error) {
+	fa = &pyFile{refs: map[string]int{}, finds: map[string]*pyFind{}, imported: map[string]bool{}, local: map[string]bool{}}
 	src, ok, err := r.pyRead(want, p, blob)
 	if !want || !ok || err != nil {
 		return fa, ok, err
@@ -232,12 +252,15 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 	type block struct {
 		indent int
 		fn     string // the outermost function, "" at import
-		meta   bool   // a class based on type
+		meta   bool   // a class that may be a metaclass (Mythos #263 L1, Opus #266 L1)
 	}
-	stack, deco, rebound, conftest, tested := []block{{indent: -1}}, []ptok(nil), false, path.Base(p) == "conftest.py", pyTested(p)
-	allow := func(why string) {
-		if fa.bad == "" {
-			fa.bad = why
+	stack, deco, conftest, tested := []block{{indent: -1}}, []ptok(nil), path.Base(p) == "conftest.py", pyTested(p)
+	rebound, classes := pyRebound(lines), map[string]bool{} // Opus #266 M2: a pre-pass
+	find := func(st []ptok, why string, strict bool) {
+		if f := fa.finds[fmt.Sprint(st)]; f != nil {
+			f.n++
+		} else {
+			fa.finds[fmt.Sprint(st)] = &pyFind{why, strict, 1, pyCalls(st)}
 		}
 	}
 	for _, l := range lines {
@@ -253,11 +276,26 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 		fn, b, code := top.fn, block{l.indent, top.fn, false}, append(append(deco, t...), l.inner...)
 		if fn == "" && !(pyMain(t) && !rebound) {
 			for _, st := range pySplit(t, ";") {
-				allow(pyAllowed(st, conftest))
+				if why := pyAllowed(st, conftest); why != "" {
+					find(st, why, false)
+				}
+				binds, imported := pyBinds(st)
+				for _, n := range binds {
+					if judged && (strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__" || !imported && pyBound[n] != "") {
+						find(st, "a dunder or an allowlisted name bound at import ("+n+")", true) // Opus #266 H1
+					}
+					fa.imported[n], fa.local[n] = fa.imported[n] || imported, fa.local[n] || !imported
+				}
+				if imported {
+					fa.imports += fmt.Sprint(st) + "\n"
+				}
 			}
 			if !pyConst(l.inner) {
-				allow("code run at import in an f-string field (" + ptext(t) + ")")
+				find(slices.Concat(t, l.inner), "code run at import in an f-string field ("+ptext(t)+")", false)
 			}
+		}
+		if judged && pySkipString(code) {
+			find(t, "a skipif or xfail condition given as a string, code pytest runs ("+ptext(t)+")", true) // Opus #266 H2
 		}
 		if why := pyFixtureName(t); (t[0].text == "@" || fn == "") && named(t, "fixture") && why != "" {
 			fa.refs["p\x00"+why+"\x00"+fn]++ // Opus #263 H3, Mythos #263 H2
@@ -270,10 +308,11 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 		if len(d) > 1 && (d[0].text == "def" || d[0].text == "class") {
 			kw, name = d[0].text, d[1].text
 		}
-		if kw == "def" && !top.meta && name != "__init_subclass__" && name != "__set_name__" {
+		dunder := strings.HasPrefix(name, "__") && strings.HasSuffix(name, "__")
+		if kw == "def" && !(top.meta && dunder) && !slices.Contains(strings.Fields("__init_subclass__ __set_name__ __class_getitem__ __mro_entries__ __prepare__"), name) {
 			b.fn = cmp.Or(fn, name)
 		} else if kw == "class" {
-			b.meta = named(pySplit(t, ":")[0], "type")
+			b.meta, classes[name] = pyMeta(pySplit(t, ":")[0], classes), true
 		} else if pyMain(t) && !rebound {
 			b.fn = cmp.Or(fn, "__main__")
 		}
@@ -287,9 +326,7 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 		for i := range code {
 			if kind, what := pyKind(code, i); kind != 0 {
 				fa.refs[string(kind)+"\x00"+what+"\x00"+fn]++
-			} // Mythos #263 H1: after __name__ rebound (not a lone call argument), no guard is a scope
-			rebound = rebound || code[i].text == "__name__" && !pyMain(t) &&
-				!(i > 1 && i+1 < len(code) && code[i-1].text == "(" && code[i+1].text == ")" && code[i-2].kind == 'n')
+			}
 		}
 		if fn == "" && len(t) > 2 && slices.Contains(pyFixtures, t[0].text) && t[1].text == "=" && t[2].text != "=" && (tested || named(code, "fixture")) {
 			fa.refs["p\x00a builtin fixture overridden by assignment ("+t[0].text+")\x00"]++ // Mythos #263 M1
@@ -297,9 +334,8 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 		if kw == "def" && (tested || named(deco, "fixture")) && slices.Contains(pyFixtures, name) { // in any file (H3)
 			fa.refs["p\x00a builtin fixture overridden ("+name+")\x00"+fn]++
 		}
-		if kw == "def" && strings.HasPrefix(name, "__") && strings.HasSuffix(name, "__") ||
-			slices.ContainsFunc(pySplit(t, "="), func(s []ptok) bool { return len(s) > 0 && s[len(s)-1].text == "__class__" }) {
-			allow("a dunder method or __class__ bound in a test file (" + ptext(t) + ")") // Opus #263 M1, in every judged file
+		if judged && (kw == "def" && dunder || slices.ContainsFunc(pySplit(t, "="), func(s []ptok) bool { return len(s) > 0 && s[len(s)-1].text == "__class__" })) {
+			find(t, "a dunder method or __class__ bound in a test file ("+ptext(t)+")", true) // Opus #263 M1
 		}
 		deco = nil
 	}
@@ -350,8 +386,12 @@ func pyMain(t []ptok) bool {
 
 // pyFileCompare: the change at p from b to a; a reference added blocks by class and place.
 func (r *run) pyFileCompare(p string, b, a *pyFile, judged bool) {
-	if judged && a.bad != "" {
-		add(&r.blocks, p, "unverifiable: "+a.bad)
+	for _, k := range slices.Sorted(maps.Keys(a.finds)) { // new findings: blocks where judged, else warnings (Opus #266 M1)
+		if f := a.finds[k]; !a.passes(k, b) && judged {
+			add(&r.blocks, p, "unverifiable: "+f.why)
+		} else if !a.passes(k, b) {
+			add(&r.warnings, p, f.why+": review it (decision A)")
+		}
 	}
 	if a.hooks || b.hooks {
 		add(&r.blocks, p, "a file holding a pytest hook, hookimpl or pytest_plugins changed")

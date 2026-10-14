@@ -8,16 +8,12 @@ import (
 	"strings"
 )
 
-// The import-time allowlist (P14c-2a-allow; Opus #263 C1, H1, H3, M1):
-// in a test module, a conftest, and a changed module under a test
-// directory, what runs at import (the top level, class bodies, decorators,
-// default arguments, annotations, bases, and the methods Python runs when
-// a class is made) may only import (pytest, mock and patch from their own
-// modules; never a builtin fixture's name), define, bind constants to plain
-// names, hold a docstring, or guard a __main__ block exactly. A constant
-// calls nothing but pytest.fixture, pytest.param and pytest.mark.NAME;
-// decorators are those, or unittest.mock's patch. Application modules are
-// decision A's: they warn.
+// The import-time allowlist (P14c-2a-allow; Opus #263 C1, H1, H3, M1): in
+// test modules, conftests and changed modules under a test directory, code
+// run at import may only import, define, bind constants to plain names,
+// hold a docstring, or guard __main__ exactly; a constant calls only
+// pytest.fixture, pytest.param, pytest.mark.NAME (and patch as a decorator).
+// Findings unchanged from the base pass; application modules warn.
 var (
 	pyKeywords = strings.Fields("and or not in is if else elif for while async await lambda return yield assert del from import as with")
 	// pyBound: names an import may bind only from these modules.
@@ -35,18 +31,13 @@ func (r *run) pyTestDir(p string) bool {
 	return false
 }
 
-// pyChainBefore is the attribute chain ending t ("pytest.mark.x"), and
-// where it starts.
-func pyChainBefore(t []ptok) (string, int) {
+// chain is the attribute chain ending t ("pytest.mark.x").
+func chain(t []ptok) string {
 	j := len(t)
 	for j > 0 && (t[j-1].kind == 'n' && !slices.Contains(pyKeywords, t[j-1].text) || t[j-1].text == ".") {
 		j--
 	}
-	var b strings.Builder
-	for _, k := range t[j:] {
-		b.WriteString(k.text)
-	}
-	return b.String(), j
+	return pyJoin(t[j:])
 }
 
 // pyPytest: c is a chain the allowlist may call: exactly pytest.fixture,
@@ -68,19 +59,104 @@ func pyPytest(c string, decorator bool) bool {
 	return decorator && i >= 0 && slices.Contains([]string{"", "mock", "unittest.mock"}, strings.Join(s[:i], ".")) && len(s) <= i+2
 }
 
-// pyConst: t evaluates no code of its own.
+// pyCallAt: t[i] opens a call.
+func pyCallAt(t []ptok, i int) bool {
+	return t[i].text == "(" && t[i].kind == 'o' && i > 0 && (t[i-1].kind == 's' || t[i-1].kind == 'n' && !slices.Contains(pyKeywords, t[i-1].text) ||
+		t[i-1].text == ")" || t[i-1].text == "]")
+}
+
+// pyConst: t evaluates no code of its own; ** unpacks only a literal dict
+// ({**K} and f(**K) call K.keys(): Opus #266 H1).
 func pyConst(t []ptok) bool {
 	for i, k := range t {
-		if k.text == "(" && k.kind == 'o' && i > 0 && (t[i-1].kind == 's' || t[i-1].kind == 'n' && !slices.Contains(pyKeywords, t[i-1].text) ||
-			t[i-1].text == ")" || t[i-1].text == "]") {
-			if c, _ := pyChainBefore(t[:i]); !pyPytest(c, false) {
-				return false
-			}
-		} else if k.text == "await" || k.text == "yield" {
+		if pyCallAt(t, i) && !pyPytest(chain(t[:i]), false) || k.text == "await" || k.text == "yield" ||
+			k.text == "*" && i+1 < len(t) && t[i+1].text == "*" && (i == 0 || strings.Contains("(,[{", t[i-1].text)) && (i+2 >= len(t) || t[i+2].text != "{") {
 			return false
 		}
 	}
 	return true
+}
+
+// pyCalls are the names t calls (a decorator's too, and a ** operand):
+// a chain's root, "" when the callee is not a plain name.
+func pyCalls(t []ptok) (calls []string) {
+	for i := range t {
+		if pyCallAt(t, i) && !strings.HasPrefix(chain(t[:i]), ".") {
+			calls = append(calls, strings.Split(chain(t[:i]), ".")[0])
+		} else if i > 0 && i+1 < len(t) && t[i].text == "*" && t[i-1].text == "*" {
+			calls = append(calls, t[i+1].text)
+		}
+	}
+	if t[0].text == "@" && len(t) > 1 {
+		calls = append(calls, t[1].text)
+	}
+	return calls
+}
+
+// pyBinds are the names statement t binds at import: an import's (and
+// imported is true), or a def's, a class's, an assignment's or a walrus's.
+func pyBinds(t []ptok) (names []string, imported bool) {
+	for i, k := range t {
+		if k.kind == 'n' && i+2 < len(t) && t[i+1].text == ":" && t[i+2].text == "=" {
+			names = append(names, k.text)
+		}
+	}
+	switch d := t[b2i(t[0].text == "async"):]; {
+	case len(d) > 1 && (d[0].text == "def" || d[0].text == "class"):
+		return append(names, d[1].text), false
+	case len(d) > 1 && (d[0].text == "import" || d[0].text == "from"):
+		for _, part := range pyImportParts(d) {
+			names = append(names, part[len(part)-1].text, part[0].text)
+		}
+		return names, true
+	}
+	parts := pyAssign(t)
+	for _, target := range parts[:len(parts)-1] {
+		for _, k := range target {
+			if k.kind == 'n' {
+				names = append(names, k.text)
+			}
+		}
+	}
+	return names, false
+}
+
+// pyRebound: the file rebinds __name__ anywhere (not as a lone call
+// argument), or star-imports (Opus #266 M2): no __main__ guard is a scope.
+func pyRebound(lines []pline) bool {
+	for _, l := range lines {
+		t := slices.Concat(l.toks, l.inner)
+		for i := range t {
+			if t[i].text == "*" && (t[0].text == "from" || t[0].text == "import") || t[i].text == "__name__" && !pyMain(l.toks) &&
+				!(i > 1 && i+1 < len(t) && t[i-1].text == "(" && t[i+1].text == ")" && t[i-2].kind == 'n') {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pyMeta: a class header with a keyword or a base not a class of this
+// file may make a metaclass: its dunder methods run at import.
+func pyMeta(h []ptok, classes map[string]bool) bool {
+	for i := 2; i < len(h); i++ {
+		if h[i].text == "=" || h[i].kind == 'n' && h[i-1].text != "." && !classes[h[i].text] && h[i].text != "object" {
+			return true
+		}
+	}
+	return false
+}
+
+// pySkipString: a skipif or xfail mark given a string condition, which
+// pytest evaluates as code with config in scope (Opus #266 H2).
+func pySkipString(t []ptok) bool {
+	for i := 0; i+2 < len(t); i++ {
+		if (t[i].text == "skipif" || t[i].text == "xfail") && t[i+1].text == "(" && t[i+2].kind == 's' && !(i > 1 && t[i-1].text == "." && t[i-2].text == "pytest") ||
+			t[i].text == "condition" && t[i+1].text == "=" && t[i+2].kind == 's' {
+			return true
+		}
+	}
+	return false
 }
 
 // pyAllowed is why the statement t, run at import, is outside the
@@ -97,8 +173,13 @@ func pyAllowed(t []ptok, conftest bool) string {
 		if end < 0 {
 			end = len(d)
 		}
-		c, j := pyChainBefore(d[:end])
-		return ok(j == 1 && pyPytest(c, true) && pyConst(d[end:]))
+		c, depth, last := chain(d[:end]), 0, end
+		for ; last < len(d); last++ { // exactly one balanced ( … ), then nothing (Opus #266 H1)
+			if depth += strings.Count("([{", d[last].text) - strings.Count(")]}", d[last].text); depth == 0 {
+				break
+			}
+		}
+		return ok(c == pyJoin(d[1:end]) && pyPytest(c, true) && pyConst(d[end:]) && last >= len(d)-1)
 	case (d[0].text == "import" || d[0].text == "from") && len(d) > 1:
 		if slices.ContainsFunc(d, func(k ptok) bool { return k.text == "*" }) {
 			return "a star import (" + ptext(t) + ")"
@@ -118,7 +199,8 @@ func pyAllowed(t []ptok, conftest bool) string {
 	case d[0].text == "def" && len(h[0]) > 1:
 		return ok(pyConst(h[0][2:]))
 	case d[0].text == "class" && len(h[0]) > 1:
-		return ok(pyConst(h[0][2:]) && !named(h[0], "metaclass") && len(t) == len(h[0])+1+b2i(t[len(t)-1].text == "pass"))
+		return ok(pyConst(h[0][2:]) && !named(h[0], "metaclass") && !slices.ContainsFunc(h[0], func(k ptok) bool { return k.text == "*" }) &&
+			len(t) == len(h[0])+1+b2i(t[len(t)-1].text == "pass"))
 	case len(d) == 1 && (d[0].text == "pass" || d[0].kind == 's' && !strings.ContainsAny(d[0].text[:strings.IndexAny(d[0].text, `"'`)], "fFtT")):
 		return ""
 	}
@@ -128,8 +210,7 @@ func pyAllowed(t []ptok, conftest bool) string {
 			return why
 		}
 		for _, n := range pySplit(pySplit(target, ":")[0], ",") {
-			if len(n) != 1 || n[0].kind != 'n' || pyBound[n[0].text] != "" || n[0].text == "__class__" ||
-				slices.Contains(pyFixtures, n[0].text) || conftest && strings.HasPrefix(n[0].text, "collect_ignore") {
+			if len(n) != 1 || n[0].kind != 'n' || slices.Contains(pyFixtures, n[0].text) || conftest && strings.HasPrefix(n[0].text, "collect_ignore") {
 				return why
 			}
 		}
