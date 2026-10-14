@@ -20,6 +20,8 @@ package recovery_test
 //   - old output: A1's adapter, which outlived the controller, publishes; it lands only if the real lease.Fence
 //     admits it;
 //   - late usage: the call's final or reconciliation arrives (at most once), at any time (P12b).
+//   - refusal stage fails: RefuseOrphans fails for good after step 1 (a hostile out/, H1 of Opus on #259); steps 2-4
+//     never wait for it.
 //
 // What it mirrors rather than calls (each a store-level check that needs a transaction): the lease fold's rule that a
 // lease leaves active only once its attempt's publication is closed (lease.Projector.changeLease); the settlement
@@ -73,6 +75,7 @@ type mstate struct {
 	A1Landed      bool // an output of A1 landed after the controller died
 	StartedEarly  bool // A2 started while L1 had not settled
 	SupersededBad bool // A2's start was not A1's supersession with the next token
+	RefusalFailed bool // the orphan stage failed, for good
 }
 
 // faults are the model's fault fixtures; next is the step decision (recovery.Next unless mutated).
@@ -83,6 +86,7 @@ type faults struct {
 	ignoreOldLease bool                        // the supersession does not check the old lease (lease.Replaceable)
 	ended          func(types.LeaseState) bool // a mutated terminal-state predicate, used where lease.Ended is
 	dropLiability  bool                        // the settlement names no call
+	coupled        bool                        // steps 2-4 wait for the orphan stage (P21's first draft)
 	next           func(types.Attempt, types.Lease) recovery.Step
 	reach          func(mstate) // sees every reachable state
 	from           []mstate     // the initial states (nil: initials())
@@ -194,6 +198,11 @@ func (f faults) moves(s mstate) []move {
 		n.Reported, n.Settled, n.Liability = true, true, false // late usage recomputes the liability (P12b)
 		out = append(out, move{"late usage", n})
 	}
+	if !s.RefusalFailed {
+		n := s
+		n.RefusalFailed = true
+		out = append(out, move{"refusal stage fails", n})
+	}
 	return out
 }
 
@@ -204,7 +213,7 @@ func (f faults) recover(s mstate, id types.AttemptID) (mstate, bool) {
 	if id == a2 {
 		a, l = s.A2, s.L2
 	}
-	if a.ID == "" {
+	if a.ID == "" || f.coupled && s.RefusalFailed {
 		return s, false
 	}
 	var err error
@@ -339,7 +348,7 @@ func (f faults) explore() (int, map[string]string) {
 }
 
 // D62: the bounded model holds every invariant in every reachable state, and reaches the states that matter: A2
-// started, a restart after it, the late usage after the settlement.
+// started, a restart after it, the late usage after the settlement, L1 settled after the refusal stage failed.
 func TestTheRecoveryModel(t *testing.T) {
 	reached := map[string]bool{}
 	n, broken := faults{reach: func(s mstate) {
@@ -350,11 +359,13 @@ func TestTheRecoveryModel(t *testing.T) {
 			s.A2.ID != "" && lease.Fence(s.attempt(s.Current), a1, 1) != nil
 		reached["a liability released by late usage"] = reached["a liability released by late usage"] || lease.Ended(s.L1.State) && s.Reported &&
 			len(s.L1.Settlement.Liabilities) == 1
+		reached["L1 settled after the refusal stage failed"] = reached["L1 settled after the refusal stage failed"] || s.RefusalFailed &&
+			s.L1.State == types.LeaseStateSettled
 	}}.explore()
 	if len(broken) > 0 {
 		t.Fatalf("the model breaks %v", broken)
 	}
-	if len(reached) != 5 || slices.Contains(slices.Collect(maps.Values(reached)), false) {
+	if len(reached) != 6 || slices.Contains(slices.Collect(maps.Values(reached)), false) {
 		t.Fatalf("the model reached %v", reached)
 	}
 	t.Logf("%d states explored", n)
@@ -378,6 +389,7 @@ func TestTheRecoveryModelsFaults(t *testing.T) {
 		"a grant outside dispatch, and the supersession ignores the old lease": {faults{placeEarly: true, ignoreOldLease: true, from: initials()[:1]}, "I3 settle before replace"},
 		"the terminal-state predicate admits settling":                         {faults{ended: func(s types.LeaseState) bool { return lease.Ended(s) || s == types.LeaseStateSettling }}, "I3 settle before replace"},
 		"the settlement names no call":                                         {faults{dropLiability: true}, "I5 no dropped charge"},
+		"the steps wait for a failing refusal stage":                           {faults{coupled: true}, "I6 recovery completes"},
 		"the lease settles before its attempt":                                 {faults{next: sealLast}, "I6 recovery completes"},
 		"recovery revokes, then stops":                                         {faults{next: onlyRevoke}, "I6 recovery completes"},
 	} {
