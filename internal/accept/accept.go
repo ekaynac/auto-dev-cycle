@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package accept is P14 (docs/design/m1/00 §5.2): the build's controller
-// diff, the accept boundary and the builder's minimal manifest.intent.
+// Package accept is P14a (docs/design/m1/00 §5.2): the build's controller
+// diff and the accept boundary. The builder's manifest.intent (I18) is
+// P16's; the integrity guard is P14b's.
 // Accept applies a candidate patch to a temporary index of the base in the
 // controller's own repository (sandbox.Repo: hardened git, never a .git a
 // run wrote) and takes the file list from git (01 §2.5 "Accept"). It
@@ -19,7 +20,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,7 +106,16 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 		in.Now = time.Now
 	}
 	start := in.Now()
-	defer func() { v.Elapsed = in.Now().Sub(start) }()
+	defer func() {
+		// Any git output over its bound (the file list, the tree object,
+		// git's diagnostics) is the candidate's size, never the
+		// controller's fault: unsafe_output, with no accepted tree.
+		if errors.Is(err, ErrTooLarge) {
+			v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", "a git output is over its bound"})
+			v.Tree, v.TreeDigest, err = "", "", nil
+		}
+		v.Elapsed = in.Now().Sub(start)
+	}()
 	if !in.Policy.ok {
 		return v, errors.New("accept: a policy PolicyOf did not build")
 	}
@@ -125,17 +134,13 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 	if len(in.Patch) > 0 {
 		if _, err := g.run(ctx, in.Patch, "apply", "--cached", "--whitespace=nowarn", "-"); err != nil {
 			if !errors.Is(err, errFailed) {
-				return v, err
+				return v, err // ErrTooLarge included: the defer refuses it
 			}
 			v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", "git does not apply the patch to the base: a path git refuses (.., .git, absolute) or a hunk that does not apply"})
 			return v, nil
 		}
 	}
 	raw, err := g.run(ctx, nil, "diff", "--cached", "--raw", "-z", "--no-abbrev", "-M", in.Base, "--")
-	if errors.Is(err, ErrTooLarge) {
-		v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", "the file list is over the patch bound"})
-		return v, nil
-	}
 	if err != nil {
 		return v, err
 	}
@@ -163,11 +168,14 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 	if err != nil {
 		return v, err
 	}
-	v.Tree = strings.TrimSpace(string(tree))
-	obj, err := g.run(ctx, nil, "cat-file", "tree", v.Tree)
-	s := sha256.Sum256(obj) // the tree object's bytes
-	v.TreeDigest = types.Digest("sha256:" + hex.EncodeToString(s[:]))
-	return v, err
+	id := strings.TrimSpace(string(tree))
+	obj, err := g.run(ctx, nil, "cat-file", "tree", id)
+	if err != nil {
+		return v, err
+	}
+	s := sha256.Sum256(obj) // the tree object's bytes, read whole
+	v.Tree, v.TreeDigest = id, types.Digest("sha256:"+hex.EncodeToString(s[:]))
+	return v, nil
 }
 
 // check is the path and mode rules for one change: both its paths.
@@ -261,24 +269,12 @@ func (g index) run(ctx context.Context, stdin []byte, args ...string) ([]byte, e
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	pipe, err := cmd.StdoutPipe()
-	if err == nil {
-		err = cmd.Start()
+	out, stderr, err := drain(cmd, maxPatch, maxStderr)
+	if errors.Is(err, ErrTooLarge) {
+		return nil, fmt.Errorf("%w (git %s)", err, args[0])
 	}
-	if err != nil {
-		return nil, fmt.Errorf("accept: git %s: %w", args[0], err)
-	}
-	out, rerr := io.ReadAll(io.LimitReader(pipe, maxPatch+1))
-	if int64(len(out)) > maxPatch {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait() // reaped; its error is the kill's
-		return nil, fmt.Errorf("%w (git %s)", ErrTooLarge, args[0])
-	}
-	err = errors.Join(cmd.Wait(), rerr)
 	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() > 0 {
-		return nil, fmt.Errorf("%w: %s: %w: %s", errFailed, args[0], err, bytes.TrimSpace(stderr.Bytes()))
+		return nil, fmt.Errorf("%w: %s: %w: %s", errFailed, args[0], err, bytes.TrimSpace(stderr))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("accept: git %s: %w", args[0], err)
