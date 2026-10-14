@@ -20,14 +20,14 @@ import (
 // refuses what it could read differently: source not UTF-8, a NUL, a
 // coding cookie naming another encoding (PEP 263), a non-ASCII name
 // (CPython folds names by NFKC), a line starting with a backslash
-// continuation (CPython's cont_line_col), a newline in a format spec of a
-// single-quoted f-string, brackets nested past CPython's 200, f-strings
-// nested past 64 (about 32 through format specs). Tokenizable is not
-// compilable: it accepts some source CPython rejects (Opus #260 L3; a
-// quote in a single-quoted spec, unlike a newline). Its work and
-// recursion are bounded by the source, and it stops when its context is
-// cancelled. A panic of its own is unverifiable too, and named. Until
-// P14c-2, P14b's rule fails closed.
+// continuation (CPython's cont_line_col), a newline, escaped or not, in a
+// format spec of a single-quoted f-string, brackets nested past CPython's
+// 200, f-strings nested past 64 (about 32 through format specs).
+// Tokenizable is not compilable: it accepts some source CPython rejects
+// (Opus #260 L3; a quote in a single-quoted spec, unlike a newline). Its
+// work and recursion are bounded by the source, and it stops when its
+// context is cancelled. A panic of its own is unverifiable too, and named.
+// Until P14c-2, P14b's rule fails closed.
 
 // ptok is a Python code token: a name ('n'), a string ('s'), a number
 // ('1') or an operator ('o', one byte).
@@ -37,10 +37,12 @@ type ptok struct {
 }
 
 // pline is a logical line: its indentation (tabs to the next multiple of
-// 8, a form feed resetting it) and its tokens.
+// 8, a form feed resetting it), its tokens, and the code tokens in its
+// f-strings' fields (inner; the guard reads them as code, P14c-2).
 type pline struct {
 	indent int
 	toks   []ptok
+	inner  []ptok
 }
 
 var (
@@ -64,8 +66,6 @@ func pyTokens(ctx context.Context, src []byte) ([]pline, string, error) {
 	lines, err := pyLex(ctx, src)
 	if cerr := ctx.Err(); cerr != nil {
 		return nil, "", cerr
-	} else if err == errLex {
-		return nil, "not tokenizable as Python", nil
 	} else if err != nil {
 		return nil, err.Error(), nil
 	}
@@ -79,14 +79,20 @@ func pyCookie(src []byte) string {
 	if !utf8.Valid(src) || slices.Contains(src, 0) {
 		return "not UTF-8 source"
 	}
-	s := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(string(src), "\ufeff"), "\r\n", "\n"), "\r", "\n")
-	lines := strings.SplitN(s, "\n", 3)
+	lines := strings.SplitN(pyNorm(src), "\n", 3)
 	for _, l := range lines[:min(2, len(lines))] {
 		if m := cookie.FindStringSubmatch(l); m != nil && !slices.Contains([]string{"utf-8", "utf8", "ascii", "us-ascii"}, strings.ReplaceAll(strings.ToLower(m[1]), "_", "-")) {
 			return "a coding cookie other than utf-8 or ascii (" + m[1] + ")"
 		}
 	}
 	return ""
+}
+
+// pyNorm is src as CPython's decoder hands it to the tokenizer: a BOM
+// stripped, CRLF and a lone CR read as LF. The gate and the lexer share it
+// (Mythos #260 L3).
+func pyNorm(src []byte) string {
+	return strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(string(src), "\ufeff"), "\r\n", "\n"), "\r", "\n")
 }
 
 func word(c byte) bool {
@@ -115,7 +121,7 @@ func pyLex(ctx context.Context, src []byte) (lines []pline, err error) {
 			panic(err)
 		}
 	}
-	s := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(string(src), "\ufeff"), "\r\n", "\n"), "\r", "\n") + "\n"
+	s := pyNorm(src) + "\n"
 	cur, depth, start := pline{}, 0, true
 	for i := 0; i < len(s); {
 		if start {
@@ -152,7 +158,7 @@ func pyLex(ctx context.Context, src []byte) (lines []pline, err error) {
 			i += 2
 			check()
 		default:
-			k, n := pyToken(s[i:], 0)
+			k, n := pyToken(s[i:], 0, &cur.inner)
 			if t := s[i : i+n]; k == 'o' && strings.Contains("([{", t) {
 				depth++
 				need(depth <= maxBrackets)
@@ -182,11 +188,11 @@ func eol(s string) int {
 }
 
 // pyToken scans the token at the start of s: its kind and length. A name
-// must be ASCII.
-func pyToken(s string, depth int) (byte, int) {
+// must be ASCII. Code in an f-string's fields goes to inner.
+func pyToken(s string, depth int, inner *[]ptok) (byte, int) {
 	switch c := s[0]; {
 	case c == '"' || c == '\'':
-		return 's', pyString(s, "", depth)
+		return 's', pyString(s, "", depth, inner)
 	case digit(c) || c == '.' && len(s) > 1 && digit(s[1]):
 		return '1', pyNumber(s)
 	case word(c):
@@ -195,7 +201,7 @@ func pyToken(s string, depth int) (byte, int) {
 			n++
 		}
 		if pre := strings.ToLower(s[:n]); n < len(s) && (s[n] == '"' || s[n] == '\'') && slices.Contains(strPrefixes, pre) {
-			return 's', n + pyString(s[n:], pre, depth)
+			return 's', n + pyString(s[n:], pre, depth, inner)
 		}
 		need(!strings.ContainsFunc(s[:n], func(r rune) bool { return r >= utf8.RuneSelf }))
 		return 'n', n
@@ -243,7 +249,7 @@ func pyNumber(s string) int {
 
 // pyString scans a string literal at s (its quote), with its prefix: its
 // length. In an f- or t-string, a {field} is code (pyField).
-func pyString(s, prefix string, depth int) int {
+func pyString(s, prefix string, depth int, inner *[]ptok) int {
 	need(depth <= maxNest)
 	q := s[:1]
 	if strings.HasPrefix(s, q+q+q) {
@@ -263,7 +269,7 @@ func pyString(s, prefix string, depth int) int {
 		case fstr && (strings.HasPrefix(s[i:], "{{") || strings.HasPrefix(s[i:], "}}")):
 			i += 2
 		case fstr && c == '{':
-			i += 1 + pyField(s[i+1:], depth+1, false, len(q) == 1)
+			i += 1 + pyField(s[i+1:], depth+1, false, len(q) == 1, inner)
 		default:
 			need(c != '\n' || len(q) == 3)
 			i++
@@ -276,14 +282,15 @@ func pyString(s, prefix string, depth int) int {
 // then a conversion (!r) and a format spec (spec), which is text that may
 // hold nested fields. Every descent counts toward maxNest (Opus #260 H3).
 // In a single-quoted f-string (single), a newline in a spec sends CPython
-// back to code mode: refused (Mythos #260 H1; a D55 false block).
-func pyField(s string, depth int, spec, single bool) int {
+// back to code mode: refused, escaped or not (Mythos #260 H1 and r2 L1;
+// a D55 false block where CPython 3.12 reads an escaped one).
+func pyField(s string, depth int, spec, single bool, inner *[]ptok) int {
 	need(depth <= maxNest)
 	nest := 0
 	for i := 0; i < len(s); {
 		switch c := s[i]; {
 		case spec && c == '{':
-			i += 1 + pyField(s[i+1:], depth+1, false, single)
+			i += 1 + pyField(s[i+1:], depth+1, false, single, inner)
 		case spec && c == '\n':
 			need(!single)
 			i++
@@ -294,15 +301,15 @@ func pyField(s string, depth int, spec, single bool) int {
 		case c == '#':
 			i += eol(s[i:])
 		case c == ':' && nest == 0:
-			return i + 1 + pyField(s[i+1:], depth+1, true, single)
+			return i + 1 + pyField(s[i+1:], depth+1, true, single, inner)
 		case strings.IndexByte("([{", c) >= 0:
-			nest, i = nest+1, i+1
+			nest, i, *inner = nest+1, i+1, append(*inner, ptok{'o', s[i : i+1]})
 		case strings.IndexByte(")]}", c) >= 0:
-			nest, i = nest-1, i+1
+			nest, i, *inner = nest-1, i+1, append(*inner, ptok{'o', s[i : i+1]})
 			need(nest >= 0)
 		default:
-			_, n := pyToken(s[i:], depth)
-			i += n
+			k, n := pyToken(s[i:], depth, inner)
+			i, *inner = i+n, append(*inner, ptok{k, s[i : i+n]})
 		}
 	}
 	panic(errLex)

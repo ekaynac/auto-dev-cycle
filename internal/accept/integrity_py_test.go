@@ -59,7 +59,7 @@ for src in json.load(sys.stdin):
 // not a token, an ERRORTOKEN or a type it does not know fails the test.
 func golden(t *testing.T, src, tok string) (levels []int, lines [][]ptok) {
 	t.Helper()
-	s := strings.ReplaceAll(strings.ReplaceAll(strings.TrimPrefix(src, "\ufeff"), "\r\n", "\n"), "\r", "\n")
+	s := pyNorm([]byte(src))
 	rows := strings.SplitAfter(s, "\n")
 	off := func(row, col string) int { // a 1-based row and a column in characters, as a byte offset
 		r, _ := strconv.Atoi(row)
@@ -324,6 +324,7 @@ func TestPyTokensRefuses(t *testing.T) {
 		// the spec would hide): refused, a D55 false block. Triple quotes read.
 		"x = 1\ndef test_zero():\n    assert 1 == 2\ny = [f\"{x:d\n#}\"\n}\"]; test_zero = None  # \"\n": "not tokenizable",
 		"x = 1\ny = f\"{x:d\n}\"\n":        "not tokenizable",
+		"x = 1\ny = f\"{x:\\\n}\"\n":       "not tokenizable",                                   // Mythos #260 r2 L1: escaped or not
 		"\ufeff# coding: latin-1\nx = 1\n": "coding cookie other than utf-8 or ascii (latin-1)", // Mythos #260 L1
 		"x = 1\ndef test_zero():\n    assert 1 == 2\ny = [f\"\"\"{f\"{x:d\n#}\"\n}\"}\"\"\"]; test_zero = None  # \"\"\"\n": "not tokenizable",
 		// Opus #260 H1: CPython nests a line after a backslash at column 0
@@ -338,7 +339,8 @@ func TestPyTokensRefuses(t *testing.T) {
 		}
 	}
 	for _, src := range []string{"# -*- coding: UTF_8 -*-\nx = 1\n", "# coding=ascii\n", "x = 'caf\u00e9'  # \u00e9\n", deep(200), fdeep(maxNest), specDeep(maxNest / 2), "x = 1\ny = 2\n# coding: latin-1\n", "x = 1 + \\\n    2\n",
-		"x = 1\ny = f\"\"\"{x:d\n}\"\"\"\n", "\ufeff# coding: utf-8\nx = 1\n"} {
+		"x = 1\ny = f\"\"\"{x:d\n}\"\"\"\n", "\ufeff# coding: utf-8\nx = 1\n",
+		"x = 1\ny = f\"{f'''{x:d\n}'''}\"\n"} { // Mythos #260 r2 L2: an inner triple quote resets single
 		if _, why, err := pyTokens(context.Background(), []byte(src)); err != nil || why != "" {
 			t.Errorf("%q: %q %v, want read", src, why, err)
 		}
