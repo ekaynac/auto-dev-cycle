@@ -5,10 +5,10 @@ package accept
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"path"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -16,44 +16,46 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// The integrity guard (01 §2.5 [A6], P14b) reads changed Go and Python
-// files by syntax (comments and strings never count) and blocks, with no
-// approved row (M1 has none): a test gone or no longer collected on a gate
-// platform; fewer assertions, more skips or a literal parametrize row gone
-// in a test (Go tests by package, Python tests by file and class); a skip
-// added outside a test in a language the base tests; a conftest.py
-// collection control, a pytest configuration change, a go.mod added over
-// tests; a collected test source it cannot read whole or parse; a Go file
-// gaining a way to forge test2json results (#226 entry 32). It warns the
-// reviewer of a changed TestMain, exiting init, exit or pytest hook, and
-// of an assertion that cannot fail. It reads at most maxRead bytes of
-// blobs in all, maxFile per file (vars: tests lower them).
+// The integrity guard (01 §2.5 [A6], P14b) reads changed Go files by
+// syntax (comments and strings never count) and blocks, with no approved
+// row (M1 has none): a test gone, or no longer surely collected on a gate
+// platform; fewer assertions or more skips in a test (tests by package);
+// a skip added outside a test where the base has Go tests; a go.mod added
+// over tests, or a root go.mod's ignore directives changed; a Go file it
+// cannot read whole or parse; a way to forge test2json results (#226
+// entry 32). Python is P14c's: until then, a Python change in a base with
+// Python tests blocks. It warns the reviewer of every exit, a changed
+// TestMain or exiting init, and a 22 converted to a byte or rune. It
+// reads at most maxRead bytes of blobs in all, maxFile per file (vars:
+// tests lower them).
 var (
 	maxRead int64 = 64 << 20
 	maxFile int64 = 4 << 20
-	header        = regexp.MustCompile(`^\[\[?\s*[\w.:-]+\s*\]\]?$`) // a plain INI or TOML header
+	// pyFiles change what pytest collects or how (P14c reads them).
+	pyFiles = []string{"conftest.py", "pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg",
+		"pyproject.toml", "pyvenv.cfg"}
 )
 
-// stat is one test's evidence; local, a Python test's name in its file.
-type stat struct {
-	asserts, skips int
-	rows           []string
-	local          string
-}
+// stat is one test's evidence.
+type stat struct{ asserts, skips int }
 
-// facts is what the guard reads of one file.
+// facts is what the guard reads of one Go file.
 type facts struct {
-	tests                              map[string]*stat  // by qualified name
-	ambient, controls, trivial, forged int               // skips outside tests, conftest controls, …
-	conf                               string            // its pytest configuration
-	warn                               map[string]string // TestMain, exits, hooks: compared whole
+	tests                              map[string]*stat  // by package and name
+	ambient, forged, exits, twentyTwos int               // skips outside tests, forging markers, …
+	forge                              bool              // detects test mode and exits at init
+	ignore                             string            // a root go.mod's ignore directives
+	warn                               map[string]string // TestMain, exiting inits: compared whole
 }
 
-// side is one side of a change: on, what collects it; why, why not read.
+// side is one side of a change. on is, per gate platform, 2 when go test
+// surely collects it, 1 when that depends on tags the guard does not
+// model, 0 when it never does; cons is its build constraint lines; why,
+// why it was not read.
 type side struct {
-	path, why string
-	on        []string
-	facts     facts
+	path, why, cons string
+	on              []int
+	facts           facts
 }
 
 // Integrity is the integrity guard for a candidate of base in repo, for
@@ -85,7 +87,8 @@ type run struct {
 	base             string
 	read             Reader
 	budget           int64
-	files            []string
+	files            []string // the base's, once listed
+	huge             bool     // the base's list is over its bound
 	blocks, warnings []Block
 }
 
@@ -93,12 +96,15 @@ func add(to *[]Block, p, what string) {
 	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what})
 }
 
-// side reads p's blob (when want) within the bounds, and what the guard
-// knows of it.
+// side reads a Go file's or root go.mod's blob (when want) within the
+// bounds, and what the guard knows of it.
 func (r *run) side(ctx context.Context, want bool, p, blob string) (side, error) {
-	s := side{path: p, facts: facts{tests: map[string]*stat{}, warn: map[string]string{}}}
-	if _, conf := pytestConf(p, nil); !want || !conf && path.Ext(p) != ".go" && path.Ext(p) != ".py" {
+	s := side{path: p, on: make([]int, len(platforms)), facts: facts{tests: map[string]*stat{}, warn: map[string]string{}}}
+	if !want || path.Ext(p) != ".go" && p != "go.mod" {
 		return s, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return s, err
 	}
 	b, ok, err := r.read(ctx, blob, min(maxFile, r.budget))
 	if err != nil || !ok {
@@ -106,14 +112,9 @@ func (r *run) side(ctx context.Context, want bool, p, blob string) (side, error)
 		return s, err
 	}
 	r.budget -= int64(len(b))
-	s.facts.conf, _ = pytestConf(p, b)
-	switch path.Ext(p) {
-	case ".go":
-		s.on, err = goOn(p, b), goFacts(p, b, &s.facts)
-	case ".py":
-		s.on, err = pyOn(p), pyFacts(p, b, &s.facts)
-	}
-	if err != nil {
+	if p == "go.mod" {
+		s.facts.ignore = goIgnores(b)
+	} else if err := goFacts(p, b, &s); err != nil {
 		s.why = "not parsed: " + err.Error()
 	}
 	return s, nil
@@ -121,33 +122,37 @@ func (r *run) side(ctx context.Context, want bool, p, blob string) (side, error)
 
 // change applies the per-file rules to one change.
 func (r *run) change(ctx context.Context, c Change, src, dst side) error {
-	for _, s := range []side{src, dst} {
-		if _, conf := pytestConf(s.path, nil); s.why != "" && (conf || goByName(s.path) || pyOn(s.path) != nil || path.Base(s.path) == "conftest.py") {
-			add(&r.blocks, s.path, "unverifiable: "+s.why)
-		} else if s.why != "" {
-			add(&r.warnings, s.path, "not read by the integrity guard ("+s.why+"): review it")
+	if py := func(p string) bool { return path.Ext(p) == ".py" || slices.Contains(pyFiles, path.Base(p)) }; py(c.Src) || py(c.Dst) {
+		if tested, err := r.hasTests(ctx, ".py", ""); err != nil || tested {
+			add(&r.blocks, c.Dst, "python integrity not verified (P14c)")
+			return err
 		}
+	}
+	if src.why != "" {
+		add(&r.blocks, src.path, "unverifiable: "+src.why)
+	}
+	if dst.why != "" && (src.why == "" || dst.path != src.path) { // an unread file once
+		add(&r.blocks, dst.path, "unverifiable: "+dst.why)
 	}
 	d, s := dst.facts, src.facts
 	switch {
 	case src.why != "" || dst.why != "":
 		return nil
-	case s.conf != d.conf:
-		add(&r.blocks, c.Dst, "a pytest configuration changed (collection, options or plugins)")
+	case s.ignore != d.ignore:
+		add(&r.blocks, c.Dst, "a root go.mod's ignore directives changed: packages leave ./...")
 	}
 	if c.Status == "D" {
 		return nil // its tests are compared by name
 	}
-	for _, on := range src.on {
-		if !slices.Contains(dst.on, on) {
-			add(&r.blocks, c.Dst, fmt.Sprintf("a test file no longer collected (%s)", on))
+	for i, pl := range platforms {
+		if src.on[i] > 0 && dst.on[i] < 2 && (src.on[i] == 2 || src.cons != dst.cons) {
+			add(&r.blocks, c.Dst, fmt.Sprintf("a test file no longer surely collected (%s/%s)", pl[0], pl[1]))
 		}
 	}
 	tested, err := false, error(nil)
 	if d.ambient > s.ambient {
-		tested, err = r.hasTests(ctx, path.Ext(c.Dst), "")
-		if tested || len(dst.on) > 0 {
-			add(&r.blocks, c.Dst, "a skip added outside a test (a helper, a module or class level mark)")
+		if tested, err = r.hasTests(ctx, ".go", ""); tested || slices.Max(dst.on) > 0 {
+			add(&r.blocks, c.Dst, "a skip added outside a test (a helper)")
 		}
 	}
 	if path.Base(c.Dst) == "go.mod" && c.Dst != "go.mod" && c.Status != "M" && err == nil { // added, copied or moved
@@ -155,19 +160,19 @@ func (r *run) change(ctx context.Context, c Change, src, dst side) error {
 			add(&r.blocks, c.Dst, "a go.mod added over tests: they leave the module the gate tests")
 		}
 	}
-	if d.forged > s.forged {
-		add(&r.blocks, c.Dst, "can forge go test2json results (testing.Testing or a 0x16 byte)")
+	if d.forged > s.forged || d.forge {
+		add(&r.blocks, c.Dst, "can forge go test2json results (testing.Testing, a 0x16 byte, or test-mode detection with an exit at init)")
 	}
-	if d.controls > 0 && (path.Base(c.Dst) == "conftest.py" || d.controls > s.controls) { // a plugin's hooks too
-		add(&r.blocks, c.Dst, "a collection control (collect_ignore, a collection hook) in a conftest.py or a plugin")
+	if d.exits > 0 {
+		add(&r.warnings, c.Dst, "exits the process (os.Exit, syscall.Exit, runtime.Goexit): review it")
+	}
+	if d.twentyTwos > 0 {
+		add(&r.warnings, c.Dst, "converts 22 (0x16, test2json's marker) to a byte or rune: review it")
 	}
 	for _, k := range slices.Sorted(maps.Keys(d.warn)) {
 		if d.warn[k] != s.warn[k] {
 			add(&r.warnings, c.Dst, k+" changed: review it")
 		}
-	}
-	if d.trivial > s.trivial {
-		add(&r.warnings, c.Dst, "an assertion that cannot fail added")
 	}
 	return err
 }
@@ -175,99 +180,51 @@ func (r *run) change(ctx context.Context, c Change, src, dst side) error {
 // merge adds a collected side's tests to into.
 func merge(into map[string]*stat, s side) {
 	for k, t := range s.facts.tests {
-		if len(s.on) > 0 {
-			u := cmp.Or(into[k], &stat{local: t.local})
-			u.asserts, u.skips, u.rows = u.asserts+t.asserts, u.skips+t.skips, append(u.rows, t.rows...)
+		if slices.Max(s.on) > 0 {
+			u := cmp.Or(into[k], &stat{})
+			u.asserts, u.skips = u.asserts+t.asserts, u.skips+t.skips
 			into[k] = u
 		}
 	}
 }
 
-// compare blocks a test gone or weakened. A Python test gone from one file
-// may reappear, by its name within the file, as a new test of another.
+// compare blocks a test gone or weakened.
 func (r *run) compare(before, after map[string]*stat) {
-	moved := map[string][]string{}
-	for _, k := range slices.Sorted(maps.Keys(after)) {
-		if a := after[k]; before[k] == nil && a.local != "" {
-			moved[a.local] = append(moved[a.local], k)
-		}
-	}
 	for _, k := range slices.Sorted(maps.Keys(before)) {
-		b, a := before[k], after[k]
-		if m := moved[b.local]; a == nil && b.local != "" && len(m) > 0 {
-			a, moved[b.local] = after[m[0]], m[1:]
-		}
-		switch {
+		switch b, a := before[k], after[k]; {
 		case a == nil:
 			add(&r.blocks, k, "a test deleted or no longer collected")
 		case a.asserts < b.asserts:
 			add(&r.blocks, k, fmt.Sprintf("fewer assertions in a test (%d → %d)", b.asserts, a.asserts))
 		case a.skips > b.skips:
 			add(&r.blocks, k, "a test skipped")
-		case lost(b.rows, a.rows):
-			add(&r.blocks, k, "a parametrize case removed")
 		}
 	}
-}
-
-// lost: a row of b is not in a (as multisets).
-func lost(b, a []string) bool {
-	left := map[string]int{}
-	for _, row := range a {
-		left[row]++
-	}
-	for _, row := range b {
-		if left[row]--; left[row] < 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // hasTests: the base holds a test file of ext (".go", ".py") collected by
-// its name, under dir ("" for anywhere).
+// its name, under dir ("" for anywhere). A base list over its bound is
+// blocked once, as unknown, and has tests everywhere.
 func (r *run) hasTests(ctx context.Context, ext, dir string) (bool, error) {
-	if r.files == nil && (ext == ".go" || ext == ".py") { // listed once: Split is never nil
+	if r.files == nil {
 		g, cleanup, err := newIndex(ctx, r.repo, r.base)
 		if err != nil {
 			return false, err
 		}
 		defer cleanup()
 		out, err := g.run(ctx, nil, "ls-files", "-z")
-		if err != nil {
+		if r.huge = errors.Is(err, ErrTooLarge); r.huge {
+			add(&r.blocks, "", "the base's file list is over its bound: where its tests are is unknown")
+		} else if err != nil {
 			return false, err
 		}
-		r.files = strings.Split(string(out), "\x00")
+		r.files = strings.Split(string(out), "\x00") // never nil: listed once
 	}
-	return slices.ContainsFunc(r.files, func(p string) bool {
-		return strings.HasPrefix(p, dir) && (ext == ".go" && goByName(p) || ext == ".py" && pyOn(p) != nil)
+	return r.huge || slices.ContainsFunc(r.files, func(p string) bool {
+		b := path.Base(p)
+		return strings.HasPrefix(p, dir) && (ext == ".go" && goByName(p) ||
+			ext == ".py" && strings.HasSuffix(b, ".py") && (strings.HasPrefix(b, "test_") || strings.HasSuffix(b, "_test.py")))
 	}), nil
-}
-
-// pytestConf is p's pytest configuration, and whether p is a file pytest
-// reads one from: all of a pytest.ini, the pytest sections of the others
-// (a header naming pytest opens one; a plain header closes it).
-func pytestConf(p string, b []byte) (string, bool) {
-	switch path.Base(p) {
-	case "pytest.ini", ".pytest.ini":
-		return string(b), true
-	case "tox.ini", "setup.cfg", "pyproject.toml":
-	default:
-		return "", false
-	}
-	var out []string
-	in := false
-	for _, l := range strings.Split(string(b), "\n") {
-		if t := strings.TrimSpace(l); strings.HasPrefix(t, "[") && strings.Contains(strings.ToLower(t), "pytest") {
-			in = true
-		} else if header.MatchString(t) {
-			in = false
-		}
-		if in {
-			out = append(out, l)
-		}
-	}
-	return strings.Join(out, "\n"), true
 }
 
 // walked: no directory of p is one skip names (the runner never walks it).
