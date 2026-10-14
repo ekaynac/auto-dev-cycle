@@ -11,6 +11,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -57,9 +58,14 @@ type pkgFacts struct {
 // Accept's In.Guard. It lists the base's files through a temporary index,
 // and imports' types through list (nil: every Go package unverifiable).
 func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
-	return func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
+	return func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, err error) {
 		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{}}
-		err := r.check(changes)
+		defer func() { // fail closed: a guard fault blocks, never crashes the controller
+			if p := recover(); p != nil {
+				blocks, warnings, err = append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p)}), r.warnings, nil
+			}
+		}()
+		err = r.check(changes)
 		return r.blocks, r.warnings, err
 	}
 }
@@ -70,6 +76,8 @@ type run struct {
 	base               string
 	read               Reader
 	lister             Lister
+	listEnd            time.Time // every go list run ends by then
+	listRuns           int
 	budget             int64
 	work               int
 	blobs              map[string][]byte   // blobs read, once
@@ -290,9 +298,10 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.warnings, at, "a reference into S (exit, output, process, testing control) added, removed, moved or changed: review it")
 		}
 	}
-	for _, k := range keys(b.typed, a.typed) { // by identity, so no fact is traded for another
+	anyTest := slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), goByName) // a helper anywhere the tests may call
+	for _, k := range keys(b.typed, a.typed) {                                   // by identity, so no fact is traded for another
 		f := strings.Split(k, "\x00") // file, function, fact
-		if at := f[0] + ": " + f[2] + " in " + f[1]; a.typed[k] > b.typed[k] && (r.tested(dir) || !strings.HasPrefix(f[2], factMakes)) {
+		if at := f[0] + ": " + f[2] + " in " + f[1]; a.typed[k] > b.typed[k] && (r.tested(dir) || anyTest || !strings.HasPrefix(f[2], factMakes)) {
 			add(&r.blocks, at, "can forge go test2json results (real types)")
 		} else if a.typed[k] > b.typed[k] {
 			add(&r.warnings, at, "reflection that makes values, in a package without tests: review it")

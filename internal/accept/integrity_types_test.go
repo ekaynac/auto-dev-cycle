@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -89,6 +90,27 @@ func TestIntegrityRealTypes(t *testing.T) {
 			"pkg/x.go": "package pkg\n\nimport \"golang.org/x/sys/unix\"\n\nvar _ = unix.S_IFMT\n"}, nil, "replaces a module by a directory"},
 		"L1 std":    {map[string]string{"pkg/x.go": "package pkg\n\nimport \"std\"\n"}, nil, "an import path go list cannot take (\"std\")"},
 		"L1 cmd/go": {map[string]string{"pkg/x.go": "package pkg\n\nimport \"cmd/go\"\n"}, nil, "an import path go list cannot take (\"cmd/go\")"},
+		// Round 3 (Mythos #265). H1: a container or field of *testing.T, and the value-making reflect API.
+		"H1 MakeSlice and Append into []*testing.T": {map[string]string{"pkg/calc_test.go": "package pkg\n\nimport (\n\t\"reflect\"\n\t\"testing\"\n)\n\n" +
+			"func TestAdd(t *testing.T) {\n\tc := make(chan any, 1)\n\tc <- t\n\tv := <-c\n" +
+			"\tp := reflect.MakeSlice(reflect.SliceOf(reflect.TypeOf(v).Elem()), 1, 1).Index(0).Addr()\n" +
+			"\ts := reflect.Append(reflect.MakeSlice(reflect.SliceOf(reflect.TypeOf(v)), 0, 1), p).Interface().([]*testing.T)\n" +
+			"\tfunc(t *testing.T) {\n\t\tif Add(1, 2) != 3 {\n\t\t\tt.Error(\"add\")\n\t\t}\n\t}(s[0])\n}\n"}, nil, forgedWhy},
+		"H1 .(struct{ T *testing.T })": {fake("mk(t).(struct{ T *testing.T }).T", mkGo), nil, forgedWhy},
+		"H1 as[[]*testing.T]":          {fake("as[[]*testing.T](mk(t))[0]", mkGo+"\nfunc as[I any](v any) I { return v.(I) }\n"), nil, forgedWhy},
+		"H1 MakeSlice alone": {map[string]string{"pkg/calc_test.go": strings.Replace(baseFiles["pkg/calc_test.go"], "import \"testing\"", "import (\n\t\"reflect\"\n\t\"testing\"\n)", 1) +
+			"\nvar _ = reflect.MakeSlice(reflect.TypeOf([]int{}), 1, 1)\n"}, nil, "reflection that makes, writes or calls values (reflect.MakeSlice"},
+		// Found in round 3 (end to end: TestAdd passes): a decoder outside the module allocates a T into a field.
+		"json.Unmarshal into a *testing.T field": {map[string]string{"pkg/calc_test.go": "package pkg\n\nimport (\n\t\"encoding/json\"\n\t\"testing\"\n)\n\n" +
+			"func TestAdd(t *testing.T) {\n\tvar h struct{ T *testing.T }\n\t_ = json.Unmarshal([]byte(`{\"T\":{}}`), &h)\n\ty := h.T\n" +
+			"\tif Add(1, 2) != 3 {\n\t\ty.Error(\"add\")\n\t}\n}\n"}, nil, forgedWhy + " (json.Unmarshal("},
+		// H2: an assertion on a value not an interface; the gate cannot compile it.
+		"H2 t.(*testing.T)": {map[string]string{"pkg/x_test.go": "package pkg\n\nimport \"testing\"\n\nfunc keep(t *testing.T) { _ = t.(*testing.T) }\n"}, nil, "it does not type-check"},
+		// M2: value-making reflection in an untested helper of a repository with tests.
+		"M2 util.Run": {map[string]string{"util/u.go": "package util\n\nimport \"reflect\"\n\nfunc Run(fn, v any) { reflect.ValueOf(fn).Call([]reflect.Value{reflect.New(reflect.TypeOf(v).Elem())}) }\n",
+			"pkg/calc_test.go": strings.Replace(strings.Replace(baseFiles["pkg/calc_test.go"], "import \"testing\"", "import (\n\t\"testing\"\n\n\t\"example.com/m/util\"\n)", 1),
+				"if Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}", "util.Run(func(t *testing.T) {\n\t\tif Add(1, 2) != 3 {\n\t\t\tt.Fatal(\"add\")\n\t\t}\n\t}, t)", 1)},
+			nil, "util/u.go: reflection that makes, writes or calls values"},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if v.Reason() != vocab.ReasonTestIntegrityViolation || !finds(v.Blocks, c.why) {
@@ -135,6 +157,32 @@ func TestIntegrityRealTypes(t *testing.T) {
 			t.Errorf("%s: %q", name, whats(v.Blocks))
 		}
 	}
+
+	// M1 (Mythos #265): a shadowed operand is another fact (its type is in
+	// the key), though the expression reads the same.
+	pick := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/helper_test.go": "package pkg\n\nimport \"testing\"\n\nfunc pick(tb testing.TB) *testing.T { return tb.(*testing.T) }\n"})
+		plain(t, src, "add", "--all")
+	})
+	v := pick.guarded(t, map[string]string{"util/u.go": "package util\n\nfunc Fresh(v any) any { return v }\n",
+		"pkg/helper_test.go": "package pkg\n\nimport (\n\t\"testing\"\n\n\t\"example.com/m/util\"\n)\n\n" +
+			"func pick(tb testing.TB) *testing.T {\n\t{\n\t\ttb := util.Fresh(tb)\n\t\treturn tb.(*testing.T)\n\t}\n}\n"})
+	if !finds(v.Blocks, "pkg/helper_test.go: "+forgedWhy+" (tb.(*testing.T) of any) in pick") {
+		t.Errorf("M1 the shadowed pick: %q", whats(v.Blocks))
+	}
+
+	// H3 (Mythos #265): a module path the standard library may shadow.
+	std := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"go.mod": "module testing\n\ngo 1.26.0\n",
+			"testing.go": "package testing\n\ntype T = tee\n\ntype tee struct{}\n\nfunc (*tee) Error(...any) {}\nfunc (*tee) Fatal(...any) {}\nfunc (*tee) Helper()      {}\n"})
+		plain(t, src, "add", "--all")
+	})
+	v = std.guarded(t, map[string]string{"pkg/calc_test.go": strings.Replace(baseFiles["pkg/calc_test.go"], "t.Fatal(\"add\")", "c := *t\n\t\tuse(&c)\n\t\tt.Fatal(\"add\")", 1) +
+		"\nfunc use(*testing.T) {}\n"})
+	if !finds(v.Blocks, "module path testing has no dot in its first element") {
+		t.Errorf("H3 module testing: %q", whats(v.Blocks))
+	}
 }
 
 // alive: pid runs (a zombie is not).
@@ -165,6 +213,21 @@ func TestIntegrityRealTypesAccepts(t *testing.T) {
 			t.Errorf("%s: blocks %q, warnings %q; want accepted clean", name, whats(v.Blocks), whats(v.Warnings))
 		}
 	}
+	// L1 (Mythos #265), found by the replay: an external test sees the
+	// package with its tests, and so does an own import that imports it (as
+	// go test builds them); nothing else does. One type, not two.
+	x := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/box.go": "package pkg\n\nimport \"example.com/m/other\"\n\ntype Box struct{}\n\nfunc Cfg() *other.Config { return nil }\n",
+			"pkg/export_test.go": "package pkg\n\nfunc Internal() int { return 1 }\n",
+			"util/u.go":          "package util\n\nimport \"example.com/m/pkg\"\n\nfunc Get() pkg.Box { return pkg.Box{} }\n"})
+		plain(t, src, "add", "--all")
+	})
+	ext := strings.Replace(guardBase["pkg/ext_test.go"], "import \"testing\"", "import (\n\t\"testing\"\n\n\t\"example.com/m/other\"\n\t\"example.com/m/pkg\"\n\t\"example.com/m/util\"\n)", 1) +
+		"\nfunc TestBox(t *testing.T) {\n\tvar _ pkg.Box = util.Get()\n\tvar _ *other.Config = pkg.Cfg()\n\t_ = pkg.Internal()\n}\n"
+	if v := x.guarded(t, map[string]string{"pkg/ext_test.go": ext}); !v.Accepted() || len(v.Warnings) > 0 {
+		t.Errorf("an external test through an own import: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
 }
 
 // Fail closed: without a loader, or when it fails, a changed Go package is
@@ -178,9 +241,13 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	}
 	// A go that sleeps, one that reports its address-space limit, and one
 	// that starts a child (M2, Opus #265: the group is killed, not go alone).
-	bin := t.TempDir()
-	write(t, bin, map[string]string{"slow": "#!/bin/sh\nexec sleep 30\n", "limit": "#!/bin/sh\nulimit -v >&2\nexit 1\n",
-		"child": "#!/bin/sh\nsleep 30 &\necho $! > " + filepath.Join(bin, "child.pid") + "\nwait\n"})
+	// Each in a fake GOROOT whose VERSION is the guard's (L2, Mythos #265),
+	// and one of another release.
+	root, old := t.TempDir(), t.TempDir()
+	bin := filepath.Join(root, "bin")
+	write(t, root, map[string]string{"VERSION": runtime.Version() + "\ntime x\n", "bin/slow": "#!/bin/sh\nexec sleep 30\n",
+		"bin/limit": "#!/bin/sh\nulimit -v >&2\nexit 1\n", "bin/child": "#!/bin/sh\nsleep 30 &\necho $! > " + filepath.Join(bin, "child.pid") + "\nwait\n"})
+	write(t, old, map[string]string{"VERSION": "go1.0\n", "bin/go": "#!/bin/sh\nexit 0\n"})
 	for _, p := range []string{"slow", "limit", "child"} {
 		if err := os.Chmod(filepath.Join(bin, p), 0o700); err != nil {
 			t.Fatal(err)
@@ -193,9 +260,11 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 		list Lister
 		why  string
 	}{
-		"no loader":        {nil, "(testing: no Go type loader)"},
-		"a loader fails":   {failing, "(testing: no toolchain)"},
-		"a missing go":     {LocalLister("/nonexistent/go", nil, time.Minute, 0), "(testing: go list: exit status 127"},
+		"no loader":      {nil, "(testing: no Go type loader)"},
+		"a loader fails": {failing, "(testing: no toolchain)"},
+		"a missing go":   {LocalLister("/nonexistent/go", nil, time.Minute, 0), "(testing: go list: lstat /nonexistent"},
+		"a go of another release": {LocalLister(filepath.Join(old, "bin/go"), nil, time.Minute, 0),
+			"(testing: go list: the toolchain is go1.0, not the guard's " + runtime.Version() + ")"},
 		"a go over time":   {LocalLister(filepath.Join(bin, "slow"), nil, 200*time.Millisecond, 0), "(testing: go list: context deadline exceeded)"},
 		"a go over memory": {LocalLister(filepath.Join(bin, "limit"), nil, time.Minute, 1<<30), "(testing: go list: exit status 1: 1048576)"},
 	} {
@@ -224,9 +293,18 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	if _, err := accept(ctx, cancelling); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled while listing: %v", err)
 	}
-	oldPkgs, oldExport := maxPkgs, maxExport
-	t.Cleanup(func() { maxPkgs, maxExport = oldPkgs, oldExport })
-	maxPkgs = 0
+	// H2 (Mythos #265): a guard fault blocks, it does not crash.
+	panicking := func(context.Context, []byte, []byte, []string) (map[string]Listed, error) { panic("a lister fault") }
+	if v, err := accept(context.Background(), panicking); err != nil || !finds(v.Blocks, "unverifiable: the guard failed (a lister fault)") {
+		t.Errorf("a panic in the guard: %v %q", err, whats(v.Blocks))
+	}
+	oldPkgs, oldExport, oldRuns := maxPkgs, maxExport, maxListRuns
+	t.Cleanup(func() { maxPkgs, maxExport, maxListRuns = oldPkgs, oldExport, oldRuns })
+	maxListRuns = 1 // L3: the base's run, then none for the candidate
+	if v := f.guarded(t, change); !finds(v.Blocks, "over the guard's go list bound") {
+		t.Errorf("past the go list run bound: %q", whats(v.Blocks))
+	}
+	maxListRuns, maxPkgs = oldRuns, 0
 	if v := f.guarded(t, map[string]string{"pkg/x.go": "package pkg\n\nimport \"example.com/m/other\"\n\nvar _ = other.Value\n"}); !finds(v.Blocks, "over the guard's package bound") {
 		t.Errorf("past the package bound: %q", whats(v.Blocks))
 	}

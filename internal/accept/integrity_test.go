@@ -575,6 +575,9 @@ func TestGoOn(t *testing.T) {
 // package with tests an exit, exec, system call, descriptor dup, process
 // start or runner call blocks and the rest warn; elsewhere all warn.
 func TestDecisionASweep(t *testing.T) {
+	if sensitive("syscall.ForkExecLock") != 1 { // a name, not the ForkExec family (L3)
+		t.Error("syscall.ForkExecLock is not class 1")
+	}
 	f := newGuardFixture(t)
 	for _, c := range []struct {
 		imp, expr, q string
@@ -584,7 +587,7 @@ func TestDecisionASweep(t *testing.T) {
 		{"syscall", "syscall.AllThreadsSyscall(0, 0, 0, 0)", "syscall.AllThreadsSyscall", 2},
 		{"syscall", "syscall.Dup3(1, 0, 0)", "syscall.Dup3", 2},
 		{"syscall", "syscall.Kill(0, 0)", "syscall.Kill", 1},
-		{"syscall", "syscall.ForkExecLock.Lock()", "syscall.ForkExecLock", 1}, // not ForkExec (L3)
+		{"syscall", "syscall.ForkLock.Lock()", "syscall.ForkLock", 1}, // ForkExecLock (L3) does not exist on linux: below
 		{"golang.org/x/sys/unix", "unix.Exit(0)", "golang.org/x/sys/unix.Exit", 2},
 		{"golang.org/x/sys/unix", "unix.Getpid()", "golang.org/x/sys/unix.Getpid", 1},
 		{"os", "os.Exit(0)", "os.Exit", 2},
