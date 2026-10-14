@@ -63,7 +63,7 @@ and is never edited apart from it.
 | I9 Accounting | partial | P11b, P20, P22a (P12a, P12b done) | `launch`: all |
 | I10 Egress, data policy, context | partial | P7, P8b, P11, P11b, P16 | `launch`: all |
 | I11 Restart and replay | partial | P4a, P21 | `launch`: all |
-| I12 Build facts and accept | partial | P14a, P14b, P22a | `launch`: all |
+| I12 Build facts and accept | partial | P14a, P14b, P14c, P14d, P22a | `launch`: all |
 | I13 Gate verdict and receipts | partial | P15 | `review`: all |
 | I14 Single merge delivery | partial | P18, P19, P27 | `merge-local`: all but the GitHub effect check; `merge-github`: all |
 | I15 Deferred surfaces | partial | P22a | `intake`: admission (the guard); every other capability: all |
@@ -191,7 +191,7 @@ through `lease.completed`. P21 keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `graph.Build` (`graph/build.go`) from `BuildFacts`; ingestion via `attemptRun.admit` (`adapterhost/submit.go`); protected paths and unsafe output refused at accept (`internal/accept`, P14a, #252); no integrity guard yet | kept + GAP | P14b; P22a (wires `accept.Accept` into the build path) |
+| admission | `graph.Build` (`graph/build.go`) from `BuildFacts`; ingestion via `attemptRun.admit` (`adapterhost/submit.go`); protected paths and unsafe output refused at accept (`internal/accept`, P14a, #252); no integrity guard yet | kept + GAP | P14b (Go), P14c (Python), P14d (Go table rows, subtests, helper skips); P22a (wires `accept.Accept` into the build path) |
 | fold/replay | `graph.Check`, `CheckRead` (`graph/build.go`) | kept | — |
 | consumption | the gate must take only an accepted tree; no template wires that | GAP | P22a (P14a provides the accepted tree) |
 | effect | n/a | n/a | — |
