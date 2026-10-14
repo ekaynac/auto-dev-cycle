@@ -33,6 +33,10 @@ func e2eCalc(imports, x, decls string) string {
 func TestIntegrityRealTypes(t *testing.T) {
 	f := newGuardFixture(t)
 	holder := "\ntype holder struct{ t *testing.T }\n"
+	other, only := "amd64", "SYS_ARCH_PRCTL" // the other gate platform's file, and a symbol only it has
+	if typePlatform[1] == "amd64" {
+		other, only = "arm64", "SYS_ARCH_SPECIFIC_SYSCALL"
+	}
 	for name, c := range map[string]guardCase{
 		// Entry 79: own functions and methods returning *testing.T, fields, containers.
 		"fresh(zt())":         {fake("fresh(zt())", freshGo+"\nfunc zt() *testing.T { return nil }\n"), nil, forgedWhy},
@@ -99,13 +103,28 @@ func TestIntegrityRealTypes(t *testing.T) {
 		"H1 .(struct{ T *testing.T })": {fake("mk(t).(struct{ T *testing.T }).T", mkGo), nil, forgedWhy},
 		"H1 as[[]*testing.T]":          {fake("as[[]*testing.T](mk(t))[0]", mkGo+"\nfunc as[I any](v any) I { return v.(I) }\n"), nil, forgedWhy},
 		"H1 MakeSlice alone": {map[string]string{"pkg/calc_test.go": strings.Replace(baseFiles["pkg/calc_test.go"], "import \"testing\"", "import (\n\t\"reflect\"\n\t\"testing\"\n)", 1) +
-			"\nvar _ = reflect.MakeSlice(reflect.TypeOf([]int{}), 1, 1)\n"}, nil, "reflection that makes, writes or calls values (reflect.MakeSlice"},
+			"\nvar _ = reflect.MakeSlice(reflect.TypeOf([]int{}), 1, 1)\n"}, nil, "reflection that makes, writes or calls values (MakeSlice)"},
 		// Found in round 3 (end to end: TestAdd passes): a decoder outside the module allocates a T into a field.
 		"json.Unmarshal into a *testing.T field": {map[string]string{"pkg/calc_test.go": "package pkg\n\nimport (\n\t\"encoding/json\"\n\t\"testing\"\n)\n\n" +
 			"func TestAdd(t *testing.T) {\n\tvar h struct{ T *testing.T }\n\t_ = json.Unmarshal([]byte(`{\"T\":{}}`), &h)\n\ty := h.T\n" +
 			"\tif Add(1, 2) != 3 {\n\t\ty.Error(\"add\")\n\t}\n}\n"}, nil, forgedWhy + " (json.Unmarshal("},
 		// H2: an assertion on a value not an interface; the gate cannot compile it.
 		"H2 t.(*testing.T)": {map[string]string{"pkg/x_test.go": "package pkg\n\nimport \"testing\"\n\nfunc keep(t *testing.T) { _ = t.(*testing.T) }\n"}, nil, "it does not type-check"},
+		// Round 5 (the background detection-bypass flag): reflect's functions as values (end to end: TestAdd passes).
+		"reflect functions as values": {map[string]string{"pkg/calc_test.go": "package pkg\n\nimport (\n\t\"reflect\"\n\t\"testing\"\n)\n\n" +
+			"type holder struct{ T *testing.T }\n\nfunc TestAdd(t *testing.T) {\n\tvar v any = t\n\tvar h holder\n" +
+			"\tvo, nw, set := reflect.ValueOf, reflect.New, reflect.Value.Set\n\tset(vo(&h).Elem().Field(0), nw(vo(v).Type().Elem()))\n" +
+			"\tvar y *testing.T = h.T\n\tif Add(1, 2) != 3 {\n\t\ty.Error(\"add\")\n\t}\n}\n"}, nil, "reflection that makes, writes or calls values (ValueOf) in TestAdd"},
+		// Round 5: a file for one platform is typed with the other's export data. A type error
+		// there is unverifiable: here it hides a forgery (accepted at 57fb44b). The control
+		// below is a documented false block until P14e-2 types each platform.
+		"a forgery typed away on the other platform": {map[string]string{
+			"pkg/calc_test.go": strings.Replace(baseFiles["pkg/calc_test.go"], "t.Fatal(\"add\")", "var y *testing.T = forge(t)\n\t\ty.Fatal(\"add\")", 1),
+			"pkg/x_" + other + "_test.go": "package pkg\n\nimport (\n\t\"encoding/json\"\n\t\"syscall\"\n\t\"testing\"\n)\n\n" +
+				"type holder struct{ T *testing.T }\n\nfunc pickH[N, H any](N, H) H { var h H; return h }\n\nfunc forge(t *testing.T) *testing.T {\n" +
+				"\th := pickH(syscall." + only + ", holder{})\n\t_ = json.Unmarshal([]byte(`{\"T\":{}}`), &h)\n\treturn h.T\n}\n"}, nil, "it does not type-check"},
+		"files for each platform (a false block, P14e-2)": {map[string]string{"pkg/x_amd64.go": "package pkg\n\nimport \"syscall\"\n\nconst archAMD = syscall.SYS_ARCH_PRCTL\n",
+			"pkg/x_arm64.go": "package pkg\n\nimport \"syscall\"\n\nconst archARM = syscall.SYS_ARCH_SPECIFIC_SYSCALL\n"}, nil, "it does not type-check"},
 		// Round 4 (the background fail-open flag): an error whose text holds "redeclared" is still an error.
 		"an error naming redeclared": {map[string]string{"pkg/x_test.go": "package pkg\n\nvar _ = redeclared\n"}, nil, "it does not type-check (pkg/x_test.go:3:9: undefined: redeclared)"},
 		// M2: value-making reflection in an untested helper of a repository with tests.
@@ -222,9 +241,6 @@ func TestIntegrityRealTypesAccepts(t *testing.T) {
 			"\ntype fixture struct{ t *testing.T }\n"},
 		"an interface holding t": {"pkg/calc_test.go": strings.Replace(goT, "t.Fatal(\"add\")", "check(t)\n\t\tt.Fatal(\"add\")", 1) +
 			"\nfunc check(tb testing.TB) { tb.Helper() }\n"},
-		// Round 4 (Mythos #265 r2, M1): a type error in a file the gate builds only on the other platform.
-		"files for each platform": {"pkg/x_amd64.go": "package pkg\n\nimport \"syscall\"\n\nconst archAMD = syscall.SYS_ARCH_PRCTL\n",
-			"pkg/x_arm64.go": "package pkg\n\nimport \"syscall\"\n\nconst archARM = syscall.SYS_ARCH_SPECIFIC_SYSCALL\n"},
 		"an own and a module-cache import": {"pkg/x.go": "package pkg\n\nimport (\n\t\"example.com/m/other\"\n\t\"golang.org/x/sys/unix\"\n)\n\nvar mode, v = unix.S_IFMT, other.Value\n"},
 	} {
 		if v := f.guarded(t, files); !v.Accepted() || len(v.Warnings) > 0 {

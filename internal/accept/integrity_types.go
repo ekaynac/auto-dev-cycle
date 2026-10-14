@@ -478,13 +478,12 @@ func (r *run) typed(dir, name string, fset *token.FileSet, files []*ast.File, me
 	}
 	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
 		Instances: map[*ast.Ident]types.Instance{}}
-	built := map[string]bool{} // a type error elsewhere is another platform's (its own export data differ)
-	for _, f := range files {
-		built[meta[f].path] = builds(meta[f].path, meta[f].src)
-	}
-	conf := types.Config{FakeImportC: true, Error: func(err error) { // not a redeclaration across platforms' files
-		if te, ok := err.(types.Error); ok && typeErr == "" && built[te.Fset.Position(te.Pos).Filename] && !redeclared.MatchString(te.Msg) {
-			typeErr = te.Error()
+	// Any error in any analysed file but a redeclaration across platforms'
+	// files: one for the other platform too, typed with this one's export
+	// data, may hide a fact (a false block until P14e-2 types each platform).
+	conf := types.Config{FakeImportC: true, Error: func(err error) {
+		if te, ok := err.(types.Error); typeErr == "" && !(ok && redeclared.MatchString(te.Msg)) {
+			typeErr = err.Error()
 		}
 	}, Importer: importFunc(func(p string) (*types.Package, error) {
 		pkg, err := ty.Import(p)
@@ -544,7 +543,7 @@ var (
 // writing or calling values. Types are unaliased: an alias in another,
 // unchanged package is seen.
 func facts(info *types.Info, n ast.Node, outside func(*types.Package) bool, add func(string)) {
-	starred := map[ast.Expr]bool{}
+	starred, called := map[ast.Expr]bool{}, map[*ast.Ident]bool{}
 	ast.Inspect(n, func(x ast.Node) bool {
 		e, _ := x.(ast.Expr)
 		at := func(what string, n ast.Node, of ...types.Type) {
@@ -586,7 +585,12 @@ func facts(info *types.Info, n ast.Node, outside func(*types.Package) bool, add 
 					}
 				}
 			}
-		case *ast.Ident:
+		case *ast.Ident: // a reflect function as a value (vo := reflect.ValueOf) hides its calls: one like the makers
+			if o, _ := info.Uses[x].(*types.Func); o != nil && o.Pkg() != nil && o.Pkg().Path() == "reflect" && (!called[x] ||
+				o.FullName() == "reflect."+o.Name() && slices.Contains(reflectMakes, o.Name()) || strings.HasPrefix(o.FullName(), "(reflect.Value).") &&
+				(strings.HasPrefix(o.Name(), "Set") || slices.Contains(valueMakes, o.Name()))) {
+				at(factMakes, x)
+			}
 			if o := info.Defs[x]; o != nil && holds(o.Type(), false, nil) && (isVar(o) || isTypeName(o)) {
 				add(factForged + " (" + x.Name + " " + types.TypeString(o.Type(), nil) + ")")
 			}
@@ -613,10 +617,7 @@ func facts(info *types.Info, n ast.Node, outside func(*types.Package) bool, add 
 				if reaches(info, x, id, func(t types.Type) bool { return holds(t, true, nil) }) {
 					at(factReflect, x)
 				}
-				if name := o.Name(); o.FullName() == "reflect."+name && slices.Contains(reflectMakes, name) ||
-					strings.HasPrefix(o.FullName(), "(reflect.Value).") && (strings.HasPrefix(name, "Set") || slices.Contains(valueMakes, name)) {
-					at(factMakes, x)
-				}
+				called[id] = true
 			}
 		}
 		if tv, ok := info.Types[e]; ok && (tv.IsValue() || tv.IsType() && !starred[e]) && holds(tv.Type, false, nil) {
