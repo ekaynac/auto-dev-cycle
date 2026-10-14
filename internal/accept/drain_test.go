@@ -47,7 +47,7 @@ func TestDrainBoundsBothStreams(t *testing.T) {
 		marker := filepath.Join(t.TempDir(), "flooded")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		start := time.Now()
-		out, stderr, err := drain(sh(t, ctx, "M="+marker+"; "+script), 64<<10, 64<<10)
+		out, stderr, err := drain(ctx, sh(t, ctx, "M="+marker+"; "+script), 64<<10, 64<<10)
 		cancel()
 		if took := time.Since(start); !errors.Is(err, ErrTooLarge) || out != nil || stderr != nil || took > 3*time.Second {
 			t.Errorf("%s: %v after %v (%d, %d bytes kept); want ErrTooLarge promptly", name, err, took, len(out), len(stderr))
@@ -56,7 +56,7 @@ func TestDrainBoundsBothStreams(t *testing.T) {
 			t.Errorf("%s: the whole 64 MiB flood was consumed", name)
 		}
 	}
-	out, stderr, err := drain(sh(t, context.Background(), "echo out; echo err >&2"), 64<<10, 64<<10)
+	out, stderr, err := drain(context.Background(), sh(t, context.Background(), "echo out; echo err >&2"), 64<<10, 64<<10)
 	if err != nil || string(out) != "out\n" || string(stderr) != "err\n" {
 		t.Errorf("an ordinary command: %q, %q, %v", out, stderr, err)
 	}
@@ -102,7 +102,7 @@ func gone(pid int) bool {
 // closed pipe) and recorded its pid before the flood.
 func TestDrainKillsTheGroup(t *testing.T) {
 	cmd, pid := descendant(t, `sleep 30 </dev/null >/dev/null 2>&1 & echo $! > "$P"; head -c 67108864 /dev/zero; sleep 30`)
-	if _, _, err := drain(cmd, 64<<10, 64<<10); !errors.Is(err, ErrTooLarge) {
+	if _, _, err := drain(context.Background(), cmd, 64<<10, 64<<10); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("drain: %v, want ErrTooLarge", err)
 	}
 	if p := pid(); !gone(p) {
@@ -116,7 +116,7 @@ func TestDrainKillsTheGroup(t *testing.T) {
 func TestDrainCutsInheritedPipes(t *testing.T) {
 	cmd, pid := descendant(t, `sleep 10 & echo $! > "$P"; echo done`)
 	start := time.Now()
-	out, _, err := drain(cmd, 64<<10, 64<<10)
+	out, _, err := drain(context.Background(), cmd, 64<<10, 64<<10)
 	if took := time.Since(start); err != nil || string(out) != "done\n" || took > 4*time.Second {
 		t.Errorf("drain: %q, %v after %v; want done within pipeDelay", out, err, took)
 	}

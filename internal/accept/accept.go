@@ -269,7 +269,7 @@ func (g index) run(ctx context.Context, stdin []byte, args ...string) ([]byte, e
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	out, stderr, err := drain(cmd, maxPatch, maxStderr)
+	out, stderr, err := drain(ctx, cmd, maxPatch, maxStderr)
 	if errors.Is(err, ErrTooLarge) {
 		return nil, fmt.Errorf("%w (git %s)", err, args[0])
 	}

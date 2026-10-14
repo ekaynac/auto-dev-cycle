@@ -29,6 +29,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"golang.org/x/mod/modfile"
 )
 
 // The guard's real types (P14e, #226 entries 79 and 82). The module's own
@@ -76,9 +78,10 @@ type Lister func(ctx context.Context, gomod, gosum []byte, paths []string) (map[
 // caches: GOCACHE, GOMODCACHE, HOME), offline: no proxy, no checksum
 // database, no workspace, no other toolchain, no cgo, go.mod read-only. A
 // run is bounded by timeout, its output by maxList and each process's
-// address space by mem bytes (0: unbounded); a cancelled run kills go. A
-// go.mod replacing a module by a directory is refused: only the module
-// cache's source is read. Results are kept by go.mod, go.sum and paths.
+// address space by mem bytes (0: unbounded); a cancelled run kills go's
+// process group. A go.mod replacing a module by a directory (modfile's
+// reading) is refused: only the module cache's source is read. Results are
+// kept by go.mod, go.sum and paths.
 func LocalLister(gobin string, env []string, timeout time.Duration, mem int64) Lister {
 	var mu sync.Mutex
 	kept := map[[32]byte]map[string]Listed{}
@@ -109,11 +112,17 @@ func LocalLister(gobin string, env []string, timeout time.Duration, mem int64) L
 }
 
 func goList(ctx context.Context, gobin string, env []string, timeout time.Duration, mem int64, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
-	if dirReplace(gomod) {
-		return nil, errors.New("go.mod replaces a module by a directory")
+	if gomod != nil {
+		f, err := modfile.Parse("go.mod", gomod, nil)
+		if err != nil {
+			return nil, fmt.Errorf("go.mod not parsed: %w", err)
+		} else if slices.ContainsFunc(f.Replace, func(r *modfile.Replace) bool { return r.New.Version == "" }) {
+			return nil, errors.New("go.mod replaces a module by a directory")
+		}
 	}
-	for _, p := range paths {
-		if p == "" || strings.ContainsAny(p[:1], "-./") || strings.ContainsFunc(p, func(r rune) bool {
+	for _, p := range paths { // no flag, pattern or reserved name
+		if p == "" || strings.ContainsAny(p[:1], "-./") || strings.Contains(p, "...") || slices.Contains([]string{"std", "cmd", "all"}, p) ||
+			strings.HasPrefix(p, "cmd/") || strings.ContainsFunc(p, func(r rune) bool {
 			return r > unicode.MaxASCII || !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("-._~+/", r)
 		}) {
 			return nil, fmt.Errorf("an import path go list cannot take (%q)", p)
@@ -146,7 +155,7 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 	cmd.Env = append(slices.Clone(env), "PATH="+filepath.Dir(gobin)+":/usr/bin:/bin", "GOENV=off", "GOFLAGS=-mod=readonly",
 		"GOPROXY=off", "GOSUMDB=off", "GOWORK=off", "GOTOOLCHAIN=local", "GOTELEMETRY=off", "CGO_ENABLED=0", "GO111MODULE=on",
 		"GOOS="+typePlatform[0], "GOARCH="+typePlatform[1]) // last: they win over env's
-	out, stderr, err := drain(cmd, maxList, maxStderr)
+	out, stderr, err := drain(ctx, cmd, maxList, maxStderr)
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("go list: %w", context.Cause(ctx))
 	} else if err != nil {
@@ -162,20 +171,6 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 		}
 		got[l.ImportPath] = l
 	}
-}
-
-// dirReplace: gomod replaces a module by a directory (./x, ../x, /x).
-func dirReplace(gomod []byte) bool {
-	for _, l := range strings.Split(string(gomod), "\n") {
-		l, _, _ = strings.Cut(l, "//")
-		if _, rhs, ok := strings.Cut(l, "=>"); ok && len(strings.Fields(rhs)) > 0 {
-			if to := strings.Trim(strings.Fields(rhs)[0], "\"`"); to == "." || to == ".." || strings.HasPrefix(to, "./") ||
-				strings.HasPrefix(to, "../") || strings.HasPrefix(to, "/") {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // tree is one version of the repository: paths to blobs, by directory, and
@@ -230,10 +225,12 @@ func (t *tree) typer(r *run, dir string) *typer {
 		ty.why = cmp.Or(why, errText(err))
 		return b
 	}
-	ty.gomod, ty.gosum = read("go.mod"), read("go.sum")
-	for _, l := range strings.Split(string(ty.gomod), "\n") {
-		if f := strings.Fields(l); len(f) == 2 && f[0] == "module" && ty.mod == "" {
-			ty.mod = strings.Trim(f[1], "\"`")
+	if ty.gomod, ty.gosum = read("go.mod"), read("go.sum"); ty.gomod != nil && ty.why == "" {
+		f, err := modfile.Parse(path.Join(root, "go.mod"), ty.gomod, nil)
+		if err != nil {
+			ty.why = "go.mod not parsed: " + err.Error()
+		} else if f.Module != nil {
+			ty.mod = f.Module.Mod.Path
 		}
 	}
 	return ty
@@ -423,8 +420,8 @@ type importFunc func(string) (*types.Package, error)
 func (f importFunc) Import(p string) (*types.Package, error) { return f(p) }
 
 // typed type-checks one package of dir with real imports and adds what the
-// types show to fa: testing values made or laundered (forged), reflection
-// reaching a testing type (a flag). Imports not loaded: unverifiable.
+// types show to fa.typed, per file and function. Imports not loaded:
+// unverifiable.
 func (r *run) typed(dir, name string, fset *token.FileSet, files []*ast.File, meta map[*ast.File]fileMeta, fa *pkgFacts) error {
 	ty := fa.tree.typer(r, dir)
 	if err := ty.need(files); err != nil {
@@ -452,79 +449,135 @@ func (r *run) typed(dir, name string, fset *token.FileSet, files []*ast.File, me
 	} else if !xtest && ty.pathOf(dir) != "" {
 		ty.self[ty.pathOf(dir)] = pkg
 	}
-	fa.forged += made(info, files)
 	for _, f := range files {
-		if p := meta[f].path; reflects(info, f) && !slices.Contains(fa.flags[p], "reflection on a testing value") {
-			fa.flags[p] = append(fa.flags[p], "reflection on a testing value")
+		for _, d := range f.Decls {
+			where := "package level"
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv != nil {
+				where = recv(fn) + "." + fn.Name.Name
+			} else if ok {
+				where = fn.Name.Name
+			}
+			facts(info, d, func(fact string) { fa.typed[meta[f].path+"\x00"+where+"\x00"+fact]++ })
 		}
 	}
 	return nil
 }
 
-// made counts the testing values the real types show made: an expression,
-// variable, type or type argument holding a T, B, F or M by value (a type
-// directly behind * excepted); a value asserted, switched or converted to a
-// pointer to one, or to an interface with a failure-setting method; and a
-// type argument a generic could assert a value to (as[*testing.T](v)).
-// Types are unaliased: an alias in another, unchanged package is seen.
-func made(info *types.Info, files []*ast.File) (n int) {
+// Facts, each keyed by its text, file and function: a key the candidate
+// holds more often than the base blocks (factMakes in a package with tests;
+// elsewhere it warns), so no counted form can be traded for another.
+const (
+	factForged  = "a testing value not the runner's"
+	factReflect = "reflection on a testing value"
+	factMakes   = "reflection that makes, writes or calls values"
+)
+
+// facts reports what the real types show in n: a testing value made (an
+// expression, variable, type or type argument holding a T, B, F or M by
+// value, a type directly behind * excepted); a value asserted, switched or
+// converted to pointers to one, or to an interface with a failure-setting
+// method; a type argument a generic could assert a value to
+// (as[*testing.T](v)); and reflection reaching a testing type, or making,
+// writing or calling values. Types are unaliased: an alias in another,
+// unchanged package is seen.
+func facts(info *types.Info, n ast.Node, add func(string)) {
 	starred := map[ast.Expr]bool{}
-	for _, f := range files {
-		ast.Inspect(f, func(x ast.Node) bool {
-			switch x := x.(type) {
-			case *ast.StarExpr:
-				for e := x.X; ; {
-					starred[e] = true
-					p, ok := e.(*ast.ParenExpr)
-					if !ok {
-						break
-					}
-					e = p.X
+	ast.Inspect(n, func(x ast.Node) bool {
+		e, _ := x.(ast.Expr)
+		at := func(what string, n ast.Node) {
+			s := types.ExprString(n.(ast.Expr))
+			add(what + " (" + s[:min(len(s), 120)] + ")")
+		}
+		switch x := x.(type) {
+		case *ast.StarExpr:
+			for e := x.X; ; {
+				starred[e] = true
+				p, ok := e.(*ast.ParenExpr)
+				if !ok {
+					break
 				}
-			case *ast.TypeAssertExpr:
-				n += b2i(x.Type != nil && launders(info.TypeOf(x.Type)))
-			case *ast.TypeSwitchStmt:
-				for _, c := range x.Body.List {
-					for _, e := range c.(*ast.CaseClause).List {
-						n += b2i(info.Types[e].IsType() && launders(info.Types[e].Type))
+				e = p.X
+			}
+		case *ast.TypeAssertExpr:
+			if x.Type != nil && launders(info.TypeOf(x.Type)) {
+				at(factForged, x)
+			}
+		case *ast.TypeSwitchStmt:
+			for _, c := range x.Body.List {
+				for _, e := range c.(*ast.CaseClause).List {
+					if info.Types[e].IsType() && launders(info.Types[e].Type) {
+						at(factForged, e)
 					}
-				}
-			case *ast.CallExpr: // a conversion to *testing.T, of anything else
-				if tv := info.Types[ast.Unparen(x.Fun)]; tv.IsType() && len(x.Args) == 1 {
-					p, ok := types.Unalias(tv.Type).Underlying().(*types.Pointer)
-					from := info.TypeOf(x.Args[0])
-					n += b2i(ok && holds(p.Elem(), false, nil) && (from == nil || !types.Identical(from, tv.Type)))
 				}
 			}
-			return true
-		})
-	}
-	for e, tv := range info.Types {
-		n += b2i((tv.IsValue() || tv.IsType() && !starred[e]) && holds(tv.Type, false, nil))
-	}
-	for _, o := range info.Defs {
-		switch o.(type) {
-		case *types.Var, *types.TypeName:
-			n += b2i(holds(o.Type(), false, nil))
+		case *ast.Ident:
+			if o := info.Defs[x]; o != nil && holds(o.Type(), false, nil) && (isVar(o) || isTypeName(o)) {
+				add(factForged + " (" + x.Name + " " + types.TypeString(o.Type(), nil) + ")")
+			}
+			if in, ok := info.Instances[x]; ok && slices.ContainsFunc(slices.Collect(in.TypeArgs.Types()), func(t types.Type) bool {
+				return holds(t, false, nil) || launders(t)
+			}) {
+				add(factForged + " (" + x.Name + types.TypeString(in.Type, nil) + ")")
+			}
+		case *ast.CallExpr:
+			if tv := info.Types[ast.Unparen(x.Fun)]; tv.IsType() && len(x.Args) == 1 { // to *testing.T (**, …), of anything else
+				if from := info.TypeOf(x.Args[0]); ptrHolds(tv.Type) && (from == nil || !types.Identical(from, tv.Type)) {
+					at(factForged, x)
+				}
+			}
+			fun, _ := fn(x.Fun)
+			id := ident(fun)
+			if sel, ok := fun.(*ast.SelectorExpr); ok {
+				id = sel.Sel
+			}
+			if o, _ := info.Uses[id].(*types.Func); o != nil && o.Pkg() != nil && o.Pkg().Path() == "reflect" {
+				if reaches(info, x, id) {
+					at(factReflect, x)
+				}
+				if name := o.Name(); slices.Contains([]string{"reflect.New", "reflect.NewAt", "reflect.Zero"}, o.FullName()) ||
+					strings.HasPrefix(o.FullName(), "(reflect.Value).") && (strings.HasPrefix(name, "Set") ||
+						slices.Contains([]string{"Call", "CallSlice", "Method", "MethodByName"}, name)) {
+					at(factMakes, x)
+				}
+			}
+		}
+		if tv, ok := info.Types[e]; ok && (tv.IsValue() || tv.IsType() && !starred[e]) && holds(tv.Type, false, nil) {
+			at(factForged, e)
+		}
+		return true
+	})
+}
+
+func isVar(o types.Object) bool      { _, ok := o.(*types.Var); return ok }
+func isTypeName(o types.Object) bool { _, ok := o.(*types.TypeName); return ok }
+
+// reaches: a reflect call's arguments (through a conversion to an
+// interface, any(h)) or type arguments (TypeFor[holder]) hold a testing
+// type at any depth, behind pointers too (a struct's *testing.T).
+func reaches(info *types.Info, c *ast.CallExpr, id *ast.Ident) bool {
+	var ts []types.Type
+	for _, a := range c.Args {
+		ts = append(ts, info.TypeOf(a))
+		if conv, ok := ast.Unparen(a).(*ast.CallExpr); ok && len(conv.Args) == 1 && info.Types[ast.Unparen(conv.Fun)].IsType() {
+			ts = append(ts, info.TypeOf(conv.Args[0]))
 		}
 	}
-	for _, in := range info.Instances {
-		n += b2i(slices.ContainsFunc(slices.Collect(in.TypeArgs.Types()), func(t types.Type) bool { return holds(t, false, nil) || launders(t) }))
+	if in, ok := info.Instances[id]; ok {
+		ts = append(ts, slices.Collect(in.TypeArgs.Types())...)
 	}
-	return n
+	return slices.ContainsFunc(ts, func(t types.Type) bool { return holds(t, true, nil) })
 }
 
 // launders: a value asserted or switched to t is a testing value to the
-// guard: a pointer to one, or an interface with a failure-setting method
+// guard: pointers to one, or an interface with a failure-setting method
 // (testing.TB, interface{ Error(...any) }, a type parameter so constrained).
 func launders(t types.Type) bool {
 	if p, ok := types.Unalias(t).(*types.TypeParam); ok {
 		t = p.Constraint()
 	}
-	switch u := types.Unalias(t).Underlying().(type) {
-	case *types.Pointer:
-		return holds(u.Elem(), false, nil)
-	case *types.Interface:
+	if ptrHolds(t) {
+		return true
+	} else if u, ok := types.Unalias(t).Underlying().(*types.Interface); ok {
 		for i := range u.NumMethods() {
 			if s := failSigs[u.Method(i).Name()]; s != nil && types.Identical(u.Method(i).Type(), s) {
 				return true
@@ -532,6 +585,16 @@ func launders(t types.Type) bool {
 		}
 	}
 	return false
+}
+
+// ptrHolds: t is one or more pointers (every level stripped) to a value
+// holding a testing struct: *testing.T, **testing.T, *myD.
+func ptrHolds(t types.Type) bool {
+	n := 0
+	for p, ok := types.Unalias(t).Underlying().(*types.Pointer); ok && n < 32; p, ok = types.Unalias(t).Underlying().(*types.Pointer) {
+		t, n = p.Elem(), n+1
+	}
+	return n > 0 && holds(t, false, nil)
 }
 
 // holds: t holds a testing.T, B, F or M (or their common part) by value,
@@ -570,23 +633,4 @@ func holds(t types.Type, ptr bool, seen map[types.Type]bool) bool {
 		in = []types.Type{u.Elem()}
 	}
 	return slices.ContainsFunc(in, func(t types.Type) bool { return t != nil && holds(t, ptr, seen) })
-}
-
-// reflects: f calls into reflect with an argument whose type holds a
-// testing type at any depth, behind pointers too (a struct's *testing.T).
-func reflects(info *types.Info, f *ast.File) (found bool) {
-	ast.Inspect(f, func(n ast.Node) bool {
-		if c, ok := n.(*ast.CallExpr); ok && !found {
-			fun, _ := fn(c.Fun)
-			id := ident(fun)
-			if sel, ok := fun.(*ast.SelectorExpr); ok {
-				id = sel.Sel
-			}
-			o, _ := info.Uses[id].(*types.Func)
-			found = o != nil && o.Pkg() != nil && o.Pkg().Path() == "reflect" &&
-				slices.ContainsFunc(c.Args, func(a ast.Expr) bool { return holds(info.TypeOf(a), true, nil) })
-		}
-		return !found
-	})
-	return found
 }

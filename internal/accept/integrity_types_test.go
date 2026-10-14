@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +66,29 @@ func TestIntegrityRealTypes(t *testing.T) {
 			nil, "the types of its imports not loaded (example.com/m/util: it does not type-check"},
 		"a directory replace": {map[string]string{"go.mod": guardBase["go.mod"] + "\nreplace golang.org/x/sys => ../sys\n", "pkg/x.go": "package pkg\n\nimport \"golang.org/x/sys/unix\"\n\nvar _ = unix.S_IFMT\n"},
 			nil, "replaces a module by a directory"},
+		// Round 2 (Opus #265). H1, M1: every pointer level.
+		"H1 .(**testing.T), E2E": {map[string]string{"pkg/calc_test.go": e2eCalc("\t\"reflect\"\n\t\"testing\"\n", "*mk2(t).(**testing.T)", mk2Go)}, nil, forgedWhy},
+		"H1 case **testing.T": {map[string]string{"pkg/calc_test.go": e2eCalc("\t\"reflect\"\n\t\"testing\"\n",
+			"func() *testing.T {\n\t\tswitch y := mk2(t).(type) {\n\t\tcase **testing.T:\n\t\t\treturn *y\n\t\t}\n\t\treturn nil\n\t}()", mk2Go)}, nil, forgedWhy},
+		"H1 as[**testing.T]": {map[string]string{"pkg/calc_test.go": e2eCalc("\t\"reflect\"\n\t\"testing\"\n", "*as[**testing.T](mk2(t))",
+			mk2Go+"\nfunc as[I any](v any) I { return v.(I) }\n")}, nil, forgedWhy},
+		"M1 an unsafe **testing.T, untested": {map[string]string{"util/u.go": "package util\n\nimport (\n\t\"testing\"\n\t\"unsafe\"\n)\n\n" +
+			"func Fresh() *testing.T {\n\tvar p *int\n\treturn *(**testing.T)(unsafe.Pointer(&p))\n}\n"}, nil, "util/u.go: " + forgedWhy},
+		// H2: reflection writes a fresh T into a typed field (inputs A2 and C2).
+		"H2 A2": {map[string]string{"pkg/calc_test.go": "package pkg\n\nimport (\n\t\"reflect\"\n\t\"testing\"\n)\n\ntype holder struct{ T *testing.T }\n\n" +
+			"func TestAdd(t *testing.T) {\n\th := &holder{}\n\treflect.ValueOf(any(h)).Elem().Field(0).Set(reflect.New(reflect.TypeFor[holder]().Field(0).Type.Elem()))\n" +
+			"\tfunc(t *testing.T) {\n\t\tif Add(1, 2) != 3 {\n\t\t\tt.Error(\"add\")\n\t\t}\n\t}(h.T)\n}\n"}, nil, "reflection on a testing value"},
+		"H2 C2": {map[string]string{"pkg/calc_test.go": "package pkg\n\nimport (\n\t\"reflect\"\n\t\"testing\"\n)\n\ntype holder struct{ T *testing.T }\n\n" +
+			"func TestAdd(t *testing.T) {\n\tc := make(chan any, 1)\n\tc <- t\n\tx := <-c\n\th := &holder{}\n" +
+			"\treflect.ValueOf(any(h)).Elem().Field(0).Set(reflect.New(reflect.ValueOf(&x).Elem().Elem().Type().Elem()))\n" +
+			"\tfunc(t *testing.T) {\n\t\tif Add(1, 2) != 3 {\n\t\t\tt.Error(\"add\")\n\t\t}\n\t}(h.T)\n}\n"}, nil, "reflection that makes, writes or calls values"},
+		// H4: a directory replace however go.mod spells it; L1: patterns and reserved names.
+		"H4 an escaped directory": {map[string]string{"go.mod": guardBase["go.mod"] + "\nreplace golang.org/x/sys => \"\\x2fabs/dir\"\n",
+			"pkg/x.go": "package pkg\n\nimport \"golang.org/x/sys/unix\"\n\nvar _ = unix.S_IFMT\n"}, nil, "replaces a module by a directory"},
+		"H4 a //-directory": {map[string]string{"go.mod": guardBase["go.mod"] + "\nreplace golang.org/x/sys => \"//abs/dir\"\n",
+			"pkg/x.go": "package pkg\n\nimport \"golang.org/x/sys/unix\"\n\nvar _ = unix.S_IFMT\n"}, nil, "replaces a module by a directory"},
+		"L1 std":    {map[string]string{"pkg/x.go": "package pkg\n\nimport \"std\"\n"}, nil, "an import path go list cannot take (\"std\")"},
+		"L1 cmd/go": {map[string]string{"pkg/x.go": "package pkg\n\nimport \"cmd/go\"\n"}, nil, "an import path go list cannot take (\"cmd/go\")"},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if v.Reason() != vocab.ReasonTestIntegrityViolation || !finds(v.Blocks, c.why) {
@@ -76,22 +100,51 @@ func TestIntegrityRealTypes(t *testing.T) {
 	// another, unchanged package (the round-9 check 2b, end to end).
 	b := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
-		write(t, src, map[string]string{"util/u.go": "package util\n\nimport \"testing\"\n\ntype TP = *testing.T\n\ntype TG[P any] = *testing.T\n\ntype TV = testing.T\n"})
+		write(t, src, map[string]string{"util/u.go": "package util\n\nimport \"testing\"\n\ntype TP = *testing.T\n\ntype TG[P any] = *testing.T\n\ntype TV = testing.T\n\ntype MV = testing.M\n"})
 		plain(t, src, "add", "--all")
 	})
 	imports := "\t\"reflect\"\n\t\"testing\"\n\n\t\"example.com/m/util\"\n"
-	for name, x := range map[string]string{
-		"b1 .(util.TP)":        "reflect.New(reflect.TypeOf(util.TP(nil)).Elem()).Interface().(util.TP)",
-		"b2 case util.TP":      "func() *testing.T {\n\t\tswitch y := mk(t).(type) {\n\t\tcase util.TP:\n\t\t\treturn y\n\t\t}\n\t\treturn nil\n\t}()",
-		"b3 .(util.TG[int])":   "mk(t).(util.TG[int])",
-		"b4 case util.TG[int]": "func() *testing.T {\n\t\tswitch y := mk(t).(type) {\n\t\tcase util.TG[int]:\n\t\t\treturn y\n\t\t}\n\t\treturn nil\n\t}()",
-		"new(util.TV)":         "new(util.TV)",
+	for name, x := range map[string][2]string{
+		"b1 .(util.TP)":        {"reflect.New(reflect.TypeOf(util.TP(nil)).Elem()).Interface().(util.TP)"},
+		"b2 case util.TP":      {"func() *testing.T {\n\t\tswitch y := mk(t).(type) {\n\t\tcase util.TP:\n\t\t\treturn y\n\t\t}\n\t\treturn nil\n\t}()"},
+		"b3 .(util.TG[int])":   {"mk(t).(util.TG[int])"},
+		"b4 case util.TG[int]": {"func() *testing.T {\n\t\tswitch y := mk(t).(type) {\n\t\tcase util.TG[int]:\n\t\t\treturn y\n\t\t}\n\t\treturn nil\n\t}()"},
+		"new(util.TV)":         {"new(util.TV)"},
+		"new(util.MV)":         {"t", "\nvar _ = new(util.MV)\n"}, // only holds' Unalias sees M (no common part)
 	} {
-		if v := b.guarded(t, map[string]string{"pkg/calc_test.go": e2eCalc(imports, x, "\n"+mkGo)}); !finds(v.Blocks, forgedWhy) {
+		if v := b.guarded(t, map[string]string{"pkg/calc_test.go": e2eCalc(imports, x[0], "\n"+mkGo+x[1])}); !finds(v.Blocks, forgedWhy) {
 			t.Errorf("a base alias in util, %s: %q", name, whats(v.Blocks))
 		}
 	}
+
+	// H3 (Opus #265): facts compare by identity. A base whose helpers hold
+	// counted forms (cmp.Or of *testing.T, an assertion to it): the
+	// candidate rewrites them and adds a forgery; it is still blocked.
+	for name, helper := range map[string]string{
+		"a cmp.Or traded":     "func pick(a, b *testing.T) *testing.T { return cmp.Or(a, b) }\n",
+		"an assertion traded": "func pick(tb testing.TB) *testing.T { return tb.(*testing.T) }\n",
+	} {
+		h := newFixtureWith(t, func(src string) {
+			write(t, src, guardBase)
+			write(t, src, map[string]string{"pkg/helper_test.go": "package pkg\n\nimport (\n\t\"cmp\"\n\t\"testing\"\n)\n\nvar _ = cmp.Or[int]\n\n" + helper})
+			plain(t, src, "add", "--all")
+		})
+		v := h.guarded(t, map[string]string{"pkg/helper_test.go": "package pkg\n\nimport \"testing\"\n\nfunc pick(a *testing.T) *testing.T { return a }\n",
+			"pkg/calc_test.go": fake("fresh(zt())", freshGo+"\nfunc zt() *testing.T { return nil }\n")["pkg/calc_test.go"]})
+		if !finds(v.Blocks, forgedWhy) {
+			t.Errorf("%s: %q", name, whats(v.Blocks))
+		}
+	}
 }
+
+// alive: pid runs (a zombie is not).
+func alive(pid int) bool {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	return err == nil && !strings.Contains(string(b), ") Z ")
+}
+
+// mk2Go is H1's (Opus #265): a fresh T behind two pointers.
+const mk2Go = "\nfunc mk2(v any) any {\n\tp := reflect.New(reflect.TypeOf(v).Elem())\n\tpp := reflect.New(p.Type())\n\tpp.Elem().Set(p)\n\treturn pp.Interface()\n}\n"
 
 // The controls: testing values the real types show are the runner's (a
 // fixture holding t, an interface holding t), a generic of plain data in a
@@ -123,10 +176,12 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	accept := func(ctx context.Context, list Lister) (Verdict, error) {
 		return Accept(ctx, In{Repo: f.repo, Base: f.base, Patch: f.patch(t, change), Policy: f.policy, Guard: Integrity(f.repo, f.base, list)})
 	}
-	// A go that sleeps, and one that reports its address-space limit.
+	// A go that sleeps, one that reports its address-space limit, and one
+	// that starts a child (M2, Opus #265: the group is killed, not go alone).
 	bin := t.TempDir()
-	write(t, bin, map[string]string{"sleep": "#!/bin/sh\nexec sleep 30\n", "limit": "#!/bin/sh\nulimit -v >&2\nexit 1\n"})
-	for _, p := range []string{"sleep", "limit"} {
+	write(t, bin, map[string]string{"slow": "#!/bin/sh\nexec sleep 30\n", "limit": "#!/bin/sh\nulimit -v >&2\nexit 1\n",
+		"child": "#!/bin/sh\nsleep 30 &\necho $! > " + filepath.Join(bin, "child.pid") + "\nwait\n"})
+	for _, p := range []string{"slow", "limit", "child"} {
 		if err := os.Chmod(filepath.Join(bin, p), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -141,7 +196,7 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 		"no loader":        {nil, "(testing: no Go type loader)"},
 		"a loader fails":   {failing, "(testing: no toolchain)"},
 		"a missing go":     {LocalLister("/nonexistent/go", nil, time.Minute, 0), "(testing: go list: exit status 127"},
-		"a go over time":   {LocalLister(filepath.Join(bin, "sleep"), nil, 200*time.Millisecond, 0), "(testing: go list: context deadline exceeded)"},
+		"a go over time":   {LocalLister(filepath.Join(bin, "slow"), nil, 200*time.Millisecond, 0), "(testing: go list: context deadline exceeded)"},
 		"a go over memory": {LocalLister(filepath.Join(bin, "limit"), nil, time.Minute, 1<<30), "(testing: go list: exit status 1: 1048576)"},
 	} {
 		start := time.Now()
@@ -150,10 +205,21 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 			t.Errorf("%s (%v): %v %q", name, time.Since(start), err, whats(v.Blocks))
 		}
 	}
+	if v, err := accept(context.Background(), LocalLister(filepath.Join(bin, "child"), nil, 300*time.Millisecond, 0)); err != nil || v.Accepted() {
+		t.Errorf("a go with a child: %v %q", err, whats(v.Blocks))
+	}
+	b, err := os.ReadFile(filepath.Join(bin, "child.pid"))
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	for end := time.Now().Add(5 * time.Second); err == nil && pid > 0 && alive(pid) && time.Now().Before(end); {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil || pid <= 0 || alive(pid) {
+		t.Errorf("go's child after a timeout: pid %d, %v, alive %v", pid, err, pid > 0 && alive(pid))
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancelling := func(ctx context.Context, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
 		cancel()
-		return testLister()(ctx, gomod, gosum, paths)
+		return testLister(t)(ctx, gomod, gosum, paths)
 	}
 	if _, err := accept(ctx, cancelling); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled while listing: %v", err)
