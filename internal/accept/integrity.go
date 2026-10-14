@@ -17,14 +17,13 @@ import (
 )
 
 // The integrity guard (01 §2.5 [A6], P14b) reads each touched package's Go
-// files, base and candidate, by syntax and types. It blocks (no approved
-// row in M1) a test gone, less surely collected, with fewer assertions or
-// more skips (by platform, package and name), a skip outside tests, and
-// test2json forgery; what it cannot prove safe is blocked as unverifiable
-// (unread or unparsed Go, initialization reaching an exit, output or an
-// unresolved call, linkname, unsafe, cgo, assembly, reflection on testing
-// values, go.mod changes that hide tests). Python fails closed until P14c;
-// table rows, subtests and helper skips are P14d's.
+// files, base and candidate, by syntax and types. It blocks a test gone,
+// less surely collected, with fewer assertions or more skips, a skip
+// outside tests, and test2json forgery's known forms; what it cannot prove
+// safe is unverifiable. References into S (sensitive) block from
+// initialization, block as exits in tested packages, and otherwise warn
+// naming file and function (operator decision A: code the tests call can
+// still forge in-process). Python fails closed until P14c.
 var (
 	maxRead  int64 = 64 << 20 // blob bytes in all
 	maxFile  int64 = 4 << 20  // per blob
@@ -35,9 +34,7 @@ var (
 		"pyproject.toml", "pyvenv.cfg"}
 )
 
-// stat is one test's evidence on one platform: cert is 2 when go test
-// surely collects its file there, 1 when that depends on tags the guard
-// does not model; cons is its file's constraint lines.
+// stat is one test's evidence on one platform (cert: goOn's).
 type stat struct {
 	asserts, skips, cert int
 	cons                 string
@@ -47,7 +44,7 @@ type stat struct {
 type pkgFacts struct {
 	tests                       map[string]*stat    // "platform dir:package.Name"
 	ambient, forged, twentyTwos int                 // skips outside tests, forging markers, …
-	danger                      map[string]int      // "file: reference in function": exits, exec, testing's runner
+	refs                        map[string]int      // "file: reference into S in function"
 	init                        map[string]int      // what initialization reaches
 	warn                        map[string]string   // TestMain(*testing.M), compared whole
 	flags                       map[string][]string // per file: linkname, unsafe, …
@@ -58,7 +55,8 @@ type pkgFacts struct {
 // Accept's In.Guard. It lists the base's files through a temporary index.
 func Integrity(repo sandbox.Repo, base string) Guard {
 	return func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
-		r := &run{ctx: ctx, repo: repo, base: base, read: read, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{}}
+		r := &run{ctx: ctx, repo: repo, base: base, read: read, budget: maxRead, blobs: map[string][]byte{},
+			touched: map[string]bool{}, changed: map[string]bool{}}
 		err := r.check(changes)
 		return r.blocks, r.warnings, err
 	}
@@ -67,14 +65,15 @@ func Integrity(repo sandbox.Repo, base string) Guard {
 type run struct {
 	ctx                context.Context
 	repo               sandbox.Repo
-	base, mod          string // mod: the candidate's module path
+	base               string
 	read               Reader
 	budget             int64
 	work               int
 	blobs              map[string][]byte   // blobs read, once
 	files, cand        map[string]string   // the base's and the candidate's paths, to blobs
-	baseDirs, candDirs map[string][]string // their Go files by directory
+	baseDirs, candDirs map[string][]string // their files by directory
 	touched            map[string]bool     // directories of changed Go files
+	changed            map[string]bool     // their import paths
 	blocks, warnings   []Block
 }
 
@@ -114,6 +113,11 @@ func (r *run) check(changes []Change) error {
 	}
 	if err := r.goMod(); err != nil {
 		return err
+	}
+	for _, dir := range slices.Sorted(maps.Keys(r.touched)) {
+		if err := r.module(dir); err != nil {
+			return err
+		}
 	}
 	for _, dir := range slices.Sorted(maps.Keys(r.touched)) {
 		b, err := r.pkg(dir, r.files, r.baseDirs)
@@ -176,39 +180,57 @@ func (r *run) file(blob string) ([]byte, string, error) {
 	return b, "", nil
 }
 
-// goMod reads the candidate's module path, and blocks a root go.mod whose
-// ignore directives (Go 1.25: packages ./... leaves out) changed.
+// goMod blocks a root go.mod with no module path, or whose ignore
+// directives (Go 1.25: packages ./... leaves out) changed.
 func (r *run) goMod() error {
-	var ignores [2]string
+	if r.files["go.mod"] == r.cand["go.mod"] {
+		return nil
+	}
+	var mods, ignores [2]string
 	for i, blob := range []string{r.files["go.mod"], r.cand["go.mod"]} {
-		if blob == "" || r.files["go.mod"] == r.cand["go.mod"] && i == 0 {
-			continue
-		}
-		b, why, err := r.file(blob)
-		if err != nil || why != "" {
+		if b, why, err := r.file(blob); blob != "" && (err != nil || why != "") {
 			add(&r.blocks, "go.mod", "unverifiable: "+why)
 			return err
+		} else if blob != "" {
+			mods[i], ignores[i] = goModFacts(b)
 		}
-		for _, l := range strings.Split(string(b), "\n") {
-			l, _, _ = strings.Cut(l, "//")
-			if f := strings.Fields(l); len(f) == 2 && f[0] == "module" && i == 1 {
-				r.mod = strings.Trim(f[1], `"`)
-			}
-		}
-		ignores[i] = goIgnores(b)
 	}
-	if r.cand["go.mod"] != "" && r.mod == "" {
+	if r.cand["go.mod"] != "" && mods[1] == "" {
 		add(&r.blocks, "go.mod", "unverifiable: a root go.mod whose module path the guard cannot read")
 	}
-	if r.files["go.mod"] != r.cand["go.mod"] && ignores[0] != ignores[1] {
+	if ignores[0] != ignores[1] {
 		add(&r.blocks, "go.mod", "unverifiable: a root go.mod's ignore directives changed (packages leave ./...)")
 	}
 	return nil
 }
 
+// module records the import path of the package in dir, from the nearest
+// go.mod above it in the candidate; none read blocks it as unverifiable.
+func (r *run) module(dir string) error {
+	d := dir
+	for r.cand[path.Join(d, "go.mod")] == "" && d != "." {
+		d = path.Dir(d)
+	}
+	mod := ""
+	if blob := r.cand[path.Join(d, "go.mod")]; blob != "" {
+		b, why, err := r.file(blob)
+		if err != nil {
+			return err
+		} else if why == "" {
+			mod, _ = goModFacts(b)
+		}
+	}
+	if mod == "" {
+		add(&r.blocks, dir, "unverifiable: the package's module cannot be read")
+	}
+	r.changed[path.Join(mod, strings.TrimPrefix(dir, d))] = mod != ""
+	return nil
+}
+
 // pkg reads one version of the package directory dir.
 func (r *run) pkg(dir string, files map[string]string, dirs map[string][]string) (pkgFacts, error) {
-	fa := pkgFacts{tests: map[string]*stat{}, init: map[string]int{}, danger: map[string]int{}, warn: map[string]string{}, flags: map[string][]string{}, bad: map[string]string{}}
+	fa := pkgFacts{tests: map[string]*stat{}, refs: map[string]int{}, init: map[string]int{}, warn: map[string]string{},
+		flags: map[string][]string{}, bad: map[string]string{}}
 	srcs := map[string][]byte{}
 	for _, p := range dirs[dir] {
 		if path.Ext(p) != ".go" {
@@ -226,8 +248,18 @@ func (r *run) pkg(dir string, files map[string]string, dirs map[string][]string)
 	return fa, r.analyse(dir, srcs, &fa)
 }
 
+// keys is the sorted union of maps' keys.
+func keys[V any](ms ...map[string]V) []string {
+	var out []string
+	for _, m := range ms {
+		out = append(out, slices.Collect(maps.Keys(m))...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // compare blocks what one package directory lost, or gained, between the
-// base (b) and the candidate (a).
+// base (b) and the candidate (a), and warns of what the reviewer must see.
 func (r *run) compare(dir string, b, a pkgFacts) {
 	bad := maps.Clone(b.bad)
 	maps.Copy(bad, a.bad)
@@ -253,7 +285,7 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 		add(&r.blocks, dir, "a skip added outside a test (a helper)")
 	}
 	if a.forged > b.forged {
-		add(&r.blocks, dir, "can forge go test2json results (testing.Testing, a 0x16 in a constant, or a testing value not the runner's)")
+		add(&r.blocks, dir, "can forge go test2json results (testing.Testing, a 0x16 spelled or in a constant, or a testing value not the runner's)")
 	}
 	for _, k := range slices.Sorted(maps.Keys(a.init)) {
 		if a.init[k] > b.init[k] {
@@ -264,19 +296,22 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 		for _, f := range a.flags[p] {
 			if !slices.Contains(b.flags[p], f) && (r.tested(dir) || f == "reflection on a testing value") {
 				add(&r.blocks, p, "unverifiable: "+f)
+			} else if !slices.Contains(b.flags[p], f) {
+				add(&r.warnings, p, f+": review it")
 			}
 		}
 	}
-	for _, k := range slices.Compact(slices.Sorted(slices.Values(slices.Concat(slices.Collect(maps.Keys(b.warn)), slices.Collect(maps.Keys(a.warn)))))) {
+	for _, k := range keys(b.warn, a.warn) {
 		if a.warn[k] != b.warn[k] {
 			add(&r.warnings, dir, k+" changed or deleted: review it")
 		}
 	}
-	for _, k := range slices.Sorted(maps.Keys(a.danger)) { // per file and function: blocked, or else warned
-		if _, ref, _ := strings.Cut(k, ": "); a.danger[k] > b.danger[k] && r.tested(dir) && dangerous(ref) {
-			add(&r.blocks, k, "unverifiable: a new exit, exec or call into testing's runner in a package with tests")
-		} else if a.danger[k] > b.danger[k] {
-			add(&r.warnings, k, "a new exit, output or testing-control reference: review it")
+	for _, k := range keys(b.refs, a.refs) { // per file and function: added ones block or warn, any other change warns
+		q, _, _ := strings.Cut(k[strings.Index(k, ": ")+2:], " in ")
+		if a.refs[k] > b.refs[k] && r.tested(dir) && sensitive(q) == 2 {
+			add(&r.blocks, k, "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
+		} else if a.refs[k] != b.refs[k] {
+			add(&r.warnings, k, "a reference into S (exit, output, process, testing control) added, removed or moved: review it")
 		}
 	}
 	if a.twentyTwos > b.twentyTwos {
