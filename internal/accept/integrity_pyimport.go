@@ -77,8 +77,7 @@ func pyConst(t []ptok) bool {
 	return true
 }
 
-// pyCalls are the names t calls (a decorator's too, and a ** operand):
-// a chain's root, "" when the callee is not a plain name.
+// pyCalls are the roots of what t calls ("": not a plain name).
 func pyCalls(t []ptok) (calls []string) {
 	for i := range t {
 		if pyCallAt(t, i) && !strings.HasPrefix(chain(t[:i]), ".") {
@@ -93,8 +92,7 @@ func pyCalls(t []ptok) (calls []string) {
 	return calls
 }
 
-// pyBinds are the names statement t binds at import: an import's (and
-// imported is true), or a def's, a class's, an assignment's or a walrus's.
+// pyBinds are the names t binds: by an import (imported), def, class, = or :=.
 func pyBinds(t []ptok) (names []string, imported bool) {
 	for i, k := range t {
 		if k.kind == 'n' && i+2 < len(t) && t[i+1].text == ":" && t[i+2].text == "=" {
@@ -121,14 +119,13 @@ func pyBinds(t []ptok) (names []string, imported bool) {
 	return names, false
 }
 
-// pyRebound: the file rebinds __name__ anywhere (not as a lone call
-// argument), or star-imports (Opus #266 M2): no __main__ guard is a scope.
+// pyRebound: the file rebinds __name__ or star-imports (Opus #266 M2).
 func pyRebound(lines []pline) bool {
 	for _, l := range lines {
 		t := slices.Concat(l.toks, l.inner)
 		for i := range t {
 			if t[i].text == "*" && (t[0].text == "from" || t[0].text == "import") || t[i].text == "__name__" && !pyMain(l.toks) &&
-				!(i > 1 && i+1 < len(t) && t[i-1].text == "(" && t[i+1].text == ")" && t[i-2].kind == 'n') {
+				!(i > 1 && i+1 < len(t) && t[i-1].text == "(" && t[i+1].text == ")" && t[i-2].kind == 'n' && !slices.Contains(pyKeywords, t[i-2].text)) {
 				return true
 			}
 		}
@@ -136,8 +133,7 @@ func pyRebound(lines []pline) bool {
 	return false
 }
 
-// pyMeta: a class header with a keyword or a base not a class of this
-// file may make a metaclass: its dunder methods run at import.
+// pyMeta: a keyword or a foreign base may make a metaclass (dunders run at import).
 func pyMeta(h []ptok, classes map[string]bool) bool {
 	for i := 2; i < len(h); i++ {
 		if h[i].text == "=" || h[i].kind == 'n' && h[i-1].text != "." && !classes[h[i].text] && h[i].text != "object" {
@@ -147,16 +143,43 @@ func pyMeta(h []ptok, classes map[string]bool) bool {
 	return false
 }
 
-// pySkipString: a skipif or xfail mark given a string condition, which
-// pytest evaluates as code with config in scope (Opus #266 H2).
+// pySkipString: a skipif or xfail mark's condition may be a string, which
+// pytest runs as code (Opus and Mythos #266 H2): each must surely be a bool.
 func pySkipString(t []ptok) bool {
-	for i := 0; i+2 < len(t); i++ {
-		if (t[i].text == "skipif" || t[i].text == "xfail") && t[i+1].text == "(" && t[i+2].kind == 's' && !(i > 1 && t[i-1].text == "." && t[i-2].text == "pytest") ||
-			t[i].text == "condition" && t[i+1].text == "=" && t[i+2].kind == 's' {
-			return true
+	for i := 0; i+1 < len(t); i++ {
+		if t[i].text != "skipif" && t[i].text != "xfail" || t[i+1].text != "(" || i > 1 && t[i-1].text == "." && t[i-2].text == "pytest" {
+			continue
+		}
+		end, depth := i+1, 0
+		for ; end < len(t); end++ {
+			if depth += strings.Count("([{", t[end].text) - strings.Count(")]}", t[end].text); depth == 0 {
+				break
+			}
+		}
+		for _, a := range pySplit(t[i+2:min(end, len(t))], ",") {
+			if kw := len(a) > 1 && a[0].kind == 'n' && a[1].text == "=" && (len(a) < 3 || a[2].text != "="); kw && a[0].text == "condition" && !pyBool(a[2:]) || !kw && len(a) > 0 && !pyBool(a) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// pyBool: True, False, or and/or of comparisons or nots (no if or else).
+func pyBool(t []ptok) bool {
+	for _, op := range pySplit(t, "and", "or") {
+		depth, sure := 0, len(op) == 1 && (op[0].text == "True" || op[0].text == "False") || len(op) > 1 && op[0].text == "not"
+		for _, k := range op {
+			if depth -= strings.Count(")]}", k.text); depth == 0 && (k.text == "if" || k.text == "else") {
+				return false
+			}
+			sure, depth = sure || depth == 0 && (strings.Contains("<>=!", k.text) && k.kind == 'o' || k.text == "is" || k.text == "in"), depth+strings.Count("([{", k.text)
+		}
+		if !sure {
+			return false
+		}
+	}
+	return len(t) > 0
 }
 
 // pyAllowed is why the statement t, run at import, is outside the
@@ -197,7 +220,13 @@ func pyAllowed(t []ptok, conftest bool) string {
 		}
 		return ""
 	case d[0].text == "def" && len(h[0]) > 1:
-		return ok(pyConst(h[0][2:]))
+		params := slices.Clone(h[0][2:]) // *args and **kwargs are parameters, not unpacking (Mythos #266 M2)
+		for j := 1; j < len(params); j++ {
+			if params[j].text == "*" && strings.Contains("(,*", params[j-1].text) {
+				params, j = slices.Delete(params, j, j+1), j-1
+			}
+		}
+		return ok(pyConst(params))
 	case d[0].text == "class" && len(h[0]) > 1:
 		return ok(pyConst(h[0][2:]) && !named(h[0], "metaclass") && !slices.ContainsFunc(h[0], func(k ptok) bool { return k.text == "*" }) &&
 			len(t) == len(h[0])+1+b2i(t[len(t)-1].text == "pass"))

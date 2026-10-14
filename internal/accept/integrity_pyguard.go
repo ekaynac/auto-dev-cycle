@@ -73,6 +73,14 @@ func (r *run) python(changes []Change) error {
 	if err != nil {
 		return err
 	}
+	var changed []string // the changed modules' paths
+	for _, c := range changes {
+		for _, q := range []string{c.Src, c.Dst} {
+			if path.Ext(q) == ".py" {
+				changed = append(changed, strings.TrimSuffix(strings.TrimSuffix(q, ".py"), "/__init__"))
+			}
+		}
+	}
 	for _, c := range changes {
 		src, dst := c.Status != "A" && c.Status != "C", c.Status != "D" // a copy's source is unchanged
 		for _, p := range slices.Compact([]string{c.Src, c.Dst}) {
@@ -100,12 +108,18 @@ func (r *run) python(changes []Change) error {
 			continue
 		}
 		judged := pyTested(c.Dst) || r.pyTestDir(c.Dst)
+		if m := strings.TrimSuffix(path.Base(c.Dst), ".py"); judged && !pyTested(c.Dst) && c.Status != "M" && c.Status != "D" && (m == "__init__" ||
+			slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), func(q string) bool { // Mythos #266 M3: a shadow of a base module
+				return path.Dir(q) != path.Dir(c.Dst) && (path.Base(q) == m+".py" || path.Base(q) == "__init__.py" && path.Base(path.Dir(q)) == m)
+			})) || c.Status == "D" && path.Base(c.Src) == "__init__.py" && r.pyTestDir(c.Src) {
+			add(&r.blocks, c.Dst, "a module added under a test directory shadows a base module, or its __init__.py moved")
+		}
 		b, ok, err := r.pyScan(src && path.Ext(c.Src) == ".py", c.Src, c.SrcBlob, judged)
 		a, ok2, err2 := r.pyScan(dst && path.Ext(c.Dst) == ".py", c.Dst, c.DstBlob, judged)
 		if err = cmp.Or(err, err2); err != nil {
 			return err
 		} else if ok && ok2 {
-			r.pyFileCompare(c.Dst, b, a, judged)
+			r.pyFileCompare(c.Dst, b, a, judged, changed)
 		}
 	}
 	return nil
@@ -185,6 +199,7 @@ type pyFile struct {
 	// its import statements; the names they bind, and the names defined at import
 	imports         string
 	imported, local map[string]bool
+	mods            []string       // the names its imports bind or name
 	refs            map[string]int // "kind\x00reference\x00function"
 }
 
@@ -258,7 +273,7 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 	rebound, classes := pyRebound(lines), map[string]bool{} // Opus #266 M2: a pre-pass
 	find := func(st []ptok, why string, strict bool) {
 		if f := fa.finds[fmt.Sprint(st)]; f != nil {
-			f.n++
+			f.n, f.strict = f.n+1, f.strict || strict // Mythos #266 L2
 		} else {
 			fa.finds[fmt.Sprint(st)] = &pyFind{why, strict, 1, pyCalls(st)}
 		}
@@ -277,9 +292,9 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 		if fn == "" && !(pyMain(t) && !rebound) {
 			for _, st := range pySplit(t, ";") {
 				if why := pyAllowed(st, conftest); why != "" {
-					find(st, why, false)
+					find(st, why, strings.HasPrefix(why, "an import binding")) // Mythos #266 L1
 				}
-				binds, imported := pyBinds(st)
+				binds, imported := pyBinds(slices.Concat(st, l.inner)) // a walrus in an f-string binds too (Mythos #266 H1)
 				for _, n := range binds {
 					if judged && (strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__" || !imported && pyBound[n] != "") {
 						find(st, "a dunder or an allowlisted name bound at import ("+n+")", true) // Opus #266 H1
@@ -287,7 +302,10 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 					fa.imported[n], fa.local[n] = fa.imported[n] || imported, fa.local[n] || !imported
 				}
 				if imported {
-					fa.imports += fmt.Sprint(st) + "\n"
+					fa.imports = fa.imports + fmt.Sprint(st) + "\n"
+					for _, k := range st {
+						fa.mods = append(fa.mods, k.text)
+					}
 				}
 			}
 			if !pyConst(l.inner) {
@@ -295,7 +313,7 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 			}
 		}
 		if judged && pySkipString(code) {
-			find(t, "a skipif or xfail condition given as a string, code pytest runs ("+ptext(t)+")", true) // Opus #266 H2
+			find(t, "a skipif or xfail condition that may be a string, code pytest runs ("+ptext(t)+")", true) // Opus #266 H2
 		}
 		if why := pyFixtureName(t); (t[0].text == "@" || fn == "") && named(t, "fixture") && why != "" {
 			fa.refs["p\x00"+why+"\x00"+fn]++ // Opus #263 H3, Mythos #263 H2
@@ -385,12 +403,14 @@ func pyMain(t []ptok) bool {
 }
 
 // pyFileCompare: the change at p from b to a; a reference added blocks by class and place.
-func (r *run) pyFileCompare(p string, b, a *pyFile, judged bool) {
+func (r *run) pyFileCompare(p string, b, a *pyFile, judged bool, changed []string) {
 	for _, k := range slices.Sorted(maps.Keys(a.finds)) { // new findings: blocks where judged, else warnings (Opus #266 M1)
 		if f := a.finds[k]; !a.passes(k, b) && judged {
 			add(&r.blocks, p, "unverifiable: "+f.why)
 		} else if !a.passes(k, b) {
 			add(&r.warnings, p, f.why+": review it (decision A)")
+		} else if slices.ContainsFunc(changed, func(q string) bool { return slices.Contains(a.mods, path.Base(q)) }) { // Mythos #266 L3
+			add(&r.warnings, p, f.why+": unchanged, but its imports name a changed module: review it")
 		}
 	}
 	if a.hooks || b.hooks {
