@@ -12,24 +12,21 @@ import (
 	"strings"
 )
 
-// The Python guard's forgery blocks (P14c-2a; #226 entries 73, 75, 84)
-// read changed Python files, f-string fields included, and block: a hook,
-// hookimpl or pytest_plugins in either version of a file; a conftest.py
-// past fixtures, imports and plain data; a changed pytest configuration,
-// environment marker, compiled or startup file; any Python change when the
-// base's pytest settings move collection (M3). Decision A: pytest
-// internals and builtin fixtures overridden block anywhere; namespace,
-// frame, comparison, exit and process references in test modules and
-// conftests and at import; output at their import; other changes warn.
-// Until P14c-2a-allow, 2a3 and 2b, P14b's rule blocks every .py change.
+// The Python guard's forgery blocks (P14c-2a; #226 entries 73, 75, 84):
+// hooks in either version of a file; a conftest past fixtures and plain
+// data; configuration, markers, compiled files; base collection settings
+// (M3); decision A's references (pytest internals and builtin fixtures
+// anywhere; namespace, exit and process ones in test files and at import;
+// others warn). Until 2a-allow, 2a3 and 2b, P14b's rule still blocks .py.
 var (
 	pyConfs   = []string{"pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg", "pyproject.toml"}
 	pyCollect = strings.Fields("python_files python_classes python_functions norecursedirs testpaths confcutdir " +
 		"collect_imported_tests consider_namespace_packages usefixtures empty_parameter_set_mark")
 	// pyOpt: the options a base may set (collection and results untouched).
 	pyOpt   = regexp.MustCompile(`^-(q+|v+|r\w*|l|s|W|-(strict|strict-markers|strict-config|showlocals|tb|color|durations|capture))$`)
-	pyWords = regexp.MustCompile(`[\s"',\[\]=:]+`)
+	pyWords = regexp.MustCompile(`[\s"',\[\]=]+`)
 	pyKey   = regexp.MustCompile(`\n(\[|[A-Za-z_][\w.-]*[ \t]*[=:])`) // the next key or section
+	pyNote  = regexp.MustCompile(`(?m)^[ \t]*[#;].*$`)                // a comment line
 	// splitLines breaks lines where str.splitlines does (iniconfig's lines).
 	splitLines = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n", "\x1c", "\n", "\x1d", "\n", "\x1e", "\n",
 		"\u0085", "\n", "\u2028", "\n", "\u2029", "\n")
@@ -39,18 +36,16 @@ var (
 	pyFixtures = strings.Fields("cache capfd capfdbinary caplog capsys capsysbinary capteesys doctest_namespace monkeypatch " +
 		"pytestconfig pytester record_property record_testsuite_property record_xml_attribute recwarn subtests testdir " +
 		"tmp_path tmp_path_factory tmpdir tmpdir_factory")
-	// pyClass: 'p' pytest internals, 'f' a namespace, a frame or a
-	// comparison override, 'e' an exit or a process, 'o' output or a thread.
+	// pyClass: 'p' pytest internals; 'f' namespace, frame, comparison; 'e' exit, process; 'o' output, thread.
 	pyClass = map[string]byte{}
 )
 
 func init() {
 	for c, names := range map[byte]string{
 		'p': "_pytest pluggy pluginmanager HookspecMarker ihook record_xml_attribute _xml",
-		'f': "__dict__ __builtins__ builtins __getattr__ __getattribute__ __setattr__ __delattr__ __setitem__ __delitem__ " +
-			"importlib modules __globals__ __code__ __subclasses__ __bases__ settrace setprofile _getframe currentframe f_locals " +
-			"f_globals f_back tb_frame gi_frame get_objects get_referrers get_referents __eq__ __ne__ __bool__ __contains__ " +
-			"__instancecheck__ __subclasscheck__",
+		'f': "__dict__ __builtins__ builtins __getattr__ __getattribute__ __setattr__ __delattr__ __setitem__ __delitem__ importlib modules __globals__ " +
+			"__code__ __subclasses__ __bases__ settrace setprofile _getframe currentframe f_locals f_globals f_back tb_frame gi_frame get_objects " +
+			"get_referrers get_referents __eq__ __ne__ __bool__ __contains__ __instancecheck__ __subclasscheck__",
 		'e': "exit _exit abort kill killpg system popen Popen fork forkpty subprocess ctypes atexit posix_spawn posix_spawnp",
 		'o': "print stdout stderr __stdout__ __stderr__ signal faulthandler argv threading Thread _thread multiprocessing",
 	} {
@@ -62,12 +57,10 @@ func init() {
 
 // pySkipDir: pytest never walks dir (its default norecursedirs).
 func pySkipDir(d string) bool {
-	return strings.HasPrefix(d, ".") || strings.HasSuffix(d, ".egg") ||
-		slices.Contains([]string{"_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}"}, d)
+	return strings.HasPrefix(d, ".") || strings.HasSuffix(d, ".egg") || slices.Contains([]string{"_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}"}, d)
 }
 
-// pyTested: p is a conftest.py or a module pytest's default patterns
-// collect (test_*.py, *_test.py).
+// pyTested: p is a conftest.py or a test_*.py or *_test.py pytest walks.
 func pyTested(p string) bool {
 	b := path.Base(p)
 	return b == "conftest.py" || strings.HasSuffix(b, ".py") && (strings.HasPrefix(b, "test_") || strings.HasSuffix(b, "_test.py")) && walked(p, pySkipDir)
@@ -116,28 +109,27 @@ func (r *run) python(changes []Change) error {
 	return nil
 }
 
-// pyCustom: a base configuration moves collection or selection off the
-// defaults (Opus #255 M3: a setting, an option outside pyOpt, a positional
-// word in addopts), or is unread; configured: the base configures pytest.
+// pyCustom: a base configuration moves collection off the defaults (a
+// setting, an option not pyOpt, an addopts path), or is unread (M3).
 func (r *run) pyCustom() (custom, configured bool, err error) {
 	for _, p := range slices.Sorted(maps.Keys(r.files)) {
 		if !slices.Contains(pyConfs, path.Base(p)) {
 			continue
-		} else if b, why, err := r.file(r.files[p]); err != nil || why != "" {
-			return err == nil, true, err
-		} else if conf := pyConf(p, b, true); slices.ContainsFunc(pyCollect, func(s string) bool { return strings.Contains(conf, s) }) ||
+		}
+		b, why, err := r.file(r.files[p])
+		conf := pyConf(p, b, true)
+		if err != nil || why != "" || slices.ContainsFunc(pyCollect, func(s string) bool { return strings.Contains(conf, s) }) ||
 			slices.ContainsFunc(pyWords.Split(conf, -1), func(w string) bool { return strings.HasPrefix(w, "-") && !pyOpt.MatchString(w) }) {
-			return true, true, nil
-		} else {
-			configured = configured || conf != ""
-			for _, v := range strings.Split(conf, "addopts")[1:] { // Opus #263 L3
-				prev := ""
-				for _, w := range pyWords.Split(pyKey.Split(v, 2)[0], -1) {
-					if w != "" && !strings.HasPrefix(w, "-") && !slices.Contains([]string{"--tb", "--color", "--durations", "--capture", "-W"}, prev) {
-						return true, true, nil
-					}
-					prev = w
+			return err == nil, true, err
+		}
+		configured = configured || conf != ""
+		for _, v := range strings.Split(conf, "addopts")[1:] { // Opus #263 L3
+			prev := ""
+			for _, w := range pyWords.Split(strings.TrimLeft(pyNote.ReplaceAllString(pyKey.Split(v, 2)[0], ""), " \t=:"), -1) {
+				if w != "" && !strings.HasPrefix(w, "-") && !slices.Contains([]string{"--tb", "--color", "--durations", "--capture", "-W"}, prev) {
+					return true, true, nil
 				}
+				prev = w
 			}
 		}
 	}
@@ -156,10 +148,9 @@ func (r *run) pyRead(want bool, p, blob string) ([]byte, bool, error) {
 	return b, err == nil && why == "", err
 }
 
-// pyConf is what pytest may read of p (Opus #255 H4): a pytest.ini or
-// pytest.toml whole, present or not; a TOML file naming pytest or escaping
-// a key; INI pytest sections as iniconfig splits them: a column-0 '[' line
-// naming pytest opens one, only a surely closed other header ends it.
+// pyConf is what pytest may read of p (H4): pytest.ini or pytest.toml
+// whole; TOML naming pytest or escaping; iniconfig's pytest sections (a '['
+// line naming pytest opens one, only a surely closed other header ends it).
 func pyConf(p string, b []byte, present bool) string {
 	s := string(b)
 	switch {
@@ -203,7 +194,6 @@ func pyKind(t []ptok, i int) (byte, string) {
 	switch {
 	case k.kind == 's' && (strings.Contains(k.text, "_pytest") || strings.Contains(k.text, "pluggy")):
 		return 'p', "a string naming _pytest or pluggy"
-	case k.kind != 'n':
 	case k.text == "main" && dot && i > 1 && t[i-2].text == "pytest": // a session in the session
 		return 'p', "pytest.main"
 	case !dot && slices.Contains(pyBare, k.text):
@@ -218,9 +208,8 @@ func named(t []ptok, name string) bool {
 	return slices.ContainsFunc(t, func(k ptok) bool { return k.kind == 'n' && k.text == name })
 }
 
-// pyScan reads one version of p when want; unverifiable, it blocks p. A
-// def body or an exact __main__ guard is a scope; the rest, class bodies,
-// decorators and def lines too, runs at import (Opus #263 H2).
+// pyScan reads one version of p when want (unverifiable: blocks p). Only a
+// def body or an exact __main__ guard is not import code (Opus #263 H2).
 func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error) {
 	fa = &pyFile{refs: map[string]int{}}
 	src, ok, err := r.pyRead(want, p, blob)
@@ -239,9 +228,9 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 	}()
 	type block struct {
 		indent int
-		fn     string // the outermost function: "" at import
-	}
-	stack, deco, fixture := []block{{indent: -1}}, []ptok(nil), true
+		fn     string
+	} // fn: the outermost function, "" at import
+	stack, deco, fixture, rebound := []block{{indent: -1}}, []ptok(nil), true, false
 	for _, l := range lines {
 		if r.work += 2 * (len(l.toks) + len(l.inner)); r.work > maxWork {
 			break
@@ -253,11 +242,11 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 		}
 		t, fn := l.toks, stack[len(stack)-1].fn
 		b, code := block{l.indent, fn}, append(append(deco, t...), l.inner...)
+		if why := pyFixtureName(t); (t[0].text == "@" || fn == "") && named(t, "fixture") && why != "" {
+			fa.refs["p\x00"+why+"\x00"+fn]++ // Opus #263 H3, Mythos #263 H2
+		}
 		if t[0].text == "@" {
-			fixture = fixture && len(t) > 1 && (t[1].text == "fixture" || len(t) > 3 && t[1].text == "pytest" && t[3].text == "fixture")
-			if deco = code; named(t, "fixture") && slices.ContainsFunc(t, func(k ptok) bool { return k.kind == 's' && slices.Contains(pyFixtures, strings.Trim(k.text, `"'`)) }) {
-				fa.refs["p\x00a builtin fixture overridden by name=\x00"+fn]++ // Opus #263 H3
-			}
+			fixture, deco = fixture && len(t) > 1 && (t[1].text == "fixture" || len(t) > 3 && t[1].text == "pytest" && t[3].text == "fixture"), code
 			continue
 		}
 		kw, name, d := "", "", t[b2i(t[0].text == "async"):]
@@ -269,7 +258,7 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 		}
 		if kw == "def" {
 			b.fn = cmp.Or(fn, name)
-		} else if pyMain(t) {
+		} else if pyMain(t) && !rebound {
 			b.fn = cmp.Or(fn, "__main__")
 		}
 		if kw != "" || t[len(t)-1].text == ":" {
@@ -282,7 +271,12 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 		for i := range code {
 			if kind, what := pyKind(code, i); kind != 0 {
 				fa.refs[string(kind)+"\x00"+what+"\x00"+fn]++
-			}
+			} // Mythos #263 H1: after __name__ rebound (not a lone call argument), no guard is a scope
+			rebound = rebound || code[i].text == "__name__" && !pyMain(t) &&
+				!(i > 1 && i+1 < len(code) && code[i-1].text == "(" && code[i+1].text == ")" && code[i-2].kind == 'n')
+		}
+		if fn == "" && len(t) > 2 && slices.Contains(pyFixtures, t[0].text) && t[1].text == "=" && t[2].text != "=" && (pyTested(p) || named(code, "fixture")) {
+			fa.refs["p\x00a builtin fixture overridden by assignment ("+t[0].text+")\x00"]++ // Mythos #263 M1
 		}
 		if kw == "def" && (pyTested(p) || named(deco, "fixture")) && slices.Contains(pyFixtures, name) { // in any file (H3)
 			fa.refs["p\x00a builtin fixture overridden ("+name+")\x00"+fn]++
@@ -300,18 +294,41 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 
 func (k ptok) String() string { return k.text }
 
+// pyStr is the string literal k, prefix and quotes stripped; "" for an
+// f- or t-string, an escape or not a string (not read as a literal).
+func pyStr(k ptok) string {
+	if q := strings.IndexAny(k.text, `"'`); k.kind == 's' && !strings.ContainsAny(k.text[:q], "fFtT") && !strings.Contains(k.text, `\`) {
+		return strings.Trim(k.text[q:], `"'`)
+	}
+	return ""
+}
+
+// pyFixtureName: on a line naming fixture, a builtin fixture named by
+// name=, or a name not one string literal (a variable, **): Mythos #263 H2.
+func pyFixtureName(t []ptok) string {
+	for i := range t {
+		if i+1 < len(t) && t[i].text == "*" && t[i+1].text == "*" {
+			return "a fixture name not a literal (**)"
+		} else if t[i].text != "name" || i+2 >= len(t) || t[i+1].text != "=" || t[i+2].text == "=" {
+			continue
+		} else if v := pyStr(t[i+2]); v == "" || i+3 >= len(t) || t[i+3].text != "," && t[i+3].text != ")" {
+			return "a fixture name not a literal"
+		} else if slices.Contains(pyFixtures, v) {
+			return "a builtin fixture overridden by name= (" + v + ")"
+		}
+	}
+	return ""
+}
+
 // pyMain: t is exactly if __name__ == "__main__": (either way round).
 func pyMain(t []ptok) bool {
-	main := func(n, s ptok) bool {
-		return n.text == "__name__" && s.kind == 's' && strings.Trim(s.text, `"'`) == "__main__"
-	}
+	main := func(n, s ptok) bool { return n.text == "__name__" && pyStr(s) == "__main__" }
 	return len(t) == 6 && t[0].text == "if" && t[2].text == "=" && t[3].text == "=" && t[5].text == ":" && (main(t[1], t[4]) || main(t[4], t[1]))
 }
 
-// pyPlain: a conftest's top-level line is a fixture (fixture: under fixture
-// decorators only), an import (not *; fixture only from pytest; pytest
-// unaliased), a docstring, or constants (not f-strings) bound to a name
-// not collect_ignore*.
+// pyPlain: a conftest's top-level line is a fixture, an import (not *;
+// fixture and pytest only from pytest), a docstring, or constants (not
+// f-strings) bound to a name not collect_ignore*.
 func pyPlain(t []ptok, fixture bool) bool {
 	constant := func(k ptok) bool {
 		return k.kind == 's' && !strings.ContainsAny(k.text[:strings.IndexAny(k.text, `"'`)], "fFtT") || k.kind == '1' ||
@@ -325,14 +342,13 @@ func pyPlain(t []ptok, fixture bool) bool {
 	case t[0].text == "import" || t[0].text == "from":
 		return !slices.ContainsFunc(t, func(k ptok) bool { return k.text == "*" }) &&
 			(!named(t, "fixture") || t[0].text == "from" && len(t) > 1 && t[1].text == "pytest" && !named(t, "as")) &&
-			!(named(t, "pytest") && named(t, "as")) // Opus #263 M3
+			(!named(t, "pytest") || len(t) == 2 && t[0].text == "import" || t[0].text == "from" && t[1].text == "pytest") // Mythos #263 M2
 	}
 	return !slices.ContainsFunc(t, func(k ptok) bool { return k.kind != 's' || !constant(k) }) || len(t) > 2 && t[0].kind == 'n' &&
 		t[1].text == "=" && !strings.HasPrefix(t[0].text, "collect_ignore") && !slices.ContainsFunc(t[2:], func(k ptok) bool { return !constant(k) })
 }
 
-// pyFileCompare applies the rules to the change at p: base b (empty when
-// added), candidate a. A reference added blocks by class and place.
+// pyFileCompare: the change at p from b to a; a reference added blocks by class and place.
 func (r *run) pyFileCompare(p string, b, a *pyFile) {
 	if a.plain != "" {
 		add(&r.blocks, p, "unverifiable: a conftest.py holding more than fixtures, imports and plain data ("+a.plain+")")

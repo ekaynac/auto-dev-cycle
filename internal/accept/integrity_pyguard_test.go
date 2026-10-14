@@ -113,9 +113,21 @@ func TestPyGuardBlocks(t *testing.T) {
 		"H3 a builtin fixture in a helper":  {map[string]string{"tests/helpers.py": "import pytest\n\n@pytest.fixture\ndef capsys():\n    return None\n"}, nil, "tests/helpers.py: a builtin fixture overridden (capsys) in module level"},
 		"M3 pytest aliased in a conftest":   {map[string]string{"tests/conftest.py": "import helpers as pytest\n\n@pytest.fixture\ndef db():\n    return 1\n"}, nil, "plain data ([import helpers as pytest"},
 		"M3 import pytest as in a conftest": {map[string]string{"tests/conftest.py": "import pytest as pt\n"}, nil, "plain data ([import pytest as pt"},
-		"L1 a pyproject added":              {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
-		"pytest.main":                       {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
-		"record_xml_attribute":              {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
+		// Mythos #263: H1 (__name__ rebound), H2 (name= not a literal), M1 (by assignment), M2 (pytest from elsewhere).
+		"H2 __name__ rebound":        {map[string]string{"money.py": baseFiles["money.py"] + "import os\n__name__ = '__main__'\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
+		"H2 __name__ by a for":       {map[string]string{"money.py": baseFiles["money.py"] + "import os\nfor __name__ in ('__main__',):\n    pass\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
+		"H2 __name__ by a walrus":    {map[string]string{"money.py": baseFiles["money.py"] + "import os\n_ = (__name__ := '__main__')\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
+		"H2 __name__ imported":       {map[string]string{"money.py": baseFiles["money.py"] + "import os\nfrom __main__ import __name__\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
+		"H3 name= with a prefix":     {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(name=r'capsys')\ndef _c():\n    return None\n"}, nil, "a builtin fixture overridden by name= (capsys)"},
+		"H3 name= a variable":        {map[string]string{"tests/conftest.py": "import pytest\nNAME = 'capsys'\n\n@pytest.fixture(name=NAME)\ndef _c():\n    return None\n"}, nil, "a fixture name not a literal"},
+		"H3 name= through **":        {map[string]string{"tests/conftest.py": "import pytest\nKW = {'name': 'capsys'}\n\n@pytest.fixture(**KW)\ndef _c():\n    return None\n"}, nil, "a fixture name not a literal (**)"},
+		"H3 name= through a partial": {map[string]string{"tests/test_money.py": pyT + "import functools\nimport pytest\nfx = functools.partial(pytest.fixture, name='capsys')\n"}, nil, "a builtin fixture overridden by name= (capsys) in module level"},
+		"M1 a fixture by assignment": {map[string]string{"tests/test_money.py": pyT + "import pytest\n\ndef _c():\n    return None\ncapsys = pytest.fixture(_c)\n"}, nil, "a builtin fixture overridden by assignment (capsys)"},
+		"M2 pytest from a helper":    {map[string]string{"tests/conftest.py": "from helpers import pytest\n\n@pytest.fixture\ndef db():\n    return 1\n"}, nil, "plain data ([from helpers import pytest"},
+		"M2 pytest from the package": {map[string]string{"tests/conftest.py": "from . import pytest\n"}, nil, "plain data ([from . import pytest"},
+		"L1 a pyproject added":       {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
+		"pytest.main":                {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
+		"record_xml_attribute":       {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
 	} {
 		pyBlocks(t, f, name, c.files, c.why)
 	}
@@ -150,6 +162,16 @@ func TestPyGuardBaseConfig(t *testing.T) {
 		// continuation, not a header: the section goes on.
 		pyBlocks(t, f, "a '[' line not a header", map[string]string{p: strings.Replace(body, "\n\n[flake8]", "\n\n[x\npython_files = check_*.py\n[flake8]", 1)}, "a pytest configuration changed")
 	}
+	// Mythos #263 L3: a -W value and a comment line in addopts are not positional.
+	for _, conf := range []string{"[pytest]\naddopts = -W error::DeprecationWarning -q\n", "[pytest]\naddopts = -q\n    # a note\n    -ra\n"} {
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, map[string]string{"pytest.ini": conf})
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, map[string]string{"money.py": baseFiles["money.py"] + "\n"}); finds(v.Blocks, "moves collection off its defaults") {
+			t.Errorf("%q: %q, want the defaults", conf, whats(v.Blocks))
+		}
+	}
 	// A base hook's helper beside it changes the hook (entry 84).
 	h := newFixtureWith(t, func(src string) {
 		write(t, src, map[string]string{"tests/plug.py": "def pytest_runtest_logreport(report):\n    check(report)\n\ndef check(report):\n    pass\n"})
@@ -177,6 +199,7 @@ func TestPyGuardAcceptsAndWarns(t *testing.T) {
 		"a unittest case":              {map[string]string{"tests/test_money.py": pyT + "\nimport unittest\n\nclass T(unittest.TestCase):\n    def setUp(self):\n        self.x = 1\n\n    def test_t(self):\n        self.assertEqual(self.x, 1)\n"}, nil, ""},
 		"walked: an exit under build/": {map[string]string{"build/test_x.py": "import os\n\ndef test_x():\n    os._exit(0)\n"}, nil, "build/test_x.py: _exit in test_x"},
 		"an exact __main__ guard":      {map[string]string{"money.py": baseFiles["money.py"] + "\nif '__main__' == __name__:\n    import sys\n    sys.exit(0)\n"}, nil, "money.py: exit in __main__"},
+		"__name__ as a call argument":  {map[string]string{"money.py": "import logging\n\nlog = logging.getLogger(__name__)\n\n" + baseFiles["money.py"] + "\nif __name__ == '__main__':\n    import sys\n    sys.exit(0)\n"}, nil, "money.py: exit in __main__"},
 		"f-string fields":              {map[string]string{"money.py": baseFiles["money.py"] + "\ndef fmt(x, w):\n    return f'{x!r:>{w}} {x=}'\n"}, nil, ""},
 		"a test deleted":               {nil, []string{"tests/test_money.py"}, ""},
 	} {
