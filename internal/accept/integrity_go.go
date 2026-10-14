@@ -261,6 +261,7 @@ type pkgScan struct {
 	asserting map[*ast.FuncDecl]bool
 	starred   map[ast.Expr]bool // directly behind *
 	pkgVars   map[*ast.ValueSpec]bool
+	aliases   map[types.Object]ast.Expr // an alias's right-hand side
 }
 
 // qual is what n names as "importpath.Name", if a package's: by type
@@ -285,20 +286,43 @@ func (s *pkgScan) tval(e ast.Expr) string {
 	if u, ok := ast.Unparen(e).(*ast.UnaryExpr); ok {
 		e = u.X
 	}
-	id, _ := ast.Unparen(e).(*ast.Ident)
-	return s.tvals[s.info.Uses[id]] // Uses[nil] is nil
+	if o := s.info.Uses[ident(e)]; o != nil { // not tvals[nil], which _ = t sets
+		return s.tvals[o]
+	}
+	return ""
 }
 
 // callee is the function call reaches in this package, if any.
 func (s *pkgScan) callee(call *ast.CallExpr) *ast.FuncDecl {
-	id, _ := ast.Unparen(call.Fun).(*ast.Ident)
-	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
+	f, _ := fn(call.Fun)
+	id := ident(f)
+	if sel, ok := f.(*ast.SelectorExpr); ok {
 		id = sel.Sel // a method's identifier uses the method
 	}
 	if o, ok := s.info.Uses[id].(*types.Func); ok {
 		return s.decls[o.Origin()]
 	}
 	return nil
+}
+
+// fn is a call's function and type arguments, through an explicit
+// instantiation (f[int]).
+func fn(e ast.Expr) (ast.Expr, []ast.Expr) {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.IndexExpr:
+		return ast.Unparen(x.X), []ast.Expr{x.Index}
+	case *ast.IndexListExpr:
+		return ast.Unparen(x.X), x.Indices
+	}
+	return ast.Unparen(e), nil
+}
+
+// alias is what e names through its own aliases (type TP = *testing.T), if one.
+func (s *pkgScan) alias(e ast.Expr) (rhs ast.Expr) {
+	for i := 0; i < 8 && ident(e) != nil && s.aliases[s.info.Uses[ident(e)]] != nil; i++ {
+		e, rhs = s.aliases[s.info.Uses[ident(e)]], s.aliases[s.info.Uses[ident(e)]]
+	}
+	return rhs
 }
 
 func (s *pkgScan) assertion(call *ast.CallExpr) bool {
@@ -326,7 +350,7 @@ func (s *pkgScan) mRun(call *ast.CallExpr) bool {
 // ptrTo: e is *testing.T, B, F or M; or *X.T, B, F, M or TB that no
 // scope resolves (fail closed).
 func (s *pkgScan) ptrTo(e ast.Expr) bool {
-	st, ok := ast.Unparen(e).(*ast.StarExpr)
+	st, ok := ast.Unparen(cmp.Or(s.alias(e), e)).(*ast.StarExpr)
 	if !ok {
 		return false
 	}
@@ -338,7 +362,7 @@ func (s *pkgScan) ptrTo(e ast.Expr) bool {
 func (s *pkgScan) mentions(n ast.Node) (found bool) {
 	ast.Inspect(n, func(n ast.Node) bool {
 		e, _ := n.(ast.Expr)
-		found = found || slices.Contains(testTypes, s.qual(n)) || e != nil && s.tval(e) != ""
+		found = found || slices.Contains(testTypes, s.qual(n)) || e != nil && (s.tval(e) != "" || s.alias(e) != nil && s.mentions(s.alias(e)))
 		return !found
 	})
 	return found
@@ -346,13 +370,18 @@ func (s *pkgScan) mentions(n ast.Node) (found bool) {
 
 // counts are a declaration's references; refs, its references into S.
 type counts struct {
-	asserts, skips, forged, reflect int
-	refs                            []string
+	asserts, skips, forged, reflect, generic int // generic: an own generic function not called
+	refs                                     []string
 }
 
 func (s *pkgScan) count(n ast.Node) (c counts) {
+	called := map[*ast.Ident]bool{}
 	ast.Inspect(n, func(n ast.Node) bool {
 		switch x := n.(type) {
+		case *ast.UnaryExpr:
+			if x.Op == token.AND && s.qual(s.root(x.X)) == "os.Args" {
+				c.refs = append(c.refs, "os.Args assigned")
+			}
 		case *ast.SelectorExpr:
 			q := s.qual(x)
 			c.skips += b2i(slices.Contains(goSkips, x.Sel.Name)) // called or not
@@ -363,6 +392,8 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 		case *ast.Ident:
 			if b, ok := s.info.Uses[x].(*types.Builtin); ok && sensitive(b.Name()) > 0 {
 				c.refs = append(c.refs, b.Name())
+			} else if f, ok := s.info.Uses[x].(*types.Func); ok && !called[x] && s.decls[f.Origin()] != nil && s.decls[f.Origin()].Type.TypeParams != nil {
+				c.generic++ // assigned, passed or returned: inferred where C3 does not look
 			}
 		case *ast.BasicLit: // a 0x16 spelled in a string or rune literal
 			c.forged += b2i(x.Kind != token.INT && slices.ContainsFunc(spelled, func(m string) bool { return strings.Contains(x.Value, m) }))
@@ -386,9 +417,22 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 				return false
 			}
 			c.asserts += b2i(s.assertion(x))
-			fun := ast.Unparen(x.Fun)
-			c.forged += b2i(s.ptrTo(fun))                               // a conversion to *testing.T
-			if d := s.callee(x); d != nil && d.Type.TypeParams != nil { // a testing value made by inference
+			fun, args := ast.Unparen(x.Fun), x.Args
+			f, targs := fn(fun)
+			called[ident(f)] = true
+			if b, ok := s.info.Uses[ident(fun)].(*types.Builtin); ok && (b.Name() == "copy" || b.Name() == "append") {
+				args = args[:min(1, len(args))] // the destination
+			} else if _, lit := fun.(*ast.FuncLit); !lit && s.callee(x) == nil {
+				args = nil // own code only
+			}
+			for _, a := range args { // os.Args's array, aliased (an element is a string)
+				if _, el := ast.Unparen(a).(*ast.IndexExpr); !el && s.qual(s.root(a)) == "os.Args" {
+					c.refs = append(c.refs, "os.Args assigned")
+				}
+			}
+			c.forged += b2i(s.ptrTo(fun)) // a conversion to *testing.T
+			// A testing value made by inference (an explicit testing type argument is unstarred).
+			if d := s.callee(x); d != nil && d.Type.TypeParams != nil && len(targs) < d.Type.TypeParams.NumFields() {
 				var params []ast.Expr
 				for _, f := range d.Type.Params.List {
 					params = append(params, slices.Repeat([]ast.Expr{f.Type}, max(1, len(f.Names)))...)
@@ -474,10 +518,14 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 		}
 	}
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
-		asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}, pkgVars: map[*ast.ValueSpec]bool{}}
-	for _, f := range files {
+		asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
+	for _, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
+			case *ast.TypeSpec:
+				if x.Assign.IsValid() {
+					s.aliases[info.Defs[x.Name]] = x.Type
+				}
 			case *ast.StarExpr:
 				s.starred[x.X] = true
 			case *ast.FuncType:
@@ -524,7 +572,7 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 	var inits, hooks []ast.Node
 	for _, f := range files {
 		m := meta[f]
-		test, flags := strings.HasSuffix(m.path, "_test.go"), []string{}
+		test, flags, tfile := strings.HasSuffix(m.path, "_test.go"), []string{}, s.mentions(f)
 		if slices.ContainsFunc(f.Comments, func(cg *ast.CommentGroup) bool {
 			return slices.ContainsFunc(cg.List, func(c *ast.Comment) bool { return strings.HasPrefix(c.Text, "//go:linkname") })
 		}) {
@@ -543,7 +591,7 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 				return err
 			}
 			c := s.count(d)
-			fa.forged += c.forged
+			fa.forged += c.forged + c.generic*b2i(tfile) // a file with testing values
 			if c.reflect > 0 && !slices.Contains(flags, "reflection on a testing value") {
 				flags = append(flags, "reflection on a testing value")
 			}
@@ -645,6 +693,14 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) 
 				s.store(x.Lhs, x.Rhs, add)
 			case *ast.IncDecStmt:
 				s.store([]ast.Expr{x.X}, nil, add)
+			case *ast.UnaryExpr: // a pointer into another package: a write it cannot follow
+				if q := s.qual(s.root(x.X)); x.Op == token.AND && q != "" {
+					add("another package's variable addressed (" + types.ExprString(x) + ")")
+				}
+			case *ast.SendStmt:
+				if s.qual(s.root(x.Chan)) != "" && !s.shared(x.Value) {
+					add("a value it cannot prove plain data sent to " + types.ExprString(x.Chan))
+				}
 			case *ast.ValueSpec: // a local's (a package variable's values flow, and are checked, where they are used)
 				if !s.pkgVars[x] {
 					s.store(nil, x.Values, add)
@@ -686,7 +742,10 @@ func (s *pkgScan) call(x *ast.CallExpr, own func(ast.Expr) bool) string {
 	}
 	switch f := fun.(type) {
 	case *ast.FuncLit, *ast.Ident:
-		if b, ok := s.info.Uses[ident(fun)].(*types.Builtin); ok && b.Name() != "panic" {
+		if b, ok := s.info.Uses[ident(fun)].(*types.Builtin); ok && slices.Contains([]string{"copy", "append", "clear", "delete"}, b.Name()) &&
+			len(args) > 0 && s.qual(s.root(args[0])) != "" {
+			return "a write it cannot prove safe (" + s.qual(s.root(args[0])) + ")" // into another package's slice or map
+		} else if ok && b.Name() != "panic" {
 			return ""
 		} else if inside = own(f); !inside && !ok {
 			return unresolved // a function value, or no body (assembly, linkname)
@@ -707,19 +766,26 @@ func (s *pkgScan) call(x *ast.CallExpr, own func(ast.Expr) bool) string {
 		return unresolved
 	}
 	for _, a := range args {
-		if inside {
+		if q := s.qual(s.root(a)); inside && q != "" && !inert(q, true) { // a slice, map or chan aliases
+			return "another package's variable passed to " + types.ExprString(fun)
+		} else if inside {
 			own(a)
-		} else if r := s.root(a); !inert(s.qual(r), true) && !inertCall(s, r) && // an inert package's value or result (never by its name's case)
-			!plainData(s.info.TypeOf(a), map[types.Type]bool{}) {
+		} else if !s.shared(a) {
 			return "a value it cannot prove plain data passed to " + types.ExprString(fun)
 		}
 	}
 	return ""
 }
 
-func inertCall(s *pkgScan, e ast.Expr) bool {
-	c, ok := e.(*ast.CallExpr)
-	return ok && inert(s.qual(ast.Unparen(c.Fun)), true)
+// shared: a may leave the package: plain data, or an inert package's
+// function, value or result (never by its name's case), not one of its
+// error variables (an interface a write could fill; by name, types unloaded).
+func (s *pkgScan) shared(a ast.Expr) bool {
+	r, q := s.root(a), s.qual(s.root(a))
+	name := q[strings.LastIndex(q, ".")+1:]
+	errVar := strings.HasPrefix(name, "Skip") || strings.HasPrefix(name, "Err") && len(name) > 3 && unicode.IsUpper(rune(name[3]))
+	c, call := r.(*ast.CallExpr)
+	return inert(q, true) && !errVar || call && inert(s.qual(ast.Unparen(c.Fun)), true) || plainData(s.info.TypeOf(a), map[types.Type]bool{})
 }
 
 // store checks a write (none to another package) and a read into a local
@@ -747,6 +813,8 @@ func (s *pkgScan) root(e ast.Expr) ast.Expr {
 		case *ast.StarExpr:
 			e = x.X
 		case *ast.IndexExpr:
+			e = x.X
+		case *ast.SliceExpr:
 			e = x.X
 		case *ast.SelectorExpr:
 			if s.qual(x) != "" {
