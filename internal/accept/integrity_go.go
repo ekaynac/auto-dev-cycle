@@ -3,7 +3,6 @@
 package accept
 
 import (
-	"bytes"
 	"go/ast"
 	"go/build"
 	"go/build/constraint"
@@ -39,7 +38,33 @@ var (
 	// sPkgs (and golang.org/x/sys/...) reach the process, its output or testing: S.
 	sPkgs   = []string{"syscall", "os", "os/exec", "os/signal", "log", "log/slog", "fmt", "testing", "reflect", "unsafe", "runtime", "plugin"}
 	spelled = []string{"\x16", `\x16`, `\026`, `\u0016`, `\U00000016`} // test2json's marker
+	// initPkgs are the inert packages initialization may call, with the
+	// unicode, math and encoding trees; fmt and time only in part (inert).
+	initPkgs = []string{"strings", "strconv", "bytes", "errors", "sort", "slices", "maps", "regexp", "embed", "path", "path/filepath"}
 )
+
+// inert: initialization may call or pass on q ("importpath.Name"): a
+// constant (ALL_CAPS), or a function of an inert package.
+func inert(q string, called bool) bool {
+	i := strings.LastIndex(q, ".")
+	pkg, name := q[:max(i, 0)], q[i+1:]
+	root, _, _ := strings.Cut(pkg, "/")
+	switch {
+	case allCaps(name) && !called:
+		return true
+	case pkg == "fmt":
+		return strings.HasPrefix(name, "Sprint") || name == "Errorf"
+	case pkg == "time":
+		return !slices.Contains([]string{"Sleep", "After", "AfterFunc", "Tick", "NewTicker", "NewTimer"}, name)
+	case pkg == "sync": // its types, and Once* wrapping a function for later
+		return strings.HasPrefix(name, "Once")
+	}
+	return slices.Contains(initPkgs, pkg) || slices.Contains([]string{"unicode", "math", "encoding"}, root)
+}
+
+func allCaps(n string) bool {
+	return n == strings.ToUpper(n) && strings.ContainsFunc(n, unicode.IsUpper)
+}
 
 func sPkg(p string) bool {
 	return slices.Contains(sPkgs, p) || strings.HasPrefix(p, "golang.org/x/sys/")
@@ -62,13 +87,13 @@ func sensitive(q string) int {
 		return 1
 	case q == "os.Args assigned":
 		return 2
-	case pkg == "syscall" || strings.HasPrefix(pkg, "golang.org/x/sys/"):
-		return 1 + is("Exit", "Exec*", "Syscall*", "RawSyscall*", "AllThreadsSyscall*", "Dup*", "ForkExec", "StartProcess")
-	case pkg == "os" && (slices.Contains(osRead, name) || strings.HasPrefix(name, "Err")):
-		return 0
-	case pkg == "os":
-		return 1 + is("Exit", "StartProcess")
-	case pkg == "os/exec" || pkg == "plugin":
+	case pkg == "syscall" || strings.HasPrefix(pkg, "golang.org/x/sys/"): // ALL_CAPS: an inert constant
+		return b2i(!allCaps(name)) * (1 + is("Exit", "Exec*", "Syscall*", "RawSyscall*", "AllThreadsSyscall*", "Dup*", "ForkExec", "StartProcess"))
+	case pkg == "os": // its reads are inert
+		return b2i(!slices.Contains(osRead, name) && !strings.HasPrefix(name, "Err")) * (1 + is("Exit", "StartProcess"))
+	case pkg == "os/exec":
+		return 1 + is("Command*") // a process start
+	case pkg == "plugin":
 		return 2
 	case pkg == "log" || pkg == "log/slog":
 		return 1 + is("Fatal*", "Panic*")
@@ -95,12 +120,11 @@ func goByName(p string) bool {
 	return strings.HasSuffix(b, "_test.go") && b[0] != '_' && b[0] != '.' && walked(p, goSkipDir)
 }
 
-// goOn is, per gate platform, whether go test collects the test file p: 2
-// surely, 1 depending on unmodelled tags (cgo, race, custom ones), 0 never;
-// and its constraint lines. on is nil past the work bound.
-func (r *run) goOn(p string, f *ast.File) (on []int, cons string, err error) {
+// goOn is, per gate platform, whether the go command builds the file p: 2
+// surely, 1 depending on unmodelled tags (tool tags, cgo, race, custom
+// ones), 0 never; and its constraints. on is nil past the work bound.
+func (r *run) goOn(p string, f *ast.File) (on []int, exprs []constraint.Expr, cons string, err error) {
 	on = make([]int, len(platforms))
-	var exprs []constraint.Expr
 	var text strings.Builder
 	seen := map[string]bool{}
 	for _, cg := range f.Comments {
@@ -115,28 +139,16 @@ func (r *run) goOn(p string, f *ast.File) (on []int, cons string, err error) {
 			}
 		}
 	}
-	if !goByName(p) || f.Name.Name == "documentation" {
-		return on, text.String(), nil
-	}
 	for i, pl := range platforms {
-		if built(p, pl, nil) {
+		ctx := build.Context{GOOS: pl[0], GOARCH: pl[1], Compiler: "gc", ReleaseTags: release, // its name: go/build's rules
+			OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("package p\n")), nil }}
+		if ok, err := ctx.MatchFile(path.Dir(p), path.Base(p)); ok || err != nil {
 			if on[i], err = r.holds(exprs, pl); err != nil || on[i] < 0 {
-				return nil, "", err
+				return nil, nil, "", err
 			}
 		}
 	}
-	return on, text.String(), nil
-}
-
-// built: go/build includes the file p (src, or only its name when nil) on pl.
-func built(p string, pl [2]string, src []byte) bool {
-	if src == nil {
-		src = []byte("package p\n")
-	}
-	ctx := build.Context{GOOS: pl[0], GOARCH: pl[1], Compiler: "gc", ReleaseTags: release,
-		OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(src)), nil }}
-	ok, err := ctx.MatchFile(path.Dir(p), path.Base(p))
-	return ok || err != nil // a header Go cannot read fails the build: built
+	return on, exprs, text.String(), nil
 }
 
 // holds is 2 when exprs hold on pl for every assignment of the unmodelled
@@ -207,18 +219,20 @@ func (r *run) analyse(dir string, srcs map[string][]byte, fa *pkgFacts) error {
 			fa.bad[p] = "not parsed: " + err.Error()
 			continue
 		}
-		on, cons, err := r.goOn(p, f)
+		on, exprs, cons, err := r.goOn(p, f)
 		if err != nil {
 			return err
 		} else if on == nil {
 			fa.bad[p] = "its build constraints are over the guard's work bound"
 			continue
+		} else if slices.Max(on) == 0 {
+			continue // no gate platform builds it, whatever the tags: it cannot shadow what one does
 		}
-		test := strings.HasSuffix(p, "_test.go")
-		if test && slices.Max(on) == 0 || !test && !slices.ContainsFunc(platforms, func(pl [2]string) bool { return built(p, pl, srcs[p]) }) {
-			continue // no gate platform builds it: it cannot shadow what one does
+		coll := on // collected as tests
+		if !goByName(p) || f.Name.Name == "documentation" {
+			coll = make([]int, len(platforms))
 		}
-		meta[f] = fileMeta{p, cons, on, srcs[p]}
+		meta[f] = fileMeta{p, cons, coll, srcs[p], exprs}
 		groups[f.Name.Name] = append(groups[f.Name.Name], f)
 	}
 	for _, name := range slices.Sorted(maps.Keys(groups)) {
@@ -233,6 +247,7 @@ type fileMeta struct {
 	path, cons string
 	on         []int
 	src        []byte
+	exprs      []constraint.Expr
 }
 
 // pkgScan is one type-checked package: its testing parameters, functions,
@@ -245,14 +260,20 @@ type pkgScan struct {
 	decls     map[types.Object]*ast.FuncDecl
 	methodsOf map[string][]*ast.FuncDecl
 	asserting map[*ast.FuncDecl]bool
-	starred   map[ast.Expr]bool
+	starred   map[ast.Expr]bool // directly behind *
+	imports   map[string]string // local name to path, in any file
 }
 
+// qual is what n names as "importpath.Name", if a package's: by its type
+// information, or, where the checker left it unrecorded (an expression on
+// an invalid value), by the package's import names.
 func (s *pkgScan) qual(n ast.Node) string {
 	if x, ok := n.(*ast.SelectorExpr); ok {
 		if id, ok := x.X.(*ast.Ident); ok {
 			if pn, ok := s.info.Uses[id].(*types.PkgName); ok {
 				return pn.Imported().Path() + "." + x.Sel.Name
+			} else if s.info.Uses[id] == nil && s.imports[id.Name] != "" {
+				return s.imports[id.Name] + "." + x.Sel.Name
 			}
 		}
 	}
@@ -302,6 +323,35 @@ func (s *pkgScan) mRun(call *ast.CallExpr) bool {
 	return ok && sel.Sel.Name == "Run" && s.tval(sel.X) == "testing.M"
 }
 
+// ptrTo: e is *testing.T, B, F or M.
+func (s *pkgScan) ptrTo(e ast.Expr) bool {
+	st, ok := ast.Unparen(e).(*ast.StarExpr)
+	return ok && slices.Contains(valueTypes, s.qual(ast.Unparen(st.X)))
+}
+
+// generic: call passes a testing value or type to a parameter of the
+// package's generic d whose type mentions d's type parameters.
+func (s *pkgScan) generic(d *ast.FuncDecl, call *ast.CallExpr) bool {
+	var tps []string
+	var params []ast.Expr
+	for _, f := range d.Type.TypeParams.List {
+		for _, n := range f.Names {
+			tps = append(tps, n.Name)
+		}
+	}
+	for _, f := range d.Type.Params.List {
+		params = append(params, slices.Repeat([]ast.Expr{f.Type}, max(1, len(f.Names)))...)
+	}
+	return len(params) > 0 && slices.ContainsFunc(call.Args, func(a ast.Expr) (found bool) {
+		ast.Inspect(params[min(slices.Index(call.Args, a), len(params)-1)], func(n ast.Node) bool {
+			id, ok := n.(*ast.Ident)
+			found = found || ok && slices.Contains(tps, id.Name)
+			return !found
+		})
+		return found && s.mentions(a)
+	})
+}
+
 // mentions: n names a testing type or a testing value.
 func (s *pkgScan) mentions(n ast.Node) (found bool) {
 	ast.Inspect(n, func(n ast.Node) bool {
@@ -343,14 +393,24 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 					c.refs = append(c.refs, "os.Args assigned")
 				}
 			}
+		case *ast.TypeAssertExpr: // to *testing.T: laundered through any
+			c.forged += b2i(s.ptrTo(x.Type))
+		case *ast.CaseClause:
+			for _, e := range x.List {
+				c.forged += b2i(s.ptrTo(e))
+			}
 		case *ast.CallExpr:
 			if s.mRun(x) {
 				return false
 			}
 			c.asserts += b2i(s.assertion(x))
 			fun := ast.Unparen(x.Fun)
-			if st, ok := fun.(*ast.StarExpr); ok { // a conversion to *testing.T
-				c.forged += b2i(slices.Contains(valueTypes, s.qual(ast.Unparen(st.X))))
+			c.forged += b2i(s.ptrTo(fun)) // a conversion to *testing.T
+			if d := s.callee(x); d != nil && d.Type.TypeParams != nil {
+				c.forged += b2i(s.generic(d, x)) // a testing value made by inference
+			}
+			if sensitive(s.qual(fun)) == 2 { // its arguments too: a changed exit code warns
+				c.refs = append(c.refs, types.ExprString(x))
 			}
 			if strings.HasPrefix(s.qual(fun), "reflect.") && slices.ContainsFunc(x.Args, func(a ast.Expr) bool { return s.mentions(a) }) {
 				c.reflect++
@@ -366,6 +426,11 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 		return true
 	})
 	return c
+}
+
+func ident(e ast.Expr) *ast.Ident {
+	id, _ := ast.Unparen(e).(*ast.Ident)
+	return id
 }
 
 func b2i(b bool) int {
@@ -384,13 +449,32 @@ func recv(fn *ast.FuncDecl) string {
 func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, meta map[*ast.File]fileMeta, fa *pkgFacts) error {
 	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
 		Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+	exprs, first := map[string][]constraint.Expr{}, ""
+	for _, f := range files {
+		exprs[meta[f].path] = meta[f].exprs
+	}
+	twice := func(a, b string) { // a name declared in files a and b: unless no gate platform builds both
+		if slices.ContainsFunc(platforms, func(pl [2]string) bool {
+			n, _ := r.holds(append(slices.Clone(exprs[a]), exprs[b]...), pl)
+			return n != 0
+		}) {
+			fa.bad[a] = "a name declared twice, in files the gate may build together"
+		}
+	}
 	pkg, _ := (&types.Config{FakeImportC: true, Error: func(err error) {
-		if te, ok := err.(types.Error); ok && (strings.Contains(te.Msg, "redeclared") || strings.Contains(te.Msg, "already declared")) {
-			fa.bad[fset.Position(te.Pos).Filename] = "a name declared twice (in files the gate never builds together?)"
+		te, _ := err.(types.Error)
+		switch at := fset.Position(te.Pos).Filename; {
+		case strings.Contains(te.Msg, "redeclared"):
+			first = at
+		case strings.HasPrefix(te.Msg, "\tother declaration of"):
+			twice(first, at)
+		case strings.Contains(te.Msg, " already declared at "):
+			other := te.Msg[strings.LastIndex(te.Msg, " at ")+4:]
+			twice(at, other[:strings.LastIndex(other[:strings.LastIndex(other, ":")], ":")])
 		}
 	}}).Check(dir, fset, files, info)
-	for _, n := range pkg.Scope().Names() {
-		if o := pkg.Scope().Lookup(n); types.Universe.Lookup(n) != nil {
+	for _, n := range pkg.Scope().Names() { // the predeclared names the rules rely on
+		if o := pkg.Scope().Lookup(n); slices.Contains([]string{"print", "println", "new", "make", "rune", "byte", "string"}, n) {
 			fa.bad[fset.Position(o.Pos()).Filename] = "a package-level " + n + " shadows Go's predeclared one"
 		}
 	}
@@ -404,8 +488,15 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 		}
 	}
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
-		methodsOf: map[string][]*ast.FuncDecl{}, asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}}
+		methodsOf: map[string][]*ast.FuncDecl{}, asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{},
+		imports: map[string]string{}}
 	for _, f := range files {
+		for _, is := range f.Imports {
+			ip, _ := strconv.Unquote(is.Path.Value)
+			if s.imports[path.Base(ip)] = ip; is.Name != nil {
+				s.imports[is.Name.Name] = ip
+			}
+		}
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.StarExpr:
@@ -441,7 +532,7 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 			}
 		}
 	}
-	var inits []ast.Node
+	var inits, hooks []ast.Node
 	for _, f := range files {
 		m := meta[f]
 		test, flags := strings.HasSuffix(m.path, "_test.go"), []string{}
@@ -475,16 +566,18 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 				where = recv(fn) + "." + fn.Name.Name
 			}
 			for _, q := range c.refs {
-				fa.refs[m.path+": "+q+" in "+where]++
+				fa.refs[m.path+"\x00"+q+"\x00"+where]++
 			}
 			hook := test && fname == "TestMain" && slices.ContainsFunc(fn.Type.Params.List, func(f *ast.Field) bool {
 				st, ok := f.Type.(*ast.StarExpr)
 				return ok && s.qual(st.X) == "testing.M"
 			})
-			if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.VAR || fname == "init" || hook {
-				if inits = append(inits, d); fn != nil {
-					inits[len(inits)-1] = fn.Body // a function: its body, not its signature
-				}
+			if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.VAR {
+				inits = append(inits, d)
+			} else if fname == "init" {
+				inits = append(inits, fn.Body) // a function: its body, not its signature
+			} else if hook {
+				hooks = append(hooks, fn.Body)
 			}
 			switch {
 			case hook:
@@ -503,18 +596,42 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 			fa.flags[m.path] = flags
 		}
 	}
-	return s.reach(dir, inits, fa)
+	if err := s.reach(dir, inits, false, fa); err != nil {
+		return err
+	}
+	return s.reach(dir, hooks, true, fa)
 }
 
-// reach follows initialization (inits, package variables, the TestMain hook,
-// test files included) through the functions it names and the methods of
-// package types whose values it handles, to a bound, counting references
-// into S and calls it cannot resolve; TestMain may os.Exit(m.Run()) once.
-func (s *pkgScan) reach(dir string, starts []ast.Node, fa *pkgFacts) error {
-	seen, exited := map[*ast.FuncDecl]bool{}, false
+// reach follows initialization (inits and package variables, test files
+// included; or the TestMain hook) through what it runs: functions and
+// literals it calls or passes on, methods of package types whose values it
+// passes on (with embedded and exported fields'), to a bound. Another
+// package's name it calls, passes on or writes must be inert (in the hook,
+// one bare flag.Parse() and one os.Exit(m.Run()) too): else unverifiable.
+func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) error {
+	seen, seenT, exited, calls, live := map[*ast.FuncDecl]bool{}, map[*types.Named]bool{}, !hook, map[ast.Expr]bool{}, map[ast.Node]bool{}
 	follow := func(d *ast.FuncDecl) {
 		if d != nil && d.Body != nil && !seen[d] {
 			seen[d], starts = true, append(starts, d.Body)
+		}
+	}
+	var followType func(t types.Type)
+	followType = func(t types.Type) {
+		if p, ok := t.(*types.Pointer); ok {
+			t = p.Elem()
+		}
+		if nt, ok := t.(*types.Named); ok && nt.Obj().Pkg() == s.pkg && !seenT[nt] {
+			seenT[nt] = true
+			for _, d := range s.methodsOf[nt.Obj().Name()] {
+				follow(d)
+			}
+			if st, ok := nt.Underlying().(*types.Struct); ok {
+				for i := range st.NumFields() {
+					if f := st.Field(i); f.Embedded() || f.Exported() {
+						followType(f.Type())
+					}
+				}
+			}
 		}
 	}
 	for len(starts) > 0 {
@@ -527,33 +644,50 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, fa *pkgFacts) error {
 		n := starts[0]
 		starts = starts[1:]
 		ast.Inspect(n, func(n ast.Node) bool {
-			if e, ok := n.(ast.Expr); ok { // a value of a package type: its methods may run
-				t := s.info.TypeOf(e)
-				if p, ok := t.(*types.Pointer); ok {
-					t = p.Elem()
-				}
-				if nt, ok := t.(*types.Named); ok && nt.Obj().Pkg() == s.pkg {
-					for _, d := range s.methodsOf[nt.Obj().Name()] {
-						follow(d)
-					}
-				}
-			}
 			switch x := n.(type) {
+			case *ast.FuncLit: // run only when called or passed on, not when stored
+				return live[x]
+			case *ast.AssignStmt, *ast.IncDecStmt: // a write is checked like a call
+				ast.Inspect(x, func(n ast.Node) bool {
+					if a, ok := x.(*ast.AssignStmt); ok && slices.ContainsFunc(a.Rhs, func(e ast.Expr) bool { return e == n }) {
+						return false
+					}
+					live[n] = true
+					return true
+				})
 			case *ast.SelectorExpr:
-				if q := s.qual(x); sensitive(q) > 0 {
-					fa.init["a reference into S ("+q+")"]++
+				if q := s.qual(x); q != "" && live[x] && !inert(q, calls[x]) { // a read alone runs no code
+					fa.init["a reference it cannot prove safe ("+q+")"]++
 				}
 			case *ast.Ident:
 				switch o := s.info.Uses[x].(type) {
 				case *types.Func:
-					follow(s.decls[o.Origin()])
+					if live[x] {
+						follow(s.decls[o.Origin()])
+					}
 				case *types.Builtin:
 					if sensitive(o.Name()) > 0 {
-						fa.init["a reference into S ("+o.Name()+")"]++
+						fa.init["a reference it cannot prove safe ("+o.Name()+")"]++
 					}
 				}
 			case *ast.CallExpr:
-				if s.mRun(x) && !exited {
+				_, builtin := s.info.Uses[ident(x.Fun)].(*types.Builtin) // new(T), make(T), append(…): nothing dispatched
+				lazy := builtin || strings.HasPrefix(s.qual(ast.Unparen(x.Fun)), "sync.Once")
+				for i, e := range append([]ast.Expr{x.Fun}, x.Args...) {
+					if e = ast.Unparen(e); i > 0 && lazy {
+						break // run later, not at initialization: a call of what it returns is unresolved
+					} else if i > 0 { // a value passed on: its methods may run
+						followType(s.info.TypeOf(e))
+					}
+					if sel, ok := e.(*ast.SelectorExpr); ok {
+						live[sel.Sel] = true
+					}
+					live[e] = true
+				}
+				if calls[ast.Unparen(x.Fun)] = true; hook && s.qual(ast.Unparen(x.Fun)) == "flag.Parse" && len(x.Args) == 0 {
+					hook = false // once
+					return false
+				} else if s.mRun(x) && !exited {
 					exited = true
 					return false
 				} else if s.unresolved(x) {
@@ -569,7 +703,7 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, fa *pkgFacts) error {
 // unresolved: a call reached from initialization the guard cannot follow.
 func (s *pkgScan) unresolved(call *ast.CallExpr) bool {
 	fun := ast.Unparen(call.Fun) // an instantiated generic is not resolved: its body is followed as an identifier
-	if tv, ok := s.info.Types[fun]; ok && tv.IsType() {
+	if _, star := fun.(*ast.StarExpr); star || s.info.Types[fun].IsType() {
 		return false // a conversion
 	}
 	var fn *types.Func
@@ -584,16 +718,12 @@ func (s *pkgScan) unresolved(call *ast.CallExpr) bool {
 			fn = o
 		}
 	case *ast.SelectorExpr:
-		if id, ok := f.X.(*ast.Ident); ok {
-			if pn, ok := s.info.Uses[id].(*types.PkgName); ok {
-				return s.r.changed[pn.Imported().Path()]
-			}
+		if s.qual(f) != "" {
+			return false // a package's function: inert or not, by its selector
 		}
 		sel := s.info.Selections[f]
-		if sel == nil && !slices.ContainsFunc(slices.Concat(slices.Collect(maps.Values(s.methodsOf))...), func(d *ast.FuncDecl) bool { return d.Name.Name == f.Sel.Name }) {
-			return false // a method of a type from an import the guard does not load
-		} else if sel == nil || sel.Kind() != types.MethodVal || types.IsInterface(sel.Recv()) { // the universe error too
-			return true // perhaps this package's method, a func field, an interface
+		if sel == nil || sel.Kind() != types.MethodVal || types.IsInterface(sel.Recv()) { // the universe error too
+			return true // a method of an unloaded type, a func field, an interface
 		}
 		fn = sel.Obj().(*types.Func)
 	}
@@ -614,17 +744,14 @@ func output(f *ast.File, fn *ast.FuncDecl) int {
 	return b2i(strings.HasPrefix(t, "output:") || strings.HasPrefix(t, "unordered output:"))
 }
 
-// goModFacts is a go.mod's module path and ignore directives, comments dropped.
-func goModFacts(b []byte) (mod, ignores string) {
+// goIgnores is a go.mod's ignore directives, comments dropped.
+func goIgnores(b []byte) (ignores string) {
 	in := false
 	for _, l := range strings.Split(string(b), "\n") {
-		l, _, _ = strings.Cut(l, "//")
-		if f := strings.Fields(l); len(f) == 2 && f[0] == "module" {
-			mod = strings.Trim(f[1], `"`)
-		}
-		if l = strings.TrimSpace(l); strings.HasPrefix(l, "ignore") || in {
+		if l, _, _ = strings.Cut(l, "//"); strings.HasPrefix(strings.TrimSpace(l), "ignore") || in {
+			l = strings.TrimSpace(l)
 			in, ignores = strings.HasSuffix(l, "(") || in && l != ")", ignores+l+"\n"
 		}
 	}
-	return mod, ignores
+	return ignores
 }

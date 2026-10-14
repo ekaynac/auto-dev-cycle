@@ -20,10 +20,11 @@ import (
 // files, base and candidate, by syntax and types. It blocks a test gone,
 // less surely collected, with fewer assertions or more skips, a skip
 // outside tests, and test2json forgery's known forms; what it cannot prove
-// safe is unverifiable. References into S (sensitive) block from
-// initialization, block as exits in tested packages, and otherwise warn
-// naming file and function (operator decision A: code the tests call can
-// still forge in-process). Python fails closed until P14c.
+// safe is unverifiable. Initialization and the TestMain hook may reach only
+// an allowlist (inert); references into S block as exits in tested
+// packages and otherwise warn naming file and function (operator decision
+// A: code the tests call can still forge in-process; P14b-out widens S).
+// Python fails closed until P14c.
 var (
 	maxRead  int64 = 64 << 20 // blob bytes in all
 	maxFile  int64 = 4 << 20  // per blob
@@ -44,7 +45,7 @@ type stat struct {
 type pkgFacts struct {
 	tests                       map[string]*stat    // "platform dir:package.Name"
 	ambient, forged, twentyTwos int                 // skips outside tests, forging markers, …
-	refs                        map[string]int      // "file: reference into S in function"
+	refs                        map[string]int      // "file\x00reference into S\x00function"
 	init                        map[string]int      // what initialization reaches
 	warn                        map[string]string   // TestMain(*testing.M), compared whole
 	flags                       map[string][]string // per file: linkname, unsafe, …
@@ -55,8 +56,7 @@ type pkgFacts struct {
 // Accept's In.Guard. It lists the base's files through a temporary index.
 func Integrity(repo sandbox.Repo, base string) Guard {
 	return func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
-		r := &run{ctx: ctx, repo: repo, base: base, read: read, budget: maxRead, blobs: map[string][]byte{},
-			touched: map[string]bool{}, changed: map[string]bool{}}
+		r := &run{ctx: ctx, repo: repo, base: base, read: read, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{}}
 		err := r.check(changes)
 		return r.blocks, r.warnings, err
 	}
@@ -73,7 +73,6 @@ type run struct {
 	files, cand        map[string]string   // the base's and the candidate's paths, to blobs
 	baseDirs, candDirs map[string][]string // their files by directory
 	touched            map[string]bool     // directories of changed Go files
-	changed            map[string]bool     // their import paths
 	blocks, warnings   []Block
 }
 
@@ -113,11 +112,6 @@ func (r *run) check(changes []Change) error {
 	}
 	if err := r.goMod(); err != nil {
 		return err
-	}
-	for _, dir := range slices.Sorted(maps.Keys(r.touched)) {
-		if err := r.module(dir); err != nil {
-			return err
-		}
 	}
 	for _, dir := range slices.Sorted(maps.Keys(r.touched)) {
 		b, err := r.pkg(dir, r.files, r.baseDirs)
@@ -180,50 +174,24 @@ func (r *run) file(blob string) ([]byte, string, error) {
 	return b, "", nil
 }
 
-// goMod blocks a root go.mod with no module path, or whose ignore
-// directives (Go 1.25: packages ./... leaves out) changed.
+// goMod blocks a root go.mod whose ignore directives (Go 1.25: packages
+// ./... leaves out) changed.
 func (r *run) goMod() error {
 	if r.files["go.mod"] == r.cand["go.mod"] {
 		return nil
 	}
-	var mods, ignores [2]string
+	var ignores [2]string
 	for i, blob := range []string{r.files["go.mod"], r.cand["go.mod"]} {
 		if b, why, err := r.file(blob); blob != "" && (err != nil || why != "") {
 			add(&r.blocks, "go.mod", "unverifiable: "+why)
 			return err
 		} else if blob != "" {
-			mods[i], ignores[i] = goModFacts(b)
+			ignores[i] = goIgnores(b)
 		}
-	}
-	if r.cand["go.mod"] != "" && mods[1] == "" {
-		add(&r.blocks, "go.mod", "unverifiable: a root go.mod whose module path the guard cannot read")
 	}
 	if ignores[0] != ignores[1] {
 		add(&r.blocks, "go.mod", "unverifiable: a root go.mod's ignore directives changed (packages leave ./...)")
 	}
-	return nil
-}
-
-// module records the import path of the package in dir, from the nearest
-// go.mod above it in the candidate; none read blocks it as unverifiable.
-func (r *run) module(dir string) error {
-	d := dir
-	for r.cand[path.Join(d, "go.mod")] == "" && d != "." {
-		d = path.Dir(d)
-	}
-	mod := ""
-	if blob := r.cand[path.Join(d, "go.mod")]; blob != "" {
-		b, why, err := r.file(blob)
-		if err != nil {
-			return err
-		} else if why == "" {
-			mod, _ = goModFacts(b)
-		}
-	}
-	if mod == "" {
-		add(&r.blocks, dir, "unverifiable: the package's module cannot be read")
-	}
-	r.changed[path.Join(mod, strings.TrimPrefix(dir, d))] = mod != ""
 	return nil
 }
 
@@ -307,11 +275,11 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 		}
 	}
 	for _, k := range keys(b.refs, a.refs) { // per file and function: added ones block or warn, any other change warns
-		q, _, _ := strings.Cut(k[strings.Index(k, ": ")+2:], " in ")
-		if a.refs[k] > b.refs[k] && r.tested(dir) && sensitive(q) == 2 {
-			add(&r.blocks, k, "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
+		f := strings.Split(k, "\x00") // file, reference, function
+		if at := f[0] + ": " + f[1] + " in " + f[2]; a.refs[k] > b.refs[k] && r.tested(dir) && sensitive(f[1]) == 2 {
+			add(&r.blocks, at, "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
 		} else if a.refs[k] != b.refs[k] {
-			add(&r.warnings, k, "a reference into S (exit, output, process, testing control) added, removed or moved: review it")
+			add(&r.warnings, at, "a reference into S (exit, output, process, testing control) added, removed, moved or changed: review it")
 		}
 	}
 	if a.twentyTwos > b.twentyTwos {
