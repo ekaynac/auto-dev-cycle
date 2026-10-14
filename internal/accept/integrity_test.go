@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,16 +21,20 @@ import (
 
 // guardBase adds to baseFiles a TestMain, an example, a root test, an
 // external test package, an ordinary test named TestMain, a test file
-// under a constraint the guard does not model, and a root go.mod.
+// under a constraint the guard does not model, a root go.mod requiring
+// x/sys (from this repository's module cache) and an in-module package.
 var guardBase = map[string]string{
 	"pkg/main_test.go":    "package pkg\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(m.Run()) }\n",
 	"pkg/example_test.go": "package pkg\n\nimport \"fmt\"\n\nfunc ExampleAdd() {\n\tfmt.Println(Add(1, 2))\n\t// Output: 3\n}\n",
 	"pkg/ext_test.go":     "package pkg_test\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif 1+2 != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n}\n",
 	"other/a_test.go":     "package other\n\nimport \"testing\"\n\nfunc TestMain(t *testing.T) { t.Fatal() }\n\nfunc TestOther(t *testing.T) { t.Fatal() }\n",
 	"race/r_test.go":      "//go:build !race\n\npackage race\n\nimport \"testing\"\n\nfunc TestR(t *testing.T) { t.Fatal() }\n",
-	"go.mod":              "module example.com/m\n\ngo 1.22\n",
-	"root_test.go":        "package m\n\nimport \"testing\"\n\nfunc TestRoot(t *testing.T) { t.Fatal() }\n",
-	"cmd/x/main.go":       "package main\n\nimport \"os\"\n\nfunc main() { os.Exit(1) }\n",
+	"go.mod":              "module example.com/m\n\ngo 1.26.0\n\nrequire golang.org/x/sys v0.48.0\n",
+	"go.sum": "golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=\n" +
+		"golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=\n",
+	"other/other.go": "package other\n\nvar (\n\tValue int\n\tCount int32\n)\n\nconst Name = \"n\"\n\ntype Config struct{}\n\nfunc Run() {}\n",
+	"root_test.go":   "package m\n\nimport \"testing\"\n\nfunc TestRoot(t *testing.T) { t.Fatal() }\n",
+	"cmd/x/main.go":  "package main\n\nimport \"os\"\n\nfunc main() { os.Exit(1) }\n",
 }
 
 // The forgeries of the #255 reviews: a failing TestAdd reads pass under
@@ -59,6 +65,29 @@ const (
 	argsGo  = "package pkg\n\nimport \"os\"\n\n"
 )
 
+// testLister reads export data with the toolchain the tests run with, and
+// its caches (the test sandbox's).
+var testListerOnce = sync.OnceValues(func() (Lister, error) {
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		return nil, err
+	}
+	out, err := exec.Command(gobin, "env", "GOCACHE", "GOMODCACHE").Output() // as go resolves them (GOPATH too)
+	caches := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if err != nil || len(caches) != 2 {
+		return nil, fmt.Errorf("go env: %v %q", err, out)
+	}
+	return LocalLister(gobin, []string{"GOCACHE=" + caches[0], "GOMODCACHE=" + caches[1]}, 5*time.Minute, 8<<30), nil
+})
+
+func testLister(t testing.TB) Lister {
+	l, err := testListerOnce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
 func newGuardFixture(t *testing.T) fixture {
 	return newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
@@ -70,7 +99,7 @@ func newGuardFixture(t *testing.T) fixture {
 func (f fixture) guarded(t *testing.T, files map[string]string, gone ...string) Verdict {
 	t.Helper()
 	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, files, gone...), Policy: f.policy,
-		Guard: Integrity(f.repo, f.base)})
+		Guard: Integrity(f.repo, f.base, testLister(t))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +503,7 @@ func TestIntegrityBounds(t *testing.T) {
 	}
 	ctx := &countCtx{Context: context.Background()}
 	ctx.n.Store(1 << 40)
-	in := In{Repo: f.repo, Base: f.base, Patch: f.patch(t, map[string]string{"pkg/h_test.go": heavy}), Policy: f.policy, Guard: Integrity(f.repo, f.base)}
+	in := In{Repo: f.repo, Base: f.base, Patch: f.patch(t, map[string]string{"pkg/h_test.go": heavy}), Policy: f.policy, Guard: Integrity(f.repo, f.base, testLister(t))}
 	start := time.Now()
 	if _, err := Accept(ctx, in); err != nil {
 		t.Fatal(err)
@@ -546,6 +575,9 @@ func TestGoOn(t *testing.T) {
 // package with tests an exit, exec, system call, descriptor dup, process
 // start or runner call blocks and the rest warn; elsewhere all warn.
 func TestDecisionASweep(t *testing.T) {
+	if sensitive("syscall.ForkExecLock") != 1 { // a name, not the ForkExec family (L3)
+		t.Error("syscall.ForkExecLock is not class 1")
+	}
 	f := newGuardFixture(t)
 	for _, c := range []struct {
 		imp, expr, q string
@@ -555,7 +587,7 @@ func TestDecisionASweep(t *testing.T) {
 		{"syscall", "syscall.AllThreadsSyscall(0, 0, 0, 0)", "syscall.AllThreadsSyscall", 2},
 		{"syscall", "syscall.Dup3(1, 0, 0)", "syscall.Dup3", 2},
 		{"syscall", "syscall.Kill(0, 0)", "syscall.Kill", 1},
-		{"syscall", "syscall.ForkExecLock.Lock()", "syscall.ForkExecLock", 1}, // not ForkExec (L3)
+		{"syscall", "syscall.ForkLock.Lock()", "syscall.ForkLock", 1}, // ForkExecLock (L3) does not exist on linux: below
 		{"golang.org/x/sys/unix", "unix.Exit(0)", "golang.org/x/sys/unix.Exit", 2},
 		{"golang.org/x/sys/unix", "unix.Getpid()", "golang.org/x/sys/unix.Getpid", 1},
 		{"os", "os.Exit(0)", "os.Exit", 2},
