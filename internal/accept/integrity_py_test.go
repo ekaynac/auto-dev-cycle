@@ -377,14 +377,27 @@ func TestPyTokensBounded(t *testing.T) {
 		}
 	}
 	// Opus #260 H3: f-string format specs nested 2M deep at the 4 MiB blob
-	// bound, unterminated, are refused at maxNest, at once.
-	specs := []byte("x = f'" + strings.Repeat("{:", 2<<20-4))
-	ctx0, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	start := time.Now()
-	if _, why, err := pyTokens(ctx0, specs); err != nil || why == "" || time.Since(start) > 100*time.Millisecond {
-		t.Errorf("nested specs: %q %v in %v", why, err, time.Since(start))
+	// bound, unterminated, are refused at maxNest, at once: before the scan
+	// reaches the end, so no slower than a flat unterminated f-string of the
+	// same size, which must be read to its end (about 5 ms against 25 ms;
+	// without the bound, about 440 ms). Relative, so a loaded runner slows
+	// both sides (a fixed 100 ms bound flaked in CI on #261).
+	refused := func(src []byte) time.Duration {
+		runs := []time.Duration{}
+		for range 3 {
+			start := time.Now()
+			if _, why, err := pyTokens(context.Background(), src); err != nil || why == "" {
+				t.Fatalf("%.12q…: %q %v, want refused", src, why, err)
+			}
+			runs = append(runs, time.Since(start))
+		}
+		slices.Sort(runs)
+		return runs[1]
 	}
-	cancel()
+	flat := refused([]byte("x = f'" + strings.Repeat("ab", 2<<20-4)))
+	if nested := refused([]byte("x = f'" + strings.Repeat("{:", 2<<20-4))); nested > flat {
+		t.Errorf("nested specs refused in %v, a flat f-string of the same size in %v: not at once", nested, flat)
+	}
 	src := []byte(strings.Repeat("def test_a():\n    assert 1\n", 4<<20/27))
 	ctx := &countCtx{Context: context.Background()}
 	ctx.n.Store(100)
