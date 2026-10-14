@@ -25,9 +25,9 @@
 //     sent again; and model_call is not idempotent, so the store never retries it either.
 //   - Recovery reads the binding (OfLease): each call of a lease with its effect's current state, so an uncertain
 //     call's charge stays on its groups (P12b keeps the liability; P20 reconciles).
-//   - The Recorder also records the gateway's own count of each request it sent (gateway.Counts, P11b) as a usage
-//     report of source gateway_count (gateway_floor when it read no usage), which an adapter's final must not fall
-//     below to settle the call.
+//   - The Recorder also records the gateway's own count of each request (gateway.Counts, P11b): a usage report of
+//     source gateway_floor before the send, then gateway_count once the usage is read, which an adapter's final must
+//     not fall below to settle the call.
 //   - Inert (§1's gating table): nothing in adcd registers the kind, the event or the projector; P22a does.
 package modelcall
 
@@ -353,10 +353,10 @@ func (r Recorder) Intend(ctx context.Context, b gateway.Binding, destination typ
 	return err
 }
 
-// Count records the gateway's count of one request it sent for b's call: a usage delta of source gateway_count (or
-// gateway_floor, when the gateway read no usage), under the gateway's sequence for the call (internal/capacity/ledger
-// keeps it apart from the adapter's reports). It returns once the report is committed. Usage is never fenced, so it
-// needs no running attempt.
+// Count records the gateway's count of one request for b's call, under the request's sequence: a usage delta of
+// source gateway_floor before the send, then gateway_count, which supersedes it, once the gateway has read the usage
+// (internal/capacity/ledger keeps both apart from the adapter's reports). It returns once the report is committed.
+// Usage is never fenced, so it needs no running attempt.
 func (r Recorder) Count(ctx context.Context, b gateway.Binding, sequence int64, n gateway.Count) error {
 	if r.Store == nil {
 		return errors.New("modelcall: no store")

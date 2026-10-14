@@ -231,7 +231,7 @@ UsageMeasurement:
   turns: int
   seconds: number
   cost: {amount, currency, basis: cash|subscription_equivalent|free|local, estimate: bool}
-  source_of_truth: provider_usage | adapter_report | gateway_count | none
+  source_of_truth: provider_usage | adapter_report | gateway_count | gateway_floor | none
 ```
 
 Reconciliation, done in one place (`internal/capacity/ledger`):

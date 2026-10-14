@@ -94,10 +94,14 @@ func StandingOf(ms []types.UsageMeasurement, call types.CallID) Standing {
 	if len(ms) == 0 {
 		return Standing{}
 	}
-	one, mixed := slices.Clone(ms), false
+	one, mixed, cur := slices.Clone(ms), false, ""
 	for i := range one {
-		mixed = mixed || one[i].Cost.Currency != ms[0].Cost.Currency
-		one[i].Cost.Currency = ms[0].Cost.Currency
+		if counts(one[i]) {
+			continue // the gateway's currency is no report's
+		}
+		cur = cmp.Or(cur, one[i].Cost.Currency)
+		mixed = mixed || one[i].Cost.Currency != cur
+		one[i].Cost.Currency = cur
 	}
 	if got, err := Reconcile(one); err == nil {
 		return trusted(got[call], mixed)
@@ -182,7 +186,9 @@ type Call struct {
 	Usage    Figure
 	Currency string // "" until a report names one
 	// Uncertain: no final and no provider reconciliation yet; the figure is
-	// the best estimate and stays a liability on the call's groups.
+	// the best estimate and stays a liability on the call's groups. It is not
+	// settlement: a final settles a call only as StandingOf trusts it, which
+	// is what P17, P20 and the liability ledger read.
 	Uncertain bool
 	// Inconsistent: a report was lower than an earlier figure without a
 	// provider reconciliation; the larger figure was kept (inconsistent_usage).
@@ -190,7 +196,7 @@ type Call struct {
 	Reason       vocab.Reason
 	// Counted is the gateway's own count (gateway_count and gateway_floor
 	// reports, summed over its sequences), nil when it counted none; Usage
-	// leaves it out. Floored: some of it is a floor, its usage unread.
+	// leaves it out. Floored: some request has a floor and no count.
 	Counted *Figure
 	Floored bool
 	// Reconciled: a provider reconciliation is recorded.
@@ -209,18 +215,20 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 	recon := map[types.CallID][]types.UsageMeasurement{}
 	conflict := map[types.CallID]bool{}
 	currency := map[types.CallID]string{}
-	counts, floored := map[key]Figure{}, map[types.CallID]bool{}
+	observed, floors := map[key]Figure{}, map[key]Figure{}
 	for _, m := range ms {
 		if mutation.Is(mutation.StaleAttemptUsageDropped) && m.Attempt != ms[len(ms)-1].Attempt {
 			continue
 		}
-		switch m.SourceOfTruth {
-		case types.UsageMeasurementSourceOfTruthGatewayCount, types.UsageMeasurementSourceOfTruthGatewayFloor:
-			// The gateway numbers its counts per call; a replay is the same
-			// count, and a clash keeps the larger.
-			k := key{m.Call, m.Sequence}
-			counts[k], _ = maxOf(counts[k], figureOf(m))
-			floored[m.Call] = floored[m.Call] || m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayFloor
+		if counts(m) {
+			// The gateway's floor and count of one request share its
+			// sequence; a replay is the same report, and a clash keeps the
+			// larger.
+			at, k := floors, key{m.Call, m.Sequence}
+			if m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayCount {
+				at = observed
+			}
+			at[k], _ = maxOf(at[k], figureOf(m))
 			continue
 		}
 		if c, ok := currency[m.Call]; ok && c != m.Cost.Currency {
@@ -252,7 +260,13 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 	if err != nil {
 		return nil, err
 	}
-	counted, err := sum(counts)
+	floored := map[types.CallID]bool{}
+	for k, f := range floors {
+		if _, ok := observed[k]; !ok {
+			observed[k], floored[k.call] = f, true // a count supersedes its request's floor
+		}
+	}
+	counted, err := sum(observed)
 	if err != nil {
 		return nil, err
 	}
@@ -281,6 +295,12 @@ func Reconcile(ms []types.UsageMeasurement) (map[types.CallID]Call, error) {
 		out[call] = c
 	}
 	return out, nil
+}
+
+// counts: m is the gateway's own count of a request, or its floor.
+func counts(m types.UsageMeasurement) bool {
+	return m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayCount ||
+		m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayFloor
 }
 
 // sum adds each call's figures, deterministically.

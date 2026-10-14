@@ -27,14 +27,14 @@
 //   - Intent before egress (P12a): a binding names its call, and nothing is sent for the call until its
 //     `model_call` intent is durable (Intents, internal/modelcall). It is intended once per binding, as the last step
 //     before the first send, so a refused request leaves no intent. A gateway without Intents sends nothing.
-//   - Counting (P11b, count.go): the gateway counts every request it sends itself (Counts), from the bytes it sent
-//     and the usage the upstream reported, so an adapter's zero final never settles a call that was sent.
+//   - Counting (P11b, count.go): the gateway counts every request it sends itself (Counts): a floor durable before
+//     the send (none, none sent), then the usage the upstream reported, so an adapter's final never settles a call on
+//     less than was sent.
 //   - Inert (§1's gating table): nothing in adcd constructs a Gateway; P22a does, when it activates `launch`.
 package gateway
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -44,8 +44,11 @@ import (
 	"io"
 	"maps"
 	"mime"
+	"net"
 	"net/http"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -106,7 +109,9 @@ type Gateway struct {
 	bound    map[[32]byte]Binding // by the token's hash
 	intended map[[32]byte]bool    // tokens whose call's intent is durable, by the token's hash
 	observed map[types.AttemptID]Observed
-	seq      map[types.CallID]int64 // each call's next count, never reset, so a rebound call's counts stay distinct
+	// seq numbers every request's count, across calls, so a call's are distinct however often it is bound. A
+	// restart resets it, but no call sends again after one: its effect is then uncertain, and Intend refuses it.
+	seq int64
 }
 
 // New is a gateway with no binding. A zero Registry registers nothing, so
@@ -116,7 +121,7 @@ func New(cfg Config) (*Gateway, error) {
 		return nil, errors.New("gateway: a gateway needs the lease and attempt readers, the secrets, the intents and the counts")
 	}
 	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, intended: map[[32]byte]bool{},
-		observed: map[types.AttemptID]Observed{}, seq: map[types.CallID]int64{}}, nil
+		observed: map[types.AttemptID]Observed{}}, nil
 }
 
 // The paths an attempt may call, under its destination's endpoint.
@@ -194,7 +199,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(w, &refusal{http.StatusUnauthorized, "unbound"})
 		return
 	}
-	resp, cred, no := g.forward(r, b)
+	resp, s, no := g.forward(r, b)
 	if no != nil {
 		refuse(w, no)
 		return
@@ -204,16 +209,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	out := &redacting{w: flushing{w}, secret: []byte(cred.Reveal())}
-	var body kept
-	_, err := io.Copy(out, io.TeeReader(resp.Body, &body))
-	if err = errors.Join(err, out.Close()); err != nil || body.dropped {
-		body.Reset() // not forwarded whole: its usage is unobserved
-	}
+	out := &redacting{w: flushing{w}, secret: []byte(s.cred.Reveal())}
+	var t tally
+	_, err := io.Copy(out, io.TeeReader(resp.Body, &t))
+	err = errors.Join(err, out.Close())
 	if out.hit {
 		g.observe(b.Attempt, 0, RouteEchoed)
 	}
-	g.count(r, b, int(resp.Request.ContentLength), body.Bytes()) // the request as sent
+	g.count(r, b, s, &t, err == nil)
 }
 
 // The response media types and charsets the gateway forwards: a header is
@@ -237,73 +240,89 @@ func contentType(v string) (string, bool) {
 	return mt, true
 }
 
-// redacting writes to w with every form of secret it scans for replaced by
-// the placeholder, so an upstream echoing the credential (in an auth error,
+// redacting writes to w with every spelling of secret replaced by the
+// placeholder, so an upstream echoing the credential (in an auth error,
 // say) never hands it to the sandbox. It holds back the last bytes that may
-// begin a form split across writes, until the next write or Close. The
+// begin a spelling split across writes, until the next write or Close. The
 // stream goes on rather than being cut: what arrived stays usable and its
 // status reaches the exit map, and the echo is recorded as a route refusal.
 //
-// The forms are the raw value and its JSON-escaped spellings (#226 entry
-// 56): an honest upstream quoting the key in a JSON error may escape '/' as
-// `\/` or '<', '>' and '&' as `\u003c` and the like. Base64, URL-encoded,
-// partial and masked echoes are not scanned: only a hostile upstream makes
-// them, and it already holds the key (an accepted M1 residual).
+// A spelling is the key with each byte raw or JSON-escaped, however an
+// honest encoder escapes it (#226 entry 56): `\uXXXX` in either case of
+// hex, or a short escape (`\/`, `\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`).
+// Base64, URL-encoded, partial and masked echoes are not scanned: only a
+// hostile upstream makes them, and it already holds the key (an accepted
+// M1 residual).
 type redacting struct {
 	w      io.Writer
 	secret []byte
-	forms  [][]byte // forms(secret), set at the first write
 	held   []byte
 	hit    bool
 }
 
-// minTail is the shortest prefix of a form, held at EOF, that Close drops
-// as an echo (#226 entry 55): a coincidental prefix that long of a random
-// key is negligible.
+// minTail is how many bytes of the key past its public prefix (publicPrefix,
+// such as `sk-proj-`) a tail held at EOF must spell for Close to drop it as
+// an echo (#226 entry 55): a coincidental run that long of a random key is
+// negligible. A key under minTail+1 bytes past its prefix is never detected
+// cut at EOF.
 const minTail = 8
 
-// forms are the spellings of secret the redaction scans for, the longest
-// first, each once.
-func forms(secret []byte) [][]byte {
-	out := [][]byte{secret}
-	for _, slash := range []string{"/", `\/`} {
-		for _, html := range []string{"", `\u%04x`, `\u%04X`} {
-			var b strings.Builder
-			for _, c := range string(secret) {
-				switch {
-				case c == '/':
-					b.WriteString(slash)
-				case html != "" && strings.ContainsRune("<>&", c):
-					fmt.Fprintf(&b, html, c)
-				case c == '"' || c == '\\':
-					b.WriteString(`\` + string(c))
-				case c < 0x20:
-					fmt.Fprintf(&b, `\u%04x`, c)
-				default:
-					b.WriteRune(c)
-				}
-			}
-			out = append(out, []byte(b.String()))
+var publicPrefix = regexp.MustCompile(`^[a-z]+(-[a-z0-9]+)*-`)
+
+// shortEscapes are JSON's two-character escapes, by the byte they stand for.
+var shortEscapes = map[byte]byte{'/': '/', '"': '"', '\\': '\\', '\b': 'b', '\f': 'f', '\n': 'n', '\r': 'r', '\t': 't'}
+
+// unit is how many bytes of buf's start spell c: 0 when they do not, -1
+// when buf ends inside what may still.
+func unit(buf []byte, c byte) int {
+	switch {
+	case len(buf) == 0 || len(buf) == 1 && buf[0] == '\\':
+		return -1
+	case c == '\\' && buf[0] == '\\' && buf[1] == '\\':
+		return 2 // an escaped backslash, before a raw one
+	case buf[0] == c:
+		return 1
+	case buf[0] != '\\':
+		return 0
+	case buf[1] == 'u':
+		if len(buf) < 6 {
+			return -1
 		}
+		if v, err := strconv.ParseUint(string(buf[2:6]), 16, 16); err == nil && v == uint64(c) {
+			return 6
+		}
+	case shortEscapes[c] != 0 && buf[1] == shortEscapes[c]:
+		return 2
 	}
-	slices.SortFunc(out, func(a, b []byte) int { return cmp.Or(len(b)-len(a), bytes.Compare(a, b)) })
-	return slices.CompactFunc(out, bytes.Equal)
+	return 0
+}
+
+// spell reads secret at buf's start: the bytes spanned and the key bytes
+// spelled, and whether buf ended first.
+func spell(buf, secret []byte) (n, spelled int, cut bool) {
+	for _, c := range secret {
+		u := unit(buf[n:], c)
+		if u <= 0 {
+			return n, spelled, u < 0
+		}
+		n, spelled = n+u, spelled+1
+	}
+	return n, spelled, false
 }
 
 func (r *redacting) Write(p []byte) (int, error) {
 	if len(r.secret) == 0 {
 		return r.w.Write(p)
 	}
-	if r.forms == nil {
-		r.forms = forms(r.secret)
+	buf, out, from := append(r.held, p...), []byte(nil), 0
+	for i := 0; i < len(buf); i++ {
+		if n, spelled, _ := spell(buf[i:], r.secret); spelled == len(r.secret) {
+			out, r.hit = append(append(out, buf[from:i]...), redacted...), true
+			from, i = i+n, i+n-1
+		}
 	}
-	buf, out := append(r.held, p...), []byte(nil)
-	for i, n := r.match(buf); i >= 0; i, n = r.match(buf) {
-		out = append(append(out, buf[:i]...), redacted...)
-		buf, r.hit = buf[i+n:], true
-	}
-	keep := min(len(r.forms[0])-1, len(buf))
-	out, r.held = append(out, buf[:len(buf)-keep]...), append([]byte(nil), buf[len(buf)-keep:]...)
+	keep := min(6*len(r.secret)-1, len(buf)-from)
+	out, r.held = append(out, buf[from:len(buf)-keep]...), append([]byte(nil), buf[len(buf)-keep:]...)
 	if len(out) > 0 {
 		if _, err := r.w.Write(out); err != nil {
 			return 0, err
@@ -312,24 +331,13 @@ func (r *redacting) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// match is the first form in buf: where it starts and its length, or -1.
-func (r *redacting) match(buf []byte) (at, n int) {
-	at = -1
-	for _, f := range r.forms {
-		if i := bytes.Index(buf, f); i >= 0 && (at < 0 || i < at) {
-			at, n = i, len(f)
-		}
-	}
-	return at, n
-}
-
-// Close writes the held-back tail, which holds no whole form. A tail ending
-// in minTail bytes or more of a form's start is an echo cut at EOF: those
-// bytes are replaced, and the echo recorded.
+// Close writes the held-back tail, which spells no whole key. A tail
+// ending in a spelling of minTail key bytes or more past its public prefix
+// is an echo cut at EOF: it is replaced, and the echo recorded.
 func (r *redacting) Close() error {
-	tail := r.held
-	for i := 0; i+minTail <= len(tail); i++ {
-		if slices.ContainsFunc(r.forms, func(f []byte) bool { return bytes.HasPrefix(f, tail[i:]) }) {
+	tail, enough := r.held, len(publicPrefix.Find(r.secret))+minTail
+	for i := range tail {
+		if _, spelled, cut := spell(tail[i:], r.secret); cut && spelled >= enough {
 			tail, r.hit = append(tail[:i:i], redacted...), true
 			break
 		}
@@ -363,8 +371,8 @@ func (g *Gateway) binding(r *http.Request) (Binding, bool) {
 // and the credential it injected, or refuses it with nothing sent. The
 // lease is checked before the body is read, so only a running attempt can
 // make the gateway buffer one.
-func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credential, *refusal) {
-	ctx, none := r.Context(), Credential{}
+func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, sending, *refusal) {
+	ctx, none := r.Context(), sending{}
 	if r.Method != http.MethodPost {
 		return nil, none, &refusal{http.StatusMethodNotAllowed, "method"}
 	}
@@ -435,6 +443,14 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 	if err != nil {
 		return nil, none, &refusal{http.StatusForbidden, "destination_not_admitted"}
 	}
+	g.mu.Lock()
+	s := sending{cred, g.seq, len(out)}
+	g.seq++
+	g.mu.Unlock()
+	if g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, floor(out, l)) != nil {
+		g.observe(b.Attempt, 0, RouteUncounted)
+		return nil, none, &refusal{http.StatusServiceUnavailable, RouteUncounted}
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if e.CredentialRef != nil {
 		inject := g.cfg.Inject[e.Destination.ID]
@@ -447,8 +463,10 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 	if resp != nil {
 		g.observe(b.Attempt, resp.StatusCode, "")
 	}
-	if err != nil || resp.Header.Get("Content-Encoding") != "" {
-		g.count(r, b, len(out), nil) // possibly sent, and nothing forwarded
+	if op := (*net.OpError)(nil); errors.As(err, &op) && op.Op == "dial" || errors.Is(err, errOffOrigin) {
+		if g.cfg.Counts.Count(context.WithoutCancel(ctx), b, s.seq, Count{Observed: true}) != nil {
+			g.observe(b.Attempt, 0, RouteUncounted) // never sent, but its floor stands
+		}
 	}
 	switch {
 	case errors.Is(err, errRedirect):
@@ -461,7 +479,7 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, Credentia
 		resp.Body.Close()
 		return nil, none, &refusal{http.StatusBadGateway, "encoding"}
 	}
-	return resp, cred, nil
+	return resp, s, nil
 }
 
 // intend makes the call's intent durable before r's token first sends.

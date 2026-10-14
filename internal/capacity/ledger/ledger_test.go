@@ -216,6 +216,7 @@ func TestAFinalSettlesOnlyOnTheGatewaysCount(t *testing.T) {
 		"a reconciliation under it":     {[]types.UsageMeasurement{zero, report(calA, recon, 0, 10), counted(calA, 0, 300, 30)}, true, 10, 1},
 		"a final over a floor":          {[]types.UsageMeasurement{agreeing, counted(calA, 0, 200, 30), floor(calA, 1, 5)}, false, 300, 30},
 		"a reconciliation over a floor": {[]types.UsageMeasurement{report(calA, recon, 0, 10), floor(calA, 0, 50)}, true, 10, 1},
+		"a count superseding its floor": {[]types.UsageMeasurement{agreeing, floor(calA, 0, 900), counted(calA, 0, 300, 30)}, true, 300, 30},
 	} {
 		st := standing(t, c.ms...)
 		if st.Settled != c.settled || st.Usage == nil || st.Usage.In != c.in || st.Usage.Out != c.out {
@@ -235,5 +236,18 @@ func TestAFinalSettlesOnlyOnTheGatewaysCount(t *testing.T) {
 	eur.Cost.Currency = "EUR"
 	if _, err := Reconcile([]types.UsageMeasurement{report(calA, final, 0, 300), eur}); err != nil {
 		t.Fatalf("a count's currency is not the call's: %v", err)
+	}
+	// L2 (Opus on #256): an honest EUR final beside the gateway's USD count
+	// is neither mixed nor inconsistent.
+	euro := agreeing
+	euro.Cost.Currency = "EUR"
+	if st := standing(t, euro, counted(calA, 0, 300, 30)); !st.Settled || st.Inconsistent {
+		t.Fatalf("a EUR final: %+v", st)
+	}
+	// L3: the gateway's sources are deltas only.
+	odd := counted(calA, 0, 1, 1)
+	odd.Kind = final
+	if _, err := contract.Encode("records/usage-measurement", odd); err == nil {
+		t.Fatal("a gateway count of kind final validates")
 	}
 }

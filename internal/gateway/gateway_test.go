@@ -4,6 +4,7 @@ package gateway
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -163,9 +164,10 @@ func (i *intents) n() int {
 // counts records the gateway's counts (internal/modelcall's Recorder in
 // adcd), failing with err when set.
 type counts struct {
-	mu  sync.Mutex
-	got []counted
-	err error
+	mu       sync.Mutex
+	got      []counted
+	err      error // for every count
+	observed error // for counts after a response, not floors
 }
 
 type counted struct {
@@ -177,8 +179,8 @@ type counted struct {
 func (c *counts) Count(_ context.Context, b Binding, seq int64, n Count) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.err != nil {
-		return c.err
+	if c.err != nil || n.Observed && c.observed != nil {
+		return cmp.Or(c.err, c.observed)
 	}
 	c.got = append(c.got, counted{b, seq, n})
 	return nil
@@ -421,15 +423,16 @@ func TestAnEchoedCredentialNeverReachesTheAdapter(t *testing.T) {
 		t.Fatalf("tail %q", out.String())
 	}
 	// Mythos M-2: a key split across two writes, deterministically. After
-	// the first write exactly len(key)-1 bytes are held back.
+	// the first write exactly 6*len(key)-1 bytes are held back, the longest
+	// spelling but one byte (every byte escaped as \uXXXX).
 	out.Reset()
 	r = &redacting{w: &out, secret: []byte(fakeKey)}
-	_, _ = r.Write([]byte("data: fake-credential-0123"))
-	if out.String() != "d" || len(r.held) != len(fakeKey)-1 {
+	_, _ = r.Write([]byte(strings.Repeat("a", 200) + "data: fake-credential-0123"))
+	if out.String() != strings.Repeat("a", 226-6*len(fakeKey)+1) || len(r.held) != 6*len(fakeKey)-1 {
 		t.Fatalf("after one write: %q, held %d", out.String(), len(r.held))
 	}
 	_, _ = r.Write([]byte("456789 tail"))
-	if _ = r.Close(); strings.Contains(out.String(), "0123456789") || out.String() != "data: "+redacted+" tail" || !r.hit {
+	if _ = r.Close(); strings.Contains(out.String(), "0123456789") || out.String() != strings.Repeat("a", 200)+"data: "+redacted+" tail" || !r.hit {
 		t.Fatalf("split: %q hit %v", out.String(), r.hit)
 	}
 }

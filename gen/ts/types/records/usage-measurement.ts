@@ -30,7 +30,7 @@ export type UsageMeasurement = {
   milliseconds: number;
   cost: UsageMeasurementCost;
   /**
-   * gateway_count and gateway_floor are the gateway's own count of one request it sent (P11b), kept apart from the adapter's reports: gateway_count when it read the upstream's usage in the response it forwarded, gateway_floor when it did not (a floor from the request's size alone). An adapter's final settles a call only when it is not below the gateway's counts and none of them is a floor.
+   * gateway_count and gateway_floor are the gateway's own count of one request it sent (P11b), kept apart from the adapter's reports: gateway_floor recorded before the request is sent, gateway_count after its response is forwarded whole with its usage read, superseding the floor at the same sequence. An adapter's final settles a call only when no request of it has a floor alone and the final is not below the counts.
    */
   source_of_truth: "provider_usage" | "adapter_report" | "gateway_count" | "gateway_floor" | "none";
 };

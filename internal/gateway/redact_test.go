@@ -5,6 +5,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -42,21 +43,70 @@ func TestAnEscapedOrCutEchoNeverReachesTheAdapter(t *testing.T) {
 	}
 }
 
-// The forms scanned for: the raw value once when no character needs
-// escaping, and every escaped spelling otherwise, longest first.
-func TestTheFormsScannedFor(t *testing.T) {
-	if f := forms([]byte(fakeKey)); len(f) != 1 || string(f[0]) != fakeKey {
-		t.Fatalf("forms of a plain key: %q", f)
-	}
-	f := forms([]byte(escapable))
-	for _, want := range []string{escapable, `fake\/key<0123>&456789`, `fake/key<0123>&456789`, `fake\/key<0123>&456789`} {
-		if !bytes.Contains(bytes.Join(f, []byte("|")), []byte(want)) {
-			t.Errorf("forms %q lack %q", f, want)
+// spelled is key with byte i written as how(i, c) returns, raw for "".
+func spelled(key string, how func(i int, c byte) string) string {
+	var b strings.Builder
+	for i := range len(key) {
+		if s := how(i, key[i]); s != "" {
+			b.WriteString(s)
+		} else {
+			b.WriteByte(key[i])
 		}
 	}
-	for i := 1; i < len(f); i++ {
-		if len(f[i]) > len(f[0]) {
-			t.Fatalf("forms not longest first: %q", f)
+	return b.String()
+}
+
+// escaping writes the bytes in pick (all when "") as `\u` with format's hex.
+func escaping(format, pick string) func(int, byte) string {
+	return func(_ int, c byte) string {
+		if pick == "" || strings.IndexByte(pick, c) >= 0 {
+			return fmt.Sprintf(`\u`+format, c)
+		}
+		return ""
+	}
+}
+
+// M1 (Opus on #256): any JSON spelling of the key is redacted, however an
+// encoder escapes each byte, in one write or in single bytes.
+func TestEveryJSONSpellingIsRedacted(t *testing.T) {
+	const key = "wJalrXUtn+FEMI/K7MDENG=bPxRfiCY<>&q"
+	letters := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	for name, body := range map[string]string{
+		"'+' as .NET escapes it": spelled(key, escaping("%04X", "+")),
+		"'=' as Gson escapes it": spelled(key, escaping("%04x", "=")),
+		`'/' as /`:               spelled(key, escaping("%04x", "/")),
+		`'/' as \/`:              strings.ReplaceAll(key, "/", `\/`),
+		"only '<' escaped":       spelled(key, escaping("%04x", "<")),
+		"mixed-case hex": spelled(key, func(i int, c byte) string {
+			return fmt.Sprintf([]string{`\u%04x`, `\u%04X`}[i%2], c)
+		}),
+		"every letter escaped": spelled(key, escaping("%04x", letters)),
+		"every byte escaped":   spelled(key, escaping("%04X", "")),
+	} {
+		for _, step := range []int{len(body), 1} {
+			var out bytes.Buffer
+			r := &redacting{w: &out, secret: []byte(key)}
+			for i := 0; i < len(body); i += step {
+				_, _ = r.Write([]byte(body[i:min(i+step, len(body))]))
+			}
+			_ = r.Close()
+			if out.String() != redacted || !r.hit {
+				t.Errorf("%s (writes of %d bytes): %q", name, step, out.String())
+			}
+		}
+	}
+}
+
+// L1 (Opus on #256): the EOF rule counts minTail bytes past the key's
+// public prefix, so a stream cut at the prefix is no echo.
+func TestATailOfThePublicPrefixIsNoEcho(t *testing.T) {
+	const key = "sk-proj-0a1b2c3d4e5f6g7h8i9j"
+	for tail, echo := range map[string]bool{"sk-proj-": false, "sk-proj-0a1b2c3": false, "sk-proj-0a1b2c3d": true} {
+		var out bytes.Buffer
+		r := &redacting{w: &out, secret: []byte(key)}
+		_, _ = r.Write([]byte("data: " + tail))
+		if _ = r.Close(); r.hit != echo || strings.Contains(out.String(), tail) == echo {
+			t.Errorf("%q: %q, hit %v", tail, out.String(), r.hit)
 		}
 	}
 }
