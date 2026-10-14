@@ -17,7 +17,8 @@ import (
 // data; configuration, markers, compiled files; base collection settings
 // (M3); decision A's references (pytest internals and builtin fixtures
 // anywhere; namespace, exit and process ones in test files and at import;
-// others warn). Until 2a-allow, 2a3 and 2b, P14b's rule still blocks .py.
+// others warn); the import-time allowlist (integrity_pyimport.go). Until
+// 2a3 and 2b, P14b's rule still blocks .py.
 var (
 	pyConfs   = []string{"pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg", "pyproject.toml"}
 	pyCollect = strings.Fields("python_files python_classes python_functions norecursedirs testpaths confcutdir " +
@@ -103,7 +104,7 @@ func (r *run) python(changes []Change) error {
 		if err = cmp.Or(err, err2); err != nil {
 			return err
 		} else if ok && ok2 {
-			r.pyFileCompare(c.Dst, b, a)
+			r.pyFileCompare(c.Dst, b, a, pyTested(c.Dst) || r.pyTestDir(c.Dst))
 		}
 	}
 	return nil
@@ -179,7 +180,7 @@ func pyConf(p string, b []byte, present bool) string {
 // pyFile is what the guard reads of one version of a Python file.
 type pyFile struct {
 	hooks bool           // it mentions a pytest hook, hookimpl or pytest_plugins
-	plain string         // a conftest's first top-level line not a fixture, an import or plain data
+	bad   string         // why its code at import is outside the allowlist (blocks where judged)
 	refs  map[string]int // "kind\x00reference\x00function"
 }
 
@@ -209,7 +210,9 @@ func named(t []ptok, name string) bool {
 }
 
 // pyScan reads one version of p when want (unverifiable: blocks p). Only a
-// def body or an exact __main__ guard is not import code (Opus #263 H2).
+// def body or an exact __main__ guard is not import code (Opus #263 H2);
+// __init_subclass__, __set_name__ and a type subclass's methods run when a
+// class is made, so are (Mythos #263 L1).
 func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error) {
 	fa = &pyFile{refs: map[string]int{}}
 	src, ok, err := r.pyRead(want, p, blob)
@@ -228,9 +231,15 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 	}()
 	type block struct {
 		indent int
-		fn     string
-	} // fn: the outermost function, "" at import
-	stack, deco, fixture, rebound := []block{{indent: -1}}, []ptok(nil), true, false
+		fn     string // the outermost function, "" at import
+		meta   bool   // a class based on type
+	}
+	stack, deco, rebound, conftest, tested := []block{{indent: -1}}, []ptok(nil), false, path.Base(p) == "conftest.py", pyTested(p)
+	allow := func(why string) {
+		if fa.bad == "" {
+			fa.bad = why
+		}
+	}
 	for _, l := range lines {
 		if r.work += 2 * (len(l.toks) + len(l.inner)); r.work > maxWork {
 			break
@@ -240,24 +249,31 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 		for l.indent <= stack[len(stack)-1].indent {
 			stack = stack[:len(stack)-1]
 		}
-		t, fn := l.toks, stack[len(stack)-1].fn
-		b, code := block{l.indent, fn}, append(append(deco, t...), l.inner...)
+		t, top := l.toks, stack[len(stack)-1]
+		fn, b, code := top.fn, block{l.indent, top.fn, false}, append(append(deco, t...), l.inner...)
+		if fn == "" && !(pyMain(t) && !rebound) {
+			for _, st := range pySplit(t, ";") {
+				allow(pyAllowed(st, conftest))
+			}
+			if !pyConst(l.inner) {
+				allow("code run at import in an f-string field (" + ptext(t) + ")")
+			}
+		}
 		if why := pyFixtureName(t); (t[0].text == "@" || fn == "") && named(t, "fixture") && why != "" {
 			fa.refs["p\x00"+why+"\x00"+fn]++ // Opus #263 H3, Mythos #263 H2
 		}
 		if t[0].text == "@" {
-			fixture, deco = fixture && len(t) > 1 && (t[1].text == "fixture" || len(t) > 3 && t[1].text == "pytest" && t[3].text == "fixture"), code
+			deco = code
 			continue
 		}
 		kw, name, d := "", "", t[b2i(t[0].text == "async"):]
 		if len(d) > 1 && (d[0].text == "def" || d[0].text == "class") {
 			kw, name = d[0].text, d[1].text
 		}
-		if path.Base(p) == "conftest.py" && len(stack) == 1 && fa.plain == "" && !pyPlain(t, kw == "def" && fixture && len(deco) > 0) {
-			fa.plain = fmt.Sprint(t[:min(len(t), 12)])
-		}
-		if kw == "def" {
+		if kw == "def" && !top.meta && name != "__init_subclass__" && name != "__set_name__" {
 			b.fn = cmp.Or(fn, name)
+		} else if kw == "class" {
+			b.meta = named(pySplit(t, ":")[0], "type")
 		} else if pyMain(t) && !rebound {
 			b.fn = cmp.Or(fn, "__main__")
 		}
@@ -275,13 +291,17 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 			rebound = rebound || code[i].text == "__name__" && !pyMain(t) &&
 				!(i > 1 && i+1 < len(code) && code[i-1].text == "(" && code[i+1].text == ")" && code[i-2].kind == 'n')
 		}
-		if fn == "" && len(t) > 2 && slices.Contains(pyFixtures, t[0].text) && t[1].text == "=" && t[2].text != "=" && (pyTested(p) || named(code, "fixture")) {
+		if fn == "" && len(t) > 2 && slices.Contains(pyFixtures, t[0].text) && t[1].text == "=" && t[2].text != "=" && (tested || named(code, "fixture")) {
 			fa.refs["p\x00a builtin fixture overridden by assignment ("+t[0].text+")\x00"]++ // Mythos #263 M1
 		}
-		if kw == "def" && (pyTested(p) || named(deco, "fixture")) && slices.Contains(pyFixtures, name) { // in any file (H3)
+		if kw == "def" && (tested || named(deco, "fixture")) && slices.Contains(pyFixtures, name) { // in any file (H3)
 			fa.refs["p\x00a builtin fixture overridden ("+name+")\x00"+fn]++
 		}
-		deco, fixture = nil, true
+		if kw == "def" && strings.HasPrefix(name, "__") && strings.HasSuffix(name, "__") ||
+			slices.ContainsFunc(pySplit(t, "="), func(s []ptok) bool { return len(s) > 0 && s[len(s)-1].text == "__class__" }) {
+			allow("a dunder method or __class__ bound in a test file (" + ptext(t) + ")") // Opus #263 M1, in every judged file
+		}
+		deco = nil
 	}
 	if r.work > maxWork {
 		why = "its analysis is over the guard's work bound"
@@ -293,6 +313,8 @@ func (r *run) pyScan(want bool, p, blob string) (fa *pyFile, ok bool, err error)
 }
 
 func (k ptok) String() string { return k.text }
+
+func ptext(t []ptok) string { return fmt.Sprint(t[:min(len(t), 12)]) }
 
 // pyStr is the string literal k, prefix and quotes stripped; "" for an
 // f- or t-string, an escape or not a string (not read as a literal).
@@ -326,32 +348,10 @@ func pyMain(t []ptok) bool {
 	return len(t) == 6 && t[0].text == "if" && t[2].text == "=" && t[3].text == "=" && t[5].text == ":" && (main(t[1], t[4]) || main(t[4], t[1]))
 }
 
-// pyPlain: a conftest's top-level line is a fixture, an import (not *;
-// fixture and pytest only from pytest), a docstring, or constants (not
-// f-strings) bound to a name not collect_ignore*.
-func pyPlain(t []ptok, fixture bool) bool {
-	constant := func(k ptok) bool {
-		return k.kind == 's' && !strings.ContainsAny(k.text[:strings.IndexAny(k.text, `"'`)], "fFtT") || k.kind == '1' ||
-			slices.Contains([]string{"True", "False", "None"}, k.text) || k.kind == 'o' && strings.Contains("[](){},:-+", k.text)
-	}
-	switch {
-	case slices.ContainsFunc(t, func(k ptok) bool { return k.text == ";" }):
-		return false
-	case fixture:
-		return true
-	case t[0].text == "import" || t[0].text == "from":
-		return !slices.ContainsFunc(t, func(k ptok) bool { return k.text == "*" }) &&
-			(!named(t, "fixture") || t[0].text == "from" && len(t) > 1 && t[1].text == "pytest" && !named(t, "as")) &&
-			(!named(t, "pytest") || len(t) == 2 && t[0].text == "import" || t[0].text == "from" && t[1].text == "pytest") // Mythos #263 M2
-	}
-	return !slices.ContainsFunc(t, func(k ptok) bool { return k.kind != 's' || !constant(k) }) || len(t) > 2 && t[0].kind == 'n' &&
-		t[1].text == "=" && !strings.HasPrefix(t[0].text, "collect_ignore") && !slices.ContainsFunc(t[2:], func(k ptok) bool { return !constant(k) })
-}
-
 // pyFileCompare: the change at p from b to a; a reference added blocks by class and place.
-func (r *run) pyFileCompare(p string, b, a *pyFile) {
-	if a.plain != "" {
-		add(&r.blocks, p, "unverifiable: a conftest.py holding more than fixtures, imports and plain data ("+a.plain+")")
+func (r *run) pyFileCompare(p string, b, a *pyFile, judged bool) {
+	if judged && a.bad != "" {
+		add(&r.blocks, p, "unverifiable: "+a.bad)
 	}
 	if a.hooks || b.hooks {
 		add(&r.blocks, p, "a file holding a pytest hook, hookimpl or pytest_plugins changed")

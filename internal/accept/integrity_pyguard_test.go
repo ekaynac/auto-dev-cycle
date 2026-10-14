@@ -21,6 +21,23 @@ const (
 	pyFail = "python integrity not verified (P14c)"
 )
 
+// Opus #263 C1's inputs: a hook plugin built under a computed name and
+// registered from a test's import (A), or built in a test helper a
+// conftest imports, the manager reached by getattr in a fixture (B).
+const (
+	pyC1A = "import inspect\nfrom pytest import TestReport\nfrom money import add\n\ndef _mk(item, call):\n" +
+		"    return TestReport(item.nodeid, item.location, {}, \"passed\", None, call.when)\n\n" +
+		"_P = type(\"_P\", (), {\"PYTEST_RUNTEST_MAKEREPORT\".lower(): staticmethod(_mk)})\n\n" +
+		"for _fi in inspect.stack():\n    _pm = inspect.getargvalues(_fi.frame).locals.get(\"self\")\n" +
+		"    if type(_pm).__name__ == \"PytestPluginManager\":\n        _pm.register(_P)\n        break\n\n" +
+		"def test_add():\n    assert add(1, 2) == 3\n\ndef test_zero():\n    assert add(0, 1) == 1\n"
+	pyC1BHelpers = "from pytest import TestReport\n\ndef _mk(item, call):\n" +
+		"    return TestReport(item.nodeid, item.location, {}, \"passed\", None, call.when)\n\n" +
+		"Plugin = type(\"Plugin\", (), {\"pytest\" \"_runtest_makereport\": staticmethod(_mk)})\n"
+	pyC1BConftest = "import pytest\nfrom helpers import Plugin\n\n@pytest.fixture(autouse=True, scope=\"session\")\n" +
+		"def _setup(request):\n    getattr(request.config, \"plugin\" \"manager\").register(Plugin)\n"
+)
+
 // pyOwn are the blocks besides P14b's fail-closed rule (until P14c-2b).
 func pyOwn(bs []Block) []Block {
 	return slices.DeleteFunc(slices.Clone(bs), func(b Block) bool { return b.What == pyFail })
@@ -62,14 +79,13 @@ func TestPyGuardBlocks(t *testing.T) {
 		"pytest_plugins":                   {map[string]string{"tests/conftest.py": "pytest_plugins = ['tests.helpers']\n"}, nil, "pytest hook"},
 		"a pluggy marker":                  {map[string]string{"tests/helpers.py": "import pluggy\n\nimpl = pluggy.HookimplMarker('pytest')\n"}, nil, "pytest hook"},
 		// The conftest allowlist (entry 84).
-		"a conftest helper":       {map[string]string{"tests/conftest.py": "def helper():\n    return 1\n"}, nil, "plain data ([def helper"},
-		"collect_ignore":          {map[string]string{"tests/conftest.py": "collect_ignore = ['test_money.py']\n"}, nil, "holding more than fixtures"},
-		"collect_ignore_glob +=":  {map[string]string{"tests/conftest.py": "X = []\nX += ['*.py']\n"}, nil, "plain data ([X + ="},
-		"an f-string constant":    {map[string]string{"tests/conftest.py": "X = f\"{__import__('os')._exit(0)}\"\n"}, nil, "holding more than fixtures"},
-		"fixture from elsewhere":  {map[string]string{"tests/conftest.py": "from helpers import register as fixture\n\n@fixture\ndef db():\n    return 1\n"}, nil, "plain data ([from helpers"},
-		"a star import":           {map[string]string{"tests/conftest.py": "from helpers import *\n"}, nil, "holding more than fixtures"},
-		"a top-level if":          {map[string]string{"tests/conftest.py": "if True:\n    X = 1\n"}, nil, "plain data ([if True"},
-		"a statement after a ';'": {map[string]string{"tests/conftest.py": "X = 1; import os\n"}, nil, "holding more than fixtures"},
+		"collect_ignore":          {map[string]string{"tests/conftest.py": "collect_ignore = ['test_money.py']\n"}, nil, "[collect_ignore ="},
+		"collect_ignore_glob +=":  {map[string]string{"tests/conftest.py": "X = []\nX += ['*.py']\n"}, nil, "[X + ="},
+		"an f-string constant":    {map[string]string{"tests/conftest.py": "X = f\"{__import__('os')._exit(0)}\"\n"}, nil, "code run at import in an f-string field"},
+		"fixture from elsewhere":  {map[string]string{"tests/conftest.py": "from helpers import register as fixture\n\n@fixture\ndef db():\n    return 1\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
+		"a star import":           {map[string]string{"tests/conftest.py": "from helpers import *\n"}, nil, "a star import"},
+		"a top-level if":          {map[string]string{"tests/conftest.py": "if True:\n    X = 1\n"}, nil, "[if True :]"},
+		"a statement after a ';'": {map[string]string{"tests/conftest.py": "X = 1; os.system('x')\n"}, nil, "[os . system ("},
 		// Configuration (H4) and markers.
 		"pytest.ini added":       {map[string]string{"pytest.ini": "[pytest]\n"}, nil, "pytest.ini: a pytest configuration changed"},
 		"tox.ini [pytest]":       {map[string]string{"tox.ini": "[testenv]\ncommands = pytest\n[pytest]\naddopts = --ignore=tests\n"}, nil, "tox.ini: a pytest configuration changed"},
@@ -111,8 +127,8 @@ func TestPyGuardBlocks(t *testing.T) {
 		// Opus #263 H3 (by name=, in any file) and M3 (pytest aliased in a conftest).
 		"H3 a builtin fixture by name=":     {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(name='capsys')\ndef _c():\n    return None\n"}, nil, "a builtin fixture overridden by name="},
 		"H3 a builtin fixture in a helper":  {map[string]string{"tests/helpers.py": "import pytest\n\n@pytest.fixture\ndef capsys():\n    return None\n"}, nil, "tests/helpers.py: a builtin fixture overridden (capsys) in module level"},
-		"M3 pytest aliased in a conftest":   {map[string]string{"tests/conftest.py": "import helpers as pytest\n\n@pytest.fixture\ndef db():\n    return 1\n"}, nil, "plain data ([import helpers as pytest"},
-		"M3 import pytest as in a conftest": {map[string]string{"tests/conftest.py": "import pytest as pt\n"}, nil, "plain data ([import pytest as pt"},
+		"M3 pytest aliased in a conftest":   {map[string]string{"tests/conftest.py": "import helpers as pytest\n\n@pytest.fixture\ndef db():\n    return 1\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
+		"M3 import pytest as in a conftest": {map[string]string{"tests/conftest.py": "import pytest as pt\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
 		// Mythos #263: H1 (__name__ rebound), H2 (name= not a literal), M1 (by assignment), M2 (pytest from elsewhere).
 		"H2 __name__ rebound":        {map[string]string{"money.py": baseFiles["money.py"] + "import os\n__name__ = '__main__'\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
 		"H2 __name__ by a for":       {map[string]string{"money.py": baseFiles["money.py"] + "import os\nfor __name__ in ('__main__',):\n    pass\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
@@ -123,11 +139,30 @@ func TestPyGuardBlocks(t *testing.T) {
 		"H3 name= through **":        {map[string]string{"tests/conftest.py": "import pytest\nKW = {'name': 'capsys'}\n\n@pytest.fixture(**KW)\ndef _c():\n    return None\n"}, nil, "a fixture name not a literal (**)"},
 		"H3 name= through a partial": {map[string]string{"tests/test_money.py": pyT + "import functools\nimport pytest\nfx = functools.partial(pytest.fixture, name='capsys')\n"}, nil, "a builtin fixture overridden by name= (capsys) in module level"},
 		"M1 a fixture by assignment": {map[string]string{"tests/test_money.py": pyT + "import pytest\n\ndef _c():\n    return None\ncapsys = pytest.fixture(_c)\n"}, nil, "a builtin fixture overridden by assignment (capsys)"},
-		"M2 pytest from a helper":    {map[string]string{"tests/conftest.py": "from helpers import pytest\n\n@pytest.fixture\ndef db():\n    return 1\n"}, nil, "plain data ([from helpers import pytest"},
-		"M2 pytest from the package": {map[string]string{"tests/conftest.py": "from . import pytest\n"}, nil, "plain data ([from . import pytest"},
-		"L1 a pyproject added":       {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
-		"pytest.main":                {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
-		"record_xml_attribute":       {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
+		"M2 pytest from a helper":    {map[string]string{"tests/conftest.py": "from helpers import pytest\n\n@pytest.fixture\ndef db():\n    return 1\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
+		// P14c-2a-allow: the import-time allowlist (Opus #263 C1, H1, H3, M1; Mythos #263 L1).
+		"F C1 A: a plugin registered at a test's import": {map[string]string{"tests/test_money.py": pyC1A}, nil, "tests/test_money.py: unverifiable: code run at import outside the allowlist ([_P = type ("},
+		"F C1 B: a plugin built in a test helper":        {map[string]string{"tests/helpers.py": pyC1BHelpers, "tests/conftest.py": pyC1BConftest}, nil, "tests/helpers.py: unverifiable: code run at import outside the allowlist ([Plugin = type ("},
+		"H1 runpy at a test's import":                    {map[string]string{"tests/test_money.py": pyT + "import runpy\nrunpy.run_path('tests/data/forge.txt')\n", "tests/data/forge.txt": "x = 1\n"}, nil, "[runpy . run_path ("},
+		"a call in a def's default":                      {map[string]string{"tests/test_money.py": pyT + "import os\n\ndef test_t(_=os.getpid()):\n    pass\n"}, nil, "[def test_t ("},
+		"a decorator not pytest's or mock's":             {map[string]string{"tests/test_money.py": pyT + "import functools\n\n@functools.lru_cache\ndef test_m():\n    pass\n"}, nil, "[@ functools . lru_cache]"},
+		"a patch not unittest.mock's":                    {map[string]string{"tests/test_money.py": pyT + "from helpers import patch\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
+		"a dunder in a pytest chain":                     {map[string]string{"tests/test_money.py": pyT + "import pytest\nX = pytest.mark.__getattribute__('foo')\n"}, nil, "[X = pytest . mark ."},
+		"a metaclass keyword":                            {map[string]string{"tests/test_money.py": pyT + "class T(metaclass=M):\n    pass\n"}, nil, "[class T ("},
+		"a class body call":                              {map[string]string{"tests/test_money.py": pyT + "class TestX:\n    x = print('PASSED')\n"}, nil, "[x = print ("},
+		"an attribute bound":                             {map[string]string{"tests/test_money.py": pyT + "import money\nmoney.add = max\n"}, nil, "[money . add ="},
+		"a helper beside a test module":                  {map[string]string{"lib/test_lib.py": "def test_l():\n    pass\n", "lib/helpers.py": "import os\nX = os.getpid()\n"}, nil, "lib/helpers.py: unverifiable: code run at import outside the allowlist"},
+		"H3 a builtin fixture imported":                  {map[string]string{"tests/conftest.py": "from helpers import capsys\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
+		"M1 a dunder method":                             {map[string]string{"tests/test_money.py": pyT + "class Big:\n    def __len__(self):\n        return 0\n"}, nil, "a dunder method or __class__ bound in a test file ([def __len__"},
+		"A1 a lambda hiding a call":                      {map[string]string{"tests/test_money.py": pyT + "X = (lambda: print('PASSED'))()\n"}, nil, "[X = ( lambda"},
+		"A3 a dunder a constant reaches":                 {map[string]string{"tests/helpers.py": "class K:\n    def __class_getitem__(cls, i):\n        return i\n\nX = K[int]\n"}, nil, "tests/helpers.py: unverifiable: a dunder method or __class__ bound in a test file"},
+		"M1 __class__ bound":                             {map[string]string{"tests/conftest.py": pyFix + "    o = object()\n    o.__class__ = int\n"}, nil, "a dunder method or __class__ bound"},
+		"L1 a metaclass's method":                        {map[string]string{"money.py": baseFiles["money.py"] + "import os\n\nclass Meta(type):\n    def __new__(m, *a):\n        os._exit(0)\n"}, nil, "money.py: _exit in module level"},
+		"L1 __init_subclass__":                           {map[string]string{"money.py": baseFiles["money.py"] + "import os\n\nclass Base:\n    def __init_subclass__(cls):\n        os._exit(0)\n"}, nil, "money.py: _exit in module level"},
+		"M2 pytest from the package":                     {map[string]string{"tests/conftest.py": "from . import pytest\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
+		"L1 a pyproject added":                           {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
+		"pytest.main":                                    {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
+		"record_xml_attribute":                           {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
 	} {
 		pyBlocks(t, f, name, c.files, c.why)
 	}
@@ -190,18 +225,21 @@ func TestPyGuardAcceptsAndWarns(t *testing.T) {
 		"fixtures in a nested conftest": {map[string]string{"tests/conftest.py": "\"\"\"Fixtures.\"\"\"\nimport pytest\nfrom pytest import fixture\n\nLIMIT = 3\nNAMES = ['a', \"b\"]\n\n" +
 			"@pytest.fixture(params=[1, 2])\ndef n(request):\n    return request.param\n\n@fixture\ndef db(tmp_path, request):\n    request.cls.db = tmp_path\n    yield tmp_path\n\n" +
 			"@pytest.fixture(autouse=True)\ndef opt(request):\n    return request.config.getoption('-q')\n"}, nil, ""},
-		"a __main__ guard":             {map[string]string{"money.py": baseFiles["money.py"] + "\nif __name__ == '__main__':\n    import sys\n    sys.exit(0)\n"}, nil, "money.py: exit in __main__"},
-		"print in a test":              {map[string]string{"tests/test_money.py": pyT + "\ndef test_p():\n    print('x')\n    assert add(1, 1) == 2\n"}, nil, "tests/test_money.py: print in test_p"},
-		"subprocess in a helper":       {map[string]string{"money.py": baseFiles["money.py"] + "\ndef run():\n    import subprocess\n    return subprocess.run(['true'])\n"}, nil, "money.py: subprocess in run"},
-		"an import of subprocess":      {map[string]string{"money.py": "import subprocess\n" + baseFiles["money.py"]}, nil, "money.py: subprocess in (import)"},
-		"mock":                         {map[string]string{"tests/test_money.py": pyT + "\nfrom unittest import mock\n\n@mock.patch('money.add')\ndef test_m(m):\n    m.return_value = 1\n    assert m(1, 2) == 1\n"}, nil, ""},
-		"raises and params":            {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ncases = [pytest.param(1)]\ncases.append(pytest.param(2))\n\n@pytest.mark.parametrize('x', cases)\ndef test_c(x):\n    with pytest.raises(ZeroDivisionError) as e:\n        1 / x\n    assert e.value\n"}, nil, ""},
-		"a unittest case":              {map[string]string{"tests/test_money.py": pyT + "\nimport unittest\n\nclass T(unittest.TestCase):\n    def setUp(self):\n        self.x = 1\n\n    def test_t(self):\n        self.assertEqual(self.x, 1)\n"}, nil, ""},
-		"walked: an exit under build/": {map[string]string{"build/test_x.py": "import os\n\ndef test_x():\n    os._exit(0)\n"}, nil, "build/test_x.py: _exit in test_x"},
-		"an exact __main__ guard":      {map[string]string{"money.py": baseFiles["money.py"] + "\nif '__main__' == __name__:\n    import sys\n    sys.exit(0)\n"}, nil, "money.py: exit in __main__"},
-		"__name__ as a call argument":  {map[string]string{"money.py": "import logging\n\nlog = logging.getLogger(__name__)\n\n" + baseFiles["money.py"] + "\nif __name__ == '__main__':\n    import sys\n    sys.exit(0)\n"}, nil, "money.py: exit in __main__"},
-		"f-string fields":              {map[string]string{"money.py": baseFiles["money.py"] + "\ndef fmt(x, w):\n    return f'{x!r:>{w}} {x=}'\n"}, nil, ""},
-		"a test deleted":               {nil, []string{"tests/test_money.py"}, ""},
+		"a __main__ guard":                  {map[string]string{"money.py": baseFiles["money.py"] + "\nif __name__ == '__main__':\n    import sys\n    sys.exit(0)\n"}, nil, "money.py: exit in __main__"},
+		"print in a test":                   {map[string]string{"tests/test_money.py": pyT + "\ndef test_p():\n    print('x')\n    assert add(1, 1) == 2\n"}, nil, "tests/test_money.py: print in test_p"},
+		"subprocess in a helper":            {map[string]string{"money.py": baseFiles["money.py"] + "\ndef run():\n    import subprocess\n    return subprocess.run(['true'])\n"}, nil, "money.py: subprocess in run"},
+		"an import of subprocess":           {map[string]string{"money.py": "import subprocess\n" + baseFiles["money.py"]}, nil, "money.py: subprocess in (import)"},
+		"mock":                              {map[string]string{"tests/test_money.py": pyT + "\nfrom unittest import mock\n\n@mock.patch('money.add')\ndef test_m(m):\n    m.return_value = 1\n    assert m(1, 2) == 1\n"}, nil, ""},
+		"an application module's top level": {map[string]string{"money.py": "import logging\ntry:\n    import json\nexcept ImportError:\n    json = None\n\nlogger = logging.getLogger(__name__)\n\n" + baseFiles["money.py"]}, nil, ""},
+		"a helper def in a conftest":        {map[string]string{"tests/conftest.py": "def helper():\n    return 1\n"}, nil, ""},
+		"mock and patch decorators":         {map[string]string{"tests/test_money.py": pyT + "\nimport unittest.mock\nfrom unittest import mock\nfrom unittest.mock import patch\n\n@mock.patch('money.add')\n@patch.object(mock, 'ANY')\n@unittest.mock.patch.dict('os.environ', {'X': '1'})\ndef test_p(a, b):\n    pass\n"}, nil, ""},
+		"raises and params":                 {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\npytestmark = pytest.mark.slow\nCASES = [(1, 2), (3, 4)]\n\n@pytest.mark.parametrize('x', [pytest.param(1, id='one'), 2])\n@pytest.mark.skipif(1 > 2, reason='never')\ndef test_c(x):\n    with pytest.raises(ZeroDivisionError) as e:\n        1 / (x - x)\n    assert e.value\n\nclass TestK:\n    \"\"\"Doc.\"\"\"\n    k = 1\n\n    def test_k(self):\n        assert self.k\n"}, nil, ""},
+		"a unittest case":                   {map[string]string{"tests/test_money.py": pyT + "\nimport unittest\n\nclass T(unittest.TestCase):\n    def setUp(self):\n        self.x = 1\n\n    def test_t(self):\n        self.assertEqual(self.x, 1)\n"}, nil, ""},
+		"walked: an exit under build/":      {map[string]string{"build/test_x.py": "import os\n\ndef test_x():\n    os._exit(0)\n"}, nil, "build/test_x.py: _exit in test_x"},
+		"an exact __main__ guard":           {map[string]string{"money.py": baseFiles["money.py"] + "\nif '__main__' == __name__:\n    import sys\n    sys.exit(0)\n"}, nil, "money.py: exit in __main__"},
+		"__name__ as a call argument":       {map[string]string{"money.py": "import logging\n\nlog = logging.getLogger(__name__)\n\n" + baseFiles["money.py"] + "\nif __name__ == '__main__':\n    import sys\n    sys.exit(0)\n"}, nil, "money.py: exit in __main__"},
+		"f-string fields":                   {map[string]string{"money.py": baseFiles["money.py"] + "\ndef fmt(x, w):\n    return f'{x!r:>{w}} {x=}'\n"}, nil, ""},
+		"a test deleted":                    {nil, []string{"tests/test_money.py"}, ""},
 	} {
 		if c.gone != nil {
 			v := f.guarded(t, nil, c.gone...)
