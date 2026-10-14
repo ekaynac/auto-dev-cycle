@@ -30,7 +30,6 @@
 //   - Counting (P11b, count.go): the gateway counts every request it sends itself (Counts): a floor durable before
 //     the send (none, none sent), then the usage the upstream reported, so an adapter's final never settles a call on
 //     less than was sent.
-//   - Serving (P20): whether a call has a request being served, so its usage is queried only once none is.
 //   - Inert (§1's gating table): nothing in adcd constructs a Gateway; P22a does, when it activates `launch`.
 package gateway
 
@@ -110,7 +109,6 @@ type Gateway struct {
 	bound    map[[32]byte]Binding // by the token's hash
 	intended map[[32]byte]bool    // tokens whose call's intent is durable, by the token's hash
 	observed map[types.AttemptID]Observed
-	serving  map[types.CallID]int // requests being served, by call (Serving)
 	// seq numbers every request's count, across calls, so a call's are distinct however often it is bound. A
 	// restart resets it, but no call sends again after one: its effect is then uncertain, and Intend refuses it.
 	seq int64
@@ -123,7 +121,7 @@ func New(cfg Config) (*Gateway, error) {
 		return nil, errors.New("gateway: a gateway needs the lease and attempt readers, the secrets, the intents and the counts")
 	}
 	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, intended: map[[32]byte]bool{},
-		observed: map[types.AttemptID]Observed{}, serving: map[types.CallID]int{}}, nil
+		observed: map[types.AttemptID]Observed{}}, nil
 }
 
 // The paths an attempt may call, under its destination's endpoint.
@@ -177,29 +175,6 @@ func (g *Gateway) Unbind(token string) Observed {
 	return o
 }
 
-// Serving reports whether a request of call is being served: admitted under a binding of the call, and its count,
-// if any, not yet recorded. The model_call reconciler (P20) asks the provider for a call's usage only once none is,
-// so the answer covers every request sent for it (#226 entry 59).
-func (g *Gateway) Serving(call types.CallID) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.serving[call] > 0
-}
-
-// serve counts a request of call as served until the func it returns runs.
-func (g *Gateway) serve(call types.CallID) func() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.serving[call]++
-	return func() {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		if g.serving[call]--; g.serving[call] == 0 {
-			delete(g.serving, call)
-		}
-	}
-}
-
 // Holds is launch readiness (dispatch.Credentials): whether the gateway
 // holds the credential named credential, which the registry gives
 // destination's executors.
@@ -234,7 +209,6 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(w, &refusal{http.StatusUnauthorized, "unbound"})
 		return
 	}
-	defer g.serve(b.Call)()
 	resp, s, no := g.forward(r, b)
 	if no != nil {
 		refuse(w, no)

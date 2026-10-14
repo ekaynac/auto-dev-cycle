@@ -114,11 +114,16 @@ func openKinds(t *testing.T, dir string, how wiring, kinds eventstore.Kinds, gro
 }
 
 func (w *world) do(fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) error {
+	return w.doAs("test.command", fn)
+}
+
+// doAs is do under action.
+func (w *world) doAs(action string, fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) error {
 	cmd, err := ids.New("cmd")
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	_, err = w.s.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: "act_01m3250v0aer9ss2097svmefj8", Action: "test.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
+	_, err = w.s.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: "act_01m3250v0aer9ss2097svmefj8", Action: action, IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
 		func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, err := fn(tx)
 			return evs, json.RawMessage(`{}`), err

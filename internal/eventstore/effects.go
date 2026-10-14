@@ -229,6 +229,9 @@ type Transition struct {
 	Outcome     string  // for "reconciled": "completed", "failed_confirmed" or "still_uncertain"
 	Observation string  // what was observed
 	ResultRef   *string // a published blob with the effect's result, if any
+	// Check, if set, runs in the transition's transaction before it, reading the projections as they are then; an
+	// error refuses the transition. It writes nothing.
+	Check func(*Tx) error
 }
 
 // next is the state machine of note 03: the state a transition leads to
@@ -267,6 +270,11 @@ func (s *Store) RecordEffect(ctx context.Context, actor, id string, tr Transitio
 	}
 	var out Effect
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		if tr.Check != nil {
+			if err := tr.Check(&Tx{ctx: ctx, tx: tx}); err != nil {
+				return err
+			}
+		}
 		var err error
 		out, err = s.transition(ctx, tx, actor, id, tr)
 		return err

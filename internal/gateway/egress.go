@@ -34,11 +34,19 @@ var (
 // reach.
 type originKey struct{}
 
-// client is the egress client: no proxy, no redirect, and a dial only to
-// the origin the request's context names (#226 entries 34 and 38).
+// RequestDeadline bounds one upstream request whole, from the send to the last byte of its response, however slowly
+// the adapter reads it (a slow reader holds a request no longer). So the model_call reconciler (P20) can tell, from a
+// floor's recorded time alone, across a restart too, that its request is over: its count, if any, follows at once,
+// and a count later than the reconciliation still raises the figure (internal/capacity/ledger).
+const RequestDeadline = 10 * time.Minute
+
+// client is the egress client: no proxy, no redirect, a dial only to the
+// origin the request's context names (#226 entries 34 and 38), and
+// RequestDeadline.
 func client() *http.Client {
 	d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	return &http.Client{
+		Timeout:       RequestDeadline,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return errRedirect },
 		Transport: &http.Transport{
 			Proxy:               nil, // never the environment's proxy: the origin is dialled directly

@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -231,6 +232,12 @@ func same(a, b types.ModelCall) bool {
 // binding without its command's model_call intent of the same request.
 func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 	for _, ev := range evs {
+		if ev.Kind == ledger.Measured {
+			if err := floored(tx, ev); err != nil {
+				return fmt.Errorf("modelcall: event %s: %w", ev.ID, err)
+			}
+			continue
+		}
 		if ev.Kind != Intended {
 			continue
 		}
@@ -255,6 +262,32 @@ func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		}
 	}
 	return nil
+}
+
+// FloorProjection keeps when each request's first floor was recorded, under "call/sequence" (P20): Recorder.Count
+// admits a late count at a floored sequence, and the reconciler asks the provider only once every request with a
+// floor and no count is older than FloorGrace.
+const FloorProjection = "model_call_floors"
+
+// floored records the time of ev, a gateway floor, unless its request's floor is recorded already.
+func floored(tx *eventstore.Tx, ev eventstore.Event) error {
+	var m types.UsageMeasurement
+	if err := json.Unmarshal(ev.Payload, &m); err != nil || m.SourceOfTruth != types.UsageMeasurementSourceOfTruthGatewayFloor {
+		return err
+	}
+	key := floorKey(m.Call, m.Sequence)
+	if _, seen, err := tx.Get(FloorProjection, key); err != nil || seen {
+		return err
+	}
+	at, err := json.Marshal(ev.At)
+	if err != nil {
+		return err
+	}
+	return tx.Put(FloorProjection, key, at)
+}
+
+func floorKey(call types.CallID, sequence int64) string {
+	return string(call) + "/" + strconv.FormatInt(sequence, 10)
 }
 
 // intended: ev has its call's model_call effect, intended by ev's command,
@@ -398,15 +431,8 @@ var ErrNotPending = errors.New("modelcall: the call's effect is not pending")
 // reconciliation covers every request. A report at a sequence already floored is that request's own count, accepted
 // late (#226 entry 59).
 func sends(tx *eventstore.Tx, call types.CallID, sequence int64) error {
-	ms, err := ledger.Measurements(tx, call)
-	if err != nil {
+	if _, floored, err := tx.Get(FloorProjection, floorKey(call, sequence)); err != nil || floored {
 		return err
-	}
-	for _, m := range ms {
-		if m.Sequence == sequence && (m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayFloor ||
-			m.SourceOfTruth == types.UsageMeasurementSourceOfTruthGatewayCount) {
-			return nil
-		}
 	}
 	e, err := tx.LoadEffect(EffectOf(call))
 	if err == nil && e.State != eventstore.EffectPending {

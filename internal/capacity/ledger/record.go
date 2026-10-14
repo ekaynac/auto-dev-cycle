@@ -24,6 +24,9 @@ const (
 	// MeasurementProjection holds each measurement under its id alone, so
 	// a reused id is seen whatever call it names.
 	MeasurementProjection = "usage_measurement_ids"
+	// ReconcileAction is the reconciler's command (modelcall.Reconciled), the one that records a provider
+	// reconciliation.
+	ReconcileAction = "model_call.reconcile"
 )
 
 // Kinds registers Measured with the event store.
@@ -54,6 +57,11 @@ func Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		}
 		if ev.Subject != string(m.Call) {
 			return fmt.Errorf("ledger: event %s: subject %s is not its call %s", ev.ID, ev.Subject, m.Call)
+		}
+		// A provider reconciliation, the one report that lowers a figure, comes only from the reconciler's command
+		// (P20; #226 entry 60). The log does not record a command's action, so a replay does not recheck it.
+		if m.Kind == types.UsageMeasurementKindProviderReconciliation && !tx.Replaying() && tx.Action() != ReconcileAction {
+			return fmt.Errorf("ledger: event %s: a provider reconciliation is recorded only by %s, not %q", ev.ID, ReconcileAction, tx.Action())
 		}
 		// A bound call's report names the call's own attempt and lease
 		// (#226 entry 61), stale or not, so its charge lands where the

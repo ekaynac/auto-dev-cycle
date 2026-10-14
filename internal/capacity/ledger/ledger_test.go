@@ -190,7 +190,8 @@ func standing(t *testing.T, ms ...types.UsageMeasurement) Standing {
 // a final with no count, under it, or with a floor among the counts (usage
 // the gateway did not read), leaves the call uncertain at the
 // larger of the reports and the count. A provider reconciliation settles
-// it whatever the count. The count never enters Reconcile's usage, and
+// it whatever the floors, but never below the observed count (P20; see
+// TestAReconciliationNeverSettlesBelowTheCounts). The count never enters Reconcile's usage, and
 // counts replayed under one sequence are one count.
 func TestAFinalSettlesOnlyOnTheGatewaysCount(t *testing.T) {
 	zero := report(calA, final, 0, 0)
@@ -213,7 +214,7 @@ func TestAFinalSettlesOnlyOnTheGatewaysCount(t *testing.T) {
 		"a final short in output":       {[]types.UsageMeasurement{shortOut, counted(calA, 0, 300, 30)}, false, 300, 30},
 		"a count replayed":              {[]types.UsageMeasurement{agreeing, counted(calA, 0, 300, 30), counted(calA, 0, 300, 30)}, true, 300, 30},
 		"deltas and a count":            {[]types.UsageMeasurement{report(calA, delta, 0, 50), counted(calA, 0, 300, 30)}, false, 300, 30},
-		"a reconciliation under it":     {[]types.UsageMeasurement{zero, report(calA, recon, 0, 10), counted(calA, 0, 300, 30)}, true, 10, 1},
+		"a reconciliation under it":     {[]types.UsageMeasurement{zero, report(calA, recon, 0, 10), counted(calA, 0, 300, 30)}, true, 300, 30},
 		"a final over a floor":          {[]types.UsageMeasurement{agreeing, counted(calA, 0, 200, 30), floor(calA, 1, 5)}, false, 300, 30},
 		"a reconciliation over a floor": {[]types.UsageMeasurement{report(calA, recon, 0, 10), floor(calA, 0, 50)}, true, 10, 1},
 		"a count superseding its floor": {[]types.UsageMeasurement{agreeing, floor(calA, 0, 900), counted(calA, 0, 300, 30)}, true, 300, 30},
@@ -249,5 +250,40 @@ func TestAFinalSettlesOnlyOnTheGatewaysCount(t *testing.T) {
 	odd.Kind = final
 	if _, err := contract.Encode("records/usage-measurement", odd); err == nil {
 		t.Fatal("a gateway count of kind final validates")
+	}
+}
+
+// P20 (Opus on #258, H1 and H2): a provider reconciliation replaces the
+// adapter's reports and the gateway's floors, but never settles a call below
+// the gateway's observed counts. Below them it settles at the larger of the
+// two, flagged; a count recorded after it raises the figure; a later
+// reconciliation supersedes it.
+func TestAReconciliationNeverSettlesBelowTheCounts(t *testing.T) {
+	split := report(calA, recon, 0, 100) // the count's 300 input, split into cache reads
+	split.Tokens.CacheRead, split.Tokens.Out = 200, 30
+	big := report(calA, delta, 0, 0)
+	big.Tokens.In = maxAmount
+	for name, c := range map[string]struct {
+		ms           []types.UsageMeasurement
+		in, out      int64
+		below, flags bool
+	}{
+		"a found zero under a count": {[]types.UsageMeasurement{report(calA, recon, 0, 0), counted(calA, 0, 300, 30)}, 300, 30, true, true},
+		"an answer split otherwise":  {[]types.UsageMeasurement{split, counted(calA, 0, 300, 30)}, 100, 30, false, false},
+		"an answer over a floor":     {[]types.UsageMeasurement{report(calA, recon, 0, 10), floor(calA, 0, 900)}, 10, 1, false, false},
+		"a count after the answer": {[]types.UsageMeasurement{report(calA, recon, 0, 300), counted(calA, 0, 300, 30),
+			counted(calA, 1, 200, 20)}, 500, 50, true, true},
+		"a later answer superseding": {[]types.UsageMeasurement{report(calA, recon, 0, 10), report(calA, recon, 1, 400),
+			counted(calA, 0, 300, 30)}, 400, 40, false, false},
+	} {
+		st := standing(t, c.ms...)
+		if !st.Settled || st.Usage.In != c.in || st.Usage.Out != c.out || st.Below != c.below || st.Inconsistent != c.flags {
+			t.Errorf("%s: %+v (usage %+v), want settled at %d in, %d out, below %v, flagged %v", name, st, st.Usage, c.in, c.out, c.below, c.flags)
+		}
+	}
+	// Reports Reconcile cannot sum: the reconciliation still settles, at the counts.
+	over := []types.UsageMeasurement{big, report(calA, delta, 1, 1), report(calA, recon, 0, 10), counted(calA, 0, 300, 30)}
+	if st := StandingOf(over, calA); !st.Settled || !st.Below || st.Usage.In != 300 || st.Usage.Out != 30 {
+		t.Errorf("an overflow: %+v (usage %+v), want settled at the count", st, st.Usage)
 	}
 }
