@@ -16,26 +16,26 @@ import (
 
 // pyBase is what the shadow rules read of the base, once per run
 // (Mythos #267 L3): its sys.path entries, its modules' dotted names, its
-// test files.
+// files read on demand.
 type pyBase struct {
 	r       *run
 	entries []string
 	read    bool
 	err     error
-	mods    map[string]string // a base module's dotted name, to its path
-	tests   []pyBaseTest
+	mods    map[string]string      // a base module's dotted name, to its path
+	files   map[string]*pyBaseFile // the base files read, by path
+	tests   []*pyBaseFile          // the judged ones (Opus #270 H2, M4)
 }
 
-// pyBaseTest is what a base test module or conftest imports, and its
-// lines holding a condition.
-type pyBaseTest struct {
+// pyBaseFile is what a base Python file imports, and its conditions.
+type pyBaseFile struct {
 	path   string
 	unread bool
-	mods   []string          // the dotted names it imports (a from-import's as module.name; no relative dots)
+	mods   []string          // the dotted names it imports (a from-import's as module.name)
 	from   map[string]string // a name it binds by import, to that dotted name (import a.b: a to a.b)
 	named  map[string]bool   // the names a from-import binds
 	stars  []string          // the modules it star-imports
-	conds  [][]ptok          // its lines pySkipString flags
+	conds  [][]ptok          // its condition lines, and the bindings they read (Opus #270 H2)
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -96,101 +96,195 @@ func pySuffixes(p string) (s []string) {
 	return s
 }
 
-// load reads the base's modules' names and its test files: every import
-// statement, after ; or a compound header's : too (Opus #267 M3).
+// load names the base's modules and reads its judged files.
 func (pb *pyBase) load() error {
 	if pb.read {
 		return pb.err
 	}
-	pb.read, pb.mods = true, map[string]string{}
+	pb.read, pb.mods, pb.files = true, map[string]string{}, map[string]*pyBaseFile{}
 	for _, q := range slices.Sorted(maps.Keys(pb.r.files)) {
+		if path.Ext(q) != ".py" {
+			continue
+		}
 		for _, n := range pyModNames(q, pb.entries, false) {
-			if pb.mods[n] == "" && path.Ext(q) == ".py" {
+			if pb.mods[n] == "" {
 				pb.mods[n] = q
 			}
 		}
-		if !pyTested(q) {
-			continue
-		}
-		bt := pyBaseTest{path: q, from: map[string]string{}, named: map[string]bool{}}
-		b, why, err := pb.r.file(pb.r.files[q])
-		lines, why2, err2 := pyTokens(pb.r.ctx, b)
-		if pb.err = cmp.Or(err, err2); pb.err != nil {
-			return pb.err
-		}
-		pure, aliases := pyPure(lines)
-		rel, in := pyRel(path.Dir(q), pyBasedir(pb.r.files, q))
-		pkg := strings.Split(rel, "/") // q's package (a relative import's base)
-		if !in {
-			pkg = nil
-		}
-		for _, l := range lines {
-			line := slices.Concat(l.toks, l.inner)
-			cond := pySkipString(line, len(l.toks), pure, aliases)
-			for i, k := range line {
-				if s := pyStr(k); cond && s != "" { // a string condition's code too (the security review)
-					sl, _, err := pyTokens(pb.r.ctx, []byte(s))
-					if pb.err = err; err != nil {
-						return err
-					}
-					for _, sk := range sl {
-						line = append(line, sk.toks...)
-					}
-				} else if i+2 < len(line) && slices.Contains([]string{"__import__", "import_module", "importorskip"}, k.text) && line[i+1].text == "(" && pyStr(line[i+2]) != "" {
-					bt.mods = append(bt.mods, strings.TrimLeft(pyStr(line[i+2]), ".")) // a constant one (the security review)
-				}
+		if pyTested(q) || pb.r.pyTestDir(q) {
+			f, err := pb.file(q)
+			if pb.err = err; err != nil {
+				return err
 			}
-			if cond {
-				bt.conds = append(bt.conds, line)
-			}
-			for i, k := range l.toks {
-				if i > 0 && l.toks[i-1].text != ";" && l.toks[i-1].text != ":" || k.text != "import" && k.text != "from" {
-					continue
-				}
-				st := pySplit(l.toks[i:], ";")[0]
-				for _, part := range pyImportParts(st) {
-					d, as := pyJoin(pySplit(part, "as")[0]), part[len(part)-1].text
-					if k.text == "from" { // a relative import from q's package (Mythos #267 r2 H3 i, the security review)
-						mod := pyJoin(st[1:max(slices.IndexFunc(st, func(k ptok) bool { return k.text == "import" }), 1)])
-						if rest := strings.TrimLeft(mod, "."); rest != mod {
-							mod = strings.Trim(strings.Join(pkg[:max(len(pkg)-len(mod)+len(rest)+1, 0)], ".")+"."+rest, ".")
-						}
-						d, bt.named[as] = strings.Trim(mod+"."+d, "."), true
-					} else if !named(part, "as") {
-						as = part[0].text // import a.b binds a, and keeps a.b (Mythos #267 r2 H2)
-					}
-					if star, ok := strings.CutSuffix(d, ".*"); ok {
-						bt.stars = append(bt.stars, star)
-					}
-					bt.mods, bt.from[as] = append(bt.mods, d), d
-				}
-			}
+			pb.tests = append(pb.tests, f)
 		}
-		bt.unread = why+why2 != ""
-		pb.tests = append(pb.tests, bt)
 	}
 	return nil
 }
 
-// pyShadow is why change c may shadow a module the tests import, or "":
-// an __init__.py removed or renamed, or added in a test directory (a
-// basedir or a package moves); or a module added under a sys.path entry
-// whose dotted name (pyModNames) is a base module's, or one a base test
-// file imports or a prefix of it (a third-party one too). Unread blocks.
-func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
-	switch {
-	case path.Base(c.Src) == "__init__.py" && (c.Status == "D" || c.Src != c.Dst) || judged && path.Base(c.Dst) == "__init__.py" && c.Status != "M" && c.Status != "D":
-		return "an __init__.py added, removed or renamed (a basedir or a package moves)", nil
-	case c.Status == "M" || c.Status == "D" || path.Ext(c.Dst) != ".py" || pyTested(c.Dst):
-		return "", nil
+// file reads base file q once: every import statement, after ; or a
+// compound header's : too (Opus #267 M3), relative ones from q's package,
+// constant dynamic ones; and its conditions, a string one's code too,
+// closed over the module-level statements and def or class bodies binding
+// a name they read, to a fixed point (Opus #270 H2).
+func (pb *pyBase) file(q string) (*pyBaseFile, error) {
+	if f := pb.files[q]; f != nil {
+		return f, nil
 	}
-	if err := pb.load(); err != nil {
+	f := &pyBaseFile{path: q, from: map[string]string{}, named: map[string]bool{}}
+	pb.files[q] = f
+	b, why, err := pb.r.file(pb.r.files[q])
+	lines, why2, err2 := pyTokens(pb.r.ctx, b)
+	if err = cmp.Or(err, err2, pb.r.ctx.Err()); err != nil {
+		return nil, err
+	}
+	f.unread = why+why2 != ""
+	pure, aliases := pyPure(pb.r.ctx, lines)
+	rel, in := pyRel(path.Dir(q), pyBasedir(pb.r.files, q))
+	pkg := strings.Split(rel, "/") // q's package (a relative import's base)
+	if !in {
+		pkg = nil
+	}
+	var units [][]ptok            // module-level statements, def and class bodies
+	binders := map[string][]int{} // a name, to the units binding it
+	owner, indent, deco := -1, 0, []ptok(nil)
+	for _, l := range lines {
+		line := slices.Concat(l.toks, l.inner)
+		cond := pySkipString(line, len(l.toks), pure, aliases)
+		for i, k := range line {
+			if s := pyStr(k); cond && s != "" { // a string condition's code too (the security review)
+				sl, _, err := pyTokens(pb.r.ctx, []byte(s))
+				if err != nil {
+					return nil, err
+				}
+				for _, sk := range sl {
+					line = append(line, sk.toks...)
+				}
+			} else if i+2 < len(line) && slices.Contains([]string{"__import__", "import_module", "importorskip"}, k.text) && line[i+1].text == "(" && pyStr(line[i+2]) != "" {
+				f.mods = append(f.mods, strings.TrimLeft(pyStr(line[i+2]), ".")) // a constant one (the security review)
+			}
+		}
+		if cond {
+			f.conds = append(f.conds, line)
+		}
+		for i, k := range l.toks {
+			if i > 0 && l.toks[i-1].text != ";" && l.toks[i-1].text != ":" || k.text != "import" && k.text != "from" {
+				continue
+			}
+			st := pySplit(l.toks[i:], ";")[0]
+			for _, part := range pyImportParts(st) {
+				d, as := pyJoin(pySplit(part, "as")[0]), part[len(part)-1].text
+				if k.text == "from" { // a relative import from q's package (Mythos #267 r2 H3 i, the security review)
+					mod := pyJoin(st[1:max(slices.IndexFunc(st, func(k ptok) bool { return k.text == "import" }), 1)])
+					if rest := strings.TrimLeft(mod, "."); rest != mod {
+						mod = strings.Trim(strings.Join(pkg[:max(len(pkg)-len(mod)+len(rest)+1, 0)], ".")+"."+rest, ".")
+					}
+					d, f.named[as] = strings.Trim(mod+"."+d, "."), true
+				} else if !named(part, "as") {
+					as = part[0].text // import a.b binds a, and keeps a.b (Mythos #267 r2 H2)
+				}
+				if star, ok := strings.CutSuffix(d, ".*"); ok {
+					f.stars = append(f.stars, star)
+				}
+				f.mods, f.from[as] = append(f.mods, d), d
+			}
+		}
+		switch {
+		case owner >= 0 && l.indent > indent: // a def's or class's body
+			units[owner] = append(units[owner], line...)
+		case l.toks[0].text == "@":
+			owner, deco = -1, append(deco, line...)
+		default:
+			owner = -1
+			for _, st := range pySplit(line, ";") {
+				if len(st) == 0 {
+					continue
+				}
+				if bound, imported := pyBinds(st); !imported {
+					for _, n := range bound {
+						binders[n] = append(binders[n], len(units))
+					}
+					if d := st[b2i(st[0].text == "async"):]; d[0].text == "def" || d[0].text == "class" {
+						owner, indent = len(units), l.indent
+					}
+					units, deco = append(units, slices.Concat(deco, st)), nil
+				}
+			}
+		}
+	}
+	taken, seen := make([]bool, len(units)), map[string]bool{}
+	for i := 0; i < len(f.conds); i++ { // the closure: f.conds grows with each unit taken
+		for _, k := range f.conds[i] {
+			if k.kind != 'n' || seen[k.text] {
+				continue
+			}
+			seen[k.text] = true
+			for _, u := range binders[k.text] {
+				if !taken[u] {
+					taken[u], f.conds = true, append(f.conds, units[u])
+				}
+			}
+		}
+	}
+	return f, nil
+}
+
+// resolve follows the dotted name d through the base modules' own
+// imports (Opus #270 H2): pkg.PSLOW2, pkg/__init__.py holding from .conf
+// import REAL as PSLOW2, is pkg.conf.REAL. Unread: the module's path.
+func (pb *pyBase) resolve(d string) (string, string, error) {
+	for range 16 {
+		parts, next := strings.Split(d, "."), d
+		for i := len(parts) - 1; i >= 1; i-- { // the longest module prefix
+			if q := pb.mods[strings.Join(parts[:i], ".")]; q != "" {
+				f, err := pb.file(q)
+				if err != nil || f.unread {
+					return d, cmp.Or(q, ""), err
+				}
+				if to := f.from[parts[i]]; to != "" {
+					if !f.named[parts[i]] && strings.HasPrefix(to, parts[i]+".") {
+						to = parts[i] // import a.b binds a
+					}
+					next = strings.Join(append([]string{to}, parts[i+1:]...), ".")
+				}
+				break
+			}
+		}
+		if next == d {
+			break
+		}
+		d = next
+	}
+	return d, "", nil
+}
+
+// pyShadow is why change c may shadow a module the tests import, or "":
+// a module added under a sys.path entry whose dotted name (pyModNames) is
+// a base module's, or one a base judged file imports or a prefix of it (a
+// third-party one too); in a judged file, a base module's in another
+// directory by its last name too (main's #266 rule, a floor: Opus #270
+// H1). Unread blocks.
+func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
+	if c.Status == "M" || c.Status == "D" || path.Ext(c.Dst) != ".py" || pyTested(c.Dst) {
+		return "", nil
+	} else if err := pb.load(); err != nil {
 		return "", err
 	}
 	names := pyModNames(c.Dst, pb.entries, judged)
 	for _, n := range names {
 		if q := pb.mods[n]; q != "" {
 			return "an added module shadows the base module " + q, nil
+		}
+	}
+	split := func(p string) (string, string) {
+		m := strings.TrimSuffix(strings.TrimSuffix(p, ".py"), "/__init__")
+		return path.Dir(m), path.Base(m)
+	}
+	for _, q := range slices.Sorted(maps.Keys(pb.r.files)) {
+		if d, m := split(c.Dst); judged && path.Ext(q) == ".py" {
+			if qd, qm := split(q); qm == m && qd != d {
+				return "an added module shadows the base module " + q, nil
+			}
 		}
 	}
 	for _, bt := range pb.tests {
@@ -208,50 +302,65 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 	return "", nil
 }
 
-// pyReach is why changed module c may change a base test's condition, or
-// "" (Mythos #267 H4, r2 H3). A condition's plain name n reaches c's
-// attribute y: n bound by a from-import and y = n's original name, c
+// pyReach is why changed module c may change a base judged file's
+// condition, or "" (Mythos #267 H4, r2 H3, Opus #270 H2). A condition's
+// plain name n reaches c's attribute y: n bound by a from-import whose
+// target, resolved through the base modules' imports, ends in y, c
 // binding y differently (by name: a re-export); or n's dotted chain, from
-// its import (or a star import of c), passing through c's dotted name to
-// y, and c binding y differently, by def, class or global (pyMoving), or
-// the condition reading past y.
-func pyReach(c Change, b, a *pyFile, all []pyBaseTest) string {
+// its import (or a star import of c) and so resolved, passing through c's
+// dotted name to y, and c binding y differently, by def, class or global
+// (pyMoving), or the condition reading past y or c whole. A star import
+// added or removed in c rebinds every name (Opus #270 M2).
+func pyReach(c Change, b, a *pyFile, pb *pyBase) (string, error) {
 	suffixes := slices.Concat(pySuffixes(c.Src), pySuffixes(c.Dst))
-	why := func(bt pyBaseTest, y string) string {
-		return "a skipif or xfail condition in " + bt.path + " reads " + y + ", which this change rebinds"
+	stars := func(f *pyFile) []string {
+		return slices.DeleteFunc(strings.Split(f.imports, "\n"), func(s string) bool { return !strings.HasSuffix(s, "*]") })
 	}
-	for _, bt := range all {
-		if bt.unread {
-			return "a base test file is unread (" + bt.path + "): its conditions are not verified"
+	rebound := func(y string) bool { return a.binds[y] != b.binds[y] || !slices.Equal(stars(a), stars(b)) }
+	why := func(f *pyBaseFile, y string) string {
+		return "a skipif or xfail condition in " + f.path + " reads " + y + ", which this change rebinds"
+	}
+	for _, f := range pb.tests {
+		if f.unread {
+			return "a base test file is unread (" + f.path + "): its conditions are not verified", nil
 		}
-		for _, line := range bt.conds {
+		for _, line := range f.conds {
 			for j, n := range line {
 				if n.kind != 'n' || j > 0 && line[j-1].text == "." {
 					continue
 				}
-				src, e := bt.from[n.text], []string{n.text}
+				src, e := f.from[n.text], []string{n.text}
 				for k := j; k+2 < len(line) && line[k+1].text == "." && line[k+2].kind == 'n'; k += 2 {
 					e = append(e, line[k+2].text)
 				}
-				if y := src[strings.LastIndex(src, ".")+1:]; bt.named[n.text] && a.binds[y] != b.binds[y] {
-					return why(bt, y)
-				}
-				star := slices.IndexFunc(bt.stars, func(s string) bool { return slices.Contains(suffixes, s) })
+				star := slices.IndexFunc(f.stars, func(s string) bool { return slices.Contains(suffixes, s) })
 				if src == "" && star >= 0 {
-					e = slices.Concat(strings.Split(bt.stars[star], "."), e)
+					e = slices.Concat(strings.Split(f.stars[star], "."), e)
 				} else if src != "" && !strings.HasPrefix(src, n.text+".") {
 					e = slices.Concat(strings.Split(src, "."), e[1:])
 				}
-				for i := 1; i <= len(e); i++ { // i == len(e): c read whole, getattr(c, …) (the security review)
+				d, unread, err := pb.resolve(strings.Join(e, "."))
+				if err != nil || unread != "" {
+					return "a module a condition reads is unread (" + unread + ")", err
+				}
+				if f.named[n.text] {
+					ds, _, err := pb.resolve(src)
+					if err != nil {
+						return "", err
+					} else if y := ds[strings.LastIndex(ds, ".")+1:]; rebound(y) {
+						return why(f, y), nil
+					}
+				}
+				for e, i := strings.Split(d, "."), 1; i <= len(e); i++ { // i == len(e): c read whole, getattr(c, …) (the security review)
 					if y := e[min(i, len(e)-1)]; slices.Contains(suffixes, strings.Join(e[:i], ".")) &&
-						(i == len(e) && (src != "" || star >= 0) || i+1 < len(e) || i < len(e) && (a.binds[y] != b.binds[y] || pyMoving(a.binds[y]))) {
-						return why(bt, y)
+						(i == len(e) && (src != "" || star >= 0) || i+1 < len(e) || i < len(e) && (rebound(y) || pyMoving(a.binds[y]))) {
+						return why(f, y), nil
 					}
 				}
 			}
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // pyMoving: a binding that may change under its line: a def's or class's

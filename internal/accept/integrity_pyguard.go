@@ -24,10 +24,11 @@ var (
 	pyCollect = strings.Fields("python_files python_classes python_functions norecursedirs testpaths confcutdir " +
 		"collect_imported_tests consider_namespace_packages usefixtures empty_parameter_set_mark")
 	// pyOpt: the options a base may set (collection and results untouched).
-	pyOpt   = regexp.MustCompile(`^-(q+|v+|r\w*|l|s|W|-(strict|strict-markers|strict-config|showlocals|tb|color|durations|capture))$`)
-	pyWords = regexp.MustCompile(`[\s"',\[\]=]+`)
-	pyKey   = regexp.MustCompile(`\n(\[|[A-Za-z_][\w.-]*[ \t]*[=:])`) // the next key or section
-	pyNote  = regexp.MustCompile(`(?m)^[ \t]*[#;].*$`)                // a comment line
+	pyOpt     = regexp.MustCompile(`^-(q+|v+|r\w*|l|s|W|-(strict|strict-markers|strict-config|showlocals|tb|color|durations|capture))$`)
+	pyWords   = regexp.MustCompile(`[\s"',\[\]=]+`)
+	pyPathKey = regexp.MustCompile(`pythonpath|python_paths|site_dirs`)
+	pyKey     = regexp.MustCompile(`\n(\[|[A-Za-z_][\w.-]*[ \t]*[=:])`) // the next key or section
+	pyNote    = regexp.MustCompile(`(?m)^[ \t]*[#;].*$`)                // a comment line
 	// splitLines breaks lines where str.splitlines does (iniconfig's lines).
 	splitLines = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n", "\x1c", "\n", "\x1d", "\n", "\x1e", "\n",
 		"\u0085", "\n", "\u2028", "\n", "\u2029", "\n")
@@ -75,6 +76,11 @@ func (r *run) python(changes []Change) error {
 		return err
 	}
 	pb := &pyBase{r: r, entries: r.pyEntries(paths)}
+	for _, q := range slices.Sorted(maps.Keys(r.files)) { // an __init__.py added, removed or renamed (Opus #270 M3)
+		if pyTested(q) && r.cand[q] != "" && pyBasedir(r.files, q) != pyBasedir(r.cand, q) {
+			add(&r.blocks, q, "a test file's basedir moves (an __init__.py added, removed or renamed)")
+		}
+	}
 	var changed []string // the changed modules' paths
 	for _, c := range changes {
 		for _, q := range []string{c.Src, c.Dst} {
@@ -123,7 +129,9 @@ func (r *run) python(changes []Change) error {
 			if src && dst && path.Ext(c.Src) == ".py" && path.Ext(c.Dst) == ".py" { // a changed module a base condition reads (Mythos #267 H4)
 				if err := pb.load(); err != nil {
 					return err
-				} else if why := pyReach(c, b, a, pb.tests); why != "" {
+				} else if why, err := pyReach(c, b, a, pb); err != nil {
+					return err
+				} else if why != "" {
 					add(&r.blocks, c.Dst, why)
 				}
 			}
@@ -147,8 +155,8 @@ func (r *run) pyCustom() (custom, configured bool, paths []string, err error) {
 			return err == nil, true, nil, err
 		}
 		configured = configured || conf != ""
-		for _, v := range strings.Split(conf, "pythonpath")[1:] { // its directories, from the file's (Mythos #266 r2 L2, Opus #267 L1)
-			if v = pyKey.Split(v, 2)[0]; path.Ext(p) == ".toml" && strings.Contains(v, `\`) {
+		for _, v := range pyPathKey.Split(conf, -1)[1:] { // its directories, from the file's (Mythos #266 r2 L2, Opus #267 L1, #270 M1)
+			if v = pyKey.Split(v, 2)[0]; strings.Contains(v, `\`) || path.Ext(p) != ".toml" && strings.ContainsAny(v, `"'`) { // shlex's quotes
 				return true, true, nil, nil // an escape: unread
 			}
 			for _, w := range pyWords.Split(strings.TrimLeft(v, " \t=:"), -1) {
@@ -301,13 +309,19 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 	}
 	stack, deco, conftest, tested := []block{{indent: -1}}, []ptok(nil), path.Base(p) == "conftest.py", pyTested(p)
 	rebound, classes := pyRebound(lines), map[string]bool{} // Opus #266 M2: a pre-pass
-	pure, aliases := pyPure(lines)
+	pure, aliases := pyPure(r.ctx, lines)
 	find := func(st []ptok, why string, strict bool) {
 		if f := fa.finds[fmt.Sprint(st)]; f != nil {
 			f.n, f.strict = f.n+1, f.strict || strict // Mythos #266 L2
 		} else {
 			fa.finds[fmt.Sprint(st)] = &pyFind{why, strict, 1, pyCalls(st), false, false}
 		}
+	}
+	importPath := func(st []ptok, n string) { // blocks in every file, over the allowlist's finding for st
+		why := "a package's import path, spec or loader bound at import (" + n + ")"
+		find(st, why, false)
+		f := fa.finds[fmt.Sprint(st)]
+		f.why, f.always = why, true
 	}
 	for _, l := range lines {
 		if r.work += 2 * (len(l.toks) + len(l.inner)); r.work > maxWork {
@@ -338,20 +352,15 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 					find(st, why, strings.HasPrefix(why, "an import binding")) // Mythos #266 L1
 				}
 				binds, imported := pyBinds(slices.Concat(st, l.inner)) // a walrus in an f-string binds too (Mythos #266 H1)
-				if slices.Contains(pyImportPath, st[0].text) && slices.ContainsFunc(st, func(k ptok) bool { return k.text == "(" }) {
-					binds = append(binds, st[0].text) // __path__.insert(…) changes it too (Mythos #267 r2 M2)
-				}
+				text := fmt.Sprint(st) + "\n"                          // once: a chain binds many names (Opus #270 L1)
 				for _, n := range binds {
 					if slices.Contains(pyImportPath, n) { // in every file (Mythos #267 H3)
-						why := "a package's import path, spec or loader bound at import (" + n + ")"
-						find(st, why, false)
-						f := fa.finds[fmt.Sprint(st)]
-						f.why, f.always = why, true // over the allowlist's finding for st
+						importPath(st, n)
 					}
 					if judged && (strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__" || !imported && pyBound[n] != "") {
 						find(st, "a dunder or an allowlisted name bound at import ("+n+")", true) // Opus #266 H1
 					}
-					fa.imported[n], fa.local[n], fa.binds[n] = fa.imported[n] || imported, fa.local[n] || !imported, fa.binds[n]+fmt.Sprint(st)+"\n"
+					fa.imported[n], fa.local[n], fa.binds[n] = fa.imported[n] || imported, fa.local[n] || !imported, fa.binds[n]+text
 				}
 				if imported {
 					fa.imports = fa.imports + fmt.Sprint(st) + "\n"
@@ -363,6 +372,9 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 			if !pyConst(l.inner) {
 				find(slices.Concat(t, l.inner), "code run at import in an f-string field ("+ptext(t)+")", false)
 			}
+		}
+		if i := slices.IndexFunc(code, func(k ptok) bool { return slices.Contains(pyImportPath, k.text) }); i >= 0 && path.Base(p) == "__init__.py" {
+			importPath(t, code[i].text) // any mention in a package's __init__.py (Opus #270 L2)
 		}
 		if line := slices.Concat(t, l.inner); pySkipString(line, len(t), pure, aliases) { // in every file (Opus #267 H1)
 			if f := fa.finds["cond "+fmt.Sprint(t)]; f != nil {

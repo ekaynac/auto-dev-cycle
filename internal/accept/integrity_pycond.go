@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"context"
 	"slices"
 	"strings"
 )
@@ -73,11 +74,14 @@ func pyBool(t []ptok) bool {
 // pyPure: the file binds pytest only by import pytest: no parameter,
 // target, attribute or alias named pytest (Opus #267 M2, Mythos #267 M2);
 // aliases are the names bound to a chain ending in .skipif or .xfail.
-func pyPure(lines []pline) (pure bool, aliases map[string]bool) {
+func pyPure(ctx context.Context, lines []pline) (pure bool, aliases map[string]bool) {
 	pure, aliases = true, map[string]bool{}
 	var binds [][]string       // each statement's bindings
 	uses := map[string][]int{} // a name, to the statements holding it
 	for _, l := range lines {
+		if ctx.Err() != nil { // the caller reads ctx (Opus #270 L1)
+			return pure, aliases
+		}
 		t, d := slices.Concat(l.toks, l.inner), l.toks[b2i(l.toks[0].text == "async"):]
 		for _, st := range pySplit(t, ";") { // per statement: import pytest, os stays pure (r2 L1), import pytest; pytest = … does not (r3 H1)
 			if len(st) == 0 { // x = 1; (r4 L)
@@ -99,9 +103,15 @@ func pyPure(lines []pline) (pure bool, aliases map[string]bool) {
 		}
 	}
 	// aliases: what a statement holding skipif, xfail or an alias binds, to a
-	// fixed point (Mythos #267 r2 M3: an alias of an alias, a tuple, a ;)
+	// fixed point (Mythos #267 r2 M3: an alias of an alias, a tuple, a ;),
+	// each statement taken once (Opus #270 L1)
+	taken := make([]bool, len(binds))
 	for queue := []string{"skipif", "xfail"}; len(queue) > 0; queue = queue[1:] {
 		for _, i := range uses[queue[0]] {
+			if taken[i] {
+				continue
+			}
+			taken[i] = true
 			for _, n := range binds[i] {
 				if !aliases[n] {
 					aliases[n], queue = true, append(queue, n)
