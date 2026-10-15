@@ -230,7 +230,7 @@ func (r *run) analyse(dir string, srcs map[string][]byte, fa *pkgFacts) error {
 		if !goByName(p) || f.Name.Name == "documentation" {
 			coll = make([]int, len(platforms))
 		}
-		meta[f] = fileMeta{p, cons, coll, srcs[p], exprs}
+		meta[f] = fileMeta{p, cons, coll, srcs[p], exprs, on}
 		groups[f.Name.Name] = append(groups[f.Name.Name], f)
 	}
 	for _, name := range slices.Sorted(maps.Keys(groups)) {
@@ -243,9 +243,10 @@ func (r *run) analyse(dir string, srcs map[string][]byte, fa *pkgFacts) error {
 
 type fileMeta struct {
 	path, cons string
-	on         []int
+	on         []int // collected as tests, per platform
 	src        []byte
 	exprs      []constraint.Expr
+	built      []int // built, per platform (goOn's)
 }
 
 // pkgScan is one type-checked package: its testing parameters, functions,
@@ -481,14 +482,15 @@ func recv(fn *ast.FuncDecl) string {
 func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, meta map[*ast.File]fileMeta, fa *pkgFacts) error {
 	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
 		Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
-	exprs, first := map[string][]constraint.Expr{}, ""
+	exprs, built, first := map[string][]constraint.Expr{}, map[string][]int{}, ""
 	for _, f := range files {
-		exprs[meta[f].path] = meta[f].exprs
+		exprs[meta[f].path], built[meta[f].path] = meta[f].exprs, meta[f].built
 	}
-	twice := func(a, b string) { // a name declared in files a and b: unless no gate platform builds both
+	twice := func(a, b string) { // a name declared in files a and b: unless no gate platform builds both (by tags or by name, x_amd64.go)
 		if slices.ContainsFunc(platforms, func(pl [2]string) bool {
+			i := slices.Index(platforms, pl)
 			n, _ := r.holds(append(slices.Clone(exprs[a]), exprs[b]...), pl)
-			return n != 0
+			return n != 0 && (built[a] == nil || built[a][i] > 0) && (built[b] == nil || built[b][i] > 0)
 		}) {
 			fa.bad[a] = "a name declared twice, in files the gate may build together"
 		}
@@ -525,8 +527,8 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.TypeSpec:
-				if x.Assign.IsValid() {
-					s.aliases[info.Defs[x.Name]] = x.Type
+				if o := info.Defs[x.Name]; x.Assign.IsValid() && o != nil { // a redeclared alias has none: never a nil key, every name's
+					s.aliases[o] = x.Type
 				}
 			case *ast.StarExpr:
 				s.starred[x.X] = true

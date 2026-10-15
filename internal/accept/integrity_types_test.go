@@ -33,10 +33,12 @@ func e2eCalc(imports, x, decls string) string {
 func TestIntegrityRealTypes(t *testing.T) {
 	f := newGuardFixture(t)
 	holder := "\ntype holder struct{ t *testing.T }\n"
-	other, only := "amd64", "SYS_ARCH_PRCTL" // the other gate platform's file, and a symbol only it has
-	if typePlatform[1] == "amd64" {
-		other, only = "arm64", "SYS_ARCH_SPECIFIC_SYSCALL"
+	// decode is TestAdd checking y, which body sets, with decls added (P14e-2a, #226 entry 85).
+	decode := func(imports, body, decls string) map[string]string {
+		return map[string]string{"pkg/calc_test.go": "package pkg\n\nimport (\n" + imports + "\t\"testing\"\n)\n\nfunc TestAdd(t *testing.T) {\n" + body +
+			"\tif Add(1, 2) != 3 {\n\t\ty.Error(\"add\")\n\t}\n}\n" + decls}
 	}
+	js, hy := "\t\"encoding/json\"\n", "\tvar h struct{ T *testing.T }\n"
 	for name, c := range map[string]guardCase{
 		// Entry 79: own functions and methods returning *testing.T, fields, containers.
 		"fresh(zt())":         {fake("fresh(zt())", freshGo+"\nfunc zt() *testing.T { return nil }\n"), nil, forgedWhy},
@@ -107,24 +109,44 @@ func TestIntegrityRealTypes(t *testing.T) {
 		// Found in round 3 (end to end: TestAdd passes): a decoder outside the module allocates a T into a field.
 		"json.Unmarshal into a *testing.T field": {map[string]string{"pkg/calc_test.go": "package pkg\n\nimport (\n\t\"encoding/json\"\n\t\"testing\"\n)\n\n" +
 			"func TestAdd(t *testing.T) {\n\tvar h struct{ T *testing.T }\n\t_ = json.Unmarshal([]byte(`{\"T\":{}}`), &h)\n\ty := h.T\n" +
-			"\tif Add(1, 2) != 3 {\n\t\ty.Error(\"add\")\n\t}\n}\n"}, nil, forgedWhy + " (json.Unmarshal("},
+			"\tif Add(1, 2) != 3 {\n\t\ty.Error(\"add\")\n\t}\n}\n"}, nil, forgedWhy},
+		// P14e-2a, #226 entry 85 (each accepted at 94bff81): a decoder's target is a fact on the value
+		// (fillable), however it reaches the decoder.
+		"H1 through an any variable": {decode(js, hy+"\tvar a any = &h\n\t_ = json.Unmarshal([]byte(`{\"T\":{}}`), a)\n\ty := h.T\n", ""), nil, forgedWhy},
+		"H1 a []any spread":          {decode(js, hy+"\targs := []any{&h}\n\t_ = json.Unmarshal([]byte(`{\"T\":{}}`), args[0])\n\ty := h.T\n", ""), nil, forgedWhy},
+		"H1 **testing.T behind any":  {decode(js, "\tvar y *testing.T\n\tvar a any = &y\n\t_ = json.Unmarshal([]byte(\"{}\"), a)\n", ""), nil, forgedWhy},
+		"H1 a decoder as a value":    {decode(js, hy+"\tdec := json.Unmarshal\n\t_ = dec([]byte(`{\"T\":{}}`), &h)\n\ty := h.T\n", ""), nil, forgedWhy},
+		"H1 gob": {decode("\t\"bytes\"\n\t\"encoding/gob\"\n", hy+"\tvar a any = &h\n\t_ = gob.NewDecoder(bytes.NewReader(nil)).Decode(a)\n\ty := h.T\n", ""),
+			nil, forgedWhy},
+		"H1 xml": {decode("\t\"encoding/xml\"\n", hy+"\tvar a any = &h\n\t_ = xml.Unmarshal([]byte(\"<x><T></T></x>\"), a)\n\ty := h.T\n", ""), nil, forgedWhy},
+		"H1 an own func returning any": {decode(js, "\tvar a any = target()\n\t_ = json.Unmarshal([]byte(`{\"T\":{}}`), a)\n\tvar y *testing.T\n",
+			"\ntype Holder struct{ T *testing.T }\n\nfunc target() any { return &Holder{} }\n"), nil, forgedWhy},
+		// The fdec10c flag "incomplete fix" (generic Call accepted at 94bff81): reflect.Value's makers through a constraint or an interface.
+		"a reflect maker through a constraint": {decode("\t\"reflect\"\n", "\ty := t\n\t_ = call(reflect.ValueOf(func() {}))\n",
+			"\nfunc call[V interface{ Call([]reflect.Value) []reflect.Value }](v V) []reflect.Value { return v.Call(nil) }\n"), nil, "reflection that makes, writes or calls values (Call) in linux/amd64 call"},
+		"a reflect maker through an interface": {decode("\t\"reflect\"\n", "\ty := t\n\tvar s interface{ Set(reflect.Value) } = reflect.ValueOf(new(int)).Elem()\n\ts.Set(reflect.Zero(reflect.TypeFor[int]()))\n", ""),
+			nil, "reflection that makes, writes or calls values (Set) in linux/amd64 TestAdd"},
+		// The fdec10c flag "fail-open on redeclaration": one name in files under exclusive
+		// tags the guard does not model, with other types (the race pair, same types, is accepted).
+		"a name declared again with other types": {map[string]string{"pkg/r_test.go": "//go:build race\n\npackage pkg\n\nconst limit = 1\n",
+			"pkg/n_test.go": "//go:build !race\n\npackage pkg\n\nconst limit = \"one\"\n"}, nil, "declared again with other types"},
+		// The background flag on P14e-2a "shape check incomplete": a type's methods (a const's value changes no type: the race pair).
+		"a type declared again with other methods": {map[string]string{"pkg/r_test.go": "//go:build race\n\npackage pkg\n\ntype probe struct{}\n\nfunc (probe) Error(...any) {}\n",
+			"pkg/n_test.go": "//go:build !race\n\npackage pkg\n\ntype probe struct{}\n\nfunc (probe) Log(...any) {}\n"}, nil, "declared again with other types"},
 		// H2: an assertion on a value not an interface; the gate cannot compile it.
 		"H2 t.(*testing.T)": {map[string]string{"pkg/x_test.go": "package pkg\n\nimport \"testing\"\n\nfunc keep(t *testing.T) { _ = t.(*testing.T) }\n"}, nil, "it does not type-check"},
 		// Round 5 (the background detection-bypass flag): reflect's functions as values (end to end: TestAdd passes).
 		"reflect functions as values": {map[string]string{"pkg/calc_test.go": "package pkg\n\nimport (\n\t\"reflect\"\n\t\"testing\"\n)\n\n" +
 			"type holder struct{ T *testing.T }\n\nfunc TestAdd(t *testing.T) {\n\tvar v any = t\n\tvar h holder\n" +
 			"\tvo, nw, set := reflect.ValueOf, reflect.New, reflect.Value.Set\n\tset(vo(&h).Elem().Field(0), nw(vo(v).Type().Elem()))\n" +
-			"\tvar y *testing.T = h.T\n\tif Add(1, 2) != 3 {\n\t\ty.Error(\"add\")\n\t}\n}\n"}, nil, "reflection that makes, writes or calls values (ValueOf) in TestAdd"},
-		// Round 5: a file for one platform is typed with the other's export data. A type error
-		// there is unverifiable: here it hides a forgery (accepted at 57fb44b). The control
-		// below is a documented false block until P14e-2 types each platform.
+			"\tvar y *testing.T = h.T\n\tif Add(1, 2) != 3 {\n\t\ty.Error(\"add\")\n\t}\n}\n"}, nil, "reflection that makes, writes or calls values (ValueOf) in linux/amd64 TestAdd"},
+		// Round 5: a file for one platform hides a forgery from the other's types (accepted
+		// at 57fb44b). Each platform's files are typed with its own export data: its fact.
 		"a forgery typed away on the other platform": {map[string]string{
 			"pkg/calc_test.go": strings.Replace(baseFiles["pkg/calc_test.go"], "t.Fatal(\"add\")", "var y *testing.T = forge(t)\n\t\ty.Fatal(\"add\")", 1),
-			"pkg/x_" + other + "_test.go": "package pkg\n\nimport (\n\t\"encoding/json\"\n\t\"syscall\"\n\t\"testing\"\n)\n\n" +
+			"pkg/x_amd64_test.go": "package pkg\n\nimport (\n\t\"encoding/json\"\n\t\"syscall\"\n\t\"testing\"\n)\n\n" +
 				"type holder struct{ T *testing.T }\n\nfunc pickH[N, H any](N, H) H { var h H; return h }\n\nfunc forge(t *testing.T) *testing.T {\n" +
-				"\th := pickH(syscall." + only + ", holder{})\n\t_ = json.Unmarshal([]byte(`{\"T\":{}}`), &h)\n\treturn h.T\n}\n"}, nil, "it does not type-check"},
-		"files for each platform (a false block, P14e-2)": {map[string]string{"pkg/x_amd64.go": "package pkg\n\nimport \"syscall\"\n\nconst archAMD = syscall.SYS_ARCH_PRCTL\n",
-			"pkg/x_arm64.go": "package pkg\n\nimport \"syscall\"\n\nconst archARM = syscall.SYS_ARCH_SPECIFIC_SYSCALL\n"}, nil, "it does not type-check"},
+				"\th := pickH(syscall.SYS_ARCH_PRCTL, holder{})\n\t_ = json.Unmarshal([]byte(`{\"T\":{}}`), &h)\n\treturn h.T\n}\n"}, nil, forgedWhy},
 		// Round 4 (the background fail-open flag): an error whose text holds "redeclared" is still an error.
 		"an error naming redeclared": {map[string]string{"pkg/x_test.go": "package pkg\n\nvar _ = redeclared\n"}, nil, "it does not type-check (pkg/x_test.go:3:9: undefined: redeclared)"},
 		// M2: value-making reflection in an untested helper of a repository with tests.
@@ -192,6 +214,30 @@ func TestIntegrityRealTypes(t *testing.T) {
 		t.Errorf("tests added to a base with none: %q", whats(v.Blocks))
 	}
 
+	// The background flag on P14e-2a "fact count trading across platforms":
+	// facts are compared per platform. (a) A file built on both platforms
+	// keeps its count while one platform loses the fact and the other gains
+	// one; (b) a fact moved from x_amd64_test.go to x_arm64_test.go.
+	hold := "package pkg\n\nimport \"testing\"\n\ntype V = struct{ T *testing.T }\n"
+	trade := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/x_amd64_test.go": hold, "pkg/x_arm64_test.go": hold, "pkg/use_test.go": "package pkg\n\nfunc use() {\n\tvar h V\n\t_ = h\n}\n",
+			"pkg/f_amd64_test.go": "package pkg\n\nimport \"testing\"\n\nfunc forge(t *testing.T) *testing.T {\n\tvar h struct{ T *testing.T }\n\treturn h.T\n}\n",
+			"pkg/f_arm64_test.go": "package pkg\n\nimport \"testing\"\n\nfunc forge(t *testing.T) *testing.T { return t }\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, files := range map[string]map[string]string{
+		"(a) one platform's fact traded for the other's": {"pkg/x_arm64_test.go": "package pkg\n\ntype V = int\n",
+			"pkg/use_test.go": "package pkg\n\nfunc use() {\n\t{\n\t\tvar h V\n\t\t_ = h\n\t}\n\t{\n\t\tvar h V\n\t\t_ = h\n\t}\n}\n"},
+		"(b) a fact moved to the other platform's file": {"pkg/f_amd64_test.go": "package pkg\n\nimport \"testing\"\n\nfunc forge(t *testing.T) *testing.T { return t }\n",
+			"pkg/f_arm64_test.go": "package pkg\n\nimport (\n\t\"encoding/json\"\n\t\"testing\"\n)\n\nfunc forge(t *testing.T) *testing.T {\n" +
+				"\tvar h struct{ T *testing.T }\n\t_ = json.Unmarshal([]byte(`{\"T\":{}}`), &h)\n\treturn h.T\n}\n"},
+	} {
+		if v := trade.guarded(t, files); !finds(v.Blocks, forgedWhy) {
+			t.Errorf("trading across platforms, %s: %q", name, whats(v.Blocks))
+		}
+	}
+
 	// M1 (Mythos #265): a shadowed operand is another fact (its type is in
 	// the key), though the expression reads the same.
 	pick := newFixtureWith(t, func(src string) {
@@ -202,7 +248,7 @@ func TestIntegrityRealTypes(t *testing.T) {
 	v := pick.guarded(t, map[string]string{"util/u.go": "package util\n\nfunc Fresh(v any) any { return v }\n",
 		"pkg/helper_test.go": "package pkg\n\nimport (\n\t\"testing\"\n\n\t\"example.com/m/util\"\n)\n\n" +
 			"func pick(tb testing.TB) *testing.T {\n\t{\n\t\ttb := util.Fresh(tb)\n\t\treturn tb.(*testing.T)\n\t}\n}\n"})
-	if !finds(v.Blocks, "pkg/helper_test.go: "+forgedWhy+" (tb.(*testing.T) of any) in pick") {
+	if !finds(v.Blocks, "pkg/helper_test.go: "+forgedWhy+" (tb.(*testing.T) of any) in linux/amd64 pick") {
 		t.Errorf("M1 the shadowed pick: %q", whats(v.Blocks))
 	}
 
@@ -241,6 +287,21 @@ func TestIntegrityRealTypesAccepts(t *testing.T) {
 			"\ntype fixture struct{ t *testing.T }\n"},
 		"an interface holding t": {"pkg/calc_test.go": strings.Replace(goT, "t.Fatal(\"add\")", "check(t)\n\t\tt.Fatal(\"add\")", 1) +
 			"\nfunc check(tb testing.TB) { tb.Helper() }\n"},
+		// Round 5's false block, now typed per platform (P14e-2a).
+		// One name in each platform's file (P14b's "declared twice" read tags only, and a
+		// redeclared alias crashed its text rules with a stack overflow, at 94bff81).
+		"one alias in each platform's file": {"pkg/v_amd64.go": "package pkg\n\ntype V = struct{ X int }\n", "pkg/v_arm64.go": "package pkg\n\ntype V = struct{ X int }\n"},
+		"files for each platform": {"pkg/x_amd64.go": "package pkg\n\nimport \"syscall\"\n\nconst archAMD = syscall.SYS_ARCH_PRCTL\n",
+			"pkg/x_arm64.go": "package pkg\n\nimport \"syscall\"\n\nconst archARM = syscall.SYS_ARCH_SPECIFIC_SYSCALL\n"},
+		// M2 (Mythos #265 r2; each blocked at 94bff81): idioms holding t where no decoder can fill it.
+		"maps.Keys of test funcs": {"pkg/calc_test.go": strings.Replace(goT, "import \"testing\"", "import (\n\t\"maps\"\n\t\"slices\"\n\t\"testing\"\n)", 1) +
+			"\nfunc TestKeys(t *testing.T) {\n\tfor _, k := range slices.Sorted(maps.Keys(map[string]func(*testing.T){\"a\": nil})) {\n\t\tt.Log(k)\n\t}\n}\n"},
+		"sync.OnceValue of a fixture": {"pkg/calc_test.go": strings.Replace(goT, "import \"testing\"", "import (\n\t\"sync\"\n\t\"testing\"\n)", 1) +
+			"\ntype fixture struct{ t *testing.T }\n\nfunc TestOnce(t *testing.T) {\n\tget := sync.OnceValue(func() *fixture { return &fixture{t: t} })\n\t_ = get()\n}\n"},
+		"httptest with a handler holding t": {"pkg/calc_test.go": strings.Replace(goT, "import \"testing\"", "import (\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"testing\"\n)", 1) +
+			"\ntype handler struct{ t *testing.T }\n\nfunc (h *handler) ServeHTTP(http.ResponseWriter, *http.Request) {}\n\n" +
+			"func TestServe(t *testing.T) {\n\ts := httptest.NewServer(&handler{t: t})\n\ts.Close()\n}\n"},
+		"a fixture logged":                 {"pkg/calc_test.go": goT + "\ntype fixture struct{ t *testing.T }\n\nfunc TestLog(t *testing.T) {\n\tfx := &fixture{t: t}\n\tt.Logf(\"%+v\", fx)\n}\n"},
 		"an own and a module-cache import": {"pkg/x.go": "package pkg\n\nimport (\n\t\"example.com/m/other\"\n\t\"golang.org/x/sys/unix\"\n)\n\nvar mode, v = unix.S_IFMT, other.Value\n"},
 	} {
 		if v := f.guarded(t, files); !v.Accepted() || len(v.Warnings) > 0 {
@@ -287,7 +348,7 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	failing := func(context.Context, []byte, []byte, []string) (map[string]Listed, error) {
+	failing := func(context.Context, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
 		return nil, errors.New("no toolchain")
 	}
 	for name, c := range map[string]struct {
@@ -304,7 +365,7 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	} {
 		start := time.Now()
 		v, err := accept(context.Background(), c.list)
-		if err != nil || !finds(v.Blocks, "pkg:pkg unverifiable: the types of its imports not loaded "+c.why) || time.Since(start) > 20*time.Second {
+		if err != nil || !finds(v.Blocks, "pkg:pkg unverifiable: linux/amd64: the types of its imports not loaded "+c.why) || time.Since(start) > 20*time.Second {
 			t.Errorf("%s (%v): %v %q", name, time.Since(start), err, whats(v.Blocks))
 		}
 	}
@@ -320,15 +381,17 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 		t.Errorf("go's child after a timeout: pid %d, %v, alive %v", pid, err, pid > 0 && alive(pid))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	cancelling := func(ctx context.Context, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+	cancelling := func(ctx context.Context, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
 		cancel()
-		return testLister(t)(ctx, gomod, gosum, paths)
+		return testLister(t)(ctx, pl, gomod, gosum, paths)
 	}
 	if _, err := accept(ctx, cancelling); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled while listing: %v", err)
 	}
 	// H2 (Mythos #265): a guard fault blocks, it does not crash.
-	panicking := func(context.Context, []byte, []byte, []string) (map[string]Listed, error) { panic("a lister fault") }
+	panicking := func(context.Context, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
+		panic("a lister fault")
+	}
 	if v, err := accept(context.Background(), panicking); err != nil || !finds(v.Blocks, "unverifiable: the guard failed (a lister fault)") {
 		t.Errorf("a panic in the guard: %v %q", err, whats(v.Blocks))
 	}
