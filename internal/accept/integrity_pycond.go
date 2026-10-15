@@ -72,7 +72,10 @@ func pyPure(lines []pline) (pure bool, aliases map[string]bool) {
 		t, d := slices.Concat(l.toks, l.inner), l.toks[b2i(l.toks[0].text == "async"):]
 		binds, _ := pyBinds(t)
 		for _, st := range pySplit(t, ";") { // per statement: import pytest, os stays pure (r2 L1), import pytest; pytest = … does not (r3 H1)
-			if b, imp := pyBinds(st); len(st) > 0 && slices.Contains(b, "pytest") && !(imp && st[0].text == "import" && !named(st, "as")) {
+			if len(st) == 0 { // x = 1; (r4 L)
+				continue
+			}
+			if b, imp := pyBinds(st); slices.Contains(b, "pytest") && !(imp && st[0].text == "import" && !named(st, "as")) {
 				pure = false
 			}
 		}
@@ -82,7 +85,12 @@ func pyPure(lines []pline) (pure bool, aliases map[string]bool) {
 				d[0].text == "def" && i < len(pySplit(d, ":")[0])))
 		}
 		if parts := pyAssign(l.toks); len(parts) > 1 {
-			if c := chain(parts[len(parts)-1]); c == pyJoin(parts[len(parts)-1]) && slices.Contains([]string{"skipif", "xfail"}, c[strings.LastIndex(c, ".")+1:]) {
+			v := parts[len(parts)-1] // cut at its first (: m = pytest.mark.xfail(False) is an alias (Mythos #267 r4 H1)
+			if k := slices.IndexFunc(v, func(k ptok) bool { return k.text == "(" }); k >= 0 {
+				v = v[:k]
+			}
+			c := strings.TrimSuffix(strings.TrimSuffix(chain(v), ".with_args"), ".__call__")
+			if chain(v) == pyJoin(v) && slices.Contains([]string{"skipif", "xfail"}, c[strings.LastIndex(c, ".")+1:]) {
 				for _, n := range binds {
 					aliases[n] = true
 				}

@@ -234,6 +234,8 @@ func TestPyGuardBlocks(t *testing.T) {
 			"tests/test_money.py": "from money import add, SKIP\npytestmark = SKIP\n\ndef test_add():\n    assert add(1, 2) == 3\n"}, nil, "money.py: unverifiable: a skipif or xfail condition"},
 		"r3 H2 a second call inside an f-string field": {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(autouse=True)\ndef fx(request):\n    x = f\"{request.applymarker(pytest.mark.xfail(False)('x'))}\"\n"}, nil,
 			"tests/conftest.py: unverifiable: a skipif or xfail condition"},
+		"r4 H1 an alias of a partially applied mark": {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(autouse=True)\ndef fx(request):\n    m = pytest.mark.xfail(False)\n    request.applymarker(m('x'))\n"}, nil,
+			"tests/conftest.py: unverifiable: a skipif or xfail condition"},
 		"r2 L4 an ordering dunder":   {map[string]string{"money.py": baseFiles["money.py"] + "class K:\n    def __lt__(self, o):\n        return 'x'\n"}, nil, "money.py: __lt__ in module level"},
 		"M2 pytest from the package": {map[string]string{"tests/conftest.py": "from . import pytest\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
 		"L1 a pyproject added":       {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
@@ -241,6 +243,12 @@ func TestPyGuardBlocks(t *testing.T) {
 		"record_xml_attribute":       {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
 	} {
 		pyBlocks(t, f, name, c.files, c.why)
+	}
+	// Mythos #267 r4 H1 control: @m, m an alias of a partially applied
+	// mark, stays the one allowlist block it was (no condition finding).
+	m := map[string]string{"tests/test_money.py": pyT + "\nimport pytest\nm = pytest.mark.xfail(False)\n\n@m\ndef test_x():\n    pass\n"}
+	if own := pyOwn(f.guarded(t, m).Blocks); len(own) != 1 || !pyFinds(own, "tests/test_money.py: unverifiable: code run at import outside the allowlist ([@ m])") {
+		t.Errorf("r4 H1 control @m: %q", whats(own))
 	}
 }
 
@@ -391,6 +399,7 @@ func TestPyGuardAcceptsAndWarns(t *testing.T) {
 		"a def taking *args and **kwargs":     {map[string]string{"tests/conftest.py": "def helper(*args, **kwargs):\n    return args\n"}, nil, ""},
 		"r2 L1 import pytest, os":             {map[string]string{"tests/test_money.py": pyT + "\nimport pytest, os\n\ndef test_x():\n    pytest.xfail('not yet')\n"}, nil, ""},
 		"r2 L2 an f-string after a condition": {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\nX = 1\n\n@pytest.mark.skipif(X == 1, reason=f'{(X)}')\ndef test_x():\n    pass\n"}, nil, ""},
+		"r4 L a trailing ;":                   {map[string]string{"tests/test_money.py": pyT + "\nX = 1;\n\ndef test_x():\n    x = 1;\n    assert x\n"}, nil, ""},
 		"comparison decorators":               {map[string]string{"tests/test_money.py": pyT + "\nimport sys\nimport pytest\n\n@pytest.mark.skipif(sys.platform == 'win32' or sys.version_info < (3, 8), reason='old')\n@pytest.mark.xfail(not True, reason='x', strict=True)\ndef test_b():\n    pytest.xfail('not yet')\n"}, nil, ""},
 		"mock and patch decorators":           {map[string]string{"tests/test_money.py": pyT + "\nimport unittest.mock\nfrom unittest import mock\nfrom unittest.mock import patch\n\n@mock.patch('money.add')\n@patch.object(mock, 'ANY')\n@unittest.mock.patch.dict('os.environ', {'X': '1'})\ndef test_p(a, b):\n    pass\n"}, nil, ""},
 		"raises and params":                   {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\npytestmark = pytest.mark.slow\nCASES = [(1, 2), (3, 4)]\n\n@pytest.mark.parametrize('x', [pytest.param(1, id='one'), 2])\n@pytest.mark.skipif(1 > 2, reason='never')\ndef test_c(x):\n    with pytest.raises(ZeroDivisionError) as e:\n        1 / (x - x)\n    assert e.value\n\nclass TestK:\n    \"\"\"Doc.\"\"\"\n    k = 1\n\n    def test_k(self):\n        assert self.k\n"}, nil, ""},

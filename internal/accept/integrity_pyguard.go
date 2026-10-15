@@ -303,6 +303,9 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 		fn, b, code := top.fn, block{l.indent, top.fn, false}, append(append(deco, t...), l.inner...)
 		if fn == "" && !(pyMain(t) && !rebound) {
 			for _, st := range pySplit(t, ";") {
+				if len(st) == 0 { // X = 1; (Mythos #267 r4 L)
+					continue
+				}
 				if why := pyAllowed(st, conftest); why != "" {
 					find(st, why, strings.HasPrefix(why, "an import binding")) // Mythos #266 L1
 				}
