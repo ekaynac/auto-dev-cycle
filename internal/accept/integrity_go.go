@@ -468,8 +468,8 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 			fun, args := ast.Unparen(x.Fun), x.Args
 			f, _ := fn(fun)
 			sel, isSel := f.(*ast.SelectorExpr)
-			if b, ok := s.info.Uses[ident(fun)].(*types.Builtin); ok && (b.Name() == "copy" || b.Name() == "append") {
-				args = args[:min(1, len(args))] // the destination
+			if b, ok := s.info.Uses[ident(fun)].(*types.Builtin); ok && (b.Name() == "copy" || b.Name() == "append") || strings.HasPrefix(s.qual(f), "fmt.Fprint") {
+				args = args[:min(1, len(args))] // the destination (Fprint*: its io.Writer)
 			} else if s.readOnly(f) || isSel && s.qual(f) == "" && s.info.Uses[sel.Sel] == nil {
 				args = nil // read-only; or, as on main, a method of another package's unresolved type (fs.Parse, app.Run)
 			} // else decision A: any callee may write them (own code, a value, util.Fill, reflect)
@@ -872,7 +872,7 @@ func (s *pkgScan) readOnly(f ast.Expr) bool {
 	}
 	q := s.qual(f)
 	name := q[strings.LastIndex(q, ".")+1:]
-	return strings.HasPrefix(q, "fmt.") && (strings.Contains(name, "rint") || name == "Errorf") ||
+	return strings.HasPrefix(q, "fmt.") && (strings.HasPrefix(name, "Sprint") || strings.HasPrefix(name, "Print") || name == "Errorf") || // Fprint*, Sscan* and Fscan* write
 		strings.HasPrefix(q, "slices.") && slices.Contains([]string{"Contains", "Index", "Equal", "Clone"}, name) ||
 		slices.Contains(readFuncs, q)
 }

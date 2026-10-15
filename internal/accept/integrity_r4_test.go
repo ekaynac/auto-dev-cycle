@@ -83,7 +83,7 @@ func TestIntegrity2b2(t *testing.T) {
 	// errors.As its target (Astra's inputs, from init).
 	tgt := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
-		write(t, src, map[string]string{"util/t.go": "package util\n\nvar Target error\n"})
+		write(t, src, map[string]string{"util/t.go": "package util\n\nimport \"bytes\"\n\nvar Target error\n\nvar Buf = new(bytes.Buffer)\n"})
 		plain(t, src, "add", "--all")
 	})
 	for name, c := range map[string]struct{ body, why string }{
@@ -95,12 +95,31 @@ func TestIntegrity2b2(t *testing.T) {
 			"a write it cannot prove safe (encoding/asn1.NullBytes)"},
 		"errors.As(err, &util.Target)": {"import (\n\t\"errors\"\n\n\t\"example.com/m/util\"\n)\n\nfunc init() { _ = errors.As(errors.New(\"x\"), &util.Target) }\n",
 			"util.Target"},
+		// fmt.Fprint* writes its io.Writer (only Sprint*, Print* and Errorf are read-only).
+		"fmt.Fprint(util.Buf, \"x\")": {"import (\n\t\"fmt\"\n\n\t\"example.com/m/util\"\n)\n\nfunc init() { fmt.Fprint(util.Buf, \"x\") }\n", "fmt.Fprint"},
 		// An inert package's pointer as the target: only the write check sees it.
 		"errors.As(err, time.UTC)": {"import (\n\t\"errors\"\n\t\"time\"\n)\n\nfunc init() { _ = errors.As(errors.New(\"x\"), time.UTC) }\n",
 			"a write it cannot prove safe (time.UTC)"},
 	} {
 		if v := tgt.guarded(t, map[string]string{"pkg/w.go": "package pkg\n\n" + c.body}); !finds(v.Blocks, c.why) {
 			t.Errorf("%s from init: %q", name, whats(v.Blocks))
+		}
+	}
+}
+
+// TestIntegrityFmt: fmt's Fprint* writes only its io.Writer (os.Args cannot
+// be one); Sscan* and Fscan* write what their arguments point to.
+func TestIntegrityFmt(t *testing.T) {
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]struct{ body, why string }{
+		"fmt.Fprintln(os.Stderr, os.Args)": {"import \"fmt\"\n\nfunc show() { fmt.Fprintln(os.Stderr, os.Args) }\n", ""},
+		"fmt.Sscan(s, &os.Args[0])":        {"import \"fmt\"\n\nfunc scan(s string) { _, _ = fmt.Sscan(s, &os.Args[0]) }\n", "os.Args assigned in scan"},
+	} {
+		if v := f.guarded(t, map[string]string{"pkg/args.go": argsGo + c.body}); c.why == "" && !v.Accepted() || c.why != "" && !finds(v.Blocks, c.why) {
+			t.Errorf("%s: %q", name, whats(v.Blocks))
 		}
 	}
 }
