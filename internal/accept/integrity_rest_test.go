@@ -202,7 +202,7 @@ func TestIntegrityDoS(t *testing.T) {
 		t.Fatalf("an abandoned check: %v, %d", why, abandoned.Load())
 	}
 	r.ctx = context.Background()
-	if why := check(importFunc(func(string) (*types.Package, error) { return nil, nil })); !strings.Contains(fmt.Sprint(why), "abandoned earlier still running") {
+	if why := check(importFunc(func(string) (*types.Package, error) { return nil, nil })); !strings.Contains(fmt.Sprint(why), "abandoned by an earlier guard run") {
 		t.Errorf("a check beside it: %v", why)
 	}
 	close(release) // it ends by a panic

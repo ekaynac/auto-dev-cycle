@@ -402,7 +402,7 @@ func TestIntegrityRealTypes(t *testing.T) {
 		t.Errorf("a struct chain: %v %q", time.Since(begin), whats(cv.Blocks))
 	}
 	plainGo := map[string]string{"pkg/x.go": "package pkg\n\nfunc G() int { return 1 }\n"}
-	if v := f.guarded(t, plainGo); !finds(v.Blocks, "abandoned earlier still running") {
+	if v := f.guarded(t, plainGo); !finds(v.Blocks, "abandoned by an earlier guard run (on base "+f.base[:12]+", started ") {
 		t.Errorf("a run beside an abandoned check: %q", whats(v.Blocks))
 	}
 	for end := time.Now().Add(3 * time.Minute); abandoned.Load() > 0 && time.Now().Before(end); {

@@ -65,7 +65,7 @@ type pkgFacts struct {
 func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
 	return func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, err error) {
 		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{},
-			listEnd: time.Now().Add(maxListTime)}
+			started: time.Now(), listEnd: time.Now().Add(maxListTime)}
 		defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
 			if p := recover(); p != nil && ctx.Err() != nil {
 				blocks, warnings, err = r.blocks, r.warnings, ctx.Err()
@@ -84,7 +84,7 @@ type run struct {
 	base               string
 	read               Reader
 	lister             Lister
-	listEnd            time.Time // every go list run and type check ends by then
+	started, listEnd   time.Time // every go list run and type check ends by listEnd
 	listRuns           int
 	budget             int64
 	work               int

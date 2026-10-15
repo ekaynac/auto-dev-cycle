@@ -279,7 +279,11 @@ func (t *tree) typer(r *run, dir string, pl [2]string) *typer {
 				break
 			}
 		}
-		switch on := err == nil && f.Go != nil && version.Compare("go"+f.Go.Version, "go1.14") >= 0; {
+		goVersion := "1.16" // go's reading of a go.mod with no go directive
+		if err == nil && f.Go != nil {
+			goVersion = f.Go.Version
+		}
+		switch on := err == nil && version.Compare("go"+goVersion, "go1.14") >= 0; {
 		case r.vendorChanged[vendor]:
 			ty.why = "a file under vendor/ changed"
 		case work && (blob != "" || t.vendors[vendor]):
@@ -526,7 +530,11 @@ func (ty *typer) Import(p string) (*types.Package, error) {
 // abandoned, its CPU the residual (a killable loader is P14e-2b's).
 func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, files []*ast.File, info *types.Info) *types.Package {
 	if n := abandoned.Load(); n > 0 { // its CPU and memory still taken, and its fault not seen
-		panic(fmt.Sprintf("%d type check(s) abandoned earlier still running", n))
+		by := "unknown"
+		if p := abandonedBy.Load(); p != nil {
+			by = *p
+		}
+		panic(fmt.Sprintf("%d type check(s) abandoned by an earlier guard run (%s) still running: not a finding against this change", n, by))
 	}
 	done, state := make(chan any, 1), new(atomic.Int32) // 0 running, 1 ended, 2 abandoned
 	go func() {
@@ -541,6 +549,8 @@ func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, fi
 	}()
 	abandon := func(why any) {
 		if state.CompareAndSwap(0, 2) {
+			by := fmt.Sprintf("on base %.12s, started %s", r.base, r.started.Format(time.RFC3339))
+			abandonedBy.Store(&by)
 			abandoned.Add(1)
 		}
 		panic(why)
@@ -562,7 +572,10 @@ func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, fi
 // abandoned is the type checks given up on that still run: go/types cannot
 // be stopped (a killable process is P14e-2c), so while one runs a new Go
 // guard run is unverifiable.
-var abandoned atomic.Int64
+var (
+	abandoned   atomic.Int64
+	abandonedBy atomic.Pointer[string] // the run that last abandoned one
+)
 
 type importFunc func(string) (*types.Package, error)
 
@@ -799,12 +812,14 @@ func facts(info *types.Info, n ast.Node, add func(string)) {
 				return holds(t, false, nil) || fillable(t) || testingPtr(t) || failing(t)
 			}) {
 				add(factForged + " (" + x.Name + types.TypeString(in.Type, nil) + ")")
+			} else if ok && slices.ContainsFunc(slices.Collect(in.TypeArgs.Types()), isUnsafe) {
+				add(factUnsafe + " (" + x.Name + types.TypeString(in.Type, nil) + ")") // a generic may convert it (deref[unsafe.Pointer, T])
 			}
 		case *ast.CallExpr:
-			if tv := info.Types[ast.Unparen(x.Fun)]; tv.IsType() && len(x.Args) == 1 && !types.IsInterface(tv.Type) { // to a holder of *testing.T, of anything else
+			if tv := info.Types[ast.Unparen(x.Fun)]; tv.IsType() && len(x.Args) == 1 && (!types.IsInterface(tv.Type) || rawParam(tv.Type)) { // to a holder of *testing.T, of anything else
 				if from := info.TypeOf(x.Args[0]); holds(tv.Type, true, nil) && (from == nil || !types.Identical(from, tv.Type)) {
 					at(factForged, x, from)
-				} else if from != nil && types.Identical(from.Underlying(), types.Typ[types.UnsafePointer]) && !types.Identical(tv.Type.Underlying(), from.Underlying()) {
+				} else if from != nil && (isUnsafe(from) && !isUnsafe(tv.Type) || rawParam(from) && pointerLike(tv.Type) || rawParam(tv.Type) && pointerLike(from)) {
 					at(factUnsafe, x)
 				}
 			}
@@ -891,13 +906,39 @@ func testingStruct(t types.Type) bool {
 }
 
 // valueMethod: o is an interface's (or constraint's) method a reflect.Value
-// maker satisfies: its name, over reflect's types (s.Set(v)).
+// maker satisfies: its name, over reflect's types (s.Set(v)), or a raw
+// pointer's maker by its exact signature (interface{ UnsafeAddr() uintptr }).
 func valueMethod(o types.Object) bool {
 	f, ok := o.(*types.Func)
 	if !ok || f.Signature().Recv() == nil || !types.IsInterface(f.Signature().Recv().Type()) {
 		return false
+	} else if sig, ok := rawMakers[f.Name()]; ok {
+		return types.TypeString(f.Type(), nil) == sig
 	}
 	return (strings.HasPrefix(f.Name(), "Set") || slices.Contains(valueMakes, f.Name())) && strings.Contains(types.TypeString(f.Type(), nil), "reflect.")
+}
+
+// rawMakers is reflect.Value's raw-pointer makers and their signatures.
+var rawMakers = map[string]string{"Pointer": "func() uintptr", "UnsafeAddr": "func() uintptr", "UnsafePointer": "func() unsafe.Pointer",
+	"Bytes": "func() []byte", "Clear": "func()", "Addr": "func() reflect.Value"}
+
+func isUnsafe(t types.Type) bool {
+	return types.Identical(t.Underlying(), types.Typ[types.UnsafePointer])
+}
+
+// rawParam: t is a type parameter whose constraint has a type set (P ~unsafe.Pointer), not a pure method set.
+func rawParam(t types.Type) bool {
+	p, ok := types.Unalias(t).(*types.TypeParam)
+	if !ok {
+		return false
+	}
+	i, ok := p.Constraint().Underlying().(*types.Interface)
+	return ok && !i.IsMethodSet()
+}
+
+func pointerLike(t types.Type) bool {
+	_, ptr := t.Underlying().(*types.Pointer)
+	return ptr || rawParam(t) || isUnsafe(t) || types.Identical(t.Underlying(), types.Typ[types.Uintptr])
 }
 
 // launders: a value asserted or switched to t is a testing value to the
