@@ -926,17 +926,20 @@ func valueMethod(o types.Object) bool {
 	return (strings.HasPrefix(f.Name(), "Set") || slices.Contains(valueMakes, f.Name())) && strings.Contains(types.TypeString(f.Type(), nil), "reflect.")
 }
 
-// rawMakers is reflect.Value's raw-pointer makers, by their one result (none: Clear).
+// rawMakers is reflect.Value's raw-pointer makers, by their one result (none: Clear; a named result too).
 var rawMakers = map[string]func(types.Type) bool{
-	"Pointer": isUintptr, "UnsafeAddr": isUintptr, "UnsafePointer": func(t types.Type) bool { return types.Identical(t, types.Typ[types.UnsafePointer]) },
-	"Bytes": func(t types.Type) bool { return types.Identical(t, types.NewSlice(types.Typ[types.Byte])) }, "Clear": nil,
+	"Pointer": isUintptr, "UnsafeAddr": isUintptr, "UnsafePointer": isUnsafe,
+	"Bytes": func(t types.Type) bool { return types.Identical(t.Underlying(), types.NewSlice(types.Typ[types.Byte])) }, "Clear": nil,
 	"Addr": func(t types.Type) bool {
 		n, ok := t.(*types.Named)
 		return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "reflect" && n.Obj().Name() == "Value"
 	},
 }
 
-func isUintptr(t types.Type) bool { return types.Identical(t, types.Typ[types.Uintptr]) }
+// isUintptr, like isUnsafe and Bytes, by the underlying type: a named one
+// (type U uintptr) is still a raw address (a false block: no reflect.Value
+// method has it).
+func isUintptr(t types.Type) bool { return types.Identical(t.Underlying(), types.Typ[types.Uintptr]) }
 
 func isUnsafe(t types.Type) bool {
 	return types.Identical(t.Underlying(), types.Typ[types.UnsafePointer])

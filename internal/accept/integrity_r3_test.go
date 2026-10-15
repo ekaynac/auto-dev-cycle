@@ -115,10 +115,16 @@ func TestIntegrityRound3(t *testing.T) {
 	for name, help := range map[string]string{
 		"M1 interface{ UnsafeAddr() U }, U = uintptr": withReflect(strings.Replace(helpClear, "interface{ UnsafeAddr() uintptr }", "interface{ UnsafeAddr() U }", 1) + "\ntype U = uintptr\n"),
 		"M1 Addr[R] interface{ UnsafeAddr() R }":      withReflect(generic),
+		// The flag on a8a9ffd: a named result; a named type over uintptr (no
+		// reflect.Value satisfies it: a false block, by its underlying type).
+		"M1 interface{ UnsafeAddr() (r uintptr) }": withReflect(strings.Replace(helpClear, "interface{ UnsafeAddr() uintptr }", "interface{ UnsafeAddr() (r uintptr) }", 1)),
 	} {
 		if v := f.guarded(t, map[string]string{"help/clear.go": help, "pkg/calc_test.go": testUsing("", "\t\thelp.Unfail(t)\n")}); !finds(v.Blocks, "can forge") {
 			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
 		}
+	}
+	if v := f.guarded(t, map[string]string{"help/u.go": "package help\n\ntype U uintptr\n\ntype A interface{ UnsafeAddr() U }\n\nfunc Get(a A) U { return a.UnsafeAddr() }\n"}); !finds(v.Blocks, "can forge") {
+		t.Errorf("M1 interface{ UnsafeAddr() U }, U uintptr (a false block): %q", whats(v.Blocks))
 	}
 	// M2: a method of another package's (unresolved) type keeps main's
 	// reading: its arguments are not counted.
