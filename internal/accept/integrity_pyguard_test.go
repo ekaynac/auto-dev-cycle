@@ -368,7 +368,7 @@ func TestPyGuardShadows(t *testing.T) {
 	for name, c := range map[string]guardCase{
 		"a pythonpath shadow":     {map[string]string{"src/money.py": "def add(a, b):\n    return a + b\n"}, nil, "src/money.py: an added module shadows the base module money.py"},
 		"__init__.py renamed out": {map[string]string{"tests/x.py": "X = 1\n"}, []string{"tests/__init__.py"}, "tests/test_requests.py: a test file's basedir moves"},
-		"a module beside an unrelated one (no unmodelled entry: Mythos #270 M6)": {map[string]string{"tests/utils.py": "X = 1\n"}, nil, ""},
+		"a module beside an unrelated one (main's floor, Opus #272 C1)": {map[string]string{"tests/utils.py": "X = 1\n"}, nil, "tests/utils.py: an added module shadows the base module app/utils.py"},
 		// Opus #267 H2 (dotted suffixes), M3 (statements, not lines), L2 (onPath's clauses).
 		"H2 a namespace submodule shadow":               {map[string]string{"tests/lib/core.py": "def add(a, b):\n    return a + b\n"}, nil, "tests/lib/core.py: an added module shadows the base module lib/core.py"},
 		"H2 a third-party submodule":                    {map[string]string{"tests/google/protobuf.py": "X = 1\n"}, nil, "tests/google/protobuf.py: an added module shadows a module tests/test_requests.py imports"},
@@ -399,13 +399,13 @@ func TestPyGuardShadows(t *testing.T) {
 		"flag a .pyi beside a .py (never imported)":          {map[string]string{"money.pyi": "def add(a: int, b: int) -> int: ...\n"}, nil, ""},
 		"flag a .so beside a .py":                            {map[string]string{"money.cpython-312-x86_64-linux-gnu.so": "x"}, nil, "unverifiable: compiled Python, an extension module"},
 		// Opus #270: M3 (a basedir moved up), M4 (a judged helper's imports).
-		"o M3 an __init__.py added above a test package":                               {map[string]string{"pkgm/__init__.py": ""}, nil, "pkgm/tests/test_m.py: a test file's basedir moves"},
-		"o M4 a test helper's import":                                                  {map[string]string{"deepdiff.py": "X = 1\n"}, nil, "deepdiff.py: an added module shadows a module tests/helpers4.py imports"},
-		"s2 a test package added (main's rule)":                                        {map[string]string{"tests/newpkg/__init__.py": "", "tests/newpkg/test_n.py": "def test_n():\n    pass\n"}, nil, "tests/newpkg/__init__.py: an __init__.py added, removed or renamed in a test directory"},
-		"s2 a helper package's __init__.py removed (main's rule)":                      {nil, []string{"tests/hp/__init__.py"}, "tests/hp/__init__.py: an __init__.py added, removed or renamed in a test directory"},
-		"s4 an import shadowed under a basedir the candidate makes":                    {map[string]string{"q3/w/__init__.py": "", "q3/w/test_x.py": "def test_x():\n    pass\n", "q3/yaml.py": "X = 1\n"}, nil, "q3/yaml.py: an added module shadows a module tests/test_requests.py imports"},
-		"s4 under a basedir the candidate makes (no unmodelled entry: Mythos #270 M6)": {map[string]string{"q2/w/__init__.py": "", "q2/w/test_x.py": "def test_x():\n    pass\n", "q2/utils.py": "X = 1\n"}, nil, "q2/w/__init__.py: an __init__.py added"},
-		"L2 a module beside a test file":                                               {map[string]string{"tests/helpers3.py": "X = 1\n"}, nil, "an added module shadows the base module lib3/helpers3.py"},
+		"o M3 an __init__.py added above a test package":            {map[string]string{"pkgm/__init__.py": ""}, nil, "pkgm/tests/test_m.py: a test file's basedir moves"},
+		"o M4 a test helper's import":                               {map[string]string{"deepdiff.py": "X = 1\n"}, nil, "deepdiff.py: an added module shadows a module tests/helpers4.py imports"},
+		"s2 a test package added (main's rule)":                     {map[string]string{"tests/newpkg/__init__.py": "", "tests/newpkg/test_n.py": "def test_n():\n    pass\n"}, nil, "tests/newpkg/__init__.py: an __init__.py added, removed or renamed in a test directory"},
+		"s2 a helper package's __init__.py removed (main's rule)":   {nil, []string{"tests/hp/__init__.py"}, "tests/hp/__init__.py: an __init__.py added, removed or renamed in a test directory"},
+		"s4 an import shadowed under a basedir the candidate makes": {map[string]string{"q3/w/__init__.py": "", "q3/w/test_x.py": "def test_x():\n    pass\n", "q3/yaml.py": "X = 1\n"}, nil, "q3/yaml.py: an added module shadows a module tests/test_requests.py imports"},
+		"s4 the floor under a basedir the candidate makes":          {map[string]string{"q2/w/__init__.py": "", "q2/w/test_x.py": "def test_x():\n    pass\n", "q2/utils.py": "X = 1\n"}, nil, "q2/utils.py: an added module shadows the base module app/utils.py"},
+		"L2 a module beside a test file":                            {map[string]string{"tests/helpers3.py": "X = 1\n"}, nil, "an added module shadows the base module lib3/helpers3.py"},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
@@ -733,23 +733,37 @@ func TestPyGuardConditionBodies(t *testing.T) {
 // application module a judged file imports; the closure across modules; a
 // third-party proxy; a container a method call fills.
 func TestPyGuardReach(t *testing.T) {
-	test := "import pytest\nfrom testing_utils import require_gpu\nfrom lmod3 import SLOW\nfrom django.conf import settings\nimport lmod4\nfrom lmod5 import FLAG5\n\n" +
-		"@require_gpu\n@pytest.mark.skipif(SLOW, reason='r')\n@pytest.mark.skipif(FLAG5, reason='r')\n@pytest.mark.skipif(settings.SKIP_SLOW, reason='r')\n@pytest.mark.skipif(lmod4.FLAGS['gpu'], reason='r')\ndef test_r():\n    pass\n"
+	test := "import pytest\nfrom testing_utils import require_gpu\nfrom lmod3 import SLOW\nfrom django.conf import settings\nimport lmod4\nfrom lmod5 import FLAG5\nfrom m2 import W\nfrom testing_utils2 import require_gpu2\nfrom pkgm2 import require_gpu3\nfrom lmod6 import SLOW6\nfrom lmod7 import SLOW7\n\n" +
+		"@require_gpu\n@require_gpu2\n@require_gpu3\n@pytest.mark.skipif(SLOW, reason='r')\n@pytest.mark.skipif(W, reason='r')\n@pytest.mark.skipif(SLOW6, reason='r')\n@pytest.mark.skipif(SLOW7, reason='r')\n@pytest.mark.skipif(settings.SKIP2, reason='r')\n@pytest.mark.skipif(settings.FEATURES.gpu, reason='r')\n@pytest.mark.skipif(settings.SKIP3, reason='r')\n@pytest.mark.skipif(FLAG5, reason='r')\n@pytest.mark.skipif(settings.SKIP_SLOW, reason='r')\n@pytest.mark.skipif(lmod4.FLAGS['gpu'], reason='r')\ndef test_r():\n    pass\n"
+	u, calc := "def d():\n    return False\n", "def compute():\n    return False\n"
+	settings := "from myproject.calc import compute\nSKIP_SLOW = False\n\ndef _d():\n    return False\n\nSKIP2 = _d()\n\nclass FEATURES:\n    gpu = False\n\nSKIP3 = compute()\n"
 	util, lmod4 := "def detect():\n    return False\n", "def _detect():\n    return False\n\nFLAGS = {}\nFLAGS.update(gpu=_detect())\n"
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, map[string]string{"cfg.py": "NO_GPU = False\n", "testing_utils.py": "import pytest\nimport cfg\nrequire_gpu = pytest.mark.skipif(cfg.NO_GPU, reason='g')\n",
-			"util.py": util, "lmod3.py": "from util import detect\nSLOW = detect()\n", "myproject/__init__.py": "", "myproject/settings.py": "SKIP_SLOW = False\n",
+			"util.py": util, "lmod3.py": "from util import detect\nSLOW = detect()\n", "myproject/__init__.py": "", "myproject/settings.py": settings, "myproject/calc.py": calc,
 			"lmod4.py": lmod4, "tests/test_r.py": test,
-			"lmod5.py": "from mid5 import flag5\nFLAG5 = flag5\n", "mid5.py": "from util5 import detect5\nflag5 = detect5()\n", "util5.py": "def detect5():\n    return False\n"})
+			"lmod5.py": "from mid5 import flag5\nFLAG5 = flag5\n", "mid5.py": "from util5 import detect5\nflag5 = detect5()\n", "util5.py": "def detect5():\n    return False\n",
+			"u.py": u, "m1.py": "import u\nV = u.d()\n", "m2.py": "import m1\nW = m1.V\n",
+			"testing_utils2.py": "from marks2 import require_gpu2\n", "marks2.py": "import pytest\nimport cfg2\nrequire_gpu2 = pytest.mark.skipif(cfg2.NO_GPU2, reason='g')\n", "cfg2.py": "NO_GPU2 = False\n",
+			"pkgm2/__init__.py": "from .marks import require_gpu3\n", "pkgm2/marks.py": "import pytest\nimport cfg3\nrequire_gpu3 = pytest.mark.skipif(cfg3.NO_GPU3, reason='g')\n", "cfg3.py": "NO_GPU3 = False\n",
+			"lmod6.py": "from util6 import *\nSLOW6 = detect6()\n", "util6.py": "def detect6():\n    return False\n", "lmod7.py": "from cfg7 import *\nSLOW7 = NO_GPU7\n", "cfg7.py": "NO_GPU7 = False\n"})
 		plain(t, src, "add", "--all")
 	})
 	for name, c := range map[string]guardCase{
-		"M2 a condition in an application module": {map[string]string{"cfg.py": "NO_GPU = 'x'\n"}, nil, "cfg.py: a skipif or xfail condition in testing_utils.py reads NO_GPU"},
-		"M3 the closure across modules":           {map[string]string{"util.py": strings.Replace(util, "return False", "return 'x'", 1)}, nil, "util.py: a skipif or xfail condition in tests/test_r.py reads detect"},
-		"M3 two modules away":                     {map[string]string{"util5.py": "def detect5():\n    return 'x'\n"}, nil, "util5.py: a skipif or xfail condition in tests/test_r.py reads detect5"},
-		"M3 an unrelated change passes":           {map[string]string{"util.py": util + "OTHER = 1\n"}, nil, ""},
-		"M4 a third-party proxy":                  {map[string]string{"myproject/settings.py": "SKIP_SLOW = 'x'\n"}, nil, "myproject/settings.py: a skipif or xfail condition in tests/test_r.py reads SKIP_SLOW"},
-		"r2 L4 a container a method call fills":   {map[string]string{"lmod4.py": strings.Replace(lmod4, "gpu=_detect()", "gpu='x'", 1)}, nil, "lmod4.py: a skipif or xfail condition in tests/test_r.py reads FLAGS"},
+		"M2 a condition in an application module":      {map[string]string{"cfg.py": "NO_GPU = 'x'\n"}, nil, "cfg.py: a skipif or xfail condition in testing_utils.py reads NO_GPU"},
+		"M3 the closure across modules":                {map[string]string{"util.py": strings.Replace(util, "return False", "return 'x'", 1)}, nil, "util.py: a skipif or xfail condition in tests/test_r.py reads detect"},
+		"M3 two modules away":                          {map[string]string{"util5.py": "def detect5():\n    return 'x'\n"}, nil, "util5.py: a skipif or xfail condition in tests/test_r.py reads detect5"},
+		"r-12 an attribute after an imported module":   {map[string]string{"u.py": "def d():\n    return 'x'\n"}, nil, "u.py: a skipif or xfail condition in tests/test_r.py reads d"},
+		"r-01 a condition re-exported":                 {map[string]string{"cfg2.py": "NO_GPU2 = 'x'\n"}, nil, "cfg2.py: a skipif or xfail condition in marks2.py reads NO_GPU2"},
+		"r-02 re-exported by a package":                {map[string]string{"cfg3.py": "NO_GPU3 = 'x'\n"}, nil, "cfg3.py: a skipif or xfail condition in pkgm2/marks.py reads NO_GPU3"},
+		"r-03 across a star import":                    {map[string]string{"util6.py": "def detect6():\n    return 'x'\n"}, nil, "util6.py: a skipif or xfail condition in tests/test_r.py reads detect6"},
+		"r-24 a name across a star import":             {map[string]string{"cfg7.py": "NO_GPU7 = 'x'\n"}, nil, "cfg7.py: a skipif or xfail condition in tests/test_r.py reads NO_GPU7"},
+		"r-13 a proxy name a def computes":             {map[string]string{"myproject/settings.py": strings.Replace(settings, "    return False", "    return 'x'", 1)}, nil, "myproject/settings.py: a skipif or xfail condition in tests/test_r.py reads SKIP2"},
+		"r-14 a proxy chain's inner name":              {map[string]string{"myproject/settings.py": strings.Replace(settings, "gpu = False", "gpu = 'x'", 1)}, nil, "myproject/settings.py: a skipif or xfail condition in tests/test_r.py reads FEATURES"},
+		"r-15 a proxy name computed in another module": {map[string]string{"myproject/calc.py": "def compute():\n    return 'x'\n"}, nil, "myproject/calc.py: a skipif or xfail condition in tests/test_r.py reads compute"},
+		"M3 an unrelated change passes":                {map[string]string{"util.py": util + "OTHER = 1\n"}, nil, ""},
+		"M4 a third-party proxy":                       {map[string]string{"myproject/settings.py": strings.Replace(settings, "SKIP_SLOW = False", "SKIP_SLOW = 'x'", 1)}, nil, "myproject/settings.py: a skipif or xfail condition in tests/test_r.py reads "},
+		"r2 L4 a container a method call fills":        {map[string]string{"lmod4.py": strings.Replace(lmod4, "gpu=_detect()", "gpu='x'", 1)}, nil, "lmod4.py: a skipif or xfail condition in tests/test_r.py reads FLAGS"},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
@@ -774,6 +788,53 @@ func TestPyGuardReach(t *testing.T) {
 			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
 		}
 	}
+	for name, base := range map[string]map[string]string{ // the readers (Opus #272 (b), (c)): read, or unread
+		"rd pyproject package-dir as a table":      {"pyproject.toml": "[tool.setuptools.package-dir]\n\"\" = \"lib\"\n"},
+		"rd pyproject package-dir as a dotted key": {"pyproject.toml": "tool.setuptools.package-dir = {\"\" = \"lib\"}\n"},
+		"rd pyproject package-dir quoted":          {"pyproject.toml": "[tool.setuptools]\n\"package-dir\" = {\"\" = \"lib\"}\n"},
+		"rd setup.cfg package_dir with a colon":    {"setup.cfg": "[options]\npackage_dir:\n    =lib\n"},
+		"rd setup.cfg Package_Dir":                 {"setup.cfg": "[options]\nPackage_Dir =\n    =lib\n"},
+		"rd poetry":                                {"pyproject.toml": "[tool.poetry]\npackages = [{include = \"x\", from = \"lib\"}]\n"},
+		"rd hatch":                                 {"pyproject.toml": "[tool.hatch.build.targets.wheel.sources]\n\"lib\" = \"\"\n"},
+		"rd another build backend":                 {"pyproject.toml": "[build-system]\nbuild-backend = \"flit_core.buildapi\"\n"},
+		"rd site.addsitedir":                       {"conftest.py": "import site\nsite.addsitedir('lib')\n"},
+		"rd from sys import path":                  {"conftest.py": "from sys import path\npath.insert(0, 'lib')\n"},
+		"rd import sys as":                         {"conftest.py": "import sys as _s\n_s.path.insert(0, 'lib')\n"},
+		"rd getattr(sys":                           {"conftest.py": "import sys\ngetattr(sys, 'path').insert(0, 'lib')\n"},
+		"rd sys.meta_path":                         {"conftest.py": "import sys\nimport finder\nsys.meta_path.insert(0, finder.F())\n"},
+		"rd a module a conftest imports":           {"conftest.py": "import helper\n", "helper.py": "import sys\nsys.path.insert(0, 'lib')\n"},
+		"rd a pytest_plugins module":               {"conftest.py": "pytest_plugins = ['myplugin']\n", "myplugin.py": "import sys\nsys.path.insert(0, 'lib')\n"},
+	} {
+		base["lib/x.py"], base["tests/test_y.py"] = "X = 1\n", "import yaml\n\ndef test_y():\n    assert yaml\n"
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, map[string]string{"lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "lib/yaml.py: ") {
+			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
+		}
+	}
+	for name, base := range map[string]map[string]string{ // src/ layouts and a joined path, read as entries
+		"rd a src layout of modules": {"src/x.py": "X = 1\n"},
+		"rd a src namespace package": {"src/ns/x.py": "X = 1\n"},
+	} {
+		base["tests/test_y.py"] = "import yaml\n\ndef test_y():\n    assert yaml\n"
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, map[string]string{"src/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "src/yaml.py: an added module shadows a module tests/test_y.py imports") {
+			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
+		}
+	}
+	vend := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"tests/conftest.py": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'vendor', 'lib'))\n",
+			"vendor/lib/x.py": "X = 1\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := vend.guarded(t, map[string]string{"vendor/lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "vendor/lib/yaml.py: an added module shadows a module tests/test_y.py imports") {
+		t.Errorf("rd a path joined from several literals: %q, want blocked", whats(pyOwn(v.Blocks)))
+	}
 	src := newFixtureWith(t, func(src string) {
 		write(t, src, map[string]string{"pyproject.toml": "[project]\nname = 'x'\n", "src/mypkg/__init__.py": "", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"})
 		plain(t, src, "add", "--all")
@@ -793,17 +854,34 @@ func TestPyGuardReach(t *testing.T) {
 			t.Errorf("%s: %q, want unread", name, whats(pyOwn(v.Blocks)))
 		}
 	}
-	// M6: the floor applies when the base shows an unmodelled entry (a setup.py, PYTHONPATH).
+	// Opus #272 C1: main's floor holds for every unmodelled entry (m6-01..m6-18, m6-20; the review has no m6-19).
 	for name, base := range map[string]map[string]string{
-		"M6 a setup.py": {"setup.py": "from setuptools import setup\nsetup()\n"},
-		"M6 PYTHONPATH": {"tox.ini": "[testenv]\nsetenv =\n    PYTHONPATH = app\n"},
+		"m6-01 package-dir as a table":        {"pyproject.toml": "[tool.setuptools.package-dir]\n\"\" = \"lib\"\n"},
+		"m6-02 package-dir as a dotted key":   {"pyproject.toml": "tool.setuptools.package-dir = {\"\" = \"lib\"}\n"},
+		"m6-03 package-dir quoted":            {"pyproject.toml": "[tool.setuptools]\n\"package-dir\" = {\"\" = \"lib\"}\n"},
+		"m6-04 package_dir:":                  {"setup.cfg": "[options]\npackage_dir:\n    =lib\n"},
+		"m6-05 Package_Dir":                   {"setup.cfg": "[options]\nPackage_Dir =\n    =lib\n"},
+		"m6-06 poetry from":                   {"pyproject.toml": "[tool.poetry]\npackages = [{include = \"x\", from = \"lib\"}]\n"},
+		"m6-07 hatch sources":                 {"pyproject.toml": "[tool.hatch.build.targets.wheel.sources]\n\"lib\" = \"\"\n"},
+		"m6-08 a src layout of modules":       {"src/x.py": "X = 1\n"},
+		"m6-09 a src namespace package":       {"src/ns/x.py": "X = 1\n"},
+		"m6-10 PYTHONPATH in CI":              {".github/workflows/ci.yml": "env:\n  PYTHONPATH: lib\n"},
+		"m6-11 PYTHONPATH in a Makefile":      {"Makefile": "test:\n\tPYTHONPATH=lib pytest\n"},
+		"m6-12 PYTHONPATH in a noxfile":       {"noxfile.py": "import nox\n\n@nox.session\ndef tests(session):\n    session.run('pytest', env={'PYTHONPATH': 'lib'})\n"},
+		"m6-13 site.addsitedir":               {"conftest.py": "import site\nsite.addsitedir('lib')\n"},
+		"m6-14 from sys import path":          {"conftest.py": "from sys import path\npath.insert(0, 'lib')\n"},
+		"m6-15 import sys as _s":              {"conftest.py": "import sys as _s\n_s.path.insert(0, 'lib')\n"},
+		"m6-16 getattr(sys, 'path')":          {"conftest.py": "import sys\ngetattr(sys, 'path').insert(0, 'lib')\n"},
+		"m6-17 a path from several literals":  {"tests/conftest.py": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'vendor', 'lib'))\n"},
+		"m6-18 a module the conftest imports": {"conftest.py": "import helper\n", "helper.py": "import sys\nsys.path.insert(0, 'lib')\n"},
+		"m6-20 a pytest_plugins module":       {"conftest.py": "pytest_plugins = ['myplugin']\n", "myplugin.py": "import sys\nsys.path.insert(0, 'lib')\n"},
 	} {
-		base["app/utils.py"] = "X = 1\n"
+		base["lib/utils.py"], base["lib/money2.py"], base["tests/test_total.py"] = "X = 1\n", "import utils\n\ndef total():\n    return utils.X\n", "from money2 import total\n\ndef test_t():\n    assert total() == 1\n"
 		g := newFixtureWith(t, func(src string) {
 			write(t, src, base)
 			plain(t, src, "add", "--all")
 		})
-		if v := g.guarded(t, map[string]string{"tests/utils.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "tests/utils.py: an added module shadows the base module app/utils.py") {
+		if v := g.guarded(t, map[string]string{"tests/utils.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "tests/utils.py: ") {
 			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
 		}
 	}

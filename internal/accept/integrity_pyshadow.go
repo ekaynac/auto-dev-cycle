@@ -18,18 +18,18 @@ import (
 // (Mythos #267 L3): its sys.path entries, its modules' dotted names, its
 // files read on demand.
 type pyBase struct {
-	r          *run
-	entries    []string
-	basedirs   []string // the test files' basedirs below the root, in either tree
-	paths      []string // the base's paths, sorted
-	read       bool
-	err        error
-	mods       map[string]string      // a base module's dotted name, to its path
-	files      map[string]*pyBaseFile // the base files read, by path
-	tests      []*pyBaseFile          // the judged ones (Opus #270 H2, M4)
-	holders    []*pyBaseFile          // the application modules they import, one hop (Mythos #270 M2)
-	unmodelled bool                   // a sys.path entry the guard does not model: the floor applies (#270 M6)
-	sysUnread  bool                   // a judged file changes sys.path in a way the guard does not read (#270 M1)
+	r         *run
+	entries   []string
+	basedirs  []string // the test files' basedirs below the root, in either tree
+	paths     []string // the base's paths, sorted
+	read      bool
+	err       error
+	mods      map[string]string      // a base module's dotted name, to its path
+	files     map[string]*pyBaseFile // the base files read, by path
+	tests     []*pyBaseFile          // the judged ones (Opus #270 H2, M4)
+	holders   []*pyBaseFile          // the application modules they import, one hop (Mythos #270 M2)
+	byName    map[string][]string    // a name, to the base modules binding it (Opus #272 M3)
+	sysUnread bool                   // a judged file changes sys.path in a way the guard does not read (#270 M1)
 }
 
 // pyBaseFile is what a base Python file imports, and its conditions.
@@ -136,16 +136,22 @@ func (pb *pyBase) load() error {
 		}
 	}
 	for _, f := range slices.Clone(pb.tests) { // the application modules a judged file imports, one hop (Mythos #270 M2)
-		for _, d := range f.mods {
-			for ; d != "" && pb.mods[d] == ""; d = d[:max(strings.LastIndex(d, "."), 0)] {
-			}
-			if d == "" {
-				continue
-			} else if h, err := pb.file(pb.mods[d]); err != nil {
-				pb.err = err
-				return err
-			} else if !slices.Contains(pb.tests, h) && !slices.Contains(pb.holders, h) {
-				pb.holders = append(pb.holders, h)
+		for _, m := range f.mods {
+			r, _, err := pb.resolve(m) // and the module a re-export lands in (Opus #272 M1)
+			for _, d := range []string{m, r} {
+				for ; d != "" && pb.mods[d] == ""; d = d[:max(strings.LastIndex(d, "."), 0)] {
+				}
+				if err != nil {
+					pb.err = err
+					return err
+				} else if d == "" {
+					continue
+				} else if h, err := pb.file(pb.mods[d]); err != nil {
+					pb.err = err
+					return err
+				} else if !slices.Contains(pb.tests, h) && !slices.Contains(pb.holders, h) {
+					pb.holders, pb.sysUnread = append(pb.holders, h), pb.sysUnread || h.sysUnread || len(h.syspath) > 0 // a module a judged file reaches: its sys.path unread (Opus #272 (b))
+				}
 			}
 		}
 	}
@@ -181,9 +187,14 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
-		if slices.ContainsFunc(line[:max(len(line)-2, 0)], func(k ptok) bool { return k.text == "sys" }) && strings.Contains(pyJoin(line), "sys.path") {
-			es, ok := pySysPath(q, l.toks)
-			f.syspath, f.sysUnread = append(f.syspath, es...), f.sysUnread || !ok
+		es, ok := pySysUse(q, l.toks)
+		f.syspath, f.sysUnread = append(f.syspath, es...), f.sysUnread || !ok
+		if l.toks[0].text == "pytest_plugins" { // its modules are reached too (Opus #272 (b))
+			for _, k := range line {
+				if pyStr(k) != "" {
+					f.mods = append(f.mods, pyStr(k))
+				}
+			}
 		}
 		for i, k := range line {
 			if s := pyStr(k); cond && s != "" { // a string condition's code too (the security review)
@@ -368,7 +379,7 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 		return path.Dir(m), path.Base(m)
 	}
 	d, m := split(c.Dst)
-	floor := pb.unmodelled && (judged || slices.Contains(pb.basedirs, d)) // directly under a test basedir too (Mythos #270 r2 M2); an unmodelled entry (#270 M6)
+	floor := judged || slices.Contains(pb.basedirs, d) // directly under a test basedir too (Mythos #270 r2 M2); main's floor (Opus #272 C1)
 	for _, q := range pb.paths {
 		if err := r.ctx.Err(); err != nil { // Mythos #270 r2 L2
 			return "", err
@@ -463,7 +474,7 @@ func pyReach(c Change, b, a *pyFile, pb *pyBase) (string, error) {
 						return "a module a condition reads is unread (" + unread + ")", err
 					} else if y := hit(d, via); y != "" {
 						return why(f, y), nil
-					} else if y, unread, err := pb.across(d, hit, func(y string) bool { return a.binds[y] != b.binds[y] }); err != nil || unread != "" {
+					} else if y, unread, err := pb.across(d, hit, func(y string) bool { return a.binds[y] != b.binds[y] || pyMoved(y, b, a) }); err != nil || unread != "" {
 						return "a module a condition reads is unread (" + unread + ")", err
 					} else if y != "" {
 						return why(f, y), nil
