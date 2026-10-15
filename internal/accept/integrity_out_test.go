@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -11,6 +12,23 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
+
+// outGuarded runs the guard with the layer and without it: the base guard's
+// findings must be byte-equal (the layer's isolation; Opus #276 r2 L5).
+func outGuarded(t *testing.T, f fixture, files map[string]string, gone ...string) Verdict {
+	t.Helper()
+	v := f.guarded(t, files, gone...)
+	outHook = false
+	w := f.guarded(t, files, gone...)
+	outHook = true
+	base := func(bs []Block) []Block {
+		return slices.DeleteFunc(slices.Clone(bs), func(b Block) bool { return b.Additive })
+	}
+	if !slices.Equal(base(v.Blocks), w.Blocks) || !slices.Equal(base(v.Warnings), w.Warnings) {
+		t.Errorf("the base guard's findings differ with the layer on: blocks %q / %q, warnings %d / %d", whats(base(v.Blocks)), whats(w.Blocks), len(base(v.Warnings)), len(w.Warnings))
+	}
+	return v
+}
 
 // outRefs is the layer's aggregated warning for file, package and functions.
 func outRefs(file, pkg, fns string) string {
@@ -60,13 +78,13 @@ func TestDecisionAOut(t *testing.T) {
 		"a local shadowing flag": {"tool/l.go", "package tool\n\nimport \"flag\"\n\nvar _ = flag.Parse\n\nfunc p() {\n\tflag := struct{ Parse func() }{func() {}}\n\tflag.Parse()\n}\n", "",
 			outRefs("tool/l.go", "flag", "1: package level")},
 	} {
-		v := f.guarded(t, map[string]string{c.file: c.src})
+		v := outGuarded(t, f, map[string]string{c.file: c.src})
 		if c.block != "" && !finds(v.Blocks, c.block) || c.block == "" && !v.Accepted() || c.warn != "" && !finds(v.Warnings, c.warn) || c.warn == "" && c.block == "" && len(v.Warnings) > 0 {
 			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
 		}
 	}
 	// The module line changed: which imports are own changes with it.
-	if v := f.guarded(t, map[string]string{"go.mod": strings.Replace(gomod, "module example.com/m", "module example.com", 1),
+	if v := outGuarded(t, f, map[string]string{"go.mod": strings.Replace(gomod, "module example.com/m", "module example.com", 1),
 		"tool/x.go": "package tool\n\nimport \"example.com/mx\"\n\nfunc G() int { return mx.F() }\n"}); !finds(v.Blocks, "the module path changed") {
 		t.Errorf("a module rename: %q", whats(v.Blocks))
 	}
@@ -76,11 +94,11 @@ func TestDecisionAOut(t *testing.T) {
 		write(t, src, map[string]string{"api/go.mod": "module example.com/m/api\n\ngo 1.26.0\n", "api/a.go": "package api\n\nfunc F() int { return 1 }\n"})
 		plain(t, src, "add", "--all")
 	})
-	if v := nested.guarded(t, map[string]string{"tool/n.go": "package tool\n\nimport \"example.com/m/api\"\n\nfunc G() int { return api.F() }\n"}, "api/go.mod"); !finds(v.Warnings, "a new import of example.com/m/api") {
+	if v := outGuarded(t, nested, map[string]string{"tool/n.go": "package tool\n\nimport \"example.com/m/api\"\n\nfunc G() int { return api.F() }\n"}, "api/go.mod"); !finds(v.Warnings, "a new import of example.com/m/api") {
 		t.Errorf("a nested module merged in: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
 	}
 	// No edge for the standard library (go list's Standard) or the module's own packages.
-	if v := f.guarded(t, map[string]string{"tool/y.go": "package tool\n\nimport (\n\t\"strings\"\n\n\t\"example.com/m/other\"\n)\n\nvar _ = strings.ToUpper\n\nvar _ = other.Value\n"}); finds(v.Warnings, "outside the standard library") {
+	if v := outGuarded(t, f, map[string]string{"tool/y.go": "package tool\n\nimport (\n\t\"strings\"\n\n\t\"example.com/m/other\"\n)\n\nvar _ = strings.ToUpper\n\nvar _ = other.Value\n"}); finds(v.Warnings, "outside the standard library") {
 		t.Errorf("std and own imports: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
 	}
 }
@@ -113,7 +131,7 @@ func TestDecisionAOutIsolated(t *testing.T) {
 		write(t, src, map[string]string{"aaa/a.go": os.String()})
 		plain(t, src, "add", "--all")
 	})
-	v := base.guarded(t, map[string]string{"aaa/a.go": sys.String(), "zzz/out.go": out})
+	v := outGuarded(t, base, map[string]string{"aaa/a.go": sys.String(), "zzz/out.go": out})
 	if _, w := report(v); len(v.Warnings) != 669 || !finds(w, "zzz/out.go: fmt.Println in out") {
 		t.Errorf("r3 #1: %d warnings (main: 669), zzz/out.go reported %t", len(v.Warnings), finds(w, "zzz/out.go: fmt.Println in out"))
 	}
@@ -125,7 +143,7 @@ func TestDecisionAOutIsolated(t *testing.T) {
 	for i := range 1000 {
 		fmt.Fprintf(&exits, "\nfunc f%d() { libc.X_Exit(nil, 0) }\n", i)
 	}
-	v = f.guarded(t, map[string]string{"pkg/a.go": exits.String(), "~p/p.go": "package p\n\nvar x int = \"bad\"\n"})
+	v = outGuarded(t, f, map[string]string{"pkg/a.go": exits.String(), "~p/p.go": "package p\n\nvar x int = \"bad\"\n"})
 	if b, _ := report(v); !finds(b, "~p:p unverifiable") || slices.ContainsFunc(v.Blocks, func(b Block) bool { return b.Path == "~p:p" && b.Additive }) {
 		t.Errorf("r3 #2: main's ~p block reported %t", finds(b, "~p:p unverifiable"))
 	}
@@ -133,15 +151,15 @@ func TestDecisionAOutIsolated(t *testing.T) {
 	// r3 #3: 250000 method selections and main's zzz/out.go: it is in the
 	// verdict and the report.
 	pad := "package aaa\n\nimport \"os\"\n\nfunc padding(f *os.File) {\n" + strings.Repeat("\t_ = f.Close\n", 250000) + "}\n"
-	v = g.guarded(t, map[string]string{"aaa/a.go": pad, "zzz/out.go": out})
+	v = outGuarded(t, g, map[string]string{"aaa/a.go": pad, "zzz/out.go": out})
 	if _, w := report(v); !finds(v.Warnings, "zzz/out.go: fmt.Println in out") || !finds(w, "zzz/out.go: fmt.Println in out") {
 		t.Errorf("r3 #3: zzz/out.go in the verdict %t, in the report %t", finds(v.Warnings, "zzz/out.go: fmt.Println in out"), finds(w, "zzz/out.go: fmt.Println in out"))
 	}
 
 	// The layer's own budget: past it, one Additive block; main's findings stay.
 	old := maxOutWork
-	maxOutWork = 100
-	v = g.guarded(t, map[string]string{"aaa/a.go": "package aaa\n\nimport \"flag\"\n\nfunc p() { flag.Parse() }\n", "zzz/out.go": out})
+	maxOutWork = 5 // nodes: the file alone is more
+	v = outGuarded(t, g, map[string]string{"aaa/a.go": "package aaa\n\nimport \"flag\"\n\nfunc p() { flag.Parse() }\n", "zzz/out.go": out})
 	maxOutWork = old
 	over := slices.DeleteFunc(slices.Clone(v.Blocks), func(b Block) bool { return !b.Additive || !strings.Contains(b.What, "over its work bound") })
 	if len(over) != 1 || !finds(v.Warnings, "zzz/out.go: fmt.Println in out") || finds(v.Warnings, "references into") { // and the layer stopped
@@ -153,7 +171,7 @@ func TestDecisionAOutIsolated(t *testing.T) {
 	for i := range 1000 {
 		files[fmt.Sprintf("aaa/a%04d.go", i)] = "package aaa\n\nimport . \"flag\"\n\nvar _ = ContinueOnError\n"
 	}
-	if _, w := report(g.guarded(t, files)); !finds(w, "zzz/out.go: fmt.Println in out") {
+	if _, w := report(outGuarded(t, g, files)); !finds(w, "zzz/out.go: fmt.Println in out") {
 		t.Errorf("r2 H2 1000 dot imports: main's warning displaced")
 	}
 	// r2 H2: 1000 functions calling flag.Parse: one Additive warning.
@@ -162,12 +180,12 @@ func TestDecisionAOutIsolated(t *testing.T) {
 	for i := range 1000 {
 		fmt.Fprintf(&parse, "\nfunc f%d() { flag.Parse() }\n", i)
 	}
-	v = g.guarded(t, map[string]string{"pkg/a.go": parse.String(), "pkg/z.go": strings.Replace(out, "package zzz", "package pkg", 1)})
+	v = outGuarded(t, g, map[string]string{"pkg/a.go": parse.String(), "pkg/z.go": strings.Replace(out, "package zzz", "package pkg", 1)})
 	if _, w := report(v); !finds(w, "pkg/z.go: fmt.Println in out") || len(slices.DeleteFunc(slices.Clone(v.Warnings), func(b Block) bool { return b.Path != "pkg/a.go" })) != 1 {
 		t.Errorf("r2 H2 1000 functions: %d warnings", len(v.Warnings))
 	}
 	// r2 H3: 1000 libc blocks and a main block (the count cap); the verdict blocks.
-	v = f.guarded(t, map[string]string{"pkg/a.go": exits.String(), "pkg/z.go": "package pkg\n\nimport \"os\"\n\nfunc quit() { os.Exit(0) }\n"})
+	v = outGuarded(t, f, map[string]string{"pkg/a.go": exits.String(), "pkg/z.go": "package pkg\n\nimport \"os\"\n\nfunc quit() { os.Exit(0) }\n"})
 	if b, _ := report(v); v.Accepted() || !finds(b, "pkg/z.go: os.Exit in quit") {
 		t.Errorf("r2 H3 1000 libc blocks: main's block displaced")
 	}
@@ -181,5 +199,101 @@ func TestDecisionAOutIsolated(t *testing.T) {
 	mainW := Block{vocab.ReasonTestIntegrityViolation, "pkg/z.go: fmt.Println in out" + strings.Repeat("x", maxField), strings.Repeat("main's ", 20), false}
 	if _, w := report(Verdict{Blocks: wide, Warnings: []Block{mainW}}); !finds(w, "pkg/z.go: fmt.Println in out") {
 		t.Errorf("the report's bytes: main's warning displaced")
+	}
+}
+
+// TestDecisionAOutRound6: Opus #276 r2 on a9d8f28, each probe a row.
+func TestDecisionAOutRound6(t *testing.T) {
+	f, _ := libcFixture(t)
+	libc := "import \"modernc.org/libc\"\n\nfunc quit() { libc.X_Exit(nil, 0) }\n"
+	probe := "fs := flag.NewFlagSet(\"x\", flag.ExitOnError)\n\t_ = fs.Parse([]string{\"-h\"})"
+	for name, c := range map[string]struct {
+		files       map[string]string
+		block, warn string
+	}{
+		// H1: a negated tag the guard does not model: some assignment builds it.
+		"A1 !race libc":   {map[string]string{"pkg/a.go": "//go:build !race\n\npackage pkg\n\n" + libc}, "modernc.org/libc.X_Exit in quit", ""},
+		"A2 !arm64 libc":  {map[string]string{"pkg/a.go": "//go:build !arm64\n\npackage pkg\n\n" + libc}, "modernc.org/libc.X_Exit in quit", ""},
+		"A3 !cgo libc":    {map[string]string{"pkg/a.go": "//go:build !cgo\n\npackage pkg\n\n" + libc}, "modernc.org/libc.X_Exit in quit", ""},
+		"A9 !amd64 dot":   {map[string]string{"pkg/d.go": "//go:build !amd64\n\npackage pkg\n\nimport . \"flag\"\n\nvar _ = ContinueOnError\n"}, "a dot import of flag", ""},
+		"A10 !race probe": {map[string]string{"pkg/x_test.go": "//go:build !race\n\npackage pkg\n\nimport (\n\t\"flag\"\n\t\"testing\"\n)\n\nfunc TestProbe(t *testing.T) {\n\t" + probe + "\n}\n"}, "", outRefs("pkg/x_test.go", "flag", "1: TestProbe")},
+		// M1: a literal assigned in init runs later, from code the tests call.
+		"S1 libc in an init literal": {map[string]string{"pkg/i.go": "package pkg\n\nimport \"modernc.org/libc\"\n\nvar parse func()\n\nfunc init() { parse = func() { libc.X_Exit(nil, 0) } }\n"}, "modernc.org/libc.X_Exit in init literal", ""},
+		"S2 flag in an init literal": {map[string]string{"pkg/i.go": "package pkg\n\nimport \"flag\"\n\nvar parse func()\n\nfunc init() {\n\tparse = func() {\n\t\t" + probe + "\n\t}\n}\n"}, "", outRefs("pkg/i.go", "flag", "1: init literal")},
+		// L1: go list's Standard on any gate platform.
+		"N1 strings in an arm64 file": {map[string]string{"tool/x_arm64.go": "package tool\n\nimport \"strings\"\n\nvar _ = strings.ToUpper\n"}, "", ""},
+	} {
+		v := outGuarded(t, f, c.files)
+		if c.block != "" && !finds(v.Blocks, c.block) || c.block == "" && !v.Accepted() || c.warn != "" && !finds(v.Warnings, c.warn) || c.warn == "" && c.block == "" && len(v.Warnings) > 0 {
+			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
+		}
+	}
+
+	// M4: a new use through an existing dot import of flag.
+	dot := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/hold.go": "package pkg\n\nimport . \"flag\"\n\nvar _ = ContinueOnError\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := outGuarded(t, dot, map[string]string{"pkg/hold.go": "package pkg\n\nimport . \"flag\"\n\nvar _ = ContinueOnError\n\nfunc P() {\n\tfs := NewFlagSet(\"x\", ExitOnError)\n\t_ = fs.Parse([]string{\"-h\"})\n}\n"}); !finds(v.Warnings, "references through a dot import of flag may have changed") {
+		t.Errorf("S3 a use through a dot import: %q", whats(v.Warnings))
+	}
+	// L4: a reference moved between methods of one name keeps no key.
+	recv := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"tool/m.go": "package tool\n\nimport \"flag\"\n\ntype A struct{}\n\ntype B struct{}\n\nfunc (A) M() { flag.Parse() }\n\nfunc (B) M() {}\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := outGuarded(t, recv, map[string]string{"tool/m.go": "package tool\n\nimport \"flag\"\n\ntype A struct{}\n\ntype B struct{}\n\nfunc (A) M() {}\n\nfunc (B) M() { flag.Parse() }\n"}); !finds(v.Warnings, outRefs("tool/m.go", "flag", "2: A.M, B.M")) {
+		t.Errorf("L4 a moved reference: %q", whats(v.Warnings))
+	}
+	// H2: 6 MiB of generated Go beside a one-line change: accepted.
+	gen := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		for _, n := range []string{"gen1", "gen2"} {
+			write(t, src, map[string]string{"tool/" + n + ".go": "package tool\n\nvar " + n + " = []int{" + strings.Repeat("0,", 3<<19) + "}\n"})
+		}
+		plain(t, src, "add", "--all")
+	})
+	if v := outGuarded(t, gen, map[string]string{"tool/x.go": "package tool\n\nvar x = 1\n"}); !v.Accepted() {
+		t.Errorf("C1 a change beside 6 MiB: %q", whats(v.Blocks))
+	}
+	// L5 probe E: 1101 layer warnings on long paths and two libc blocks:
+	// the blocks are reported.
+	long := strings.Repeat("d", 250) + "/" + strings.Repeat("e", 250) + "/" + strings.Repeat("f", 250)
+	files := map[string]string{"pkg/" + strings.Repeat("l", 200) + ".go": "package pkg\n\nimport \"modernc.org/libc\"\n\nfunc a() { libc.X_Exit(nil, 0) }\n\nfunc b() { libc.X_Exit(nil, 0) }\n"}
+	for i := range 1101 {
+		files[fmt.Sprintf("%s/%s%04d.go", long, strings.Repeat("g", 200), i)] = fmt.Sprintf("package ff\n\nimport \"flag\"\n\nfunc p%d() { flag.Parse() }\n", i)
+	}
+	v := f.guarded(t, files)
+	b, err := v.Report()
+	var rep struct{ Blocks []Block }
+	if err != nil || json.Unmarshal(b, &rep) != nil {
+		t.Fatal(err)
+	}
+	if n := len(slices.DeleteFunc(rep.Blocks, func(b Block) bool { return !strings.Contains(b.Path, "modernc.org/libc.X_Exit") })); n != 2 {
+		t.Errorf("E: %d of 2 libc blocks reported; verdict blocks %d", n, len(v.Blocks))
+	}
+}
+
+// TestOutReadAndCancel: the layer reads no non-Go blob (Opus #276 r2 M3,
+// probe B1), and a done context stops it with no block (M2, probe B2).
+func TestOutReadAndCancel(t *testing.T) {
+	var read []string
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}},
+		read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
+			read = append(read, blob)
+			return []byte("package tool\n"), true, nil
+		}}
+	tr := &tree{files: map[string]string{"tool/README.md": "readme", "tool/x.go": "x"}, dirs: map[string][]string{"tool": {"tool/README.md", "tool/x.go"}}}
+	r.outRead("tool", tr)
+	if !slices.Equal(read, []string{"x"}) {
+		t.Errorf("B1: blobs read %q", read)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r = &run{ctx: ctx, touched: map[string]bool{"tool": true}, trees: [2]*tree{tr, tr}, budget: maxRead, blobs: map[string][]byte{}, read: r.read}
+	if err := r.outRun(); err == nil || len(r.out.blocks) > 0 {
+		t.Errorf("B2: %v, blocks %q", err, whats(r.out.blocks))
 	}
 }

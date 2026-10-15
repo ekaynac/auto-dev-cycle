@@ -201,8 +201,9 @@ func (r *run) check(changes []Change) error {
 		}
 		r.compare(dir, b, a)
 	}
-	r.outPkgs() // once the base guard is done: its own reading, budget and findings
-	r.outModule()
+	if outHook {
+		return r.outRun() // once the base guard is done: its own reading, bound and findings
+	}
 	return nil
 }
 
