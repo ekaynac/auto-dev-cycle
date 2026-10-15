@@ -22,6 +22,9 @@ func pySkipString(t []ptok, code int, pure bool, aliases map[string]bool) bool {
 		if i+3 < len(t) && t[i+1].text == "." && (t[i+2].text == "with_args" || t[i+2].text == "__call__") {
 			open = i + 3
 		}
+		for open+1 < len(t) && t[open].text == ")" { // (pytest.mark.xfail)(…) (#267 round 7)
+			open++
+		}
 		if t[i].text != "skipif" && t[i].text != "xfail" && !aliases[t[i].text] || t[open].text != "(" || pure && i > 1 && t[i-1].text == "." && t[i-2].text == "pytest" {
 			continue
 		}
@@ -31,7 +34,11 @@ func pySkipString(t []ptok, code int, pure bool, aliases map[string]bool) bool {
 				break
 			}
 		}
-		if end+1 < len(t) && t[end+1].text == "(" && (i < code) == (end+1 < code) { // xfail(False)("…") appends a condition (Mythos #267 M2), the mark and the call in one segment (r2 L2, r3 H2)
+		next := end + 1
+		for next < len(t) && t[next].text == ")" { // closes a group opened before the mark: (xfail(False))('…'), (m := …)('…') (#267 round 7)
+			next++
+		}
+		if next < len(t) && t[next].text == "(" && (i < code) == (next < code) { // xfail(False)("…") appends a condition (Mythos #267 M2), the mark and the call in one segment (r2 L2, r3 H2)
 			return true
 		}
 		for _, a := range pySplit(t[open+1:min(end, len(t))], ",") {
@@ -84,20 +91,41 @@ func pyPure(lines []pline) (pure bool, aliases map[string]bool) {
 				i+1 < len(t) && (t[i+1].text == ":" || t[i+1].text == "=" && (i+2 >= len(t) || t[i+2].text != "=")) ||
 				d[0].text == "def" && i < len(pySplit(d, ":")[0])))
 		}
-		if parts := pyAssign(l.toks); len(parts) > 1 {
-			v := parts[len(parts)-1] // cut at its first (: m = pytest.mark.xfail(False) is an alias (Mythos #267 r4 H1)
-			if k := slices.IndexFunc(v, func(k ptok) bool { return k.text == "(" }); k >= 0 {
-				v = v[:k]
+		if parts := pyAssign(l.toks); len(parts) > 1 && pyMark(parts[len(parts)-1]) {
+			for _, n := range binds {
+				aliases[n] = true
 			}
-			c := strings.TrimSuffix(strings.TrimSuffix(chain(v), ".with_args"), ".__call__")
-			if chain(v) == pyJoin(v) && slices.Contains([]string{"skipif", "xfail"}, c[strings.LastIndex(c, ".")+1:]) {
-				for _, n := range binds {
-					aliases[n] = true
+		}
+		for i := 0; i+3 < len(t); i++ { // a walrus bound to a mark: (m := pytest.mark.xfail(False)) (#267 round 7)
+			if t[i].kind == 'n' && t[i+1].text == ":" && t[i+2].text == "=" {
+				end, depth := i+3, 0
+				for ; end < len(t) && depth >= 0 && !(depth == 0 && t[end].text == ","); end++ {
+					depth += strings.Count("([{", t[end].text) - strings.Count(")]}", t[end].text)
+				}
+				if pyMark(t[i+3 : end]) {
+					aliases[t[i].text] = true
 				}
 			}
 		}
 	}
 	return pure, aliases
+}
+
+// pyMark: the value v is a skipif or xfail mark, maybe in parentheses,
+// called, or behind a walrus: pytest.mark.xfail(False) (Mythos #267 r4
+// H1), (pytest.mark.xfail), (m := pytest.mark.xfail) (#267 round 7).
+func pyMark(v []ptok) bool {
+	for len(v) > 0 && v[0].text == "(" || len(v) > 2 && v[0].kind == 'n' && v[1].text == ":" && v[2].text == "=" {
+		v = v[1+2*b2i(v[0].text != "("):]
+	}
+	if k := slices.IndexFunc(v, func(k ptok) bool { return k.text == "(" }); k >= 0 {
+		v = v[:k]
+	}
+	for len(v) > 0 && v[len(v)-1].text == ")" {
+		v = v[:len(v)-1]
+	}
+	c := strings.TrimSuffix(strings.TrimSuffix(chain(v), ".with_args"), ".__call__")
+	return chain(v) == pyJoin(v) && slices.Contains([]string{"skipif", "xfail"}, c[strings.LastIndex(c, ".")+1:])
 }
 
 // pyNames are the plain names t reads (not attributes, keywords or
