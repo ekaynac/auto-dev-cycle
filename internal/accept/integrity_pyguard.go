@@ -46,7 +46,7 @@ func init() {
 		'p': "_pytest pluggy pluginmanager HookspecMarker ihook record_xml_attribute _xml",
 		'f': "__dict__ __builtins__ builtins __getattr__ __getattribute__ __setattr__ __delattr__ __setitem__ __delitem__ importlib modules __globals__ " +
 			"__code__ __subclasses__ __bases__ settrace setprofile _getframe currentframe f_locals f_globals f_back tb_frame gi_frame get_objects " +
-			"get_referrers get_referents __eq__ __ne__ __bool__ __contains__ __instancecheck__ __subclasscheck__",
+			"get_referrers get_referents __eq__ __ne__ __bool__ __contains__ __instancecheck__ __subclasscheck__ __lt__ __le__ __gt__ __ge__",
 		'e': "exit _exit abort kill killpg system popen Popen fork forkpty subprocess ctypes atexit posix_spawn posix_spawnp",
 		'o': "print stdout stderr __stdout__ __stderr__ signal faulthandler argv threading Thread _thread multiprocessing",
 	} {
@@ -199,8 +199,9 @@ type pyFile struct {
 	// its import statements; the names they bind, and the names defined at import
 	imports         string
 	imported, local map[string]bool
-	mods            []string       // the names its imports bind or name
-	refs            map[string]int // "kind\x00reference\x00function"
+	mods            []string          // the names its imports bind or name
+	binds           map[string]string // the statements binding each name at import
+	refs            map[string]int    // "kind\x00reference\x00function"
 }
 
 // pyFind is one import-time finding: strict ones never pass on the base.
@@ -208,15 +209,25 @@ type pyFind struct {
 	why    string
 	strict bool
 	n      int
-	calls  []string // the names its statement calls ("": not a plain name)
+	calls  []string // the names its statement calls ("": not a plain name); a condition's: the names it reads
+	cond   bool     // a skipif or xfail condition (Opus #267 H1)
+	always bool     // blocks in every file: a condition, __path__ (Mythos #267 H3)
 }
 
 // passes: a's finding k is unchanged from the base b, its imports
 // unchanged, and it calls only imported names (Opus #266 widening 1).
-func (a *pyFile) passes(k string, b *pyFile) bool {
+func (a *pyFile) passes(k string, b *pyFile, changed []string) bool {
 	f, base := a.finds[k], b.finds[k]
-	return base != nil && base.n >= f.n && !f.strict && a.imports == b.imports &&
-		!slices.ContainsFunc(f.calls, func(c string) bool { return !a.imported[c] || a.local[c] })
+	if base == nil || base.n < f.n || f.strict || a.imports != b.imports {
+		return false
+	} else if f.cond { // each name bound at import as in the base, no import naming a changed module (Opus #267 M4)
+		return !slices.ContainsFunc(f.calls, func(n string) bool { // a def's or class's body may change under its line
+			return (!a.imported[n] || a.local[n]) && (!a.local[n] || a.binds[n] != b.binds[n] || strings.Contains(a.binds[n], "[def ") || // Mythos #267 H1
+				strings.Contains(a.binds[n], "[class ") || strings.Contains(a.binds[n], "[async "))
+		}) &&
+			!slices.ContainsFunc(changed, func(q string) bool { return slices.Contains(a.mods, path.Base(q)) })
+	}
+	return !slices.ContainsFunc(f.calls, func(c string) bool { return !a.imported[c] || a.local[c] })
 }
 
 func isHook(k ptok) bool {
@@ -249,7 +260,7 @@ func named(t []ptok, name string) bool {
 // __init_subclass__, __set_name__ and a type subclass's methods run when a
 // class is made, so are (Mythos #263 L1).
 func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok bool, err error) {
-	fa = &pyFile{refs: map[string]int{}, finds: map[string]*pyFind{}, imported: map[string]bool{}, local: map[string]bool{}}
+	fa = &pyFile{refs: map[string]int{}, finds: map[string]*pyFind{}, imported: map[string]bool{}, local: map[string]bool{}, binds: map[string]string{}}
 	src, ok, err := r.pyRead(want, p, blob)
 	if !want || !ok || err != nil {
 		return fa, ok, err
@@ -271,11 +282,12 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 	}
 	stack, deco, conftest, tested := []block{{indent: -1}}, []ptok(nil), path.Base(p) == "conftest.py", pyTested(p)
 	rebound, classes := pyRebound(lines), map[string]bool{} // Opus #266 M2: a pre-pass
+	pure, aliases := pyPure(lines)
 	find := func(st []ptok, why string, strict bool) {
 		if f := fa.finds[fmt.Sprint(st)]; f != nil {
 			f.n, f.strict = f.n+1, f.strict || strict // Mythos #266 L2
 		} else {
-			fa.finds[fmt.Sprint(st)] = &pyFind{why, strict, 1, pyCalls(st)}
+			fa.finds[fmt.Sprint(st)] = &pyFind{why, strict, 1, pyCalls(st), false, false}
 		}
 	}
 	for _, l := range lines {
@@ -291,15 +303,22 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 		fn, b, code := top.fn, block{l.indent, top.fn, false}, append(append(deco, t...), l.inner...)
 		if fn == "" && !(pyMain(t) && !rebound) {
 			for _, st := range pySplit(t, ";") {
+				if len(st) == 0 { // X = 1; (Mythos #267 r4 L)
+					continue
+				}
 				if why := pyAllowed(st, conftest); why != "" {
 					find(st, why, strings.HasPrefix(why, "an import binding")) // Mythos #266 L1
 				}
 				binds, imported := pyBinds(slices.Concat(st, l.inner)) // a walrus in an f-string binds too (Mythos #266 H1)
 				for _, n := range binds {
+					if slices.Contains([]string{"__path__", "__spec__", "__loader__"}, n) { // in every file (Mythos #267 H3)
+						find(st, "a package's import path, spec or loader bound at import ("+n+")", false)
+						fa.finds[fmt.Sprint(st)].always = true
+					}
 					if judged && (strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__" || !imported && pyBound[n] != "") {
 						find(st, "a dunder or an allowlisted name bound at import ("+n+")", true) // Opus #266 H1
 					}
-					fa.imported[n], fa.local[n] = fa.imported[n] || imported, fa.local[n] || !imported
+					fa.imported[n], fa.local[n], fa.binds[n] = fa.imported[n] || imported, fa.local[n] || !imported, fa.binds[n]+fmt.Sprint(st)+"\n"
 				}
 				if imported {
 					fa.imports = fa.imports + fmt.Sprint(st) + "\n"
@@ -310,6 +329,13 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 			}
 			if !pyConst(l.inner) {
 				find(slices.Concat(t, l.inner), "code run at import in an f-string field ("+ptext(t)+")", false)
+			}
+		}
+		if line := slices.Concat(t, l.inner); pySkipString(line, len(t), pure, aliases) { // in every file (Opus #267 H1)
+			if f := fa.finds["cond "+fmt.Sprint(t)]; f != nil {
+				f.n++
+			} else {
+				fa.finds["cond "+fmt.Sprint(t)] = &pyFind{"a skipif or xfail condition that may be a string, code pytest runs (" + ptext(t) + ")", false, 1, pyNames(line), true, true}
 			}
 		}
 		if why := pyFixtureName(t); (t[0].text == "@" || fn == "") && named(t, "fixture") && why != "" {
@@ -402,9 +428,9 @@ func pyMain(t []ptok) bool {
 // pyFileCompare: the change at p from b to a; a reference added blocks by class and place.
 func (r *run) pyFileCompare(p string, b, a *pyFile, judged bool, changed []string) {
 	for _, k := range slices.Sorted(maps.Keys(a.finds)) { // new findings: blocks where judged, else warnings (Opus #266 M1)
-		if f := a.finds[k]; !a.passes(k, b) && judged {
+		if f := a.finds[k]; !a.passes(k, b, changed) && (judged || f.always) {
 			add(&r.blocks, p, "unverifiable: "+f.why)
-		} else if !a.passes(k, b) {
+		} else if !a.passes(k, b, changed) {
 			add(&r.warnings, p, f.why+": review it (decision A)")
 		} else if slices.ContainsFunc(changed, func(q string) bool { return slices.Contains(a.mods, path.Base(q)) }) { // Mythos #266 L3
 			add(&r.warnings, p, f.why+": unchanged, but its imports name a changed module: review it")

@@ -94,8 +94,10 @@ func pyCalls(t []ptok) (calls []string) {
 
 // pyBinds are the names t binds: by an import (imported), def, class, = or :=.
 func pyBinds(t []ptok) (names []string, imported bool) {
+	target := false // for … in, and as: bindings too (Mythos #267 M3)
 	for i, k := range t {
-		if k.kind == 'n' && i+2 < len(t) && t[i+1].text == ":" && t[i+2].text == "=" {
+		target = k.text == "for" || target && k.text != "in"
+		if k.kind == 'n' && (i+2 < len(t) && t[i+1].text == ":" && t[i+2].text == "=" || target && k.text != "for" || i > 0 && t[i-1].text == "as") {
 			names = append(names, k.text)
 		}
 	}
@@ -124,7 +126,7 @@ func pyRebound(lines []pline) bool {
 	for _, l := range lines {
 		t := slices.Concat(l.toks, l.inner)
 		for i := range t {
-			if t[i].text == "*" && (t[0].text == "from" || t[0].text == "import") || t[i].text == "__name__" && !pyMain(l.toks) &&
+			if t[i].text == "*" && (t[0].text == "from" || t[0].text == "import") || t[i].text == "__name__" && t[0].text == "case" || t[i].text == "__name__" && !pyMain(l.toks) &&
 				!(i > 1 && i+1 < len(t) && t[i-1].text == "(" && t[i+1].text == ")" && t[i-2].kind == 'n' && !slices.Contains(pyKeywords, t[i-2].text)) {
 				return true
 			}
