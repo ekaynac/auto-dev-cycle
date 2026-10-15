@@ -47,6 +47,7 @@ type pyBaseFile struct {
 	conds     [][]ptok          // its condition lines, and the bindings they read (Opus #270 H2)
 	units     [][]ptok          // its module-level statements, def and class bodies (Mythos #270 M3)
 	binders   map[string][]int  // a name, to the units binding it
+	syspath   []string          // the sys.path entries it adds (Mythos #270 M1)
 	sysUnread bool              // it names sys.path in a way pySysPath does not read
 }
 
@@ -124,7 +125,7 @@ func (pb *pyBase) load() error {
 			if pb.err = err; err != nil {
 				return err
 			}
-			pb.tests, pb.sysUnread = append(pb.tests, f), pb.sysUnread || f.sysUnread
+			pb.tests, pb.entries, pb.sysUnread = append(pb.tests, f), append(pb.entries, f.syspath...), pb.sysUnread || f.sysUnread
 		}
 	}
 	slices.Sort(pb.entries)
@@ -141,21 +142,21 @@ func (pb *pyBase) load() error {
 			r, unread, err := pb.resolve(m) // and the module a re-export lands in (Opus #272 M1); unread: no holder known
 			pb.holderUnread = cmp.Or(pb.holderUnread, unread)
 			for _, d := range []string{m, r} {
-				for ; d != "" && pb.mods[d] == ""; d = d[:max(strings.LastIndex(d, "."), 0)] {
-				}
-				if err != nil {
+				parts := strings.Split(d, ".")
+				i, why, perr := pb.prefix(parts, len(parts)) // feature.py beside feature/__init__.py, a namespace decoy (Astra #272 r2 H1)
+				if err = cmp.Or(err, perr); err != nil {
 					pb.err = err
 					return err
-				} else if d == "" {
+				} else if why != "" {
+					pb.holderUnread = cmp.Or(pb.holderUnread, why)
 					continue
-				} else if pb.alts[d] > 1 { // feature.py beside feature/__init__.py (Astra #272 r2 H1)
-					pb.holderUnread = cmp.Or(pb.holderUnread, "the module name "+d+" in two roots")
+				} else if d = strings.Join(parts[:max(i, 0)], "."); i < 1 {
 					continue
 				} else if h, err := pb.file(pb.mods[d]); err != nil {
 					pb.err = err
 					return err
 				} else if !slices.Contains(pb.tests, h) && !slices.Contains(pb.holders, h) {
-					pb.holders, pb.sysUnread = append(pb.holders, h), pb.sysUnread || h.sysUnread // a module a judged file reaches: its sys.path unread (Opus #272 (b))
+					pb.holders, pb.sysUnread = append(pb.holders, h), pb.sysUnread || h.sysUnread || len(h.syspath) > 0 // a module a judged file reaches: its sys.path unread (Opus #272 (b))
 				}
 			}
 		}
@@ -192,7 +193,8 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
-		f.sysUnread = f.sysUnread || !pySysUse(l.toks)
+		es, ok := pySysUse(q, l.toks)
+		f.syspath, f.sysUnread = append(f.syspath, es...), f.sysUnread || !ok
 		if l.toks[0].text == "pytest_plugins" { // its modules are reached too (Opus #272 (b))
 			for _, k := range line {
 				if pyStr(k) != "" {
@@ -316,10 +318,12 @@ func (pb *pyBase) resolve(d string) (string, string, error) {
 	for !seen[d] && len(seen) < 16 { // a cycle or over 16 steps: unread (the security review of 9e748fc)
 		seen[d] = true
 		parts, next := strings.Split(d, "."), d
-		for i := len(parts) - 1; i >= 1; i-- { // the longest module prefix
-			if q := pb.mods[strings.Join(parts[:i], ".")]; q != "" && pb.alts[strings.Join(parts[:i], ".")] > 1 {
-				return d, "the module name " + strings.Join(parts[:i], ".") + " in two roots", nil // Astra #272 H1: no root replaces another
-			} else if q != "" {
+		i, why, err := pb.prefix(parts, len(parts)-1) // the module prefix Python imports (Astra #272 r2 H1)
+		if err != nil || why != "" {
+			return d, why, err
+		}
+		for ; i >= 1; i = 0 {
+			if q := pb.mods[strings.Join(parts[:i], ".")]; q != "" {
 				f, err := pb.file(q)
 				if err != nil || f.unread {
 					return d, cmp.Or(q, ""), err

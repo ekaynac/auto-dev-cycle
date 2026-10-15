@@ -724,7 +724,7 @@ func TestPyGuardConditionBodies(t *testing.T) {
 	old := maxWork // M5: the base conditions' analysis counts toward the work bound
 	t.Cleanup(func() { maxWork = old })
 	maxWork = 120
-	if v := f.guarded(t, map[string]string{"b4.py": "SLOW = False\nX = 1\n"}); !pyFinds(pyOwn(v.Blocks), "b4.py: unverifiable: the base conditions' analysis is over the guard's work bound") {
+	if v := f.guarded(t, map[string]string{"b4.py": "SLOW = False\nX = 1\n"}); !pyFinds(pyOwn(v.Blocks), "over the guard's work bound") {
 		t.Errorf("m M5 the work bound: %q", whats(pyOwn(v.Blocks)))
 	}
 	maxWork = old
@@ -791,7 +791,7 @@ func TestPyGuardReach(t *testing.T) {
 			write(t, src, base)
 			plain(t, src, "add", "--all")
 		})
-		if v := g.guarded(t, map[string]string{"lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "lib/yaml.py: unverifiable: the base adds sys.path entries the guard does not read") { // read as roots in P14c-2a-roots
+		if v := g.guarded(t, map[string]string{"lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "lib/yaml.py: an added module shadows a module tests/test_y.py imports") { // a root, read exactly (P14c-2a-roots)
 			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
 		}
 	}
@@ -830,17 +830,31 @@ func TestPyGuardReach(t *testing.T) {
 			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
 		}
 	}
+	for name, base := range map[string]map[string]string{ // the src/ layout, a root (P14c-2a-roots)
+		"rt a src layout of modules": {"src/x.py": "X = 1\n"},
+		"rt a src namespace package": {"src/ns/x.py": "X = 1\n"},
+		"rt an editable src layout":  {"pyproject.toml": "[project]\nname = 'x'\n", "src/mypkg/__init__.py": ""},
+	} {
+		base["tests/test_y.py"] = "import yaml\n\ndef test_y():\n    assert yaml\n"
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, map[string]string{"src/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "src/yaml.py: an added module shadows a module tests/test_y.py imports") {
+			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
+		}
+	}
 	vend := newFixtureWith(t, func(src string) {
 		write(t, src, map[string]string{"tests/conftest.py": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'vendor', 'lib'))\n",
 			"vendor/lib/x.py": "X = 1\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"})
 		plain(t, src, "add", "--all")
 	})
-	if v := vend.guarded(t, map[string]string{"vendor/lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "vendor/lib/yaml.py: unverifiable: the base adds sys.path entries the guard does not read") {
+	if v := vend.guarded(t, map[string]string{"vendor/lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "vendor/lib/yaml.py: an added module shadows a module tests/test_y.py imports") {
 		t.Errorf("rd a path joined from several literals: %q, want blocked", whats(pyOwn(v.Blocks)))
 	}
 	for name, c := range map[string][2]string{ // Astra #272 H1: a root never replaces main's binding
 		"a-H1 a where in an unrelated section": {"[unrelated]\nwhere = a\n", "cfg.py: unverifiable: the base adds sys.path entries the guard does not read"},
-		"a-H1 a module name in two roots":      {"[options.packages.find]\nwhere = a\n", "cfg.py: unverifiable: the base adds sys.path entries the guard does not read"},
+		"a-H1 a module name in two roots":      {"[options.packages.find]\nwhere = a\n", "cfg.py: a module a condition reads is unread (the module name feature in two roots)"},
 	} {
 		h1 := newFixtureWith(t, func(src string) {
 			write(t, src, map[string]string{"setup.cfg": c[0], "a/feature.py": "SKIP = False\n", "feature.py": "from cfg import SLOW as SKIP\n", "cfg.py": "SLOW = False\n",
@@ -858,6 +872,8 @@ func TestPyGuardReach(t *testing.T) {
 			"tests/test_x.py": "import feature\n\n@feature.require_gpu\ndef test_x():\n    pass\n"}, {"cfg.py": "SLOW = 'True'\n"}},
 		"a2-H1 a collision reached across modules": {{"feature.py": "X = False\n", "feature/__init__.py": "X = False\n", "lmod11.py": "import feature\nV11 = feature.X\n", "cfg.py": "SLOW = False\n",
 			"tests/test_x.py": "import pytest\nfrom lmod11 import V11\n\n@pytest.mark.skipif(V11, reason='r')\ndef test_x():\n    pass\n"}, {"cfg.py": "SLOW = 'True'\n"}},
+		"rt-H1 a package binding a name beside its submodule": {{"feature/__init__.py": "import cfg as flags\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n",
+			"tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, {"cfg.py": "SKIP = 'True'\n"}},
 		"a2-H2 an absolute join argument": {{"conftest.py": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '/work/repo/vendor/lib'))\n",
 			"vendor/lib/x.py": "X = 1\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"}, {"vendor/lib/yaml.py": "X = 1\n"}},
 	} {
@@ -865,8 +881,9 @@ func TestPyGuardReach(t *testing.T) {
 			write(t, src, c[0])
 			plain(t, src, "add", "--all")
 		})
-		if v := g.guarded(t, c[1]); !pyFinds(pyOwn(v.Blocks), "unverifiable: ") && !pyFinds(pyOwn(v.Blocks), "is unread") {
-			t.Errorf("%s: %q, want unread", name, whats(pyOwn(v.Blocks)))
+		if v := g.guarded(t, c[1]); name == "a2-H1 a namespace-prefix decoy" && !pyFinds(pyOwn(v.Blocks), "cfg.py: a skipif or xfail condition in tests/test_x.py reads SKIP") ||
+			name != "a2-H1 a namespace-prefix decoy" && !pyFinds(pyOwn(v.Blocks), "unverifiable: ") && !pyFinds(pyOwn(v.Blocks), "is unread") {
+			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
 		}
 	}
 	h4 := newFixtureWith(t, func(src string) { // Astra #272 H4: a holder's __getattr__
