@@ -31,7 +31,7 @@ func pySkipString(t []ptok, code int, pure bool, aliases map[string]bool) bool {
 				break
 			}
 		}
-		if end+1 < len(t) && t[end+1].text == "(" && end+1 < code { // xfail(False)("…") appends a condition (Mythos #267 M2), in t, not its f-string fields (r2 L2)
+		if end+1 < len(t) && t[end+1].text == "(" && (i < code) == (end+1 < code) { // xfail(False)("…") appends a condition (Mythos #267 M2), the mark and the call in one segment (r2 L2, r3 H2)
 			return true
 		}
 		for _, a := range pySplit(t[open+1:min(end, len(t))], ",") {
@@ -70,8 +70,12 @@ func pyPure(lines []pline) (pure bool, aliases map[string]bool) {
 	pure, aliases = true, map[string]bool{}
 	for _, l := range lines {
 		t, d := slices.Concat(l.toks, l.inner), l.toks[b2i(l.toks[0].text == "async"):]
-		binds, imported := pyBinds(t)
-		pure = pure && !(slices.Contains(binds, "pytest") && !(imported && t[0].text == "import" && !named(t, "as"))) // import pytest, os (Mythos #267 r2 L1)
+		binds, _ := pyBinds(t)
+		for _, st := range pySplit(t, ";") { // per statement: import pytest, os stays pure (r2 L1), import pytest; pytest = … does not (r3 H1)
+			if b, imp := pyBinds(st); len(st) > 0 && slices.Contains(b, "pytest") && !(imp && st[0].text == "import" && !named(st, "as")) {
+				pure = false
+			}
+		}
 		for i, k := range t {
 			pure = pure && !(k.text == "pytest" && (i > 0 && slices.Contains([]string{".", "lambda"}, t[i-1].text) ||
 				i+1 < len(t) && (t[i+1].text == ":" || t[i+1].text == "=" && (i+2 >= len(t) || t[i+2].text != "=")) ||
