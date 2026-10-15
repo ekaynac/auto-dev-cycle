@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package accept
+
+import "testing"
+
+// F (P14e-2b2, #226 entry 85; Mythos #271 r2 L1 and L2, r3's list): each
+// row reproduced first on main (0ae4e77).
+func TestIntegrity2b2(t *testing.T) {
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"help/help.go": "package help\n\nfunc One() int { return 1 }\n", "pkg/testdata/x.json": "{}\n"})
+		plain(t, src, "add", "--all")
+	})
+	// r2 L1: a numeric type parameter converted to uintptr is no raw address;
+	// one with an unsafe.Pointer or pointer term still is.
+	for name, c := range map[string]struct{ src, why string }{
+		"L1 N ~int | ~uintptr to uintptr":            {"package help\n\nfunc U[N ~int | ~uintptr](n N) uintptr { return uintptr(n) }\n", ""},
+		"L1 N ~unsafe.Pointer | ~uintptr to uintptr": {"package help\n\nimport \"unsafe\"\n\nfunc U[N ~unsafe.Pointer | ~uintptr](n N) uintptr { return uintptr(n) }\n", "can forge"},
+		"L1 N *int | ~uintptr to uintptr":            {"package help\n\nfunc U[N *int | ~uintptr](n N) uintptr { return uintptr(n) }\n", "can forge"},
+		"L1 a named constraint with a pointer term":  {"package help\n\nimport \"unsafe\"\n\ntype raw interface{ ~unsafe.Pointer }\n\nfunc U[N raw](n N) uintptr { return uintptr(n) }\n", "can forge"},
+	} {
+		if v := f.guarded(t, map[string]string{"help/u.go": c.src}); c.why == "" && (!v.Accepted() || len(v.Warnings) > 0) || c.why != "" && !finds(v.Blocks, c.why) {
+			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
+		}
+	}
+
+	// Item 1: SWIG turns cgo on by itself: a .swig file in either version
+	// makes the repository one that uses cgo.
+	for name, files := range map[string]map[string]string{
+		"a .swig in the base, testdata changed":     {"pkg/testdata/x.json": "[]\n"},
+		"a .swigcxx in the candidate, testdata too": {"help/y.swigcxx": "%module y\n", "pkg/testdata/x.json": "[]\n"},
+	} {
+		base := f
+		if _, ok := files["help/y.swigcxx"]; !ok {
+			base = newFixtureWith(t, func(src string) {
+				write(t, src, guardBase)
+				write(t, src, map[string]string{"help/x.swig": "%module x\n", "pkg/testdata/x.json": "{}\n"})
+				plain(t, src, "add", "--all")
+			})
+		}
+		if v := base.guarded(t, files); !finds(v.Blocks, "a non-Go file in a repository that uses cgo") {
+			t.Errorf("%s: %q", name, whats(v.Blocks))
+		}
+	}
+
+	// r2 L2: the cgo pass reads with its own bound, not the guard's budget
+	// (a Go change typed within the budget the pass would have spent), and
+	// fails closed past it.
+	big := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"other/a.go": "package other\n\n// " + pad(6000) + "\n", "pkg/testdata/x.json": "{}\n"})
+		plain(t, src, "add", "--all")
+	})
+	oldRead := maxRead
+	maxRead = 6000 // the pkg files, not other/a.go too
+	v := big.guarded(t, map[string]string{"pkg/x.go": "package pkg\n\nfunc G() int { return 1 }\n", "pkg/testdata/x.json": "[]\n"})
+	maxRead = oldRead
+	if !v.Accepted() {
+		t.Errorf("L2 the cgo pass within its own bound: %q", whats(v.Blocks))
+	}
+	oldCgo := maxCgoRead
+	maxCgoRead = 10
+	v = big.guarded(t, map[string]string{"pkg/testdata/x.json": "[]\n"})
+	maxCgoRead = oldCgo
+	if !finds(v.Blocks, "a non-Go file in a repository that uses cgo") {
+		t.Errorf("L2 the cgo pass past its own bound: %q", whats(v.Blocks))
+	}
+
+	// Astra #274 M1 (a regression against main): an inert package's variable
+	// handed to a writer off the allowlist from init is still a write.
+	for name, body := range map[string]string{
+		"slices.Reverse(unicode.CaseRanges)":  "import (\n\t\"slices\"\n\t\"unicode\"\n)\n\nfunc init() { slices.Reverse(unicode.CaseRanges) }\n",
+		"maps.DeleteFunc(unicode.Scripts, …)": "import (\n\t\"maps\"\n\t\"unicode\"\n)\n\nfunc init() {\n\tmaps.DeleteFunc(unicode.Scripts, func(string, *unicode.RangeTable) bool { return true })\n}\n",
+	} {
+		if v := f.guarded(t, map[string]string{"pkg/w.go": "package pkg\n\n" + body}); !finds(v.Blocks, "a write it cannot prove safe (unicode.") {
+			t.Errorf("M1 %s from init: %q", name, whats(v.Blocks))
+		}
+	}
+
+	// Astra #274 r2 (and the flag on 99edbd1): read-only by function, not by
+	// package: an Append* or Encode* writes its slice's backing array, and
+	// errors.As its target (Astra's inputs, from init).
+	tgt := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"util/t.go": "package util\n\nimport \"bytes\"\n\nvar Target error\n\nvar Buf = new(bytes.Buffer)\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]struct{ body, why string }{
+		"utf8.EncodeRune(asn1.NullBytes, 'X')": {"import (\n\t\"encoding/asn1\"\n\t\"unicode/utf8\"\n)\n\nfunc init() { utf8.EncodeRune(asn1.NullBytes, 'X') }\n",
+			"a write it cannot prove safe (encoding/asn1.NullBytes)"},
+		"utf8.AppendRune(asn1.NullBytes[:0], 'Y')": {"import (\n\t\"encoding/asn1\"\n\t\"unicode/utf8\"\n)\n\nfunc init() { _ = utf8.AppendRune(asn1.NullBytes[:0], 'Y') }\n",
+			"a write it cannot prove safe (encoding/asn1.NullBytes)"},
+		"strconv.AppendInt(asn1.NullBytes[:0], 0, 10)": {"import (\n\t\"encoding/asn1\"\n\t\"strconv\"\n)\n\nfunc init() { _ = strconv.AppendInt(asn1.NullBytes[:0], 0, 10) }\n",
+			"a write it cannot prove safe (encoding/asn1.NullBytes)"},
+		"errors.As(err, &util.Target)": {"import (\n\t\"errors\"\n\n\t\"example.com/m/util\"\n)\n\nfunc init() { _ = errors.As(errors.New(\"x\"), &util.Target) }\n",
+			"util.Target"},
+		// fmt.Fprint* writes its io.Writer (only Sprint*, Print* and Errorf are read-only).
+		"fmt.Fprint(util.Buf, \"x\")": {"import (\n\t\"fmt\"\n\n\t\"example.com/m/util\"\n)\n\nfunc init() { fmt.Fprint(util.Buf, \"x\") }\n", "fmt.Fprint"},
+		// An inert package's pointer as the target: only the write check sees it.
+		"errors.As(err, time.UTC)": {"import (\n\t\"errors\"\n\t\"time\"\n)\n\nfunc init() { _ = errors.As(errors.New(\"x\"), time.UTC) }\n",
+			"a write it cannot prove safe (time.UTC)"},
+	} {
+		if v := tgt.guarded(t, map[string]string{"pkg/w.go": "package pkg\n\n" + c.body}); !finds(v.Blocks, c.why) {
+			t.Errorf("%s from init: %q", name, whats(v.Blocks))
+		}
+	}
+}
+
+// TestIntegrityFmt: fmt's Fprint* writes only its io.Writer (os.Args cannot
+// be one); Sscan* and Fscan* write what their arguments point to.
+func TestIntegrityFmt(t *testing.T) {
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]struct{ body, why string }{
+		"fmt.Fprintln(os.Stderr, os.Args)": {"import \"fmt\"\n\nfunc show() { fmt.Fprintln(os.Stderr, os.Args) }\n", ""},
+		"fmt.Sscan(s, &os.Args[0])":        {"import \"fmt\"\n\nfunc scan(s string) { _, _ = fmt.Sscan(s, &os.Args[0]) }\n", "os.Args assigned in scan"},
+	} {
+		if v := f.guarded(t, map[string]string{"pkg/args.go": argsGo + c.body}); c.why == "" && !v.Accepted() || c.why != "" && !finds(v.Blocks, c.why) {
+			t.Errorf("%s: %q", name, whats(v.Blocks))
+		}
+	}
+}
+
+func pad(n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = 'x'
+	}
+	return string(b)
+}

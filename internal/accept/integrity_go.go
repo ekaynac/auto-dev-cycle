@@ -467,24 +467,12 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 			c.asserts += b2i(s.assertion(x))
 			fun, args := ast.Unparen(x.Fun), x.Args
 			f, _ := fn(fun)
-			id := ident(f)
 			sel, isSel := f.(*ast.SelectorExpr)
-			if isSel {
-				id = sel.Sel
-			}
-			_, known := s.info.Uses[id].(*types.Func) // else a function value (a variable, a call's result, *fp): what it does to them is not known
-			known = known || s.qual(f) != ""          // another package's name (unresolved here): in-place writers below
-			if isSel && s.info.Uses[sel.Sel] == nil {
-				known = true // a method of another package's (unresolved) type, as on main: fs.Parse(os.Args[1:])
-			}
-			if _, b := s.info.Uses[id].(*types.Builtin); b || isSel && s.info.Selections[sel] != nil && types.IsInterface(s.info.Selections[sel].Recv()) {
-				known = b // an interface's method, like a value
-			}
-			if b, ok := s.info.Uses[ident(fun)].(*types.Builtin); ok && (b.Name() == "copy" || b.Name() == "append") || inPlace(s.qual(f)) {
-				args = args[:min(1, len(args))] // the destination
-			} else if _, lit := fun.(*ast.FuncLit); !lit && known && s.callee(x) == nil {
-				args = nil // own code only
-			}
+			if b, ok := s.info.Uses[ident(fun)].(*types.Builtin); ok && (b.Name() == "copy" || b.Name() == "append") || strings.HasPrefix(s.qual(f), "fmt.Fprint") {
+				args = args[:min(1, len(args))] // the destination (Fprint*: its io.Writer)
+			} else if s.readOnly(f) || isSel && s.qual(f) == "" && s.info.Uses[sel.Sel] == nil {
+				args = nil // read-only; or, as on main, a method of another package's unresolved type (fs.Parse, app.Run)
+			} // else decision A: any callee may write them (own code, a value, util.Fill, reflect)
 			for _, a := range args { // os.Args's array, aliased (an element is a string)
 				if _, el := ast.Unparen(a).(*ast.IndexExpr); !el && s.qual(s.root(a)) == "os.Args" {
 					c.refs = append(c.refs, "os.Args assigned")
@@ -839,9 +827,7 @@ func (s *pkgScan) call(x *ast.CallExpr, own func(ast.Expr) bool) string {
 			return unresolved // a function value, or no body (assembly, linkname)
 		}
 	case *ast.SelectorExpr:
-		if q := s.qual(f); inPlace(q) && len(args) > 0 && s.qual(s.root(args[0])) != "" {
-			return "a write it cannot prove safe (" + s.qual(s.root(args[0])) + ")" // in place, like copy
-		} else if strings.HasPrefix(q, "sync.Once") {
+		if q := s.qual(f); strings.HasPrefix(q, "sync.Once") {
 			return "" // wraps a function for later: a call of what it returns is unresolved
 		} else if q == "" {
 			sel := s.info.Selections[f]
@@ -862,23 +848,40 @@ func (s *pkgScan) call(x *ast.CallExpr, own func(ast.Expr) bool) string {
 			own(a)
 		} else if !s.shared(a) {
 			return "a value it cannot prove plain data passed to " + types.ExprString(fun)
+		} else if q := s.qual(s.root(a)); q != "" && !s.scalar(a) && !s.readOnly(fun) {
+			return "a write it cannot prove safe (" + q + ")" // decision A: a slice, map or pointer it may write, an inert package's too
 		}
 	}
 	return ""
 }
 
-// inPlace: q writes its first argument in place, like copy.
-func inPlace(q string) bool {
-	switch pkg, name, _ := strings.Cut(q, "."); pkg {
-	case "slices":
-		return slices.Contains(strings.Fields("Reverse Sort SortFunc SortStableFunc Replace Insert Delete DeleteFunc Compact CompactFunc"), name)
-	case "sort":
-		return !strings.HasPrefix(name, "Search")
-	case "maps":
-		return name == "Copy" || name == "DeleteFunc"
-	}
-	return false
+// scalar: a is proved a copy that aliases nothing: a resolved basic type,
+// not unsafe.Pointer (another package's, unresolved here, is not proved).
+func (s *pkgScan) scalar(a ast.Expr) bool {
+	b, ok := types.Unalias(cmp.Or(s.info.TypeOf(a), types.Type(types.Typ[types.Invalid]))).Underlying().(*types.Basic)
+	return ok && b.Kind() != types.Invalid && b.Kind() != types.UnsafePointer && b.Kind() != types.UntypedNil
 }
+
+// readOnly: f, a callee, only reads its arguments (decision A: an allowlist;
+// any other may write a slice it is given).
+func (s *pkgScan) readOnly(f ast.Expr) bool {
+	if b, ok := s.info.Uses[ident(f)].(*types.Builtin); ok {
+		return b.Name() == "len" || b.Name() == "cap"
+	} else if sel, ok := f.(*ast.SelectorExpr); ok && sel.Sel.Name == "Parse" && s.qual(sel.X) == "flag.CommandLine" {
+		return true
+	}
+	q := s.qual(f)
+	name := q[strings.LastIndex(q, ".")+1:]
+	return strings.HasPrefix(q, "fmt.") && (strings.HasPrefix(name, "Sprint") || strings.HasPrefix(name, "Print") || name == "Errorf") || // Fprint*, Sscan* and Fscan* write
+		strings.HasPrefix(q, "slices.") && slices.Contains([]string{"Contains", "Index", "Equal", "Clone"}, name) ||
+		slices.Contains(readFuncs, q)
+}
+
+// readFuncs are functions proved not to write their arguments, a package's
+// value read as a value included (time.Date(…, time.UTC), strings.Map's
+// rune function). Any other, an Append* or Encode* or one taking a callback
+// among them, may write what it is given.
+var readFuncs = strings.Fields("strings.Join strings.Map path/filepath.Base path.Base time.Date time.Sleep")
 
 // shared: a may leave the package: plain data, or an inert package's
 // function, value or result (never by its name's case), not one of its

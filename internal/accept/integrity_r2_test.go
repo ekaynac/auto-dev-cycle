@@ -209,20 +209,31 @@ func TestIntegrityRound2(t *testing.T) {
 		base, cand map[string]string
 		why        string
 	}{
-		"M2 a cgo constructor added":   {nil, map[string]string{"help/c.go": ctor}, "an import of C"},
-		"M2 a cgo preamble changed":    {map[string]string{"help/c.go": benign}, map[string]string{"help/c.go": ctor}, "an import of C"},
-		"M2 a C file added":            {nil, map[string]string{"help/c.c": "static int x;\n"}, "unverifiable: C, C++, Objective-C, Fortran or SWIG source"},
-		"M2 a header changed":          {map[string]string{"help/h.h": "#define X 1\n"}, map[string]string{"help/h.h": "#define X 2\n"}, "Objective-C"},
-		"M2 a C++ file in a test tree": {nil, map[string]string{"pkg/x.cpp": "int x;\n"}, "Objective-C"},
+		"M2 a cgo constructor added": {nil, map[string]string{"help/c.go": ctor}, "an import of C"},
+		"M2 a cgo preamble changed":  {map[string]string{"help/c.go": benign}, map[string]string{"help/c.go": ctor}, "an import of C"},
+		// No cgo: b924eec's list still blocks C sources (go refuses them; SWIG would turn cgo on).
+		"M2 a C file added, no cgo":         {nil, map[string]string{"help/c.c": "static int x;\n"}, "SWIG source"},
+		"M2 a header changed, no cgo":       {map[string]string{"help/h.h": "#define X 1\n"}, map[string]string{"help/h.h": "#define X 2\n"}, "SWIG source"},
+		"M2 a C file beside a new cgo file": {nil, map[string]string{"help/c.go": benign, "help/c.c": "static int x;\n"}, "unverifiable: a non-Go file in a repository that uses cgo"},
+		"M2 a C++ file, cgo elsewhere":      {map[string]string{"help/c.go": benign}, map[string]string{"pkg/x.cpp": "int x;\n"}, "uses cgo"},
+		"allowlist: an .inc the preamble includes": {map[string]string{"help/c.go": "package help\n\n// #include \"x.inc\"\nimport \"C\"\n", "help/x.inc": "int x;\n"},
+			map[string]string{"help/x.inc": "int y;\n"}, "unverifiable: a non-Go file in a repository that uses cgo"},
+		"allowlist: testdata in a cgo module":      {map[string]string{"help/c.go": benign, "pkg/testdata/x.json": "{}\n"}, map[string]string{"pkg/testdata/x.json": "[]\n"}, "uses cgo"},
+		"allowlist: README.md in a cgo repository": {map[string]string{"help/c.go": benign}, map[string]string{"README.md": "# m\n"}, "uses cgo"}, // C may #include it: accepted false block
+		"allowlist: cgo in module a/, an .inc in module b/": {map[string]string{"a/go.mod": "module example.com/a\n\ngo 1.22\n", "a/c.go": "package a\n\n// #cgo CFLAGS: -I${SRCDIR}/../b\n// #include \"x.inc\"\nimport \"C\"\n",
+			"b/go.mod": "module example.com/b\n\ngo 1.22\n", "b/x.inc": "int x;\n"}, map[string]string{"b/x.inc": "int y;\n"}, "uses cgo"},
+		"allowlist: testdata, no cgo": {map[string]string{"pkg/testdata/x.json": "{}\n"}, map[string]string{"pkg/testdata/x.json": "[]\n"}, ""},
 	} {
-		if v := cgo(c.base).guarded(t, c.cand); !finds(v.Blocks, c.why) {
+		if v := cgo(c.base).guarded(t, c.cand); c.why == "" && (!v.Accepted() || len(v.Warnings) > 0) || c.why != "" && !finds(v.Blocks, c.why) {
 			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
 		}
 	}
 
-	// The background flags on 050a6cc ("validator-bypass"): every file the
-	// gate may compile or link beside cgo, and any workspace file GOWORK may
-	// name, changed in any way (deleted too: a header found elsewhere).
+	// The background flags on 050a6cc and b924eec ("validator-bypass"): in a
+	// module that uses cgo (#cgo -I and ${SRCDIR} reach any path in it) only
+	// Go files and plain documentation may change; assembly and objects,
+	// which go builds without cgo, and any workspace file GOWORK may name,
+	// block anywhere, deleted too.
 	linked := map[string]string{"help/c.go": "package help\n\n// #cgo LDFLAGS: ${SRCDIR}/lib.o\nimport \"C\"\n", "help/lib.o": "x", "help/x.h": "#define X 1\n"}
 	for name, c := range map[string]struct {
 		cand map[string]string
@@ -231,7 +242,7 @@ func TestIntegrityRound2(t *testing.T) {
 	}{
 		"a .sx file added":                 {map[string]string{"help/a.sx": ".text\n"}, nil, "assembly or an object file"},
 		"an object the preamble links":     {map[string]string{"help/lib.o": "y"}, nil, "assembly or an object file"},
-		"a header deleted":                 {nil, []string{"help/x.h"}, "Objective-C"},
+		"a header deleted":                 {nil, []string{"help/x.h"}, "uses cgo"},
 		"a workspace file GOWORK may name": {map[string]string{"ws.work": "go 1.22\n\nuse .\n"}, nil, "workspace"},
 		"its go.work.sum":                  {map[string]string{"ws.work.sum": ""}, nil, "workspace"},
 		"a nested go.work":                 {map[string]string{"a/b/go.work": "go 1.22\n"}, nil, "workspace"},
@@ -239,6 +250,14 @@ func TestIntegrityRound2(t *testing.T) {
 		if v := cgo(linked).guarded(t, c.cand, c.gone...); !finds(v.Blocks, c.why) {
 			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
 		}
+	}
+	outside := newFixtureWith(t, func(src string) { // the base files hold no root go.mod: inc/ is in no module
+		write(t, src, map[string]string{"m/go.mod": "module example.com/m\n\ngo 1.22\n", "m/c.go": "package m\n\n// #cgo CFLAGS: -I${SRCDIR}/../inc\n// #include \"x.inc\"\nimport \"C\"\n",
+			"inc/x.inc": "int x;\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := outside.guarded(t, map[string]string{"inc/x.inc": "int y;\n"}); !finds(v.Blocks, "uses cgo") {
+		t.Errorf("allowlist: an .inc outside any module: %q", whats(v.Blocks))
 	}
 	if v := work.guarded(t, nil, "go.work"); !finds(v.Blocks, "workspace") {
 		t.Errorf("a go.work deleted: %q", whats(v.Blocks))

@@ -819,7 +819,7 @@ func facts(info *types.Info, n ast.Node, add func(string)) {
 			if tv := info.Types[ast.Unparen(x.Fun)]; tv.IsType() && len(x.Args) == 1 && (!types.IsInterface(tv.Type) || rawParam(tv.Type)) { // to a holder of *testing.T, of anything else
 				if from := info.TypeOf(x.Args[0]); holds(tv.Type, true, nil) && (from == nil || !types.Identical(from, tv.Type)) {
 					at(factForged, x, from)
-				} else if from != nil && (isUnsafe(from) && !isUnsafe(tv.Type) || rawParam(from) && pointerLike(tv.Type) || rawParam(tv.Type) && pointerLike(from)) {
+				} else if from != nil && (isUnsafe(from) && !isUnsafe(tv.Type) || ptrParam(from) && pointerLike(tv.Type) || ptrParam(tv.Type) && pointerLike(from)) {
 					at(factUnsafe, x)
 				}
 			}
@@ -957,7 +957,32 @@ func rawParam(t types.Type) bool {
 
 func pointerLike(t types.Type) bool {
 	_, ptr := t.Underlying().(*types.Pointer)
-	return ptr || rawParam(t) || isUnsafe(t) || types.Identical(t.Underlying(), types.Typ[types.Uintptr])
+	return ptr || ptrParam(t) || isUnsafe(t) || types.Identical(t.Underlying(), types.Typ[types.Uintptr])
+}
+
+// ptrParam: t is a type parameter whose type set has an unsafe.Pointer or a
+// pointer term (P ~unsafe.Pointer | ~uintptr), through embedded constraints;
+// a numeric one (N ~int | ~uintptr) is no raw address. Past a depth: one.
+func ptrParam(t types.Type) bool {
+	p, ok := types.Unalias(t).(*types.TypeParam)
+	var raw func(types.Type, int) bool
+	raw = func(t types.Type, depth int) bool {
+		switch u := t.Underlying().(type) {
+		case *types.Interface:
+			return depth > 8 || slices.ContainsFunc(slices.Collect(u.EmbeddedTypes()), func(e types.Type) bool { return raw(e, depth+1) })
+		case *types.Union:
+			for i := range u.Len() {
+				if raw(u.Term(i).Type(), depth+1) {
+					return true
+				}
+			}
+			return false
+		case *types.Pointer:
+			return true
+		}
+		return isUnsafe(t)
+	}
+	return ok && raw(p.Constraint(), 0)
 }
 
 // launders: a value asserted or switched to t is a testing value to the
