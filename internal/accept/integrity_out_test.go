@@ -164,14 +164,15 @@ func TestDecisionAOutIsolated(t *testing.T) {
 		t.Errorf("r3 #3: zzz/out.go in the verdict %t, in the report %t", finds(v.Warnings, "zzz/out.go: fmt.Println in out"), finds(w, "zzz/out.go: fmt.Println in out"))
 	}
 
-	// The layer's own budget: past it, one Additive block; main's findings stay.
+	// The layer's own budget: past it, one Additive warning (round 8);
+	// main's findings stay.
 	old := maxOutNodes
 	maxOutNodes = 5 // the file alone has more nodes
 	v = outGuarded(t, g, map[string]string{"aaa/a.go": "package aaa\n\nimport \"flag\"\n\nfunc p() { flag.Parse() }\n", "zzz/out.go": out})
 	maxOutNodes = old
-	over := slices.DeleteFunc(slices.Clone(v.Blocks), func(b Block) bool { return !b.Additive || !strings.Contains(b.What, "over its work bound") })
-	if len(over) != 1 || !finds(v.Warnings, "zzz/out.go: fmt.Println in out") || finds(v.Warnings, "references into") { // and the layer stopped
-		t.Errorf("the layer's budget: %d Additive over-bound blocks, warnings %q", len(over), whats(v.Warnings))
+	stopped := slices.DeleteFunc(slices.Clone(v.Warnings), func(b Block) bool { return !b.Additive || !strings.Contains(b.What, "stopped at its work bound") })
+	if !v.Accepted() || len(stopped) != 1 || !finds(v.Warnings, "zzz/out.go: fmt.Println in out") || finds(v.Warnings, "references into") { // and the layer stopped
+		t.Errorf("the layer's budget: blocks %q, %d stop warnings, warnings %q", whats(v.Blocks), len(stopped), whats(v.Warnings))
 	}
 
 	// r2 H2: 1000 dot imports of flag, untested, and zzz/out.go.
@@ -257,21 +258,21 @@ func TestDecisionAOutRound6(t *testing.T) {
 	}
 	// H2 (and Astra #276 r4 H2): six generated files that fill most of the
 	// base guard's read bound, beside a one-line change: accepted. The
-	// guard's envelope is scaled by 1/64 (maxRead 1 MiB, maxWork 256 Ki),
+	// guard's envelope is scaled by 1/256 (maxRead 256 KiB, maxWork 64 Ki),
 	// so the layer's bounds scale with it; at full scale this is six 3 MiB
 	// files (about 280 s).
 	oldRead, oldWork := maxRead, maxWork
 	t.Cleanup(func() { maxRead, maxWork = oldRead, oldWork })
-	maxRead, maxWork = 1<<20, 1<<18
+	maxRead, maxWork = 256<<10, 1<<16
 	gen := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
 		for _, n := range []string{"gen1", "gen2", "gen3", "gen4", "gen5", "gen6"} {
-			write(t, src, map[string]string{"tool/" + n + ".go": "package tool\n\nvar " + n + " = []int{" + strings.Repeat("0,", 75000) + "}\n"})
+			write(t, src, map[string]string{"tool/" + n + ".go": "package tool\n\nvar " + n + " = []int{" + strings.Repeat("0,", 18000) + "}\n"})
 		}
 		plain(t, src, "add", "--all")
 	})
-	if v := outGuarded(t, gen, map[string]string{"tool/x.go": "package tool\n\nvar x = 1\n"}); !v.Accepted() {
-		t.Errorf("C1 a change beside 900 KB at a 1 MiB read bound: %q", whats(v.Blocks))
+	if v := outGuarded(t, gen, map[string]string{"tool/x.go": "package tool\n\nvar x = 1\n"}); !v.Accepted() || len(v.Warnings) > 0 { // not even the layer's stop warning
+		t.Errorf("C1 a change beside 216 KB at a 256 KiB read bound: %q, %q", whats(v.Blocks), whats(v.Warnings))
 	}
 	maxRead, maxWork = oldRead, oldWork
 	// L5 probe E: 1101 layer warnings on long paths and two libc blocks:
@@ -317,6 +318,86 @@ func TestDecisionAOutRound7(t *testing.T) {
 	if v := outGuarded(t, f, map[string]string{"tool/s.go": "package tool\n\nimport \"flag\"\n\ntype fs struct{ Parse func() }\n\nfunc a(flag fs) { flag.Parse() }\n\n" +
 		"func b(xs []fs) {\n\tfor _, flag := range xs {\n\t\tflag.Parse()\n\t}\n\tif flag := (fs{}); flag.Parse != nil {\n\t\tflag.Parse()\n\t}\n}\n\nfunc c() { flag.Parse() }\n"}); !finds(v.Warnings, outRefs("tool/s.go", "flag", "1: c")) {
 		t.Errorf("H1 scopes: %q", whats(v.Warnings))
+	}
+}
+
+// TestDecisionAOutRound8: Astra #276 r5 on 8830861, scaled by the
+// test-only envelope, and the lead's rule: the layer's own bound warns,
+// and blocks only with a libc import in a changed file of a tested package.
+func TestDecisionAOutRound8(t *testing.T) {
+	oldRead, oldWork, oldNodes := maxRead, maxWork, maxOutNodes
+	t.Cleanup(func() { maxRead, maxWork, maxOutNodes = oldRead, oldWork, oldNodes })
+	onlyStopped := func(name string, v Verdict) {
+		t.Helper()
+		if !v.Accepted() || len(v.Warnings) > 1 || len(v.Warnings) == 1 && !strings.Contains(v.Warnings[0].What, "stopped at its work bound") {
+			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
+		}
+	}
+	// #1: 70 directories share one blob whose function name is 32 KiB;
+	// x.go is added to each. Main reads the blob once (maxRead 256 KiB).
+	maxRead = 256 << 10
+	many := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		for i := range 70 {
+			write(t, src, map[string]string{fmt.Sprintf("d%03d/a.go", i): "package p\n\nfunc " + strings.Repeat("a", 32<<10) + "() {}\n"})
+		}
+		plain(t, src, "add", "--all")
+	})
+	added := map[string]string{}
+	for i := range 70 {
+		added[fmt.Sprintf("d%03d/x.go", i)] = "package p\n"
+	}
+	onlyStopped("#1 70 directories sharing a 32 KiB name", outGuarded(t, many, added))
+	maxRead = oldRead
+	// #2: 34 files of one blob, 169 distinct +build lines of 13 free tags
+	// each (main's holds returns before its bound); one file's comment
+	// changes. maxWork 64 Ki.
+	maxWork = 1 << 16
+	tags := strings.Fields("a b c d e f g h i j k l m")
+	var hdr strings.Builder
+	for i := range 169 {
+		rot := func(k int) string { return strings.Join(append(slices.Clone(tags[k:]), tags[:k]...), ",") }
+		hdr.WriteString("// +build " + rot(i%13) + " " + rot(i/13) + "\n")
+	}
+	blob := hdr.String() + "\npackage p\n"
+	tagged := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		for i := range 34 {
+			write(t, src, map[string]string{fmt.Sprintf("zzz/f%02d.go", i): blob})
+		}
+		plain(t, src, "add", "--all")
+	})
+	onlyStopped("#2 34 files of 13 free tags", outGuarded(t, tagged, map[string]string{"zzz/f00.go": blob + "\n// changed\n"}))
+	maxWork = oldWork
+	// The rule: exhausted, a libc import in a changed file of a tested
+	// package blocks; elsewhere, or with no libc import, a warning.
+	f, _ := libcFixture(t)
+	maxOutNodes = 5
+	v := outGuarded(t, f, map[string]string{"pkg/x.go": "package pkg\n\nimport \"modernc.org/libc\"\n\nvar _ = libc.NewTLS\n"})
+	if !finds(v.Blocks, "pkg/x.go unverifiable: decision A's outside-initialization check stopped at its work bound, and this file imports modernc.org/libc") {
+		t.Errorf("exhausted with a libc import: blocks %q", whats(v.Blocks))
+	}
+	onlyStopped("exhausted, flag only", outGuarded(t, f, map[string]string{"pkg/y.go": "package pkg\n\nimport \"flag\"\n\nvar _ = flag.Parse\n"}))
+	onlyStopped("exhausted, libc untested", outGuarded(t, f, map[string]string{"tool/x.go": "package tool\n\nimport \"modernc.org/libc\"\n\nvar _ = libc.NewTLS\n"}))
+	maxOutNodes = oldNodes
+	// H3 (Astra r5 #3): a module replacing the non-std path archive (a
+	// namespace directory in GOROOT): its new edge warns.
+	arch := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"go.mod": guardBase["go.mod"] + "\nrequire archive v1.0.0\n\nreplace archive => example.org/archive v1.0.0\n",
+			"vendor/modules.txt":  "# golang.org/x/sys v0.48.0\n## explicit\n# archive v1.0.0 => example.org/archive v1.0.0\n## explicit\narchive\n",
+			"vendor/archive/a.go": "package archive\n\nfunc F() {}\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := outGuarded(t, arch, map[string]string{"tool/x.go": "package tool\n\nimport dep \"archive\"\n\nfunc f() { dep.F() }\n"}); !finds(v.Warnings, "a new import of archive") { // main blocks this vendored form itself (a replacement)
+		t.Errorf("H3 replace archive: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	// H3: std on positive evidence only (a namespace directory is not).
+	r := &run{out: additive{std: map[string]bool{}}}
+	for p, want := range map[string]bool{"archive": false, "archive/tar": true, "flag": true, "os/user": true, "example.org/x": false, "nosuch": false} {
+		if r.std(p) != want {
+			t.Errorf("std(%q) = %v", p, !want)
+		}
 	}
 }
 
@@ -385,7 +466,7 @@ func TestOutShadowOracle(t *testing.T) {
 			read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
 				return []byte(files[blob[0]-'0']), true, nil
 			}}
-		tr := &tree{files: map[string]string{}, dirs: map[string][]string{}}
+		tr := &tree{files: map[string]string{}, dirs: map[string][]string{}, typers: map[string]*typer{}}
 		for i := range files {
 			p := fmt.Sprintf("p/f%d.go", i)
 			tr.files[p], tr.dirs["p"] = fmt.Sprint(i), append(tr.dirs["p"], p)

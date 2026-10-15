@@ -11,14 +11,17 @@ import (
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io"
 	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/mod/modfile"
 
@@ -53,20 +56,10 @@ type outFile struct {
 // findings with and without it).
 var outHook = true
 
-// The layer's bounds, sized so that no input the base guard accepts can
-// exhaust them (Astra #276 r4 H2). Tags: the layer evaluates a file's
-// constraints once a blob and name, on the lines the base guard's goOn
-// keeps (deduplicated), platform by platform until one builds it, and an
-// assignment until its first false line; the base guard evaluates them for
-// each version, every platform and every line, charging maxWork. So the
-// layer visits fewer tags than an accepted input cost the base guard.
-// Nodes: a node of Go's syntax holds a token of its own (one byte at least)
-// or wraps one node that does (ExprStmt, FuncType of a FuncDecl): two nodes
-// a byte at most. The layer parses each version once and each blob was read
-// once, within maxRead in all, so it visits at most 4 × maxRead nodes; the
-// names it keys charge their bytes (2 × maxRead at most) and the items it
-// handles are its keys (fewer than its nodes): 10 × maxRead at most, under
-// 16 × maxRead. Both are read when charged, so a test that scales maxRead
+// The layer's own work bounds: AST nodes, items and name bytes, and
+// constraint tag visits. Reaching one stops the layer with one Additive
+// warning, never a block by itself (outStopped; the lead's decision on
+// Astra #276 r5). They are read when charged, so a test that scales maxRead
 // or maxWork scales them; a test sets one to reach it.
 var maxOutNodes, maxOutTags int // 0: 16 × maxRead; maxWork
 
@@ -88,14 +81,11 @@ func (r *run) outWarn(p, what string) {
 	r.out.warnings = append(r.out.warnings, Block{vocab.ReasonTestIntegrityViolation, p, what, true})
 }
 
-// charge counts the layer's work: past a bound, one Additive block and no
-// more of its work; a done context stops it with no block.
+// charge counts the layer's work: past a bound, or on a done context, no
+// more of it (outStopped says so).
 func (r *run) charge(nodes, tags int) bool {
 	r.out.nodes, r.out.tags = r.out.nodes+nodes, r.out.tags+tags
 	past := r.out.nodes > cmp.Or(maxOutNodes, int(16*maxRead)) || r.out.tags > cmp.Or(maxOutTags, maxWork)
-	if past && !r.out.over && r.ctx.Err() == nil {
-		r.outBlock("", "unverifiable: decision A's outside-initialization check is over its work bound")
-	}
 	r.out.over = r.out.over || past || r.ctx.Err() != nil
 	return !r.out.over
 }
@@ -109,15 +99,26 @@ func bound(name string) string {
 	return fmt.Sprintf("%s…%x", name[:64], h[:16])
 }
 
-// std: p is the standard library's, by the GOROOT the guard runs with (its
-// loader lists with the same toolchain); unknown is not.
+// gorootSame: the guard's GOROOT is its own release, the one LocalLister
+// requires of the loader's toolchain; else std knows nothing.
+var gorootSame = sync.OnceValue(func() bool {
+	b, err := os.ReadFile(filepath.Join(build.Default.GOROOT, "VERSION"))
+	v, _, _ := strings.Cut(string(b), "\n")
+	return build.Default.GOROOT != "" && err == nil && v == runtime.Version()
+})
+
+// std: p is the standard library's on positive evidence only, as
+// internal/goroot reads it: its first element has no dot and the release's
+// src/p holds a .go file (Astra #276 r5: a directory alone is a namespace).
+// Anything uncertain is not: a warning, never silence.
 func (r *run) std(p string) bool {
 	if ok, seen := r.out.std[p]; seen {
 		return ok
 	}
 	first, _, _ := strings.Cut(p, "/")
-	fi, err := os.Stat(filepath.Join(build.Default.GOROOT, "src", filepath.FromSlash(p)))
-	r.out.std[p] = build.Default.GOROOT != "" && !strings.Contains(first, ".") && err == nil && fi.IsDir()
+	ents, err := os.ReadDir(filepath.Join(build.Default.GOROOT, "src", filepath.FromSlash(p)))
+	r.out.std[p] = gorootSame() && !strings.Contains(first, ".") && err == nil &&
+		slices.ContainsFunc(ents, func(e os.DirEntry) bool { return !e.IsDir() && strings.HasSuffix(e.Name(), ".go") })
 	return r.out.std[p]
 }
 
@@ -254,11 +255,17 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 }
 
 // loadedName is the declared name of ip as the base guard's loader read it
-// for t and dir (its own and vendored packages); "" if it did not.
+// for t and dir: its own and vendored packages, and the imports of dir's
+// analysed package (export data); "" if it did not.
 func (r *run) loadedName(t *tree, dir, ip string) string {
 	for _, pl := range platforms {
-		if p := t.typer(r, dir, pl).pkgs[ip]; p != nil {
+		ty := t.typer(r, dir, pl)
+		if p := ty.pkgs[ip]; p != nil {
 			return p.Name()
+		} else if self := ty.self[ty.pathOf(dir)]; self != nil {
+			if i := slices.IndexFunc(self.Imports(), func(q *types.Package) bool { return q.Path() == ip }); i >= 0 {
+				return self.Imports()[i].Name()
+			}
 		}
 	}
 	return ""
@@ -423,9 +430,11 @@ func (r *run) outRun() (err error) {
 }
 
 func (r *run) outPkgs() {
-	for _, dir := range slices.Sorted(maps.Keys(r.touched)) {
+	dirs := slices.Sorted(maps.Keys(r.touched))
+	for i, dir := range dirs {
 		b, a := r.outRead(dir, r.trees[0]), r.outRead(dir, r.trees[1])
 		if r.out.over || !r.charge(len(b.refs)+len(a.refs)+len(a.dots)+len(a.unknown)+len(a.imports), 0) {
+			r.outStopped(dirs[i:])
 			return
 		}
 		tested := r.tested(dir)          // once a directory
@@ -477,6 +486,42 @@ func (r *run) outPkgs() {
 		}
 		if r.ctx.Err() != nil {
 			return
+		}
+	}
+}
+
+// outStopped: the layer stopped at its own work bound (the lead's decision
+// on Astra #276 r5): one Additive warning naming the directories it did
+// not finish, never a block by itself. Class 2 stays closed: a libc
+// reference needs a libc import in its file, so a changed Go file of an
+// unfinished tested package that imports modernc.org/libc blocks. The
+// import scan reads each blob once (the base guard read it), its imports
+// only, charged by its bytes to maxRead; a scan that cannot finish blocks.
+func (r *run) outStopped(dirs []string) {
+	if r.ctx.Err() != nil {
+		return
+	}
+	shown := strings.Join(dirs[:min(3, len(dirs))], ", ") + map[bool]string{true: ", …"}[len(dirs) > 3]
+	r.outWarn("", fmt.Sprintf("decision A's outside-initialization check stopped at its work bound; its signals for %d directories (%s) are incomplete", len(dirs), bound(shown)))
+	scanned, bytes := map[string]bool{}, int64(0)
+	for _, dir := range slices.DeleteFunc(slices.Clone(dirs), func(d string) bool { return !r.tested(d) }) {
+		for _, p := range r.trees[1].dirs[dir] {
+			blob := r.trees[1].files[p]
+			if path.Ext(p) != ".go" || r.files[p] == blob || scanned[blob] {
+				continue
+			}
+			b, why, err := r.file(blob)
+			scanned[blob], bytes = true, bytes+int64(len(b))
+			f, perr := parser.ParseFile(token.NewFileSet(), p, b, parser.ImportsOnly|parser.SkipObjectResolution)
+			if why != "" || err != nil || perr != nil || bytes > maxRead || r.ctx.Err() != nil {
+				r.outBlock(p, "unverifiable: decision A's outside-initialization check stopped at its work bound and could not read this file's imports")
+				return
+			}
+			for _, is := range f.Imports {
+				if ip, _ := strconv.Unquote(is.Path.Value); libc(ip) {
+					r.outBlock(p, "unverifiable: decision A's outside-initialization check stopped at its work bound, and this file imports "+ip+" in a package with tests")
+				}
+			}
 		}
 	}
 }
