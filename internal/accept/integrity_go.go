@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"bytes"
 	"cmp"
 	"go/ast"
 	"go/build"
@@ -29,13 +30,12 @@ var (
 	otherPlatforms = strings.Fields("aix android darwin dragonfly freebsd hurd illumos ios js nacl netbsd openbsd plan9 " +
 		"solaris wasip1 windows zos 386 amd64p32 arm armbe arm64be loong64 mips mipsle mips64 mips64le mips64p32 " +
 		"mips64p32le ppc ppc64 ppc64le riscv riscv64 s390 s390x sparc sparc64 wasm gccgo")
-	goSkips    = []string{"Skip", "Skipf", "SkipNow"}
-	goFails    = []string{"Error", "Errorf", "Fatal", "Fatalf", "Fail", "FailNow"} // exactly the failure-setting methods
-	control    = append(slices.Clone(goSkips), append(slices.Clone(goFails), "Run", "Helper", "Cleanup")...)
-	testify    = []string{"github.com/stretchr/testify/assert", "github.com/stretchr/testify/require"}
-	testTypes  = []string{"testing.T", "testing.B", "testing.F", "testing.TB", "testing.M"}
-	valueTypes = []string{"testing.T", "testing.B", "testing.F", "testing.M"} // only ever behind a pointer
-	osRead     = []string{"Getenv", "LookupEnv", "Environ", "Getwd", "Stat", "Open", "ReadFile", "ReadDir", "PathSeparator"}
+	goSkips   = []string{"Skip", "Skipf", "SkipNow"}
+	goFails   = []string{"Error", "Errorf", "Fatal", "Fatalf", "Fail", "FailNow"} // exactly the failure-setting methods
+	control   = append(slices.Clone(goSkips), append(slices.Clone(goFails), "Run", "Helper", "Cleanup")...)
+	testify   = []string{"github.com/stretchr/testify/assert", "github.com/stretchr/testify/require"}
+	testTypes = []string{"testing.T", "testing.B", "testing.F", "testing.TB", "testing.M"}
+	osRead    = []string{"Getenv", "LookupEnv", "Environ", "Getwd", "Stat", "Open", "ReadFile", "ReadDir", "PathSeparator"}
 	// sPkgs (and golang.org/x/sys/...) reach the process, its output or testing: S.
 	sPkgs   = []string{"syscall", "os", "os/exec", "os/signal", "log", "log/slog", "fmt", "testing", "reflect", "unsafe", "runtime", "plugin"}
 	spelled = []string{"\x16", `\x16`, `\026`, `\u0016`, `\U00000016`} // test2json's marker
@@ -121,22 +121,18 @@ func goByName(p string) bool {
 
 // goOn is, per gate platform, whether go builds p: 2 surely, 1 by unmodelled
 // tags (tool tags, cgo, race, custom), 0 never; nil past the work bound.
-func (r *run) goOn(p string, f *ast.File) (on []int, exprs []constraint.Expr, cons string, err error) {
+func (r *run) goOn(p string, src []byte) (on []int, exprs []constraint.Expr, cons string, err error) {
 	on = make([]int, len(platforms))
 	var text strings.Builder
-	seen, goBuild := map[string]bool{}, slices.ContainsFunc(f.Comments, func(cg *ast.CommentGroup) bool {
-		return slices.ContainsFunc(cg.List, func(c *ast.Comment) bool { return c.Pos() < f.Package && constraint.IsGoBuild(c.Text) })
-	})
-	for _, cg := range f.Comments {
-		for _, c := range cg.List { // a //go:build line, as go reads it, makes +build lines ignored
-			if c.Pos() < f.Package && (constraint.IsGoBuild(c.Text) || !goBuild && constraint.IsPlusBuild(c.Text)) && !seen[c.Text] {
-				x, err := constraint.Parse(c.Text)
-				if err != nil {
-					x = &constraint.TagExpr{Tag: "unparsed"} // a tag the guard does not model
-				}
-				seen[c.Text], exprs = true, append(exprs, x)
-				text.WriteString(c.Text + "\n")
+	seen := map[string]bool{}
+	for _, l := range header(src) {
+		if !seen[l] {
+			x, err := constraint.Parse(l)
+			if err != nil {
+				x = &constraint.TagExpr{Tag: "unparsed"} // a tag the guard does not model
 			}
+			seen[l], exprs = true, append(exprs, x)
+			text.WriteString(l + "\n")
 		}
 	}
 	for i, pl := range platforms {
@@ -151,11 +147,64 @@ func (r *run) goOn(p string, f *ast.File) (on []int, exprs []constraint.Expr, co
 	return on, exprs, text.String(), nil
 }
 
+// header is the constraint lines go reads in src, by go/build's rule: its
+// //go:build line (two: unparsed), outside a /* */ comment and before the
+// first code; else its +build lines before the last blank line of the
+// leading // comments.
+func header(src []byte) []string {
+	var goBuild, plus []string
+	end, ended, inStar, plusEnd := 0, false, false, []int{}
+	src = bytes.TrimPrefix(src, []byte("\uFEFF"))
+Lines:
+	for p := src; len(p) > 0; {
+		var line []byte
+		line, p, _ = bytes.Cut(p, []byte("\n"))
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 && !ended {
+			end = len(src) - len(p)
+			continue
+		}
+		ended = ended || !bytes.HasPrefix(line, []byte("//"))
+		if rest, ok := strings.CutPrefix(string(line), "//go:build"); ok && !inStar && (rest == "" || strings.TrimSpace(rest) != rest) {
+			goBuild = append(goBuild, string(line))
+		} else if !ended && constraint.IsPlusBuild(string(line)) {
+			plus, plusEnd = append(plus, string(line)), append(plusEnd, len(src)-len(p))
+		}
+		for len(line) > 0 { // past the comments go reads no more
+			switch i := bytes.Index(line, []byte("*/")); {
+			case inStar && i < 0, !inStar && bytes.HasPrefix(line, []byte("//")):
+				continue Lines
+			case inStar:
+				inStar, line = false, bytes.TrimSpace(line[i+2:])
+			case bytes.HasPrefix(line, []byte("/*")):
+				inStar, line = true, bytes.TrimSpace(line[2:])
+			default:
+				break Lines
+			}
+		}
+	}
+	switch {
+	case len(goBuild) > 1:
+		return []string{"//go:build unparsed"} // go fails on it
+	case len(goBuild) == 1:
+		return goBuild
+	}
+	var read []string
+	for i, l := range plus {
+		if plusEnd[i] <= end {
+			read = append(read, l)
+		}
+	}
+	return read
+}
+
 // holds is 2 when exprs hold on pl for every assignment of the unmodelled
 // tags, 0 for none, 1 otherwise or past 12 tags, -1 past the work bound.
-func (r *run) holds(exprs []constraint.Expr, pl [2]string) (int, error) {
+func (r *run) holds(exprs []constraint.Expr, pl [2]string, off ...string) (int, error) {
 	known := func(tag string) (bool, bool) {
 		switch {
+		case slices.Contains(off, tag):
+			return false, true
 		case tag == pl[0] || tag == pl[1] || tag == "unix" || tag == "gc" || slices.Contains(release, tag):
 			return true, true
 		case slices.Contains(otherPlatforms, tag) || strings.HasPrefix(tag, "go1.") ||
@@ -220,7 +269,7 @@ func (r *run) analyse(dir string, srcs map[string][]byte, fa *pkgFacts) error {
 			fa.bad[p] = "not parsed: " + err.Error()
 			continue
 		}
-		on, exprs, cons, err := r.goOn(p, f)
+		on, exprs, cons, err := r.goOn(p, srcs[p])
 		if err != nil {
 			return err
 		} else if on == nil {
@@ -257,7 +306,7 @@ type fileMeta struct {
 }
 
 // pkgScan is one type-checked package: its testing parameters, functions,
-// methods by receiver, asserting helpers, and testing types behind a pointer.
+// methods by receiver and asserting helpers (testing values made: the types layer).
 type pkgScan struct {
 	r         *run
 	pkg       *types.Package
@@ -268,7 +317,6 @@ type pkgScan struct {
 	pi        int                        // the platform read (platforms[pi])
 	asserting map[*ast.FuncDecl]bool
 	mentioned map[ast.Expr]int8 // per alias right-hand side: 1 being read, 2 no, 3 mentions
-	starred   map[ast.Expr]bool // directly behind *
 	pkgVars   map[*ast.ValueSpec]bool
 	aliases   map[types.Object]ast.Expr // an alias's right-hand side
 }
@@ -358,17 +406,6 @@ func (s *pkgScan) mRun(call *ast.CallExpr) bool {
 	return ok && sel.Sel.Name == "Run" && s.tval(sel.X) == "testing.M"
 }
 
-// ptrTo: e is *testing.T, B, F or M; or *X.T, B, F, M or TB that no
-// scope resolves (fail closed).
-func (s *pkgScan) ptrTo(e ast.Expr) bool {
-	st, ok := ast.Unparen(cmp.Or(s.alias(e), e)).(*ast.StarExpr)
-	if !ok {
-		return false
-	}
-	sel, _ := ast.Unparen(st.X).(*ast.SelectorExpr)
-	return sel != nil && (slices.Contains(valueTypes, s.qual(sel)) || s.qual(sel) == "" && slices.Contains(strings.Fields("T B F M TB"), sel.Sel.Name))
-}
-
 // mentions: n names a testing type or a testing value.
 func (s *pkgScan) mentions(n ast.Node) (found bool) {
 	ast.Inspect(n, func(n ast.Node) bool {
@@ -388,12 +425,11 @@ func (s *pkgScan) mentions(n ast.Node) (found bool) {
 
 // counts are a declaration's references; refs, its references into S.
 type counts struct {
-	asserts, skips, forged, reflect, generic int // generic: an own generic function not called
-	refs                                     []string
+	asserts, skips, forged, reflect int
+	refs                            []string
 }
 
 func (s *pkgScan) count(n ast.Node) (c counts) {
-	called := map[*ast.Ident]bool{}
 	ast.Inspect(n, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.UnaryExpr:
@@ -403,15 +439,13 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 		case *ast.SelectorExpr:
 			q := s.qual(x)
 			c.skips += b2i(slices.Contains(goSkips, x.Sel.Name)) // called or not
-			c.forged += b2i(q == "testing.Testing" || slices.Contains(valueTypes, q) && !s.starred[x])
+			c.forged += b2i(q == "testing.Testing")
 			if sensitive(q) > 0 {
 				c.refs = append(c.refs, q)
 			}
 		case *ast.Ident:
 			if b, ok := s.info.Uses[x].(*types.Builtin); ok && sensitive(b.Name()) > 0 {
 				c.refs = append(c.refs, b.Name())
-			} else if f, ok := s.info.Uses[x].(*types.Func); ok && !called[x] && s.decls[f.Origin()] != nil && s.decls[f.Origin()].Type.TypeParams != nil {
-				c.generic++ // assigned, passed or returned: inferred where C3 does not look
 			}
 		case *ast.BasicLit: // a 0x16 spelled in a string or rune literal
 			c.forged += b2i(x.Kind != token.INT && slices.ContainsFunc(spelled, func(m string) bool { return strings.Contains(x.Value, m) }))
@@ -426,23 +460,29 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 			}
 		case *ast.TypeSpec: // an alias of a testing type: plain, generic or exported
 			c.forged += b2i(x.Assign.IsValid() && s.mentions(x.Type))
-		case *ast.TypeAssertExpr: // to *testing.T: laundered through any
-			c.forged += b2i(s.ptrTo(x.Type))
-		case *ast.CaseClause:
-			for _, e := range x.List {
-				c.forged += b2i(s.ptrTo(e))
-			}
 		case *ast.CallExpr:
 			if s.mRun(x) {
 				return false
 			}
 			c.asserts += b2i(s.assertion(x))
 			fun, args := ast.Unparen(x.Fun), x.Args
-			f, targs := fn(fun)
-			called[ident(f)] = true
-			if b, ok := s.info.Uses[ident(fun)].(*types.Builtin); ok && (b.Name() == "copy" || b.Name() == "append") {
+			f, _ := fn(fun)
+			id := ident(f)
+			sel, isSel := f.(*ast.SelectorExpr)
+			if isSel {
+				id = sel.Sel
+			}
+			_, known := s.info.Uses[id].(*types.Func) // else a function value (a variable, a call's result, *fp): what it does to them is not known
+			known = known || s.qual(f) != ""          // another package's name (unresolved here): in-place writers below
+			if isSel && s.info.Uses[sel.Sel] == nil {
+				known = true // a method of another package's (unresolved) type, as on main: fs.Parse(os.Args[1:])
+			}
+			if _, b := s.info.Uses[id].(*types.Builtin); b || isSel && s.info.Selections[sel] != nil && types.IsInterface(s.info.Selections[sel].Recv()) {
+				known = b // an interface's method, like a value
+			}
+			if b, ok := s.info.Uses[ident(fun)].(*types.Builtin); ok && (b.Name() == "copy" || b.Name() == "append") || inPlace(s.qual(f)) {
 				args = args[:min(1, len(args))] // the destination
-			} else if _, lit := fun.(*ast.FuncLit); !lit && s.callee(x) == nil {
+			} else if _, lit := fun.(*ast.FuncLit); !lit && known && s.callee(x) == nil {
 				args = nil // own code only
 			}
 			for _, a := range args { // os.Args's array, aliased (an element is a string)
@@ -450,22 +490,11 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 					c.refs = append(c.refs, "os.Args assigned")
 				}
 			}
-			c.forged += b2i(s.ptrTo(fun)) // a conversion to *testing.T
-			// A testing value made by inference (an explicit testing type argument is unstarred).
-			if d := s.callee(x); d != nil && d.Type.TypeParams != nil && len(targs) < d.Type.TypeParams.NumFields() {
-				var params []ast.Expr
-				for _, f := range d.Type.Params.List {
-					params = append(params, slices.Repeat([]ast.Expr{f.Type}, max(1, len(f.Names)))...)
-				}
-				c.forged += b2i(len(params) > 0 && slices.ContainsFunc(x.Args, func(a ast.Expr) bool {
-					return s.mentions(a) && !s.mentions(params[min(slices.Index(x.Args, a), len(params)-1)])
-				}))
+			if strings.HasPrefix(s.qual(fun), "reflect.") && slices.ContainsFunc(x.Args, func(a ast.Expr) bool { return s.mentions(a) }) {
+				c.reflect++ // a second net under the types layer's (Mythos #271 H1)
 			}
 			if sensitive(s.qual(fun)) == 2 { // its arguments too: a changed exit code warns
 				c.refs = append(c.refs, types.ExprString(x))
-			}
-			if strings.HasPrefix(s.qual(fun), "reflect.") && slices.ContainsFunc(x.Args, func(a ast.Expr) bool { return s.mentions(a) }) {
-				c.reflect++
 			}
 			if sel, ok := fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MethodByName" && len(x.Args) == 1 {
 				lit, _ := ast.Unparen(x.Args[0]).(*ast.BasicLit)
@@ -548,7 +577,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	}
 	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
-		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
+		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
 	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		if i == len(files) {
 			clear(s.mentioned) // read again, every alias known (and after: the tvals grew)
@@ -559,8 +588,6 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				if o := info.Defs[x.Name]; x.Assign.IsValid() && o != nil { // a redeclared alias has none: never a nil key, every name's
 					s.aliases[o] = x.Type
 				}
-			case *ast.StarExpr:
-				s.starred[x.X] = true
 			case *ast.FuncType:
 				for _, fl := range x.Params.List {
 					t := fl.Type
@@ -610,7 +637,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	var inits, hooks []ast.Node
 	for _, f := range files {
 		m := meta[f]
-		test, flags, tfile := strings.HasSuffix(m.path, "_test.go"), []string{}, s.mentions(f)
+		test, flags := strings.HasSuffix(m.path, "_test.go"), []string{}
 		if slices.ContainsFunc(f.Comments, func(cg *ast.CommentGroup) bool {
 			return slices.ContainsFunc(cg.List, func(c *ast.Comment) bool { return strings.HasPrefix(c.Text, "//go:linkname") })
 		}) {
@@ -629,7 +656,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				return err
 			}
 			c := s.count(d)
-			fa.forged[pi] += c.forged + c.generic*b2i(tfile) // a file with testing values
+			fa.forged[pi] += c.forged
 			if c.reflect > 0 && !slices.Contains(flags, "reflection on a testing value") {
 				flags = append(flags, "reflection on a testing value")
 			}
@@ -676,9 +703,16 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			fa.flags[m.path+"\x00"+plat] = flags
 		}
 	}
-	if err := r.typedOn(platforms[pi], dir, name, fset, files, meta, fa); err != nil {
-		return err
-	} else if err := s.reach(dir, inits, false, fa); err != nil {
+	typed := slices.DeleteFunc(slices.Clone(files), func(f *ast.File) bool { // go never builds an ignore file: the types layer leaves it
+		n, _ := r.holds(meta[f].exprs, platforms[pi], "ignore")
+		return n == 0
+	})
+	if len(typed) > 0 {
+		if err := r.typedOn(platforms[pi], dir, name, fset, typed, meta, fa); err != nil {
+			return err
+		}
+	}
+	if err := s.reach(dir, inits, false, fa); err != nil {
 		return err
 	}
 	return s.reach(dir, hooks, true, fa)
@@ -732,6 +766,8 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) 
 				}
 				if (t == nil || t == types.Typ[types.Invalid] || fn) && !own(x.X) {
 					add("a range it cannot follow (" + types.ExprString(x.X) + ")")
+				} else if !fn && !s.read(x.X) { // its elements are read into the loop's variables
+					add("another package's value it cannot prove plain data ranged over (" + types.ExprString(x.X) + ")")
 				}
 			case *ast.AssignStmt:
 				s.store(x.Lhs, x.Rhs, add)
@@ -803,7 +839,9 @@ func (s *pkgScan) call(x *ast.CallExpr, own func(ast.Expr) bool) string {
 			return unresolved // a function value, or no body (assembly, linkname)
 		}
 	case *ast.SelectorExpr:
-		if q := s.qual(f); strings.HasPrefix(q, "sync.Once") {
+		if q := s.qual(f); inPlace(q) && len(args) > 0 && s.qual(s.root(args[0])) != "" {
+			return "a write it cannot prove safe (" + s.qual(s.root(args[0])) + ")" // in place, like copy
+		} else if strings.HasPrefix(q, "sync.Once") {
 			return "" // wraps a function for later: a call of what it returns is unresolved
 		} else if q == "" {
 			sel := s.info.Selections[f]
@@ -818,7 +856,7 @@ func (s *pkgScan) call(x *ast.CallExpr, own func(ast.Expr) bool) string {
 		return unresolved
 	}
 	for _, a := range args {
-		if q := s.qual(s.root(a)); inside && q != "" && !inert(q) { // a slice, map or chan aliases
+		if inside && slices.ContainsFunc(s.leaves(a), func(l ast.Expr) bool { q := s.qual(s.root(l)); return q != "" && !inert(q) }) { // a slice, map or chan aliases
 			return "another package's variable passed to " + types.ExprString(fun)
 		} else if inside {
 			own(a)
@@ -827,6 +865,19 @@ func (s *pkgScan) call(x *ast.CallExpr, own func(ast.Expr) bool) string {
 		}
 	}
 	return ""
+}
+
+// inPlace: q writes its first argument in place, like copy.
+func inPlace(q string) bool {
+	switch pkg, name, _ := strings.Cut(q, "."); pkg {
+	case "slices":
+		return slices.Contains(strings.Fields("Reverse Sort SortFunc SortStableFunc Replace Insert Delete DeleteFunc Compact CompactFunc"), name)
+	case "sort":
+		return !strings.HasPrefix(name, "Search")
+	case "maps":
+		return name == "Copy" || name == "DeleteFunc"
+	}
+	return false
 }
 
 // shared: a may leave the package: plain data, or an inert package's
@@ -856,14 +907,37 @@ func (s *pkgScan) store(lhs, rhs []ast.Expr, add func(string)) {
 }
 
 // read: r is not another package's, or is an inert package's, or a copy
-// of a basic value (a slice, map, chan, pointer or struct may alias it).
+// of a basic value (a slice, map, chan, pointer or struct may alias it); a
+// composite literal's keys and values each so (holder{util.S}).
 func (s *pkgScan) read(r ast.Expr) bool {
+	if ls := s.leaves(r); len(ls) != 1 || ls[0] != r {
+		return !slices.ContainsFunc(ls, func(e ast.Expr) bool { return !s.read(e) })
+	}
 	t, q := s.info.TypeOf(r), s.qual(s.root(r))
 	if c, ok := ast.Unparen(r).(*ast.CallExpr); ok && s.conversion(c) {
 		t = s.info.TypeOf(c.Fun) // what it converts to (an unloaded operand leaves the result invalid)
 	}
 	_, basic := types.Unalias(cmp.Or(t, types.Type(types.Typ[types.Invalid]))).Underlying().(*types.Basic)
 	return q == "" || inert(q) || basic && plainData(t, map[types.Type]bool{})
+}
+
+// leaves is what e holds: a composite literal's keys and values, at any
+// depth and through & (&holder{s: util.S}, map[chan any]bool{util.Ch: true}),
+// else e itself.
+func (s *pkgScan) leaves(e ast.Expr) []ast.Expr {
+	cl, ok := ast.Unparen(s.root(e)).(*ast.CompositeLit)
+	if !ok {
+		return []ast.Expr{e}
+	}
+	var out []ast.Expr
+	for _, el := range cl.Elts {
+		if kv, ok := el.(*ast.KeyValueExpr); ok {
+			out = append(append(out, s.leaves(kv.Key)...), s.leaves(kv.Value)...)
+		} else {
+			out = append(out, s.leaves(el)...)
+		}
+	}
+	return out
 }
 
 func (s *pkgScan) conversion(x *ast.CallExpr) bool {

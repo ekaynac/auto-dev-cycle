@@ -62,7 +62,7 @@ type pkgFacts struct {
 func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
 	return func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, err error) {
 		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{},
-			listEnd: time.Now().Add(maxListTime)}
+			started: time.Now(), listEnd: time.Now().Add(maxListTime)}
 		defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
 			if p := recover(); p != nil && ctx.Err() != nil {
 				blocks, warnings, err = r.blocks, r.warnings, ctx.Err()
@@ -81,7 +81,7 @@ type run struct {
 	base               string
 	read               Reader
 	lister             Lister
-	listEnd            time.Time // every go list run and type check ends by then
+	started, listEnd   time.Time // every go list run and type check ends by listEnd
 	listRuns           int
 	budget             int64
 	work               int
@@ -90,8 +90,18 @@ type run struct {
 	baseDirs, candDirs map[string][]string // their files by directory
 	touched            map[string]bool     // directories of changed Go files
 	trees              [2]*tree            // the base and the candidate
+	vendorChanged      map[string]bool     // vendor/ directories with a file changed
+	anyTest            bool                // a Go test in either version (a helper anywhere the tests may call)
 	blocks, warnings   []Block
 }
+
+// cgoSources is what cgo compiles beside a package's Go files, and objects
+// what go assembles or links (go/build's names; .o, .a and .so through a
+// preamble's LDFLAGS).
+var (
+	cgoSources = strings.Fields(".c .cc .cxx .cpp .m .h .hh .hpp .hxx .f .F .for .f90 .swig .swigcxx")
+	objects    = strings.Fields(".s .S .sx .syso .o .a .so")
+)
 
 func add(to *[]Block, p, what string) {
 	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what})
@@ -111,7 +121,9 @@ func (r *run) check(changes []Change) error {
 		}
 	}
 	r.baseDirs, r.candDirs = byDir(r.files), byDir(r.cand)
-	r.trees = [2]*tree{{r.files, r.baseDirs, map[string]*typer{}}, {r.cand, r.candDirs, map[string]*typer{}}}
+	r.trees = [2]*tree{{r.files, r.baseDirs, map[string]*typer{}, vendors(keys(r.files))}, {r.cand, r.candDirs, map[string]*typer{}, vendors(keys(r.cand))}}
+	r.anyTest = slices.ContainsFunc(keys(r.files, r.cand), goByName)
+	r.vendorChanged = vendors(slices.DeleteFunc(keys(r.files, r.cand), func(p string) bool { return r.files[p] == r.cand[p] }))
 	py := slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), func(p string) bool { return path.Ext(p) == ".py" })
 	for _, c := range changes {
 		for _, p := range slices.Compact([]string{c.Src, c.Dst}) {
@@ -120,8 +132,12 @@ func (r *run) check(changes []Change) error {
 				add(&r.blocks, p, "python integrity not verified (P14c)")
 			case path.Ext(p) == ".go":
 				r.touched[dir] = true
-			case new && slices.Contains([]string{".s", ".S", ".syso"}, path.Ext(p)): // linked into any test binary importing it
-				add(&r.blocks, p, "unverifiable: assembly or a system object")
+			case strings.HasSuffix(p, ".work") || strings.HasSuffix(p, ".work.sum"): // a workspace (GOWORK may name any) redirects imports
+				add(&r.blocks, p, "unverifiable: a workspace file changed (go.work, or one GOWORK may name)")
+			case slices.Contains(objects, path.Ext(p)): // assembled or linked into any test binary importing it; deleted too
+				add(&r.blocks, p, "unverifiable: assembly or an object file")
+			case slices.Contains(cgoSources, path.Ext(p)): // a constructor runs before any test; deleted too (a header found elsewhere)
+				add(&r.blocks, p, "unverifiable: C, C++, Objective-C, Fortran or SWIG source")
 			case new && path.Base(p) == "go.mod" && p != "go.mod" && c.Status != "M" && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)),
 				func(q string) bool { return goByName(q) && strings.HasPrefix(q, dir+"/") }):
 				add(&r.blocks, p, "a go.mod added over tests: they leave the module the gate tests")
@@ -299,7 +315,8 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 	for _, k := range slices.Sorted(maps.Keys(a.flags)) {
 		p, _, _ := strings.Cut(k, "\x00")
 		for _, f := range a.flags[k] {
-			if !slices.Contains(b.flags[k], f) && (r.tested(dir) || f == "reflection on a testing value") {
+			cgo := f == "an import of C" && r.files[p] != r.cand[p] // a new or changed preamble runs before any test
+			if (!slices.Contains(b.flags[k], f) || cgo) && (r.tested(dir) || cgo || f == "reflection on a testing value") {
 				add(&r.blocks, p, "unverifiable: "+f)
 			} else if !slices.Contains(b.flags[k], f) {
 				add(&r.warnings, p, f+": review it")
@@ -319,10 +336,9 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.warnings, at, "a reference into S (exit, output, process, testing control) added, removed, moved or changed: review it")
 		}
 	}
-	anyTest := slices.ContainsFunc(keys(r.files, r.cand), goByName) // a helper anywhere the tests may call
-	for _, k := range keys(b.typed, a.typed) {                      // by identity, so no fact is traded for another
+	for _, k := range keys(b.typed, a.typed) { // by identity, so no fact is traded for another
 		f := strings.Split(k, "\x00") // file, function, fact
-		if at := f[0] + ": " + f[2] + " in " + f[1]; a.typed[k] > b.typed[k] && (r.tested(dir) || anyTest || !strings.HasPrefix(f[2], factMakes)) {
+		if at := f[0] + ": " + f[2] + " in " + f[1]; a.typed[k] > b.typed[k] && (r.tested(dir) || r.anyTest || !strings.HasPrefix(f[2], factMakes)) {
 			add(&r.blocks, at, "can forge go test2json results (real types)")
 		} else if a.typed[k] > b.typed[k] {
 			add(&r.warnings, at, "reflection that makes values, in a package without tests: review it")

@@ -287,12 +287,12 @@ func TestIntegrityBlocks(t *testing.T) {
 		"a range over a stored function":  {map[string]string{"pkg/forge.go": "package pkg\n\nvar seq = func(yield func() bool) {}\n\nfunc init() {\n\tfor range seq {\n\t}\n}\n"}, nil, "a range it cannot follow (seq)"},
 		"a local read of another package": {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"example.com/m/util\"\n\nfunc init() {\n\tv := util.V\n\t_ = v\n}\n"}, nil, "plain data read (util.V)"},
 		"an own function passed on":       {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"flag\"\n\nfunc helper() {\n" + flagBody + "}\n\nfunc apply(f func()) {}\n\nfunc init() { apply(helper) }\n"}, nil, "cannot prove safe (flag.NewFlagSet)"},
-		"an unresolvable testing type":    {fake("func() *testing.T { var x any = t; return x.(*nope.T) }()", ""), nil, "a testing value not the runner's"},
+		"an unresolvable testing type":    {fake("func() *testing.T { var x any = t; return x.(*nope.T) }()", ""), nil, "unverifiable"}, // with real types, a type error
 		"a stored sort.Slice callback":    {map[string]string{"pkg/forge.go": "package pkg\n\nimport \"sort\"\n\nvar less = func(i, j int) bool { return false }\n\nfunc init() {\n\txs := []int{2, 1}\n\tsort.Slice(xs, less)\n}\n"}, nil, "plain data passed to sort.Slice"},
 		"a stored WalkDir callback":       {map[string]string{"pkg/forge.go": "package pkg\n\nimport (\n\t\"io/fs\"\n\t\"path/filepath\"\n)\n\nvar walk = func(string, fs.DirEntry, error) error { return nil }\n\nfunc init() { filepath.WalkDir(\".\", walk) }\n"}, nil, "plain data passed to filepath.WalkDir"},
 		// H1: an alias in another file cannot rename testing; H2: inference through a copy or a package var.
 		"a poisoned import": {map[string]string{"pkg/calc_test.go": fake("func() *testing.T { x := any(t); return reflect.New(reflect.TypeOf(x).Elem()).Interface().(*testing.T) }()", "")["pkg/calc_test.go"],
-			"pkg/zz.go": "package pkg\n\nimport testing \"example.com/m/util\"\n\nvar _ = testing.V\n"}, nil, "a testing value not the runner's"},
+			"pkg/zz.go": "package pkg\n\nimport testing \"example.com/m/util\"\n\nvar _ = testing.V\n"}, nil, "unverifiable"}, // with real types, imports not loaded
 		"fresh(u), a local copy":  {fake("func() *testing.T { u := t; return fresh(u) }()", "func fresh[P any](*P) *P { return new(P) }\n"), nil, "a testing value not the runner's"},
 		"fresh(u), a package var": {fake("fresh(u)", "var u *testing.T\n\nfunc fresh[P any](*P) *P { return new(P) }\n"), nil, "a testing value not the runner's"},
 		// The lead's verification of round 7 (F1, M1): a pointer into, or a write through, another package's variable.
@@ -419,12 +419,12 @@ func TestIntegrityAcceptsAndWarns(t *testing.T) {
 			"var (\n\tre  = regexp.MustCompile(\"x\")\n\terr = errors.New(strings.ToUpper(filepath.Join(\"a\", \"b\")))\n\tcfg = new(other.Config)\n)\n"}, nil, ""},
 		"stored functions": {map[string]string{"tool/h.go": "package tool\n\nimport \"fmt\"\n\nfunc helper() { fmt.Println(\"x\") }\n\n" +
 			"var handlers = map[string]func(){\"x\": helper, \"y\": func() { fmt.Println(\"y\") }}\n"}, nil, "tool/h.go: fmt.Println in helper"},
-		"a TestMain parsing flags":       {map[string]string{"race/main_test.go": "package race\n\nimport (\n\t\"flag\"\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) {\n\tflag.Parse()\n\tos.Exit(m.Run())\n}\n"}, nil, "TestMain(*testing.M) of race:race changed or deleted"},
-		"an exit code changed":           {map[string]string{"cmd/x/main.go": "package main\n\nimport \"os\"\n\nfunc main() { os.Exit(0) }\n"}, nil, "cmd/x/main.go: os.Exit(0) in main"},
-		"a named 22":                     {map[string]string{"pkg/calc.go": calc + "\ntype R int32\n\nvar r = R(22)\n"}, nil, "converts 22"},
-		"an exit moved":                  {map[string]string{"cmd/x/main.go": "package main\n\nimport \"os\"\n\nfunc main() { run() }\n\nfunc run() { os.Exit(1) }\n"}, nil, "cmd/x/main.go: os.Exit in main"},
-		"a dot import, untested":         {map[string]string{"tool/d.go": "package tool\n\nimport . \"os\"\n\nvar _ = Getpid\n"}, nil, "a dot import of os"},
-		"cgo, untested":                  {map[string]string{"tool/c.go": "package tool\n\nimport \"C\"\n"}, nil, "an import of C"},
+		"a TestMain parsing flags": {map[string]string{"race/main_test.go": "package race\n\nimport (\n\t\"flag\"\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) {\n\tflag.Parse()\n\tos.Exit(m.Run())\n}\n"}, nil, "TestMain(*testing.M) of race:race changed or deleted"},
+		"an exit code changed":     {map[string]string{"cmd/x/main.go": "package main\n\nimport \"os\"\n\nfunc main() { os.Exit(0) }\n"}, nil, "cmd/x/main.go: os.Exit(0) in main"},
+		"a named 22":               {map[string]string{"pkg/calc.go": calc + "\ntype R int32\n\nvar r = R(22)\n"}, nil, "converts 22"},
+		"an exit moved":            {map[string]string{"cmd/x/main.go": "package main\n\nimport \"os\"\n\nfunc main() { run() }\n\nfunc run() { os.Exit(1) }\n"}, nil, "cmd/x/main.go: os.Exit in main"},
+		"a dot import, untested":   {map[string]string{"tool/d.go": "package tool\n\nimport . \"os\"\n\nvar _ = Getpid\n"}, nil, "a dot import of os"},
+		// cgo, untested: blocks since #271 Opus M2 (a constructor runs before any test), TestIntegrityRound2.
 		"a method keyed by its receiver": {map[string]string{"pkg/calc.go": "package pkg\n\nimport \"fmt\"\n\nfunc Add(a, b int) int { return a + b }\n\ntype A struct{}\n\nfunc (A) Print() { fmt.Println() }\n"}, nil, "pkg/calc.go: fmt.Println in A.Print"},
 		// Operator decision A: every exit, output or testing-control
 		// reference that does not block warns, naming its file and function.
@@ -536,11 +536,10 @@ func TestIntegrityBounds(t *testing.T) {
 func TestGoOn(t *testing.T) {
 	r := &run{ctx: context.Background()}
 	on := func(p, src string) []int {
-		f, err := parser.ParseFile(token.NewFileSet(), filepath.Base(p), src, parser.ParseComments)
-		if err != nil {
+		if _, err := parser.ParseFile(token.NewFileSet(), filepath.Base(p), src, parser.ParseComments); err != nil {
 			t.Fatal(err)
 		}
-		o, _, _, err := r.goOn(p, f)
+		o, _, _, err := r.goOn(p, []byte(src))
 		if err != nil {
 			t.Fatal(err)
 		}

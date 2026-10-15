@@ -18,6 +18,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"go/version"
 	"io"
 	"os"
 	"os/exec"
@@ -29,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -187,9 +189,29 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 // tree is one version of the repository: paths to blobs, by directory, and
 // a typer per module root and platform.
 type tree struct {
-	files  map[string]string
-	dirs   map[string][]string
-	typers map[string]*typer
+	files   map[string]string
+	dirs    map[string][]string
+	typers  map[string]*typer
+	vendors map[string]bool // its vendor/ directories
+}
+
+// vendors is the vendor/ directories ("x/vendor/") the paths are under,
+// once per run: per module would be its paths times its modules.
+func vendors(paths []string) map[string]bool {
+	out := map[string]bool{}
+	for _, p := range paths {
+		for i := 0; i < len(p); {
+			j := strings.Index(p[i:], "vendor/")
+			if j < 0 {
+				break
+			}
+			if k := i + j; k == 0 || p[k-1] == '/' {
+				out[p[:k+len("vendor/")]] = true
+			}
+			i += j + 1
+		}
+	}
+	return out
 }
 
 // typer is one module's packages in one version: its own type-checked here,
@@ -209,6 +231,7 @@ type typer struct {
 	pkgs         map[string]*types.Package // own packages, by import path (nil: being checked)
 	failed       map[string]string         // import paths not loaded, and why
 	self         map[string]*types.Package // analysed packages with their tests, for their external tests only
+	vendor       map[string]bool           // the packages vendor/modules.txt lists (nil: not vendored)
 }
 
 // typer is the typer of dir's module (the nearest go.mod above it) on pl.
@@ -244,6 +267,35 @@ func (t *tree) typer(r *run, dir string, pl [2]string) *typer {
 		} else if f.Module != nil {
 			ty.mod = f.Module.Mod.Path
 		}
+		// go builds -mod=vendor with a vendor/modules.txt (go 1.14 on): its
+		// packages are typed from vendor/ as own source, only the standard
+		// library from export data; it must agree with go.mod.
+		// vendor/ only as the base has it: the gate may build it, or (GOFLAGS
+		// -mod=readonly, as the prepared image sets) the module cache.
+		vendor := path.Join(root, "vendor") + "/"
+		blob, work := t.files[vendor+"modules.txt"], false
+		for d := root; ; d = path.Dir(d) { // go finds a go.work upward
+			if work = t.files[path.Join(d, "go.work")] != ""; work || d == "." || d == "/" {
+				break
+			}
+		}
+		goVersion := "1.16" // go's reading of a go.mod with no go directive
+		if err == nil && f.Go != nil {
+			goVersion = f.Go.Version
+		}
+		switch on := err == nil && version.Compare("go"+goVersion, "go1.14") >= 0; {
+		case r.vendorChanged[vendor]:
+			ty.why = "a file under vendor/ changed"
+		case work && (blob != "" || t.vendors[vendor]):
+			ty.why = "a go.work beside vendor/: workspace mode does not read it"
+		case on && blob != "":
+			b, why, err := r.file(blob)
+			if ty.vendor, ty.gomod, ty.gosum = vendorPkgs(f, string(b)), []byte("module adc.invalid/vendored\n"), nil; ty.vendor == nil {
+				ty.why = cmp.Or(why, errText(err), "vendor/modules.txt does not agree with go.mod")
+			}
+		case on && t.vendors[vendor]:
+			ty.why = "a vendor/ directory without vendor/modules.txt"
+		}
 	}
 	if first, _, _ := strings.Cut(ty.mod, "/"); ty.mod != "" && !strings.Contains(first, ".") && ty.why == "" {
 		ty.why = "module path " + ty.mod + " has no dot in its first element: the standard library may shadow it"
@@ -258,8 +310,42 @@ func errText(err error) string {
 	return err.Error()
 }
 
-// local is the directory of an own package's import path, if one.
+// vendorPkgs is the packages vendor/modules.txt lists, if it agrees with
+// go.mod as go checks it (each requirement explicit at its version, nothing
+// explicit unrequired, no replacement); nil if not.
+func vendorPkgs(f *modfile.File, txt string) map[string]bool {
+	pkgs, explicit, mod, ver := map[string]bool{}, map[string]string{}, "", ""
+	for _, l := range strings.Split(txt, "\n") {
+		switch fs := strings.Fields(l); {
+		case len(fs) > 3 && fs[0] == "#", len(fs) >= 2 && fs[0] == "##" && fs[1] == "workspace": // a replacement; a workspace's vendoring
+			return nil
+		case len(fs) == 3 && fs[0] == "#":
+			mod, ver = fs[1], fs[2]
+		case len(fs) >= 2 && fs[0] == "##" && strings.HasPrefix(fs[1], "explicit"):
+			explicit[mod] = ver
+		case len(fs) == 1 && mod != "" && (fs[0] == mod || strings.HasPrefix(fs[0], mod+"/")):
+			pkgs[fs[0]] = true
+		case len(fs) == 1: // a package outside its module (fmt, an own one)
+			return nil
+		}
+	}
+	for _, r := range f.Require {
+		if explicit[r.Mod.Path] != r.Mod.Version {
+			return nil
+		}
+		delete(explicit, r.Mod.Path)
+	}
+	if len(explicit) > 0 || len(f.Replace) > 0 {
+		return nil
+	}
+	return pkgs
+}
+
+// local is the directory of an own (or vendored) package's import path, if one.
 func (ty *typer) local(p string) (string, bool) {
+	if first, _, _ := strings.Cut(p, "/"); ty.vendor[p] && strings.Contains(first, ".") { // never the standard library's
+		return path.Join(ty.root, "vendor", p), true
+	}
 	rel, ok := strings.CutPrefix(p, ty.mod)
 	if ty.mod == "" || !ok || rel != "" && (rel[0] != '/' || path.Clean(rel) != rel) {
 		return "", false
@@ -353,6 +439,8 @@ func (ty *typer) need(files []*ast.File) error {
 					seen[p] = true
 					fs, _ := ty.parse(dir)
 					walk(fs)
+				} else if first, _, _ := strings.Cut(p, "/"); ty.vendor != nil && strings.Contains(first, ".") {
+					ty.listed[p] = Listed{ImportPath: p, Error: &struct{ Err string }{"not in vendor/modules.txt"}} // go builds -mod=vendor
 				} else if _, ok := ty.listed[p]; !seen[p] && !ok && p != "C" && p != "unsafe" {
 					seen[p], ext = true, append(ext, p)
 				}
@@ -441,12 +529,32 @@ func (ty *typer) Import(p string) (*types.Package, error) {
 // past it, or on a done context, the guard stops (recovered) and the check is
 // abandoned, its CPU the residual (a killable loader is P14e-2b's).
 func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, files []*ast.File, info *types.Info) *types.Package {
-	done := make(chan any, 1)
+	if n := abandoned.Load(); n > 0 { // its CPU and memory still taken, and its fault not seen
+		by := "unknown"
+		if p := abandonedBy.Load(); p != nil {
+			by = *p
+		}
+		panic(fmt.Sprintf("%d type check(s) abandoned by an earlier guard run (%s) still running: not a finding against this change", n, by))
+	}
+	done, state := make(chan any, 1), new(atomic.Int32) // 0 running, 1 ended, 2 abandoned
 	go func() {
 		var v any
-		defer func() { done <- cmp.Or(recover(), v) }() // its panic is the guard's
+		defer func() {
+			if !state.CompareAndSwap(0, 1) {
+				abandoned.Add(-1)
+			}
+			done <- cmp.Or(recover(), v) // its panic is the guard's
+		}()
 		v, _ = conf.Check(path, fset, files, info)
 	}()
+	abandon := func(why any) {
+		if state.CompareAndSwap(0, 2) {
+			by := fmt.Sprintf("on base %.12s, started %s", r.base, r.started.Format(time.RFC3339))
+			abandonedBy.Store(&by)
+			abandoned.Add(1)
+		}
+		panic(why)
+	}
 	select {
 	case v := <-done:
 		if pkg, ok := v.(*types.Package); ok {
@@ -454,11 +562,20 @@ func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, fi
 		}
 		panic(v)
 	case <-r.ctx.Done():
-		panic(r.ctx.Err())
+		abandon(r.ctx.Err())
 	case <-time.After(time.Until(r.listEnd)):
-		panic("a type check over the guard's deadline (" + path + ")")
+		abandon("a type check over the guard's deadline (" + path + ")")
 	}
+	return nil
 }
+
+// abandoned is the type checks given up on that still run: go/types cannot
+// be stopped (a killable process is P14e-2c), so while one runs a new Go
+// guard run is unverifiable.
+var (
+	abandoned   atomic.Int64
+	abandonedBy atomic.Pointer[string] // the run that last abandoned one
+)
 
 type importFunc func(string) (*types.Package, error)
 
@@ -617,6 +734,7 @@ const (
 	factForged  = "a testing value not the runner's"
 	factReflect = "reflection on a testing value"
 	factMakes   = "reflection that makes, writes or calls values"
+	factUnsafe  = "a conversion from unsafe.Pointer" // a reflect.Value's (UnsafePointer) needs no unsafe import
 )
 
 var (
@@ -624,7 +742,7 @@ var (
 	otherDecl    = regexp.MustCompile(`^\tother declaration of \S+$`)
 	methodDecl   = regexp.MustCompile(`^(method|field and method with the same name) \S+ already declared at \S+$`)
 	reflectMakes = strings.Fields("New NewAt Zero MakeSlice MakeMap MakeMapWithSize MakeChan MakeFunc Append AppendSlice Copy")
-	valueMakes   = strings.Fields("Call CallSlice Method MethodByName Convert Grow Slice Slice3")
+	valueMakes   = strings.Fields("Call CallSlice Method MethodByName Convert Grow Slice Slice3 Addr Pointer UnsafeAddr UnsafePointer Bytes Clear") // from Addr: raw pointers, or a write past the read-only flag
 )
 
 // facts reports what the real types show in n: a testing value made (an
@@ -694,11 +812,15 @@ func facts(info *types.Info, n ast.Node, add func(string)) {
 				return holds(t, false, nil) || fillable(t) || testingPtr(t) || failing(t)
 			}) {
 				add(factForged + " (" + x.Name + types.TypeString(in.Type, nil) + ")")
+			} else if ok && slices.ContainsFunc(slices.Collect(in.TypeArgs.Types()), isUnsafe) {
+				add(factUnsafe + " (" + x.Name + types.TypeString(in.Type, nil) + ")") // a generic may convert it (deref[unsafe.Pointer, T])
 			}
 		case *ast.CallExpr:
-			if tv := info.Types[ast.Unparen(x.Fun)]; tv.IsType() && len(x.Args) == 1 && !types.IsInterface(tv.Type) { // to a holder of *testing.T, of anything else
+			if tv := info.Types[ast.Unparen(x.Fun)]; tv.IsType() && len(x.Args) == 1 && (!types.IsInterface(tv.Type) || rawParam(tv.Type)) { // to a holder of *testing.T, of anything else
 				if from := info.TypeOf(x.Args[0]); holds(tv.Type, true, nil) && (from == nil || !types.Identical(from, tv.Type)) {
 					at(factForged, x, from)
+				} else if from != nil && (isUnsafe(from) && !isUnsafe(tv.Type) || rawParam(from) && pointerLike(tv.Type) || rawParam(tv.Type) && pointerLike(from)) {
+					at(factUnsafe, x)
 				}
 			}
 			fun, _ := fn(x.Fun)
@@ -784,13 +906,58 @@ func testingStruct(t types.Type) bool {
 }
 
 // valueMethod: o is an interface's (or constraint's) method a reflect.Value
-// maker satisfies: its name, over reflect's types (s.Set(v)).
+// maker satisfies: its name, over reflect's types (s.Set(v)), or a raw
+// pointer's maker by its exact signature (interface{ UnsafeAddr() uintptr }).
 func valueMethod(o types.Object) bool {
 	f, ok := o.(*types.Func)
 	if !ok || f.Signature().Recv() == nil || !types.IsInterface(f.Signature().Recv().Type()) {
 		return false
+	} else if want, ok := rawMakers[f.Name()]; ok { // by type: an alias or a type-parameter result too
+		sig := f.Signature()
+		if sig.Params().Len() > 0 || sig.Results().Len() != b2i(want != nil) {
+			return false
+		} else if want == nil {
+			return true
+		}
+		r := types.Unalias(sig.Results().At(0).Type())
+		_, param := r.(*types.TypeParam)
+		return param || want(r)
 	}
 	return (strings.HasPrefix(f.Name(), "Set") || slices.Contains(valueMakes, f.Name())) && strings.Contains(types.TypeString(f.Type(), nil), "reflect.")
+}
+
+// rawMakers is reflect.Value's raw-pointer makers, by their one result (none: Clear; a named result too).
+var rawMakers = map[string]func(types.Type) bool{
+	"Pointer": isUintptr, "UnsafeAddr": isUintptr, "UnsafePointer": isUnsafe,
+	"Bytes": func(t types.Type) bool { return types.Identical(t.Underlying(), types.NewSlice(types.Typ[types.Byte])) }, "Clear": nil,
+	"Addr": func(t types.Type) bool {
+		n, ok := t.(*types.Named)
+		return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "reflect" && n.Obj().Name() == "Value"
+	},
+}
+
+// isUintptr, like isUnsafe and Bytes, by the underlying type: a named one
+// (type U uintptr) is still a raw address (a false block: no reflect.Value
+// method has it).
+func isUintptr(t types.Type) bool { return types.Identical(t.Underlying(), types.Typ[types.Uintptr]) }
+
+func isUnsafe(t types.Type) bool {
+	return types.Identical(t.Underlying(), types.Typ[types.UnsafePointer])
+}
+
+// rawParam: t is a type parameter whose constraint has a type set (P ~unsafe.Pointer), not a pure method set.
+func rawParam(t types.Type) bool {
+	p, ok := types.Unalias(t).(*types.TypeParam)
+	if !ok {
+		return false
+	}
+	i, ok := p.Constraint().Underlying().(*types.Interface)
+	return ok && !i.IsMethodSet()
+}
+
+func pointerLike(t types.Type) bool {
+	_, ptr := t.Underlying().(*types.Pointer)
+	return ptr || rawParam(t) || isUnsafe(t) || types.Identical(t.Underlying(), types.Typ[types.Uintptr])
 }
 
 // launders: a value asserted or switched to t is a testing value to the
