@@ -77,6 +77,32 @@ func TestIntegrity2b2(t *testing.T) {
 			t.Errorf("M1 %s from init: %q", name, whats(v.Blocks))
 		}
 	}
+
+	// Astra #274 r2 (and the flag on 99edbd1): read-only by function, not by
+	// package: an Append* or Encode* writes its slice's backing array, and
+	// errors.As its target (Astra's inputs, from init).
+	tgt := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"util/t.go": "package util\n\nvar Target error\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]struct{ body, why string }{
+		"utf8.EncodeRune(asn1.NullBytes, 'X')": {"import (\n\t\"encoding/asn1\"\n\t\"unicode/utf8\"\n)\n\nfunc init() { utf8.EncodeRune(asn1.NullBytes, 'X') }\n",
+			"a write it cannot prove safe (encoding/asn1.NullBytes)"},
+		"utf8.AppendRune(asn1.NullBytes[:0], 'Y')": {"import (\n\t\"encoding/asn1\"\n\t\"unicode/utf8\"\n)\n\nfunc init() { _ = utf8.AppendRune(asn1.NullBytes[:0], 'Y') }\n",
+			"a write it cannot prove safe (encoding/asn1.NullBytes)"},
+		"strconv.AppendInt(asn1.NullBytes[:0], 0, 10)": {"import (\n\t\"encoding/asn1\"\n\t\"strconv\"\n)\n\nfunc init() { _ = strconv.AppendInt(asn1.NullBytes[:0], 0, 10) }\n",
+			"a write it cannot prove safe (encoding/asn1.NullBytes)"},
+		"errors.As(err, &util.Target)": {"import (\n\t\"errors\"\n\n\t\"example.com/m/util\"\n)\n\nfunc init() { _ = errors.As(errors.New(\"x\"), &util.Target) }\n",
+			"util.Target"},
+		// An inert package's pointer as the target: only the write check sees it.
+		"errors.As(err, time.UTC)": {"import (\n\t\"errors\"\n\t\"time\"\n)\n\nfunc init() { _ = errors.As(errors.New(\"x\"), time.UTC) }\n",
+			"a write it cannot prove safe (time.UTC)"},
+	} {
+		if v := tgt.guarded(t, map[string]string{"pkg/w.go": "package pkg\n\n" + c.body}); !finds(v.Blocks, c.why) {
+			t.Errorf("%s from init: %q", name, whats(v.Blocks))
+		}
+	}
 }
 
 func pad(n int) string {

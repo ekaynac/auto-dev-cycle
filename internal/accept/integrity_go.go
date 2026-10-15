@@ -872,14 +872,16 @@ func (s *pkgScan) readOnly(f ast.Expr) bool {
 	}
 	q := s.qual(f)
 	name := q[strings.LastIndex(q, ".")+1:]
-	return strings.HasPrefix(q, "fmt.") && (strings.Contains(name, "rint") || name == "Errorf" || strings.HasPrefix(name, "Append")) ||
+	return strings.HasPrefix(q, "fmt.") && (strings.Contains(name, "rint") || name == "Errorf") ||
 		strings.HasPrefix(q, "slices.") && slices.Contains([]string{"Contains", "Index", "Equal", "Clone"}, name) ||
-		slices.Contains(readPkgs, q[:max(strings.LastIndex(q, "."), 0)]) // time.Date(…, time.UTC), strings.Map(unicode.ToUpper, …)
+		slices.Contains(readFuncs, q)
 }
 
-// readPkgs' functions never write their arguments (strings and strconv
-// take values; slices, sort, maps, bytes and encoding/* may write).
-var readPkgs = strings.Fields("strings strconv unicode unicode/utf8 unicode/utf16 errors regexp path path/filepath time")
+// readFuncs are functions proved not to write their arguments, a package's
+// value read as a value included (time.Date(…, time.UTC), strings.Map's
+// rune function). Any other, an Append* or Encode* or one taking a callback
+// among them, may write what it is given.
+var readFuncs = strings.Fields("strings.Join strings.Map path/filepath.Base path.Base time.Date time.Sleep")
 
 // shared: a may leave the package: plain data, or an inert package's
 // function, value or result (never by its name's case), not one of its
