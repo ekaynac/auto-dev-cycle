@@ -18,6 +18,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"go/version"
 	"io"
 	"os"
 	"os/exec"
@@ -209,6 +210,7 @@ type typer struct {
 	pkgs         map[string]*types.Package // own packages, by import path (nil: being checked)
 	failed       map[string]string         // import paths not loaded, and why
 	self         map[string]*types.Package // analysed packages with their tests, for their external tests only
+	vendor       map[string]bool           // the packages vendor/modules.txt lists (nil: not vendored)
 }
 
 // typer is the typer of dir's module (the nearest go.mod above it) on pl.
@@ -244,6 +246,15 @@ func (t *tree) typer(r *run, dir string, pl [2]string) *typer {
 		} else if f.Module != nil {
 			ty.mod = f.Module.Mod.Path
 		}
+		// go builds -mod=vendor with a vendor/modules.txt (go 1.14 on): its
+		// packages are typed from vendor/ as own source, only the standard
+		// library from export data; it must agree with go.mod.
+		if blob := t.files[path.Join(root, "vendor/modules.txt")]; err == nil && blob != "" && f.Go != nil && version.Compare("go"+f.Go.Version, "go1.14") >= 0 {
+			b, why, err := r.file(blob)
+			if ty.vendor, ty.gomod, ty.gosum = vendorPkgs(f, string(b)), []byte("module adc.invalid/vendored\n"), nil; ty.vendor == nil {
+				ty.why = cmp.Or(why, errText(err), "vendor/modules.txt does not agree with go.mod")
+			}
+		}
 	}
 	if first, _, _ := strings.Cut(ty.mod, "/"); ty.mod != "" && !strings.Contains(first, ".") && ty.why == "" {
 		ty.why = "module path " + ty.mod + " has no dot in its first element: the standard library may shadow it"
@@ -258,8 +269,40 @@ func errText(err error) string {
 	return err.Error()
 }
 
-// local is the directory of an own package's import path, if one.
+// vendorPkgs is the packages vendor/modules.txt lists, if it agrees with
+// go.mod as go checks it (each requirement explicit at its version, nothing
+// explicit unrequired, no replacement); nil if not.
+func vendorPkgs(f *modfile.File, txt string) map[string]bool {
+	pkgs, explicit, mod, ver := map[string]bool{}, map[string]string{}, "", ""
+	for _, l := range strings.Split(txt, "\n") {
+		switch fs := strings.Fields(l); {
+		case len(fs) > 3 && fs[0] == "#": // a replacement
+			return nil
+		case len(fs) == 3 && fs[0] == "#":
+			mod, ver = fs[1], fs[2]
+		case len(fs) >= 2 && fs[0] == "##" && strings.HasPrefix(fs[1], "explicit"):
+			explicit[mod] = ver
+		case len(fs) == 1 && mod != "" && fs[0] != "#":
+			pkgs[fs[0]] = true
+		}
+	}
+	for _, r := range f.Require {
+		if explicit[r.Mod.Path] != r.Mod.Version {
+			return nil
+		}
+		delete(explicit, r.Mod.Path)
+	}
+	if len(explicit) > 0 || len(f.Replace) > 0 {
+		return nil
+	}
+	return pkgs
+}
+
+// local is the directory of an own (or vendored) package's import path, if one.
 func (ty *typer) local(p string) (string, bool) {
+	if ty.vendor[p] {
+		return path.Join(ty.root, "vendor", p), true
+	}
 	rel, ok := strings.CutPrefix(p, ty.mod)
 	if ty.mod == "" || !ok || rel != "" && (rel[0] != '/' || path.Clean(rel) != rel) {
 		return "", false
@@ -353,6 +396,8 @@ func (ty *typer) need(files []*ast.File) error {
 					seen[p] = true
 					fs, _ := ty.parse(dir)
 					walk(fs)
+				} else if first, _, _ := strings.Cut(p, "/"); ty.vendor != nil && strings.Contains(first, ".") {
+					ty.listed[p] = Listed{ImportPath: p, Error: &struct{ Err string }{"not in vendor/modules.txt"}} // go builds -mod=vendor
 				} else if _, ok := ty.listed[p]; !seen[p] && !ok && p != "C" && p != "unsafe" {
 					seen[p], ext = true, append(ext, p)
 				}
