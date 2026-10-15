@@ -26,9 +26,9 @@ var (
 	// pyOpt: the options a base may set (collection and results untouched).
 	pyOpt     = regexp.MustCompile(`^-(q+|v+|r\w*|l|s|W|-(strict|strict-markers|strict-config|showlocals|tb|color|durations|capture))$`)
 	pyWords   = regexp.MustCompile(`[\s"',\[\]=]+`)
-	pyPathKey = regexp.MustCompile(`(?m)^[ \t]*(pythonpath|python_paths|site_dirs)[ \t]*[=:]`) // a key (Mythos #270 L2)
-	pyKey     = regexp.MustCompile(`\n(\[|[A-Za-z_][\w.-]*[ \t]*[=:])`)                        // the next key or section
-	pyNote    = regexp.MustCompile(`(?m)^[ \t]*[#;].*$`)                                       // a comment line
+	pyPathKey = regexp.MustCompile(`pythonpath|python_paths|site_dirs`)
+	pyKey     = regexp.MustCompile(`\n(\[|[A-Za-z_][\w.-]*[ \t]*[=:])`) // the next key or section
+	pyNote    = regexp.MustCompile(`(?m)^[ \t]*[#;].*$`)                // a comment line
 	// splitLines breaks lines where str.splitlines does (iniconfig's lines).
 	splitLines = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n", "\x1c", "\n", "\x1d", "\n", "\x1e", "\n",
 		"\u0085", "\n", "\u2028", "\n", "\u2029", "\n")
@@ -156,7 +156,9 @@ func (r *run) pyCustom() (custom, configured bool, paths []string, err error) {
 			return err == nil, true, nil, err
 		}
 		configured = configured || conf != ""
-		for _, v := range pyPathKey.Split(conf, -1)[1:] { // its directories, from the file's (Mythos #266 r2 L2, Opus #267 L1, #270 M1)
+		// its directories, from the file's (Mythos #266 r2 L2, Opus #267 L1, #270 M1); a key not
+		// in a comment (#270 L2), after any line break, in any key form (the review of 8f2a20c)
+		for _, v := range pyPathKey.Split(pyNote.ReplaceAllString(splitLines.Replace(conf), ""), -1)[1:] {
 			if v = pyKey.Split(v, 2)[0]; strings.Contains(v, `\`) || path.Ext(p) != ".toml" && strings.ContainsAny(v, `"'`) { // shlex's quotes
 				return true, true, nil, nil // an escape: unread
 			}
@@ -306,8 +308,9 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 	}()
 	type block struct {
 		indent int
-		fn     string // the outermost function, "" at import
-		meta   bool   // a class that may be a metaclass (Mythos #263 L1, Opus #266 L1)
+		fn     string   // the outermost function, "" at import
+		meta   bool     // a class that may be a metaclass (Mythos #263 L1, Opus #266 L1)
+		reads  []string // at import, the names its headers read: if _detect(): (the security review of 8f2a20c)
 	}
 	stack, deco, conftest, tested := []block{{indent: -1}}, []ptok(nil), path.Base(p) == "conftest.py", pyTested(p)
 	rebound, classes := pyRebound(lines), map[string]bool{} // Opus #266 M2: a pre-pass
@@ -331,8 +334,9 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 		} else if err := r.ctx.Err(); err != nil {
 			return nil, false, err
 		}
+		var prev []string // an else, elif, except or finally continues the header before it
 		for l.indent <= stack[len(stack)-1].indent {
-			stack = stack[:len(stack)-1]
+			prev, stack = stack[len(stack)-1].reads, stack[:len(stack)-1]
 		}
 		t, top := l.toks, stack[len(stack)-1]
 		for i, k := range t { // global X: X rebound at import if its function runs (Mythos #267 r2 M2)
@@ -344,7 +348,7 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 				}
 			}
 		}
-		fn, b, code := top.fn, block{l.indent, top.fn, false}, append(append(deco, t...), l.inner...)
+		fn, b, code := top.fn, block{l.indent, top.fn, false, slices.Concat(top.reads, prev, pyNames(t))}, append(append(deco, t...), l.inner...)
 		if fn == "" && !(pyMain(t) && !rebound) {
 			for _, st := range pySplit(t, ";") {
 				if len(st) == 0 { // X = 1; (Mythos #267 r4 L)
@@ -353,8 +357,8 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 				if why := pyAllowed(st, conftest); why != "" {
 					find(st, why, strings.HasPrefix(why, "an import binding")) // Mythos #266 L1
 				}
-				binds, imported := pyBinds(slices.Concat(st, l.inner))                  // a walrus in an f-string binds too (Mythos #266 H1)
-				text, reads := fmt.Sprint(st)+"\n", pyNames(slices.Concat(st, l.inner)) // once: a chain binds many names (Opus #270 L1)
+				binds, imported := pyBinds(slices.Concat(st, l.inner))                                            // a walrus in an f-string binds too (Mythos #266 H1)
+				text, reads := fmt.Sprint(st)+"\n", slices.Concat(top.reads, pyNames(slices.Concat(st, l.inner))) // once: a chain binds many names (Opus #270 L1)
 				for _, n := range binds {
 					if slices.Contains(pyImportPath, n) { // in every file (Mythos #267 H3)
 						importPath(st, n)

@@ -31,15 +31,19 @@ type pyBase struct {
 
 // pyBaseFile is what a base Python file imports, and its conditions.
 type pyBaseFile struct {
-	path   string
-	unread bool
-	mods   []string          // the dotted names it imports (a from-import's as module.name)
-	from   map[string]string // a name it binds by import, to that dotted name (import a.b: a to a.b)
-	named  map[string]bool   // the names a from-import binds
-	locals map[string]bool   // the names its module-level statements bind
-	stars  []string          // the modules it star-imports
-	conds  [][]ptok          // its condition lines, and the bindings they read (Opus #270 H2)
+	path    string
+	unread  bool
+	mods    []string          // the dotted names it imports (a from-import's as module.name)
+	from    map[string]string // a name it binds by import, to that dotted name (import a.b: a to a.b)
+	named   map[string]bool   // the names a from-import binds
+	locals  map[string]bool   // the names its module-level statements bind
+	stars   []string          // the modules it star-imports
+	dynamic bool              // it may bind names at run time: __getattr__, globals(), setattr, vars, __dict__, modules
+	conds   [][]ptok          // its condition lines, and the bindings they read (Opus #270 H2)
 }
+
+// pyDynamic: the tokens of a module that may bind names at run time.
+var pyDynamic = []string{"__getattr__", "globals", "setattr", "vars", "__dict__", "modules"}
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
 // r2 M1): the root, each base pythonpath entry, and each test file's
@@ -157,6 +161,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	owner, indent, deco, def, bodies := -1, 0, []ptok(nil), "", []int(nil)
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
+		f.dynamic = f.dynamic || slices.ContainsFunc(line, func(k ptok) bool { return slices.Contains(pyDynamic, k.text) })
 		cond := pySkipString(line, len(l.toks), pure, aliases)
 		for i, k := range line {
 			if s := pyStr(k); cond && s != "" { // a string condition's code too (the security review)
@@ -277,6 +282,8 @@ func (pb *pyBase) resolve(d string) (string, string, error) {
 						} else if fs.locals[parts[i]] || fs.from[parts[i]] != "" || len(fs.stars) > 0 {
 							next = strings.Join(append([]string{s}, parts[i:]...), ".")
 							break
+						} else if fs.dynamic { // its names are bound at run time (the security review of 8f2a20c)
+							return d, "the star import " + s + ", which binds names at run time", nil
 						}
 					}
 				}
