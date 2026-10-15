@@ -214,6 +214,89 @@ func TestIntegrityRealTypes(t *testing.T) {
 		t.Errorf("tests added to a base with none: %q", whats(v.Blocks))
 	}
 
+	// Opus #269 round 2. H1 (a regression) and M1 (on main): a helper or a
+	// const declared once per platform, or per race tag; the text layer read
+	// the first declaration. Each platform's files are now read apart, and a
+	// name declared again counts as asserting only when every declaration
+	// asserts; a redeclared const's value must match (but a bool's).
+	check := "func check(t *testing.T, got, want int) {\n\tif got != want {\n\t\tt.Errorf(\"got %d\", got)\n\t}\n}\n"
+	split := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/helper_test.go": "package pkg\n\nimport \"testing\"\n\n" + check,
+			"pkg/calc_test.go": "package pkg\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tcheck(t, Add(1, 2), 3)\n}\n"})
+		plain(t, src, "add", "--all")
+	})
+	empty := "package pkg\n\nimport \"testing\"\n\nfunc check(t *testing.T, got, want int) {}\n"
+	for name, c := range map[string]struct {
+		files map[string]string
+		why   string
+	}{
+		"H1 an asserting helper on amd64 only, E2E": {map[string]string{"pkg/a_amd64_test.go": "package pkg\n\nimport \"testing\"\n\n" + check, "pkg/b_arm64_test.go": empty}, "fewer assertions"},
+		"H1 the reverse file names":                 {map[string]string{"pkg/a_arm64_test.go": empty, "pkg/b_amd64_test.go": "package pkg\n\nimport \"testing\"\n\n" + check}, "fewer assertions"},
+		"M1 a race pair helper": {map[string]string{"pkg/a_test.go": "//go:build race\n\npackage pkg\n\nimport \"testing\"\n\n" + check,
+			"pkg/b_test.go": "//go:build !race\n\npackage pkg\n\nimport \"testing\"\n\nfunc check(t *testing.T, got, want int) {}\n"}, "fewer assertions"},
+		"H1 a const 22 on amd64 only": {map[string]string{"pkg/a_arm64.go": "package pkg\n\nconst mark = 0\n", "pkg/b_amd64.go": "package pkg\n\nconst mark = 22\n",
+			"pkg/m.go": "package pkg\n\nvar sep = string(rune(mark))\n"}, "can forge"},
+		"M1 a race pair const": {map[string]string{"pkg/a.go": "//go:build race\n\npackage pkg\n\nconst mark = 0\n", "pkg/b.go": "//go:build !race\n\npackage pkg\n\nconst mark = 22\n",
+			"pkg/m.go": "package pkg\n\nvar sep = string(rune(mark))\n"}, "declared again with other types"},
+		// The same audit: a test, and initialization's callee, declared once per race tag.
+		"M1 init's callee per race tag": {map[string]string{"pkg/a.go": "//go:build race\n\npackage pkg\n\nfunc quit() {}\n",
+			"pkg/b.go": "//go:build !race\n\npackage pkg\n\nimport \"fmt\"\n\nfunc quit() { fmt.Println(\"PASS\") }\n", "pkg/c.go": "package pkg\n\nfunc init() { quit() }\n"},
+			"reaches a reference it cannot prove safe (fmt.Println)"},
+	} {
+		var gone []string // the helper moves into the split files
+		if !strings.Contains(name, "const") && !strings.Contains(name, "M1 a test") && !strings.Contains(name, "init") {
+			gone = []string{"pkg/helper_test.go"}
+		}
+		if v := split.guarded(t, c.files, gone...); !finds(v.Blocks, c.why) {
+			t.Errorf("%s: %q", name, whats(v.Blocks))
+		}
+	}
+
+	// The same audit: a test declared once per race tag counts as its weakest declaration.
+	race := func(body string) string {
+		return "package pkg\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n" + body + "}\n"
+	}
+	rp := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		plain(t, src, "rm", "-q", "-f", "pkg/calc_test.go")
+		write(t, src, map[string]string{"pkg/a_test.go": "//go:build race\n\n" + race("\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n"),
+			"pkg/b_test.go": "//go:build !race\n\n" + race("\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n")})
+		plain(t, src, "add", "--all")
+	})
+	if v := rp.guarded(t, map[string]string{"pkg/a_test.go": "//go:build race\n\n" + race("")}); !finds(v.Blocks, "fewer assertions") {
+		t.Errorf("M1 a test per race tag: %q", whats(v.Blocks))
+	}
+
+	// H2 (Opus #269): an embedded unexported field promotes its exported ones
+	// to the decoders; the holder types are already in the base.
+	emb := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/suite_test.go": "package pkg\n\nimport \"testing\"\n\ntype env struct{ T *testing.T }\n\ntype suite struct{ env }\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, dec := range map[string][2]string{
+		"json": {"\t\"encoding/json\"\n", "\t_ = json.Unmarshal([]byte(`{\"T\":{}}`), &s)\n"},
+		"xml":  {"\t\"encoding/xml\"\n", "\t_ = xml.Unmarshal([]byte(\"<s><T></T></s>\"), &s)\n"},
+		"gob":  {"\t\"bytes\"\n\t\"encoding/gob\"\n", "\t_ = gob.NewDecoder(bytes.NewReader(nil)).Decode(&s)\n"},
+	} {
+		v := emb.guarded(t, decode(dec[0], "\tvar s suite\n"+dec[1]+"\tvar y *testing.T = s.T\n", ""))
+		if !finds(v.Blocks, forgedWhy) {
+			t.Errorf("H2 an embedded holder, %s: %q", name, whats(v.Blocks))
+		}
+	}
+
+	// H3 (Opus #269, on main): a generic alias cycle crashed the text layer
+	// (a fatal stack overflow, not recoverable); it blocks in-process.
+	for name, src := range map[string]string{
+		"A = B, B = A": "package pkg\n\ntype A[P any] = B[P]\n\ntype B[P any] = A[P]\n",
+		"A = A":        "package pkg\n\ntype A[P any] = A[P]\n",
+	} {
+		if v := f.guarded(t, map[string]string{"pkg/cycle.go": src}); v.Accepted() {
+			t.Errorf("H3 an alias cycle, %s: accepted", name)
+		}
+	}
+
 	// The background flag on P14e-2a "fact count trading across platforms":
 	// facts are compared per platform. (a) A file built on both platforms
 	// keeps its count while one platform loses the fact and the other gains
@@ -322,6 +405,17 @@ func TestIntegrityRealTypesAccepts(t *testing.T) {
 		"\nfunc TestBox(t *testing.T) {\n\tvar _ pkg.Box = util.Get()\n\tvar _ *other.Config = pkg.Cfg()\n\t_ = pkg.Internal()\n}\n"
 	if v := x.guarded(t, map[string]string{"pkg/ext_test.go": ext}); !v.Accepted() || len(v.Warnings) > 0 {
 		t.Errorf("an external test through an own import: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	// L2 (Opus #269): an own import's files under each platform's default
+	// level tag (amd64.v1, arm64.v8.0) are read on that platform, whatever the host.
+	lv := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"util/v.go": "//go:build amd64.v1\n\npackage util\n\nfunc V() int { return 1 }\n",
+			"util/w.go": "//go:build arm64.v8.0\n\npackage util\n\nfunc V() int { return 2 }\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := lv.guarded(t, map[string]string{"pkg/x.go": "package pkg\n\nimport \"example.com/m/util\"\n\nfunc Level() int { return util.V() }\n"}); !v.Accepted() || len(v.Warnings) > 0 {
+		t.Errorf("level-tagged own files: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
 	}
 }
 

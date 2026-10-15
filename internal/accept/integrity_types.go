@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/build"
+	"go/constant"
 	"go/importer"
 	"go/parser"
 	"go/token"
@@ -336,9 +337,7 @@ func (ty *typer) parse(dir string) ([]*ast.File, string) {
 func builds(pl [2]string, p string, src []byte) bool {
 	c := build.Context{GOOS: pl[0], GOARCH: pl[1], Compiler: "gc", ReleaseTags: release,
 		OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(src)), nil }}
-	if pl[1] == runtime.GOARCH {
-		c.ToolTags = build.Default.ToolTags
-	}
+	c.ToolTags = map[string][]string{"amd64": {"amd64.v1"}, "arm64": {"arm64.v8.0"}}[pl[1]] // the default levels
 	ok, err := c.MatchFile(path.Dir(p), path.Base(p))
 	return ok && err == nil
 }
@@ -447,23 +446,10 @@ type importFunc func(string) (*types.Package, error)
 
 func (f importFunc) Import(p string) (*types.Package, error) { return f(p) }
 
-// typed type-checks one package of dir with real imports, on each gate
-// platform with the files the gate may build there and that platform's
-// export data, and adds what the types show to fa.typed, per file and
-// function. Imports not loaded, or a type error, on any platform:
-// unverifiable.
-func (r *run) typed(dir, name string, fset *token.FileSet, files []*ast.File, meta map[*ast.File]fileMeta, fa *pkgFacts) error {
-	for i, pl := range platforms {
-		on := slices.DeleteFunc(slices.Clone(files), func(f *ast.File) bool { return meta[f].built[i] == 0 })
-		if len(on) == 0 {
-			continue
-		} else if err := r.typedOn(pl, dir, name, fset, on, meta, fa); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
+// typedOn type-checks one package of dir with real imports, on pl with the
+// files the gate may build there and pl's export data, and adds what the
+// types show to fa.typed, per file, platform and function. Imports not
+// loaded, or a type error: unverifiable.
 func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files []*ast.File, meta map[*ast.File]fileMeta, fa *pkgFacts) error {
 	ty := fa.tree.typer(r, dir, pl)
 	if err := ty.need(files); err != nil {
@@ -498,7 +484,7 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 		te, ok := err.(types.Error)
 		switch at := fset.Position(te.Pos).String(); {
 		case ok && redeclared.MatchString(te.Msg):
-			pending = at
+			typeErr, pending = cmp.Or(typeErr, map[bool]string{true: "a redeclaration without its other declaration"}[pending != ""]), at
 		case ok && otherDecl.MatchString(te.Msg) && pending != "":
 			redecl[pending], pending = at, ""
 		case ok && methodDecl.MatchString(te.Msg):
@@ -514,6 +500,9 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 		return pkg, err
 	})}
 	pkg, _ := conf.Check(cmp.Or(ty.pathOf(dir), dir)+suffix, fset, files, info)
+	if pending != "" {
+		typeErr = cmp.Or(typeErr, pending+": a redeclaration without its other declaration")
+	}
 	shapes := shapes(fset, info, files)
 	for again, first := range redecl {
 		if typeErr == "" && (shapes[again] == "" || shapes[again] != shapes[first]) {
@@ -549,8 +538,9 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 // shapes are the declarations of each package-level name and method, by the
 // position of its name: what a redeclaration must repeat. Its kind; a
 // func's or method's signature; a type's kind (alias or defined), type and
-// the methods its file declares on it; a var's or const's type (a const's
-// value changes no type: race pairs differ in it).
+// the methods its file declares on it; a var's or const's type, and a
+// const's value but a bool's (the 22 and 0x16 rules read values; race
+// pairs differ in a bool). An implicit (iota) value never matches.
 func shapes(fset *token.FileSet, info *types.Info, files []*ast.File) map[string]string {
 	out := map[string]string{}
 	of := func(es ...ast.Expr) (s string) {
@@ -592,7 +582,10 @@ func shapes(fset *token.FileSet, info *types.Info, files []*ast.File) map[string
 							if i < len(sp.Values) {
 								v = sp.Values[i]
 							}
-							out[at] = d.Tok.String() + " " + of(sp.Type, v) // a const's value changes no type (race pairs differ in it)
+							out[at] = d.Tok.String() + " " + of(sp.Type, v)
+							if tv := info.Types[v]; d.Tok == token.CONST && (tv.Value == nil || tv.Value.Kind() != constant.Bool) {
+								out[at] += " = " + cmp.Or(tv.Value, constant.MakeUnknown()).ExactString() + map[bool]string{true: " " + at}[tv.Value == nil] // the 22 and 0x16 rules read it
+							}
 						}
 					}
 				}
@@ -749,7 +742,7 @@ func fillable(t types.Type) bool {
 		switch u := t.Underlying().(type) {
 		case *types.Struct:
 			for i := range u.NumFields() {
-				if u.Field(i).Exported() && slot(u.Field(i).Type(), seen) {
+				if (u.Field(i).Exported() || u.Field(i).Embedded()) && slot(u.Field(i).Type(), seen) { // an embedded one promotes
 					return true
 				}
 			}
