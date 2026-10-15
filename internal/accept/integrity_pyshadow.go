@@ -56,7 +56,7 @@ type pyBaseFile struct {
 	syspath   []string          // the sys.path entries it adds (Mythos #270 M1)
 	sysUnread bool              // it names sys.path in a way pySysPath does not read
 
-	importPath bool // it names __path__, __spec__, __loader__ or extend_path: its submodules are unread (Opus #275 M1)
+	plain bool // pyPlain
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -208,9 +208,6 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		cond := pySkipString(line, len(l.toks), pure, aliases)
 		es, ok := pySysUse(q, l.toks)
 		f.syspath, f.sysUnread = append(f.syspath, es...), f.sysUnread || !ok
-		f.importPath = f.importPath || slices.ContainsFunc(l.toks, func(k ptok) bool {
-			return slices.Contains(pyImportPath, k.text) || k.text == "extend_path"
-		})
 		if l.toks[0].text == "pytest_plugins" { // its modules are reached too (Opus #272 (b))
 			for _, k := range line {
 				if pyStr(k) != "" {
@@ -306,6 +303,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		}
 	}
 	f.units, f.binders = units, binders
+	f.plain = pyPlain(f)
 	return f, nil
 }
 

@@ -224,11 +224,30 @@ func pyDepthEnd(t []ptok, open int) int {
 // package whose directory does not hold the longer one, ends it; a package
 // binding the next name otherwise than as its submodule, or a name two
 // files answer to, is unread.
+// pyPlain: a package whose submodules resolve in its own directory. It is
+// read, every module-level statement is pyStatic (an import, def, class,
+// docstring, NAME = a value with no call), and it binds no dunder name but
+// __all__ and __version__ (Opus #275 M1, as an allowlist in round 3).
+// __path__ = […], a walrus, extend_path(…) or __path__.insert(…) is not.
+func pyPlain(f *pyBaseFile) bool {
+	for _, n := range slices.Concat(slices.Collect(maps.Keys(f.locals)), slices.Collect(maps.Keys(f.from))) {
+		if strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__version__" {
+			return false
+		}
+	}
+	return !f.unread && !f.dynamic
+}
+
 func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 	i := min(top, len(parts))
 	for ; i >= 1 && pb.mods[strings.Join(parts[:i], ".")] == ""; i-- {
 		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil { // Opus #275 L3
 			return 0, "the base conditions' analysis is over the guard's work bound", pb.r.ctx.Err()
+		}
+	}
+	for k := i + 1; k <= min(top, len(parts)); k++ { // main reads no added root: a module only one names stays unread, not third-party (round 3)
+		if name := strings.Join(parts[:k], "."); pb.shadowMods[name] != "" {
+			return 0, "the module " + name + " is under a root the guard reads for shadows only", nil
 		}
 	}
 	for k := 1; k <= i; k++ {
@@ -241,8 +260,8 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 			f, err := pb.file(q)
 			if err != nil {
 				return 0, "", err
-			} else if f.importPath {
-				return 0, "the package " + name + " sets its own import path", nil // Opus #275 M1
+			} else if !f.plain {
+				return 0, "the package " + name + " is not plain (its submodules may resolve elsewhere)", nil // Opus #275 M1, an allowlist (round 3)
 			} else if k < i && (f.locals[parts[k]] || f.from[parts[k]] != "" && f.from[parts[k]] != name+"."+parts[k]) {
 				return 0, "the package " + name + " binds " + parts[k] + " beside its submodule", nil
 			}
