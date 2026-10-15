@@ -370,6 +370,36 @@ func TestIntegrityRealTypes(t *testing.T) {
 	if v := f.guarded(t, decode("\t\"encoding/gob\"\n", "\tvar zt *testing.T\n\tgob.Register(zt)\n\ty := t\n", "")); !finds(v.Blocks, forgedWhy+" (gob.Register(zt))") {
 		t.Errorf("gob.Register of a *testing.T: %q", whats(v.Blocks))
 	}
+	// Round 4 (the lead; the flag "fail-open-state-drift"): the mentions memo
+	// is read only once every alias is known. In the base, A names B, which a
+	// later file declares, and A is used before B is known; a new alias C
+	// naming A is still an alias of a testing type.
+	late := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/a_test.go": "package pkg\n\ntype A = struct{ x B }\n\nvar v A\n",
+			"pkg/z_test.go": "package pkg\n\nimport \"testing\"\n\ntype B = *testing.T\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := late.guarded(t, map[string]string{"pkg/c_test.go": "package pkg\n\ntype C = struct{ y A }\n"}); !finds(v.Blocks, "can forge") {
+		t.Errorf("an alias of a later alias: %q", whats(v.Blocks))
+	}
+	// Round 4 (the lead, on main): go/types' validType is exponential on a
+	// chain of struct types; a check past the guard's deadline is abandoned
+	// and the change unverifiable, in-process.
+	var chain strings.Builder
+	chain.WriteString("package pkg\n")
+	for i := range 14 {
+		fmt.Fprintf(&chain, "\ntype S%d struct{ A, B, C, D, E, F, G, H S%d }\n", i, i+1)
+	}
+	chain.WriteString("\ntype S14 int\n")
+	oldTime := maxListTime
+	maxListTime = 5 * time.Second
+	begin := time.Now()
+	cv := f.guarded(t, map[string]string{"pkg/chain.go": chain.String()})
+	if maxListTime = oldTime; !finds(cv.Blocks, "over the guard's deadline") || time.Since(begin) > time.Minute {
+		t.Errorf("a struct chain: %v %q", time.Since(begin), whats(cv.Blocks))
+	}
+
 	// Mythos #269 M1 (on main): an alias DAG made mentions exponential (8^12
 	// visits); it gets a verdict within seconds.
 	var dag strings.Builder

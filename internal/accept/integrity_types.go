@@ -35,14 +35,11 @@ import (
 	"golang.org/x/mod/modfile"
 )
 
-// The guard's real types (P14e, #226 entries 79, 82 and 85), per gate
-// platform. The module's own packages are type-checked here, from the
-// version's blobs, with the files the gate builds on that platform. Every
-// other import (the standard library, the module cache) is read from the
-// export data go list writes, for that platform, in a directory holding only
-// go.mod and go.sum: the go command never reads the tree's Go source. A
-// package whose imports cannot all be loaded, on any platform, in the base
-// or the candidate, is unverifiable.
+// The guard's real types (P14e, #226 entries 79, 82, 85), per gate platform:
+// own packages type-checked here from the version's blobs, every other import
+// from the export data go list writes for that platform beside only go.mod and
+// go.sum (never the tree's source). Imports not loaded on any platform, in the
+// base or the candidate: unverifiable.
 var (
 	maxPkgs           = 2000      // own packages one version type-checks
 	maxExport   int64 = 256 << 20 // export data bytes one version reads
@@ -368,9 +365,6 @@ func (ty *typer) need(files []*ast.File) error {
 	}
 	slices.Sort(ext)
 	got, err := map[string]Listed{}, errors.New("no Go type loader")
-	if ty.r.listEnd.IsZero() {
-		ty.r.listEnd = time.Now().Add(maxListTime)
-	}
 	if ty.r.listRuns++; ty.r.lister != nil && ty.r.listRuns > maxListRuns {
 		err = errors.New("over the guard's go list bound")
 	} else if ty.r.lister != nil {
@@ -430,7 +424,7 @@ func (ty *typer) Import(p string) (*types.Package, error) {
 	if why == "" {
 		ty.pkgs[p] = nil
 		conf := types.Config{Importer: ty, FakeImportC: true, IgnoreFuncBodies: true, Error: func(err error) { first = cmp.Or(first, err) }}
-		ty.pkgs[p], _ = conf.Check(p, ty.fset, files, nil)
+		ty.pkgs[p] = ty.r.typeCheck(&conf, p, ty.fset, files, nil)
 	}
 	if first != nil {
 		why = "it does not type-check: " + first.Error()
@@ -443,14 +437,36 @@ func (ty *typer) Import(p string) (*types.Package, error) {
 	return ty.pkgs[p], nil
 }
 
+// typeCheck runs conf.Check (it cannot be cancelled) by the guard's deadline:
+// past it, or on a done context, the guard stops (recovered) and the check is
+// abandoned, its CPU the residual (a killable loader is P14e-2b's).
+func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, files []*ast.File, info *types.Info) *types.Package {
+	done := make(chan any, 1)
+	go func() {
+		var v any
+		defer func() { done <- cmp.Or(recover(), v) }() // its panic is the guard's
+		v, _ = conf.Check(path, fset, files, info)
+	}()
+	select {
+	case v := <-done:
+		if pkg, ok := v.(*types.Package); ok {
+			return pkg
+		}
+		panic(v)
+	case <-r.ctx.Done():
+		panic(r.ctx.Err())
+	case <-time.After(time.Until(r.listEnd)):
+		panic("a type check over the guard's deadline (" + path + ")")
+	}
+}
+
 type importFunc func(string) (*types.Package, error)
 
 func (f importFunc) Import(p string) (*types.Package, error) { return f(p) }
 
-// typedOn type-checks one package of dir with real imports, on pl with the
-// files the gate may build there and pl's export data, and adds what the
-// types show to fa.typed, per file, platform and function. Imports not
-// loaded, or a type error: unverifiable.
+// typedOn type-checks one package of dir on pl (its files and export data) and
+// adds the types' facts to fa.typed, per file, platform and function. Imports
+// not loaded, or a type error: unverifiable.
 func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files []*ast.File, meta map[*ast.File]fileMeta, fa *pkgFacts) error {
 	ty := fa.tree.typer(r, dir, pl)
 	if err := ty.need(files); err != nil {
@@ -500,7 +516,7 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 		}
 		return pkg, err
 	})}
-	pkg, _ := conf.Check(cmp.Or(ty.pathOf(dir), dir)+suffix, fset, files, info)
+	pkg := r.typeCheck(&conf, cmp.Or(ty.pathOf(dir), dir)+suffix, fset, files, info)
 	if pending != "" {
 		typeErr = cmp.Or(typeErr, pending+": a redeclaration without its other declaration")
 	}
@@ -536,12 +552,10 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 	return nil
 }
 
-// shapes are the declarations of each package-level name and method, by the
-// position of its name: what a redeclaration must repeat. Its kind; a
-// func's or method's signature; a type's kind (alias or defined), type and
-// the methods its file declares on it; a var's or const's type, and a
-// const's value but a bool's (the 22 and 0x16 rules read values; race
-// pairs differ in a bool). An implicit (iota) value never matches.
+// shapes are what a redeclaration must repeat, by its name's position: its
+// kind; a signature; a type's alias-ness, type and its file's methods on it; a
+// var's or const's type, a const's value but a bool's (race pairs differ in
+// one; the 22 and 0x16 rules read values), an implicit (iota) one never.
 func shapes(fset *token.FileSet, info *types.Info, files []*ast.File) map[string]string {
 	out := map[string]string{}
 	of := func(es ...ast.Expr) (s string) {
@@ -597,8 +611,8 @@ func shapes(fset *token.FileSet, info *types.Info, files []*ast.File) map[string
 }
 
 // Facts, each keyed by its text, file and function: a key the candidate
-// holds more often than the base blocks (factMakes in a package with tests;
-// elsewhere it warns), so no counted form can be traded for another.
+// holds more often than the base, on a platform, blocks (factMakes with no Go
+// test anywhere warns), so no counted form can be traded for another.
 const (
 	factForged  = "a testing value not the runner's"
 	factReflect = "reflection on a testing value"
@@ -613,16 +627,15 @@ var (
 	valueMakes   = strings.Fields("Call CallSlice Method MethodByName Convert Grow Slice Slice3")
 )
 
-// facts reports what the real types show in n: a testing value made, or a
-// slot code outside it can fill with one (an expression, variable, type or
-// type argument holding a T, B, F or M by value, or fillable: a decoder's
-// &h, a type directly behind * excepted); a value asserted, switched or
+// facts reports what the real types show in n: a testing value made (an
+// expression, variable, type or type argument holding a T, B, F or M by
+// value, a type directly behind * excepted); a value asserted, switched or
 // converted to pointers to one, or to an interface with a failure-setting
 // method; a type argument a generic could assert a value to
 // (as[*testing.T](v)); and reflection reaching a testing type, or making,
-// writing or calling values, through reflect or an interface over its
-// Value. Types are unaliased: an alias in another, unchanged package is
-// seen.
+// writing or calling values. Types are unaliased: an alias in another,
+// unchanged package is seen. Also: a fillable value or type (a decoder's
+// &h), and a reflect.Value maker through an interface or a constraint.
 func facts(info *types.Info, n ast.Node, add func(string)) {
 	starred, called := map[ast.Expr]bool{}, map[*ast.Ident]bool{}
 	ast.Inspect(n, func(x ast.Node) bool {
@@ -731,11 +744,9 @@ func reaches(info *types.Info, c *ast.CallExpr, id *ast.Ident, is func(types.Typ
 	return slices.ContainsFunc(ts, func(t types.Type) bool { return t != nil && is(t) })
 }
 
-// fillable: code given a value of t that sets exported fields (a decoder,
-// json.Unmarshal(b, &h)) can store a testing value it made there: a data
-// path to a T, B, F or M through pointers, arrays, slices, maps, chans and
-// exported fields; no signature, interface or unexported field (fixture{t}),
-// and not the runner's *testing.T itself.
+// fillable: a decoder given a value of t (json.Unmarshal(b, &h)) can store a
+// testing value it made: a path to a T, B, F or M through pointers, arrays,
+// slices, maps, chans and exported or embedded fields; not *testing.T itself.
 func fillable(t types.Type) bool {
 	var slot func(t types.Type, seen map[types.Type]bool) bool
 	slot = func(t types.Type, seen map[types.Type]bool) bool {
@@ -772,9 +783,8 @@ func testingStruct(t types.Type) bool {
 	return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "testing" && slices.Contains([]string{"T", "B", "F", "M", "common"}, n.Obj().Name())
 }
 
-// valueMethod: o is a method of an interface (or a type parameter's
-// constraint) that reflect.Value's makers satisfy: one of their names over
-// reflect's types (s.Set(v) with s an interface{ Set(reflect.Value) }).
+// valueMethod: o is an interface's (or constraint's) method a reflect.Value
+// maker satisfies: its name, over reflect's types (s.Set(v)).
 func valueMethod(o types.Object) bool {
 	f, ok := o.(*types.Func)
 	if !ok || f.Signature().Recv() == nil || !types.IsInterface(f.Signature().Recv().Type()) {

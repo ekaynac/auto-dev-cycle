@@ -491,11 +491,11 @@ func b2i(b bool) int {
 }
 
 // declKey is a function's name, or a method's receiver and name.
-func declKey(fn *ast.FuncDecl) string {
-	if fn.Recv != nil {
-		return recv(fn) + "." + fn.Name.Name
+func declKey(fn *ast.FuncDecl) (k string) {
+	if k = fn.Name.Name; fn.Recv != nil {
+		k = recv(fn) + "." + k
 	}
-	return fn.Name.Name
+	return k
 }
 
 // recv is a method's receiver type name, without * or type parameters.
@@ -520,7 +520,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			fa.bad[a] = "a name declared twice, in files the gate may build together"
 		}
 	}
-	pkg, _ := (&types.Config{FakeImportC: true, Error: func(err error) {
+	pkg := r.typeCheck(&types.Config{FakeImportC: true, Error: func(err error) {
 		te, _ := err.(types.Error)
 		switch at := fset.Position(te.Pos).Filename; {
 		case strings.Contains(te.Msg, "redeclared"):
@@ -531,7 +531,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			other := te.Msg[strings.LastIndex(te.Msg, " at ")+4:]
 			twice(at, other[:strings.LastIndex(other[:strings.LastIndex(other, ":")], ":")])
 		}
-	}}).Check(dir, fset, files, info)
+	}}, dir, fset, files, info)
 	for _, n := range pkg.Scope().Names() { // the predeclared names the rules rely on
 		if o := pkg.Scope().Lookup(n); slices.Contains([]string{"print", "println", "new", "make", "rune", "byte", "string"}, n) {
 			fa.bad[fset.Position(o.Pos()).Filename] = "a package-level " + n + " shadows Go's predeclared one"
@@ -549,7 +549,10 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
 		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
-	for _, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
+	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
+		if i == len(files) {
+			clear(s.mentioned) // read again, every alias known (and after: the tvals grew)
+		}
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.TypeSpec:
@@ -590,6 +593,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			return true
 		})
 	}
+	clear(s.mentioned)
 	for changed, i := true, 0; changed && i < 32; i++ { // the asserting helpers, to a bounded depth
 		if err := r.ctx.Err(); err != nil {
 			return err

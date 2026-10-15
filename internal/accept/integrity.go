@@ -61,9 +61,12 @@ type pkgFacts struct {
 // and imports' types through list (nil: every Go package unverifiable).
 func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
 	return func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, err error) {
-		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{}}
-		defer func() { // fail closed: a guard fault blocks, never crashes the controller
-			if p := recover(); p != nil {
+		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{},
+			listEnd: time.Now().Add(maxListTime)}
+		defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
+			if p := recover(); p != nil && ctx.Err() != nil {
+				blocks, warnings, err = r.blocks, r.warnings, ctx.Err()
+			} else if p != nil {
 				blocks, warnings, err = append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p)}), r.warnings, nil
 			}
 		}()
@@ -78,7 +81,7 @@ type run struct {
 	base               string
 	read               Reader
 	lister             Lister
-	listEnd            time.Time // every go list run ends by then
+	listEnd            time.Time // every go list run and type check ends by then
 	listRuns           int
 	budget             int64
 	work               int
@@ -279,11 +282,8 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.blocks, k, "a test skipped")
 		}
 	}
-	more := func(a, b []int) (m bool) { // on some platform: none is traded across them
-		for i := range platforms {
-			m = m || a[i] > b[i]
-		}
-		return m
+	more := func(a, b []int) bool { // on some platform: none is traded across them
+		return slices.ContainsFunc(platforms, func(pl [2]string) bool { return a[slices.Index(platforms, pl)] > b[slices.Index(platforms, pl)] })
 	}
 	if more(a.ambient, b.ambient) && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), goByName) {
 		add(&r.blocks, dir, "a skip added outside a test (a helper)")
