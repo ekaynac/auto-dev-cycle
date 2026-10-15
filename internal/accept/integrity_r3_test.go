@@ -103,4 +103,30 @@ func TestIntegrityRound3(t *testing.T) {
 	if v := nogo.guarded(t, map[string]string{"pkg/x.go": "package pkg\n\nfunc G() int { return 1 }\n"}); !finds(v.Blocks, "vendor/ directory without vendor/modules.txt") {
 		t.Errorf("L2 no go directive: %q", whats(v.Blocks))
 	}
+
+	// Round 4 (Mythos r2 on 9b72e12). M1: a raw-pointer maker's signature
+	// by type, an alias or a type-parameter result too (behind an any: the
+	// text rule does not reach them).
+	withReflect := func(src string) string {
+		return strings.Replace(src, "import \"unsafe\"", "import (\n\t\"reflect\"\n\t\"unsafe\"\n)", 1) + unfailAny
+	}
+	generic := "package help\n\nimport \"unsafe\"\n\ntype Addr[R any] interface{ UnsafeAddr() R }\n\nfunc Get[R any](a Addr[R]) R { return a.UnsafeAddr() }\n\n" +
+		"func deref[P ~unsafe.Pointer, T any](p P) *T { return (*T)(p) }\n\nfunc Clear(v reflect.Value) { *deref[unsafe.Pointer, bool](unsafe.Pointer(Get[uintptr](v))) = false }\n"
+	for name, help := range map[string]string{
+		"M1 interface{ UnsafeAddr() U }, U = uintptr": withReflect(strings.Replace(helpClear, "interface{ UnsafeAddr() uintptr }", "interface{ UnsafeAddr() U }", 1) + "\ntype U = uintptr\n"),
+		"M1 Addr[R] interface{ UnsafeAddr() R }":      withReflect(generic),
+	} {
+		if v := f.guarded(t, map[string]string{"help/clear.go": help, "pkg/calc_test.go": testUsing("", "\t\thelp.Unfail(t)\n")}); !finds(v.Blocks, "can forge") {
+			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
+		}
+	}
+	// M2: a method of another package's (unresolved) type keeps main's
+	// reading: its arguments are not counted.
+	if v := f.guarded(t, map[string]string{"pkg/args.go": argsGo + "import \"flag\"\n\nfunc parse() {\n\tfs := flag.NewFlagSet(\"x\", flag.ContinueOnError)\n\t_ = fs.Parse(os.Args[1:])\n}\n"}); !v.Accepted() {
+		t.Errorf("M2 fs.Parse(os.Args[1:]): %q", whats(v.Blocks))
+	}
+	// H1: SWIG turns cgo on by itself; b924eec's list blocks it without cgo.
+	if v := f.guarded(t, map[string]string{"help/x.swig": "%module x\n%{\n__attribute__((constructor)) static void forge(void) {}\n%}\n"}); !finds(v.Blocks, "SWIG source") {
+		t.Errorf("H1 a .swig file without cgo: %q", whats(v.Blocks))
+	}
 }

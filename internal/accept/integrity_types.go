@@ -912,15 +912,31 @@ func valueMethod(o types.Object) bool {
 	f, ok := o.(*types.Func)
 	if !ok || f.Signature().Recv() == nil || !types.IsInterface(f.Signature().Recv().Type()) {
 		return false
-	} else if sig, ok := rawMakers[f.Name()]; ok {
-		return types.TypeString(f.Type(), nil) == sig
+	} else if want, ok := rawMakers[f.Name()]; ok { // by type: an alias or a type-parameter result too
+		sig := f.Signature()
+		if sig.Params().Len() > 0 || sig.Results().Len() != b2i(want != nil) {
+			return false
+		} else if want == nil {
+			return true
+		}
+		r := types.Unalias(sig.Results().At(0).Type())
+		_, param := r.(*types.TypeParam)
+		return param || want(r)
 	}
 	return (strings.HasPrefix(f.Name(), "Set") || slices.Contains(valueMakes, f.Name())) && strings.Contains(types.TypeString(f.Type(), nil), "reflect.")
 }
 
-// rawMakers is reflect.Value's raw-pointer makers and their signatures.
-var rawMakers = map[string]string{"Pointer": "func() uintptr", "UnsafeAddr": "func() uintptr", "UnsafePointer": "func() unsafe.Pointer",
-	"Bytes": "func() []byte", "Clear": "func()", "Addr": "func() reflect.Value"}
+// rawMakers is reflect.Value's raw-pointer makers, by their one result (none: Clear).
+var rawMakers = map[string]func(types.Type) bool{
+	"Pointer": isUintptr, "UnsafeAddr": isUintptr, "UnsafePointer": func(t types.Type) bool { return types.Identical(t, types.Typ[types.UnsafePointer]) },
+	"Bytes": func(t types.Type) bool { return types.Identical(t, types.NewSlice(types.Typ[types.Byte])) }, "Clear": nil,
+	"Addr": func(t types.Type) bool {
+		n, ok := t.(*types.Named)
+		return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "reflect" && n.Obj().Name() == "Value"
+	},
+}
+
+func isUintptr(t types.Type) bool { return types.Identical(t, types.Typ[types.Uintptr]) }
 
 func isUnsafe(t types.Type) bool {
 	return types.Identical(t.Underlying(), types.Typ[types.UnsafePointer])

@@ -474,6 +474,9 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 			}
 			_, known := s.info.Uses[id].(*types.Func) // else a function value (a variable, a call's result, *fp): what it does to them is not known
 			known = known || s.qual(f) != ""          // another package's name (unresolved here): in-place writers below
+			if isSel && s.info.Uses[sel.Sel] == nil {
+				known = true // a method of another package's (unresolved) type, as on main: fs.Parse(os.Args[1:])
+			}
 			if _, b := s.info.Uses[id].(*types.Builtin); b || isSel && s.info.Selections[sel] != nil && types.IsInterface(s.info.Selections[sel].Recv()) {
 				known = b // an interface's method, like a value
 			}
