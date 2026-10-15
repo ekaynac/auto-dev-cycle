@@ -4,6 +4,7 @@ package accept
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -195,8 +196,8 @@ func TestPyGuardBlocks(t *testing.T) {
 		"H1m __init_subclass__ by an f-string walrus": {pyG("class Base:\n    X = f\"{(__init_subclass__ := g)}\"\n\nclass T(Base):\n    pass\n"), nil, "a dunder or an allowlisted name bound at import (__init_subclass__)"},
 		"M1m for (__name__)":                          {map[string]string{"money.py": baseFiles["money.py"] + "import os\nfor (__name__) in ('__main__',):\n    pass\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
 		"M1m with … as (__name__)":                    {map[string]string{"money.py": baseFiles["money.py"] + "import os\nwith open('x') as (__name__):\n    pass\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
-		"M3 a shadow of money":                        {map[string]string{"tests/money.py": "def add(a, b):\n    return a + b\n"}, nil, "tests/money.py: a module added under a test directory shadows a base module"},
-		"M3 tests/__init__.py added":                  {map[string]string{"tests/__init__.py": ""}, nil, "tests/__init__.py: a module added under a test directory shadows a base module, or its __init__.py moved"},
+		"M3 a shadow of money":                        {map[string]string{"tests/money.py": "def add(a, b):\n    return a + b\n"}, nil, "tests/money.py: an added module shadows the base module money.py"},
+		"M3 tests/__init__.py added":                  {map[string]string{"tests/__init__.py": ""}, nil, "tests/test_money.py: a test file's basedir moves"},
 		// P14c-2a-cond: the condition rule (Opus and Mythos #266 H2) with Mythos r2's forms.
 		"H2 a skipif string":              {pyG("import pytest\n\n@pytest.mark.skipif(\"config.pluginmanager.register(1) and False\", reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
 		"H2 xfail(condition=)":            {pyG("import pytest\n\n@pytest.mark.xfail(condition='x', reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
@@ -226,10 +227,11 @@ func TestPyGuardBlocks(t *testing.T) {
 		"M1 skipif(1 << ZERO)":        {pyG("import pytest\nZERO = 0\n\n@pytest.mark.skipif(1 << ZERO, reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
 		"M2 a parameter named pytest": {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(autouse=True)\ndef fx(request, pytest=pytest.mark):\n    request.applymarker(pytest.xfail('x'))\n"}, nil, "a skipif or xfail condition that may be a string"},
 		// Mythos #267: H2 (the root, module paths), M2 (renamed marks in an application module).
-		"M2 an alias of skipif":      {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "sk = pytest.mark.skipif\nSKIP = sk('x', reason='r')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
-		"M2 pytest bound by a tuple": {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "pytest, _ = pytest.mark, 0\nSKIP = pytest.xfail('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
-		"M2 .__call__":               {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "SKIP = pytest.mark.skipif.__call__('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
-		"M2 xfail(False)(string)":    {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "SKIP = pytest.mark.xfail(False)('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
+		"H2 a package beside a root module": {map[string]string{"money/__init__.py": "def add(a, b):\n    return a + b\n"}, nil, "money/__init__.py: an added module shadows the base module money.py"},
+		"M2 an alias of skipif":             {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "sk = pytest.mark.skipif\nSKIP = sk('x', reason='r')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
+		"M2 pytest bound by a tuple":        {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "pytest, _ = pytest.mark, 0\nSKIP = pytest.xfail('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
+		"M2 .__call__":                      {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "SKIP = pytest.mark.skipif.__call__('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
+		"M2 xfail(False)(string)":           {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "SKIP = pytest.mark.xfail(False)('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
 		"r3 H1 pytest rebound after import pytest;": {map[string]string{"money.py": "import pytest; pytest, _ = pytest.mark, 0\n" + baseFiles["money.py"] + "SKIP = pytest.xfail('x')\n",
 			"tests/test_money.py": "from money import add, SKIP\npytestmark = SKIP\n\ndef test_add():\n    assert add(1, 2) == 3\n"}, nil, "money.py: unverifiable: a skipif or xfail condition"},
 		"r3 H2 a second call inside an f-string field": {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(autouse=True)\ndef fx(request):\n    x = f\"{request.applymarker(pytest.mark.xfail(False)('x'))}\"\n"}, nil,
@@ -244,11 +246,16 @@ func TestPyGuardBlocks(t *testing.T) {
 		"r7 2b m = (mark(False))":       {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(autouse=True)\ndef fx(request):\n    m = (pytest.mark.xfail(False))\n    request.applymarker(m('x'))\n"}, nil, "tests/conftest.py: unverifiable: a skipif or xfail condition"},
 		"r7 2c a walrus alias":          {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(autouse=True)\ndef fx(request):\n    (m := pytest.mark.xfail(False))\n    request.applymarker(m('x'))\n"}, nil, "tests/conftest.py: unverifiable: a skipif or xfail condition"},
 		"r7 1e SKIP = (mark(False))(x)": {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "SKIP = (pytest.mark.xfail(False))('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition"},
-		"r2 L4 an ordering dunder":      {map[string]string{"money.py": baseFiles["money.py"] + "class K:\n    def __lt__(self, o):\n        return 'x'\n"}, nil, "money.py: __lt__ in module level"},
-		"M2 pytest from the package":    {map[string]string{"tests/conftest.py": "from . import pytest\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
-		"L1 a pyproject added":          {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
-		"pytest.main":                   {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
-		"record_xml_attribute":          {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
+		"r2 M3 an alias of an alias":    {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "sk = pytest.mark.skipif\nsk2 = sk\nSKIP = sk2('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition"},
+		"r2 M3 a tuple alias":           {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "sk, _ = pytest.mark.skipif, 0\nSKIP = sk('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition"},
+		"r2 M3 an alias after a ;":      {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "sk = pytest.mark.skipif; SKIP = sk('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition"},
+		"r2 M3 an alias of an alias in a fixture": {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(autouse=True)\ndef fx(request):\n    m = pytest.mark.xfail(False)\n    k = m\n    request.applymarker(k('x'))\n"}, nil,
+			"tests/conftest.py: unverifiable: a skipif or xfail condition"},
+		"r2 L4 an ordering dunder":   {map[string]string{"money.py": baseFiles["money.py"] + "class K:\n    def __lt__(self, o):\n        return 'x'\n"}, nil, "money.py: __lt__ in module level"},
+		"M2 pytest from the package": {map[string]string{"tests/conftest.py": "from . import pytest\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
+		"L1 a pyproject added":       {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
+		"pytest.main":                {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
+		"record_xml_attribute":       {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
 	} {
 		pyBlocks(t, f, name, c.files, c.why)
 	}
@@ -343,12 +350,143 @@ func TestPyGuardBaseFindings(t *testing.T) {
 	}
 }
 
+// P14c-2a-shadow (Mythos #266 r2 M3, L1, L2, L5): a module added under a
+// test directory, or in a base pythonpath directory, shadowing what the
+// tests import; tests' __init__.py renamed out.
+func TestPyGuardShadows(t *testing.T) {
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"tests/test_requests.py": "import os; import requests as rq\ntry: import yaml\nexcept ImportError: pass\nimport json, \\\n    toml\nfrom lib.core import add\nfrom google.protobuf import message\nimport pkgx.sub\nimport importlib\nimportlib.import_module('dynmod')\n__import__('dyn2')\npytest.importorskip('dyn3')\n\ndef test_r():\n    assert rq\n",
+			"tests/__init__.py": "X = 1\n", "app/utils.py": "X = 1\n", "pytest.ini": "[pytest]\npythonpath = src\n", "lib/core.py": "X = 1\n", "bank.py": "X = 1\n",
+			"lib3/test_x.py": "def test_x():\n    pass\n", "lib3/helpers3.py": "X = 1\n", "pkgb/__init__.py": "X = 1\n",
+			"src/nsp/core.py": "X = 1\n", "src/mypkg/__init__.py": "", "lib3/utils3.py": "X = 1\n",
+			"src/nsp/deep/core.py": "X = 1\n", "pkgr/__init__.py": "", "pkgr/tests/__init__.py": "", "pkgr/tests/test_r.py": "from .. import core\n\ndef test_r():\n    assert core\n",
+			"pkgz/__init__.py": "", "pkgz/tests/__init__.py": "", "pkgz/tests/test_z.py": "def test_z():\n    pass\n",
+			"pkgm/tests/__init__.py": "", "pkgm/tests/test_m.py": "def test_m():\n    pass\n", "tests/hp/__init__.py": "", "tests/hp/h.py": "X = 1\n", "tests/helpers4.py": "from deepdiff import DeepDiff\n"})
+		plain(t, src, "add", "--all")
+		plain(t, src, "rm", "-q", "--cached", "conftest.py") // no root conftest: the root's own clause (Opus #267 L2)
+	})
+	for name, c := range map[string]guardCase{
+		"a pythonpath shadow":     {map[string]string{"src/money.py": "def add(a, b):\n    return a + b\n"}, nil, "src/money.py: an added module shadows the base module money.py"},
+		"__init__.py renamed out": {map[string]string{"tests/x.py": "X = 1\n"}, []string{"tests/__init__.py"}, "tests/test_requests.py: a test file's basedir moves"},
+		"a module beside an unrelated one (a false block, Opus #270 H1)": {map[string]string{"tests/utils.py": "X = 1\n"}, nil, "tests/utils.py: an added module shadows the base module app/utils.py"},
+		// Opus #267 H2 (dotted suffixes), M3 (statements, not lines), L2 (onPath's clauses).
+		"H2 a namespace submodule shadow":               {map[string]string{"tests/lib/core.py": "def add(a, b):\n    return a + b\n"}, nil, "tests/lib/core.py: an added module shadows the base module lib/core.py"},
+		"H2 a third-party submodule":                    {map[string]string{"tests/google/protobuf.py": "X = 1\n"}, nil, "tests/google/protobuf.py: an added module shadows a module tests/test_requests.py imports"},
+		"M3 after a ;":                                  {map[string]string{"tests/requests.py": "X = 1\n"}, nil, "an added module shadows a module tests/test_requests.py imports"},
+		"M3 after try:":                                 {map[string]string{"tests/yaml.py": "X = 1\n"}, nil, "an added module shadows a module tests/test_requests.py imports"},
+		"M3 a continued import":                         {map[string]string{"tests/toml.py": "X = 1\n"}, nil, "an added module shadows a module tests/test_requests.py imports"},
+		"L2 a root module":                              {map[string]string{"tests/bank.py": "X = 1\n"}, nil, "an added module shadows the base module bank.py"},
+		"M1 under a pythonpath tree":                    {map[string]string{"src/google/protobuf.py": "X = 1\n"}, nil, "src/google/protobuf.py: an added module shadows a module tests/test_requests.py imports"},
+		"H2 an unimported package beside a root module": {map[string]string{"bank/__init__.py": "X = 1\n"}, nil, "bank/__init__.py: an added module shadows the base module bank.py"},
+		"M4 a package against a root module":            {map[string]string{"src/bank/__init__.py": "X = 1\n"}, nil, "src/bank/__init__.py: an added module shadows the base module bank.py"},
+		"M4 a module against a root package":            {map[string]string{"tests/pkgb.py": "X = 1\n"}, nil, "tests/pkgb.py: an added module shadows the base module pkgb/__init__.py"},
+		// Mythos #267 r2: H1 (the root's namespace portions), H2 (import a.b), M1 (names relative to sys.path entries).
+		"r2 H1 a root namespace portion":     {map[string]string{"nsp/core.py": "X = 1\n"}, nil, "nsp/core.py: an added module shadows the base module src/nsp/core.py"},
+		"r2 H1 a root third-party namespace": {map[string]string{"google/protobuf.py": "X = 1\n"}, nil, "google/protobuf.py: an added module shadows a module tests/test_requests.py imports"},
+		"r2 H2 import a.b":                   {map[string]string{"tests/pkgx/sub.py": "X = 1\n"}, nil, "tests/pkgx/sub.py: an added module shadows a module tests/test_requests.py imports"},
+		"r2 M1 src/mypkg/json.py":            {map[string]string{"src/mypkg/json.py": "X = 1\n"}, nil, ""},
+		"r2 M1 src/mypkg/utils3.py":          {map[string]string{"src/mypkg/utils3.py": "X = 1\n"}, nil, ""},
+		"r2 M1 src/pkg/sub/money.py":         {map[string]string{"src/pkg/sub/money.py": "X = 1\n"}, nil, ""},
+		// The security review's flags on 713eb2e: scope, import reading, case and suffixes.
+		"flag a depth-two namespace portion":                 {map[string]string{"nsp/deep/core.py": "X = 1\n"}, nil, "nsp/deep/core.py: an added module shadows the base module src/nsp/deep/core.py"},
+		"flag a candidate test package's basedir":            {map[string]string{"q/w/__init__.py": "", "q/w/test_x.py": "def test_x():\n    pass\n", "q/money.py": "X = 1\n"}, nil, "q/money.py: an added module shadows the base module money.py"},
+		"flag import_module with a constant":                 {map[string]string{"tests/dynmod.py": "X = 1\n"}, nil, "tests/dynmod.py: an added module shadows a module tests/test_requests.py imports"},
+		"flag __import__ with a constant":                    {map[string]string{"tests/dyn2.py": "X = 1\n"}, nil, "tests/dyn2.py: an added module shadows a module tests/test_requests.py imports"},
+		"flag importorskip with a constant":                  {map[string]string{"tests/dyn3.py": "X = 1\n"}, nil, "tests/dyn3.py: an added module shadows a module tests/test_requests.py imports"},
+		"flag from .. import core":                           {map[string]string{"pkgr/core.py": "X = 1\n"}, nil, "pkgr/core.py: an added module shadows a module pkgr/tests/test_r.py imports"},
+		"flag an __init__.py removed outside tests":          {nil, []string{"pkgz/__init__.py"}, "pkgz/tests/test_z.py: a test file's basedir moves"},
+		"flag a case-only name (imports are case-sensitive)": {map[string]string{"Money.py": "X = 1\n"}, nil, ""},
+		"flag a .pyi beside a .py (never imported)":          {map[string]string{"money.pyi": "def add(a: int, b: int) -> int: ...\n"}, nil, ""},
+		"flag a .so beside a .py":                            {map[string]string{"money.cpython-312-x86_64-linux-gnu.so": "x"}, nil, "unverifiable: compiled Python, an extension module"},
+		// Opus #270: M3 (a basedir moved up), M4 (a judged helper's imports).
+		"o M3 an __init__.py added above a test package":            {map[string]string{"pkgm/__init__.py": ""}, nil, "pkgm/tests/test_m.py: a test file's basedir moves"},
+		"o M4 a test helper's import":                               {map[string]string{"deepdiff.py": "X = 1\n"}, nil, "deepdiff.py: an added module shadows a module tests/helpers4.py imports"},
+		"s2 a test package added (main's rule)":                     {map[string]string{"tests/newpkg/__init__.py": "", "tests/newpkg/test_n.py": "def test_n():\n    pass\n"}, nil, "tests/newpkg/__init__.py: an __init__.py added, removed or renamed in a test directory"},
+		"s2 a helper package's __init__.py removed (main's rule)":   {nil, []string{"tests/hp/__init__.py"}, "tests/hp/__init__.py: an __init__.py added, removed or renamed in a test directory"},
+		"s4 an import shadowed under a basedir the candidate makes": {map[string]string{"q3/w/__init__.py": "", "q3/w/test_x.py": "def test_x():\n    pass\n", "q3/yaml.py": "X = 1\n"}, nil, "q3/yaml.py: an added module shadows a module tests/test_requests.py imports"},
+		"s4 the floor under a basedir the candidate makes":          {map[string]string{"q2/w/__init__.py": "", "q2/w/test_x.py": "def test_x():\n    pass\n", "q2/utils.py": "X = 1\n"}, nil, "q2/utils.py: an added module shadows the base module app/utils.py"},
+		"L2 a module beside a test file":                            {map[string]string{"tests/helpers3.py": "X = 1\n"}, nil, "an added module shadows the base module lib3/helpers3.py"},
+	} {
+		v := f.guarded(t, c.files, c.gone...)
+		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
+			t.Errorf("%s: %q, want %q", name, whats(own), c.why)
+		}
+	}
+}
+
+// Opus #270 H1: main's #266 basename rule is a floor for judged added
+// files: sys.path entries the guard does not read (a conftest's
+// sys.path.insert, setup.cfg's package_dir). M1: an ini pythonpath with
+// a quote or a backslash is unread; python_paths and site_dirs are read.
+func TestPyGuardShadowFloor(t *testing.T) {
+	for name, base := range map[string]map[string]string{
+		"S1 a conftest's sys.path.insert": {"conftest.py": "import sys\nsys.path.insert(0, 'app')\n", "app/utils.py": "X = 1\n", "app/money2.py": "import utils\n\ndef total():\n    return utils.X\n",
+			"tests/test_total.py": "from money2 import total\n\ndef test_t():\n    assert total() == 1\n"},
+		"S2 setup.cfg's package_dir": {"setup.cfg": "[options]\npackage_dir =\n    =lib\n", "lib/utils.py": "X = 1\n", "lib/money2.py": "import utils\n\ndef total():\n    return utils.X\n", "tests/test_total.py": "from money2 import total\n\ndef test_t():\n    assert total() == 1\n"},
+	} {
+		f := newFixtureWith(t, func(src string) {
+			write(t, src, base)
+			plain(t, src, "add", "--all")
+		})
+		if v := f.guarded(t, map[string]string{"tests/utils.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "tests/utils.py: an added module shadows the base module") {
+			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
+		}
+	}
+	src := newFixtureWith(t, func(src string) { // Mythos #270 r2 M2: in-package tests, src/ their basedir
+		write(t, src, map[string]string{"src/pkg/__init__.py": "", "src/pkg/tests/__init__.py": "", "src/pkg/tests/test_a.py": "def test_a():\n    pass\n", "app/utils.py": "X = 1\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := src.guarded(t, map[string]string{"src/pkg/utils.py": "X = 2\n"}); len(pyOwn(v.Blocks)) > 0 {
+		t.Errorf("r4 M2 src/pkg/utils.py: %q, want none", whats(pyOwn(v.Blocks)))
+	}
+	for _, v := range []string{`s\rc`, `"sr"c`, `'src'`, "src\rlib", "src\f"} { // a lone CR or a form feed: unread (the review of b5a634d)
+		f := newFixtureWith(t, func(src string) {
+			write(t, src, map[string]string{"pytest.ini": "[pytest]\npythonpath = " + v + "\n"})
+			plain(t, src, "add", "--all")
+		})
+		if got := f.guarded(t, map[string]string{"money.py": baseFiles["money.py"] + "\n"}); !finds(got.Blocks, "moves collection off its defaults") {
+			t.Errorf("an ini pythonpath %s: %q, want unread", v, whats(got.Blocks))
+		}
+	}
+	h := newFixtureWith(t, func(src string) { // Mythos #270 L2: a comment naming pythonpath is no key
+		write(t, src, map[string]string{"pytest.ini": "[pytest]\n# see the pythonpath docs, it's long\nminversion = 7\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := h.guarded(t, map[string]string{"money.py": baseFiles["money.py"] + "\n"}); finds(v.Blocks, "moves collection off its defaults") {
+		t.Errorf("m L2 a comment: %q, want read", whats(v.Blocks))
+	}
+	for name, conf := range map[string]map[string]string{ // the security review of 8f2a20c: line breaks and keys iniconfig and TOML read
+		"a quoted TOML key":     {"pyproject.toml": "[tool.pytest.ini_options]\n\"pythonpath\" = [\"src\"]\n"},
+		"r4 M4 an inline table": {"pyproject.toml": "[tool.pytest]\nini_options = { pythonpath = [\"src\"] }\n"},
+		"r4 M4 a dotted key":    {"pyproject.toml": "[tool.pytest]\nini_options.pythonpath = [\"src\"]\n"},
+	} {
+		conf["src/zz/core.py"] = "X = 1\n"
+		f := newFixtureWith(t, func(src string) {
+			write(t, src, conf)
+			plain(t, src, "add", "--all")
+		})
+		if v := f.guarded(t, map[string]string{"zz/core.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "zz/core.py: an added module shadows the base module src/zz/core.py") {
+			t.Errorf("t1 %s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
+		}
+	}
+	for _, key := range []string{"python_paths", "site_dirs"} {
+		f := newFixtureWith(t, func(src string) {
+			write(t, src, map[string]string{"pytest.ini": "[pytest]\n" + key + " = src\n", "src/zz/core.py": "X = 1\n"})
+			plain(t, src, "add", "--all")
+		})
+		if v := f.guarded(t, map[string]string{"zz/core.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "zz/core.py: an added module shadows the base module src/zz/core.py") {
+			t.Errorf("%s: %q, want blocked", key, whats(pyOwn(v.Blocks)))
+		}
+	}
+}
+
 // Opus #267 M4: an unchanged condition passes when each name it reads is
-// bound as in the base; a changed binding blocks.
+// bound as in the base; a changed binding blocks. L1: pythonpath entries
+// from the config file's directory; an escaped TOML entry is unread.
 func TestPyGuardConditionBase(t *testing.T) {
 	test := pyT + "import pytest\nIS_WINDOWS = False\n\n@pytest.mark.skipif(IS_WINDOWS, reason='w')\ndef test_w():\n    pass\n"
 	f := newFixtureWith(t, func(src string) {
-		write(t, src, map[string]string{"tests/test_money.py": test})
+		write(t, src, map[string]string{"tests/test_money.py": test, "tests/pytest.ini": "[pytest]\npythonpath = ../lib2\n", "lib2/x.py": "X = 1\n"})
 		plain(t, src, "add", "--all")
 	})
 	if v := f.guarded(t, map[string]string{"tests/test_money.py": test + "\ndef test_more():\n    pass\n"}); pyFinds(pyOwn(v.Blocks), "skipif or xfail") {
@@ -365,9 +503,29 @@ func TestPyGuardConditionBase(t *testing.T) {
 	if v := h.guarded(t, map[string]string{"marks.py": strings.Replace(app, "return False", "return 'x'", 1)}); !pyFinds(pyOwn(v.Blocks), "marks.py: unverifiable: a skipif or xfail condition") {
 		t.Errorf("a same-file function's body changed under an unchanged condition: %q, want blocked", whats(pyOwn(v.Blocks)))
 	}
+	if v := f.guarded(t, map[string]string{"lib2/money.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "lib2/money.py: an added module shadows the base module money.py") {
+		t.Errorf("a pythonpath from tests/pytest.ini: %q", whats(pyOwn(v.Blocks)))
+	}
+	g := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"tests/pytest.toml": "[pytest]\npythonpath = ['\\x73rc']\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := g.guarded(t, map[string]string{"money.py": baseFiles["money.py"] + "\n"}); !finds(v.Blocks, "moves collection off its defaults") {
+		t.Errorf("an escaped TOML pythonpath: %q, want unread", whats(v.Blocks))
+	}
+	for _, out := range []string{"..", "/opt/lib"} { // the security review's flag: an entry outside the root is unread
+		h := newFixtureWith(t, func(src string) {
+			write(t, src, map[string]string{"pytest.ini": "[pytest]\npythonpath = " + out + "\n"})
+			plain(t, src, "add", "--all")
+		})
+		if v := h.guarded(t, map[string]string{"money.py": baseFiles["money.py"] + "\n"}); !finds(v.Blocks, "moves collection off its defaults") {
+			t.Errorf("a pythonpath outside the root (%s): %q, want unread", out, whats(v.Blocks))
+		}
+	}
 }
 
-// Mythos #267 H1, H3 and M3: a condition's names rebound; __path__.
+// Mythos #267 H1, H2 (input B), H3, H4 and M3: a condition's names and
+// the modules they come from; __path__; the src layout.
 func TestPyGuardConditionReach(t *testing.T) {
 	test := "import pytest\nimport money\nfrom money import add, FAST\n\n@pytest.mark.skipif(FAST, reason='s')\ndef test_add():\n    assert add(1, 2) == 3\n\n@pytest.mark.xfail(money.SLOW, reason='s')\ndef test_zero():\n    pass\n"
 	marks := "import pytest\nIS_WINDOWS = False\nSKIP = pytest.mark.skipif(IS_WINDOWS, reason='w')\n"
@@ -377,16 +535,198 @@ func TestPyGuardConditionReach(t *testing.T) {
 		plain(t, src, "add", "--all")
 	})
 	for name, c := range map[string]guardCase{
-		"H1 an imported name rebound in the test":    {map[string]string{"tests/test_money.py": strings.Replace(test, "from money import add, FAST\n", "from money import add, FAST\nFAST = 'x'\n", 1)}, nil, "tests/test_money.py: unverifiable: a skipif or xfail condition"},
-		"H3 __path__ in an application package":      {map[string]string{"lib/__init__.py": "__path__ = ['lib/alt']\n", "lib/alt/core.py": "def add(a, b):\n    return a + b\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
-		"M3 a for target rebinds a condition's name": {map[string]string{"marks.py": strings.Replace(marks, "SKIP =", "for IS_WINDOWS in ['x']:\n    pass\nSKIP =", 1)}, nil, "marks.py: unverifiable: a skipif or xfail condition"},
-		"an unchanged extend_path passes":            {map[string]string{"pkg/__init__.py": "import pkgutil\n__path__ = pkgutil.extend_path(__path__, __name__)\nX = 1\n"}, nil, ""},
+		"H1 an imported name rebound in the test":             {map[string]string{"tests/test_money.py": strings.Replace(test, "from money import add, FAST\n", "from money import add, FAST\nFAST = 'x'\n", 1)}, nil, "tests/test_money.py: unverifiable: a skipif or xfail condition"},
+		"H4 only money.py rebinds FAST":                       {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = 'x'\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads FAST"},
+		"H4 only money.py rebinds SLOW":                       {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = 'x'\nFAST = False\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads SLOW"},
+		"r2 M2 global rebinds SLOW":                           {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\n\ndef _f():\n    global SLOW\n    SLOW = 'x'\n\n_f()\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads SLOW"},
+		"r2 M2 __path__ by a call":                            {map[string]string{"lib/__init__.py": "__path__.insert(0, 'lib/alt')\n", "lib/alt/core.py": "def add(a, b):\n    return a + b\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"o M2 a case capture":                                 {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\nmatch 1:\n    case SLOW:\n        pass\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads SLOW"},
+		"o M2 an added star import":                           {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\nfrom other import *\n", "other.py": "FAST = 'x'\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads FAST"},
+		"o L2 (__path__).insert":                              {map[string]string{"lib/__init__.py": "(__path__).insert(0, 'lib/alt')\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"o L2 del __path__[:]":                                {map[string]string{"lib/__init__.py": "del __path__[:]\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"s1 a package's __path__ changed from a plain module": {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\nimport lib\nlib.__path__.append('lib/alt')\n"}, nil, "money.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"s1 __path__ bound in a plain module (main's rule)":   {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\n__path__ = ['alt']\n"}, nil, "money.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"H3 __path__ in an application package":               {map[string]string{"lib/__init__.py": "__path__ = ['lib/alt']\n", "lib/alt/core.py": "def add(a, b):\n    return a + b\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"M3 a for target rebinds a condition's name":          {map[string]string{"marks.py": strings.Replace(marks, "SKIP =", "for IS_WINDOWS in ['x']:\n    pass\nSKIP =", 1)}, nil, "marks.py: unverifiable: a skipif or xfail condition"},
+		"an unchanged extend_path passes":                     {map[string]string{"pkg/__init__.py": "import pkgutil\n__path__ = pkgutil.extend_path(__path__, __name__)\nX = 1\n"}, nil, ""},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
 			t.Errorf("%s: %q, want %q", name, whats(own), c.why)
 		}
 	}
+	cyc := newFixtureWith(t, func(src string) { // the security review of 9e748fc: a resolution cycle is unread
+		write(t, src, map[string]string{"cyca/__init__.py": "from cycb import CV\n", "cycb/__init__.py": "from cyca import CV\n", "other.py": "X = 1\n",
+			"tests/test_c.py": "import pytest\nfrom cyca import CV\n\n@pytest.mark.skipif(CV, reason='r')\ndef test_c():\n    pass\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := cyc.guarded(t, map[string]string{"other.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread") {
+		t.Errorf("s3 a resolution cycle: %q, want blocked", whats(pyOwn(v.Blocks)))
+	}
+	dyn := newFixtureWith(t, func(src string) { // the security review of 8f2a20c: a star module binding names at run time
+		write(t, src, map[string]string{"spk3/__init__.py": "from .dyn import *\n", "spk3/dyn.py": "def __getattr__(name):\n    return False\n",
+			"tests/test_d.py": "import pytest\nimport spk3\n\n@pytest.mark.skipif(spk3.PSLOW6, reason='r')\ndef test_d():\n    pass\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := dyn.guarded(t, map[string]string{"spk3/dyn.py": "def __getattr__(name):\n    return 'x'\n"}); !pyFinds(pyOwn(v.Blocks), "spk3/dyn.py: a module a condition reads is unread") {
+		t.Errorf("t3 a star module's __getattr__: %q, want blocked", whats(pyOwn(v.Blocks)))
+	}
+	kw := newFixtureWith(t, func(src string) { // Mythos #270 r2 M3 (b): a keyword is no chain head
+		write(t, src, map[string]string{"starh.py": "from numpy.testing import *\nHAS_X = True\n", "other.py": "X = 1\n",
+			"tests/test_k.py": "import pytest\nfrom starh import *\n\n@pytest.mark.skipif(not HAS_X, 1 + 1)\ndef test_k():\n    pass\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := kw.guarded(t, map[string]string{"other.py": "X = 2\n"}); len(pyOwn(v.Blocks)) > 0 {
+		t.Errorf("r4 M3 not through an unknown star: %q, want none", whats(pyOwn(v.Blocks)))
+	}
+	lazy := newFixtureWith(t, func(src string) { // Mythos #270 r2 L1: a chain stopping at a module __getattr__
+		write(t, src, map[string]string{"lazypkg/__init__.py": "def __getattr__(name):\n    return False\n", "other.py": "X = 1\n",
+			"tests/test_l.py": "import pytest\nimport lazypkg\n\n@pytest.mark.skipif(lazypkg.LSLOW, reason='r')\ndef test_l():\n    pass\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := lazy.guarded(t, map[string]string{"other.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread") {
+		t.Errorf("r4 L1 a module __getattr__: %q, want blocked", whats(pyOwn(v.Blocks)))
+	}
+	for name, dyn := range map[string]string{"exec": "exec('PSLOW7 = False')\n", "a call in an assignment's value": "X = globals().update({'PSLOW7': False})\n", "locals()": "locals()['PSLOW7'] = False\n"} { // the review of b5a634d: an allowlist
+		u := newFixtureWith(t, func(src string) {
+			write(t, src, map[string]string{"spk4/__init__.py": "from .dyn import *\n", "spk4/dyn.py": dyn, "other.py": "X = 1\n",
+				"tests/test_u.py": "import pytest\nimport spk4\n\n@pytest.mark.skipif(spk4.PSLOW7, reason='r')\ndef test_u():\n    pass\n"})
+			plain(t, src, "add", "--all")
+		})
+		if v := u.guarded(t, map[string]string{"other.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread") {
+			t.Errorf("u1 a star module binding by %s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
+		}
+	}
+	g := newFixtureWith(t, func(src string) { // Mythos #267 H2, input B: the src layout
+		plain(t, src, "mv", "money.py", "src_money.py")
+		write(t, src, map[string]string{"pytest.ini": "[pytest]\npythonpath = src\n", "src/money.py": baseFiles["money.py"]})
+		plain(t, src, "rm", "-q", "--cached", "src_money.py")
+		plain(t, src, "add", "--all")
+	})
+	if v := g.guarded(t, map[string]string{"money.py": "def add(a, b):\n    return a + b\n"}); !pyFinds(pyOwn(v.Blocks), "money.py: an added module shadows the base module src/money.py") {
+		t.Errorf("the src layout: %q", whats(pyOwn(v.Blocks)))
+	}
+}
+
+// Mythos #267 r2 H3: the four base shapes a condition reads a changed
+// module through: a relative import, a re-export through an unchanged
+// __init__.py, a def- or class-bound name, a dotted or star import.
+func TestPyGuardConditionShapes(t *testing.T) {
+	test := "import pytest\nimport cfgmod\nimport clsmod\nimport objmod\nimport getmod\nimport strmod\nimport dotted.config\nfrom pkg import PSLOW\nfrom . import flags\nfrom starmod import *\n" +
+		"import lmod\nimport fmod\nfrom .marks import SKIPH\nfrom pkg import PSLOW2, settings\nfrom pkgs import SSLOW\nfrom gpu1 import HAS_GPU\nimport gpu2\nimport gpu3\nimport gpu4\nimport gpu5\nimport gpu6\nimport spk\nimport pkgn\nfrom spk2 import *\nfrom extmod import EXSLOW\nLSLOW = lmod.SLOW\n\ndef _slow():\n    return fmod.FSLOW\n\n" +
+		"@pytest.mark.skipif(LSLOW, reason='r')\n@pytest.mark.skipif(_slow(), reason='r')\n@SKIPH\n@pytest.mark.skipif(PSLOW2, reason='r')\n@pytest.mark.skipif(settings.S4, reason='r')\n@pytest.mark.skipif(SSLOW, reason='r')\n@pytest.mark.skipif(HAS_GPU, reason='r')\n@pytest.mark.skipif(gpu2.PSLOW3, reason='r')\n@pytest.mark.skipif(gpu3.CSLOW, reason='r')\n@pytest.mark.skipif(gpu4.HAS_GPU4, reason='r')\n@pytest.mark.skipif(gpu5.HAS5, reason='r')\n@pytest.mark.skipif(gpu6.HAS6, reason='r')\n@pytest.mark.skipif(spk.PSLOW4, reason='r')\n@pytest.mark.skipif(pkgn.SLOWN, reason='r')\n@pytest.mark.skipif(PSLOW5, reason='r')\n@pytest.mark.skipif(EXSLOW, reason='r')\n" +
+		"@pytest.mark.skipif(flags.RSLOW, reason='r')\n@pytest.mark.skipif(PSLOW, reason='r')\n@pytest.mark.skipif(cfgmod.flag(), reason='r')\n" +
+		"@pytest.mark.skipif(clsmod.Cfg.SLOW, reason='r')\n@pytest.mark.skipif(objmod.cfg.SLOW, reason='r')\n@pytest.mark.skipif(getattr(getmod, 'X'), reason='r')\n@pytest.mark.skipif('strmod.check()', reason='r')\n@pytest.mark.skipif(dotted.config.DSLOW, reason='r')\n@pytest.mark.skipif(STAR, reason='r')\ndef test_s():\n    pass\n"
+	cfg, cls, obj := "def flag():\n    return False\n", "class Cfg:\n    SLOW = False\n", "import types\ncfg = types.SimpleNamespace(SLOW=False)\n"
+	gpu1 := "def _detect():\n    return False\n\nHAS_GPU = _detect()\n"
+	gpu2 := "import functools\n\ndef _g(x):\n    return False\n\nPSLOW3 = functools.partial(_g, 1)\n"
+	gpu3 := "class _Cfg:\n    slow = False\n\nCSLOW = _Cfg().slow\n"
+	gpu5 := "def _probe():\n    return None\n\ntry:\n    _probe()\nexcept Exception:\n    HAS5 = False\n"
+	gpu6 := "def _p6(x):\n    return False\n\nfor x in [1]:\n    if _p6(x):\n        break\nelse:\n    HAS6 = False\n"
+	gpu4 := "def _detect():\n    return False\n\nif _detect():\n    pass\nelse:\n    HAS_GPU4 = False\n"
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"tests/__init__.py": "", "tests/flags.py": "RSLOW = False\n", "tests/test_shapes.py": test, "pkg/__init__.py": "from .config import PSLOW\nfrom .conf import REAL as PSLOW2\nfrom . import conf4 as settings\n", "pkg/conf.py": "REAL = False\n", "pkgs/__init__.py": "from .sconf import *\n", "gpu1.py": gpu1, "gpu2.py": gpu2, "gpu3.py": gpu3, "gpu4.py": gpu4, "gpu5.py": gpu5, "gpu6.py": gpu6,
+			"spk/__init__.py": "from .sconf2 import *\n", "pkgn/__init__.py": "from numpy import *\nfrom .config import *\n", "pkgn/config.py": "SLOWN = False\n", "spk/sconf2.py": "PSLOW4 = False\n", "spk2/__init__.py": "from .sconf3 import *\n", "spk2/sconf3.py": "PSLOW5 = False\n", "exsrc.py": "EXSLOW = False\n", "pkgs/sconf.py": "SSLOW = False\n", "pkg/conf4.py": "S4 = False\n",
+			"lmod.py": "SLOW = False\n", "fmod.py": "FSLOW = False\n", "hmod.py": "HSLOW = False\n", "tests/marks.py": "import pytest\nfrom hmod import HSLOW\nSKIPH = pytest.mark.skipif(HSLOW, reason='r')\n",
+			"pkg/config.py": "PSLOW = False\n", "cfgmod.py": cfg, "clsmod.py": cls, "objmod.py": obj, "getmod.py": "X = False\n", "strmod.py": "def check():\n    return False\n", "dotted/__init__.py": "", "dotted/config.py": "DSLOW = False\n", "starmod.py": "STAR = False\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]guardCase{
+		"i a relative import":                                  {map[string]string{"tests/flags.py": "RSLOW = 'x'\n"}, nil, "tests/flags.py: a skipif or xfail condition in tests/test_shapes.py reads RSLOW"},
+		"ii a re-export":                                       {map[string]string{"pkg/config.py": "PSLOW = 'x'\n"}, nil, "pkg/config.py: a skipif or xfail condition in tests/test_shapes.py reads PSLOW"},
+		"iii a def body":                                       {map[string]string{"cfgmod.py": strings.Replace(cfg, "return False", "return 'x'", 1)}, nil, "cfgmod.py: a skipif or xfail condition in tests/test_shapes.py reads flag"},
+		"iii a class body":                                     {map[string]string{"clsmod.py": strings.Replace(cls, "SLOW = False", "SLOW = 'x'", 1)}, nil, "clsmod.py: a skipif or xfail condition in tests/test_shapes.py reads Cfg"},
+		"iii an attribute read past its name":                  {map[string]string{"objmod.py": obj + "\ndef _f():\n    cfg.SLOW = 'x'\n\n_f()\n"}, nil, "objmod.py: a skipif or xfail condition in tests/test_shapes.py reads cfg"},
+		"flag a module read whole":                             {map[string]string{"getmod.py": "X = 'x'\n"}, nil, "getmod.py: a skipif or xfail condition in tests/test_shapes.py reads getmod"},
+		"flag a string condition":                              {map[string]string{"strmod.py": "def check():\n    return 'x'\n"}, nil, "strmod.py: a skipif or xfail condition in tests/test_shapes.py reads check"},
+		"o H2 R1 a local binding":                              {map[string]string{"lmod.py": "SLOW = 'x'\n"}, nil, "lmod.py: a skipif or xfail condition in tests/test_shapes.py reads SLOW"},
+		"o H2 R8 a same-file function":                         {map[string]string{"fmod.py": "FSLOW = 'x'\n"}, nil, "fmod.py: a skipif or xfail condition in tests/test_shapes.py reads FSLOW"},
+		"o H2 R2 a condition in a helper":                      {map[string]string{"hmod.py": "HSLOW = 'x'\n"}, nil, "hmod.py: a skipif or xfail condition in tests/marks.py reads HSLOW"},
+		"o H2 R10 a renamed re-export":                         {map[string]string{"pkg/conf.py": "REAL = 'x'\n"}, nil, "pkg/conf.py: a skipif or xfail condition in tests/test_shapes.py reads REAL"},
+		"o H2 R11 a module re-exported":                        {map[string]string{"pkg/conf4.py": "S4 = 'x'\n"}, nil, "pkg/conf4.py: a skipif or xfail condition in tests/test_shapes.py reads S4"},
+		"ii a re-export through a star import (the name rule)": {map[string]string{"pkgs/sconf.py": "SSLOW = 'x'\n"}, nil, "pkgs/sconf.py: a skipif or xfail condition in tests/test_shapes.py reads SSLOW"},
+		// Mythos #270: H1 (a name bound by a same-file call), H3 (resolve through star imports).
+		"m H1 a same-file def's body":                                       {map[string]string{"gpu1.py": strings.Replace(gpu1, "return False", "return 'x'", 1)}, nil, "gpu1.py: a skipif or xfail condition in tests/test_shapes.py reads HAS_GPU"},
+		"r4 M5 an unchanged def body (pyReach)":                             {map[string]string{"gpu1.py": gpu1 + "OTHER = 1\n"}, nil, ""},
+		"m H1 functools.partial":                                            {map[string]string{"gpu2.py": strings.Replace(gpu2, "return False", "return 'x'", 1)}, nil, "gpu2.py: a skipif or xfail condition in tests/test_shapes.py reads PSLOW3"},
+		"m H1 _Cfg().slow":                                                  {map[string]string{"gpu3.py": strings.Replace(gpu3, "slow = False", "slow = 'x'", 1)}, nil, "gpu3.py: a skipif or xfail condition in tests/test_shapes.py reads CSLOW"},
+		"u2 a flag set in an except":                                        {map[string]string{"gpu5.py": strings.Replace(gpu5, "return None", "raise ValueError", 1)}, nil, "gpu5.py: a skipif or xfail condition in tests/test_shapes.py reads HAS5"},
+		"u2 a flag set in a for's else":                                     {map[string]string{"gpu6.py": strings.Replace(gpu6, "return False", "return True", 1)}, nil, "gpu6.py: a skipif or xfail condition in tests/test_shapes.py reads HAS6"},
+		"t2 a flag bound under an if":                                       {map[string]string{"gpu4.py": strings.Replace(gpu4, "return False", "return 'x'", 1)}, nil, "gpu4.py: a skipif or xfail condition in tests/test_shapes.py reads HAS_GPU4"},
+		"r4 M3 an unknown star before a binding one":                        {map[string]string{"pkgn/config.py": "SLOWN = 'x'\n"}, nil, "pkgn/config.py: a skipif or xfail condition in tests/test_shapes.py reads SLOWN"},
+		"m H3 pkg.PSLOW4 through a star":                                    {map[string]string{"spk/sconf2.py": "PSLOW4 = 'x'\n"}, nil, "spk/sconf2.py: a skipif or xfail condition in tests/test_shapes.py reads PSLOW4"},
+		"ii a name re-exported by a module not in the base (the name rule)": {map[string]string{"exsrc.py": "EXSLOW = 'x'\n"}, nil, "exsrc.py: a skipif or xfail condition in tests/test_shapes.py reads EXSLOW"},
+		"m H3 a two-level star":                                             {map[string]string{"spk2/sconf3.py": "PSLOW5 = 'x'\n"}, nil, "spk2/sconf3.py: a skipif or xfail condition in tests/test_shapes.py reads PSLOW5"},
+		"iv a dotted import":                                                {map[string]string{"dotted/config.py": "DSLOW = 'x'\n"}, nil, "dotted/config.py: a skipif or xfail condition in tests/test_shapes.py reads DSLOW"},
+		"iv a star import":                                                  {map[string]string{"starmod.py": "STAR = 'x'\n"}, nil, "starmod.py: a skipif or xfail condition in tests/test_shapes.py reads STAR"},
+		"an unrelated change to a star one":                                 {map[string]string{"starmod.py": "STAR = False\nOTHER = 1\n"}, nil, ""},
+	} {
+		v := f.guarded(t, c.files, c.gone...)
+		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
+			t.Errorf("%s: %q, want %q", name, whats(own), c.why)
+		}
+	}
+}
+
+// Mythos #270 H1 in passes: a flag a same-file def computes; H2: a
+// condition in a def or class body reading a local name or a parameter.
+func TestPyGuardConditionBodies(t *testing.T) {
+	marks := "import pytest\n\ndef _detect():\n    return False\n\nFLAG = _detect()\nSKIP = pytest.mark.skipif(FLAG, reason='r')\n"
+	m := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"marks2.py": marks})
+		plain(t, src, "add", "--all")
+	})
+	if v := m.guarded(t, map[string]string{"marks2.py": strings.Replace(marks, "return False", "return 'x'", 1)}); !pyFinds(pyOwn(v.Blocks), "marks2.py: unverifiable: a skipif or xfail condition") {
+		t.Errorf("m H1 passes: FLAG = _detect(), the body changed: %q, want blocked", whats(pyOwn(v.Blocks)))
+	}
+	xf := "import pytest\n\ndef _xf():\n    return pytest.mark.xfail\n" // Mythos #270 r2 H1: a factory in the base conftest, a fixture added calling it
+	h := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"tests/conftest.py": xf})
+		plain(t, src, "add", "--all")
+	})
+	if v := h.guarded(t, map[string]string{"tests/conftest.py": xf + "\n@pytest.fixture(autouse=True)\ndef fx(request):\n    request.applymarker(_xf()('x'))\n"}); !pyFinds(pyOwn(v.Blocks), "tests/conftest.py: unverifiable: a skipif or xfail condition") {
+		t.Errorf("r4 H1 a two-line factory in a fixture: %q, want blocked", whats(pyOwn(v.Blocks)))
+	}
+	m3 := "import functools\nimport pytest\n\n@functools.lru_cache\ndef _detect():\n    return False\n\nFLAG = _detect()\nSKIP = pytest.mark.skipif(FLAG, reason='r')\n\ndef other():\n    return 1\n"
+	k := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"marks3.py": m3})
+		plain(t, src, "add", "--all")
+	})
+	if v := k.guarded(t, map[string]string{"marks3.py": strings.Replace(m3, "return 1", "return 2", 1)}); len(pyOwn(v.Blocks)) > 0 {
+		t.Errorf("r4 M5 an unchanged def body passes: %q", whats(pyOwn(v.Blocks)))
+	}
+	if v := k.guarded(t, map[string]string{"marks3.py": strings.Replace(m3, "@functools.lru_cache", "@functools.cache", 1)}); !pyFinds(pyOwn(v.Blocks), "marks3.py: unverifiable: a skipif or xfail condition") {
+		t.Errorf("r4 M5 a changed decorator blocks: %q", whats(pyOwn(v.Blocks)))
+	}
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"b1.py": "SLOW = False\n", "b2.py": "SLOW = False\n", "b3.py": "SLOW = False\n", "b4.py": "SLOW = False\n", "b5.py": "SLOW = False\n", "b6.py": "SLOW = False\n", "b7.py": "SLOW = False\n",
+			"tests/conftest.py": "import pytest\nimport b1\nimport b2\nimport b5\n\n@pytest.fixture(autouse=True)\ndef fx5(request):\n    request.applymarker(_xf(b5.SLOW))\n\ndef _xf(c):\n    return pytest.mark.xfail(c)\n\n@pytest.fixture(autouse=True)\ndef fx(request):\n    s = b1.SLOW\n    request.applymarker(pytest.mark.xfail(s))\n\n" +
+				"def pytest_collection_modifyitems(items):\n    flag = b2.SLOW\n    for item in items:\n        item.add_marker(pytest.mark.skipif(flag, reason='r'))\n",
+			"tests/test_b.py": "import pytest\nimport b3\nimport b4\n\nclass TestX:\n    slow = b3.SLOW\n    pytestmark = pytest.mark.skipif(slow, reason='r')\n\n    def test_x(self):\n        pass\n\n" +
+				"def _mk(flag):\n    return pytest.mark.skipif(flag, reason='r')\n\nSKIP = _mk(b4.SLOW)\n\n@SKIP\ndef test_y():\n    pass\n\nimport b6\nSKIP6 = _mk(flag=b6.SLOW)\n\nimport b7\n\ndef outer():\n    def inner(c):\n        return pytest.mark.xfail(c)\n    return inner\n\n_mk7 = outer()\nSKIP7 = _mk7(b7.SLOW)\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]guardCase{
+		"m H2 a fixture's local":             {map[string]string{"b1.py": "SLOW = 'x'\n"}, nil, "b1.py: a skipif or xfail condition in tests/conftest.py reads SLOW"},
+		"m H2 a hook's local":                {map[string]string{"b2.py": "SLOW = 'x'\n"}, nil, "b2.py: a skipif or xfail condition in tests/conftest.py reads SLOW"},
+		"m H2 a class's pytestmark":          {map[string]string{"b3.py": "SLOW = 'x'\n"}, nil, "b3.py: a skipif or xfail condition in tests/test_b.py reads SLOW"},
+		"r4 M1 a caller above its factory":   {map[string]string{"b5.py": "SLOW = 'x'\n"}, nil, "b5.py: a skipif or xfail condition in tests/conftest.py reads SLOW"},
+		"r4 M6 a factory's keyword argument": {map[string]string{"b6.py": "SLOW = 'x'\n"}, nil, "b6.py: a skipif or xfail condition in tests/test_b.py reads SLOW"},
+		"r4 L6 a factory a factory returns":  {map[string]string{"b7.py": "SLOW = 'x'\n"}, nil, "b7.py: a skipif or xfail condition in tests/test_b.py reads SLOW"},
+		"m H2 a mark factory":                {map[string]string{"b4.py": "SLOW = 'x'\n"}, nil, "b4.py: a skipif or xfail condition in tests/test_b.py reads SLOW"},
+	} {
+		v := f.guarded(t, c.files, c.gone...)
+		if own := pyOwn(v.Blocks); !pyFinds(own, c.why) {
+			t.Errorf("%s: %q, want %q", name, whats(own), c.why)
+		}
+	}
+	old := maxWork // M5: the base conditions' analysis counts toward the work bound
+	t.Cleanup(func() { maxWork = old })
+	maxWork = 120
+	if v := f.guarded(t, map[string]string{"b4.py": "SLOW = False\nX = 1\n"}); !pyFinds(pyOwn(v.Blocks), "b4.py: unverifiable: the base conditions' analysis is over the guard's work bound") {
+		t.Errorf("m M5 the work bound: %q", whats(pyOwn(v.Blocks)))
+	}
+	maxWork = old
 }
 
 // The controls: ordinary Python changes raise nothing of P14c-2a's but
@@ -451,6 +791,21 @@ func TestPyGuardBounded(t *testing.T) {
 	}
 	if took[1] > 6*took[0]+time.Second {
 		t.Errorf("1 MiB in %v, 3 MiB in %v: not linear", took[0], took[1])
+	}
+	chain := func(n int) map[string]string { // Opus #270 L1: one statement binding n aliases
+		var b strings.Builder
+		for i := range n {
+			fmt.Fprintf(&b, "a%d = ", i)
+		}
+		return map[string]string{"tests/conftest.py": "import pytest\n" + b.String() + "pytest.mark.skipif\n"}
+	}
+	for i, n := range []int{10000, 40000} {
+		start := time.Now()
+		f.guarded(t, chain(n))
+		took[i] = time.Since(start)
+	}
+	if took[1] > 6*took[0]+time.Second {
+		t.Errorf("an alias chain of 10000 in %v, of 40000 in %v: not linear", took[0], took[1])
 	}
 	old := maxWork
 	t.Cleanup(func() { maxWork = old })

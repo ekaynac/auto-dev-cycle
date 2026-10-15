@@ -101,6 +101,13 @@ func pyBinds(t []ptok) (names []string, imported bool) {
 			names = append(names, k.text)
 		}
 	}
+	if pat := pySplit(t, ":"); t[0].text == "case" && len(pat) > 1 && len(pyAssign(t)) == 1 { // a case pattern's captures (Opus #270 M2)
+		for i, k := range pat[0][1:] { // a name not after ., nor before (, . or = (a class, a value, a keyword)
+			if k.kind == 'n' && pat[0][i].text != "." && (i+2 >= len(pat[0]) || !slices.Contains([]string{"(", ".", "="}, pat[0][i+2].text)) {
+				names = append(names, k.text)
+			}
+		}
+	}
 	switch d := t[b2i(t[0].text == "async"):]; {
 	case len(d) > 1 && (d[0].text == "def" || d[0].text == "class"):
 		return append(names, d[1].text), false
