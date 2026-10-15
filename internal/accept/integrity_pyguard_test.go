@@ -734,6 +734,9 @@ func TestPyGuardConditionBodies(t *testing.T) {
 // application module a judged file imports; the closure across modules; a
 // third-party proxy; a container a method call fills.
 func TestPyGuardReach(t *testing.T) {
+	gate := pyInstallRootsRead // the reader's rows: the gate on, as P14c-2a-plain will turn it (Astra #275 r3); TestPyGuardInstallGate runs the default
+	t.Cleanup(func() { pyInstallRootsRead = gate })
+	pyInstallRootsRead = true
 	test := "import pytest\nfrom testing_utils import require_gpu\nfrom lmod3 import SLOW\nfrom django.conf import settings\nimport lmod4\nfrom lmod5 import FLAG5\nfrom m2 import W\nfrom testing_utils2 import require_gpu2\nfrom pkgm2 import require_gpu3\nfrom lmod6 import SLOW6\nfrom lmod7 import SLOW7\nfrom flags8 import SLOW8\n\n" +
 		"@pytest.mark.skipif(SLOW8, reason='r')\n" +
 		"@pytest.mark.skipif(pytest.FLAGP, reason='r')\n" +
@@ -910,7 +913,7 @@ func TestPyGuardReach(t *testing.T) {
 		"o2-P9 an indented continuation line":                         {map[string]string{"setup.cfg": "[options]\npackages = find:\n\n[options.packages.find]\nexclude =\n    where = a\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"}, map[string]string{"a/yaml.py": "X = 1\n"}, "a/yaml.py: unverifiable: the base adds sys.path entries the guard does not read"},
 		"o2-P10c another backend named setuptools_x":                  {map[string]string{"pyproject.toml": "[build-system]\nbuild-backend = \"setuptools_x\"\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"}, map[string]string{"vendor/yaml.py": "X = 1\n"}, "vendor/yaml.py: unverifiable: the base adds sys.path entries the guard does not read"},
 		"o2-P1g a package in two roots above a unique submodule":      {map[string]string{"src/util/__init__.py": "", "util/__init__.py": "", "util/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nfrom util.flags import SKIP\n\n@pytest.mark.skipif(SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the module name util in two roots)"},
-		"o2-a2 a module beside a namespace portion in a test basedir": {map[string]string{"feature.py": "import cfg as flags\n", "tests/feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a skipif or xfail condition in tests/test_x.py reads SKIP, which"},
+		"o2-a2 a module beside a namespace portion in a test basedir": {map[string]string{"feature.py": "import cfg as flags\n", "tests/feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the module feature holds no submodule flags)"},
 		"o3-B1 a module only a sys.path root names":                   {map[string]string{"conftest.py": "import sys\nsys.path.insert(0, 'lib')\n", "lib/flags.py": "import cfg\nSKIP = cfg.PV\n", "cfg.py": "PV = False\n", "tests/test_x.py": "import pytest, flags\n\n@pytest.mark.skipif(flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "PV = 'True'\n"}, "cfg.py: "},
 		"o3-B2 a module only a package-dir root names":                {map[string]string{"pyproject.toml": "[tool.setuptools]\npackage-dir = {\"\" = \"lib\"}\n", "lib/flags.py": "import cfg\nSKIP = cfg.PV\n", "cfg.py": "PV = False\n", "tests/test_x.py": "import pytest, flags\n\n@pytest.mark.skipif(flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "PV = 'True'\n"}, "cfg.py: "},
 		"o3-B3 a module binding the name by import":                   {map[string]string{"pyproject.toml": "[tool.setuptools]\npackage-dir = {\"\" = \"lib\"}\n", "lib/flags.py": "from cfg import PV as SKIP\n", "cfg.py": "PV = False\n", "tests/test_x.py": "import pytest, flags\n\n@pytest.mark.skipif(flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "PV = 'True'\n"}, "cfg.py: "},
@@ -1130,5 +1133,32 @@ func TestPyGuardBounded(t *testing.T) {
 	ctx.n.Store(total / 2)
 	if _, err := Accept(ctx, in); err == nil || total < 1000 {
 		t.Errorf("cancelled midway (%d checks): %v", total, err)
+	}
+}
+
+// TestPyGuardInstallGate: the gate off (the default), a base with an install
+// key keeps main's unread verdict, and nothing else this PR adds passes what
+// main blocks (Astra #275 r3; strictly additive). "": no block, as on main.
+func TestPyGuardInstallGate(t *testing.T) {
+	for name, c := range map[string]struct {
+		base, change map[string]string
+		want         string
+	}{
+		"g setup.cfg package_dir":                                                   {map[string]string{"setup.cfg": "[options]\npackage_dir =\n    =lib\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"}, map[string]string{"lib/yaml.py": "X = 1\n"}, "lib/yaml.py: unverifiable: the base adds sys.path entries the guard does not read"},
+		"g setup.cfg packages.find where":                                           {map[string]string{"setup.cfg": "[options]\npackages = find:\n\n[options.packages.find]\nwhere = lib\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"}, map[string]string{"lib/yaml.py": "X = 1\n"}, "lib/yaml.py: unverifiable: the base adds sys.path entries the guard does not read"},
+		"g pyproject package-dir":                                                   {map[string]string{"pyproject.toml": "[tool.setuptools]\npackage-dir = {\"\" = \"lib\"}\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"}, map[string]string{"lib/yaml.py": "X = 1\n"}, "lib/yaml.py: unverifiable: the base adds sys.path entries the guard does not read"},
+		"g pyproject packages.find where":                                           {map[string]string{"pyproject.toml": "[tool.setuptools.packages.find]\nwhere = [\"lib\"]\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"}, map[string]string{"lib/yaml.py": "X = 1\n"}, "lib/yaml.py: unverifiable: the base adds sys.path entries the guard does not read"},
+		"g Astra #275 r3: an install root and a package's own __path__":             {map[string]string{"setup.cfg": "[metadata]\nname = example\nversion = 0.0.0\n\n[options]\npackage_dir = =lib\npackages = find:\n\n[options.packages.find]\nwhere = lib\n", "feature/__init__.py": "__path__ = [\"lib/impl\"]\n", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: unverifiable: the base adds sys.path entries the guard does not read"},
+		"g a setuptools backend only stays read, as on main":                        {map[string]string{"pyproject.toml": "[build-system]\nbuild-backend = \"setuptools.build_meta\"\n", "cfg.py": "SKIP = False\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, ""},
+		"g src/ and a package's own __path__: as on main (P14c-2a-plain)":           {map[string]string{"feature/__init__.py": "__path__ = [\"src/impl\"]\n", "feature/flags.py": "SKIP = False\n", "src/impl/__init__.py": "", "src/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, ""},
+		"g src/ and a package's own __path__: the decoy changed blocks, as on main": {map[string]string{"feature/__init__.py": "__path__ = [\"src/impl\"]\n", "feature/flags.py": "SKIP = False\n", "src/impl/__init__.py": "", "src/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"feature/flags.py": "SKIP = 'True'\n"}, "feature/flags.py: a skipif or xfail condition in tests/test_x.py reads SKIP"},
+	} {
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, c.base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, c.change); c.want == "" && len(pyOwn(v.Blocks)) > 0 || c.want != "" && !pyFinds(pyOwn(v.Blocks), c.want) {
+			t.Errorf("%s: %q, want %q", name, whats(pyOwn(v.Blocks)), c.want)
+		}
 	}
 }

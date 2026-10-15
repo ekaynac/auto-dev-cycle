@@ -22,6 +22,7 @@ var (
 	pyInstallKey = regexp.MustCompile(`(?mi)^(package[_-]dir|where|build-backend)[ \t]*[:=]`)                     // no indented key (Opus #275 H3)
 	pyInstallAny = regexp.MustCompile(`(?i)package[_-]dir|(^|[^\w])where["']?\s*[:=]|build-backend|backend-path`) // any backend-path unread (Opus #275 H4)
 	pyFindPkgs   = regexp.MustCompile(`(?m)^packages[ \t]*[:=][ \t]*find(_namespace)?:[ \t]*$`)
+	pyBackend    = regexp.MustCompile(`(?m)^[ \t]*build-backend[ \t]*=[ \t]*["']setuptools[."']`) // main's: a setuptools backend is no root
 	pyToolOther  = regexp.MustCompile(`(?i)tool["'\s]*\.["'\s]*(poetry|hatch|pdm|flit)`)
 	pyPkgDir     = regexp.MustCompile(`^\{\s*""\s*=\s*"([\w./-]+)"\s*\}$`)                              // package-dir = {"" = "src"}
 	pyWhere      = regexp.MustCompile(`^(?:\[\s*"([\w./-]+)"\s*\]|\[\s*'([\w./-]+)'\s*\]|([\w./-]+))$`) // where = DIR, or ["DIR"] in TOML
@@ -32,6 +33,13 @@ var (
 	pyInstallKeys = map[string]string{"options": "package_dir", "options.packages.find": "where", "tool.setuptools": "package-dir",
 		"tool.setuptools.packages.find": "where", "build-system": "build-backend"}
 )
+
+// pyInstallRootsRead gates pyInstall's reader: off, a base with an install
+// key keeps main's unread verdict (Astra #275 r3: a package's own __path__
+// would send a read root's module elsewhere). P14c-2a-plain turns it on,
+// once package plainness is modelled, with Astra #275 r3's row. A var only
+// so that the reader's own tests can run it.
+var pyInstallRootsRead = false
 
 // pyInstall reads the entries an install adds (Mythos #270 M1), as an
 // allowlist (Opus #272 (c)), each key only in its section (Astra #272 H1):
@@ -55,8 +63,8 @@ func (r *run) pyInstall() (entries []string, unread bool, err error) {
 				return nil, true, err
 			}
 			s := strings.ReplaceAll(string(b), "\r\n", "\n")
-			if pyToolOther.MatchString(s) {
-				return nil, true, nil
+			if pyToolOther.MatchString(s) || !pyInstallRootsRead && len(pyInstallAny.FindAllString(string(b), -1)) > len(pyBackend.FindAllString(string(b), -1)) {
+				return nil, true, nil // the gate off: main's verdict, a key not a setuptools backend
 			}
 			parsed, heads, toml := 0, append([][]int{{0, 0, 0, 0}}, pySection.FindAllStringSubmatchIndex(s, -1)...), base == "pyproject.toml"
 			if p != base || base == "tox.ini" {
@@ -141,8 +149,9 @@ func pySysUse(t []ptok) bool {
 }
 
 // prefix is how many of parts name the base module Python imports, at most
-// top (Astra #272 r2 H1): a shorter prefix that is a plain module, or a
-// package whose directory does not hold the longer one, ends it. Unread:
+// top: main's longest module prefix, or unread (strictly additive, Astra
+// #275 r3). Unread: a shorter prefix that is a plain module, or a package
+// whose directory does not hold the longer one (Astra #272 r2 H1);
 // any ancestor only an added root names, or two files answer to (Astra
 // #275 H1, Opus #275 H1); a package binding the next name otherwise than as
 // its submodule. A package's own __path__ is not modelled, as on main
@@ -174,8 +183,7 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 			}
 		}
 		if k < i && (path.Base(q) != "__init__.py" || !strings.HasPrefix(pb.mods[strings.Join(parts[:i], ".")], path.Dir(q)+"/")) {
-			i = k // a module, or a package elsewhere, holds no submodule: the shorter one is imported
-			break
+			return 0, "the module " + name + " holds no submodule " + parts[k], nil // main takes the longer one; Python the shorter: unread
 		}
 	}
 	return i, "", nil
