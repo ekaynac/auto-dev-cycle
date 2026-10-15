@@ -161,39 +161,6 @@ func pyDepthEnd(t []ptok, open int) int {
 	return -1
 }
 
-// starDunder is the first base module f star-imports that may run code or
-// bind a dunder name in f (Astra #275 r2 H6b, Opus #277 H2): one not plain
-// (pyInert), importing anything (an import runs its module), or binding
-// __all__ (a package's exports its implicit __path__, Astra #277 H1).
-// Without __all__, a star binds no name starting with "_". A module
-// outside the base: resolve's unknown star rule. Unread too: a source
-// only an added root names, two files answer to, or with a compiled or
-// extension sibling Python may load instead (the background review of
-// 6ba56ce). A change to a star source blocks (pyBase.starOf).
-func (pb *pyBase) starDunder(f *pyBaseFile) (string, error) {
-	for _, s := range f.stars {
-		if q := pb.mods[s]; q == "" && pb.shadowMods[s] == "" {
-			continue
-		} else if q == "" || pb.alts[s] > 1 || pb.compiled(q) {
-			return s, nil
-		} else if fs, err := pb.file(q); err != nil {
-			return "", err
-		} else if !fs.plain || len(fs.mods) > 0 || fs.locals["__all__"] {
-			return s, nil
-		}
-	}
-	return "", nil
-}
-
-// compiled: a base file beside module q that Python may load in its place:
-// an extension module, a .pyd or a .pyc (dir/m.*.so for dir/m.py).
-func (pb *pyBase) compiled(q string) bool {
-	stem := strings.TrimSuffix(q, ".py") + "."
-	return slices.ContainsFunc(pb.paths, func(p string) bool {
-		return strings.HasPrefix(p, stem) && slices.Contains([]string{".so", ".pyd", ".pyc"}, path.Ext(p))
-	})
-}
-
 // prefix is how many of parts name the base module Python imports, at most
 // top: main's longest module prefix, or unread (strictly additive, Astra
 // #275 r3). Unread: a shorter prefix that is a plain module, or a package
@@ -226,10 +193,6 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 				return 0, "", err
 			} else if !f.plain {
 				return 0, "the package " + name + " is not plain (its submodules may resolve elsewhere)", nil // Opus #275 M1, Astra #275 H6
-			} else if s, err := pb.starDunder(f); err != nil {
-				return 0, "", err
-			} else if s != "" {
-				return 0, "the package " + name + " star-imports " + s + ", which may run code or bind __path__", nil // Astra #275 r2 H6b, Opus #277 H2
 			} else if k < i && (f.locals[parts[k]] || f.from[parts[k]] != "" && f.from[parts[k]] != name+"."+parts[k]) {
 				return 0, "the package " + name + " binds " + parts[k] + " beside its submodule", nil
 			}
