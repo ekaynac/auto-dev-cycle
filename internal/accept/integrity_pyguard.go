@@ -79,8 +79,8 @@ func (r *run) python(changes []Change) error {
 	if err != nil {
 		return err
 	}
-	pb := &pyBase{r: r}
-	pb.entries, pb.basedirs = r.pyEntries(slices.Concat(paths, installed))
+	pb := &pyBase{r: r, extra: installed}
+	pb.entries, pb.basedirs = r.pyEntries(paths)
 	if err := pb.load(); err != nil {
 		return err
 	}

@@ -18,8 +18,9 @@ import (
 
 var (
 	pySection    = regexp.MustCompile(`(?m)^[ \t]*\[([^\]\n]*)\][ \t]*$`)
-	pyInstallKey = regexp.MustCompile(`(?mi)^[ \t]*(package[_-]dir|where|build-backend)[ \t]*[:=]`)
-	pyInstallAny = regexp.MustCompile(`(?i)package[_-]dir|(^|[^\w])where["']?\s*[:=]|build-backend`)
+	pyInstallKey = regexp.MustCompile(`(?mi)^(package[_-]dir|where|build-backend)[ \t]*[:=]`)                     // no indented key (Opus #275 H3)
+	pyInstallAny = regexp.MustCompile(`(?i)package[_-]dir|(^|[^\w])where["']?\s*[:=]|build-backend|backend-path`) // any backend-path unread (Opus #275 H4)
+	pyFindPkgs   = regexp.MustCompile(`(?m)^packages[ \t]*[:=][ \t]*find(_namespace)?:[ \t]*$`)
 	pyToolOther  = regexp.MustCompile(`(?i)tool["'\s]*\.["'\s]*(poetry|hatch|pdm|flit)`)
 	pyPkgDir     = regexp.MustCompile(`^\{\s*""\s*=\s*"([^"\\]+)"\s*\}$`) // package-dir = {"" = "src"}
 	pySysAttrs   = strings.Fields("argv platform version_info version implementation executable exit stdout stderr stdin maxsize byteorder flags " +
@@ -53,23 +54,31 @@ func (r *run) pyInstall() (entries []string, unread bool, err error) {
 			if pyToolOther.MatchString(s) {
 				return nil, true, nil
 			}
-			parsed, heads := 0, append([][]int{{0, 0, 0, 0}}, pySection.FindAllStringSubmatchIndex(s, -1)...)
+			parsed, heads, toml := 0, append([][]int{{0, 0, 0, 0}}, pySection.FindAllStringSubmatchIndex(s, -1)...), base == "pyproject.toml"
+			if p != base || base == "tox.ini" {
+				heads = nil // only the root setup.cfg or pyproject.toml is read (Opus #275 H3)
+			}
 			for i, h := range heads {
-				end, name := len(s), strings.ToLower(strings.NewReplacer(`"`, "", "'", "", " ", "", "\t", "", "[", "", "]", "").Replace(s[h[2]:h[3]]))
+				end, name := len(s), strings.TrimSpace(s[h[2]:h[3]]) // exact case (Opus #275 H3)
+				if toml {
+					name = strings.NewReplacer(`"`, "", "'", "", " ", "", "\t", "", "[", "", "]", "").Replace(name)
+				}
 				if i+1 < len(heads) {
 					end = heads[i+1][0]
 				}
 				for _, m := range pyInstallKey.FindAllStringSubmatchIndex(s[h[0]:end], -1) {
 					sec := s[h[0]:end]
 					v, key := strings.TrimSpace(pyKey.Split(sec[m[1]:], 2)[0]), strings.ToLower(strings.ReplaceAll(sec[m[2]:m[3]], "_", "-"))
-					words := pyWords.Split(v, -1)
+					words := slices.DeleteFunc(pyWords.Split(v, -1), func(w string) bool { return w == "" })
 					switch {
-					case key != strings.ReplaceAll(pyInstallKeys[name], "_", "-"):
-						return nil, true, nil // a key outside its section stays unread, as on main
+					case key != strings.ReplaceAll(pyInstallKeys[name], "_", "-") || toml && sec[m[2]:m[3]] != pyInstallKeys[name]:
+						return nil, true, nil // a key outside its section, or a TOML key in another case, stays unread, as on main
 					case key == "build-backend":
-						if words = nil; !strings.HasPrefix(strings.Trim(v, `"'`), "setuptools") {
-							return nil, true, nil
+						if words = nil; !slices.Contains([]string{"setuptools.build_meta", "setuptools.build_meta:__legacy__"}, strings.Trim(v, `"'`)) {
+							return nil, true, nil // exactly setuptools' (Opus #275 H4)
 						}
+					case key == "where" && (len(words) != 1 || !toml && !pyFindPkgs.MatchString(s)):
+						return nil, true, nil // one directory, with packages = find: (Opus #275 H3)
 					case key == "package-dir":
 						if g := pyPkgDir.FindStringSubmatch(v); g != nil && name == "tool.setuptools" {
 							words = g[1:]
@@ -142,10 +151,7 @@ func pySysPath(q string, t []ptok) ([]string, bool) {
 	} else if t[4].text != "append" || len(args) != 1 {
 		return nil, false
 	}
-	ps, anchored, ok := pyPathExpr(q, args[0])
-	if !anchored && ok { // a literal: relative to q's directory, and to the root (the cwd pytest runs in)
-		ps = append([]string{path.Join(path.Dir(q), ps[0])}, ps...)
-	}
+	ps, _, ok := pyPathExpr(q, args[0]) // a literal: relative to the root, the cwd pytest runs in (P15; not q's directory: Opus #275 H3)
 	return ps, ok && !slices.ContainsFunc(ps, func(p string) bool { return p == ".." || strings.HasPrefix(p, "../") || path.IsAbs(p) })
 }
 
@@ -221,23 +227,30 @@ func pyDepthEnd(t []ptok, open int) int {
 func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 	i := min(top, len(parts))
 	for ; i >= 1 && pb.mods[strings.Join(parts[:i], ".")] == ""; i-- {
-		pb.r.work++
+		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil { // Opus #275 L3
+			return 0, "the base conditions' analysis is over the guard's work bound", pb.r.ctx.Err()
+		}
 	}
-	for k := 1; k < i; k++ {
+	for k := 1; k <= i; k++ {
 		name, q := strings.Join(parts[:k], "."), pb.mods[strings.Join(parts[:k], ".")]
 		if q == "" {
 			continue // a namespace portion
-		} else if path.Base(q) != "__init__.py" || !strings.HasPrefix(pb.mods[strings.Join(parts[:i], ".")], path.Dir(q)+"/") {
+		} else if pb.alts[name] > 1 { // at any depth (Opus #275 H1); a module and a package (Astra #272 r2 H1)
+			return 0, "the module name " + name + " in two roots", nil
+		} else if path.Base(q) == "__init__.py" && k < len(parts) {
+			f, err := pb.file(q)
+			if err != nil {
+				return 0, "", err
+			} else if f.importPath {
+				return 0, "the package " + name + " sets its own import path", nil // Opus #275 M1
+			} else if k < i && (f.locals[parts[k]] || f.from[parts[k]] != "" && f.from[parts[k]] != name+"."+parts[k]) {
+				return 0, "the package " + name + " binds " + parts[k] + " beside its submodule", nil
+			}
+		}
+		if k < i && (path.Base(q) != "__init__.py" || !strings.HasPrefix(pb.mods[strings.Join(parts[:i], ".")], path.Dir(q)+"/")) {
 			i = k // a module, or a package elsewhere, holds no submodule: the shorter one is imported
 			break
-		} else if f, err := pb.file(q); err != nil {
-			return 0, "", err
-		} else if f.locals[parts[k]] || f.from[parts[k]] != "" && f.from[parts[k]] != name+"."+parts[k] {
-			return 0, "the package " + name + " binds " + parts[k] + " beside its submodule", nil
 		}
-	}
-	if i >= 1 && pb.alts[strings.Join(parts[:i], ".")] > 1 {
-		return 0, "the module name " + strings.Join(parts[:i], ".") + " in two roots", nil // a module and a package (Astra #272 r2 H1)
 	}
 	return i, "", nil
 }

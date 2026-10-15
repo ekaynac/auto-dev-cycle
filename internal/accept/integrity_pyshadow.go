@@ -32,6 +32,12 @@ type pyBase struct {
 	byName       map[string][]string    // a name, to the base modules binding it (Opus #272 M3)
 	holderUnread string                 // a module a judged file imports, unread on the way to its holder (the review of 1ceb79c)
 	sysUnread    bool                   // a judged file changes sys.path in a way the guard does not read (#270 M1)
+
+	// entries are main's (the root, pythonpath, the basedirs) and resolve; extra are the roots an install
+	// or a sys.path literal adds, which name modules for pyShadow only (Opus #275 H2)
+	extra         []string
+	shadowEntries []string
+	shadowMods    map[string]string // a dotted name over every root, to a base path
 }
 
 // pyBaseFile is what a base Python file imports, and its conditions.
@@ -49,6 +55,8 @@ type pyBaseFile struct {
 	binders   map[string][]int  // a name, to the units binding it
 	syspath   []string          // the sys.path entries it adds (Mythos #270 M1)
 	sysUnread bool              // it names sys.path in a way pySysPath does not read
+
+	importPath bool // it names __path__, __spec__, __loader__ or extend_path: its submodules are unread (Opus #275 M1)
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -125,16 +133,21 @@ func (pb *pyBase) load() error {
 			if pb.err = err; err != nil {
 				return err
 			}
-			pb.tests, pb.entries, pb.sysUnread = append(pb.tests, f), append(pb.entries, f.syspath...), pb.sysUnread || f.sysUnread
+			pb.tests, pb.extra, pb.sysUnread = append(pb.tests, f), append(pb.extra, f.syspath...), pb.sysUnread || f.sysUnread
 		}
 	}
-	slices.Sort(pb.entries)
-	pb.entries = slices.Compact(pb.entries)
+	pb.shadowEntries, pb.shadowMods = slices.Concat(pb.entries, pb.extra), map[string]string{}
+	slices.Sort(pb.shadowEntries)
+	pb.shadowEntries = slices.Compact(pb.shadowEntries)
 	for _, q := range pb.paths {
+		if path.Ext(q) != ".py" {
+			continue
+		}
 		for _, n := range pyModNames(q, pb.entries, false) {
-			if path.Ext(q) == ".py" {
-				pb.mods[n], pb.alts[n] = cmp.Or(pb.mods[n], q), pb.alts[n]+1
-			}
+			pb.mods[n] = cmp.Or(pb.mods[n], q)
+		}
+		for _, n := range pyModNames(q, pb.shadowEntries, false) { // a name an added root gives a second file is unread (Opus #275 H2)
+			pb.shadowMods[n], pb.alts[n] = cmp.Or(pb.shadowMods[n], q), pb.alts[n]+1
 		}
 	}
 	for _, f := range slices.Clone(pb.tests) { // the application modules a judged file imports, one hop (Mythos #270 M2)
@@ -195,6 +208,9 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		cond := pySkipString(line, len(l.toks), pure, aliases)
 		es, ok := pySysUse(q, l.toks)
 		f.syspath, f.sysUnread = append(f.syspath, es...), f.sysUnread || !ok
+		f.importPath = f.importPath || slices.ContainsFunc(l.toks, func(k ptok) bool {
+			return slices.Contains(pyImportPath, k.text) || k.text == "extend_path"
+		})
 		if l.toks[0].text == "pytest_plugins" { // its modules are reached too (Opus #272 (b))
 			for _, k := range line {
 				if pyStr(k) != "" {
@@ -378,9 +394,9 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 	if err := pb.load(); err != nil {
 		return "", err
 	}
-	names := pyModNames(c.Dst, pb.entries, judged)
+	names := pyModNames(c.Dst, pb.shadowEntries, judged)
 	for _, n := range names {
-		if q := pb.mods[n]; q != "" {
+		if q := pb.shadowMods[n]; q != "" {
 			return "an added module shadows the base module " + q, nil
 		}
 	}
