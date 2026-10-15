@@ -4,10 +4,16 @@ package accept
 
 import (
 	"context"
+	"fmt"
+	"go/ast"
 	"go/build"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 // forgeU is a package using util with a Stringer that does nothing.
@@ -171,5 +177,60 @@ func TestHeaderAsGo(t *testing.T) {
 	walk("", 0)
 	if n < 1000 {
 		t.Errorf("only %d headers", n)
+	}
+}
+
+// TestIntegrityDoS: the denial-of-service flag on the 2b work. A check
+// abandoned is counted until it ends, a panic included, and a check that
+// ends is never counted; vendor/ and the test files are found once per run,
+// not once per module or directory.
+func TestIntegrityDoS(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r, release := &run{ctx: ctx, listEnd: time.Now().Add(time.Hour)}, make(chan struct{})
+	check := func(imp types.Importer) (why any) {
+		defer func() { why = recover() }()
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, "x.go", "package x\n\nimport \"y\"\n\nvar _ = y.V\n", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.typeCheck(&types.Config{Importer: imp, Error: func(error) {}}, "x", fset, []*ast.File{f}, &types.Info{})
+		return nil
+	}
+	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+	if why := check(importFunc(func(string) (*types.Package, error) { <-release; panic("the check's own fault") })); why != context.Canceled || abandoned.Load() != 1 {
+		t.Fatalf("an abandoned check: %v, %d", why, abandoned.Load())
+	}
+	r.ctx = context.Background()
+	if why := check(importFunc(func(string) (*types.Package, error) { return nil, nil })); !strings.Contains(fmt.Sprint(why), "abandoned earlier still running") {
+		t.Errorf("a check beside it: %v", why)
+	}
+	close(release) // it ends by a panic
+	for end := time.Now().Add(time.Minute); abandoned.Load() > 0 && time.Now().Before(end); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if why := check(importFunc(func(string) (*types.Package, error) { return types.NewPackage("y", "y"), nil })); why != nil || abandoned.Load() != 0 {
+		t.Errorf("once it ended: %v, %d", why, abandoned.Load())
+	}
+
+	// Many modules, each a changed directory: 2500 took about 50 s with a
+	// scan of every path per module and per directory.
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		m := map[string]string{}
+		for i := range 7500 {
+			m[fmt.Sprintf("other/f%d.txt", i)] = "x\n"
+		}
+		write(t, src, m)
+		plain(t, src, "add", "--all")
+	})
+	files := map[string]string{}
+	for i := range 2500 {
+		files[fmt.Sprintf("m%d/go.mod", i)] = fmt.Sprintf("module example.com/m%d\n\ngo 1.22\n", i)
+		files[fmt.Sprintf("m%d/x.go", i)] = "package x\n\nfunc G() int { return 1 }\n"
+	}
+	begin := time.Now()
+	if v := f.guarded(t, files); !v.Accepted() || time.Since(begin) > 30*time.Second {
+		t.Errorf("2500 modules: %v, %q", time.Since(begin), whats(v.Blocks[:min(3, len(v.Blocks))]))
 	}
 }

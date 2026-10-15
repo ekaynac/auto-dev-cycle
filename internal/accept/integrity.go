@@ -90,6 +90,8 @@ type run struct {
 	baseDirs, candDirs map[string][]string // their files by directory
 	touched            map[string]bool     // directories of changed Go files
 	trees              [2]*tree            // the base and the candidate
+	vendorChanged      map[string]bool     // vendor/ directories with a file changed
+	anyTest            bool                // a Go test in either version (a helper anywhere the tests may call)
 	blocks, warnings   []Block
 }
 
@@ -111,7 +113,9 @@ func (r *run) check(changes []Change) error {
 		}
 	}
 	r.baseDirs, r.candDirs = byDir(r.files), byDir(r.cand)
-	r.trees = [2]*tree{{r.files, r.baseDirs, map[string]*typer{}}, {r.cand, r.candDirs, map[string]*typer{}}}
+	r.trees = [2]*tree{{r.files, r.baseDirs, map[string]*typer{}, vendors(keys(r.files))}, {r.cand, r.candDirs, map[string]*typer{}, vendors(keys(r.cand))}}
+	r.anyTest = slices.ContainsFunc(keys(r.files, r.cand), goByName)
+	r.vendorChanged = vendors(slices.DeleteFunc(keys(r.files, r.cand), func(p string) bool { return r.files[p] == r.cand[p] }))
 	py := slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), func(p string) bool { return path.Ext(p) == ".py" })
 	for _, c := range changes {
 		for _, p := range slices.Compact([]string{c.Src, c.Dst}) {
@@ -319,10 +323,9 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.warnings, at, "a reference into S (exit, output, process, testing control) added, removed, moved or changed: review it")
 		}
 	}
-	anyTest := slices.ContainsFunc(keys(r.files, r.cand), goByName) // a helper anywhere the tests may call
-	for _, k := range keys(b.typed, a.typed) {                      // by identity, so no fact is traded for another
+	for _, k := range keys(b.typed, a.typed) { // by identity, so no fact is traded for another
 		f := strings.Split(k, "\x00") // file, function, fact
-		if at := f[0] + ": " + f[2] + " in " + f[1]; a.typed[k] > b.typed[k] && (r.tested(dir) || anyTest || !strings.HasPrefix(f[2], factMakes)) {
+		if at := f[0] + ": " + f[2] + " in " + f[1]; a.typed[k] > b.typed[k] && (r.tested(dir) || r.anyTest || !strings.HasPrefix(f[2], factMakes)) {
 			add(&r.blocks, at, "can forge go test2json results (real types)")
 		} else if a.typed[k] > b.typed[k] {
 			add(&r.warnings, at, "reflection that makes values, in a package without tests: review it")

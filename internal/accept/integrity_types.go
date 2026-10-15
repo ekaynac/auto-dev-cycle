@@ -189,9 +189,29 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 // tree is one version of the repository: paths to blobs, by directory, and
 // a typer per module root and platform.
 type tree struct {
-	files  map[string]string
-	dirs   map[string][]string
-	typers map[string]*typer
+	files   map[string]string
+	dirs    map[string][]string
+	typers  map[string]*typer
+	vendors map[string]bool // its vendor/ directories
+}
+
+// vendors is the vendor/ directories ("x/vendor/") the paths are under,
+// once per run: per module would be its paths times its modules.
+func vendors(paths []string) map[string]bool {
+	out := map[string]bool{}
+	for _, p := range paths {
+		for i := 0; i < len(p); {
+			j := strings.Index(p[i:], "vendor/")
+			if j < 0 {
+				break
+			}
+			if k := i + j; k == 0 || p[k-1] == '/' {
+				out[p[:k+len("vendor/")]] = true
+			}
+			i += j + 1
+		}
+	}
+	return out
 }
 
 // typer is one module's packages in one version: its own type-checked here,
@@ -253,18 +273,16 @@ func (t *tree) typer(r *run, dir string, pl [2]string) *typer {
 		// vendor/ only as the base has it: the gate may build it, or (GOFLAGS
 		// -mod=readonly, as the prepared image sets) the module cache.
 		vendor := path.Join(root, "vendor") + "/"
-		changed := slices.ContainsFunc(keys(r.files, r.cand), func(p string) bool { return strings.HasPrefix(p, vendor) && r.files[p] != r.cand[p] })
-		dir := slices.ContainsFunc(keys(t.files), func(p string) bool { return strings.HasPrefix(p, vendor) })
 		blob := t.files[vendor+"modules.txt"]
 		switch on := err == nil && f.Go != nil && version.Compare("go"+f.Go.Version, "go1.14") >= 0; {
-		case changed:
+		case r.vendorChanged[vendor]:
 			ty.why = "a file under vendor/ changed"
 		case on && blob != "":
 			b, why, err := r.file(blob)
 			if ty.vendor, ty.gomod, ty.gosum = vendorPkgs(f, string(b)), []byte("module adc.invalid/vendored\n"), nil; ty.vendor == nil {
 				ty.why = cmp.Or(why, errText(err), "vendor/modules.txt does not agree with go.mod")
 			}
-		case on && dir:
+		case on && t.vendors[vendor]:
 			ty.why = "a vendor/ directory without vendor/modules.txt"
 		}
 	}
