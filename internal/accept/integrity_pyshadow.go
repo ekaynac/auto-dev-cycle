@@ -38,12 +38,9 @@ type pyBaseFile struct {
 	named   map[string]bool   // the names a from-import binds
 	locals  map[string]bool   // the names its module-level statements bind
 	stars   []string          // the modules it star-imports
-	dynamic bool              // it may bind names at run time: __getattr__, globals(), setattr, vars, __dict__, modules
+	dynamic bool              // a module-level statement not pyStatic: it may bind names at run time
 	conds   [][]ptok          // its condition lines, and the bindings they read (Opus #270 H2)
 }
-
-// pyDynamic: the tokens of a module that may bind names at run time.
-var pyDynamic = []string{"__getattr__", "globals", "setattr", "vars", "__dict__", "modules"}
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
 // r2 M1): the root, each base pythonpath entry, and each test file's
@@ -158,10 +155,9 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	}
 	var units [][]ptok            // module-level statements, def and class bodies
 	binders := map[string][]int{} // a name, to the units binding it
-	owner, indent, deco, def, bodies := -1, 0, []ptok(nil), "", []int(nil)
+	owner, indent, deco, bodies := -1, 0, []ptok(nil), []int(nil)
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
-		f.dynamic = f.dynamic || slices.ContainsFunc(line, func(k ptok) bool { return slices.Contains(pyDynamic, k.text) })
 		cond := pySkipString(line, len(l.toks), pure, aliases)
 		for i, k := range line {
 			if s := pyStr(k); cond && s != "" { // a string condition's code too (the security review)
@@ -204,28 +200,24 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		switch {
 		case owner >= 0 && l.indent > indent: // a def's or class's body
 			units[owner] = append(units[owner], line...)
-			if cond { // its unit is a condition; a def's callers pass conditions (Mythos #270 H2)
-				if bodies = append(bodies, owner); def != "" {
-					aliases[def] = true
-				}
+			if cond { // its unit is a condition (Mythos #270 H2); pyPure made a def holding one an alias
+				bodies = append(bodies, owner)
 			}
 		case l.toks[0].text == "@":
-			owner, deco = -1, append(deco, line...)
+			owner, deco, f.dynamic = -1, append(deco, line...), true
 		default:
 			owner = -1
 			for _, st := range pySplit(line, ";") {
 				if len(st) == 0 {
 					continue
 				}
+				f.dynamic = f.dynamic || !pyStatic(st)
 				if bound, imported := pyBinds(st); !imported {
 					for _, n := range bound {
 						binders[n], f.locals[n] = append(binders[n], len(units)), true
 					}
 					if d := st[b2i(st[0].text == "async"):]; d[0].text == "def" || d[0].text == "class" {
-						owner, indent, def = len(units), l.indent, ""
-						if d[0].text == "def" {
-							def = d[1].text
-						}
+						owner, indent = len(units), l.indent
 					}
 					units, deco = append(units, slices.Concat(deco, st)), nil
 				}
@@ -254,6 +246,20 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	return f, nil
 }
 
+// pyStatic: st is a statement a star module may hold and stay read: an
+// import, a def or class (not __getattr__), a docstring, NAME = value, or
+// if TYPE_CHECKING: (an allowlist: the review of b5a634d).
+func pyStatic(st []ptok) bool {
+	d, parts := st[b2i(st[0].text == "async"):], pyAssign(st)
+	switch {
+	case d[0].text == "import" || d[0].text == "from" || len(st) == 1 && st[0].kind == 's':
+		return true
+	case d[0].text == "def" || d[0].text == "class":
+		return len(d) > 1 && d[1].text != "__getattr__"
+	}
+	return len(parts) == 2 && len(parts[0]) == 1 && parts[0][0].kind == 'n' || slices.Contains([]string{"ifTYPE_CHECKING:", "iftyping.TYPE_CHECKING:"}, pyJoin(st))
+}
+
 // resolve follows the dotted name d through the base modules' own
 // imports (Opus #270 H2): pkg.PSLOW2, pkg/__init__.py holding from .conf
 // import REAL as PSLOW2, is pkg.conf.REAL. Unread: the module's path.
@@ -274,17 +280,21 @@ func (pb *pyBase) resolve(d string) (string, string, error) {
 					}
 					next = strings.Join(append([]string{to}, parts[i+1:]...), ".")
 				} else if !f.locals[parts[i]] {
-					for _, s := range f.stars { // through a star import that binds it (Mythos #270 H3); an unknown one is unread
+					unknown := "" // through a star import that binds it (Mythos #270 H3); else an unknown, unread or run-time one is unread (r2 M3)
+					for _, s := range f.stars {
 						if pb.mods[s] == "" {
-							return d, "the star import " + s, nil
-						} else if fs, err := pb.file(pb.mods[s]); err != nil || fs.unread {
-							return d, "the star import " + s, err
-						} else if fs.locals[parts[i]] || fs.from[parts[i]] != "" || len(fs.stars) > 0 {
+							unknown = cmp.Or(unknown, s)
+						} else if fs, err := pb.file(pb.mods[s]); err != nil {
+							return d, s, err
+						} else if !fs.unread && (fs.locals[parts[i]] || fs.from[parts[i]] != "" || len(fs.stars) > 0) {
 							next = strings.Join(append([]string{s}, parts[i:]...), ".")
 							break
-						} else if fs.dynamic { // its names are bound at run time (the security review of 8f2a20c)
-							return d, "the star import " + s + ", which binds names at run time", nil
+						} else if fs.unread || fs.dynamic {
+							unknown = cmp.Or(unknown, s)
 						}
+					}
+					if next == d && (unknown != "" || f.dynamic) { // a run-time module itself too: a __getattr__ (r2 L1)
+						return d, cmp.Or(unknown, q) + ", unknown, unread or binding names at run time", nil
 					}
 				}
 				break
@@ -324,16 +334,21 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 		m := strings.TrimSuffix(strings.TrimSuffix(p, ".py"), "/__init__")
 		return path.Dir(m), path.Base(m)
 	}
-	floor := judged || slices.ContainsFunc(pb.basedirs, func(e string) bool { _, ok := pyRel(c.Dst, e); return ok }) // under a test basedir too
+	d, m := split(c.Dst)
+	floor := judged || slices.Contains(pb.basedirs, d) // directly under a test basedir too (Mythos #270 r2 M2)
 	for _, q := range pb.paths {
-		if d, m := split(c.Dst); floor && path.Ext(q) == ".py" {
+		if err := r.ctx.Err(); err != nil { // Mythos #270 r2 L2
+			return "", err
+		} else if floor && path.Ext(q) == ".py" {
 			if qd, qm := split(q); qm == m && qd != d {
 				return "an added module shadows the base module " + q, nil
 			}
 		}
 	}
 	for _, bt := range pb.tests {
-		if bt.unread {
+		if err := r.ctx.Err(); err != nil {
+			return "", err
+		} else if bt.unread {
 			return "an added module may shadow one " + bt.path + " imports (unread)", nil
 		}
 		for _, d := range bt.mods {
@@ -376,7 +391,8 @@ func pyReach(c Change, b, a *pyFile, pb *pyBase) (string, error) {
 				return "", err
 			}
 			for j, n := range line {
-				if n.kind != 'n' || j > 0 && line[j-1].text == "." {
+				if n.kind != 'n' || j > 0 && line[j-1].text == "." || slices.Contains(pyKeywords, n.text) || slices.Contains([]string{"True", "False", "None"}, n.text) ||
+					j+1 < len(line) && line[j+1].text == "=" && (j+2 >= len(line) || line[j+2].text != "=") { // not a read (Mythos #270 r2 M3)
 					continue
 				}
 				src, e := f.from[n.text], []string{n.text}
@@ -424,7 +440,7 @@ func pyMoved(y string, b, a *pyFile) bool {
 	seen := map[string]bool{}
 	for queue := []string{y}; len(queue) > 0; queue = queue[1:] {
 		if n := queue[0]; !seen[n] {
-			if seen[n] = true; a.binds[n] != b.binds[n] || pyMoving(a.binds[n]) {
+			if seen[n] = true; a.binds[n] != b.binds[n] || !slices.Equal(a.bodies[n], b.bodies[n]) || pyMoving(a.binds[n]) { // a def's body as it reads (r2 M5)
 				return true
 			}
 			queue = append(queue, a.reads[n]...)
@@ -433,8 +449,9 @@ func pyMoved(y string, b, a *pyFile) bool {
 	return false
 }
 
-// pyMoving: a binding that may change under its line: a def's or class's
-// body (Mythos #267 H1), or a function's global statement (r2 M2).
+// pyMoving: a binding that may change under its line: a class's body
+// (Mythos #267 H1), or a function's global statement (r2 M2); a def's body
+// is compared (#270 r2 M5).
 func pyMoving(binds string) bool {
-	return slices.ContainsFunc([]string{"[def ", "[class ", "[async ", "[global "}, func(s string) bool { return strings.Contains(binds, s) })
+	return strings.Contains(binds, "[class ") || strings.Contains(binds, "[global ")
 }

@@ -156,9 +156,12 @@ func (r *run) pyCustom() (custom, configured bool, paths []string, err error) {
 			return err == nil, true, nil, err
 		}
 		configured = configured || conf != ""
+		if strings.ContainsAny(strings.ReplaceAll(conf, "\r\n", "\n"), "\r\v\f\x1c\x1d\x1e\u0085\u2028\u2029") {
+			return true, true, nil, nil // a line break iniconfig and TOML read differently: unread (the review of b5a634d)
+		}
 		// its directories, from the file's (Mythos #266 r2 L2, Opus #267 L1, #270 M1); a key not
 		// in a comment (#270 L2), after any line break, in any key form (the review of 8f2a20c)
-		for _, v := range pyPathKey.Split(pyNote.ReplaceAllString(splitLines.Replace(conf), ""), -1)[1:] {
+		for _, v := range pyPathKey.Split(pyNote.ReplaceAllString(strings.ReplaceAll(conf, "\r\n", "\n"), ""), -1)[1:] {
 			if v = pyKey.Split(v, 2)[0]; strings.Contains(v, `\`) || path.Ext(p) != ".toml" && strings.ContainsAny(v, `"'`) { // shlex's quotes
 				return true, true, nil, nil // an escape: unread
 			}
@@ -232,7 +235,8 @@ type pyFile struct {
 	imported, local map[string]bool
 	mods            []string            // the names its imports bind or name
 	binds           map[string]string   // the statements binding each name at import
-	reads           map[string][]string // the names those statements read (Mythos #270 H1)
+	reads           map[string][]string // the names those statements read (Mythos #270 H1), and a def's body
+	bodies          map[string][]string // a def's decorators and body (Mythos #270 r2 M5)
 	refs            map[string]int      // "kind\x00reference\x00function"
 }
 
@@ -291,7 +295,7 @@ func named(t []ptok, name string) bool {
 // __init_subclass__, __set_name__ and a type subclass's methods run when a
 // class is made, so are (Mythos #263 L1).
 func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok bool, err error) {
-	fa = &pyFile{refs: map[string]int{}, finds: map[string]*pyFind{}, imported: map[string]bool{}, local: map[string]bool{}, binds: map[string]string{}, reads: map[string][]string{}}
+	fa = &pyFile{refs: map[string]int{}, finds: map[string]*pyFind{}, imported: map[string]bool{}, local: map[string]bool{}, binds: map[string]string{}, reads: map[string][]string{}, bodies: map[string][]string{}}
 	src, ok, err := r.pyRead(want, p, blob)
 	if !want || !ok || err != nil {
 		return fa, ok, err
@@ -339,6 +343,9 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 			prev, stack = stack[len(stack)-1].reads, stack[:len(stack)-1]
 		}
 		t, top := l.toks, stack[len(stack)-1]
+		if !slices.Contains([]string{"else", "elif", "except", "finally"}, t[0].text) {
+			prev = nil // only a continuing header continues the one before it
+		}
 		for i, k := range t { // global X: X rebound at import if its function runs (Mythos #267 r2 M2)
 			for _, n := range t[i+1:] {
 				if k.text != "global" || n.kind != 'n' && n.text != "," {
@@ -349,6 +356,13 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 			}
 		}
 		fn, b, code := top.fn, block{l.indent, top.fn, false, slices.Concat(top.reads, prev, pyNames(t))}, append(append(deco, t...), l.inner...)
+		if fn != "" { // Mythos #270 r2 M5
+			fa.bodies[fn], fa.reads[fn] = append(fa.bodies[fn], fmt.Sprint(t)), append(fa.reads[fn], pyNames(code)...)
+		} else {
+			for i := range stack[1:] { // what a block's statements read counts after it: except, a loop's else (the review of b5a634d)
+				stack[i+1].reads = append(stack[i+1].reads, pyNames(code)...)
+			}
+		}
 		if fn == "" && !(pyMain(t) && !rebound) {
 			for _, st := range pySplit(t, ";") {
 				if len(st) == 0 { // X = 1; (Mythos #267 r4 L)
@@ -400,6 +414,9 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 		kw, name, d := "", "", t[b2i(t[0].text == "async"):]
 		if len(d) > 1 && (d[0].text == "def" || d[0].text == "class") {
 			kw, name = d[0].text, d[1].text
+		}
+		if kw == "def" && fn == "" {
+			fa.bodies[name] = append(fa.bodies[name], fmt.Sprint(deco)) // its decorators
 		}
 		dunder := strings.HasPrefix(name, "__") && strings.HasSuffix(name, "__")
 		if kw == "def" && !(top.meta && dunder) && !slices.Contains(strings.Fields("__init_subclass__ __set_name__ __class_getitem__ __mro_entries__ __prepare__"), name) {
