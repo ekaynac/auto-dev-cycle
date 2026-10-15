@@ -58,7 +58,15 @@ type pkgFacts struct {
 	untyped                     map[string]string   // per package: why its real types are not read (P14e)
 	typed                       map[string]int      // "file\x00function\x00fact" the real types show (P14e)
 	imports                     map[string]bool     // the package's import paths, its files' together
+	bodies                      map[string]string   // "file\x00function\x00platform": the body's hash
+	usesS                       map[string][]string // the same: the S packages it references
 	tree                        *tree               // the version read
+}
+
+func (fa *pkgFacts) uses(key, pkg string) {
+	if sPkg(pkg) && !slices.Contains(fa.usesS[key], pkg) || pkg == "" {
+		fa.usesS[key] = append(fa.usesS[key], pkg)
+	}
 }
 
 // Integrity is the integrity guard for a candidate of base in repo, for
@@ -70,13 +78,13 @@ func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
 			started: time.Now(), listEnd: time.Now().Add(maxListTime)}
 		defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
 			if p := recover(); p != nil && ctx.Err() != nil {
-				blocks, warnings, err = r.blocks, r.warnings, ctx.Err()
+				blocks, warnings, err = r.blocks, append(r.warnings, r.outWarnings...), ctx.Err()
 			} else if p != nil {
-				blocks, warnings, err = append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p)}), r.warnings, nil
+				blocks, warnings, err = append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p)}), append(r.warnings, r.outWarnings...), nil
 			}
 		}()
 		err = r.check(changes)
-		return r.blocks, r.warnings, err
+		return r.blocks, append(r.warnings, r.outWarnings...), err
 	}
 }
 
@@ -99,6 +107,7 @@ type run struct {
 	vendorChanged      map[string]bool     // vendor/ directories with a file changed
 	anyTest            bool                // a Go test in either version (a helper anywhere the tests may call)
 	blocks, warnings   []Block
+	outWarnings        []Block // P14b-out's, reported after main's (Astra #276 H2)
 }
 
 // cgoSources is what cgo compiles beside a package's Go files, and objects
@@ -285,7 +294,7 @@ func (r *run) goMod() error {
 func (r *run) pkg(dir string, t *tree) (pkgFacts, error) {
 	fa := pkgFacts{ambient: make([]int, len(platforms)), forged: make([]int, len(platforms)), twentyTwos: make([]int, len(platforms)),
 		tests: map[string]*stat{}, refs: map[string]int{}, init: map[string]int{}, warn: map[string]string{},
-		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, imports: map[string]bool{}, tree: t}
+		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, imports: map[string]bool{}, bodies: map[string]string{}, usesS: map[string][]string{}, tree: t}
 	srcs := map[string][]byte{}
 	for _, p := range t.dirs[dir] {
 		if path.Ext(p) != ".go" {
@@ -376,13 +385,28 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.warnings, dir, hook+" changed or deleted: review it")
 		}
 	}
+	out := map[string][]string{}             // P14b-out's findings: "file\x00what" to functions
 	for _, k := range keys(b.refs, a.refs) { // per file and function: added ones block or warn, any other change warns
-		f := strings.Split(k, "\x00") // file, reference, function, platform
+		f := strings.Split(k, "\x00") // file, reference, function, platform, its package
 		if at := f[0] + ": " + f[1] + " in " + f[2]; a.refs[k] > b.refs[k] && r.tested(dir) && sensitive(f[1]) == 2 {
 			add(&r.blocks, at, "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
+		} else if pkg := strings.TrimPrefix(f[4], "~"); a.refs[k] != b.refs[k] && (!mainS(pkg) || pkg != f[4]) { // P14b-out's: per file and package
+			out[f[0]+"\x00references into "+pkg+" added, removed, moved or changed"] = append(out[f[0]+"\x00references into "+pkg+" added, removed, moved or changed"], f[2])
 		} else if a.refs[k] != b.refs[k] {
 			add(&r.warnings, at, "a reference into S (exit, output, process, testing control) added, removed, moved or changed: review it")
 		}
+	}
+	for _, k := range keys(a.bodies) { // a body changed, its S references kept (fs.Parse(nil) to fs.Parse([]string{"-h"}))
+		if f := strings.Split(k, "\x00"); b.bodies[k] != "" && a.bodies[k] != b.bodies[k] {
+			for _, pkg := range a.usesS[k] {
+				out[f[0]+"\x00changed bodies that use "+cmp.Or(pkg, "print")] = append(out[f[0]+"\x00changed bodies that use "+cmp.Or(pkg, "print")], f[1])
+			}
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(out)) {
+		file, what, _ := strings.Cut(k, "\x00")
+		fns := slices.Compact(slices.Sorted(slices.Values(out[k])))
+		add(&r.outWarnings, file, fmt.Sprintf("%s (%d: %s%s): review it", what, len(fns), strings.Join(fns[:min(3, len(fns))], ", "), map[bool]string{true: ", …"}[len(fns) > 3]))
 	}
 	own := func(p string) bool { // as the loader resolves it, in both versions: an own package, not vendored nor a nested module's
 		return !slices.ContainsFunc([]*tree{b.tree, a.tree}, func(t *tree) bool {
@@ -393,7 +417,7 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 	}
 	for _, p := range slices.Sorted(maps.Keys(a.imports)) { // a new edge outside the standard library (go list's) and the module warns (decision A)
 		if !b.imports[p] && p != "C" && p != "unsafe" && !a.tree.typer(r, dir, platforms[0]).listed[p].Standard && !own(p) {
-			add(&r.warnings, dir, "a new import of "+p+", outside the standard library and the module: review it")
+			add(&r.outWarnings, dir, "a new import of "+p+", outside the standard library and the module: review it")
 		}
 	}
 	for _, k := range keys(b.typed, a.typed) { // by identity, so no fact is traded for another

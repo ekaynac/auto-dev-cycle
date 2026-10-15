@@ -5,6 +5,8 @@ package accept
 import (
 	"bytes"
 	"cmp"
+	"crypto/sha256"
+	"fmt"
 	"go/ast"
 	"go/build"
 	"go/build/constraint"
@@ -65,6 +67,26 @@ func inert(q string) bool {
 
 func allCaps(n string) bool {
 	return len(n) >= 3 && n == strings.ToUpper(n) && strings.ContainsFunc(n, unicode.IsUpper) // not V, T, ID
+}
+
+// mainS is S as P14b-init had it: references into it are main's warnings,
+// reported first and one by one; P14b-out's come after, per file and package.
+func mainS(p string) bool {
+	return slices.Contains([]string{"", "syscall", "os", "os/exec", "os/signal", "log", "log/slog", "fmt", "testing", "reflect", "unsafe", "runtime", "plugin"}, p) ||
+		strings.HasPrefix(p, "golang.org/x/sys/")
+}
+
+// refPkg is the package a reference names: flag.Parse, os.Exit(2),
+// (*flag.FlagSet).Parse via …, parse[flag.FlagSet], println ("").
+func refPkg(q string) string {
+	switch i := strings.IndexAny(q, "(["); {
+	case i == 0 || i > 0 && q[i] == '[':
+		in := q[i+1:]
+		q = strings.TrimPrefix(in[:max(strings.IndexAny(in, ")]"), 0)], "*")
+	case i > 0:
+		q = q[:i]
+	}
+	return q[:max(strings.LastIndex(q, "."), 0)]
 }
 
 func sPkg(p string) bool {
@@ -484,7 +506,7 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 				c.reflect++ // a second net under the types layer's (Mythos #271 H1)
 			}
 			if sensitive(s.qual(fun)) == 2 { // its arguments too: a changed exit code warns
-				c.refs = append(c.refs, types.ExprString(x))
+				c.refs = append(c.refs, types.ExprString(x)+"\x00"+refPkg(s.qual(fun))) // its package, not the text's local name
 			}
 			if sel, ok := fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MethodByName" && len(x.Args) == 1 {
 				lit, _ := ast.Unparen(x.Args[0]).(*ast.BasicLit)
@@ -657,8 +679,17 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			} else if fn != nil && fn.Body != nil {
 				where = recv(fn) + "." + fn.Name.Name
 			}
+			key := m.path + "\x00" + where + "\x00" + plat
 			for _, q := range c.refs {
-				fa.refs[m.path+"\x00"+q+"\x00"+where+"\x00"+plat]++
+				q, pkg, ok := strings.Cut(q, "\x00")
+				if !ok {
+					pkg = refPkg(q)
+				}
+				fa.refs[m.path+"\x00"+q+"\x00"+where+"\x00"+plat+"\x00"+pkg]++
+				fa.uses(key, pkg)
+			}
+			if fn != nil && fn.Body != nil && fname != "init" && fname != "TestMain" { // a body changed with the same references (Astra #276 H1)
+				fa.bodies[key] = fmt.Sprintf("%x", sha256.Sum256(m.src[fset.Position(fn.Pos()).Offset:fset.Position(fn.End()).Offset]))
 			}
 			hook := test && fname == "TestMain" && slices.ContainsFunc(fn.Type.Params.List, func(f *ast.Field) bool {
 				st, ok := f.Type.(*ast.StarExpr)

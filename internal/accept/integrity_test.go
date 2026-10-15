@@ -635,6 +635,9 @@ func TestDecisionASweep(t *testing.T) {
 			p := dir + "/sweep.go"
 			v := f.guarded(t, map[string]string{p: "package " + dir + "\n\n" + imp + "func " + fn + "() { " + c.expr + " }\n"})
 			key := p + ": " + c.q + " in " + fn
+			if pkg := refPkg(c.q); !mainS(pkg) { // P14b-out's: per file and package, after main's
+				key = p + " references into " + pkg + " added, removed, moved or changed (1: " + fn + ")"
+			}
 			switch {
 			case at == "init" && !finds(v.Blocks, "initialization (tests included) reaches"):
 				t.Errorf("%s from init: blocks %q", c.expr, whats(v.Blocks))
