@@ -68,7 +68,6 @@ var (
 // Listed is one package go list reads: its export data file, or its error.
 type Listed struct {
 	ImportPath, Export string
-	Standard           bool
 	Error              *struct{ Err string }
 }
 
@@ -164,7 +163,7 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 		limit = strconv.FormatInt(mem>>10, 10)
 	}
 	cmd := exec.CommandContext(ctx, "/bin/sh", append([]string{"-c", `ulimit -v "$1" && shift && exec "$@"`, "sh", limit,
-		gobin, "list", "-e", "-export", "-deps", "-json=ImportPath,Export,Error,Standard", "--"}, paths...)...)
+		gobin, "list", "-e", "-export", "-deps", "-json=ImportPath,Export,Error", "--"}, paths...)...)
 	cmd.Dir = dir
 	cmd.Env = append(slices.Clone(env), "PATH="+filepath.Dir(gobin)+":/usr/bin:/bin", "GOENV=off", "GOFLAGS=-mod=readonly",
 		"GOPROXY=off", "GOSUMDB=off", "GOWORK=off", "GOTOOLCHAIN=local", "GOTELEMETRY=off", "CGO_ENABLED=0", "GO111MODULE=on",

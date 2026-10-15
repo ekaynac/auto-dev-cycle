@@ -37,7 +37,7 @@ func outRefs(file, pkg, fns string) string {
 
 // libcFixture vendors modernc.org/libc (and its sub package), example.org/lib,
 // example.com/mx and example.com/m/evil (the gate is offline).
-func libcFixture(t *testing.T) (fixture, string) {
+func libcFixture(t *testing.T, extra ...map[string]string) (fixture, string) {
 	gomod := guardBase["go.mod"] + "\nrequire (\n\tmodernc.org/libc v1.0.0\n\texample.org/lib v1.0.0\n\texample.com/mx v1.0.0\n\texample.com/m/evil v1.0.0\n)\n"
 	return newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
@@ -52,6 +52,9 @@ func libcFixture(t *testing.T) (fixture, string) {
 			"vendor/example.com/mx/mx.go":        "package mx\n\nfunc F() int { return 1 }\n",
 			"vendor/example.com/m/evil/evil.go":  "package evil\n\nfunc Exit() {}\n",
 		})
+		for _, e := range extra {
+			write(t, src, e)
+		}
 		plain(t, src, "add", "--all")
 	}), gomod
 }
@@ -157,10 +160,10 @@ func TestDecisionAOutIsolated(t *testing.T) {
 	}
 
 	// The layer's own budget: past it, one Additive block; main's findings stay.
-	old := maxOutWork
-	maxOutWork = 5 // nodes: the file alone is more
+	old := maxOutNodes
+	maxOutNodes = 5 // the file alone has more nodes
 	v = outGuarded(t, g, map[string]string{"aaa/a.go": "package aaa\n\nimport \"flag\"\n\nfunc p() { flag.Parse() }\n", "zzz/out.go": out})
-	maxOutWork = old
+	maxOutNodes = old
 	over := slices.DeleteFunc(slices.Clone(v.Blocks), func(b Block) bool { return !b.Additive || !strings.Contains(b.What, "over its work bound") })
 	if len(over) != 1 || !finds(v.Warnings, "zzz/out.go: fmt.Println in out") || finds(v.Warnings, "references into") { // and the layer stopped
 		t.Errorf("the layer's budget: %d Additive over-bound blocks, warnings %q", len(over), whats(v.Warnings))
@@ -247,16 +250,17 @@ func TestDecisionAOutRound6(t *testing.T) {
 	if v := outGuarded(t, recv, map[string]string{"tool/m.go": "package tool\n\nimport \"flag\"\n\ntype A struct{}\n\ntype B struct{}\n\nfunc (A) M() {}\n\nfunc (B) M() { flag.Parse() }\n"}); !finds(v.Warnings, outRefs("tool/m.go", "flag", "2: A.M, B.M")) {
 		t.Errorf("L4 a moved reference: %q", whats(v.Warnings))
 	}
-	// H2: 6 MiB of generated Go beside a one-line change: accepted.
+	// H2 (and Astra #276 r4 H2): 18 MiB of generated Go beside a one-line
+	// change: accepted.
 	gen := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
-		for _, n := range []string{"gen1", "gen2"} {
+		for _, n := range []string{"gen1", "gen2", "gen3", "gen4", "gen5", "gen6"} {
 			write(t, src, map[string]string{"tool/" + n + ".go": "package tool\n\nvar " + n + " = []int{" + strings.Repeat("0,", 3<<19) + "}\n"})
 		}
 		plain(t, src, "add", "--all")
 	})
 	if v := outGuarded(t, gen, map[string]string{"tool/x.go": "package tool\n\nvar x = 1\n"}); !v.Accepted() {
-		t.Errorf("C1 a change beside 6 MiB: %q", whats(v.Blocks))
+		t.Errorf("C1 a change beside 18 MiB: %q", whats(v.Blocks))
 	}
 	// L5 probe E: 1101 layer warnings on long paths and two libc blocks:
 	// the blocks are reported.
@@ -276,11 +280,39 @@ func TestDecisionAOutRound6(t *testing.T) {
 	}
 }
 
+// TestDecisionAOutRound7: Astra #276 r4 on 6d271a1, each input a row.
+func TestDecisionAOutRound7(t *testing.T) {
+	f, _ := libcFixture(t)
+	// H1: 1,001 nested blocks, which object resolution rejects and the base
+	// guard's parser mode accepts.
+	nest := strings.Repeat("{", 1001) + strings.Repeat("}", 1001)
+	if v := outGuarded(t, f, map[string]string{"pkg/out.go": "package pkg\n\nimport \"modernc.org/libc\"\n\nfunc quit() { libc.X_Exit(nil, 0) }\n\nfunc padding() " + nest + "\n"}); !finds(v.Blocks, "pkg/out.go: modernc.org/libc.X_Exit in quit") {
+		t.Errorf("H1 1,001 nested blocks: %q", whats(v.Blocks))
+	}
+	// H2: 5,000 identical contradictory +build lines: never built, accepted.
+	off := strings.Repeat("// +build a,!a b,!b c,!c d,!d e,!e f,!f g,!g h,!h i,!i j,!j k,!k l,!l\n", 5000) + "\npackage tool\n"
+	if v := outGuarded(t, f, map[string]string{"tool/off.go": off}); !v.Accepted() || len(v.Warnings) > 0 {
+		t.Errorf("H2 5,000 +build lines: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	// H3: a default import name is the package's declared name.
+	shim, _ := libcFixture(t, map[string]string{"vendor/modernc.org/libc/sub/sub.go": "package shim\n\nfunc X_exit(int32) {}\n",
+		"pkg/keep.go": "package pkg\n\nimport \"modernc.org/libc/sub\"\n\nfunc keep() { _ = shim.X_exit }\n"})
+	if v := outGuarded(t, shim, map[string]string{"pkg/keep.go": "package pkg\n\nimport \"modernc.org/libc/sub\"\n\nfunc keep() { _ = shim.X_exit }\n\nfunc quit() { shim.X_exit(0) }\n"}); !finds(v.Blocks, "pkg/keep.go: modernc.org/libc/sub.X_exit in quit") {
+		t.Errorf("H3 package shim: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	// H1: a parameter, a range variable and a := shadow the import name in
+	// their scopes only.
+	if v := outGuarded(t, f, map[string]string{"tool/s.go": "package tool\n\nimport \"flag\"\n\ntype fs struct{ Parse func() }\n\nfunc a(flag fs) { flag.Parse() }\n\n" +
+		"func b(xs []fs) {\n\tfor _, flag := range xs {\n\t\tflag.Parse()\n\t}\n\tif flag := (fs{}); flag.Parse != nil {\n\t\tflag.Parse()\n\t}\n}\n\nfunc c() { flag.Parse() }\n"}); !finds(v.Warnings, outRefs("tool/s.go", "flag", "1: c")) {
+		t.Errorf("H1 scopes: %q", whats(v.Warnings))
+	}
+}
+
 // TestOutReadAndCancel: the layer reads no non-Go blob (Opus #276 r2 M3,
 // probe B1), and a done context stops it with no block (M2, probe B2).
 func TestOutReadAndCancel(t *testing.T) {
 	var read []string
-	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}},
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}},
 		read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
 			read = append(read, blob)
 			return []byte("package tool\n"), true, nil
