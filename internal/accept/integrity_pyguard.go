@@ -126,6 +126,9 @@ func (r *run) python(changes []Change) error {
 		} else if unread {
 			add(&r.blocks, c.Dst, "unverifiable: the base adds sys.path entries the guard does not read (Mythos #270 M1)")
 			continue
+		} else if pb.holderUnread != "" { // every Python change: an addition may shadow what it imports (Astra #275 H2)
+			add(&r.blocks, c.Dst, "a module a condition reads is unread ("+pb.holderUnread+")")
+			continue
 		}
 		judged := pyTested(c.Dst) || r.pyTestDir(c.Dst)
 		if why, err := r.pyShadow(c, judged, pb); err != nil {

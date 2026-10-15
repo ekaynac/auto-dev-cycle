@@ -56,7 +56,7 @@ type pyBaseFile struct {
 	syspath   []string          // the sys.path entries it adds (Mythos #270 M1)
 	sysUnread bool              // it names sys.path in a way pySysPath does not read
 
-	plain bool // pyPlain
+	plain bool // a package whose submodules resolve in its own directory: read, every module-level statement pyInert (Astra #275 H6)
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -133,7 +133,7 @@ func (pb *pyBase) load() error {
 			if pb.err = err; err != nil {
 				return err
 			}
-			pb.tests, pb.extra, pb.sysUnread = append(pb.tests, f), append(pb.extra, f.syspath...), pb.sysUnread || f.sysUnread
+			pb.tests, pb.sysUnread = append(pb.tests, f), pb.sysUnread || f.sysUnread
 		}
 	}
 	pb.shadowEntries, pb.shadowMods = slices.Concat(pb.entries, pb.extra), map[string]string{}
@@ -169,7 +169,7 @@ func (pb *pyBase) load() error {
 					pb.err = err
 					return err
 				} else if !slices.Contains(pb.tests, h) && !slices.Contains(pb.holders, h) {
-					pb.holders, pb.sysUnread = append(pb.holders, h), pb.sysUnread || h.sysUnread || len(h.syspath) > 0 // a module a judged file reaches: its sys.path unread (Opus #272 (b))
+					pb.holders, pb.sysUnread = append(pb.holders, h), pb.sysUnread || h.sysUnread // a module a judged file reaches: its sys.path unread (Opus #272 (b))
 				}
 			}
 		}
@@ -203,11 +203,11 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	var units [][]ptok            // module-level statements, def and class bodies
 	binders := map[string][]int{} // a name, to the units binding it
 	owner, indent, deco, bodies := -1, 0, []ptok(nil), []int(nil)
+	future, inert := false, true // pyInert, every module-level statement
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
-		es, ok := pySysUse(q, l.toks)
-		f.syspath, f.sysUnread = append(f.syspath, es...), f.sysUnread || !ok
+		f.sysUnread = f.sysUnread || !pySysUse(l.toks)
 		if l.toks[0].text == "pytest_plugins" { // its modules are reached too (Opus #272 (b))
 			for _, k := range line {
 				if pyStr(k) != "" {
@@ -260,7 +260,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				bodies = append(bodies, owner)
 			}
 		case l.toks[0].text == "@":
-			owner, deco, f.dynamic = -1, append(deco, line...), true
+			owner, deco, f.dynamic, inert = -1, append(deco, line...), true, false
 		default:
 			owner = -1
 			for _, st := range pySplit(line, ";") {
@@ -268,6 +268,8 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 					continue
 				}
 				f.dynamic = f.dynamic || !pyStatic(st)
+				future = future || pyJoin(st) == "from__future__importannotations"
+				inert = inert && pyInert(st, future)
 				if bound, imported := pyBinds(st); !imported {
 					if len(st) > 2 && st[0].kind == 'n' && st[1].text == "." && len(pyAssign(st)) == 1 {
 						bound = append(bound, st[0].text) // FLAGS.update(…) changes FLAGS (Mythos #270 r2 L4)
@@ -303,7 +305,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		}
 	}
 	f.units, f.binders = units, binders
-	f.plain = pyPlain(f)
+	f.plain = inert && !f.unread
 	return f, nil
 }
 
@@ -322,6 +324,73 @@ func pyStatic(st []ptok) bool {
 		return !slices.ContainsFunc(parts[1], func(k ptok) bool { return k.text == "(" }) // no call in the value: X = globals().update(…) (the review of d859e60)
 	}
 	return slices.Contains([]string{"ifTYPE_CHECKING:", "iftyping.TYPE_CHECKING:"}, pyJoin(st))
+}
+
+// pyInert: module-level statement st of a package runs nothing at import
+// that can move its submodules (Astra #275 H6), an allowlist: an import
+// binding no dunder name, a docstring, NAME = a pyLiteral (NAME no dunder
+// but __all__ and __version__), or a def, not a dunder, whose defaults are
+// pyLiterals and whose annotations are strings (from __future__ import
+// annotations). A class body runs: not inert.
+func pyInert(st []ptok, future bool) bool {
+	dunder := func(n string) bool { return strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") }
+	d, parts := st[b2i(st[0].text == "async"):], pyAssign(st)
+	switch {
+	case d[0].text == "import" || d[0].text == "from":
+		names, _ := pyBinds(st)
+		return !slices.ContainsFunc(names, dunder)
+	case len(parts) == 1 && !slices.ContainsFunc(st, func(k ptok) bool { return k.kind != 's' }):
+		return pyLiteral(st) // a docstring
+	case len(parts) == 2 && len(parts[0]) == 1 && parts[0][0].kind == 'n':
+		n := parts[0][0].text
+		return (!dunder(n) || n == "__all__" || n == "__version__") && pyLiteral(parts[1])
+	case len(d) < 4 || d[0].text != "def" || d[1].kind != 'n' || dunder(d[1].text) || d[2].text != "(":
+		return false
+	}
+	end := pyDepthEnd(d, 2)
+	if end < 0 || end+1 < len(d) && d[end+1].text != ":" && !future { // a return annotation runs
+		return false
+	}
+	for _, p := range pySplit(d[3:end], ",") {
+		for len(p) > 0 && strings.Trim(p[0].text, "*") == "" { // *args, **kwargs, a bare *
+			p = p[1:]
+		}
+		if len(p) == 0 || len(p) == 1 && (p[0].kind == 'n' || p[0].text == "/") {
+			continue
+		} else if p[0].kind != 'n' {
+			return false
+		}
+		eq := slices.IndexFunc(p, func(k ptok) bool { return k.text == "=" })
+		if p[1].text == ":" && !future || eq < 0 && p[1].text != ":" || eq >= 0 && !pyLiteral(p[eq+1:]) {
+			return false // an annotation runs; a default runs
+		}
+	}
+	return true
+}
+
+// pyLiteral: value t is strings, numbers, True, False, None, or tuples,
+// lists and dicts of them: no name, attribute, subscript, call or operator
+// (Astra #275 H6). An f-string's fields are code tokens on its line
+// (pline.inner): their names are refused too.
+func pyLiteral(t []ptok) bool {
+	value := false // the token before closes a value: ( or [ after it is a call or a subscript
+	for _, k := range t {
+		switch {
+		case k.kind == 's' || k.kind == '1' || slices.Contains([]string{"True", "False", "None"}, k.text):
+			value = true
+		case k.text == "(" || k.text == "[":
+			if value {
+				return false
+			}
+		case slices.Contains([]string{")", "]", "}"}, k.text):
+			value = true
+		case k.text == "{" || k.text == "," || k.text == ":":
+			value = false
+		default:
+			return false
+		}
+	}
+	return len(t) > 0
 }
 
 // resolve follows the dotted name d through the base modules' own
@@ -413,7 +482,7 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 			}
 		}
 	}
-	for _, bt := range pb.tests {
+	for _, bt := range slices.Concat(pb.tests, pb.holders) { // a holder's imports too (Astra #275 H2)
 		if err := r.ctx.Err(); err != nil {
 			return "", err
 		} else if bt.unread {
@@ -456,9 +525,6 @@ func pyReach(c Change, b, a *pyFile, pb *pyBase) (string, error) {
 			}
 		}
 		return ""
-	}
-	if pb.holderUnread != "" {
-		return "a module a condition reads is unread (" + pb.holderUnread + ")", nil
 	}
 	for _, f := range slices.Concat(pb.tests, pb.holders) {
 		if f.unread {

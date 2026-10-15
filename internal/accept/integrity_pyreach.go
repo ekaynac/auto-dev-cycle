@@ -12,9 +12,10 @@ import (
 
 // P14c-2a-reach (Mythos #270 M1–M4, r2 L4) and P14c-2a-roots: conditions
 // that reach a changed module through an application module, across
-// modules or through a third-party proxy; the sys.path entries an install
-// or a test file adds, read only where they can be read exactly; anything
-// else leaves the base unread.
+// modules or through a third-party proxy; the roots an install adds, read
+// only where they can be read exactly, and only to name shadows (Opus #275
+// H2). A test file's sys.path change leaves the base unread, as on main
+// (literal sys.path roots: P14c-2a-syspath, Astra #275 H4, H5).
 
 var (
 	pySection    = regexp.MustCompile(`(?m)^[ \t]*\[([^\]\n]*)\][ \t]*$`)
@@ -22,7 +23,9 @@ var (
 	pyInstallAny = regexp.MustCompile(`(?i)package[_-]dir|(^|[^\w])where["']?\s*[:=]|build-backend|backend-path`) // any backend-path unread (Opus #275 H4)
 	pyFindPkgs   = regexp.MustCompile(`(?m)^packages[ \t]*[:=][ \t]*find(_namespace)?:[ \t]*$`)
 	pyToolOther  = regexp.MustCompile(`(?i)tool["'\s]*\.["'\s]*(poetry|hatch|pdm|flit)`)
-	pyPkgDir     = regexp.MustCompile(`^\{\s*""\s*=\s*"([^"\\]+)"\s*\}$`) // package-dir = {"" = "src"}
+	pyPkgDir     = regexp.MustCompile(`^\{\s*""\s*=\s*"([\w./-]+)"\s*\}$`)                              // package-dir = {"" = "src"}
+	pyWhere      = regexp.MustCompile(`^(?:\[\s*"([\w./-]+)"\s*\]|\[\s*'([\w./-]+)'\s*\]|([\w./-]+))$`) // where = DIR, or ["DIR"] in TOML
+	pyDir        = regexp.MustCompile(`^[\w./-]+$`)                                                     // a directory read exactly: no %(interpolation)s, attr:, file:, quote or escape (Astra #275 H3)
 	pySysAttrs   = strings.Fields("argv platform version_info version implementation executable exit stdout stderr stdin maxsize byteorder flags " +
 		"getrecursionlimit setrecursionlimit exc_info prefix base_prefix float_info hexversion getdefaultencoding getfilesystemencoding") // sys attributes read as no sys.path change
 	// pyInstallKeys: the key each setuptools section is read for (Astra #272 H1).
@@ -74,15 +77,19 @@ func (r *run) pyInstall() (entries []string, unread bool, err error) {
 					case key != strings.ReplaceAll(pyInstallKeys[name], "_", "-") || toml && sec[m[2]:m[3]] != pyInstallKeys[name]:
 						return nil, true, nil // a key outside its section, or a TOML key in another case, stays unread, as on main
 					case key == "build-backend":
-						if words = nil; !slices.Contains([]string{"setuptools.build_meta", "setuptools.build_meta:__legacy__"}, strings.Trim(v, `"'`)) {
+						if words = nil; !slices.Contains([]string{`"setuptools.build_meta"`, `"setuptools.build_meta:__legacy__"`, `'setuptools.build_meta'`, `'setuptools.build_meta:__legacy__'`}, v) {
 							return nil, true, nil // exactly setuptools' (Opus #275 H4)
 						}
-					case key == "where" && (len(words) != 1 || !toml && !pyFindPkgs.MatchString(s)):
-						return nil, true, nil // one directory, with packages = find: (Opus #275 H3)
+					case key == "where":
+						g := pyWhere.FindStringSubmatch(v)
+						if g == nil || toml == (g[3] != "") || !toml && !pyFindPkgs.MatchString(s) {
+							return nil, true, nil // one directory, read exactly, with packages = find: (Opus #275 H3, Astra #275 H3)
+						}
+						words = []string{g[1] + g[2] + g[3]}
 					case key == "package-dir":
 						if g := pyPkgDir.FindStringSubmatch(v); g != nil && name == "tool.setuptools" {
 							words = g[1:]
-						} else if d, ok := strings.CutPrefix(v, "="); ok && name == "options" && !strings.ContainsAny(d, "=:\n") {
+						} else if d, ok := strings.CutPrefix(v, "="); ok && name == "options" && pyDir.MatchString(strings.TrimSpace(d)) {
 							words = []string{strings.TrimSpace(d)}
 						} else {
 							return nil, true, nil
@@ -106,106 +113,30 @@ func (r *run) pyInstall() (entries []string, unread bool, err error) {
 	return entries, false, nil
 }
 
-// pySysUse reads base file q's line t for the sys.path it changes (Mythos
-// #270 M1), as an allowlist (Opus #272 (b)): sys only after import sys or
-// before a dot, sys.path only in what pySysPath reads; from sys import
-// path, an alias of sys, getattr(sys, …), site.addsitedir, meta_path or
-// path_hooks are unread.
-func pySysUse(q string, t []ptok) (entries []string, ok bool) {
+// pySysUse: base file line t leaves sys.path as the guard reads it (Mythos
+// #270 M1), an allowlist (Opus #272 (b)): sys only after import sys or
+// before a dot and an attribute of pySysAttrs. Any sys.path use, from sys
+// import path, an alias of sys, getattr(sys, …) or of 'path', a 'sys'
+// string, a path changed on something not named sys, site.addsitedir,
+// meta_path or path_hooks is not.
+func pySysUse(t []ptok) bool {
 	if len(t) > 1 && t[0].text == "from" && t[1].text == "sys" || len(t) > 2 && t[0].text == "import" && named(t, "as") && named(t, "sys") {
-		return nil, !slices.ContainsFunc(t, func(k ptok) bool { return k.text == "path" || k.text == "*" || k.text == "meta_path" || k.text == "as" })
+		return !slices.ContainsFunc(t, func(k ptok) bool { return k.text == "path" || k.text == "*" || k.text == "meta_path" || k.text == "as" })
 	}
 	for i, k := range t {
 		switch {
 		case slices.Contains([]string{"addsitedir", "meta_path", "path_hooks", "path_importer_cache"}, k.text) || pyStr(k) == "sys":
-			return nil, false // importlib.import_module('sys') too (the review of 1ceb79c)
+			return false // importlib.import_module('sys') too (the review of 1ceb79c)
 		case k.text == "path" && i > 0 && t[i-1].text == "." && i+2 < len(t) && t[i+1].text == "." && slices.Contains([]string{"insert", "append", "extend", "remove", "clear", "pop"}, t[i+2].text) && (i < 2 || t[i-2].text != "sys"),
 			pyStr(k) == "path" && named(t[:i], "getattr"):
-			return nil, false // a path changed on something not named sys: __import__('s' + 'ys') (the review of 9d12467)
+			return false // a path changed on something not named sys: __import__('s' + 'ys') (the review of 9d12467)
 		case k.text != "sys" || k.kind != 'n' || i > 0 && t[i-1].text == ".":
 		case t[0].text == "import":
-		case i+2 >= len(t) || t[i+1].text != ".":
-			return nil, false
-		case t[i+2].text == "path":
-			es, ok := pySysPath(q, t)
-			if !ok {
-				return nil, false
-			}
-			entries = append(entries, es...)
-		case !slices.Contains(pySysAttrs, t[i+2].text):
-			return nil, false // sys.__dict__['path'] (the review of 1ceb79c)
+		case i+2 >= len(t) || t[i+1].text != "." || !slices.Contains(pySysAttrs, t[i+2].text):
+			return false // sys.path in any form, sys.__dict__ (the review of 1ceb79c, #272 split)
 		}
 	}
-	return entries, true
-}
-
-// pySysPath reads base file q's line t, exactly sys.path.insert(N, E) or
-// sys.path.append(E), E a shape pyPathExpr evaluates (Astra #272 H2).
-func pySysPath(q string, t []ptok) ([]string, bool) {
-	if len(t) < 7 || pyJoin(t[:4]) != "sys.path." || t[5].text != "(" || t[len(t)-1].text != ")" {
-		return nil, false
-	}
-	args := pySplit(t[6:len(t)-1], ",")
-	if t[4].text == "insert" && len(args) == 2 && len(args[0]) == 1 && args[0][0].kind == '1' {
-		args = args[1:]
-	} else if t[4].text != "append" || len(args) != 1 {
-		return nil, false
-	}
-	ps, _, ok := pyPathExpr(q, args[0]) // a literal: relative to the root, the cwd pytest runs in (P15; not q's directory: Opus #275 H3)
-	return ps, ok && !slices.ContainsFunc(ps, func(p string) bool { return p == ".." || strings.HasPrefix(p, "../") || path.IsAbs(p) })
-}
-
-// pyPathExpr evaluates the path expression t of base file q, as a whole
-// shape (Astra #272 H2): a literal; __file__ through os.path.dirname,
-// abspath, realpath, os.path.join with literals, str, Path(…), .parent,
-// .resolve() or .absolute(). anchored: derived from __file__. dirname,
-// abspath or join of a literal (cwd-dependent), or any other shape: !ok.
-func pyPathExpr(q string, t []ptok) (paths []string, anchored, ok bool) {
-	n := len(t)
-	switch {
-	case n == 1 && pyStr(t[0]) != "":
-		return []string{path.Clean(pyStr(t[0]))}, false, true
-	case n == 1 && t[0].text == "__file__":
-		return []string{q}, true, true
-	case n > 2 && t[n-2].text == "." && t[n-1].text == "parent":
-		if p, a, ok := pyPathExpr(q, t[:n-2]); ok && a { // not p[0] of nothing (the review of 9d12467)
-			return []string{path.Dir(p[0])}, true, true
-		}
-		return nil, false, false
-	case n > 4 && t[n-4].text == "." && (t[n-3].text == "resolve" || t[n-3].text == "absolute") && t[n-2].text == "(" && t[n-1].text == ")":
-		p, a, ok := pyPathExpr(q, t[:n-4])
-		return p, a, ok && a
-	}
-	open := slices.IndexFunc(t, func(k ptok) bool { return k.text == "(" })
-	if open < 1 || pyDepthEnd(t, open) != n-1 {
-		return nil, false, false
-	}
-	args := pySplit(t[open+1:n-1], ",")
-	if len(args) == 0 {
-		return nil, false, false
-	}
-	p, a, ok := pyPathExpr(q, args[0])
-	switch callee := pyJoin(t[:open]); {
-	case !ok || !a:
-		return nil, false, false
-	case callee == "os.path.dirname" && len(args) == 1:
-		return []string{path.Dir(p[0])}, true, true
-	case slices.Contains([]string{"os.path.abspath", "os.path.realpath", "str", "Path", "pathlib.Path"}, callee) && len(args) == 1:
-		return p, true, true
-	case callee == "os.path.join":
-		j := p[0]
-		for _, l := range args[1:] {
-			if len(l) != 1 || pyStr(l[0]) == "" {
-				return nil, false, false
-			}
-			if path.IsAbs(pyStr(l[0])) { // Python's join restarts at an absolute part (Astra #272 r2 H2): unread
-				return nil, false, false
-			}
-			j = path.Join(j, pyStr(l[0]))
-		}
-		return []string{j}, true, true
-	}
-	return nil, false, false
+	return true
 }
 
 // pyDepthEnd is the index of the bracket closing t[open].
@@ -221,23 +152,10 @@ func pyDepthEnd(t []ptok, open int) int {
 
 // prefix is how many of parts name the base module Python imports, at most
 // top (Astra #272 r2 H1): a shorter prefix that is a plain module, or a
-// package whose directory does not hold the longer one, ends it; a package
-// binding the next name otherwise than as its submodule, or a name two
-// files answer to, is unread.
-// pyPlain: a package whose submodules resolve in its own directory. It is
-// read, every module-level statement is pyStatic (an import, def, class,
-// docstring, NAME = a value with no call), and it binds no dunder name but
-// __all__ and __version__ (Opus #275 M1, as an allowlist in round 3).
-// __path__ = […], a walrus, extend_path(…) or __path__.insert(…) is not.
-func pyPlain(f *pyBaseFile) bool {
-	for _, n := range slices.Concat(slices.Collect(maps.Keys(f.locals)), slices.Collect(maps.Keys(f.from))) {
-		if strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__version__" {
-			return false
-		}
-	}
-	return !f.unread && !f.dynamic
-}
-
+// package whose directory does not hold the longer one, ends it. Unread:
+// any ancestor only an added root names, or two files answer to (Astra
+// #275 H1, Opus #275 H1); a package not plain (pyInert), or binding the next
+// name otherwise than as its submodule.
 func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 	i := min(top, len(parts))
 	for ; i >= 1 && pb.mods[strings.Join(parts[:i], ".")] == ""; i-- {
@@ -245,23 +163,23 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 			return 0, "the base conditions' analysis is over the guard's work bound", pb.r.ctx.Err()
 		}
 	}
-	for k := i + 1; k <= min(top, len(parts)); k++ { // main reads no added root: a module only one names stays unread, not third-party (round 3)
-		if name := strings.Join(parts[:k], "."); pb.shadowMods[name] != "" {
-			return 0, "the module " + name + " is under a root the guard reads for shadows only", nil
+	for k := 1; k <= min(top, len(parts)); k++ { // every ancestor, a namespace portion's too (Astra #275 H1)
+		if name := strings.Join(parts[:k], "."); pb.mods[name] == "" && pb.shadowMods[name] != "" {
+			return 0, "the module " + name + " is under a root the guard reads for shadows only", nil // main reads no added root
+		} else if pb.alts[name] > 1 { // at any depth (Opus #275 H1); a module and a package (Astra #272 r2 H1)
+			return 0, "the module name " + name + " in two roots", nil
 		}
 	}
 	for k := 1; k <= i; k++ {
 		name, q := strings.Join(parts[:k], "."), pb.mods[strings.Join(parts[:k], ".")]
 		if q == "" {
 			continue // a namespace portion
-		} else if pb.alts[name] > 1 { // at any depth (Opus #275 H1); a module and a package (Astra #272 r2 H1)
-			return 0, "the module name " + name + " in two roots", nil
 		} else if path.Base(q) == "__init__.py" && k < len(parts) {
 			f, err := pb.file(q)
 			if err != nil {
 				return 0, "", err
 			} else if !f.plain {
-				return 0, "the package " + name + " is not plain (its submodules may resolve elsewhere)", nil // Opus #275 M1, an allowlist (round 3)
+				return 0, "the package " + name + " is not plain (its submodules may resolve elsewhere)", nil // Opus #275 M1, Astra #275 H6
 			} else if k < i && (f.locals[parts[k]] || f.from[parts[k]] != "" && f.from[parts[k]] != name+"."+parts[k]) {
 				return 0, "the package " + name + " binds " + parts[k] + " beside its submodule", nil
 			}
