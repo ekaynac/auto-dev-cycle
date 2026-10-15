@@ -399,7 +399,7 @@ func TestIntegrityAcceptsAndWarns(t *testing.T) {
 		"TestMain deleted":    {nil, []string{"pkg/main_test.go"}, "TestMain(*testing.M) of pkg:pkg changed or deleted"},
 		"rune(22)":            {map[string]string{"pkg/calc.go": calc + "\nvar m = rune(0x16)\n"}, nil, "converts 22"},
 		// The round-5 verification's false blocks, now accepted clean.
-		"x/sys constants":        {map[string]string{"pkg/consts.go": "package pkg\n\nimport \"golang.org/x/sys/unix\"\n\nvar mode = unix.S_IFMT\n"}, nil, ""},
+		"x/sys constants":        {map[string]string{"pkg/consts.go": "package pkg\n\nimport \"golang.org/x/sys/unix\"\n\nvar mode = unix.S_IFMT\n"}, nil, "a new import of golang.org/x/sys/unix"}, // P14b-out: a new edge warns
 		"a test helper clear":    {map[string]string{"pkg/clear_test.go": "package pkg\n\nfunc clear() {}\n"}, nil, ""},
 		"a race pair":            {map[string]string{"pkg/race_test.go": "//go:build race\n\npackage pkg\n\nconst raceOn = true\n", "pkg/norace_test.go": "//go:build !race\n\npackage pkg\n\nconst raceOn = false\n"}, nil, ""},
 		"an interface assertion": {map[string]string{"pkg/assert.go": "package pkg\n\nimport (\n\t\"bytes\"\n\t\"io\"\n)\n\nvar _ io.Writer = (*bytes.Buffer)(nil)\n"}, nil, ""},
@@ -612,6 +612,16 @@ func TestDecisionASweep(t *testing.T) {
 		{"reflect", "reflect.TypeOf(0)", "reflect.TypeOf", 1},
 		{"", "println(0)", "println", 1},
 		{"", "print(0)", "print", 1},
+		// P14b-out: S prefix-matched (flag, io/ioutil, net/http/cgi; the os/,
+		// log/, runtime/ and testing/ trees), from code the tests call.
+		{"flag", "flag.Parse()", "flag.Parse", 1},
+		{"flag", "flag.NewFlagSet(\"x\", flag.ExitOnError).Parse([]string{\"-h\"})", "flag.NewFlagSet", 1},
+		{"io/ioutil", "ioutil.ReadFile(\"x\")", "io/ioutil.ReadFile", 1},
+		{"net/http/cgi", "cgi.Serve(nil)", "net/http/cgi.Serve", 1},
+		{"runtime/debug", "debug.SetTraceback(\"all\")", "runtime/debug.SetTraceback", 1},
+		{"os/user", "user.Current()", "os/user.Current", 1},
+		{"log/syslog", "syslog.New(syslog.LOG_INFO, \"x\")", "log/syslog.New", 1},
+		{"testing/fstest", "fstest.TestFS(nil)", "testing/fstest.TestFS", 1},
 	} {
 		imp := ""
 		if c.imp != "" {
@@ -623,8 +633,11 @@ func TestDecisionASweep(t *testing.T) {
 				dir, fn = "pkg", "init"
 			}
 			p := dir + "/sweep.go"
-			v := f.guarded(t, map[string]string{p: "package " + dir + "\n\n" + imp + "func " + fn + "() { " + c.expr + " }\n"})
+			v := outGuarded(t, f, map[string]string{p: "package " + dir + "\n\n" + imp + "func " + fn + "() { " + c.expr + " }\n"})
 			key := p + ": " + c.q + " in " + fn
+			if pkg := c.q[:max(strings.LastIndex(c.q, "."), 0)]; outS(pkg) { // P14b-out-1's: per file and package, Additive
+				key = outRefs(p, pkg, "1: "+fn)
+			}
 			switch {
 			case at == "init" && !finds(v.Blocks, "initialization (tests included) reaches"):
 				t.Errorf("%s from init: blocks %q", c.expr, whats(v.Blocks))

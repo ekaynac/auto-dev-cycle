@@ -523,7 +523,8 @@ func TestIntegrityRealTypesAccepts(t *testing.T) {
 		"a fixture logged":                 {"pkg/calc_test.go": goT + "\ntype fixture struct{ t *testing.T }\n\nfunc TestLog(t *testing.T) {\n\tfx := &fixture{t: t}\n\tt.Logf(\"%+v\", fx)\n}\n"},
 		"an own and a module-cache import": {"pkg/x.go": "package pkg\n\nimport (\n\t\"example.com/m/other\"\n\t\"golang.org/x/sys/unix\"\n)\n\nvar mode, v = unix.S_IFMT, other.Value\n"},
 	} {
-		if v := f.guarded(t, files); !v.Accepted() || len(v.Warnings) > 0 {
+		edge := name == "an own and a module-cache import" // P14b-out: its new x/sys edge warns, nothing else
+		if v := f.guarded(t, files); !v.Accepted() || len(v.Warnings) > b2i(edge) || edge && !finds(v.Warnings, "a new import of golang.org/x/sys/unix") {
 			t.Errorf("%s: blocks %q, warnings %q; want accepted clean", name, whats(v.Blocks), whats(v.Warnings))
 		}
 	}

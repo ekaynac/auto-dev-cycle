@@ -69,13 +69,13 @@ func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
 			started: time.Now(), listEnd: time.Now().Add(maxListTime)}
 		defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
 			if p := recover(); p != nil && ctx.Err() != nil {
-				blocks, warnings, err = r.blocks, r.warnings, ctx.Err()
+				blocks, warnings, err = append(r.blocks, r.out.blocks...), append(r.warnings, r.out.warnings...), ctx.Err()
 			} else if p != nil {
-				blocks, warnings, err = append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p)}), r.warnings, nil
+				blocks, warnings, err = append(append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p), false}), r.out.blocks...), append(r.warnings, r.out.warnings...), nil
 			}
 		}()
 		err = r.check(changes)
-		return r.blocks, r.warnings, err
+		return append(r.blocks, r.out.blocks...), append(r.warnings, r.out.warnings...), err
 	}
 }
 
@@ -98,6 +98,7 @@ type run struct {
 	vendorChanged      map[string]bool     // vendor/ directories with a file changed
 	anyTest            bool                // a Go test in either version (a helper anywhere the tests may call)
 	blocks, warnings   []Block
+	out                additive // decision A outside initialization (P14b-out-1): its own findings and work
 }
 
 // cgoSources is what cgo compiles beside a package's Go files, and objects
@@ -142,7 +143,7 @@ func (r *run) usesCgo() bool {
 }
 
 func add(to *[]Block, p, what string) {
-	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what})
+	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what, false})
 }
 
 func (r *run) check(changes []Change) error {
@@ -199,6 +200,9 @@ func (r *run) check(changes []Change) error {
 			return err
 		}
 		r.compare(dir, b, a)
+	}
+	if outHook {
+		return r.outRun() // once the base guard is done: its own reading, bound and findings
 	}
 	return nil
 }

@@ -33,9 +33,11 @@ const (
 func (v Verdict) Report() ([]byte, error) {
 	budget, truncated, clipped := maxEntries, 0, 0
 	var err error
-	cut := func(bs []Block) []Block {
-		out := []Block{}
+	cut := func(out, bs []Block, additive bool) []Block { // the base guard's findings first, P14b-out's in what is left
 		for _, b := range bs {
+			if b.Additive != additive {
+				continue
+			}
 			for _, f := range []*string{&b.Path, &b.What} {
 				if len(*f) > maxField {
 					*f, clipped = strings.ToValidUTF8((*f)[:maxField], ""), clipped+1
@@ -52,7 +54,8 @@ func (v Verdict) Report() ([]byte, error) {
 		}
 		return out
 	}
-	blocks, warnings := cut(v.Blocks), cut(v.Warnings)
+	blocks, warnings := cut([]Block{}, v.Blocks, false), cut([]Block{}, v.Warnings, false)
+	blocks, warnings = cut(blocks, v.Blocks, true), cut(warnings, v.Warnings, true)
 	if err != nil {
 		return nil, err
 	}
