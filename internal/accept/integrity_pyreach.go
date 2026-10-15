@@ -22,6 +22,7 @@ var (
 	pyInstallKey = regexp.MustCompile(`(?mi)^(package[_-]dir|where|build-backend)[ \t]*[:=]`)                     // no indented key (Opus #275 H3)
 	pyInstallAny = regexp.MustCompile(`(?i)package[_-]dir|(^|[^\w])where["']?\s*[:=]|build-backend|backend-path`) // any backend-path unread (Opus #275 H4)
 	pyFindPkgs   = regexp.MustCompile(`(?m)^packages[ \t]*[:=][ \t]*find(_namespace)?:[ \t]*$`)
+	pyBackend    = regexp.MustCompile(`(?m)^[ \t]*build-backend[ \t]*=[ \t]*["']setuptools[."']`) // main's: a setuptools backend is no root
 	pyToolOther  = regexp.MustCompile(`(?i)tool["'\s]*\.["'\s]*(poetry|hatch|pdm|flit)`)
 	pyPkgDir     = regexp.MustCompile(`^\{\s*""\s*=\s*"([\w./-]+)"\s*\}$`)                              // package-dir = {"" = "src"}
 	pyWhere      = regexp.MustCompile(`^(?:\[\s*"([\w./-]+)"\s*\]|\[\s*'([\w./-]+)'\s*\]|([\w./-]+))$`) // where = DIR, or ["DIR"] in TOML
@@ -33,19 +34,25 @@ var (
 		"tool.setuptools.packages.find": "where", "build-system": "build-backend"}
 )
 
+// pyInstallRootsRead gates pyInstall's reader: off, a base with an install
+// key keeps main's unread verdict (Astra #275 r3: a package's own __path__
+// would send a read root's module elsewhere). P14c-2a-install turns it on,
+// once P14c-2a-widen models imports and code parked at run time (Opus
+// #277 H1, H2). A var only
+// so that the reader's own tests can run it. A package variable, not safe
+// to change concurrently: a test that sets it must not run in parallel.
+var pyInstallRootsRead = false
+
 // pyInstall reads the entries an install adds (Mythos #270 M1), as an
 // allowlist (Opus #272 (c)), each key only in its section (Astra #272 H1):
 // [options] package_dir = =DIR (any case, = or :), [options.packages.find]
 // where, [tool.setuptools] package-dir = {"" = "DIR"},
 // [tool.setuptools.packages.find] where, a setuptools [build-system]
 // build-backend, a .py under src/; a directory only as exactly [\w./-]
-// (Astra #275 H3). Its roots name shadows only (pyShadow); a package's own
-// __path__ is not plain (pyInert, Astra #275 r3). A root setup.py beside a
-// key read (it may override it), any other such key anywhere, a
+// (Astra #275 H3). Any other such key anywhere, a
 // tool.poetry, hatch, pdm or flit table, an entry outside the root, or a
 // .pth anywhere (Astra #272 M2) is unread, as on main.
 func (r *run) pyInstall() (entries []string, unread bool, err error) {
-	keys := false // a root read from a key
 	for _, p := range slices.Sorted(maps.Keys(r.files)) {
 		switch base := path.Base(p); {
 		case path.Ext(p) == ".pth":
@@ -58,8 +65,8 @@ func (r *run) pyInstall() (entries []string, unread bool, err error) {
 				return nil, true, err
 			}
 			s := strings.ReplaceAll(string(b), "\r\n", "\n")
-			if pyToolOther.MatchString(s) {
-				return nil, true, nil
+			if pyToolOther.MatchString(s) || !pyInstallRootsRead && len(pyInstallAny.FindAllString(string(b), -1)) > len(pyBackend.FindAllString(string(b), -1)) {
+				return nil, true, nil // the gate off: main's verdict, a key not a setuptools backend
 			}
 			parsed, heads, toml := 0, append([][]int{{0, 0, 0, 0}}, pySection.FindAllStringSubmatchIndex(s, -1)...), base == "pyproject.toml"
 			if p != base || base == "tox.ini" {
@@ -103,7 +110,7 @@ func (r *run) pyInstall() (entries []string, unread bool, err error) {
 						if j := path.Join(path.Dir(p), w); w != "" && (path.IsAbs(w) || j == ".." || strings.HasPrefix(j, "../")) {
 							return nil, true, nil
 						} else if w != "" {
-							entries, keys = append(entries, j), true
+							entries = append(entries, j)
 						}
 					}
 					parsed++
@@ -113,9 +120,6 @@ func (r *run) pyInstall() (entries []string, unread bool, err error) {
 				return nil, true, nil
 			}
 		}
-	}
-	if keys && r.files["setup.py"] != "" {
-		return nil, true, nil // setup(package_dir=…) overrides setup.cfg: main's verdict (P14c-2a-plain)
 	}
 	return entries, false, nil
 }
@@ -157,18 +161,18 @@ func pyDepthEnd(t []ptok, open int) int {
 	return -1
 }
 
-// starDunder is the first base module f star-imports that may bind a dunder
-// name in f (Astra #275 r2 H6b): unread, dynamic, binding or importing
-// __all__, or star-importing itself. Without __all__, a star binds no name
-// starting with "_". A module outside the base is the same in both trees
-// (residual: one exporting __path__, P14c-2a-widen).
+// starDunder is the first base module f star-imports that may run code or
+// bind a dunder name in f (Astra #275 r2 H6b, Opus #277 H2): one not plain
+// (pyInert), or importing anything (an import runs its module). A plain
+// module binds no dunder but __all__ and __version__, so its star cannot
+// bind __path__. A module outside the base: resolve's unknown star rule.
 func (pb *pyBase) starDunder(f *pyBaseFile) (string, error) {
 	for _, s := range f.stars {
 		if pb.mods[s] == "" {
 			continue
 		} else if fs, err := pb.file(pb.mods[s]); err != nil {
 			return "", err
-		} else if fs.unread || fs.dynamic || len(fs.stars) > 0 || fs.locals["__all__"] || fs.from["__all__"] != "" {
+		} else if !fs.plain || len(fs.mods) > 0 {
 			return s, nil
 		}
 	}
@@ -210,7 +214,7 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 			} else if s, err := pb.starDunder(f); err != nil {
 				return 0, "", err
 			} else if s != "" {
-				return 0, "the package " + name + " star-imports " + s + ", whose names may include __path__", nil // Astra #275 r2 H6b
+				return 0, "the package " + name + " star-imports " + s + ", which may run code or bind __path__", nil // Astra #275 r2 H6b, Opus #277 H2
 			} else if k < i && (f.locals[parts[k]] || f.from[parts[k]] != "" && f.from[parts[k]] != name+"."+parts[k]) {
 				return 0, "the package " + name + " binds " + parts[k] + " beside its submodule", nil
 			}
