@@ -18,28 +18,35 @@ import (
 // (Mythos #267 L3): its sys.path entries, its modules' dotted names, its
 // files read on demand.
 type pyBase struct {
-	r        *run
-	entries  []string
-	basedirs []string // the test files' basedirs below the root, in either tree
-	paths    []string // the base's paths, sorted
-	read     bool
-	err      error
-	mods     map[string]string      // a base module's dotted name, to its path
-	files    map[string]*pyBaseFile // the base files read, by path
-	tests    []*pyBaseFile          // the judged ones (Opus #270 H2, M4)
+	r          *run
+	entries    []string
+	basedirs   []string // the test files' basedirs below the root, in either tree
+	paths      []string // the base's paths, sorted
+	read       bool
+	err        error
+	mods       map[string]string      // a base module's dotted name, to its path
+	files      map[string]*pyBaseFile // the base files read, by path
+	tests      []*pyBaseFile          // the judged ones (Opus #270 H2, M4)
+	holders    []*pyBaseFile          // the application modules they import, one hop (Mythos #270 M2)
+	unmodelled bool                   // a sys.path entry the guard does not model: the floor applies (#270 M6)
+	sysUnread  bool                   // a judged file changes sys.path in a way the guard does not read (#270 M1)
 }
 
 // pyBaseFile is what a base Python file imports, and its conditions.
 type pyBaseFile struct {
-	path    string
-	unread  bool
-	mods    []string          // the dotted names it imports (a from-import's as module.name)
-	from    map[string]string // a name it binds by import, to that dotted name (import a.b: a to a.b)
-	named   map[string]bool   // the names a from-import binds
-	locals  map[string]bool   // the names its module-level statements bind
-	stars   []string          // the modules it star-imports
-	dynamic bool              // a module-level statement not pyStatic: it may bind names at run time
-	conds   [][]ptok          // its condition lines, and the bindings they read (Opus #270 H2)
+	path      string
+	unread    bool
+	mods      []string          // the dotted names it imports (a from-import's as module.name)
+	from      map[string]string // a name it binds by import, to that dotted name (import a.b: a to a.b)
+	named     map[string]bool   // the names a from-import binds
+	locals    map[string]bool   // the names its module-level statements bind
+	stars     []string          // the modules it star-imports
+	dynamic   bool              // a module-level statement not pyStatic: it may bind names at run time
+	conds     [][]ptok          // its condition lines, and the bindings they read (Opus #270 H2)
+	units     [][]ptok          // its module-level statements, def and class bodies (Mythos #270 M3)
+	binders   map[string][]int  // a name, to the units binding it
+	syspath   []string          // the sys.path entries it adds (#270 M1)
+	sysUnread bool              // it names sys.path in a way pySysPath does not read
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -111,20 +118,35 @@ func (pb *pyBase) load() error {
 	for _, q := range pb.paths {
 		if pb.err = pb.r.ctx.Err(); pb.err != nil { // Mythos #270 M5
 			return pb.err
-		} else if path.Ext(q) != ".py" {
-			continue
-		}
-		for _, n := range pyModNames(q, pb.entries, false) {
-			if pb.mods[n] == "" {
-				pb.mods[n] = q
-			}
-		}
-		if pyTested(q) || pb.r.pyTestDir(q) {
+		} else if path.Ext(q) == ".py" && (pyTested(q) || pb.r.pyTestDir(q)) {
 			f, err := pb.file(q)
 			if pb.err = err; err != nil {
 				return err
 			}
-			pb.tests = append(pb.tests, f)
+			pb.tests, pb.entries, pb.sysUnread = append(pb.tests, f), append(pb.entries, f.syspath...), pb.sysUnread || f.sysUnread
+		}
+	}
+	slices.Sort(pb.entries)
+	pb.entries = slices.Compact(pb.entries)
+	for _, q := range pb.paths {
+		for _, n := range pyModNames(q, pb.entries, false) {
+			if pb.mods[n] == "" && path.Ext(q) == ".py" {
+				pb.mods[n] = q
+			}
+		}
+	}
+	for _, f := range slices.Clone(pb.tests) { // the application modules a judged file imports, one hop (Mythos #270 M2)
+		for _, d := range f.mods {
+			for ; d != "" && pb.mods[d] == ""; d = d[:max(strings.LastIndex(d, "."), 0)] {
+			}
+			if d == "" {
+				continue
+			} else if h, err := pb.file(pb.mods[d]); err != nil {
+				pb.err = err
+				return err
+			} else if !slices.Contains(pb.tests, h) && !slices.Contains(pb.holders, h) {
+				pb.holders = append(pb.holders, h)
+			}
 		}
 	}
 	return nil
@@ -159,6 +181,10 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
+		if slices.ContainsFunc(line[:max(len(line)-2, 0)], func(k ptok) bool { return k.text == "sys" }) && strings.Contains(pyJoin(line), "sys.path") {
+			es, ok := pySysPath(q, l.toks)
+			f.syspath, f.sysUnread = append(f.syspath, es...), f.sysUnread || !ok
+		}
 		for i, k := range line {
 			if s := pyStr(k); cond && s != "" { // a string condition's code too (the security review)
 				sl, _, err := pyTokens(pb.r.ctx, []byte(s))
@@ -213,6 +239,9 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				}
 				f.dynamic = f.dynamic || !pyStatic(st)
 				if bound, imported := pyBinds(st); !imported {
+					if len(st) > 2 && st[0].kind == 'n' && st[1].text == "." && len(pyAssign(st)) == 1 {
+						bound = append(bound, st[0].text) // FLAGS.update(…) changes FLAGS (Mythos #270 r2 L4)
+					}
 					for _, n := range bound {
 						binders[n], f.locals[n] = append(binders[n], len(units)), true
 					}
@@ -243,6 +272,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 			}
 		}
 	}
+	f.units, f.binders = units, binders
 	return f, nil
 }
 
@@ -338,7 +368,7 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 		return path.Dir(m), path.Base(m)
 	}
 	d, m := split(c.Dst)
-	floor := judged || slices.Contains(pb.basedirs, d) // directly under a test basedir too (Mythos #270 r2 M2)
+	floor := pb.unmodelled && (judged || slices.Contains(pb.basedirs, d)) // directly under a test basedir too (Mythos #270 r2 M2); an unmodelled entry (#270 M6)
 	for _, q := range pb.paths {
 		if err := r.ctx.Err(); err != nil { // Mythos #270 r2 L2
 			return "", err
@@ -383,7 +413,16 @@ func pyReach(c Change, b, a *pyFile, pb *pyBase) (string, error) {
 	why := func(f *pyBaseFile, y string) string {
 		return "a skipif or xfail condition in " + f.path + " reads " + y + ", which this change rebinds"
 	}
-	for _, f := range pb.tests {
+	hit := func(d string, via bool) string { // c's attribute chain d reaches, or ""
+		for e, i := strings.Split(d, "."), 1; i <= len(e); i++ { // i == len(e): c read whole, getattr(c, …) (the security review)
+			if y := e[min(i, len(e)-1)]; slices.Contains(suffixes, strings.Join(e[:i], ".")) &&
+				(i == len(e) && via || i+1 < len(e) || i < len(e) && (rebound(y) || pyMoved(y, b, a))) {
+				return y
+			}
+		}
+		return ""
+	}
+	for _, f := range slices.Concat(pb.tests, pb.holders) {
 		if f.unread {
 			return "a base test file is unread (" + f.path + "): its conditions are not verified", nil
 		}
@@ -422,12 +461,12 @@ func pyReach(c Change, b, a *pyFile, pb *pyBase) (string, error) {
 					d, unread, err := pb.resolve(strings.Join(ch, "."))
 					if err != nil || unread != "" {
 						return "a module a condition reads is unread (" + unread + ")", err
-					}
-					for e, i := strings.Split(d, "."), 1; i <= len(e); i++ { // i == len(e): c read whole, getattr(c, …) (the security review)
-						if y := e[min(i, len(e)-1)]; slices.Contains(suffixes, strings.Join(e[:i], ".")) &&
-							(i == len(e) && via || i+1 < len(e) || i < len(e) && (rebound(y) || pyMoved(y, b, a))) {
-							return why(f, y), nil
-						}
+					} else if y := hit(d, via); y != "" {
+						return why(f, y), nil
+					} else if y, unread, err := pb.across(d, hit, func(y string) bool { return a.binds[y] != b.binds[y] }); err != nil || unread != "" {
+						return "a module a condition reads is unread (" + unread + ")", err
+					} else if y != "" {
+						return why(f, y), nil
 					}
 				}
 			}

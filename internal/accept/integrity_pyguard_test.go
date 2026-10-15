@@ -368,7 +368,7 @@ func TestPyGuardShadows(t *testing.T) {
 	for name, c := range map[string]guardCase{
 		"a pythonpath shadow":     {map[string]string{"src/money.py": "def add(a, b):\n    return a + b\n"}, nil, "src/money.py: an added module shadows the base module money.py"},
 		"__init__.py renamed out": {map[string]string{"tests/x.py": "X = 1\n"}, []string{"tests/__init__.py"}, "tests/test_requests.py: a test file's basedir moves"},
-		"a module beside an unrelated one (a false block, Opus #270 H1)": {map[string]string{"tests/utils.py": "X = 1\n"}, nil, "tests/utils.py: an added module shadows the base module app/utils.py"},
+		"a module beside an unrelated one (no unmodelled entry: Mythos #270 M6)": {map[string]string{"tests/utils.py": "X = 1\n"}, nil, ""},
 		// Opus #267 H2 (dotted suffixes), M3 (statements, not lines), L2 (onPath's clauses).
 		"H2 a namespace submodule shadow":               {map[string]string{"tests/lib/core.py": "def add(a, b):\n    return a + b\n"}, nil, "tests/lib/core.py: an added module shadows the base module lib/core.py"},
 		"H2 a third-party submodule":                    {map[string]string{"tests/google/protobuf.py": "X = 1\n"}, nil, "tests/google/protobuf.py: an added module shadows a module tests/test_requests.py imports"},
@@ -399,13 +399,13 @@ func TestPyGuardShadows(t *testing.T) {
 		"flag a .pyi beside a .py (never imported)":          {map[string]string{"money.pyi": "def add(a: int, b: int) -> int: ...\n"}, nil, ""},
 		"flag a .so beside a .py":                            {map[string]string{"money.cpython-312-x86_64-linux-gnu.so": "x"}, nil, "unverifiable: compiled Python, an extension module"},
 		// Opus #270: M3 (a basedir moved up), M4 (a judged helper's imports).
-		"o M3 an __init__.py added above a test package":            {map[string]string{"pkgm/__init__.py": ""}, nil, "pkgm/tests/test_m.py: a test file's basedir moves"},
-		"o M4 a test helper's import":                               {map[string]string{"deepdiff.py": "X = 1\n"}, nil, "deepdiff.py: an added module shadows a module tests/helpers4.py imports"},
-		"s2 a test package added (main's rule)":                     {map[string]string{"tests/newpkg/__init__.py": "", "tests/newpkg/test_n.py": "def test_n():\n    pass\n"}, nil, "tests/newpkg/__init__.py: an __init__.py added, removed or renamed in a test directory"},
-		"s2 a helper package's __init__.py removed (main's rule)":   {nil, []string{"tests/hp/__init__.py"}, "tests/hp/__init__.py: an __init__.py added, removed or renamed in a test directory"},
-		"s4 an import shadowed under a basedir the candidate makes": {map[string]string{"q3/w/__init__.py": "", "q3/w/test_x.py": "def test_x():\n    pass\n", "q3/yaml.py": "X = 1\n"}, nil, "q3/yaml.py: an added module shadows a module tests/test_requests.py imports"},
-		"s4 the floor under a basedir the candidate makes":          {map[string]string{"q2/w/__init__.py": "", "q2/w/test_x.py": "def test_x():\n    pass\n", "q2/utils.py": "X = 1\n"}, nil, "q2/utils.py: an added module shadows the base module app/utils.py"},
-		"L2 a module beside a test file":                            {map[string]string{"tests/helpers3.py": "X = 1\n"}, nil, "an added module shadows the base module lib3/helpers3.py"},
+		"o M3 an __init__.py added above a test package":                               {map[string]string{"pkgm/__init__.py": ""}, nil, "pkgm/tests/test_m.py: a test file's basedir moves"},
+		"o M4 a test helper's import":                                                  {map[string]string{"deepdiff.py": "X = 1\n"}, nil, "deepdiff.py: an added module shadows a module tests/helpers4.py imports"},
+		"s2 a test package added (main's rule)":                                        {map[string]string{"tests/newpkg/__init__.py": "", "tests/newpkg/test_n.py": "def test_n():\n    pass\n"}, nil, "tests/newpkg/__init__.py: an __init__.py added, removed or renamed in a test directory"},
+		"s2 a helper package's __init__.py removed (main's rule)":                      {nil, []string{"tests/hp/__init__.py"}, "tests/hp/__init__.py: an __init__.py added, removed or renamed in a test directory"},
+		"s4 an import shadowed under a basedir the candidate makes":                    {map[string]string{"q3/w/__init__.py": "", "q3/w/test_x.py": "def test_x():\n    pass\n", "q3/yaml.py": "X = 1\n"}, nil, "q3/yaml.py: an added module shadows a module tests/test_requests.py imports"},
+		"s4 under a basedir the candidate makes (no unmodelled entry: Mythos #270 M6)": {map[string]string{"q2/w/__init__.py": "", "q2/w/test_x.py": "def test_x():\n    pass\n", "q2/utils.py": "X = 1\n"}, nil, "q2/w/__init__.py: an __init__.py added"},
+		"L2 a module beside a test file":                                               {map[string]string{"tests/helpers3.py": "X = 1\n"}, nil, "an added module shadows the base module lib3/helpers3.py"},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
@@ -727,6 +727,86 @@ func TestPyGuardConditionBodies(t *testing.T) {
 		t.Errorf("m M5 the work bound: %q", whats(pyOwn(v.Blocks)))
 	}
 	maxWork = old
+}
+
+// P14c-2a-reach (Mythos #270 M2, M3, M4, r2 L4): a condition in an
+// application module a judged file imports; the closure across modules; a
+// third-party proxy; a container a method call fills.
+func TestPyGuardReach(t *testing.T) {
+	test := "import pytest\nfrom testing_utils import require_gpu\nfrom lmod3 import SLOW\nfrom django.conf import settings\nimport lmod4\nfrom lmod5 import FLAG5\n\n" +
+		"@require_gpu\n@pytest.mark.skipif(SLOW, reason='r')\n@pytest.mark.skipif(FLAG5, reason='r')\n@pytest.mark.skipif(settings.SKIP_SLOW, reason='r')\n@pytest.mark.skipif(lmod4.FLAGS['gpu'], reason='r')\ndef test_r():\n    pass\n"
+	util, lmod4 := "def detect():\n    return False\n", "def _detect():\n    return False\n\nFLAGS = {}\nFLAGS.update(gpu=_detect())\n"
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"cfg.py": "NO_GPU = False\n", "testing_utils.py": "import pytest\nimport cfg\nrequire_gpu = pytest.mark.skipif(cfg.NO_GPU, reason='g')\n",
+			"util.py": util, "lmod3.py": "from util import detect\nSLOW = detect()\n", "myproject/__init__.py": "", "myproject/settings.py": "SKIP_SLOW = False\n",
+			"lmod4.py": lmod4, "tests/test_r.py": test,
+			"lmod5.py": "from mid5 import flag5\nFLAG5 = flag5\n", "mid5.py": "from util5 import detect5\nflag5 = detect5()\n", "util5.py": "def detect5():\n    return False\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]guardCase{
+		"M2 a condition in an application module": {map[string]string{"cfg.py": "NO_GPU = 'x'\n"}, nil, "cfg.py: a skipif or xfail condition in testing_utils.py reads NO_GPU"},
+		"M3 the closure across modules":           {map[string]string{"util.py": strings.Replace(util, "return False", "return 'x'", 1)}, nil, "util.py: a skipif or xfail condition in tests/test_r.py reads detect"},
+		"M3 two modules away":                     {map[string]string{"util5.py": "def detect5():\n    return 'x'\n"}, nil, "util5.py: a skipif or xfail condition in tests/test_r.py reads detect5"},
+		"M3 an unrelated change passes":           {map[string]string{"util.py": util + "OTHER = 1\n"}, nil, ""},
+		"M4 a third-party proxy":                  {map[string]string{"myproject/settings.py": "SKIP_SLOW = 'x'\n"}, nil, "myproject/settings.py: a skipif or xfail condition in tests/test_r.py reads SKIP_SLOW"},
+		"r2 L4 a container a method call fills":   {map[string]string{"lmod4.py": strings.Replace(lmod4, "gpu=_detect()", "gpu='x'", 1)}, nil, "lmod4.py: a skipif or xfail condition in tests/test_r.py reads FLAGS"},
+	} {
+		v := f.guarded(t, c.files, c.gone...)
+		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
+			t.Errorf("%s: %q, want %q", name, whats(own), c.why)
+		}
+	}
+	// M1: sys.path entries the guard did not model; an unread one blocks every Python change.
+	for name, base := range map[string]map[string]string{
+		"M1 setup.cfg package_dir":                   {"setup.cfg": "[options]\npackage_dir =\n    =lib\n"},
+		"M1 setup.cfg packages.find where":           {"setup.cfg": "[options.packages.find]\nwhere = lib\n"},
+		"M1 pyproject package-dir":                   {"pyproject.toml": "[tool.setuptools]\npackage-dir = {\"\" = \"lib\"}\n"},
+		"M1 pyproject packages.find where":           {"pyproject.toml": "[tool.setuptools.packages.find]\nwhere = [\"lib\"]\n"},
+		"M1 a conftest's sys.path.insert":            {"conftest.py": "import sys\nsys.path.insert(0, 'lib')\n"},
+		"M1 a conftest's sys.path from its __file__": {"tests/conftest.py": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))\n"},
+	} {
+		base["lib/x.py"], base["tests/test_y.py"] = "X = 1\n", "import yaml\n\ndef test_y():\n    assert yaml\n"
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, map[string]string{"lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "lib/yaml.py: an added module shadows a module tests/test_y.py imports") {
+			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
+		}
+	}
+	src := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"pyproject.toml": "[project]\nname = 'x'\n", "src/mypkg/__init__.py": "", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := src.guarded(t, map[string]string{"src/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "src/yaml.py: an added module shadows a module tests/test_y.py imports") {
+		t.Errorf("M1 an editable src layout: %q, want blocked", whats(pyOwn(v.Blocks)))
+	}
+	for name, base := range map[string]map[string]string{
+		"M1 sys.path from a call":            {"conftest.py": "import sys\nimport helper\nsys.path.insert(0, helper.where())\n"},
+		"M1 setup.cfg package_dir a mapping": {"setup.cfg": "[options]\npackage_dir =\n    mypkg = lib/mypkg\n"},
+	} {
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, map[string]string{"money.py": baseFiles["money.py"] + "\n"}); !pyFinds(pyOwn(v.Blocks), "money.py: unverifiable: the base adds sys.path entries the guard does not read") {
+			t.Errorf("%s: %q, want unread", name, whats(pyOwn(v.Blocks)))
+		}
+	}
+	// M6: the floor applies when the base shows an unmodelled entry (a setup.py, PYTHONPATH).
+	for name, base := range map[string]map[string]string{
+		"M6 a setup.py": {"setup.py": "from setuptools import setup\nsetup()\n"},
+		"M6 PYTHONPATH": {"tox.ini": "[testenv]\nsetenv =\n    PYTHONPATH = app\n"},
+	} {
+		base["app/utils.py"] = "X = 1\n"
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, map[string]string{"tests/utils.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "tests/utils.py: an added module shadows the base module app/utils.py") {
+			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
+		}
+	}
 }
 
 // The controls: ordinary Python changes raise nothing of P14c-2a's but
