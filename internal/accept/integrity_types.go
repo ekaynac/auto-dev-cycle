@@ -249,11 +249,22 @@ func (t *tree) typer(r *run, dir string, pl [2]string) *typer {
 		// go builds -mod=vendor with a vendor/modules.txt (go 1.14 on): its
 		// packages are typed from vendor/ as own source, only the standard
 		// library from export data; it must agree with go.mod.
-		if blob := t.files[path.Join(root, "vendor/modules.txt")]; err == nil && blob != "" && f.Go != nil && version.Compare("go"+f.Go.Version, "go1.14") >= 0 {
+		// vendor/ only as the base has it: the gate may build it, or (GOFLAGS
+		// -mod=readonly, as the prepared image sets) the module cache.
+		vendor := path.Join(root, "vendor") + "/"
+		changed := slices.ContainsFunc(keys(r.files, r.cand), func(p string) bool { return strings.HasPrefix(p, vendor) && r.files[p] != r.cand[p] })
+		dir := slices.ContainsFunc(keys(t.files), func(p string) bool { return strings.HasPrefix(p, vendor) })
+		blob := t.files[vendor+"modules.txt"]
+		switch on := err == nil && f.Go != nil && version.Compare("go"+f.Go.Version, "go1.14") >= 0; {
+		case changed:
+			ty.why = "a file under vendor/ changed"
+		case on && blob != "":
 			b, why, err := r.file(blob)
 			if ty.vendor, ty.gomod, ty.gosum = vendorPkgs(f, string(b)), []byte("module adc.invalid/vendored\n"), nil; ty.vendor == nil {
 				ty.why = cmp.Or(why, errText(err), "vendor/modules.txt does not agree with go.mod")
 			}
+		case on && dir:
+			ty.why = "a vendor/ directory without vendor/modules.txt"
 		}
 	}
 	if first, _, _ := strings.Cut(ty.mod, "/"); ty.mod != "" && !strings.Contains(first, ".") && ty.why == "" {
@@ -282,8 +293,10 @@ func vendorPkgs(f *modfile.File, txt string) map[string]bool {
 			mod, ver = fs[1], fs[2]
 		case len(fs) >= 2 && fs[0] == "##" && strings.HasPrefix(fs[1], "explicit"):
 			explicit[mod] = ver
-		case len(fs) == 1 && mod != "" && fs[0] != "#":
+		case len(fs) == 1 && mod != "" && (fs[0] == mod || strings.HasPrefix(fs[0], mod+"/")):
 			pkgs[fs[0]] = true
+		case len(fs) == 1: // a package outside its module (fmt, an own one)
+			return nil
 		}
 	}
 	for _, r := range f.Require {
@@ -300,7 +313,7 @@ func vendorPkgs(f *modfile.File, txt string) map[string]bool {
 
 // local is the directory of an own (or vendored) package's import path, if one.
 func (ty *typer) local(p string) (string, bool) {
-	if ty.vendor[p] {
+	if first, _, _ := strings.Cut(p, "/"); ty.vendor[p] && strings.Contains(first, ".") { // never the standard library's
 		return path.Join(ty.root, "vendor", p), true
 	}
 	rel, ok := strings.CutPrefix(p, ty.mod)

@@ -536,11 +536,10 @@ func TestIntegrityBounds(t *testing.T) {
 func TestGoOn(t *testing.T) {
 	r := &run{ctx: context.Background()}
 	on := func(p, src string) []int {
-		f, err := parser.ParseFile(token.NewFileSet(), filepath.Base(p), src, parser.ParseComments)
-		if err != nil {
+		if _, err := parser.ParseFile(token.NewFileSet(), filepath.Base(p), src, parser.ParseComments); err != nil {
 			t.Fatal(err)
 		}
-		o, _, _, err := r.goOn(p, f)
+		o, _, _, err := r.goOn(p, []byte(src))
 		if err != nil {
 			t.Fatal(err)
 		}

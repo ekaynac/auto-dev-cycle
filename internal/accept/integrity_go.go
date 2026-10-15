@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"bytes"
 	"cmp"
 	"go/ast"
 	"go/build"
@@ -120,22 +121,18 @@ func goByName(p string) bool {
 
 // goOn is, per gate platform, whether go builds p: 2 surely, 1 by unmodelled
 // tags (tool tags, cgo, race, custom), 0 never; nil past the work bound.
-func (r *run) goOn(p string, f *ast.File) (on []int, exprs []constraint.Expr, cons string, err error) {
+func (r *run) goOn(p string, src []byte) (on []int, exprs []constraint.Expr, cons string, err error) {
 	on = make([]int, len(platforms))
 	var text strings.Builder
-	seen, goBuild := map[string]bool{}, slices.ContainsFunc(f.Comments, func(cg *ast.CommentGroup) bool {
-		return slices.ContainsFunc(cg.List, func(c *ast.Comment) bool { return c.Pos() < f.Package && constraint.IsGoBuild(c.Text) })
-	})
-	for _, cg := range f.Comments {
-		for _, c := range cg.List { // a //go:build line, as go reads it, makes +build lines ignored
-			if c.Pos() < f.Package && (constraint.IsGoBuild(c.Text) || !goBuild && constraint.IsPlusBuild(c.Text)) && !seen[c.Text] {
-				x, err := constraint.Parse(c.Text)
-				if err != nil {
-					x = &constraint.TagExpr{Tag: "unparsed"} // a tag the guard does not model
-				}
-				seen[c.Text], exprs = true, append(exprs, x)
-				text.WriteString(c.Text + "\n")
+	seen := map[string]bool{}
+	for _, l := range header(src) {
+		if !seen[l] {
+			x, err := constraint.Parse(l)
+			if err != nil {
+				x = &constraint.TagExpr{Tag: "unparsed"} // a tag the guard does not model
 			}
+			seen[l], exprs = true, append(exprs, x)
+			text.WriteString(l + "\n")
 		}
 	}
 	for i, pl := range platforms {
@@ -148,6 +145,57 @@ func (r *run) goOn(p string, f *ast.File) (on []int, exprs []constraint.Expr, co
 		}
 	}
 	return on, exprs, text.String(), nil
+}
+
+// header is the constraint lines go reads in src, by go/build's rule: its
+// //go:build line (two: unparsed), outside a /* */ comment and before the
+// first code; else its +build lines before the last blank line of the
+// leading // comments.
+func header(src []byte) []string {
+	var goBuild, plus []string
+	end, ended, inStar, plusEnd := 0, false, false, []int{}
+	src = bytes.TrimPrefix(src, []byte("\uFEFF"))
+Lines:
+	for p := src; len(p) > 0; {
+		var line []byte
+		line, p, _ = bytes.Cut(p, []byte("\n"))
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 && !ended {
+			end = len(src) - len(p)
+			continue
+		}
+		ended = ended || !bytes.HasPrefix(line, []byte("//"))
+		if rest, ok := strings.CutPrefix(string(line), "//go:build"); ok && !inStar && (rest == "" || strings.TrimSpace(rest) != rest) {
+			goBuild = append(goBuild, string(line))
+		} else if !ended && constraint.IsPlusBuild(string(line)) {
+			plus, plusEnd = append(plus, string(line)), append(plusEnd, len(src)-len(p))
+		}
+		for len(line) > 0 { // past the comments go reads no more
+			switch i := bytes.Index(line, []byte("*/")); {
+			case inStar && i < 0, !inStar && bytes.HasPrefix(line, []byte("//")):
+				continue Lines
+			case inStar:
+				inStar, line = false, bytes.TrimSpace(line[i+2:])
+			case bytes.HasPrefix(line, []byte("/*")):
+				inStar, line = true, bytes.TrimSpace(line[2:])
+			default:
+				break Lines
+			}
+		}
+	}
+	switch {
+	case len(goBuild) > 1:
+		return []string{"//go:build unparsed"} // go fails on it
+	case len(goBuild) == 1:
+		return goBuild
+	}
+	var read []string
+	for i, l := range plus {
+		if plusEnd[i] <= end {
+			read = append(read, l)
+		}
+	}
+	return read
 }
 
 // holds is 2 when exprs hold on pl for every assignment of the unmodelled
@@ -221,7 +269,7 @@ func (r *run) analyse(dir string, srcs map[string][]byte, fa *pkgFacts) error {
 			fa.bad[p] = "not parsed: " + err.Error()
 			continue
 		}
-		on, exprs, cons, err := r.goOn(p, f)
+		on, exprs, cons, err := r.goOn(p, srcs[p])
 		if err != nil {
 			return err
 		} else if on == nil {
