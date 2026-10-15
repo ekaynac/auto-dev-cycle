@@ -161,6 +161,58 @@ func pyDepthEnd(t []ptok, open int) int {
 	return -1
 }
 
+// starCheck: why package q's star imports are not inert (P14c-2a-star), an
+// allowlist. Each is exactly "from .x import *" at module level, x.py in
+// q's own directory is read, plain (pyInert), imports nothing and binds no
+// __all__, and no form CPython's FileFinder may load before it, or in its
+// place, exists: a package x/__init__.*, an extension x.*.so or x.*.pyd,
+// x.pyc, or __pycache__/x.*. A source imports nothing, so it is a leaf.
+func (pb *pyBase) starCheck(q string, f *pyBaseFile) (string, error) {
+	if f.badStar {
+		return "has a star import other than from .x import * at module level", nil
+	}
+	tree, d := pb.r.files, path.Dir(q)
+	if pb.tree != nil {
+		tree = pb.tree
+	}
+	for _, x := range f.starSrc {
+		if src := d + "/" + x + ".py"; tree[src] == "" || slices.ContainsFunc(pb.paths, func(p string) bool { return pyStarForm(p, d, x) && p != src && path.Ext(p) != ".pyi" }) {
+			return "star-imports ." + x + ", which is not one plain module file", nil
+		} else if fs, err := pb.file(src); err != nil {
+			return "", err
+		} else if !fs.plain || len(fs.mods) > 0 || fs.locals["__all__"] {
+			return "star-imports ." + x + ", which may run code or bind __path__", nil
+		}
+	}
+	return "", nil
+}
+
+// starCandidate: why the candidate's package __init__.py q has a star import
+// that is not inert, judged on the candidate's files (P14c-2a-star).
+func (pb *pyBase) starCandidate(q string) (string, error) {
+	if pb.cand == nil {
+		pb.cand = &pyBase{r: pb.r, tree: pb.r.cand, files: map[string]*pyBaseFile{}, paths: slices.Sorted(maps.Keys(pb.r.cand))}
+	}
+	f, err := pb.cand.file(q)
+	if err != nil {
+		return "", err
+	} else if f.unread {
+		return "a package __init__.py the guard cannot read", nil
+	}
+	why, err := pb.cand.starCheck(q, f)
+	if err != nil || why == "" {
+		return "", err
+	}
+	return "a package __init__.py that " + why, nil
+}
+
+// pyStarForm: path p is a form of module x in directory d that CPython may
+// load: x.py, a package x/__init__.*, x.<anything> (extensions, .pyc), or
+// __pycache__/x.*.
+func pyStarForm(p, d, x string) bool {
+	return slices.ContainsFunc([]string{d + "/" + x + ".", d + "/" + x + "/__init__.", d + "/__pycache__/" + x + "."}, func(pre string) bool { return strings.HasPrefix(p, pre) })
+}
+
 // prefix is how many of parts name the base module Python imports, at most
 // top: main's longest module prefix, or unread (strictly additive, Astra
 // #275 r3). Unread: a shorter prefix that is a plain module, or a package
@@ -193,6 +245,10 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 				return 0, "", err
 			} else if !f.plain {
 				return 0, "the package " + name + " is not plain (its submodules may resolve elsewhere)", nil // Opus #275 M1, Astra #275 H6
+			} else if why, err := pb.starCheck(q, f); err != nil {
+				return 0, "", err
+			} else if why != "" {
+				return 0, "the package " + name + " " + why, nil // P14c-2a-star
 			} else if k < i && (f.locals[parts[k]] || f.from[parts[k]] != "" && f.from[parts[k]] != name+"."+parts[k]) {
 				return 0, "the package " + name + " binds " + parts[k] + " beside its submodule", nil
 			}

@@ -136,6 +136,16 @@ func (r *run) python(changes []Change) error {
 		} else if why != "" {
 			add(&r.blocks, c.Dst, why)
 		}
+		if i := slices.IndexFunc(pb.starSrcs, func(s [2]string) bool { return pyStarForm(c.Src, s[0], s[1]) || pyStarForm(c.Dst, s[0], s[1]) }); i >= 0 {
+			add(&r.blocks, c.Dst, "a star source of "+pb.starSrcs[i][0]+" changed (its exports may move the package's submodules)") // P14c-2a-star
+		}
+		if dst && path.Base(c.Dst) == "__init__.py" { // the candidate's own star imports, at token level (P14c-2a-star)
+			if why, err := pb.starCandidate(c.Dst); err != nil {
+				return err
+			} else if why != "" {
+				add(&r.blocks, c.Dst, why)
+			}
+		}
 		b, ok, err := r.pyScan(src && path.Ext(c.Src) == ".py", c.Src, c.SrcBlob, judged)
 		a, ok2, err2 := r.pyScan(dst && path.Ext(c.Dst) == ".py", c.Dst, c.DstBlob, judged)
 		if err = cmp.Or(err, err2); err != nil {
