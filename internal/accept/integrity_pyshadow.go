@@ -32,6 +32,7 @@ type pyBase struct {
 	byName       map[string][]string    // a name, to the base modules binding it (Opus #272 M3)
 	holderUnread string                 // a module a judged file imports, unread on the way to its holder (the review of 1ceb79c)
 	sysUnread    bool                   // a judged file changes sys.path in a way the guard does not read (#270 M1)
+	starOf       map[string]string      // a module a package __init__.py star-imports, to the package (Astra #277 H1)
 
 	// entries are main's (the root, pythonpath, the basedirs) and resolve; extra are the roots an install
 	// adds (pyInstall), which name modules for pyShadow only (Opus #275 H2)
@@ -147,6 +148,19 @@ func (pb *pyBase) load() error {
 		}
 		for _, n := range pyModNames(q, pb.shadowEntries, false) { // a name an added root gives a second file is unread (Opus #275 H2)
 			pb.shadowMods[n], pb.alts[n] = cmp.Or(pb.shadowMods[n], q), pb.alts[n]+1
+		}
+	}
+	pb.starOf = map[string]string{}
+	for _, q := range pb.paths { // star sources: a change to one may move a package's submodules (Astra #277 H1)
+		if path.Base(q) != "__init__.py" {
+			continue
+		} else if f, err := pb.file(q); err != nil {
+			pb.err = err
+			return err
+		} else {
+			for _, s := range f.stars {
+				pb.starOf[s] = cmp.Or(pb.starOf[s], path.Dir(q))
+			}
 		}
 	}
 	for _, f := range slices.Clone(pb.tests) { // the application modules a judged file imports, one hop (Mythos #270 M2)

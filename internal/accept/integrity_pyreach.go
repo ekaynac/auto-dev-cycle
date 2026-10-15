@@ -163,16 +163,18 @@ func pyDepthEnd(t []ptok, open int) int {
 
 // starDunder is the first base module f star-imports that may run code or
 // bind a dunder name in f (Astra #275 r2 H6b, Opus #277 H2): one not plain
-// (pyInert), or importing anything (an import runs its module). A plain
-// module binds no dunder but __all__ and __version__, so its star cannot
-// bind __path__. A module outside the base: resolve's unknown star rule.
+// (pyInert), importing anything (an import runs its module), or binding
+// __all__ (a package's exports its implicit __path__, Astra #277 H1).
+// Without __all__, a star binds no name starting with "_". A module
+// outside the base: resolve's unknown star rule. A change to a star
+// source blocks (pyBase.starOf).
 func (pb *pyBase) starDunder(f *pyBaseFile) (string, error) {
 	for _, s := range f.stars {
 		if pb.mods[s] == "" {
 			continue
 		} else if fs, err := pb.file(pb.mods[s]); err != nil {
 			return "", err
-		} else if !fs.plain || len(fs.mods) > 0 {
+		} else if !fs.plain || len(fs.mods) > 0 || fs.locals["__all__"] {
 			return s, nil
 		}
 	}

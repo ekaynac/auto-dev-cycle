@@ -136,6 +136,12 @@ func (r *run) python(changes []Change) error {
 		} else if why != "" {
 			add(&r.blocks, c.Dst, why)
 		}
+		for _, n := range slices.Concat(pyModNames(c.Src, pb.shadowEntries, false), pyModNames(c.Dst, pb.shadowEntries, false)) {
+			if pkg := pb.starOf[n]; pkg != "" { // added, changed, removed or renamed (Astra #277 H1)
+				add(&r.blocks, c.Dst, "a star source of "+strings.ReplaceAll(pkg, "/", ".")+" changed (its exports may move the package's submodules)")
+				break
+			}
+		}
 		b, ok, err := r.pyScan(src && path.Ext(c.Src) == ".py", c.Src, c.SrcBlob, judged)
 		a, ok2, err2 := r.pyScan(dst && path.Ext(c.Dst) == ".py", c.Dst, c.DstBlob, judged)
 		if err = cmp.Or(err, err2); err != nil {
