@@ -18,18 +18,19 @@ import (
 // (Mythos #267 L3): its sys.path entries, its modules' dotted names, its
 // files read on demand.
 type pyBase struct {
-	r         *run
-	entries   []string
-	basedirs  []string // the test files' basedirs below the root, in either tree
-	paths     []string // the base's paths, sorted
-	read      bool
-	err       error
-	mods      map[string]string      // a base module's dotted name, to its path
-	files     map[string]*pyBaseFile // the base files read, by path
-	tests     []*pyBaseFile          // the judged ones (Opus #270 H2, M4)
-	holders   []*pyBaseFile          // the application modules they import, one hop (Mythos #270 M2)
-	byName    map[string][]string    // a name, to the base modules binding it (Opus #272 M3)
-	sysUnread bool                   // a judged file changes sys.path in a way the guard does not read (#270 M1)
+	r            *run
+	entries      []string
+	basedirs     []string // the test files' basedirs below the root, in either tree
+	paths        []string // the base's paths, sorted
+	read         bool
+	err          error
+	mods         map[string]string      // a base module's dotted name, to its path
+	files        map[string]*pyBaseFile // the base files read, by path
+	tests        []*pyBaseFile          // the judged ones (Opus #270 H2, M4)
+	holders      []*pyBaseFile          // the application modules they import, one hop (Mythos #270 M2)
+	byName       map[string][]string    // a name, to the base modules binding it (Opus #272 M3)
+	holderUnread string                 // a module a judged file imports, unread on the way to its holder (the review of 1ceb79c)
+	sysUnread    bool                   // a judged file changes sys.path in a way the guard does not read (#270 M1)
 }
 
 // pyBaseFile is what a base Python file imports, and its conditions.
@@ -137,7 +138,8 @@ func (pb *pyBase) load() error {
 	}
 	for _, f := range slices.Clone(pb.tests) { // the application modules a judged file imports, one hop (Mythos #270 M2)
 		for _, m := range f.mods {
-			r, _, err := pb.resolve(m) // and the module a re-export lands in (Opus #272 M1)
+			r, unread, err := pb.resolve(m) // and the module a re-export lands in (Opus #272 M1); unread: no holder known
+			pb.holderUnread = cmp.Or(pb.holderUnread, unread)
 			for _, d := range []string{m, r} {
 				for ; d != "" && pb.mods[d] == ""; d = d[:max(strings.LastIndex(d, "."), 0)] {
 				}
@@ -432,6 +434,9 @@ func pyReach(c Change, b, a *pyFile, pb *pyBase) (string, error) {
 			}
 		}
 		return ""
+	}
+	if pb.holderUnread != "" {
+		return "a module a condition reads is unread (" + pb.holderUnread + ")", nil
 	}
 	for _, f := range slices.Concat(pb.tests, pb.holders) {
 		if f.unread {

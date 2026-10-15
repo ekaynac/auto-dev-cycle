@@ -20,7 +20,8 @@ var (
 	pyBackend    = regexp.MustCompile(`(?m)^[ \t]*build-backend[ \t]*=[ \t]*["']setuptools[."']`)
 	pyPkgDir     = regexp.MustCompile(`^\{\s*""\s*=\s*"([^"\\]+)"\s*\}$`) // package-dir = {"" = "src"}
 	pySysNames   = strings.Fields("sys path insert append os join dirname abspath realpath __file__ str Path parent resolve")
-	pyProxyFree  = strings.Fields("pytest sys os platform") // heads that proxy no project module (Opus #272 M3)
+	pySysAttrs   = strings.Fields("argv platform version_info version implementation executable exit stdout stderr stdin maxsize byteorder flags " +
+		"getrecursionlimit setrecursionlimit exc_info prefix base_prefix float_info hexversion getdefaultencoding getfilesystemencoding") // sys attributes read as no sys.path change
 )
 
 // pyInstall reads the entries an install adds (Mythos #270 M1), as an
@@ -81,8 +82,8 @@ func pySysUse(q string, t []ptok) (entries []string, ok bool) {
 	}
 	for i, k := range t {
 		switch {
-		case slices.Contains([]string{"addsitedir", "meta_path", "path_hooks", "path_importer_cache"}, k.text):
-			return nil, false
+		case slices.Contains([]string{"addsitedir", "meta_path", "path_hooks", "path_importer_cache"}, k.text) || pyStr(k) == "sys":
+			return nil, false // importlib.import_module('sys') too (the review of 1ceb79c)
 		case k.text != "sys" || k.kind != 'n' || i > 0 && t[i-1].text == ".":
 		case t[0].text == "import":
 		case i+2 >= len(t) || t[i+1].text != ".":
@@ -93,6 +94,8 @@ func pySysUse(q string, t []ptok) (entries []string, ok bool) {
 				return nil, false
 			}
 			entries = append(entries, es...)
+		case !slices.Contains(pySysAttrs, t[i+2].text):
+			return nil, false // sys.__dict__['path'] (the review of 1ceb79c)
 		}
 	}
 	return entries, true
@@ -157,10 +160,8 @@ func (pb *pyBase) across(d string, hit func(string, bool) string, rebound func(s
 		for ; i >= 1 && pb.mods[strings.Join(parts[:i], ".")] == ""; i-- {
 		}
 		if i < 1 {
-			for _, n := range parts[1:] {
-				if slices.Contains(pyProxyFree, parts[0]) {
-					break
-				} else if rebound(n) {
+			for _, n := range parts[1:] { // every head: a value may be parked on pytest or os (the review of 1ceb79c)
+				if rebound(n) {
 					return n, "", nil
 				}
 				mods, why, err := pb.binding(n)
