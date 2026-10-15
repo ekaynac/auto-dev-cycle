@@ -88,6 +88,28 @@ func TestIntegrityRound3(t *testing.T) {
 		}
 	}
 
+	// The flag on 9b72e12 (decision A): os.Args passed to any callee but a
+	// short read-only allowlist is written, a reflect.Copy or an unchanged
+	// base helper included.
+	fill := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"util/fill.go": "package util\n\nfunc Fill(s []string) { s[0] = \"-h\" }\n"})
+		plain(t, src, "add", "--all")
+	})
+	refl := "import \"reflect\"\n\nfunc %s { reflect.Copy(reflect.ValueOf(os.Args), reflect.ValueOf([]string{\"-h\"})) }\n"
+	util := "import \"example.com/m/util\"\n\nfunc %s { util.Fill(os.Args) }\n"
+	for name, c := range map[string]struct{ src, why string }{
+		"reflect.Copy(os.Args) from init":     {argsGo + strings.Replace(refl, "%s", "init()", 1), "a write it cannot prove safe (os.Args)"},
+		"reflect.Copy(os.Args) in reset":      {argsGo + strings.Replace(refl, "%s", "reset()", 1), "os.Args assigned in reset"},
+		"util.Fill(os.Args) from init":        {argsGo + strings.Replace(util, "%s", "init()", 1), "a write it cannot prove safe (os.Args)"},
+		"util.Fill(os.Args) in reset":         {argsGo + strings.Replace(util, "%s", "reset()", 1), "os.Args assigned in reset"},
+		"flag.CommandLine.Parse(os.Args[1:])": {argsGo + "import \"flag\"\n\nfunc parse() { _ = flag.CommandLine.Parse(os.Args[1:]) }\n", ""},
+	} {
+		if v := fill.guarded(t, map[string]string{"pkg/args.go": c.src}); c.why == "" && !v.Accepted() || c.why != "" && !finds(v.Blocks, c.why) {
+			t.Errorf("%s: %q", name, whats(v.Blocks))
+		}
+	}
+
 	// L1's limit: another package's function (unresolved in the text layer)
 	// is not a value; only the in-place writers count.
 	if v := f.guarded(t, map[string]string{"pkg/args.go": argsGo + "import \"strings\"\n\nfunc line() string { return strings.Join(os.Args, \" \") }\n"}); !v.Accepted() {
@@ -131,8 +153,8 @@ func TestIntegrityRound3(t *testing.T) {
 	if v := f.guarded(t, map[string]string{"pkg/args.go": argsGo + "import \"flag\"\n\nfunc parse() {\n\tfs := flag.NewFlagSet(\"x\", flag.ContinueOnError)\n\t_ = fs.Parse(os.Args[1:])\n}\n"}); !v.Accepted() {
 		t.Errorf("M2 fs.Parse(os.Args[1:]): %q", whats(v.Blocks))
 	}
-	// H1: SWIG turns cgo on by itself; b924eec's list blocks it without cgo.
-	if v := f.guarded(t, map[string]string{"help/x.swig": "%module x\n%{\n__attribute__((constructor)) static void forge(void) {}\n%}\n"}); !finds(v.Blocks, "SWIG source") {
+	// H1: SWIG turns cgo on by itself: the .swig file is a non-Go file in a repository that uses cgo.
+	if v := f.guarded(t, map[string]string{"help/x.swig": "%module x\n%{\n__attribute__((constructor)) static void forge(void) {}\n%}\n"}); !finds(v.Blocks, "uses cgo") {
 		t.Errorf("H1 a .swig file without cgo: %q", whats(v.Blocks))
 	}
 }
