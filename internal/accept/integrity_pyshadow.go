@@ -18,13 +18,14 @@ import (
 // (Mythos #267 L3): its sys.path entries, its modules' dotted names, its
 // files read on demand.
 type pyBase struct {
-	r       *run
-	entries []string
-	read    bool
-	err     error
-	mods    map[string]string      // a base module's dotted name, to its path
-	files   map[string]*pyBaseFile // the base files read, by path
-	tests   []*pyBaseFile          // the judged ones (Opus #270 H2, M4)
+	r        *run
+	entries  []string
+	basedirs []string // the test files' basedirs below the root, in either tree
+	read     bool
+	err      error
+	mods     map[string]string      // a base module's dotted name, to its path
+	files    map[string]*pyBaseFile // the base files read, by path
+	tests    []*pyBaseFile          // the judged ones (Opus #270 H2, M4)
 }
 
 // pyBaseFile is what a base Python file imports, and its conditions.
@@ -41,17 +42,19 @@ type pyBaseFile struct {
 // pyEntries are the sys.path entries the tests import from (Mythos #267
 // r2 M1): the root, each base pythonpath entry, and each test file's
 // basedir, in the base and in the candidate (the security review).
-func (r *run) pyEntries(paths []string) []string {
-	entries := append([]string{"."}, paths...)
+func (r *run) pyEntries(paths []string) (entries, basedirs []string) {
 	for _, tree := range []map[string]string{r.files, r.cand} {
 		for q := range tree {
-			if pyTested(q) {
-				entries = append(entries, pyBasedir(tree, q))
+			if d := pyBasedir(tree, q); pyTested(q) && d != "." {
+				basedirs = append(basedirs, d)
 			}
 		}
 	}
+	slices.Sort(basedirs)
+	basedirs = slices.Compact(basedirs)
+	entries = slices.Concat([]string{"."}, paths, basedirs)
 	slices.Sort(entries)
-	return slices.Compact(entries)
+	return slices.Compact(entries), basedirs
 }
 
 // pyBasedir is test file q's basedir in tree: its first directory up with
@@ -233,7 +236,9 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 // imports (Opus #270 H2): pkg.PSLOW2, pkg/__init__.py holding from .conf
 // import REAL as PSLOW2, is pkg.conf.REAL. Unread: the module's path.
 func (pb *pyBase) resolve(d string) (string, string, error) {
-	for range 16 {
+	seen := map[string]bool{}
+	for !seen[d] && len(seen) < 16 { // a cycle or over 16 steps: unread (the security review of 9e748fc)
+		seen[d] = true
 		parts, next := strings.Split(d, "."), d
 		for i := len(parts) - 1; i >= 1; i-- { // the longest module prefix
 			if q := pb.mods[strings.Join(parts[:i], ".")]; q != "" {
@@ -251,23 +256,27 @@ func (pb *pyBase) resolve(d string) (string, string, error) {
 			}
 		}
 		if next == d {
-			break
+			return d, "", nil
 		}
 		d = next
 	}
-	return d, "", nil
+	return d, "a cycle or over 16 steps: " + d, nil
 }
 
 // pyShadow is why change c may shadow a module the tests import, or "":
 // a module added under a sys.path entry whose dotted name (pyModNames) is
 // a base module's, or one a base judged file imports or a prefix of it (a
-// third-party one too); in a judged file, a base module's in another
-// directory by its last name too (main's #266 rule, a floor: Opus #270
-// H1). Unread blocks.
+// third-party one too); in a judged file or under a test basedir, a base
+// module's in another directory by its last name too (main's #266 rule, a
+// floor: Opus #270 H1); or main's __init__.py rule. Unread blocks.
 func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
-	if c.Status == "M" || c.Status == "D" || path.Ext(c.Dst) != ".py" || pyTested(c.Dst) {
+	switch { // main's #266 rule, a floor beside the basedir rule (the security review of 9e748fc)
+	case path.Base(c.Src) == "__init__.py" && (c.Status == "D" || c.Src != c.Dst) && r.pyTestDir(c.Src) || judged && path.Base(c.Dst) == "__init__.py" && c.Status != "M" && c.Status != "D":
+		return "an __init__.py added, removed or renamed in a test directory (the basedir moves)", nil
+	case c.Status == "M" || c.Status == "D" || path.Ext(c.Dst) != ".py" || pyTested(c.Dst):
 		return "", nil
-	} else if err := pb.load(); err != nil {
+	}
+	if err := pb.load(); err != nil {
 		return "", err
 	}
 	names := pyModNames(c.Dst, pb.entries, judged)
@@ -280,8 +289,9 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 		m := strings.TrimSuffix(strings.TrimSuffix(p, ".py"), "/__init__")
 		return path.Dir(m), path.Base(m)
 	}
+	floor := judged || slices.ContainsFunc(pb.basedirs, func(e string) bool { _, ok := pyRel(c.Dst, e); return ok }) // under a test basedir too
 	for _, q := range slices.Sorted(maps.Keys(pb.r.files)) {
-		if d, m := split(c.Dst); judged && path.Ext(q) == ".py" {
+		if d, m := split(c.Dst); floor && path.Ext(q) == ".py" {
 			if qd, qm := split(q); qm == m && qd != d {
 				return "an added module shadows the base module " + q, nil
 			}

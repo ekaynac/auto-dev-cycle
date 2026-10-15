@@ -75,7 +75,8 @@ func (r *run) python(changes []Change) error {
 	if err != nil {
 		return err
 	}
-	pb := &pyBase{r: r, entries: r.pyEntries(paths)}
+	pb := &pyBase{r: r}
+	pb.entries, pb.basedirs = r.pyEntries(paths)
 	for _, q := range slices.Sorted(maps.Keys(r.files)) { // an __init__.py added, removed or renamed (Opus #270 M3)
 		if pyTested(q) && r.cand[q] != "" && pyBasedir(r.files, q) != pyBasedir(r.cand, q) {
 			add(&r.blocks, q, "a test file's basedir moves (an __init__.py added, removed or renamed)")
@@ -373,8 +374,8 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 				find(slices.Concat(t, l.inner), "code run at import in an f-string field ("+ptext(t)+")", false)
 			}
 		}
-		if i := slices.IndexFunc(code, func(k ptok) bool { return slices.Contains(pyImportPath, k.text) }); i >= 0 && path.Base(p) == "__init__.py" {
-			importPath(t, code[i].text) // any mention in a package's __init__.py (Opus #270 L2)
+		if i := slices.IndexFunc(code, func(k ptok) bool { return slices.Contains(pyImportPath, k.text) }); i >= 0 {
+			importPath(t, code[i].text) // any mention, in every file: a plain module may change a package's (Opus #270 L2, the security review of 9e748fc)
 		}
 		if line := slices.Concat(t, l.inner); pySkipString(line, len(t), pure, aliases) { // in every file (Opus #267 H1)
 			if f := fa.finds["cond "+fmt.Sprint(t)]; f != nil {

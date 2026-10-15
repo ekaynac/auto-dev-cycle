@@ -361,7 +361,7 @@ func TestPyGuardShadows(t *testing.T) {
 			"src/nsp/core.py": "X = 1\n", "src/mypkg/__init__.py": "", "lib3/utils3.py": "X = 1\n",
 			"src/nsp/deep/core.py": "X = 1\n", "pkgr/__init__.py": "", "pkgr/tests/__init__.py": "", "pkgr/tests/test_r.py": "from .. import core\n\ndef test_r():\n    assert core\n",
 			"pkgz/__init__.py": "", "pkgz/tests/__init__.py": "", "pkgz/tests/test_z.py": "def test_z():\n    pass\n",
-			"pkgm/tests/__init__.py": "", "pkgm/tests/test_m.py": "def test_m():\n    pass\n", "tests/helpers4.py": "from deepdiff import DeepDiff\n"})
+			"pkgm/tests/__init__.py": "", "pkgm/tests/test_m.py": "def test_m():\n    pass\n", "tests/hp/__init__.py": "", "tests/hp/h.py": "X = 1\n", "tests/helpers4.py": "from deepdiff import DeepDiff\n"})
 		plain(t, src, "add", "--all")
 		plain(t, src, "rm", "-q", "--cached", "conftest.py") // no root conftest: the root's own clause (Opus #267 L2)
 	})
@@ -399,9 +399,13 @@ func TestPyGuardShadows(t *testing.T) {
 		"flag a .pyi beside a .py (never imported)":          {map[string]string{"money.pyi": "def add(a: int, b: int) -> int: ...\n"}, nil, ""},
 		"flag a .so beside a .py":                            {map[string]string{"money.cpython-312-x86_64-linux-gnu.so": "x"}, nil, "unverifiable: compiled Python, an extension module"},
 		// Opus #270: M3 (a basedir moved up), M4 (a judged helper's imports).
-		"o M3 an __init__.py added above a test package": {map[string]string{"pkgm/__init__.py": ""}, nil, "pkgm/tests/test_m.py: a test file's basedir moves"},
-		"o M4 a test helper's import":                    {map[string]string{"deepdiff.py": "X = 1\n"}, nil, "deepdiff.py: an added module shadows a module tests/helpers4.py imports"},
-		"L2 a module beside a test file":                 {map[string]string{"tests/helpers3.py": "X = 1\n"}, nil, "an added module shadows the base module lib3/helpers3.py"},
+		"o M3 an __init__.py added above a test package":            {map[string]string{"pkgm/__init__.py": ""}, nil, "pkgm/tests/test_m.py: a test file's basedir moves"},
+		"o M4 a test helper's import":                               {map[string]string{"deepdiff.py": "X = 1\n"}, nil, "deepdiff.py: an added module shadows a module tests/helpers4.py imports"},
+		"s2 a test package added (main's rule)":                     {map[string]string{"tests/newpkg/__init__.py": "", "tests/newpkg/test_n.py": "def test_n():\n    pass\n"}, nil, "tests/newpkg/__init__.py: an __init__.py added, removed or renamed in a test directory"},
+		"s2 a helper package's __init__.py removed (main's rule)":   {nil, []string{"tests/hp/__init__.py"}, "tests/hp/__init__.py: an __init__.py added, removed or renamed in a test directory"},
+		"s4 an import shadowed under a basedir the candidate makes": {map[string]string{"q3/w/__init__.py": "", "q3/w/test_x.py": "def test_x():\n    pass\n", "q3/yaml.py": "X = 1\n"}, nil, "q3/yaml.py: an added module shadows a module tests/test_requests.py imports"},
+		"s4 the floor under a basedir the candidate makes":          {map[string]string{"q2/w/__init__.py": "", "q2/w/test_x.py": "def test_x():\n    pass\n", "q2/utils.py": "X = 1\n"}, nil, "q2/utils.py: an added module shadows the base module app/utils.py"},
+		"L2 a module beside a test file":                            {map[string]string{"tests/helpers3.py": "X = 1\n"}, nil, "an added module shadows the base module lib3/helpers3.py"},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
@@ -503,23 +507,33 @@ func TestPyGuardConditionReach(t *testing.T) {
 		plain(t, src, "add", "--all")
 	})
 	for name, c := range map[string]guardCase{
-		"H1 an imported name rebound in the test":    {map[string]string{"tests/test_money.py": strings.Replace(test, "from money import add, FAST\n", "from money import add, FAST\nFAST = 'x'\n", 1)}, nil, "tests/test_money.py: unverifiable: a skipif or xfail condition"},
-		"H4 only money.py rebinds FAST":              {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = 'x'\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads FAST"},
-		"H4 only money.py rebinds SLOW":              {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = 'x'\nFAST = False\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads SLOW"},
-		"r2 M2 global rebinds SLOW":                  {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\n\ndef _f():\n    global SLOW\n    SLOW = 'x'\n\n_f()\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads SLOW"},
-		"r2 M2 __path__ by a call":                   {map[string]string{"lib/__init__.py": "__path__.insert(0, 'lib/alt')\n", "lib/alt/core.py": "def add(a, b):\n    return a + b\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
-		"o M2 a case capture":                        {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\nmatch 1:\n    case SLOW:\n        pass\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads SLOW"},
-		"o M2 an added star import":                  {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\nfrom other import *\n", "other.py": "FAST = 'x'\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads FAST"},
-		"o L2 (__path__).insert":                     {map[string]string{"lib/__init__.py": "(__path__).insert(0, 'lib/alt')\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
-		"o L2 del __path__[:]":                       {map[string]string{"lib/__init__.py": "del __path__[:]\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
-		"H3 __path__ in an application package":      {map[string]string{"lib/__init__.py": "__path__ = ['lib/alt']\n", "lib/alt/core.py": "def add(a, b):\n    return a + b\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
-		"M3 a for target rebinds a condition's name": {map[string]string{"marks.py": strings.Replace(marks, "SKIP =", "for IS_WINDOWS in ['x']:\n    pass\nSKIP =", 1)}, nil, "marks.py: unverifiable: a skipif or xfail condition"},
-		"an unchanged extend_path passes":            {map[string]string{"pkg/__init__.py": "import pkgutil\n__path__ = pkgutil.extend_path(__path__, __name__)\nX = 1\n"}, nil, ""},
+		"H1 an imported name rebound in the test":             {map[string]string{"tests/test_money.py": strings.Replace(test, "from money import add, FAST\n", "from money import add, FAST\nFAST = 'x'\n", 1)}, nil, "tests/test_money.py: unverifiable: a skipif or xfail condition"},
+		"H4 only money.py rebinds FAST":                       {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = 'x'\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads FAST"},
+		"H4 only money.py rebinds SLOW":                       {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = 'x'\nFAST = False\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads SLOW"},
+		"r2 M2 global rebinds SLOW":                           {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\n\ndef _f():\n    global SLOW\n    SLOW = 'x'\n\n_f()\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads SLOW"},
+		"r2 M2 __path__ by a call":                            {map[string]string{"lib/__init__.py": "__path__.insert(0, 'lib/alt')\n", "lib/alt/core.py": "def add(a, b):\n    return a + b\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"o M2 a case capture":                                 {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\nmatch 1:\n    case SLOW:\n        pass\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads SLOW"},
+		"o M2 an added star import":                           {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\nfrom other import *\n", "other.py": "FAST = 'x'\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads FAST"},
+		"o L2 (__path__).insert":                              {map[string]string{"lib/__init__.py": "(__path__).insert(0, 'lib/alt')\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"o L2 del __path__[:]":                                {map[string]string{"lib/__init__.py": "del __path__[:]\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"s1 a package's __path__ changed from a plain module": {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\nimport lib\nlib.__path__.append('lib/alt')\n"}, nil, "money.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"s1 __path__ bound in a plain module (main's rule)":   {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\n__path__ = ['alt']\n"}, nil, "money.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"H3 __path__ in an application package":               {map[string]string{"lib/__init__.py": "__path__ = ['lib/alt']\n", "lib/alt/core.py": "def add(a, b):\n    return a + b\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
+		"M3 a for target rebinds a condition's name":          {map[string]string{"marks.py": strings.Replace(marks, "SKIP =", "for IS_WINDOWS in ['x']:\n    pass\nSKIP =", 1)}, nil, "marks.py: unverifiable: a skipif or xfail condition"},
+		"an unchanged extend_path passes":                     {map[string]string{"pkg/__init__.py": "import pkgutil\n__path__ = pkgutil.extend_path(__path__, __name__)\nX = 1\n"}, nil, ""},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
 			t.Errorf("%s: %q, want %q", name, whats(own), c.why)
 		}
+	}
+	cyc := newFixtureWith(t, func(src string) { // the security review of 9e748fc: a resolution cycle is unread
+		write(t, src, map[string]string{"cyca/__init__.py": "from cycb import CV\n", "cycb/__init__.py": "from cyca import CV\n", "other.py": "X = 1\n",
+			"tests/test_c.py": "import pytest\nfrom cyca import CV\n\n@pytest.mark.skipif(CV, reason='r')\ndef test_c():\n    pass\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := cyc.guarded(t, map[string]string{"other.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread") {
+		t.Errorf("s3 a resolution cycle: %q, want blocked", whats(pyOwn(v.Blocks)))
 	}
 	g := newFixtureWith(t, func(src string) { // Mythos #267 H2, input B: the src layout
 		plain(t, src, "mv", "money.py", "src_money.py")
