@@ -32,6 +32,12 @@ type pyBase struct {
 	byName       map[string][]string    // a name, to the base modules binding it (Opus #272 M3)
 	holderUnread string                 // a module a judged file imports, unread on the way to its holder (the review of 1ceb79c)
 	sysUnread    bool                   // a judged file changes sys.path in a way the guard does not read (#270 M1)
+
+	// entries are main's (the root, pythonpath, the basedirs) and resolve; extra are the roots an install
+	// adds (pyInstall), which name modules for pyShadow only (Opus #275 H2)
+	extra         []string
+	shadowEntries []string
+	shadowMods    map[string]string // a dotted name over every root, to a base path
 }
 
 // pyBaseFile is what a base Python file imports, and its conditions.
@@ -47,7 +53,7 @@ type pyBaseFile struct {
 	conds     [][]ptok          // its condition lines, and the bindings they read (Opus #270 H2)
 	units     [][]ptok          // its module-level statements, def and class bodies (Mythos #270 M3)
 	binders   map[string][]int  // a name, to the units binding it
-	sysUnread bool              // it names sys.path in a way pySysPath does not read
+	sysUnread bool              // it names sys.path, or sys in a way pySysUse does not read
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -127,13 +133,18 @@ func (pb *pyBase) load() error {
 			pb.tests, pb.sysUnread = append(pb.tests, f), pb.sysUnread || f.sysUnread
 		}
 	}
-	slices.Sort(pb.entries)
-	pb.entries = slices.Compact(pb.entries)
+	pb.shadowEntries, pb.shadowMods = slices.Concat(pb.entries, pb.extra), map[string]string{}
+	slices.Sort(pb.shadowEntries)
+	pb.shadowEntries = slices.Compact(pb.shadowEntries)
 	for _, q := range pb.paths {
+		if path.Ext(q) != ".py" {
+			continue
+		}
 		for _, n := range pyModNames(q, pb.entries, false) {
-			if path.Ext(q) == ".py" {
-				pb.mods[n], pb.alts[n] = cmp.Or(pb.mods[n], q), pb.alts[n]+1
-			}
+			pb.mods[n] = cmp.Or(pb.mods[n], q)
+		}
+		for _, n := range pyModNames(q, pb.shadowEntries, false) { // a name an added root gives a second file is unread (Opus #275 H2)
+			pb.shadowMods[n], pb.alts[n] = cmp.Or(pb.shadowMods[n], q), pb.alts[n]+1
 		}
 	}
 	for _, f := range slices.Clone(pb.tests) { // the application modules a judged file imports, one hop (Mythos #270 M2)
@@ -141,15 +152,15 @@ func (pb *pyBase) load() error {
 			r, unread, err := pb.resolve(m) // and the module a re-export lands in (Opus #272 M1); unread: no holder known
 			pb.holderUnread = cmp.Or(pb.holderUnread, unread)
 			for _, d := range []string{m, r} {
-				for ; d != "" && pb.mods[d] == ""; d = d[:max(strings.LastIndex(d, "."), 0)] {
-				}
-				if err != nil {
+				parts := strings.Split(d, ".")
+				i, why, perr := pb.prefix(parts, len(parts)) // feature.py beside feature/__init__.py, a namespace decoy (Astra #272 r2 H1)
+				if err = cmp.Or(err, perr); err != nil {
 					pb.err = err
 					return err
-				} else if d == "" {
+				} else if why != "" {
+					pb.holderUnread = cmp.Or(pb.holderUnread, why)
 					continue
-				} else if pb.alts[d] > 1 { // feature.py beside feature/__init__.py (Astra #272 r2 H1)
-					pb.holderUnread = cmp.Or(pb.holderUnread, "the module name "+d+" in two roots")
+				} else if d = strings.Join(parts[:max(i, 0)], "."); i < 1 {
 					continue
 				} else if h, err := pb.file(pb.mods[d]); err != nil {
 					pb.err = err
@@ -316,10 +327,12 @@ func (pb *pyBase) resolve(d string) (string, string, error) {
 	for !seen[d] && len(seen) < 16 { // a cycle or over 16 steps: unread (the security review of 9e748fc)
 		seen[d] = true
 		parts, next := strings.Split(d, "."), d
-		for i := len(parts) - 1; i >= 1; i-- { // the longest module prefix
-			if q := pb.mods[strings.Join(parts[:i], ".")]; q != "" && pb.alts[strings.Join(parts[:i], ".")] > 1 {
-				return d, "the module name " + strings.Join(parts[:i], ".") + " in two roots", nil // Astra #272 H1: no root replaces another
-			} else if q != "" {
+		i, why, err := pb.prefix(parts, len(parts)-1) // the module prefix Python imports (Astra #272 r2 H1)
+		if err != nil || why != "" {
+			return d, why, err
+		}
+		for ; i >= 1; i = 0 {
+			if q := pb.mods[strings.Join(parts[:i], ".")]; q != "" {
 				f, err := pb.file(q)
 				if err != nil || f.unread {
 					return d, cmp.Or(q, ""), err
@@ -374,9 +387,9 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 	if err := pb.load(); err != nil {
 		return "", err
 	}
-	names := pyModNames(c.Dst, pb.entries, judged)
+	names := pyModNames(c.Dst, pb.shadowEntries, judged)
 	for _, n := range names {
-		if q := pb.mods[n]; q != "" {
+		if q := pb.shadowMods[n]; q != "" {
 			return "an added module shadows the base module " + q, nil
 		}
 	}
@@ -395,7 +408,7 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 			}
 		}
 	}
-	for _, bt := range pb.tests {
+	for _, bt := range slices.Concat(pb.tests, pb.holders) { // a holder's imports too (Astra #275 H2)
 		if err := r.ctx.Err(); err != nil {
 			return "", err
 		} else if bt.unread {
@@ -438,9 +451,6 @@ func pyReach(c Change, b, a *pyFile, pb *pyBase) (string, error) {
 			}
 		}
 		return ""
-	}
-	if pb.holderUnread != "" {
-		return "a module a condition reads is unread (" + pb.holderUnread + ")", nil
 	}
 	for _, f := range slices.Concat(pb.tests, pb.holders) {
 		if f.unread {

@@ -75,11 +75,11 @@ func (r *run) python(changes []Change) error {
 	if err != nil {
 		return err
 	}
-	unread, err := r.pyInstall()
+	installed, unread, err := r.pyInstall()
 	if err != nil {
 		return err
 	}
-	pb := &pyBase{r: r}
+	pb := &pyBase{r: r, extra: installed}
 	pb.entries, pb.basedirs = r.pyEntries(paths)
 	if err := pb.load(); err != nil {
 		return err
@@ -125,6 +125,9 @@ func (r *run) python(changes []Change) error {
 			continue
 		} else if unread {
 			add(&r.blocks, c.Dst, "unverifiable: the base adds sys.path entries the guard does not read (Mythos #270 M1)")
+			continue
+		} else if pb.holderUnread != "" { // every Python change: an addition may shadow what it imports (Astra #275 H2)
+			add(&r.blocks, c.Dst, "a module a condition reads is unread ("+pb.holderUnread+")")
 			continue
 		}
 		judged := pyTested(c.Dst) || r.pyTestDir(c.Dst)
