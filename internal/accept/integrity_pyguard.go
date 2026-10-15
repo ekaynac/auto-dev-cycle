@@ -75,8 +75,16 @@ func (r *run) python(changes []Change) error {
 	if err != nil {
 		return err
 	}
+	unread, err := r.pyInstall()
+	if err != nil {
+		return err
+	}
 	pb := &pyBase{r: r}
 	pb.entries, pb.basedirs = r.pyEntries(paths)
+	if err := pb.load(); err != nil {
+		return err
+	}
+	unread = unread || pb.sysUnread
 	for _, q := range slices.Sorted(maps.Keys(r.files)) { // an __init__.py added, removed or renamed (Opus #270 M3)
 		if pyTested(q) && r.cand[q] != "" && pyBasedir(r.files, q) != pyBasedir(r.cand, q) {
 			add(&r.blocks, q, "a test file's basedir moves (an __init__.py added, removed or renamed)")
@@ -114,6 +122,9 @@ func (r *run) python(changes []Change) error {
 			continue
 		} else if custom {
 			add(&r.blocks, c.Dst, "unverifiable: a pytest configuration of the base moves collection off its defaults or is unread")
+			continue
+		} else if unread {
+			add(&r.blocks, c.Dst, "unverifiable: the base adds sys.path entries the guard does not read (Mythos #270 M1)")
 			continue
 		}
 		judged := pyTested(c.Dst) || r.pyTestDir(c.Dst)
@@ -382,6 +393,9 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 					}
 					fa.imported[n], fa.local[n], fa.binds[n] = fa.imported[n] || imported, fa.local[n] || !imported, fa.binds[n]+text
 					fa.reads[n] = append(fa.reads[n], reads...)
+				}
+				if n := st[0].text; len(st) > 2 && st[0].kind == 'n' && st[1].text == "." && len(pyAssign(st)) == 1 { // FLAGS.update(…) changes FLAGS (Mythos #270 r2 L4)
+					fa.binds[n], fa.reads[n] = fa.binds[n]+text, append(fa.reads[n], reads...)
 				}
 				if imported {
 					fa.imports = fa.imports + fmt.Sprint(st) + "\n"
