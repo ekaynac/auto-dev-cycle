@@ -57,6 +57,7 @@ type pkgFacts struct {
 	bad                         map[string]string   // per file: why it is not verified
 	untyped                     map[string]string   // per package: why its real types are not read (P14e)
 	typed                       map[string]int      // "file\x00function\x00fact" the real types show (P14e)
+	imports                     map[string]bool     // the package's import paths, its files' together
 	tree                        *tree               // the version read
 }
 
@@ -281,7 +282,7 @@ func (r *run) goMod() error {
 func (r *run) pkg(dir string, t *tree) (pkgFacts, error) {
 	fa := pkgFacts{ambient: make([]int, len(platforms)), forged: make([]int, len(platforms)), twentyTwos: make([]int, len(platforms)),
 		tests: map[string]*stat{}, refs: map[string]int{}, init: map[string]int{}, warn: map[string]string{},
-		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, tree: t}
+		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, imports: map[string]bool{}, tree: t}
 	srcs := map[string][]byte{}
 	for _, p := range t.dirs[dir] {
 		if path.Ext(p) != ".go" {
@@ -378,6 +379,12 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.blocks, at, "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
 		} else if a.refs[k] != b.refs[k] {
 			add(&r.warnings, at, "a reference into S (exit, output, process, testing control) added, removed, moved or changed: review it")
+		}
+	}
+	mod := a.tree.typer(r, dir, platforms[0]).mod // a new edge outside the standard library and the module warns (decision A)
+	for _, p := range slices.Sorted(maps.Keys(a.imports)) {
+		if first, _, _ := strings.Cut(p, "/"); !b.imports[p] && strings.Contains(first, ".") && p != mod && !strings.HasPrefix(p, mod+"/") {
+			add(&r.warnings, dir, "a new import of "+p+", outside the standard library and the module: review it")
 		}
 	}
 	for _, k := range keys(b.typed, a.typed) { // by identity, so no fact is traded for another

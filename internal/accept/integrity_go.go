@@ -36,8 +36,10 @@ var (
 	testify   = []string{"github.com/stretchr/testify/assert", "github.com/stretchr/testify/require"}
 	testTypes = []string{"testing.T", "testing.B", "testing.F", "testing.TB", "testing.M"}
 	osRead    = []string{"Getenv", "LookupEnv", "Environ", "Getwd", "Stat", "Open", "ReadFile", "ReadDir", "PathSeparator"}
-	// sPkgs (and golang.org/x/sys/...) reach the process, its output or testing: S.
-	sPkgs   = []string{"syscall", "os", "os/exec", "os/signal", "log", "log/slog", "fmt", "testing", "reflect", "unsafe", "runtime", "plugin"}
+	// sPkgs and the sTrees (each with the packages under it) reach the
+	// process, its output or testing: S, prefix-matched (P14b-out).
+	sPkgs   = []string{"syscall", "fmt", "reflect", "unsafe", "plugin", "flag", "io/ioutil", "net/http/cgi"}
+	sTrees  = []string{"os", "log", "runtime", "testing", "golang.org/x/sys", "modernc.org/libc"}
 	spelled = []string{"\x16", `\x16`, `\026`, `\u0016`, `\U00000016`} // test2json's marker
 	// initPkgs are the inert packages initialization may call, with the
 	// unicode, math and encoding trees; fmt and time only in part (inert).
@@ -66,7 +68,7 @@ func allCaps(n string) bool {
 }
 
 func sPkg(p string) bool {
-	return slices.Contains(sPkgs, p) || strings.HasPrefix(p, "golang.org/x/sys/")
+	return slices.Contains(sPkgs, p) || slices.ContainsFunc(sTrees, func(t string) bool { return p == t || strings.HasPrefix(p, t+"/") })
 }
 
 // sensitive classifies q ("importpath.Name", a builtin, "os.Args assigned"):
@@ -92,7 +94,7 @@ func sensitive(q string) int {
 		return b2i(!slices.Contains(osRead, name) && !strings.HasPrefix(name, "Err")) * (1 + is("Exit", "StartProcess"))
 	case pkg == "os/exec":
 		return 1 + is("Command*", "Cmd") // a process start
-	case pkg == "plugin":
+	case pkg == "plugin" || pkg == "modernc.org/libc" || strings.HasPrefix(pkg, "modernc.org/libc/"): // libc: C's exit, exec and syscalls in Go
 		return 2
 	case pkg == "log" || pkg == "log/slog":
 		return 1 + is("Fatal*", "Panic*")
@@ -695,6 +697,12 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 		n, _ := r.holds(meta[f].exprs, platforms[pi], "ignore")
 		return n == 0
 	})
+	for _, f := range typed { // an import go builds (never an ignore file's): an edge
+		for _, is := range f.Imports {
+			ip, _ := strconv.Unquote(is.Path.Value)
+			fa.imports[ip] = true
+		}
+	}
 	if len(typed) > 0 {
 		if err := r.typedOn(platforms[pi], dir, name, fset, typed, meta, fa); err != nil {
 			return err

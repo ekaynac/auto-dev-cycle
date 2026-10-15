@@ -610,7 +610,7 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 		defer func() { ty.pkgs = saved }()
 	}
 	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
-		Instances: map[*ast.Ident]types.Instance{}}
+		Instances: map[*ast.Ident]types.Instance{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
 	// Any error but a name declared again in a file under a tag the guard
 	// does not model (race, !race), with the same declared types (redecl).
 	redecl, pending := map[string]string{}, ""
@@ -664,6 +664,15 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 				where = fn.Name.Name
 			}
 			facts(info, d, func(fact string) { fa.typed[meta[f].path+"\x00"+pl[0]+"/"+pl[1]+" "+where+"\x00"+fact]++ }) // per platform: no trade across them
+			ast.Inspect(d, func(n ast.Node) bool {                                                                      // a method or field of an S type through a value, by its real type (util.Flags().Parse): warns
+				if sel, ok := n.(*ast.SelectorExpr); ok && info.Selections[sel] != nil && info.Selections[sel].Kind() != types.FieldVal { // a method; a field is data
+					if o := info.Selections[sel].Obj(); o.Pkg() != nil && sPkg(o.Pkg().Path()) && !slices.Contains([]string{"testing", "reflect", "unsafe"}, o.Pkg().Path()) {
+						q := "(" + types.TypeString(info.Selections[sel].Recv(), nil) + ")." + o.Name() // (*flag.FlagSet).Parse: never class 2
+						fa.refs[meta[f].path+"\x00"+q+"\x00"+where+"\x00"+pl[0]+"/"+pl[1]]++
+					}
+				}
+				return true
+			})
 		}
 	}
 	return nil

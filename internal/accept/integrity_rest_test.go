@@ -62,7 +62,8 @@ func TestIntegrityRest(t *testing.T) {
 	}
 	consistent := "# golang.org/x/sys v0.48.0\n## explicit\n# example.org/lib v1.0.0\n## explicit\nexample.org/lib\n"
 	vf := vendored(consistent)
-	if v := vf.guarded(t, map[string]string{"pkg/x.go": "package pkg\n\nimport \"example.org/lib\"\n\nfunc G() int { return lib.F() }\n"}); !v.Accepted() || len(v.Warnings) > 0 {
+	if v := vf.guarded(t, map[string]string{"pkg/x.go": "package pkg\n\nimport \"example.org/lib\"\n\nfunc G() int { return lib.F() }\n"}); !v.Accepted() || len(v.Warnings) != 1 ||
+		!finds(v.Warnings, "a new import of example.org/lib") { // P14b-out: a new edge outside std and the module warns
 		t.Errorf("a vendored import: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
 	}
 	holder := "package pkg\n\nimport (\n\t\"encoding/json\"\n\t\"testing\"\n\n\t\"example.org/lib\"\n)\n\nfunc TestAdd(t *testing.T) {\n\tvar h lib.Holder\n" +
