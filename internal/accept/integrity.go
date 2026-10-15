@@ -275,6 +275,9 @@ func (r *run) goMod() error {
 	if ignores[0] != ignores[1] {
 		add(&r.blocks, "go.mod", "unverifiable: a root go.mod's ignore directives changed (packages leave ./...)")
 	}
+	if r.trees[0].typer(r, ".", platforms[0]).mod != r.trees[1].typer(r, ".", platforms[0]).mod { // which imports are own changes
+		add(&r.blocks, "go.mod", "unverifiable: the module path changed")
+	}
 	return nil
 }
 
@@ -381,9 +384,15 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.warnings, at, "a reference into S (exit, output, process, testing control) added, removed, moved or changed: review it")
 		}
 	}
-	mod := a.tree.typer(r, dir, platforms[0]).mod // a new edge outside the standard library and the module warns (decision A)
-	for _, p := range slices.Sorted(maps.Keys(a.imports)) {
-		if first, _, _ := strings.Cut(p, "/"); !b.imports[p] && strings.Contains(first, ".") && p != mod && !strings.HasPrefix(p, mod+"/") {
+	own := func(p string) bool { // as the loader resolves it, in both versions: an own package, not vendored nor a nested module's
+		return !slices.ContainsFunc([]*tree{b.tree, a.tree}, func(t *tree) bool {
+			ty := t.typer(r, dir, platforms[0])
+			_, ok := ty.local(p)
+			return !ok || ty.vendor[p]
+		})
+	}
+	for _, p := range slices.Sorted(maps.Keys(a.imports)) { // a new edge outside the standard library (go list's) and the module warns (decision A)
+		if !b.imports[p] && p != "C" && p != "unsafe" && !a.tree.typer(r, dir, platforms[0]).listed[p].Standard && !own(p) {
 			add(&r.warnings, dir, "a new import of "+p+", outside the standard library and the module: review it")
 		}
 	}

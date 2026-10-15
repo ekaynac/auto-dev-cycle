@@ -68,6 +68,7 @@ var (
 // Listed is one package go list reads: its export data file, or its error.
 type Listed struct {
 	ImportPath, Export string
+	Standard           bool
 	Error              *struct{ Err string }
 }
 
@@ -163,7 +164,7 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 		limit = strconv.FormatInt(mem>>10, 10)
 	}
 	cmd := exec.CommandContext(ctx, "/bin/sh", append([]string{"-c", `ulimit -v "$1" && shift && exec "$@"`, "sh", limit,
-		gobin, "list", "-e", "-export", "-deps", "-json=ImportPath,Export,Error", "--"}, paths...)...)
+		gobin, "list", "-e", "-export", "-deps", "-json=ImportPath,Export,Error,Standard", "--"}, paths...)...)
 	cmd.Dir = dir
 	cmd.Env = append(slices.Clone(env), "PATH="+filepath.Dir(gobin)+":/usr/bin:/bin", "GOENV=off", "GOFLAGS=-mod=readonly",
 		"GOPROXY=off", "GOSUMDB=off", "GOWORK=off", "GOTOOLCHAIN=local", "GOTELEMETRY=off", "CGO_ENABLED=0", "GO111MODULE=on",
@@ -664,11 +665,29 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 				where = fn.Name.Name
 			}
 			facts(info, d, func(fact string) { fa.typed[meta[f].path+"\x00"+pl[0]+"/"+pl[1]+" "+where+"\x00"+fact]++ }) // per platform: no trade across them
-			ast.Inspect(d, func(n ast.Node) bool {                                                                      // a method or field of an S type through a value, by its real type (util.Flags().Parse): warns
+			ref := func(q string) {                                                                                     // never class 2; cut as facts are
+				if len(q) > 200 {
+					q = fmt.Sprintf("%s… %x", q[:200], sha256.Sum256([]byte(q)))
+				}
+				fa.refs[meta[f].path+"\x00"+q+"\x00"+where+"\x00"+pl[0]+"/"+pl[1]]++
+			}
+			ast.Inspect(d, func(n ast.Node) bool { // by real types, an S type's method through a value (util.Flags().Parse) or an S type argument: warns
 				if sel, ok := n.(*ast.SelectorExpr); ok && info.Selections[sel] != nil && info.Selections[sel].Kind() != types.FieldVal { // a method; a field is data
-					if o := info.Selections[sel].Obj(); o.Pkg() != nil && sPkg(o.Pkg().Path()) && !slices.Contains([]string{"testing", "reflect", "unsafe"}, o.Pkg().Path()) {
-						q := "(" + types.TypeString(info.Selections[sel].Recv(), nil) + ")." + o.Name() // (*flag.FlagSet).Parse: never class 2
-						fa.refs[meta[f].path+"\x00"+q+"\x00"+where+"\x00"+pl[0]+"/"+pl[1]]++
+					if o := info.Selections[sel].Obj().(*types.Func); sObj(o) {
+						q, recv := o.FullName(), types.TypeString(info.Selections[sel].Recv(), nil) // (*flag.FlagSet).Parse
+						if !strings.Contains(q, recv) {
+							q += " via " + recv // promoted, or through an alias's or another package's type
+						}
+						ref(q)
+					}
+				} else if id, ok := n.(*ast.Ident); ok && info.Instances[id].TypeArgs != nil {
+					for t := range info.Instances[id].TypeArgs.Types() {
+						if p, ok := types.Unalias(t).(*types.Pointer); ok {
+							t = p.Elem()
+						}
+						if nt, ok := types.Unalias(t).(*types.Named); ok && sObj(nt.Obj()) {
+							ref(id.Name + "[" + types.TypeString(t, nil) + "]") // parse[*flag.FlagSet]: its methods are called in the generic
+						}
 					}
 				}
 				return true
@@ -855,7 +874,12 @@ func facts(info *types.Info, n ast.Node, add func(string)) {
 	})
 }
 
-func isVar(o types.Object) bool      { _, ok := o.(*types.Var); return ok }
+func isVar(o types.Object) bool { _, ok := o.(*types.Var); return ok }
+
+// sObj: o is an S package's (testing's, reflect's and unsafe's have their own rules).
+func sObj(o types.Object) bool {
+	return o.Pkg() != nil && sPkg(o.Pkg().Path()) && !slices.Contains([]string{"testing", "reflect", "unsafe"}, o.Pkg().Path())
+}
 func isTypeName(o types.Object) bool { _, ok := o.(*types.TypeName); return ok }
 
 // reaches: a call's arguments (through a conversion to an interface,
