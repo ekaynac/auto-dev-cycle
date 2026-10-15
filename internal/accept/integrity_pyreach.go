@@ -38,7 +38,8 @@ var (
 // [options] package_dir = =DIR (any case, = or :), [options.packages.find]
 // where, [tool.setuptools] package-dir = {"" = "DIR"},
 // [tool.setuptools.packages.find] where, a setuptools [build-system]
-// build-backend, a .py under src/. Any other such key anywhere, a
+// build-backend, a .py under src/; a directory only as exactly [\w./-]
+// (Astra #275 H3). Any other such key anywhere, a
 // tool.poetry, hatch, pdm or flit table, an entry outside the root, or a
 // .pth anywhere (Astra #272 M2) is unread, as on main.
 func (r *run) pyInstall() (entries []string, unread bool, err error) {
@@ -139,23 +140,13 @@ func pySysUse(t []ptok) bool {
 	return true
 }
 
-// pyDepthEnd is the index of the bracket closing t[open].
-func pyDepthEnd(t []ptok, open int) int {
-	depth := 0
-	for i := open; i < len(t); i++ {
-		if depth += strings.Count("([{", t[i].text) - strings.Count(")]}", t[i].text); depth == 0 {
-			return i
-		}
-	}
-	return -1
-}
-
 // prefix is how many of parts name the base module Python imports, at most
 // top (Astra #272 r2 H1): a shorter prefix that is a plain module, or a
 // package whose directory does not hold the longer one, ends it. Unread:
 // any ancestor only an added root names, or two files answer to (Astra
-// #275 H1, Opus #275 H1); a package not plain (pyInert), or binding the next
-// name otherwise than as its submodule.
+// #275 H1, Opus #275 H1); a package binding the next name otherwise than as
+// its submodule. A package's own __path__ is not modelled, as on main
+// (P14c-2a-plain).
 func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 	i := min(top, len(parts))
 	for ; i >= 1 && pb.mods[strings.Join(parts[:i], ".")] == ""; i-- {
@@ -178,8 +169,6 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 			f, err := pb.file(q)
 			if err != nil {
 				return 0, "", err
-			} else if !f.plain {
-				return 0, "the package " + name + " is not plain (its submodules may resolve elsewhere)", nil // Opus #275 M1, Astra #275 H6
 			} else if k < i && (f.locals[parts[k]] || f.from[parts[k]] != "" && f.from[parts[k]] != name+"."+parts[k]) {
 				return 0, "the package " + name + " binds " + parts[k] + " beside its submodule", nil
 			}
