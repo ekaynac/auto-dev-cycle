@@ -95,6 +95,9 @@ type run struct {
 	blocks, warnings   []Block
 }
 
+// cgoSources is what cgo compiles beside a package's Go files (go/build).
+var cgoSources = strings.Fields(".c .cc .cxx .cpp .m .h .hh .hpp .hxx .f .F .for .f90 .swig .swigcxx")
+
 func add(to *[]Block, p, what string) {
 	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what})
 }
@@ -124,8 +127,12 @@ func (r *run) check(changes []Change) error {
 				add(&r.blocks, p, "python integrity not verified (P14c)")
 			case path.Ext(p) == ".go":
 				r.touched[dir] = true
+			case path.Base(p) == "go.work" || path.Base(p) == "go.work.sum": // a workspace redirects imports (use, replace)
+				add(&r.blocks, p, "unverifiable: a go.work workspace file changed")
 			case new && slices.Contains([]string{".s", ".S", ".syso"}, path.Ext(p)): // linked into any test binary importing it
 				add(&r.blocks, p, "unverifiable: assembly or a system object")
+			case new && slices.Contains(cgoSources, path.Ext(p)): // cgo builds them, a constructor runs before any test
+				add(&r.blocks, p, "unverifiable: C, C++, Objective-C, Fortran or SWIG source")
 			case new && path.Base(p) == "go.mod" && p != "go.mod" && c.Status != "M" && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)),
 				func(q string) bool { return goByName(q) && strings.HasPrefix(q, dir+"/") }):
 				add(&r.blocks, p, "a go.mod added over tests: they leave the module the gate tests")
@@ -303,7 +310,8 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 	for _, k := range slices.Sorted(maps.Keys(a.flags)) {
 		p, _, _ := strings.Cut(k, "\x00")
 		for _, f := range a.flags[k] {
-			if !slices.Contains(b.flags[k], f) && (r.tested(dir) || f == "reflection on a testing value") {
+			cgo := f == "an import of C" && r.files[p] != r.cand[p] // a new or changed preamble runs before any test
+			if (!slices.Contains(b.flags[k], f) || cgo) && (r.tested(dir) || cgo || f == "reflection on a testing value") {
 				add(&r.blocks, p, "unverifiable: "+f)
 			} else if !slices.Contains(b.flags[k], f) {
 				add(&r.warnings, p, f+": review it")

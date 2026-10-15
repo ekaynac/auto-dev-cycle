@@ -273,10 +273,17 @@ func (t *tree) typer(r *run, dir string, pl [2]string) *typer {
 		// vendor/ only as the base has it: the gate may build it, or (GOFLAGS
 		// -mod=readonly, as the prepared image sets) the module cache.
 		vendor := path.Join(root, "vendor") + "/"
-		blob := t.files[vendor+"modules.txt"]
+		blob, work := t.files[vendor+"modules.txt"], false
+		for d := root; ; d = path.Dir(d) { // go finds a go.work upward
+			if work = t.files[path.Join(d, "go.work")] != ""; work || d == "." || d == "/" {
+				break
+			}
+		}
 		switch on := err == nil && f.Go != nil && version.Compare("go"+f.Go.Version, "go1.14") >= 0; {
 		case r.vendorChanged[vendor]:
 			ty.why = "a file under vendor/ changed"
+		case work && (blob != "" || t.vendors[vendor]):
+			ty.why = "a go.work beside vendor/: workspace mode does not read it"
 		case on && blob != "":
 			b, why, err := r.file(blob)
 			if ty.vendor, ty.gomod, ty.gosum = vendorPkgs(f, string(b)), []byte("module adc.invalid/vendored\n"), nil; ty.vendor == nil {
@@ -306,7 +313,7 @@ func vendorPkgs(f *modfile.File, txt string) map[string]bool {
 	pkgs, explicit, mod, ver := map[string]bool{}, map[string]string{}, "", ""
 	for _, l := range strings.Split(txt, "\n") {
 		switch fs := strings.Fields(l); {
-		case len(fs) > 3 && fs[0] == "#": // a replacement
+		case len(fs) > 3 && fs[0] == "#", len(fs) >= 2 && fs[0] == "##" && fs[1] == "workspace": // a replacement; a workspace's vendoring
 			return nil
 		case len(fs) == 3 && fs[0] == "#":
 			mod, ver = fs[1], fs[2]
@@ -714,6 +721,7 @@ const (
 	factForged  = "a testing value not the runner's"
 	factReflect = "reflection on a testing value"
 	factMakes   = "reflection that makes, writes or calls values"
+	factUnsafe  = "a conversion from unsafe.Pointer" // a reflect.Value's (UnsafePointer) needs no unsafe import
 )
 
 var (
@@ -721,7 +729,7 @@ var (
 	otherDecl    = regexp.MustCompile(`^\tother declaration of \S+$`)
 	methodDecl   = regexp.MustCompile(`^(method|field and method with the same name) \S+ already declared at \S+$`)
 	reflectMakes = strings.Fields("New NewAt Zero MakeSlice MakeMap MakeMapWithSize MakeChan MakeFunc Append AppendSlice Copy")
-	valueMakes   = strings.Fields("Call CallSlice Method MethodByName Convert Grow Slice Slice3")
+	valueMakes   = strings.Fields("Call CallSlice Method MethodByName Convert Grow Slice Slice3 Addr Pointer UnsafeAddr UnsafePointer Bytes Clear") // from Addr: raw pointers, or a write past the read-only flag
 )
 
 // facts reports what the real types show in n: a testing value made (an
@@ -796,6 +804,8 @@ func facts(info *types.Info, n ast.Node, add func(string)) {
 			if tv := info.Types[ast.Unparen(x.Fun)]; tv.IsType() && len(x.Args) == 1 && !types.IsInterface(tv.Type) { // to a holder of *testing.T, of anything else
 				if from := info.TypeOf(x.Args[0]); holds(tv.Type, true, nil) && (from == nil || !types.Identical(from, tv.Type)) {
 					at(factForged, x, from)
+				} else if from != nil && types.Identical(from.Underlying(), types.Typ[types.UnsafePointer]) && !types.Identical(tv.Type.Underlying(), from.Underlying()) {
+					at(factUnsafe, x)
 				}
 			}
 			fun, _ := fn(x.Fun)

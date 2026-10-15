@@ -419,12 +419,12 @@ func TestIntegrityAcceptsAndWarns(t *testing.T) {
 			"var (\n\tre  = regexp.MustCompile(\"x\")\n\terr = errors.New(strings.ToUpper(filepath.Join(\"a\", \"b\")))\n\tcfg = new(other.Config)\n)\n"}, nil, ""},
 		"stored functions": {map[string]string{"tool/h.go": "package tool\n\nimport \"fmt\"\n\nfunc helper() { fmt.Println(\"x\") }\n\n" +
 			"var handlers = map[string]func(){\"x\": helper, \"y\": func() { fmt.Println(\"y\") }}\n"}, nil, "tool/h.go: fmt.Println in helper"},
-		"a TestMain parsing flags":       {map[string]string{"race/main_test.go": "package race\n\nimport (\n\t\"flag\"\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) {\n\tflag.Parse()\n\tos.Exit(m.Run())\n}\n"}, nil, "TestMain(*testing.M) of race:race changed or deleted"},
-		"an exit code changed":           {map[string]string{"cmd/x/main.go": "package main\n\nimport \"os\"\n\nfunc main() { os.Exit(0) }\n"}, nil, "cmd/x/main.go: os.Exit(0) in main"},
-		"a named 22":                     {map[string]string{"pkg/calc.go": calc + "\ntype R int32\n\nvar r = R(22)\n"}, nil, "converts 22"},
-		"an exit moved":                  {map[string]string{"cmd/x/main.go": "package main\n\nimport \"os\"\n\nfunc main() { run() }\n\nfunc run() { os.Exit(1) }\n"}, nil, "cmd/x/main.go: os.Exit in main"},
-		"a dot import, untested":         {map[string]string{"tool/d.go": "package tool\n\nimport . \"os\"\n\nvar _ = Getpid\n"}, nil, "a dot import of os"},
-		"cgo, untested":                  {map[string]string{"tool/c.go": "package tool\n\nimport \"C\"\n"}, nil, "an import of C"},
+		"a TestMain parsing flags": {map[string]string{"race/main_test.go": "package race\n\nimport (\n\t\"flag\"\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) {\n\tflag.Parse()\n\tos.Exit(m.Run())\n}\n"}, nil, "TestMain(*testing.M) of race:race changed or deleted"},
+		"an exit code changed":     {map[string]string{"cmd/x/main.go": "package main\n\nimport \"os\"\n\nfunc main() { os.Exit(0) }\n"}, nil, "cmd/x/main.go: os.Exit(0) in main"},
+		"a named 22":               {map[string]string{"pkg/calc.go": calc + "\ntype R int32\n\nvar r = R(22)\n"}, nil, "converts 22"},
+		"an exit moved":            {map[string]string{"cmd/x/main.go": "package main\n\nimport \"os\"\n\nfunc main() { run() }\n\nfunc run() { os.Exit(1) }\n"}, nil, "cmd/x/main.go: os.Exit in main"},
+		"a dot import, untested":   {map[string]string{"tool/d.go": "package tool\n\nimport . \"os\"\n\nvar _ = Getpid\n"}, nil, "a dot import of os"},
+		// cgo, untested: blocks since #271 Opus M2 (a constructor runs before any test), TestIntegrityRound2.
 		"a method keyed by its receiver": {map[string]string{"pkg/calc.go": "package pkg\n\nimport \"fmt\"\n\nfunc Add(a, b int) int { return a + b }\n\ntype A struct{}\n\nfunc (A) Print() { fmt.Println() }\n"}, nil, "pkg/calc.go: fmt.Println in A.Print"},
 		// Operator decision A: every exit, output or testing-control
 		// reference that does not block warns, naming its file and function.
