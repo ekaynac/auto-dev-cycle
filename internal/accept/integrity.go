@@ -65,7 +65,7 @@ type pkgFacts struct {
 // and imports' types through list (nil: every Go package unverifiable).
 func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
 	return func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, err error) {
-		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{},
+		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, budget: maxRead, blobs: map[string][]byte{}, cgoBlobs: map[string][]byte{}, touched: map[string]bool{},
 			started: time.Now(), listEnd: time.Now().Add(maxListTime)}
 		defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
 			if p := recover(); p != nil && ctx.Err() != nil {
@@ -90,6 +90,7 @@ type run struct {
 	budget             int64
 	work               int
 	blobs              map[string][]byte   // blobs read, once
+	cgoBlobs           map[string][]byte   // read by the cgo pass, not yet charged to the budget
 	files, cand        map[string]string   // the base's and the candidate's paths, to blobs
 	baseDirs, candDirs map[string][]string // their files by directory
 	touched            map[string]bool     // directories of changed Go files
@@ -113,22 +114,23 @@ var (
 // the Go files read with their own bound, not the guard's read budget (one
 // not read, past it, or not parsed counts).
 func (r *run) usesCgo() bool {
-	fset, budget := token.NewFileSet(), maxCgoRead
+	fset, budget, seen := token.NewFileSet(), maxCgoRead, map[string]bool{}
 	for _, q := range keys(r.files, r.cand) {
 		if path.Ext(q) == ".swig" || path.Ext(q) == ".swigcxx" {
 			return true
 		}
 		for _, blob := range slices.Compact([]string{r.files[q], r.cand[q]}) {
-			if path.Ext(q) != ".go" || blob == "" {
+			if path.Ext(q) != ".go" || blob == "" || seen[blob] { // a blob once: copies share one
 				continue
 			}
+			seen[blob] = true
 			b, ok := r.blobs[blob]
 			if !ok {
 				var err error
 				if b, ok, err = r.read(r.ctx, blob, min(maxFile, budget)); err != nil || !ok {
 					return true
 				}
-				budget -= int64(len(b))
+				budget, r.cgoBlobs[blob] = budget-int64(len(b)), b // read once: file takes it, charged then
 			}
 			f, err := parser.ParseFile(fset, q, b, parser.ImportsOnly)
 			if err != nil || slices.ContainsFunc(f.Imports, func(is *ast.ImportSpec) bool { return is.Path.Value == `"C"` }) {
@@ -241,6 +243,9 @@ func (r *run) tested(dir string) bool {
 // file reads a blob within the bounds, once: why says why not.
 func (r *run) file(blob string) ([]byte, string, error) {
 	if b, ok := r.blobs[blob]; ok {
+		return b, "", nil
+	} else if b, ok := r.cgoBlobs[blob]; ok && int64(len(b)) <= min(maxFile, r.budget) {
+		r.budget, r.blobs[blob] = r.budget-int64(len(b)), b
 		return b, "", nil
 	}
 	b, ok, err := r.read(r.ctx, blob, min(maxFile, r.budget))
