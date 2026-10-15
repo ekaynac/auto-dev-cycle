@@ -38,7 +38,8 @@ var (
 // key keeps main's unread verdict (Astra #275 r3: a package's own __path__
 // would send a read root's module elsewhere). P14c-2a-plain turns it on,
 // once package plainness is modelled, with Astra #275 r3's row. A var only
-// so that the reader's own tests can run it.
+// so that the reader's own tests can run it. A package variable, not safe
+// to change concurrently: a test that sets it must not run in parallel.
 var pyInstallRootsRead = false
 
 // pyInstall reads the entries an install adds (Mythos #270 M1), as an
