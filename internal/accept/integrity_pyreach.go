@@ -36,8 +36,9 @@ var (
 
 // pyInstallRootsRead gates pyInstall's reader: off, a base with an install
 // key keeps main's unread verdict (Astra #275 r3: a package's own __path__
-// would send a read root's module elsewhere). P14c-2a-plain turns it on,
-// once package plainness is modelled, with Astra #275 r3's row. A var only
+// would send a read root's module elsewhere). P14c-2a-install turns it on,
+// once P14c-2a-widen models imports and code parked at run time (Opus
+// #277 H1, H2). A var only
 // so that the reader's own tests can run it. A package variable, not safe
 // to change concurrently: a test that sets it must not run in parallel.
 var pyInstallRootsRead = false
@@ -149,14 +150,25 @@ func pySysUse(t []ptok) bool {
 	return true
 }
 
+// pyDepthEnd is the index of the bracket closing t[open].
+func pyDepthEnd(t []ptok, open int) int {
+	depth := 0
+	for i := open; i < len(t); i++ {
+		if depth += strings.Count("([{", t[i].text) - strings.Count(")]}", t[i].text); depth == 0 {
+			return i
+		}
+	}
+	return -1
+}
+
 // prefix is how many of parts name the base module Python imports, at most
 // top: main's longest module prefix, or unread (strictly additive, Astra
 // #275 r3). Unread: a shorter prefix that is a plain module, or a package
 // whose directory does not hold the longer one (Astra #272 r2 H1);
 // any ancestor only an added root names, or two files answer to (Astra
-// #275 H1, Opus #275 H1); a package binding the next name otherwise than as
-// its submodule. A package's own __path__ is not modelled, as on main
-// (P14c-2a-plain).
+// #275 H1, Opus #275 H1); a package not plain (pyInert: its own __path__,
+// Opus #275 M1, Astra #275 H6), or binding the next name otherwise than as
+// its submodule.
 func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 	i := min(top, len(parts))
 	for ; i >= 1 && pb.mods[strings.Join(parts[:i], ".")] == ""; i-- {
@@ -179,6 +191,8 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 			f, err := pb.file(q)
 			if err != nil {
 				return 0, "", err
+			} else if !f.plain {
+				return 0, "the package " + name + " is not plain (its submodules may resolve elsewhere)", nil // Opus #275 M1, Astra #275 H6
 			} else if k < i && (f.locals[parts[k]] || f.from[parts[k]] != "" && f.from[parts[k]] != name+"."+parts[k]) {
 				return 0, "the package " + name + " binds " + parts[k] + " beside its submodule", nil
 			}
