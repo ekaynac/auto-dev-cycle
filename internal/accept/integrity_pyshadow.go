@@ -21,6 +21,7 @@ type pyBase struct {
 	r        *run
 	entries  []string
 	basedirs []string // the test files' basedirs below the root, in either tree
+	paths    []string // the base's paths, sorted
 	read     bool
 	err      error
 	mods     map[string]string      // a base module's dotted name, to its path
@@ -35,6 +36,7 @@ type pyBaseFile struct {
 	mods   []string          // the dotted names it imports (a from-import's as module.name)
 	from   map[string]string // a name it binds by import, to that dotted name (import a.b: a to a.b)
 	named  map[string]bool   // the names a from-import binds
+	locals map[string]bool   // the names its module-level statements bind
 	stars  []string          // the modules it star-imports
 	conds  [][]ptok          // its condition lines, and the bindings they read (Opus #270 H2)
 }
@@ -104,9 +106,11 @@ func (pb *pyBase) load() error {
 	if pb.read {
 		return pb.err
 	}
-	pb.read, pb.mods, pb.files = true, map[string]string{}, map[string]*pyBaseFile{}
-	for _, q := range slices.Sorted(maps.Keys(pb.r.files)) {
-		if path.Ext(q) != ".py" {
+	pb.read, pb.mods, pb.files, pb.paths = true, map[string]string{}, map[string]*pyBaseFile{}, slices.Sorted(maps.Keys(pb.r.files))
+	for _, q := range pb.paths {
+		if pb.err = pb.r.ctx.Err(); pb.err != nil { // Mythos #270 M5
+			return pb.err
+		} else if path.Ext(q) != ".py" {
 			continue
 		}
 		for _, n := range pyModNames(q, pb.entries, false) {
@@ -134,7 +138,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	if f := pb.files[q]; f != nil {
 		return f, nil
 	}
-	f := &pyBaseFile{path: q, from: map[string]string{}, named: map[string]bool{}}
+	f := &pyBaseFile{path: q, from: map[string]string{}, named: map[string]bool{}, locals: map[string]bool{}}
 	pb.files[q] = f
 	b, why, err := pb.r.file(pb.r.files[q])
 	lines, why2, err2 := pyTokens(pb.r.ctx, b)
@@ -150,7 +154,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	}
 	var units [][]ptok            // module-level statements, def and class bodies
 	binders := map[string][]int{} // a name, to the units binding it
-	owner, indent, deco := -1, 0, []ptok(nil)
+	owner, indent, deco, def, bodies := -1, 0, []ptok(nil), "", []int(nil)
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
@@ -195,6 +199,11 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		switch {
 		case owner >= 0 && l.indent > indent: // a def's or class's body
 			units[owner] = append(units[owner], line...)
+			if cond { // its unit is a condition; a def's callers pass conditions (Mythos #270 H2)
+				if bodies = append(bodies, owner); def != "" {
+					aliases[def] = true
+				}
+			}
 		case l.toks[0].text == "@":
 			owner, deco = -1, append(deco, line...)
 		default:
@@ -205,10 +214,13 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				}
 				if bound, imported := pyBinds(st); !imported {
 					for _, n := range bound {
-						binders[n] = append(binders[n], len(units))
+						binders[n], f.locals[n] = append(binders[n], len(units)), true
 					}
 					if d := st[b2i(st[0].text == "async"):]; d[0].text == "def" || d[0].text == "class" {
-						owner, indent = len(units), l.indent
+						owner, indent, def = len(units), l.indent, ""
+						if d[0].text == "def" {
+							def = d[1].text
+						}
 					}
 					units, deco = append(units, slices.Concat(deco, st)), nil
 				}
@@ -216,6 +228,11 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		}
 	}
 	taken, seen := make([]bool, len(units)), map[string]bool{}
+	for _, u := range bodies {
+		if !taken[u] {
+			taken[u], f.conds = true, append(f.conds, units[u])
+		}
+	}
 	for i := 0; i < len(f.conds); i++ { // the closure: f.conds grows with each unit taken
 		for _, k := range f.conds[i] {
 			if k.kind != 'n' || seen[k.text] {
@@ -251,6 +268,17 @@ func (pb *pyBase) resolve(d string) (string, string, error) {
 						to = parts[i] // import a.b binds a
 					}
 					next = strings.Join(append([]string{to}, parts[i+1:]...), ".")
+				} else if !f.locals[parts[i]] {
+					for _, s := range f.stars { // through a star import that binds it (Mythos #270 H3); an unknown one is unread
+						if pb.mods[s] == "" {
+							return d, "the star import " + s, nil
+						} else if fs, err := pb.file(pb.mods[s]); err != nil || fs.unread {
+							return d, "the star import " + s, err
+						} else if fs.locals[parts[i]] || fs.from[parts[i]] != "" || len(fs.stars) > 0 {
+							next = strings.Join(append([]string{s}, parts[i:]...), ".")
+							break
+						}
+					}
 				}
 				break
 			}
@@ -290,7 +318,7 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 		return path.Dir(m), path.Base(m)
 	}
 	floor := judged || slices.ContainsFunc(pb.basedirs, func(e string) bool { _, ok := pyRel(c.Dst, e); return ok }) // under a test basedir too
-	for _, q := range slices.Sorted(maps.Keys(pb.r.files)) {
+	for _, q := range pb.paths {
 		if d, m := split(c.Dst); floor && path.Ext(q) == ".py" {
 			if qd, qm := split(q); qm == m && qd != d {
 				return "an added module shadows the base module " + q, nil
@@ -335,6 +363,11 @@ func pyReach(c Change, b, a *pyFile, pb *pyBase) (string, error) {
 			return "a base test file is unread (" + f.path + "): its conditions are not verified", nil
 		}
 		for _, line := range f.conds {
+			if pb.r.work += len(line); pb.r.work > maxWork { // Mythos #270 M5
+				return "unverifiable: the base conditions' analysis is over the guard's work bound", nil
+			} else if err := pb.r.ctx.Err(); err != nil {
+				return "", err
+			}
 			for j, n := range line {
 				if n.kind != 'n' || j > 0 && line[j-1].text == "." {
 					continue
@@ -343,34 +376,54 @@ func pyReach(c Change, b, a *pyFile, pb *pyBase) (string, error) {
 				for k := j; k+2 < len(line) && line[k+1].text == "." && line[k+2].kind == 'n'; k += 2 {
 					e = append(e, line[k+2].text)
 				}
-				star := slices.IndexFunc(f.stars, func(s string) bool { return slices.Contains(suffixes, s) })
-				if src == "" && star >= 0 {
-					e = slices.Concat(strings.Split(f.stars[star], "."), e)
-				} else if src != "" && !strings.HasPrefix(src, n.text+".") {
-					e = slices.Concat(strings.Split(src, "."), e[1:])
-				}
-				d, unread, err := pb.resolve(strings.Join(e, "."))
-				if err != nil || unread != "" {
-					return "a module a condition reads is unread (" + unread + ")", err
-				}
 				if f.named[n.text] {
-					ds, _, err := pb.resolve(src)
-					if err != nil {
-						return "", err
+					if ds, unread, err := pb.resolve(src); err != nil || unread != "" {
+						return "a module a condition reads is unread (" + unread + ")", err
 					} else if y := ds[strings.LastIndex(ds, ".")+1:]; rebound(y) {
 						return why(f, y), nil
 					}
 				}
-				for e, i := strings.Split(d, "."), 1; i <= len(e); i++ { // i == len(e): c read whole, getattr(c, …) (the security review)
-					if y := e[min(i, len(e)-1)]; slices.Contains(suffixes, strings.Join(e[:i], ".")) &&
-						(i == len(e) && (src != "" || star >= 0) || i+1 < len(e) || i < len(e) && (rebound(y) || pyMoving(a.binds[y]))) {
-						return why(f, y), nil
+				chains, via := [][]string{e}, src != "" // n's chain: from its import, or through each star import (Mythos #270 H3)
+				if src != "" && !strings.HasPrefix(src, n.text+".") {
+					chains = [][]string{slices.Concat(strings.Split(src, "."), e[1:])}
+				} else if src == "" && !f.locals[n.text] && len(f.stars) > 0 {
+					chains, via = nil, true
+					for _, s := range f.stars {
+						chains = append(chains, slices.Concat(strings.Split(s, "."), e))
+					}
+				}
+				for _, ch := range chains {
+					d, unread, err := pb.resolve(strings.Join(ch, "."))
+					if err != nil || unread != "" {
+						return "a module a condition reads is unread (" + unread + ")", err
+					}
+					for e, i := strings.Split(d, "."), 1; i <= len(e); i++ { // i == len(e): c read whole, getattr(c, …) (the security review)
+						if y := e[min(i, len(e)-1)]; slices.Contains(suffixes, strings.Join(e[:i], ".")) &&
+							(i == len(e) && via || i+1 < len(e) || i < len(e) && (rebound(y) || pyMoved(y, b, a))) {
+							return why(f, y), nil
+						}
 					}
 				}
 			}
 		}
 	}
 	return "", nil
+}
+
+// pyMoved: y, or a same-file name its statements read, transitively, is
+// bound differently, or may change under its line (Mythos #270 H1:
+// HAS_GPU = _detect(), _detect's body changed).
+func pyMoved(y string, b, a *pyFile) bool {
+	seen := map[string]bool{}
+	for queue := []string{y}; len(queue) > 0; queue = queue[1:] {
+		if n := queue[0]; !seen[n] {
+			if seen[n] = true; a.binds[n] != b.binds[n] || pyMoving(a.binds[n]) {
+				return true
+			}
+			queue = append(queue, a.reads[n]...)
+		}
+	}
+	return false
 }
 
 // pyMoving: a binding that may change under its line: a def's or class's

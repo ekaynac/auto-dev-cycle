@@ -441,6 +441,13 @@ func TestPyGuardShadowFloor(t *testing.T) {
 			t.Errorf("an ini pythonpath %s: %q, want unread", v, whats(got.Blocks))
 		}
 	}
+	h := newFixtureWith(t, func(src string) { // Mythos #270 L2: a comment naming pythonpath is no key
+		write(t, src, map[string]string{"pytest.ini": "[pytest]\n# see the pythonpath docs, it's long\nminversion = 7\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := h.guarded(t, map[string]string{"money.py": baseFiles["money.py"] + "\n"}); finds(v.Blocks, "moves collection off its defaults") {
+		t.Errorf("m L2 a comment: %q, want read", whats(v.Blocks))
+	}
 	for _, key := range []string{"python_paths", "site_dirs"} {
 		f := newFixtureWith(t, func(src string) {
 			write(t, src, map[string]string{"pytest.ini": "[pytest]\n" + key + " = src\n", "src/zz/core.py": "X = 1\n"})
@@ -551,13 +558,17 @@ func TestPyGuardConditionReach(t *testing.T) {
 // __init__.py, a def- or class-bound name, a dotted or star import.
 func TestPyGuardConditionShapes(t *testing.T) {
 	test := "import pytest\nimport cfgmod\nimport clsmod\nimport objmod\nimport getmod\nimport strmod\nimport dotted.config\nfrom pkg import PSLOW\nfrom . import flags\nfrom starmod import *\n" +
-		"import lmod\nimport fmod\nfrom .marks import SKIPH\nfrom pkg import PSLOW2, settings\nfrom pkgs import SSLOW\nLSLOW = lmod.SLOW\n\ndef _slow():\n    return fmod.FSLOW\n\n" +
-		"@pytest.mark.skipif(LSLOW, reason='r')\n@pytest.mark.skipif(_slow(), reason='r')\n@SKIPH\n@pytest.mark.skipif(PSLOW2, reason='r')\n@pytest.mark.skipif(settings.S4, reason='r')\n@pytest.mark.skipif(SSLOW, reason='r')\n" +
+		"import lmod\nimport fmod\nfrom .marks import SKIPH\nfrom pkg import PSLOW2, settings\nfrom pkgs import SSLOW\nfrom gpu1 import HAS_GPU\nimport gpu2\nimport gpu3\nimport spk\nfrom spk2 import *\nfrom extmod import EXSLOW\nLSLOW = lmod.SLOW\n\ndef _slow():\n    return fmod.FSLOW\n\n" +
+		"@pytest.mark.skipif(LSLOW, reason='r')\n@pytest.mark.skipif(_slow(), reason='r')\n@SKIPH\n@pytest.mark.skipif(PSLOW2, reason='r')\n@pytest.mark.skipif(settings.S4, reason='r')\n@pytest.mark.skipif(SSLOW, reason='r')\n@pytest.mark.skipif(HAS_GPU, reason='r')\n@pytest.mark.skipif(gpu2.PSLOW3, reason='r')\n@pytest.mark.skipif(gpu3.CSLOW, reason='r')\n@pytest.mark.skipif(spk.PSLOW4, reason='r')\n@pytest.mark.skipif(PSLOW5, reason='r')\n@pytest.mark.skipif(EXSLOW, reason='r')\n" +
 		"@pytest.mark.skipif(flags.RSLOW, reason='r')\n@pytest.mark.skipif(PSLOW, reason='r')\n@pytest.mark.skipif(cfgmod.flag(), reason='r')\n" +
 		"@pytest.mark.skipif(clsmod.Cfg.SLOW, reason='r')\n@pytest.mark.skipif(objmod.cfg.SLOW, reason='r')\n@pytest.mark.skipif(getattr(getmod, 'X'), reason='r')\n@pytest.mark.skipif('strmod.check()', reason='r')\n@pytest.mark.skipif(dotted.config.DSLOW, reason='r')\n@pytest.mark.skipif(STAR, reason='r')\ndef test_s():\n    pass\n"
 	cfg, cls, obj := "def flag():\n    return False\n", "class Cfg:\n    SLOW = False\n", "import types\ncfg = types.SimpleNamespace(SLOW=False)\n"
+	gpu1 := "def _detect():\n    return False\n\nHAS_GPU = _detect()\n"
+	gpu2 := "import functools\n\ndef _g(x):\n    return False\n\nPSLOW3 = functools.partial(_g, 1)\n"
+	gpu3 := "class _Cfg:\n    slow = False\n\nCSLOW = _Cfg().slow\n"
 	f := newFixtureWith(t, func(src string) {
-		write(t, src, map[string]string{"tests/__init__.py": "", "tests/flags.py": "RSLOW = False\n", "tests/test_shapes.py": test, "pkg/__init__.py": "from .config import PSLOW\nfrom .conf import REAL as PSLOW2\nfrom . import conf4 as settings\n", "pkg/conf.py": "REAL = False\n", "pkgs/__init__.py": "from .sconf import *\n", "pkgs/sconf.py": "SSLOW = False\n", "pkg/conf4.py": "S4 = False\n",
+		write(t, src, map[string]string{"tests/__init__.py": "", "tests/flags.py": "RSLOW = False\n", "tests/test_shapes.py": test, "pkg/__init__.py": "from .config import PSLOW\nfrom .conf import REAL as PSLOW2\nfrom . import conf4 as settings\n", "pkg/conf.py": "REAL = False\n", "pkgs/__init__.py": "from .sconf import *\n", "gpu1.py": gpu1, "gpu2.py": gpu2, "gpu3.py": gpu3,
+			"spk/__init__.py": "from .sconf2 import *\n", "spk/sconf2.py": "PSLOW4 = False\n", "spk2/__init__.py": "from .sconf3 import *\n", "spk2/sconf3.py": "PSLOW5 = False\n", "exsrc.py": "EXSLOW = False\n", "pkgs/sconf.py": "SSLOW = False\n", "pkg/conf4.py": "S4 = False\n",
 			"lmod.py": "SLOW = False\n", "fmod.py": "FSLOW = False\n", "hmod.py": "HSLOW = False\n", "tests/marks.py": "import pytest\nfrom hmod import HSLOW\nSKIPH = pytest.mark.skipif(HSLOW, reason='r')\n",
 			"pkg/config.py": "PSLOW = False\n", "cfgmod.py": cfg, "clsmod.py": cls, "objmod.py": obj, "getmod.py": "X = False\n", "strmod.py": "def check():\n    return False\n", "dotted/__init__.py": "", "dotted/config.py": "DSLOW = False\n", "starmod.py": "STAR = False\n"})
 		plain(t, src, "add", "--all")
@@ -576,15 +587,61 @@ func TestPyGuardConditionShapes(t *testing.T) {
 		"o H2 R10 a renamed re-export":                         {map[string]string{"pkg/conf.py": "REAL = 'x'\n"}, nil, "pkg/conf.py: a skipif or xfail condition in tests/test_shapes.py reads REAL"},
 		"o H2 R11 a module re-exported":                        {map[string]string{"pkg/conf4.py": "S4 = 'x'\n"}, nil, "pkg/conf4.py: a skipif or xfail condition in tests/test_shapes.py reads S4"},
 		"ii a re-export through a star import (the name rule)": {map[string]string{"pkgs/sconf.py": "SSLOW = 'x'\n"}, nil, "pkgs/sconf.py: a skipif or xfail condition in tests/test_shapes.py reads SSLOW"},
-		"iv a dotted import":                                   {map[string]string{"dotted/config.py": "DSLOW = 'x'\n"}, nil, "dotted/config.py: a skipif or xfail condition in tests/test_shapes.py reads DSLOW"},
-		"iv a star import":                                     {map[string]string{"starmod.py": "STAR = 'x'\n"}, nil, "starmod.py: a skipif or xfail condition in tests/test_shapes.py reads STAR"},
-		"an unrelated change to a star one":                    {map[string]string{"starmod.py": "STAR = False\nOTHER = 1\n"}, nil, ""},
+		// Mythos #270: H1 (a name bound by a same-file call), H3 (resolve through star imports).
+		"m H1 a same-file def's body":    {map[string]string{"gpu1.py": strings.Replace(gpu1, "return False", "return 'x'", 1)}, nil, "gpu1.py: a skipif or xfail condition in tests/test_shapes.py reads HAS_GPU"},
+		"m H1 functools.partial":         {map[string]string{"gpu2.py": strings.Replace(gpu2, "return False", "return 'x'", 1)}, nil, "gpu2.py: a skipif or xfail condition in tests/test_shapes.py reads PSLOW3"},
+		"m H1 _Cfg().slow":               {map[string]string{"gpu3.py": strings.Replace(gpu3, "slow = False", "slow = 'x'", 1)}, nil, "gpu3.py: a skipif or xfail condition in tests/test_shapes.py reads CSLOW"},
+		"m H3 pkg.PSLOW4 through a star": {map[string]string{"spk/sconf2.py": "PSLOW4 = 'x'\n"}, nil, "spk/sconf2.py: a skipif or xfail condition in tests/test_shapes.py reads PSLOW4"},
+		"ii a name re-exported by a module not in the base (the name rule)": {map[string]string{"exsrc.py": "EXSLOW = 'x'\n"}, nil, "exsrc.py: a skipif or xfail condition in tests/test_shapes.py reads EXSLOW"},
+		"m H3 a two-level star":             {map[string]string{"spk2/sconf3.py": "PSLOW5 = 'x'\n"}, nil, "spk2/sconf3.py: a skipif or xfail condition in tests/test_shapes.py reads PSLOW5"},
+		"iv a dotted import":                {map[string]string{"dotted/config.py": "DSLOW = 'x'\n"}, nil, "dotted/config.py: a skipif or xfail condition in tests/test_shapes.py reads DSLOW"},
+		"iv a star import":                  {map[string]string{"starmod.py": "STAR = 'x'\n"}, nil, "starmod.py: a skipif or xfail condition in tests/test_shapes.py reads STAR"},
+		"an unrelated change to a star one": {map[string]string{"starmod.py": "STAR = False\nOTHER = 1\n"}, nil, ""},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
 			t.Errorf("%s: %q, want %q", name, whats(own), c.why)
 		}
 	}
+}
+
+// Mythos #270 H1 in passes: a flag a same-file def computes; H2: a
+// condition in a def or class body reading a local name or a parameter.
+func TestPyGuardConditionBodies(t *testing.T) {
+	marks := "import pytest\n\ndef _detect():\n    return False\n\nFLAG = _detect()\nSKIP = pytest.mark.skipif(FLAG, reason='r')\n"
+	m := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"marks2.py": marks})
+		plain(t, src, "add", "--all")
+	})
+	if v := m.guarded(t, map[string]string{"marks2.py": strings.Replace(marks, "return False", "return 'x'", 1)}); !pyFinds(pyOwn(v.Blocks), "marks2.py: unverifiable: a skipif or xfail condition") {
+		t.Errorf("m H1 passes: FLAG = _detect(), the body changed: %q, want blocked", whats(pyOwn(v.Blocks)))
+	}
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"b1.py": "SLOW = False\n", "b2.py": "SLOW = False\n", "b3.py": "SLOW = False\n", "b4.py": "SLOW = False\n",
+			"tests/conftest.py": "import pytest\nimport b1\nimport b2\n\n@pytest.fixture(autouse=True)\ndef fx(request):\n    s = b1.SLOW\n    request.applymarker(pytest.mark.xfail(s))\n\n" +
+				"def pytest_collection_modifyitems(items):\n    flag = b2.SLOW\n    for item in items:\n        item.add_marker(pytest.mark.skipif(flag, reason='r'))\n",
+			"tests/test_b.py": "import pytest\nimport b3\nimport b4\n\nclass TestX:\n    slow = b3.SLOW\n    pytestmark = pytest.mark.skipif(slow, reason='r')\n\n    def test_x(self):\n        pass\n\n" +
+				"def _mk(flag):\n    return pytest.mark.skipif(flag, reason='r')\n\nSKIP = _mk(b4.SLOW)\n\n@SKIP\ndef test_y():\n    pass\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]guardCase{
+		"m H2 a fixture's local":    {map[string]string{"b1.py": "SLOW = 'x'\n"}, nil, "b1.py: a skipif or xfail condition in tests/conftest.py reads SLOW"},
+		"m H2 a hook's local":       {map[string]string{"b2.py": "SLOW = 'x'\n"}, nil, "b2.py: a skipif or xfail condition in tests/conftest.py reads SLOW"},
+		"m H2 a class's pytestmark": {map[string]string{"b3.py": "SLOW = 'x'\n"}, nil, "b3.py: a skipif or xfail condition in tests/test_b.py reads SLOW"},
+		"m H2 a mark factory":       {map[string]string{"b4.py": "SLOW = 'x'\n"}, nil, "b4.py: a skipif or xfail condition in tests/test_b.py reads SLOW"},
+	} {
+		v := f.guarded(t, c.files, c.gone...)
+		if own := pyOwn(v.Blocks); !pyFinds(own, c.why) {
+			t.Errorf("%s: %q, want %q", name, whats(own), c.why)
+		}
+	}
+	old := maxWork // M5: the base conditions' analysis counts toward the work bound
+	t.Cleanup(func() { maxWork = old })
+	maxWork = 120
+	if v := f.guarded(t, map[string]string{"b4.py": "SLOW = False\nX = 1\n"}); !pyFinds(pyOwn(v.Blocks), "b4.py: unverifiable: the base conditions' analysis is over the guard's work bound") {
+		t.Errorf("m M5 the work bound: %q", whats(pyOwn(v.Blocks)))
+	}
+	maxWork = old
 }
 
 // The controls: ordinary Python changes raise nothing of P14c-2a's but

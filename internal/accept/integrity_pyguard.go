@@ -26,9 +26,9 @@ var (
 	// pyOpt: the options a base may set (collection and results untouched).
 	pyOpt     = regexp.MustCompile(`^-(q+|v+|r\w*|l|s|W|-(strict|strict-markers|strict-config|showlocals|tb|color|durations|capture))$`)
 	pyWords   = regexp.MustCompile(`[\s"',\[\]=]+`)
-	pyPathKey = regexp.MustCompile(`pythonpath|python_paths|site_dirs`)
-	pyKey     = regexp.MustCompile(`\n(\[|[A-Za-z_][\w.-]*[ \t]*[=:])`) // the next key or section
-	pyNote    = regexp.MustCompile(`(?m)^[ \t]*[#;].*$`)                // a comment line
+	pyPathKey = regexp.MustCompile(`(?m)^[ \t]*(pythonpath|python_paths|site_dirs)[ \t]*[=:]`) // a key (Mythos #270 L2)
+	pyKey     = regexp.MustCompile(`\n(\[|[A-Za-z_][\w.-]*[ \t]*[=:])`)                        // the next key or section
+	pyNote    = regexp.MustCompile(`(?m)^[ \t]*[#;].*$`)                                       // a comment line
 	// splitLines breaks lines where str.splitlines does (iniconfig's lines).
 	splitLines = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n", "\x1c", "\n", "\x1d", "\n", "\x1e", "\n",
 		"\u0085", "\n", "\u2028", "\n", "\u2029", "\n")
@@ -228,9 +228,10 @@ type pyFile struct {
 	// its import statements; the names they bind, and the names defined at import
 	imports         string
 	imported, local map[string]bool
-	mods            []string          // the names its imports bind or name
-	binds           map[string]string // the statements binding each name at import
-	refs            map[string]int    // "kind\x00reference\x00function"
+	mods            []string            // the names its imports bind or name
+	binds           map[string]string   // the statements binding each name at import
+	reads           map[string][]string // the names those statements read (Mythos #270 H1)
+	refs            map[string]int      // "kind\x00reference\x00function"
 }
 
 // pyFind is one import-time finding: strict ones never pass on the base.
@@ -251,7 +252,7 @@ func (a *pyFile) passes(k string, b *pyFile, changed []string) bool {
 		return false
 	} else if f.cond { // each name bound at import as in the base, no import naming a changed module (Opus #267 M4)
 		return !slices.ContainsFunc(f.calls, func(n string) bool { // a def's or class's body may change under its line
-			return (!a.imported[n] || a.local[n]) && (!a.local[n] || a.binds[n] != b.binds[n] || pyMoving(a.binds[n])) // Mythos #267 H1, r2 M2
+			return (!a.imported[n] || a.local[n]) && (!a.local[n] || pyMoved(n, b, a)) // Mythos #267 H1, r2 M2, #270 H1
 		}) &&
 			!slices.ContainsFunc(changed, func(q string) bool { return slices.Contains(a.mods, path.Base(q)) })
 	}
@@ -288,7 +289,7 @@ func named(t []ptok, name string) bool {
 // __init_subclass__, __set_name__ and a type subclass's methods run when a
 // class is made, so are (Mythos #263 L1).
 func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok bool, err error) {
-	fa = &pyFile{refs: map[string]int{}, finds: map[string]*pyFind{}, imported: map[string]bool{}, local: map[string]bool{}, binds: map[string]string{}}
+	fa = &pyFile{refs: map[string]int{}, finds: map[string]*pyFind{}, imported: map[string]bool{}, local: map[string]bool{}, binds: map[string]string{}, reads: map[string][]string{}}
 	src, ok, err := r.pyRead(want, p, blob)
 	if !want || !ok || err != nil {
 		return fa, ok, err
@@ -352,8 +353,8 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 				if why := pyAllowed(st, conftest); why != "" {
 					find(st, why, strings.HasPrefix(why, "an import binding")) // Mythos #266 L1
 				}
-				binds, imported := pyBinds(slices.Concat(st, l.inner)) // a walrus in an f-string binds too (Mythos #266 H1)
-				text := fmt.Sprint(st) + "\n"                          // once: a chain binds many names (Opus #270 L1)
+				binds, imported := pyBinds(slices.Concat(st, l.inner))                  // a walrus in an f-string binds too (Mythos #266 H1)
+				text, reads := fmt.Sprint(st)+"\n", pyNames(slices.Concat(st, l.inner)) // once: a chain binds many names (Opus #270 L1)
 				for _, n := range binds {
 					if slices.Contains(pyImportPath, n) { // in every file (Mythos #267 H3)
 						importPath(st, n)
@@ -362,6 +363,7 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 						find(st, "a dunder or an allowlisted name bound at import ("+n+")", true) // Opus #266 H1
 					}
 					fa.imported[n], fa.local[n], fa.binds[n] = fa.imported[n] || imported, fa.local[n] || !imported, fa.binds[n]+text
+					fa.reads[n] = append(fa.reads[n], reads...)
 				}
 				if imported {
 					fa.imports = fa.imports + fmt.Sprint(st) + "\n"
