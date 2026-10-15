@@ -5,6 +5,7 @@ package accept
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/build"
 	"os"
 	"path/filepath"
@@ -327,6 +328,62 @@ func TestIntegrityRealTypes(t *testing.T) {
 			t.Errorf("traded across platforms, %s: %q", name, whats(v.Blocks))
 		}
 	}
+	// Mythos #269 H1 (a), a regression, and its race twin (on main): a
+	// TestMain declared per platform or per race tag; every declaration of
+	// the hook is compared, per platform.
+	hook := "package pkg\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(m.Run()) }\n"
+	for name, files := range map[string]map[string]string{
+		"a TestMain per platform": {"pkg/main_arm64_test.go": hook, "pkg/main_amd64_test.go": "package pkg\n\nimport \"testing\"\n\nfunc TestMain(m *testing.M) {}\n"},
+		"a TestMain per race tag": {"pkg/main_race_test.go": "//go:build race\n\n" + hook, "pkg/main_norace_test.go": "//go:build !race\n\npackage pkg\n\nimport \"testing\"\n\nfunc TestMain(m *testing.M) {}\n"},
+	} {
+		if v := f.guarded(t, files, "pkg/main_test.go"); !finds(v.Warnings, "TestMain(*testing.M) of pkg:pkg changed or deleted") {
+			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
+		}
+	}
+	// H1 (b): a both-platform .(*testing.T) traded for a one-platform "\x16"
+	// literal; a second identical exec.Command in a file now built on amd64 only.
+	ex := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/helper_test.go": "package pkg\n\nimport \"testing\"\n\nfunc asT(tb testing.TB) *testing.T { return tb.(*testing.T) }\n",
+			"pkg/x.go": "package pkg\n\nimport \"os/exec\"\n\nfunc run() { _ = exec.Command(\"true\").Run() }\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]struct {
+		files map[string]string
+		why   string
+	}{
+		"a 0x16 literal for an assertion": {map[string]string{"pkg/helper_test.go": "package pkg\n\nimport \"testing\"\n\nfunc asT(tb testing.TB) *testing.T { return nil }\n",
+			"pkg/mark_amd64_test.go": "package pkg\n\nimport (\n\t\"fmt\"\n\t\"testing\"\n)\n\nfunc TestMark(t *testing.T) { fmt.Print(\"\\x16--- PASS: TestAdd (0.00s)\\n\") }\n"}, "can forge"},
+		"a second exec.Command on amd64 only": {map[string]string{"pkg/x.go": "//go:build amd64\n\npackage pkg\n\nimport \"os/exec\"\n\nfunc run() {\n\t_ = exec.Command(\"true\").Run()\n\t_ = exec.Command(\"true\").Run()\n}\n"},
+			"a new exit, exec"},
+	} {
+		if v := ex.guarded(t, c.files); !finds(v.Blocks, c.why) {
+			t.Errorf("%s: %q", name, whats(v.Blocks))
+		}
+	}
+	// Mythos #269 M2: a redeclared func's variadic-ness is part of its shape.
+	if v := f.guarded(t, map[string]string{"pkg/a_test.go": "//go:build race\n\npackage pkg\n\nfunc sum(a ...int) int { return 0 }\n",
+		"pkg/b_test.go": "//go:build !race\n\npackage pkg\n\nfunc sum(a []int) int { return 0 }\n"}); !finds(v.Blocks, "declared again with other types") {
+		t.Errorf("a variadic redeclared as a slice: %q", whats(v.Blocks))
+	}
+	// Mythos #269 L2: gob.Register of a testing value lets a stream allocate one.
+	if v := f.guarded(t, decode("\t\"encoding/gob\"\n", "\tvar zt *testing.T\n\tgob.Register(zt)\n\ty := t\n", "")); !finds(v.Blocks, forgedWhy+" (gob.Register(zt))") {
+		t.Errorf("gob.Register of a *testing.T: %q", whats(v.Blocks))
+	}
+	// Mythos #269 M1 (on main): an alias DAG made mentions exponential (8^12
+	// visits); it gets a verdict within seconds.
+	var dag strings.Builder
+	dag.WriteString("package pkg\n")
+	for i := range 12 {
+		a := fmt.Sprintf("A%d", i+1)
+		fmt.Fprintf(&dag, "\ntype A%d = func(%s) %s\n", i, strings.Repeat(a+", ", 7)+a, a)
+	}
+	dag.WriteString("\ntype A12 = int\n")
+	start := time.Now()
+	if v := f.guarded(t, map[string]string{"pkg/dag.go": dag.String()}); time.Since(start) > 30*time.Second {
+		t.Errorf("an alias DAG: %v (%q)", time.Since(start), whats(v.Blocks))
+	}
+
 	// The background flag on 52087d3 "parser differential (build tags)": a
 	// //go:build line makes +build lines ignored, as go reads them (go vet's
 	// buildtag check fails such a package in a default go test).

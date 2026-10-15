@@ -249,6 +249,13 @@ func keys[V any](ms ...map[string]V) []string {
 // compare blocks what one package directory lost, or gained, between the
 // base (b) and the candidate (a), and warns of what the reviewer must see.
 func (r *run) compare(dir string, b, a pkgFacts) {
+	seen := map[string]bool{} // keys per platform: each finding reported once
+	add := func(to *[]Block, p, what string) {
+		if k := p + "\x00" + what; !seen[k] {
+			seen[k] = true
+			add(to, p, what)
+		}
+	}
 	bad := maps.Clone(b.bad)
 	maps.Copy(bad, a.bad)
 	for _, p := range slices.Sorted(maps.Keys(bad)) {
@@ -284,29 +291,28 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 	if more(a.forged, b.forged) {
 		add(&r.blocks, dir, "can forge go test2json results (testing.Testing, a 0x16 spelled or in a constant, or a testing value not the runner's)")
 	}
-	reached := map[string]bool{} // per platform, reported once
-	for _, k := range slices.Sorted(maps.Keys(a.init)) {
-		if what := k[:max(0, strings.LastIndex(k, " on "))]; a.init[k] > b.init[k] && !reached[what] {
-			reached[what] = true
+	for _, k := range slices.Sorted(maps.Keys(a.init)) { // init, flags, warn and refs keys end in "\x00platform"
+		if what, _, _ := strings.Cut(k, "\x00"); a.init[k] > b.init[k] {
 			add(&r.blocks, dir, "unverifiable: the package's initialization (tests included) reaches "+what)
 		}
 	}
-	for _, p := range slices.Sorted(maps.Keys(a.flags)) {
-		for _, f := range a.flags[p] {
-			if !slices.Contains(b.flags[p], f) && (r.tested(dir) || f == "reflection on a testing value") {
+	for _, k := range slices.Sorted(maps.Keys(a.flags)) {
+		p, _, _ := strings.Cut(k, "\x00")
+		for _, f := range a.flags[k] {
+			if !slices.Contains(b.flags[k], f) && (r.tested(dir) || f == "reflection on a testing value") {
 				add(&r.blocks, p, "unverifiable: "+f)
-			} else if !slices.Contains(b.flags[p], f) {
+			} else if !slices.Contains(b.flags[k], f) {
 				add(&r.warnings, p, f+": review it")
 			}
 		}
 	}
 	for _, k := range keys(b.warn, a.warn) {
-		if a.warn[k] != b.warn[k] {
-			add(&r.warnings, dir, k+" changed or deleted: review it")
+		if hook, _, _ := strings.Cut(k, "\x00"); a.warn[k] != b.warn[k] {
+			add(&r.warnings, dir, hook+" changed or deleted: review it")
 		}
 	}
 	for _, k := range keys(b.refs, a.refs) { // per file and function: added ones block or warn, any other change warns
-		f := strings.Split(k, "\x00") // file, reference, function
+		f := strings.Split(k, "\x00") // file, reference, function, platform
 		if at := f[0] + ": " + f[1] + " in " + f[2]; a.refs[k] > b.refs[k] && r.tested(dir) && sensitive(f[1]) == 2 {
 			add(&r.blocks, at, "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
 		} else if a.refs[k] != b.refs[k] {

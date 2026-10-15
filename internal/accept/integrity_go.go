@@ -267,7 +267,7 @@ type pkgScan struct {
 	same      map[string][]*ast.FuncDecl // every declaration of a name (race, !race): each counts
 	pi        int                        // the platform read (platforms[pi])
 	asserting map[*ast.FuncDecl]bool
-	mentioned map[ast.Expr]bool // the aliases mentions is in
+	mentioned map[ast.Expr]int8 // per alias right-hand side: 1 being read, 2 no, 3 mentions
 	starred   map[ast.Expr]bool // directly behind *
 	pkgVars   map[*ast.ValueSpec]bool
 	aliases   map[types.Object]ast.Expr // an alias's right-hand side
@@ -374,10 +374,10 @@ func (s *pkgScan) mentions(n ast.Node) (found bool) {
 	ast.Inspect(n, func(n ast.Node) bool {
 		e, _ := n.(ast.Expr)
 		if a := s.alias(e); e != nil && a != nil && !found && !slices.Contains(testTypes, s.qual(n)) && s.tval(e) == "" {
-			if found = s.mentioned[a]; !found { // an alias cycle (A[P] = B[P], B[P] = A[P]) mentions, fail closed
-				s.mentioned[a] = true
+			if found = s.mentioned[a]&1 == 1; s.mentioned[a] == 0 { // once per alias; a cycle (A[P] = B[P], B[P] = A[P]) mentions
+				s.mentioned[a] = 1
 				found = s.mentions(a)
-				delete(s.mentioned, a)
+				s.mentioned[a] = 2 + int8(b2i(found))
 			}
 		}
 		found = found || slices.Contains(testTypes, s.qual(n)) || e != nil && s.tval(e) != ""
@@ -546,8 +546,9 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			fa.twentyTwos[pi] += b2i(constant.Compare(tv.Value, token.EQL, constant.MakeInt64(22)))
 		}
 	}
+	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
-		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]bool{}, asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
+		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
 	for _, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
@@ -636,7 +637,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				where = recv(fn) + "." + fn.Name.Name
 			}
 			for _, q := range c.refs {
-				fa.refs[m.path+"\x00"+q+"\x00"+where]++
+				fa.refs[m.path+"\x00"+q+"\x00"+where+"\x00"+plat]++
 			}
 			hook := test && fname == "TestMain" && slices.ContainsFunc(fn.Type.Params.List, func(f *ast.Field) bool {
 				st, ok := f.Type.(*ast.StarExpr)
@@ -654,7 +655,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			}
 			switch {
 			case hook:
-				fa.warn["TestMain(*testing.M) of "+dir+":"+name] = string(m.src[fset.Position(d.Pos()).Offset:fset.Position(d.End()).Offset])
+				fa.warn["TestMain(*testing.M) of "+dir+":"+name+"\x00"+plat] += string(m.src[fset.Position(d.Pos()).Offset:fset.Position(d.End()).Offset]) // every declaration
 			case test && goTest(fname):
 				if m.on[pi] > 0 {
 					k, st := platforms[pi][0]+"/"+platforms[pi][1]+" "+dir+":"+name+"."+fname, &stat{c.asserts + output(f, fn), c.skips, m.on[pi], m.cons}
@@ -668,7 +669,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			fa.ambient[pi] += c.skips
 		}
 		if len(flags) > 0 {
-			fa.flags[m.path] = flags
+			fa.flags[m.path+"\x00"+plat] = flags
 		}
 	}
 	if err := r.typedOn(platforms[pi], dir, name, fset, files, meta, fa); err != nil {
@@ -716,7 +717,7 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) 
 		n := starts[0]
 		starts = starts[1:]
 		ast.Inspect(n, func(n ast.Node) bool {
-			add := func(k string) { fa.init[k+" on "+platforms[s.pi][0]+"/"+platforms[s.pi][1]]++ }
+			add := func(k string) { fa.init[k+"\x00"+platforms[s.pi][0]+"/"+platforms[s.pi][1]]++ }
 			switch x := n.(type) {
 			case *ast.FuncLit: // run only when called, ranged over or passed to an own function
 				return run[x]

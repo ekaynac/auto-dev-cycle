@@ -546,8 +546,8 @@ func shapes(fset *token.FileSet, info *types.Info, files []*ast.File) map[string
 	out := map[string]string{}
 	of := func(es ...ast.Expr) (s string) {
 		for _, e := range es {
-			if e != nil {
-				s += types.TypeString(info.TypeOf(e), nil) + ";"
+			if _, dots := e.(*ast.Ellipsis); e != nil {
+				s += map[bool]string{true: "..."}[dots] + types.TypeString(info.TypeOf(e), nil) + ";"
 			}
 		}
 		return s
@@ -692,6 +692,10 @@ func facts(info *types.Info, n ast.Node, add func(string)) {
 			id := ident(fun)
 			if sel, ok := fun.(*ast.SelectorExpr); ok {
 				id = sel.Sel
+			}
+			if o, _ := info.Uses[id].(*types.Func); o != nil && strings.HasPrefix(o.FullName(), "encoding/gob.Register") &&
+				reaches(info, x, id, func(t types.Type) bool { return holds(t, true, nil) }) {
+				at(factForged, x) // a stream may then allocate one
 			}
 			if o, _ := info.Uses[id].(*types.Func); o != nil && o.Pkg() != nil && o.Pkg().Path() == "reflect" {
 				if reaches(info, x, id, func(t types.Type) bool { return holds(t, true, nil) }) {
