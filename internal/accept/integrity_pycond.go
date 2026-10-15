@@ -3,22 +3,20 @@
 package accept
 
 import (
-	"cmp"
-	"maps"
-	"path"
 	"slices"
 	"strings"
 )
 
 // P14c-2a-cond (Opus and Mythos #266 H2, Mythos #266 r2, Opus and Mythos
-// #267): a skipif or xfail condition pytest would run as code, and modules
-// shadowing the code under test.
+// #267): a skipif or xfail condition pytest would run as code. The shadow
+// rules are P14c-2a-shadow's (#267 round 4, split per 04 §2).
 
 // pySkipString: a skipif or xfail mark (pytest.mark.NAME(…), .with_args(…),
 // .__call__(…), or a name bound to such a mark; not pytest.xfail() in a
 // pure file) whose positional arguments or condition= may be a string:
-// each must surely be a bool, and the call is not called again.
-func pySkipString(t []ptok, pure bool, aliases map[string]bool) bool {
+// each must surely be a bool, and the call is not called again. t's first
+// code tokens are its line's, the rest its f-string fields'.
+func pySkipString(t []ptok, code int, pure bool, aliases map[string]bool) bool {
 	for i := 0; i+1 < len(t); i++ {
 		open := i + 1
 		if i+3 < len(t) && t[i+1].text == "." && (t[i+2].text == "with_args" || t[i+2].text == "__call__") {
@@ -33,7 +31,7 @@ func pySkipString(t []ptok, pure bool, aliases map[string]bool) bool {
 				break
 			}
 		}
-		if end+1 < len(t) && t[end+1].text == "(" { // xfail(False)("…") appends a condition (Mythos #267 M2)
+		if end+1 < len(t) && t[end+1].text == "(" && end+1 < code { // xfail(False)("…") appends a condition (Mythos #267 M2), in t, not its f-string fields (r2 L2)
 			return true
 		}
 		for _, a := range pySplit(t[open+1:min(end, len(t))], ",") {
@@ -65,137 +63,6 @@ func pyBool(t []ptok) bool {
 	return len(t) > 0
 }
 
-// pyBaseTest is what a base test module or conftest imports, and its
-// lines holding a condition: read once per run (Mythos #267 L3).
-type pyBaseTest struct {
-	path   string
-	unread bool
-	mods   []string          // the dotted names it imports (a from-import's as module.name)
-	from   map[string]string // a name it binds by import, to that dotted name
-	conds  [][]ptok          // its lines pySkipString flags
-}
-
-// pyBaseTests reads the base's test files: every import statement, after
-// ; or a compound header's : too (Opus #267 M3).
-func (r *run) pyBaseTests() (tests []pyBaseTest, err error) {
-	for _, q := range slices.Sorted(maps.Keys(r.files)) {
-		if !pyTested(q) {
-			continue
-		}
-		bt := pyBaseTest{path: q, from: map[string]string{}}
-		b, why, err := r.file(r.files[q])
-		lines, why2, err2 := pyTokens(r.ctx, b)
-		if err = cmp.Or(err, err2); err != nil {
-			return nil, err
-		}
-		pure, aliases := pyPure(lines)
-		for _, l := range lines {
-			if line := slices.Concat(l.toks, l.inner); pySkipString(line, pure, aliases) {
-				bt.conds = append(bt.conds, line)
-			}
-			for i, k := range l.toks {
-				if i > 0 && l.toks[i-1].text != ";" && l.toks[i-1].text != ":" || k.text != "import" && k.text != "from" {
-					continue
-				}
-				st := pySplit(l.toks[i:], ";")[0]
-				for _, part := range pyImportParts(st) {
-					d, as := pyJoin(pySplit(part, "as")[0]), part[len(part)-1].text
-					if k.text == "from" {
-						d = pyJoin(st[1:max(slices.IndexFunc(st, func(k ptok) bool { return k.text == "import" }), 1)]) + "." + d
-					} else if !named(part, "as") {
-						as, d = part[0].text, part[0].text
-					}
-					bt.mods, bt.from[as] = append(bt.mods, d), d
-				}
-			}
-		}
-		bt.unread = why+why2 != ""
-		tests = append(tests, bt)
-	}
-	return tests, nil
-}
-
-// pySuffixes are the dotted names the module at p (dir/m) may answer to.
-func pySuffixes(p string) (s []string) {
-	for d, rest := "", strings.Split(strings.TrimSuffix(strings.TrimSuffix(p, ".py"), "/__init__"), "/"); len(rest) > 0; rest = rest[:len(rest)-1] {
-		d = strings.TrimSuffix(rest[len(rest)-1]+"."+d, ".")
-		s = append(s, d)
-	}
-	return s
-}
-
-// pyShadow is why change c may shadow a module the tests import, or "":
-// an __init__.py added, removed or renamed in a test directory (the
-// basedir moves); a module added under a test directory, the root, or a
-// base pythonpath directory or its subdirectories, whose module path is a
-// base module's or ends with one, or named as a base module in a directory
-// holding a test file or a pythonpath one; or a module a base test file
-// imports, by any dotted suffix (a third-party one too). Unread blocks.
-func (r *run) pyShadow(c Change, judged bool, paths []string, tests func() ([]pyBaseTest, error)) (string, error) {
-	dir, m := path.Dir(c.Dst), strings.TrimSuffix(path.Base(c.Dst), ".py")
-	switch {
-	case path.Base(c.Src) == "__init__.py" && (c.Status == "D" || c.Src != c.Dst) && r.pyTestDir(c.Src) || judged && m == "__init__" && c.Status != "M" && c.Status != "D":
-		return "an __init__.py added, removed or renamed in a test directory (the basedir moves)", nil
-	case c.Status == "M" || c.Status == "D" || path.Ext(c.Dst) != ".py" || pyTested(c.Dst):
-		return "", nil
-	case m == "__init__":
-		dir, m = path.Dir(dir), path.Base(dir)
-	}
-	in := func(d string) bool {
-		return slices.ContainsFunc(paths, func(p string) bool { return d == p || strings.HasPrefix(d, p+"/") })
-	}
-	if !judged && dir != "." && !in(dir) { // the root is on sys.path (Mythos #267 H2), a pythonpath's tree too (M1)
-		return "", nil
-	}
-	mp, suffixes := path.Join(dir, m), pySuffixes(c.Dst)
-	for _, q := range slices.Sorted(maps.Keys(r.files)) {
-		if qm := strings.TrimSuffix(strings.TrimSuffix(q, "/__init__.py"), ".py"); path.Ext(q) == ".py" && (qm == mp || strings.HasSuffix(mp, "/"+qm) ||
-			path.Base(qm) == m && path.Dir(qm) != dir && (slices.Contains(paths, path.Dir(qm)) || slices.ContainsFunc(r.baseDirs[path.Dir(qm)], pyTested))) {
-			return "a module added under a test directory shadows the base module " + q, nil
-		}
-	}
-	all, err := tests()
-	for _, bt := range all {
-		if bt.unread {
-			return "a module added under a test directory may shadow one " + bt.path + " imports (unread)", err
-		}
-		for _, d := range bt.mods {
-			for ; d != "" && d != "."; d = d[:max(strings.LastIndex(d, "."), 0)] {
-				if slices.Contains(suffixes, d) {
-					return "a module added under a test directory shadows a module " + bt.path + " imports", nil
-				}
-			}
-		}
-	}
-	return "", err
-}
-
-// pyReach is why changed module c may change a base test's condition, or
-// "": a base test file's condition reads a name imported from c (or c.name
-// through a module import) that c binds differently now (Mythos #267 H4).
-func pyReach(c Change, b, a *pyFile, all []pyBaseTest) string {
-	suffixes := pySuffixes(c.Dst)
-	for _, bt := range all {
-		if bt.unread {
-			return "a base test file is unread (" + bt.path + "): its conditions are not verified"
-		}
-		for _, line := range bt.conds {
-			for j, n := range line {
-				src, attr := bt.from[n.text], ""
-				if j+2 < len(line) && line[j+1].text == "." && slices.Contains(suffixes, src) {
-					attr = line[j+2].text
-				} else if i := strings.LastIndex(src, "."); i > 0 && slices.Contains(suffixes, src[:i]) {
-					attr = src[i+1:]
-				}
-				if attr != "" && a.binds[attr] != b.binds[attr] {
-					return "a skipif or xfail condition in " + bt.path + " reads " + attr + ", which this change rebinds"
-				}
-			}
-		}
-	}
-	return ""
-}
-
 // pyPure: the file binds pytest only by import pytest: no parameter,
 // target, attribute or alias named pytest (Opus #267 M2, Mythos #267 M2);
 // aliases are the names bound to a chain ending in .skipif or .xfail.
@@ -204,7 +71,7 @@ func pyPure(lines []pline) (pure bool, aliases map[string]bool) {
 	for _, l := range lines {
 		t, d := slices.Concat(l.toks, l.inner), l.toks[b2i(l.toks[0].text == "async"):]
 		binds, imported := pyBinds(t)
-		pure = pure && !(slices.Contains(binds, "pytest") && !(imported && len(t) == 2 && t[0].text == "import"))
+		pure = pure && !(slices.Contains(binds, "pytest") && !(imported && t[0].text == "import" && !named(t, "as"))) // import pytest, os (Mythos #267 r2 L1)
 		for i, k := range t {
 			pure = pure && !(k.text == "pytest" && (i > 0 && slices.Contains([]string{".", "lambda"}, t[i-1].text) ||
 				i+1 < len(t) && (t[i+1].text == ":" || t[i+1].text == "=" && (i+2 >= len(t) || t[i+2].text != "=")) ||
