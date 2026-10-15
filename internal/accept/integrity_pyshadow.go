@@ -54,6 +54,8 @@ type pyBaseFile struct {
 	units     [][]ptok          // its module-level statements, def and class bodies (Mythos #270 M3)
 	binders   map[string][]int  // a name, to the units binding it
 	sysUnread bool              // it names sys.path, or sys in a way pySysUse does not read
+
+	plain bool // a package whose submodules resolve in its own directory: read, every module-level statement pyInert (Astra #275 H6)
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -200,6 +202,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	var units [][]ptok            // module-level statements, def and class bodies
 	binders := map[string][]int{} // a name, to the units binding it
 	owner, indent, deco, bodies := -1, 0, []ptok(nil), []int(nil)
+	future, inert := false, true // pyInert, every module-level statement
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
@@ -256,7 +259,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				bodies = append(bodies, owner)
 			}
 		case l.toks[0].text == "@":
-			owner, deco, f.dynamic = -1, append(deco, line...), true
+			owner, deco, f.dynamic, inert = -1, append(deco, line...), true, false
 		default:
 			owner = -1
 			for _, st := range pySplit(line, ";") {
@@ -264,6 +267,8 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 					continue
 				}
 				f.dynamic = f.dynamic || !pyStatic(st)
+				future = future || pyJoin(st) == "from__future__importannotations"
+				inert = inert && pyInert(st, future)
 				if bound, imported := pyBinds(st); !imported {
 					if len(st) > 2 && st[0].kind == 'n' && st[1].text == "." && len(pyAssign(st)) == 1 {
 						bound = append(bound, st[0].text) // FLAGS.update(…) changes FLAGS (Mythos #270 r2 L4)
@@ -299,6 +304,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		}
 	}
 	f.units, f.binders = units, binders
+	f.plain = inert && !f.unread
 	return f, nil
 }
 
@@ -317,6 +323,80 @@ func pyStatic(st []ptok) bool {
 		return !slices.ContainsFunc(parts[1], func(k ptok) bool { return k.text == "(" }) // no call in the value: X = globals().update(…) (the review of d859e60)
 	}
 	return slices.Contains([]string{"ifTYPE_CHECKING:", "iftyping.TYPE_CHECKING:"}, pyJoin(st))
+}
+
+// pyInert: module-level statement st of a package runs nothing at import
+// that can move its submodules (Astra #275 H6), an allowlist: an import
+// binding no dunder name (a star: pyBase.starDunder, Astra #275 r2 H6b); a docstring;
+// NAME = a pyLiteral (NAME no dunder but __all__ and __version__); or a
+// def, not a dunder, whose defaults are pyLiterals and whose annotations
+// are strings (from __future__ import annotations). A class body runs: not
+// inert. The statements are pyLex's logical lines split at ";" outside
+// brackets and strings, as CPython splits them; what pyLex cannot read as
+// CPython does leaves the file unread, and so not plain.
+func pyInert(st []ptok, future bool) bool {
+	dunder := func(n string) bool { return strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") }
+	d, parts := st[b2i(st[0].text == "async"):], pyAssign(st)
+	switch {
+	case d[0].text == "import" || d[0].text == "from":
+		names, _ := pyBinds(st)
+		return !slices.ContainsFunc(names, dunder)
+	case len(parts) == 1 && !slices.ContainsFunc(st, func(k ptok) bool { return k.kind != 's' }):
+		return pyLiteral(st) // a docstring
+	case len(parts) == 2 && len(parts[0]) == 1 && parts[0][0].kind == 'n':
+		n := parts[0][0].text
+		return (!dunder(n) || n == "__all__" || n == "__version__") && pyLiteral(parts[1])
+	case len(d) < 4 || d[0].text != "def" || d[1].kind != 'n' || dunder(d[1].text) || d[2].text != "(":
+		return false
+	}
+	end := pyDepthEnd(d, 2)
+	if end < 0 || end+1 < len(d) && d[end+1].text != ":" && !future { // a return annotation runs
+		return false
+	}
+	for _, p := range pySplit(d[3:end], ",") {
+		for len(p) > 0 && strings.Trim(p[0].text, "*") == "" { // *args, **kwargs, a bare *
+			p = p[1:]
+		}
+		if len(p) == 0 || len(p) == 1 && (p[0].kind == 'n' || p[0].text == "/") {
+			continue
+		} else if p[0].kind != 'n' {
+			return false
+		}
+		eq := slices.IndexFunc(p, func(k ptok) bool { return k.text == "=" })
+		if p[1].text == ":" && !future || eq < 0 && p[1].text != ":" || eq >= 0 && !pyLiteral(p[eq+1:]) {
+			return false // an annotation runs; a default runs
+		}
+	}
+	return true
+}
+
+// pyLiteral: value t is strings (no f- or t-string, Astra #275 r2 H6a),
+// numbers, True, False, None, or tuples, lists and dicts of them: no name,
+// attribute, subscript, call or operator (Astra #275 H6).
+func pyLiteral(t []ptok) bool {
+	value := false // the token before closes a value: ( or [ after it is a call or a subscript
+	for _, k := range t {
+		switch {
+		case k.kind == 's':
+			if q := strings.IndexAny(k.text, `"'`); q < 0 || strings.ContainsAny(k.text[:q], "fFtT") {
+				return false
+			}
+			value = true
+		case k.kind == '1' || slices.Contains([]string{"True", "False", "None"}, k.text):
+			value = true
+		case k.text == "(" || k.text == "[":
+			if value {
+				return false
+			}
+		case slices.Contains([]string{")", "]", "}"}, k.text):
+			value = true
+		case k.text == "{" || k.text == "," || k.text == ":":
+			value = false
+		default:
+			return false
+		}
+	}
+	return len(t) > 0
 }
 
 // resolve follows the dotted name d through the base modules' own
