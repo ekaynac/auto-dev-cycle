@@ -95,8 +95,13 @@ type run struct {
 	blocks, warnings   []Block
 }
 
-// cgoSources is what cgo compiles beside a package's Go files (go/build).
-var cgoSources = strings.Fields(".c .cc .cxx .cpp .m .h .hh .hpp .hxx .f .F .for .f90 .swig .swigcxx")
+// cgoSources is what cgo compiles beside a package's Go files, and objects
+// what go assembles or links (go/build's names; .o, .a and .so through a
+// preamble's LDFLAGS).
+var (
+	cgoSources = strings.Fields(".c .cc .cxx .cpp .m .h .hh .hpp .hxx .f .F .for .f90 .swig .swigcxx")
+	objects    = strings.Fields(".s .S .sx .syso .o .a .so")
+)
 
 func add(to *[]Block, p, what string) {
 	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what})
@@ -127,11 +132,11 @@ func (r *run) check(changes []Change) error {
 				add(&r.blocks, p, "python integrity not verified (P14c)")
 			case path.Ext(p) == ".go":
 				r.touched[dir] = true
-			case path.Base(p) == "go.work" || path.Base(p) == "go.work.sum": // a workspace redirects imports (use, replace)
-				add(&r.blocks, p, "unverifiable: a go.work workspace file changed")
-			case new && slices.Contains([]string{".s", ".S", ".syso"}, path.Ext(p)): // linked into any test binary importing it
-				add(&r.blocks, p, "unverifiable: assembly or a system object")
-			case new && slices.Contains(cgoSources, path.Ext(p)): // cgo builds them, a constructor runs before any test
+			case strings.HasSuffix(p, ".work") || strings.HasSuffix(p, ".work.sum"): // a workspace (GOWORK may name any) redirects imports
+				add(&r.blocks, p, "unverifiable: a workspace file changed (go.work, or one GOWORK may name)")
+			case slices.Contains(objects, path.Ext(p)): // assembled or linked into any test binary importing it; deleted too
+				add(&r.blocks, p, "unverifiable: assembly or an object file")
+			case slices.Contains(cgoSources, path.Ext(p)): // a constructor runs before any test; deleted too (a header found elsewhere)
 				add(&r.blocks, p, "unverifiable: C, C++, Objective-C, Fortran or SWIG source")
 			case new && path.Base(p) == "go.mod" && p != "go.mod" && c.Status != "M" && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)),
 				func(q string) bool { return goByName(q) && strings.HasPrefix(q, dir+"/") }):

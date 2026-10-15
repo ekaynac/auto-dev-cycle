@@ -219,4 +219,28 @@ func TestIntegrityRound2(t *testing.T) {
 			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
 		}
 	}
+
+	// The background flags on 050a6cc ("validator-bypass"): every file the
+	// gate may compile or link beside cgo, and any workspace file GOWORK may
+	// name, changed in any way (deleted too: a header found elsewhere).
+	linked := map[string]string{"help/c.go": "package help\n\n// #cgo LDFLAGS: ${SRCDIR}/lib.o\nimport \"C\"\n", "help/lib.o": "x", "help/x.h": "#define X 1\n"}
+	for name, c := range map[string]struct {
+		cand map[string]string
+		gone []string
+		why  string
+	}{
+		"a .sx file added":                 {map[string]string{"help/a.sx": ".text\n"}, nil, "assembly or an object file"},
+		"an object the preamble links":     {map[string]string{"help/lib.o": "y"}, nil, "assembly or an object file"},
+		"a header deleted":                 {nil, []string{"help/x.h"}, "Objective-C"},
+		"a workspace file GOWORK may name": {map[string]string{"ws.work": "go 1.22\n\nuse .\n"}, nil, "workspace"},
+		"its go.work.sum":                  {map[string]string{"ws.work.sum": ""}, nil, "workspace"},
+		"a nested go.work":                 {map[string]string{"a/b/go.work": "go 1.22\n"}, nil, "workspace"},
+	} {
+		if v := cgo(linked).guarded(t, c.cand, c.gone...); !finds(v.Blocks, c.why) {
+			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
+		}
+	}
+	if v := work.guarded(t, nil, "go.work"); !finds(v.Blocks, "workspace") {
+		t.Errorf("a go.work deleted: %q", whats(v.Blocks))
+	}
 }
