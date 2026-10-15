@@ -195,8 +195,8 @@ func TestPyGuardBlocks(t *testing.T) {
 		"H1m __init_subclass__ by an f-string walrus": {pyG("class Base:\n    X = f\"{(__init_subclass__ := g)}\"\n\nclass T(Base):\n    pass\n"), nil, "a dunder or an allowlisted name bound at import (__init_subclass__)"},
 		"M1m for (__name__)":                          {map[string]string{"money.py": baseFiles["money.py"] + "import os\nfor (__name__) in ('__main__',):\n    pass\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
 		"M1m with … as (__name__)":                    {map[string]string{"money.py": baseFiles["money.py"] + "import os\nwith open('x') as (__name__):\n    pass\nif __name__ == '__main__':\n    os._exit(0)\n"}, nil, "money.py: _exit in module level"},
-		"M3 a shadow of money":                        {map[string]string{"tests/money.py": "def add(a, b):\n    return a + b\n"}, nil, "tests/money.py: a module added under a test directory shadows the base module money.py"},
-		"M3 tests/__init__.py added":                  {map[string]string{"tests/__init__.py": ""}, nil, "tests/__init__.py: an __init__.py added, removed or renamed in a test directory"},
+		"M3 a shadow of money":                        {map[string]string{"tests/money.py": "def add(a, b):\n    return a + b\n"}, nil, "tests/money.py: an added module shadows the base module money.py"},
+		"M3 tests/__init__.py added":                  {map[string]string{"tests/__init__.py": ""}, nil, "tests/__init__.py: an __init__.py added, removed or renamed"},
 		// P14c-2a-cond: the condition rule (Opus and Mythos #266 H2) with Mythos r2's forms.
 		"H2 a skipif string":              {pyG("import pytest\n\n@pytest.mark.skipif(\"config.pluginmanager.register(1) and False\", reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
 		"H2 xfail(condition=)":            {pyG("import pytest\n\n@pytest.mark.xfail(condition='x', reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
@@ -226,7 +226,7 @@ func TestPyGuardBlocks(t *testing.T) {
 		"M1 skipif(1 << ZERO)":        {pyG("import pytest\nZERO = 0\n\n@pytest.mark.skipif(1 << ZERO, reason='r')\ndef test_s():\n    pass\n"), nil, "a skipif or xfail condition that may be a string"},
 		"M2 a parameter named pytest": {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(autouse=True)\ndef fx(request, pytest=pytest.mark):\n    request.applymarker(pytest.xfail('x'))\n"}, nil, "a skipif or xfail condition that may be a string"},
 		// Mythos #267: H2 (the root, module paths), M2 (renamed marks in an application module).
-		"H2 a package beside a root module": {map[string]string{"money/__init__.py": "def add(a, b):\n    return a + b\n"}, nil, "money/__init__.py: a module added under a test directory shadows the base module money.py"},
+		"H2 a package beside a root module": {map[string]string{"money/__init__.py": "def add(a, b):\n    return a + b\n"}, nil, "money/__init__.py: an added module shadows the base module money.py"},
 		"M2 an alias of skipif":             {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "sk = pytest.mark.skipif\nSKIP = sk('x', reason='r')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
 		"M2 pytest bound by a tuple":        {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "pytest, _ = pytest.mark, 0\nSKIP = pytest.xfail('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
 		"M2 .__call__":                      {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "SKIP = pytest.mark.skipif.__call__('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
@@ -245,11 +245,16 @@ func TestPyGuardBlocks(t *testing.T) {
 		"r7 2b m = (mark(False))":       {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(autouse=True)\ndef fx(request):\n    m = (pytest.mark.xfail(False))\n    request.applymarker(m('x'))\n"}, nil, "tests/conftest.py: unverifiable: a skipif or xfail condition"},
 		"r7 2c a walrus alias":          {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(autouse=True)\ndef fx(request):\n    (m := pytest.mark.xfail(False))\n    request.applymarker(m('x'))\n"}, nil, "tests/conftest.py: unverifiable: a skipif or xfail condition"},
 		"r7 1e SKIP = (mark(False))(x)": {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "SKIP = (pytest.mark.xfail(False))('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition"},
-		"r2 L4 an ordering dunder":      {map[string]string{"money.py": baseFiles["money.py"] + "class K:\n    def __lt__(self, o):\n        return 'x'\n"}, nil, "money.py: __lt__ in module level"},
-		"M2 pytest from the package":    {map[string]string{"tests/conftest.py": "from . import pytest\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
-		"L1 a pyproject added":          {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
-		"pytest.main":                   {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
-		"record_xml_attribute":          {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
+		"r2 M3 an alias of an alias":    {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "sk = pytest.mark.skipif\nsk2 = sk\nSKIP = sk2('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition"},
+		"r2 M3 a tuple alias":           {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "sk, _ = pytest.mark.skipif, 0\nSKIP = sk('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition"},
+		"r2 M3 an alias after a ;":      {map[string]string{"money.py": "import pytest\n" + baseFiles["money.py"] + "sk = pytest.mark.skipif; SKIP = sk('x')\n"}, nil, "money.py: unverifiable: a skipif or xfail condition"},
+		"r2 M3 an alias of an alias in a fixture": {map[string]string{"tests/conftest.py": "import pytest\n\n@pytest.fixture(autouse=True)\ndef fx(request):\n    m = pytest.mark.xfail(False)\n    k = m\n    request.applymarker(k('x'))\n"}, nil,
+			"tests/conftest.py: unverifiable: a skipif or xfail condition"},
+		"r2 L4 an ordering dunder":   {map[string]string{"money.py": baseFiles["money.py"] + "class K:\n    def __lt__(self, o):\n        return 'x'\n"}, nil, "money.py: __lt__ in module level"},
+		"M2 pytest from the package": {map[string]string{"tests/conftest.py": "from . import pytest\n"}, nil, "an import binding pytest, fixture, mock, patch or a builtin fixture"},
+		"L1 a pyproject added":       {map[string]string{"tests/pyproject.toml": "[tool.black]\nline-length = 100\n"}, nil, "a pyproject.toml added or removed in a base without pytest configuration"},
+		"pytest.main":                {map[string]string{"tests/test_money.py": pyT + "\nimport pytest\n\ndef test_m():\n    pytest.main(['-q'])\n"}, nil, "pytest.main in test_m"},
+		"record_xml_attribute":       {map[string]string{"tests/test_money.py": pyT + "\ndef test_r(record_xml_attribute):\n    record_xml_attribute('name', 'test_add')\n"}, nil, "record_xml_attribute in test_r"},
 	} {
 		pyBlocks(t, f, name, c.files, c.why)
 	}
@@ -349,28 +354,49 @@ func TestPyGuardBaseFindings(t *testing.T) {
 // tests import; tests' __init__.py renamed out.
 func TestPyGuardShadows(t *testing.T) {
 	f := newFixtureWith(t, func(src string) {
-		write(t, src, map[string]string{"tests/test_requests.py": "import os; import requests as rq\ntry: import yaml\nexcept ImportError: pass\nimport json, \\\n    toml\nfrom lib.core import add\nfrom google.protobuf import message\n\ndef test_r():\n    assert rq\n",
+		write(t, src, map[string]string{"tests/test_requests.py": "import os; import requests as rq\ntry: import yaml\nexcept ImportError: pass\nimport json, \\\n    toml\nfrom lib.core import add\nfrom google.protobuf import message\nimport pkgx.sub\nimport importlib\nimportlib.import_module('dynmod')\n__import__('dyn2')\npytest.importorskip('dyn3')\n\ndef test_r():\n    assert rq\n",
 			"tests/__init__.py": "X = 1\n", "app/utils.py": "X = 1\n", "pytest.ini": "[pytest]\npythonpath = src\n", "lib/core.py": "X = 1\n", "bank.py": "X = 1\n",
-			"lib3/test_x.py": "def test_x():\n    pass\n", "lib3/helpers3.py": "X = 1\n", "pkgb/__init__.py": "X = 1\n"})
+			"lib3/test_x.py": "def test_x():\n    pass\n", "lib3/helpers3.py": "X = 1\n", "pkgb/__init__.py": "X = 1\n",
+			"src/nsp/core.py": "X = 1\n", "src/mypkg/__init__.py": "", "lib3/utils3.py": "X = 1\n",
+			"src/nsp/deep/core.py": "X = 1\n", "pkgr/__init__.py": "", "pkgr/tests/__init__.py": "", "pkgr/tests/test_r.py": "from .. import core\n\ndef test_r():\n    assert core\n",
+			"pkgz/__init__.py": "", "pkgz/tests/__init__.py": "", "pkgz/tests/test_z.py": "def test_z():\n    pass\n"})
 		plain(t, src, "add", "--all")
 		plain(t, src, "rm", "-q", "--cached", "conftest.py") // no root conftest: the root's own clause (Opus #267 L2)
 	})
 	for name, c := range map[string]guardCase{
-		"a pythonpath shadow":              {map[string]string{"src/money.py": "def add(a, b):\n    return a + b\n"}, nil, "src/money.py: a module added under a test directory shadows the base module money.py"},
-		"__init__.py renamed out":          {map[string]string{"tests/x.py": "X = 1\n"}, []string{"tests/__init__.py"}, "tests/x.py: an __init__.py added, removed or renamed in a test directory"},
+		"a pythonpath shadow":              {map[string]string{"src/money.py": "def add(a, b):\n    return a + b\n"}, nil, "src/money.py: an added module shadows the base module money.py"},
+		"__init__.py renamed out":          {map[string]string{"tests/x.py": "X = 1\n"}, []string{"tests/__init__.py"}, "tests/x.py: an __init__.py added, removed or renamed"},
 		"a module beside an unrelated one": {map[string]string{"tests/utils.py": "X = 1\n"}, nil, ""},
 		// Opus #267 H2 (dotted suffixes), M3 (statements, not lines), L2 (onPath's clauses).
-		"H2 a namespace submodule shadow":               {map[string]string{"tests/lib/core.py": "def add(a, b):\n    return a + b\n"}, nil, "tests/lib/core.py: a module added under a test directory shadows the base module lib/core.py"},
-		"H2 a third-party submodule":                    {map[string]string{"tests/google/protobuf.py": "X = 1\n"}, nil, "tests/google/protobuf.py: a module added under a test directory shadows a module tests/test_requests.py imports"},
-		"M3 after a ;":                                  {map[string]string{"tests/requests.py": "X = 1\n"}, nil, "a module added under a test directory shadows a module tests/test_requests.py imports"},
-		"M3 after try:":                                 {map[string]string{"tests/yaml.py": "X = 1\n"}, nil, "a module added under a test directory shadows a module tests/test_requests.py imports"},
-		"M3 a continued import":                         {map[string]string{"tests/toml.py": "X = 1\n"}, nil, "a module added under a test directory shadows a module tests/test_requests.py imports"},
-		"L2 a root module":                              {map[string]string{"tests/bank.py": "X = 1\n"}, nil, "a module added under a test directory shadows the base module bank.py"},
-		"M1 under a pythonpath tree":                    {map[string]string{"src/google/protobuf.py": "X = 1\n"}, nil, "src/google/protobuf.py: a module added under a test directory shadows a module tests/test_requests.py imports"},
-		"H2 an unimported package beside a root module": {map[string]string{"bank/__init__.py": "X = 1\n"}, nil, "bank/__init__.py: a module added under a test directory shadows the base module bank.py"},
-		"M4 a package against a root module":            {map[string]string{"src/bank/__init__.py": "X = 1\n"}, nil, "src/bank/__init__.py: a module added under a test directory shadows the base module bank.py"},
-		"M4 a module against a root package":            {map[string]string{"tests/pkgb.py": "X = 1\n"}, nil, "tests/pkgb.py: a module added under a test directory shadows the base module pkgb/__init__.py"},
-		"L2 a module beside a test file":                {map[string]string{"tests/helpers3.py": "X = 1\n"}, nil, "a module added under a test directory shadows the base module lib3/helpers3.py"},
+		"H2 a namespace submodule shadow":               {map[string]string{"tests/lib/core.py": "def add(a, b):\n    return a + b\n"}, nil, "tests/lib/core.py: an added module shadows the base module lib/core.py"},
+		"H2 a third-party submodule":                    {map[string]string{"tests/google/protobuf.py": "X = 1\n"}, nil, "tests/google/protobuf.py: an added module shadows a module tests/test_requests.py imports"},
+		"M3 after a ;":                                  {map[string]string{"tests/requests.py": "X = 1\n"}, nil, "an added module shadows a module tests/test_requests.py imports"},
+		"M3 after try:":                                 {map[string]string{"tests/yaml.py": "X = 1\n"}, nil, "an added module shadows a module tests/test_requests.py imports"},
+		"M3 a continued import":                         {map[string]string{"tests/toml.py": "X = 1\n"}, nil, "an added module shadows a module tests/test_requests.py imports"},
+		"L2 a root module":                              {map[string]string{"tests/bank.py": "X = 1\n"}, nil, "an added module shadows the base module bank.py"},
+		"M1 under a pythonpath tree":                    {map[string]string{"src/google/protobuf.py": "X = 1\n"}, nil, "src/google/protobuf.py: an added module shadows a module tests/test_requests.py imports"},
+		"H2 an unimported package beside a root module": {map[string]string{"bank/__init__.py": "X = 1\n"}, nil, "bank/__init__.py: an added module shadows the base module bank.py"},
+		"M4 a package against a root module":            {map[string]string{"src/bank/__init__.py": "X = 1\n"}, nil, "src/bank/__init__.py: an added module shadows the base module bank.py"},
+		"M4 a module against a root package":            {map[string]string{"tests/pkgb.py": "X = 1\n"}, nil, "tests/pkgb.py: an added module shadows the base module pkgb/__init__.py"},
+		// Mythos #267 r2: H1 (the root's namespace portions), H2 (import a.b), M1 (names relative to sys.path entries).
+		"r2 H1 a root namespace portion":     {map[string]string{"nsp/core.py": "X = 1\n"}, nil, "nsp/core.py: an added module shadows the base module src/nsp/core.py"},
+		"r2 H1 a root third-party namespace": {map[string]string{"google/protobuf.py": "X = 1\n"}, nil, "google/protobuf.py: an added module shadows a module tests/test_requests.py imports"},
+		"r2 H2 import a.b":                   {map[string]string{"tests/pkgx/sub.py": "X = 1\n"}, nil, "tests/pkgx/sub.py: an added module shadows a module tests/test_requests.py imports"},
+		"r2 M1 src/mypkg/json.py":            {map[string]string{"src/mypkg/json.py": "X = 1\n"}, nil, ""},
+		"r2 M1 src/mypkg/utils3.py":          {map[string]string{"src/mypkg/utils3.py": "X = 1\n"}, nil, ""},
+		"r2 M1 src/pkg/sub/money.py":         {map[string]string{"src/pkg/sub/money.py": "X = 1\n"}, nil, ""},
+		// The security review's flags on 713eb2e: scope, import reading, case and suffixes.
+		"flag a depth-two namespace portion":                 {map[string]string{"nsp/deep/core.py": "X = 1\n"}, nil, "nsp/deep/core.py: an added module shadows the base module src/nsp/deep/core.py"},
+		"flag a candidate test package's basedir":            {map[string]string{"q/w/__init__.py": "", "q/w/test_x.py": "def test_x():\n    pass\n", "q/money.py": "X = 1\n"}, nil, "q/money.py: an added module shadows the base module money.py"},
+		"flag import_module with a constant":                 {map[string]string{"tests/dynmod.py": "X = 1\n"}, nil, "tests/dynmod.py: an added module shadows a module tests/test_requests.py imports"},
+		"flag __import__ with a constant":                    {map[string]string{"tests/dyn2.py": "X = 1\n"}, nil, "tests/dyn2.py: an added module shadows a module tests/test_requests.py imports"},
+		"flag importorskip with a constant":                  {map[string]string{"tests/dyn3.py": "X = 1\n"}, nil, "tests/dyn3.py: an added module shadows a module tests/test_requests.py imports"},
+		"flag from .. import core":                           {map[string]string{"pkgr/core.py": "X = 1\n"}, nil, "pkgr/core.py: an added module shadows a module pkgr/tests/test_r.py imports"},
+		"flag an __init__.py removed outside tests":          {nil, []string{"pkgz/__init__.py"}, "pkgz/__init__.py: an __init__.py added, removed or renamed"},
+		"flag a case-only name (imports are case-sensitive)": {map[string]string{"Money.py": "X = 1\n"}, nil, ""},
+		"flag a .pyi beside a .py (never imported)":          {map[string]string{"money.pyi": "def add(a: int, b: int) -> int: ...\n"}, nil, ""},
+		"flag a .so beside a .py":                            {map[string]string{"money.cpython-312-x86_64-linux-gnu.so": "x"}, nil, "unverifiable: compiled Python, an extension module"},
+		"L2 a module beside a test file":                     {map[string]string{"tests/helpers3.py": "X = 1\n"}, nil, "an added module shadows the base module lib3/helpers3.py"},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
@@ -402,7 +428,7 @@ func TestPyGuardConditionBase(t *testing.T) {
 	if v := h.guarded(t, map[string]string{"marks.py": strings.Replace(app, "return False", "return 'x'", 1)}); !pyFinds(pyOwn(v.Blocks), "marks.py: unverifiable: a skipif or xfail condition") {
 		t.Errorf("a same-file function's body changed under an unchanged condition: %q, want blocked", whats(pyOwn(v.Blocks)))
 	}
-	if v := f.guarded(t, map[string]string{"lib2/money.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "lib2/money.py: a module added under a test directory shadows the base module money.py") {
+	if v := f.guarded(t, map[string]string{"lib2/money.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "lib2/money.py: an added module shadows the base module money.py") {
 		t.Errorf("a pythonpath from tests/pytest.ini: %q", whats(pyOwn(v.Blocks)))
 	}
 	g := newFixtureWith(t, func(src string) {
@@ -411,6 +437,15 @@ func TestPyGuardConditionBase(t *testing.T) {
 	})
 	if v := g.guarded(t, map[string]string{"money.py": baseFiles["money.py"] + "\n"}); !finds(v.Blocks, "moves collection off its defaults") {
 		t.Errorf("an escaped TOML pythonpath: %q, want unread", whats(v.Blocks))
+	}
+	for _, out := range []string{"..", "/opt/lib"} { // the security review's flag: an entry outside the root is unread
+		h := newFixtureWith(t, func(src string) {
+			write(t, src, map[string]string{"pytest.ini": "[pytest]\npythonpath = " + out + "\n"})
+			plain(t, src, "add", "--all")
+		})
+		if v := h.guarded(t, map[string]string{"money.py": baseFiles["money.py"] + "\n"}); !finds(v.Blocks, "moves collection off its defaults") {
+			t.Errorf("a pythonpath outside the root (%s): %q, want unread", out, whats(v.Blocks))
+		}
 	}
 }
 
@@ -428,6 +463,8 @@ func TestPyGuardConditionReach(t *testing.T) {
 		"H1 an imported name rebound in the test":    {map[string]string{"tests/test_money.py": strings.Replace(test, "from money import add, FAST\n", "from money import add, FAST\nFAST = 'x'\n", 1)}, nil, "tests/test_money.py: unverifiable: a skipif or xfail condition"},
 		"H4 only money.py rebinds FAST":              {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = 'x'\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads FAST"},
 		"H4 only money.py rebinds SLOW":              {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = 'x'\nFAST = False\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads SLOW"},
+		"r2 M2 global rebinds SLOW":                  {map[string]string{"money.py": baseFiles["money.py"] + "SLOW = False\nFAST = False\n\ndef _f():\n    global SLOW\n    SLOW = 'x'\n\n_f()\n"}, nil, "money.py: a skipif or xfail condition in tests/test_money.py reads SLOW"},
+		"r2 M2 __path__ by a call":                   {map[string]string{"lib/__init__.py": "__path__.insert(0, 'lib/alt')\n", "lib/alt/core.py": "def add(a, b):\n    return a + b\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
 		"H3 __path__ in an application package":      {map[string]string{"lib/__init__.py": "__path__ = ['lib/alt']\n", "lib/alt/core.py": "def add(a, b):\n    return a + b\n"}, nil, "lib/__init__.py: unverifiable: a package's import path, spec or loader bound at import (__path__)"},
 		"M3 a for target rebinds a condition's name": {map[string]string{"marks.py": strings.Replace(marks, "SKIP =", "for IS_WINDOWS in ['x']:\n    pass\nSKIP =", 1)}, nil, "marks.py: unverifiable: a skipif or xfail condition"},
 		"an unchanged extend_path passes":            {map[string]string{"pkg/__init__.py": "import pkgutil\n__path__ = pkgutil.extend_path(__path__, __name__)\nX = 1\n"}, nil, ""},
@@ -443,8 +480,40 @@ func TestPyGuardConditionReach(t *testing.T) {
 		plain(t, src, "rm", "-q", "--cached", "src_money.py")
 		plain(t, src, "add", "--all")
 	})
-	if v := g.guarded(t, map[string]string{"money.py": "def add(a, b):\n    return a + b\n"}); !pyFinds(pyOwn(v.Blocks), "money.py: a module added under a test directory shadows the base module src/money.py") {
+	if v := g.guarded(t, map[string]string{"money.py": "def add(a, b):\n    return a + b\n"}); !pyFinds(pyOwn(v.Blocks), "money.py: an added module shadows the base module src/money.py") {
 		t.Errorf("the src layout: %q", whats(pyOwn(v.Blocks)))
+	}
+}
+
+// Mythos #267 r2 H3: the four base shapes a condition reads a changed
+// module through: a relative import, a re-export through an unchanged
+// __init__.py, a def- or class-bound name, a dotted or star import.
+func TestPyGuardConditionShapes(t *testing.T) {
+	test := "import pytest\nimport cfgmod\nimport clsmod\nimport objmod\nimport getmod\nimport strmod\nimport dotted.config\nfrom pkg import PSLOW\nfrom . import flags\nfrom starmod import *\n\n" +
+		"@pytest.mark.skipif(flags.RSLOW, reason='r')\n@pytest.mark.skipif(PSLOW, reason='r')\n@pytest.mark.skipif(cfgmod.flag(), reason='r')\n" +
+		"@pytest.mark.skipif(clsmod.Cfg.SLOW, reason='r')\n@pytest.mark.skipif(objmod.cfg.SLOW, reason='r')\n@pytest.mark.skipif(getattr(getmod, 'X'), reason='r')\n@pytest.mark.skipif('strmod.check()', reason='r')\n@pytest.mark.skipif(dotted.config.DSLOW, reason='r')\n@pytest.mark.skipif(STAR, reason='r')\ndef test_s():\n    pass\n"
+	cfg, cls, obj := "def flag():\n    return False\n", "class Cfg:\n    SLOW = False\n", "import types\ncfg = types.SimpleNamespace(SLOW=False)\n"
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"tests/__init__.py": "", "tests/flags.py": "RSLOW = False\n", "tests/test_shapes.py": test, "pkg/__init__.py": "from .config import PSLOW\n",
+			"pkg/config.py": "PSLOW = False\n", "cfgmod.py": cfg, "clsmod.py": cls, "objmod.py": obj, "getmod.py": "X = False\n", "strmod.py": "def check():\n    return False\n", "dotted/__init__.py": "", "dotted/config.py": "DSLOW = False\n", "starmod.py": "STAR = False\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]guardCase{
+		"i a relative import":                 {map[string]string{"tests/flags.py": "RSLOW = 'x'\n"}, nil, "tests/flags.py: a skipif or xfail condition in tests/test_shapes.py reads RSLOW"},
+		"ii a re-export":                      {map[string]string{"pkg/config.py": "PSLOW = 'x'\n"}, nil, "pkg/config.py: a skipif or xfail condition in tests/test_shapes.py reads PSLOW"},
+		"iii a def body":                      {map[string]string{"cfgmod.py": strings.Replace(cfg, "return False", "return 'x'", 1)}, nil, "cfgmod.py: a skipif or xfail condition in tests/test_shapes.py reads flag"},
+		"iii a class body":                    {map[string]string{"clsmod.py": strings.Replace(cls, "SLOW = False", "SLOW = 'x'", 1)}, nil, "clsmod.py: a skipif or xfail condition in tests/test_shapes.py reads Cfg"},
+		"iii an attribute read past its name": {map[string]string{"objmod.py": obj + "\ndef _f():\n    cfg.SLOW = 'x'\n\n_f()\n"}, nil, "objmod.py: a skipif or xfail condition in tests/test_shapes.py reads cfg"},
+		"flag a module read whole":            {map[string]string{"getmod.py": "X = 'x'\n"}, nil, "getmod.py: a skipif or xfail condition in tests/test_shapes.py reads getmod"},
+		"flag a string condition":             {map[string]string{"strmod.py": "def check():\n    return 'x'\n"}, nil, "strmod.py: a skipif or xfail condition in tests/test_shapes.py reads check"},
+		"iv a dotted import":                  {map[string]string{"dotted/config.py": "DSLOW = 'x'\n"}, nil, "dotted/config.py: a skipif or xfail condition in tests/test_shapes.py reads DSLOW"},
+		"iv a star import":                    {map[string]string{"starmod.py": "STAR = 'x'\n"}, nil, "starmod.py: a skipif or xfail condition in tests/test_shapes.py reads STAR"},
+		"an unrelated change to a star one":   {map[string]string{"starmod.py": "STAR = False\nOTHER = 1\n"}, nil, ""},
+	} {
+		v := f.guarded(t, c.files, c.gone...)
+		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
+			t.Errorf("%s: %q, want %q", name, whats(own), c.why)
+		}
 	}
 }
 

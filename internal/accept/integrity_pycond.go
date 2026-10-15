@@ -75,57 +75,41 @@ func pyBool(t []ptok) bool {
 // aliases are the names bound to a chain ending in .skipif or .xfail.
 func pyPure(lines []pline) (pure bool, aliases map[string]bool) {
 	pure, aliases = true, map[string]bool{}
+	var binds [][]string       // each statement's bindings
+	uses := map[string][]int{} // a name, to the statements holding it
 	for _, l := range lines {
 		t, d := slices.Concat(l.toks, l.inner), l.toks[b2i(l.toks[0].text == "async"):]
-		binds, _ := pyBinds(t)
 		for _, st := range pySplit(t, ";") { // per statement: import pytest, os stays pure (r2 L1), import pytest; pytest = … does not (r3 H1)
 			if len(st) == 0 { // x = 1; (r4 L)
 				continue
 			}
-			if b, imp := pyBinds(st); slices.Contains(b, "pytest") && !(imp && st[0].text == "import" && !named(st, "as")) {
+			b, imp := pyBinds(st)
+			if slices.Contains(b, "pytest") && !(imp && st[0].text == "import" && !named(st, "as")) {
 				pure = false
 			}
+			for _, k := range st {
+				uses[k.text] = append(uses[k.text], len(binds))
+			}
+			binds = append(binds, b)
 		}
 		for i, k := range t {
 			pure = pure && !(k.text == "pytest" && (i > 0 && slices.Contains([]string{".", "lambda"}, t[i-1].text) ||
 				i+1 < len(t) && (t[i+1].text == ":" || t[i+1].text == "=" && (i+2 >= len(t) || t[i+2].text != "=")) ||
 				d[0].text == "def" && i < len(pySplit(d, ":")[0])))
 		}
-		if parts := pyAssign(l.toks); len(parts) > 1 && pyMark(parts[len(parts)-1]) {
-			for _, n := range binds {
-				aliases[n] = true
-			}
-		}
-		for i := 0; i+3 < len(t); i++ { // a walrus bound to a mark: (m := pytest.mark.xfail(False)) (#267 round 7)
-			if t[i].kind == 'n' && t[i+1].text == ":" && t[i+2].text == "=" {
-				end, depth := i+3, 0
-				for ; end < len(t) && depth >= 0 && !(depth == 0 && t[end].text == ","); end++ {
-					depth += strings.Count("([{", t[end].text) - strings.Count(")]}", t[end].text)
-				}
-				if pyMark(t[i+3 : end]) {
-					aliases[t[i].text] = true
+	}
+	// aliases: what a statement holding skipif, xfail or an alias binds, to a
+	// fixed point (Mythos #267 r2 M3: an alias of an alias, a tuple, a ;)
+	for queue := []string{"skipif", "xfail"}; len(queue) > 0; queue = queue[1:] {
+		for _, i := range uses[queue[0]] {
+			for _, n := range binds[i] {
+				if !aliases[n] {
+					aliases[n], queue = true, append(queue, n)
 				}
 			}
 		}
 	}
 	return pure, aliases
-}
-
-// pyMark: the value v is a skipif or xfail mark, maybe in parentheses,
-// called, or behind a walrus: pytest.mark.xfail(False) (Mythos #267 r4
-// H1), (pytest.mark.xfail), (m := pytest.mark.xfail) (#267 round 7).
-func pyMark(v []ptok) bool {
-	for len(v) > 0 && v[0].text == "(" || len(v) > 2 && v[0].kind == 'n' && v[1].text == ":" && v[2].text == "=" {
-		v = v[1+2*b2i(v[0].text != "("):]
-	}
-	if k := slices.IndexFunc(v, func(k ptok) bool { return k.text == "(" }); k >= 0 {
-		v = v[:k]
-	}
-	for len(v) > 0 && v[len(v)-1].text == ")" {
-		v = v[:len(v)-1]
-	}
-	c := strings.TrimSuffix(strings.TrimSuffix(chain(v), ".with_args"), ".__call__")
-	return chain(v) == pyJoin(v) && slices.Contains([]string{"skipif", "xfail"}, c[strings.LastIndex(c, ".")+1:])
 }
 
 // pyNames are the plain names t reads (not attributes, keywords or

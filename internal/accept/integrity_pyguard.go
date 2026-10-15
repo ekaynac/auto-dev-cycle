@@ -31,10 +31,11 @@ var (
 	// splitLines breaks lines where str.splitlines does (iniconfig's lines).
 	splitLines = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n", "\x1c", "\n", "\x1d", "\n", "\x1e", "\n",
 		"\u0085", "\n", "\u2028", "\n", "\u2029", "\n")
-	pyLoaded   = []string{".pyc", ".pyo", ".so", ".pyd", ".pth", "sitecustomize.py", "usercustomize.py", "entry_points.txt"}
-	pyBare     = strings.Fields("globals locals vars setattr delattr exec eval compile __import__") // builtins, not attributes
-	pyExec     = regexp.MustCompile(`^(exec|spawn)[lv]p?e?$`)                                       // os.exec*, os.spawn*
-	pyFixtures = strings.Fields("cache capfd capfdbinary caplog capsys capsysbinary capteesys doctest_namespace monkeypatch " +
+	pyImportPath = []string{"__path__", "__spec__", "__loader__"}
+	pyLoaded     = []string{".pyc", ".pyo", ".so", ".pyd", ".pth", "sitecustomize.py", "usercustomize.py", "entry_points.txt"}
+	pyBare       = strings.Fields("globals locals vars setattr delattr exec eval compile __import__") // builtins, not attributes
+	pyExec       = regexp.MustCompile(`^(exec|spawn)[lv]p?e?$`)                                       // os.exec*, os.spawn*
+	pyFixtures   = strings.Fields("cache capfd capfdbinary caplog capsys capsysbinary capteesys doctest_namespace monkeypatch " +
 		"pytestconfig pytester record_property record_testsuite_property record_xml_attribute recwarn subtests testdir " +
 		"tmp_path tmp_path_factory tmpdir tmpdir_factory")
 	// pyClass: 'p' pytest internals; 'f' namespace, frame, comparison; 'e' exit, process; 'o' output, thread.
@@ -73,15 +74,7 @@ func (r *run) python(changes []Change) error {
 	if err != nil {
 		return err
 	}
-	var cache []pyBaseTest // the base's test files, read once (Mythos #267 L3)
-	var cacheErr error
-	tests := func() ([]pyBaseTest, error) {
-		if cache == nil && cacheErr == nil {
-			cache, cacheErr = r.pyBaseTests()
-			cache = append(cache, pyBaseTest{}) // read, even when empty
-		}
-		return cache, cacheErr
-	}
+	pb := &pyBase{r: r, entries: r.pyEntries(paths)}
 	var changed []string // the changed modules' paths
 	for _, c := range changes {
 		for _, q := range []string{c.Src, c.Dst} {
@@ -117,7 +110,7 @@ func (r *run) python(changes []Change) error {
 			continue
 		}
 		judged := pyTested(c.Dst) || r.pyTestDir(c.Dst)
-		if why, err := r.pyShadow(c, judged, paths, tests); err != nil {
+		if why, err := r.pyShadow(c, judged, pb); err != nil {
 			return err
 		} else if why != "" {
 			add(&r.blocks, c.Dst, why)
@@ -128,9 +121,9 @@ func (r *run) python(changes []Change) error {
 			return err
 		} else if ok && ok2 {
 			if src && dst && path.Ext(c.Src) == ".py" && path.Ext(c.Dst) == ".py" { // a changed module a base condition reads (Mythos #267 H4)
-				if all, err := tests(); err != nil {
+				if err := pb.load(); err != nil {
 					return err
-				} else if why := pyReach(c, b, a, all); why != "" {
+				} else if why := pyReach(c, b, a, pb.tests); why != "" {
 					add(&r.blocks, c.Dst, why)
 				}
 			}
@@ -159,8 +152,10 @@ func (r *run) pyCustom() (custom, configured bool, paths []string, err error) {
 				return true, true, nil, nil // an escape: unread
 			}
 			for _, w := range pyWords.Split(strings.TrimLeft(v, " \t=:"), -1) {
-				if w != "" {
-					paths = append(paths, path.Join(path.Dir(p), w))
+				if j := path.Join(path.Dir(p), w); w != "" && (path.IsAbs(w) || j == ".." || strings.HasPrefix(j, "../")) {
+					return true, true, nil, nil // outside the root: unread (the security review of 713eb2e)
+				} else if w != "" {
+					paths = append(paths, j)
 				}
 			}
 		}
@@ -247,8 +242,7 @@ func (a *pyFile) passes(k string, b *pyFile, changed []string) bool {
 		return false
 	} else if f.cond { // each name bound at import as in the base, no import naming a changed module (Opus #267 M4)
 		return !slices.ContainsFunc(f.calls, func(n string) bool { // a def's or class's body may change under its line
-			return (!a.imported[n] || a.local[n]) && (!a.local[n] || a.binds[n] != b.binds[n] || strings.Contains(a.binds[n], "[def ") || // Mythos #267 H1
-				strings.Contains(a.binds[n], "[class ") || strings.Contains(a.binds[n], "[async "))
+			return (!a.imported[n] || a.local[n]) && (!a.local[n] || a.binds[n] != b.binds[n] || pyMoving(a.binds[n])) // Mythos #267 H1, r2 M2
 		}) &&
 			!slices.ContainsFunc(changed, func(q string) bool { return slices.Contains(a.mods, path.Base(q)) })
 	}
@@ -325,6 +319,15 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 			stack = stack[:len(stack)-1]
 		}
 		t, top := l.toks, stack[len(stack)-1]
+		for i, k := range t { // global X: X rebound at import if its function runs (Mythos #267 r2 M2)
+			for _, n := range t[i+1:] {
+				if k.text != "global" || n.kind != 'n' && n.text != "," {
+					break
+				} else if n.kind == 'n' {
+					fa.local[n.text], fa.binds[n.text] = true, fa.binds[n.text]+fmt.Sprint(t)+"\n"
+				}
+			}
+		}
 		fn, b, code := top.fn, block{l.indent, top.fn, false}, append(append(deco, t...), l.inner...)
 		if fn == "" && !(pyMain(t) && !rebound) {
 			for _, st := range pySplit(t, ";") {
@@ -335,10 +338,15 @@ func (r *run) pyScan(want bool, p, blob string, judged bool) (fa *pyFile, ok boo
 					find(st, why, strings.HasPrefix(why, "an import binding")) // Mythos #266 L1
 				}
 				binds, imported := pyBinds(slices.Concat(st, l.inner)) // a walrus in an f-string binds too (Mythos #266 H1)
+				if slices.Contains(pyImportPath, st[0].text) && slices.ContainsFunc(st, func(k ptok) bool { return k.text == "(" }) {
+					binds = append(binds, st[0].text) // __path__.insert(…) changes it too (Mythos #267 r2 M2)
+				}
 				for _, n := range binds {
-					if slices.Contains([]string{"__path__", "__spec__", "__loader__"}, n) { // in every file (Mythos #267 H3)
-						find(st, "a package's import path, spec or loader bound at import ("+n+")", false)
-						fa.finds[fmt.Sprint(st)].always = true
+					if slices.Contains(pyImportPath, n) { // in every file (Mythos #267 H3)
+						why := "a package's import path, spec or loader bound at import (" + n + ")"
+						find(st, why, false)
+						f := fa.finds[fmt.Sprint(st)]
+						f.why, f.always = why, true // over the allowlist's finding for st
 					}
 					if judged && (strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__" || !imported && pyBound[n] != "") {
 						find(st, "a dunder or an allowlisted name bound at import ("+n+")", true) // Opus #266 H1
