@@ -587,7 +587,7 @@ func TestPyGuardConditionReach(t *testing.T) {
 	if v := lazy.guarded(t, map[string]string{"other.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread") {
 		t.Errorf("r4 L1 a module __getattr__: %q, want blocked", whats(pyOwn(v.Blocks)))
 	}
-	for name, dyn := range map[string]string{"exec": "exec('PSLOW7 = False')\n", "locals()": "locals()['PSLOW7'] = False\n"} { // the review of b5a634d: an allowlist
+	for name, dyn := range map[string]string{"exec": "exec('PSLOW7 = False')\n", "a call in an assignment's value": "X = globals().update({'PSLOW7': False})\n", "locals()": "locals()['PSLOW7'] = False\n"} { // the review of b5a634d: an allowlist
 		u := newFixtureWith(t, func(src string) {
 			write(t, src, map[string]string{"spk4/__init__.py": "from .dyn import *\n", "spk4/dyn.py": dyn, "other.py": "X = 1\n",
 				"tests/test_u.py": "import pytest\nimport spk4\n\n@pytest.mark.skipif(spk4.PSLOW7, reason='r')\ndef test_u():\n    pass\n"})

@@ -257,7 +257,10 @@ func pyStatic(st []ptok) bool {
 	case d[0].text == "def" || d[0].text == "class":
 		return len(d) > 1 && d[1].text != "__getattr__"
 	}
-	return len(parts) == 2 && len(parts[0]) == 1 && parts[0][0].kind == 'n' || slices.Contains([]string{"ifTYPE_CHECKING:", "iftyping.TYPE_CHECKING:"}, pyJoin(st))
+	if len(parts) == 2 && len(parts[0]) == 1 && parts[0][0].kind == 'n' {
+		return !slices.ContainsFunc(parts[1], func(k ptok) bool { return k.text == "(" }) // no call in the value: X = globals().update(…) (the review of d859e60)
+	}
+	return slices.Contains([]string{"ifTYPE_CHECKING:", "iftyping.TYPE_CHECKING:"}, pyJoin(st))
 }
 
 // resolve follows the dotted name d through the base modules' own
