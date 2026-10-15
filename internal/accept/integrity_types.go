@@ -30,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -499,12 +500,26 @@ func (ty *typer) Import(p string) (*types.Package, error) {
 // past it, or on a done context, the guard stops (recovered) and the check is
 // abandoned, its CPU the residual (a killable loader is P14e-2b's).
 func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, files []*ast.File, info *types.Info) *types.Package {
-	done := make(chan any, 1)
+	if n := abandoned.Load(); n > 0 { // its CPU and memory still taken, and its fault not seen
+		panic(fmt.Sprintf("%d type check(s) abandoned earlier still running", n))
+	}
+	done, state := make(chan any, 1), new(atomic.Int32) // 0 running, 1 ended, 2 abandoned
 	go func() {
 		var v any
-		defer func() { done <- cmp.Or(recover(), v) }() // its panic is the guard's
+		defer func() {
+			if !state.CompareAndSwap(0, 1) {
+				abandoned.Add(-1)
+			}
+			done <- cmp.Or(recover(), v) // its panic is the guard's
+		}()
 		v, _ = conf.Check(path, fset, files, info)
 	}()
+	abandon := func(why any) {
+		if state.CompareAndSwap(0, 2) {
+			abandoned.Add(1)
+		}
+		panic(why)
+	}
 	select {
 	case v := <-done:
 		if pkg, ok := v.(*types.Package); ok {
@@ -512,11 +527,17 @@ func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, fi
 		}
 		panic(v)
 	case <-r.ctx.Done():
-		panic(r.ctx.Err())
+		abandon(r.ctx.Err())
 	case <-time.After(time.Until(r.listEnd)):
-		panic("a type check over the guard's deadline (" + path + ")")
+		abandon("a type check over the guard's deadline (" + path + ")")
 	}
+	return nil
 }
+
+// abandoned is the type checks given up on that still run: go/types cannot
+// be stopped (a killable process is P14e-2c), so while one runs a new Go
+// guard run is unverifiable.
+var abandoned atomic.Int64
 
 type importFunc func(string) (*types.Package, error)
 
