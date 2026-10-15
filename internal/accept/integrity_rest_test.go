@@ -64,4 +64,18 @@ func TestIntegrityRest(t *testing.T) {
 	if v := vf.guarded(t, map[string]string{"pkg/x.go": "package pkg\n\nimport \"example.org/other\"\n\nvar _ = other.X\n"}); !finds(v.Blocks, "not in vendor/modules.txt") {
 		t.Errorf("an import vendor/modules.txt does not list: %q", whats(v.Blocks))
 	}
+
+	// Mythos #269 L4: go never builds a //go:build ignore file, so the types
+	// layer leaves it out (a generator's imports need not list); the text
+	// layer still reads it, so a forgery there still blocks.
+	gen := "//go:build ignore\n\npackage main\n\nimport \"example.org/gen\"\n\nfunc main() { gen.Run() }\n"
+	if v := u.guarded(t, map[string]string{"pkg/gen.go": gen}); !v.Accepted() || len(v.Warnings) > 0 {
+		t.Errorf("a generator under ignore: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	if v := u.guarded(t, map[string]string{"pkg/gen.go": strings.Replace(gen, "package main", "package pkg", 1)}); !v.Accepted() || len(v.Warnings) > 0 {
+		t.Errorf("an ignored file of the package: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	if v := u.guarded(t, map[string]string{"pkg/forge.go": "//go:build ignore\n\n" + forgeGo}); !finds(v.Blocks, "cannot prove safe (syscall.Exit)") {
+		t.Errorf("a forgery under ignore: %q", whats(v.Blocks))
+	}
 }

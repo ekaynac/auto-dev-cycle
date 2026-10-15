@@ -152,9 +152,11 @@ func (r *run) goOn(p string, f *ast.File) (on []int, exprs []constraint.Expr, co
 
 // holds is 2 when exprs hold on pl for every assignment of the unmodelled
 // tags, 0 for none, 1 otherwise or past 12 tags, -1 past the work bound.
-func (r *run) holds(exprs []constraint.Expr, pl [2]string) (int, error) {
+func (r *run) holds(exprs []constraint.Expr, pl [2]string, off ...string) (int, error) {
 	known := func(tag string) (bool, bool) {
 		switch {
+		case slices.Contains(off, tag):
+			return false, true
 		case tag == pl[0] || tag == pl[1] || tag == "unix" || tag == "gc" || slices.Contains(release, tag):
 			return true, true
 		case slices.Contains(otherPlatforms, tag) || strings.HasPrefix(tag, "go1.") ||
@@ -642,9 +644,16 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			fa.flags[m.path+"\x00"+plat] = flags
 		}
 	}
-	if err := r.typedOn(platforms[pi], dir, name, fset, files, meta, fa); err != nil {
-		return err
-	} else if err := s.reach(dir, inits, false, fa); err != nil {
+	typed := slices.DeleteFunc(slices.Clone(files), func(f *ast.File) bool { // go never builds an ignore file: the types layer leaves it
+		n, _ := r.holds(meta[f].exprs, platforms[pi], "ignore")
+		return n == 0
+	})
+	if len(typed) > 0 {
+		if err := r.typedOn(platforms[pi], dir, name, fset, typed, meta, fa); err != nil {
+			return err
+		}
+	}
+	if err := s.reach(dir, inits, false, fa); err != nil {
 		return err
 	}
 	return s.reach(dir, hooks, true, fa)
