@@ -6,6 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/importer"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"slices"
 	"strings"
 	"testing"
@@ -250,18 +255,25 @@ func TestDecisionAOutRound6(t *testing.T) {
 	if v := outGuarded(t, recv, map[string]string{"tool/m.go": "package tool\n\nimport \"flag\"\n\ntype A struct{}\n\ntype B struct{}\n\nfunc (A) M() {}\n\nfunc (B) M() { flag.Parse() }\n"}); !finds(v.Warnings, outRefs("tool/m.go", "flag", "2: A.M, B.M")) {
 		t.Errorf("L4 a moved reference: %q", whats(v.Warnings))
 	}
-	// H2 (and Astra #276 r4 H2): 18 MiB of generated Go beside a one-line
-	// change: accepted.
+	// H2 (and Astra #276 r4 H2): six generated files that fill most of the
+	// base guard's read bound, beside a one-line change: accepted. The
+	// guard's envelope is scaled by 1/64 (maxRead 1 MiB, maxWork 256 Ki),
+	// so the layer's bounds scale with it; at full scale this is six 3 MiB
+	// files (about 280 s).
+	oldRead, oldWork := maxRead, maxWork
+	t.Cleanup(func() { maxRead, maxWork = oldRead, oldWork })
+	maxRead, maxWork = 1<<20, 1<<18
 	gen := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
 		for _, n := range []string{"gen1", "gen2", "gen3", "gen4", "gen5", "gen6"} {
-			write(t, src, map[string]string{"tool/" + n + ".go": "package tool\n\nvar " + n + " = []int{" + strings.Repeat("0,", 3<<19) + "}\n"})
+			write(t, src, map[string]string{"tool/" + n + ".go": "package tool\n\nvar " + n + " = []int{" + strings.Repeat("0,", 75000) + "}\n"})
 		}
 		plain(t, src, "add", "--all")
 	})
 	if v := outGuarded(t, gen, map[string]string{"tool/x.go": "package tool\n\nvar x = 1\n"}); !v.Accepted() {
-		t.Errorf("C1 a change beside 18 MiB: %q", whats(v.Blocks))
+		t.Errorf("C1 a change beside 900 KB at a 1 MiB read bound: %q", whats(v.Blocks))
 	}
+	maxRead, maxWork = oldRead, oldWork
 	// L5 probe E: 1101 layer warnings on long paths and two libc blocks:
 	// the blocks are reported.
 	long := strings.Repeat("d", 250) + "/" + strings.Repeat("e", 250) + "/" + strings.Repeat("f", 250)
@@ -305,6 +317,92 @@ func TestDecisionAOutRound7(t *testing.T) {
 	if v := outGuarded(t, f, map[string]string{"tool/s.go": "package tool\n\nimport \"flag\"\n\ntype fs struct{ Parse func() }\n\nfunc a(flag fs) { flag.Parse() }\n\n" +
 		"func b(xs []fs) {\n\tfor _, flag := range xs {\n\t\tflag.Parse()\n\t}\n\tif flag := (fs{}); flag.Parse != nil {\n\t\tflag.Parse()\n\t}\n}\n\nfunc c() { flag.Parse() }\n"}); !finds(v.Warnings, outRefs("tool/s.go", "flag", "1: c")) {
 		t.Errorf("H1 scopes: %q", whats(v.Warnings))
+	}
+}
+
+// TestOutNodesPerByte: the node bound's argument (integrity_out.go): one
+// parse charges at most two nodes a byte. Dense forms of Go's syntax, about
+// 300 KiB, charge at most one (nil callbacks charged would be two).
+func TestOutNodesPerByte(t *testing.T) {
+	src := "package p\n\nfunc f() {\n" + strings.Repeat("\tx\n\t^^^^^^^^x\n\ta.b.c.d.e.f\n\tf()()()()\n\t{{{{}}}}\n\tx[0][0][0]\n\t-(-(-x))\n\tx, y := 0, 0\n\t_ = []int{0,0,0,0}\n", 4000) + "}\n"
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, std: map[string]bool{}},
+		read: func(context.Context, string, int64) ([]byte, bool, error) { return []byte(src), true, nil }}
+	tr := &tree{files: map[string]string{"p/d.go": "d"}, dirs: map[string][]string{"p": {"p/d.go"}}}
+	if r.outRead("p", tr); r.out.nodes > len(src) || r.out.nodes < len(src)/4 || r.out.over {
+		t.Errorf("%d nodes for %d bytes", r.out.nodes, len(src))
+	}
+}
+
+// TestOutShadowOracle: the layer's shadow tracking against go/types' scope
+// rules. Each row's files type-check; a flag.X that go/types resolves to
+// the package must be one of the layer's references (never fewer: decision
+// A); more is a false warning (logged).
+func TestOutShadowOracle(t *testing.T) {
+	h := "package p\n\nimport \"flag\"\n\n"
+	imp := importer.ForCompiler(token.NewFileSet(), "source", nil)
+	for name, files := range map[string][]string{
+		"x := x":                    {h + "func a() {\n\tflag := flag.NewFlagSet(\"x\", flag.ExitOnError)\n\t_ = flag.Parse(nil)\n}\n"},
+		"init scopes end":           {h + "func b() {\n\tif flag := 1; flag > 0 {\n\t}\n\tfor flag := 0; flag < 1; flag++ {\n\t}\n\tswitch flag := 2; flag {\n\t}\n\tflag.Parse()\n}\n"},
+		"a type switch":             {h + "func c(v any) {\n\tswitch flag := v.(type) {\n\tcase *flag.FlagSet:\n\t\t_ = flag.Name()\n\tcase int:\n\t\t_ = flag\n\t}\n\tflag.Parse()\n}\n"},
+		"labels and goto":           {h + "func d() {\nflag:\n\tfor {\n\t\tbreak flag\n\t}\n\tgoto done\ndone:\n\tflag.Parse()\n}\n"},
+		"fields and keys":           {h + "type T struct{ flag int }\n\nfunc e() {\n\tt := T{flag: 1}\n\t_ = t.flag\n\tflag.Parse()\n}\n"},
+		"selectors, methods":        {h + "type U struct{}\n\nfunc (U) flag() {}\n\nfunc f(u U) {\n\tu.flag()\n\tflag.Parse()\n}\n"},
+		"signatures without a body": {h + "func g(flag int) int\n\nvar fn func(flag int)\n\ntype I interface{ M(flag int) }\n\nfunc g2() { flag.Parse() }\n"},
+		"type parameters":           {h + "func k[flag any](v flag) flag { return v }\n\ntype G[flag any] struct{ v flag }\n\nfunc l() { flag.Parse() }\n"},
+		"a var block":               {h + "func m() {\n\tvar x = flag.NArg()\n\tvar (\n\t\ty, flag = x, 2\n\t)\n\t_, _ = y, flag\n}\n\nfunc n() {\n\t{\n\t\tconst flag = 1\n\t\t_ = flag\n\t}\n\tflag.Parse()\n}\n"},
+		"closures":                  {h + "func o() {\n\tf := func() { flag.Parse() }\n\tf()\n\t_ = func(flag int) int { return flag }\n\t{\n\t\tflag := 1\n\t\t_ = func() int { return flag }\n\t}\n\tflag.Parse()\n}\n"},
+		"select with :=":            {h + "func q(ch chan int) {\n\tselect {\n\tcase flag := <-ch:\n\t\t_ = flag\n\tdefault:\n\t\tflag.Parse()\n\t}\n}\n"},
+		"ranges":                    {h + "func u(xs []int) {\n\tfor _, flag := range xs {\n\t\t_ = flag\n\t}\n\tfor flag := range flag.Args() {\n\t\t_ = flag\n\t}\n}\n"},
+		"receivers, results":        {h + "type V struct{}\n\nfunc (flag V) w() (n int) { _ = flag; return }\n\nfunc x() (flag int) { return }\n\nfunc y() { flag.Parse() }\n"},
+		"another file":              {"package p\n\nfunc r() {\n\tflag := 1\n\t_ = flag\n}\n", h + "func s() { flag.Parse() }\n"},
+	} {
+		fset, want, got := token.NewFileSet(), map[string]int{}, map[string]int{}
+		var fs []*ast.File
+		for i, src := range files {
+			f, err := parser.ParseFile(fset, fmt.Sprintf("p/f%d.go", i), src, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatal(name, err)
+			}
+			fs = append(fs, f)
+		}
+		info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
+		if _, err := (&types.Config{Importer: imp}).Check("p", fset, fs, info); err != nil {
+			t.Fatal(name, err)
+		}
+		for i, f := range fs {
+			ast.Inspect(f, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok {
+					if x, ok := sel.X.(*ast.Ident); ok {
+						if pn, ok := info.Uses[x].(*types.PkgName); ok && pn.Imported().Path() == "flag" {
+							want[fmt.Sprintf("p/f%d.go.%s", i, sel.Sel.Name)]++
+						}
+					}
+				}
+				return true
+			})
+		}
+		r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, std: map[string]bool{}},
+			read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
+				return []byte(files[blob[0]-'0']), true, nil
+			}}
+		tr := &tree{files: map[string]string{}, dirs: map[string][]string{}}
+		for i := range files {
+			p := fmt.Sprintf("p/f%d.go", i)
+			tr.files[p], tr.dirs["p"] = fmt.Sprint(i), append(tr.dirs["p"], p)
+			for k, n := range r.outFileOf(p, "p", fmt.Sprint(i), tr).refs {
+				got[p+"."+k[strings.LastIndexByte(k, 0)+1:]] += n
+			}
+		}
+		for k, n := range want {
+			if got[k] < n {
+				t.Errorf("%s: %s: %d of go/types' %d references", name, k, got[k], n)
+			}
+		}
+		for k, n := range got {
+			if n > want[k] {
+				t.Logf("%s: %s: %d references, go/types %d (a false warning)", name, k, n, want[k])
+			}
+		}
 	}
 }
 

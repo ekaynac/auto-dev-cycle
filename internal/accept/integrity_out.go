@@ -66,11 +66,9 @@ var outHook = true
 // once, within maxRead in all, so it visits at most 4 × maxRead nodes; the
 // names it keys charge their bytes (2 × maxRead at most) and the items it
 // handles are its keys (fewer than its nodes): 10 × maxRead at most, under
-// 16 × maxRead.
-var (
-	maxOutTags  = maxWork
-	maxOutNodes = int(8 * 2 * maxRead)
-)
+// 16 × maxRead. Both are read when charged, so a test that scales maxRead
+// or maxWork scales them; a test sets one to reach it.
+var maxOutNodes, maxOutTags int // 0: 16 × maxRead; maxWork
 
 // outS is S beyond the base guard's sPkg: flag, io/ioutil, net/http/cgi
 // and the os/, log/, runtime/, testing/ and modernc.org/libc trees.
@@ -94,10 +92,11 @@ func (r *run) outWarn(p, what string) {
 // more of its work; a done context stops it with no block.
 func (r *run) charge(nodes, tags int) bool {
 	r.out.nodes, r.out.tags = r.out.nodes+nodes, r.out.tags+tags
-	if past := r.out.nodes > maxOutNodes || r.out.tags > maxOutTags; past && !r.out.over && r.ctx.Err() == nil {
+	past := r.out.nodes > cmp.Or(maxOutNodes, int(16*maxRead)) || r.out.tags > cmp.Or(maxOutTags, maxWork)
+	if past && !r.out.over && r.ctx.Err() == nil {
 		r.outBlock("", "unverifiable: decision A's outside-initialization check is over its work bound")
 	}
-	r.out.over = r.out.over || r.out.nodes > maxOutNodes || r.out.tags > maxOutTags || r.ctx.Err() != nil
+	r.out.over = r.out.over || past || r.ctx.Err() != nil
 	return !r.out.over
 }
 
@@ -268,8 +267,11 @@ func (r *run) loadedName(t *tree, dir, ip string) string {
 // refsIn calls add for each reference in n to a package names maps it to
 // (only inside function literals with lits), a local that shadows the
 // import name, in a scope open there, being no reference. Scopes are
-// tracked lexically, as the language declares them: a := or var name from
-// the end of its statement, parameters and range variables in the body.
+// tracked lexically, as the language declares them: a := , var or const
+// name from the end of its statement, parameters and range variables in
+// the body. Only these shadow: any other name (a type parameter, a type
+// switch's variable, a local type) is taken as not shadowing, so a doubt
+// is a false warning, never a silent reference (decision A).
 func (r *run) refsIn(n ast.Node, names map[string]string, lits bool, add func(pkg, name string)) {
 	var stack []ast.Node
 	var scopes [][]string // the import names each open scope declares
@@ -304,8 +306,8 @@ func (r *run) refsIn(n ast.Node, names map[string]string, lits bool, add func(pk
 			top := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
 			switch top := top.(type) {
-			case *ast.AssignStmt:
-				if top.Tok == token.DEFINE {
+			case *ast.AssignStmt: // a type switch's v is declared in each clause, after its types: left out (not shadowed)
+				if ts, ok := stack[len(stack)-1].(*ast.TypeSwitchStmt); top.Tok == token.DEFINE && (!ok || ts.Assign != top) {
 					declare(top.Lhs...)
 				}
 			case *ast.ValueSpec:
