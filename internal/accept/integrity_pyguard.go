@@ -69,9 +69,18 @@ func pyTested(p string) bool {
 
 // python is the guard for a base holding Python.
 func (r *run) python(changes []Change) error {
-	custom, configured, err := r.pyCustom()
+	custom, configured, paths, err := r.pyCustom()
 	if err != nil {
 		return err
+	}
+	var cache []pyBaseTest // the base's test files, read once (Mythos #267 L3)
+	var cacheErr error
+	tests := func() ([]pyBaseTest, error) {
+		if cache == nil && cacheErr == nil {
+			cache, cacheErr = r.pyBaseTests()
+			cache = append(cache, pyBaseTest{}) // read, even when empty
+		}
+		return cache, cacheErr
 	}
 	var changed []string // the changed modules' paths
 	for _, c := range changes {
@@ -108,17 +117,23 @@ func (r *run) python(changes []Change) error {
 			continue
 		}
 		judged := pyTested(c.Dst) || r.pyTestDir(c.Dst)
-		if m := strings.TrimSuffix(path.Base(c.Dst), ".py"); judged && !pyTested(c.Dst) && c.Status != "M" && c.Status != "D" && (m == "__init__" ||
-			slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), func(q string) bool { // Mythos #266 M3: a shadow of a base module
-				return path.Dir(q) != path.Dir(c.Dst) && (path.Base(q) == m+".py" || path.Base(q) == "__init__.py" && path.Base(path.Dir(q)) == m)
-			})) || c.Status == "D" && path.Base(c.Src) == "__init__.py" && r.pyTestDir(c.Src) {
-			add(&r.blocks, c.Dst, "a module added under a test directory shadows a base module, or its __init__.py moved")
+		if why, err := r.pyShadow(c, judged, paths, tests); err != nil {
+			return err
+		} else if why != "" {
+			add(&r.blocks, c.Dst, why)
 		}
 		b, ok, err := r.pyScan(src && path.Ext(c.Src) == ".py", c.Src, c.SrcBlob, judged)
 		a, ok2, err2 := r.pyScan(dst && path.Ext(c.Dst) == ".py", c.Dst, c.DstBlob, judged)
 		if err = cmp.Or(err, err2); err != nil {
 			return err
 		} else if ok && ok2 {
+			if src && dst && path.Ext(c.Src) == ".py" && path.Ext(c.Dst) == ".py" { // a changed module a base condition reads (Mythos #267 H4)
+				if all, err := tests(); err != nil {
+					return err
+				} else if why := pyReach(c, b, a, all); why != "" {
+					add(&r.blocks, c.Dst, why)
+				}
+			}
 			r.pyFileCompare(c.Dst, b, a, judged, changed)
 		}
 	}
@@ -127,7 +142,7 @@ func (r *run) python(changes []Change) error {
 
 // pyCustom: a base configuration moves collection off the defaults (a
 // setting, an option not pyOpt, an addopts path), or is unread (M3).
-func (r *run) pyCustom() (custom, configured bool, err error) {
+func (r *run) pyCustom() (custom, configured bool, paths []string, err error) {
 	for _, p := range slices.Sorted(maps.Keys(r.files)) {
 		if !slices.Contains(pyConfs, path.Base(p)) {
 			continue
@@ -136,20 +151,30 @@ func (r *run) pyCustom() (custom, configured bool, err error) {
 		conf := pyConf(p, b, true)
 		if err != nil || why != "" || slices.ContainsFunc(pyCollect, func(s string) bool { return strings.Contains(conf, s) }) ||
 			slices.ContainsFunc(pyWords.Split(conf, -1), func(w string) bool { return strings.HasPrefix(w, "-") && !pyOpt.MatchString(w) }) {
-			return err == nil, true, err
+			return err == nil, true, nil, err
 		}
 		configured = configured || conf != ""
+		for _, v := range strings.Split(conf, "pythonpath")[1:] { // its directories, from the file's (Mythos #266 r2 L2, Opus #267 L1)
+			if v = pyKey.Split(v, 2)[0]; path.Ext(p) == ".toml" && strings.Contains(v, `\`) {
+				return true, true, nil, nil // an escape: unread
+			}
+			for _, w := range pyWords.Split(strings.TrimLeft(v, " \t=:"), -1) {
+				if w != "" {
+					paths = append(paths, path.Join(path.Dir(p), w))
+				}
+			}
+		}
 		for _, v := range strings.Split(conf, "addopts")[1:] { // Opus #263 L3
 			prev := ""
 			for _, w := range pyWords.Split(strings.TrimLeft(pyNote.ReplaceAllString(pyKey.Split(v, 2)[0], ""), " \t=:"), -1) {
 				if w != "" && !strings.HasPrefix(w, "-") && !slices.Contains([]string{"--tb", "--color", "--durations", "--capture", "-W"}, prev) {
-					return true, true, nil
+					return true, true, nil, nil
 				}
 				prev = w
 			}
 		}
 	}
-	return false, configured, nil
+	return false, configured, paths, nil
 }
 
 // pyRead reads p's blob when want; unread, it blocks p.
