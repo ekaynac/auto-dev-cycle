@@ -5,6 +5,7 @@ package accept
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -733,7 +734,8 @@ func TestPyGuardConditionBodies(t *testing.T) {
 // application module a judged file imports; the closure across modules; a
 // third-party proxy; a container a method call fills.
 func TestPyGuardReach(t *testing.T) {
-	test := "import pytest\nfrom testing_utils import require_gpu\nfrom lmod3 import SLOW\nfrom django.conf import settings\nimport lmod4\nfrom lmod5 import FLAG5\nfrom m2 import W\nfrom testing_utils2 import require_gpu2\nfrom pkgm2 import require_gpu3\nfrom lmod6 import SLOW6\nfrom lmod7 import SLOW7\n\n" +
+	test := "import pytest\nfrom testing_utils import require_gpu\nfrom lmod3 import SLOW\nfrom django.conf import settings\nimport lmod4\nfrom lmod5 import FLAG5\nfrom m2 import W\nfrom testing_utils2 import require_gpu2\nfrom pkgm2 import require_gpu3\nfrom lmod6 import SLOW6\nfrom lmod7 import SLOW7\nfrom flags8 import SLOW8\n\n" +
+		"@pytest.mark.skipif(SLOW8, reason='r')\n" +
 		"@pytest.mark.skipif(pytest.FLAGP, reason='r')\n" +
 		"@require_gpu\n@require_gpu2\n@require_gpu3\n@pytest.mark.skipif(SLOW, reason='r')\n@pytest.mark.skipif(W, reason='r')\n@pytest.mark.skipif(SLOW6, reason='r')\n@pytest.mark.skipif(SLOW7, reason='r')\n@pytest.mark.skipif(settings.SKIP2, reason='r')\n@pytest.mark.skipif(settings.FEATURES.gpu, reason='r')\n@pytest.mark.skipif(settings.SKIP3, reason='r')\n@pytest.mark.skipif(FLAG5, reason='r')\n@pytest.mark.skipif(settings.SKIP_SLOW, reason='r')\n@pytest.mark.skipif(lmod4.FLAGS['gpu'], reason='r')\ndef test_r():\n    pass\n"
 	u, calc := "def d():\n    return False\n", "def compute():\n    return False\n"
@@ -748,7 +750,8 @@ func TestPyGuardReach(t *testing.T) {
 			"testing_utils2.py": "from marks2 import require_gpu2\n", "marks2.py": "import pytest\nimport cfg2\nrequire_gpu2 = pytest.mark.skipif(cfg2.NO_GPU2, reason='g')\n", "cfg2.py": "NO_GPU2 = False\n",
 			"pkgm2/__init__.py": "from .marks import require_gpu3\n", "pkgm2/marks.py": "import pytest\nimport cfg3\nrequire_gpu3 = pytest.mark.skipif(cfg3.NO_GPU3, reason='g')\n", "cfg3.py": "NO_GPU3 = False\n",
 			"lmod6.py": "from util6 import *\nSLOW6 = detect6()\n", "util6.py": "def detect6():\n    return False\n", "lmod7.py": "from cfg7 import *\nSLOW7 = NO_GPU7\n", "cfg7.py": "NO_GPU7 = False\n",
-			"conftest.py": "import pytest\nimport cfgp\npytest.FLAGP = cfgp.PVAL\n", "cfgp.py": "PVAL = False\n"})
+			"conftest.py": "import pytest\nimport cfgp\npytest.FLAGP = cfgp.PVAL\n", "cfgp.py": "PVAL = False\n",
+			"util8.py": "def detect8():\n    return False\n", "leaf8.py": "from util8 import detect8\nV8 = detect8()\n", "bridge8.py": "import leaf8\n", "flags8.py": "from bridge8 import *\nSLOW8 = leaf8.V8\n"})
 		plain(t, src, "add", "--all")
 	})
 	for name, c := range map[string]guardCase{
@@ -764,6 +767,7 @@ func TestPyGuardReach(t *testing.T) {
 		"r-14 a proxy chain's inner name":              {map[string]string{"myproject/settings.py": strings.Replace(settings, "gpu = False", "gpu = 'x'", 1)}, nil, "myproject/settings.py: a skipif or xfail condition in tests/test_r.py reads FEATURES"},
 		"r-15 a proxy name computed in another module": {map[string]string{"myproject/calc.py": "def compute():\n    return 'x'\n"}, nil, "myproject/calc.py: a skipif or xfail condition in tests/test_r.py reads compute"},
 		"v1 a value parked on pytest":                  {map[string]string{"cfgp.py": "PVAL = 'x'\n"}, nil, "cfgp.py: a skipif or xfail condition in tests/test_r.py reads PVAL"},
+		"a-H3 a star import keeps the whole chain":     {map[string]string{"util8.py": "def detect8():\n    return 'True'\n"}, nil, "util8.py: a skipif or xfail condition in tests/test_r.py reads detect8"},
 		"M3 an unrelated change passes":                {map[string]string{"util.py": util + "OTHER = 1\n"}, nil, ""},
 		"M4 a third-party proxy":                       {map[string]string{"myproject/settings.py": strings.Replace(settings, "SKIP_SLOW = False", "SKIP_SLOW = 'x'", 1)}, nil, "myproject/settings.py: a skipif or xfail condition in tests/test_r.py reads "},
 		"r2 L4 a container a method call fills":        {map[string]string{"lmod4.py": strings.Replace(lmod4, "gpu=_detect()", "gpu='x'", 1)}, nil, "lmod4.py: a skipif or xfail condition in tests/test_r.py reads FLAGS"},
@@ -807,6 +811,9 @@ func TestPyGuardReach(t *testing.T) {
 		"rd sys.meta_path":                         {"conftest.py": "import sys\nimport finder\nsys.meta_path.insert(0, finder.F())\n"},
 		"v2 import_module('sys')":                  {"conftest.py": "import importlib\nimportlib.import_module('sys').path.insert(0, 'lib')\n"},
 		"v2 sys.__dict__":                          {"conftest.py": "import sys\nsys.__dict__['path'].insert(0, 'lib')\n"},
+		"a-H2 dirname of a literal":                {"conftest.py": "import os\nimport sys\nsys.path.insert(0, os.path.dirname('lib/anchor'))\n"},
+		"a-H2 abspath of a literal":                {"conftest.py": "import os\nimport sys\nsys.path.insert(0, os.path.abspath('lib'))\n"},
+		"a-M2 a .pth in the tree":                  {"vendor/local.pth": "../lib\n"},
 		"rd a module a conftest imports":           {"conftest.py": "import helper\n", "helper.py": "import sys\nsys.path.insert(0, 'lib')\n"},
 		"rd a pytest_plugins module":               {"conftest.py": "pytest_plugins = ['myplugin']\n", "myplugin.py": "import sys\nsys.path.insert(0, 'lib')\n"},
 	} {
@@ -840,6 +847,51 @@ func TestPyGuardReach(t *testing.T) {
 	if v := vend.guarded(t, map[string]string{"vendor/lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "vendor/lib/yaml.py: an added module shadows a module tests/test_y.py imports") {
 		t.Errorf("rd a path joined from several literals: %q, want blocked", whats(pyOwn(v.Blocks)))
 	}
+	for name, c := range map[string][2]string{ // Astra #272 H1: a root never replaces main's binding
+		"a-H1 a where in an unrelated section": {"[unrelated]\nwhere = a\n", "cfg.py: a skipif or xfail condition in tests/test_x.py reads SLOW"},
+		"a-H1 a module name in two roots":      {"[options.packages.find]\nwhere = a\n", "cfg.py: a module a condition reads is unread (the module name feature in two roots)"},
+	} {
+		h1 := newFixtureWith(t, func(src string) {
+			write(t, src, map[string]string{"setup.cfg": c[0], "a/feature.py": "SKIP = False\n", "feature.py": "from cfg import SLOW as SKIP\n", "cfg.py": "SLOW = False\n",
+				"tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.SKIP, reason='r')\ndef test_x():\n    pass\n"})
+			plain(t, src, "add", "--all")
+		})
+		if v := h1.guarded(t, map[string]string{"cfg.py": "SLOW = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), c[1]) {
+			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
+		}
+	}
+	h4 := newFixtureWith(t, func(src string) { // Astra #272 H4: a holder's __getattr__
+		write(t, src, map[string]string{"holder10.py": "import marks10\n\ndef __getattr__(name):\n    if name == 'require_gpu10':\n        return marks10.require_gpu10\n    raise AttributeError(name)\n",
+			"marks10.py": "import pytest\nimport cfg10\nrequire_gpu10 = pytest.mark.skipif(cfg10.SLOW10, reason='r')\n", "cfg10.py": "SLOW10 = False\n",
+			"tests/test_h.py": "from holder10 import require_gpu10\n\n@require_gpu10\ndef test_h():\n    pass\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := h4.guarded(t, map[string]string{"cfg10.py": "SLOW10 = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), "cfg10.py: a module a condition reads is unread") {
+		t.Errorf("a-H4 a holder's __getattr__: %q, want blocked", whats(pyOwn(v.Blocks)))
+	}
+	big := func(t *testing.T) fixture { // Astra #272 M1: 2000 modules binding X, a chain of 5000 .X
+		files := map[string]string{"other.py": "Y = 1\n", "tests/test_b.py": "import pytest\nimport ext\n\n@pytest.mark.skipif(ext" + strings.Repeat(".X", 5000) + ", reason='r')\ndef test_b():\n    pass\n"}
+		for i := range 2000 {
+			files[fmt.Sprintf("m%d.py", i)] = "X = False\n"
+		}
+		return newFixtureWith(t, func(src string) {
+			write(t, src, files)
+			plain(t, src, "add", "--all")
+		})
+	}(t)
+	old := maxWork
+	t.Cleanup(func() { maxWork = old })
+	for bound, want := range map[int]string{200000: "", 10000: "other.py: unverifiable: the base conditions' analysis is over the guard's work bound"} {
+		maxWork = bound
+		var m0, m1 runtime.MemStats
+		runtime.ReadMemStats(&m0)
+		v := big.guarded(t, map[string]string{"other.py": "Y = 2\n"})
+		runtime.ReadMemStats(&m1)
+		if mb := (m1.TotalAlloc - m0.TotalAlloc) >> 20; want == "" && (len(pyOwn(v.Blocks)) > 0 || mb > 200) || want != "" && !pyFinds(pyOwn(v.Blocks), want) {
+			t.Errorf("a-M1 a bounded expansion (%d, %d MB): %q, want %q", bound, (m1.TotalAlloc-m0.TotalAlloc)>>20, whats(pyOwn(v.Blocks)), want)
+		}
+	}
+	maxWork = old
 	hu := newFixtureWith(t, func(src string) { // the review of 1ceb79c: a re-export behind an unknown star is unread
 		write(t, src, map[string]string{"helpers9.py": "from numpy import *\n", "other.py": "X = 1\n",
 			"tests/test_h.py": "from helpers9 import REQ9\n\n@REQ9\ndef test_h():\n    pass\n"})

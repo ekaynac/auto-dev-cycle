@@ -25,6 +25,7 @@ type pyBase struct {
 	read         bool
 	err          error
 	mods         map[string]string      // a base module's dotted name, to its path
+	alts         map[string]int         // how many base files answer to a dotted name (Astra #272 H1)
 	files        map[string]*pyBaseFile // the base files read, by path
 	tests        []*pyBaseFile          // the judged ones (Opus #270 H2, M4)
 	holders      []*pyBaseFile          // the application modules they import, one hop (Mythos #270 M2)
@@ -115,7 +116,7 @@ func (pb *pyBase) load() error {
 	if pb.read {
 		return pb.err
 	}
-	pb.read, pb.mods, pb.files, pb.paths = true, map[string]string{}, map[string]*pyBaseFile{}, slices.Sorted(maps.Keys(pb.r.files))
+	pb.read, pb.mods, pb.alts, pb.files, pb.paths = true, map[string]string{}, map[string]int{}, map[string]*pyBaseFile{}, slices.Sorted(maps.Keys(pb.r.files))
 	for _, q := range pb.paths {
 		if pb.err = pb.r.ctx.Err(); pb.err != nil { // Mythos #270 M5
 			return pb.err
@@ -131,8 +132,8 @@ func (pb *pyBase) load() error {
 	pb.entries = slices.Compact(pb.entries)
 	for _, q := range pb.paths {
 		for _, n := range pyModNames(q, pb.entries, false) {
-			if pb.mods[n] == "" && path.Ext(q) == ".py" {
-				pb.mods[n] = q
+			if path.Ext(q) == ".py" {
+				pb.mods[n], pb.alts[n] = cmp.Or(pb.mods[n], q), pb.alts[n]+1
 			}
 		}
 	}
@@ -315,7 +316,9 @@ func (pb *pyBase) resolve(d string) (string, string, error) {
 		seen[d] = true
 		parts, next := strings.Split(d, "."), d
 		for i := len(parts) - 1; i >= 1; i-- { // the longest module prefix
-			if q := pb.mods[strings.Join(parts[:i], ".")]; q != "" {
+			if q := pb.mods[strings.Join(parts[:i], ".")]; q != "" && pb.alts[strings.Join(parts[:i], ".")] > 1 {
+				return d, "the module name " + strings.Join(parts[:i], ".") + " in two roots", nil // Astra #272 H1: no root replaces another
+			} else if q != "" {
 				f, err := pb.file(q)
 				if err != nil || f.unread {
 					return d, cmp.Or(q, ""), err
