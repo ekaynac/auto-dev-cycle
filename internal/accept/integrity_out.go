@@ -14,14 +14,10 @@ import (
 	"go/types"
 	"io"
 	"maps"
-	"os"
 	"path"
-	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 
 	"golang.org/x/mod/modfile"
 
@@ -40,8 +36,9 @@ type additive struct {
 	blocks, warnings []Block
 	nodes, tags      int // its work: AST nodes and items handled; tag visits
 	over             bool
-	files            map[string]*outFile // by blob, name, directory and version
-	std, built       map[string]bool     // by path; by blob and name
+	files            map[string]*outFile        // by blob, name, directory and version
+	built            map[string]bool            // by blob and name
+	named            map[string]map[string]bool // by module root and version
 }
 
 // outFile is what one Go file holds for the layer.
@@ -99,27 +96,68 @@ func bound(name string) string {
 	return fmt.Sprintf("%s…%x", name[:64], h[:16])
 }
 
-// gorootSame: the guard's GOROOT is its own release, the one LocalLister
-// requires of the loader's toolchain; else std knows nothing.
-var gorootSame = sync.OnceValue(func() bool {
-	b, err := os.ReadFile(filepath.Join(build.Default.GOROOT, "VERSION"))
-	v, _, _ := strings.Cut(string(b), "\n")
-	return build.Default.GOROOT != "" && err == nil && v == runtime.Version()
-})
-
-// std: p is the standard library's on positive evidence only, as
-// internal/goroot reads it: its first element has no dot and the release's
-// src/p holds a .go file (Astra #276 r5: a directory alone is a namespace).
-// Anything uncertain is not: a warning, never silence.
-func (r *run) std(p string) bool {
-	if ok, seen := r.out.std[p]; seen {
-		return ok
+// std: p is the standard library's by module metadata alone (Astra #276
+// r6; the lead's rule): its first element has no dot, and no module path
+// that dir's go.mod or vendor/modules.txt names, in either version, is p or
+// a prefix of it. The go command resolves such a path from its GOROOT
+// only: it is std or it does not build. Otherwise a new edge warns.
+func (r *run) std(dir, p string) bool {
+	if first, _, _ := strings.Cut(p, "/"); strings.Contains(first, ".") {
+		return false
 	}
-	first, _, _ := strings.Cut(p, "/")
-	ents, err := os.ReadDir(filepath.Join(build.Default.GOROOT, "src", filepath.FromSlash(p)))
-	r.out.std[p] = gorootSame() && !strings.Contains(first, ".") && err == nil &&
-		slices.ContainsFunc(ents, func(e os.DirEntry) bool { return !e.IsDir() && strings.HasSuffix(e.Name(), ".go") })
-	return r.out.std[p]
+	for _, t := range r.trees {
+		named := r.named(t, t.typer(r, dir, platforms[0]).root)
+		for q := p; ; q = path.Dir(q) {
+			if named[q] || named[""] {
+				return false
+			} else if !strings.Contains(q, "/") {
+				break
+			}
+		}
+	}
+	return true
+}
+
+// named: the module paths root's go.mod (module, require, replace) and
+// vendor/modules.txt name in t, once; an unreadable one names every path ("").
+func (r *run) named(t *tree, root string) map[string]bool {
+	key := root + "\x00" + fmt.Sprintf("%p", t)
+	if m, ok := r.out.named[key]; ok {
+		return m
+	}
+	m := map[string]bool{}
+	for _, name := range []string{"go.mod", "vendor/modules.txt"} {
+		blob := t.files[path.Join(root, name)]
+		if blob == "" {
+			continue
+		}
+		b, why, err := r.file(blob)
+		f, perr := modfile.Parse(name, b, nil) // strict: ParseLax drops replace
+		switch {
+		case why != "" || err != nil || name == "go.mod" && perr != nil:
+			m[""] = true
+		case name == "go.mod":
+			if f.Module != nil {
+				m[f.Module.Mod.Path] = true
+			}
+			for _, q := range f.Require {
+				m[q.Mod.Path] = true
+			}
+			for _, q := range f.Replace {
+				m[q.Old.Path] = true
+			}
+		default:
+			for _, l := range strings.Split(string(b), "\n") {
+				if fs := strings.Fields(l); len(fs) > 1 && fs[0] == "#" {
+					m[fs[1]] = true
+				} else if len(fs) == 1 {
+					m[fs[0]] = true
+				}
+			}
+		}
+	}
+	r.out.named[key] = m
+	return m
 }
 
 // outBuilt: a gate platform may build p, as the base guard's goOn and holds
@@ -220,7 +258,7 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 		switch {
 		case is.Name != nil:
 			name = is.Name.Name
-		case r.std(ip):
+		case r.std(dir, ip):
 			name = path.Base(ip) // a standard package is named by its last element
 		default:
 			name = r.loadedName(t, dir, ip)
@@ -423,7 +461,7 @@ func (r *run) outRun() (err error) {
 			r.outBlock("", fmt.Sprintf("unverifiable: decision A's outside-initialization check failed (%v)", p))
 		}
 	}()
-	r.out.files, r.out.std, r.out.built = map[string]*outFile{}, map[string]bool{}, map[string]bool{}
+	r.out.files, r.out.built, r.out.named = map[string]*outFile{}, map[string]bool{}, map[string]map[string]bool{}
 	r.outPkgs()
 	r.outModule()
 	return r.ctx.Err()
@@ -456,7 +494,7 @@ func (r *run) outPkgs() {
 				strings.Join(fns[:min(3, len(fns))], ", "), map[bool]string{true: ", …"}[len(fns) > 3]))
 		}
 		for _, k := range slices.Sorted(maps.Keys(a.unknown)) { // fail closed: its references cannot be read
-			if file, pkg, _ := strings.Cut(k, "\x00"); r.files[file] != r.cand[file] && libc(pkg) {
+			if file, pkg, _ := strings.Cut(k, "\x00"); r.files[file] != r.cand[file] && libc(pkg) && tested {
 				r.outBlock(file, "unverifiable: an import of "+pkg+" with an unknown name")
 			} else if r.files[file] != r.cand[file] {
 				r.outWarn(file, "an import of "+pkg+" with an unknown name: review it")
@@ -480,7 +518,7 @@ func (r *run) outPkgs() {
 			})
 		}
 		for _, p := range slices.Sorted(maps.Keys(a.imports)) { // a new edge outside the standard library and the module
-			if !b.imports[p] && p != "C" && p != "unsafe" && !r.std(p) && !own(p) {
+			if !b.imports[p] && p != "C" && p != "unsafe" && !r.std(dir, p) && !own(p) {
 				r.outWarn(dir, "a new import of "+p+", outside the standard library and the module: review it")
 			}
 		}

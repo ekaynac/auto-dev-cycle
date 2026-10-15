@@ -11,6 +11,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"path"
 	"slices"
 	"strings"
 	"testing"
@@ -380,24 +381,39 @@ func TestDecisionAOutRound8(t *testing.T) {
 	onlyStopped("exhausted, flag only", outGuarded(t, f, map[string]string{"pkg/y.go": "package pkg\n\nimport \"flag\"\n\nvar _ = flag.Parse\n"}))
 	onlyStopped("exhausted, libc untested", outGuarded(t, f, map[string]string{"tool/x.go": "package tool\n\nimport \"modernc.org/libc\"\n\nvar _ = libc.NewTLS\n"}))
 	maxOutNodes = oldNodes
-	// H3 (Astra r5 #3): a module replacing the non-std path archive (a
-	// namespace directory in GOROOT): its new edge warns.
-	arch := newFixtureWith(t, func(src string) {
-		write(t, src, guardBase)
-		write(t, src, map[string]string{"go.mod": guardBase["go.mod"] + "\nrequire archive v1.0.0\n\nreplace archive => example.org/archive v1.0.0\n",
-			"vendor/modules.txt":  "# golang.org/x/sys v0.48.0\n## explicit\n# archive v1.0.0 => example.org/archive v1.0.0\n## explicit\narchive\n",
-			"vendor/archive/a.go": "package archive\n\nfunc F() {}\n"})
-		plain(t, src, "add", "--all")
-	})
-	if v := outGuarded(t, arch, map[string]string{"tool/x.go": "package tool\n\nimport dep \"archive\"\n\nfunc f() { dep.F() }\n"}); !finds(v.Warnings, "a new import of archive") { // main blocks this vendored form itself (a replacement)
-		t.Errorf("H3 replace archive: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
-	}
-	// H3: std on positive evidence only (a namespace directory is not).
-	r := &run{out: additive{std: map[string]bool{}}}
-	for p, want := range map[string]bool{"archive": false, "archive/tar": true, "flag": true, "os/user": true, "example.org/x": false, "nosuch": false} {
-		if r.std(p) != want {
-			t.Errorf("std(%q) = %v", p, !want)
+}
+
+// TestDecisionAOutRound9 (final, scope freeze): Astra #276 r6 on f9ab6e6.
+func TestDecisionAOutRound9(t *testing.T) {
+	// Fix 1: std by module metadata. A dotless path a module of go.mod or
+	// vendor/modules.txt names is not std: its new edge warns (main blocks
+	// this vendored form itself: a replacement).
+	for _, mod := range []string{"archive", "archive/tar"} {
+		f := newFixtureWith(t, func(src string) {
+			write(t, src, guardBase)
+			write(t, src, map[string]string{"go.mod": guardBase["go.mod"] + "\nrequire " + mod + " v1.0.0\n\nreplace " + mod + " => example.org/x v1.0.0\n",
+				"vendor/modules.txt":      "# golang.org/x/sys v0.48.0\n## explicit\n# " + mod + " v1.0.0 => example.org/x v1.0.0\n## explicit\n" + mod + "\n",
+				"vendor/" + mod + "/a.go": "package " + path.Base(mod) + "\n\nfunc F() {}\n"})
+			plain(t, src, "add", "--all")
+		})
+		if v := outGuarded(t, f, map[string]string{"tool/x.go": "package tool\n\nimport dep \"" + mod + "\"\n\nfunc f() { dep.F() }\n"}); !finds(v.Warnings, "a new import of "+mod+",") {
+			t.Errorf("replace %s: blocks %q, warnings %q", mod, whats(v.Blocks), whats(v.Warnings))
 		}
+	}
+	// flag and os/user, which no module names: std, no edge.
+	f, _ := libcFixture(t)
+	if v := outGuarded(t, f, map[string]string{"tool/s.go": "package tool\n\nimport (\n\t\"flag\"\n\t\"os/user\"\n)\n\nvar _, _ = flag.Parse, user.Current\n"}); finds(v.Warnings, "a new import of") || !v.Accepted() {
+		t.Errorf("flag, os/user: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	// Fix 2: a libc import whose name the layer cannot learn (package p_test
+	// in an ordinary file) blocks only in a tested package.
+	quiet := "package p_test\n\nimport \"modernc.org/libc\"\n\nfunc f() { _ = libc.NewTLS }\n"
+	f, _ = libcFixture(t, map[string]string{"t2/x_test.go": "package p_test\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n"})
+	if v := outGuarded(t, f, map[string]string{"untested/a.go": quiet}); !v.Accepted() || !finds(v.Warnings, "untested/a.go an import of modernc.org/libc with an unknown name") {
+		t.Errorf("unknown name, untested: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	if v := outGuarded(t, f, map[string]string{"t2/a.go": quiet}); !finds(v.Blocks, "t2/a.go unverifiable: an import of modernc.org/libc with an unknown name") {
+		t.Errorf("unknown name, tested: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
 	}
 }
 
@@ -406,7 +422,7 @@ func TestDecisionAOutRound8(t *testing.T) {
 // 300 KiB, charge at most one (nil callbacks charged would be two).
 func TestOutNodesPerByte(t *testing.T) {
 	src := "package p\n\nfunc f() {\n" + strings.Repeat("\tx\n\t^^^^^^^^x\n\ta.b.c.d.e.f\n\tf()()()()\n\t{{{{}}}}\n\tx[0][0][0]\n\t-(-(-x))\n\tx, y := 0, 0\n\t_ = []int{0,0,0,0}\n", 4000) + "}\n"
-	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, std: map[string]bool{}},
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
 		read: func(context.Context, string, int64) ([]byte, bool, error) { return []byte(src), true, nil }}
 	tr := &tree{files: map[string]string{"p/d.go": "d"}, dirs: map[string][]string{"p": {"p/d.go"}}}
 	if r.outRead("p", tr); r.out.nodes > len(src) || r.out.nodes < len(src)/4 || r.out.over {
@@ -462,11 +478,12 @@ func TestOutShadowOracle(t *testing.T) {
 				return true
 			})
 		}
-		r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, std: map[string]bool{}},
+		r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
 			read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
 				return []byte(files[blob[0]-'0']), true, nil
 			}}
 		tr := &tree{files: map[string]string{}, dirs: map[string][]string{}, typers: map[string]*typer{}}
+		r.trees = [2]*tree{tr, tr}
 		for i := range files {
 			p := fmt.Sprintf("p/f%d.go", i)
 			tr.files[p], tr.dirs["p"] = fmt.Sprint(i), append(tr.dirs["p"], p)
@@ -491,7 +508,7 @@ func TestOutShadowOracle(t *testing.T) {
 // probe B1), and a done context stops it with no block (M2, probe B2).
 func TestOutReadAndCancel(t *testing.T) {
 	var read []string
-	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}},
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
 		read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
 			read = append(read, blob)
 			return []byte("package tool\n"), true, nil
