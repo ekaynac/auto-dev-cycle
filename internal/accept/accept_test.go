@@ -319,7 +319,7 @@ func TestPolicyOfOnly(t *testing.T) {
 
 // L2: the report's lists are bounded, counted beyond, and never null.
 func TestReportBounded(t *testing.T) {
-	b, err := Verdict{Blocks: slices.Repeat([]Block{{vocab.ReasonProtectedPath, "p", "w"}}, maxReported+5)}.Report()
+	b, err := Verdict{Blocks: slices.Repeat([]Block{{vocab.ReasonProtectedPath, "p", "w", false}}, maxReported+5)}.Report()
 	var rep struct {
 		Blocks, Warnings []json.RawMessage
 		Truncated        int
@@ -330,8 +330,8 @@ func TestReportBounded(t *testing.T) {
 	}
 	// L8 (Astra): a megabyte path is clipped, and long entries stop at the
 	// byte bound, the rest counted.
-	long := Block{vocab.ReasonProtectedPath, strings.Repeat("p", 2<<20), "w"}
-	wide := slices.Repeat([]Block{{vocab.ReasonProtectedPath, strings.Repeat("q", maxField), "w"}}, maxReported)
+	long := Block{vocab.ReasonProtectedPath, strings.Repeat("p", 2<<20), "w", false}
+	wide := slices.Repeat([]Block{{vocab.ReasonProtectedPath, strings.Repeat("q", maxField), "w", false}}, maxReported)
 	b, err = Verdict{Blocks: append([]Block{long}, wide...)}.Report()
 	var cut struct{ Truncated, Clipped int }
 	if err != nil || json.Unmarshal(b, &cut) != nil || len(b) > maxEntries+4096 || cut.Clipped != 1 || cut.Truncated == 0 {
@@ -350,7 +350,7 @@ func TestGuardSeam(t *testing.T) {
 		if _, small, _ := read(ctx, changes[0].DstBlob, 1); err != nil || !ok || string(b) != "x = 1\n" || small {
 			t.Errorf("read: %q, %t, %v", b, ok, err)
 		}
-		return []Block{{vocab.ReasonTestIntegrityViolation, changes[0].Dst, "guarded"}}, nil, nil
+		return []Block{{vocab.ReasonTestIntegrityViolation, changes[0].Dst, "guarded", false}}, nil, nil
 	}
 	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, map[string]string{"money.py": "x = 1\n"}), Policy: f.policy, Guard: guard})
 	if err != nil || calls != 1 || v.Reason() != vocab.ReasonTestIntegrityViolation {

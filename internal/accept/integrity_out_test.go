@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // F (P14b-out, #226 entries 75 and 76; operator decision A, outside
@@ -182,8 +184,109 @@ func TestMethodRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sel := range info.Selections {
-		if q := methodRef(sel.Obj().(*types.Func), sel.Recv()); q != "(*flag.FlagSet).Parse" {
+		if q := methodRef(sel.Obj().(*types.Func), sel.Recv(), map[types.Object]string{}); q != "(*flag.FlagSet).Parse" {
 			t.Errorf("the key: %d bytes, %.80q", len(q), q)
+		}
+	}
+}
+
+// TestDecisionAOutRound4: Astra #276 r2. Every finding P14b-out adds, a
+// block or a warning, is Additive: the report gives the base guard's all its
+// capacity first (H2, H3). Package-level function literals and a TestMain
+// that is no hook are fingerprinted (H1). Names are cut at their source (H4).
+func TestDecisionAOutRound4(t *testing.T) {
+	report := func(v Verdict) (blocks, warnings []Block) {
+		b, err := v.Report()
+		var r struct{ Blocks, Warnings []Block }
+		if err != nil || json.Unmarshal(b, &r) != nil {
+			t.Fatal(err)
+		}
+		return r.Blocks, r.Warnings
+	}
+	g := newGuardFixture(t)
+	// H2: 1000 dot imports of flag, untested, and main's output warning.
+	files := map[string]string{"zzz/out.go": "package zzz\n\nimport \"fmt\"\n\nfunc out() { fmt.Println(\"x\") }\n"}
+	for i := range 1000 {
+		files[fmt.Sprintf("aaa/a%04d.go", i)] = "package aaa\n\nimport . \"flag\"\n\nvar _ = ContinueOnError\n"
+	}
+	if _, w := report(g.guarded(t, files)); !finds(w, "zzz/out.go: fmt.Println in out") {
+		t.Errorf("H2 1000 dot imports: main's warning displaced (%d reported)", len(w))
+	}
+
+	libc := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"go.mod": guardBase["go.mod"] + "\nrequire modernc.org/libc v1.0.0\n",
+			"vendor/modules.txt":              "# golang.org/x/sys v0.48.0\n## explicit\n# modernc.org/libc v1.0.0\n## explicit\nmodernc.org/libc\n",
+			"vendor/modernc.org/libc/libc.go": "package libc\n\ntype TLS struct{}\n\nfunc X_Exit(t *TLS, s int32) {}\n"})
+		plain(t, src, "add", "--all")
+	})
+	exits := func(name string) string {
+		var b strings.Builder
+		b.WriteString("package pkg\n\nimport \"modernc.org/libc\"\n")
+		for i := range 1000 {
+			fmt.Fprintf(&b, "\nfunc "+name+"() { libc.X_Exit(nil, 0) }\n", i)
+		}
+		return b.String()
+	}
+	// H3: long-named libc blocks against the shared byte budget; the verdict
+	// is still a block.
+	long := strings.Repeat("x", 1500)
+	v := libc.guarded(t, map[string]string{"pkg/a.go": exits("f%d_" + long), "pkg/z.go": "package pkg\n\nimport \"fmt\"\n\nfunc out" + long + "() { fmt.Println(\"x\") }\n"})
+	if _, w := report(v); v.Accepted() || !finds(w, "pkg/z.go: fmt.Println in out") {
+		t.Errorf("H3 long libc blocks: accepted %t, main's warning reported %t", v.Accepted(), finds(w, "pkg/z.go: fmt.Println in out"))
+	}
+	// H3: 1000 short libc blocks and a main block: the count cap.
+	v = libc.guarded(t, map[string]string{"pkg/a.go": exits("f%d"), "pkg/z.go": "package pkg\n\nimport \"os\"\n\nfunc quit() { os.Exit(0) }\n"})
+	if b, _ := report(v); !finds(b, "pkg/z.go: os.Exit in quit") {
+		t.Errorf("H3 1000 libc blocks: main's block displaced (%d reported)", len(b))
+	}
+
+	// H2, H3 in the report itself: 1000 Additive blocks of the widest path
+	// take neither main's block's place (the count) nor main's warning's
+	// (the shared byte budget).
+	short := slices.Repeat([]Block{{vocab.ReasonTestIntegrityViolation, "pkg/a.go: modernc.org/libc.X_Exit in f", "x", true}}, maxReported)
+	mainB := Block{vocab.ReasonTestIntegrityViolation, "pkg/z.go: os.Exit in quit", "main's", false}
+	if b, _ := report(Verdict{Blocks: append(short, mainB)}); !finds(b, "pkg/z.go: os.Exit in quit") {
+		t.Errorf("the report's count: main's block displaced")
+	}
+	wide := slices.Repeat([]Block{{vocab.ReasonTestIntegrityViolation, strings.Repeat("p", maxField), "x", true}}, maxReported)
+	mainW := Block{vocab.ReasonTestIntegrityViolation, "pkg/z.go: fmt.Println in out" + strings.Repeat("x", maxField), strings.Repeat("main's ", 20), false}
+	if _, w := report(Verdict{Blocks: wide, Warnings: []Block{mainW}}); !finds(w, "pkg/z.go: fmt.Println in out") {
+		t.Errorf("the report's bytes: main's warning displaced")
+	}
+
+	// H1: a package-level function literal; a TestMain that is not the hook.
+	for name, c := range map[string]struct{ file, src, why string }{
+		"var parse = func() {…}": {"pkg/p.go", "package pkg\n\nimport \"flag\"\n\nvar parse = func() {\n\tfs := flag.NewFlagSet(\"x\", flag.ExitOnError)\n\t_ = fs.Parse(nil)\n}\n",
+			"pkg/p.go changed bodies that use flag (1: var parse)"},
+		"func TestMain() in a non-test file": {"tool/m.go", "package tool\n\nimport \"flag\"\n\nfunc TestMain() {\n\tfs := flag.NewFlagSet(\"x\", flag.ExitOnError)\n\t_ = fs.Parse(nil)\n}\n",
+			"tool/m.go changed bodies that use flag (1: TestMain)"},
+	} {
+		base := newFixtureWith(t, func(src string) {
+			write(t, src, guardBase)
+			write(t, src, map[string]string{c.file: c.src})
+			plain(t, src, "add", "--all")
+		})
+		if v := base.guarded(t, map[string]string{c.file: strings.Replace(c.src, "fs.Parse(nil)", "fs.Parse([]string{\"-h\"})", 1)}); !finds(v.Warnings, c.why) {
+			t.Errorf("H1 %s: %q", name, whats(v.Warnings))
+		}
+	}
+
+	// H4: a type name of 1 MiB is cut at its source: the key stays short.
+	huge := "W" + strings.Repeat("w", 1<<20)
+	src := "package p\n\nimport \"flag\"\n\ntype " + huge + " struct{ *flag.FlagSet }\n\nvar w " + huge + "\n\nvar _ = w.Parse\n"
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}}
+	if _, err := (&types.Config{Importer: importer.ForCompiler(fset, "source", nil)}).Check("p", fset, []*ast.File{f}, info); err != nil {
+		t.Fatal(err)
+	}
+	for _, sel := range info.Selections {
+		if q := methodRef(sel.Obj().(*types.Func), sel.Recv(), map[types.Object]string{}); len(q) > 160 || !strings.HasPrefix(q, "(*flag.FlagSet).Parse via p.Ww") {
+			t.Errorf("H4 the key: %d bytes, %.100q", len(q), q)
 		}
 	}
 }

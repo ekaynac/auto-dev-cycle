@@ -78,13 +78,13 @@ func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
 			started: time.Now(), listEnd: time.Now().Add(maxListTime)}
 		defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
 			if p := recover(); p != nil && ctx.Err() != nil {
-				blocks, warnings, err = r.blocks, append(r.warnings, r.outWarnings...), ctx.Err()
+				blocks, warnings, err = append(r.blocks, r.outBlocks...), append(r.warnings, r.outWarnings...), ctx.Err()
 			} else if p != nil {
-				blocks, warnings, err = append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p)}), append(r.warnings, r.outWarnings...), nil
+				blocks, warnings, err = append(append(r.blocks, r.outBlocks...), Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p), false}), append(r.warnings, r.outWarnings...), nil
 			}
 		}()
 		err = r.check(changes)
-		return r.blocks, append(r.warnings, r.outWarnings...), err
+		return append(r.blocks, r.outBlocks...), append(r.warnings, r.outWarnings...), err
 	}
 }
 
@@ -107,7 +107,8 @@ type run struct {
 	vendorChanged      map[string]bool     // vendor/ directories with a file changed
 	anyTest            bool                // a Go test in either version (a helper anywhere the tests may call)
 	blocks, warnings   []Block
-	outWarnings        []Block // P14b-out's, reported after main's (Astra #276 H2)
+	outBlocks          []Block // P14b-out's findings: Additive, reported after the base guard's (Astra #276)
+	outWarnings        []Block
 }
 
 // cgoSources is what cgo compiles beside a package's Go files, and objects
@@ -152,7 +153,12 @@ func (r *run) usesCgo() bool {
 }
 
 func add(to *[]Block, p, what string) {
-	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what})
+	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what, false})
+}
+
+// addOut adds a finding P14b-out added: Additive in the report.
+func addOut(to *[]Block, p, what string) {
+	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what, true})
 }
 
 func (r *run) check(changes []Change) error {
@@ -285,7 +291,7 @@ func (r *run) goMod() error {
 		add(&r.blocks, "go.mod", "unverifiable: a root go.mod's ignore directives changed (packages leave ./...)")
 	}
 	if r.trees[0].typer(r, ".", platforms[0]).mod != r.trees[1].typer(r, ".", platforms[0]).mod { // which imports are own changes
-		add(&r.blocks, "go.mod", "unverifiable: the module path changed")
+		addOut(&r.outBlocks, "go.mod", "unverifiable: the module path changed")
 	}
 	return nil
 }
@@ -329,7 +335,11 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 	add := func(to *[]Block, p, what string) {
 		if k := p + "\x00" + what; !seen[k] {
 			seen[k] = true
-			add(to, p, what)
+			if to == &r.outBlocks || to == &r.outWarnings {
+				addOut(to, p, what)
+			} else {
+				add(to, p, what)
+			}
 		}
 	}
 	bad := maps.Clone(b.bad)
@@ -338,7 +348,11 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 		add(&r.blocks, p, "unverifiable: "+bad[p])
 	}
 	for _, k := range keys(b.untyped, a.untyped) {
-		add(&r.blocks, k, "unverifiable: "+cmp.Or(a.untyped[k], b.untyped[k]))
+		if p, ok := strings.CutPrefix(k, "~"); ok { // P14b-out's walk over its bound
+			add(&r.outBlocks, p, "unverifiable: "+cmp.Or(a.untyped[k], b.untyped[k]))
+		} else {
+			add(&r.blocks, k, "unverifiable: "+cmp.Or(a.untyped[k], b.untyped[k]))
+		}
 	}
 	if len(bad) > 0 {
 		return // the facts are incomplete
@@ -373,10 +387,14 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 		p, _, _ := strings.Cut(k, "\x00")
 		for _, f := range a.flags[k] {
 			cgo := f == "an import of C" && r.files[p] != r.cand[p] // a new or changed preamble runs before any test
+			blocks, warnings := &r.blocks, &r.warnings
+			if dot, ok := strings.CutPrefix(f, "a dot import of "); ok && !mainS(dot) { // of a package P14b-out put in S
+				blocks, warnings = &r.outBlocks, &r.outWarnings
+			}
 			if (!slices.Contains(b.flags[k], f) || cgo) && (r.tested(dir) || cgo || f == "reflection on a testing value") {
-				add(&r.blocks, p, "unverifiable: "+f)
+				add(blocks, p, "unverifiable: "+f)
 			} else if !slices.Contains(b.flags[k], f) {
-				add(&r.warnings, p, f+": review it")
+				add(warnings, p, f+": review it")
 			}
 		}
 	}
@@ -388,9 +406,12 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 	out := map[string][]string{}             // P14b-out's findings: "file\x00what" to functions
 	for _, k := range keys(b.refs, a.refs) { // per file and function: added ones block or warn, any other change warns
 		f := strings.Split(k, "\x00") // file, reference, function, platform, its package
+		pkg := strings.TrimPrefix(f[4], "~")
+		additive := !mainS(pkg) || pkg != f[4] // P14b-out's: libc, the new S, every reference by real types
 		if at := f[0] + ": " + f[1] + " in " + f[2]; a.refs[k] > b.refs[k] && r.tested(dir) && sensitive(f[1]) == 2 {
-			add(&r.blocks, at, "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
-		} else if pkg := strings.TrimPrefix(f[4], "~"); a.refs[k] != b.refs[k] && (!mainS(pkg) || pkg != f[4]) { // P14b-out's: per file and package
+			add(map[bool]*[]Block{false: &r.blocks, true: &r.outBlocks}[additive], at, "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
+		} else if a.refs[k] != b.refs[k] && additive { // per file and package
+			r.work += len(k)
 			out[f[0]+"\x00references into "+pkg+" added, removed, moved or changed"] = append(out[f[0]+"\x00references into "+pkg+" added, removed, moved or changed"], f[2])
 		} else if a.refs[k] != b.refs[k] {
 			add(&r.warnings, at, "a reference into S (exit, output, process, testing control) added, removed, moved or changed: review it")
@@ -398,6 +419,7 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 	}
 	for _, k := range keys(a.bodies) { // a body changed, its S references kept (fs.Parse(nil) to fs.Parse([]string{"-h"}))
 		if f := strings.Split(k, "\x00"); b.bodies[k] != "" && a.bodies[k] != b.bodies[k] {
+			r.work += len(k)
 			for _, pkg := range a.usesS[k] {
 				out[f[0]+"\x00changed bodies that use "+cmp.Or(pkg, "print")] = append(out[f[0]+"\x00changed bodies that use "+cmp.Or(pkg, "print")], f[1])
 			}
@@ -406,6 +428,9 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 	for _, k := range slices.Sorted(maps.Keys(out)) {
 		file, what, _ := strings.Cut(k, "\x00")
 		fns := slices.Compact(slices.Sorted(slices.Values(out[k])))
+		for i, fn := range fns {
+			fns[i] = bound(fn) // a name cut at its source (Astra #276 r2 H4)
+		}
 		add(&r.outWarnings, file, fmt.Sprintf("%s (%d: %s%s): review it", what, len(fns), strings.Join(fns[:min(3, len(fns))], ", "), map[bool]string{true: ", …"}[len(fns) > 3]))
 	}
 	own := func(p string) bool { // as the loader resolves it, in both versions: an own package, not vendored nor a nested module's

@@ -76,6 +76,26 @@ func mainS(p string) bool {
 		strings.HasPrefix(p, "golang.org/x/sys/")
 }
 
+// bound is a name cut at its source: up to 64 bytes, then a short hash of
+// the whole (an identifier may be megabytes: Astra #276 r2 H4).
+func bound(name string) string {
+	if len(name) <= 64 {
+		return name
+	}
+	h := sha256.Sum256([]byte(name))
+	return fmt.Sprintf("%s…%x", name[:64], h[:6])
+}
+
+// hasLit: n holds a function literal.
+func hasLit(n ast.Node) (lit bool) {
+	ast.Inspect(n, func(n ast.Node) bool {
+		_, ok := n.(*ast.FuncLit)
+		lit = lit || ok
+		return !lit
+	})
+	return lit
+}
+
 // refPkg is the package a reference names: flag.Parse, os.Exit(2),
 // (*flag.FlagSet).Parse via …, parse[flag.FlagSet], println ("").
 func refPkg(q string) string {
@@ -679,17 +699,42 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			} else if fn != nil && fn.Body != nil {
 				where = recv(fn) + "." + fn.Name.Name
 			}
-			key := m.path + "\x00" + where + "\x00" + plat
+			key := m.path + "\x00" + bound(where) + "\x00" + plat
 			for _, q := range c.refs {
 				q, pkg, ok := strings.Cut(q, "\x00")
 				if !ok {
 					pkg = refPkg(q)
 				}
-				fa.refs[m.path+"\x00"+q+"\x00"+where+"\x00"+plat+"\x00"+pkg]++
+				if !mainS(pkg) { // P14b-out's key: a bounded name
+					fa.refs[m.path+"\x00"+q+"\x00"+bound(where)+"\x00"+plat+"\x00"+pkg]++
+				} else {
+					fa.refs[m.path+"\x00"+q+"\x00"+where+"\x00"+plat+"\x00"+pkg]++
+				}
 				fa.uses(key, pkg)
 			}
-			if fn != nil && fn.Body != nil && fname != "init" && fname != "TestMain" { // a body changed with the same references (Astra #276 H1)
-				fa.bodies[key] = fmt.Sprintf("%x", sha256.Sum256(m.src[fset.Position(fn.Pos()).Offset:fset.Position(fn.End()).Offset]))
+			span := func(n ast.Node) string {
+				return fmt.Sprintf("%x", sha256.Sum256(m.src[fset.Position(n.Pos()).Offset:fset.Position(n.End()).Offset]))
+			}
+			realHook := test && fname == "TestMain" && slices.ContainsFunc(fn.Type.Params.List, func(f *ast.Field) bool { // only the testing hook is the hook's rules'
+				st, ok := f.Type.(*ast.StarExpr)
+				return ok && s.qual(st.X) == "testing.M"
+			})
+			if fn != nil && fn.Body != nil && fname != "init" && !realHook { // a body changed with the same references (Astra #276 H1)
+				fa.bodies[key] = span(fn)
+			} else if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.VAR { // a package-level function literal: its spec (Astra #276 r2 H1)
+				for _, sp := range g.Specs {
+					if vs := sp.(*ast.ValueSpec); hasLit(vs) {
+						k := m.path + "\x00var " + bound(vs.Names[0].Name) + "\x00" + plat
+						fa.bodies[k] = span(vs)
+						for _, q := range s.count(vs).refs {
+							q, pkg, ok := strings.Cut(q, "\x00")
+							if !ok {
+								pkg = refPkg(q)
+							}
+							fa.uses(k, pkg)
+						}
+					}
+				}
 			}
 			hook := test && fname == "TestMain" && slices.ContainsFunc(fn.Type.Params.List, func(f *ast.Field) bool {
 				st, ok := f.Type.(*ast.StarExpr)

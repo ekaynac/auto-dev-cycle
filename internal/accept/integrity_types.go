@@ -656,6 +656,7 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 	if !xtest && ty.pathOf(dir) != "" {
 		ty.self[ty.pathOf(dir)] = pkg
 	}
+	names := map[types.Object]string{} // bounded, once per object (Astra #276 r2 H4)
 	for _, f := range files {
 		for _, d := range f.Decls {
 			where := "package level"
@@ -665,33 +666,50 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 				where = fn.Name.Name
 			}
 			facts(info, d, func(fact string) { fa.typed[meta[f].path+"\x00"+pl[0]+"/"+pl[1]+" "+where+"\x00"+fact]++ }) // per platform: no trade across them
-			ref := func(q, pkg string) {                                                                                // never class 2; bounded: names, never a rendered type
-				fa.refs[meta[f].path+"\x00"+q[:min(len(q), 300)]+"\x00"+where+"\x00"+pl[0]+"/"+pl[1]+"\x00~"+pkg]++ // ~: always P14b-out's
-				fa.uses(meta[f].path+"\x00"+where+"\x00"+pl[0]+"/"+pl[1], pkg)
+			specs := []ast.Node{d}                                                                                      // a package-level function literal: its spec's own key (Astra #276 r2 H1)
+			if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.VAR {
+				specs = slices.Collect(func(yield func(ast.Node) bool) {
+					for _, sp := range g.Specs {
+						if !yield(sp) {
+							return
+						}
+					}
+				})
 			}
-			ast.Inspect(d, func(n ast.Node) bool { // by real types, an S type's method through a value (util.Flags().Parse) or an S type argument: warns
-				if r.work++; r.work > maxWork || r.ctx.Err() != nil {
-					return false
-				} else if sel, ok := n.(*ast.SelectorExpr); ok && info.Selections[sel] != nil && info.Selections[sel].Kind() != types.FieldVal { // a method; a field is data
-					if o := info.Selections[sel].Obj().(*types.Func); sObj(o) {
-						ref(methodRef(o, info.Selections[sel].Recv()), o.Pkg().Path())
-					}
-				} else if id, ok := n.(*ast.Ident); ok && info.Instances[id].TypeArgs != nil {
-					for t := range info.Instances[id].TypeArgs.Types() {
-						if p, ok := types.Unalias(t).(*types.Pointer); ok {
-							t = p.Elem()
-						}
-						if nt, ok := types.Unalias(t).(*types.Named); ok && sObj(nt.Obj()) {
-							ref(id.Name+"["+namedOf(nt)+"]", nt.Obj().Pkg().Path()) // parse[flag.FlagSet]: its methods are called in the generic
-						}
-					}
+			for _, sp := range specs {
+				uses := meta[f].path + "\x00" + bound(where) + "\x00" + pl[0] + "/" + pl[1]
+				if vs, ok := sp.(*ast.ValueSpec); ok && hasLit(vs) {
+					uses = meta[f].path + "\x00var " + bound(vs.Names[0].Name) + "\x00" + pl[0] + "/" + pl[1]
 				}
-				return true
-			})
+				ref := func(q, pkg string) { // never class 2; bounded names, charged
+					r.work += len(q) + len(uses)
+					fa.refs[meta[f].path+"\x00"+q+"\x00"+bound(where)+"\x00"+pl[0]+"/"+pl[1]+"\x00~"+pkg]++ // ~: always P14b-out's
+					fa.uses(uses, pkg)
+				}
+				ast.Inspect(sp, func(n ast.Node) bool { // by real types, an S type's method through a value (util.Flags().Parse) or an S type argument: warns
+					if r.work++; r.work > maxWork || r.ctx.Err() != nil {
+						return false
+					} else if sel, ok := n.(*ast.SelectorExpr); ok && info.Selections[sel] != nil && info.Selections[sel].Kind() != types.FieldVal { // a method; a field is data
+						if o := info.Selections[sel].Obj().(*types.Func); sObj(o) {
+							ref(methodRef(o, info.Selections[sel].Recv(), names), o.Pkg().Path())
+						}
+					} else if id, ok := n.(*ast.Ident); ok && info.Instances[id].TypeArgs != nil {
+						for t := range info.Instances[id].TypeArgs.Types() {
+							if p, ok := types.Unalias(t).(*types.Pointer); ok {
+								t = p.Elem()
+							}
+							if nt, ok := types.Unalias(t).(*types.Named); ok && sObj(nt.Obj()) {
+								ref(bound(id.Name)+"["+namedOf(nt, names)+"]", nt.Obj().Pkg().Path()) // parse[flag.FlagSet]: its methods are called in the generic
+							}
+						}
+					}
+					return true
+				})
+			}
 		}
 	}
 	if r.work > maxWork {
-		fa.untyped[key] = cmp.Or(fa.untyped[key], where+"its references are over the guard's work bound")
+		fa.untyped["~"+key] = cmp.Or(fa.untyped["~"+key], where+"its references are over the guard's work bound")
 	}
 	return r.ctx.Err()
 }
@@ -878,23 +896,31 @@ func isVar(o types.Object) bool { _, ok := o.(*types.Var); return ok }
 // methodRef is a method's reference: its full name ((*flag.FlagSet).Parse),
 // and the named type it is reached through when another; never a rendered
 // type (an anonymous receiver may be megabytes: Astra #276 H3).
-func methodRef(o *types.Func, recv types.Type) string {
-	q := o.FullName()
-	if via := namedOf(recv); via != "" && !strings.Contains(q, via) {
+func methodRef(o *types.Func, recv types.Type, names map[types.Object]string) string {
+	q, ok := names[o]
+	if !ok {
+		q = bound(o.FullName())
+		names[o] = q
+	}
+	if via := namedOf(recv, names); via != "" && !strings.Contains(q, via) {
 		q += " via " + via // promoted through another named type
 	}
 	return q
 }
 
 // namedOf is t's named type as "path.Name" (behind a pointer too), or "".
-func namedOf(t types.Type) string {
+func namedOf(t types.Type, names map[types.Object]string) string {
 	if p, ok := types.Unalias(t).(*types.Pointer); ok {
 		t = p.Elem()
 	}
-	if n, ok := types.Unalias(t).(*types.Named); ok && n.Obj().Pkg() != nil {
-		return n.Obj().Pkg().Path() + "." + n.Obj().Name()
+	n, ok := types.Unalias(t).(*types.Named)
+	if !ok || n.Obj().Pkg() == nil {
+		return ""
+	} else if q, ok := names[n.Obj()]; ok {
+		return q
 	}
-	return ""
+	names[n.Obj()] = bound(n.Obj().Pkg().Path()) + "." + bound(n.Obj().Name()) // each name cut before it is joined
+	return names[n.Obj()]
 }
 
 // sObj: o is an S package's (testing's, reflect's and unsafe's have their own rules).
