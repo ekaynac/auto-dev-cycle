@@ -440,9 +440,14 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 			fun, args := ast.Unparen(x.Fun), x.Args
 			f, targs := fn(fun)
 			called[ident(f)] = true
+			id := ident(f)
+			if sel, ok := f.(*ast.SelectorExpr); ok {
+				id = sel.Sel
+			}
+			_, value := s.info.Uses[id].(*types.Var) // a function value: what it does to them is not known
 			if b, ok := s.info.Uses[ident(fun)].(*types.Builtin); ok && (b.Name() == "copy" || b.Name() == "append") {
 				args = args[:min(1, len(args))] // the destination
-			} else if _, lit := fun.(*ast.FuncLit); !lit && s.callee(x) == nil {
+			} else if _, lit := fun.(*ast.FuncLit); !lit && !value && s.callee(x) == nil {
 				args = nil // own code only
 			}
 			for _, a := range args { // os.Args's array, aliased (an element is a string)
@@ -856,8 +861,17 @@ func (s *pkgScan) store(lhs, rhs []ast.Expr, add func(string)) {
 }
 
 // read: r is not another package's, or is an inert package's, or a copy
-// of a basic value (a slice, map, chan, pointer or struct may alias it).
+// of a basic value (a slice, map, chan, pointer or struct may alias it); a
+// composite literal's elements each so (holder{util.S}, &holder{s: util.S}).
 func (s *pkgScan) read(r ast.Expr) bool {
+	if cl, ok := ast.Unparen(s.root(r)).(*ast.CompositeLit); ok {
+		return !slices.ContainsFunc(cl.Elts, func(e ast.Expr) bool {
+			if kv, ok := e.(*ast.KeyValueExpr); ok {
+				e = kv.Value
+			}
+			return !s.read(e)
+		})
+	}
 	t, q := s.info.TypeOf(r), s.qual(s.root(r))
 	if c, ok := ast.Unparen(r).(*ast.CallExpr); ok && s.conversion(c) {
 		t = s.info.TypeOf(c.Fun) // what it converts to (an unloaded operand leaves the result invalid)
