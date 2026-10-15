@@ -7,6 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"maps"
 	"path"
 	"slices"
@@ -27,10 +30,11 @@ import (
 // forgery (P14c-2a); every changed .py file still fails closed until
 // P14c-2b compares test identities.
 var (
-	maxRead  int64 = 64 << 20 // blob bytes in all
-	maxFile  int64 = 4 << 20  // per blob
-	maxWork        = 1 << 24  // build-constraint tag evaluations and Python tokens in all
-	maxReach       = 4096     // functions followed from a package's initialization
+	maxRead    int64 = 64 << 20 // blob bytes in all
+	maxFile    int64 = 4 << 20  // per blob
+	maxCgoRead       = maxRead  // the cgo pass's own bound (Go files' imports)
+	maxWork          = 1 << 24  // build-constraint tag evaluations and Python tokens in all
+	maxReach         = 4096     // functions followed from a package's initialization
 	// pyFiles change what pytest collects or how (P14c reads them).
 	pyFiles = []string{"conftest.py", "pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg",
 		"pyproject.toml", "pyvenv.cfg"}
@@ -97,11 +101,43 @@ type run struct {
 
 // cgoSources is what cgo compiles beside a package's Go files, and objects
 // what go assembles or links (go/build's names; .o, .a and .so through a
-// preamble's LDFLAGS).
+// preamble's LDFLAGS): they block in any repository. With cgo anywhere (SWIG
+// turns it on by itself), #cgo -I and ${SRCDIR} reach any path, a README or
+// NOTES.txt included: only Go files may change.
 var (
 	cgoSources = strings.Fields(".c .cc .cxx .cpp .m .h .hh .hpp .hxx .f .F .for .f90 .swig .swigcxx")
 	objects    = strings.Fields(".s .S .sx .syso .o .a .so")
 )
+
+// usesCgo: a SWIG file, or a Go file importing C, anywhere in either version;
+// the Go files read with their own bound, not the guard's read budget (one
+// not read, past it, or not parsed counts).
+func (r *run) usesCgo() bool {
+	fset, budget := token.NewFileSet(), maxCgoRead
+	for _, q := range keys(r.files, r.cand) {
+		if path.Ext(q) == ".swig" || path.Ext(q) == ".swigcxx" {
+			return true
+		}
+		for _, blob := range slices.Compact([]string{r.files[q], r.cand[q]}) {
+			if path.Ext(q) != ".go" || blob == "" {
+				continue
+			}
+			b, ok := r.blobs[blob]
+			if !ok {
+				var err error
+				if b, ok, err = r.read(r.ctx, blob, min(maxFile, budget)); err != nil || !ok {
+					return true
+				}
+				budget -= int64(len(b))
+			}
+			f, err := parser.ParseFile(fset, q, b, parser.ImportsOnly)
+			if err != nil || slices.ContainsFunc(f.Imports, func(is *ast.ImportSpec) bool { return is.Path.Value == `"C"` }) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func add(to *[]Block, p, what string) {
 	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what})
@@ -125,6 +161,7 @@ func (r *run) check(changes []Change) error {
 	r.anyTest = slices.ContainsFunc(keys(r.files, r.cand), goByName)
 	r.vendorChanged = vendors(slices.DeleteFunc(keys(r.files, r.cand), func(p string) bool { return r.files[p] == r.cand[p] }))
 	py := slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), func(p string) bool { return path.Ext(p) == ".py" })
+	cgo := slices.ContainsFunc(changes, func(c Change) bool { return path.Ext(c.Src) != ".go" || path.Ext(c.Dst) != ".go" }) && r.usesCgo()
 	for _, c := range changes {
 		for _, p := range slices.Compact([]string{c.Src, c.Dst}) {
 			switch dir, new := path.Dir(p), c.Status != "D" && p == c.Dst; {
@@ -136,7 +173,9 @@ func (r *run) check(changes []Change) error {
 				add(&r.blocks, p, "unverifiable: a workspace file changed (go.work, or one GOWORK may name)")
 			case slices.Contains(objects, path.Ext(p)): // assembled or linked into any test binary importing it; deleted too
 				add(&r.blocks, p, "unverifiable: assembly or an object file")
-			case slices.Contains(cgoSources, path.Ext(p)): // a constructor runs before any test; deleted too (a header found elsewhere)
+			case cgo: // a constructor runs before any test; deleted too (a header found elsewhere)
+				add(&r.blocks, p, "unverifiable: a non-Go file in a repository that uses cgo")
+			case slices.Contains(cgoSources, path.Ext(p)): // no cgo yet: SWIG turns it on, a C file is refused
 				add(&r.blocks, p, "unverifiable: C, C++, Objective-C, Fortran or SWIG source")
 			case new && path.Base(p) == "go.mod" && p != "go.mod" && c.Status != "M" && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)),
 				func(q string) bool { return goByName(q) && strings.HasPrefix(q, dir+"/") }):
