@@ -75,12 +75,12 @@ func (r *run) python(changes []Change) error {
 	if err != nil {
 		return err
 	}
-	installed, unread, err := r.pyInstall()
+	unread, err := r.pyInstall()
 	if err != nil {
 		return err
 	}
 	pb := &pyBase{r: r}
-	pb.entries, pb.basedirs = r.pyEntries(slices.Concat(paths, installed))
+	pb.entries, pb.basedirs = r.pyEntries(paths)
 	if err := pb.load(); err != nil {
 		return err
 	}

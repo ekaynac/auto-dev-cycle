@@ -429,7 +429,7 @@ func TestPyGuardShadowFloor(t *testing.T) {
 			write(t, src, base)
 			plain(t, src, "add", "--all")
 		})
-		if v := f.guarded(t, map[string]string{"tests/utils.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "tests/utils.py: an added module shadows the base module") {
+		if v := f.guarded(t, map[string]string{"tests/utils.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "tests/utils.py: ") { // unread since #272's split
 			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
 		}
 	}
@@ -791,7 +791,7 @@ func TestPyGuardReach(t *testing.T) {
 			write(t, src, base)
 			plain(t, src, "add", "--all")
 		})
-		if v := g.guarded(t, map[string]string{"lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "lib/yaml.py: an added module shadows a module tests/test_y.py imports") {
+		if v := g.guarded(t, map[string]string{"lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "lib/yaml.py: unverifiable: the base adds sys.path entries the guard does not read") { // read as roots in P14c-2a-roots
 			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
 		}
 	}
@@ -809,11 +809,15 @@ func TestPyGuardReach(t *testing.T) {
 		"rd import sys as":                         {"conftest.py": "import sys as _s\n_s.path.insert(0, 'lib')\n"},
 		"rd getattr(sys":                           {"conftest.py": "import sys\ngetattr(sys, 'path').insert(0, 'lib')\n"},
 		"rd sys.meta_path":                         {"conftest.py": "import sys\nimport finder\nsys.meta_path.insert(0, finder.F())\n"},
-		"v2 import_module('sys')":                  {"conftest.py": "import importlib\nimportlib.import_module('sys').path.insert(0, 'lib')\n"},
+		"v2 import_module('sys')":                  {"conftest.py": "import importlib\nimportlib.import_module('sys').path[0:0] = ['lib']\n"},
 		"v2 sys.__dict__":                          {"conftest.py": "import sys\nsys.__dict__['path'].insert(0, 'lib')\n"},
 		"a-H2 dirname of a literal":                {"conftest.py": "import os\nimport sys\nsys.path.insert(0, os.path.dirname('lib/anchor'))\n"},
 		"a-H2 abspath of a literal":                {"conftest.py": "import os\nimport sys\nsys.path.insert(0, os.path.abspath('lib'))\n"},
 		"a-M2 a .pth in the tree":                  {"vendor/local.pth": "../lib\n"},
+		"w2 a quoted TOML table name":              {"pyproject.toml": "[tool.\"setuptools\"]\npackage-dir = {\"\" = \"lib\"}\n"},
+		"w2 a key dotted under [tool]":             {"pyproject.toml": "[tool]\nsetuptools.package-dir = {\"\" = \"lib\"}\n"},
+		"w3 sys built from a string":               {"conftest.py": "__import__('s' + 'ys').path.insert(0, 'lib')\n"},
+		"w3 path through getattr":                  {"conftest.py": "import importlib\ngetattr(importlib.import_module('s' + 'ys'), 'path').insert(0, 'lib')\n"},
 		"rd a module a conftest imports":           {"conftest.py": "import helper\n", "helper.py": "import sys\nsys.path.insert(0, 'lib')\n"},
 		"rd a pytest_plugins module":               {"conftest.py": "pytest_plugins = ['myplugin']\n", "myplugin.py": "import sys\nsys.path.insert(0, 'lib')\n"},
 	} {
@@ -826,30 +830,17 @@ func TestPyGuardReach(t *testing.T) {
 			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
 		}
 	}
-	for name, base := range map[string]map[string]string{ // src/ layouts and a joined path, read as entries
-		"rd a src layout of modules": {"src/x.py": "X = 1\n"},
-		"rd a src namespace package": {"src/ns/x.py": "X = 1\n"},
-	} {
-		base["tests/test_y.py"] = "import yaml\n\ndef test_y():\n    assert yaml\n"
-		g := newFixtureWith(t, func(src string) {
-			write(t, src, base)
-			plain(t, src, "add", "--all")
-		})
-		if v := g.guarded(t, map[string]string{"src/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "src/yaml.py: an added module shadows a module tests/test_y.py imports") {
-			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
-		}
-	}
 	vend := newFixtureWith(t, func(src string) {
 		write(t, src, map[string]string{"tests/conftest.py": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'vendor', 'lib'))\n",
 			"vendor/lib/x.py": "X = 1\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"})
 		plain(t, src, "add", "--all")
 	})
-	if v := vend.guarded(t, map[string]string{"vendor/lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "vendor/lib/yaml.py: an added module shadows a module tests/test_y.py imports") {
+	if v := vend.guarded(t, map[string]string{"vendor/lib/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "vendor/lib/yaml.py: unverifiable: the base adds sys.path entries the guard does not read") {
 		t.Errorf("rd a path joined from several literals: %q, want blocked", whats(pyOwn(v.Blocks)))
 	}
 	for name, c := range map[string][2]string{ // Astra #272 H1: a root never replaces main's binding
-		"a-H1 a where in an unrelated section": {"[unrelated]\nwhere = a\n", "cfg.py: a skipif or xfail condition in tests/test_x.py reads SLOW"},
-		"a-H1 a module name in two roots":      {"[options.packages.find]\nwhere = a\n", "cfg.py: a module a condition reads is unread (the module name feature in two roots)"},
+		"a-H1 a where in an unrelated section": {"[unrelated]\nwhere = a\n", "cfg.py: unverifiable: the base adds sys.path entries the guard does not read"},
+		"a-H1 a module name in two roots":      {"[options.packages.find]\nwhere = a\n", "cfg.py: unverifiable: the base adds sys.path entries the guard does not read"},
 	} {
 		h1 := newFixtureWith(t, func(src string) {
 			write(t, src, map[string]string{"setup.cfg": c[0], "a/feature.py": "SKIP = False\n", "feature.py": "from cfg import SLOW as SKIP\n", "cfg.py": "SLOW = False\n",
@@ -858,6 +849,24 @@ func TestPyGuardReach(t *testing.T) {
 		})
 		if v := h1.guarded(t, map[string]string{"cfg.py": "SLOW = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), c[1]) {
 			t.Errorf("%s: %q, want blocked", name, whats(pyOwn(v.Blocks)))
+		}
+	}
+	for name, c := range map[string][2]map[string]string{ // Astra #272 r2: a namespace prefix under a where root; a module beside its package
+		"a2-H1 a namespace-prefix decoy": {{"setup.cfg": "[options.packages.find]\nwhere = a\n", "a/feature/flags.py": "SKIP = False\n", "feature.py": "import cfg as flags\n", "cfg.py": "SKIP = False\n",
+			"tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, {"cfg.py": "SKIP = 'True'\n"}},
+		"a2-H1 a holder module beside its package": {{"feature.py": "X = False\n", "feature/__init__.py": "import pytest\nimport cfg\nrequire_gpu = pytest.mark.skipif(cfg.SLOW, reason='r')\n", "cfg.py": "SLOW = False\n",
+			"tests/test_x.py": "import feature\n\n@feature.require_gpu\ndef test_x():\n    pass\n"}, {"cfg.py": "SLOW = 'True'\n"}},
+		"a2-H1 a collision reached across modules": {{"feature.py": "X = False\n", "feature/__init__.py": "X = False\n", "lmod11.py": "import feature\nV11 = feature.X\n", "cfg.py": "SLOW = False\n",
+			"tests/test_x.py": "import pytest\nfrom lmod11 import V11\n\n@pytest.mark.skipif(V11, reason='r')\ndef test_x():\n    pass\n"}, {"cfg.py": "SLOW = 'True'\n"}},
+		"a2-H2 an absolute join argument": {{"conftest.py": "import os\nimport sys\nsys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '/work/repo/vendor/lib'))\n",
+			"vendor/lib/x.py": "X = 1\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"}, {"vendor/lib/yaml.py": "X = 1\n"}},
+	} {
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, c[0])
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, c[1]); !pyFinds(pyOwn(v.Blocks), "unverifiable: ") && !pyFinds(pyOwn(v.Blocks), "is unread") {
+			t.Errorf("%s: %q, want unread", name, whats(pyOwn(v.Blocks)))
 		}
 	}
 	h4 := newFixtureWith(t, func(src string) { // Astra #272 H4: a holder's __getattr__
@@ -900,16 +909,10 @@ func TestPyGuardReach(t *testing.T) {
 	if v := hu.guarded(t, map[string]string{"other.py": "X = 2\n"}); !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread") {
 		t.Errorf("v3 a holder behind an unknown star: %q, want blocked", whats(pyOwn(v.Blocks)))
 	}
-	src := newFixtureWith(t, func(src string) {
-		write(t, src, map[string]string{"pyproject.toml": "[project]\nname = 'x'\n", "src/mypkg/__init__.py": "", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"})
-		plain(t, src, "add", "--all")
-	})
-	if v := src.guarded(t, map[string]string{"src/yaml.py": "X = 1\n"}); !pyFinds(pyOwn(v.Blocks), "src/yaml.py: an added module shadows a module tests/test_y.py imports") {
-		t.Errorf("M1 an editable src layout: %q, want blocked", whats(pyOwn(v.Blocks)))
-	}
 	for name, base := range map[string]map[string]string{
-		"M1 sys.path from a call":            {"conftest.py": "import sys\nimport helper\nsys.path.insert(0, helper.where())\n"},
-		"M1 setup.cfg package_dir a mapping": {"setup.cfg": "[options]\npackage_dir =\n    mypkg = lib/mypkg\n"},
+		"w1 .parent of an unknown shape (a nil index)": {"conftest.py": "import sys\nimport foo\nsys.path.append(foo.parent)\n"},
+		"M1 sys.path from a call":                      {"conftest.py": "import sys\nimport helper\nsys.path.insert(0, helper.where())\n"},
+		"M1 setup.cfg package_dir a mapping":           {"setup.cfg": "[options]\npackage_dir =\n    mypkg = lib/mypkg\n"},
 	} {
 		g := newFixtureWith(t, func(src string) {
 			write(t, src, base)

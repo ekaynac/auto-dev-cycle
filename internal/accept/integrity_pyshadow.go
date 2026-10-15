@@ -47,7 +47,6 @@ type pyBaseFile struct {
 	conds     [][]ptok          // its condition lines, and the bindings they read (Opus #270 H2)
 	units     [][]ptok          // its module-level statements, def and class bodies (Mythos #270 M3)
 	binders   map[string][]int  // a name, to the units binding it
-	syspath   []string          // the sys.path entries it adds (#270 M1)
 	sysUnread bool              // it names sys.path in a way pySysPath does not read
 }
 
@@ -125,7 +124,7 @@ func (pb *pyBase) load() error {
 			if pb.err = err; err != nil {
 				return err
 			}
-			pb.tests, pb.entries, pb.sysUnread = append(pb.tests, f), append(pb.entries, f.syspath...), pb.sysUnread || f.sysUnread
+			pb.tests, pb.sysUnread = append(pb.tests, f), pb.sysUnread || f.sysUnread
 		}
 	}
 	slices.Sort(pb.entries)
@@ -149,11 +148,14 @@ func (pb *pyBase) load() error {
 					return err
 				} else if d == "" {
 					continue
+				} else if pb.alts[d] > 1 { // feature.py beside feature/__init__.py (Astra #272 r2 H1)
+					pb.holderUnread = cmp.Or(pb.holderUnread, "the module name "+d+" in two roots")
+					continue
 				} else if h, err := pb.file(pb.mods[d]); err != nil {
 					pb.err = err
 					return err
 				} else if !slices.Contains(pb.tests, h) && !slices.Contains(pb.holders, h) {
-					pb.holders, pb.sysUnread = append(pb.holders, h), pb.sysUnread || h.sysUnread || len(h.syspath) > 0 // a module a judged file reaches: its sys.path unread (Opus #272 (b))
+					pb.holders, pb.sysUnread = append(pb.holders, h), pb.sysUnread || h.sysUnread // a module a judged file reaches: its sys.path unread (Opus #272 (b))
 				}
 			}
 		}
@@ -190,8 +192,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
-		es, ok := pySysUse(q, l.toks)
-		f.syspath, f.sysUnread = append(f.syspath, es...), f.sysUnread || !ok
+		f.sysUnread = f.sysUnread || !pySysUse(l.toks)
 		if l.toks[0].text == "pytest_plugins" { // its modules are reached too (Opus #272 (b))
 			for _, k := range line {
 				if pyStr(k) != "" {
