@@ -75,8 +75,8 @@ func TestIntegrityRound3(t *testing.T) {
 	// dereference.
 	for name, c := range map[string]struct{ file, src, why string }{
 		"M2 slices.Replace(os.Args) from init": {"pkg/args.go", argsGo + "import \"slices\"\n\nfunc init() { slices.Replace(os.Args, 1, 2, \"-test.run=Nope\") }\n",
-			"a write it cannot prove safe (os.Args)"},
-		"M2 sort.Strings(os.Args) from init": {"pkg/args.go", argsGo + "import \"sort\"\n\nfunc init() { sort.Strings(os.Args) }\n", "a write it cannot prove safe (os.Args)"},
+			"os.Args assigned in init"},
+		"M2 sort.Strings(os.Args) from init": {"pkg/args.go", argsGo + "import \"sort\"\n\nfunc init() { sort.Strings(os.Args) }\n", "os.Args assigned in init"},
 		"M2 sort.Strings(os.Args) in a test": {"pkg/args_test.go", "package pkg\n\nimport (\n\t\"os\"\n\t\"sort\"\n\t\"testing\"\n)\n\nfunc TestArgs(t *testing.T) { sort.Strings(os.Args) }\n",
 			"os.Args assigned in TestArgs"},
 		"L1 getter()(os.Args)": {"pkg/args.go", argsGo + "func getter() func([]string) { return func(a []string) { a[0] = \"-h\" } }\n\nfunc reset() { getter()(os.Args) }\n",
@@ -99,9 +99,9 @@ func TestIntegrityRound3(t *testing.T) {
 	refl := "import \"reflect\"\n\nfunc %s { reflect.Copy(reflect.ValueOf(os.Args), reflect.ValueOf([]string{\"-h\"})) }\n"
 	util := "import \"example.com/m/util\"\n\nfunc %s { util.Fill(os.Args) }\n"
 	for name, c := range map[string]struct{ src, why string }{
-		"reflect.Copy(os.Args) from init":     {argsGo + strings.Replace(refl, "%s", "init()", 1), "a write it cannot prove safe (os.Args)"},
+		"reflect.Copy(os.Args) from init":     {argsGo + strings.Replace(refl, "%s", "init()", 1), "os.Args assigned in init"},
 		"reflect.Copy(os.Args) in reset":      {argsGo + strings.Replace(refl, "%s", "reset()", 1), "os.Args assigned in reset"},
-		"util.Fill(os.Args) from init":        {argsGo + strings.Replace(util, "%s", "init()", 1), "a write it cannot prove safe (os.Args)"},
+		"util.Fill(os.Args) from init":        {argsGo + strings.Replace(util, "%s", "init()", 1), "os.Args assigned in init"},
 		"util.Fill(os.Args) in reset":         {argsGo + strings.Replace(util, "%s", "reset()", 1), "os.Args assigned in reset"},
 		"flag.CommandLine.Parse(os.Args[1:])": {argsGo + "import \"flag\"\n\nfunc parse() { _ = flag.CommandLine.Parse(os.Args[1:]) }\n", ""},
 	} {

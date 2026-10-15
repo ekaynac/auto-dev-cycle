@@ -66,6 +66,17 @@ func TestIntegrity2b2(t *testing.T) {
 	if !finds(v.Blocks, "a non-Go file in a repository that uses cgo") {
 		t.Errorf("L2 the cgo pass past its own bound: %q", whats(v.Blocks))
 	}
+
+	// Astra #274 M1 (a regression against main): an inert package's variable
+	// handed to a writer off the allowlist from init is still a write.
+	for name, body := range map[string]string{
+		"slices.Reverse(unicode.CaseRanges)":  "import (\n\t\"slices\"\n\t\"unicode\"\n)\n\nfunc init() { slices.Reverse(unicode.CaseRanges) }\n",
+		"maps.DeleteFunc(unicode.Scripts, …)": "import (\n\t\"maps\"\n\t\"unicode\"\n)\n\nfunc init() {\n\tmaps.DeleteFunc(unicode.Scripts, func(string, *unicode.RangeTable) bool { return true })\n}\n",
+	} {
+		if v := f.guarded(t, map[string]string{"pkg/w.go": "package pkg\n\n" + body}); !finds(v.Blocks, "a write it cannot prove safe (unicode.") {
+			t.Errorf("M1 %s from init: %q", name, whats(v.Blocks))
+		}
+	}
 }
 
 func pad(n int) string {

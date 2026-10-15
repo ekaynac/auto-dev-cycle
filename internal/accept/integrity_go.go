@@ -846,13 +846,20 @@ func (s *pkgScan) call(x *ast.CallExpr, own func(ast.Expr) bool) string {
 			return "another package's variable passed to " + types.ExprString(fun)
 		} else if inside {
 			own(a)
-		} else if q := s.qual(s.root(a)); q != "" && !s.read(a) && !s.readOnly(fun) { // decision A: a slice, map or pointer it may write
-			return "a write it cannot prove safe (" + q + ")"
 		} else if !s.shared(a) {
 			return "a value it cannot prove plain data passed to " + types.ExprString(fun)
+		} else if q := s.qual(s.root(a)); q != "" && !s.scalar(a) && !s.readOnly(fun) {
+			return "a write it cannot prove safe (" + q + ")" // decision A: a slice, map or pointer it may write, an inert package's too
 		}
 	}
 	return ""
+}
+
+// scalar: a is proved a copy that aliases nothing: a resolved basic type,
+// not unsafe.Pointer (another package's, unresolved here, is not proved).
+func (s *pkgScan) scalar(a ast.Expr) bool {
+	b, ok := types.Unalias(cmp.Or(s.info.TypeOf(a), types.Type(types.Typ[types.Invalid]))).Underlying().(*types.Basic)
+	return ok && b.Kind() != types.Invalid && b.Kind() != types.UnsafePointer && b.Kind() != types.UntypedNil
 }
 
 // readOnly: f, a callee, only reads its arguments (decision A: an allowlist;
@@ -867,8 +874,12 @@ func (s *pkgScan) readOnly(f ast.Expr) bool {
 	name := q[strings.LastIndex(q, ".")+1:]
 	return strings.HasPrefix(q, "fmt.") && (strings.Contains(name, "rint") || name == "Errorf" || strings.HasPrefix(name, "Append")) ||
 		strings.HasPrefix(q, "slices.") && slices.Contains([]string{"Contains", "Index", "Equal", "Clone"}, name) ||
-		slices.Contains([]string{"strings.Join", "path/filepath.Base", "path.Base"}, q)
+		slices.Contains(readPkgs, q[:max(strings.LastIndex(q, "."), 0)]) // time.Date(…, time.UTC), strings.Map(unicode.ToUpper, …)
 }
+
+// readPkgs' functions never write their arguments (strings and strconv
+// take values; slices, sort, maps, bytes and encoding/* may write).
+var readPkgs = strings.Fields("strings strconv unicode unicode/utf8 unicode/utf16 errors regexp path path/filepath time")
 
 // shared: a may leave the package: plain data, or an inert package's
 // function, value or result (never by its name's case), not one of its
