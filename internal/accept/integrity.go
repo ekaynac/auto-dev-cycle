@@ -99,45 +99,28 @@ type run struct {
 }
 
 // objects is what go assembles or links without cgo (go/build's names; .o,
-// .a and .so through LDFLAGS). With cgo, #cgo -I and ${SRCDIR} reach any path
-// in the module: only Go files and plain documentation (docFile) may change.
+// .a and .so through LDFLAGS). With cgo anywhere, #cgo -I and ${SRCDIR} reach
+// any path in the repository, a README or NOTES.txt included: only Go files
+// may change.
 var objects = strings.Fields(".s .S .sx .syso .o .a .so")
 
-func docFile(p string) bool {
-	b := path.Base(p)
-	return slices.Contains([]string{".md", ".txt", ".rst"}, path.Ext(p)) ||
-		slices.ContainsFunc([]string{"LICENSE", "README", "CHANGELOG", "AUTHORS"}, func(pre string) bool { return strings.HasPrefix(b, pre) })
-}
-
-// module is the directory of p's module: its nearest go.mod, in either
-// version ("." with none).
-func (r *run) module(p string) string {
-	for d := path.Dir(p); d != "."; d = path.Dir(d) {
-		if r.files[d+"/go.mod"] != "" || r.cand[d+"/go.mod"] != "" {
-			return d
-		}
-	}
-	return "."
-}
-
-// cgoModules is which of the modules need have a Go file importing C, in
-// either version, read once; a file not read or parsed counts as one.
-func (r *run) cgoModules(need map[string]bool) map[string]bool {
-	out, fset := map[string]bool{}, token.NewFileSet()
+// usesCgo: a Go file anywhere, in either version, imports C (one not read or
+// parsed counts), read once and only when a non-Go file changed.
+func (r *run) usesCgo() bool {
+	fset := token.NewFileSet()
 	for _, q := range keys(r.files, r.cand) {
-		if m := r.module(q); path.Ext(q) == ".go" && need[m] && !out[m] {
-			for _, blob := range slices.Compact([]string{r.files[q], r.cand[q]}) {
-				if blob == "" {
-					continue
-				}
-				b, why, err := r.file(blob)
-				f, perr := parser.ParseFile(fset, q, b, parser.ImportsOnly)
-				out[m] = out[m] || why != "" || err != nil || perr != nil ||
-					slices.ContainsFunc(f.Imports, func(is *ast.ImportSpec) bool { return is.Path.Value == `"C"` })
+		for _, blob := range slices.Compact([]string{r.files[q], r.cand[q]}) {
+			if path.Ext(q) != ".go" || blob == "" {
+				continue
+			}
+			b, why, err := r.file(blob)
+			f, perr := parser.ParseFile(fset, q, b, parser.ImportsOnly)
+			if why != "" || err != nil || perr != nil || slices.ContainsFunc(f.Imports, func(is *ast.ImportSpec) bool { return is.Path.Value == `"C"` }) {
+				return true
 			}
 		}
 	}
-	return out
+	return false
 }
 
 func add(to *[]Block, p, what string) {
@@ -162,13 +145,7 @@ func (r *run) check(changes []Change) error {
 	r.anyTest = slices.ContainsFunc(keys(r.files, r.cand), goByName)
 	r.vendorChanged = vendors(slices.DeleteFunc(keys(r.files, r.cand), func(p string) bool { return r.files[p] == r.cand[p] }))
 	py := slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), func(p string) bool { return path.Ext(p) == ".py" })
-	need := map[string]bool{}
-	for _, c := range changes {
-		for _, p := range []string{c.Src, c.Dst} {
-			need[r.module(p)] = need[r.module(p)] || path.Ext(p) != ".go" && !docFile(p)
-		}
-	}
-	cgo := r.cgoModules(need)
+	cgo := slices.ContainsFunc(changes, func(c Change) bool { return path.Ext(c.Src) != ".go" || path.Ext(c.Dst) != ".go" }) && r.usesCgo()
 	for _, c := range changes {
 		for _, p := range slices.Compact([]string{c.Src, c.Dst}) {
 			switch dir, new := path.Dir(p), c.Status != "D" && p == c.Dst; {
@@ -180,8 +157,8 @@ func (r *run) check(changes []Change) error {
 				add(&r.blocks, p, "unverifiable: a workspace file changed (go.work, or one GOWORK may name)")
 			case slices.Contains(objects, path.Ext(p)): // assembled or linked into any test binary importing it; deleted too
 				add(&r.blocks, p, "unverifiable: assembly or an object file")
-			case cgo[r.module(p)] && !docFile(p): // a constructor runs before any test; deleted too (a header found elsewhere)
-				add(&r.blocks, p, "unverifiable: a non-Go file in a module that uses cgo")
+			case cgo: // a constructor runs before any test; deleted too (a header found elsewhere)
+				add(&r.blocks, p, "unverifiable: a non-Go file in a repository that uses cgo")
 			case new && path.Base(p) == "go.mod" && p != "go.mod" && c.Status != "M" && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)),
 				func(q string) bool { return goByName(q) && strings.HasPrefix(q, dir+"/") }):
 				add(&r.blocks, p, "a go.mod added over tests: they leave the module the gate tests")

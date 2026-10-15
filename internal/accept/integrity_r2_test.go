@@ -214,13 +214,15 @@ func TestIntegrityRound2(t *testing.T) {
 		// A module with no cgo: go refuses to build C sources (no cgo file).
 		"M2 a C file added, no cgo":         {nil, map[string]string{"help/c.c": "static int x;\n"}, ""},
 		"M2 a header changed, no cgo":       {map[string]string{"help/h.h": "#define X 1\n"}, map[string]string{"help/h.h": "#define X 2\n"}, ""},
-		"M2 a C file beside a new cgo file": {nil, map[string]string{"help/c.go": benign, "help/c.c": "static int x;\n"}, "unverifiable: a non-Go file in a module that uses cgo"},
+		"M2 a C file beside a new cgo file": {nil, map[string]string{"help/c.go": benign, "help/c.c": "static int x;\n"}, "unverifiable: a non-Go file in a repository that uses cgo"},
 		"M2 a C++ file, cgo elsewhere":      {map[string]string{"help/c.go": benign}, map[string]string{"pkg/x.cpp": "int x;\n"}, "uses cgo"},
 		"allowlist: an .inc the preamble includes": {map[string]string{"help/c.go": "package help\n\n// #include \"x.inc\"\nimport \"C\"\n", "help/x.inc": "int x;\n"},
-			map[string]string{"help/x.inc": "int y;\n"}, "unverifiable: a non-Go file in a module that uses cgo"},
-		"allowlist: testdata in a cgo module":  {map[string]string{"help/c.go": benign, "pkg/testdata/x.json": "{}\n"}, map[string]string{"pkg/testdata/x.json": "[]\n"}, "uses cgo"},
-		"allowlist: README.md in a cgo module": {map[string]string{"help/c.go": benign}, map[string]string{"README.md": "# m\n"}, ""},
-		"allowlist: testdata, no cgo":          {map[string]string{"pkg/testdata/x.json": "{}\n"}, map[string]string{"pkg/testdata/x.json": "[]\n"}, ""},
+			map[string]string{"help/x.inc": "int y;\n"}, "unverifiable: a non-Go file in a repository that uses cgo"},
+		"allowlist: testdata in a cgo module":      {map[string]string{"help/c.go": benign, "pkg/testdata/x.json": "{}\n"}, map[string]string{"pkg/testdata/x.json": "[]\n"}, "uses cgo"},
+		"allowlist: README.md in a cgo repository": {map[string]string{"help/c.go": benign}, map[string]string{"README.md": "# m\n"}, "uses cgo"}, // C may #include it: accepted false block
+		"allowlist: cgo in module a/, an .inc in module b/": {map[string]string{"a/go.mod": "module example.com/a\n\ngo 1.22\n", "a/c.go": "package a\n\n// #cgo CFLAGS: -I${SRCDIR}/../b\n// #include \"x.inc\"\nimport \"C\"\n",
+			"b/go.mod": "module example.com/b\n\ngo 1.22\n", "b/x.inc": "int x;\n"}, map[string]string{"b/x.inc": "int y;\n"}, "uses cgo"},
+		"allowlist: testdata, no cgo": {map[string]string{"pkg/testdata/x.json": "{}\n"}, map[string]string{"pkg/testdata/x.json": "[]\n"}, ""},
 	} {
 		if v := cgo(c.base).guarded(t, c.cand); c.why == "" && (!v.Accepted() || len(v.Warnings) > 0) || c.why != "" && !finds(v.Blocks, c.why) {
 			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
@@ -248,6 +250,14 @@ func TestIntegrityRound2(t *testing.T) {
 		if v := cgo(linked).guarded(t, c.cand, c.gone...); !finds(v.Blocks, c.why) {
 			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
 		}
+	}
+	outside := newFixtureWith(t, func(src string) { // the base files hold no root go.mod: inc/ is in no module
+		write(t, src, map[string]string{"m/go.mod": "module example.com/m\n\ngo 1.22\n", "m/c.go": "package m\n\n// #cgo CFLAGS: -I${SRCDIR}/../inc\n// #include \"x.inc\"\nimport \"C\"\n",
+			"inc/x.inc": "int x;\n"})
+		plain(t, src, "add", "--all")
+	})
+	if v := outside.guarded(t, map[string]string{"inc/x.inc": "int y;\n"}); !finds(v.Blocks, "uses cgo") {
+		t.Errorf("allowlist: an .inc outside any module: %q", whats(v.Blocks))
 	}
 	if v := work.guarded(t, nil, "go.work"); !finds(v.Blocks, "workspace") {
 		t.Errorf("a go.work deleted: %q", whats(v.Blocks))
