@@ -124,10 +124,12 @@ func goByName(p string) bool {
 func (r *run) goOn(p string, f *ast.File) (on []int, exprs []constraint.Expr, cons string, err error) {
 	on = make([]int, len(platforms))
 	var text strings.Builder
-	seen := map[string]bool{}
+	seen, goBuild := map[string]bool{}, slices.ContainsFunc(f.Comments, func(cg *ast.CommentGroup) bool {
+		return slices.ContainsFunc(cg.List, func(c *ast.Comment) bool { return c.Pos() < f.Package && constraint.IsGoBuild(c.Text) })
+	})
 	for _, cg := range f.Comments {
-		for _, c := range cg.List {
-			if c.Pos() < f.Package && (constraint.IsGoBuild(c.Text) || constraint.IsPlusBuild(c.Text)) && !seen[c.Text] {
+		for _, c := range cg.List { // a //go:build line, as go reads it, makes +build lines ignored
+			if c.Pos() < f.Package && (constraint.IsGoBuild(c.Text) || !goBuild && constraint.IsPlusBuild(c.Text)) && !seen[c.Text] {
 				x, err := constraint.Parse(c.Text)
 				if err != nil {
 					x = &constraint.TagExpr{Tag: "unparsed"} // a tag the guard does not model
@@ -263,6 +265,7 @@ type pkgScan struct {
 	tvals     map[types.Object]string
 	decls     map[types.Object]*ast.FuncDecl
 	same      map[string][]*ast.FuncDecl // every declaration of a name (race, !race): each counts
+	pi        int                        // the platform read (platforms[pi])
 	asserting map[*ast.FuncDecl]bool
 	mentioned map[ast.Expr]bool // the aliases mentions is in
 	starred   map[ast.Expr]bool // directly behind *
@@ -538,13 +541,13 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 		b, _ := tv.Type.Underlying().(*types.Basic)
 		switch {
 		case tv.Value != nil && tv.Value.Kind() == constant.String:
-			fa.forged += b2i(strings.Contains(constant.StringVal(tv.Value), "\x16"))
+			fa.forged[pi] += b2i(strings.Contains(constant.StringVal(tv.Value), "\x16"))
 		case tv.Value != nil && b != nil && slices.Contains([]types.BasicKind{types.Int32, types.Uint8, types.UntypedRune}, b.Kind()):
-			fa.twentyTwos += b2i(constant.Compare(tv.Value, token.EQL, constant.MakeInt64(22)))
+			fa.twentyTwos[pi] += b2i(constant.Compare(tv.Value, token.EQL, constant.MakeInt64(22)))
 		}
 	}
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
-		same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]bool{}, asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
+		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]bool{}, asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
 	for _, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
@@ -621,7 +624,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				return err
 			}
 			c := s.count(d)
-			fa.forged += c.forged + c.generic*b2i(tfile) // a file with testing values
+			fa.forged[pi] += c.forged + c.generic*b2i(tfile) // a file with testing values
 			if c.reflect > 0 && !slices.Contains(flags, "reflection on a testing value") {
 				flags = append(flags, "reflection on a testing value")
 			}
@@ -662,7 +665,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				}
 				continue
 			}
-			fa.ambient += c.skips
+			fa.ambient[pi] += c.skips
 		}
 		if len(flags) > 0 {
 			fa.flags[m.path] = flags
@@ -713,7 +716,7 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) 
 		n := starts[0]
 		starts = starts[1:]
 		ast.Inspect(n, func(n ast.Node) bool {
-			add := func(k string) { fa.init[k]++ }
+			add := func(k string) { fa.init[k+" on "+platforms[s.pi][0]+"/"+platforms[s.pi][1]]++ }
 			switch x := n.(type) {
 			case *ast.FuncLit: // run only when called, ranged over or passed to an own function
 				return run[x]

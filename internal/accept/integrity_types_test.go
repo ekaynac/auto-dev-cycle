@@ -5,9 +5,11 @@ package accept
 import (
 	"context"
 	"errors"
+	"go/build"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -297,6 +299,41 @@ func TestIntegrityRealTypes(t *testing.T) {
 		}
 	}
 
+	// The background flag on 52087d3 "count trading across platforms" (each
+	// accepted there): the text layer's counts are per platform too. A skip
+	// outside tests, initialization's reach and a 0x16 move from one
+	// platform's file to the other's; an assertion moves from an amd64-only
+	// helper to an arm64-only one (per platform since 52087d3).
+	tt := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/s_amd64.go": "package pkg\n\nfunc skipper(t interface{ Skip(...any) }) { t.Skip() }\n",
+			"pkg/s_arm64.go": "package pkg\n\nfunc skipper(t interface{ Skip(...any) }) {}\n",
+			"pkg/i_amd64.go": "package pkg\n\nimport \"fmt\"\n\nfunc init() { fmt.Println(\"x\") }\n", "pkg/i_arm64.go": "package pkg\n",
+			"pkg/m_amd64.go": "package pkg\n\nvar mark = string(rune(21 + 1))\n", "pkg/m_arm64.go": "package pkg\n\nvar mark = \"\"\n",
+			"pkg/h_amd64_test.go": "package pkg\n\nimport \"testing\"\n\n" + check, "pkg/h_arm64_test.go": empty,
+			"pkg/calc_test.go": "package pkg\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tcheck(t, Add(1, 2), 3)\n}\n"})
+		plain(t, src, "add", "--all")
+	})
+	for name, c := range map[string]struct {
+		files map[string]string
+		why   string
+	}{
+		"a skip traded":       {map[string]string{"pkg/s_amd64.go": "package pkg\n\nfunc skipper(t interface{ Skip(...any) }) {}\n", "pkg/s_arm64.go": "package pkg\n\nfunc skipper(t interface{ Skip(...any) }) { t.Skip() }\n"}, "a skip added outside a test"},
+		"init traded":         {map[string]string{"pkg/i_amd64.go": "package pkg\n", "pkg/i_arm64.go": "package pkg\n\nimport \"fmt\"\n\nfunc init() { fmt.Println(\"x\") }\n"}, "reaches a reference it cannot prove safe (fmt.Println)"},
+		"a 0x16 traded":       {map[string]string{"pkg/m_amd64.go": "package pkg\n\nvar mark = \"\"\n", "pkg/m_arm64.go": "package pkg\n\nvar mark = string(rune(21 + 1))\n"}, "can forge"},
+		"an assertion traded": {map[string]string{"pkg/h_amd64_test.go": empty, "pkg/h_arm64_test.go": "package pkg\n\nimport \"testing\"\n\n" + check}, "linux/amd64 pkg:pkg.TestAdd fewer assertions"},
+	} {
+		if v := tt.guarded(t, c.files); !finds(v.Blocks, c.why) {
+			t.Errorf("traded across platforms, %s: %q", name, whats(v.Blocks))
+		}
+	}
+	// The background flag on 52087d3 "parser differential (build tags)": a
+	// //go:build line makes +build lines ignored, as go reads them (go vet's
+	// buildtag check fails such a package in a default go test).
+	if v := f.guarded(t, map[string]string{"pkg/forge.go": strings.Replace(forgeGo, "package pkg", "//go:build linux\n// +build windows\n\npackage pkg", 1)}); !finds(v.Blocks, "cannot prove safe (syscall.Exit)") {
+		t.Errorf("a +build line beside //go:build: %q", whats(v.Blocks))
+	}
+
 	// The background flag on P14e-2a "fact count trading across platforms":
 	// facts are compared per platform. (a) A file built on both platforms
 	// keeps its count while one platform loses the fact and the other gains
@@ -405,6 +442,18 @@ func TestIntegrityRealTypesAccepts(t *testing.T) {
 		"\nfunc TestBox(t *testing.T) {\n\tvar _ pkg.Box = util.Get()\n\tvar _ *other.Config = pkg.Cfg()\n\t_ = pkg.Internal()\n}\n"
 	if v := x.guarded(t, map[string]string{"pkg/ext_test.go": ext}); !v.Accepted() || len(v.Warnings) > 0 {
 		t.Errorf("an external test through an own import: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	// The background flag on 52087d3 "parser differential (build tags)": an
+	// own import's file under one of the toolchain's default experiments is read.
+	if i := slices.IndexFunc(build.Default.ToolTags, func(t string) bool { return strings.HasPrefix(t, "goexperiment.") }); i >= 0 {
+		ex := newFixtureWith(t, func(src string) {
+			write(t, src, guardBase)
+			write(t, src, map[string]string{"util/e.go": "//go:build " + build.Default.ToolTags[i] + "\n\npackage util\n\nfunc E() int { return 1 }\n"})
+			plain(t, src, "add", "--all")
+		})
+		if v := ex.guarded(t, map[string]string{"pkg/x.go": "package pkg\n\nimport \"example.com/m/util\"\n\nfunc Ex() int { return util.E() }\n"}); !v.Accepted() || len(v.Warnings) > 0 {
+			t.Errorf("an own file under a default experiment: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+		}
 	}
 	// L2 (Opus #269): an own import's files under each platform's default
 	// level tag (amd64.v1, arm64.v8.0) are read on that platform, whatever the host.

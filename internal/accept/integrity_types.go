@@ -337,7 +337,8 @@ func (ty *typer) parse(dir string) ([]*ast.File, string) {
 func builds(pl [2]string, p string, src []byte) bool {
 	c := build.Context{GOOS: pl[0], GOARCH: pl[1], Compiler: "gc", ReleaseTags: release,
 		OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(src)), nil }}
-	c.ToolTags = map[string][]string{"amd64": {"amd64.v1"}, "arm64": {"arm64.v8.0"}}[pl[1]] // the default levels
+	c.ToolTags = append(slices.DeleteFunc(slices.Clone(build.Default.ToolTags), func(t string) bool { return !strings.HasPrefix(t, "goexperiment.") }),
+		map[string][]string{"amd64": {"amd64.v1"}, "arm64": {"arm64.v8.0"}}[pl[1]]...) // the toolchain's experiments, pl's default level
 	ok, err := c.MatchFile(path.Dir(p), path.Base(p))
 	return ok && err == nil
 }

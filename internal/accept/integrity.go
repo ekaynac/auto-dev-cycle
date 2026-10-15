@@ -45,7 +45,7 @@ type stat struct {
 // pkgFacts is what the guard reads of one version of a package directory.
 type pkgFacts struct {
 	tests                       map[string]*stat    // "platform dir:package.Name"
-	ambient, forged, twentyTwos int                 // skips outside tests, forging markers, …
+	ambient, forged, twentyTwos []int               // per platform: skips outside tests, forging markers, …
 	refs                        map[string]int      // "file\x00reference into S\x00function"
 	init                        map[string]int      // what initialization reaches
 	warn                        map[string]string   // TestMain(*testing.M), compared whole
@@ -216,7 +216,8 @@ func (r *run) goMod() error {
 
 // pkg reads one version of the package directory dir.
 func (r *run) pkg(dir string, t *tree) (pkgFacts, error) {
-	fa := pkgFacts{tests: map[string]*stat{}, refs: map[string]int{}, init: map[string]int{}, warn: map[string]string{},
+	fa := pkgFacts{ambient: make([]int, len(platforms)), forged: make([]int, len(platforms)), twentyTwos: make([]int, len(platforms)),
+		tests: map[string]*stat{}, refs: map[string]int{}, init: map[string]int{}, warn: map[string]string{},
 		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, tree: t}
 	srcs := map[string][]byte{}
 	for _, p := range t.dirs[dir] {
@@ -271,15 +272,23 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.blocks, k, "a test skipped")
 		}
 	}
-	if a.ambient > b.ambient && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), goByName) {
+	more := func(a, b []int) (m bool) { // on some platform: none is traded across them
+		for i := range platforms {
+			m = m || a[i] > b[i]
+		}
+		return m
+	}
+	if more(a.ambient, b.ambient) && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), goByName) {
 		add(&r.blocks, dir, "a skip added outside a test (a helper)")
 	}
-	if a.forged > b.forged {
+	if more(a.forged, b.forged) {
 		add(&r.blocks, dir, "can forge go test2json results (testing.Testing, a 0x16 spelled or in a constant, or a testing value not the runner's)")
 	}
+	reached := map[string]bool{} // per platform, reported once
 	for _, k := range slices.Sorted(maps.Keys(a.init)) {
-		if a.init[k] > b.init[k] {
-			add(&r.blocks, dir, "unverifiable: the package's initialization (tests included) reaches "+k)
+		if what := k[:max(0, strings.LastIndex(k, " on "))]; a.init[k] > b.init[k] && !reached[what] {
+			reached[what] = true
+			add(&r.blocks, dir, "unverifiable: the package's initialization (tests included) reaches "+what)
 		}
 	}
 	for _, p := range slices.Sorted(maps.Keys(a.flags)) {
@@ -313,7 +322,7 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.warnings, at, "reflection that makes values, in a package without tests: review it")
 		}
 	}
-	if a.twentyTwos > b.twentyTwos {
+	if more(a.twentyTwos, b.twentyTwos) {
 		add(&r.warnings, dir, "converts 22 (0x16, test2json's marker) to a byte or rune: review it")
 	}
 }
