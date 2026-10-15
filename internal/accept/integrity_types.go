@@ -611,7 +611,7 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 		defer func() { ty.pkgs = saved }()
 	}
 	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
-		Instances: map[*ast.Ident]types.Instance{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+		Instances: map[*ast.Ident]types.Instance{}}
 	// Any error but a name declared again in a file under a tag the guard
 	// does not model (race, !race), with the same declared types (redecl).
 	redecl, pending := map[string]string{}, ""
@@ -656,7 +656,6 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 	if !xtest && ty.pathOf(dir) != "" {
 		ty.self[ty.pathOf(dir)] = pkg
 	}
-	names := map[types.Object]string{} // bounded, once per object (Astra #276 r2 H4)
 	for _, f := range files {
 		for _, d := range f.Decls {
 			where := "package level"
@@ -666,52 +665,9 @@ func (r *run) typedOn(pl [2]string, dir, name string, fset *token.FileSet, files
 				where = fn.Name.Name
 			}
 			facts(info, d, func(fact string) { fa.typed[meta[f].path+"\x00"+pl[0]+"/"+pl[1]+" "+where+"\x00"+fact]++ }) // per platform: no trade across them
-			specs := []ast.Node{d}                                                                                      // a package-level function literal: its spec's own key (Astra #276 r2 H1)
-			if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.VAR {
-				specs = slices.Collect(func(yield func(ast.Node) bool) {
-					for _, sp := range g.Specs {
-						if !yield(sp) {
-							return
-						}
-					}
-				})
-			}
-			for _, sp := range specs {
-				uses := meta[f].path + "\x00" + bound(where) + "\x00" + pl[0] + "/" + pl[1]
-				if vs, ok := sp.(*ast.ValueSpec); ok && hasLit(vs) {
-					uses = meta[f].path + "\x00var " + bound(vs.Names[0].Name) + "\x00" + pl[0] + "/" + pl[1]
-				}
-				ref := func(q, pkg string) { // never class 2; bounded names, charged
-					r.work += len(q) + len(uses)
-					fa.refs[meta[f].path+"\x00"+q+"\x00"+bound(where)+"\x00"+pl[0]+"/"+pl[1]+"\x00~"+pkg]++ // ~: always P14b-out's
-					fa.uses(uses, pkg)
-				}
-				ast.Inspect(sp, func(n ast.Node) bool { // by real types, an S type's method through a value (util.Flags().Parse) or an S type argument: warns
-					if r.work++; r.work > maxWork || r.ctx.Err() != nil {
-						return false
-					} else if sel, ok := n.(*ast.SelectorExpr); ok && info.Selections[sel] != nil && info.Selections[sel].Kind() != types.FieldVal { // a method; a field is data
-						if o := info.Selections[sel].Obj().(*types.Func); sObj(o) {
-							ref(methodRef(o, info.Selections[sel].Recv(), names), o.Pkg().Path())
-						}
-					} else if id, ok := n.(*ast.Ident); ok && info.Instances[id].TypeArgs != nil {
-						for t := range info.Instances[id].TypeArgs.Types() {
-							if p, ok := types.Unalias(t).(*types.Pointer); ok {
-								t = p.Elem()
-							}
-							if nt, ok := types.Unalias(t).(*types.Named); ok && sObj(nt.Obj()) {
-								ref(bound(id.Name)+"["+namedOf(nt, names)+"]", nt.Obj().Pkg().Path()) // parse[flag.FlagSet]: its methods are called in the generic
-							}
-						}
-					}
-					return true
-				})
-			}
 		}
 	}
-	if r.work > maxWork {
-		fa.untyped["~"+key] = cmp.Or(fa.untyped["~"+key], where+"its references are over the guard's work bound")
-	}
-	return r.ctx.Err()
+	return nil
 }
 
 // shapes are what a redeclaration must repeat, by its name's position: its
@@ -891,42 +847,7 @@ func facts(info *types.Info, n ast.Node, add func(string)) {
 	})
 }
 
-func isVar(o types.Object) bool { _, ok := o.(*types.Var); return ok }
-
-// methodRef is a method's reference: its full name ((*flag.FlagSet).Parse),
-// and the named type it is reached through when another; never a rendered
-// type (an anonymous receiver may be megabytes: Astra #276 H3).
-func methodRef(o *types.Func, recv types.Type, names map[types.Object]string) string {
-	q, ok := names[o]
-	if !ok {
-		q = bound(o.FullName())
-		names[o] = q
-	}
-	if via := namedOf(recv, names); via != "" && !strings.Contains(q, via) {
-		q += " via " + via // promoted through another named type
-	}
-	return q
-}
-
-// namedOf is t's named type as "path.Name" (behind a pointer too), or "".
-func namedOf(t types.Type, names map[types.Object]string) string {
-	if p, ok := types.Unalias(t).(*types.Pointer); ok {
-		t = p.Elem()
-	}
-	n, ok := types.Unalias(t).(*types.Named)
-	if !ok || n.Obj().Pkg() == nil {
-		return ""
-	} else if q, ok := names[n.Obj()]; ok {
-		return q
-	}
-	names[n.Obj()] = bound(n.Obj().Pkg().Path()) + "." + bound(n.Obj().Name()) // each name cut before it is joined
-	return names[n.Obj()]
-}
-
-// sObj: o is an S package's (testing's, reflect's and unsafe's have their own rules).
-func sObj(o types.Object) bool {
-	return o.Pkg() != nil && sPkg(o.Pkg().Path()) && !slices.Contains([]string{"testing", "reflect", "unsafe"}, o.Pkg().Path())
-}
+func isVar(o types.Object) bool      { _, ok := o.(*types.Var); return ok }
 func isTypeName(o types.Object) bool { _, ok := o.(*types.TypeName); return ok }
 
 // reaches: a call's arguments (through a conversion to an interface,

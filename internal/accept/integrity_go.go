@@ -5,8 +5,6 @@ package accept
 import (
 	"bytes"
 	"cmp"
-	"crypto/sha256"
-	"fmt"
 	"go/ast"
 	"go/build"
 	"go/build/constraint"
@@ -38,10 +36,8 @@ var (
 	testify   = []string{"github.com/stretchr/testify/assert", "github.com/stretchr/testify/require"}
 	testTypes = []string{"testing.T", "testing.B", "testing.F", "testing.TB", "testing.M"}
 	osRead    = []string{"Getenv", "LookupEnv", "Environ", "Getwd", "Stat", "Open", "ReadFile", "ReadDir", "PathSeparator"}
-	// sPkgs and the sTrees (each with the packages under it) reach the
-	// process, its output or testing: S, prefix-matched (P14b-out).
-	sPkgs   = []string{"syscall", "fmt", "reflect", "unsafe", "plugin", "flag", "io/ioutil", "net/http/cgi"}
-	sTrees  = []string{"os", "log", "runtime", "testing", "golang.org/x/sys", "modernc.org/libc"}
+	// sPkgs (and golang.org/x/sys/...) reach the process, its output or testing: S.
+	sPkgs   = []string{"syscall", "os", "os/exec", "os/signal", "log", "log/slog", "fmt", "testing", "reflect", "unsafe", "runtime", "plugin"}
 	spelled = []string{"\x16", `\x16`, `\026`, `\u0016`, `\U00000016`} // test2json's marker
 	// initPkgs are the inert packages initialization may call, with the
 	// unicode, math and encoding trees; fmt and time only in part (inert).
@@ -69,48 +65,8 @@ func allCaps(n string) bool {
 	return len(n) >= 3 && n == strings.ToUpper(n) && strings.ContainsFunc(n, unicode.IsUpper) // not V, T, ID
 }
 
-// mainS is S as P14b-init had it: references into it are main's warnings,
-// reported first and one by one; P14b-out's come after, per file and package.
-func mainS(p string) bool {
-	return slices.Contains([]string{"", "syscall", "os", "os/exec", "os/signal", "log", "log/slog", "fmt", "testing", "reflect", "unsafe", "runtime", "plugin"}, p) ||
-		strings.HasPrefix(p, "golang.org/x/sys/")
-}
-
-// bound is a name cut at its source: up to 64 bytes, then a short hash of
-// the whole (an identifier may be megabytes: Astra #276 r2 H4).
-func bound(name string) string {
-	if len(name) <= 64 {
-		return name
-	}
-	h := sha256.Sum256([]byte(name))
-	return fmt.Sprintf("%s…%x", name[:64], h[:6])
-}
-
-// hasLit: n holds a function literal.
-func hasLit(n ast.Node) (lit bool) {
-	ast.Inspect(n, func(n ast.Node) bool {
-		_, ok := n.(*ast.FuncLit)
-		lit = lit || ok
-		return !lit
-	})
-	return lit
-}
-
-// refPkg is the package a reference names: flag.Parse, os.Exit(2),
-// (*flag.FlagSet).Parse via …, parse[flag.FlagSet], println ("").
-func refPkg(q string) string {
-	switch i := strings.IndexAny(q, "(["); {
-	case i == 0 || i > 0 && q[i] == '[':
-		in := q[i+1:]
-		q = strings.TrimPrefix(in[:max(strings.IndexAny(in, ")]"), 0)], "*")
-	case i > 0:
-		q = q[:i]
-	}
-	return q[:max(strings.LastIndex(q, "."), 0)]
-}
-
 func sPkg(p string) bool {
-	return slices.Contains(sPkgs, p) || slices.ContainsFunc(sTrees, func(t string) bool { return p == t || strings.HasPrefix(p, t+"/") })
+	return slices.Contains(sPkgs, p) || strings.HasPrefix(p, "golang.org/x/sys/")
 }
 
 // sensitive classifies q ("importpath.Name", a builtin, "os.Args assigned"):
@@ -136,7 +92,7 @@ func sensitive(q string) int {
 		return b2i(!slices.Contains(osRead, name) && !strings.HasPrefix(name, "Err")) * (1 + is("Exit", "StartProcess"))
 	case pkg == "os/exec":
 		return 1 + is("Command*", "Cmd") // a process start
-	case pkg == "plugin" || pkg == "modernc.org/libc" || strings.HasPrefix(pkg, "modernc.org/libc/"): // libc: C's exit, exec and syscalls in Go
+	case pkg == "plugin":
 		return 2
 	case pkg == "log" || pkg == "log/slog":
 		return 1 + is("Fatal*", "Panic*")
@@ -526,7 +482,7 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 				c.reflect++ // a second net under the types layer's (Mythos #271 H1)
 			}
 			if sensitive(s.qual(fun)) == 2 { // its arguments too: a changed exit code warns
-				c.refs = append(c.refs, types.ExprString(x)+"\x00"+refPkg(s.qual(fun))) // its package, not the text's local name
+				c.refs = append(c.refs, types.ExprString(x))
 			}
 			if sel, ok := fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MethodByName" && len(x.Args) == 1 {
 				lit, _ := ast.Unparen(x.Args[0]).(*ast.BasicLit)
@@ -699,42 +655,8 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			} else if fn != nil && fn.Body != nil {
 				where = recv(fn) + "." + fn.Name.Name
 			}
-			key := m.path + "\x00" + bound(where) + "\x00" + plat
 			for _, q := range c.refs {
-				q, pkg, ok := strings.Cut(q, "\x00")
-				if !ok {
-					pkg = refPkg(q)
-				}
-				if !mainS(pkg) { // P14b-out's key: a bounded name
-					fa.refs[m.path+"\x00"+q+"\x00"+bound(where)+"\x00"+plat+"\x00"+pkg]++
-				} else {
-					fa.refs[m.path+"\x00"+q+"\x00"+where+"\x00"+plat+"\x00"+pkg]++
-				}
-				fa.uses(key, pkg)
-			}
-			span := func(n ast.Node) string {
-				return fmt.Sprintf("%x", sha256.Sum256(m.src[fset.Position(n.Pos()).Offset:fset.Position(n.End()).Offset]))
-			}
-			realHook := test && fname == "TestMain" && slices.ContainsFunc(fn.Type.Params.List, func(f *ast.Field) bool { // only the testing hook is the hook's rules'
-				st, ok := f.Type.(*ast.StarExpr)
-				return ok && s.qual(st.X) == "testing.M"
-			})
-			if fn != nil && fn.Body != nil && fname != "init" && !realHook { // a body changed with the same references (Astra #276 H1)
-				fa.bodies[key] = span(fn)
-			} else if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.VAR { // a package-level function literal: its spec (Astra #276 r2 H1)
-				for _, sp := range g.Specs {
-					if vs := sp.(*ast.ValueSpec); hasLit(vs) {
-						k := m.path + "\x00var " + bound(vs.Names[0].Name) + "\x00" + plat
-						fa.bodies[k] = span(vs)
-						for _, q := range s.count(vs).refs {
-							q, pkg, ok := strings.Cut(q, "\x00")
-							if !ok {
-								pkg = refPkg(q)
-							}
-							fa.uses(k, pkg)
-						}
-					}
-				}
+				fa.refs[m.path+"\x00"+q+"\x00"+where+"\x00"+plat]++
 			}
 			hook := test && fname == "TestMain" && slices.ContainsFunc(fn.Type.Params.List, func(f *ast.Field) bool {
 				st, ok := f.Type.(*ast.StarExpr)
@@ -773,12 +695,6 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 		n, _ := r.holds(meta[f].exprs, platforms[pi], "ignore")
 		return n == 0
 	})
-	for _, f := range typed { // an import go builds (never an ignore file's): an edge
-		for _, is := range f.Imports {
-			ip, _ := strconv.Unquote(is.Path.Value)
-			fa.imports[ip] = true
-		}
-	}
 	if len(typed) > 0 {
 		if err := r.typedOn(platforms[pi], dir, name, fset, typed, meta, fa); err != nil {
 			return err
