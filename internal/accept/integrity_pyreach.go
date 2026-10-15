@@ -88,9 +88,14 @@ func (pb *pyBase) across(d string, hit func(string, bool) string, rebound func(s
 			seen[x], queue = true, append(queue, x)
 		}
 	}
-	over := func() bool { return pb.r.work > maxWork || pb.r.ctx.Err() != nil }
+	over := func() bool { // exhausted: the bound or ctx, propagated at once (Astra #272 r3 M1)
+		if err = pb.r.ctx.Err(); err == nil && pb.r.work > maxWork {
+			unread = "the base conditions' analysis is over the guard's work bound"
+		}
+		return err != nil || unread != ""
+	}
 	follow := func(x string) string { // x resolved: c's attribute it reaches, or queued
-		if err != nil || unread != "" {
+		if pb.r.work++; err != nil || unread != "" || over() {
 			return ""
 		} else if x, unread, err = pb.resolve(x); err == nil && unread == "" {
 			if y := hit(x, true); y != "" {
@@ -142,7 +147,9 @@ func (pb *pyBase) across(d string, hit func(string, bool) string, rebound func(s
 		}
 		star := func(chain string) string { // a name neither bound nor imported, through each star import
 			for _, s := range f.stars {
-				if pb.mods[s] == "" {
+				if over() {
+					return ""
+				} else if pb.mods[s] == "" {
 					unread = "the star import " + s
 				} else if y := follow(s + "." + chain); y != "" {
 					return y
@@ -163,7 +170,9 @@ func (pb *pyBase) across(d string, hit func(string, bool) string, rebound func(s
 				}
 				unit := f.units[u]
 				for j, t := range unit {
-					if t.kind != 'n' || j > 0 && unit[j-1].text == "." || slices.Contains(pyKeywords, t.text) || slices.Contains([]string{"True", "False", "None"}, t.text) {
+					if over() {
+						return "", unread, err
+					} else if t.kind != 'n' || j > 0 && unit[j-1].text == "." || slices.Contains(pyKeywords, t.text) || slices.Contains([]string{"True", "False", "None"}, t.text) {
 						continue
 					} else if !taken[t.text] {
 						taken[t.text], names = true, append(names, t.text) // its module-level binding, and its import too (Opus #272 L3)

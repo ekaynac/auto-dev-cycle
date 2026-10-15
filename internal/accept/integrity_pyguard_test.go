@@ -901,6 +901,26 @@ func TestPyGuardReach(t *testing.T) {
 		}
 	}
 	maxWork = old
+	stars := func(t *testing.T) fixture { // Astra #272 r3 M1: 10000 star imports binding Z, a binding reading Z 10000 times
+		var b strings.Builder
+		files := map[string]string{"other.py": "Y = 1\n", "tests/test_s.py": "import pytest\nfrom big import V\n\n@pytest.mark.skipif(V, reason='r')\ndef test_s():\n    pass\n"}
+		for i := range 10000 {
+			fmt.Fprintf(&b, "from s%d import *\n", i)
+			files[fmt.Sprintf("s%d.py", i)] = "Z = False\n"
+		}
+		files["big.py"] = b.String() + "V = Z" + strings.Repeat(" + Z", 9999) + "\n"
+		return newFixtureWith(t, func(src string) {
+			write(t, src, files)
+			plain(t, src, "add", "--all")
+		})
+	}(t)
+	maxWork = 100000
+	start := time.Now()
+	v := stars.guarded(t, map[string]string{"other.py": "Y = 2\n"})
+	if took := time.Since(start); took > 10*time.Second || !pyFinds(pyOwn(v.Blocks), "over the guard's work bound") {
+		t.Errorf("r5-M1 a star expansion bounded: %v, %q", took, whats(pyOwn(v.Blocks)))
+	}
+	maxWork = old
 	hu := newFixtureWith(t, func(src string) { // the review of 1ceb79c: a re-export behind an unknown star is unread
 		write(t, src, map[string]string{"helpers9.py": "from numpy import *\n", "other.py": "X = 1\n",
 			"tests/test_h.py": "from helpers9 import REQ9\n\n@REQ9\ndef test_h():\n    pass\n"})
