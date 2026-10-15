@@ -166,19 +166,32 @@ func pyDepthEnd(t []ptok, open int) int {
 // (pyInert), importing anything (an import runs its module), or binding
 // __all__ (a package's exports its implicit __path__, Astra #277 H1).
 // Without __all__, a star binds no name starting with "_". A module
-// outside the base: resolve's unknown star rule. A change to a star
-// source blocks (pyBase.starOf).
+// outside the base: resolve's unknown star rule. Unread too: a source
+// only an added root names, two files answer to, or with a compiled or
+// extension sibling Python may load instead (the background review of
+// 6ba56ce). A change to a star source blocks (pyBase.starOf).
 func (pb *pyBase) starDunder(f *pyBaseFile) (string, error) {
 	for _, s := range f.stars {
-		if pb.mods[s] == "" {
+		if q := pb.mods[s]; q == "" && pb.shadowMods[s] == "" {
 			continue
-		} else if fs, err := pb.file(pb.mods[s]); err != nil {
+		} else if q == "" || pb.alts[s] > 1 || pb.compiled(q) {
+			return s, nil
+		} else if fs, err := pb.file(q); err != nil {
 			return "", err
 		} else if !fs.plain || len(fs.mods) > 0 || fs.locals["__all__"] {
 			return s, nil
 		}
 	}
 	return "", nil
+}
+
+// compiled: a base file beside module q that Python may load in its place:
+// an extension module, a .pyd or a .pyc (dir/m.*.so for dir/m.py).
+func (pb *pyBase) compiled(q string) bool {
+	stem := strings.TrimSuffix(q, ".py") + "."
+	return slices.ContainsFunc(pb.paths, func(p string) bool {
+		return strings.HasPrefix(p, stem) && slices.Contains([]string{".so", ".pyd", ".pyc"}, path.Ext(p))
+	})
 }
 
 // prefix is how many of parts name the base module Python imports, at most

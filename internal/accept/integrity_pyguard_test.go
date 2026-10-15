@@ -1235,3 +1235,30 @@ func TestPyGuardInstallPending(t *testing.T) {
 		t.Skipf("pass with the reader on, must block before P14c-2a-install (P14c-2a-widen): %q", pending)
 	}
 }
+
+// TestPyGuardStarSources: star sources Python loads that the guard does not
+// match exactly are unread; a change to one, a deletion included, blocks;
+// a changed package __init__.py with a star import blocks (background
+// review of 6ba56ce).
+func TestPyGuardStarSources(t *testing.T) {
+	for name, c := range map[string]struct {
+		base, change map[string]string
+		gone         []string
+		want         string
+	}{
+		"a star source only src/ names":                                      {map[string]string{"feature/__init__.py": "from redirect import *\n", "src/redirect/__init__.py": "__all__ = [\"__path__\"]\n", "src/redirect/flags.py": "from cfg import SKIP\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature star-imports redirect, which may run code or bind __path__)"},
+		"a star source two files answer to":                                  {map[string]string{"feature/__init__.py": "from redirect import *\n", "redirect.py": "X = 1\n", "redirect/__init__.py": "__all__ = [\"__path__\"]\n", "redirect/flags.py": "from cfg import SKIP\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature star-imports redirect, which may run code or bind __path__)"},
+		"a star source beside an extension module":                           {map[string]string{"feature/__init__.py": "from redirect import *\n", "redirect.py": "X = 1\n", "redirect.cpython-312-x86_64-linux-gnu.so": "\x00", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature star-imports redirect, which may run code or bind __path__)"},
+		"a star source deleted":                                              {map[string]string{"feature/__init__.py": "from redirect import *\n", "redirect.py": "X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{}, []string{"redirect.py"}, "redirect.py: a star source of feature changed"},
+		"a candidate keeping a star import in a changed package __init__.py": {map[string]string{"feature/__init__.py": "from redirect import *\n", "redirect.py": "X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_y.py": "def test_y():\n    pass\n"}, map[string]string{"feature/__init__.py": "from redirect import *\nY = 2\n"}, []string{}, "feature/__init__.py: a package __init__.py with a star import changed"},
+		"a relative star source changed":                                     {map[string]string{"feature/__init__.py": "from .sub import *\n", "feature/sub.py": "X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"feature/sub.py": "X = 2\n"}, []string{}, "feature/sub.py: a star source of feature changed"},
+	} {
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, c.base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, c.change, c.gone...); !pyFinds(pyOwn(v.Blocks), c.want) {
+			t.Errorf("%s: %q, want %q", name, whats(pyOwn(v.Blocks)), c.want)
+		}
+	}
+}

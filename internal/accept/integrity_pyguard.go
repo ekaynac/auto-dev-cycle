@@ -146,7 +146,10 @@ func (r *run) python(changes []Change) error {
 		a, ok2, err2 := r.pyScan(dst && path.Ext(c.Dst) == ".py", c.Dst, c.DstBlob, judged)
 		if err = cmp.Or(err, err2); err != nil {
 			return err
-		} else if ok && ok2 {
+		} else if ok2 && dst && path.Base(c.Dst) == "__init__.py" && slices.ContainsFunc(strings.Split(a.imports, "\n"), func(s string) bool { return strings.HasSuffix(s, "*]") }) {
+			add(&r.blocks, c.Dst, "a package __init__.py with a star import changed (its sources' exports may move the package's submodules)") // the candidate's own, without a condition through it (the background review of 6ba56ce)
+		}
+		if ok && ok2 {
 			if src && dst && path.Ext(c.Src) == ".py" && path.Ext(c.Dst) == ".py" { // a changed module a base condition reads (Mythos #267 H4)
 				if err := pb.load(); err != nil {
 					return err
