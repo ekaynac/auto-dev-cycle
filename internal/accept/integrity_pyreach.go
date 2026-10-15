@@ -200,10 +200,36 @@ func (pb *pyBase) starCandidate(q string) (string, error) {
 		return "a package __init__.py the guard cannot read", nil
 	}
 	why, err := pb.cand.starCheck(q, f)
+	if err == nil && why == "" && len(f.starSrc) > 0 && !f.plain {
+		why = "star-imports and is not plain" // its other statements may move its submodules (Opus #279 L2)
+	}
 	if err != nil || why == "" {
 		return "", err
 	}
 	return "a package __init__.py that " + why, nil
+}
+
+// starSourceOf: the base package directory whose __init__.py star-imports
+// the module that path p is a form of (pyStarForm), or "". Only the
+// __init__.py of p's own package is read, never all of them (Opus #279 L3).
+func (pb *pyBase) starSourceOf(p string) (string, error) {
+	d, base := path.Dir(p), path.Base(p)
+	cands := [][2]string{{d, strings.SplitN(base, ".", 2)[0]}} // d/x.*
+	if strings.HasPrefix(base, "__init__.") {
+		cands = append(cands, [2]string{path.Dir(d), path.Base(d)}) // d/x/__init__.*
+	} else if path.Base(d) == "__pycache__" {
+		cands = append(cands, [2]string{path.Dir(d), strings.SplitN(base, ".", 2)[0]}) // d/__pycache__/x.*
+	}
+	for _, c := range cands {
+		if q := path.Join(c[0], "__init__.py"); pb.r.files[q] == "" {
+			continue
+		} else if f, err := pb.file(q); err != nil {
+			return "", err
+		} else if slices.Contains(f.starSrc, c[1]) {
+			return c[0], nil
+		}
+	}
+	return "", nil
 }
 
 // pyStarForm: path p is a form of module x in directory d that CPython may

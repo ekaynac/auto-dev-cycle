@@ -33,7 +33,6 @@ type pyBase struct {
 	holderUnread string                 // a module a judged file imports, unread on the way to its holder (the review of 1ceb79c)
 	sysUnread    bool                   // a judged file changes sys.path in a way the guard does not read (#270 M1)
 	tree         map[string]string      // the files file reads: nil, the base; the candidate for pyStarCandidate
-	starSrcs     [][2]string            // a base package's directory and a module it star-imports (P14c-2a-star)
 	cand         *pyBase                // the candidate's files, for its package __init__.py stars
 
 	// entries are main's (the root, pythonpath, the basedirs) and resolve; extra are the roots an install
@@ -152,18 +151,6 @@ func (pb *pyBase) load() error {
 		}
 		for _, n := range pyModNames(q, pb.shadowEntries, false) { // a name an added root gives a second file is unread (Opus #275 H2)
 			pb.shadowMods[n], pb.alts[n] = cmp.Or(pb.shadowMods[n], q), pb.alts[n]+1
-		}
-	}
-	for _, q := range pb.paths { // star sources: a change to one blocks (P14c-2a-star)
-		if path.Base(q) != "__init__.py" {
-			continue
-		} else if f, err := pb.file(q); err != nil {
-			pb.err = err
-			return err
-		} else {
-			for _, x := range f.starSrc {
-				pb.starSrcs = append(pb.starSrcs, [2]string{path.Dir(q), x})
-			}
 		}
 	}
 	for _, f := range slices.Clone(pb.tests) { // the application modules a judged file imports, one hop (Mythos #270 M2)
