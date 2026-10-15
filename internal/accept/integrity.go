@@ -45,7 +45,7 @@ type stat struct {
 // pkgFacts is what the guard reads of one version of a package directory.
 type pkgFacts struct {
 	tests                       map[string]*stat    // "platform dir:package.Name"
-	ambient, forged, twentyTwos int                 // skips outside tests, forging markers, …
+	ambient, forged, twentyTwos []int               // per platform: skips outside tests, forging markers, …
 	refs                        map[string]int      // "file\x00reference into S\x00function"
 	init                        map[string]int      // what initialization reaches
 	warn                        map[string]string   // TestMain(*testing.M), compared whole
@@ -61,9 +61,12 @@ type pkgFacts struct {
 // and imports' types through list (nil: every Go package unverifiable).
 func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
 	return func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, err error) {
-		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{}}
-		defer func() { // fail closed: a guard fault blocks, never crashes the controller
-			if p := recover(); p != nil {
+		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, budget: maxRead, blobs: map[string][]byte{}, touched: map[string]bool{},
+			listEnd: time.Now().Add(maxListTime)}
+		defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
+			if p := recover(); p != nil && ctx.Err() != nil {
+				blocks, warnings, err = r.blocks, r.warnings, ctx.Err()
+			} else if p != nil {
 				blocks, warnings, err = append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p)}), r.warnings, nil
 			}
 		}()
@@ -78,7 +81,7 @@ type run struct {
 	base               string
 	read               Reader
 	lister             Lister
-	listEnd            time.Time // every go list run ends by then
+	listEnd            time.Time // every go list run and type check ends by then
 	listRuns           int
 	budget             int64
 	work               int
@@ -216,7 +219,8 @@ func (r *run) goMod() error {
 
 // pkg reads one version of the package directory dir.
 func (r *run) pkg(dir string, t *tree) (pkgFacts, error) {
-	fa := pkgFacts{tests: map[string]*stat{}, refs: map[string]int{}, init: map[string]int{}, warn: map[string]string{},
+	fa := pkgFacts{ambient: make([]int, len(platforms)), forged: make([]int, len(platforms)), twentyTwos: make([]int, len(platforms)),
+		tests: map[string]*stat{}, refs: map[string]int{}, init: map[string]int{}, warn: map[string]string{},
 		flags: map[string][]string{}, bad: map[string]string{}, untyped: map[string]string{}, typed: map[string]int{}, tree: t}
 	srcs := map[string][]byte{}
 	for _, p := range t.dirs[dir] {
@@ -248,6 +252,13 @@ func keys[V any](ms ...map[string]V) []string {
 // compare blocks what one package directory lost, or gained, between the
 // base (b) and the candidate (a), and warns of what the reviewer must see.
 func (r *run) compare(dir string, b, a pkgFacts) {
+	seen := map[string]bool{} // keys per platform: each finding reported once
+	add := func(to *[]Block, p, what string) {
+		if k := p + "\x00" + what; !seen[k] {
+			seen[k] = true
+			add(to, p, what)
+		}
+	}
 	bad := maps.Clone(b.bad)
 	maps.Copy(bad, a.bad)
 	for _, p := range slices.Sorted(maps.Keys(bad)) {
@@ -271,33 +282,37 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.blocks, k, "a test skipped")
 		}
 	}
-	if a.ambient > b.ambient && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), goByName) {
+	more := func(a, b []int) bool { // on some platform: none is traded across them
+		return slices.ContainsFunc(platforms, func(pl [2]string) bool { return a[slices.Index(platforms, pl)] > b[slices.Index(platforms, pl)] })
+	}
+	if more(a.ambient, b.ambient) && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), goByName) {
 		add(&r.blocks, dir, "a skip added outside a test (a helper)")
 	}
-	if a.forged > b.forged {
+	if more(a.forged, b.forged) {
 		add(&r.blocks, dir, "can forge go test2json results (testing.Testing, a 0x16 spelled or in a constant, or a testing value not the runner's)")
 	}
-	for _, k := range slices.Sorted(maps.Keys(a.init)) {
-		if a.init[k] > b.init[k] {
-			add(&r.blocks, dir, "unverifiable: the package's initialization (tests included) reaches "+k)
+	for _, k := range slices.Sorted(maps.Keys(a.init)) { // init, flags, warn and refs keys end in "\x00platform"
+		if what, _, _ := strings.Cut(k, "\x00"); a.init[k] > b.init[k] {
+			add(&r.blocks, dir, "unverifiable: the package's initialization (tests included) reaches "+what)
 		}
 	}
-	for _, p := range slices.Sorted(maps.Keys(a.flags)) {
-		for _, f := range a.flags[p] {
-			if !slices.Contains(b.flags[p], f) && (r.tested(dir) || f == "reflection on a testing value") {
+	for _, k := range slices.Sorted(maps.Keys(a.flags)) {
+		p, _, _ := strings.Cut(k, "\x00")
+		for _, f := range a.flags[k] {
+			if !slices.Contains(b.flags[k], f) && (r.tested(dir) || f == "reflection on a testing value") {
 				add(&r.blocks, p, "unverifiable: "+f)
-			} else if !slices.Contains(b.flags[p], f) {
+			} else if !slices.Contains(b.flags[k], f) {
 				add(&r.warnings, p, f+": review it")
 			}
 		}
 	}
 	for _, k := range keys(b.warn, a.warn) {
-		if a.warn[k] != b.warn[k] {
-			add(&r.warnings, dir, k+" changed or deleted: review it")
+		if hook, _, _ := strings.Cut(k, "\x00"); a.warn[k] != b.warn[k] {
+			add(&r.warnings, dir, hook+" changed or deleted: review it")
 		}
 	}
 	for _, k := range keys(b.refs, a.refs) { // per file and function: added ones block or warn, any other change warns
-		f := strings.Split(k, "\x00") // file, reference, function
+		f := strings.Split(k, "\x00") // file, reference, function, platform
 		if at := f[0] + ": " + f[1] + " in " + f[2]; a.refs[k] > b.refs[k] && r.tested(dir) && sensitive(f[1]) == 2 {
 			add(&r.blocks, at, "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
 		} else if a.refs[k] != b.refs[k] {
@@ -313,7 +328,7 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.warnings, at, "reflection that makes values, in a package without tests: review it")
 		}
 	}
-	if a.twentyTwos > b.twentyTwos {
+	if more(a.twentyTwos, b.twentyTwos) {
 		add(&r.warnings, dir, "converts 22 (0x16, test2json's marker) to a byte or rune: review it")
 	}
 }

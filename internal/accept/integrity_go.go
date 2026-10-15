@@ -124,10 +124,12 @@ func goByName(p string) bool {
 func (r *run) goOn(p string, f *ast.File) (on []int, exprs []constraint.Expr, cons string, err error) {
 	on = make([]int, len(platforms))
 	var text strings.Builder
-	seen := map[string]bool{}
+	seen, goBuild := map[string]bool{}, slices.ContainsFunc(f.Comments, func(cg *ast.CommentGroup) bool {
+		return slices.ContainsFunc(cg.List, func(c *ast.Comment) bool { return c.Pos() < f.Package && constraint.IsGoBuild(c.Text) })
+	})
 	for _, cg := range f.Comments {
-		for _, c := range cg.List {
-			if c.Pos() < f.Package && (constraint.IsGoBuild(c.Text) || constraint.IsPlusBuild(c.Text)) && !seen[c.Text] {
+		for _, c := range cg.List { // a //go:build line, as go reads it, makes +build lines ignored
+			if c.Pos() < f.Package && (constraint.IsGoBuild(c.Text) || !goBuild && constraint.IsPlusBuild(c.Text)) && !seen[c.Text] {
 				x, err := constraint.Parse(c.Text)
 				if err != nil {
 					x = &constraint.TagExpr{Tag: "unparsed"} // a tag the guard does not model
@@ -207,8 +209,9 @@ func goTest(name string) bool {
 	return false
 }
 
-// analyse reads one version of dir: each package (pkg and pkg_test apart)
-// type-checked from the files a gate platform builds, imports unresolved.
+// analyse reads one version of dir: each package (pkg and pkg_test apart),
+// per gate platform, type-checked from the files that platform may build,
+// imports unresolved.
 func (r *run) analyse(dir string, srcs map[string][]byte, fa *pkgFacts) error {
 	fset, groups, meta := token.NewFileSet(), map[string][]*ast.File{}, map[*ast.File]fileMeta{}
 	for _, p := range slices.Sorted(maps.Keys(srcs)) {
@@ -230,12 +233,16 @@ func (r *run) analyse(dir string, srcs map[string][]byte, fa *pkgFacts) error {
 		if !goByName(p) || f.Name.Name == "documentation" {
 			coll = make([]int, len(platforms))
 		}
-		meta[f] = fileMeta{p, cons, coll, srcs[p], exprs}
+		meta[f] = fileMeta{p, cons, coll, srcs[p], exprs, on}
 		groups[f.Name.Name] = append(groups[f.Name.Name], f)
 	}
 	for _, name := range slices.Sorted(maps.Keys(groups)) {
-		if err := r.group(dir, name, fset, groups[name], meta, fa); err != nil {
-			return err
+		for i := range platforms { // each platform's files apart: a name split by platform (x_amd64.go) is that platform's
+			if on := slices.DeleteFunc(slices.Clone(groups[name]), func(f *ast.File) bool { return meta[f].built[i] == 0 }); len(on) > 0 {
+				if err := r.group(i, dir, name, fset, on, meta, fa); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
@@ -243,9 +250,10 @@ func (r *run) analyse(dir string, srcs map[string][]byte, fa *pkgFacts) error {
 
 type fileMeta struct {
 	path, cons string
-	on         []int
+	on         []int // collected as tests, per platform
 	src        []byte
 	exprs      []constraint.Expr
+	built      []int // built, per platform (goOn's)
 }
 
 // pkgScan is one type-checked package: its testing parameters, functions,
@@ -256,7 +264,10 @@ type pkgScan struct {
 	info      *types.Info
 	tvals     map[types.Object]string
 	decls     map[types.Object]*ast.FuncDecl
+	same      map[string][]*ast.FuncDecl // every declaration of a name (race, !race): each counts
+	pi        int                        // the platform read (platforms[pi])
 	asserting map[*ast.FuncDecl]bool
+	mentioned map[ast.Expr]int8 // per alias right-hand side: 1 being read, 2 no, 3 mentions
 	starred   map[ast.Expr]bool // directly behind *
 	pkgVars   map[*ast.ValueSpec]bool
 	aliases   map[types.Object]ast.Expr // an alias's right-hand side
@@ -362,7 +373,14 @@ func (s *pkgScan) ptrTo(e ast.Expr) bool {
 func (s *pkgScan) mentions(n ast.Node) (found bool) {
 	ast.Inspect(n, func(n ast.Node) bool {
 		e, _ := n.(ast.Expr)
-		found = found || slices.Contains(testTypes, s.qual(n)) || e != nil && (s.tval(e) != "" || s.alias(e) != nil && s.mentions(s.alias(e)))
+		if a := s.alias(e); e != nil && a != nil && !found && !slices.Contains(testTypes, s.qual(n)) && s.tval(e) == "" {
+			if found = s.mentioned[a]&1 == 1; s.mentioned[a] == 0 { // once per alias; a cycle (A[P] = B[P], B[P] = A[P]) mentions
+				s.mentioned[a] = 1
+				found = s.mentions(a)
+				s.mentioned[a] = 2 + int8(b2i(found))
+			}
+		}
+		found = found || slices.Contains(testTypes, s.qual(n)) || e != nil && s.tval(e) != ""
 		return !found
 	})
 	return found
@@ -472,28 +490,37 @@ func b2i(b bool) int {
 	return 0
 }
 
+// declKey is a function's name, or a method's receiver and name.
+func declKey(fn *ast.FuncDecl) (k string) {
+	if k = fn.Name.Name; fn.Recv != nil {
+		k = recv(fn) + "." + k
+	}
+	return k
+}
+
 // recv is a method's receiver type name, without * or type parameters.
 func recv(fn *ast.FuncDecl) string {
 	return strings.TrimLeft(strings.SplitN(types.ExprString(fn.Recv.List[0].Type), "[", 2)[0], "*")
 }
 
 // group reads one type-checked package of dir.
-func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, meta map[*ast.File]fileMeta, fa *pkgFacts) error {
+func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.File, meta map[*ast.File]fileMeta, fa *pkgFacts) error {
 	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
 		Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
-	exprs, first := map[string][]constraint.Expr{}, ""
+	exprs, built, first := map[string][]constraint.Expr{}, map[string][]int{}, ""
 	for _, f := range files {
-		exprs[meta[f].path] = meta[f].exprs
+		exprs[meta[f].path], built[meta[f].path] = meta[f].exprs, meta[f].built
 	}
-	twice := func(a, b string) { // a name declared in files a and b: unless no gate platform builds both
+	twice := func(a, b string) { // a name declared in files a and b: unless no gate platform builds both (by tags or by name, x_amd64.go)
 		if slices.ContainsFunc(platforms, func(pl [2]string) bool {
+			i := slices.Index(platforms, pl)
 			n, _ := r.holds(append(slices.Clone(exprs[a]), exprs[b]...), pl)
-			return n != 0
+			return n != 0 && (built[a] == nil || built[a][i] > 0) && (built[b] == nil || built[b][i] > 0)
 		}) {
 			fa.bad[a] = "a name declared twice, in files the gate may build together"
 		}
 	}
-	pkg, _ := (&types.Config{FakeImportC: true, Error: func(err error) {
+	pkg := r.typeCheck(&types.Config{FakeImportC: true, Error: func(err error) {
 		te, _ := err.(types.Error)
 		switch at := fset.Position(te.Pos).Filename; {
 		case strings.Contains(te.Msg, "redeclared"):
@@ -504,7 +531,7 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 			other := te.Msg[strings.LastIndex(te.Msg, " at ")+4:]
 			twice(at, other[:strings.LastIndex(other[:strings.LastIndex(other, ":")], ":")])
 		}
-	}}).Check(dir, fset, files, info)
+	}}, dir, fset, files, info)
 	for _, n := range pkg.Scope().Names() { // the predeclared names the rules rely on
 		if o := pkg.Scope().Lookup(n); slices.Contains([]string{"print", "println", "new", "make", "rune", "byte", "string"}, n) {
 			fa.bad[fset.Position(o.Pos()).Filename] = "a package-level " + n + " shadows Go's predeclared one"
@@ -514,19 +541,23 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 		b, _ := tv.Type.Underlying().(*types.Basic)
 		switch {
 		case tv.Value != nil && tv.Value.Kind() == constant.String:
-			fa.forged += b2i(strings.Contains(constant.StringVal(tv.Value), "\x16"))
+			fa.forged[pi] += b2i(strings.Contains(constant.StringVal(tv.Value), "\x16"))
 		case tv.Value != nil && b != nil && slices.Contains([]types.BasicKind{types.Int32, types.Uint8, types.UntypedRune}, b.Kind()):
-			fa.twentyTwos += b2i(constant.Compare(tv.Value, token.EQL, constant.MakeInt64(22)))
+			fa.twentyTwos[pi] += b2i(constant.Compare(tv.Value, token.EQL, constant.MakeInt64(22)))
 		}
 	}
+	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
-		asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
-	for _, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
+		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, starred: map[ast.Expr]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
+	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
+		if i == len(files) {
+			clear(s.mentioned) // read again, every alias known (and after: the tvals grew)
+		}
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.TypeSpec:
-				if x.Assign.IsValid() {
-					s.aliases[info.Defs[x.Name]] = x.Type
+				if o := info.Defs[x.Name]; x.Assign.IsValid() && o != nil { // a redeclared alias has none: never a nil key, every name's
+					s.aliases[o] = x.Type
 				}
 			case *ast.StarExpr:
 				s.starred[x.X] = true
@@ -543,7 +574,9 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 					}
 				}
 			case *ast.FuncDecl:
-				s.decls[info.Defs[x.Name]] = x
+				if s.decls[info.Defs[x.Name]] = x; !slices.Contains(s.same[declKey(x)], x) {
+					s.same[declKey(x)] = append(s.same[declKey(x)], x)
+				}
 			case *ast.AssignStmt: // a copy of a testing value is one
 				for i, v := range x.Rhs {
 					if id := ident(x.Lhs[min(i, len(x.Lhs)-1)]); id != nil && s.mentions(v) {
@@ -560,14 +593,17 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 			return true
 		})
 	}
+	clear(s.mentioned)
 	for changed, i := true, 0; changed && i < 32; i++ { // the asserting helpers, to a bounded depth
 		if err := r.ctx.Err(); err != nil {
 			return err
 		}
 		changed = false
-		for _, d := range s.decls {
-			if !s.asserting[d] && d.Body != nil && s.count(d.Body).asserts > 0 {
-				s.asserting[d], changed = true, true
+		for _, ds := range s.same { // asserting only when every declaration asserts
+			if !s.asserting[ds[0]] && !slices.ContainsFunc(ds, func(d *ast.FuncDecl) bool { return d.Body == nil || s.count(d.Body).asserts == 0 }) {
+				for _, d := range ds {
+					s.asserting[d], changed = true, true
+				}
 			}
 		}
 	}
@@ -593,7 +629,7 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 				return err
 			}
 			c := s.count(d)
-			fa.forged += c.forged + c.generic*b2i(tfile) // a file with testing values
+			fa.forged[pi] += c.forged + c.generic*b2i(tfile) // a file with testing values
 			if c.reflect > 0 && !slices.Contains(flags, "reflection on a testing value") {
 				flags = append(flags, "reflection on a testing value")
 			}
@@ -605,7 +641,7 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 				where = recv(fn) + "." + fn.Name.Name
 			}
 			for _, q := range c.refs {
-				fa.refs[m.path+"\x00"+q+"\x00"+where]++
+				fa.refs[m.path+"\x00"+q+"\x00"+where+"\x00"+plat]++
 			}
 			hook := test && fname == "TestMain" && slices.ContainsFunc(fn.Type.Params.List, func(f *ast.Field) bool {
 				st, ok := f.Type.(*ast.StarExpr)
@@ -623,22 +659,24 @@ func (r *run) group(dir, name string, fset *token.FileSet, files []*ast.File, me
 			}
 			switch {
 			case hook:
-				fa.warn["TestMain(*testing.M) of "+dir+":"+name] = string(m.src[fset.Position(d.Pos()).Offset:fset.Position(d.End()).Offset])
+				fa.warn["TestMain(*testing.M) of "+dir+":"+name+"\x00"+plat] += string(m.src[fset.Position(d.Pos()).Offset:fset.Position(d.End()).Offset]) // every declaration
 			case test && goTest(fname):
-				for i, pl := range platforms {
-					if m.on[i] > 0 {
-						fa.tests[pl[0]+"/"+pl[1]+" "+dir+":"+name+"."+fname] = &stat{c.asserts + output(f, fn), c.skips, m.on[i], m.cons}
+				if m.on[pi] > 0 {
+					k, st := platforms[pi][0]+"/"+platforms[pi][1]+" "+dir+":"+name+"."+fname, &stat{c.asserts + output(f, fn), c.skips, m.on[pi], m.cons}
+					if old := fa.tests[k]; old != nil { // declared again (race, !race): the weakest
+						st = &stat{min(old.asserts, st.asserts), max(old.skips, st.skips), min(old.cert, st.cert), old.cons + st.cons}
 					}
+					fa.tests[k] = st
 				}
 				continue
 			}
-			fa.ambient += c.skips
+			fa.ambient[pi] += c.skips
 		}
 		if len(flags) > 0 {
-			fa.flags[m.path] = flags
+			fa.flags[m.path+"\x00"+plat] = flags
 		}
 	}
-	if err := r.typed(dir, name, fset, files, meta, fa); err != nil {
+	if err := r.typedOn(platforms[pi], dir, name, fset, files, meta, fa); err != nil {
 		return err
 	} else if err := s.reach(dir, inits, false, fa); err != nil {
 		return err
@@ -664,8 +702,10 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) 
 			id = sel.Sel
 		}
 		if o, _ := s.info.Uses[id].(*types.Func); o != nil && s.decls[o.Origin()] != nil && s.decls[o.Origin()].Body != nil {
-			if d := s.decls[o.Origin()]; !seen[d] {
-				seen[d], starts = true, append(starts, d.Body)
+			for _, d := range s.same[declKey(s.decls[o.Origin()])] { // every declaration of it
+				if !seen[d] && d.Body != nil {
+					seen[d], starts = true, append(starts, d.Body)
+				}
 			}
 			return true
 		}
@@ -681,7 +721,7 @@ func (s *pkgScan) reach(dir string, starts []ast.Node, hook bool, fa *pkgFacts) 
 		n := starts[0]
 		starts = starts[1:]
 		ast.Inspect(n, func(n ast.Node) bool {
-			add := func(k string) { fa.init[k]++ }
+			add := func(k string) { fa.init[k+"\x00"+platforms[s.pi][0]+"/"+platforms[s.pi][1]]++ }
 			switch x := n.(type) {
 			case *ast.FuncLit: // run only when called, ranged over or passed to an own function
 				return run[x]
