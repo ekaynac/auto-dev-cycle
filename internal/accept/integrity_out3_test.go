@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package accept
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+// aliasChain is n nested struct aliases of name (P0 = struct{ v int }, Pi =
+// struct{ a, b P(i-1) }), whose identity with another such chain costs 2^n.
+func aliasChain(name string, n int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "type %s0 = struct{ v int }\n\n", name)
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "type %s%d = struct{ a, b %s%d }\n\n", name, i, name, i-1)
+	}
+	return b.String()
+}
+
+// waitWorkers waits until no check of the layer's runs.
+func waitWorkers(t *testing.T) {
+	for end := time.Now().Add(time.Minute); outWorkers.Load() > 0 && time.Now().Before(end); {
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestDecisionAOut3 (P14b-out-3): S by real types. Each row is silent on
+// main (a03c3af) or, for the bounds, stalls or blocks there in #280's
+// reviews; each runs with the layer on and off (outGuarded).
+func TestDecisionAOut3(t *testing.T) {
+	probe := "\tfs := flag.NewFlagSet(\"x\", flag.ExitOnError)\n\t_ = fs.Parse(nil)\n"
+	base := map[string]string{
+		// r3 #7, values and type arguments.
+		"tool/mv.go":   "package tool\n\nimport \"flag\"\n\nvar safe = flag.NewFlagSet(\"s\", flag.ContinueOnError)\n\nvar fatal = flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse4 = safe.Parse\n",
+		"tool/val.go":  "package tool\n\nimport \"flag\"\n\nvar w = flag.NewFlagSet(\"w\", flag.ContinueOnError)\n\nfunc v() {}\n",
+		"tool/targ.go": "package tool\n\nimport \"flag\"\n\ntype fsAlias = flag.FlagSet\n\ntype pa = flag.FlagSet\n\nfunc g[T any]() {}\n\nfunc h() {}\n\nfunc h2() {}\n",
+		// Opus #280 H1: each platform's files alone are cheap; their union costs 2^28.
+		"slow/a.go":       "package slow\n\n" + aliasChain("A", 28),
+		"slow/b_amd64.go": "package slow\n\n" + aliasChain("B", 28) + "type Q = B28\n",
+		// Opus #280 H2: only/'s amd64 file costs 2^30; the base guard loads only/ on arm64 alone.
+		"only/a.go":       "package only\n\nvar X = 1\n\n" + aliasChain("A", 30) + aliasChain("B", 30),
+		"only/s_amd64.go": "package only\n\nvar _ = A30(B30{})\n",
+		// Opus #280 M1, M2, M4 and L1.
+		"arm/x_arm64.go":    "package arm\n\nimport \"flag\"\n\nvar w = flag.NewFlagSet(\"w\", flag.ContinueOnError)\n\nfunc v() {}\n",
+		"xt/x.go":           "package xt\n\nimport \"flag\"\n\nvar fs = flag.NewFlagSet(\"x\", flag.ContinueOnError)\n",
+		"xt/export_test.go": "package xt\n\nvar FS = fs\n",
+		"xt/a_test.go":      "package xt_test\n\nimport (\n\t\"testing\"\n\n\t\"example.com/m/xt\"\n)\n\nfunc helper() {}\n\nfunc TestX(t *testing.T) { helper(); _ = xt.FS }\n",
+		"iv/iv.go":          "package iv\n\nimport \"flag\"\n\nvar safe2 = flag.NewFlagSet(\"s\", flag.ContinueOnError)\n\nvar fatal2 = flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse5 func([]string) error\n\nfunc init() { parse5 = safe2.Parse }\n",
+		"iv2/iv.go":         "package iv2\n\nimport \"flag\"\n\nvar safe3, fatal3 = flag.NewFlagSet(\"s\", flag.ContinueOnError), flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse6 func([]string) error\n",
+		"osr/f.go":          "package osr\n\nimport \"os\"\n\nvar F *os.File\n",
+		"osr/r.go":          "package osr\n\nfunc rd() int {\n\tfi, _ := F.Stat()\n\treturn int(fi.Size()) + 1\n}\n",
+		// Astra #280 H2: one coherent graph (util's flag is the layer's flag).
+		"util/u.go":  "package util\n\nimport \"flag\"\n\nvar FS *flag.FlagSet\n\nfunc Choose[T any](a, b T) T { return a }\n",
+		"p/state.go": "package p\n\nimport \"flag\"\n\nvar FS *flag.FlagSet\n",
+		"p/use.go":   "package p\n\nimport \"example.com/m/util\"\n\nfunc f() { _ = util.Choose(FS, util.FS).Parse(nil) }\n",
+		// Astra #280 H3: util2.FS is flag.FlagSet on arm64 alone.
+		"util2/type_amd64.go": "package util2\n\ntype FS struct{}\n\nfunc (*FS) Parse([]string) error { return nil }\n",
+		"util2/type_arm64.go": "package util2\n\nimport \"flag\"\n\ntype FS = flag.FlagSet\n",
+		"c3/c.go":             "package c3\n\nimport \"example.com/m/util2\"\n\nfunc f(fs *util2.FS) { _ = fs.Parse(nil) }\n",
+		// One graph across directories: a2's external test imports q2, which
+		// imports a2; then zr imports both (the replay's vocab and types).
+		"a2/x.go":      "package a2\n\ntype T int\n",
+		"q2/q.go":      "package q2\n\nimport \"example.com/m/a2\"\n\nvar V a2.T\n",
+		"a2/a_test.go": "package a2_test\n\nimport (\n\t\"flag\"\n\t\"testing\"\n\n\t\"example.com/m/a2\"\n\t\"example.com/m/q2\"\n)\n\nvar fs = flag.NewFlagSet(\"x\", flag.ContinueOnError)\n\nvar _ a2.T = q2.V\n\nfunc helper() {}\n\nfunc TestX(t *testing.T) { helper() }\n",
+		"zr/r.go":      "package zr\n\nimport (\n\t\"flag\"\n\n\t\"example.com/m/a2\"\n\t\"example.com/m/q2\"\n)\n\nvar _ a2.T = q2.V\n\nvar fs = flag.NewFlagSet(\"r\", flag.ContinueOnError)\n\nfunc g() {}\n",
+	}
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, base)
+		plain(t, src, "add", "--all")
+	})
+	stopped := func(v Verdict) bool { return finds(v.Warnings, "stopped at its work bound") }
+	edit := func(file, from, to string) map[string]string {
+		return map[string]string{file: strings.Replace(base[file], from, to, 1)}
+	}
+	for name, c := range map[string]struct {
+		files       map[string]string
+		warn, never string
+	}{
+		"r3 #7 a method-value initializer":       {edit("tool/mv.go", "= safe.Parse", "= fatal.Parse"), "tool/mv.go changed bodies that use flag (1: var parse4)", ""},
+		"an S method through a value":            {edit("tool/val.go", "func v() {}", "func v() { _ = w.Parse(nil) }"), "tool/val.go references into flag added, removed, moved or changed (1: v)", ""},
+		"an S type argument":                     {edit("tool/targ.go", "func h() {}", "func h() { g[fsAlias]() }"), "tool/targ.go references into flag added, removed, moved or changed (1: h)", ""},
+		"L3 a pointer type argument":             {edit("tool/targ.go", "func h2() {}", "func h2() { g[*pa]() }"), "tool/targ.go references into flag added, removed, moved or changed (1: h2)", ""},
+		"M1 an arm64-only file":                  {edit("arm/x_arm64.go", "func v() {}", "func v() { _ = w.Parse(nil) }"), "arm/x_arm64.go references into flag added, removed, moved or changed (1: v)", ""},
+		"M2 export_test.go's value":              {edit("xt/a_test.go", "func helper() {}", "func helper() { _ = xt.FS.Parse(nil) }"), "xt/a_test.go references into flag added, removed, moved or changed (1: helper)", ""},
+		"M4 a method value rebound in init":      {edit("iv/iv.go", "= safe2.Parse", "= fatal2.Parse"), "iv/iv.go changed bodies that use flag (1: init body)", ""},
+		"an init added rebinding a method value": {map[string]string{"iv2/iv.go": base["iv2/iv.go"] + "\nfunc init() { parse6 = fatal3.Parse }\n"}, "iv2/iv.go changed bodies that use flag (1: init body)", ""},
+		"L1 an os read by types":                 {edit("osr/r.go", "+ 1", "+ 2"), "", "osr/r.go changed bodies that use os"},
+		"Astra H2 one coherent graph":            {edit("p/use.go", "Parse(nil)", "Parse([]string{\"-h\"})"), "p/use.go changed bodies that use flag (1: func f)", "incomplete"},
+		"one graph across directories": {map[string]string{"a2/a_test.go": strings.Replace(base["a2/a_test.go"], "func helper() {}", "func helper() { _ = fs.Parse(nil) }", 1),
+			"zr/r.go": strings.Replace(base["zr/r.go"], "func g() {}", "func g() { _ = fs.Parse(nil) }", 1)}, "zr/r.go references into flag added, removed, moved or changed (1: g)", "could not finish"},
+		"Astra H3 each platform its own": {edit("c3/c.go", "Parse(nil)", "Parse([]string{\"-h\"})"), "c3/c.go changed bodies that use flag (1: func f)", "incomplete"},
+	} {
+		v := outGuarded(t, f, c.files)
+		if c.warn != "" && !finds(v.Warnings, c.warn) || c.never != "" && finds(v.Warnings, c.never) || stopped(v) {
+			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
+		}
+	}
+	// Opus #280 H1: the union is never checked (it would be dropped: the stop warning).
+	maxOutCheck = 2 * time.Second
+	if v := outGuarded(t, f, map[string]string{"slow/g_arm64.go": "package slow\n\nimport _ \"flag\"\n\ntype Q = A28\n\nvar _ = A28(Q{})\n"}); !v.Accepted() || stopped(v) {
+		t.Errorf("H1 the union: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	maxOutCheck = 0
+	waitWorkers(t)
+	// Opus #280 H2: run 1, then an ordinary run 2: both as the base guard's, nothing left running.
+	if v := outGuarded(t, f, map[string]string{"zzz/z_arm64.go": "package zzz\n\nimport \"example.com/m/only\"\n\nvar _ = only.X\n"}); !v.Accepted() || stopped(v) || abandoned.Load() != 0 || outWorkers.Load() != 0 {
+		t.Errorf("H2 run 1: blocks %q, warnings %q, %d abandoned, %d workers", whats(v.Blocks), whats(v.Warnings), abandoned.Load(), outWorkers.Load())
+	}
+	if v := outGuarded(t, f, map[string]string{"tool2/x.go": "package tool2\n\nfunc F() {}\n"}); !v.Accepted() || len(v.Blocks) > 0 {
+		t.Errorf("H2 run 2: blocks %q", whats(v.Blocks))
+	}
+	// libc by types is a warning, never a block (the blocking decisions keep P14b-out-1's identity).
+	tl := "package pkg\n\nimport \"modernc.org/libc\"\n\ntype tlsAlias = libc.TLS\n\nfunc g[T any]() {}\n\nfunc h() {}\n"
+	lf, _ := libcFixture(t, map[string]string{"pkg/tl.go": tl})
+	if v := outGuarded(t, lf, map[string]string{"pkg/tl.go": strings.Replace(tl, "func h() {}", "func h() { g[tlsAlias]() }", 1)}); !v.Accepted() ||
+		!finds(v.Warnings, "pkg/tl.go references into modernc.org/libc added, removed, moved or changed (1: h)") {
+		t.Errorf("a libc type argument: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	// L3, r3 #6 by types: a 64 KiB name with 5,000 references through a value, under a node bound.
+	oldNodes := maxOutNodes
+	maxOutNodes = 8 << 20
+	v := outGuarded(t, f, map[string]string{"tool/huge.go": "package tool\n\nfunc " + strings.Repeat("n", 64<<10) + "() {\n" + strings.Repeat("\t_ = w.Parse\n", 5000) + "}\n"})
+	maxOutNodes = oldNodes
+	if !finds(v.Warnings, "tool/huge.go references into flag added, removed, moved or changed (1: "+strings.Repeat("n", 64)) || stopped(v) {
+		t.Errorf("r3 #6 by types: %q", whats(v.Warnings))
+	}
+	_ = probe
+}
+
+// TestOutTypedBounded: Astra #280 M5 and the bounds. A check needs a free
+// worker slot; a dropped worker keeps its slot until it ends; past the
+// deadline, the stop warning; past the export bound, an incomplete warning;
+// the base guard's accounting (abandoned) is never touched.
+func TestOutTypedBounded(t *testing.T) {
+	f, _ := libcFixture(t)
+	change := map[string]string{"tool/x.go": "package tool\n\nimport \"flag\"\n\nfunc v() {\n\tw := flag.NewFlagSet(\"w\", flag.ContinueOnError)\n\t_ = w.Parse(nil)\n}\n"}
+	outWorkers.Add(1) // another run's worker holds the slot past the deadline
+	maxOutCheck = 300 * time.Millisecond
+	v := outGuarded(t, f, change)
+	maxOutCheck = 0
+	outWorkers.Add(-1)
+	if !v.Accepted() || !finds(v.Warnings, "stopped at its work bound") {
+		t.Errorf("no free slot: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	maxOutCheck = time.Nanosecond
+	v = f.guarded(t, map[string]string{"tool/c.go": "package tool\n\nimport _ \"flag\"\n\n" + aliasChain("A", 25) + aliasChain("B", 25) + "var _ = A25(B25{})\n"}) // read at once: the dropped worker still runs
+	held := outWorkers.Load()
+	maxOutCheck = 0
+	if !v.Accepted() || !finds(v.Warnings, "stopped at its work bound") || abandoned.Load() != 0 || held != 1 {
+		t.Errorf("past the deadline: blocks %q, warnings %q, %d abandoned, %d workers", whats(v.Blocks), whats(v.Warnings), abandoned.Load(), held)
+	}
+	waitWorkers(t)
+	old := maxOutExport
+	maxOutExport = 1
+	v = outGuarded(t, f, change)
+	maxOutExport = old
+	if !v.Accepted() || !finds(v.Warnings, "tool decision A's check by types could not finish (linux/amd64: flag: over the layer's export data bound)") {
+		t.Errorf("the export bound: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+}

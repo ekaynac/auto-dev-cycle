@@ -26,6 +26,7 @@ type unit struct {
 	n           ast.Node
 	where, bind string
 	lits        bool // only its function literals: they run later
+	typedOnly   bool // P14b-out-3: its S uses by types alone (its text is the base guard's); no reference counted
 }
 
 // units are d's parts: a function, bound by its bounded name; each var spec,
@@ -39,12 +40,12 @@ func (r *run) units(d ast.Decl, p, testing string) []unit {
 	case *ast.FuncDecl:
 		switch {
 		case d.Recv == nil && (d.Name.Name == "init" || strings.HasSuffix(p, "_test.go") && d.Name.Name == "TestMain" && hook(d, testing)):
-			return []unit{{d, "init literal", "init literal", true}}
+			return []unit{{d, "init literal", "init literal", true, false}, {d, "", d.Name.Name + " body", false, true}} // the body: P14b-out-3 (Opus #280 M4)
 		case d.Recv != nil && r.charge(len(d.Name.Name)+len(recv(d)), 0):
 			w := bound(recv(d) + "." + d.Name.Name)
-			return []unit{{d, w, "func " + w, false}}
+			return []unit{{d, w, "func " + w, false, false}}
 		case d.Recv == nil && r.charge(len(d.Name.Name), 0):
-			return []unit{{d, bound(d.Name.Name), "func " + bound(d.Name.Name), false}}
+			return []unit{{d, bound(d.Name.Name), "func " + bound(d.Name.Name), false, false}}
 		}
 	case *ast.GenDecl:
 		if d.Tok == token.VAR {
@@ -56,12 +57,12 @@ func (r *run) units(d ast.Decl, p, testing string) []unit {
 						ns = append(ns, id.Name)
 					}
 				}
-				us = append(us, unit{sp, "package level", "var " + bound(strings.Join(ns, ", ")), false})
+				us = append(us, unit{sp, "package level", "var " + bound(strings.Join(ns, ", ")), false, false})
 			}
 			return us
 		}
 	}
-	return []unit{{d, "package level", "", false}}
+	return []unit{{d, "package level", "", false, false}}
 }
 
 // print combines u's spans (its function literals only, with lits) into its

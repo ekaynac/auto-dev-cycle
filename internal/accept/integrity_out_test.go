@@ -423,7 +423,7 @@ func TestDecisionAOutRound9(t *testing.T) {
 // too) charges a few units a byte.
 func TestOutNodesPerByte(t *testing.T) {
 	src := "package p\n\nfunc f() {\n" + strings.Repeat("\tx\n\t^^^^^^^^x\n\ta.b.c.d.e.f\n\tf()()()()\n\t{{{{}}}}\n\tx[0][0][0]\n\t-(-(-x))\n\tx, y := 0, 0\n\t_ = []int{0,0,0,0}\n", 4000) + "}\n"
-	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]int{}, named: map[string]map[string]bool{}},
 		read: func(context.Context, string, int64) ([]byte, bool, error) { return []byte(src), true, nil }}
 	tr := &tree{files: map[string]string{"p/d.go": "d"}, dirs: map[string][]string{"p": {"p/d.go"}}}
 	if r.outRead("p", tr); r.out.nodes > 4*len(src) || r.out.over {
@@ -487,7 +487,7 @@ func TestOutShadowOracle(t *testing.T) {
 				return true
 			})
 		}
-		r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
+		r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]int{}, named: map[string]map[string]bool{}},
 			read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
 				return []byte(files[blob[0]-'0']), true, nil
 			}}
@@ -517,7 +517,7 @@ func TestOutShadowOracle(t *testing.T) {
 // probe B1), and a done context stops it with no block (M2, probe B2).
 func TestOutReadAndCancel(t *testing.T) {
 	var read []string
-	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]int{}, named: map[string]map[string]bool{}},
 		read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
 			read = append(read, blob)
 			return []byte("package tool\n"), true, nil
