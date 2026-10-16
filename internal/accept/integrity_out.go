@@ -37,9 +37,11 @@ type additive struct {
 	nodes, tags      int // its work: AST nodes and items handled; tag visits
 	over             bool
 	files            map[string]*outFile        // by blob, name, directory and version
-	built            map[string]bool            // by blob and name
+	built            map[string]int             // by blob and name: its platforms (outBuilt)
 	named            map[string]map[string]bool // by module root and version
 	fset             *token.FileSet             // every file it parses (one type check reads several)
+	export           int64                      // export data bytes its importers may still read
+	importers        map[*typer]*outImporter
 }
 
 // outFile is what one Go file holds for the layer.
@@ -53,6 +55,7 @@ type outFile struct {
 	prints  map[string]string          // by binding: its spans' fingerprint, combined in source order
 	uses    map[string]map[string]bool // by binding: the S packages it uses
 	typed   bool                       // its package's type check is done
+	on      int                        // its gate platforms (outBuilt)
 }
 
 // outHook runs the layer (a test turns it off to compare the base guard's
@@ -170,11 +173,11 @@ func (r *run) named(t *tree, root string) map[string]bool {
 	return m
 }
 
-// outBuilt: a gate platform may build p, as the base guard's goOn and holds
+// outBuilt: the gate platforms that may build p (bit i: platforms[i]), as the base guard's goOn and holds
 // read it: its name by go/build; its constraint lines deduplicated, true for
 // some assignment of the tags the guard does not model (up to 12; more:
 // built); ignore false.
-func (r *run) outBuilt(p string, src []byte) bool {
+func (r *run) outBuilt(p string, src []byte) (on int) {
 	var exprs []constraint.Expr
 	seen := map[string]bool{}
 	for _, l := range header(src) {
@@ -182,7 +185,7 @@ func (r *run) outBuilt(p string, src []byte) bool {
 			seen[l], exprs = true, append(exprs, x)
 		}
 	}
-	return slices.ContainsFunc(platforms, func(pl [2]string) bool {
+	builds := func(pl [2]string) bool {
 		ctx := build.Context{GOOS: pl[0], GOARCH: pl[1], Compiler: "gc", ReleaseTags: release, // its name: go/build's rules
 			OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("package p\n")), nil }}
 		if ok, err := ctx.MatchFile(path.Dir(p), path.Base(p)); !ok && err == nil {
@@ -223,7 +226,13 @@ func (r *run) outBuilt(p string, src []byte) bool {
 			}
 		}
 		return false
-	})
+	}
+	for i, pl := range platforms {
+		if builds(pl) {
+			on |= 1 << i
+		}
+	}
+	return on
 }
 
 // outFileOf reads and parses p (blob) of dir in t once, as the base guard
@@ -240,7 +249,7 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 		if _, seen := r.out.built[bk]; !seen && !slices.ContainsFunc(r.blocks, func(x Block) bool { return x.Path == p }) {
 			r.outBlock(p, "unverifiable: decision A's outside-initialization check could not "+what+" it")
 		}
-		r.out.built[bk] = false
+		r.out.built[bk] = 0
 		return nil
 	}
 	b, why, err := r.file(blob)
@@ -252,7 +261,7 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 		built = r.outBuilt(p, b)
 		r.out.built[bk] = built
 	}
-	if !built {
+	if built == 0 {
 		return nil
 	}
 	if r.out.fset == nil {
@@ -263,7 +272,7 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 		delete(r.out.built, bk)
 		return fail("parse")
 	}
-	of := &outFile{refs: map[string]int{}, f: f, prints: map[string]string{}, uses: map[string]map[string]bool{}}
+	of := &outFile{refs: map[string]int{}, f: f, prints: map[string]string{}, uses: map[string]map[string]bool{}, on: built}
 	names, testing := map[string]string{}, ""
 	for _, is := range f.Imports {
 		ip, _ := strconv.Unquote(is.Path.Value)
@@ -292,7 +301,7 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 	for _, d := range f.Decls {
 		for _, u := range r.units(d, p, testing) {
 			of.units = append(of.units, u)
-			r.refsIn(u.n, names, u.lits, func(pkg, name string) {
+			r.refsIn(u.n, map[bool]map[string]string{false: names}[u.typedOnly], u.lits, func(pkg, name string) {
 				if r.charge(len(name), 0) && outS(pkg) { // a name's original bytes (Astra #276 r3 #6)
 					of.refs[pkg+"\x00"+u.where+"\x00"+bound(name)]++
 				}
@@ -487,7 +496,8 @@ func (r *run) outRun() (err error) {
 			r.outBlock("", fmt.Sprintf("unverifiable: decision A's outside-initialization check failed (%v)", p))
 		}
 	}()
-	r.out.files, r.out.built, r.out.named = map[string]*outFile{}, map[string]bool{}, map[string]map[string]bool{}
+	r.out.files, r.out.built, r.out.named = map[string]*outFile{}, map[string]int{}, map[string]map[string]bool{}
+	r.out.export, r.out.importers = maxOutExport, map[*typer]*outImporter{}
 	r.outPkgs()
 	r.outModule()
 	return r.ctx.Err()
