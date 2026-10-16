@@ -85,6 +85,17 @@ func (r *run) python(changes []Change) error {
 		return err
 	}
 	unread = unread || pb.sysUnread
+	var dsts []string // the changed modules, where the candidate's closure starts
+	for _, c := range changes {
+		if c.Status != "D" && path.Ext(c.Dst) == ".py" {
+			dsts = append(dsts, c.Dst)
+		}
+	}
+	if p, err := pb.candClosure(dsts); err != nil {
+		return err
+	} else if p != "" && !unread && !custom {
+		add(&r.blocks, p, "a module the tests now import runs code at import, writes a module or uses sys (P14c-2a-widen)")
+	}
 	for _, q := range slices.Sorted(maps.Keys(r.files)) { // an __init__.py added, removed or renamed (Opus #270 M3)
 		if pyTested(q) && r.cand[q] != "" && pyBasedir(r.files, q) != pyBasedir(r.cand, q) {
 			add(&r.blocks, q, "a test file's basedir moves (an __init__.py added, removed or renamed)")
@@ -123,6 +134,12 @@ func (r *run) python(changes []Change) error {
 				return err
 			} else if d != "" {
 				add(&r.blocks, p, "a star source of "+d+" changed (its exports may move the package's submodules)")
+				break
+			}
+		}
+		for _, t := range pb.linkTargets { // a change at or under a base symlink's target, any extension (Opus #281 H4)
+			if t == "" || slices.ContainsFunc([]string{c.Src, c.Dst}, func(p string) bool { return p == t || strings.HasPrefix(p, t+"/") }) {
+				add(&r.blocks, c.Dst, "a change at or under a base symlink's target (or one that leaves the checkout)")
 				break
 			}
 		}

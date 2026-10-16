@@ -92,7 +92,7 @@ type run struct {
 	blobs              map[string][]byte   // blobs read, once
 	cgoBlobs           map[string][]byte   // read by the cgo pass, not yet charged to the budget
 	files, cand        map[string]string   // the base's and the candidate's paths, to blobs
-	links              map[string]bool     // the base's symlinks and gitlinks (Opus #279 M1)
+	links              map[string]string   // the base's symlinks and gitlinks, to their mode (Opus #279 M1)
 	baseDirs, candDirs map[string][]string // their files by directory
 	touched            map[string]bool     // directories of changed Go files
 	trees              [2]*tree            // the base and the candidate
@@ -223,10 +223,12 @@ func (r *run) list() error {
 	} else if err != nil {
 		return err
 	}
-	r.files, r.links = map[string]string{}, map[string]bool{}
+	r.files, r.links = map[string]string{}, map[string]string{}
 	for _, e := range strings.Split(string(out), "\x00") {
 		if meta, p, ok := strings.Cut(e, "\t"); ok && len(strings.Fields(meta)) == 3 {
-			r.files[p], r.links[p] = strings.Fields(meta)[1], slices.Contains([]string{"120000", "160000"}, strings.Fields(meta)[0])
+			if r.files[p] = strings.Fields(meta)[1]; slices.Contains([]string{"120000", "160000"}, strings.Fields(meta)[0]) {
+				r.links[p] = strings.Fields(meta)[0]
+			}
 		}
 	}
 	return nil

@@ -260,10 +260,19 @@ func (pb *pyBase) starSourceOf(p string) (string, error) {
 // setattr'd, or its import path reached) makes that module unread
 // (pb.written). Base symlinks and gitlinks name opaque modules.
 func (pb *pyBase) closure() error {
-	pb.written, pb.opaque = map[string]string{}, map[string]bool{}
-	for p, l := range pb.r.links {
+	pb.written, pb.opaque, pb.bad = map[string]string{}, map[string]bool{}, map[string]bool{}
+	for p, mode := range pb.r.links {
 		for _, n := range pyModNames(p, pb.shadowEntries, false) {
-			pb.opaque[n] = pb.opaque[n] || l
+			pb.opaque[n] = true
+		}
+		if mode != "120000" {
+			continue // a gitlink has no target in the tree
+		} else if b, why, err := pb.r.file(pb.r.files[p]); err != nil {
+			return err
+		} else if t := path.Join(path.Dir(p), string(b)); why != "" || path.IsAbs(string(b)) || t == ".." || strings.HasPrefix(t, "../") {
+			pb.linkTargets = append(pb.linkTargets, "") // out of the root: every change (Opus #281 H4)
+		} else {
+			pb.linkTargets = append(pb.linkTargets, t)
 		}
 	}
 	seen, names, queue := map[*pyBaseFile]bool{}, map[string]bool{}, slices.Clone(pb.tests)
@@ -276,15 +285,30 @@ func (pb *pyBase) closure() error {
 			continue
 		}
 		seen[f], pb.sysUnread = true, pb.sysUnread || f.sysUnread
+		if f.runs {
+			pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+f.path+" imports or runs code dynamically")
+		}
 		for _, w := range f.writes {
 			if n := pb.writtenModule(f, w); n != "" {
 				pb.written[n] = f.path
 			}
 		}
+		for _, m := range f.mods { // not inert: it may write any base module it imports, and their packages (Opus #281 H1, H2)
+			for parts, k := strings.Split(m, "."), 1; k <= len(parts) && pb.writesAll(f); k++ {
+				if n := strings.Join(parts[:k], "."); cmp.Or(pb.mods[n], pb.shadowMods[n]) != "" {
+					pb.written[n] = f.path
+				}
+			}
+		}
+		if pb.risky(f) {
+			pb.bad[f.path] = true
+		}
 		for _, m := range f.mods { // every package on the way runs too
 			for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
 				if n := strings.Join(parts[:k], "."); names[n] {
 					continue // each name once
+				} else if pb.opaque[n] {
+					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+n+" is a symlink or a gitlink in the base") // Opus #281 H4
 				} else if names[n] = true; cmp.Or(pb.mods[n], pb.shadowMods[n]) != "" {
 					q := cmp.Or(pb.mods[n], pb.shadowMods[n])
 					g, err := pb.file(q)
@@ -297,6 +321,63 @@ func (pb *pyBase) closure() error {
 		}
 	}
 	return nil
+}
+
+// writesAll: f may write any module it imports. A write the recognizer
+// cannot read or a write word, in any file; a statement run at import
+// outside pyAllowed, in an application module (a judged file's import-time
+// code is P14c-2a-allow's).
+func (pb *pyBase) writesAll(f *pyBaseFile) bool {
+	return f.active || f.impure && !pyTested(f.path) && !pb.r.pyTestDir(f.path)
+}
+
+// risky: for the candidate's closure, f names a write onto a base module,
+// a write it cannot read, a dynamic import or a sys use. A statement run at
+// import outside pyAllowed alone stays main's warning there (Opus #266 M1).
+func (pb *pyBase) risky(f *pyBaseFile) bool {
+	return f.active || f.runs || f.sysUnread || slices.ContainsFunc(f.writes, func(w string) bool { return pb.writtenModule(f, w) != "" })
+}
+
+// candClosure is the first module the candidate's closure (from its judged
+// files and the changed files) reaches that is not inert, writes, imports
+// dynamically or uses sys, and that the base closure did not reach as one
+// (Opus #281 M1).
+func (pb *pyBase) candClosure(changed []string) (string, error) {
+	mods := map[string]string{}
+	for _, p := range slices.Sorted(maps.Keys(pb.r.cand)) {
+		for _, n := range pyModNames(p, pb.shadowEntries, false) {
+			if path.Ext(p) == ".py" && mods[n] == "" {
+				mods[n] = p
+			}
+		}
+	}
+	queue := slices.Clone(changed)
+	for p := range pb.r.cand {
+		if path.Ext(p) == ".py" && (pyTested(p) || pb.r.pyTestDir(p)) {
+			queue = append(queue, p)
+		}
+	}
+	slices.Sort(queue)
+	for seen := map[string]bool{}; len(queue) > 0; queue = queue[1:] {
+		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
+		} else if p := queue[0]; seen[p] || pb.r.cand[p] == "" {
+			continue
+		} else if f, err := pb.candFile(p); err != nil {
+			return "", err
+		} else if seen[p] = true; pb.risky(f) && !pb.bad[p] {
+			return p, nil
+		} else {
+			for _, m := range f.mods {
+				for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
+					if q := mods[strings.Join(parts[:k], ".")]; q != "" {
+						queue = append(queue, q)
+					}
+				}
+			}
+		}
+	}
+	return "", nil
 }
 
 // writtenModule: the base module that f's write w lands on, or "": w's head
@@ -350,8 +431,6 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 	for k := 1; k <= min(top, len(parts)); k++ { // every ancestor, a namespace portion's too (Astra #275 H1)
 		if name := strings.Join(parts[:k], "."); pb.mods[name] == "" && pb.shadowMods[name] != "" {
 			return 0, "the module " + name + " is under a root the guard reads for shadows only", nil // main reads no added root
-		} else if pb.opaque[name] {
-			return 0, "the module " + name + " is a symlink or a gitlink in the base", nil // Opus #279 M1
 		} else if w := pb.written[name]; w != "" {
 			return 0, "the module " + name + " is written at run time by " + w, nil // P14c-2a-widen
 		} else if pb.alts[name] > 1 { // at any depth (Opus #275 H1); a module and a package (Astra #272 r2 H1)

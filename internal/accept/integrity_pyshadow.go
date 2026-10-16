@@ -36,6 +36,8 @@ type pyBase struct {
 	cand         *pyBase                // the candidate's files, for its package __init__.py stars
 	dirs         map[string][]string    // a directory's direct entries, built once (Astra #279 M1)
 	written      map[string]string      // a base module an imported module writes at run time, to the writer (P14c-2a-widen)
+	bad          map[string]bool        // a base closure module that is not inert, writes, imports dynamically or uses sys
+	linkTargets  []string               // a base symlink's target in the root; "" when out of it (Opus #281 H4)
 	opaque       map[string]bool        // a module name under a base symlink or gitlink (Opus #279 M1)
 
 	// entries are main's (the root, pythonpath, the basedirs) and resolve; extra are the roots an install
@@ -65,6 +67,9 @@ type pyBaseFile struct {
 	badStar bool     // any other import followed by * anywhere in its tokens
 	starWhy *string  // starCheck's verdict, cached (Astra #279 M1)
 	writes  []string // the dotted chains it assigns, deletes or setattrs, or whose import path it reaches, rooted at a name it imports (P14c-2a-widen)
+	active  bool     // a write the recognizer cannot read, or a write word: it may write any module it imports (Opus #281 H1, H2)
+	impure  bool     // a statement run at import outside pyAllowed: an application module that may write any module it imports (P14c-2a-allow judges a test file's)
+	runs    bool     // a dynamic import or code from a string: import_module, __import__, importlib, runpy, exec, eval, compile (Opus #281 H3)
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -209,7 +214,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	if err = cmp.Or(err, err2, pb.r.ctx.Err()); err != nil {
 		return nil, err
 	}
-	f.unread = why+why2 != ""
+	f.unread = why+why2 != "" || pb.tree == nil && pb.r.links[q] != "" // a base symlink is read as its link text (Opus #281 H4)
 	pure, aliases := pyPure(pb.r.ctx, lines)
 	rel, in := pyRel(path.Dir(q), pyBasedir(tree, q))
 	pkg := strings.Split(rel, "/") // q's package (a relative import's base)
@@ -220,22 +225,42 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	binders := map[string][]int{} // a name, to the units binding it
 	owner, indent, deco, bodies := -1, 0, []ptok(nil), []int(nil)
 	future, inert, starSeen := false, true, map[string]bool{} // pyInert, every module-level statement
+	conftest, defIn := path.Base(q) == "conftest.py", -1      // a def's body does not run at import
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
 		f.sysUnread = f.sysUnread || !pySysUse(l.toks)
-		for _, st := range pySplit(line, ";") { // a write onto another module, anywhere in the file (P14c-2a-widen)
+		if defIn >= 0 && l.indent <= defIn {
+			defIn = -1
+		}
+		for i, k := range line { // the words of a write by call or of code run from a string, anywhere (Opus #281 H2, H3)
+			bare := i == 0 || line[i-1].text != "."
+			f.active = f.active || slices.Contains(pyWriteWords, k.text) || slices.Contains(pyImportPath, pyStr(k)) // getattr(M, '__path__')
+			f.runs = f.runs || slices.Contains(pyRunWords, k.text) && !pyExactImport(line, i) || bare && slices.Contains([]string{"exec", "eval", "compile"}, k.text)
+		}
+		for _, st := range pySplit(l.toks, ";") { // a statement run at import: pyAllowed only (Opus #281 H1)
+			if len(st) == 0 || defIn >= 0 || len(st) == 5 && st[0].text == "from" && st[1].text == "." && st[4].text == "*" {
+				continue // an exact relative star is P14c-2a-star's
+			} else if pyMain(st) {
+				defIn = l.indent // the exact __main__ guard's body does not run at import
+				continue
+			} else if names, _ := pyBinds(st); pyAllowed(st, conftest) != "" || !pyConst(l.inner) || slices.ContainsFunc(names, func(n string) bool {
+				return strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__"
+			}) {
+				f.impure = true
+			}
+			if d := st[b2i(st[0].text == "async"):]; d[0].text == "def" {
+				defIn = l.indent
+			}
+		}
+		for _, st := range pySplit(line, ";") { // a write onto another module, anywhere in the file (P14c-2a-widen); every head name counts, so a compound header's suite too
 			parts, targets := pyAssign(st), [][]ptok(nil)
 			if targets = parts[:len(parts)-1]; len(st) > 1 && st[0].text == "del" {
 				targets = [][]ptok{st[1:]}
 			}
-			for i, k := range st {
-				if i+2 < len(st) && k.text == "setattr" && st[i+1].text == "(" {
-					targets = append(targets, st[i+2:])
-				}
-			}
 			for i := range st { // a.b.__path__.insert(…), a.__spec__…: the package's import path, moved in place
 				if i+2 < len(st) && st[i+1].text == "." && slices.Contains(pyImportPath, st[i+2].text) {
+					f.active = f.active || st[i].kind != 'n' // (feature).__path__, f().__path__: a head the recognizer cannot read
 					j := i
 					for ; j >= 2 && st[j-1].text == "." && st[j-2].kind == 'n'; j -= 2 {
 					}
@@ -243,8 +268,16 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				}
 			}
 			for _, tg := range targets {
-				if i := slices.IndexFunc(tg, func(k ptok) bool { return k.kind == 'n' }); i >= 0 && i+1 < len(tg) && slices.Contains([]string{".", "[", ","}, tg[i+1].text) {
-					chain := tg[i].text
+				if len(tg) > 0 && (tg[0].text == "(" || tg[0].text == "[" || slices.ContainsFunc(tg, func(k ptok) bool { return k.text == "(" && tg[0].text != "setattr" })) {
+					f.active = true // a head the recognizer cannot read: (feature).x, f().x, [a, M.x]
+					continue
+				}
+				depth := 0
+				for i, k := range tg { // every name heading a chain, outside brackets
+					if depth += strings.Count("([{", k.text) - strings.Count(")]}", k.text); depth > 0 && k.text != "(" || k.kind != 'n' || i > 0 && tg[i-1].text == "." {
+						continue
+					}
+					chain := k.text
 					for j := i; j+2 < len(tg) && tg[j+1].text == "." && tg[j+2].kind == 'n'; j += 2 {
 						chain += "." + tg[j+2].text
 					}
@@ -379,6 +412,25 @@ func pyStatic(st []ptok) bool {
 		return !slices.ContainsFunc(parts[1], func(k ptok) bool { return k.text == "(" }) // no call in the value: X = globals().update(…) (the review of d859e60)
 	}
 	return slices.Contains([]string{"ifTYPE_CHECKING:", "iftyping.TYPE_CHECKING:"}, pyJoin(st))
+}
+
+var (
+	pyWriteWords = strings.Fields("__dict__ __setattr__ __setitem__ __delattr__ setattr delattr setitem vars globals") // a write by call (Opus #281 H2)
+	pyRunWords   = strings.Fields("import_module __import__ importlib runpy run_module run_path")                      // an import the closure cannot follow (Opus #281 H3)
+)
+
+// pyExactImport: line[i], a dynamic-import word, is a form the closure
+// follows exactly: `import importlib`, importlib.import_module, and
+// import_module('mod') or __import__('mod') with one absolute string.
+func pyExactImport(line []ptok, i int) bool {
+	at := func(j int, s string) bool { return j < len(line) && line[j].text == s }
+	switch line[i].text {
+	case "importlib":
+		return line[0].text == "import" && len(line) == 2 || at(i+1, ".") && at(i+2, "import_module")
+	case "import_module", "__import__":
+		return at(i+1, "(") && i+3 < len(line) && pyStr(line[i+2]) != "" && !strings.HasPrefix(pyStr(line[i+2]), ".") && at(i+3, ")")
+	}
+	return false
 }
 
 // pyInert: module-level statement st of a package runs nothing at import

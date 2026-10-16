@@ -681,7 +681,7 @@ func TestPyGuardUnknownStar(t *testing.T) {
 			"tests/test_n.py": "import pytest\nimport pkgn\n\n@pytest.mark.skipif(pkgn.SLOWN, reason='r')\ndef test_n():\n    pass\n"})
 		plain(t, src, "add", "--all")
 	})
-	if v := g.guarded(t, map[string]string{"pkgn/config.py": "SLOWN = 'x'\n"}); !pyFinds(pyOwn(v.Blocks), "pkgn/config.py: a module a condition reads is unread (the package pkgn has a star import other than") {
+	if v := g.guarded(t, map[string]string{"pkgn/config.py": "SLOWN = 'x'\n"}); !pyFinds(pyOwn(v.Blocks), "pkgn/config.py: a module a condition reads is unread") {
 		t.Errorf("r4 M3 an unknown star before a binding one: %q", whats(pyOwn(v.Blocks)))
 	}
 }
@@ -774,23 +774,25 @@ func TestPyGuardReach(t *testing.T) {
 			"util8.py": "def detect8():\n    return False\n", "leaf8.py": "from util8 import detect8\nV8 = detect8()\n", "bridge8.py": "import leaf8\n", "flags8.py": "from bridge8 import *\nSLOW8 = leaf8.V8\n"})
 		plain(t, src, "add", "--all")
 	})
+	// P14c-2a-widen r2 (Opus #281, decision A): m1.py, lmod3.py, settings.py, lmod4.py and flags8.py run
+	// code at import outside pyAllowed, so each may write every base module it imports: the conditions are unread.
 	for name, c := range map[string]guardCase{
-		"M2 a condition in an application module":      {map[string]string{"cfg.py": "NO_GPU = 'x'\n"}, nil, "cfg.py: a skipif or xfail condition in testing_utils.py reads NO_GPU"},
-		"M3 the closure across modules":                {map[string]string{"util.py": strings.Replace(util, "return False", "return 'x'", 1)}, nil, "util.py: a skipif or xfail condition in tests/test_r.py reads detect"},
-		"M3 two modules away":                          {map[string]string{"util5.py": "def detect5():\n    return 'x'\n"}, nil, "util5.py: a skipif or xfail condition in tests/test_r.py reads detect5"},
-		"r-12 an attribute after an imported module":   {map[string]string{"u.py": "def d():\n    return 'x'\n"}, nil, "u.py: a skipif or xfail condition in tests/test_r.py reads d"},
-		"r-01 a condition re-exported":                 {map[string]string{"cfg2.py": "NO_GPU2 = 'x'\n"}, nil, "cfg2.py: a skipif or xfail condition in marks2.py reads NO_GPU2"},
-		"r-02 re-exported by a package":                {map[string]string{"cfg3.py": "NO_GPU3 = 'x'\n"}, nil, "cfg3.py: a skipif or xfail condition in pkgm2/marks.py reads NO_GPU3"},
-		"r-03 across a star import":                    {map[string]string{"util6.py": "def detect6():\n    return 'x'\n"}, nil, "util6.py: a skipif or xfail condition in tests/test_r.py reads detect6"},
-		"r-24 a name across a star import":             {map[string]string{"cfg7.py": "NO_GPU7 = 'x'\n"}, nil, "cfg7.py: a skipif or xfail condition in tests/test_r.py reads NO_GPU7"},
-		"r-13 a proxy name a def computes":             {map[string]string{"myproject/settings.py": strings.Replace(settings, "    return False", "    return 'x'", 1)}, nil, "myproject/settings.py: a skipif or xfail condition in tests/test_r.py reads SKIP2"},
-		"r-14 a proxy chain's inner name":              {map[string]string{"myproject/settings.py": strings.Replace(settings, "gpu = False", "gpu = 'x'", 1)}, nil, "myproject/settings.py: a skipif or xfail condition in tests/test_r.py reads FEATURES"},
-		"r-15 a proxy name computed in another module": {map[string]string{"myproject/calc.py": "def compute():\n    return 'x'\n"}, nil, "myproject/calc.py: a skipif or xfail condition in tests/test_r.py reads compute"},
-		"v1 a value parked on pytest":                  {map[string]string{"cfgp.py": "PVAL = 'x'\n"}, nil, "cfgp.py: a skipif or xfail condition in tests/test_r.py reads PVAL"},
-		"a-H3 a star import keeps the whole chain":     {map[string]string{"util8.py": "def detect8():\n    return 'True'\n"}, nil, "util8.py: a skipif or xfail condition in tests/test_r.py reads detect8"},
-		"M3 an unrelated change passes":                {map[string]string{"util.py": util + "OTHER = 1\n"}, nil, ""},
-		"M4 a third-party proxy":                       {map[string]string{"myproject/settings.py": strings.Replace(settings, "SKIP_SLOW = False", "SKIP_SLOW = 'x'", 1)}, nil, "myproject/settings.py: a skipif or xfail condition in tests/test_r.py reads "},
-		"r2 L4 a container a method call fills":        {map[string]string{"lmod4.py": strings.Replace(lmod4, "gpu=_detect()", "gpu='x'", 1)}, nil, "lmod4.py: a skipif or xfail condition in tests/test_r.py reads FLAGS"},
+		"M2 a condition in an application module":      {map[string]string{"cfg.py": "NO_GPU = 'x'\n"}, nil, "cfg.py: a module a condition reads is unread"},
+		"M3 the closure across modules":                {map[string]string{"util.py": strings.Replace(util, "return False", "return 'x'", 1)}, nil, "util.py: a module a condition reads is unread"},
+		"M3 two modules away":                          {map[string]string{"util5.py": "def detect5():\n    return 'x'\n"}, nil, "util5.py: a module a condition reads is unread"},
+		"r-12 an attribute after an imported module":   {map[string]string{"u.py": "def d():\n    return 'x'\n"}, nil, "u.py: a module a condition reads is unread"},
+		"r-01 a condition re-exported":                 {map[string]string{"cfg2.py": "NO_GPU2 = 'x'\n"}, nil, "cfg2.py: a module a condition reads is unread"},
+		"r-02 re-exported by a package":                {map[string]string{"cfg3.py": "NO_GPU3 = 'x'\n"}, nil, "cfg3.py: a module a condition reads is unread"},
+		"r-03 across a star import":                    {map[string]string{"util6.py": "def detect6():\n    return 'x'\n"}, nil, "util6.py: a module a condition reads is unread"},
+		"r-24 a name across a star import":             {map[string]string{"cfg7.py": "NO_GPU7 = 'x'\n"}, nil, "cfg7.py: a module a condition reads is unread"},
+		"r-13 a proxy name a def computes":             {map[string]string{"myproject/settings.py": strings.Replace(settings, "    return False", "    return 'x'", 1)}, nil, "myproject/settings.py: a module a condition reads is unread"},
+		"r-14 a proxy chain's inner name":              {map[string]string{"myproject/settings.py": strings.Replace(settings, "gpu = False", "gpu = 'x'", 1)}, nil, "myproject/settings.py: a module a condition reads is unread"},
+		"r-15 a proxy name computed in another module": {map[string]string{"myproject/calc.py": "def compute():\n    return 'x'\n"}, nil, "myproject/calc.py: a module a condition reads is unread"},
+		"v1 a value parked on pytest":                  {map[string]string{"cfgp.py": "PVAL = 'x'\n"}, nil, "cfgp.py: a module a condition reads is unread"},
+		"a-H3 a star import keeps the whole chain":     {map[string]string{"util8.py": "def detect8():\n    return 'True'\n"}, nil, "util8.py: a module a condition reads is unread"},
+		"M3 an unrelated change passes":                {map[string]string{"util.py": util + "OTHER = 1\n"}, nil, "util.py: a module a condition reads is unread"},
+		"M4 a third-party proxy":                       {map[string]string{"myproject/settings.py": strings.Replace(settings, "SKIP_SLOW = False", "SKIP_SLOW = 'x'", 1)}, nil, "myproject/settings.py: a module a condition reads is unread"},
+		"r2 L4 a container a method call fills":        {map[string]string{"lmod4.py": strings.Replace(lmod4, "gpu=_detect()", "gpu='x'", 1)}, nil, "lmod4.py: a module a condition reads is unread"},
 	} {
 		v := f.guarded(t, c.files, c.gone...)
 		if own := pyOwn(v.Blocks); c.why == "" && len(own) > 0 || c.why != "" && !pyFinds(own, c.why) {
@@ -941,18 +943,18 @@ func TestPyGuardReach(t *testing.T) {
 		"o4-H3 a package_dir interpolated from [DEFAULT]":             {map[string]string{"setup.cfg": "[DEFAULT]\nroot = lib\n\n[metadata]\nname = example\nversion = 0.0.0\n\n[options]\npackage_dir = =%(root)s\npy_modules = flags\n", "lib/flags.py": "from cfg import PV as SKIP\n", "cfg.py": "PV = False\n", "tests/test_x.py": "import pytest, flags\n\n@pytest.mark.skipif(flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "PV = 'True'\n"}, "cfg.py: unverifiable: the base adds sys.path entries the guard does not read"},
 		"o4-H3 a where interpolated":                                  {map[string]string{"setup.cfg": "[DEFAULT]\nroot = lib\n\n[options]\npackages = find:\n\n[options.packages.find]\nwhere = %(root)s\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"}, map[string]string{"lib/yaml.py": "X = 1\n"}, "lib/yaml.py: unverifiable: the base adds sys.path entries the guard does not read"},
 		"o4-H5 a where with a quote":                                  {map[string]string{"setup.cfg": "[options]\npackages = find:\n\n[options.packages.find]\nwhere = lib'\n", "tests/test_y.py": "import yaml\n\ndef test_y():\n    assert yaml\n"}, map[string]string{"lib'/yaml.py": "X = 1\n"}, "lib'/yaml.py: unverifiable: the base adds sys.path entries the guard does not read"},
-		"o3-D1 a package binding __spec__ from an import":             {map[string]string{"feature/__init__.py": "from importlib.machinery import ModuleSpec as __spec__\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "feature/impl.py": "from cfg import SKIP\n", "tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain (its submodules"},
+		"o3-D1 a package binding __spec__ from an import":             {map[string]string{"feature/__init__.py": "from types import SimpleNamespace as __spec__\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "feature/impl.py": "from cfg import SKIP\n", "tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain (its submodules"},
 		"o3-D2 a package assigning __class__":                         {map[string]string{"feature/__init__.py": "__class__ = object\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain (its submodules"},
 		"o3-D3 a package setting an attribute at run time":            {map[string]string{"feature/__init__.py": "import cfg\nglobals().update(flags=cfg)\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain (its submodules"},
 		"o3-D4 a package binding __path__ in a walrus":                {map[string]string{"feature/__init__.py": "X = [__path__ := ['feature/impl']]\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain (its submodules"},
 		"o4-H6 a class body":                                          {map[string]string{"feature/__init__.py": "class Redirect:\n    __path__.insert(0, 'feature/impl')\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain"},
 		"o4-H6 a subscript":                                           {map[string]string{"feature/__init__.py": "from ._r import redirect\nX = redirect[0]\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain"},
 		"o4-H6 a subscript of a literal":                              {map[string]string{"feature/__init__.py": "X = ['feature/impl'][0]\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain"},
-		"o4-H6 a def default with a call":                             {map[string]string{"feature/__init__.py": "from ._r import g\n\ndef f(x=g()):\n    pass\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain"},
-		"o4-H6 a def annotation with a call":                          {map[string]string{"feature/__init__.py": "from ._r import g\n\ndef f(x: g()):\n    pass\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain"},
-		"o4-H6 a return annotation with a call":                       {map[string]string{"feature/__init__.py": "from ._r import g\n\ndef f() -> g():\n    pass\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain"},
-		"o4-H6 a decorated def":                                       {map[string]string{"feature/__init__.py": "from ._r import g\n\n@g\ndef f():\n    pass\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain"},
-		"o4-H6 an f-string":                                           {map[string]string{"feature/__init__.py": "from ._r import g\nX = f\"{g()}\"\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain"},
+		"o4-H6 a def default with a call":                             {map[string]string{"feature/__init__.py": "from ._r import g\n\ndef f(x=g()):\n    pass\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread"},
+		"o4-H6 a def annotation with a call":                          {map[string]string{"feature/__init__.py": "from ._r import g\n\ndef f(x: g()):\n    pass\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread"},
+		"o4-H6 a return annotation with a call":                       {map[string]string{"feature/__init__.py": "from ._r import g\n\ndef f() -> g():\n    pass\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread"},
+		"o4-H6 a decorated def":                                       {map[string]string{"feature/__init__.py": "from ._r import g\n\n@g\ndef f():\n    pass\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread"},
+		"o4-H6 an f-string":                                           {map[string]string{"feature/__init__.py": "from ._r import g\nX = f\"{g()}\"\n", "feature/flags.py": "SKIP = False\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread"},
 		"o4-H6 a plain package resolves":                              {map[string]string{"feature/__init__.py": "\"\"\"Doc.\"\"\"\nfrom __future__ import annotations\nimport os\n__all__ = ['flags']\n__version__ = '1.0'\nX = {'a': [1, 0.5, None, True], 'b': [b'x', 'y' 'z']}\n\ndef f(x: int = 1, *a, k='v', **kw) -> str:\n    return g()\n", "feature/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a skipif or xfail condition in tests/test_x.py reads SKIP, which"},
 		"o2-P3c a package setting its own __path__":                   {map[string]string{"feature/__init__.py": "__path__ = ['feature/impl']\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain (its submodules"},
 		"o2-P3d a package changing __path__ in a try":                 {map[string]string{"feature/__init__.py": "try:\n    __path__.insert(0, 'feature/impl')\nexcept NameError:\n    pass\n", "feature/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest, feature\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the package feature is not plain (its submodules"},
@@ -1019,7 +1021,7 @@ func TestPyGuardReach(t *testing.T) {
 	maxWork = 100000
 	start := time.Now()
 	v := stars.guarded(t, map[string]string{"other.py": "Y = 2\n"})
-	if took := time.Since(start); took > 10*time.Second || !pyFinds(pyOwn(v.Blocks), "over the guard's work bound") {
+	if took := time.Since(start); took > 10*time.Second || !pyFinds(pyOwn(v.Blocks), "over the guard's work bound") && !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread") { // big.py is not inert (P14c-2a-widen r2): unread before the expansion
 		t.Errorf("r5-M1 a star expansion bounded: %v, %q", took, whats(pyOwn(v.Blocks)))
 	}
 	maxWork = old
@@ -1260,7 +1262,7 @@ func TestPyGuardStar(t *testing.T) {
 		"r2 H1 a backslash continuation":                                 {map[string]string{"feature/__init__.py": "", "feature/flags.py": "", "tests/test_x.py": "import feature.flags\n\ndef test_x():\n    assert False\n", "tests/test_control.py": "def test_control():\n    pass\n"}, map[string]string{"feature/__init__.py": "if True: from redirect \\\n    import *\n"}, []string{}, "feature/__init__.py: a package __init__.py that has a star import other than"},
 		"r2 H2 a compiled package beside the source":                     {map[string]string{"feature/__init__.py": "from .redirect import *\n", "feature/redirect.py": "X = 1\n", "feature/redirect/__init__.pyc": "\x00", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature star-imports .redirect, which is not one plain module file"},
 		"r2 H2 an absolute star with a compiled package":                 {map[string]string{"feature/__init__.py": "from redirect import *\n", "redirect.py": "X = 1\n", "redirect/__init__.pyc": "\x00", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature has a star import other than"},
-		"r2 H3 a dotted source":                                          {map[string]string{"feature/__init__.py": "from .sources.redirect import *\n", "feature/sources/__init__.py": "__path__ = [\"real\"]\n", "feature/sources/redirect.py": "X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature has a star import other than"},
+		"r2 H3 a dotted source":                                          {map[string]string{"feature/__init__.py": "from .sources.redirect import *\n", "feature/sources/__init__.py": "__path__ = [\"real\"]\n", "feature/sources/redirect.py": "X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread"},
 		"S07 a source running a def default":                             {map[string]string{"feature/__init__.py": "from .helper import *\n", "feature/helper.py": "import sys\n\ndef f(x=sys.modules['feature'].__path__.insert(0, 'impl')):\n    pass\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: unverifiable: the base adds sys.path entries the guard does not read"},
 		"S08 a source with a class":                                      {map[string]string{"feature/__init__.py": "from .helper import *\n", "feature/helper.py": "class K:\n    X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature star-imports .helper, which may run code or bind __path__"},
 		"P33l a source importing":                                        {map[string]string{"feature/__init__.py": "from .helper import *\n", "feature/helper.py": "import helper2\n", "helper2.py": "X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature star-imports .helper, which may run code or bind __path__"},
@@ -1340,10 +1342,11 @@ func TestPyGuardImportTime(t *testing.T) {
 		"A02c a root helper rebinding __path__":                      {map[string]string{"feature/__init__.py": "import helper\n", "helper.py": "import feature\nfeature.__path__[:] = ['lib/impl']\n", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature is written at run time by helper.py)"},
 		"A02d the helper under the install root":                     {map[string]string{"feature/__init__.py": "import helper\n", "lib/helper.py": "import feature\nfeature.__path__[:] = ['lib/impl']\n", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: "},
 		"G01 a conftest parking a value on a base module":            {map[string]string{"conftest.py": "import cfg\nimport feature.flags\nfeature.flags.SKIP = cfg.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature.flags is written at run time by conftest.py)"},
-		"G02 an imported sibling parking a value":                    {map[string]string{"feature/__init__.py": "from . import _park\n", "feature/_park.py": "import cfg\nfrom . import flags\nflags.SKIP = cfg.SKIP\n", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature.flags is written at run time by feature/_park.py)"},
-		"G03 a setattr on a base module":                             {map[string]string{"conftest.py": "import cfg\nimport feature.flags\nsetattr(feature.flags, 'SKIP', cfg.SKIP)\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature.flags is written at run time by conftest.py)"},
+		"G02 an imported sibling parking a value":                    {map[string]string{"feature/__init__.py": "from . import _park\n", "feature/_park.py": "import cfg\nfrom . import flags\nflags.SKIP = cfg.SKIP\n", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature"},
+		"G03 a setattr on a base module":                             {map[string]string{"conftest.py": "import cfg\nimport feature.flags\nsetattr(feature.flags, 'SKIP', cfg.SKIP)\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread"},
 		"G04 a del on a base module":                                 {map[string]string{"conftest.py": "import feature.flags\ndel feature.flags.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature.flags is written at run time by conftest.py)"},
 		"an ordinary closure module stays read":                      {map[string]string{"feature/__init__.py": "from . import util\n", "feature/util.py": "import os\nX = os.path.join('a', 'b')\nos.environ['MODE'] = '1'\n", "feature/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a skipif or xfail condition in tests/test_x.py reads SKIP, which"},
+		"a __main__ guard stays read":                                {map[string]string{"feature/__init__.py": "from . import util\n", "feature/util.py": "from . import flags\n\ndef main():\n    pass\n\nif __name__ == \"__main__\":\n    main()\n", "feature/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a skipif or xfail condition in tests/test_x.py reads SKIP, which"},
 		"a method writing self stays read":                           {map[string]string{"feature/__init__.py": "from . import util\n", "feature/util.py": "class C:\n    def set(self):\n        self.x = 1\n", "feature/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a skipif or xfail condition in tests/test_x.py reads SKIP, which"},
 	}
 	for _, on := range []bool{true, false} {
@@ -1400,5 +1403,128 @@ func TestPyGuardImportTime(t *testing.T) {
 	})
 	if v := gitlink.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the module vendored is a symlink or a gitlink in the base)") {
 		t.Errorf("a base gitlink: %q", whats(pyOwn(v.Blocks)))
+	}
+}
+
+// TestPyGuardImportTimeR2: Opus #281's probes (H1-H3, L1), each blocking or
+// unread: a closure module is inert only when every statement it runs at
+// import is pyAllowed; any other writes every base module it imports; a
+// dynamic-import name leaves the base unread.
+func TestPyGuardImportTimeR2(t *testing.T) {
+	for name, base := range map[string]map[string]string{
+		"w02 a tuple target":                  {"conftest.py": "import cfg\nimport feature.flags\n_, feature.flags.SKIP = 0, cfg.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"w04 an inline if suite":              {"conftest.py": "import cfg\nimport feature.flags\nif True: feature.flags.SKIP = cfg.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"w27b a parenthesised head":           {"conftest.py": "import cfg\nimport feature.flags\n(feature).flags.SKIP = cfg.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"w11 a computed head":                 {"conftest.py": "import cfg\nimport importlib\nimportlib.import_module('feature.flags').SKIP = cfg.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"a04 a parenthesised __path__ move":   {"conftest.py": "import feature\n(feature).__path__.insert(0, 'lib/impl')\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"w05 __setattr__":                     {"conftest.py": "import cfg\nimport feature.flags\nfeature.flags.__setattr__('SKIP', cfg.SKIP)\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"w07 __dict__.update":                 {"conftest.py": "import cfg\nimport feature.flags\nfeature.flags.__dict__.update(SKIP=cfg.SKIP)\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"w16 exec":                            {"conftest.py": "import cfg\nimport feature.flags\nexec('feature.flags.SKIP = cfg.SKIP')\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"a02 getattr __path__":                {"conftest.py": "import feature\ngetattr(feature, '__path__').insert(0, 'lib/impl')\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"i02 import_module by keyword":        {"conftest.py": "import importlib\nimportlib.import_module(name='helper')\n", "helper.py": "import cfg\nimport feature.flags\nfeature.flags.SKIP = cfg.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"i04 a relative constant":             {"conftest.py": "import importlib\nimportlib.import_module('._park', 'feature')\n", "feature/_park.py": "import cfg\nfrom . import flags\nflags.SKIP = cfg.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"i21 fromlist":                        {"conftest.py": "__import__('feature', fromlist=['_park'])\n", "feature/_park.py": "import cfg\nfrom . import flags\nflags.SKIP = cfg.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+		"m1 a head import of a dotted module": {"conftest.py": "import cfg\nimport feature.flags\nfeature.X = cfg.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature\n\n@pytest.mark.skipif(feature.X, reason='r')\ndef test_x():\n    assert False\n"},
+		"m2 a setattr on a package":           {"conftest.py": "import cfg\nimport feature\nsetattr(feature, 'X', cfg.SKIP)\n", "feature/__init__.py": "", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature\n\n@pytest.mark.skipif(feature.X, reason='r')\ndef test_x():\n    assert False\n"},
+		"m3 a setattr not at the head":        {"conftest.py": "import cfg\nimport feature.flags\nx = setattr(feature.flags, 'SKIP', cfg.SKIP)\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+	} {
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), "cfg.py: ") {
+			t.Errorf("%s: %q, want blocked or unread", name, whats(pyOwn(v.Blocks)))
+		}
+	}
+	for name, c := range map[string]struct {
+		base, change map[string]string
+		want         string
+	}{ // the candidate side (Opus #281 H1 k04, M1 k01-k03)
+		"kp1 the candidate gives a package a decorated def":          {map[string]string{"feature/__init__.py": "", "feature/_r.py": "def g(f):\n    return f\n", "feature/sources.py": "X = 1\n", "tests/test_y.py": "def test_y():\n    pass\n"}, map[string]string{"feature/__init__.py": "from ._r import g\n\n@g\ndef f():\n    pass\n"}, "feature/__init__.py: a package __init__.py that is not plain changed"},
+		"kp2 the candidate gives a package an annotation call":       {map[string]string{"feature/__init__.py": "", "feature/_r.py": "def g(f):\n    return f\n", "feature/sources.py": "X = 1\n", "tests/test_y.py": "def test_y():\n    pass\n"}, map[string]string{"feature/__init__.py": "from ._r import g\n\ndef f(x: g()):\n    pass\n"}, "feature/__init__.py: a package __init__.py that is not plain changed"},
+		"kp3 the candidate gives a package a return annotation call": {map[string]string{"feature/__init__.py": "", "feature/_r.py": "def g(f):\n    return f\n", "feature/sources.py": "X = 1\n", "tests/test_y.py": "def test_y():\n    pass\n"}, map[string]string{"feature/__init__.py": "from ._r import g\n\ndef f() -> g():\n    pass\n"}, "feature/__init__.py: a package __init__.py that is not plain changed"},
+		"kp4 the candidate gives a package a dotted relative star":   {map[string]string{"feature/__init__.py": "", "feature/_r.py": "def g(f):\n    return f\n", "feature/sources.py": "X = 1\n", "tests/test_y.py": "def test_y():\n    pass\n"}, map[string]string{"feature/__init__.py": "from .sources.redirect import *\n"}, "feature/__init__.py: a package __init__.py that has a star import other than"},
+		"k04 a changed module with a tuple target": {map[string]string{"helper.py": "X = 1\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "tests/test_y.py": "def test_y():\n    pass\n"},
+			map[string]string{"helper.py": "import feature.flags\n_, feature.flags.SKIP = 0, True\n"}, "helper.py: "},
+		"k01 a changed helper newly importing a writer": {map[string]string{"conftest.py": "import helper\n", "helper.py": "X = 1\n", "parker.py": "import feature.flags\nfeature.flags.SKIP = True\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+			map[string]string{"helper.py": "import parker\nX = 1\n"}, "a module the tests now import runs code at import"},
+		"k02 a new test importing a writer": {map[string]string{"parker.py": "import feature.flags\nfeature.flags.SKIP = True\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+			map[string]string{"tests/test_a.py": "import parker\n\ndef test_a():\n    pass\n"}, "a module the tests now import runs code at import"},
+		"k03 a package already not plain newly importing a writer": {map[string]string{"conftest.py": "import other\n", "other/__init__.py": "import logging\nlogging.getLogger(__name__)\n", "parker.py": "import feature.flags\nfeature.flags.SKIP = True\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"},
+			map[string]string{"other/__init__.py": "import logging\nimport parker\nlogging.getLogger(__name__)\n"}, "a module the tests now import runs code at import"},
+	} {
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, c.base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, c.change); !pyFinds(pyOwn(v.Blocks), c.want) {
+			t.Errorf("%s: %q, want %q", name, whats(pyOwn(v.Blocks)), c.want)
+		}
+	}
+	links := map[string]func(src string){ // Opus #281 H4: s08, s03, c08
+		"s08 a base symlink's target changed": func(src string) {
+			write(t, src, map[string]string{"feature/__init__.py": "", "real_flags.txt": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"})
+			if err := os.Symlink("../real_flags.txt", filepath.Join(src, "feature", "flags.py")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"s03 a symlinked test file": func(src string) {
+			write(t, src, map[string]string{"feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "impl_test.txt": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"})
+			if err := os.MkdirAll(filepath.Join(src, "tests"), 0o755); err != nil {
+				t.Fatal(err)
+			} else if err := os.Symlink("../impl_test.txt", filepath.Join(src, "tests", "test_x.py")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"s09 a base symlink out of the checkout": func(src string) {
+			write(t, src, map[string]string{"feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"})
+			if err := os.Symlink("../../outside.txt", filepath.Join(src, "feature", "data.txt")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"c10 a gitlink two hops away": func(src string) {
+			write(t, src, map[string]string{"conftest.py": "import helper0\n", "helper0.py": "import vendored\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n",
+				"tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"})
+		},
+		"c08 a symlinked closure module two hops away": func(src string) {
+			write(t, src, map[string]string{"conftest.py": "import helper0\n", "helper0.py": "import helper\n", "real_helper.txt": "import cfg\nimport feature.flags\nfeature.flags.SKIP = cfg.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n",
+				"tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"})
+			if err := os.Symlink("real_helper.txt", filepath.Join(src, "helper.py")); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, prep := range links {
+		g := newFixtureWith(t, func(src string) {
+			prep(src)
+			plain(t, src, "add", "--all")
+			if strings.HasPrefix(name, "c10") {
+				plain(t, src, "update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,vendored")
+			}
+		})
+		change := map[string]string{"cfg.py": "SKIP = 'True'\n"}
+		if strings.HasPrefix(name, "s08") {
+			change = map[string]string{"real_flags.txt": "SKIP = True\n"}
+		} else if strings.HasPrefix(name, "s09") {
+			change = map[string]string{"notes.txt": "x\n"} // any change, while a base symlink leaves the checkout
+		}
+		if v := g.guarded(t, change); len(pyOwn(v.Blocks)) == 0 {
+			t.Errorf("%s: no block", name)
+		}
+	}
+	old := maxWork // the closure charged to the work bound
+	t.Cleanup(func() { maxWork = old })
+	maxWork = 40
+	chain := map[string]string{"conftest.py": "import m0\n", "cfg.py": "SKIP = False\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n",
+		"tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}
+	for i := range 60 {
+		chain[fmt.Sprintf("m%d.py", i)] = fmt.Sprintf("import m%d\n", i+1)
+	}
+	g := newFixtureWith(t, func(src string) {
+		write(t, src, chain)
+		plain(t, src, "add", "--all")
+	})
+	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), "over the guard's work bound") {
+		t.Errorf("a long import chain over the work bound: %q", whats(pyOwn(v.Blocks)))
 	}
 }
