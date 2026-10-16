@@ -161,6 +161,107 @@ func pyDepthEnd(t []ptok, open int) int {
 	return -1
 }
 
+// starCheck: why package q's star imports are not inert (P14c-2a-star), an
+// allowlist. Each is exactly "from .x import *" at module level, x.py in
+// q's own directory is read, plain (pyInert), imports nothing and binds no
+// __all__, and no form CPython's FileFinder may load before it, or in its
+// place, exists: a package x/__init__.*, an extension x.*.so or x.*.pyd,
+// x.pyc, or __pycache__/x.*. A source imports nothing, so it is a leaf.
+// The verdict is cached on f, and the competing forms come from three
+// directories' entries, charged to the work bound (Astra #279 M1).
+func (pb *pyBase) starCheck(q string, f *pyBaseFile) (string, error) {
+	if f.starWhy != nil {
+		return *f.starWhy, nil
+	}
+	why, err := pb.starVerdict(q, f)
+	if err == nil {
+		f.starWhy = &why
+	}
+	return why, err
+}
+
+func (pb *pyBase) starVerdict(q string, f *pyBaseFile) (string, error) {
+	if f.badStar {
+		return "has a star import other than from .x import * at module level", nil
+	}
+	tree, d := pb.r.files, path.Dir(q)
+	if pb.tree != nil {
+		tree = pb.tree
+	}
+	if pb.dirs == nil {
+		pb.dirs, pb.r.work = map[string][]string{}, pb.r.work+len(pb.paths)
+		for _, p := range pb.paths {
+			pb.dirs[path.Dir(p)] = append(pb.dirs[path.Dir(p)], p)
+		}
+	}
+	for _, x := range f.starSrc {
+		src := d + "/" + x + ".py"
+		near := slices.Concat(pb.dirs[d], pb.dirs[d+"/"+x], pb.dirs[d+"/__pycache__"])
+		if pb.r.work += len(near) + 1; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return "is over the guard's work bound", pb.r.ctx.Err()
+		} else if tree[src] == "" || slices.ContainsFunc(near, func(p string) bool { return pyStarForm(p, d, x) && p != src && path.Ext(p) != ".pyi" }) {
+			return "star-imports ." + x + ", which is not one plain module file", nil
+		} else if fs, err := pb.file(src); err != nil {
+			return "", err
+		} else if !fs.plain || len(fs.mods) > 0 || fs.locals["__all__"] {
+			return "star-imports ." + x + ", which may run code or bind __path__", nil
+		}
+	}
+	return "", nil
+}
+
+// starCandidate: why the candidate's package __init__.py q has a star import
+// that is not inert, judged on the candidate's files (P14c-2a-star).
+func (pb *pyBase) starCandidate(q string) (string, error) {
+	if pb.cand == nil {
+		pb.cand = &pyBase{r: pb.r, tree: pb.r.cand, files: map[string]*pyBaseFile{}, paths: slices.Sorted(maps.Keys(pb.r.cand))}
+	}
+	f, err := pb.cand.file(q)
+	if err != nil {
+		return "", err
+	} else if f.unread {
+		return "a package __init__.py the guard cannot read", nil
+	}
+	why, err := pb.cand.starCheck(q, f)
+	if err == nil && why == "" && len(f.starSrc) > 0 && !f.plain {
+		why = "star-imports and is not plain" // its other statements may move its submodules (Opus #279 L2)
+	}
+	if err != nil || why == "" {
+		return "", err
+	}
+	return "a package __init__.py that " + why, nil
+}
+
+// starSourceOf: the base package directory whose __init__.py star-imports
+// the module that path p is a form of (pyStarForm), or "". Only the
+// __init__.py of p's own package is read, never all of them (Opus #279 L3).
+func (pb *pyBase) starSourceOf(p string) (string, error) {
+	d, base := path.Dir(p), path.Base(p)
+	cands := [][2]string{{d, strings.SplitN(base, ".", 2)[0]}} // d/x.*
+	if strings.HasPrefix(base, "__init__.") {
+		cands = append(cands, [2]string{path.Dir(d), path.Base(d)}) // d/x/__init__.*
+	} else if path.Base(d) == "__pycache__" {
+		cands = append(cands, [2]string{path.Dir(d), strings.SplitN(base, ".", 2)[0]}) // d/__pycache__/x.*
+	}
+	for _, c := range cands {
+		if q := path.Join(c[0], "__init__.py"); pb.r.files[q] == "" {
+			continue
+		} else if f, err := pb.file(q); err != nil {
+			return "", err
+		} else if slices.Contains(f.starSrc, c[1]) {
+			return c[0], nil
+		}
+	}
+	return "", nil
+}
+
+// pyStarForm: path p is a form of module x in directory d that CPython may
+// load: x.py, a package x/__init__.*, x.<anything> (extensions, .pyc), or
+// __pycache__/x.*.
+func pyStarForm(p, d, x string) bool {
+	return slices.ContainsFunc([]string{d + "/" + x + ".", d + "/" + x + "/__init__.", d + "/__pycache__/" + x + "."}, func(pre string) bool { return strings.HasPrefix(p, pre) })
+}
+
 // prefix is how many of parts name the base module Python imports, at most
 // top: main's longest module prefix, or unread (strictly additive, Astra
 // #275 r3). Unread: a shorter prefix that is a plain module, or a package
@@ -193,6 +294,10 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 				return 0, "", err
 			} else if !f.plain {
 				return 0, "the package " + name + " is not plain (its submodules may resolve elsewhere)", nil // Opus #275 M1, Astra #275 H6
+			} else if why, err := pb.starCheck(q, f); err != nil {
+				return 0, "", err
+			} else if why != "" {
+				return 0, "the package " + name + " " + why, nil // P14c-2a-star
 			} else if k < i && (f.locals[parts[k]] || f.from[parts[k]] != "" && f.from[parts[k]] != name+"."+parts[k]) {
 				return 0, "the package " + name + " binds " + parts[k] + " beside its submodule", nil
 			}

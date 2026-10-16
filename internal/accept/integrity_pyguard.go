@@ -118,6 +118,14 @@ func (r *run) python(changes []Change) error {
 				}
 			}
 		}
+		for _, p := range slices.Compact([]string{c.Src, c.Dst}) { // any form, whatever its extension (P14c-2a-star, Opus #279 L1)
+			if d, err := pb.starSourceOf(p); err != nil {
+				return err
+			} else if d != "" {
+				add(&r.blocks, p, "a star source of "+d+" changed (its exports may move the package's submodules)")
+				break
+			}
+		}
 		if path.Ext(c.Src) != ".py" && path.Ext(c.Dst) != ".py" {
 			continue
 		} else if custom {
@@ -135,6 +143,13 @@ func (r *run) python(changes []Change) error {
 			return err
 		} else if why != "" {
 			add(&r.blocks, c.Dst, why)
+		}
+		if dst && path.Base(c.Dst) == "__init__.py" { // the candidate's own star imports, at token level (P14c-2a-star)
+			if why, err := pb.starCandidate(c.Dst); err != nil {
+				return err
+			} else if why != "" {
+				add(&r.blocks, c.Dst, why)
+			}
 		}
 		b, ok, err := r.pyScan(src && path.Ext(c.Src) == ".py", c.Src, c.SrcBlob, judged)
 		a, ok2, err2 := r.pyScan(dst && path.Ext(c.Dst) == ".py", c.Dst, c.DstBlob, judged)

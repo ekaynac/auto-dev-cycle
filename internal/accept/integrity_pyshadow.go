@@ -32,6 +32,9 @@ type pyBase struct {
 	byName       map[string][]string    // a name, to the base modules binding it (Opus #272 M3)
 	holderUnread string                 // a module a judged file imports, unread on the way to its holder (the review of 1ceb79c)
 	sysUnread    bool                   // a judged file changes sys.path in a way the guard does not read (#270 M1)
+	tree         map[string]string      // the files file reads: nil, the base; the candidate for pyStarCandidate
+	cand         *pyBase                // the candidate's files, for its package __init__.py stars
+	dirs         map[string][]string    // a directory's direct entries, built once (Astra #279 M1)
 
 	// entries are main's (the root, pythonpath, the basedirs) and resolve; extra are the roots an install
 	// adds (pyInstall), which name modules for pyShadow only (Opus #275 H2)
@@ -55,7 +58,10 @@ type pyBaseFile struct {
 	binders   map[string][]int  // a name, to the units binding it
 	sysUnread bool              // it names sys.path, or sys in a way pySysUse does not read
 
-	plain bool // a package whose submodules resolve in its own directory: read, every module-level statement pyInert (Astra #275 H6)
+	plain   bool     // a package whose submodules resolve in its own directory: read, every module-level statement pyInert (Astra #275 H6)
+	starSrc []string // x of each exact "from .x import *" at module level (P14c-2a-star)
+	badStar bool     // any other import followed by * anywhere in its tokens
+	starWhy *string  // starCheck's verdict, cached (Astra #279 M1)
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -187,14 +193,18 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	}
 	f := &pyBaseFile{path: q, from: map[string]string{}, named: map[string]bool{}, locals: map[string]bool{}}
 	pb.files[q] = f
-	b, why, err := pb.r.file(pb.r.files[q])
+	tree := pb.r.files
+	if pb.tree != nil {
+		tree = pb.tree
+	}
+	b, why, err := pb.r.file(tree[q])
 	lines, why2, err2 := pyTokens(pb.r.ctx, b)
 	if err = cmp.Or(err, err2, pb.r.ctx.Err()); err != nil {
 		return nil, err
 	}
 	f.unread = why+why2 != ""
 	pure, aliases := pyPure(pb.r.ctx, lines)
-	rel, in := pyRel(path.Dir(q), pyBasedir(pb.r.files, q))
+	rel, in := pyRel(path.Dir(q), pyBasedir(tree, q))
 	pkg := strings.Split(rel, "/") // q's package (a relative import's base)
 	if !in {
 		pkg = nil
@@ -202,11 +212,22 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	var units [][]ptok            // module-level statements, def and class bodies
 	binders := map[string][]int{} // a name, to the units binding it
 	owner, indent, deco, bodies := -1, 0, []ptok(nil), []int(nil)
-	future, inert := false, true // pyInert, every module-level statement
+	future, inert, starSeen := false, true, map[string]bool{} // pyInert, every module-level statement
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
 		f.sysUnread = f.sysUnread || !pySysUse(l.toks)
+		for i := 1; i < len(l.toks); i++ { // a star import at token level, in any form (Astra #277 r2 H1)
+			if l.toks[i].text == "*" && l.toks[i-1].text == "import" {
+				if t := l.toks; l.indent == 0 && len(t) == 5 && t[0].text == "from" && t[1].text == "." && t[2].kind == 'n' {
+					if !starSeen[t[2].text] { // each source once (Astra #279 M1)
+						starSeen[t[2].text], f.starSrc = true, append(f.starSrc, t[2].text)
+					}
+				} else {
+					f.badStar = true
+				}
+			}
+		}
 		if l.toks[0].text == "pytest_plugins" { // its modules are reached too (Opus #272 (b))
 			for _, k := range line {
 				if pyStr(k) != "" {
