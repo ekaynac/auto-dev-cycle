@@ -174,6 +174,11 @@ func TestDecisionAOut2Round2(t *testing.T) {
 		// L1: an os read by types is inert, as the base guard's text rule has it.
 		"osr/f.go": "package osr\n\nimport \"os\"\n\nvar F *os.File\n",
 		"osr/r.go": "package osr\n\nfunc rd() int {\n\tfi, _ := F.Stat()\n\treturn int(fi.Size()) + 1\n}\n",
+		// The background flag on d5041a9: an init added; a literal moved to a
+		// new init; a body changed beside another function's references.
+		"iv2/iv.go": "package iv2\n\nimport \"flag\"\n\nvar safe3, fatal3 = flag.NewFlagSet(\"s\", flag.ContinueOnError), flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse6 func([]string) error\n",
+		"mv2/a.go":  "package mv2\n\nimport \"fmt\"\n\nvar hello2 func()\n\nfunc init() { hello2 = func() { fmt.Println(\"a\") } }\n",
+		"mv2/b.go":  "package mv2\n",
 		// L3: the suppression, and a pointer type argument.
 		"l3/a.go": "package l3\n\nimport \"flag\"\n\ntype pa = flag.FlagSet\n\nfunc gn[T any]() {}\n\nfunc h2() {}\n\nfunc p() {\n" + probe + "}\n",
 	}
@@ -209,10 +214,15 @@ func TestDecisionAOut2Round2(t *testing.T) {
 		"M3 a reshaped var spec (fmt)": {map[string]string{"m3/a.go": strings.Replace(base["m3/a.go"], "var hello = func() { fmt.Println(\"a\") }", "var hello, _ = func() { fmt.Println(\"b\") }, 0", 1)},
 			"m3/a.go changed bodies that use fmt (2: var hello, var hello, _)", ""},
 		"M4 a method value rebound in init": {map[string]string{"iv/iv.go": strings.Replace(base["iv/iv.go"], "= safe2.Parse", "= fatal2.Parse", 1)},
-			"iv/iv.go changed bodies that use flag (1: func init)", ""},
+			"iv/iv.go changed bodies that use flag (1: init body)", ""},
 		"L3 references changed: no body warning too": {map[string]string{"l3/a.go": strings.Replace(base["l3/a.go"], "flag.ExitOnError", "flag.ContinueOnError", 1)},
 			"l3/a.go references into flag added, removed, moved or changed (1: p)", "l3/a.go changed bodies that use flag"},
-		"L1 an os read by types": {map[string]string{"osr/r.go": strings.Replace(base["osr/r.go"], "+ 1", "+ 2", 1)}, "", "osr/r.go changed bodies that use os"},
+		"L1 an os read by types":                 {map[string]string{"osr/r.go": strings.Replace(base["osr/r.go"], "+ 1", "+ 2", 1)}, "", "osr/r.go changed bodies that use os"},
+		"an init added rebinding a method value": {map[string]string{"iv2/iv.go": base["iv2/iv.go"] + "\nfunc init() { parse6 = fatal3.Parse }\n"}, "iv2/iv.go changed bodies that use flag (1: init body)", ""},
+		"a literal moved to a new init": {map[string]string{"mv2/a.go": "package mv2\n\nvar hello2 func()\n", "mv2/b.go": "package mv2\n\nimport \"fmt\"\n\nfunc init() { hello2 = func() { fmt.Println(\"b\") } }\n"},
+			"mv2/b.go changed bodies that use fmt (1: init literal)", ""},
+		"a body changed beside another function's references": {map[string]string{"l3/a.go": strings.Replace(base["l3/a.go"], "func p() {\n"+probe+"}", "func p() {\n"+h+"}\n\nfunc q() { _ = flag.ContinueOnError }", 1)},
+			"l3/a.go changed bodies that use flag (1: func p)", ""},
 		"L3 a pointer type argument": {map[string]string{"l3/a.go": strings.Replace(base["l3/a.go"], "func h2() {}", "func h2() { gn[*pa]() }", 1)},
 			"l3/a.go references into flag added, removed, moved or changed (1: h2)", ""},
 	} {

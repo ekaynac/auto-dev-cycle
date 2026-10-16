@@ -47,7 +47,7 @@ func (r *run) units(d ast.Decl, p, testing string) []unit {
 	case *ast.FuncDecl:
 		switch {
 		case d.Recv == nil && (d.Name.Name == "init" || strings.HasSuffix(p, "_test.go") && d.Name.Name == "TestMain" && hook(d, testing)):
-			return []unit{{d, "init literal", "init literal", true, false}, {d, "", "func " + d.Name.Name, false, true}}
+			return []unit{{d, "init literal", "init literal", true, false}, {d, "", d.Name.Name + " body", false, true}}
 		case d.Recv != nil && r.charge(len(d.Name.Name)+len(recv(d)), 0):
 			w := bound(recv(d) + "." + d.Name.Name)
 			return []unit{{d, w, "func " + w, false, false}}
@@ -393,16 +393,16 @@ func (r *run) typeName(o types.Object, names map[types.Object]string) string {
 }
 
 // outBodies warns, once per file and package, for the bindings whose
-// fingerprint changed, or var specs added or gone, that use S in either
-// version, unless the file's references into that package changed (their
-// warning says it already).
+// fingerprint changed, or that are added or gone (but a function's: its
+// references move), that use S in either version, unless the references
+// warning for that file and package names it already.
 func (r *run) outBodies(b, a outFacts, changed map[string][]string) {
 	bodies := map[string][]string{}
 	for _, k := range keys(b.prints, a.prints) {
 		file, bind, _ := strings.Cut(k, "\x00")
 		bp, inB := b.prints[k]
-		if ap, inA := a.prints[k]; inB && inA && bp == ap || (!inB || !inA) && !strings.HasPrefix(bind, "var ") {
-			continue // unchanged; a function added or gone moves its references (a var spec's text ones do not: Opus #280 M3)
+		if ap, inA := a.prints[k]; inB && inA && bp == ap || (!inB || !inA) && strings.HasPrefix(bind, "func ") {
+			continue // unchanged; a function added or gone moves its references (a var spec's text ones, a literal's or a body's by types do not: M3)
 		}
 		for _, pkg := range slices.Sorted(maps.Keys(maps.Collect(func(yield func(string, bool) bool) {
 			for _, m := range []map[string]bool{b.uses[k], a.uses[k]} {
@@ -411,7 +411,7 @@ func (r *run) outBodies(b, a outFacts, changed map[string][]string) {
 				}
 			}
 		}))) {
-			if changed[file+"\x00"+pkg] == nil {
+			if !slices.Contains(changed[file+"\x00"+pkg], strings.TrimPrefix(bind, "func ")) { // its references' warning names it already
 				bodies[file+"\x00"+pkg] = append(bodies[file+"\x00"+pkg], bind)
 			}
 		}
