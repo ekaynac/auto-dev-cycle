@@ -54,26 +54,28 @@ type outImporter struct {
 	pkgs   map[string]*types.Package // checked from the base guard's syntax (nil: being checked, or failed)
 	errs   map[string]error          // why one failed
 	self   *types.Package            // for an external test (forTest): its package under test
-	budget *int64                    // the run's export data bytes left: the layer's own counter
+	budget *int64                    // the export data bytes it may still read: its own counter
 	failed string
 }
 
-// maxOutExport bounds the export data the layer's importers read in a run:
-// the base guard reads at most maxExport a version.
-var maxOutExport = 2 * maxExport
+// maxOutExport bounds the export data the layer's importer of a typer reads,
+// as the base guard's typer is bounded (Opus #282 L2).
+var maxOutExport = maxExport
 
 func (r *run) outImporterOf(ty *typer) *outImporter {
 	if im := r.out.importers[ty]; im != nil {
 		return im
 	} else if r.out.importers == nil { // a run made without outRun (a test)
-		r.out.importers, r.out.export = map[*typer]*outImporter{}, new(int64)
-		*r.out.export = maxOutExport
+		r.out.importers = map[*typer]*outImporter{}
 	}
-	im := &outImporter{v: outView{fset: ty.fset, own: map[string][]*ast.File{}, export: map[string]string{}}, pkgs: map[string]*types.Package{}, errs: map[string]error{}, budget: r.out.export}
-	for d, fs := range ty.parsed {
-		if rel, ok := strings.CutPrefix(d, path.Join(ty.root, "vendor")+"/"); ok && fs != nil {
-			im.v.own[rel] = fs
-		} else if p := ty.pathOf(d); p != "" && fs != nil {
+	im := &outImporter{v: outView{fset: ty.fset, own: map[string][]*ast.File{}, export: map[string]string{}}, pkgs: map[string]*types.Package{}, errs: map[string]error{}, budget: new(int64)}
+	*im.budget = maxOutExport
+	for d, fs := range ty.parsed { // only what the base guard could check (Opus #282 H1): its other syntax is never checked
+		p := ty.pathOf(d)
+		if rel, ok := strings.CutPrefix(d, path.Join(ty.root, "vendor")+"/"); ok {
+			p = rel
+		}
+		if fs != nil && p != "" && ty.why == "" && ty.failed["dir "+d] == "" && ty.failed[p] == "" {
 			im.v.own[p] = fs
 		}
 	}
@@ -155,9 +157,15 @@ func (im *outImporter) fail(p string, err error) error {
 // outWorkers counts the layer's checks that run, any run's (Astra #280 M5):
 // a slot is taken before a check starts and freed only when its worker
 // ends; go/types cannot be stopped, so a dropped worker keeps its slot.
-var outWorkers atomic.Int32
+// outDropped counts the dropped ones still running (Opus #282 M1).
+var outWorkers, outDropped atomic.Int32
 
 const maxOutWorkers = 1
+
+// outSlotWait bounds a run's wait for a live peer's slot, from the run's
+// own start: past it, or while a dropped worker runs, the types check stops
+// at once.
+const outSlotWait = 2 * time.Second
 
 // maxOutCheck bounds one of the layer's checks (0: the run's deadline
 // alone; a test sets it).
@@ -165,32 +173,45 @@ var maxOutCheck time.Duration
 
 // outCheck type-checks files as path in a worker that holds only them, the
 // importer (its snapshot and budget) and info, never the run: it waits until
-// the run's deadline (or maxOutCheck) or until ctx ends, then drops it. No
-// slot free by the deadline, a drop or a panic: false (the layer stops,
-// with its warning).
-func outCheck(ctx context.Context, deadline time.Time, im *outImporter, path string, fset *token.FileSet, files []*ast.File, info *types.Info) (*types.Package, []error, bool) {
+// the run's deadline (or maxOutCheck) or until ctx ends, then drops it. A
+// dropped worker still running, no slot free within outSlotWait, the
+// deadline passed, a drop or a panic: false (the types check stops).
+func outCheck(ctx context.Context, start, deadline time.Time, im *outImporter, path string, fset *token.FileSet, files []*ast.File, info *types.Info) (*types.Package, []error, bool) {
 	if maxOutCheck > 0 && time.Now().Add(maxOutCheck).Before(deadline) {
 		deadline = time.Now().Add(maxOutCheck)
 	}
-	for outWorkers.Add(1) > maxOutWorkers { // a slot, waited for until the deadline
+	waitEnd := start.Add(outSlotWait)
+	if deadline.Before(waitEnd) {
+		waitEnd = deadline
+	}
+	for outWorkers.Add(1) > maxOutWorkers { // a live peer's slot, waited for briefly
 		outWorkers.Add(-1)
+		if outDropped.Load() > 0 || !time.Now().Before(waitEnd) {
+			return nil, nil, false
+		}
 		select {
 		case <-ctx.Done():
 			return nil, nil, false
-		case <-time.After(min(10*time.Millisecond, time.Until(deadline))):
-			if !time.Now().Before(deadline) {
-				return nil, nil, false
-			}
+		case <-time.After(min(10*time.Millisecond, time.Until(waitEnd))):
 		}
+	}
+	if outDropped.Load() > 0 || !time.Now().Before(deadline) || ctx.Err() != nil { // never a worker past the deadline
+		outWorkers.Add(-1)
+		return nil, nil, false
 	}
 	type result struct {
 		pkg  *types.Package
 		errs []error
 		ok   bool
 	}
-	done := make(chan result, 1)
+	done, state := make(chan result, 1), new(atomic.Int32) // 0 running, 1 ended, 2 dropped
 	go func() {
-		defer outWorkers.Add(-1) // when it ends
+		defer func() { // when it ends
+			if !state.CompareAndSwap(0, 1) {
+				outDropped.Add(-1)
+			}
+			outWorkers.Add(-1)
+		}()
 		var res result
 		defer func() {
 			if recover() != nil {
@@ -207,6 +228,9 @@ func outCheck(ctx context.Context, deadline time.Time, im *outImporter, path str
 		return res.pkg, res.errs, res.ok
 	case <-ctx.Done():
 	case <-time.After(time.Until(deadline)):
+	}
+	if state.CompareAndSwap(0, 2) {
+		outDropped.Add(1)
 	}
 	return nil, nil, false
 }
@@ -240,7 +264,7 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 			of.typed, todo = true, append(todo, of)
 		}
 	}
-	if r.out.over || !slices.ContainsFunc(todo, func(of *outFile) bool { return len(of.f.Imports) > 0 }) {
+	if r.out.over || r.out.typedOff || !slices.ContainsFunc(todo, func(of *outFile) bool { return len(of.f.Imports) > 0 }) {
 		return
 	}
 	why := ""
@@ -273,9 +297,12 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 			if strings.HasSuffix(name, "_test") && self != nil {
 				check = im.forTest(self)
 			}
-			pkg, errs, ok := outCheck(r.ctx, r.listEnd, check, cmp.Or(ty.pathOf(dir), dir)+map[bool]string{true: "_test"}[strings.HasSuffix(name, "_test")], r.out.fset, files, info)
+			if outCheckSeen != nil {
+				outCheckSeen(files)
+			}
+			pkg, errs, ok := outCheck(r.ctx, r.started, r.listEnd, check, cmp.Or(ty.pathOf(dir), dir)+map[bool]string{true: "_test"}[strings.HasSuffix(name, "_test")], r.out.fset, files, info)
 			if !ok {
-				r.out.over = true
+				r.typesOff(dir)
 				return
 			} else if e := cmp.Or(check.failed, unexpected(errs)); e != "" {
 				why, check.failed = cmp.Or(why, pl[0]+"/"+pl[1]+": "+e), ""
@@ -288,6 +315,20 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 	}
 	if why != "" {
 		r.outWarn(dir, "decision A's check by types could not finish ("+bound(why)+"): its signals by types for this directory are incomplete: review it")
+	}
+}
+
+// outCheckSeen, when a test sets it, sees each file set the layer checks.
+var outCheckSeen func(files []*ast.File)
+
+// typesOff stops the types check for the rest of the run, with one
+// warning: its own stop, never P14b-out-1's work bound, so it feeds no
+// libc exhaustion block (the lead's decision on Opus #282 probe D); the
+// references by types are then left out of the comparison.
+func (r *run) typesOff(dir string) {
+	if !r.out.typedOff {
+		r.out.typedOff = true
+		r.outWarn(dir, "decision A's check by types stopped (a worker still busy, or its deadline): its signals by types are incomplete from this directory on: review it")
 	}
 }
 
@@ -332,6 +373,33 @@ func sObj(o types.Object, name string) bool {
 	return outS(o.Pkg().Path()) || sPkg(o.Pkg().Path()) && sensitive(o.Pkg().Path()+"."+name) > 0
 }
 
+// osReads are the plain reads of an *os.File (Opus #282 M2): inert, as the
+// base guard's osRead is for os's functions (an os.FileInfo's methods are
+// io/fs's, outside S).
+var osReads = []string{"Read", "ReadAt", "ReadDir", "Readdir", "Readdirnames", "Stat", "Name", "Seek"}
+
+// sMethod: o is a method in S, classified by its receiver: every method of
+// an S package but os.File's plain reads (testing's, reflect's and
+// unsafe's values have the base guard's own rules).
+func sMethod(o *types.Func) bool {
+	p := ""
+	if o.Pkg() != nil {
+		p = o.Pkg().Path()
+	}
+	recv := ""
+	if sig, _ := o.Type().(*types.Signature); sig != nil && sig.Recv() != nil {
+		t := sig.Recv().Type()
+		if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+			t = ptr.Elem()
+		}
+		if n, ok := types.Unalias(t).(*types.Named); ok {
+			recv = n.Obj().Name()
+		}
+	}
+	return (outS(p) || sPkg(p)) && !slices.Contains([]string{"testing", "reflect", "unsafe"}, p) &&
+		!(p == "os" && recv == "File" && slices.Contains(osReads, o.Name()))
+}
+
 // typedIn calls add for each S method through a value and each S type
 // argument in u (inside its function literals only, with lits; outside
 // them, with typedOnly).
@@ -343,7 +411,7 @@ func (r *run) typedIn(u unit, info *types.Info, names map[types.Object]string, a
 		switch x := n.(type) {
 		case *ast.SelectorExpr:
 			if s := info.Selections[x]; s != nil && s.Kind() != types.FieldVal {
-				if o, _ := s.Obj().(*types.Func); o != nil && sObj(o, o.Name()) {
+				if o, _ := s.Obj().(*types.Func); o != nil && sMethod(o) {
 					add(o.Pkg().Path(), r.methodName(o.Origin(), names))
 				}
 			}

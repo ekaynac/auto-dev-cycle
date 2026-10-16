@@ -3,8 +3,12 @@
 package accept
 
 import (
+	"context"
 	"fmt"
+	"go/ast"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -20,9 +24,14 @@ func aliasChain(name string, n int) string {
 	return b.String()
 }
 
-// waitWorkers waits until no check of the layer's runs.
+// waitWorkers waits until no check of the layer's runs (Opus #282 L1: a
+// stuck one fails here).
 func waitWorkers(t *testing.T) {
-	for end := time.Now().Add(time.Minute); outWorkers.Load() > 0 && time.Now().Before(end); {
+	t.Helper()
+	for end := time.Now().Add(time.Minute); outWorkers.Load() > 0 || outDropped.Load() > 0; {
+		if !time.Now().Before(end) {
+			t.Fatalf("a worker still runs: %d workers, %d dropped", outWorkers.Load(), outDropped.Load())
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
@@ -51,7 +60,12 @@ func TestDecisionAOut3(t *testing.T) {
 		"iv/iv.go":          "package iv\n\nimport \"flag\"\n\nvar safe2 = flag.NewFlagSet(\"s\", flag.ContinueOnError)\n\nvar fatal2 = flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse5 func([]string) error\n\nfunc init() { parse5 = safe2.Parse }\n",
 		"iv2/iv.go":         "package iv2\n\nimport \"flag\"\n\nvar safe3, fatal3 = flag.NewFlagSet(\"s\", flag.ContinueOnError), flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse6 func([]string) error\n",
 		"osr/f.go":          "package osr\n\nimport \"os\"\n\nvar F *os.File\n",
-		"osr/r.go":          "package osr\n\nfunc rd() int {\n\tfi, _ := F.Stat()\n\treturn int(fi.Size()) + 1\n}\n",
+		"osr/r.go":          "package osr\n\nfunc rd() int {\n\tb := make([]byte, 1)\n\tn, _ := F.Read(b)\n\treturn n\n}\n\nfunc wr() int {\n\tb := make([]byte, 1)\n\tn, _ := F.Write(b)\n\treturn n\n}\n",
+		// Opus #282 H1 (probe A): own syntax the base guard refused.
+		"bad1/a.go": "package bad1\n\nvar X = 1\n\n" + aliasChain("A", 26) + aliasChain("B", 26) + "var _ = A26(B26{})\n",
+		"bad1/z.go": "package other\n",
+		"bad2/a.go": "package bad2\n\nvar X = 1\n\n" + aliasChain("A", 26) + aliasChain("B", 26) + "var _ = A26(B26{})\n",
+		"bad2/z.go": "package bad2\n\nfunc (\n",
 		// Astra #280 H2: one coherent graph (util's flag is the layer's flag).
 		"util/u.go":  "package util\n\nimport \"flag\"\n\nvar FS *flag.FlagSet\n\nfunc Choose[T any](a, b T) T { return a }\n",
 		"p/state.go": "package p\n\nimport \"flag\"\n\nvar FS *flag.FlagSet\n",
@@ -88,7 +102,8 @@ func TestDecisionAOut3(t *testing.T) {
 		"M2 export_test.go's value":              {edit("xt/a_test.go", "func helper() {}", "func helper() { _ = xt.FS.Parse(nil) }"), "xt/a_test.go references into flag added, removed, moved or changed (1: helper)", ""},
 		"M4 a method value rebound in init":      {edit("iv/iv.go", "= safe2.Parse", "= fatal2.Parse"), "iv/iv.go changed bodies that use flag (1: init body)", ""},
 		"an init added rebinding a method value": {map[string]string{"iv2/iv.go": base["iv2/iv.go"] + "\nfunc init() { parse6 = fatal3.Parse }\n"}, "iv2/iv.go changed bodies that use flag (1: init body)", ""},
-		"L1 an os read by types":                 {edit("osr/r.go", "+ 1", "+ 2"), "", "osr/r.go changed bodies that use os"},
+		"L1 an os read by types (Opus #282 M2)":  {edit("osr/r.go", "b := make([]byte, 1)\n\tn, _ := F.Read", "b := make([]byte, 2)\n\tn, _ := F.Read"), "", "osr/r.go changed bodies that use os"},
+		"L1 an os write by types still warns":    {edit("osr/r.go", "b := make([]byte, 1)\n\tn, _ := F.Write", "b := make([]byte, 2)\n\tn, _ := F.Write"), "osr/r.go changed bodies that use os (1: func wr)", ""},
 		"Astra H2 one coherent graph":            {edit("p/use.go", "Parse(nil)", "Parse([]string{\"-h\"})"), "p/use.go changed bodies that use flag (1: func f)", "incomplete"},
 		"one graph across directories": {map[string]string{"a2/a_test.go": strings.Replace(base["a2/a_test.go"], "func helper() {}", "func helper() { _ = fs.Parse(nil) }", 1),
 			"zr/r.go": strings.Replace(base["zr/r.go"], "func g() {}", "func g() { _ = fs.Parse(nil) }", 1)}, "zr/r.go references into flag added, removed, moved or changed (1: g)", "could not finish"},
@@ -99,13 +114,29 @@ func TestDecisionAOut3(t *testing.T) {
 			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
 		}
 	}
-	// Opus #280 H1: the union is never checked (it would be dropped: the stop warning).
-	maxOutCheck = 2 * time.Second
-	if v := outGuarded(t, f, map[string]string{"slow/g_arm64.go": "package slow\n\nimport _ \"flag\"\n\ntype Q = A28\n\nvar _ = A28(Q{})\n"}); !v.Accepted() || stopped(v) {
-		t.Errorf("H1 the union: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	// Opus #280 H1: the union is never checked: no file set given to a
+	// check holds both platforms' files (Opus #282 L1: by structure).
+	var union bool
+	outCheckSeen = func(files []*ast.File) { // b_amd64.go declares B0; g_arm64.go declares Q alone
+		union = union || slices.ContainsFunc(files, func(f *ast.File) bool { return hasDecl(f, "B0") }) && slices.ContainsFunc(files, func(f *ast.File) bool { return hasDecl(f, "Q") && !hasDecl(f, "B0") })
 	}
-	maxOutCheck = 0
+	v := outGuarded(t, f, map[string]string{"slow/g_arm64.go": "package slow\n\nimport _ \"flag\"\n\ntype Q = A28\n\nvar _ = A28(Q{})\n"})
+	outCheckSeen = nil
+	if !v.Accepted() || stopped(v) || union {
+		t.Errorf("H1 the union: blocks %q, warnings %q, a union checked %v", whats(v.Blocks), whats(v.Warnings), union)
+	}
 	waitWorkers(t)
+	// Opus #282 H1 (probe A): a package the base guard refused (a second
+	// package name; a later parse error) is never checked by the layer: the
+	// directory is incomplete, at once, and no worker is left.
+	for _, bad := range []string{"bad1", "bad2"} {
+		begin := time.Now()
+		v := outGuarded(t, f, map[string]string{"use/u.go": "package use\n\nimport (\n\t\"flag\"\n\n\t\"example.com/m/" + bad + "\"\n)\n\nvar _ = " + bad + ".X\n\nfunc f() { flag.Parse() }\n"})
+		if !finds(v.Warnings, "use decision A's check by types could not finish") || stopped(v) || finds(v.Warnings, "check by types stopped") || outWorkers.Load() != 0 || time.Since(begin) > time.Minute {
+			t.Errorf("H1 %s: warnings %q, %d workers, %v", bad, whats(v.Warnings), outWorkers.Load(), time.Since(begin))
+		}
+	}
+	_ = v
 	// Opus #280 H2: run 1, then an ordinary run 2: both as the base guard's, nothing left running.
 	if v := outGuarded(t, f, map[string]string{"zzz/z_arm64.go": "package zzz\n\nimport \"example.com/m/only\"\n\nvar _ = only.X\n"}); !v.Accepted() || stopped(v) || abandoned.Load() != 0 || outWorkers.Load() != 0 {
 		t.Errorf("H2 run 1: blocks %q, warnings %q, %d abandoned, %d workers", whats(v.Blocks), whats(v.Warnings), abandoned.Load(), outWorkers.Load())
@@ -123,12 +154,20 @@ func TestDecisionAOut3(t *testing.T) {
 	// L3, r3 #6 by types: a 64 KiB name with 5,000 references through a value, under a node bound.
 	oldNodes := maxOutNodes
 	maxOutNodes = 8 << 20
-	v := outGuarded(t, f, map[string]string{"tool/huge.go": "package tool\n\nfunc " + strings.Repeat("n", 64<<10) + "() {\n" + strings.Repeat("\t_ = w.Parse\n", 5000) + "}\n"})
+	v = outGuarded(t, f, map[string]string{"tool/huge.go": "package tool\n\nfunc " + strings.Repeat("n", 64<<10) + "() {\n" + strings.Repeat("\t_ = w.Parse\n", 5000) + "}\n"})
 	maxOutNodes = oldNodes
 	if !finds(v.Warnings, "tool/huge.go references into flag added, removed, moved or changed (1: "+strings.Repeat("n", 64)) || stopped(v) {
 		t.Errorf("r3 #6 by types: %q", whats(v.Warnings))
 	}
 	_ = probe
+}
+
+// hasDecl: f declares name at package level.
+func hasDecl(f *ast.File, name string) bool {
+	return slices.ContainsFunc(f.Decls, func(d ast.Decl) bool {
+		g, ok := d.(*ast.GenDecl)
+		return ok && slices.ContainsFunc(g.Specs, func(sp ast.Spec) bool { ts, ok := sp.(*ast.TypeSpec); return ok && ts.Name.Name == name })
+	})
 }
 
 // TestOutTypedBounded: Astra #280 M5 and the bounds. A check needs a free
@@ -138,22 +177,52 @@ func TestDecisionAOut3(t *testing.T) {
 func TestOutTypedBounded(t *testing.T) {
 	f, _ := libcFixture(t)
 	change := map[string]string{"tool/x.go": "package tool\n\nimport \"flag\"\n\nfunc v() {\n\tw := flag.NewFlagSet(\"w\", flag.ContinueOnError)\n\t_ = w.Parse(nil)\n}\n"}
-	outWorkers.Add(1) // another run's worker holds the slot past the deadline
-	maxOutCheck = 300 * time.Millisecond
+	typesStopped := func(v Verdict) bool { return finds(v.Warnings, "decision A's check by types stopped") }
+	// Opus #282 M1 (probe B): a live peer holds the slot: the types check
+	// stops within outSlotWait of the run's start, not at its deadline.
+	outWorkers.Add(1)
+	begin := time.Now()
 	v := outGuarded(t, f, change)
-	maxOutCheck = 0
+	took := time.Since(begin)
 	outWorkers.Add(-1)
-	if !v.Accepted() || !finds(v.Warnings, "stopped at its work bound") {
-		t.Errorf("no free slot: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	if !v.Accepted() || !typesStopped(v) || finds(v.Warnings, "stopped at its work bound") || took > time.Minute {
+		t.Errorf("a held slot: blocks %q, warnings %q, %v", whats(v.Blocks), whats(v.Warnings), took)
 	}
-	maxOutCheck = time.Nanosecond
+	// A dropped worker still running: the types check stops at once.
+	outDropped.Add(1)
+	v = outGuarded(t, f, change)
+	outDropped.Add(-1)
+	if !v.Accepted() || !typesStopped(v) {
+		t.Errorf("a dropped worker: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	// No worker starts past the deadline.
+	if _, _, ok := outCheck(context.Background(), time.Now(), time.Now().Add(-time.Second), nil, "p", nil, nil, nil); ok || outWorkers.Load() != 0 {
+		t.Errorf("past the deadline: started, %d workers", outWorkers.Load())
+	}
+	// Past the deadline (a 2^25 check, maxOutCheck 50 ms): the types check
+	// stops; the dropped worker keeps its slot; abandoned is untouched.
+	maxOutCheck = 50 * time.Millisecond
 	v = f.guarded(t, map[string]string{"tool/c.go": "package tool\n\nimport _ \"flag\"\n\n" + aliasChain("A", 25) + aliasChain("B", 25) + "var _ = A25(B25{})\n"}) // read at once: the dropped worker still runs
-	held := outWorkers.Load()
+	held, dropped := outWorkers.Load(), outDropped.Load()
 	maxOutCheck = 0
-	if !v.Accepted() || !finds(v.Warnings, "stopped at its work bound") || abandoned.Load() != 0 || held != 1 {
-		t.Errorf("past the deadline: blocks %q, warnings %q, %d abandoned, %d workers", whats(v.Blocks), whats(v.Warnings), abandoned.Load(), held)
+	if !v.Accepted() || !typesStopped(v) || abandoned.Load() != 0 || held != 1 || dropped != 1 {
+		t.Errorf("past the deadline: blocks %q, warnings %q, %d abandoned, %d workers, %d dropped", whats(v.Blocks), whats(v.Warnings), abandoned.Load(), held, dropped)
 	}
 	waitWorkers(t)
+	// Opus #282 probe D (the lead's decision): the types check's stop never
+	// feeds the libc exhaustion block: a later run that changes only a
+	// libc-importing file of a tested package is accepted, as on main.
+	tl := "package pkg\n\nimport \"modernc.org/libc\"\n\nvar _ = libc.NewTLS\n\nfunc k() int { return 1 }\n"
+	lf, _ := libcFixture(t, map[string]string{"pkg/tl.go": tl})
+	for name, hold := range map[string]*atomic.Int32{"held": &outWorkers, "dropped": &outDropped} {
+		hold.Add(1)
+		v := outGuarded(t, lf, map[string]string{"pkg/tl.go": strings.Replace(tl, "return 1", "return 2", 1)})
+		hold.Add(-1)
+		if !v.Accepted() || len(v.Blocks) > 0 || !typesStopped(v) {
+			t.Errorf("probe D, a %s worker: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
+		}
+	}
+	// The export bound (each typer's, Opus #282 L2): incomplete.
 	old := maxOutExport
 	maxOutExport = 1
 	v = outGuarded(t, f, change)

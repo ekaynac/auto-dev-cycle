@@ -41,7 +41,7 @@ type additive struct {
 	named            map[string]map[string]bool // by module root and version
 	fset             *token.FileSet             // every file it parses
 	importers        map[*typer]*outImporter    // P14b-out-3: one a typer of main's, read only
-	export           *int64                     // P14b-out-3: export data bytes its importers may still read (its own)
+	typedOff         bool                       // P14b-out-3: its types check stopped (typesOff)
 }
 
 // outFile is what one Go file holds for the layer.
@@ -497,8 +497,6 @@ func (r *run) outRun() (err error) {
 		}
 	}()
 	r.out.files, r.out.built, r.out.named, r.out.importers = map[string]*outFile{}, map[string]int{}, map[string]map[string]bool{}, map[*typer]*outImporter{}
-	r.out.export = new(int64)
-	*r.out.export = maxOutExport
 	r.outPkgs()
 	r.outModule()
 	return r.ctx.Err()
@@ -518,6 +516,8 @@ func (r *run) outPkgs() {
 			f := strings.Split(k, "\x00") // file, package, function, name
 			if r.ctx.Err() != nil {
 				return
+			} else if r.out.typedOff && strings.ContainsAny(f[3], "([") { // the types check stopped: its references are left out
+				continue
 			} else if a.refs[k] > b.refs[k] && libc(f[1]) && tested && !strings.ContainsAny(f[3], "([") { // by types ((T).M, g[T]): warnings only
 				r.outBlock(f[0]+": "+f[1]+"."+f[3]+" in "+f[2], "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
 			} else if a.refs[k] != b.refs[k] {
