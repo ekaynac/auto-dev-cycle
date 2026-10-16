@@ -15,7 +15,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -86,7 +85,7 @@ func TestDecisionAOut(t *testing.T) {
 		"example.com/mx beside example.com/m": {"tool/x.go", "package tool\n\nimport \"example.com/mx\"\n\nfunc G() int { return mx.F() }\n", "", "a new import of example.com/mx"},
 		"a renamed flag":                      {"tool/r.go", "package tool\n\nimport fl \"flag\"\n\nfunc p() { fl.Parse() }\n", "", outRefs("tool/r.go", "flag", "1: p")},
 		"a local shadowing flag": {"tool/l.go", "package tool\n\nimport \"flag\"\n\nvar _ = flag.Parse\n\nfunc p() {\n\tflag := struct{ Parse func() }{func() {}}\n\tflag.Parse()\n}\n", "",
-			outRefs("tool/l.go", "flag", "1: var _")},
+			outRefs("tool/l.go", "flag", "1: package level")},
 	} {
 		v := outGuarded(t, f, map[string]string{c.file: c.src})
 		if c.block != "" && !finds(v.Blocks, c.block) || c.block == "" && !v.Accepted() || c.warn != "" && !finds(v.Warnings, c.warn) || c.warn == "" && c.block == "" && len(v.Warnings) > 0 {
@@ -419,27 +418,24 @@ func TestDecisionAOutRound9(t *testing.T) {
 }
 
 // TestOutNodesPerByte: the shadow walk charges real nodes only, at most two
-// a byte. Dense forms of Go's syntax, about
-// 300 KiB, charge at most one (nil callbacks charged would be two).
+// a byte: dense forms of Go's syntax, about 300 KiB, charge at most one (nil
+// callbacks charged would be two). All of outRead (P14b-out-2's fingerprints
+// too) charges a few units a byte.
 func TestOutNodesPerByte(t *testing.T) {
 	src := "package p\n\nfunc f() {\n" + strings.Repeat("\tx\n\t^^^^^^^^x\n\ta.b.c.d.e.f\n\tf()()()()\n\t{{{{}}}}\n\tx[0][0][0]\n\t-(-(-x))\n\tx, y := 0, 0\n\t_ = []int{0,0,0,0}\n", 4000) + "}\n"
-	r := &run{ctx: context.Background()}
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
+		read: func(context.Context, string, int64) ([]byte, bool, error) { return []byte(src), true, nil }}
+	tr := &tree{files: map[string]string{"p/d.go": "d"}, dirs: map[string][]string{"p": {"p/d.go"}}}
+	if r.outRead("p", tr); r.out.nodes > 4*len(src) || r.out.over {
+		t.Errorf("outRead: %d units for %d bytes", r.out.nodes, len(src))
+	}
 	f, err := parser.ParseFile(token.NewFileSet(), "p/d.go", src, parser.SkipObjectResolution)
 	if err != nil {
 		t.Fatal(err)
 	}
+	r = &run{ctx: context.Background()}
 	if r.refsIn(f, nil, false, func(string, string) {}); r.out.nodes > len(src) || r.out.nodes < len(src)/4 || r.out.over {
 		t.Errorf("%d nodes for %d bytes", r.out.nodes, len(src))
-	}
-	// All of outRead (P14b-out-2: the walk, the fingerprints, the type check
-	// on each platform's set and its walk): a few units a byte.
-	r = &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, listEnd: time.Now().Add(time.Minute),
-		out:  additive{files: map[string]*outFile{}, built: map[string]int{}, named: map[string]map[string]bool{}, importers: map[*typer]*outImporter{}, export: maxOutExport},
-		read: func(context.Context, string, int64) ([]byte, bool, error) { return []byte(src), true, nil }}
-	tr := &tree{files: map[string]string{"p/d.go": "d"}, dirs: map[string][]string{"p": {"p/d.go"}}, typers: map[string]*typer{}}
-	r.trees = [2]*tree{tr, tr}
-	if r.outRead("p", tr); r.out.nodes > 8*len(src) || r.out.over {
-		t.Errorf("outRead: %d units for %d bytes", r.out.nodes, len(src))
 	}
 }
 
@@ -491,7 +487,7 @@ func TestOutShadowOracle(t *testing.T) {
 				return true
 			})
 		}
-		r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]int{}, named: map[string]map[string]bool{}},
+		r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
 			read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
 				return []byte(files[blob[0]-'0']), true, nil
 			}}
@@ -521,12 +517,12 @@ func TestOutShadowOracle(t *testing.T) {
 // probe B1), and a done context stops it with no block (M2, probe B2).
 func TestOutReadAndCancel(t *testing.T) {
 	var read []string
-	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]int{}, named: map[string]map[string]bool{},
-		importers: map[*typer]*outImporter{}, export: maxOutExport}, listEnd: time.Now().Add(time.Minute), read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
-		read = append(read, blob)
-		return []byte("package tool\n"), true, nil
-	}}
-	tr := &tree{files: map[string]string{"tool/README.md": "readme", "tool/x.go": "x"}, dirs: map[string][]string{"tool": {"tool/README.md", "tool/x.go"}}, typers: map[string]*typer{}}
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
+		read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
+			read = append(read, blob)
+			return []byte("package tool\n"), true, nil
+		}}
+	tr := &tree{files: map[string]string{"tool/README.md": "readme", "tool/x.go": "x"}, dirs: map[string][]string{"tool": {"tool/README.md", "tool/x.go"}}}
 	r.outRead("tool", tr)
 	if !slices.Equal(read, []string{"x"}) {
 		t.Errorf("B1: blobs read %q", read)
