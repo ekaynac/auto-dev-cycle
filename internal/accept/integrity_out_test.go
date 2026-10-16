@@ -417,15 +417,17 @@ func TestDecisionAOutRound9(t *testing.T) {
 	}
 }
 
-// TestOutNodesPerByte: the node bound's argument (integrity_out.go): one
-// parse charges at most two nodes a byte. Dense forms of Go's syntax, about
+// TestOutNodesPerByte: the shadow walk charges real nodes only, at most two
+// a byte. Dense forms of Go's syntax, about
 // 300 KiB, charge at most one (nil callbacks charged would be two).
 func TestOutNodesPerByte(t *testing.T) {
 	src := "package p\n\nfunc f() {\n" + strings.Repeat("\tx\n\t^^^^^^^^x\n\ta.b.c.d.e.f\n\tf()()()()\n\t{{{{}}}}\n\tx[0][0][0]\n\t-(-(-x))\n\tx, y := 0, 0\n\t_ = []int{0,0,0,0}\n", 4000) + "}\n"
-	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
-		read: func(context.Context, string, int64) ([]byte, bool, error) { return []byte(src), true, nil }}
-	tr := &tree{files: map[string]string{"p/d.go": "d"}, dirs: map[string][]string{"p": {"p/d.go"}}}
-	if r.outRead("p", tr); r.out.nodes > len(src) || r.out.nodes < len(src)/4 || r.out.over {
+	r := &run{ctx: context.Background()}
+	f, err := parser.ParseFile(token.NewFileSet(), "p/d.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.refsIn(f, nil, false, func(string, string) {}); r.out.nodes > len(src) || r.out.nodes < len(src)/4 || r.out.over {
 		t.Errorf("%d nodes for %d bytes", r.out.nodes, len(src))
 	}
 }
@@ -513,7 +515,7 @@ func TestOutReadAndCancel(t *testing.T) {
 			read = append(read, blob)
 			return []byte("package tool\n"), true, nil
 		}}
-	tr := &tree{files: map[string]string{"tool/README.md": "readme", "tool/x.go": "x"}, dirs: map[string][]string{"tool": {"tool/README.md", "tool/x.go"}}}
+	tr := &tree{files: map[string]string{"tool/README.md": "readme", "tool/x.go": "x"}, dirs: map[string][]string{"tool": {"tool/README.md", "tool/x.go"}}, typers: map[string]*typer{}}
 	r.outRead("tool", tr)
 	if !slices.Equal(read, []string{"x"}) {
 		t.Errorf("B1: blobs read %q", read)
