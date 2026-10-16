@@ -149,6 +149,20 @@ func (r *run) python(changes []Change) error {
 				return err
 			} else if why != "" {
 				add(&r.blocks, c.Dst, why)
+			} else if was, ok := pb.files[c.Src]; !pb.cand.files[c.Dst].plain && (!src || !ok || was.plain) { // plainness lost or new
+				add(&r.blocks, c.Dst, "a package __init__.py that is not plain changed (its submodules may resolve elsewhere)") // P14c-2a-widen
+			}
+		}
+		if dst {
+			f, err := pb.candFile(c.Dst)
+			if err != nil {
+				return err
+			}
+			for _, w := range f.writes {
+				if n := pb.writtenModule(f, w); n != "" {
+					add(&r.blocks, c.Dst, "a module that writes "+n+" at run time changed") // P14c-2a-widen
+					break
+				}
 			}
 		}
 		b, ok, err := r.pyScan(src && path.Ext(c.Src) == ".py", c.Src, c.SrcBlob, judged)

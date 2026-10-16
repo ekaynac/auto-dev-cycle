@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"cmp"
 	"maps"
 	"path"
 	"regexp"
@@ -213,10 +214,7 @@ func (pb *pyBase) starVerdict(q string, f *pyBaseFile) (string, error) {
 // starCandidate: why the candidate's package __init__.py q has a star import
 // that is not inert, judged on the candidate's files (P14c-2a-star).
 func (pb *pyBase) starCandidate(q string) (string, error) {
-	if pb.cand == nil {
-		pb.cand = &pyBase{r: pb.r, tree: pb.r.cand, files: map[string]*pyBaseFile{}, paths: slices.Sorted(maps.Keys(pb.r.cand))}
-	}
-	f, err := pb.cand.file(q)
+	f, err := pb.candFile(q)
 	if err != nil {
 		return "", err
 	} else if f.unread {
@@ -255,6 +253,78 @@ func (pb *pyBase) starSourceOf(p string) (string, error) {
 	return "", nil
 }
 
+// closure: the base modules that run because a judged file imports them,
+// transitively, under every root (P14c-2a-widen). In each, a sys use
+// pySysUse does not read leaves the base unread, as in a judged file, and
+// a write onto a base module it imports (an attribute assigned, deleted or
+// setattr'd, or its import path reached) makes that module unread
+// (pb.written). Base symlinks and gitlinks name opaque modules.
+func (pb *pyBase) closure() error {
+	pb.written, pb.opaque = map[string]string{}, map[string]bool{}
+	for p, l := range pb.r.links {
+		for _, n := range pyModNames(p, pb.shadowEntries, false) {
+			pb.opaque[n] = pb.opaque[n] || l
+		}
+	}
+	seen, names, queue := map[*pyBaseFile]bool{}, map[string]bool{}, slices.Clone(pb.tests)
+	for ; len(queue) > 0; queue = queue[1:] {
+		f := queue[0]
+		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			pb.holderUnread = cmp.Or(pb.holderUnread, "the base conditions' analysis is over the guard's work bound")
+			return pb.r.ctx.Err()
+		} else if seen[f] {
+			continue
+		}
+		seen[f], pb.sysUnread = true, pb.sysUnread || f.sysUnread
+		for _, w := range f.writes {
+			if n := pb.writtenModule(f, w); n != "" {
+				pb.written[n] = f.path
+			}
+		}
+		for _, m := range f.mods { // every package on the way runs too
+			for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
+				if n := strings.Join(parts[:k], "."); names[n] {
+					continue // each name once
+				} else if names[n] = true; cmp.Or(pb.mods[n], pb.shadowMods[n]) != "" {
+					q := cmp.Or(pb.mods[n], pb.shadowMods[n])
+					g, err := pb.file(q)
+					if err != nil {
+						return err
+					}
+					queue = append(queue, g)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// writtenModule: the base module that f's write w lands on, or "": w's head
+// read as the module f imports under that name, then the longest prefix a
+// base file answers to.
+func (pb *pyBase) writtenModule(f *pyBaseFile, w string) string {
+	parts := strings.Split(w, ".")
+	to := f.from[parts[0]]
+	if !f.named[parts[0]] && strings.HasPrefix(to, parts[0]+".") {
+		to = parts[0] // import a.b binds a
+	}
+	full := strings.Split(strings.Join(append([]string{to}, parts[1:]...), "."), ".")
+	for k := len(full); k >= 1; k-- {
+		if n := strings.Join(full[:k], "."); cmp.Or(pb.mods[n], pb.shadowMods[n]) != "" {
+			return n
+		}
+	}
+	return ""
+}
+
+// candFile is the candidate's version of q, read with the candidate's tree.
+func (pb *pyBase) candFile(q string) (*pyBaseFile, error) {
+	if pb.cand == nil {
+		pb.cand = &pyBase{r: pb.r, tree: pb.r.cand, files: map[string]*pyBaseFile{}, paths: slices.Sorted(maps.Keys(pb.r.cand))}
+	}
+	return pb.cand.file(q)
+}
+
 // pyStarForm: path p is a form of module x in directory d that CPython may
 // load: x.py, a package x/__init__.*, x.<anything> (extensions, .pyc), or
 // __pycache__/x.*.
@@ -280,6 +350,10 @@ func (pb *pyBase) prefix(parts []string, top int) (int, string, error) {
 	for k := 1; k <= min(top, len(parts)); k++ { // every ancestor, a namespace portion's too (Astra #275 H1)
 		if name := strings.Join(parts[:k], "."); pb.mods[name] == "" && pb.shadowMods[name] != "" {
 			return 0, "the module " + name + " is under a root the guard reads for shadows only", nil // main reads no added root
+		} else if pb.opaque[name] {
+			return 0, "the module " + name + " is a symlink or a gitlink in the base", nil // Opus #279 M1
+		} else if w := pb.written[name]; w != "" {
+			return 0, "the module " + name + " is written at run time by " + w, nil // P14c-2a-widen
 		} else if pb.alts[name] > 1 { // at any depth (Opus #275 H1); a module and a package (Astra #272 r2 H1)
 			return 0, "the module name " + name + " in two roots", nil
 		}

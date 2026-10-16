@@ -35,6 +35,8 @@ type pyBase struct {
 	tree         map[string]string      // the files file reads: nil, the base; the candidate for pyStarCandidate
 	cand         *pyBase                // the candidate's files, for its package __init__.py stars
 	dirs         map[string][]string    // a directory's direct entries, built once (Astra #279 M1)
+	written      map[string]string      // a base module an imported module writes at run time, to the writer (P14c-2a-widen)
+	opaque       map[string]bool        // a module name under a base symlink or gitlink (Opus #279 M1)
 
 	// entries are main's (the root, pythonpath, the basedirs) and resolve; extra are the roots an install
 	// adds (pyInstall), which name modules for pyShadow only (Opus #275 H2)
@@ -62,6 +64,7 @@ type pyBaseFile struct {
 	starSrc []string // x of each exact "from .x import *" at module level (P14c-2a-star)
 	badStar bool     // any other import followed by * anywhere in its tokens
 	starWhy *string  // starCheck's verdict, cached (Astra #279 M1)
+	writes  []string // the dotted chains it assigns, deletes or setattrs, or whose import path it reaches, rooted at a name it imports (P14c-2a-widen)
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -155,6 +158,10 @@ func (pb *pyBase) load() error {
 			pb.shadowMods[n], pb.alts[n] = cmp.Or(pb.shadowMods[n], q), pb.alts[n]+1
 		}
 	}
+	if err := pb.closure(); err != nil {
+		pb.err = err
+		return err
+	}
 	for _, f := range slices.Clone(pb.tests) { // the application modules a judged file imports, one hop (Mythos #270 M2)
 		for _, m := range f.mods {
 			r, unread, err := pb.resolve(m) // and the module a re-export lands in (Opus #272 M1); unread: no holder known
@@ -217,6 +224,34 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
 		f.sysUnread = f.sysUnread || !pySysUse(l.toks)
+		for _, st := range pySplit(line, ";") { // a write onto another module, anywhere in the file (P14c-2a-widen)
+			parts, targets := pyAssign(st), [][]ptok(nil)
+			if targets = parts[:len(parts)-1]; len(st) > 1 && st[0].text == "del" {
+				targets = [][]ptok{st[1:]}
+			}
+			for i, k := range st {
+				if i+2 < len(st) && k.text == "setattr" && st[i+1].text == "(" {
+					targets = append(targets, st[i+2:])
+				}
+			}
+			for i := range st { // a.b.__path__.insert(…), a.__spec__…: the package's import path, moved in place
+				if i+2 < len(st) && st[i+1].text == "." && slices.Contains(pyImportPath, st[i+2].text) {
+					j := i
+					for ; j >= 2 && st[j-1].text == "." && st[j-2].kind == 'n'; j -= 2 {
+					}
+					targets = append(targets, st[j:i+2])
+				}
+			}
+			for _, tg := range targets {
+				if i := slices.IndexFunc(tg, func(k ptok) bool { return k.kind == 'n' }); i >= 0 && i+1 < len(tg) && slices.Contains([]string{".", "[", ","}, tg[i+1].text) {
+					chain := tg[i].text
+					for j := i; j+2 < len(tg) && tg[j+1].text == "." && tg[j+2].kind == 'n'; j += 2 {
+						chain += "." + tg[j+2].text
+					}
+					f.writes = append(f.writes, chain)
+				}
+			}
+		}
 		for i := 1; i < len(l.toks); i++ { // a star import at token level, in any form (Astra #277 r2 H1)
 			if l.toks[i].text == "*" && l.toks[i-1].text == "import" {
 				if t := l.toks; l.indent == 0 && len(t) == 5 && t[0].text == "from" && t[1].text == "." && t[2].kind == 'n' {

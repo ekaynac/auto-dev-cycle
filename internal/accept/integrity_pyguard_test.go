@@ -5,6 +5,9 @@ package accept
 import (
 	"context"
 	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -1258,7 +1261,7 @@ func TestPyGuardStar(t *testing.T) {
 		"r2 H2 a compiled package beside the source":                     {map[string]string{"feature/__init__.py": "from .redirect import *\n", "feature/redirect.py": "X = 1\n", "feature/redirect/__init__.pyc": "\x00", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature star-imports .redirect, which is not one plain module file"},
 		"r2 H2 an absolute star with a compiled package":                 {map[string]string{"feature/__init__.py": "from redirect import *\n", "redirect.py": "X = 1\n", "redirect/__init__.pyc": "\x00", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature has a star import other than"},
 		"r2 H3 a dotted source":                                          {map[string]string{"feature/__init__.py": "from .sources.redirect import *\n", "feature/sources/__init__.py": "__path__ = [\"real\"]\n", "feature/sources/redirect.py": "X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature has a star import other than"},
-		"S07 a source running a def default":                             {map[string]string{"feature/__init__.py": "from .helper import *\n", "feature/helper.py": "import sys\n\ndef f(x=sys.modules['feature'].__path__.insert(0, 'impl')):\n    pass\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature star-imports .helper, which may run code or bind __path__"},
+		"S07 a source running a def default":                             {map[string]string{"feature/__init__.py": "from .helper import *\n", "feature/helper.py": "import sys\n\ndef f(x=sys.modules['feature'].__path__.insert(0, 'impl')):\n    pass\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: unverifiable: the base adds sys.path entries the guard does not read"},
 		"S08 a source with a class":                                      {map[string]string{"feature/__init__.py": "from .helper import *\n", "feature/helper.py": "class K:\n    X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature star-imports .helper, which may run code or bind __path__"},
 		"P33l a source importing":                                        {map[string]string{"feature/__init__.py": "from .helper import *\n", "feature/helper.py": "import helper2\n", "helper2.py": "X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature star-imports .helper, which may run code or bind __path__"},
 		"6ba a source only src/ names":                                   {map[string]string{"feature/__init__.py": "from .redirect import *\n", "src/feature/redirect.py": "X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, map[string]string{"cfg.py": "SKIP = 'True'\n"}, []string{}, "cfg.py: a module a condition reads is unread (the package feature star-imports .redirect, which is not one plain module file"},
@@ -1317,5 +1320,85 @@ func TestPyGuardStarWork(t *testing.T) {
 	maxWork = 3000
 	if v := g.guarded(t, map[string]string{"other.py": "O = 2\n"}); !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread (the package feature is over the guard's work bound)") {
 		t.Errorf("the star check charged to the work bound: %q", whats(pyOwn(v.Blocks)))
+	}
+}
+
+// TestPyGuardImportTime: P14c-2a-widen (A), code that runs because a module
+// is imported. The acceptance rows of Opus #277 (A02-A02d, G01, G02) block
+// or are unread with the install reader on (test-only: it sets a package
+// variable, not in parallel) and without install keys; ordinary closure
+// modules stay read.
+func TestPyGuardImportTime(t *testing.T) {
+	gate := pyInstallRootsRead
+	t.Cleanup(func() { pyInstallRootsRead = gate })
+	rows := map[string]struct {
+		base map[string]string
+		want string
+	}{
+		"A02 a plain package importing a module that moves __path__": {map[string]string{"feature/__init__.py": "from . import _r\n", "feature/_r.py": "import feature\nfeature.__path__.insert(0, 'lib/impl')\n", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature is written at run time by feature/_r.py)"},
+		"A02b sys.modules in an imported module":                     {map[string]string{"feature/__init__.py": "import feature._r\n", "feature/_r.py": "import sys\nsys.modules['feature'].__path__.insert(0, 'lib/impl')\n", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: "},
+		"A02c a root helper rebinding __path__":                      {map[string]string{"feature/__init__.py": "import helper\n", "helper.py": "import feature\nfeature.__path__[:] = ['lib/impl']\n", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature is written at run time by helper.py)"},
+		"A02d the helper under the install root":                     {map[string]string{"feature/__init__.py": "import helper\n", "lib/helper.py": "import feature\nfeature.__path__[:] = ['lib/impl']\n", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: "},
+		"G01 a conftest parking a value on a base module":            {map[string]string{"conftest.py": "import cfg\nimport feature.flags\nfeature.flags.SKIP = cfg.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature.flags is written at run time by conftest.py)"},
+		"G02 an imported sibling parking a value":                    {map[string]string{"feature/__init__.py": "from . import _park\n", "feature/_park.py": "import cfg\nfrom . import flags\nflags.SKIP = cfg.SKIP\n", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature.flags is written at run time by feature/_park.py)"},
+		"G03 a setattr on a base module":                             {map[string]string{"conftest.py": "import cfg\nimport feature.flags\nsetattr(feature.flags, 'SKIP', cfg.SKIP)\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature.flags is written at run time by conftest.py)"},
+		"G04 a del on a base module":                                 {map[string]string{"conftest.py": "import feature.flags\ndel feature.flags.SKIP\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "lib/impl/__init__.py": "", "lib/impl/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module feature.flags is written at run time by conftest.py)"},
+		"an ordinary closure module stays read":                      {map[string]string{"feature/__init__.py": "from . import util\n", "feature/util.py": "import os\nX = os.path.join('a', 'b')\nos.environ['MODE'] = '1'\n", "feature/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a skipif or xfail condition in tests/test_x.py reads SKIP, which"},
+		"a method writing self stays read":                           {map[string]string{"feature/__init__.py": "from . import util\n", "feature/util.py": "class C:\n    def set(self):\n        self.x = 1\n", "feature/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "tests/test_x.py": "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    assert False\n"}, "cfg.py: a skipif or xfail condition in tests/test_x.py reads SKIP, which"},
+	}
+	for _, on := range []bool{true, false} {
+		pyInstallRootsRead = on
+		for name, c := range rows {
+			base := maps.Clone(c.base)
+			if !on && strings.HasPrefix(name, "A02d") {
+				continue // lib/ is a root only through the install key
+			} else if on {
+				base["setup.cfg"] = "[metadata]\nname = example\nversion = 0.0.0\n\n[options]\npackage_dir = =lib\npackages = find:\n\n[options.packages.find]\nwhere = lib\n"
+			}
+			g := newFixtureWith(t, func(src string) {
+				write(t, src, base)
+				plain(t, src, "add", "--all")
+			})
+			if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), c.want) {
+				t.Errorf("%s (the reader on: %v): %q, want %q", name, on, whats(pyOwn(v.Blocks)), c.want)
+			}
+		}
+	}
+	pyInstallRootsRead = gate
+	for name, c := range map[string]struct {
+		base, change map[string]string
+		want         string
+	}{
+		"the candidate makes a package __init__.py not plain": {map[string]string{"feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "tests/test_y.py": "def test_y():\n    pass\n"}, map[string]string{"feature/__init__.py": "import logging\nlogging.getLogger(__name__)\n"}, "feature/__init__.py: a package __init__.py that is not plain changed"},
+		"the candidate writes onto a base module":             {map[string]string{"helper.py": "X = 1\n", "feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "tests/test_y.py": "def test_y():\n    pass\n"}, map[string]string{"helper.py": "import feature.flags\nfeature.flags.SKIP = True\n"}, "helper.py: a module that writes feature.flags at run time changed"},
+		"the candidate uses sys.modules":                      {map[string]string{"helper.py": "X = 1\n", "tests/test_y.py": "def test_y():\n    pass\n"}, map[string]string{"helper.py": "import sys\nsys.modules['feature'] = object()\n"}, "helper.py: modules in module level: unverifiable"},
+	} {
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, c.base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, c.change); !pyFinds(pyOwn(v.Blocks), c.want) {
+			t.Errorf("%s: %q, want %q", name, whats(pyOwn(v.Blocks)), c.want)
+		}
+	}
+	links := newFixtureWith(t, func(src string) { // a base .py symlink and a gitlink (Opus #279 M1, Astra #279 M2)
+		write(t, src, map[string]string{"feature/__init__.py": "", "real/flags.py": "from cfg import SKIP\n", "cfg.py": "SKIP = False\n", "sub/x.py": "",
+			"tests/test_x.py": "import pytest\nimport feature.flags\nimport vendored.flags\n\n@pytest.mark.skipif(feature.flags.SKIP or vendored.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"})
+		if err := os.Symlink("../real/flags.py", filepath.Join(src, "feature", "flags.py")); err != nil {
+			t.Fatal(err)
+		}
+		plain(t, src, "add", "--all")
+		plain(t, src, "update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,vendored")
+	})
+	if v := links.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the module feature.flags is a symlink or a gitlink in the base)") {
+		t.Errorf("a base .py symlink: %q", whats(pyOwn(v.Blocks)))
+	}
+	gitlink := newFixtureWith(t, func(src string) {
+		write(t, src, map[string]string{"cfg.py": "SKIP = False\n", "tests/test_v.py": "import pytest\nimport vendored.flags\n\n@pytest.mark.skipif(vendored.flags.SKIP, reason='r')\ndef test_v():\n    pass\n"})
+		plain(t, src, "add", "--all")
+		plain(t, src, "update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,vendored")
+	})
+	if v := gitlink.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the module vendored is a symlink or a gitlink in the base)") {
+		t.Errorf("a base gitlink: %q", whats(pyOwn(v.Blocks)))
 	}
 }
