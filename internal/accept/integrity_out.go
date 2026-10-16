@@ -39,6 +39,7 @@ type additive struct {
 	files            map[string]*outFile        // by blob, name, directory and version
 	built            map[string]bool            // by blob and name
 	named            map[string]map[string]bool // by module root and version
+	fset             *token.FileSet             // every file it parses
 }
 
 // outFile is what one Go file holds for the layer.
@@ -47,6 +48,10 @@ type outFile struct {
 	dots    []string       // packages in outS it dot-imports
 	unknown []string       // packages in outS imported under a name the layer cannot learn
 	imports []string
+	f       *ast.File
+	units   []unit
+	prints  map[string]string          // by binding: its spans' fingerprint, combined in source order
+	uses    map[string]map[string]bool // by binding: the S packages it uses
 }
 
 // outHook runs the layer (a test turns it off to compare the base guard's
@@ -93,8 +98,12 @@ func bound(name string) string {
 		return name
 	}
 	h := sha256.Sum256([]byte(name))
-	return fmt.Sprintf("%s…%x", name[:64], h[:16])
+	return fmt.Sprintf("%s…%x", name[:64], h[:boundHash])
 }
+
+// boundHash is how many bytes of its hash a bound name keeps (a test forces
+// a collision with 0; fingerprints combine, so one never hides another).
+var boundHash = 16
 
 // std: p is the standard library's by module metadata alone (Astra #276
 // r6; the lead's rule): its first element has no dot, and no module path
@@ -245,12 +254,15 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 	if !built {
 		return nil
 	}
-	f, err := parser.ParseFile(token.NewFileSet(), p, b, parser.ParseComments|parser.SkipObjectResolution) // the base guard's mode
+	if r.out.fset == nil {
+		r.out.fset = token.NewFileSet()
+	}
+	f, err := parser.ParseFile(r.out.fset, p, b, parser.ParseComments|parser.SkipObjectResolution) // the base guard's mode
 	if err != nil {
 		delete(r.out.built, bk)
 		return fail("parse")
 	}
-	of := &outFile{refs: map[string]int{}}
+	of := &outFile{refs: map[string]int{}, f: f, prints: map[string]string{}, uses: map[string]map[string]bool{}}
 	names, testing := map[string]string{}, ""
 	for _, is := range f.Imports {
 		ip, _ := strconv.Unquote(is.Path.Value)
@@ -263,30 +275,32 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 		default:
 			name = r.loadedName(t, dir, ip)
 		}
+		if ip == "testing" {
+			testing = cmp.Or(name, "testing")
+		}
 		switch {
 		case name == "." && outS(ip):
 			of.dots = append(of.dots, ip)
 		case name == "" && outS(ip):
 			of.unknown = append(of.unknown, ip)
-		case outS(ip):
+		case (outS(ip) || sPkg(ip)) && name != "" && name != "." && name != "_": // the base guard's S too: what a body uses
 			names[name] = ip
-		case ip == "testing":
-			testing = cmp.Or(name, "testing")
 		}
 		of.imports = append(of.imports, ip)
 	}
 	for _, d := range f.Decls {
-		fn, _ := d.(*ast.FuncDecl)
-		where, lits := "package level", false
-		switch {
-		case fn != nil && fn.Recv == nil && (fn.Name.Name == "init" || strings.HasSuffix(p, "_test.go") && fn.Name.Name == "TestMain" && hook(fn, testing)):
-			where, lits = "init literal", true // initialization and the hook are the base guard's; the literals in them run later
-		case fn != nil && fn.Recv != nil && r.charge(len(fn.Name.Name)+len(recv(fn)), 0):
-			where = bound(recv(fn) + "." + fn.Name.Name)
-		case fn != nil && r.charge(len(fn.Name.Name), 0):
-			where = bound(fn.Name.Name)
+		for _, u := range r.units(d, p, testing) {
+			of.units = append(of.units, u)
+			r.refsIn(u.n, names, u.lits, func(pkg, name string) {
+				if r.charge(len(name)+len(u.bind), 0) && outS(pkg) { // the bytes it keys (Astra #276 r3 #6, #280 H4)
+					of.refs[pkg+"\x00"+u.where+"\x00"+bound(name)]++
+				}
+				if outS(pkg) || sensitive(pkg+"."+name) > 0 {
+					of.use(u.bind, pkg)
+				}
+			})
+			r.print(of, b, u)
 		}
-		r.refsIn(d, names, lits, func(pkg, name string) { of.refs[pkg+"\x00"+where+"\x00"+bound(name)]++ })
 	}
 	r.out.files[key] = of
 	return of
@@ -425,17 +439,27 @@ type outFacts struct {
 	dots    map[string]bool // "file\x00package"
 	unknown map[string]bool // "file\x00package"
 	imports map[string]bool
+	prints  map[string]string          // "file\x00binding"
+	uses    map[string]map[string]bool // "file\x00binding": packages
 }
 
 func (r *run) outRead(dir string, t *tree) outFacts {
-	fa := outFacts{refs: map[string]int{}, dots: map[string]bool{}, unknown: map[string]bool{}, imports: map[string]bool{}}
+	fa := outFacts{refs: map[string]int{}, dots: map[string]bool{}, unknown: map[string]bool{}, imports: map[string]bool{},
+		prints: map[string]string{}, uses: map[string]map[string]bool{}}
+	var ofs []*outFile
+	var ps []string
 	for _, p := range t.dirs[dir] {
 		if path.Ext(p) != ".go" || r.out.over {
 			continue // never a non-Go blob
 		}
-		f := r.outFileOf(p, dir, t.files[p], t)
-		if f == nil {
-			continue
+		if f := r.outFileOf(p, dir, t.files[p], t); f != nil {
+			ofs, ps = append(ofs, f), append(ps, p)
+		}
+	}
+	for i, f := range ofs {
+		p := ps[i]
+		for k, h := range f.prints {
+			fa.prints[p+"\x00"+k], fa.uses[p+"\x00"+k] = h, f.uses[k]
 		}
 		for k, n := range f.refs {
 			fa.refs[p+"\x00"+k] += n
@@ -471,7 +495,7 @@ func (r *run) outPkgs() {
 	dirs := slices.Sorted(maps.Keys(r.touched))
 	for i, dir := range dirs {
 		b, a := r.outRead(dir, r.trees[0]), r.outRead(dir, r.trees[1])
-		if r.out.over || !r.charge(len(b.refs)+len(a.refs)+len(a.dots)+len(a.unknown)+len(a.imports), 0) {
+		if r.out.over || !r.charge(len(b.refs)+len(a.refs)+len(a.dots)+len(a.unknown)+len(a.imports)+len(b.prints)+len(a.prints), 0) {
 			r.outStopped(dirs[i:])
 			return
 		}
@@ -493,6 +517,7 @@ func (r *run) outPkgs() {
 			r.outWarn(file, fmt.Sprintf("references into %s added, removed, moved or changed (%d: %s%s): review it", pkg, len(fns),
 				strings.Join(fns[:min(3, len(fns))], ", "), map[bool]string{true: ", …"}[len(fns) > 3]))
 		}
+		r.outBodies(b, a, changed)
 		for _, k := range slices.Sorted(maps.Keys(a.unknown)) { // fail closed: its references cannot be read
 			if file, pkg, _ := strings.Cut(k, "\x00"); r.files[file] != r.cand[file] && libc(pkg) && tested {
 				r.outBlock(file, "unverifiable: an import of "+pkg+" with an unknown name")
