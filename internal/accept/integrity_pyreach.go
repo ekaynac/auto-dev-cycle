@@ -167,7 +167,20 @@ func pyDepthEnd(t []ptok, open int) int {
 // __all__, and no form CPython's FileFinder may load before it, or in its
 // place, exists: a package x/__init__.*, an extension x.*.so or x.*.pyd,
 // x.pyc, or __pycache__/x.*. A source imports nothing, so it is a leaf.
+// The verdict is cached on f, and the competing forms come from three
+// directories' entries, charged to the work bound (Astra #279 M1).
 func (pb *pyBase) starCheck(q string, f *pyBaseFile) (string, error) {
+	if f.starWhy != nil {
+		return *f.starWhy, nil
+	}
+	why, err := pb.starVerdict(q, f)
+	if err == nil {
+		f.starWhy = &why
+	}
+	return why, err
+}
+
+func (pb *pyBase) starVerdict(q string, f *pyBaseFile) (string, error) {
 	if f.badStar {
 		return "has a star import other than from .x import * at module level", nil
 	}
@@ -175,8 +188,18 @@ func (pb *pyBase) starCheck(q string, f *pyBaseFile) (string, error) {
 	if pb.tree != nil {
 		tree = pb.tree
 	}
+	if pb.dirs == nil {
+		pb.dirs, pb.r.work = map[string][]string{}, pb.r.work+len(pb.paths)
+		for _, p := range pb.paths {
+			pb.dirs[path.Dir(p)] = append(pb.dirs[path.Dir(p)], p)
+		}
+	}
 	for _, x := range f.starSrc {
-		if src := d + "/" + x + ".py"; tree[src] == "" || slices.ContainsFunc(pb.paths, func(p string) bool { return pyStarForm(p, d, x) && p != src && path.Ext(p) != ".pyi" }) {
+		src := d + "/" + x + ".py"
+		near := slices.Concat(pb.dirs[d], pb.dirs[d+"/"+x], pb.dirs[d+"/__pycache__"])
+		if pb.r.work += len(near) + 1; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return "is over the guard's work bound", pb.r.ctx.Err()
+		} else if tree[src] == "" || slices.ContainsFunc(near, func(p string) bool { return pyStarForm(p, d, x) && p != src && path.Ext(p) != ".pyi" }) {
 			return "star-imports ." + x + ", which is not one plain module file", nil
 		} else if fs, err := pb.file(src); err != nil {
 			return "", err

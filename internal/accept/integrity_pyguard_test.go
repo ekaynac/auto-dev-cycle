@@ -1287,3 +1287,35 @@ func TestPyGuardStar(t *testing.T) {
 		}
 	}
 }
+
+// TestPyGuardStarWork: Astra #279 M1, scaled. 2,000 repetitions of
+// "from .x import *" beside 2,000 sibling files, read by 100 conditions:
+// deduplicated, cached and indexed by directory, the star check stays well
+// inside a work bound that the uncached (about 100 x 2,005) or repeated
+// (about 2,000 x 2,005) scan would pass; and the scan is charged, so a
+// small bound stops it as unread. No wall-clock bound.
+func TestPyGuardStarWork(t *testing.T) {
+	base := map[string]string{"feature/__init__.py": strings.Repeat("from .x import *\n", 2000), "feature/x.py": "X = 1\n", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "other.py": "O = 1\n"}
+	for i := range 2000 {
+		base[fmt.Sprintf("feature/m%d.py", i)] = "M = 1\n"
+	}
+	test := "import pytest\nimport feature.flags\n\n"
+	for i := range 100 {
+		test += fmt.Sprintf("@pytest.mark.skipif(feature.flags.SKIP, reason='r%d')\ndef test_%d():\n    pass\n\n", i, i)
+	}
+	base["tests/test_x.py"] = test
+	g := newFixtureWith(t, func(src string) {
+		write(t, src, base)
+		plain(t, src, "add", "--all")
+	})
+	old := maxWork
+	t.Cleanup(func() { maxWork = old })
+	maxWork = 50000
+	if v := g.guarded(t, map[string]string{"other.py": "O = 2\n"}); len(pyOwn(v.Blocks)) > 0 {
+		t.Errorf("repeated stars within the work bound: %q, want no block", whats(pyOwn(v.Blocks)))
+	}
+	maxWork = 3000
+	if v := g.guarded(t, map[string]string{"other.py": "O = 2\n"}); !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread (the package feature is over the guard's work bound)") {
+		t.Errorf("the star check charged to the work bound: %q", whats(pyOwn(v.Blocks)))
+	}
+}
