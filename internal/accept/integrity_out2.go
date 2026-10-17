@@ -85,7 +85,7 @@ func (r *run) print(of *outFile, src []byte, u unit) {
 	tf := r.out.fset.File(of.f.Pos())
 	for _, n := range spans {
 		s := src[tf.Offset(n.Pos()):tf.Offset(n.End())]
-		if !r.charge(len(s), 0) {
+		if u.typedOnly && !r.chargeTypes(len(s)) || !u.typedOnly && !r.charge(len(s), 0) {
 			return
 		}
 		h := sha256.Sum256(append([]byte(of.prints[u.bind]), s...))

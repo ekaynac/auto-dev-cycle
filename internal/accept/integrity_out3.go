@@ -164,8 +164,13 @@ const maxOutWorkers = 1
 
 // outSlotWait bounds a run's wait for a live peer's slot, from the run's
 // own start: past it, or while a dropped worker runs, the types check stops
-// at once.
-const outSlotWait = 2 * time.Second
+// at once (a test shortens it).
+var outSlotWait = 2 * time.Second
+
+// outCheckHook, when a test sets it, is called before a caller's drop
+// ("drop") and at a worker's very end ("ended": its slot freed, its
+// accounting done, its result published).
+var outCheckHook func(event string)
 
 // maxOutCheck bounds one of the layer's checks (0: the run's deadline
 // alone; a test sets it).
@@ -175,8 +180,14 @@ var maxOutCheck time.Duration
 // importer (its snapshot and budget) and info, never the run: it waits until
 // the run's deadline (or maxOutCheck) or until ctx ends, then drops it. A
 // dropped worker still running, no slot free within outSlotWait, the
-// deadline passed, a drop or a panic: false (the types check stops).
-func outCheck(ctx context.Context, start, deadline time.Time, im *outImporter, path string, fset *token.FileSet, files []*ast.File, info *types.Info) (*types.Package, []error, bool) {
+// deadline passed, a drop or a panic: false (the types check stops). The
+// hand-off is one decision a worker (Astra #282 M2): its state goes by CAS
+// from running to ended (by the worker) or to dropped (by the caller), and
+// only the winner accounts for it. A worker that ends frees its slot before
+// it publishes its result. A dropped one is counted by its caller, and
+// uncounted by the worker only after that count, at its real end, before
+// its slot is freed: outDropped is exact and never below zero.
+func outCheck(ctx context.Context, start, deadline time.Time, im types.Importer, path string, fset *token.FileSet, files []*ast.File, info *types.Info) (*types.Package, []error, bool) {
 	if maxOutCheck > 0 && time.Now().Add(maxOutCheck).Before(deadline) {
 		deadline = time.Now().Add(maxOutCheck)
 	}
@@ -204,20 +215,25 @@ func outCheck(ctx context.Context, start, deadline time.Time, im *outImporter, p
 		errs []error
 		ok   bool
 	}
-	done, state := make(chan result, 1), new(atomic.Int32) // 0 running, 1 ended, 2 dropped
+	done, state, counted := make(chan result, 1), new(atomic.Int32), make(chan struct{}) // state: 0 running, 1 ended, 2 dropped
 	go func() {
-		defer func() { // when it ends
-			if !state.CompareAndSwap(0, 1) {
-				outDropped.Add(-1)
-			}
-			outWorkers.Add(-1)
-		}()
 		var res result
 		defer func() {
 			if recover() != nil {
 				res.ok = false
 			}
-			done <- res
+			ended := state.CompareAndSwap(0, 1)
+			if !ended { // dropped: its caller counted it first
+				<-counted
+				outDropped.Add(-1)
+			}
+			outWorkers.Add(-1) // its slot, before its result
+			if ended {
+				done <- res
+			}
+			if outCheckHook != nil {
+				outCheckHook("ended")
+			}
 		}()
 		conf := types.Config{Importer: im, FakeImportC: true, Error: func(err error) { res.errs = append(res.errs, err) }}
 		res.pkg, _ = conf.Check(path, fset, files, info)
@@ -229,9 +245,15 @@ func outCheck(ctx context.Context, start, deadline time.Time, im *outImporter, p
 	case <-ctx.Done():
 	case <-time.After(time.Until(deadline)):
 	}
-	if state.CompareAndSwap(0, 2) {
-		outDropped.Add(1)
+	if outCheckHook != nil {
+		outCheckHook("drop")
 	}
+	if !state.CompareAndSwap(0, 2) { // it ended first: its result is published
+		res := <-done
+		return res.pkg, res.errs, res.ok
+	}
+	outDropped.Add(1)
+	close(counted)
 	return nil, nil, false
 }
 
@@ -266,6 +288,9 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 	}
 	if r.out.over || r.out.typedOff || !slices.ContainsFunc(todo, func(of *outFile) bool { return len(of.f.Imports) > 0 }) {
 		return
+	} else if !r.chargeTypes(0) {
+		r.typesOff(dir)
+		return
 	}
 	why := ""
 	for i, pl := range platforms {
@@ -288,7 +313,8 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 		}) {
 			var files []*ast.File
 			for _, of := range groups[name] {
-				if files = append(files, of.f); !r.charge(int(of.f.FileEnd-of.f.FileStart), 0) {
+				if files = append(files, of.f); !r.chargeTypes(int(of.f.FileEnd - of.f.FileStart)) {
+					r.typesOff(dir)
 					return
 				}
 			}
@@ -310,7 +336,10 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 			} else if !strings.HasSuffix(name, "_test") {
 				self = pkg
 			}
-			r.outTypedRefs(groups[name], info)
+			if r.outTypedRefs(groups[name], info); !r.chargeTypes(0) {
+				r.typesOff(dir)
+				return
+			}
 		}
 	}
 	if why != "" {
@@ -318,17 +347,45 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 	}
 }
 
+// maxOutTypeWork bounds the types check's own work (0: 16 × maxRead): its
+// file bytes, AST visits, names, reference keys and their aggregation, its
+// typed-only fingerprints and the platform-mask work past the first
+// platform that builds a file. It never charges the text layer's counter
+// (r.charge), which keeps main's charges exactly (Astra #282 H1); past it,
+// the types check stops (typesOff).
+var maxOutTypeWork int
+
+func (r *run) chargeTypes(n int) bool {
+	r.out.tnodes += n
+	return r.out.tnodes <= cmp.Or(maxOutTypeWork, int(16*maxRead)) && r.ctx.Err() == nil
+}
+
+// typedBind: a binding the types check alone fingerprints (an init or
+// hook body: "init body", "TestMain body").
+func typedBind(k string) bool {
+	return strings.HasSuffix(k, " body") && !strings.HasPrefix(k, "func ") && !strings.HasPrefix(k, "var ")
+}
+
+// outTypesHook runs the types check, all its work (a test turns it off: the
+// layer is then main's, to compare the text layer's charges and findings),
+// and outDone, when a test sets it, sees the text layer's counters at a
+// run's end.
+var (
+	outTypesHook = true
+	outDone      func(nodes, tags int, over bool)
+)
+
 // outCheckSeen, when a test sets it, sees each file set the layer checks.
 var outCheckSeen func(files []*ast.File)
 
 // typesOff stops the types check for the rest of the run, with one
 // warning: its own stop, never P14b-out-1's work bound, so it feeds no
 // libc exhaustion block (the lead's decision on Opus #282 probe D); the
-// references by types are then left out of the comparison.
+// references and fingerprints by types are then left out of the comparison.
 func (r *run) typesOff(dir string) {
 	if !r.out.typedOff {
 		r.out.typedOff = true
-		r.outWarn(dir, "decision A's check by types stopped (a worker still busy, or its deadline): its signals by types are incomplete from this directory on: review it")
+		r.outWarn(dir, "decision A's check by types stopped (a worker still busy, its deadline or its own work bound): its signals by types are incomplete from this directory on: review it")
 	}
 }
 
@@ -351,7 +408,7 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info) {
 		counts := map[string]int{}
 		for _, u := range of.units {
 			r.typedIn(u, info, names, func(pkg, ref string) {
-				if r.charge(len(u.where)+len(ref), 0) && u.where != "" {
+				if r.chargeTypes(len(u.where)+len(ref)) && u.where != "" {
 					counts[pkg+"\x00"+u.where+"\x00"+ref]++
 				}
 				of.use(u.bind, pkg)
@@ -405,7 +462,7 @@ func sMethod(o *types.Func) bool {
 // them, with typedOnly).
 func (r *run) typedIn(u unit, info *types.Info, names map[types.Object]string, add func(pkg, ref string)) {
 	visit := func(n ast.Node) bool {
-		if n == nil || !r.charge(1, 0) {
+		if n == nil || !r.chargeTypes(1) {
 			return n == nil
 		}
 		switch x := n.(type) {
@@ -416,7 +473,7 @@ func (r *run) typedIn(u unit, info *types.Info, names map[types.Object]string, a
 				}
 			}
 		case *ast.Ident:
-			if in, ok := info.Instances[x]; ok && in.TypeArgs != nil && r.charge(len(x.Name), 0) {
+			if in, ok := info.Instances[x]; ok && in.TypeArgs != nil && r.chargeTypes(len(x.Name)) {
 				for t := range in.TypeArgs.Types() {
 					if p, ok := types.Unalias(t).(*types.Pointer); ok {
 						t = p.Elem()
@@ -442,7 +499,7 @@ func (r *run) typedIn(u unit, info *types.Info, names map[types.Object]string, a
 		} else if u.typedOnly {
 			return visit(n)
 		}
-		return n == nil || r.charge(1, 0)
+		return n == nil || r.chargeTypes(1)
 	})
 }
 
@@ -462,7 +519,7 @@ func (r *run) methodName(o *types.Func, names map[types.Object]string) string {
 			on = star + r.typeName(n.Obj(), names)
 		}
 	}
-	r.charge(len(o.Name()), 0)
+	r.chargeTypes(len(o.Name()))
 	names[o] = "(" + on + ")." + bound(o.Name())
 	return names[o]
 }
@@ -471,7 +528,7 @@ func (r *run) typeName(o types.Object, names map[types.Object]string) string {
 	if q, ok := names[o]; ok {
 		return q
 	}
-	r.charge(len(o.Pkg().Path())+len(o.Name()), 0)
+	r.chargeTypes(len(o.Pkg().Path()) + len(o.Name()))
 	names[o] = bound(o.Pkg().Path()) + "." + bound(o.Name())
 	return names[o]
 }

@@ -6,6 +6,11 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"maps"
+	"path"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -114,6 +119,25 @@ func TestDecisionAOut3(t *testing.T) {
 			t.Errorf("%s: blocks %q, warnings %q", name, whats(v.Blocks), whats(v.Warnings))
 		}
 	}
+	// Astra #282 H1: the types check charges its own budget alone: the same
+	// change with it on and off (off: main's layer), with method values, type
+	// arguments, an init body, an arm64-only file, an external test and a
+	// build constraint, leaves the text layer's counters (outDone) as main's.
+	all, counters := map[string]string{"tool/tag.go": "//go:build !windows\n\npackage tool\n"}, []string{}
+	for _, files := range []map[string]string{edit("tool/mv.go", "= safe.Parse", "= fatal.Parse"), edit("tool/targ.go", "func h() {}", "func h() { g[fsAlias]() }"),
+		edit("iv/iv.go", "= safe2.Parse", "= fatal2.Parse"), edit("arm/x_arm64.go", "func v() {}", "func v() { _ = w.Parse(nil) }"),
+		edit("xt/a_test.go", "func helper() {}", "func helper() { _ = xt.FS.Parse(nil) }")} {
+		maps.Copy(all, files)
+	}
+	outDone = func(nodes, tags int, over bool) { counters = append(counters, fmt.Sprint(nodes, tags, over)) }
+	on := f.guarded(t, all)
+	outTypesHook = false
+	off := f.guarded(t, all)
+	outTypesHook, outDone = true, nil
+	if len(counters) != 2 || counters[0] != counters[1] || strings.HasSuffix(counters[0], "true") || !finds(on.Warnings, "iv/iv.go changed bodies that use flag (1: init body)") ||
+		!finds(on.Warnings, "tool/targ.go references into flag added, removed, moved or changed (1: h)") || finds(off.Warnings, "(1: init body)") {
+		t.Errorf("the text layer's counters, types on and off: %q; warnings %q", counters, whats(on.Warnings))
+	}
 	// Opus #280 H1: the union is never checked: no file set given to a
 	// check holds both platforms' files (Opus #282 L1: by structure).
 	var union bool
@@ -171,10 +195,13 @@ func hasDecl(f *ast.File, name string) bool {
 }
 
 // TestOutTypedBounded: Astra #280 M5 and the bounds. A check needs a free
-// worker slot; a dropped worker keeps its slot until it ends; past the
-// deadline, the stop warning; past the export bound, an incomplete warning;
-// the base guard's accounting (abandoned) is never touched.
+// worker slot (waited for within a test-shortened outSlotWait); a dropped
+// worker still running stops the types check at once; its stop warning
+// feeds no libc block; past the export bound, an incomplete warning. A
+// dropped worker's lifecycle is TestOutCheckHandOff's.
 func TestOutTypedBounded(t *testing.T) {
+	defer func(w time.Duration) { outSlotWait = w }(outSlotWait)
+	outSlotWait = 100 * time.Millisecond
 	f, _ := libcFixture(t)
 	change := map[string]string{"tool/x.go": "package tool\n\nimport \"flag\"\n\nfunc v() {\n\tw := flag.NewFlagSet(\"w\", flag.ContinueOnError)\n\t_ = w.Parse(nil)\n}\n"}
 	typesStopped := func(v Verdict) bool { return finds(v.Warnings, "decision A's check by types stopped") }
@@ -199,16 +226,6 @@ func TestOutTypedBounded(t *testing.T) {
 	if _, _, ok := outCheck(context.Background(), time.Now(), time.Now().Add(-time.Second), nil, "p", nil, nil, nil); ok || outWorkers.Load() != 0 {
 		t.Errorf("past the deadline: started, %d workers", outWorkers.Load())
 	}
-	// Past the deadline (a 2^25 check, maxOutCheck 50 ms): the types check
-	// stops; the dropped worker keeps its slot; abandoned is untouched.
-	maxOutCheck = 50 * time.Millisecond
-	v = f.guarded(t, map[string]string{"tool/c.go": "package tool\n\nimport _ \"flag\"\n\n" + aliasChain("A", 25) + aliasChain("B", 25) + "var _ = A25(B25{})\n"}) // read at once: the dropped worker still runs
-	held, dropped := outWorkers.Load(), outDropped.Load()
-	maxOutCheck = 0
-	if !v.Accepted() || !typesStopped(v) || abandoned.Load() != 0 || held != 1 || dropped != 1 {
-		t.Errorf("past the deadline: blocks %q, warnings %q, %d abandoned, %d workers, %d dropped", whats(v.Blocks), whats(v.Warnings), abandoned.Load(), held, dropped)
-	}
-	waitWorkers(t)
 	// Opus #282 probe D (the lead's decision): the types check's stop never
 	// feeds the libc exhaustion block: a later run that changes only a
 	// libc-importing file of a tested package is accepted, as on main.
@@ -229,5 +246,164 @@ func TestOutTypedBounded(t *testing.T) {
 	maxOutExport = old
 	if !v.Accepted() || !finds(v.Warnings, "tool decision A's check by types could not finish (linux/amd64: flag: over the layer's export data bound)") {
 		t.Errorf("the export bound: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+}
+
+// gate is an importer that holds each check in its import until the row
+// releases it (out closed); in tells the row a check is held.
+type gate struct{ in, out chan struct{} }
+
+func newGate() gate { return gate{make(chan struct{}, 1), make(chan struct{})} }
+
+func (g gate) Import(p string) (*types.Package, error) {
+	select {
+	case g.in <- struct{}{}:
+	default:
+	}
+	<-g.out
+	return types.NewPackage(p, path.Base(p)), nil
+}
+
+// TestOutCheckHandOff (Astra #282 M2 and L3): a worker's end and its drop,
+// under the row's control (a gate importer, outCheckHook; no sleeps): one
+// decision a worker, its slot freed before its result is published,
+// outDropped never below zero, and both counts 0 once both sides are done.
+func TestOutCheckHandOff(t *testing.T) {
+	waitWorkers(t)
+	defer func() { outCheckHook, maxOutCheck = nil, 0 }()
+	check := func(ctx context.Context, start time.Time, im types.Importer) bool {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, "p.go", "package p\n\nimport _ \"flag\"\n", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, ok := outCheck(ctx, start, time.Now().Add(time.Hour), im, "p", fset, []*ast.File{f}, &types.Info{})
+		return ok
+	}
+	ended := make(chan int32, 4) // outDropped at a worker's very end
+	// M2: a completed worker whose tail is held after its result: its
+	// caller's next check, in a run past outSlotWait (no wait for a slot),
+	// finds the slot free.
+	free, tail := newGate(), make(chan struct{})
+	var n atomic.Int32
+	close(free.out)
+	outCheckHook = func(e string) {
+		if e == "ended" && n.Add(1) == 1 {
+			<-tail
+		}
+		if e == "ended" {
+			ended <- outDropped.Load()
+		}
+	}
+	long := time.Now().Add(-time.Hour)
+	first := check(context.Background(), long, free)
+	second := check(context.Background(), long, free)
+	close(tail)
+	for range 1 + b2i(second) {
+		<-ended
+	}
+	if !first || !second || outWorkers.Load() != 0 || outDropped.Load() != 0 {
+		t.Errorf("a held tail: checks %v %v, %d workers, %d dropped", first, second, outWorkers.Load(), outDropped.Load())
+	}
+	// M2: the drop races the worker's end, the worker first (released in
+	// the drop's hook): the caller's CAS fails, it takes the published
+	// result, and outDropped is 0 throughout.
+	g, atEnd := newGate(), int32(-9)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { <-g.in; cancel() }()
+	outCheckHook = func(e string) {
+		if e == "ended" {
+			ended <- outDropped.Load()
+		} else {
+			close(g.out)
+			atEnd = <-ended
+		}
+	}
+	if ok := check(ctx, time.Now(), g); !ok || atEnd != 0 || outWorkers.Load() != 0 || outDropped.Load() != 0 {
+		t.Errorf("the worker first: check %v, %d at its end, %d workers, %d dropped", ok, atEnd, outWorkers.Load(), outDropped.Load())
+	}
+	// L3: a dropped worker (maxOutCheck): held in its import until the row
+	// releases it, it keeps its slot and is counted (the immediate-stop gate
+	// sees it), abandoned untouched; at its real end both counts are 0.
+	g = newGate()
+	outCheckHook = func(e string) {
+		if e == "ended" {
+			ended <- outDropped.Load()
+		}
+	}
+	maxOutCheck = 20 * time.Millisecond
+	ok := check(context.Background(), time.Now(), g)
+	maxOutCheck = 0
+	if ok || outWorkers.Load() != 1 || outDropped.Load() != 1 || abandoned.Load() != 0 {
+		t.Errorf("dropped: check %v, %d workers, %d dropped, %d abandoned", ok, outWorkers.Load(), outDropped.Load(), abandoned.Load())
+	}
+	close(g.out)
+	if d := <-ended; d != 0 || outWorkers.Load() != 0 || outDropped.Load() != 0 {
+		t.Errorf("dropped, then ended: %d at its end, %d workers, %d dropped", d, outWorkers.Load(), outDropped.Load())
+	}
+	// M2: the drop and the worker's end race, released together, 100 times:
+	// outDropped is 0 or 1 after the drop, never -1, and 0 at the worker's
+	// end, as outWorkers.
+	for i := range 100 {
+		g := newGate()
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { <-g.in; cancel() }()
+		outCheckHook = func(e string) {
+			if e == "ended" {
+				ended <- outDropped.Load()
+			} else {
+				close(g.out)
+			}
+		}
+		check(ctx, time.Now(), g)
+		d := outDropped.Load()
+		if e := <-ended; d < 0 || d > 1 || e != 0 || outWorkers.Load() != 0 || outDropped.Load() != 0 {
+			t.Fatalf("race %d: %d after the drop, %d at its end, %d workers, %d dropped", i, d, e, outWorkers.Load(), outDropped.Load())
+		}
+	}
+}
+
+// TestOutTypesApart (Astra #282 H1): the types check's work has its own
+// budget (maxOutTypeWork) and stops through typesOff; the text layer's
+// counter keeps main's charges. Astra's input, scaled by test-only bounds:
+// a padded file importing flag in four directories before tested pkg, each
+// directory touched, a text signal in tool, and pkg's libc-importing file
+// changed only from return 1 to return 2 (or not). With the types check on,
+// a text bound just above the text layer's work with it off (main's layer)
+// and a types bound under the padding: the same text counters, the same
+// blocks (none: as on main), and the same warnings plus the types stop
+// alone, before pkg.
+func TestOutTypesApart(t *testing.T) {
+	tl := "package pkg\n\nimport \"modernc.org/libc\"\n\nvar _ = libc.NewTLS\n\nfunc k() int { return 1 }\n"
+	pad := "package pad\n\nimport _ \"flag\"\n\n/* " + strings.Repeat("x", 16<<10) + " */\n"
+	base, change := map[string]string{"pkg/tl.go": tl}, map[string]string{"tool/q.go": "package tool\n\nimport \"flag\"\n\nfunc q() { flag.Parse() }\n"}
+	for i := range 4 {
+		base[fmt.Sprintf("a%03d/pad.go", i)], change[fmt.Sprintf("a%03d/x.go", i)] = pad, "package pad\n"
+	}
+	lf, _ := libcFixture(t, base)
+	type counters struct {
+		nodes, tags int
+		over        bool
+	}
+	var got counters
+	oldNodes, oldTypes := maxOutNodes, maxOutTypeWork
+	outDone = func(nodes, tags int, over bool) { got = counters{nodes, tags, over} }
+	defer func() { outDone, outTypesHook, maxOutNodes, maxOutTypeWork = nil, true, oldNodes, oldTypes }()
+	for _, libcEdit := range []bool{true, false} {
+		files := maps.Clone(change)
+		if libcEdit {
+			files["pkg/tl.go"] = strings.Replace(tl, "return 1", "return 2", 1)
+		}
+		outTypesHook = false
+		off := lf.guarded(t, files)
+		text := got
+		maxOutNodes, maxOutTypeWork, outTypesHook = text.nodes+len(pad)/2, 5*len(pad)/2, true // a typed file's bytes would pass the text bound; the types check stops in a000's second version
+		on := lf.guarded(t, files)
+		maxOutNodes, maxOutTypeWork = oldNodes, oldTypes
+		added := slices.DeleteFunc(whats(on.Warnings), func(w string) bool { return slices.Contains(whats(off.Warnings), w) })
+		if got != text || text.over || !on.Accepted() || !slices.Equal(whats(on.Blocks), whats(off.Blocks)) || len(on.Warnings) != len(off.Warnings)+1 ||
+			len(added) != 1 || !strings.HasPrefix(added[0], "a000: decision A's check by types stopped") || !finds(off.Warnings, outRefs("tool/q.go", "flag", "1: q")) {
+			t.Errorf("libc edit %v: text counters %v, off %v; blocks %q; warnings %q, off %q", libcEdit, got, text, whats(on.Blocks), whats(on.Warnings), whats(off.Warnings))
+		}
 	}
 }

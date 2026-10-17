@@ -42,6 +42,7 @@ type additive struct {
 	fset             *token.FileSet             // every file it parses
 	importers        map[*typer]*outImporter    // P14b-out-3: one a typer of main's, read only
 	typedOff         bool                       // P14b-out-3: its types check stopped (typesOff)
+	tnodes           int                        // P14b-out-3: its types check's own work (chargeTypes)
 }
 
 // outFile is what one Go file holds for the layer.
@@ -185,7 +186,7 @@ func (r *run) outBuilt(p string, src []byte) (on int) {
 			seen[l], exprs = true, append(exprs, x)
 		}
 	}
-	builds := func(pl [2]string) bool {
+	builds := func(pl [2]string, charge func(), stop func() bool) bool {
 		ctx := build.Context{GOOS: pl[0], GOARCH: pl[1], Compiler: "gc", ReleaseTags: release, // its name: go/build's rules
 			OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("package p\n")), nil }}
 		if ok, err := ctx.MatchFile(path.Dir(p), path.Base(p)); !ok && err == nil {
@@ -207,17 +208,17 @@ func (r *run) outBuilt(p string, src []byte) (on int) {
 				if _, ok := known(tag); !ok && !slices.Contains(free, tag) {
 					free = append(free, tag)
 				}
-				r.charge(0, 1)
+				charge()
 				return false
 			})
 		}
 		if len(free) > 12 {
 			return true
 		}
-		for m := 0; m < 1<<len(free) && !r.out.over; m++ {
+		for m := 0; m < 1<<len(free) && !stop(); m++ {
 			if !slices.ContainsFunc(exprs, func(x constraint.Expr) bool {
 				return !x.Eval(func(tag string) bool {
-					r.charge(0, 1)
+					charge()
 					v, k := known(tag)
 					return k && v || !k && m>>slices.Index(free, tag)&1 == 1
 				})
@@ -227,8 +228,14 @@ func (r *run) outBuilt(p string, src []byte) (on int) {
 		}
 		return false
 	}
-	for i, pl := range platforms {
-		if builds(pl) {
+	for i, pl := range platforms { // the platforms after the first that builds it: the types check's work (Astra #282 H1)
+		charge, stop := func() { r.charge(0, 1) }, func() bool { return r.out.over }
+		if on != 0 && !outTypesHook { // the types check off: main's layer
+			break
+		} else if on != 0 {
+			charge, stop = func() { r.chargeTypes(1) }, func() bool { return !r.chargeTypes(0) }
+		}
+		if builds(pl, charge, stop) {
 			on |= 1 << i
 		}
 	}
@@ -300,8 +307,13 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 	}
 	for _, d := range f.Decls {
 		for _, u := range r.units(d, p, testing) {
-			of.units = append(of.units, u)
-			r.refsIn(u.n, map[bool]map[string]string{false: names}[u.typedOnly], u.lits, func(pkg, name string) {
+			if u.typedOnly && !outTypesHook { // the types check off: main's layer
+				continue
+			} else if of.units = append(of.units, u); u.typedOnly { // the types check's alone
+				r.print(of, b, u)
+				continue
+			}
+			r.refsIn(u.n, names, u.lits, func(pkg, name string) {
 				if r.charge(len(name)+len(u.bind), 0) && outS(pkg) { // the bytes it keys (Astra #276 r3 #6, #280 H4)
 					of.refs[pkg+"\x00"+u.where+"\x00"+bound(name)]++
 				}
@@ -450,6 +462,7 @@ type outFacts struct {
 	unknown map[string]bool // "file\x00package"
 	imports map[string]bool
 	prints  map[string]string          // "file\x00binding"
+	typed   int                        // its prints and references the types check's alone
 	uses    map[string]map[string]bool // "file\x00binding": packages
 }
 
@@ -466,14 +479,18 @@ func (r *run) outRead(dir string, t *tree) outFacts {
 			ofs, ps = append(ofs, f), append(ps, p)
 		}
 	}
-	r.outTyped(dir, t, ofs)
+	if outTypesHook {
+		r.outTyped(dir, t, ofs)
+	}
 	for i, f := range ofs {
 		p := ps[i]
 		for k, h := range f.prints {
 			fa.prints[p+"\x00"+k], fa.uses[p+"\x00"+k] = h, f.uses[k]
+			fa.typed += b2i(typedBind(k))
 		}
 		for k, n := range f.refs {
 			fa.refs[p+"\x00"+k] += n
+			fa.typed += b2i(strings.ContainsAny(k[strings.LastIndexByte(k, 0)+1:], "(["))
 		}
 		for _, d := range f.dots {
 			fa.dots[p+"\x00"+d] = true
@@ -499,6 +516,9 @@ func (r *run) outRun() (err error) {
 	r.out.files, r.out.built, r.out.named, r.out.importers = map[string]*outFile{}, map[string]int{}, map[string]map[string]bool{}, map[*typer]*outImporter{}
 	r.outPkgs()
 	r.outModule()
+	if outDone != nil {
+		outDone(r.out.nodes, r.out.tags, r.out.over)
+	}
 	return r.ctx.Err()
 }
 
@@ -506,7 +526,10 @@ func (r *run) outPkgs() {
 	dirs := slices.Sorted(maps.Keys(r.touched))
 	for i, dir := range dirs {
 		b, a := r.outRead(dir, r.trees[0]), r.outRead(dir, r.trees[1])
-		if r.out.over || !r.charge(len(b.refs)+len(a.refs)+len(a.dots)+len(a.unknown)+len(a.imports)+len(b.prints)+len(a.prints), 0) {
+		if !r.chargeTypes(b.typed + a.typed) { // its own items, apart (Astra #282 H1)
+			r.typesOff(dir)
+		}
+		if r.out.over || !r.charge(len(b.refs)+len(a.refs)+len(a.dots)+len(a.unknown)+len(a.imports)+len(b.prints)+len(a.prints)-b.typed-a.typed, 0) {
 			r.outStopped(dirs[i:])
 			return
 		}
@@ -529,6 +552,11 @@ func (r *run) outPkgs() {
 			fns := slices.Compact(slices.Sorted(slices.Values(changed[k])))
 			r.outWarn(file, fmt.Sprintf("references into %s added, removed, moved or changed (%d: %s%s): review it", pkg, len(fns),
 				strings.Join(fns[:min(3, len(fns))], ", "), map[bool]string{true: ", …"}[len(fns) > 3]))
+		}
+		if r.out.typedOff { // the types check stopped: its fingerprints are left out too
+			for _, m := range []map[string]string{b.prints, a.prints} {
+				maps.DeleteFunc(m, func(k, _ string) bool { return typedBind(k[strings.IndexByte(k, 0)+1:]) })
+			}
 		}
 		r.outBodies(b, a, changed)
 		for _, k := range slices.Sorted(maps.Keys(a.unknown)) { // fail closed: its references cannot be read
