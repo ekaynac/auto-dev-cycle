@@ -311,7 +311,7 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 			} else if !strings.HasSuffix(name, "_test") {
 				self = pkg
 			}
-			if r.outTypedRefs(groups[name], info); !r.chargeTypes(0) {
+			if r.outTypedRefs(groups[name], info, pl[0]+"/"+pl[1]); !r.chargeTypes(0) {
 				r.typesOff(dir)
 				return
 			}
@@ -424,8 +424,11 @@ func unexpected(errs []error) string {
 // outTypedRefs adds one check's references by types to its files' trefs (a
 // key's largest count on any platform) and S uses to tuses, never to refs;
 // an init or hook body's S uses outside its literals go to its own binding,
-// "init body" or "TestMain body", fingerprinted by typedPrint (P14b-out-3b).
-func (r *run) outTypedRefs(ofs []*outFile, info *types.Info) {
+// "init body" or "TestMain body", fingerprinted by typedPrint (P14b-out-3b),
+// and each use's identity, its platform, its offset in the body and its S
+// target, in AST order, joins that fingerprint (Astra #283 H1: uses that
+// swap targets never cancel).
+func (r *run) outTypedRefs(ofs []*outFile, info *types.Info, pl string) {
 	names := map[types.Object]string{}
 	for _, of := range ofs {
 		counts, printed := map[string]int{}, of.tprints != nil
@@ -433,7 +436,7 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info) {
 			of.tprints = map[string]string{}
 		}
 		for _, u := range of.units {
-			r.typedIn(u, false, info, names, func(pkg, ref string) {
+			r.typedIn(u, false, info, names, func(pkg, ref string, _ token.Pos) {
 				if r.chargeTypes(len(u.where)+len(ref)) && u.where != "" {
 					counts[pkg+"\x00"+u.where+"\x00"+ref]++
 				}
@@ -444,10 +447,14 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info) {
 				if !printed {
 					r.typedPrint(of, d, bind)
 				}
-				r.typedIn(u, true, info, names, func(pkg, ref string) {
-					if r.chargeTypes(len(bind) + len(ref)) { // its references too, as a literal's (Opus #283 H1)
+				tf := r.out.fset.File(of.f.Pos())
+				r.typedIn(u, true, info, names, func(pkg, ref string, at token.Pos) {
+					id := fmt.Sprintf("%s\x00%d\x00%s", pl, tf.Offset(at)-tf.Offset(d.Pos()), ref)
+					if r.chargeTypes(len(bind) + len(ref) + len(id)) { // its references too, as a literal's (Opus #283 H1)
 						counts[pkg+"\x00"+bind+"\x00"+ref]++
 						of.tuses[bind+"\x00"+pkg] = true
+						h := sha256.Sum256(append([]byte(of.tprints[bind]), id...))
+						of.tprints[bind] = string(h[:])
 					}
 				})
 				if outBodyHook != nil {
@@ -521,7 +528,7 @@ func sMethod(o *types.Func) bool {
 // typedIn calls add for each S method through a value and each S type
 // argument in u (inside its function literals only, with lits; outside
 // them, with body).
-func (r *run) typedIn(u unit, body bool, info *types.Info, names map[types.Object]string, add func(pkg, ref string)) {
+func (r *run) typedIn(u unit, body bool, info *types.Info, names map[types.Object]string, add func(pkg, ref string, at token.Pos)) {
 	visit := func(n ast.Node) bool {
 		if n == nil || !r.chargeTypes(1) {
 			return n == nil
@@ -530,7 +537,7 @@ func (r *run) typedIn(u unit, body bool, info *types.Info, names map[types.Objec
 		case *ast.SelectorExpr:
 			if s := info.Selections[x]; s != nil && s.Kind() != types.FieldVal {
 				if o, _ := s.Obj().(*types.Func); o != nil && sMethod(o) {
-					add(o.Pkg().Path(), r.methodName(o.Origin(), names))
+					add(o.Pkg().Path(), r.methodName(o.Origin(), names), x.Pos())
 				}
 			}
 		case *ast.Ident:
@@ -540,7 +547,7 @@ func (r *run) typedIn(u unit, body bool, info *types.Info, names map[types.Objec
 						t = p.Elem()
 					}
 					if nt, ok := types.Unalias(t).(*types.Named); ok && sObj(nt.Obj(), nt.Obj().Name()) {
-						add(nt.Obj().Pkg().Path(), bound(x.Name)+"["+r.typeName(nt.Obj(), names)+"]")
+						add(nt.Obj().Pkg().Path(), bound(x.Name)+"["+r.typeName(nt.Obj(), names)+"]", x.Pos())
 					}
 				}
 			}
