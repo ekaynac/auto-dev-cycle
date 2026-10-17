@@ -104,10 +104,9 @@ func (of *outFile) use(bind, pkg string) {
 // outBodies warns, once per file and package, for the bindings whose
 // fingerprint changed, or that are added or gone (but a function's: its
 // references move), that use S in either version, unless the references
-// warning for that file and package names it already (by text, for a text
-// use); typed when none of its uses is the text read's (Astra #282 r2 H1).
-func (r *run) outBodies(b, a outFacts, changed, text map[string][]string) {
-	bodies, textual := map[string][]string{}, map[string]bool{}
+// warning for that file and package names it already.
+func (r *run) outBodies(b, a outFacts, changed map[string][]string) {
+	bodies := map[string][]string{}
 	for _, k := range keys(b.prints, a.prints) {
 		file, bind, _ := strings.Cut(k, "\x00")
 		bp, inB := b.prints[k]
@@ -121,16 +120,15 @@ func (r *run) outBodies(b, a outFacts, changed, text map[string][]string) {
 				}
 			}
 		}))) {
-			fp, tu := file+"\x00"+pkg, b.uses[k][pkg] || a.uses[k][pkg]
-			if named := map[bool][]string{true: text[fp], false: changed[fp]}[tu]; !slices.Contains(named, strings.TrimPrefix(bind, "func ")) { // its references' warning names it already
-				bodies[fp], textual[fp] = append(bodies[fp], bind), textual[fp] || tu
+			if !slices.Contains(changed[file+"\x00"+pkg], strings.TrimPrefix(bind, "func ")) { // its references' warning names it already
+				bodies[file+"\x00"+pkg] = append(bodies[file+"\x00"+pkg], bind)
 			}
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(bodies)) {
 		file, pkg, _ := strings.Cut(k, "\x00")
 		bs := bodies[k]
-		r.outTypedWarn(!textual[k], file, fmt.Sprintf("changed bodies that use %s (%d: %s%s): review it", pkg, len(bs),
+		r.outWarn(file, fmt.Sprintf("changed bodies that use %s (%d: %s%s): review it", pkg, len(bs),
 			strings.Join(bs[:min(3, len(bs))], ", "), map[bool]string{true: ", …"}[len(bs) > 3]))
 	}
 }

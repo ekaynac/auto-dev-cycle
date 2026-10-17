@@ -57,6 +57,8 @@ type outFile struct {
 	uses    map[string]map[string]bool // by binding: the S packages it uses
 	on      int                        // its gate platforms (outBuilt)
 	typed   bool                       // its package's checks by types are done
+	trefs   map[string]int             // its references by types alone, as refs (outTypedRefs)
+	tuses   map[string]bool            // "binding\x00package": its S uses by types alone
 }
 
 // outHook runs the layer (a test turns it off to compare the base guard's
@@ -279,7 +281,7 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 		delete(r.out.built, bk)
 		return fail("parse")
 	}
-	of := &outFile{refs: map[string]int{}, f: f, prints: map[string]string{}, uses: map[string]map[string]bool{}, on: built}
+	of := &outFile{refs: map[string]int{}, f: f, prints: map[string]string{}, uses: map[string]map[string]bool{}, on: built, trefs: map[string]int{}, tuses: map[string]bool{}}
 	names, testing := map[string]string{}, ""
 	for _, is := range f.Imports {
 		ip, _ := strconv.Unquote(is.Path.Value)
@@ -457,13 +459,14 @@ type outFacts struct {
 	unknown map[string]bool // "file\x00package"
 	imports map[string]bool
 	prints  map[string]string          // "file\x00binding"
-	typed   int                        // its references the types check's alone
+	trefs   map[string]int             // P14b-out-3: the references by types alone, apart from refs (Astra #282 r3 H1)
+	tuses   map[string]bool            // P14b-out-3: "file\x00binding\x00package", the S uses by types alone
 	uses    map[string]map[string]bool // "file\x00binding": packages
 }
 
 func (r *run) outRead(dir string, t *tree) outFacts {
 	fa := outFacts{refs: map[string]int{}, dots: map[string]bool{}, unknown: map[string]bool{}, imports: map[string]bool{},
-		prints: map[string]string{}, uses: map[string]map[string]bool{}}
+		prints: map[string]string{}, uses: map[string]map[string]bool{}, trefs: map[string]int{}, tuses: map[string]bool{}}
 	var ofs []*outFile
 	var ps []string
 	for _, p := range t.dirs[dir] {
@@ -484,7 +487,12 @@ func (r *run) outRead(dir string, t *tree) outFacts {
 		}
 		for k, n := range f.refs {
 			fa.refs[p+"\x00"+k] += n
-			fa.typed += b2i(strings.ContainsAny(k[strings.LastIndexByte(k, 0)+1:], "(["))
+		}
+		for k, n := range f.trefs {
+			fa.trefs[p+"\x00"+k] += n
+		}
+		for k := range f.tuses {
+			fa.tuses[p+"\x00"+k] = true
 		}
 		for _, d := range f.dots {
 			fa.dots[p+"\x00"+d] = true
@@ -520,38 +528,30 @@ func (r *run) outPkgs() {
 	dirs := slices.Sorted(maps.Keys(r.touched))
 	for i, dir := range dirs {
 		b, a := r.outRead(dir, r.trees[0]), r.outRead(dir, r.trees[1])
-		if !r.chargeTypes(b.typed + a.typed) { // its own items, apart (Astra #282 H1)
-			r.typesOff(dir)
-		}
-		if r.out.over || !r.charge(len(b.refs)+len(a.refs)+len(a.dots)+len(a.unknown)+len(a.imports)+len(b.prints)+len(a.prints)-b.typed-a.typed, 0) {
+		if r.out.over || !r.charge(len(b.refs)+len(a.refs)+len(a.dots)+len(a.unknown)+len(a.imports)+len(b.prints)+len(a.prints), 0) {
 			r.outStopped(dirs[i:])
 			return
 		}
 		tested := r.tested(dir)          // once a directory
 		changed := map[string][]string{} // "file\x00package" to the functions whose references changed
-		text := map[string][]string{}    // those by a text reference (Astra #282 r2 H1)
 		for _, k := range keys(b.refs, a.refs) {
 			f := strings.Split(k, "\x00") // file, package, function, name
 			if r.ctx.Err() != nil {
 				return
-			} else if r.out.typedOff && strings.ContainsAny(f[3], "([") { // the types check stopped: its references are left out
-				continue
-			} else if a.refs[k] > b.refs[k] && libc(f[1]) && tested && !strings.ContainsAny(f[3], "([") { // by types ((T).M, g[T]): warnings only
+			} else if a.refs[k] > b.refs[k] && libc(f[1]) && tested {
 				r.outBlock(f[0]+": "+f[1]+"."+f[3]+" in "+f[2], "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
 			} else if a.refs[k] != b.refs[k] {
 				changed[f[0]+"\x00"+f[1]] = append(changed[f[0]+"\x00"+f[1]], f[2])
-				if !strings.ContainsAny(f[3], "([") {
-					text[f[0]+"\x00"+f[1]] = append(text[f[0]+"\x00"+f[1]], f[2])
-				}
 			}
 		}
 		for _, k := range slices.Sorted(maps.Keys(changed)) {
 			file, pkg, _ := strings.Cut(k, "\x00")
 			fns := slices.Compact(slices.Sorted(slices.Values(changed[k])))
-			r.outTypedWarn(len(text[k]) == 0, file, fmt.Sprintf("references into %s added, removed, moved or changed (%d: %s%s): review it", pkg, len(fns),
+			r.outWarn(file, fmt.Sprintf("references into %s added, removed, moved or changed (%d: %s%s): review it", pkg, len(fns),
 				strings.Join(fns[:min(3, len(fns))], ", "), map[bool]string{true: ", …"}[len(fns) > 3]))
 		}
-		r.outBodies(b, a, changed, text)
+		r.outBodies(b, a, changed)
+		r.outTypedSignals(dir, b, a, changed)
 		for _, k := range slices.Sorted(maps.Keys(a.unknown)) { // fail closed: its references cannot be read
 			if file, pkg, _ := strings.Cut(k, "\x00"); r.files[file] != r.cand[file] && libc(pkg) && tested {
 				r.outBlock(file, "unverifiable: an import of "+pkg+" with an unknown name")

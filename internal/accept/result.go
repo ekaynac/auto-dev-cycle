@@ -25,7 +25,7 @@ const (
 	maxEntries  = 1 << 20
 )
 
-var reported = maxReported // a test lowers it
+var reported, reportedBytes = maxReported, maxEntries // tests lower them
 
 // Report is the D55 record of one accept node, a blob its result holds
 // from the first live attempt: elapsed time, blocks, warnings, files,
@@ -33,7 +33,7 @@ var reported = maxReported // a test lowers it
 // together at most maxEntries encoded bytes; the entries left out are
 // counted in truncated, and the fields cut to maxField bytes in clipped.
 func (v Verdict) Report() ([]byte, error) {
-	budget, truncated, clipped := maxEntries, 0, 0
+	budget, truncated, clipped := reportedBytes, 0, 0
 	var err error
 	cut := func(out, bs []Block, rank int) []Block { // the base guard's findings first, P14b-out's text ones, then its types check's alone (Astra #282 r2 H1), in what is left
 		for _, b := range bs {

@@ -121,9 +121,8 @@ func TestDecisionAOut3(t *testing.T) {
 	// change with it on and off (off: main's layer), with method values, type
 	// arguments, an arm64-only file, an external test and a build
 	// constraint, leaves the text layer's counters (outDone) as main's.
-	// Astra #282 r2 H1: a warning is typed only when all its signals are
-	// the types check's: mx.go's bodies (x1's use the text read's, x2's the
-	// types check's) and tag.go's reference are text warnings.
+	// Astra #282 r3 H1: typed signals are Typed entries apart: mx.go's text
+	// body (x1: the text read's use) is main's, x2's is a typed entry.
 	all, counters := map[string]string{"tool/tag.go": "//go:build !windows\n\npackage tool\n\nimport \"flag\"\n\nfunc tg() { flag.Parse() }\n"}, []string{}
 	for _, files := range []map[string]string{edit("tool/mv.go", "= safe.Parse", "= fatal.Parse"), edit("tool/targ.go", "func h() {}", "func h() { g[fsAlias]() }"),
 		edit("tool/val.go", "func v() {}", "func v() { _ = w.Parse(nil) }"), edit("arm/x_arm64.go", "func v() {}", "func v() { _ = w.Parse(nil) }"),
@@ -141,10 +140,11 @@ func TestDecisionAOut3(t *testing.T) {
 	}
 	if len(counters) != 2 || counters[0] != counters[1] || strings.HasSuffix(counters[0], "true") || !typedAs(on, "tool/mv.go changed bodies that use flag (1: var parse4)", true) ||
 		!typedAs(on, "tool/targ.go references into flag added, removed, moved or changed (1: h)", true) || !typedAs(on, "tool/val.go references into flag added, removed, moved or changed (1: v)", true) ||
-		!typedAs(on, "tool/mx.go changed bodies that use flag (2: func x1, func x2)", false) || !typedAs(on, outRefs("tool/tag.go", "flag", "1: tg"), false) ||
-		!typedAs(off, "tool/mx.go changed bodies that use flag (1: func x1)", false) || slices.ContainsFunc(off.Warnings, func(b Block) bool { return b.Typed }) {
+		!typedAs(on, "tool/mx.go changed bodies that use flag (1: func x1)", false) || !typedAs(on, "tool/mx.go changed bodies that use flag (1: func x2)", true) ||
+		!typedAs(on, outRefs("tool/tag.go", "flag", "1: tg"), false) {
 		t.Errorf("the text layer's counters, types on and off: %q; warnings %q", counters, whats(on.Warnings))
 	}
+	outSame(t, on, off)
 	// Opus #280 H1: the union is never checked: no file set given to a
 	// check holds both platforms' files (Opus #282 L1: by structure).
 	var union bool
@@ -412,6 +412,7 @@ func TestOutTypesApart(t *testing.T) {
 			len(added) != 1 || !strings.HasPrefix(added[0], "a000: decision A's check by types stopped") || !finds(off.Warnings, outRefs("tool/q.go", "flag", "1: q")) {
 			t.Errorf("libc edit %v: text counters %v, off %v; blocks %q; warnings %q, off %q", libcEdit, got, text, whats(on.Blocks), whats(on.Warnings), whats(off.Warnings))
 		}
+		outSame(t, on, off)
 	}
 }
 
@@ -447,24 +448,82 @@ func TestOutReportPriority(t *testing.T) {
 		write(t, src, base)
 		plain(t, src, "add", "--all")
 	})
-	report := func(v Verdict) (r struct {
-		Warnings  []Block
-		Truncated int
-	}) {
-		if b, err := v.Report(); err != nil || json.Unmarshal(b, &r) != nil {
-			t.Fatal(err)
-		}
-		return r
-	}
 	on := f.guarded(t, change)
 	outTypesHook = false
 	off := f.guarded(t, change)
 	outTypesHook = true
-	head, main := report(on), report(off)
-	text := slices.DeleteFunc(slices.Clone(on.Warnings), func(b Block) bool { return b.Typed })
-	if len(head.Warnings) < len(main.Warnings) || !slices.Equal(head.Warnings[:len(main.Warnings)], main.Warnings) || head.Truncated == 0 || main.Truncated != 0 ||
-		!slices.Equal(whats(text), whats(off.Warnings)) || !finds(main.Warnings, outRefs("tool/z.go", "flag", "1: z")) || !finds(main.Warnings, outRefs("tool/y.go", "flag", "1: y")) ||
-		!finds(main.Warnings, "tool/v.go changed bodies that use flag (1: func v)") || len(on.Warnings) <= reported {
-		t.Errorf("main's report %q (%d truncated); head's text warnings %q, %d warnings, report %d (%d truncated)", whats(main.Warnings), main.Truncated, whats(text), len(on.Warnings), len(head.Warnings), head.Truncated)
+	outSame(t, on, off)
+	b, err := off.Report()
+	if err != nil || !strings.Contains(string(b), `"truncated":0`) || len(on.Warnings) <= reported || !finds(off.Warnings, outRefs("tool/z.go", "flag", "1: z")) ||
+		!finds(off.Warnings, outRefs("tool/y.go", "flag", "1: y")) || !finds(off.Warnings, "tool/v.go changed bodies that use flag (1: func v)") {
+		t.Errorf("main's warnings %q, %d warnings with the types check", whats(off.Warnings), len(on.Warnings))
+	}
+}
+
+// TestOutTypedEntries (Astra #282 r3 H1): typed signals are Typed entries
+// apart; main's entries never change. Astra's three inputs, in tool with
+// w a *flag.FlagSet: mixed.go (a, b and c call w.Parse, z adds flag.Parse);
+// body.go (each of ba, bb, bc calling w.Parse and bz calling flag.Parse
+// gets _ = 1); a byte-budget case scaled by test-only report bounds (long
+// paths and names). And both preview limits (wide.go: four typed and four
+// text functions).
+func TestOutTypedEntries(t *testing.T) {
+	long := "tool/" + strings.Repeat("p", 200)
+	base := map[string]string{
+		"tool/state.go": "package tool\n\nimport \"flag\"\n\nvar w *flag.FlagSet\n",
+		"tool/mixed.go": "package tool\n\nimport \"flag\"\n\nfunc a() {}\n\nfunc b() {}\n\nfunc c() {}\n\nfunc z() { _ = flag.CommandLine }\n",
+		"tool/body.go":  "package tool\n\nimport \"flag\"\n\nfunc ba() { _ = w.Parse(nil) }\n\nfunc bb() { _ = w.Parse(nil) }\n\nfunc bc() { _ = w.Parse(nil) }\n\nfunc bz() { flag.Parse() }\n",
+		"tool/wide.go":  "package tool\n\nimport \"flag\"\n\nvar _ = flag.CommandLine\n",
+		long + "/s.go":  "package long\n\nimport \"flag\"\n\nvar w *flag.FlagSet\n",
+	}
+	change := map[string]string{
+		"tool/mixed.go": strings.NewReplacer("{}", "{ _ = w.Parse(nil) }", "CommandLine }", "CommandLine; flag.Parse() }").Replace(base["tool/mixed.go"]),
+		"tool/body.go":  strings.ReplaceAll(base["tool/body.go"], ") }", "); _ = 1 }"),
+		"tool/wide.go":  base["tool/wide.go"],
+	}
+	for _, fn := range []string{"wa", "wb", "wc", "wd", "wz1", "wz2", "wz3", "wz4"} {
+		base["tool/wide.go"] += "\nfunc " + fn + "() {}\n"
+		change["tool/wide.go"] += "\nfunc " + fn + "() { " + map[bool]string{true: "flag.Parse()", false: "_ = w.Parse(nil)"}[strings.HasPrefix(fn, "wz")] + " }\n"
+	}
+	for i := range 10 {
+		fns := []string{fmt.Sprintf("z%03d", i), fmt.Sprintf("%s%03da", strings.Repeat("t", 60), i), fmt.Sprintf("%s%03db", strings.Repeat("t", 60), i), fmt.Sprintf("%s%03dc", strings.Repeat("t", 60), i)}
+		src := "package long\n\nimport \"flag\"\n\nvar _ = flag.CommandLine\n"
+		base[fmt.Sprintf("%s/f%03d.go", long, i)] = src + "\nfunc " + strings.Join(fns, "() {}\n\nfunc ") + "() {}\n"
+		change[fmt.Sprintf("%s/f%03d.go", long, i)] = src + "\nfunc " + fns[0] + "() { flag.Parse() }\n\nfunc " + strings.Join(fns[1:], "() { _ = w.Parse(nil) }\n\nfunc ") + "() { _ = w.Parse(nil) }\n"
+	}
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, base)
+		plain(t, src, "add", "--all")
+	})
+	on := f.guarded(t, change)
+	outTypesHook = false
+	off := f.guarded(t, change)
+	outTypesHook = true
+	outSame(t, on, off)
+	is := func(what string, typed bool) bool {
+		return slices.ContainsFunc(on.Warnings, func(b Block) bool { return b.Path+" "+b.What == what+": review it" && b.Typed == typed })
+	}
+	if !is(outRefs("tool/mixed.go", "flag", "1: z"), false) || !is(outRefs("tool/mixed.go", "flag", "3: a, b, c"), true) ||
+		!is("tool/body.go changed bodies that use flag (1: func bz)", false) || !is("tool/body.go changed bodies that use flag (3: func ba, func bb, func bc)", true) ||
+		!is(outRefs("tool/wide.go", "flag", "4: wz1, wz2, wz3, …"), false) || !is(outRefs("tool/wide.go", "flag", "4: wa, wb, wc, …"), true) ||
+		!is(outRefs(long+"/f009.go", "flag", "1: z009"), false) || !is(outRefs(long+"/f009.go", "flag", "3: "+strings.Repeat("t", 60)+"009a, "+strings.Repeat("t", 60)+"009b, "+strings.Repeat("t", 60)+"009c"), true) {
+		t.Errorf("warnings %q", whats(on.Warnings))
+	}
+	// The byte boundary: a report budget main's entries just fill; the typed
+	// entries are left out, main's all kept, byte for byte.
+	defer func() { reportedBytes = maxEntries }()
+	b, err := off.Report()
+	var r struct{ Blocks, Warnings []json.RawMessage }
+	if err != nil || json.Unmarshal(b, &r) != nil {
+		t.Fatal(err)
+	}
+	reportedBytes = 8
+	for _, e := range append(r.Blocks, r.Warnings...) {
+		reportedBytes += len(e) + 1
+	}
+	outSame(t, on, off)
+	if b, err := on.Report(); err != nil || !strings.Contains(string(b), fmt.Sprintf(`"truncated":%d,`, len(on.Warnings)-len(off.Warnings))) {
+		t.Errorf("the byte boundary: %d typed entries, not all left out", len(on.Warnings)-len(off.Warnings))
 	}
 }

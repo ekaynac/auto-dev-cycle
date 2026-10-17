@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,10 +21,14 @@ import (
 )
 
 // outGuarded runs the guard with the layer and without it: the base guard's
-// findings must be byte-equal (the layer's isolation; Opus #276 r2 L5).
+// findings must be byte-equal (the layer's isolation; Opus #276 r2 L5). It
+// runs it with the types check off too: outSame (Astra #282 r3 H1).
 func outGuarded(t *testing.T, f fixture, files map[string]string, gone ...string) Verdict {
 	t.Helper()
 	v := f.guarded(t, files, gone...)
+	outTypesHook = false
+	outSame(t, v, f.guarded(t, files, gone...))
+	outTypesHook = true
 	outHook = false
 	w := f.guarded(t, files, gone...)
 	outHook = true
@@ -34,6 +39,31 @@ func outGuarded(t *testing.T, f fixture, files map[string]string, gone ...string
 		t.Errorf("the base guard's findings differ with the layer on: blocks %q / %q, warnings %d / %d", whats(base(v.Blocks)), whats(w.Blocks), len(base(v.Warnings)), len(w.Warnings))
 	}
 	return v
+}
+
+// outSame asserts the invariant (Astra #282 r3 H1): with the types check on
+// (v) and off (w: main's layer), the blocks and the warnings not Typed are
+// the same, in order, in the verdict and in the serialized report, byte for
+// byte; typed entries take only what the report leaves.
+func outSame(t *testing.T, v, w Verdict) {
+	t.Helper()
+	report := func(v Verdict) (r struct {
+		Blocks, Warnings []json.RawMessage
+		Truncated        int
+	}) {
+		if b, err := v.Report(); err != nil || json.Unmarshal(b, &r) != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	raw := func(a, b json.RawMessage) bool { return bytes.Equal(a, b) }
+	text := slices.DeleteFunc(slices.Clone(v.Warnings), func(b Block) bool { return b.Typed })
+	rv, rw := report(v), report(w)
+	if n := len(rw.Warnings); !slices.Equal(v.Blocks, w.Blocks) || !slices.Equal(text, w.Warnings) || slices.ContainsFunc(w.Warnings, func(b Block) bool { return b.Typed }) ||
+		!slices.EqualFunc(rv.Blocks, rw.Blocks, raw) || len(rv.Warnings) < n || !slices.EqualFunc(rv.Warnings[:n], rw.Warnings, raw) ||
+		rv.Truncated+len(rv.Warnings) != rw.Truncated+n+len(v.Warnings)-len(text) {
+		t.Errorf("the text layer's findings differ with the types check on: warnings %q / %q; reports %d+%d truncated / %d+%d", whats(text), whats(w.Warnings), len(rv.Warnings), rv.Truncated, n, rw.Truncated)
+	}
 }
 
 // outRefs is the layer's aggregated warning for file, package and functions.

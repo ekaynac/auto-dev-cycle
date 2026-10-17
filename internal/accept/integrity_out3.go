@@ -23,12 +23,11 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// P14b-out-3a (cut from #280, and from P14b-out-3b): S by real types, in the
-// additive layer, warnings only. The layer checks each touched package
-// again; a shared object is the base guard's alone, read only, or the
-// layer's alone. It reads S methods through values ((*flag.FlagSet).Parse),
-// S type arguments (g[flag.FlagSet]) and S uses by types in changed bodies
-// and variable initializers (var parse = safe.Parse).
+// P14b-out-3a: S by real types, warnings only: S methods through values
+// ((*flag.FlagSet).Parse), S type arguments (g[flag.FlagSet]), S uses by
+// types in changed bodies. A shared object is the base guard's alone, read
+// only, or the layer's alone; its findings are Typed entries apart, and the
+// text layer's are main's, byte for byte (Astra #282 r3 H1).
 
 // outView is a read-only snapshot of a base guard typer: all a worker reads
 // of the base guard (never the run, its tree or the typer).
@@ -160,13 +159,11 @@ var (
 	maxOutCheck  time.Duration      // one check's bound (0: the run's deadline alone; tests set it)
 )
 
-// outCheck type-checks files in a worker holding only them, the importer
-// and info, never the run, until the deadline (or maxOutCheck) or ctx's
-// end, then drops it. No slot within outSlotWait, a dropped worker running,
-// the deadline passed, a drop or a panic: false. One CAS a worker decides
-// its end or its drop (Astra #282 M2): an ended worker frees its slot
-// before its result; a dropped one is counted by its caller and uncounted
-// after that, at its real end, before its slot (outDropped never below 0).
+// outCheck type-checks files in a worker holding only them, the importer and
+// info, until the deadline (or maxOutCheck) or ctx's end; no slot, a dropped
+// worker running, a drop or a panic: false. One CAS decides a worker's end or
+// drop (Astra #282 M2): an ended one frees its slot before its result; a
+// dropped one is uncounted at its real end, after its caller counted it.
 func outCheck(ctx context.Context, start, deadline time.Time, im types.Importer, path string, fset *token.FileSet, files []*ast.File, info *types.Info) (*types.Package, []error, bool) {
 	if maxOutCheck > 0 && time.Now().Add(maxOutCheck).Before(deadline) {
 		deadline = time.Now().Add(maxOutCheck)
@@ -320,7 +317,7 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 		}
 	}
 	if why != "" {
-		r.outTypedWarn(true, dir, "decision A's check by types could not finish ("+bound(why)+"): its signals by types for this directory are incomplete: review it")
+		r.outTypedWarn(dir, "decision A's check by types could not finish ("+bound(why)+"): its signals by types for this directory are incomplete: review it")
 	}
 }
 
@@ -334,10 +331,54 @@ func (r *run) chargeTypes(n int) bool {
 	return r.out.tnodes <= cmp.Or(maxOutTypeWork, int(16*maxRead)) && r.ctx.Err() == nil
 }
 
-// outTypedWarn is a layer warning, typed when all its signals are the types
-// check's: the report gives it what the others leave (Astra #282 r2 H1).
-func (r *run) outTypedWarn(typed bool, p, what string) {
-	r.out.warnings = append(r.out.warnings, Block{vocab.ReasonTestIntegrityViolation, p, what, true, typed})
+// outTypedWarn is a typed warning: the report gives it what the base
+// guard's findings and the text layer's leave (Astra #282 r2 H1).
+func (r *run) outTypedWarn(p, what string) {
+	r.out.warnings = append(r.out.warnings, Block{vocab.ReasonTestIntegrityViolation, p, what, true, true})
+}
+
+// outTypedSignals warns for what only the types check found in dir, from
+// typed facts alone, less what the text facts report (a function the
+// references warning names, a binding using the package by text): no text
+// entry ever changes (Astra #282 r3 H1). After a types stop, none.
+func (r *run) outTypedSignals(dir string, b, a outFacts, changed map[string][]string) {
+	if !r.chargeTypes(len(b.trefs) + len(a.trefs)) {
+		r.typesOff(dir)
+	}
+	if r.out.typedOff {
+		return
+	}
+	refs, bodies := map[string][]string{}, map[string][]string{} // "file\x00package": functions, bindings
+	for _, k := range keys(b.trefs, a.trefs) {
+		if f := strings.Split(k, "\x00"); a.trefs[k] != b.trefs[k] {
+			refs[f[0]+"\x00"+f[1]] = append(refs[f[0]+"\x00"+f[1]], f[2])
+		}
+	}
+	for _, k := range keys(b.tuses, a.tuses) { // in a binding outBodies reads as changed
+		f := strings.Split(k, "\x00") // file, binding, package
+		kb, fp, fn := f[0]+"\x00"+f[1], f[0]+"\x00"+f[2], strings.TrimPrefix(f[1], "func ")
+		bp, inB := b.prints[kb]
+		if ap, inA := a.prints[kb]; !inB && !inA || inB && inA && bp == ap || (!inB || !inA) && strings.HasPrefix(f[1], "func ") {
+			continue
+		} else if !b.uses[kb][f[2]] && !a.uses[kb][f[2]] && !slices.Contains(changed[fp], fn) && !slices.Contains(refs[fp], fn) {
+			bodies[fp] = append(bodies[fp], f[1])
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(refs)) {
+		fns := slices.DeleteFunc(slices.Compact(slices.Sorted(slices.Values(refs[k]))), func(fn string) bool { return slices.Contains(changed[k], fn) })
+		if file, pkg, _ := strings.Cut(k, "\x00"); len(fns) > 0 {
+			r.outTypedWarn(file, "references into "+pkg+" added, removed, moved or changed ("+preview(fns)+"): review it")
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(bodies)) {
+		file, pkg, _ := strings.Cut(k, "\x00")
+		r.outTypedWarn(file, "changed bodies that use "+pkg+" ("+preview(bodies[k])+"): review it")
+	}
+}
+
+// preview is a count and the first three names, as the text warnings show them.
+func preview(ns []string) string {
+	return fmt.Sprintf("%d: %s%s", len(ns), strings.Join(ns[:min(3, len(ns))], ", "), map[bool]string{true: ", …"}[len(ns) > 3])
 }
 
 // outTypesHook runs all the types check's work (off: main's layer); outDone
@@ -351,11 +392,11 @@ var (
 
 // typesOff stops the types check for the run, with one warning, never
 // P14b-out-1's work bound (no libc exhaustion block: Opus #282 probe D);
-// its references are then left out of the comparison.
+// its signals are then left out (outTypedSignals).
 func (r *run) typesOff(dir string) {
 	if !r.out.typedOff {
 		r.out.typedOff = true
-		r.outTypedWarn(true, dir, "decision A's check by types stopped (a worker still busy, its deadline or its own work bound): its signals by types are incomplete from this directory on: review it")
+		r.outTypedWarn(dir, "decision A's check by types stopped (a worker still busy, its deadline or its own work bound): its signals by types are incomplete from this directory on: review it")
 	}
 }
 
@@ -370,8 +411,8 @@ func unexpected(errs []error) string {
 	return ""
 }
 
-// outTypedRefs adds one check's references by types to its files, a key's
-// largest count on any platform, and its S uses to their bindings.
+// outTypedRefs adds one check's references by types to its files' trefs (a
+// key's largest count on any platform) and S uses to tuses, never to refs.
 func (r *run) outTypedRefs(ofs []*outFile, info *types.Info) {
 	names := map[types.Object]string{}
 	for _, of := range ofs {
@@ -381,14 +422,11 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info) {
 				if r.chargeTypes(len(u.where)+len(ref)) && u.where != "" {
 					counts[pkg+"\x00"+u.where+"\x00"+ref]++
 				}
-				if _, seen := of.uses[u.bind][pkg]; !seen && u.bind != "" { // a use the types check's alone (false), unless the text read's (true)
-					of.use(u.bind, pkg)
-					of.uses[u.bind][pkg] = false
-				}
+				of.tuses[u.bind+"\x00"+pkg] = true
 			})
 		}
 		for k, n := range counts {
-			of.refs[k] = max(of.refs[k], n)
+			of.trefs[k] = max(of.trefs[k], n)
 		}
 	}
 }
