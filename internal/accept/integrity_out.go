@@ -59,6 +59,8 @@ type outFile struct {
 	typed   bool                       // its package's checks by types are done
 	trefs   map[string]int             // its references by types alone, as refs (outTypedRefs)
 	tuses   map[string]bool            // "binding\x00package": its S uses by types alone
+	tprints map[string]string          // P14b-out-3b: its init and hook bodies' fingerprints outside their literals ("init body")
+	src     []byte
 }
 
 // outHook runs the layer (a test turns it off to compare the base guard's
@@ -281,7 +283,7 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 		delete(r.out.built, bk)
 		return fail("parse")
 	}
-	of := &outFile{refs: map[string]int{}, f: f, prints: map[string]string{}, uses: map[string]map[string]bool{}, on: built, trefs: map[string]int{}, tuses: map[string]bool{}}
+	of := &outFile{refs: map[string]int{}, f: f, prints: map[string]string{}, uses: map[string]map[string]bool{}, on: built, trefs: map[string]int{}, tuses: map[string]bool{}, src: b}
 	names, testing := map[string]string{}, ""
 	for _, is := range f.Imports {
 		ip, _ := strconv.Unquote(is.Path.Value)
@@ -461,12 +463,13 @@ type outFacts struct {
 	prints  map[string]string          // "file\x00binding"
 	trefs   map[string]int             // P14b-out-3: the references by types alone, apart from refs (Astra #282 r3 H1)
 	tuses   map[string]bool            // P14b-out-3: "file\x00binding\x00package", the S uses by types alone
+	tprints map[string]string          // P14b-out-3b: "file\x00binding", the init and hook bodies' typed fingerprints
 	uses    map[string]map[string]bool // "file\x00binding": packages
 }
 
 func (r *run) outRead(dir string, t *tree) outFacts {
 	fa := outFacts{refs: map[string]int{}, dots: map[string]bool{}, unknown: map[string]bool{}, imports: map[string]bool{},
-		prints: map[string]string{}, uses: map[string]map[string]bool{}, trefs: map[string]int{}, tuses: map[string]bool{}}
+		prints: map[string]string{}, uses: map[string]map[string]bool{}, trefs: map[string]int{}, tuses: map[string]bool{}, tprints: map[string]string{}}
 	var ofs []*outFile
 	var ps []string
 	for _, p := range t.dirs[dir] {
@@ -493,6 +496,9 @@ func (r *run) outRead(dir string, t *tree) outFacts {
 		}
 		for k := range f.tuses {
 			fa.tuses[p+"\x00"+k] = true
+		}
+		for k, h := range f.tprints {
+			fa.tprints[p+"\x00"+k] = h
 		}
 		for _, d := range f.dots {
 			fa.dots[p+"\x00"+d] = true

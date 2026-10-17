@@ -5,6 +5,7 @@ package accept
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -342,7 +343,7 @@ func (r *run) outTypedWarn(p, what string) {
 // references warning names, a binding using the package by text): no text
 // entry ever changes (Astra #282 r3 H1). After a types stop, none.
 func (r *run) outTypedSignals(dir string, b, a outFacts, changed map[string][]string) {
-	if !r.chargeTypes(len(b.trefs) + len(a.trefs)) {
+	if !r.chargeTypes(len(b.trefs) + len(a.trefs) + len(b.tprints) + len(a.tprints)) {
 		r.typesOff(dir)
 	}
 	if r.out.typedOff {
@@ -357,8 +358,15 @@ func (r *run) outTypedSignals(dir string, b, a outFacts, changed map[string][]st
 	for _, k := range keys(b.tuses, a.tuses) { // in a binding outBodies reads as changed
 		f := strings.Split(k, "\x00") // file, binding, package
 		kb, fp, fn := f[0]+"\x00"+f[1], f[0]+"\x00"+f[2], strings.TrimPrefix(f[1], "func ")
-		bp, inB := b.prints[kb]
-		if ap, inA := a.prints[kb]; !inB && !inA || inB && inA && bp == ap || (!inB || !inA) && strings.HasPrefix(f[1], "func ") {
+		print := func(fa outFacts) (string, bool) { // a text binding's, or an init or hook body's by types (P14b-out-3b)
+			if h, ok := fa.prints[kb]; ok {
+				return h, ok
+			}
+			h, ok := fa.tprints[kb]
+			return h, ok
+		}
+		bp, inB := print(b)
+		if ap, inA := print(a); !inB && !inA || inB && inA && bp == ap || (!inB || !inA) && strings.HasPrefix(f[1], "func ") {
 			continue
 		} else if !b.uses[kb][f[2]] && !a.uses[kb][f[2]] && !slices.Contains(changed[fp], fn) && !slices.Contains(refs[fp], fn) {
 			bodies[fp] = append(bodies[fp], f[1])
@@ -412,22 +420,61 @@ func unexpected(errs []error) string {
 }
 
 // outTypedRefs adds one check's references by types to its files' trefs (a
-// key's largest count on any platform) and S uses to tuses, never to refs.
+// key's largest count on any platform) and S uses to tuses, never to refs;
+// an init or hook body's S uses outside its literals go to its own binding,
+// "init body" or "TestMain body", fingerprinted by typedPrint (P14b-out-3b).
 func (r *run) outTypedRefs(ofs []*outFile, info *types.Info) {
 	names := map[types.Object]string{}
 	for _, of := range ofs {
-		counts := map[string]int{}
+		counts, printed := map[string]int{}, of.tprints != nil
+		if !printed {
+			of.tprints = map[string]string{}
+		}
 		for _, u := range of.units {
-			r.typedIn(u, info, names, func(pkg, ref string) {
+			r.typedIn(u, false, info, names, func(pkg, ref string) {
 				if r.chargeTypes(len(u.where)+len(ref)) && u.where != "" {
 					counts[pkg+"\x00"+u.where+"\x00"+ref]++
 				}
 				of.tuses[u.bind+"\x00"+pkg] = true
 			})
+			if d, ok := u.n.(*ast.FuncDecl); ok && u.bind == "init literal" { // its body outside its literals (P14b-out-3b)
+				bind := d.Name.Name + " body"
+				if !printed {
+					r.typedPrint(of, d, bind)
+				}
+				r.typedIn(u, true, info, names, func(pkg, ref string) {
+					if r.chargeTypes(len(ref)) {
+						of.tuses[bind+"\x00"+pkg] = true
+					}
+				})
+			}
 		}
 		for k, n := range counts {
 			of.trefs[k] = max(of.trefs[k], n)
 		}
+	}
+}
+
+// typedPrint combines d's spans outside its function literals (the text
+// binding "init literal" holds those) into of's typed fingerprint for
+// bind, sha256(prev||span) in source order, on the types budget.
+func (r *run) typedPrint(of *outFile, d *ast.FuncDecl, bind string) {
+	tf, at := r.out.fset.File(of.f.Pos()), d.Pos()
+	var spans [][2]token.Pos
+	ast.Inspect(d, func(n ast.Node) bool {
+		if l, ok := n.(*ast.FuncLit); ok {
+			spans, at = append(spans, [2]token.Pos{at, l.Pos()}), l.End()
+			return false
+		}
+		return n == nil || r.chargeTypes(1)
+	})
+	for _, sp := range append(spans, [2]token.Pos{at, d.End()}) {
+		s := of.src[tf.Offset(sp[0]):tf.Offset(sp[1])]
+		if !r.chargeTypes(len(s)) {
+			return
+		}
+		h := sha256.Sum256(append([]byte(of.tprints[bind]), s...))
+		of.tprints[bind] = string(h[:])
 	}
 }
 
@@ -466,8 +513,9 @@ func sMethod(o *types.Func) bool {
 }
 
 // typedIn calls add for each S method through a value and each S type
-// argument in u (inside its function literals only, with lits).
-func (r *run) typedIn(u unit, info *types.Info, names map[types.Object]string, add func(pkg, ref string)) {
+// argument in u (inside its function literals only, with lits; outside
+// them, with body).
+func (r *run) typedIn(u unit, body bool, info *types.Info, names map[types.Object]string, add func(pkg, ref string)) {
 	visit := func(n ast.Node) bool {
 		if n == nil || !r.chargeTypes(1) {
 			return n == nil
@@ -493,14 +541,18 @@ func (r *run) typedIn(u unit, info *types.Info, names map[types.Object]string, a
 		}
 		return true
 	}
-	if !u.lits {
+	if !u.lits && !body {
 		ast.Inspect(u.n, visit)
 		return
 	}
-	ast.Inspect(u.n, func(n ast.Node) bool { // its function literals alone
+	ast.Inspect(u.n, func(n ast.Node) bool { // its function literals alone, or all but them (body)
 		if l, ok := n.(*ast.FuncLit); ok {
-			ast.Inspect(l, visit)
+			if !body {
+				ast.Inspect(l, visit)
+			}
 			return false
+		} else if body {
+			return visit(n)
 		}
 		return n == nil || r.chargeTypes(1)
 	})
