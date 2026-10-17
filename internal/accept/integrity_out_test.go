@@ -201,12 +201,12 @@ func TestDecisionAOutIsolated(t *testing.T) {
 	}
 	// The report itself: Additive blocks of the widest path take neither main's
 	// block's place (the count) nor main's warning's (the byte budget).
-	short := slices.Repeat([]Block{{vocab.ReasonTestIntegrityViolation, "pkg/a.go: modernc.org/libc.X_Exit in f", "x", true}}, maxReported)
-	if b, _ := report(Verdict{Blocks: append(short, Block{vocab.ReasonTestIntegrityViolation, "pkg/z.go: os.Exit in quit", "main's", false})}); !finds(b, "pkg/z.go: os.Exit in quit") {
+	short := slices.Repeat([]Block{{vocab.ReasonTestIntegrityViolation, "pkg/a.go: modernc.org/libc.X_Exit in f", "x", true, false}}, maxReported)
+	if b, _ := report(Verdict{Blocks: append(short, Block{vocab.ReasonTestIntegrityViolation, "pkg/z.go: os.Exit in quit", "main's", false, false})}); !finds(b, "pkg/z.go: os.Exit in quit") {
 		t.Errorf("the report's count: main's block displaced")
 	}
-	wide := slices.Repeat([]Block{{vocab.ReasonTestIntegrityViolation, strings.Repeat("p", maxField), "x", true}}, maxReported)
-	mainW := Block{vocab.ReasonTestIntegrityViolation, "pkg/z.go: fmt.Println in out" + strings.Repeat("x", maxField), strings.Repeat("main's ", 20), false}
+	wide := slices.Repeat([]Block{{vocab.ReasonTestIntegrityViolation, strings.Repeat("p", maxField), "x", true, false}}, maxReported)
+	mainW := Block{vocab.ReasonTestIntegrityViolation, "pkg/z.go: fmt.Println in out" + strings.Repeat("x", maxField), strings.Repeat("main's ", 20), false, false}
 	if _, w := report(Verdict{Blocks: wide, Warnings: []Block{mainW}}); !finds(w, "pkg/z.go: fmt.Println in out") {
 		t.Errorf("the report's bytes: main's warning displaced")
 	}

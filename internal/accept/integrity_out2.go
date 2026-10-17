@@ -26,7 +26,6 @@ type unit struct {
 	n           ast.Node
 	where, bind string
 	lits        bool // only its function literals: they run later
-	typedOnly   bool // P14b-out-3: its S uses by types alone (its text is the base guard's); no reference counted
 }
 
 // units are d's parts: a function, bound by its bounded name; each var spec,
@@ -40,12 +39,12 @@ func (r *run) units(d ast.Decl, p, testing string) []unit {
 	case *ast.FuncDecl:
 		switch {
 		case d.Recv == nil && (d.Name.Name == "init" || strings.HasSuffix(p, "_test.go") && d.Name.Name == "TestMain" && hook(d, testing)):
-			return []unit{{d, "init literal", "init literal", true, false}, {d, "", d.Name.Name + " body", false, true}} // the body: P14b-out-3 (Opus #280 M4)
+			return []unit{{d, "init literal", "init literal", true}}
 		case d.Recv != nil && r.charge(len(d.Name.Name)+len(recv(d)), 0):
 			w := bound(recv(d) + "." + d.Name.Name)
-			return []unit{{d, w, "func " + w, false, false}}
+			return []unit{{d, w, "func " + w, false}}
 		case d.Recv == nil && r.charge(len(d.Name.Name), 0):
-			return []unit{{d, bound(d.Name.Name), "func " + bound(d.Name.Name), false, false}}
+			return []unit{{d, bound(d.Name.Name), "func " + bound(d.Name.Name), false}}
 		}
 	case *ast.GenDecl:
 		if d.Tok == token.VAR {
@@ -57,12 +56,12 @@ func (r *run) units(d ast.Decl, p, testing string) []unit {
 						ns = append(ns, id.Name)
 					}
 				}
-				us = append(us, unit{sp, "package level", "var " + bound(strings.Join(ns, ", ")), false, false})
+				us = append(us, unit{sp, "package level", "var " + bound(strings.Join(ns, ", ")), false})
 			}
 			return us
 		}
 	}
-	return []unit{{d, "package level", "", false, false}}
+	return []unit{{d, "package level", "", false}}
 }
 
 // print combines u's spans (its function literals only, with lits) into its
@@ -85,7 +84,7 @@ func (r *run) print(of *outFile, src []byte, u unit) {
 	tf := r.out.fset.File(of.f.Pos())
 	for _, n := range spans {
 		s := src[tf.Offset(n.Pos()):tf.Offset(n.End())]
-		if u.typedOnly && !r.chargeTypes(len(s)) || !u.typedOnly && !r.charge(len(s), 0) {
+		if !r.charge(len(s), 0) {
 			return
 		}
 		h := sha256.Sum256(append([]byte(of.prints[u.bind]), s...))
@@ -105,9 +104,10 @@ func (of *outFile) use(bind, pkg string) {
 // outBodies warns, once per file and package, for the bindings whose
 // fingerprint changed, or that are added or gone (but a function's: its
 // references move), that use S in either version, unless the references
-// warning for that file and package names it already.
-func (r *run) outBodies(b, a outFacts, changed map[string][]string) {
-	bodies := map[string][]string{}
+// warning for that file and package names it already (by text, for a text
+// use); typed when none of its uses is the text read's (Astra #282 r2 H1).
+func (r *run) outBodies(b, a outFacts, changed, text map[string][]string) {
+	bodies, textual := map[string][]string{}, map[string]bool{}
 	for _, k := range keys(b.prints, a.prints) {
 		file, bind, _ := strings.Cut(k, "\x00")
 		bp, inB := b.prints[k]
@@ -121,15 +121,16 @@ func (r *run) outBodies(b, a outFacts, changed map[string][]string) {
 				}
 			}
 		}))) {
-			if !slices.Contains(changed[file+"\x00"+pkg], strings.TrimPrefix(bind, "func ")) { // its references' warning names it already
-				bodies[file+"\x00"+pkg] = append(bodies[file+"\x00"+pkg], bind)
+			fp, tu := file+"\x00"+pkg, b.uses[k][pkg] || a.uses[k][pkg]
+			if named := map[bool][]string{true: text[fp], false: changed[fp]}[tu]; !slices.Contains(named, strings.TrimPrefix(bind, "func ")) { // its references' warning names it already
+				bodies[fp], textual[fp] = append(bodies[fp], bind), textual[fp] || tu
 			}
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(bodies)) {
 		file, pkg, _ := strings.Cut(k, "\x00")
 		bs := bodies[k]
-		r.outWarn(file, fmt.Sprintf("changed bodies that use %s (%d: %s%s): review it", pkg, len(bs),
+		r.outTypedWarn(!textual[k], file, fmt.Sprintf("changed bodies that use %s (%d: %s%s): review it", pkg, len(bs),
 			strings.Join(bs[:min(3, len(bs))], ", "), map[bool]string{true: ", …"}[len(bs) > 3]))
 	}
 }

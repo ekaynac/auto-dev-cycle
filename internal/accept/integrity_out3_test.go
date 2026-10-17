@@ -4,6 +4,7 @@ package accept
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -50,6 +51,7 @@ func TestDecisionAOut3(t *testing.T) {
 		// r3 #7, values and type arguments.
 		"tool/mv.go":   "package tool\n\nimport \"flag\"\n\nvar safe = flag.NewFlagSet(\"s\", flag.ContinueOnError)\n\nvar fatal = flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse4 = safe.Parse\n",
 		"tool/val.go":  "package tool\n\nimport \"flag\"\n\nvar w = flag.NewFlagSet(\"w\", flag.ContinueOnError)\n\nfunc v() {}\n",
+		"tool/mx.go":   "package tool\n\nimport \"flag\"\n\nfunc x1() { flag.Parse() }\n\nfunc x2() { _ = w.Parse }\n",
 		"tool/targ.go": "package tool\n\nimport \"flag\"\n\ntype fsAlias = flag.FlagSet\n\ntype pa = flag.FlagSet\n\nfunc g[T any]() {}\n\nfunc h() {}\n\nfunc h2() {}\n",
 		// Opus #280 H1: each platform's files alone are cheap; their union costs 2^28.
 		"slow/a.go":       "package slow\n\n" + aliasChain("A", 28),
@@ -62,8 +64,6 @@ func TestDecisionAOut3(t *testing.T) {
 		"xt/x.go":           "package xt\n\nimport \"flag\"\n\nvar fs = flag.NewFlagSet(\"x\", flag.ContinueOnError)\n",
 		"xt/export_test.go": "package xt\n\nvar FS = fs\n",
 		"xt/a_test.go":      "package xt_test\n\nimport (\n\t\"testing\"\n\n\t\"example.com/m/xt\"\n)\n\nfunc helper() {}\n\nfunc TestX(t *testing.T) { helper(); _ = xt.FS }\n",
-		"iv/iv.go":          "package iv\n\nimport \"flag\"\n\nvar safe2 = flag.NewFlagSet(\"s\", flag.ContinueOnError)\n\nvar fatal2 = flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse5 func([]string) error\n\nfunc init() { parse5 = safe2.Parse }\n",
-		"iv2/iv.go":         "package iv2\n\nimport \"flag\"\n\nvar safe3, fatal3 = flag.NewFlagSet(\"s\", flag.ContinueOnError), flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse6 func([]string) error\n",
 		"osr/f.go":          "package osr\n\nimport \"os\"\n\nvar F *os.File\n",
 		"osr/r.go":          "package osr\n\nfunc rd() int {\n\tb := make([]byte, 1)\n\tn, _ := F.Read(b)\n\treturn n\n}\n\nfunc wr() int {\n\tb := make([]byte, 1)\n\tn, _ := F.Write(b)\n\treturn n\n}\n",
 		// Opus #282 H1 (probe A): own syntax the base guard refused.
@@ -99,17 +99,15 @@ func TestDecisionAOut3(t *testing.T) {
 		files       map[string]string
 		warn, never string
 	}{
-		"r3 #7 a method-value initializer":       {edit("tool/mv.go", "= safe.Parse", "= fatal.Parse"), "tool/mv.go changed bodies that use flag (1: var parse4)", ""},
-		"an S method through a value":            {edit("tool/val.go", "func v() {}", "func v() { _ = w.Parse(nil) }"), "tool/val.go references into flag added, removed, moved or changed (1: v)", ""},
-		"an S type argument":                     {edit("tool/targ.go", "func h() {}", "func h() { g[fsAlias]() }"), "tool/targ.go references into flag added, removed, moved or changed (1: h)", ""},
-		"L3 a pointer type argument":             {edit("tool/targ.go", "func h2() {}", "func h2() { g[*pa]() }"), "tool/targ.go references into flag added, removed, moved or changed (1: h2)", ""},
-		"M1 an arm64-only file":                  {edit("arm/x_arm64.go", "func v() {}", "func v() { _ = w.Parse(nil) }"), "arm/x_arm64.go references into flag added, removed, moved or changed (1: v)", ""},
-		"M2 export_test.go's value":              {edit("xt/a_test.go", "func helper() {}", "func helper() { _ = xt.FS.Parse(nil) }"), "xt/a_test.go references into flag added, removed, moved or changed (1: helper)", ""},
-		"M4 a method value rebound in init":      {edit("iv/iv.go", "= safe2.Parse", "= fatal2.Parse"), "iv/iv.go changed bodies that use flag (1: init body)", ""},
-		"an init added rebinding a method value": {map[string]string{"iv2/iv.go": base["iv2/iv.go"] + "\nfunc init() { parse6 = fatal3.Parse }\n"}, "iv2/iv.go changed bodies that use flag (1: init body)", ""},
-		"L1 an os read by types (Opus #282 M2)":  {edit("osr/r.go", "b := make([]byte, 1)\n\tn, _ := F.Read", "b := make([]byte, 2)\n\tn, _ := F.Read"), "", "osr/r.go changed bodies that use os"},
-		"L1 an os write by types still warns":    {edit("osr/r.go", "b := make([]byte, 1)\n\tn, _ := F.Write", "b := make([]byte, 2)\n\tn, _ := F.Write"), "osr/r.go changed bodies that use os (1: func wr)", ""},
-		"Astra H2 one coherent graph":            {edit("p/use.go", "Parse(nil)", "Parse([]string{\"-h\"})"), "p/use.go changed bodies that use flag (1: func f)", "incomplete"},
+		"r3 #7 a method-value initializer":      {edit("tool/mv.go", "= safe.Parse", "= fatal.Parse"), "tool/mv.go changed bodies that use flag (1: var parse4)", ""},
+		"an S method through a value":           {edit("tool/val.go", "func v() {}", "func v() { _ = w.Parse(nil) }"), "tool/val.go references into flag added, removed, moved or changed (1: v)", ""},
+		"an S type argument":                    {edit("tool/targ.go", "func h() {}", "func h() { g[fsAlias]() }"), "tool/targ.go references into flag added, removed, moved or changed (1: h)", ""},
+		"L3 a pointer type argument":            {edit("tool/targ.go", "func h2() {}", "func h2() { g[*pa]() }"), "tool/targ.go references into flag added, removed, moved or changed (1: h2)", ""},
+		"M1 an arm64-only file":                 {edit("arm/x_arm64.go", "func v() {}", "func v() { _ = w.Parse(nil) }"), "arm/x_arm64.go references into flag added, removed, moved or changed (1: v)", ""},
+		"M2 export_test.go's value":             {edit("xt/a_test.go", "func helper() {}", "func helper() { _ = xt.FS.Parse(nil) }"), "xt/a_test.go references into flag added, removed, moved or changed (1: helper)", ""},
+		"L1 an os read by types (Opus #282 M2)": {edit("osr/r.go", "b := make([]byte, 1)\n\tn, _ := F.Read", "b := make([]byte, 2)\n\tn, _ := F.Read"), "", "osr/r.go changed bodies that use os"},
+		"L1 an os write by types still warns":   {edit("osr/r.go", "b := make([]byte, 1)\n\tn, _ := F.Write", "b := make([]byte, 2)\n\tn, _ := F.Write"), "osr/r.go changed bodies that use os (1: func wr)", ""},
+		"Astra H2 one coherent graph":           {edit("p/use.go", "Parse(nil)", "Parse([]string{\"-h\"})"), "p/use.go changed bodies that use flag (1: func f)", "incomplete"},
 		"one graph across directories": {map[string]string{"a2/a_test.go": strings.Replace(base["a2/a_test.go"], "func helper() {}", "func helper() { _ = fs.Parse(nil) }", 1),
 			"zr/r.go": strings.Replace(base["zr/r.go"], "func g() {}", "func g() { _ = fs.Parse(nil) }", 1)}, "zr/r.go references into flag added, removed, moved or changed (1: g)", "could not finish"},
 		"Astra H3 each platform its own": {edit("c3/c.go", "Parse(nil)", "Parse([]string{\"-h\"})"), "c3/c.go changed bodies that use flag (1: func f)", "incomplete"},
@@ -121,21 +119,30 @@ func TestDecisionAOut3(t *testing.T) {
 	}
 	// Astra #282 H1: the types check charges its own budget alone: the same
 	// change with it on and off (off: main's layer), with method values, type
-	// arguments, an init body, an arm64-only file, an external test and a
-	// build constraint, leaves the text layer's counters (outDone) as main's.
-	all, counters := map[string]string{"tool/tag.go": "//go:build !windows\n\npackage tool\n"}, []string{}
+	// arguments, an arm64-only file, an external test and a build
+	// constraint, leaves the text layer's counters (outDone) as main's.
+	// Astra #282 r2 H1: a warning is typed only when all its signals are
+	// the types check's: mx.go's bodies (x1's use the text read's, x2's the
+	// types check's) and tag.go's reference are text warnings.
+	all, counters := map[string]string{"tool/tag.go": "//go:build !windows\n\npackage tool\n\nimport \"flag\"\n\nfunc tg() { flag.Parse() }\n"}, []string{}
 	for _, files := range []map[string]string{edit("tool/mv.go", "= safe.Parse", "= fatal.Parse"), edit("tool/targ.go", "func h() {}", "func h() { g[fsAlias]() }"),
-		edit("iv/iv.go", "= safe2.Parse", "= fatal2.Parse"), edit("arm/x_arm64.go", "func v() {}", "func v() { _ = w.Parse(nil) }"),
+		edit("tool/val.go", "func v() {}", "func v() { _ = w.Parse(nil) }"), edit("arm/x_arm64.go", "func v() {}", "func v() { _ = w.Parse(nil) }"),
 		edit("xt/a_test.go", "func helper() {}", "func helper() { _ = xt.FS.Parse(nil) }")} {
 		maps.Copy(all, files)
 	}
+	all["tool/mx.go"] = strings.Replace(strings.Replace(base["tool/mx.go"], "flag.Parse() }", "flag.Parse(); _ = 1 }", 1), "w.Parse }", "w.Parse; _ = 2 }", 1)
 	outDone = func(nodes, tags int, over bool) { counters = append(counters, fmt.Sprint(nodes, tags, over)) }
 	on := f.guarded(t, all)
 	outTypesHook = false
 	off := f.guarded(t, all)
 	outTypesHook, outDone = true, nil
-	if len(counters) != 2 || counters[0] != counters[1] || strings.HasSuffix(counters[0], "true") || !finds(on.Warnings, "iv/iv.go changed bodies that use flag (1: init body)") ||
-		!finds(on.Warnings, "tool/targ.go references into flag added, removed, moved or changed (1: h)") || finds(off.Warnings, "(1: init body)") {
+	typedAs := func(v Verdict, what string, typed bool) bool {
+		return slices.ContainsFunc(v.Warnings, func(b Block) bool { return strings.Contains(b.Path+" "+b.What, what) && b.Typed == typed })
+	}
+	if len(counters) != 2 || counters[0] != counters[1] || strings.HasSuffix(counters[0], "true") || !typedAs(on, "tool/mv.go changed bodies that use flag (1: var parse4)", true) ||
+		!typedAs(on, "tool/targ.go references into flag added, removed, moved or changed (1: h)", true) || !typedAs(on, "tool/val.go references into flag added, removed, moved or changed (1: v)", true) ||
+		!typedAs(on, "tool/mx.go changed bodies that use flag (2: func x1, func x2)", false) || !typedAs(on, outRefs("tool/tag.go", "flag", "1: tg"), false) ||
+		!typedAs(off, "tool/mx.go changed bodies that use flag (1: func x1)", false) || slices.ContainsFunc(off.Warnings, func(b Block) bool { return b.Typed }) {
 		t.Errorf("the text layer's counters, types on and off: %q; warnings %q", counters, whats(on.Warnings))
 	}
 	// Opus #280 H1: the union is never checked: no file set given to a
@@ -405,5 +412,59 @@ func TestOutTypesApart(t *testing.T) {
 			len(added) != 1 || !strings.HasPrefix(added[0], "a000: decision A's check by types stopped") || !finds(off.Warnings, outRefs("tool/q.go", "flag", "1: q")) {
 			t.Errorf("libc edit %v: text counters %v, off %v; blocks %q; warnings %q, off %q", libcEdit, got, text, whats(on.Blocks), whats(on.Warnings), whats(off.Warnings))
 		}
+	}
+}
+
+// TestOutReportPriority (Astra #282 r2 H1): typed-only warnings never take
+// a text-level warning's place in the report. Astra's input, scaled by a
+// test-only report cap of 20 entries (main's 1,000): tool's state.go holds
+// w, a *flag.FlagSet; 20 files change fNNN() {} to fNNN() { _ = w.Parse(nil) }
+// (a typed-only warning each), and z.go adds flag.Parse(). With them, a
+// mixed reference warning (y.go: a text and a typed key) and a text body
+// whose function's references change by types alone (v.go). The report
+// starts with main's report (the types check off: main's layer), the same
+// entries in the same order; typed ones follow.
+func TestOutReportPriority(t *testing.T) {
+	defer func() { reported = maxReported }()
+	reported = 20
+	base := map[string]string{
+		"tool/state.go": "package tool\n\nimport \"flag\"\n\nvar w *flag.FlagSet\n",
+		"tool/v.go":     "package tool\n\nimport \"flag\"\n\nfunc v() { flag.Parse() }\n",
+		"tool/y.go":     "package tool\n\nimport \"flag\"\n\nfunc y() { _ = flag.CommandLine }\n",
+		"tool/z.go":     "package tool\n\nimport \"flag\"\n\nfunc z() { _ = flag.CommandLine }\n",
+	}
+	change := map[string]string{
+		"tool/v.go": strings.Replace(base["tool/v.go"], "flag.Parse() }", "flag.Parse(); _ = w.Parse(nil) }", 1),
+		"tool/y.go": strings.Replace(base["tool/y.go"], "flag.CommandLine }", "flag.CommandLine; flag.Parse(); _ = w.Parse(nil) }", 1),
+		"tool/z.go": strings.Replace(base["tool/z.go"], "flag.CommandLine }", "flag.CommandLine; flag.Parse() }", 1),
+	}
+	for i := range reported {
+		base[fmt.Sprintf("tool/a%03d.go", i)] = fmt.Sprintf("package tool\n\nfunc f%03d() {}\n", i)
+		change[fmt.Sprintf("tool/a%03d.go", i)] = fmt.Sprintf("package tool\n\nfunc f%03d() { _ = w.Parse(nil) }\n", i)
+	}
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, base)
+		plain(t, src, "add", "--all")
+	})
+	report := func(v Verdict) (r struct {
+		Warnings  []Block
+		Truncated int
+	}) {
+		if b, err := v.Report(); err != nil || json.Unmarshal(b, &r) != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	on := f.guarded(t, change)
+	outTypesHook = false
+	off := f.guarded(t, change)
+	outTypesHook = true
+	head, main := report(on), report(off)
+	text := slices.DeleteFunc(slices.Clone(on.Warnings), func(b Block) bool { return b.Typed })
+	if len(head.Warnings) < len(main.Warnings) || !slices.Equal(head.Warnings[:len(main.Warnings)], main.Warnings) || head.Truncated == 0 || main.Truncated != 0 ||
+		!slices.Equal(whats(text), whats(off.Warnings)) || !finds(main.Warnings, outRefs("tool/z.go", "flag", "1: z")) || !finds(main.Warnings, outRefs("tool/y.go", "flag", "1: y")) ||
+		!finds(main.Warnings, "tool/v.go changed bodies that use flag (1: func v)") || len(on.Warnings) <= reported {
+		t.Errorf("main's report %q (%d truncated); head's text warnings %q, %d warnings, report %d (%d truncated)", whats(main.Warnings), main.Truncated, whats(text), len(on.Warnings), len(head.Warnings), head.Truncated)
 	}
 }

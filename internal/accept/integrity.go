@@ -71,7 +71,7 @@ func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
 			if p := recover(); p != nil && ctx.Err() != nil {
 				blocks, warnings, err = append(r.blocks, r.out.blocks...), append(r.warnings, r.out.warnings...), ctx.Err()
 			} else if p != nil {
-				blocks, warnings, err = append(append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p), false}), r.out.blocks...), append(r.warnings, r.out.warnings...), nil
+				blocks, warnings, err = append(append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p), false, false}), r.out.blocks...), append(r.warnings, r.out.warnings...), nil
 			}
 		}()
 		err = r.check(changes)
@@ -143,7 +143,7 @@ func (r *run) usesCgo() bool {
 }
 
 func add(to *[]Block, p, what string) {
-	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what, false})
+	*to = append(*to, Block{vocab.ReasonTestIntegrityViolation, p, what, false, false})
 }
 
 func (r *run) check(changes []Change) error {

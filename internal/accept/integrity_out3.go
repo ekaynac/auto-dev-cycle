@@ -19,35 +19,30 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// P14b-out-3 (split from #280 at its round 3): S by real types, in the
-// additive layer, warnings only. The base guard keeps no types.Info, so the
-// layer checks each touched package again, with one rule from #280's
-// reviews: a shared object is the base guard's alone, read only, or the
-// layer's alone. The layer reads a method of an S type through a value
-// (fs.Parse on a *flag.FlagSet, keyed by its full name), an S type argument
-// (g[T] with T flag.FlagSet), and S uses by types in changed bodies,
-// variable initializers (var parse = safe.Parse) and init and hook bodies.
+// P14b-out-3a (cut from #280, and from P14b-out-3b): S by real types, in the
+// additive layer, warnings only. The layer checks each touched package
+// again; a shared object is the base guard's alone, read only, or the
+// layer's alone. It reads S methods through values ((*flag.FlagSet).Parse),
+// S type arguments (g[flag.FlagSet]) and S uses by types in changed bodies
+// and variable initializers (var parse = safe.Parse).
 
-// outView is a narrow, read-only snapshot of one of the base guard's
-// typers: all a worker reads of the base guard (never the run, its tree or
-// the typer).
+// outView is a read-only snapshot of a base guard typer: all a worker reads
+// of the base guard (never the run, its tree or the typer).
 type outView struct {
 	fset   *token.FileSet         // the base guard's positions of its parsed syntax
 	own    map[string][]*ast.File // an own or vendored package it parsed, by import path
 	export map[string]string      // the export data file it listed, by import path
 }
 
-// outImporter is one coherent package graph for the layer's checks on one
-// typer (Astra #280 H2; choice a): every package it returns is its own. An
-// own or vendored package is checked from the base guard's syntax (bodies
-// skipped) against this importer; any other is read by its own gc importer
-// from the export data the base guard listed, within maxOutExport bytes a
-// run; the package under test, for its external test, is the layer's own
-// check of it with its test files (Opus #280 M2). It loads nothing the base
-// guard did not list or parse and writes none of its state; any import it
-// cannot serve is failed (the directory is incomplete).
+// outImporter is one coherent package graph a typer, all its own (Astra #280
+// H2): own and vendored packages checked from the base guard's syntax,
+// bodies skipped; others from the export data it listed (maxOutExport); for
+// an external test, the layer's own check of the package under test (Opus
+// #280 M2). An import it cannot serve fails: the directory is incomplete.
 type outImporter struct {
 	v      outView
 	gc     types.Importer
@@ -123,10 +118,8 @@ func (im *outImporter) Import(p string) (*types.Package, error) {
 	return pkg, nil
 }
 
-// forTest is im's view for the external test of self, the layer's own check
-// of its package with its test files (Opus #280 M2), coherent as the base
-// guard's: a package that reaches self's path is checked again against
-// self; any other is im's own.
+// forTest is im's view for self's external test (Opus #280 M2): a package
+// reaching self's path is checked again against self; any other is im's.
 func (im *outImporter) forTest(self *types.Package) *outImporter {
 	c := &outImporter{v: im.v, gc: im.gc, pkgs: map[string]*types.Package{}, errs: im.errs, self: self, budget: im.budget}
 	memo := map[*types.Package]bool{}
@@ -154,39 +147,26 @@ func (im *outImporter) fail(p string, err error) error {
 	return err
 }
 
-// outWorkers counts the layer's checks that run, any run's (Astra #280 M5):
-// a slot is taken before a check starts and freed only when its worker
-// ends; go/types cannot be stopped, so a dropped worker keeps its slot.
-// outDropped counts the dropped ones still running (Opus #282 M1).
+// outWorkers counts the layer's checks running, any run's (Astra #280 M5):
+// a dropped worker keeps its slot until it ends. outDropped counts the
+// dropped ones still running (Opus #282 M1).
 var outWorkers, outDropped atomic.Int32
 
 const maxOutWorkers = 1
 
-// outSlotWait bounds a run's wait for a live peer's slot, from the run's
-// own start: past it, or while a dropped worker runs, the types check stops
-// at once (a test shortens it).
-var outSlotWait = 2 * time.Second
+var (
+	outSlotWait  = 2 * time.Second  // a run's wait for a peer's slot, from its start: past it, or while a dropped worker runs, the types check stops (tests shorten it)
+	outCheckHook func(event string) // a test's: a caller's drop ("drop"), a worker's very end ("ended": its slot freed, accounting done, result published)
+	maxOutCheck  time.Duration      // one check's bound (0: the run's deadline alone; tests set it)
+)
 
-// outCheckHook, when a test sets it, is called before a caller's drop
-// ("drop") and at a worker's very end ("ended": its slot freed, its
-// accounting done, its result published).
-var outCheckHook func(event string)
-
-// maxOutCheck bounds one of the layer's checks (0: the run's deadline
-// alone; a test sets it).
-var maxOutCheck time.Duration
-
-// outCheck type-checks files as path in a worker that holds only them, the
-// importer (its snapshot and budget) and info, never the run: it waits until
-// the run's deadline (or maxOutCheck) or until ctx ends, then drops it. A
-// dropped worker still running, no slot free within outSlotWait, the
-// deadline passed, a drop or a panic: false (the types check stops). The
-// hand-off is one decision a worker (Astra #282 M2): its state goes by CAS
-// from running to ended (by the worker) or to dropped (by the caller), and
-// only the winner accounts for it. A worker that ends frees its slot before
-// it publishes its result. A dropped one is counted by its caller, and
-// uncounted by the worker only after that count, at its real end, before
-// its slot is freed: outDropped is exact and never below zero.
+// outCheck type-checks files in a worker holding only them, the importer
+// and info, never the run, until the deadline (or maxOutCheck) or ctx's
+// end, then drops it. No slot within outSlotWait, a dropped worker running,
+// the deadline passed, a drop or a panic: false. One CAS a worker decides
+// its end or its drop (Astra #282 M2): an ended worker frees its slot
+// before its result; a dropped one is counted by its caller and uncounted
+// after that, at its real end, before its slot (outDropped never below 0).
 func outCheck(ctx context.Context, start, deadline time.Time, im types.Importer, path string, fset *token.FileSet, files []*ast.File, info *types.Info) (*types.Package, []error, bool) {
 	if maxOutCheck > 0 && time.Now().Add(maxOutCheck).Before(deadline) {
 		deadline = time.Now().Add(maxOutCheck)
@@ -271,14 +251,11 @@ func outTyperOf(t *tree, dir string, pl [2]string) *typer {
 	return t.typers[root+"\x00"+pl[0]+"/"+pl[1]]
 }
 
-// outTyped checks each package of dir in t by types: each gate platform's
-// own files with the base guard's typer of that platform (Astra #280 H3,
-// Opus #280 H1: no union, no file set shared), the package before its
-// external test; a key's count is its largest on any platform. A package
-// none of whose files imports anything reaches no S type. An import it
-// cannot serve, or a type error the base guard tolerates not (its
-// redeclarations under tags it does not model), makes the directory
-// incomplete: one warning, and that check adds nothing.
+// outTyped checks dir's packages in t by types: each platform's own files
+// with its base guard typer (Astra #280 H3, Opus #280 H1: no union), the
+// package before its external test; a key counts its largest on any
+// platform. An import it cannot serve, or an error the base guard does not
+// tolerate, makes the directory incomplete: one warning, nothing added.
 func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 	var todo []*outFile
 	for _, of := range ofs {
@@ -343,16 +320,13 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 		}
 	}
 	if why != "" {
-		r.outWarn(dir, "decision A's check by types could not finish ("+bound(why)+"): its signals by types for this directory are incomplete: review it")
+		r.outTypedWarn(true, dir, "decision A's check by types could not finish ("+bound(why)+"): its signals by types for this directory are incomplete: review it")
 	}
 }
 
-// maxOutTypeWork bounds the types check's own work (0: 16 × maxRead): its
-// file bytes, AST visits, names, reference keys and their aggregation, its
-// typed-only fingerprints and the platform-mask work past the first
-// platform that builds a file. It never charges the text layer's counter
-// (r.charge), which keeps main's charges exactly (Astra #282 H1); past it,
-// the types check stops (typesOff).
+// maxOutTypeWork bounds all the types check's work (0: 16 × maxRead): file
+// bytes, visits, names, keys, platform masks past the first. The text
+// layer's counter keeps main's charges (Astra #282 H1); past it, typesOff.
 var maxOutTypeWork int
 
 func (r *run) chargeTypes(n int) bool {
@@ -360,32 +334,28 @@ func (r *run) chargeTypes(n int) bool {
 	return r.out.tnodes <= cmp.Or(maxOutTypeWork, int(16*maxRead)) && r.ctx.Err() == nil
 }
 
-// typedBind: a binding the types check alone fingerprints (an init or
-// hook body: "init body", "TestMain body").
-func typedBind(k string) bool {
-	return strings.HasSuffix(k, " body") && !strings.HasPrefix(k, "func ") && !strings.HasPrefix(k, "var ")
+// outTypedWarn is a layer warning, typed when all its signals are the types
+// check's: the report gives it what the others leave (Astra #282 r2 H1).
+func (r *run) outTypedWarn(typed bool, p, what string) {
+	r.out.warnings = append(r.out.warnings, Block{vocab.ReasonTestIntegrityViolation, p, what, true, typed})
 }
 
-// outTypesHook runs the types check, all its work (a test turns it off: the
-// layer is then main's, to compare the text layer's charges and findings),
-// and outDone, when a test sets it, sees the text layer's counters at a
-// run's end.
+// outTypesHook runs all the types check's work (off: main's layer); outDone
+// and outCheckSeen (tests') see the text layer's counters at a run's end and
+// each file set the layer checks.
 var (
 	outTypesHook = true
 	outDone      func(nodes, tags int, over bool)
+	outCheckSeen func(files []*ast.File)
 )
 
-// outCheckSeen, when a test sets it, sees each file set the layer checks.
-var outCheckSeen func(files []*ast.File)
-
-// typesOff stops the types check for the rest of the run, with one
-// warning: its own stop, never P14b-out-1's work bound, so it feeds no
-// libc exhaustion block (the lead's decision on Opus #282 probe D); the
-// references and fingerprints by types are then left out of the comparison.
+// typesOff stops the types check for the run, with one warning, never
+// P14b-out-1's work bound (no libc exhaustion block: Opus #282 probe D);
+// its references are then left out of the comparison.
 func (r *run) typesOff(dir string) {
 	if !r.out.typedOff {
 		r.out.typedOff = true
-		r.outWarn(dir, "decision A's check by types stopped (a worker still busy, its deadline or its own work bound): its signals by types are incomplete from this directory on: review it")
+		r.outTypedWarn(true, dir, "decision A's check by types stopped (a worker still busy, its deadline or its own work bound): its signals by types are incomplete from this directory on: review it")
 	}
 }
 
@@ -411,7 +381,10 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info) {
 				if r.chargeTypes(len(u.where)+len(ref)) && u.where != "" {
 					counts[pkg+"\x00"+u.where+"\x00"+ref]++
 				}
-				of.use(u.bind, pkg)
+				if _, seen := of.uses[u.bind][pkg]; !seen && u.bind != "" { // a use the types check's alone (false), unless the text read's (true)
+					of.use(u.bind, pkg)
+					of.uses[u.bind][pkg] = false
+				}
 			})
 		}
 		for k, n := range counts {
@@ -421,8 +394,7 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info) {
 }
 
 // sObj: o, named name, is in S: the layer's, or the base guard's as its
-// sensitive classifies it (Opus #280 L1); testing's, reflect's and unsafe's
-// values have the base guard's own rules.
+// sensitive classifies it (Opus #280 L1); testing, reflect and unsafe excepted.
 func sObj(o types.Object, name string) bool {
 	if o == nil || o.Pkg() == nil || slices.Contains([]string{"testing", "reflect", "unsafe"}, o.Pkg().Path()) {
 		return false
@@ -430,14 +402,12 @@ func sObj(o types.Object, name string) bool {
 	return outS(o.Pkg().Path()) || sPkg(o.Pkg().Path()) && sensitive(o.Pkg().Path()+"."+name) > 0
 }
 
-// osReads are the plain reads of an *os.File (Opus #282 M2): inert, as the
-// base guard's osRead is for os's functions (an os.FileInfo's methods are
-// io/fs's, outside S).
+// osReads are an *os.File's plain reads (Opus #282 M2): inert, as the base
+// guard's osRead for os's functions (os.FileInfo's are io/fs's, outside S).
 var osReads = []string{"Read", "ReadAt", "ReadDir", "Readdir", "Readdirnames", "Stat", "Name", "Seek"}
 
 // sMethod: o is a method in S, classified by its receiver: every method of
-// an S package but os.File's plain reads (testing's, reflect's and
-// unsafe's values have the base guard's own rules).
+// an S package but os.File's plain reads (testing, reflect, unsafe excepted).
 func sMethod(o *types.Func) bool {
 	p := ""
 	if o.Pkg() != nil {
@@ -458,8 +428,7 @@ func sMethod(o *types.Func) bool {
 }
 
 // typedIn calls add for each S method through a value and each S type
-// argument in u (inside its function literals only, with lits; outside
-// them, with typedOnly).
+// argument in u (inside its function literals only, with lits).
 func (r *run) typedIn(u unit, info *types.Info, names map[types.Object]string, add func(pkg, ref string)) {
 	visit := func(n ast.Node) bool {
 		if n == nil || !r.chargeTypes(1) {
@@ -486,18 +455,14 @@ func (r *run) typedIn(u unit, info *types.Info, names map[types.Object]string, a
 		}
 		return true
 	}
-	if !u.lits && !u.typedOnly {
+	if !u.lits {
 		ast.Inspect(u.n, visit)
 		return
 	}
-	ast.Inspect(u.n, func(n ast.Node) bool { // its literals alone (lits), or all but them (typedOnly)
+	ast.Inspect(u.n, func(n ast.Node) bool { // its function literals alone
 		if l, ok := n.(*ast.FuncLit); ok {
-			if u.lits {
-				ast.Inspect(l, visit)
-			}
+			ast.Inspect(l, visit)
 			return false
-		} else if u.typedOnly {
-			return visit(n)
 		}
 		return n == nil || r.chargeTypes(1)
 	})

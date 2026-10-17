@@ -81,11 +81,11 @@ func outS(p string) bool {
 func libc(p string) bool { return p == "modernc.org/libc" || strings.HasPrefix(p, "modernc.org/libc/") }
 
 func (r *run) outBlock(p, what string) {
-	r.out.blocks = append(r.out.blocks, Block{vocab.ReasonTestIntegrityViolation, p, what, true})
+	r.out.blocks = append(r.out.blocks, Block{vocab.ReasonTestIntegrityViolation, p, what, true, false})
 }
 
 func (r *run) outWarn(p, what string) {
-	r.out.warnings = append(r.out.warnings, Block{vocab.ReasonTestIntegrityViolation, p, what, true})
+	r.out.warnings = append(r.out.warnings, Block{vocab.ReasonTestIntegrityViolation, p, what, true, false})
 }
 
 // charge counts the layer's work: past a bound, or on a done context, no
@@ -307,12 +307,7 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 	}
 	for _, d := range f.Decls {
 		for _, u := range r.units(d, p, testing) {
-			if u.typedOnly && !outTypesHook { // the types check off: main's layer
-				continue
-			} else if of.units = append(of.units, u); u.typedOnly { // the types check's alone
-				r.print(of, b, u)
-				continue
-			}
+			of.units = append(of.units, u)
 			r.refsIn(u.n, names, u.lits, func(pkg, name string) {
 				if r.charge(len(name)+len(u.bind), 0) && outS(pkg) { // the bytes it keys (Astra #276 r3 #6, #280 H4)
 					of.refs[pkg+"\x00"+u.where+"\x00"+bound(name)]++
@@ -462,7 +457,7 @@ type outFacts struct {
 	unknown map[string]bool // "file\x00package"
 	imports map[string]bool
 	prints  map[string]string          // "file\x00binding"
-	typed   int                        // its prints and references the types check's alone
+	typed   int                        // its references the types check's alone
 	uses    map[string]map[string]bool // "file\x00binding": packages
 }
 
@@ -486,7 +481,6 @@ func (r *run) outRead(dir string, t *tree) outFacts {
 		p := ps[i]
 		for k, h := range f.prints {
 			fa.prints[p+"\x00"+k], fa.uses[p+"\x00"+k] = h, f.uses[k]
-			fa.typed += b2i(typedBind(k))
 		}
 		for k, n := range f.refs {
 			fa.refs[p+"\x00"+k] += n
@@ -535,6 +529,7 @@ func (r *run) outPkgs() {
 		}
 		tested := r.tested(dir)          // once a directory
 		changed := map[string][]string{} // "file\x00package" to the functions whose references changed
+		text := map[string][]string{}    // those by a text reference (Astra #282 r2 H1)
 		for _, k := range keys(b.refs, a.refs) {
 			f := strings.Split(k, "\x00") // file, package, function, name
 			if r.ctx.Err() != nil {
@@ -545,20 +540,18 @@ func (r *run) outPkgs() {
 				r.outBlock(f[0]+": "+f[1]+"."+f[3]+" in "+f[2], "unverifiable: a new exit, exec, system call or call into testing's runner in a package with tests")
 			} else if a.refs[k] != b.refs[k] {
 				changed[f[0]+"\x00"+f[1]] = append(changed[f[0]+"\x00"+f[1]], f[2])
+				if !strings.ContainsAny(f[3], "([") {
+					text[f[0]+"\x00"+f[1]] = append(text[f[0]+"\x00"+f[1]], f[2])
+				}
 			}
 		}
 		for _, k := range slices.Sorted(maps.Keys(changed)) {
 			file, pkg, _ := strings.Cut(k, "\x00")
 			fns := slices.Compact(slices.Sorted(slices.Values(changed[k])))
-			r.outWarn(file, fmt.Sprintf("references into %s added, removed, moved or changed (%d: %s%s): review it", pkg, len(fns),
+			r.outTypedWarn(len(text[k]) == 0, file, fmt.Sprintf("references into %s added, removed, moved or changed (%d: %s%s): review it", pkg, len(fns),
 				strings.Join(fns[:min(3, len(fns))], ", "), map[bool]string{true: ", …"}[len(fns) > 3]))
 		}
-		if r.out.typedOff { // the types check stopped: its fingerprints are left out too
-			for _, m := range []map[string]string{b.prints, a.prints} {
-				maps.DeleteFunc(m, func(k, _ string) bool { return typedBind(k[strings.IndexByte(k, 0)+1:]) })
-			}
-		}
-		r.outBodies(b, a, changed)
+		r.outBodies(b, a, changed, text)
 		for _, k := range slices.Sorted(maps.Keys(a.unknown)) { // fail closed: its references cannot be read
 			if file, pkg, _ := strings.Cut(k, "\x00"); r.files[file] != r.cand[file] && libc(pkg) && tested {
 				r.outBlock(file, "unverifiable: an import of "+pkg+" with an unknown name")

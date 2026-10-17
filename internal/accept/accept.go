@@ -58,6 +58,9 @@ type Block struct {
 	// Additive: a finding P14b-out added (Astra #276): the report gives
 	// it only the capacity the base guard's findings leave.
 	Additive bool `json:"-"`
+	// Typed: an Additive warning all of whose signals are P14b-out-3's types
+	// check's: the report gives it what all others leave (Astra #282 r2 H1).
+	Typed bool `json:"-"`
 }
 
 // Verdict is an accept's outcome; accepted, Tree is the accepted tree.
@@ -114,7 +117,7 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 		// git's diagnostics) is the candidate's size, never the
 		// controller's fault: unsafe_output, with no accepted tree.
 		if errors.Is(err, ErrTooLarge) {
-			v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", "a git output is over its bound", false})
+			v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", "a git output is over its bound", false, false})
 			v.Tree, v.TreeDigest, err = "", "", nil
 		}
 		v.Elapsed = in.Now().Sub(start)
@@ -123,10 +126,10 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 		return v, errors.New("accept: a policy PolicyOf did not build")
 	}
 	for _, p := range in.Ignored {
-		v.Warnings = append(v.Warnings, Block{vocab.ReasonCompletedWithFindings, p, "output .gitignore kept out of the diff", false})
+		v.Warnings = append(v.Warnings, Block{vocab.ReasonCompletedWithFindings, p, "output .gitignore kept out of the diff", false, false})
 	}
 	if int64(len(in.Patch)) > maxPatch {
-		v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", fmt.Sprintf("the patch is over %d bytes", maxPatch), false})
+		v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", fmt.Sprintf("the patch is over %d bytes", maxPatch), false, false})
 		return v, nil
 	}
 	g, cleanup, err := newIndex(ctx, in.Repo, in.Base)
@@ -139,7 +142,7 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 			if !errors.Is(err, errFailed) {
 				return v, err // ErrTooLarge included: the defer refuses it
 			}
-			v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", "git does not apply the patch to the base: a path git refuses (.., .git, absolute) or a hunk that does not apply", false})
+			v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", "git does not apply the patch to the base: a path git refuses (.., .git, absolute) or a hunk that does not apply", false, false})
 			return v, nil
 		}
 	}
@@ -191,16 +194,16 @@ func (pol Policy) check(c Change) []Block {
 	for _, p := range paths {
 		switch {
 		case unsafePath(p):
-			return []Block{{vocab.ReasonUnsafeOutput, p, "not one plain repository path", false}}
+			return []Block{{vocab.ReasonUnsafeOutput, p, "not one plain repository path", false, false}}
 		case pol.Protected(p):
-			out = append(out, Block{vocab.ReasonProtectedPath, p, "a protected path", false})
+			out = append(out, Block{vocab.ReasonProtectedPath, p, "a protected path", false, false})
 		}
 	}
 	switch {
 	case c.DstMode == "120000":
-		return []Block{{vocab.ReasonUnsafeOutput, c.Dst, "a symlink", false}}
+		return []Block{{vocab.ReasonUnsafeOutput, c.Dst, "a symlink", false, false}}
 	case c.SrcMode == "160000" || c.DstMode == "160000":
-		return []Block{{vocab.ReasonUnsafeOutput, c.Dst, "a gitlink (submodule)", false}}
+		return []Block{{vocab.ReasonUnsafeOutput, c.Dst, "a gitlink (submodule)", false, false}}
 	}
 	return out
 }
