@@ -1528,3 +1528,120 @@ func TestPyGuardImportTimeR2(t *testing.T) {
 		t.Errorf("a long import chain over the work bound: %q", whats(pyOwn(v.Blocks)))
 	}
 }
+
+// TestPyGuardImportTimeR3: Astra #281's inputs (H1-H5, M1), each unread or
+// blocking; the positives (a def's or literal's attribute, self.x in a
+// method, an import cycle) stay read or pass.
+func TestPyGuardImportTimeR3(t *testing.T) {
+	const flags = "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_z():\n    assert False\n"
+	astra := func(extra map[string]string) map[string]string {
+		return maps.Collect(func(yield func(string, string) bool) {
+			for k, v := range map[string]string{"feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_z.py": flags} {
+				_ = yield(k, v)
+			}
+			for k, v := range extra {
+				_ = yield(k, v)
+			}
+		})
+	}
+	read := "cfg.py: a skipif or xfail condition in tests/test_z.py reads SKIP, which"
+	for name, c := range map[string]struct {
+		base map[string]string
+		want string
+	}{
+		"H1 a conftest writing through an alias":      {astra(map[string]string{"conftest.py": "import cfg\nimport feature.flags\n\nm = feature.flags\nm.SKIP = cfg.SKIP\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py writes m.SKIP"},
+		"H1 a subscript through an alias":             {astra(map[string]string{"conftest.py": "import cfg\nimport feature.flags\n\nm = feature.flags.__dict__\nm['SKIP'] = cfg.SKIP\n"}), "cfg.py: a module a condition reads is unread"},
+		"H1 an alias also bound by a literal":         {astra(map[string]string{"conftest.py": "import cfg\nimport feature.flags\n\nm = {}\nm = feature.flags\nm.SKIP = cfg.SKIP\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py writes m.SKIP"},
+		"H1 a global rebinding a literal":             {astra(map[string]string{"conftest.py": "import cfg\nimport feature.flags\n\nm = {}\n\ndef f():\n    global m\n    m = feature.flags\n\nf()\nm.SKIP = cfg.SKIP\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py writes m.SKIP"},
+		"H1 a decorated def":                          {astra(map[string]string{"conftest.py": "import cfg\nimport feature.flags\n\n@lambda f: feature.flags\ndef m():\n    pass\n\nm.SKIP = cfg.SKIP\n"}), "cfg.py: a module a condition reads is unread"},
+		"H2 a re-export":                              {astra(map[string]string{"conftest.py": "import writer\n", "bridge.py": "import feature.flags as target\n", "writer.py": "import cfg\nfrom bridge import target\ntarget.SKIP = cfg.SKIP\n"}), "cfg.py: a module a condition reads is unread"},
+		"H2 a re-export's attribute in a conftest":    {astra(map[string]string{"conftest.py": "import cfg\nimport bridge\nbridge.target.SKIP = cfg.SKIP\n", "bridge.py": "import feature.flags as target\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py writes bridge.target.SKIP"},
+		"H2 a re-exported value in a conftest":        {astra(map[string]string{"conftest.py": "import cfg\nfrom bridge import target\ntarget['skip'] = cfg.SKIP\n", "bridge.py": "from feature.flags import CONFIG as target\n", "feature/flags.py": "CONFIG = {'skip': False}\nSKIP = False\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py writes target at import"},
+		"H2 an impure writer through a re-export":     {astra(map[string]string{"conftest.py": "import writer\n", "bridge.py": "import feature.flags as target\n", "writer.py": "import cfg\nimport bridge\nsetattr(bridge.target, 'SKIP', cfg.SKIP)\n"}), "cfg.py: a module a condition reads is unread (the module feature.flags is written at run time by writer.py)"},
+		"H2 an impure writer through two re-exports":  {astra(map[string]string{"conftest.py": "import writer\n", "bridge.py": "import bridge2\n", "bridge2.py": "import feature.flags as target\n", "writer.py": "import cfg\nimport bridge\nsetattr(bridge.bridge2.target, 'SKIP', cfg.SKIP)\n"}), "cfg.py: a module a condition reads is unread (the module feature.flags is written at run time by writer.py)"},
+		"H3 a quoted dynamic-import name":             {astra(map[string]string{"conftest.py": "__import__(\"'parker'\")\n", "parker.py": "X = 1\n", "'parker'.py": "import cfg\nimport feature.flags\nfeature.flags.SKIP = cfg.SKIP\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py imports or runs code dynamically)"},
+		"H5 an unread module two hops away":           {astra(map[string]string{"conftest.py": "import helper0\n", "helper0.py": "import parker\n", "parker.py": "# coding: latin-1\nimport cfg\nimport feature.flags\nfeature.flags.SKIP = cfg.SKIP\n"}), "cfg.py: a module a condition reads is unread (the module parker.py is unread)"},
+		"a def's attribute stays read":                {astra(map[string]string{"feature/flags.py": "from cfg import SKIP\n", "conftest.py": "def f():\n    pass\n\nclass C:\n    pass\n\nf.x = 1\nC.y = 2\n"}), read},
+		"a literal's subscript stays read":            {astra(map[string]string{"feature/flags.py": "from cfg import SKIP\n", "conftest.py": "import os\nCFG = {}\nCFG['x'] = 1\nos.environ['MODE'] = '1'\n"}), read},
+		"a method writing self in a conftest is read": {astra(map[string]string{"feature/flags.py": "from cfg import SKIP\n", "conftest.py": "class C:\n    def set(self):\n        self.x = 1\n"}), read},
+	} {
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, c.base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), c.want) {
+			t.Errorf("%s: %q, want %q", name, whats(pyOwn(v.Blocks)), c.want)
+		}
+	}
+	for name, c := range map[string]struct {
+		base, change map[string]string
+		want         string
+	}{
+		"H1 a candidate helper newly importing an alias writer": {astra(map[string]string{"conftest.py": "import helper\n", "helper.py": "X = 1\n", "parker.py": "import feature.flags\nm = feature.flags\nm.SKIP = True\n"}),
+			map[string]string{"helper.py": "import parker\nX = 1\n"}, "parker.py: a module the tests now import runs code at import"},
+		"H5 a new test importing an unread module": {astra(map[string]string{"parker.py": "# coding: latin-1\nimport feature.flags\nfeature.flags.SKIP = True\n"}),
+			map[string]string{"tests/test_a.py": "import parker\n\ndef test_a():\n    pass\n"}, "parker.py: a module the tests now import runs code at import"},
+		"M1 a new test with a 100,000-component import": {astra(nil), map[string]string{"tests/test_a.py": "__import__('" + strings.TrimSuffix(strings.Repeat("a.", 100000), ".") + "')\n\ndef test_a():\n    pass\n"}, "tests/test_a.py: a module the tests now import runs code at import"},
+		"an import cycle in the candidate passes": {astra(map[string]string{"conftest.py": "import helper\n", "helper.py": "X = 1\n", "a.py": "import b\n", "b.py": "import a\n"}),
+			map[string]string{"helper.py": "import a\nX = 1\n"}, ""},
+	} {
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, c.base)
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, c.change); c.want == "" && len(pyOwn(v.Blocks)) > 0 || c.want != "" && !pyFinds(pyOwn(v.Blocks), c.want) {
+			t.Errorf("%s: %q, want %q", name, whats(pyOwn(v.Blocks)), c.want)
+		}
+	}
+	for name, c := range map[string]struct {
+		links  map[string]string // a link, to its text
+		change string
+	}{
+		"H4 a .. after a linked directory": {map[string]string{"feature/flags.py": "../alias/../real_flags.txt", "alias": "real/sub"}, "real/real_flags.txt"},
+		"H4 a target through another link": {map[string]string{"feature/flags.py": "../alias/real_flags.txt", "alias": "real"}, "real/real_flags.txt"},
+		"H4 a target that is the root":     {map[string]string{"loop": "."}, "notes.txt"},
+	} {
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, astra(map[string]string{"feature/flags.py": "", "real/sub/.keep": "", "real/real_flags.txt": "SKIP = False\n", "notes.txt": "x\n"}))
+			for l, to := range c.links {
+				if err := os.Remove(filepath.Join(src, l)); err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				} else if err := os.Symlink(to, filepath.Join(src, l)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			plain(t, src, "add", "--all")
+		})
+		if v := g.guarded(t, map[string]string{c.change: "SKIP = True\n"}); !pyFinds(pyOwn(v.Blocks), c.change+": a change at or under a base symlink's target") {
+			t.Errorf("%s: %q", name, whats(pyOwn(v.Blocks)))
+		}
+	}
+	deep := astra(map[string]string{"conftest.py": "__import__('" + strings.TrimSuffix(strings.Repeat("a.", 100000), ".") + "')\n", "a.py": ""}) // M1: 100,000 components
+	g := newFixtureWith(t, func(src string) {
+		write(t, src, deep)
+		plain(t, src, "add", "--all")
+	})
+	start := time.Now()
+	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); time.Since(start) > 20*time.Second || !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the module conftest.py imports a name past the depth bound)") {
+		t.Errorf("M1 a 100,000-component import (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))
+	}
+	old := maxWork // M1: a 60 KB name charged by its bytes, in either closure; the rest of each run is far below the bound
+	t.Cleanup(func() { maxWork = old })
+	maxWork = 40000
+	name := strings.TrimSuffix(strings.Repeat(strings.Repeat("b", 1000)+".", 60), ".")
+	g = newFixtureWith(t, func(src string) {
+		write(t, src, astra(map[string]string{"conftest.py": "__import__('" + name + "')\n"}))
+		plain(t, src, "add", "--all")
+	})
+	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the base conditions' analysis is over the guard's work bound)") {
+		t.Errorf("M1 a long name charged by its bytes: %q", whats(pyOwn(v.Blocks)))
+	}
+	g = newFixtureWith(t, func(src string) {
+		write(t, src, astra(map[string]string{"conftest.py": "import helper\n", "helper.py": "X = 1\n"}))
+		plain(t, src, "add", "--all")
+	})
+	if v := g.guarded(t, map[string]string{"helper.py": "__import__('" + name + "')\nX = 1\n"}); !pyFinds(pyOwn(v.Blocks), "the candidate's closure is over the guard's work bound") {
+		t.Errorf("M1 a long candidate name charged by its bytes: %q", whats(pyOwn(v.Blocks)))
+	}
+	maxWork = old
+}

@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"maps"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -62,14 +63,15 @@ type pyBaseFile struct {
 	binders   map[string][]int  // a name, to the units binding it
 	sysUnread bool              // it names sys.path, or sys in a way pySysUse does not read
 
-	plain   bool     // a package whose submodules resolve in its own directory: read, every module-level statement pyInert (Astra #275 H6)
-	starSrc []string // x of each exact "from .x import *" at module level (P14c-2a-star)
-	badStar bool     // any other import followed by * anywhere in its tokens
-	starWhy *string  // starCheck's verdict, cached (Astra #279 M1)
-	writes  []string // the dotted chains it assigns, deletes or setattrs, or whose import path it reaches, rooted at a name it imports (P14c-2a-widen)
-	active  bool     // a write the recognizer cannot read, or a write word: it may write any module it imports (Opus #281 H1, H2)
-	impure  bool     // a statement run at import outside pyAllowed: an application module that may write any module it imports (P14c-2a-allow judges a test file's)
-	runs    bool     // a dynamic import or code from a string: import_module, __import__, importlib, runpy, exec, eval, compile (Opus #281 H3)
+	plain     bool     // a package whose submodules resolve in its own directory: read, every module-level statement pyInert (Astra #275 H6)
+	starSrc   []string // x of each exact "from .x import *" at module level (P14c-2a-star)
+	badStar   bool     // any other import followed by * anywhere in its tokens
+	starWhy   *string  // starCheck's verdict, cached (Astra #279 M1)
+	writes    []string // the dotted chains it assigns, deletes or setattrs, or whose import path it reaches, rooted at a name it imports (P14c-2a-widen)
+	active    bool     // a write the recognizer cannot read, or a write word: it may write any module it imports (Opus #281 H1, H2)
+	impure    bool     // a statement run at import outside pyAllowed: an application module that may write any module it imports (P14c-2a-allow judges a test file's)
+	runs      bool     // a dynamic import or code from a string: import_module, __import__, importlib, runpy, exec, eval, compile (Opus #281 H3)
+	impWrites []string // the chains of the attribute, subscript and del targets it writes at import, past def bodies (Astra #281 H1)
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -169,6 +171,10 @@ func (pb *pyBase) load() error {
 	}
 	for _, f := range slices.Clone(pb.tests) { // the application modules a judged file imports, one hop (Mythos #270 M2)
 		for _, m := range f.mods {
+			if strings.Count(m, ".") >= pyMaxDepth { // the closure made the base unread (Astra #281 M1)
+				pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+f.path+" imports a name past the depth bound")
+				continue
+			}
 			r, unread, err := pb.resolve(m) // and the module a re-export lands in (Opus #272 M1); unread: no holder known
 			pb.holderUnread = cmp.Or(pb.holderUnread, unread)
 			for _, d := range []string{m, r} {
@@ -277,11 +283,13 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 					if depth += strings.Count("([{", k.text) - strings.Count(")]}", k.text); depth > 0 && k.text != "(" || k.kind != 'n' || i > 0 && tg[i-1].text == "." {
 						continue
 					}
-					chain := k.text
-					for j := i; j+2 < len(tg) && tg[j+1].text == "." && tg[j+2].kind == 'n'; j += 2 {
+					chain, j := k.text, i
+					for ; j+2 < len(tg) && tg[j+1].text == "." && tg[j+2].kind == 'n' && j-i < 2*pyMaxDepth; j += 2 { // its first pyMaxDepth names (Astra #281 M1)
 						chain += "." + tg[j+2].text
 					}
-					f.writes = append(f.writes, chain)
+					if f.writes = append(f.writes, chain); defIn < 0 && (j > i || j+1 < len(tg) && tg[j+1].text == "[") {
+						f.impWrites = append(f.impWrites, chain) // an attribute or a subscript written at import (Astra #281 H1)
+					}
 				}
 			}
 		}
@@ -417,18 +425,23 @@ func pyStatic(st []ptok) bool {
 var (
 	pyWriteWords = strings.Fields("__dict__ __setattr__ __setitem__ __delattr__ setattr delattr setitem vars globals") // a write by call (Opus #281 H2)
 	pyRunWords   = strings.Fields("import_module __import__ importlib runpy run_module run_path")                      // an import the closure cannot follow (Opus #281 H3)
+	pyDotted     = regexp.MustCompile(`^(?:'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*'|"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")$`)     // one plain literal of an absolute dotted name (Astra #281 H3)
 )
+
+// pyMaxDepth bounds a dotted name's components: past it, the name is unread (Astra #281 M1).
+const pyMaxDepth = 64
 
 // pyExactImport: line[i], a dynamic-import word, is a form the closure
 // follows exactly: `import importlib`, importlib.import_module, and
-// import_module('mod') or __import__('mod') with one absolute string.
+// import_module('mod') or __import__('mod') with one plain string literal
+// of an absolute dotted name, no prefix, escape or concatenation.
 func pyExactImport(line []ptok, i int) bool {
 	at := func(j int, s string) bool { return j < len(line) && line[j].text == s }
 	switch line[i].text {
 	case "importlib":
 		return line[0].text == "import" && len(line) == 2 || at(i+1, ".") && at(i+2, "import_module")
 	case "import_module", "__import__":
-		return at(i+1, "(") && i+3 < len(line) && pyStr(line[i+2]) != "" && !strings.HasPrefix(pyStr(line[i+2]), ".") && at(i+3, ")")
+		return at(i+1, "(") && i+3 < len(line) && line[i+2].kind == 's' && pyDotted.MatchString(line[i+2].text) && at(i+3, ")")
 	}
 	return false
 }

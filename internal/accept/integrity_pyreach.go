@@ -267,15 +267,20 @@ func (pb *pyBase) closure() error {
 		}
 		if mode != "120000" {
 			continue // a gitlink has no target in the tree
-		} else if b, why, err := pb.r.file(pb.r.files[p]); err != nil {
+		}
+		b, why, err := pb.r.file(pb.r.files[p])
+		if err != nil {
 			return err
-		} else if t := path.Join(path.Dir(p), string(b)); why != "" || path.IsAbs(string(b)) || t == ".." || strings.HasPrefix(t, "../") {
-			pb.linkTargets = append(pb.linkTargets, "") // out of the root: every change (Opus #281 H4)
+		}
+		// out of the root, the root itself or a .. past the first component: every change (Opus #281 H4, Astra
+		// #281 H4). A target through another link is at or under that link's own target, already matched.
+		if t := path.Join(path.Dir(p), string(b)); why != "" || path.IsAbs(string(b)) || slices.Contains(strings.Split(string(b), "/")[1:], "..") || t == "." || t == ".." || strings.HasPrefix(t, "../") {
+			pb.linkTargets = append(pb.linkTargets, "")
 		} else {
 			pb.linkTargets = append(pb.linkTargets, t)
 		}
 	}
-	seen, names, queue := map[*pyBaseFile]bool{}, map[string]bool{}, slices.Clone(pb.tests)
+	seen, names, queue, exposed := map[*pyBaseFile]bool{}, map[string]bool{}, slices.Clone(pb.tests), [][2]string(nil) // exposed: a module, its impure writer
 	for ; len(queue) > 0; queue = queue[1:] {
 		f := queue[0]
 		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
@@ -287,35 +292,63 @@ func (pb *pyBase) closure() error {
 		seen[f], pb.sysUnread = true, pb.sysUnread || f.sysUnread
 		if f.runs {
 			pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+f.path+" imports or runs code dynamically")
+		} else if f.unread {
+			pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+f.path+" is unread") // Astra #281 H5
+		} else if why := pb.unreadWrite(f); why != "" {
+			pb.holderUnread = cmp.Or(pb.holderUnread, why)
 		}
 		for _, w := range f.writes {
 			if n := pb.writtenModule(f, w); n != "" {
 				pb.written[n] = f.path
 			}
 		}
-		for _, m := range f.mods { // not inert: it may write any base module it imports, and their packages (Opus #281 H1, H2)
-			for parts, k := strings.Split(m, "."), 1; k <= len(parts) && pb.writesAll(f); k++ {
-				if n := strings.Join(parts[:k], "."); cmp.Or(pb.mods[n], pb.shadowMods[n]) != "" {
-					pb.written[n] = f.path
-				}
-			}
-		}
 		if pb.risky(f) {
 			pb.bad[f.path] = true
 		}
-		for _, m := range f.mods { // every package on the way runs too
+		tried := map[string]bool{}
+		for _, m := range f.mods { // every package on the way runs too; each attempt charged, a new name by its bytes, before it is split (Astra #281 M1)
+			if pb.r.work += 1 + len(m)*b2i(!tried[m]); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+				pb.holderUnread = cmp.Or(pb.holderUnread, "the base conditions' analysis is over the guard's work bound")
+				return pb.r.ctx.Err()
+			} else if tried[m] {
+				continue
+			} else if tried[m] = true; strings.Count(m, ".") >= pyMaxDepth {
+				pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+f.path+" imports a name past the depth bound")
+				continue
+			}
 			for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
-				if n := strings.Join(parts[:k], "."); names[n] {
+				n := strings.Join(parts[:k], ".")
+				q := cmp.Or(pb.mods[n], pb.shadowMods[n])
+				if q != "" && pb.writesAll(f) { // not inert: it may write any base module it imports, and their packages (Opus #281 H1, H2)
+					pb.written[n], exposed = f.path, append(exposed, [2]string{q, f.path})
+				}
+				if names[n] {
 					continue // each name once
 				} else if pb.opaque[n] {
 					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+n+" is a symlink or a gitlink in the base") // Opus #281 H4
-				} else if names[n] = true; cmp.Or(pb.mods[n], pb.shadowMods[n]) != "" {
-					q := cmp.Or(pb.mods[n], pb.shadowMods[n])
+				} else if names[n] = true; q != "" {
 					g, err := pb.file(q)
 					if err != nil {
 						return err
 					}
 					queue = append(queue, g)
+				}
+			}
+		}
+	}
+	for done := map[string]bool{}; len(exposed) > 0; exposed = exposed[1:] { // a module an impure one writes exposes the base modules it imports: written too, transitively (Astra #281 H2)
+		if q := exposed[0][0]; done[q] {
+			continue
+		} else if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			pb.holderUnread = cmp.Or(pb.holderUnread, "the base conditions' analysis is over the guard's work bound")
+			return pb.r.ctx.Err()
+		} else if g, err := pb.file(q); err != nil {
+			return err
+		} else {
+			done[q] = true
+			for _, d := range slices.Sorted(maps.Values(g.from)) {
+				if n := pb.baseModule(d); n != "" {
+					pb.written[n], exposed = cmp.Or(pb.written[n], exposed[0][1]), append(exposed, [2]string{cmp.Or(pb.mods[n], pb.shadowMods[n]), exposed[0][1]})
 				}
 			}
 		}
@@ -332,16 +365,73 @@ func (pb *pyBase) writesAll(f *pyBaseFile) bool {
 }
 
 // risky: for the candidate's closure, f names a write onto a base module,
-// a write it cannot read, a dynamic import or a sys use. A statement run at
-// import outside pyAllowed alone stays main's warning there (Opus #266 M1).
+// a write it cannot read, a dynamic import, a sys use or is unread (Astra
+// #281 H5). A statement run at import outside pyAllowed alone stays main's
+// warning there (Opus #266 M1).
 func (pb *pyBase) risky(f *pyBaseFile) bool {
-	return f.active || f.runs || f.sysUnread || slices.ContainsFunc(f.writes, func(w string) bool { return pb.writtenModule(f, w) != "" })
+	return f.active || f.runs || f.sysUnread || f.unread || pb.unreadWrite(f) != "" || slices.ContainsFunc(f.writes, func(w string) bool { return pb.writtenModule(f, w) != "" })
+}
+
+// unreadWrite: why an attribute or subscript f writes at import may land
+// on a module the model does not name, or "" (Astra #281 H1, H2). Its head
+// is a name f does not import, unless f binds it only by an undecorated
+// def, a class without bases or a literal; an import that reaches the base
+// but is not a base module (a re-export); or a base module's attribute
+// that is not the written one (bridge.target.SKIP).
+func (pb *pyBase) unreadWrite(f *pyBaseFile) string {
+	for _, w := range f.impWrites {
+		parts := strings.Split(w, ".")
+		to := pb.importOf(f, parts[0])
+		if to == "" && pyNotModule(f, parts[0]) {
+			continue
+		} else if to != "" {
+			n := pb.writtenModule(f, w)
+			if n == "" || (n == to || strings.HasPrefix(n, to+".")) && len(strings.Split(to, "."))+len(parts)-len(strings.Split(n, ".")) <= 2 {
+				continue // outside the base (os.environ), or one name of a base module
+			}
+		}
+		return "the module " + f.path + " writes " + w + " at import onto an object the guard does not resolve"
+	}
+	return ""
+}
+
+// pyNotModule: f binds n, never declared global, only by an undecorated
+// def, a class without bases, or n = a pyLiteral (Astra #281 H1). A
+// statement naming n only before . or [ (n.x = v, n[k] = v) binds nothing.
+func pyNotModule(f *pyBaseFile, n string) bool {
+	if slices.ContainsFunc(f.units, func(u []ptok) bool {
+		return slices.ContainsFunc(u, func(k ptok) bool { return k.text == "global" || k.text == "nonlocal" })
+	}) {
+		return false
+	}
+	bound := false
+	for _, i := range f.binders[n] {
+		u, parts := f.units[i], pyAssign(f.units[i])
+		def := len(u) > 2 && u[1].text == n && (u[0].text == "def" || u[0].text == "class" && (u[2].text == ":" || len(u) > 3 && u[2].text == "(" && u[3].text == ")"))
+		if def || len(parts) == 2 && len(parts[0]) == 1 && parts[0][0].text == n && pyLiteral(parts[1]) {
+			bound = true
+		} else if len(parts) < 2 || !pyOnlyHead(u, n) {
+			return false
+		}
+	}
+	return bound
+}
+
+// pyOnlyHead: every n in u not after a dot comes before a . or a [.
+func pyOnlyHead(u []ptok, n string) bool {
+	for i, k := range u {
+		if k.text == n && (i == 0 || u[i-1].text != ".") && (i+1 == len(u) || u[i+1].text != "." && u[i+1].text != "[") {
+			return false
+		}
+	}
+	return true
 }
 
 // candClosure is the first module the candidate's closure (from its judged
 // files and the changed files) reaches that is not inert, writes, imports
-// dynamically or uses sys, and that the base closure did not reach as one
-// (Opus #281 M1).
+// dynamically, uses sys or is unread, and that the base closure did not
+// reach as one (Opus #281 M1, Astra #281 H5). Each import is charged by its
+// bytes before it is split, and each path queued once (Astra #281 M1).
 func (pb *pyBase) candClosure(changed []string) (string, error) {
 	mods := map[string]string{}
 	for _, p := range slices.Sorted(maps.Keys(pb.r.cand)) {
@@ -358,20 +448,30 @@ func (pb *pyBase) candClosure(changed []string) (string, error) {
 		}
 	}
 	slices.Sort(queue)
-	for seen := map[string]bool{}; len(queue) > 0; queue = queue[1:] {
+	queue = slices.Compact(queue)
+	queued := map[string]bool{}
+	for _, p := range queue {
+		queued[p] = true
+	}
+	for ; len(queue) > 0; queue = queue[1:] {
 		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
 			return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
-		} else if p := queue[0]; seen[p] || pb.r.cand[p] == "" {
+		} else if p := queue[0]; pb.r.cand[p] == "" {
 			continue
 		} else if f, err := pb.candFile(p); err != nil {
 			return "", err
-		} else if seen[p] = true; pb.risky(f) && !pb.bad[p] {
+		} else if pb.risky(f) && !pb.bad[p] {
 			return p, nil
 		} else {
 			for _, m := range f.mods {
+				if pb.r.work += 1 + len(m); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+					return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
+				} else if strings.Count(m, ".") >= pyMaxDepth {
+					return p, nil // a name past the depth bound
+				}
 				for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
-					if q := mods[strings.Join(parts[:k], ".")]; q != "" {
-						queue = append(queue, q)
+					if q := mods[strings.Join(parts[:k], ".")]; q != "" && !queued[q] {
+						queued[q], queue = true, append(queue, q)
 					}
 				}
 			}
@@ -380,20 +480,36 @@ func (pb *pyBase) candClosure(changed []string) (string, error) {
 	return "", nil
 }
 
+// importOf: the module f binds name h to by an import, or "" (import a.b
+// binds a).
+func (pb *pyBase) importOf(f *pyBaseFile, h string) string {
+	if to := f.from[h]; f.named[h] || !strings.HasPrefix(to, h+".") {
+		return to
+	}
+	return h
+}
+
+// baseModule: the longest prefix of dotted name d a base file answers to,
+// or "" (a name past the depth bound too: the closure makes it unread).
+func (pb *pyBase) baseModule(d string) string {
+	if strings.Count(d, ".") >= pyMaxDepth {
+		return ""
+	}
+	for parts, k := strings.Split(d, "."), strings.Count(d, ".")+1; k >= 1; k-- {
+		if n := strings.Join(parts[:k], "."); cmp.Or(pb.mods[n], pb.shadowMods[n]) != "" {
+			return n
+		}
+	}
+	return ""
+}
+
 // writtenModule: the base module that f's write w lands on, or "": w's head
 // read as the module f imports under that name, then the longest prefix a
 // base file answers to.
 func (pb *pyBase) writtenModule(f *pyBaseFile, w string) string {
-	parts := strings.Split(w, ".")
-	to := f.from[parts[0]]
-	if !f.named[parts[0]] && strings.HasPrefix(to, parts[0]+".") {
-		to = parts[0] // import a.b binds a
-	}
-	full := strings.Split(strings.Join(append([]string{to}, parts[1:]...), "."), ".")
-	for k := len(full); k >= 1; k-- {
-		if n := strings.Join(full[:k], "."); cmp.Or(pb.mods[n], pb.shadowMods[n]) != "" {
-			return n
-		}
+	head, rest, _ := strings.Cut(w, ".")
+	if to := pb.importOf(f, head); to != "" {
+		return pb.baseModule(strings.TrimSuffix(to+"."+rest, "."))
 	}
 	return ""
 }
