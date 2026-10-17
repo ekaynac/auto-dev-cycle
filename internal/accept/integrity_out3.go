@@ -389,13 +389,15 @@ func preview(ns []string) string {
 	return fmt.Sprintf("%d: %s%s", len(ns), strings.Join(ns[:min(3, len(ns))], ", "), map[bool]string{true: ", …"}[len(ns) > 3])
 }
 
-// outTypesHook runs all the types check's work (off: main's layer); outDone
-// and outCheckSeen (tests') see the text layer's counters at a run's end and
-// each file set the layer checks.
+// outTypesHook runs all the types check's work (off: main's layer); outDone,
+// outCheckSeen and outBodyHook (tests') see the text layer's counters at a
+// run's end, each file set the layer checks, and what an init or hook
+// body's pass charges the types budget (Opus #283 L2).
 var (
 	outTypesHook = true
 	outDone      func(nodes, tags int, over bool)
 	outCheckSeen func(files []*ast.File)
+	outBodyHook  func(charged int)
 )
 
 // typesOff stops the types check for the run, with one warning, never
@@ -438,15 +440,19 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info) {
 				of.tuses[u.bind+"\x00"+pkg] = true
 			})
 			if d, ok := u.n.(*ast.FuncDecl); ok && u.bind == "init literal" { // its body outside its literals (P14b-out-3b)
-				bind := d.Name.Name + " body"
+				bind, before := d.Name.Name+" body", r.out.tnodes
 				if !printed {
 					r.typedPrint(of, d, bind)
 				}
 				r.typedIn(u, true, info, names, func(pkg, ref string) {
-					if r.chargeTypes(len(ref)) {
+					if r.chargeTypes(len(bind) + len(ref)) { // its references too, as a literal's (Opus #283 H1)
+						counts[pkg+"\x00"+bind+"\x00"+ref]++
 						of.tuses[bind+"\x00"+pkg] = true
 					}
 				})
+				if outBodyHook != nil {
+					outBodyHook(r.out.tnodes - before)
+				}
 			}
 		}
 		for k, n := range counts {
