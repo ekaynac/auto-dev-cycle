@@ -44,26 +44,47 @@ func outGuarded(t *testing.T, f fixture, files map[string]string, gone ...string
 // outSame asserts the invariant (Astra #282 r3 H1): with the types check on
 // (v) and off (w: main's layer), the blocks and the warnings not Typed are
 // the same, in order, in the verdict and in the serialized report, byte for
-// byte; typed entries take only what the report leaves.
+// byte; typed entries take only what the report leaves (outReports).
 func outSame(t *testing.T, v, w Verdict) {
 	t.Helper()
-	report := func(v Verdict) (r struct {
+	bv, errv := v.Report()
+	bw, errw := w.Report()
+	if errv != nil || errw != nil {
+		t.Fatal(errv, errw)
+	}
+	text := slices.DeleteFunc(slices.Clone(v.Warnings), func(b Block) bool { return b.Typed })
+	if !slices.Equal(v.Blocks, w.Blocks) || !slices.Equal(text, w.Warnings) || slices.ContainsFunc(w.Warnings, func(b Block) bool { return b.Typed }) || !outReports(v, bv, bw) {
+		t.Errorf("the text layer's findings differ with the types check on: warnings %q / %q; reports %d / %d bytes", whats(text), whats(w.Warnings), len(bv), len(bw))
+	}
+}
+
+// outReports: the report with the types check on (bv, of v) is the report
+// with it off (bw), its blocks and its warnings byte for byte, then only
+// v's typed warnings, each encoded as Report encodes it, in their order
+// (Astra #282 r4 L2); every entry left out is counted in truncated.
+func outReports(v Verdict, bv, bw []byte) bool {
+	var rv, rw struct {
 		Blocks, Warnings []json.RawMessage
 		Truncated        int
-	}) {
-		if b, err := v.Report(); err != nil || json.Unmarshal(b, &r) != nil {
-			t.Fatal(err)
-		}
-		return r
+	}
+	if json.Unmarshal(bv, &rv) != nil || json.Unmarshal(bw, &rw) != nil || len(rv.Warnings) < len(rw.Warnings) {
+		return false
 	}
 	raw := func(a, b json.RawMessage) bool { return bytes.Equal(a, b) }
-	text := slices.DeleteFunc(slices.Clone(v.Warnings), func(b Block) bool { return b.Typed })
-	rv, rw := report(v), report(w)
-	if n := len(rw.Warnings); !slices.Equal(v.Blocks, w.Blocks) || !slices.Equal(text, w.Warnings) || slices.ContainsFunc(w.Warnings, func(b Block) bool { return b.Typed }) ||
-		!slices.EqualFunc(rv.Blocks, rw.Blocks, raw) || len(rv.Warnings) < n || !slices.EqualFunc(rv.Warnings[:n], rw.Warnings, raw) ||
-		rv.Truncated+len(rv.Warnings) != rw.Truncated+n+len(v.Warnings)-len(text) {
-		t.Errorf("the text layer's findings differ with the types check on: warnings %q / %q; reports %d+%d truncated / %d+%d", whats(text), whats(w.Warnings), len(rv.Warnings), rv.Truncated, n, rw.Truncated)
+	rest, typed := rv.Warnings[len(rw.Warnings):], 0
+	for _, b := range v.Warnings {
+		for _, f := range []*string{&b.Path, &b.What} { // as Report clips it
+			if len(*f) > maxField {
+				*f = strings.ToValidUTF8((*f)[:maxField], "")
+			}
+		}
+		if e, err := json.Marshal(b); b.Typed && err == nil && len(rest) > 0 && bytes.Equal(rest[0], e) {
+			rest = rest[1:]
+		}
+		typed += b2i(b.Typed)
 	}
+	return len(rest) == 0 && slices.EqualFunc(rv.Blocks, rw.Blocks, raw) && slices.EqualFunc(rv.Warnings[:len(rw.Warnings)], rw.Warnings, raw) &&
+		rv.Truncated+len(rv.Warnings) == rw.Truncated+len(rw.Warnings)+typed
 }
 
 // outRefs is the layer's aggregated warning for file, package and functions.
@@ -307,13 +328,14 @@ func TestDecisionAOutRound6(t *testing.T) {
 	}
 	maxRead, maxWork = oldRead, oldWork
 	// L5 probe E: 1101 layer warnings on long paths and two libc blocks:
-	// the blocks are reported.
+	// the blocks are reported (with the layer and the types check on and
+	// off: outGuarded, Astra #282 r4 L1).
 	long := strings.Repeat("d", 250) + "/" + strings.Repeat("e", 250) + "/" + strings.Repeat("f", 250)
 	files := map[string]string{"pkg/" + strings.Repeat("l", 200) + ".go": "package pkg\n\nimport \"modernc.org/libc\"\n\nfunc a() { libc.X_Exit(nil, 0) }\n\nfunc b() { libc.X_Exit(nil, 0) }\n"}
 	for i := range 1101 {
 		files[fmt.Sprintf("%s/%s%04d.go", long, strings.Repeat("g", 200), i)] = fmt.Sprintf("package ff\n\nimport \"flag\"\n\nfunc p%d() { flag.Parse() }\n", i)
 	}
-	v := f.guarded(t, files)
+	v := outGuarded(t, f, files)
 	b, err := v.Report()
 	var rep struct{ Blocks []Block }
 	if err != nil || json.Unmarshal(b, &rep) != nil {

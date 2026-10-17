@@ -526,4 +526,15 @@ func TestOutTypedEntries(t *testing.T) {
 	if b, err := on.Report(); err != nil || !strings.Contains(string(b), fmt.Sprintf(`"truncated":%d,`, len(on.Warnings)-len(off.Warnings))) {
 		t.Errorf("the byte boundary: %d typed entries, not all left out", len(on.Warnings)-len(off.Warnings))
 	}
+	// Below it (Astra #282 r4 L2): main's report already leaves text entries
+	// out (its last one; half of them); with the types check, the same
+	// report, then typed candidates alone in what is left.
+	full := reportedBytes
+	for _, bound := range []int{full - 8 - len(r.Warnings[len(r.Warnings)-1]), full / 2} {
+		reportedBytes = bound
+		outSame(t, on, off)
+		if b, err := off.Report(); err != nil || strings.Contains(string(b), `"truncated":0,`) {
+			t.Errorf("below the boundary (%d bytes): main's report leaves no text entry out", bound)
+		}
+	}
 }
