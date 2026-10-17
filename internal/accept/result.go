@@ -25,17 +25,19 @@ const (
 	maxEntries  = 1 << 20
 )
 
+var reported, reportedBytes = maxReported, maxEntries // tests lower them
+
 // Report is the D55 record of one accept node, a blob its result holds
 // from the first live attempt: elapsed time, blocks, warnings, files,
 // tree. Each list keeps at most maxReported entries, and all entries
 // together at most maxEntries encoded bytes; the entries left out are
 // counted in truncated, and the fields cut to maxField bytes in clipped.
 func (v Verdict) Report() ([]byte, error) {
-	budget, truncated, clipped := maxEntries, 0, 0
+	budget, truncated, clipped := reportedBytes, 0, 0
 	var err error
-	cut := func(out, bs []Block, additive bool) []Block { // the base guard's findings first, P14b-out's in what is left
+	cut := func(out, bs []Block, rank int) []Block { // the base guard's findings first, P14b-out's text ones, then its types check's alone (Astra #282 r2 H1), in what is left
 		for _, b := range bs {
-			if b.Additive != additive {
+			if b2i(b.Additive)+b2i(b.Typed) != rank {
 				continue
 			}
 			for _, f := range []*string{&b.Path, &b.What} {
@@ -45,7 +47,7 @@ func (v Verdict) Report() ([]byte, error) {
 			}
 			e, merr := json.Marshal(b)
 			err = errors.Join(err, merr)
-			if len(out) == maxReported || len(e)+1 > budget {
+			if len(out) == reported || len(e)+1 > budget {
 				truncated++
 				continue
 			}
@@ -54,8 +56,9 @@ func (v Verdict) Report() ([]byte, error) {
 		}
 		return out
 	}
-	blocks, warnings := cut([]Block{}, v.Blocks, false), cut([]Block{}, v.Warnings, false)
-	blocks, warnings = cut(blocks, v.Blocks, true), cut(warnings, v.Warnings, true)
+	blocks, warnings := cut([]Block{}, v.Blocks, 0), cut([]Block{}, v.Warnings, 0)
+	blocks, warnings = cut(blocks, v.Blocks, 1), cut(warnings, v.Warnings, 1)
+	blocks, warnings = cut(blocks, v.Blocks, 2), cut(warnings, v.Warnings, 2)
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,10 +21,14 @@ import (
 )
 
 // outGuarded runs the guard with the layer and without it: the base guard's
-// findings must be byte-equal (the layer's isolation; Opus #276 r2 L5).
+// findings must be byte-equal (the layer's isolation; Opus #276 r2 L5). It
+// runs it with the types check off too: outSame (Astra #282 r3 H1).
 func outGuarded(t *testing.T, f fixture, files map[string]string, gone ...string) Verdict {
 	t.Helper()
 	v := f.guarded(t, files, gone...)
+	outTypesHook = false
+	outSame(t, v, f.guarded(t, files, gone...))
+	outTypesHook = true
 	outHook = false
 	w := f.guarded(t, files, gone...)
 	outHook = true
@@ -34,6 +39,52 @@ func outGuarded(t *testing.T, f fixture, files map[string]string, gone ...string
 		t.Errorf("the base guard's findings differ with the layer on: blocks %q / %q, warnings %d / %d", whats(base(v.Blocks)), whats(w.Blocks), len(base(v.Warnings)), len(w.Warnings))
 	}
 	return v
+}
+
+// outSame asserts the invariant (Astra #282 r3 H1): with the types check on
+// (v) and off (w: main's layer), the blocks and the warnings not Typed are
+// the same, in order, in the verdict and in the serialized report, byte for
+// byte; typed entries take only what the report leaves (outReports).
+func outSame(t *testing.T, v, w Verdict) {
+	t.Helper()
+	bv, errv := v.Report()
+	bw, errw := w.Report()
+	if errv != nil || errw != nil {
+		t.Fatal(errv, errw)
+	}
+	text := slices.DeleteFunc(slices.Clone(v.Warnings), func(b Block) bool { return b.Typed })
+	if !slices.Equal(v.Blocks, w.Blocks) || !slices.Equal(text, w.Warnings) || slices.ContainsFunc(w.Warnings, func(b Block) bool { return b.Typed }) || !outReports(v, bv, bw) {
+		t.Errorf("the text layer's findings differ with the types check on: warnings %q / %q; reports %d / %d bytes", whats(text), whats(w.Warnings), len(bv), len(bw))
+	}
+}
+
+// outReports: the report with the types check on (bv, of v) is the report
+// with it off (bw), its blocks and its warnings byte for byte, then only
+// v's typed warnings, each encoded as Report encodes it, in their order
+// (Astra #282 r4 L2); every entry left out is counted in truncated.
+func outReports(v Verdict, bv, bw []byte) bool {
+	var rv, rw struct {
+		Blocks, Warnings []json.RawMessage
+		Truncated        int
+	}
+	if json.Unmarshal(bv, &rv) != nil || json.Unmarshal(bw, &rw) != nil || len(rv.Warnings) < len(rw.Warnings) {
+		return false
+	}
+	raw := func(a, b json.RawMessage) bool { return bytes.Equal(a, b) }
+	rest, typed := rv.Warnings[len(rw.Warnings):], 0
+	for _, b := range v.Warnings {
+		for _, f := range []*string{&b.Path, &b.What} { // as Report clips it
+			if len(*f) > maxField {
+				*f = strings.ToValidUTF8((*f)[:maxField], "")
+			}
+		}
+		if e, err := json.Marshal(b); b.Typed && err == nil && len(rest) > 0 && bytes.Equal(rest[0], e) {
+			rest = rest[1:]
+		}
+		typed += b2i(b.Typed)
+	}
+	return len(rest) == 0 && slices.EqualFunc(rv.Blocks, rw.Blocks, raw) && slices.EqualFunc(rv.Warnings[:len(rw.Warnings)], rw.Warnings, raw) &&
+		rv.Truncated+len(rv.Warnings) == rw.Truncated+len(rw.Warnings)+typed
 }
 
 // outRefs is the layer's aggregated warning for file, package and functions.
@@ -201,12 +252,12 @@ func TestDecisionAOutIsolated(t *testing.T) {
 	}
 	// The report itself: Additive blocks of the widest path take neither main's
 	// block's place (the count) nor main's warning's (the byte budget).
-	short := slices.Repeat([]Block{{vocab.ReasonTestIntegrityViolation, "pkg/a.go: modernc.org/libc.X_Exit in f", "x", true}}, maxReported)
-	if b, _ := report(Verdict{Blocks: append(short, Block{vocab.ReasonTestIntegrityViolation, "pkg/z.go: os.Exit in quit", "main's", false})}); !finds(b, "pkg/z.go: os.Exit in quit") {
+	short := slices.Repeat([]Block{{vocab.ReasonTestIntegrityViolation, "pkg/a.go: modernc.org/libc.X_Exit in f", "x", true, false}}, maxReported)
+	if b, _ := report(Verdict{Blocks: append(short, Block{vocab.ReasonTestIntegrityViolation, "pkg/z.go: os.Exit in quit", "main's", false, false})}); !finds(b, "pkg/z.go: os.Exit in quit") {
 		t.Errorf("the report's count: main's block displaced")
 	}
-	wide := slices.Repeat([]Block{{vocab.ReasonTestIntegrityViolation, strings.Repeat("p", maxField), "x", true}}, maxReported)
-	mainW := Block{vocab.ReasonTestIntegrityViolation, "pkg/z.go: fmt.Println in out" + strings.Repeat("x", maxField), strings.Repeat("main's ", 20), false}
+	wide := slices.Repeat([]Block{{vocab.ReasonTestIntegrityViolation, strings.Repeat("p", maxField), "x", true, false}}, maxReported)
+	mainW := Block{vocab.ReasonTestIntegrityViolation, "pkg/z.go: fmt.Println in out" + strings.Repeat("x", maxField), strings.Repeat("main's ", 20), false, false}
 	if _, w := report(Verdict{Blocks: wide, Warnings: []Block{mainW}}); !finds(w, "pkg/z.go: fmt.Println in out") {
 		t.Errorf("the report's bytes: main's warning displaced")
 	}
@@ -277,13 +328,14 @@ func TestDecisionAOutRound6(t *testing.T) {
 	}
 	maxRead, maxWork = oldRead, oldWork
 	// L5 probe E: 1101 layer warnings on long paths and two libc blocks:
-	// the blocks are reported.
+	// the blocks are reported (with the layer and the types check on and
+	// off: outGuarded, Astra #282 r4 L1).
 	long := strings.Repeat("d", 250) + "/" + strings.Repeat("e", 250) + "/" + strings.Repeat("f", 250)
 	files := map[string]string{"pkg/" + strings.Repeat("l", 200) + ".go": "package pkg\n\nimport \"modernc.org/libc\"\n\nfunc a() { libc.X_Exit(nil, 0) }\n\nfunc b() { libc.X_Exit(nil, 0) }\n"}
 	for i := range 1101 {
 		files[fmt.Sprintf("%s/%s%04d.go", long, strings.Repeat("g", 200), i)] = fmt.Sprintf("package ff\n\nimport \"flag\"\n\nfunc p%d() { flag.Parse() }\n", i)
 	}
-	v := f.guarded(t, files)
+	v := outGuarded(t, f, files)
 	b, err := v.Report()
 	var rep struct{ Blocks []Block }
 	if err != nil || json.Unmarshal(b, &rep) != nil {
@@ -423,7 +475,7 @@ func TestDecisionAOutRound9(t *testing.T) {
 // too) charges a few units a byte.
 func TestOutNodesPerByte(t *testing.T) {
 	src := "package p\n\nfunc f() {\n" + strings.Repeat("\tx\n\t^^^^^^^^x\n\ta.b.c.d.e.f\n\tf()()()()\n\t{{{{}}}}\n\tx[0][0][0]\n\t-(-(-x))\n\tx, y := 0, 0\n\t_ = []int{0,0,0,0}\n", 4000) + "}\n"
-	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]int{}, named: map[string]map[string]bool{}},
 		read: func(context.Context, string, int64) ([]byte, bool, error) { return []byte(src), true, nil }}
 	tr := &tree{files: map[string]string{"p/d.go": "d"}, dirs: map[string][]string{"p": {"p/d.go"}}}
 	if r.outRead("p", tr); r.out.nodes > 4*len(src) || r.out.over {
@@ -487,7 +539,7 @@ func TestOutShadowOracle(t *testing.T) {
 				return true
 			})
 		}
-		r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
+		r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]int{}, named: map[string]map[string]bool{}},
 			read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
 				return []byte(files[blob[0]-'0']), true, nil
 			}}
@@ -517,7 +569,7 @@ func TestOutShadowOracle(t *testing.T) {
 // probe B1), and a done context stops it with no block (M2, probe B2).
 func TestOutReadAndCancel(t *testing.T) {
 	var read []string
-	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]bool{}, named: map[string]map[string]bool{}},
+	r := &run{ctx: context.Background(), budget: maxRead, blobs: map[string][]byte{}, out: additive{files: map[string]*outFile{}, built: map[string]int{}, named: map[string]map[string]bool{}},
 		read: func(_ context.Context, blob string, _ int64) ([]byte, bool, error) {
 			read = append(read, blob)
 			return []byte("package tool\n"), true, nil

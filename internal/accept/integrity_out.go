@@ -37,9 +37,12 @@ type additive struct {
 	nodes, tags      int // its work: AST nodes and items handled; tag visits
 	over             bool
 	files            map[string]*outFile        // by blob, name, directory and version
-	built            map[string]bool            // by blob and name
+	built            map[string]int             // by blob and name: its gate platforms (outBuilt)
 	named            map[string]map[string]bool // by module root and version
 	fset             *token.FileSet             // every file it parses
+	importers        map[*typer]*outImporter    // P14b-out-3: one a typer of main's, read only
+	typedOff         bool                       // P14b-out-3: its types check stopped (typesOff)
+	tnodes           int                        // P14b-out-3: its types check's own work (chargeTypes)
 }
 
 // outFile is what one Go file holds for the layer.
@@ -52,6 +55,10 @@ type outFile struct {
 	units   []unit
 	prints  map[string]string          // by binding: its spans' fingerprint, combined in source order
 	uses    map[string]map[string]bool // by binding: the S packages it uses
+	on      int                        // its gate platforms (outBuilt)
+	typed   bool                       // its package's checks by types are done
+	trefs   map[string]int             // its references by types alone, as refs (outTypedRefs)
+	tuses   map[string]bool            // "binding\x00package": its S uses by types alone
 }
 
 // outHook runs the layer (a test turns it off to compare the base guard's
@@ -76,11 +83,11 @@ func outS(p string) bool {
 func libc(p string) bool { return p == "modernc.org/libc" || strings.HasPrefix(p, "modernc.org/libc/") }
 
 func (r *run) outBlock(p, what string) {
-	r.out.blocks = append(r.out.blocks, Block{vocab.ReasonTestIntegrityViolation, p, what, true})
+	r.out.blocks = append(r.out.blocks, Block{vocab.ReasonTestIntegrityViolation, p, what, true, false})
 }
 
 func (r *run) outWarn(p, what string) {
-	r.out.warnings = append(r.out.warnings, Block{vocab.ReasonTestIntegrityViolation, p, what, true})
+	r.out.warnings = append(r.out.warnings, Block{vocab.ReasonTestIntegrityViolation, p, what, true, false})
 }
 
 // charge counts the layer's work: past a bound, or on a done context, no
@@ -169,11 +176,11 @@ func (r *run) named(t *tree, root string) map[string]bool {
 	return m
 }
 
-// outBuilt: a gate platform may build p, as the base guard's goOn and holds
+// outBuilt: the gate platforms that may build p (bit i: platforms[i]), as the base guard's goOn and holds
 // read it: its name by go/build; its constraint lines deduplicated, true for
 // some assignment of the tags the guard does not model (up to 12; more:
 // built); ignore false.
-func (r *run) outBuilt(p string, src []byte) bool {
+func (r *run) outBuilt(p string, src []byte) (on int) {
 	var exprs []constraint.Expr
 	seen := map[string]bool{}
 	for _, l := range header(src) {
@@ -181,7 +188,7 @@ func (r *run) outBuilt(p string, src []byte) bool {
 			seen[l], exprs = true, append(exprs, x)
 		}
 	}
-	return slices.ContainsFunc(platforms, func(pl [2]string) bool {
+	builds := func(pl [2]string, charge func(), stop func() bool) bool {
 		ctx := build.Context{GOOS: pl[0], GOARCH: pl[1], Compiler: "gc", ReleaseTags: release, // its name: go/build's rules
 			OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("package p\n")), nil }}
 		if ok, err := ctx.MatchFile(path.Dir(p), path.Base(p)); !ok && err == nil {
@@ -203,17 +210,17 @@ func (r *run) outBuilt(p string, src []byte) bool {
 				if _, ok := known(tag); !ok && !slices.Contains(free, tag) {
 					free = append(free, tag)
 				}
-				r.charge(0, 1)
+				charge()
 				return false
 			})
 		}
 		if len(free) > 12 {
 			return true
 		}
-		for m := 0; m < 1<<len(free) && !r.out.over; m++ {
+		for m := 0; m < 1<<len(free) && !stop(); m++ {
 			if !slices.ContainsFunc(exprs, func(x constraint.Expr) bool {
 				return !x.Eval(func(tag string) bool {
-					r.charge(0, 1)
+					charge()
 					v, k := known(tag)
 					return k && v || !k && m>>slices.Index(free, tag)&1 == 1
 				})
@@ -222,7 +229,19 @@ func (r *run) outBuilt(p string, src []byte) bool {
 			}
 		}
 		return false
-	})
+	}
+	for i, pl := range platforms { // the platforms after the first that builds it: the types check's work (Astra #282 H1)
+		charge, stop := func() { r.charge(0, 1) }, func() bool { return r.out.over }
+		if on != 0 && !outTypesHook { // the types check off: main's layer
+			break
+		} else if on != 0 {
+			charge, stop = func() { r.chargeTypes(1) }, func() bool { return !r.chargeTypes(0) }
+		}
+		if builds(pl, charge, stop) {
+			on |= 1 << i
+		}
+	}
+	return on
 }
 
 // outFileOf reads and parses p (blob) of dir in t once, as the base guard
@@ -239,7 +258,7 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 		if _, seen := r.out.built[bk]; !seen && !slices.ContainsFunc(r.blocks, func(x Block) bool { return x.Path == p }) {
 			r.outBlock(p, "unverifiable: decision A's outside-initialization check could not "+what+" it")
 		}
-		r.out.built[bk] = false
+		r.out.built[bk] = 0
 		return nil
 	}
 	b, why, err := r.file(blob)
@@ -251,7 +270,7 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 		built = r.outBuilt(p, b)
 		r.out.built[bk] = built
 	}
-	if !built {
+	if built == 0 {
 		return nil
 	}
 	if r.out.fset == nil {
@@ -262,7 +281,7 @@ func (r *run) outFileOf(p, dir, blob string, t *tree) *outFile {
 		delete(r.out.built, bk)
 		return fail("parse")
 	}
-	of := &outFile{refs: map[string]int{}, f: f, prints: map[string]string{}, uses: map[string]map[string]bool{}}
+	of := &outFile{refs: map[string]int{}, f: f, prints: map[string]string{}, uses: map[string]map[string]bool{}, on: built, trefs: map[string]int{}, tuses: map[string]bool{}}
 	names, testing := map[string]string{}, ""
 	for _, is := range f.Imports {
 		ip, _ := strconv.Unquote(is.Path.Value)
@@ -440,12 +459,14 @@ type outFacts struct {
 	unknown map[string]bool // "file\x00package"
 	imports map[string]bool
 	prints  map[string]string          // "file\x00binding"
+	trefs   map[string]int             // P14b-out-3: the references by types alone, apart from refs (Astra #282 r3 H1)
+	tuses   map[string]bool            // P14b-out-3: "file\x00binding\x00package", the S uses by types alone
 	uses    map[string]map[string]bool // "file\x00binding": packages
 }
 
 func (r *run) outRead(dir string, t *tree) outFacts {
 	fa := outFacts{refs: map[string]int{}, dots: map[string]bool{}, unknown: map[string]bool{}, imports: map[string]bool{},
-		prints: map[string]string{}, uses: map[string]map[string]bool{}}
+		prints: map[string]string{}, uses: map[string]map[string]bool{}, trefs: map[string]int{}, tuses: map[string]bool{}}
 	var ofs []*outFile
 	var ps []string
 	for _, p := range t.dirs[dir] {
@@ -456,6 +477,9 @@ func (r *run) outRead(dir string, t *tree) outFacts {
 			ofs, ps = append(ofs, f), append(ps, p)
 		}
 	}
+	if outTypesHook {
+		r.outTyped(dir, t, ofs)
+	}
 	for i, f := range ofs {
 		p := ps[i]
 		for k, h := range f.prints {
@@ -463,6 +487,12 @@ func (r *run) outRead(dir string, t *tree) outFacts {
 		}
 		for k, n := range f.refs {
 			fa.refs[p+"\x00"+k] += n
+		}
+		for k, n := range f.trefs {
+			fa.trefs[p+"\x00"+k] += n
+		}
+		for k := range f.tuses {
+			fa.tuses[p+"\x00"+k] = true
 		}
 		for _, d := range f.dots {
 			fa.dots[p+"\x00"+d] = true
@@ -485,9 +515,12 @@ func (r *run) outRun() (err error) {
 			r.outBlock("", fmt.Sprintf("unverifiable: decision A's outside-initialization check failed (%v)", p))
 		}
 	}()
-	r.out.files, r.out.built, r.out.named = map[string]*outFile{}, map[string]bool{}, map[string]map[string]bool{}
+	r.out.files, r.out.built, r.out.named, r.out.importers = map[string]*outFile{}, map[string]int{}, map[string]map[string]bool{}, map[*typer]*outImporter{}
 	r.outPkgs()
 	r.outModule()
+	if outDone != nil {
+		outDone(r.out.nodes, r.out.tags, r.out.over)
+	}
 	return r.ctx.Err()
 }
 
@@ -518,6 +551,7 @@ func (r *run) outPkgs() {
 				strings.Join(fns[:min(3, len(fns))], ", "), map[bool]string{true: ", …"}[len(fns) > 3]))
 		}
 		r.outBodies(b, a, changed)
+		r.outTypedSignals(dir, b, a, changed)
 		for _, k := range slices.Sorted(maps.Keys(a.unknown)) { // fail closed: its references cannot be read
 			if file, pkg, _ := strings.Cut(k, "\x00"); r.files[file] != r.cand[file] && libc(pkg) && tested {
 				r.outBlock(file, "unverifiable: an import of "+pkg+" with an unknown name")
