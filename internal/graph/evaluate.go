@@ -357,6 +357,9 @@ func commitRecorded(tx *eventstore.Tx, rr types.ResultRecorded, env Env) error {
 	if err := revalidate(tx, rr.Node, env); err != nil {
 		return err
 	}
+	if err := reviewIndependent(tx, rr, env); err != nil { // P16b: a review receipt's reviewer, against the contributors now
+		return err
+	}
 	evs, err := recordResult(tx, rr, env.Blobs)
 	if err == nil && rr.Result.Outcome != types.OutcomeCouldNotRun {
 		var sel []eventstore.Event

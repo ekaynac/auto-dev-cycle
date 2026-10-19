@@ -140,7 +140,7 @@ implementation item.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `graph.RecordReview`, `ClaimReview` → `registered` (`graph/roster.go`) against `graph.Families`. The registry (`internal/registry`, P7 #236; `adcd run --registry`) refuses equal builder and reviewer families at start (`distinct`) and implements `graph.Families` (`Registry.Family`); contributor families are not tracked | kept + GAP | P16 (contributor families) |
+| admission | `graph.RecordReview`, `ClaimReview` → `registered` (`graph/roster.go`) against `graph.Families`. The registry (`internal/registry`, P7 #236; `adcd run --registry`) refuses equal builder and reviewer families at start (`distinct`) and implements `graph.Families` (`Registry.Family`). Contributor families (P16b): `graph.Contributors` reads the families of every lease on the task's build nodes; `ClaimReview` and the commit of a review's result refuse a roster member of a contributing family, or any member once a contributor's family is unknown, and a review receipt the result holds is checked by `receipt.Independent` against them. Kept in code, inert until P22a | kept + GAP | P22a |
 | fold/replay | `checkRoster`, `checkReview` (`graph/roster.go`): shape, and no `unknown` family | kept | — |
 | consumption | `bindsRequirement` (`graph/roster.go`), `currentRevision` (`graph/supersede.go`); `dispatch.Match` (P8b, #247) places a rostered node only on its pinned roster member, a reviewer, and any other node only on a builder. Kept in code, inert until P22a | kept + GAP | P22a |
 | effect | `serves` (`graph/requirement.go`): the merge's requirement is served at the subject's selected revision | kept | — |

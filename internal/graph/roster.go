@@ -90,13 +90,17 @@ func RecordReview(r types.NodeRecorded, families Families) ([]eventstore.Event, 
 }
 
 // ClaimReview is Claim for a review or review_requirement node: its roster
-// is checked against the registry again, whoever recorded it.
+// is checked against the registry again, whoever recorded it, and a
+// review's roster against its task's contributors (contributors.go).
 func ClaimReview(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, generation int64, families Families) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, node)
 	if err != nil {
 		return nil, err
 	}
 	if err := registered(rec.Recorded.Node, families); err != nil {
+		return nil, err
+	}
+	if _, err := independentOf(tx, rec, families); err != nil {
 		return nil, err
 	}
 	return claimNode(tx, rec, resolved, generation)
