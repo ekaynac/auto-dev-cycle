@@ -39,17 +39,9 @@
 //   - The tree gated is the one checked out: the checkout's own tree id
 //     must be the one asked for (a commit id or another tree is refused),
 //     and the receipt is about it (receipt.go).
-//   - The cwd contract (#275), for pytest's adapters only (probed: a Go
-//     test may run Python from its package directory, Opus #286 M3): every
-//     Python process of the run starts in the checkout root, and none
-//     changes directory before pytest has collected; a probe the controller
-//     writes into the results mount records both (cwd/), and anything else,
-//     or a log over its bound, invalidates the run
-//     (could_not_run/runner_fault). The probe runs in-process, writable by
-//     the run, so these escape it (decision A's residual, Opus #286 L1): a
-//     run that deletes or rewrites the probe or its log, a Python started
-//     with -E, -I or -S, and a wrapper that drops PYTHONPATH (tox's default
-//     environment does).
+//   - The cwd contract (#275) is P15b's, with the junit_xml (pytest)
+//     adapter: a Go gate runs no Python probe (go test runs each test
+//     binary in its package directory, Opus #286 M3).
 //   - Acceptance tests are overlaid on the gate workspace only.
 package gate
 
@@ -57,7 +49,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -78,15 +69,10 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-//go:embed cwd/*.py
-var probe embed.FS
-
 const (
 	resultsFile = "go-test.json"    // the derived results file, in the results mount
-	probeDir    = ".adc-cwd"        // the cwd probe, beside it
 	placeholder = "{results_path}"  // the profile's name for the derived path
 	maxResults  = results.MaxStream // what a run's results may hold
-	maxProbeLog = 1 << 20           // what the cwd probe's log may hold
 	maxOverlay  = 16 << 20          // acceptance files, in all
 	maxGoMod    = 1 << 20           // the root go.mod, read as its blob
 	ownership   = "default"         // the only ownership rules in v1
@@ -96,11 +82,6 @@ var (
 	// ErrSpec: the gate cannot run as asked; nothing ran, or what ran is
 	// not this gate's (another tree, baseline or platform).
 	ErrSpec = errors.New("gate: refused")
-
-	// probed are the result adapters whose runs are pytest's, under the
-	// cwd probe (Opus #286 M3: go test runs a test binary in its package
-	// directory, and a Go test may run Python there). var: tests add one.
-	probed = map[string]bool{"junit_xml": true}
 
 	objectID = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	imageID  = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -200,17 +181,11 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	if err := writeFiles(a.Workspace(), in.Overlay); err != nil {
 		return v, err
 	}
-	probe := probed[in.Gate.ResultAdapter]
-	if probe {
-		if err := writeProbe(a.Results()); err != nil {
-			return v, err
-		}
-	}
 	// The exit code and the run's output are never a gate's verdict; a run
 	// refused before it started, or cut by its caller, is no verdict at
 	// all. A run that left too much is judged by what it wrote: copy-out
 	// bounds it again.
-	_, runErr := in.Host.Start(ctx, sandbox.Run{Image: in.Image, Mode: sandbox.Gate, Attempt: a, Limits: in.Limits, Argv: argv(in.Gate.Command, probe)})
+	_, runErr := in.Host.Start(ctx, sandbox.Run{Image: in.Image, Mode: sandbox.Gate, Attempt: a, Limits: in.Limits, Argv: argv(in.Gate.Command)})
 	if (errors.Is(runErr, sandbox.ErrSpec) || errors.Is(runErr, sandbox.ErrHost)) && !errors.Is(runErr, sandbox.ErrLeft) {
 		return v, runErr
 	}
@@ -218,20 +193,9 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 		return v, fmt.Errorf("gate: the run was cut: %w", ctx.Err())
 	}
 	out := filepath.Join(a.Dir, "out")
-	if err := a.CopyOut(out, maxResults+maxProbeLog+64<<10); err != nil {
+	if err := a.CopyOut(out, maxResults); err != nil {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results could not be copied out within their bounds")
 		return v, nil
-	}
-	if probe {
-		log := filepath.Join(out, probeDir, "log")
-		if st, err := os.Stat(log); err == nil && st.Size() > maxProbeLog {
-			v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the cwd probe's log is over its bound")
-			return v, nil
-		}
-		if bad := violations(log, a.Workspace()); bad > 0 {
-			v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, fmt.Sprintf("invalidated: %d Python process starts or early chdirs outside the checkout root (the cwd contract)", bad))
-			return v, nil
-		}
 	}
 	// Astra #286 H1: a candidate run cut by its timeout or a signal may have
 	// written a complete-looking stream of what ran; what never ran is not
@@ -388,8 +352,8 @@ func cmpOr(a, b string) string {
 }
 
 // argv is the command the container runs: the profile's, its results path
-// derived, with the cwd probe's environment when probe.
-func argv(command []string, probe bool) []string {
+// derived.
+func argv(command []string) []string {
 	res := sandbox.ResultsDir + "/" + resultsFile
 	cmd, named := make([]string, len(command)), false
 	for i, a := range command {
@@ -397,58 +361,9 @@ func argv(command []string, probe bool) []string {
 		named = named || cmd[i] != a
 	}
 	if !named { // a stdout adapter: the controller writes its stream to the results file
-		cmd = append([]string{"sh", "-c", `exec "$@" >"$0"`, res}, cmd...)
-	} else { // the run's stdout is never read: none reaches the runner's bound
-		cmd = append([]string{"sh", "-c", `exec "$@" >/dev/null`, "sh"}, cmd...)
+		return append([]string{"sh", "-c", `exec "$@" >"$0"`, res}, cmd...)
 	}
-	if !probe {
-		return cmd
-	}
-	dir := sandbox.ResultsDir + "/" + probeDir
-	return append([]string{"env", "PYTHONPATH=" + dir, "PYTEST_PLUGINS=adc_gate_cwd", "PYTHONDONTWRITEBYTECODE=1",
-		"ADC_GATE_ROOT=" + sandbox.WorkspaceDir, "ADC_GATE_LOG=" + dir + "/log"}, cmd...)
-}
-
-// writeProbe writes the cwd probe into the results mount.
-func writeProbe(results string) error {
-	dir := filepath.Join(results, probeDir)
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		return err
-	}
-	for _, name := range []string{"sitecustomize.py", "adc_gate_cwd.py"} {
-		b, err := probe.ReadFile("cwd/" + name)
-		if err == nil {
-			err = os.WriteFile(filepath.Join(dir, name), b, 0o600)
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// violations counts the probe's records outside the checkout root:
-// sandbox.WorkspaceDir in the container, or ws itself for a host's Runner
-// that runs the command in place.
-func violations(log, ws string) int {
-	b, err := os.ReadFile(log)
-	if err != nil {
-		return 0 // no Python ran
-	}
-	n := 0
-	for line := range strings.Lines(string(b)) {
-		_, dir, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
-		if dir != sandbox.WorkspaceDir && !sameDir(dir, ws) {
-			n++
-		}
-	}
-	return n
-}
-
-func sameDir(a, b string) bool {
-	ra, ea := filepath.EvalSymlinks(a)
-	rb, eb := filepath.EvalSymlinks(b)
-	return ea == nil && eb == nil && ra == rb
+	return append([]string{"sh", "-c", `exec "$@" >/dev/null`, "sh"}, cmd...) // the run's stdout is never read: none reaches the runner's bound
 }
 
 // checkout writes tree into ws through a temporary index and returns the

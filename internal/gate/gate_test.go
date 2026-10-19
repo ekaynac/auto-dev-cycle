@@ -359,43 +359,6 @@ func TestGateGoMod(t *testing.T) {
 	}
 }
 
-// TestGateCwd (#275): under a pytest adapter (probed; these rows probe
-// go_test_json's stand-in streams), every Python process starts in the
-// checkout root and changes directory only after collection; the runner/
-// counterexample, a worker started elsewhere, an early chdir and a log
-// over its bound invalidate the run. A Go gate is never probed (Opus #286
-// M3): its tests may run Python from their package directories.
-func TestGateCwd(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Fatal("the cwd rows need python3")
-	}
-	files := map[string]string{"clean.json": stream["clean.json"], "conftest.py": "import sys\nsys.path.insert(0, 'lib')\n",
-		"lib/feature.py": "FLAG = False\n", "runner/lib/feature.py": "FLAG = True\n", "runner/README": "runner\n"}
-	py := `python3 -c 'import sys; sys.path.insert(0, "lib"); import feature'`
-	worker := `python3 -c 'import subprocess; subprocess.run(["python3", "-c", "pass"], cwd="runner", check=True)' && cat clean.json`
-	probed[results.GoTestJSON] = true
-	for name, c := range map[string]struct {
-		script string
-		want   string
-	}{
-		"python at the root":             {py + ` && cat clean.json`, "empty/completed_clean"},
-		"cd runner && pytest .. (#275)":  {`cd runner && ` + py + ` && cat ../clean.json`, "the cwd contract"},
-		"a worker started in runner":     {worker, "the cwd contract"},
-		"a chdir before collection":      {`python3 -c 'import os; os.chdir("runner")' && cat clean.json`, "the cwd contract"},
-		"the probe's log over its bound": {`head -c 1100000 /dev/zero >> "$ADC_GATE_LOG" && cat clean.json`, "the cwd probe's log is over its bound"},
-	} {
-		f := newFixture(t, files, "sh", "-c", c.script)
-		if v := gated(t, f.in); !strings.Contains(v.String(), c.want) {
-			t.Errorf("%s: %v, want %s", name, v, c.want)
-		}
-	}
-	delete(probed, results.GoTestJSON)
-	f := newFixture(t, files, "sh", "-c", worker)
-	if v := gated(t, f.in); !is(v, vocab.Empty, vocab.ReasonCompletedClean) {
-		t.Errorf("a Go gate whose test runs Python in its package directory: %v", v)
-	}
-}
-
 // TestGateTree: the receipt is about the tree the run checked out; a
 // commit id given as the tree is refused, and a receipt of another tree,
 // image, contract revision or baseline (Astra #286 M3) does not apply.
