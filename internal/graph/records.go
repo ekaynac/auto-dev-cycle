@@ -3,6 +3,7 @@
 package graph
 
 import (
+	"fmt"
 	"slices"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -24,45 +25,69 @@ type RefRecord struct {
 // unknown or ambiguous.
 type RefRecords func(id string) (RefRecord, bool, error)
 
-// Records is task's RefRecords, from the event store: every ref a recorded
+// Recorded is what Records read of one task: its resolver, and the content
+// digests a review's result holds (a reviewer's input never has one, under
+// whatever id: Opus #289 L2).
+type Recorded struct {
+	Resolve  RefRecords
+	Reviewed map[types.Digest]bool
+}
+
+// maxTaskRefs bounds the refs Records keeps for one task; past it, Records
+// refuses (Opus #289 L3). A var, so a test can lower it.
+var maxTaskRefs = 100_000
+
+// Records is task's Recorded, from the event store: every ref a recorded
 // result of the task holds, with its producer's kind, and the extra refs
 // the controller rendered from its authority (Context's approvals). An id
-// recorded with two identities or lineages is ambiguous and resolves to
-// nothing. It reads the store once, at the call.
-func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (RefRecords, error) {
-	byID, ambiguous := map[string]RefRecord{}, map[string]bool{}
-	add := func(r types.Ref, producer types.NodeKind) {
+// recorded with two identities, lineages or producers is ambiguous and
+// resolves to nothing. It reads the store once, at the call.
+func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded, error) {
+	byID, ambiguous, reviewed := map[string]RefRecord{}, map[string]bool{}, map[types.Digest]bool{}
+	n := 0
+	add := func(r types.Ref, producer types.NodeKind) error {
+		if n++; n > maxTaskRefs {
+			return fmt.Errorf("graph: task %s holds over %d refs", task, maxTaskRefs)
+		}
 		rec := RefRecord{ID: r.ID, ContentDigest: r.ContentDigest, Lineage: slices.Clone(r.Lineage), Producer: producer}
 		if prior, ok := byID[r.ID]; ok && (prior.ContentDigest != rec.ContentDigest || !slices.Equal(prior.Lineage, rec.Lineage) || prior.Producer != rec.Producer) {
 			ambiguous[r.ID] = true
 		}
+		if producer == types.NodeKindReview {
+			reviewed[r.ContentDigest] = true
+		}
 		byID[r.ID] = rec
+		return nil
 	}
 	keys, err := tx.Keys(ResultProjection, "")
 	if err != nil {
-		return nil, err
+		return Recorded{}, err
 	}
 	for _, k := range keys {
 		rr, _, err := load[types.ResultRecorded](tx, ResultProjection, k)
 		if err != nil {
-			return nil, err
+			return Recorded{}, err
 		}
-		n, ok, err := load[nodeRecord](tx, NodeProjection, string(rr.Node))
+		node, ok, err := load[nodeRecord](tx, NodeProjection, string(rr.Node))
 		if err != nil {
-			return nil, err
+			return Recorded{}, err
 		}
-		if !ok || n.Recorded.Task != task {
+		if !ok || node.Recorded.Task != task {
 			continue
 		}
 		for _, r := range rr.Result.Value {
-			add(r, n.Recorded.Node.Kind)
+			if err := add(r, node.Recorded.Node.Kind); err != nil {
+				return Recorded{}, err
+			}
 		}
 	}
 	for _, r := range extra {
-		add(r, "")
+		if err := add(r, ""); err != nil {
+			return Recorded{}, err
+		}
 	}
-	return func(id string) (RefRecord, bool, error) {
+	return Recorded{Resolve: func(id string) (RefRecord, bool, error) {
 		rec, ok := byID[id]
 		return rec, ok && !ambiguous[id], nil
-	}, nil
+	}, Reviewed: reviewed}, nil
 }

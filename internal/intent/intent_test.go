@@ -21,12 +21,13 @@ const acceptance = "e" // the task's acceptance blob's digest character
 
 // store is a resolver over records by id, counting its lookups.
 type store struct {
-	recs    map[string]graph.RefRecord
-	lookups map[string]int
+	recs     map[string]graph.RefRecord
+	lookups  map[string]int
+	reviewed map[types.Digest]bool
 }
 
 func newStore(recs ...graph.RefRecord) *store {
-	s := &store{recs: map[string]graph.RefRecord{}, lookups: map[string]int{}}
+	s := &store{recs: map[string]graph.RefRecord{}, lookups: map[string]int{}, reviewed: map[types.Digest]bool{}}
 	for _, r := range recs {
 		s.recs[r.ID] = r
 	}
@@ -70,14 +71,23 @@ func in(t *testing.T, s *store, inputs ...graph.RefRecord) In {
 		ctx.Included = append(ctx.Included, x)
 		bytes[x.IdentityDigest] = 10
 	}
-	return In{Call: call(), Context: ctx, Bytes: bytes, Acceptance: []types.Digest{digest(acceptance)}, Records: s.resolve}
+	return In{Call: call(), Context: ctx, Bytes: bytes, Records: s.records()}
 }
 
+// records are s's Records, under the one acceptance blob.
+func (s *store) records() Records {
+	return Records{Recorded: graph.Recorded{Resolve: s.resolve, Reviewed: s.reviewed}, Acceptance: []types.Digest{digest(acceptance)}}
+}
+
+// roles are both intents, by role.
+var roles = map[string]func(In) (types.ManifestIntent, error){"builder": Builder, "reviewer": Reviewer}
+
 // TestIntentAcceptance (I18, fault 2): an input that is, or derives at any
-// depth from, an acceptance blob refuses the intent, through its id (a
-// blob ref's id is its digest) or through its record's content digest
-// under another id (Astra #252 r2 H1); an unknown or unrecorded ancestor
-// refuses it as unresolved; a clean ancestry gives a valid intent.
+// depth from, an acceptance blob refuses the intent, through its record's
+// id or content digest (under another id: Astra #252 r2 H1); an unknown
+// or unrecorded ancestor (an acceptance blob no result holds included)
+// refuses it as unresolved; so do a missing resolver and acceptance not
+// read; a clean ancestry gives a valid intent.
 func TestIntentAcceptance(t *testing.T) {
 	tree := rec("tree-1", "1", "graph", "patch-1")
 	clean := newStore(tree, rec("patch-1", "2", "build", "spec-1"), rec("spec-1", "3", ""))
@@ -89,36 +99,50 @@ func TestIntentAcceptance(t *testing.T) {
 		t.Fatalf("a clean ancestry, reviewed: %+v, %v", got, err)
 	}
 	accepted := "sha256:" + strings.Repeat(acceptance, 64)
+	hiddenInput := rec("tree-1", acceptance, "graph")
+	withParent := rec("tree-1", "1", "graph", accepted) // its one parent's id is the acceptance digest
 	for name, c := range map[string]struct {
-		s    *store
-		want error
+		s     *store
+		input graph.RefRecord
+		want  error
 	}{
-		"the input is an acceptance blob": {newStore(rec("tree-1", acceptance, "graph")), ErrAcceptanceInput},
-		"a parent is one (by its id)":     {newStore(rec("tree-1", "1", "graph", accepted)), ErrAcceptanceInput},
-		"at depth three, by its id": {newStore(tree, rec("patch-1", "2", "build", "spec-1"), rec("spec-1", "3", "", "notes-1"),
-			rec("notes-1", "4", "", accepted)), ErrAcceptanceInput},
-		"an ancestor under another id holds it (Astra #252 r2 H1)": {newStore(tree, rec("patch-1", "2", "build", "spec-1"), rec("spec-1", acceptance, "")), ErrAcceptanceInput},
-		"an unknown ancestor":            {newStore(tree, rec("patch-1", "2", "build", "spec-1")), ErrAncestryUnresolved},
-		"the input has no record":        {newStore(), ErrAncestryUnresolved},
-		"its record has another digest":  {newStore(rec("tree-1", "9", "graph", "patch-1")), ErrAncestryUnresolved},
-		"its record has another lineage": {newStore(rec("tree-1", "1", "graph")), ErrAncestryUnresolved},
+		"the input is an acceptance blob":              {newStore(hiddenInput), hiddenInput, ErrAcceptanceInput},
+		"a parent is one, with no record (unresolved)": {newStore(withParent), withParent, ErrAncestryUnresolved},
+		"one at depth three, with no record (unresolved)": {newStore(tree, rec("patch-1", "2", "build", "spec-1"), rec("spec-1", "3", "", "notes-1"),
+			rec("notes-1", "4", "", accepted)), tree, ErrAncestryUnresolved},
+		"an ancestor under another id holds it (Astra #252 r2 H1)": {newStore(tree, rec("patch-1", "2", "build", "spec-1"), rec("spec-1", acceptance, "")), tree, ErrAcceptanceInput},
+		"an ancestor whose id is the acceptance digest, its content another (Opus #289 M1)": {newStore(withParent, rec(accepted, "2", "build")), withParent,
+			ErrAcceptanceInput},
+		"an unknown ancestor":            {newStore(tree, rec("patch-1", "2", "build", "spec-1")), tree, ErrAncestryUnresolved},
+		"the input has no record":        {newStore(), tree, ErrAncestryUnresolved},
+		"its record has another digest":  {newStore(rec("tree-1", "9", "graph", "patch-1")), tree, ErrAncestryUnresolved},
+		"its record has another lineage": {newStore(rec("tree-1", "1", "graph")), tree, ErrAncestryUnresolved},
 	} {
-		for role, intent := range map[string]func(In) (types.ManifestIntent, error){"builder": Builder, "reviewer": Reviewer} {
-			if _, err := intent(in(t, c.s, tree)); !errors.Is(err, c.want) {
+		for role, intent := range roles {
+			// A resolved acceptance row is refused by its digest check,
+			// not by an unresolved record.
+			if _, err := intent(in(t, c.s, c.input)); !errors.Is(err, c.want) || c.want == ErrAcceptanceInput && errors.Is(err, ErrAncestryUnresolved) {
 				t.Errorf("%s, %s: %v, want %v", name, role, err, c.want)
 			}
 		}
 	}
-	x := in(t, clean, tree)
-	x.Records = nil
-	if _, err := Builder(x); !errors.Is(err, ErrAncestryUnresolved) {
-		t.Errorf("no resolver: %v", err)
-	}
-	// An omitted input is an input too.
-	x = in(t, newStore(rec("tree-1", acceptance, "graph")))
-	x.Context.Omitted = []types.ManifestIntentOmittedItem{{Ref: ref(t, rec("tree-1", acceptance, "graph")), Reason: types.ManifestIntentOmittedItemReasonRestricted}}
-	if _, err := Builder(x); !errors.Is(err, ErrAcceptanceInput) {
-		t.Errorf("an omitted acceptance input: %v", err)
+	for role, intent := range roles {
+		x := in(t, clean, tree)
+		x.Records.Resolve = nil
+		if _, err := intent(x); !errors.Is(err, ErrAncestryUnresolved) {
+			t.Errorf("no resolver, %s: %v", role, err)
+		}
+		x = in(t, clean, tree)
+		x.Records.Acceptance = nil
+		if _, err := intent(x); !errors.Is(err, ErrAncestryUnresolved) {
+			t.Errorf("the task's acceptance not read, %s: %v", role, err)
+		}
+		// An omitted input is an input too.
+		x = in(t, newStore(rec("tree-1", acceptance, "graph")))
+		x.Context.Omitted = []types.ManifestIntentOmittedItem{{Ref: ref(t, rec("tree-1", acceptance, "graph")), Reason: types.ManifestIntentOmittedItemReasonRestricted}}
+		if _, err := intent(x); !errors.Is(err, ErrAcceptanceInput) || errors.Is(err, ErrAncestryUnresolved) {
+			t.Errorf("an omitted acceptance input, %s: %v", role, err)
+		}
 	}
 }
 
@@ -142,9 +166,11 @@ func TestIntentDigestApartFromWalk(t *testing.T) {
 	}
 }
 
-// TestIntentBounds (Astra #252 r2 M3): each id is resolved once, however
-// many paths reach it; the record bound is inclusive, and the edge and
-// byte bounds hold apart from it; a cycle ends.
+// TestIntentBounds (Astra #252 r2 M3; Opus #289 M2, L1): each id is
+// resolved once, however many paths reach it, and deduplicated before it
+// is enqueued; the record bound is inclusive, and the edge and byte bounds
+// hold apart from it, a wide lineage refused before any of it is enqueued;
+// a cycle ends.
 func TestIntentBounds(t *testing.T) {
 	defer func(r, e, b int) { maxRecords, maxEdges, maxIDBytes = r, e, b }(maxRecords, maxEdges, maxIDBytes)
 	// A dense DAG: layer i's every node lists every node of layer i+1.
@@ -173,6 +199,10 @@ func TestIntentBounds(t *testing.T) {
 		}
 	}
 	total := len(s.lookups) // the input, its two layer-0 parents, and every node below
+	w := newWalk(newStore(append(recs, input)...).records())
+	if _, err := w.start(ref(t, input)); err != nil || w.peak > total {
+		t.Errorf("the queue's peak %d, over the %d distinct ids: %v", w.peak, total, err)
+	}
 	edges := 2 + 2*width + (layers-2)*width*width
 	for name, c := range map[string]struct {
 		records, edges, bytes int
@@ -189,6 +219,19 @@ func TestIntentBounds(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// One wide lineage: refused before its parents are enqueued.
+	var many []string
+	for i := range 10_000 {
+		many = append(many, fmt.Sprintf("p-%05d", i)) // in sorted order, as a sealed ref keeps its lineage
+	}
+	wide := rec("tree-1", "1", "graph", many...)
+	for name, b := range map[string][2]int{"the edge bound": {10, 1 << 20}, "the byte bound": {1 << 20, 100}} {
+		maxRecords, maxEdges, maxIDBytes = 1<<20, b[0], b[1]
+		w := newWalk(newStore(wide).records())
+		if _, err := w.start(ref(t, wide)); !errors.Is(err, ErrAncestryUnresolved) || !strings.Contains(fmt.Sprint(err), "ancestry is over") || len(w.walked) > 1 || w.peak != 0 {
+			t.Errorf("one wide lineage past %s: %v, %d walked, a queue of %d", name, err, len(w.walked), w.peak)
+		}
+	}
 	maxRecords, maxEdges, maxIDBytes = 1<<20, 1<<20, 1<<20
 	cycle := newStore(rec("tree-1", "1", "graph", "a"), rec("a", "2", "build", "b"), rec("b", "3", "build", "a"))
 	if _, err := Builder(in(t, cycle, rec("tree-1", "1", "graph", "a"))); err != nil {
@@ -197,8 +240,9 @@ func TestIntentBounds(t *testing.T) {
 }
 
 // TestIntentFresh: a reviewer's input is never a review's result (a fresh
-// context per round); a builder may take one (a repair round's findings),
-// and a reviewer may take a ref that derives from one.
+// context per round), nor its content under another id (Opus #289 L2); a
+// builder may take one (a repair round's findings), and a reviewer may
+// take a ref that derives from one.
 func TestIntentFresh(t *testing.T) {
 	decision := rec("decision-1", "1", types.NodeKindReview)
 	repaired := rec("tree-2", "2", "graph", "decision-1")
@@ -211,5 +255,14 @@ func TestIntentFresh(t *testing.T) {
 	}
 	if _, err := Reviewer(in(t, s, repaired)); err != nil {
 		t.Errorf("a reviewer taking a tree repaired from a decision: %v", err)
+	}
+	relay := rec("relay-1", "1", types.NodeKindIntegration) // the decision's content, re-recorded
+	s = newStore(decision, relay)
+	s.reviewed[decision.ContentDigest] = true
+	if _, err := Reviewer(in(t, s, relay)); !errors.Is(err, ErrNotFresh) {
+		t.Errorf("a review's content under another id: %v", err)
+	}
+	if _, err := Builder(in(t, s, relay)); err != nil {
+		t.Errorf("a builder taking it: %v", err)
 	}
 }
