@@ -395,13 +395,14 @@ func preview(ns []string) string {
 // counters at a run's end, each file set the layer checks, an init or hook
 // body's budget at its start, what its pass charges and what its print
 // hashes (Opus #283 L2, Astra #283 r3 L2), and each S target its print
-// emits, at its walk index (#283 round 6).
+// commits, at its walk index, with the budget spent once it was charged
+// (#283 round 6, Astra #283 r5 L1).
 var (
 	outTypesHook  = true
 	outDone       func(nodes, tags int, over bool)
 	outCheckSeen  func(files []*ast.File)
 	outBodyHook   func(start, charged, hashed int)
-	outTargetHook func(i int, ref string)
+	outTargetHook func(i int, ref string, charged int)
 )
 
 // typesOff stops the types check for the run, with one warning, never
@@ -449,13 +450,11 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info, pl string) {
 			})
 			if d, ok := u.n.(*ast.FuncDecl); ok && u.bind == "init literal" { // its body outside its literals (P14b-out-3b)
 				bind, before := d.Name.Name+" body", r.out.tnodes
-				hashed := r.typedPrint(of, d, bind, fmt.Sprint(pl, "\x00", ords[bind]), info, names, func(pkg, ref string) bool {
-					if r.chargeTypes(len(bind) + len(ref)) { // its references too, as a literal's (Opus #283 H1)
-						counts[pkg+"\x00"+bind+"\x00"+ref]++
-						of.tuses[bind+"\x00"+pkg] = true
-						return true
-					}
-					return false
+				hashed := r.typedPrint(of, d, bind, fmt.Sprint(pl, "\x00", ords[bind]), info, names, func(ref string) bool {
+					return r.chargeTypes(len(bind) + len(ref)) // its references too, as a literal's (Opus #283 H1)
+				}, func(pkg, ref string) {
+					counts[pkg+"\x00"+bind+"\x00"+ref]++
+					of.tuses[bind+"\x00"+pkg] = true
 				})
 				ords[bind]++
 				if outBodyHook != nil {
@@ -474,12 +473,13 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info, pl string) {
 // each node outside its function literals (a literal one opaque node), in
 // walk order: its kind, an expression's type, an identifier's object, an
 // instance's type arguments (typeStr), and the S targets sAt resolves at
-// it, which the same walk counts (count) (#283 round 6: a use whose target
-// changes changes the print where it is); then the source outside the
-// literals; never an offset. Every byte is charged before it is hashed, and
-// after the first failed charge nothing more is (Astra #283 r3 L2). It
-// returns the bytes hashed.
-func (r *run) typedPrint(of *outFile, d *ast.FuncDecl, bind, at string, info *types.Info, names map[types.Object]string, count func(pkg, ref string) bool) (hashed int) {
+// it, which the same walk counts (charge, then commit) (#283 round 6: a use
+// whose target changes changes the print where it is); then the source
+// outside the literals; never an offset. Every byte is charged before it is
+// hashed, and after the first failed charge nothing more is (Astra #283 r3
+// L2); a node's targets are committed only once it is hashed (Astra #283 r5
+// L1). It returns the bytes hashed.
+func (r *run) typedPrint(of *outFile, d *ast.FuncDecl, bind, at string, info *types.Info, names map[types.Object]string, charge func(ref string) bool, commit func(pkg, ref string)) (hashed int) {
 	h, tf, from, ok, i := sha256.New(), r.out.fset.File(of.f.Pos()), d.Pos(), true, 0
 	emit := func(s string) {
 		if ok = ok && r.chargeTypes(len(s)); ok {
@@ -494,7 +494,7 @@ func (r *run) typedPrint(of *outFile, d *ast.FuncDecl, bind, at string, info *ty
 			return false
 		}
 		i++
-		s := fmt.Sprintf("\x00%T", n)
+		s, staged := fmt.Sprintf("\x00%T", n), []sTarget(nil)
 		if e, isE := n.(ast.Expr); isE && info.Types[e].Type != nil {
 			s += str(info.Types[e].Type)
 		}
@@ -511,21 +511,35 @@ func (r *run) typedPrint(of *outFile, d *ast.FuncDecl, bind, at string, info *ty
 			from = l.End()
 		} else {
 			r.sAt(n, info, names, func(pkg, ref string) {
-				if ok = ok && count(pkg, ref); ok {
+				if ok = ok && charge(ref); ok {
 					s += " →" + ref
-					if outTargetHook != nil {
-						outTargetHook(i, ref)
-					}
+					staged = append(staged, sTarget{pkg, ref, r.out.tnodes})
 				}
 			})
 		}
 		emit(s)
+		for _, t := range staged {
+			if !ok {
+				break
+			}
+			commit(t.pkg, t.ref)
+			if outTargetHook != nil {
+				outTargetHook(i, t.ref, t.charged)
+			}
+		}
 		_, lit := n.(*ast.FuncLit)
 		return !lit
 	})
 	emit(string(of.src[tf.Offset(from):tf.Offset(d.End())]))
 	of.tprints[bind] = string(h.Sum(nil))
 	return hashed
+}
+
+// sTarget is a node's S target, staged until the node is hashed: its
+// package, its name, and the types budget spent once it is charged.
+type sTarget struct {
+	pkg, ref string
+	charged  int
 }
 
 // maxTypeNodes and maxTypeDepth bound typeStr; past them, one "…deep"

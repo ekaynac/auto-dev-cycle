@@ -286,12 +286,36 @@ func TestOutTypedBodyCharge(t *testing.T) {
 	var hashes, extras []int
 	var emitted []string
 	outBodyHook = func(_, c, h int) { hashes, extras = append(hashes, h), append(extras, c-h) }
-	outTargetHook = func(i int, r string) { emitted = append(emitted, fmt.Sprint(i, r)) }
+	outTargetHook = func(i int, r string, _ int) { emitted = append(emitted, fmt.Sprint(i, r)) }
 	defer func() { outBodyHook, outTargetHook = nil, nil }()
 	v := outGuarded(t, newGuardFixture(t), map[string]string{"bb/b.go": src})
 	if !v.Accepted() || len(hashes) != len(platforms) || slices.Min(hashes) < kinds+bytes+refs*len(" →"+ref) || !slices.Equal(extras, []int{counted, counted}) ||
 		!slices.Equal(emitted, append(slices.Clone(at), at...)) {
 		t.Errorf("the body pass hashed %v, charged past it %v; at least %d (%d kinds' bytes, %d bytes, %d targets), exactly %d; %d targets emitted (%d expected); blocks %q",
 			hashes, extras, kinds+bytes+refs*len(" →"+ref), kinds, bytes, refs, counted, len(emitted), 2*len(at), whats(v.Blocks))
+	}
+}
+
+// TestOutTypedBodyBoundary (Astra #283 r5 L1): the budget runs out at the
+// exact boundary, a node's target charged (len("init body") + the target's
+// left once its name is resolved) and its print not: no count, use or hook
+// event comes from that node, and the result is the types stop warning
+// alone. The boundary is measured in the same run.
+func TestOutTypedBodyBoundary(t *testing.T) {
+	src := "package bb\n\nimport \"flag\"\n\nvar w *flag.FlagSet\n\nfunc init() { _ = w.Parse }\n"
+	f := newGuardFixture(t)
+	var events []int
+	outTargetHook = func(_ int, _ string, charged int) { events = append(events, charged) }
+	defer func(w int) { outTargetHook, maxOutTypeWork = nil, w }(maxOutTypeWork)
+	maxOutTypeWork = 0
+	outGuarded(t, f, map[string]string{"bb/b.go": src})
+	if len(events) == 0 {
+		t.Fatal("no target")
+	}
+	maxOutTypeWork, events = events[0], nil
+	v := outGuarded(t, f, map[string]string{"bb/b.go": src})
+	typed := slices.DeleteFunc(slices.Clone(v.Warnings), func(b Block) bool { return !b.Typed })
+	if !v.Accepted() || len(events) != 0 || len(typed) != 1 || !strings.Contains(typed[0].What, "check by types stopped") {
+		t.Errorf("the boundary (%d): events %v; blocks %q, warnings %q", maxOutTypeWork, events, whats(v.Blocks), whats(v.Warnings))
 	}
 }
