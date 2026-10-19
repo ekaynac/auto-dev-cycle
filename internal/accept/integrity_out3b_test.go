@@ -25,7 +25,7 @@ func TestOutTypedBodies(t *testing.T) {
 		return "package " + pkg + "\n\nimport \"flag\"\n\ntype T struct{}\n\nfunc (*T) Parse([]string) error { return nil }\n\ntype FS = flag.FlagSet\n\nvar safe = &T{}\n\nvar fatal = flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse func([]string) error\n"
 	}
 	gst := func(pkg string) string {
-		return "package " + pkg + "\n\nimport \"flag\"\n\ntype Safe struct{}\n\ntype FS = flag.FlagSet\n\nfunc g[A, B any]() {}\n\nfunc h[A, B any](func(A), func(B)) {}\n\nvar fa func(X)\n\nvar fb func(Y)\n"
+		return "package " + pkg + "\n\nimport \"flag\"\n\ntype Safe struct{}\n\ntype FS = flag.FlagSet\n\nfunc g[A, B any]() {}\n\nfunc h[A, B any](func(A), func(B)) {}\n\nfunc k[A, B any](A, B) {}\n\nvar fa func(X)\n\nvar fb func(Y)\n\nvar pa, pb, sa, sb, ma, mb = new(X), new(Y), []X{}, []Y{}, map[string]X{}, map[string]Y{}\n"
 	}
 	xy, yx := "type X = Safe\n\ntype Y = FS\n", "type X = FS\n\ntype Y = Safe\n"
 	tmain := "import (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) {\n\tparse = x.Parse\n\tos.Exit(m.Run())\n}\n"
@@ -80,6 +80,19 @@ func TestOutTypedBodies(t *testing.T) {
 		"gn/st.go":     gst("gn"),
 		"gn/v.go":      "package gn\n\n" + xy,
 		"gn/m_test.go": "package gn\n\n" + strings.Replace(tmain, "parse = x.Parse", "h(fa, fb)", 1),
+		// Astra #283 r3 H1: inferred composite arguments (pointer, slice, map value) swap.
+		"gp/st.go":     gst("gp"),
+		"gp/v.go":      "package gp\n\n" + xy,
+		"gp/a.go":      "package gp\n\nfunc init() { k(pa, pb) }\n",
+		"gq/st.go":     gst("gq"),
+		"gq/v.go":      "package gq\n\n" + xy,
+		"gq/m_test.go": "package gq\n\n" + strings.Replace(tmain, "parse = x.Parse", "k(pa, pb)", 1),
+		"gs/st.go":     gst("gs"),
+		"gs/v.go":      "package gs\n\n" + xy,
+		"gs/a.go":      "package gs\n\nfunc init() { k(sa, sb) }\n",
+		"gk/st.go":     gst("gk"),
+		"gk/v.go":      "package gk\n\n" + xy,
+		"gk/a.go":      "package gk\n\nfunc init() { k(ma, mb) }\n",
 		// The declarations' boundary: the first of two inits alone changes.
 		"t2/i.go": "package t2\n\n" + fs + "\nfunc init() { parse = safe.Parse }\n\nfunc init() { hook = nil }\n",
 		// Astra #283 r2 L3: an S use after a literal whose contents alone change.
@@ -110,29 +123,33 @@ func TestOutTypedBodies(t *testing.T) {
 		typed, text []string
 		base        string // a warning of the base guard's
 	}{
-		"an init body's method value":            {edit("iv/iv.go", "= safe.Parse", "= fatal.Parse"), []string{body("iv/iv.go", "init body")}, nil, ""},
-		"an init added":                          {map[string]string{"iv2/iv.go": base["iv2/iv.go"] + "\nfunc init() { parse = fatal.Parse }\n"}, []string{refs("iv2/iv.go", "init body")}, nil, ""},
-		"a TestMain hook body":                   {edit("tm/tm_test.go", "= safe.Parse", "= fatal.Parse"), []string{body("tm/tm_test.go", "TestMain body")}, nil, "tm: TestMain(*testing.M) of tm:tm changed or deleted"},
-		"a mix: the literal and the body":        {edit("mx/mx.go", "= safe.Parse\n\thook = func() { flag.Parse() }", "= fatal.Parse\n\thook = func() { flag.Parse(); _ = 1 }"), []string{body("mx/mx.go", "init body")}, []string{body("mx/mx.go", "init literal")}, ""},
-		"a mix: the body alone":                  {edit("mx/my.go", "= safe.Parse", "= fatal.Parse"), []string{body("mx/my.go", "init body")}, nil, ""},
-		"a body without S, its literal by types": {edit("mx/mz.go", "n = 1", "n = 2"), nil, nil, ""},
-		"a literal alone":                        {edit("mx/my.go", "flag.Parse() }", "flag.Parse(); _ = 1 }"), nil, []string{body("mx/my.go", "init literal")}, ""},
-		"H1 init, the type in another file":      {edit("ua/v.go", "= safe", "= fatal"), []string{refs("ua/a.go", "init body")}, nil, ""},
-		"H1 init, the type in its own file":      {edit("ub/a.go", "var x = safe", same["var x = safe"]), []string{refs("ub/a.go", "init body")}, nil, ""},
-		"H1 TestMain, the type in another file":  {edit("um/v.go", "= safe", "= fatal"), []string{refs("um/m_test.go", "TestMain body")}, nil, ""},
-		"H1 TestMain, the type in its own file":  {edit("un/m_test.go", "var x = safe", same["var x = safe"]), []string{refs("un/m_test.go", "TestMain body")}, nil, ""},
-		"Astra H1 an init's uses swap":           {edit("sw/v.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("sw/a.go", "init body")}, nil, ""},
-		"Astra H1 a TestMain's uses swap":        {edit("sm/v.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("sm/m_test.go", "TestMain body")}, nil, ""},
-		"Astra H1 a swap on arm64 alone":         {edit("sp/v_arm64.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("sp/a.go", "init body")}, nil, ""},
-		"r2 H1 two inits swap on arm64 alone":    {edit("tw/v_arm64.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("tw/a.go", "init body")}, nil, ""},
-		"the first of two inits changes":         {edit("t2/i.go", "= safe.Parse", "= fatal.Parse"), []string{body("t2/i.go", "init body")}, nil, ""},
-		"a statement moves to the next init":     {edit("t2/i.go", "{ parse = safe.Parse }\n\nfunc init() { hook = nil }", "{}\n\nfunc init() { parse = safe.Parse; hook = nil }"), []string{body("t2/i.go", "init body")}, nil, ""},
-		"r2 H2 an init's explicit slots swap":    {map[string]string{"ga/v.go": "package ga\n\n" + yx}, []string{body("ga/a.go", "init body")}, nil, ""},
-		"r2 H2 an init's inferred slots swap":    {map[string]string{"gi/v.go": "package gi\n\n" + yx}, []string{body("gi/a.go", "init body")}, nil, ""},
-		"r2 H2 a TestMain's explicit slots swap": {map[string]string{"gm/v.go": "package gm\n\n" + yx}, []string{body("gm/m_test.go", "TestMain body")}, nil, ""},
-		"r2 H2 a TestMain's inferred slots swap": {map[string]string{"gn/v.go": "package gn\n\n" + yx}, []string{body("gn/m_test.go", "TestMain body")}, nil, ""},
-		"r2 L3 an S use after a changed literal": {edit("lt/l.go", "flag.Parse() }", "flag.Parse(); _ = 1 }"), nil, []string{body("lt/l.go", "init literal")}, ""},
-		"Astra H1 two S targets swap":            {edit("sg/v.go", "x = fs\n\nvar y = lg", "x = lg\n\nvar y = fs"), []string{body("sg/a.go", "init body"), "sg/a.go changed bodies that use log (1: init body)"}, nil, ""},
+		"an init body's method value":               {edit("iv/iv.go", "= safe.Parse", "= fatal.Parse"), []string{body("iv/iv.go", "init body")}, nil, ""},
+		"an init added":                             {map[string]string{"iv2/iv.go": base["iv2/iv.go"] + "\nfunc init() { parse = fatal.Parse }\n"}, []string{refs("iv2/iv.go", "init body")}, nil, ""},
+		"a TestMain hook body":                      {edit("tm/tm_test.go", "= safe.Parse", "= fatal.Parse"), []string{body("tm/tm_test.go", "TestMain body")}, nil, "tm: TestMain(*testing.M) of tm:tm changed or deleted"},
+		"a mix: the literal and the body":           {edit("mx/mx.go", "= safe.Parse\n\thook = func() { flag.Parse() }", "= fatal.Parse\n\thook = func() { flag.Parse(); _ = 1 }"), []string{body("mx/mx.go", "init body")}, []string{body("mx/mx.go", "init literal")}, ""},
+		"a mix: the body alone":                     {edit("mx/my.go", "= safe.Parse", "= fatal.Parse"), []string{body("mx/my.go", "init body")}, nil, ""},
+		"a body without S, its literal by types":    {edit("mx/mz.go", "n = 1", "n = 2"), nil, nil, ""},
+		"a literal alone":                           {edit("mx/my.go", "flag.Parse() }", "flag.Parse(); _ = 1 }"), nil, []string{body("mx/my.go", "init literal")}, ""},
+		"H1 init, the type in another file":         {edit("ua/v.go", "= safe", "= fatal"), []string{refs("ua/a.go", "init body")}, nil, ""},
+		"H1 init, the type in its own file":         {edit("ub/a.go", "var x = safe", same["var x = safe"]), []string{refs("ub/a.go", "init body")}, nil, ""},
+		"H1 TestMain, the type in another file":     {edit("um/v.go", "= safe", "= fatal"), []string{refs("um/m_test.go", "TestMain body")}, nil, ""},
+		"H1 TestMain, the type in its own file":     {edit("un/m_test.go", "var x = safe", same["var x = safe"]), []string{refs("un/m_test.go", "TestMain body")}, nil, ""},
+		"Astra H1 an init's uses swap":              {edit("sw/v.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("sw/a.go", "init body")}, nil, ""},
+		"Astra H1 a TestMain's uses swap":           {edit("sm/v.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("sm/m_test.go", "TestMain body")}, nil, ""},
+		"Astra H1 a swap on arm64 alone":            {edit("sp/v_arm64.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("sp/a.go", "init body")}, nil, ""},
+		"r2 H1 two inits swap on arm64 alone":       {edit("tw/v_arm64.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("tw/a.go", "init body")}, nil, ""},
+		"the first of two inits changes":            {edit("t2/i.go", "= safe.Parse", "= fatal.Parse"), []string{body("t2/i.go", "init body")}, nil, ""},
+		"a statement moves to the next init":        {edit("t2/i.go", "{ parse = safe.Parse }\n\nfunc init() { hook = nil }", "{}\n\nfunc init() { parse = safe.Parse; hook = nil }"), []string{body("t2/i.go", "init body")}, nil, ""},
+		"r2 H2 an init's explicit slots swap":       {map[string]string{"ga/v.go": "package ga\n\n" + yx}, []string{body("ga/a.go", "init body")}, nil, ""},
+		"r2 H2 an init's inferred slots swap":       {map[string]string{"gi/v.go": "package gi\n\n" + yx}, []string{body("gi/a.go", "init body")}, nil, ""},
+		"r2 H2 a TestMain's explicit slots swap":    {map[string]string{"gm/v.go": "package gm\n\n" + yx}, []string{body("gm/m_test.go", "TestMain body")}, nil, ""},
+		"r2 H2 a TestMain's inferred slots swap":    {map[string]string{"gn/v.go": "package gn\n\n" + yx}, []string{body("gn/m_test.go", "TestMain body")}, nil, ""},
+		"r3 H1 an init's inferred pointers swap":    {map[string]string{"gp/v.go": "package gp\n\n" + yx}, []string{body("gp/a.go", "init body")}, nil, ""},
+		"r3 H1 a TestMain's inferred pointers swap": {map[string]string{"gq/v.go": "package gq\n\n" + yx}, []string{body("gq/m_test.go", "TestMain body")}, nil, ""},
+		"r3 H1 an init's slice elements swap":       {map[string]string{"gs/v.go": "package gs\n\n" + yx}, []string{body("gs/a.go", "init body")}, nil, ""},
+		"r3 H1 an init's map values swap":           {map[string]string{"gk/v.go": "package gk\n\n" + yx}, []string{body("gk/a.go", "init body")}, nil, ""},
+		"r2 L3 an S use after a changed literal":    {edit("lt/l.go", "flag.Parse() }", "flag.Parse(); _ = 1 }"), nil, []string{body("lt/l.go", "init literal")}, ""},
+		"Astra H1 two S targets swap":               {edit("sg/v.go", "x = fs\n\nvar y = lg", "x = lg\n\nvar y = fs"), []string{body("sg/a.go", "init body"), "sg/a.go changed bodies that use log (1: init body)"}, nil, ""},
 	} {
 		v := outGuarded(t, f, c.files)
 		if !v.Accepted() || !slices.Equal(layer(v, true), slices.Sorted(slices.Values(c.typed))) || !slices.Equal(layer(v, false), slices.Sorted(slices.Values(c.text))) ||
@@ -162,6 +179,24 @@ func TestOutTypedBodies(t *testing.T) {
 	if typed := slices.DeleteFunc(slices.Clone(v.Warnings), func(b Block) bool { return !b.Typed }); !v.Accepted() || len(typed) != 1 || !strings.Contains(typed[0].What, "check by types stopped") {
 		t.Errorf("the budget: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
 	}
+	// Astra #283 r3 L2: a budget that runs out inside a typed print (between
+	// its start and its full cost, measured in this run): the types stop
+	// warning alone, and nothing past the budget is hashed.
+	var calls [][4]int
+	outBodyHook = func(s, p, h, v int) { calls = append(calls, [4]int{s, p, h, v}) }
+	defer func() { outBodyHook = nil }()
+	maxOutTypeWork = 0
+	ed := edit("iv/iv.go", "= safe.Parse", "= fatal.Parse")
+	outGuarded(t, f, ed)
+	if len(calls) == 0 {
+		t.Fatal("no body print")
+	}
+	maxOutTypeWork, calls = calls[0][0]+calls[0][1]/2, nil
+	v = outGuarded(t, f, ed)
+	typed := slices.DeleteFunc(slices.Clone(v.Warnings), func(b Block) bool { return !b.Typed })
+	if !v.Accepted() || len(typed) != 1 || !strings.Contains(typed[0].What, "check by types stopped") || len(calls) == 0 || calls[0][0]+calls[0][2] > maxOutTypeWork {
+		t.Errorf("the budget inside a print (%d): calls %v; blocks %q, warnings %q", maxOutTypeWork, calls, whats(v.Blocks), whats(v.Warnings))
+	}
 }
 
 // TestOutTypedBodyCharge (Opus #283 L2): a body pass charges the types
@@ -188,7 +223,12 @@ func TestOutTypedBodyCharge(t *testing.T) {
 	bytes := fset.Position(d.End()).Offset - fset.Position(d.Pos()).Offset
 	visit := nodes + refs*len("init body"+"(*flag.FlagSet).Parse") + len("Parse"+"flag"+"FlagSet")
 	var prints, visits []int
-	outBodyHook = func(p, v int) { prints, visits = append(prints, p), append(visits, v) }
+	outBodyHook = func(_, p, h, v int) {
+		if h != p { // every charged byte hashed, none uncharged (Astra #283 r3 L2)
+			t.Errorf("the print charged %d, hashed %d", p, h)
+		}
+		prints, visits = append(prints, p), append(visits, v)
+	}
 	defer func() { outBodyHook = nil }()
 	v := outGuarded(t, newGuardFixture(t), map[string]string{"bb/b.go": src})
 	if !v.Accepted() || len(prints) != len(platforms) || slices.Min(prints) < kinds+bytes || !slices.Equal(visits, []int{visit, visit}) {

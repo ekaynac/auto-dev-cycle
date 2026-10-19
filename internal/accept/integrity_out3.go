@@ -392,13 +392,14 @@ func preview(ns []string) string {
 
 // outTypesHook runs all the types check's work (off: main's layer); outDone,
 // outCheckSeen and outBodyHook (tests') see the text layer's counters at a
-// run's end, each file set the layer checks, and what an init or hook
-// body's typed print and its visit charge the types budget (Opus #283 L2).
+// run's end, each file set the layer checks, and an init or hook body's
+// budget at its start, what its typed print charges and hashes, and what its
+// visit charges (Opus #283 L2, Astra #283 r3 L2).
 var (
 	outTypesHook = true
 	outDone      func(nodes, tags int, over bool)
 	outCheckSeen func(files []*ast.File)
-	outBodyHook  func(print, visit int)
+	outBodyHook  func(start, print, hashed, visit int)
 )
 
 // typesOff stops the types check for the run, with one warning, never
@@ -435,6 +436,9 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info, pl string) {
 			of.tprints = map[string]string{}
 		}
 		for _, u := range of.units {
+			if !r.chargeTypes(0) { // the budget is out: nothing more (Astra #283 r3 L2)
+				return
+			}
 			r.typedIn(u, false, info, names, func(pkg, ref string) {
 				if r.chargeTypes(len(u.where)+len(ref)) && u.where != "" {
 					counts[pkg+"\x00"+u.where+"\x00"+ref]++
@@ -443,7 +447,7 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info, pl string) {
 			})
 			if d, ok := u.n.(*ast.FuncDecl); ok && u.bind == "init literal" { // its body outside its literals (P14b-out-3b)
 				bind, before := d.Name.Name+" body", r.out.tnodes
-				r.typedPrint(of, d, bind, fmt.Sprint(pl, "\x00", ords[bind]), info)
+				hashed := r.typedPrint(of, d, bind, fmt.Sprint(pl, "\x00", ords[bind]), info)
 				ords[bind]++
 				printed := r.out.tnodes
 				r.typedIn(u, true, info, names, func(pkg, ref string) {
@@ -453,7 +457,7 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info, pl string) {
 					}
 				})
 				if outBodyHook != nil {
-					outBodyHook(printed-before, r.out.tnodes-printed)
+					outBodyHook(before, printed-before, hashed, r.out.tnodes-printed)
 				}
 			}
 		}
@@ -467,15 +471,19 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info, pl string) {
 // split): at (its platform and its ordinal among bind's declarations), then
 // each node outside its function literals (a literal one opaque node), in
 // walk order: its kind, an expression's type, an identifier's object, an
-// instance's type arguments (aliases resolved), and the source outside the
-// literals; never an offset. Every byte is on the types budget.
-func (r *run) typedPrint(of *outFile, d *ast.FuncDecl, bind, at string, info *types.Info) {
+// instance's type arguments (typeStr), and the source outside the literals;
+// never an offset. Every byte is charged before it is hashed, and after the
+// first failed charge nothing more is (Astra #283 r3 L2). It returns the
+// bytes hashed.
+func (r *run) typedPrint(of *outFile, d *ast.FuncDecl, bind, at string, info *types.Info) (hashed int) {
 	h, tf, from, ok := sha256.New(), r.out.fset.File(of.f.Pos()), d.Pos(), true
 	emit := func(s string) {
-		h.Write([]byte(s))
-		ok = ok && r.chargeTypes(len(s))
+		if ok = ok && r.chargeTypes(len(s)); ok {
+			hashed += len(s)
+			h.Write([]byte(s))
+		}
 	}
-	str := func(t types.Type) string { return " " + types.TypeString(types.Unalias(t), nil) }
+	str := func(t types.Type) string { return " " + typeStr(t, new(int), 0, nil) }
 	emit(of.tprints[bind] + at)
 	ast.Inspect(d, func(n ast.Node) bool {
 		if n == nil || !ok {
@@ -503,6 +511,83 @@ func (r *run) typedPrint(of *outFile, d *ast.FuncDecl, bind, at string, info *ty
 	})
 	emit(string(of.src[tf.Offset(from):tf.Offset(d.End())]))
 	of.tprints[bind] = string(h.Sum(nil))
+	return hashed
+}
+
+// maxTypeNodes and maxTypeDepth bound typeStr; past them, a "…deep" marker.
+const maxTypeNodes, maxTypeDepth = 256, 16
+
+// typeStr is t unaliased at every level (Astra #283 r3 H1): a named type by
+// its origin's package path and name and its type arguments, each of which
+// named calls on (nil: none). Two types past the bound are equal if their
+// bounded prefixes are.
+func typeStr(t types.Type, n *int, depth int, named func(*types.TypeName)) string {
+	if *n++; *n > maxTypeNodes || depth > maxTypeDepth {
+		return "…deep"
+	}
+	sub := func(t types.Type) string { return typeStr(t, n, depth+1, named) }
+	tuple := func(tu *types.Tuple) string {
+		var s []string
+		for v := range tu.Variables() {
+			s = append(s, v.Name()+" "+sub(v.Type()))
+		}
+		return "(" + strings.Join(s, ", ") + ")"
+	}
+	switch t := t.(type) {
+	case *types.Alias:
+		return typeStr(types.Unalias(t), n, depth, named)
+	case *types.Pointer:
+		return "*" + sub(t.Elem())
+	case *types.Slice:
+		return "[]" + sub(t.Elem())
+	case *types.Array:
+		return fmt.Sprintf("[%d]", t.Len()) + sub(t.Elem())
+	case *types.Map:
+		return "map[" + sub(t.Key()) + "]" + sub(t.Elem())
+	case *types.Chan:
+		return fmt.Sprintf("chan%d ", t.Dir()) + sub(t.Elem())
+	case *types.Signature:
+		return fmt.Sprintf("func%s%s%v", tuple(t.Params()), tuple(t.Results()), t.Variadic())
+	case *types.Tuple:
+		return tuple(t)
+	case *types.Struct:
+		var s []string
+		for i := range t.NumFields() {
+			s = append(s, fmt.Sprintf("%s %v %s %q", t.Field(i).Name(), t.Field(i).Embedded(), sub(t.Field(i).Type()), t.Tag(i)))
+		}
+		return "struct{" + strings.Join(s, "; ") + "}"
+	case *types.Interface:
+		var s []string
+		for m := range t.ExplicitMethods() {
+			s = append(s, m.Name()+sub(m.Type()))
+		}
+		for e := range t.EmbeddedTypes() {
+			s = append(s, sub(e))
+		}
+		return "interface{" + strings.Join(s, "; ") + "}"
+	case *types.Union:
+		var s []string
+		for i := range t.Len() {
+			s = append(s, fmt.Sprint(t.Term(i).Tilde())+sub(t.Term(i).Type()))
+		}
+		return strings.Join(s, "|")
+	case *types.Named:
+		o, s := t.Origin().Obj(), ""
+		if named != nil {
+			named(o)
+		}
+		if o.Pkg() != nil {
+			s = o.Pkg().Path()
+		}
+		s += "." + o.Name()
+		for a := range t.TypeArgs().Types() {
+			s += "[" + sub(a)
+		}
+		return s
+	case *types.TypeParam:
+		return fmt.Sprintf("$%d%s", t.Index(), t.Obj().Name())
+	}
+	return fmt.Sprintf("%T:%v", t, t) // *types.Basic
 }
 
 // sObj: o, named name, is in S: the layer's, or the base guard's as its
@@ -556,13 +641,12 @@ func (r *run) typedIn(u unit, body bool, info *types.Info, names map[types.Objec
 			}
 		case *ast.Ident:
 			if in, ok := info.Instances[x]; ok && in.TypeArgs != nil && r.chargeTypes(len(x.Name)) {
-				for t := range in.TypeArgs.Types() {
-					if p, ok := types.Unalias(t).(*types.Pointer); ok {
-						t = p.Elem()
-					}
-					if nt, ok := types.Unalias(t).(*types.Named); ok && sObj(nt.Obj(), nt.Obj().Name()) {
-						add(nt.Obj().Pkg().Path(), bound(x.Name)+"["+r.typeName(nt.Obj(), names)+"]")
-					}
+				for t := range in.TypeArgs.Types() { // every named type in it, aliases resolved at every level (Astra #283 r3 H1)
+					r.chargeTypes(len(typeStr(t, new(int), 0, func(o *types.TypeName) {
+						if sObj(o, o.Name()) {
+							add(o.Pkg().Path(), bound(x.Name)+"["+r.typeName(o, names)+"]")
+						}
+					})))
 				}
 			}
 		}
