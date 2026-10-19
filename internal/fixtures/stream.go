@@ -41,7 +41,9 @@ const streamWatchdog = 2 * frameWait
 
 // schedLag is this run's scheduling delay, measured now: the most that n
 // one-millisecond sleeps overran. A timing bound adds it, so the bound is
-// relative to the load the run is under, not a fixed wall-clock figure.
+// relative to the load the run is under, not a fixed wall-clock figure. It
+// measures timer wake-up delay, not throughput, which CPU load barely
+// moves: the bounds it joins hold through frameSlack (Opus #288 L1).
 func schedLag(n int) time.Duration {
 	var worst time.Duration
 	for range n {
@@ -272,9 +274,15 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 		cl := &slowClient{stall: c.stall, delay: c.delay, before: c.end(g)}
 		lag := schedLag(5)
 		cut := cl.serve(ctx, handler, token.Reveal(), streamWatchdog)
+		lag = max(lag, schedLag(5)) // the load during serve, as well as before it
 		o.check(!cut, "%s: the stream outlived the client (still open after %s)", c.name, streamWatchdog)
 		o.check(cl.maxDeadline <= handler.Poll, "%s: a write deadline of %s, past the poll bound", c.name, cl.maxDeadline)
 		if c.stall {
+			// Timed from the stall itself, never from the case's start: the
+			// stalled write waits out its deadline (at most a poll) and the
+			// stream ends; no store work is in the window (#226 entry 86).
+			o.check(!cl.stalledAt.IsZero() && cl.endedAt.Sub(cl.stalledAt) <= handler.Poll+frameSlack+lag, "%s: the stream ended %s after the stall (bound %s)",
+				c.name, cl.endedAt.Sub(cl.stalledAt), handler.Poll+frameSlack+lag)
 			o.check(cl.written() == "", "%s: frames after the stall: %q", c.name, cl.written())
 			continue
 		}
@@ -288,7 +296,7 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 // slowClient is the client as the stream's ResponseWriter sees it: it
 // runs before() once, as the first event frame is written (the change
 // lands during a delivery), and, stalling, blocks every event write
-// until its deadline.
+// until its deadline, or, with no deadline, until the request ends.
 type slowClient struct {
 	mu          sync.Mutex
 	header      http.Header
@@ -297,9 +305,12 @@ type slowClient struct {
 	maxDeadline time.Duration
 	before      func()
 	stall       bool
-	delay       time.Duration // an event write takes this long, and succeeds
-	changedAt   time.Time     // when before ran
-	closedAt    time.Time     // when the closed frame was written
+	delay       time.Duration   // an event write takes this long, and succeeds
+	done        <-chan struct{} // the request's end: a write with no deadline stalls until it
+	changedAt   time.Time       // when before ran
+	closedAt    time.Time       // when the closed frame was written
+	stalledAt   time.Time       // when the first stalled write began
+	endedAt     time.Time       // when the handler returned
 }
 
 func (c *slowClient) Header() http.Header {
@@ -330,7 +341,13 @@ func (c *slowClient) Write(b []byte) (int, error) {
 		if c.stall {
 			c.mu.Lock()
 			d := c.deadline
+			if c.stalledAt.IsZero() {
+				c.stalledAt = time.Now()
+			}
 			c.mu.Unlock()
+			if d.IsZero() {
+				<-c.done // a real client stalls for as long as the stream lets it
+			}
 			time.Sleep(time.Until(d))
 			return 0, os.ErrDeadlineExceeded
 		}
@@ -356,7 +373,9 @@ func (c *slowClient) serve(ctx context.Context, h http.Handler, bearer string, b
 	defer cancel()
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, api.EventsPath, nil)
 	req.Header.Set("Authorization", "Bearer "+bearer)
+	c.done = ctx.Done()
 	h.ServeHTTP(c, req)
+	c.endedAt = time.Now()
 	return ctx.Err() != nil
 }
 
