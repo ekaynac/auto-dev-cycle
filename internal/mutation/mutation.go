@@ -223,6 +223,13 @@ const (
 	// HoldRaiseSkipsAnswer admits an awaiting_input wait on no answer its
 	// node declares, which nothing can then end.
 	HoldRaiseSkipsAnswer = "graph.hold-raise-skips-answer"
+	// The junit_xml result adapter (M1 P15b).
+	// JUnitErrorPasses reads a testcase that only errored (setup,
+	// teardown, collection) as a pass, as a runner that says green would.
+	JUnitErrorPasses = "results.junit-error-passes"
+	// JUnitCountsUnchecked reads a document whose suite counts disagree
+	// with its testcases, as if it were complete.
+	JUnitCountsUnchecked = "results.junit-counts-unchecked"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -246,4 +253,4 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	RequirementRevisionUnchecked,
 	GenerationKeepsReview, MergeCASOnHead,
 	RecordedFoldSkipsOwed, ClaimFoldSkipsAnswers, ReuseFoldSkipsAnswers, ResultFoldSkipsAnswers, SupersessionFoldSkipsMoves, HoldFoldSkipsAnswers,
-	HoldRaiseSkipsAnswer}
+	HoldRaiseSkipsAnswer, JUnitErrorPasses, JUnitCountsUnchecked}

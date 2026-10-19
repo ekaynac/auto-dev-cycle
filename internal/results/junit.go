@@ -29,6 +29,8 @@ import (
 	"io"
 	"slices"
 	"strconv"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 )
 
 // The adapter's name in a profile's gate.result_adapter.
@@ -123,7 +125,7 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 				if has["skipped"] {
 					o = Skip
 				}
-				if has["failure"] || has["error"] {
+				if has["failure"] || has["error"] && !mutation.Is(mutation.JUnitErrorPasses) {
 					o = Fail
 				}
 				// A second testcase of one identity is unreadable, but for
@@ -147,7 +149,7 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 				suites = suites[:len(suites)-1]
 				got := map[string]int{"tests": s.tests, "failures": s.failures, "errors": s.errors, "skipped": s.skipped}
 				for k, n := range s.declared {
-					if got[k] != n {
+					if got[k] != n && !mutation.Is(mutation.JUnitCountsUnchecked) {
 						return unreadable("%s declares %d %s, holds %d", t.Name.Local, n, k, got[k])
 					}
 				}
