@@ -252,9 +252,10 @@ func pyStmt(st []ptok) bool {
 }
 
 // pyExpr: t is an inert expression: a number, -number, strings (no f- or
-// t-string), True, False, None, a name or dotted name, or a tuple, list,
-// set or dict display of pyExprs. Nothing else is: no comprehension, call,
-// subscript, operator, lambda, conditional, walrus or starred (r4 H1).
+// t-string), True, False, None, a bare name, or a tuple, list, set or dict
+// display of pyExprs. Nothing else is: no dotted name (a module's
+// __getattr__ runs), comprehension, call, subscript, operator, lambda,
+// conditional, walrus or starred (r4 H1, the lead's pre-check).
 func pyExpr(t []ptok) bool {
 	if es := pySplit(t, ","); len(es) > 1 {
 		return pyElems(es, false)
@@ -271,7 +272,7 @@ func pyExpr(t []ptok) bool {
 	case k.kind == 'o' && strings.Contains("([{", k.text) && pyClosed(t):
 		return pyElems(pySplit(t[1:len(t)-1], ","), k.text == "{")
 	}
-	return pyName(t)
+	return len(t) == 1 && pyName(t)
 }
 
 // pyElems: each element of a display is a pyExpr (key: value in a dict).
@@ -313,14 +314,15 @@ func pyClosed(t []ptok) bool {
 }
 
 // pyHeader: def or class statement d evaluates only pyExprs at import: each
-// default and annotation, the return one too; a class's bases bare or
-// dotted names, no keyword (r3 H2, r4).
+// default and annotation, the return one too; a class has no base but
+// object and no keyword (a base's __init_subclass__ or metaclass runs: the
+// lead's pre-check; the file may not bind object, file's dunder rule).
 func pyHeader(d []ptok) bool {
 	h := pySplit(d, ":")
 	if len(d) < 3 || d[1].kind != 'n' || len(h) < 2 {
 		return false
 	} else if d[0].text == "class" {
-		return len(h[0]) == 2 || h[0][2].text == "(" && pyClosed(h[0][2:]) && pyElemsBy(pySplit(h[0][3:len(h[0])-1], ","), pyName)
+		return slices.Contains([]string{"", "()", "(object)"}, pyJoin(h[0][2:]))
 	}
 	sig := pySplit(h[0][2:], "-")
 	if len(sig) > 2 || len(sig[0]) < 2 || sig[0][0].text != "(" || !pyClosed(sig[0]) || len(sig) == 2 && (len(sig[1]) < 2 || sig[1][0].text != ">" || !pyExpr(sig[1][1:])) {
@@ -347,8 +349,9 @@ func pyElemsBy(es [][]ptok, ok func([]ptok) bool) bool {
 }
 
 // pyDeco: decorator st calls a trusted pytest chain (pyPytest without
-// patch: rooted at pytest or fixture) with pyExpr arguments; its root,
-// whose binding pyTrusted must prove (Astra #281 r4 H2).
+// patch: rooted at pytest or fixture) with pyExpr arguments, or a dotted
+// name as one (a skipif's condition, read from an inert closure module);
+// its root, whose binding pyTrusted must prove (Astra #281 r4 H2).
 func pyDeco(st []ptok) (string, bool) {
 	end := slices.IndexFunc(st, func(k ptok) bool { return k.text == "(" })
 	if end < 0 {
@@ -361,7 +364,7 @@ func pyDeco(st []ptok) (string, bool) {
 			if len(a) > 2 && a[0].kind == 'n' && a[1].text == "=" { // a keyword argument
 				a = a[2:]
 			}
-			return pyExpr(a)
+			return pyExpr(a) || pyName(a)
 		}))
 }
 

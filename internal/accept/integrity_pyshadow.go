@@ -260,7 +260,7 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				defIn = l.indent // the exact __main__ guard's body does not run at import
 				continue
 			} else if names, _ := pyBinds(st); pyAllowed(st, conftest) != "" || !stmt(st) || !pyConst(l.inner) || slices.ContainsFunc(names, func(n string) bool {
-				return strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__"
+				return strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__" || n == "object" // def __getattr__, __init_subclass__, …; a class(object) base rebound
 			}) {
 				f.impure = true
 			}
