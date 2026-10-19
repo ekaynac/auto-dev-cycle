@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="2" failures="2" skipped="2" tests="11" time="0.019" timestamp="2026-10-19T15:41:47.289804+03:00" hostname="sandbox"><testcase classname="tests.test_mix" name="test_pass" time="0.000" /><testcase classname="tests.test_mix" name="test_fail" time="0.000"><failure message="AssertionError: CANARY-FAILURE-TEXT&#10;assert 1 == 2">&gt;   def test_fail(): assert 1 == 2, "CANARY-FAILURE-TEXT"
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: CANARY-FAILURE-TEXT
+E   assert 1 == 2
+
+tests/test_mix.py:13: AssertionError</failure></testcase><testcase classname="tests.test_mix" name="test_skip" time="0.001"><skipped type="pytest.skip" message="no">/work/tests/test_mix.py:14: no</skipped></testcase><testcase classname="tests.test_mix" name="test_xfail" time="0.000"><skipped type="pytest.xfail" message="" /></testcase><testcase classname="tests.test_mix" name="test_setup_error" time="0.000"><error message="failed on setup with &quot;RuntimeError: setup&quot;">@pytest.fixture
+    def broken():
+&gt;       raise RuntimeError("setup")
+E       RuntimeError: setup
+
+tests/test_mix.py:5: RuntimeError</error></testcase><testcase classname="tests.test_mix" name="test_fail_and_teardown" time="0.000"><failure message="assert 0">bad_teardown = None
+
+&gt;   def test_fail_and_teardown(bad_teardown): assert 0
+                                              ^^^^^^^^
+E   assert 0
+
+tests/test_mix.py:18: AssertionError</failure></testcase><testcase classname="tests.test_mix" name="test_fail_and_teardown" time="0.000"><error message="failed on teardown with &quot;RuntimeError: teardown&quot;">@pytest.fixture
+    def bad_teardown():
+        yield
+&gt;       raise RuntimeError("teardown")
+E       RuntimeError: teardown
+
+tests/test_mix.py:10: RuntimeError</error></testcase><testcase classname="tests.test_mix" name="test_param[1]" time="0.000" /><testcase classname="tests.test_mix" name="test_param[2]" time="0.001" /><testcase classname="tests.test_mix.TestK" name="test_m" time="0.000" /><testcase classname="tests.test_ok" name="test_ok" time="0.000" /></testsuite></testsuites>
