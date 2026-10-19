@@ -27,8 +27,9 @@ import (
 var GoEnv = []string{"GOFLAGS=-mod=readonly -buildvcs=false", "GOTOOLCHAIN=local", "GOWORK=off", "GOPROXY=off", "GOSUMDB=off",
 	"GOENV=off", "GOTELEMETRY=off", "GODEBUG=goindex=0", "CGO_ENABLED=0", "GO111MODULE=on", "GOEXPERIMENT=", "GOAMD64=v1", "GOARM64=v8.0"}
 
-// goImage is the prepared image's layout (fixtures/m1/images/go/Containerfile).
-var goImage = []string{"PATH=/usr/local/go/bin:/usr/bin:/bin", "HOME=/tmp", "GOPATH=/go", "GOCACHE=/opt/adc/gocache"}
+// goImage is the prepared image's layout (fixtures/m1/images/go/Containerfile);
+// no home: go reads no configuration (GOENV=off) and writes no cache there.
+var goImage = []string{"PATH=/usr/local/go/bin:/usr/bin:/bin", "GOPATH=/go", "GOCACHE=/opt/adc/gocache"}
 
 // listScript lists "$@" into $1/list, a package a line (its path, export
 // data file and quoted error), copies the export data into $1/x and writes

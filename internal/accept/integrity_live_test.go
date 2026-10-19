@@ -6,19 +6,23 @@ package accept
 // runs go list in the prepared Go image under rootless Podman, which the
 // test sandbox (bubblewrap) does not offer, so it runs only when asked:
 //
-//	ADC_LIVE_GO_ARCHIVE=/path/go.oci.tar ADC_LIVE_GO_PIN=ghcr.io/…@sha256:… ADC_LIVE_GO_ID=<id> \
+//	ADC_LIVE_GO_ROOT=/tmp/adcs ADC_LIVE_GO_PIN=ghcr.io/…@sha256:… ADC_LIVE_GO_ID=<id> \
 //	  go test -run TestLiveSandboxLister ./internal/accept/
 //
-// The archive is the pinned image saved by the ID its pin resolves to on
-// this host's architecture (podman save --format oci-archive -o x.tar ID);
-// it is loaded into a fresh, private storage, nothing pulled, and its ID
-// must be ADC_LIVE_GO_ID. The sandbox's runs/ is on /dev/shm (tmpfs).
+// ADC_LIVE_GO_ROOT is a sandbox root (sandbox.Host.Root) prepared beforehand
+// with the pinned image in its storage, by the ID the pin resolves to on this
+// host's architecture (podman image inspect PIN), nothing pulled here:
+//
+//	podman save --format oci-archive -o go.tar ID
+//	mkdir -p ROOT/home ROOT/xdg && ln -s "$(mktemp -d /dev/shm/adcg-runs.XXXX)" ROOT/runs
+//	env -i HOME=ROOT/home XDG_RUNTIME_DIR=ROOT/xdg PATH=/usr/bin:/bin podman --root ROOT/storage \
+//	  --runroot ROOT/r --cgroup-manager=cgroupfs --events-backend=none pull oci-archive:go.tar
+//
+// runs/ must be on a filesystem of its own (here /dev/shm, tmpfs).
 
 import (
 	"context"
-	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,37 +32,9 @@ import (
 )
 
 func TestLiveSandboxLister(t *testing.T) {
-	archive, pin, id := os.Getenv("ADC_LIVE_GO_ARCHIVE"), os.Getenv("ADC_LIVE_GO_PIN"), os.Getenv("ADC_LIVE_GO_ID")
-	if archive == "" || pin == "" || id == "" {
-		t.Skip("set ADC_LIVE_GO_ARCHIVE, ADC_LIVE_GO_PIN and ADC_LIVE_GO_ID to run the live loader smoke check")
-	}
-	root, err := os.MkdirTemp("", "adcg") // short: Podman's runroot limit
-	runs, err2 := os.MkdirTemp("/dev/shm", "adcg-runs")
-	if err = errors.Join(err, err2); err == nil {
-		err = os.Symlink(runs, filepath.Join(root, "runs"))
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	podman := func(args ...string) ([]byte, error) {
-		cmd := exec.Command("/usr/bin/podman", append([]string{"--root", filepath.Join(root, "storage"), "--runroot", filepath.Join(root, "r"),
-			"--cgroup-manager=cgroupfs", "--events-backend=none"}, args...)...)
-		cmd.Env = []string{"HOME=" + filepath.Join(root, "home"), "XDG_RUNTIME_DIR=" + filepath.Join(root, "xdg"), "PATH=/usr/bin:/bin"}
-		return cmd.Output()
-	}
-	for _, d := range []string{"home", "xdg"} {
-		if err := os.Mkdir(filepath.Join(root, d), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Cleanup(func() {
-		_, _ = podman("system", "reset", "--force")
-		_ = os.RemoveAll(root)
-		_ = os.RemoveAll(runs)
-	})
-	out, err := podman("pull", "-q", "oci-archive:"+archive)
-	if loaded := strings.TrimPrefix(strings.TrimSpace(string(out)), "sha256:"); err != nil || loaded != id {
-		t.Fatalf("loading the archive: %v, %q (want %s)", err, out, id)
+	root, pin, id := os.Getenv("ADC_LIVE_GO_ROOT"), os.Getenv("ADC_LIVE_GO_PIN"), os.Getenv("ADC_LIVE_GO_ID")
+	if root == "" || pin == "" || id == "" {
+		t.Skip("set ADC_LIVE_GO_ROOT, ADC_LIVE_GO_PIN and ADC_LIVE_GO_ID to run the live loader smoke check")
 	}
 	h := sandbox.Host{Podman: "/usr/bin/podman", Root: root, Home: filepath.Clean(os.Getenv("HOME"))}
 	list := SandboxLister(h, sandbox.Image{Pinned: pin, ID: id}, sandbox.Limits{Memory: 2 << 30, CPUs: "2", PIDs: 512, Timeout: 3 * time.Minute, Disk: 1 << 30})
