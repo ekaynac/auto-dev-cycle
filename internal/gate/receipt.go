@@ -8,8 +8,11 @@ package gate
 //   - A gate receipt is about the tree the run checked out (Verdict.Tree),
 //     in its environment: the image's id and platform, and the profile's
 //     contract revision. Its instrument's digest binds the adapter, the
-//     command and the image, so a receipt of another tree, image or
-//     command never applies (Requirement; internal/receipt's Applies).
+//     command and the image, and its demand, which a requirement always
+//     carries, binds the baseline it was judged against: the baseline's
+//     content digest and its base tree (Astra #286 M3). So a receipt of
+//     another tree, image, command or baseline never applies
+//     (Requirement; internal/receipt's Applies).
 //   - Failure text is sanitised for consumers: the run's raw results are
 //     the receipt's restricted evidence, never a ref of the result. The
 //     result's value (what a reviewer's context renders: graph.Context does
@@ -54,11 +57,10 @@ type Blobs interface {
 	Put(r io.Reader, declared string) (string, error)
 }
 
-// Subject is what a gate receipt is about, beside its tree.
+// Subject is what a gate receipt is about, beside its tree and baseline.
 type Subject struct {
 	Project  types.ProjectID
 	Revision string // the profile's contract revision
-	Demand   types.Demand
 }
 
 // Contract is the gate's instrument contract for g run in img.
@@ -76,17 +78,37 @@ func Contract(g types.ProjectProfileGate, img sandbox.Image) (types.InstrumentCo
 		ArtifactClasses: map[string]types.InstrumentContractArtifactClassesValue{"results": types.InstrumentContractArtifactClassesValueRestricted}}, err
 }
 
-// subject is a receipt's or requirement's tree subject.
-func subject(tree string, img sandbox.Image, s Subject) types.Subject {
+// subject is a receipt's or requirement's tree subject, its demand the
+// baseline's (demand).
+func subject(tree string, img sandbox.Image, s Subject, b *Baseline) (types.Subject, error) {
+	key, err := demand(b)
+	if err != nil {
+		return types.Subject{}, err
+	}
+	run, err := ids.New("run")
 	return types.Subject{Variant: &types.TreeSubject{Type: "tree", Project: s.Project, Tree: types.GitID("git:" + tree),
 		Environment:      types.Environment{Identity: types.Digest("sha256:" + img.ID), Description: img.OS + "/" + img.Arch},
-		ContractRevision: s.Revision, Demand: s.Demand}}
+		ContractRevision: s.Revision, Demand: &types.DemandValue{Key: key, Run: types.EvidenceRunID(run)}}}, err
 }
 
-// Requirement is what a gate receipt must be to serve tree.
-func Requirement(c types.InstrumentContract, tree string, img sandbox.Image, s Subject) receipt.Requirement {
+// demand is the key a gate's demand derives from its baseline: the
+// baseline's content digest, which covers its base tree, report, command
+// and platform image. A measurement has none (Measure's verdict carries no
+// baseline), so no receipt is ever made of it.
+func demand(b *Baseline) (types.Digest, error) {
+	if b == nil {
+		return "", fmt.Errorf("%w: a gate receipt needs its baseline: a measurement is no gate result", ErrSpec)
+	}
+	d, err := b.Digest()
+	sum := sha256.Sum256([]byte("adc.gate-baseline/v1\x00" + string(d)))
+	return types.Digest("sha256:" + hex.EncodeToString(sum[:])), err
+}
+
+// Requirement is what a gate receipt must be to serve tree against b.
+func Requirement(c types.InstrumentContract, tree string, img sandbox.Image, s Subject, b *Baseline) (receipt.Requirement, error) {
+	sub, err := subject(tree, img, s, b)
 	return receipt.Requirement{Kind: types.ReceiptKindGate, Instrument: types.InstrumentRef{Name: c.Name, Version: c.Version, Digest: c.Digest},
-		Subject: subject(tree, img, s)}
+		Subject: sub}, err
 }
 
 // Result publishes v as the gate node's result for key: its raw results
@@ -101,9 +123,6 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 		return knowledge.Seal(types.Ref{Type: t, ID: id, Scope: types.RefScope{Project: &s.Project},
 			Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: d})
 	}
-	if v.measured {
-		return types.Result{}, fmt.Errorf("%w: a measurement is no gate result", ErrSpec)
-	}
 	stream, err := put(v.Stream)
 	if err != nil {
 		return types.Result{}, err
@@ -116,8 +135,12 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 	if v.Outcome == vocab.Empty {
 		detail = ""
 	}
+	sub, err := subject(v.Tree, img, s, v.baseline)
+	if err != nil {
+		return types.Result{}, err
+	}
 	r := types.Receipt{ID: types.ReceiptID(rid), Kind: types.ReceiptKindGate, Instrument: types.InstrumentRef{Name: c.Name, Version: c.Version, Digest: c.Digest},
-		Subject: subject(v.Tree, img, s), Provenance: types.ReceiptProvenance{Command: command, Calls: []types.CallID{}, ModelFamilies: []types.Name{}, Contributors: []types.ActorID{}},
+		Subject: sub, Provenance: types.ReceiptProvenance{Command: command, Calls: []types.CallID{}, ModelFamilies: []types.Name{}, Contributors: []types.ActorID{}},
 		ProducedAt: types.Time(now.UTC().Format(time.RFC3339Nano)),
 		Predicates: []types.Predicate{{Name: "tests", Outcome: types.Outcome(v.Outcome), Reason: v.Reason, Detail: detail,
 			Evidence: []types.PredicateEvidenceItem{{Blob: stream, MediaType: evidenceType, Artifact: "results"}}}}}
@@ -162,9 +185,11 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 
 // Report is the D55 record of one gate node: the run's elapsed time, its
 // verdict and blocking findings (test ids and outcomes, at most
-// maxReported, the rest counted, each id cut to maxID bytes: a name is the
-// candidate's text, Opus #286 L2), and its charge links (none). It holds
-// at most about maxReported × 2 maxID bytes of ids.
+// maxReported, the rest counted, each id cut to at most maxID bytes, its
+// ellipsis included: a name is the candidate's text, Opus #286 L2), and
+// its charge links (none). It holds at most about maxReported × 2 maxID
+// bytes of ids. A short id stays verbatim, by design (the
+// hostile-gate-output fixture): the reviewer's handling of ids is P16's.
 func (v Verdict) Report() ([]byte, error) {
 	type finding struct {
 		Package string          `json:"package"`
@@ -175,7 +200,7 @@ func (v Verdict) Report() ([]byte, error) {
 		if len(s) <= maxID {
 			return s
 		}
-		return strings.ToValidUTF8(s[:maxID], "") + "…"
+		return strings.ToValidUTF8(s[:maxID-len("…")], "") + "…"
 	}
 	var blocking []finding
 	for _, x := range v.Results.Blocking() {
