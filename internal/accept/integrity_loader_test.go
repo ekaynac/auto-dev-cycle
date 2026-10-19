@@ -7,20 +7,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,15 +24,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
-// TestMain: the test binary is Integrity's child when asked (RunChildIfAsked).
-func TestMain(m *testing.M) {
-	RunChildIfAsked()
-	os.Exit(m.Run())
-}
-
-// isolated accepts a patch of the base through Integrity: the guard in its
-// own process.
-func (f fixture) isolated(t *testing.T, list Lister, files map[string]string, gone ...string) Verdict {
+// loaded accepts a patch of the base through the guard with list.
+func (f fixture) loaded(t *testing.T, list Lister, files map[string]string, gone ...string) Verdict {
 	t.Helper()
 	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, files, gone...), Policy: f.policy,
 		Guard: Integrity(f.repo, f.base, list, "")})
@@ -44,160 +33,6 @@ func (f fixture) isolated(t *testing.T, list Lister, files map[string]string, go
 		t.Fatal(err)
 	}
 	return v
-}
-
-// children records each run's child, and kills any left at the end.
-func children(t *testing.T) func() []*os.Process {
-	var mu sync.Mutex
-	var procs []*os.Process
-	procStarted = func(p *os.Process) { mu.Lock(); procs = append(procs, p); mu.Unlock() }
-	t.Cleanup(func() {
-		procStarted = nil
-		for _, p := range procs {
-			_ = p.Kill()
-		}
-	})
-	return func() []*os.Process { mu.Lock(); defer mu.Unlock(); return slices.Clone(procs) }
-}
-
-// exited: p has exited (and been waited for).
-func exited(p *os.Process) bool { return !alive(p.Pid) }
-
-// TestIntegrityProcess (P14e-2c): the guard runs in a child the controller
-// kills: its verdicts are the in-process guard's, a type check that never
-// ends is killed at the whole-run deadline, an abandoned one ends with its
-// process (the cap on abandoned checks is gone: no later run sees it), and
-// every way the child fails blocks.
-func TestIntegrityProcess(t *testing.T) {
-	base := map[string]string{
-		"tool/mv.go":  "package tool\n\nimport \"flag\"\n\nvar safe = flag.NewFlagSet(\"s\", flag.ContinueOnError)\n\nvar fatal = flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse4 = safe.Parse\n",
-		"tool/val.go": "package tool\n\nimport \"flag\"\n\nvar w = flag.NewFlagSet(\"w\", flag.ContinueOnError)\n\nfunc v() {}\n",
-		"tool/mx.go":  "package tool\n\nimport \"flag\"\n\nfunc x1() { flag.Parse() }\n\nfunc x2() { _ = w.Parse }\n",
-	}
-	f := newFixtureWith(t, func(src string) {
-		write(t, src, guardBase)
-		write(t, src, base)
-		plain(t, src, "add", "--all")
-	})
-	procs := children(t)
-	edit := func(file, from, to string) string { return strings.Replace(base[file], from, to, 1) }
-	plainGo := map[string]string{"pkg/x.go": "package pkg\n\nfunc G() int { return 1 }\n"}
-	// The same verdicts as in this process: blocks, warnings (Additive and
-	// Typed too), in order; a reader's error is the guard's.
-	for name, files := range map[string]map[string]string{
-		"a plain change": plainGo,
-		"a forgery":      {"pkg/forge.go": forgeGo},
-		"typed and text warnings": {"tool/mv.go": edit("tool/mv.go", "= safe.Parse", "= fatal.Parse"), "tool/val.go": edit("tool/val.go", "func v() {}", "func v() { _ = w.Parse(nil) }"),
-			"tool/mx.go": strings.Replace(edit("tool/mx.go", "flag.Parse() }", "flag.Parse(); _ = 1 }"), "w.Parse }", "w.Parse; _ = 2 }", 1)},
-		"an unloaded import": {"pkg/x.go": "package pkg\n\nimport \"example.org/none\"\n\nvar _ = none.X\n"},
-		// H1 (Opus #287): decision A's Python classes are the child's too.
-		"python os._exit":         {"tests/test_money.py": baseFiles["tests/test_money.py"] + "\ndef test_exit():\n    import os\n    os._exit(0)\n"},
-		"python module-level run": {"money.py": baseFiles["money.py"] + "\nimport subprocess\nsubprocess.run(['true'])\n"},
-		"python print('PASSED')":  {"tests/test_money.py": baseFiles["tests/test_money.py"] + "\nprint('PASSED')\n"},
-	} {
-		in, out := f.guarded(t, files), f.isolated(t, testLister(t), files)
-		if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || len(out.Blocks)+len(out.Warnings) == 0 && name != "a plain change" ||
-			strings.HasPrefix(name, "python") && !slices.ContainsFunc(out.Blocks, func(b Block) bool {
-				return strings.Contains(b.What, "decision A") || strings.Contains(b.What, "allowlist")
-			}) {
-			t.Errorf("%s: in this process %+v %+v, in its own %+v %+v", name, in.Blocks, in.Warnings, out.Blocks, out.Warnings)
-		}
-	}
-	if ps := procs(); len(ps) == 0 || !slices.ContainsFunc(ps, exited) {
-		t.Fatalf("no child ran, or none ended: %d", len(ps))
-	}
-	// The baseline: an ordinary run in its own process.
-	begin := time.Now()
-	if v := f.isolated(t, testLister(t), plainGo); !v.Accepted() {
-		t.Fatalf("the baseline: %q", whats(v.Blocks))
-	}
-	baseline := time.Since(begin)
-	// F: a type check that never ends (validType on a chain of 40), no type
-	// check deadline before the whole-run deadline: the child is killed at
-	// it, the change unverifiable; a later ordinary run is accepted.
-	var chain strings.Builder
-	chain.WriteString("package pkg\n")
-	for i := range 40 {
-		fmt.Fprintf(&chain, "\ntype S%d struct{ A, B, C, D, E, F, G, H S%d }\n", i, i+1)
-	}
-	chain.WriteString("\ntype S40 int\n")
-	oldList, oldRun := maxListTime, maxRunTime
-	t.Cleanup(func() { maxListTime, maxRunTime = oldList, oldRun })
-	maxListTime, maxRunTime = time.Hour, 2*baseline+time.Second
-	n, begin := len(procs()), time.Now()
-	done := make(chan Verdict, 1)
-	go func() { done <- f.isolated(t, testLister(t), map[string]string{"pkg/chain.go": chain.String()}) }()
-	select {
-	case v := <-done:
-		took := time.Since(begin)
-		if !finds(v.Blocks, "unverifiable: the guard did not finish by its whole-run deadline") || took > maxRunTime+2*baseline+5*time.Second {
-			t.Errorf("a type check that never ends: %v (deadline %v), %q", took, maxRunTime, whats(v.Blocks))
-		}
-	case <-time.After(maxRunTime + 10*baseline + 30*time.Second):
-		t.Fatalf("a type check that never ends: no verdict in %v", time.Since(begin))
-	}
-	if ps := procs(); len(ps) != n+1 || !exited(ps[n]) {
-		t.Errorf("the killed child: %d children, the last alive", len(ps)-n)
-	}
-	maxListTime, maxRunTime = oldList, oldRun
-	if v := f.isolated(t, testLister(t), plainGo); !v.Accepted() {
-		t.Errorf("a run after the kill: %q", whats(v.Blocks))
-	}
-	// Past the type check deadline in the child: abandoned there (main's
-	// block), the child ended with its result, and a later run accepted
-	// (main blocked it while the check ran: a reviewed relaxation). The
-	// deadline is the baseline's twice: listing is over by then (Astra L7).
-	maxListTime = 2*baseline + time.Second
-	n = len(procs())
-	if v := f.isolated(t, testLister(t), map[string]string{"pkg/chain.go": chain.String()}); !finds(v.Blocks, "unverifiable: the guard failed (a type check over the guard's deadline (") {
-		t.Errorf("past the type check deadline: %q", whats(v.Blocks))
-	}
-	maxListTime = oldList
-	if ps := procs(); len(ps) != n+1 || !exited(ps[n]) {
-		t.Errorf("an abandoned check's child: %d children, the last alive", len(ps)-n)
-	}
-	if v := f.isolated(t, testLister(t), plainGo); !v.Accepted() {
-		t.Errorf("a run after an abandoned check: %q", whats(v.Blocks))
-	}
-	// A child that ends without its result, or writes past its bound, blocks.
-	oldOut := maxProcOut
-	maxProcOut = 64
-	v := f.isolated(t, testLister(t), plainGo)
-	if maxProcOut = oldOut; !finds(v.Blocks, "unverifiable: the guard's process ended without its result") {
-		t.Errorf("a child over its output bound: %q", whats(v.Blocks))
-	}
-	// H3 (Astra #287): one deadline for the whole run. A reader that waits
-	// for its context, and one that never returns: the run ends at the
-	// deadline, its child reaped and its directory removed.
-	stuck := make(chan struct{})
-	defer close(stuck)
-	for name, read := range map[string]Reader{
-		"a reader waiting for its context": func(ctx context.Context, _ string, _ int64) ([]byte, bool, error) {
-			<-ctx.Done()
-			return nil, false, ctx.Err()
-		},
-		"a reader that never returns": func(context.Context, string, int64) ([]byte, bool, error) { <-stuck; return nil, false, nil },
-	} {
-		maxRunTime = 2*baseline + time.Second
-		scratch, n, begin := t.TempDir(), len(procs()), time.Now()
-		g := Integrity(f.repo, f.base, testLister(t), scratch)
-		done := make(chan Verdict, 1)
-		go func() {
-			v, _ := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, plainGo), Policy: f.policy,
-				Guard: func(ctx context.Context, c []Change, _ Reader) ([]Block, []Block, error) { return g(ctx, c, read) }})
-			done <- v
-		}()
-		select {
-		case v := <-done:
-			left, _ := os.ReadDir(scratch)
-			if ps := procs(); !finds(v.Blocks, "did not finish by its whole-run deadline") || len(ps) != n+1 || !exited(ps[n]) || len(left) != 0 {
-				t.Errorf("%s: %q, %d children, left %d", name, whats(v.Blocks), len(ps)-n, len(left))
-			}
-		case <-time.After(maxRunTime + 10*baseline + 30*time.Second):
-			t.Errorf("%s: no verdict in %v", name, time.Since(begin))
-		}
-		maxRunTime = oldRun
-	}
 }
 
 // localBox runs a sandbox run's argv here, as the image would: the mounts
@@ -286,7 +121,7 @@ func TestSandboxLister(t *testing.T) {
 	change := map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\nfunc Sum(xs ...int) int { return len(fmt.Sprint(xs)) }\n"}
 	change["pkg/calc.go"] = strings.Replace(change["pkg/calc.go"], "package pkg\n", "package pkg\n\nimport \"fmt\"\n", 1)
 	typed := func(v Verdict) bool { return v.Accepted() && !finds(v.Blocks, "not loaded") }
-	if v := f.isolated(t, list, change); !typed(v) || box.started.Load() == 0 {
+	if v := f.loaded(t, list, change); !typed(v) || box.started.Load() == 0 {
 		t.Errorf("a change typed through the loader (a base go.work beside it): %d runs, %q", box.started.Load(), whats(v.Blocks))
 	}
 	for _, e := range *box.ws {
@@ -297,10 +132,10 @@ func TestSandboxLister(t *testing.T) {
 	// F: a candidate raising the toolchain line: typed by the image's own go
 	// (GOTOOLCHAIN=local), as the gate builds it under GoEnv.
 	raised := maps2(change, "go.mod", guardBase["go.mod"]+"\ntoolchain go1.99.0\n")
-	if v := f.isolated(t, list, raised); !typed(v) {
+	if v := f.loaded(t, list, raised); !typed(v) {
 		t.Errorf("a raised toolchain line: %q", whats(v.Blocks))
 	}
-	if v := f.isolated(t, list, maps2(change, "go.mod", strings.Replace(guardBase["go.mod"], "go 1.26.0", "go 1.99", 1))); !finds(v.Blocks, "go list in the prepared image") {
+	if v := f.loaded(t, list, maps2(change, "go.mod", strings.Replace(guardBase["go.mod"], "go 1.26.0", "go 1.99", 1))); !finds(v.Blocks, "go list in the prepared image") {
 		t.Errorf("a raised go line: %q", whats(v.Blocks))
 	}
 	// What comes out: another release's go, export data not copied out, an
@@ -354,10 +189,45 @@ func TestSandboxLister(t *testing.T) {
 				}
 			}
 		}, "an archive the run holds"},
+		// Astra #287 r2: #4 an error column present and empty; #7 one
+		// record past maxListEntries, the last with no final newline.
+		"an empty error listed": {relist(`(?m)^fmt\t([^\t]+)\t$`, "fmt\t$1\t\"\""), "(fmt: an empty error listed)"},
+		"maxListEntries+1 records, no final newline": {func(r string) {
+			var b strings.Builder
+			for i := range maxListEntries + 1 {
+				fmt.Fprintf(&b, "%sexample.org/p%d\t\t", map[bool]string{true: "\n"}[i > 0], i)
+			}
+			_ = os.WriteFile(filepath.Join(r, "list"), []byte(b.String()), 0o600)
+		}, "a list over its bound"},
 	} {
 		box.mutate = c.mutate
-		if v := f.isolated(t, list, change); c.why == "" && !typed(v) || c.why != "" && !finds(v.Blocks, c.why) {
+		if v := f.loaded(t, list, change); c.why == "" && !typed(v) || c.why != "" && !finds(v.Blocks, c.why) {
 			t.Errorf("%s: %q", name, whats(v.Blocks))
+		}
+	}
+	box.mutate = nil
+	// #2 (Astra #287 r2): an absent go.mod (the fallback module) and a
+	// present, empty one, each as main's loader has them.
+	for name, mod := range map[string]map[string]string{"no go.mod": nil, "an empty go.mod": {"go.mod": ""}} {
+		m := newFixtureWith(t, func(src string) {
+			b := maps.Clone(guardBase)
+			delete(b, "go.mod")
+			delete(b, "go.sum")
+			write(t, src, b)
+			write(t, src, mod)
+			plain(t, src, "add", "--all")
+		})
+		fresh := LocalLister(box.gobin, []string{"GOCACHE=" + box.caches[0], "GOMODCACHE=" + box.caches[1]}, 5*time.Minute, 8<<30) // main's, its cache its own
+		got, main := m.loaded(t, list, change), m.loaded(t, fresh, change)
+		cause := regexp.MustCompile(`(?s)\(.*\)`) // the lister's own wording of its error
+		norm := func(bs []Block) (out []string) {
+			for _, w := range whats(bs) {
+				out = append(out, cause.ReplaceAllString(w, "(…)"))
+			}
+			return out
+		}
+		if !slices.Equal(norm(got.Blocks), norm(main.Blocks)) || !slices.Equal(norm(got.Warnings), norm(main.Warnings)) {
+			t.Errorf("%s: %q %q, main's %q %q", name, whats(got.Blocks), whats(got.Warnings), whats(main.Blocks), whats(main.Warnings))
 		}
 	}
 	// H2 (A), each layer alone: the loader drops an errored entry's
@@ -378,11 +248,11 @@ func TestSandboxLister(t *testing.T) {
 		}
 		return out, err
 	}
-	if v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, change), Policy: f.policy, Guard: integrity(f.repo, f.base, both)}); err != nil || !finds(v.Blocks, "(fmt: cache failure)") {
+	if v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, change), Policy: f.policy, Guard: Integrity(f.repo, f.base, both, "")}); err != nil || !finds(v.Blocks, "(fmt: cache failure)") {
 		t.Errorf("the typer, an error beside an archive: %v %q", err, whats(v.Blocks))
 	}
 	// A directory replacement is refused before any run of it.
-	if v := f.isolated(t, list, maps2(change, "go.mod", guardBase["go.mod"]+"\nreplace golang.org/x/sys => ../sys\n")); !finds(v.Blocks, "go.mod replaces a module by a directory") {
+	if v := f.loaded(t, list, maps2(change, "go.mod", guardBase["go.mod"]+"\nreplace golang.org/x/sys => ../sys\n")); !finds(v.Blocks, "go.mod replaces a module by a directory") {
 		t.Errorf("a directory replacement: %q", whats(v.Blocks))
 	}
 	// M1 (Opus #287): five modules listing the same heavy import copy its
@@ -429,6 +299,34 @@ func TestSandboxLister(t *testing.T) {
 	}
 }
 
+// TestReadListing (#3, Astra #287 r2): a version past its bound (Astra's
+// 768 MiB of spaces, scaled to 1 MiB), and a list of one line of tabs
+// (16 MiB, scaled with maxList to 1 MiB), are refused with bounded allocation.
+func TestReadListing(t *testing.T) {
+	oldList := maxList
+	defer func() { maxList = oldList }()
+	maxList = 1 << 20
+	for name, c := range map[string]struct {
+		version, list []byte
+		why           string
+		alloc         uint64
+	}{
+		"a version past its bound": {append([]byte(runtime.Version()), bytes.Repeat([]byte(" "), 1<<20)...), nil, "a version over its bound", 64 << 10},
+		"a line of tabs":           {[]byte(runtime.Version()), bytes.Repeat([]byte("\t"), 1<<20), "an unreadable list", 3<<20 + 1<<20},
+	} {
+		out := t.TempDir()
+		write(t, out, map[string]string{"version": string(c.version), "list": string(c.list)})
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		_, err := readListing(out, t.TempDir())
+		runtime.ReadMemStats(&after)
+		if err == nil || !strings.Contains(err.Error(), c.why) || after.TotalAlloc-before.TotalAlloc > c.alloc {
+			t.Errorf("%s: %v, %d bytes allocated", name, err, after.TotalAlloc-before.TotalAlloc)
+		}
+	}
+}
+
 // TestGoEnv (L5, Opus #287): the gate's Go environment, whole.
 func TestGoEnv(t *testing.T) {
 	want := []string{"GOFLAGS=-mod=readonly -buildvcs=false", "GOTOOLCHAIN=local", "GOWORK=off", "GOPROXY=off", "GOSUMDB=off",
@@ -436,43 +334,6 @@ func TestGoEnv(t *testing.T) {
 	if !slices.Equal(GoEnv, want) {
 		t.Errorf("GoEnv: %q", GoEnv)
 	}
-}
-
-// TestNoInit (H1, Opus #287): no file of the package has an init (Go runs
-// them in file-name order: a child dispatched from one would run the guard
-// before a later one), and adcd's main asks first.
-func TestNoInit(t *testing.T) {
-	paths, _ := filepath.Glob("*.go")
-	for _, p := range append(paths, "../../cmd/adcd/main.go") {
-		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, d := range f.Decls {
-			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "init" {
-				t.Errorf("%s has an init", p)
-			} else if ok && p == "../../cmd/adcd/main.go" && fn.Name.Name == "main" && !firstCall(fn, "RunChildIfAsked") {
-				t.Errorf("adcd's main does not ask first")
-			}
-		}
-	}
-	if len(paths) < 20 {
-		t.Fatalf("only %d files", len(paths))
-	}
-}
-
-// firstCall: fn's first statement calls a function named name.
-func firstCall(fn *ast.FuncDecl, name string) bool {
-	s, ok := fn.Body.List[0].(*ast.ExprStmt)
-	if !ok {
-		return false
-	}
-	c, ok := s.X.(*ast.CallExpr)
-	if !ok {
-		return false
-	}
-	sel, ok := c.Fun.(*ast.SelectorExpr)
-	return ok && sel.Sel.Name == name
 }
 
 // maps2 is m with k set to v.
@@ -513,9 +374,6 @@ func TestIntegrityVendored(t *testing.T) {
 	v := f.guarded(t, plainGo)
 	if !slices.Contains(whats(v.Blocks), "vendor/: "+why) || !slices.Contains(whats(v.Blocks), "sub/vendor/: "+why) || finds(v.Blocks, "tools/vendor/") {
 		t.Errorf("a vendored base: %q", whats(v.Blocks))
-	}
-	if w := f.isolated(t, testLister(t), plainGo); !reflect.DeepEqual(v.Blocks, w.Blocks) {
-		t.Errorf("a vendored base in its own process: %q", whats(w.Blocks))
 	}
 	g := newGuardFixture(t)
 	if v := g.guarded(t, map[string]string{"vendor/example.org/lib/lib.go": lib["vendor/example.org/lib/lib.go"]}); !slices.Contains(whats(v.Blocks), "vendor/: "+why) {

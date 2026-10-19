@@ -5,7 +5,11 @@ package accept
 import (
 	"context"
 	"fmt"
+	"go/ast"
 	"go/build"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"io"
 	"strings"
 	"testing"
@@ -178,10 +182,38 @@ func TestHeaderAsGo(t *testing.T) {
 	}
 }
 
-// TestIntegrityDoS: the denial-of-service flag on the 2b work. vendor/ and
-// the test files are found once per run, not once per module or directory.
-// (The cap on abandoned checks is gone: TestIntegrityProcess, P14e-2c.)
+// TestIntegrityDoS: the denial-of-service flag on the 2b work. A check
+// abandoned is counted until it ends, a panic included, and a check that
+// ends is never counted; vendor/ and the test files are found once per run,
+// not once per module or directory.
 func TestIntegrityDoS(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r, release := &run{ctx: ctx, listEnd: time.Now().Add(time.Hour)}, make(chan struct{})
+	check := func(imp types.Importer) (why any) {
+		defer func() { why = recover() }()
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, "x.go", "package x\n\nimport \"y\"\n\nvar _ = y.V\n", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.typeCheck(&types.Config{Importer: imp, Error: func(error) {}}, "x", fset, []*ast.File{f}, &types.Info{})
+		return nil
+	}
+	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+	if why := check(importFunc(func(string) (*types.Package, error) { <-release; panic("the check's own fault") })); why != context.Canceled || abandoned.Load() != 1 {
+		t.Fatalf("an abandoned check: %v, %d", why, abandoned.Load())
+	}
+	r.ctx = context.Background()
+	if why := check(importFunc(func(string) (*types.Package, error) { return nil, nil })); !strings.Contains(fmt.Sprint(why), "abandoned by an earlier guard run") {
+		t.Errorf("a check beside it: %v", why)
+	}
+	close(release) // it ends by a panic
+	for end := time.Now().Add(time.Minute); abandoned.Load() > 0 && time.Now().Before(end); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if why := check(importFunc(func(string) (*types.Package, error) { return types.NewPackage("y", "y"), nil })); why != nil || abandoned.Load() != 0 {
+		t.Errorf("once it ended: %v, %d", why, abandoned.Load())
+	}
 
 	// Many modules, each a changed directory: 2500 took about 50 s with a
 	// scan of every path per module and per directory.

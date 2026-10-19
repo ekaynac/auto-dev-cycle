@@ -8,13 +8,11 @@ package main
 import (
 	"os"
 
-	"github.com/ekaynac/auto-dev-cycle/internal/accept"
 	"github.com/ekaynac/auto-dev-cycle/internal/daemon"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
 )
 
 func main() {
-	accept.RunChildIfAsked() // the integrity guard's own process (P14e-2c): first, before any command
 	if len(os.Args) > 1 && os.Args[1] == "run" {
 		os.Exit(daemon.RunCommand(os.Args[2:], os.Stderr))
 	}

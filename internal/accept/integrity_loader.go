@@ -3,7 +3,7 @@
 package accept
 
 import (
-	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -95,8 +95,9 @@ func boxLister(h box, img sandbox.Image, lim sandbox.Limits) Lister {
 // maxListEntries bounds a listing's packages; exportName is a build
 // cache's export data file, named by its content's sha256.
 var (
-	maxListEntries = 1 << 14
-	exportName     = regexp.MustCompile(`^[0-9a-f]{64}-d$`)
+	maxListEntries       = 1 << 14
+	maxVersion     int64 = 256 // go env GOVERSION's line
+	exportName           = regexp.MustCompile(`^[0-9a-f]{64}-d$`)
 )
 
 // boxList lists in the sandbox. What comes out is checked for its form,
@@ -170,46 +171,57 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	if err := checkOut(out, x, held); err != nil {
 		return nil, err
 	}
+	return readListing(out, x)
+}
+
+// readListing reads a listing's version and list, each bounded before it
+// is read, the list's records counted and cut, never split, as they are
+// parsed (Astra #287 r2 #3, #7).
+func readListing(out, x string) (map[string]Listed, error) {
+	for name, bound := range map[string]int64{"version": maxVersion, "list": maxList} {
+		if st, err := os.Stat(filepath.Join(out, name)); err != nil || st.Size() > bound {
+			return nil, errors.Join(err, fmt.Errorf("a %s over its bound", name))
+		}
+	}
 	v, err := os.ReadFile(filepath.Join(out, "version"))
 	if err != nil {
 		return nil, err
 	} else if v := strings.TrimSpace(string(v)); v != runtime.Version() {
 		return nil, fmt.Errorf("the toolchain is %.40q, not the guard's %s", v, runtime.Version())
 	}
-	if st, err := os.Stat(filepath.Join(out, "list")); err != nil || st.Size() > maxList { // bounded before it is read
-		return nil, errors.Join(err, errors.New("a list over its bound"))
-	}
 	list, err := os.ReadFile(filepath.Join(out, "list"))
 	if err != nil {
 		return nil, err
-	} else if bytes.Count(list, []byte("\n")) > maxListEntries {
-		return nil, errors.New("a list over its bound")
 	}
-	got := map[string]Listed{}
+	got, n := map[string]Listed{}, 0
 	for line := range strings.Lines(string(list)) {
-		f := strings.Split(strings.TrimSuffix(line, "\n"), "\t")
-		if len(f) != 3 {
+		ip, rest, ok := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
+		exp, col, ok2 := strings.Cut(rest, "\t")
+		if n++; n > maxListEntries {
+			return nil, errors.New("a list over its bound")
+		} else if !ok || !ok2 || strings.Contains(col, "\t") {
 			return nil, errors.New("an unreadable list")
 		}
-		l, why := Listed{ImportPath: f[0]}, ""
-		if f[2] != "" {
-			if why, err = strconv.Unquote(f[2]); err != nil {
+		l, why := Listed{ImportPath: ip}, ""
+		if col != "" { // an error column, present: an error, even an empty one (Astra #287 r2 #4)
+			if why, err = strconv.Unquote(col); err != nil {
 				return nil, errors.New("an unreadable list")
 			}
+			why = cmp.Or(why, "an empty error listed")
 		}
-		switch e := path.Base(f[1]); {
+		switch e := path.Base(exp); {
 		case why != "": // an error, whatever else the entry holds (Astra #287 H2)
-		case got[f[0]].ImportPath != "":
+		case got[ip].ImportPath != "":
 			why = "listed twice"
-		case f[1] != "" && (!exportName.MatchString(e) || !regular(filepath.Join(x, e))):
+		case exp != "" && (!exportName.MatchString(e) || !regular(filepath.Join(x, e))):
 			why = "its export data not copied out"
-		case f[1] != "":
+		case exp != "":
 			l.Export = filepath.Join(x, e) // the run's copy of that name, never the path go listed
 		}
 		if why != "" {
 			l.Error = &struct{ Err string }{why}
 		}
-		got[f[0]] = l
+		got[ip] = l
 	}
 	return got, nil
 }

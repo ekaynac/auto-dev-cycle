@@ -169,8 +169,8 @@ func TestDecisionAOut3(t *testing.T) {
 	}
 	_ = v
 	// Opus #280 H2: run 1, then an ordinary run 2: both as the base guard's, nothing left running.
-	if v := outGuarded(t, f, map[string]string{"zzz/z_arm64.go": "package zzz\n\nimport \"example.com/m/only\"\n\nvar _ = only.X\n"}); !v.Accepted() || stopped(v) || outWorkers.Load() != 0 {
-		t.Errorf("H2 run 1: blocks %q, warnings %q, %d workers", whats(v.Blocks), whats(v.Warnings), outWorkers.Load())
+	if v := outGuarded(t, f, map[string]string{"zzz/z_arm64.go": "package zzz\n\nimport \"example.com/m/only\"\n\nvar _ = only.X\n"}); !v.Accepted() || stopped(v) || abandoned.Load() != 0 || outWorkers.Load() != 0 {
+		t.Errorf("H2 run 1: blocks %q, warnings %q, %d abandoned, %d workers", whats(v.Blocks), whats(v.Warnings), abandoned.Load(), outWorkers.Load())
 	}
 	if v := outGuarded(t, f, map[string]string{"tool2/x.go": "package tool2\n\nfunc F() {}\n"}); !v.Accepted() || len(v.Blocks) > 0 {
 		t.Errorf("H2 run 2: blocks %q", whats(v.Blocks))
@@ -331,7 +331,7 @@ func TestOutCheckHandOff(t *testing.T) {
 	}
 	// L3: a dropped worker (maxOutCheck): held in its import until the row
 	// releases it, it keeps its slot and is counted (the immediate-stop gate
-	// sees it); at its real end both counts are 0.
+	// sees it), abandoned untouched; at its real end both counts are 0.
 	g = newGate()
 	outCheckHook = func(e string) {
 		if e == "ended" {
@@ -341,8 +341,8 @@ func TestOutCheckHandOff(t *testing.T) {
 	maxOutCheck = 20 * time.Millisecond
 	ok := check(context.Background(), time.Now(), g)
 	maxOutCheck = 0
-	if ok || outWorkers.Load() != 1 || outDropped.Load() != 1 {
-		t.Errorf("dropped: check %v, %d workers, %d dropped", ok, outWorkers.Load(), outDropped.Load())
+	if ok || outWorkers.Load() != 1 || outDropped.Load() != 1 || abandoned.Load() != 0 {
+		t.Errorf("dropped: check %v, %d workers, %d dropped, %d abandoned", ok, outWorkers.Load(), outDropped.Load(), abandoned.Load())
 	}
 	close(g.out)
 	if d := <-ended; d != 0 || outWorkers.Load() != 0 || outDropped.Load() != 0 {

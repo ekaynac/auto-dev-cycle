@@ -147,11 +147,9 @@ func (im *outImporter) fail(p string, err error) error {
 	return err
 }
 
-// outWorkers counts the layer's checks running in this process (Astra #280
-// M5): a dropped worker keeps its slot until it ends. outDropped counts the
-// dropped ones still running (Opus #282 M1). Integrity runs each guard run
-// in a process of its own (P14e-2c), so both are one run's: concurrent runs
-// are the caller's to bound.
+// outWorkers counts the layer's checks running, any run's (Astra #280 M5):
+// a dropped worker keeps its slot until it ends. outDropped counts the
+// dropped ones still running (Opus #282 M1).
 var outWorkers, outDropped atomic.Int32
 
 const maxOutWorkers = 1
