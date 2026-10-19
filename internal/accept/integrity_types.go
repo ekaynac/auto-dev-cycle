@@ -485,10 +485,11 @@ func (ty *typer) need(files []*ast.File) error {
 	return nil
 }
 
-// lookup opens a listed package's export data, within the version's bound.
+// lookup opens a listed package's export data, within the version's bound;
+// an entry with an error is not loaded, whatever else it holds.
 func (ty *typer) lookup(p string) (io.ReadCloser, error) {
 	l := ty.listed[p]
-	if l.Export == "" && l.Error != nil {
+	if l.Error != nil {
 		return nil, errors.New(l.Error.Err)
 	} else if l.Export == "" {
 		return nil, errors.New("no export data")

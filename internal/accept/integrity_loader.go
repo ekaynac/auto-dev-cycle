@@ -3,13 +3,19 @@
 package accept
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -49,9 +55,8 @@ if cut -f3 "$r/list" | grep -qF -e 'read-only file system' -e "$GOCACHE"; then
   GOCACHE=/tmp/gocache go list -e -export -deps -f "$f" -- "$@" >"$r/list"
 fi
 mkdir "$r/x"
-cut -f2 "$r/list" | while read -r e; do
-  if [ -n "$e" ] && ! grep -qxF -- "${e##*/}" "$r/have"; then cp -- "$e" "$r/x/"; fi
-done
+awk -F '\t' 'NR == FNR { h[$0] = 1; next } $2 != "" { n = $2; sub(/.*\//, "", n); if (!(n in h)) print $2 }' "$r/have" "$r/list" |
+  xargs -r -d '\n' cp -t "$r/x/" --
 rm -- "$r/have"
 `
 
@@ -87,33 +92,43 @@ func boxLister(h box, img sandbox.Image, lim sandbox.Limits) Lister {
 	}
 }
 
+// maxListEntries bounds a listing's packages; exportName is a build
+// cache's export data file, named by its content's sha256.
+var (
+	maxListEntries = 1 << 14
+	exportName     = regexp.MustCompile(`^[0-9a-f]{64}-d$`)
+)
+
+// boxList lists in the sandbox. What comes out is checked for its form,
+// its bounds and its consistency, not its provenance: the pinned image and
+// go.sum are trusted. Every listing's copy is charged to the run's ledger,
+// kept or not; past maxRunCopy, a listing fails.
 func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, dir string, pl [2]string, gomod, gosum []byte, paths []string) (_ map[string]Listed, err error) {
 	if err := listable(gomod, paths); err != nil {
 		return nil, err
 	}
-	x := filepath.Join(dir, "x") // the run's export data, by file name
+	x, ledger := filepath.Join(dir, "x"), filepath.Join(dir, "copied") // the run's export data, by name; what its listings copied out
 	if err := os.MkdirAll(x, 0o700); err != nil {
 		return nil, err
 	}
-	var used int64 // what the run's listings copied out so far
-	var have []string
-	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		fi, err := d.Info()
+	var charged int64
+	if b, err := os.ReadFile(ledger); err == nil {
+		charged, err = strconv.ParseInt(string(b), 10, 64)
 		if err != nil {
-			return err
-		} else if filepath.Dir(p) == x {
-			have = append(have, d.Name())
+			return nil, err
 		}
-		used += fi.Size()
-		return nil
-	})
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	have, err := os.ReadDir(x)
 	if err != nil {
 		return nil, err
-	} else if used >= maxRunCopy() {
+	} else if charged >= maxRunCopy() {
 		return nil, errors.New("over the guard run's export data bound")
+	}
+	held := map[string]bool{}
+	for _, e := range have {
+		held[e.Name()] = true
 	}
 	a, err := h.NewAttempt()
 	if err != nil {
@@ -128,7 +143,7 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 		err = os.WriteFile(filepath.Join(a.Workspace(), "go.sum"), gosum, 0o600)
 	}
 	if err == nil {
-		err = os.WriteFile(filepath.Join(a.Results(), "have"), []byte(strings.Join(have, "\n")+"\n"), 0o600)
+		err = os.WriteFile(filepath.Join(a.Results(), "have"), []byte(strings.Join(slices.Sorted(maps.Keys(held)), "\n")+"\n"), 0o600)
 	}
 	if err != nil {
 		return nil, err
@@ -142,16 +157,17 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 		return nil, err
 	}
 	out = filepath.Join(out, "r")
-	if err := a.CopyOut(out, maxRunCopy()-used); err != nil {
+	err = a.CopyOut(out, maxRunCopy()-charged)
+	_ = filepath.WalkDir(out, func(_ string, d fs.DirEntry, _ error) error { // charged, whatever comes of it
+		if fi, err := d.Info(); err == nil && !d.IsDir() {
+			charged += fi.Size()
+		}
+		return nil
+	})
+	if err = errors.Join(err, os.WriteFile(ledger, []byte(strconv.FormatInt(charged, 10)), 0o600)); err != nil {
 		return nil, err
 	}
-	news, err := os.ReadDir(filepath.Join(out, "x"))
-	for _, e := range news { // into the run's: a name it holds is the same content
-		if _, serr := os.Lstat(filepath.Join(x, e.Name())); err == nil && errors.Is(serr, fs.ErrNotExist) {
-			err = os.Rename(filepath.Join(out, "x", e.Name()), filepath.Join(x, e.Name()))
-		}
-	}
-	if err = errors.Join(err, os.RemoveAll(filepath.Join(out, "x"))); err != nil {
+	if err := checkOut(out, x, held); err != nil {
 		return nil, err
 	}
 	v, err := os.ReadFile(filepath.Join(out, "version"))
@@ -160,9 +176,14 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	} else if v := strings.TrimSpace(string(v)); v != runtime.Version() {
 		return nil, fmt.Errorf("the toolchain is %.40q, not the guard's %s", v, runtime.Version())
 	}
+	if st, err := os.Stat(filepath.Join(out, "list")); err != nil || st.Size() > maxList { // bounded before it is read
+		return nil, errors.Join(err, errors.New("a list over its bound"))
+	}
 	list, err := os.ReadFile(filepath.Join(out, "list"))
 	if err != nil {
 		return nil, err
+	} else if bytes.Count(list, []byte("\n")) > maxListEntries {
+		return nil, errors.New("a list over its bound")
 	}
 	got := map[string]Listed{}
 	for line := range strings.Lines(string(list)) {
@@ -170,23 +191,67 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 		if len(f) != 3 {
 			return nil, errors.New("an unreadable list")
 		}
-		l := Listed{ImportPath: f[0]}
+		l, why := Listed{ImportPath: f[0]}, ""
 		if f[2] != "" {
-			why, err := strconv.Unquote(f[2])
-			if err != nil {
+			if why, err = strconv.Unquote(f[2]); err != nil {
 				return nil, errors.New("an unreadable list")
 			}
+		}
+		switch e := path.Base(f[1]); {
+		case why != "": // an error, whatever else the entry holds (Astra #287 H2)
+		case got[f[0]].ImportPath != "":
+			why = "listed twice"
+		case f[1] != "" && (!exportName.MatchString(e) || !regular(filepath.Join(x, e))):
+			why = "its export data not copied out"
+		case f[1] != "":
+			l.Export = filepath.Join(x, e) // the run's copy of that name, never the path go listed
+		}
+		if why != "" {
 			l.Error = &struct{ Err string }{why}
 		}
-		if e := filepath.Join(x, path.Base(f[1])); f[1] != "" { // the run's copy of that name, never the path go listed
-			if st, err := os.Lstat(e); err == nil && st.Mode().IsRegular() {
-				l.Export = e
-			}
-		}
-		if f[1] != "" && l.Export == "" && l.Error == nil {
-			l.Error = &struct{ Err string }{"its export data not copied out"}
-		}
-		got[l.ImportPath] = l
+		got[f[0]] = l
 	}
 	return got, nil
+}
+
+// checkOut moves the archives a listing copied out into the run's x: only
+// list, version and x/ came out, each archive named by its content's
+// sha256, none the run held.
+func checkOut(out, x string, held map[string]bool) error {
+	entries, err := os.ReadDir(out)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !slices.Contains([]string{"list", "version", "x"}, e.Name()) {
+			return fmt.Errorf("an unexpected output (%.40q)", e.Name())
+		}
+	}
+	news, err := os.ReadDir(filepath.Join(out, "x"))
+	for _, e := range news {
+		if err != nil {
+			break
+		}
+		h, f := sha256.New(), (*os.File)(nil)
+		if f, err = os.Open(filepath.Join(out, "x", e.Name())); err == nil {
+			_, err = io.Copy(h, f)
+			err = errors.Join(err, f.Close())
+		}
+		switch {
+		case err != nil:
+		case !e.Type().IsRegular() || !exportName.MatchString(e.Name()) || hex.EncodeToString(h.Sum(nil))+"-d" != e.Name():
+			err = fmt.Errorf("an archive not named by its content (%.40q)", e.Name())
+		case held[e.Name()]:
+			err = fmt.Errorf("an archive the run holds (%.40q)", e.Name())
+		default:
+			err = os.Rename(filepath.Join(out, "x", e.Name()), filepath.Join(x, e.Name()))
+		}
+	}
+	return err
+}
+
+// regular: p is a regular file, not followed if a link.
+func regular(p string) bool {
+	st, err := os.Lstat(p)
+	return err == nil && st.Mode().IsRegular()
 }

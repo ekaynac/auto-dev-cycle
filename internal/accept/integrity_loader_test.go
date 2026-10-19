@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -143,8 +145,9 @@ func TestIntegrityProcess(t *testing.T) {
 	}
 	// Past the type check deadline in the child: abandoned there (main's
 	// block), the child ended with its result, and a later run accepted
-	// (main blocked it while the check ran: a reviewed relaxation).
-	maxListTime = 2 * time.Second
+	// (main blocked it while the check ran: a reviewed relaxation). The
+	// deadline is the baseline's twice: listing is over by then (Astra L7).
+	maxListTime = 2*baseline + time.Second
 	n = len(procs())
 	if v := f.isolated(t, testLister(t), map[string]string{"pkg/chain.go": chain.String()}); !finds(v.Blocks, "unverifiable: the guard failed (a type check over the guard's deadline (") {
 		t.Errorf("past the type check deadline: %q", whats(v.Blocks))
@@ -162,6 +165,38 @@ func TestIntegrityProcess(t *testing.T) {
 	v := f.isolated(t, testLister(t), plainGo)
 	if maxProcOut = oldOut; !finds(v.Blocks, "unverifiable: the guard's process ended without its result") {
 		t.Errorf("a child over its output bound: %q", whats(v.Blocks))
+	}
+	// H3 (Astra #287): one deadline for the whole run. A reader that waits
+	// for its context, and one that never returns: the run ends at the
+	// deadline, its child reaped and its directory removed.
+	stuck := make(chan struct{})
+	defer close(stuck)
+	for name, read := range map[string]Reader{
+		"a reader waiting for its context": func(ctx context.Context, _ string, _ int64) ([]byte, bool, error) {
+			<-ctx.Done()
+			return nil, false, ctx.Err()
+		},
+		"a reader that never returns": func(context.Context, string, int64) ([]byte, bool, error) { <-stuck; return nil, false, nil },
+	} {
+		maxRunTime = 2*baseline + time.Second
+		scratch, n, begin := t.TempDir(), len(procs()), time.Now()
+		g := Integrity(f.repo, f.base, testLister(t), scratch)
+		done := make(chan Verdict, 1)
+		go func() {
+			v, _ := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, plainGo), Policy: f.policy,
+				Guard: func(ctx context.Context, c []Change, _ Reader) ([]Block, []Block, error) { return g(ctx, c, read) }})
+			done <- v
+		}()
+		select {
+		case v := <-done:
+			left, _ := os.ReadDir(scratch)
+			if ps := procs(); !finds(v.Blocks, "did not finish by its whole-run deadline") || len(ps) != n+1 || !exited(ps[n]) || len(left) != 0 {
+				t.Errorf("%s: %q, %d children, left %d", name, whats(v.Blocks), len(ps)-n, len(left))
+			}
+		case <-time.After(maxRunTime + 10*baseline + 30*time.Second):
+			t.Errorf("%s: no verdict in %v", name, time.Since(begin))
+		}
+		maxRunTime = oldRun
 	}
 }
 
@@ -286,13 +321,66 @@ func TestSandboxLister(t *testing.T) {
 		"export data not copied out": {relist(`\t/[^\t]*-d\t`, "\t/etc/passwd\t"), "its export data not copied out"},
 		"a listed path elsewhere":    {relist(`\t/[^\t]*/([^/\t]*-d)\t`, "\t/nonexistent/$1\t"), ""},
 		"an unreadable list":         {func(r string) { _ = os.WriteFile(filepath.Join(r, "list"), []byte("fmt\n"), 0o600) }, "an unreadable list"},
+		// Astra #287 H2 (A): an error beside a valid archive; a package
+		// listed twice; (B) an archive not named by its content.
+		"an error beside an archive": {relist(`(?m)^fmt\t([^\t]+)\t$`, "fmt\t$1\t\"cache failure\""), "(fmt: cache failure)"},
+		"a package listed twice":     {relist(`(?m)^(fmt\t[^\n]*\n)`, "$1$1"), "(fmt: listed twice)"},
+		"a corrupted archive": {func(r string) {
+			xs, _ := os.ReadDir(filepath.Join(r, "x"))
+			f, _ := os.OpenFile(filepath.Join(r, "x", xs[0].Name()), os.O_APPEND|os.O_WRONLY, 0)
+			_, _ = f.Write([]byte{0})
+			_ = f.Close()
+		}, "an archive not named by its content"},
+		// M6: an unexpected output; a list past maxList (Astra's 500 MiB
+		// list, just past the bound: long lines, fewer than maxListEntries),
+		// refused before it is read; one past maxListEntries; and archives
+		// the run already holds, delivered again.
+		"an unexpected output": {func(r string) { _ = os.WriteFile(filepath.Join(r, "extra"), nil, 0o600) }, "an unexpected output"},
+		"a list past maxList": {func(r string) {
+			pad := bytes.Repeat([]byte("example.org/"+strings.Repeat("p", 2000)+"\t\t\n"), int(maxList)/2000)
+			b, _ := os.ReadFile(filepath.Join(r, "list"))
+			_ = os.WriteFile(filepath.Join(r, "list"), append(b, pad...), 0o600)
+		}, "a list over its bound"},
+		"a list past maxListEntries": {func(r string) {
+			b, _ := os.ReadFile(filepath.Join(r, "list"))
+			_ = os.WriteFile(filepath.Join(r, "list"), append(b, bytes.Repeat([]byte("example.org/p\t\t\n"), maxListEntries)...), 0o600)
+		}, "a list over its bound"},
+		"archives delivered again": {func(r string) {
+			b, _ := os.ReadFile(filepath.Join(r, "list"))
+			for line := range strings.Lines(string(b)) {
+				if e := strings.Split(line, "\t")[1]; e != "" {
+					src, _ := os.ReadFile(e)
+					_ = os.WriteFile(filepath.Join(r, "x", filepath.Base(e)), src, 0o600)
+				}
+			}
+		}, "an archive the run holds"},
 	} {
 		box.mutate = c.mutate
 		if v := f.isolated(t, list, change); c.why == "" && !typed(v) || c.why != "" && !finds(v.Blocks, c.why) {
 			t.Errorf("%s: %q", name, whats(v.Blocks))
 		}
 	}
+	// H2 (A), each layer alone: the loader drops an errored entry's
+	// archive; the typer loads no entry with an error, whatever it holds.
+	box.mutate = relist(`(?m)^fmt\t([^\t]+)\t$`, "fmt\t$1\t\"cache failure\"")
+	if got, err := list(context.Background(), t.TempDir(), [2]string{"linux", "amd64"}, []byte("module example.com/m\n\ngo 1.26.0\n"), nil, []string{"fmt"}); err != nil || got["fmt"].Export != "" || got["fmt"].Error == nil {
+		t.Errorf("the loader, an error beside an archive: %v %+v", err, got["fmt"])
+	}
 	box.mutate = nil
+	both := func(ctx context.Context, dir string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+		got, err := testLister(t)(ctx, dir, pl, gomod, gosum, paths)
+		out := map[string]Listed{}
+		for p, l := range got {
+			if p == "fmt" {
+				l.Error = &struct{ Err string }{"cache failure"}
+			}
+			out[p] = l
+		}
+		return out, err
+	}
+	if v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, change), Policy: f.policy, Guard: integrity(f.repo, f.base, both)}); err != nil || !finds(v.Blocks, "(fmt: cache failure)") {
+		t.Errorf("the typer, an error beside an archive: %v %q", err, whats(v.Blocks))
+	}
 	// A directory replacement is refused before any run of it.
 	if v := f.isolated(t, list, maps2(change, "go.mod", guardBase["go.mod"]+"\nreplace golang.org/x/sys => ../sys\n")); !finds(v.Blocks, "go.mod replaces a module by a directory") {
 		t.Errorf("a directory replacement: %q", whats(v.Blocks))
@@ -318,11 +406,26 @@ func TestSandboxLister(t *testing.T) {
 	if len(box.copied) != 5 || box.copied[0] == 0 || slices.Max(box.copied[1:]) != 0 || size > maxRunCopy() {
 		t.Errorf("five listings of net/http: copied %v, %d bytes (bound %d)", box.copied, size, maxRunCopy())
 	}
+	// L7 (Astra #287): two distinct archive sets (fmt on each platform)
+	// that each fit the run's allowance and together do not: the
+	// allowance is what is left of the run's, not each listing's.
+	fmtOn := func(dir, arch string) error {
+		_, err := list(context.Background(), dir, [2]string{"linux", arch}, []byte("module example.com/m\n\ngo 1.26.0\n"), nil, []string{"fmt"})
+		return err
+	}
+	d1 := t.TempDir()
+	if err := fmtOn(d1, "amd64"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(d1, "copied"))
+	one, _ := strconv.ParseInt(string(b), 10, 64)
 	oldExport, oldList, oldRuns := maxExport, maxList, maxListRuns
-	maxExport, maxList, maxListRuns = 1<<20, 1<<10, 1
-	_, err := list(context.Background(), t.TempDir(), amd64, []byte("module example.com/m\n\ngo 1.26.0\n"), nil, []string{"net/http"})
-	if maxExport, maxList, maxListRuns = oldExport, oldList, oldRuns; err == nil || !strings.Contains(err.Error(), "more than") {
-		t.Errorf("past the run's copy bound: %v", err)
+	defer func() { maxExport, maxList, maxListRuns = oldExport, oldList, oldRuns }()
+	maxExport, maxList, maxListRuns = (one-1<<20)*3/4, 1<<20, 1 // 1.5 of one listing, less 0.5 MiB
+	d2 := t.TempDir()
+	alone, first := fmtOn(t.TempDir(), "arm64"), fmtOn(d2, "amd64")
+	if second := fmtOn(d2, "arm64"); alone != nil || first != nil || second == nil || !strings.Contains(second.Error(), "more than") {
+		t.Errorf("two archive sets past the run's allowance (%d each): alone %v, first %v, second %v", one, alone, first, second)
 	}
 }
 
