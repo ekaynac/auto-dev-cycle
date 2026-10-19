@@ -39,9 +39,21 @@
 //   - The tree gated is the one checked out: the checkout's own tree id
 //     must be the one asked for (a commit id or another tree is refused),
 //     and the receipt is about it (receipt.go).
-//   - The cwd contract (#275) is P15b's, with the junit_xml (pytest)
-//     adapter: a Go gate runs no Python probe (go test runs each test
-//     binary in its package directory, Opus #286 M3).
+//   - The cwd contract (#275), for junit_xml (pytest) only: a Go test may
+//     run Python from its package directory (Opus #286 M3). Every Python
+//     process of the run starts in the checkout root, and none changes
+//     directory before pytest has collected; a probe the controller writes
+//     into the results mount records both (cwd/). A record elsewhere, no
+//     record at all (Python that never loaded the probe), or a log over
+//     its bound invalidates the run (could_not_run/runner_fault). The probe
+//     runs in-process, writable by the run, so these escape it (decision
+//     A's residual, Opus #286 L1): a run that deletes or rewrites the probe
+//     or its log after a first record, Python started with -E, -I or -S
+//     beside one that loaded it, and a wrapper that drops PYTHONPATH for
+//     some processes (tox's default environment does).
+//   - A gate environment's runtime.arch "any" (py-mini) relaxes only that
+//     environment's check: the image is still the host's OS and
+//     architecture.
 //   - Acceptance tests are overlaid on the gate workspace only.
 package gate
 
@@ -49,16 +61,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -70,9 +85,13 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
+//go:embed cwd/*.py
+var probe embed.FS
+
 const (
-	resultsFile = "go-test.json"    // the derived results file, in the results mount
 	placeholder = "{results_path}"  // the profile's name for the derived path
+	probeDir    = ".adc-cwd"        // the cwd probe, in the results mount
+	maxProbeLog = 1 << 20           // what the cwd probe's log may hold
 	maxResults  = results.MaxStream // what a run's results may hold
 	maxOverlay  = 16 << 20          // acceptance files, in all
 	maxGoMod    = 1 << 20           // the root go.mod, read as its blob
@@ -86,7 +105,22 @@ var (
 
 	objectID = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	imageID  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+	// adapters are the result adapters the gate reads: the derived results
+	// file, its parser and its name, and whether its runs are pytest's,
+	// under the cwd probe (probed).
+	adapters = map[string]adapter{
+		results.GoTestJSON: {"go-test.json", results.ParseGoTestJSON, "a go test -json stream", false},
+		results.JUnitXML:   {"junit.xml", results.ParseJUnitXML, "a JUnit XML document", true},
+	}
 )
+
+type adapter struct {
+	file   string
+	parse  func(io.Reader, []results.Test, *results.Report) (results.Report, error)
+	what   string
+	probed bool
+}
 
 // Baseline is a measured baseline (fixtures/m1/issues/*/baseline-report.json):
 // the command, the image (its pinned reference, and the platform image
@@ -189,7 +223,13 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	// refused before it started, or cut by its caller, is no verdict at
 	// all. A run that left too much is judged by what it wrote: copy-out
 	// bounds it again.
-	_, runErr := in.Host.Start(ctx, sandbox.Run{Image: in.Image, Mode: sandbox.Gate, Attempt: a, Limits: in.Limits, Argv: argv(in.Gate.Command)})
+	ad := adapters[in.Gate.ResultAdapter]
+	if ad.probed {
+		if err := writeProbe(a.Results()); err != nil {
+			return v, err
+		}
+	}
+	_, runErr := in.Host.Start(ctx, sandbox.Run{Image: in.Image, Mode: sandbox.Gate, Attempt: a, Limits: in.Limits, Argv: argv(in.Gate.Command, ad)})
 	if (errors.Is(runErr, sandbox.ErrSpec) || errors.Is(runErr, sandbox.ErrHost)) && !errors.Is(runErr, sandbox.ErrLeft) {
 		return v, runErr
 	}
@@ -197,7 +237,7 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 		return v, fmt.Errorf("gate: the run was cut: %w", ctx.Err())
 	}
 	out := filepath.Join(a.Dir, "out")
-	if err := a.CopyOut(out, maxResults); err != nil {
+	if err := a.CopyOut(out, maxResults+int64(b2i(ad.probed))*(maxProbeLog+64<<10)); err != nil {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results could not be copied out within their bounds")
 		return v, nil
 	}
@@ -210,7 +250,18 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run did not finish (its timeout, a signal or the runner)")
 		return v, nil
 	}
-	v.Stream, err = os.ReadFile(filepath.Join(out, resultsFile))
+	if ad.probed {
+		log := filepath.Join(out, probeDir, "log")
+		if st, err := os.Stat(log); err == nil && st.Size() > maxProbeLog {
+			v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the cwd probe's log is over its bound")
+			return v, nil
+		}
+		if bad, records := violations(log, a.Workspace()); bad > 0 || records == 0 {
+			v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, fmt.Sprintf("invalidated: %d Python process starts or early chdirs outside the checkout root, of %d recorded (the cwd contract)", bad, records))
+			return v, nil
+		}
+	}
+	v.Stream, err = os.ReadFile(filepath.Join(out, ad.file))
 	if err != nil {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run never wrote its results")
 		return v, nil
@@ -219,8 +270,8 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	if v.baseline != nil {
 		base = &v.baseline.Report
 	}
-	if v.Results, err = results.ParseGoTestJSON(bytes.NewReader(v.Stream), in.Expected, base); err != nil {
-		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results are not a go test -json stream")
+	if v.Results, err = ad.parse(bytes.NewReader(v.Stream), in.Expected, base); err != nil {
+		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results are not "+ad.what)
 		return v, nil
 	}
 	v.judge(in, module, zero)
@@ -258,7 +309,8 @@ func ending(runErr error) (zero, normal bool) {
 
 // valid: b is a measured baseline (Astra #286 M2): every binding field
 // present, its base a full tree id, and a green report with results, each
-// result's package among its packages for go_test_json.
+// result's package among its packages for go_test_json, and none for
+// junit_xml (its adapter, by its report's shape).
 func (b *Baseline) valid(adapter string) error {
 	refuse := func(why string) error { return fmt.Errorf("%w: the baseline %s", ErrSpec, why) }
 	switch {
@@ -270,8 +322,8 @@ func (b *Baseline) valid(adapter string) error {
 	seen := map[results.Test]bool{}
 	for _, x := range b.Results {
 		_, pkg := b.Packages[x.Package]
-		if seen[x.Test] || adapter == results.GoTestJSON && !pkg {
-			return refuse("holds a test twice, or a test of no package it reports")
+		if seen[x.Test] || adapter == results.GoTestJSON && !pkg || adapter == results.JUnitXML && len(b.Packages) > 0 {
+			return refuse("holds a test twice, a test of no package it reports, or (junit_xml) a package outcome")
 		}
 		seen[x.Test] = true
 	}
@@ -297,10 +349,10 @@ func (in In) check() error {
 	}
 	rt, b := in.Gate.Environments[i].Facts.Runtime, in.Baseline
 	switch {
-	case in.Gate.ResultAdapter != results.GoTestJSON || in.Gate.OwnershipRules != ownership:
-		return fmt.Errorf("%w: result adapter %q with ownership rules %q (only %s, %s)", ErrSpec, in.Gate.ResultAdapter, in.Gate.OwnershipRules, results.GoTestJSON, ownership)
-	case rt.Os != in.Image.OS || rt.Arch != in.Image.Arch:
-		return fmt.Errorf("%w: the image is %s/%s, the environment %s/%s", ErrSpec, in.Image.OS, in.Image.Arch, rt.Os, rt.Arch)
+	case adapters[in.Gate.ResultAdapter].file == "" || in.Gate.OwnershipRules != ownership:
+		return fmt.Errorf("%w: result adapter %q with ownership rules %q (only %s or %s, %s)", ErrSpec, in.Gate.ResultAdapter, in.Gate.OwnershipRules, results.GoTestJSON, results.JUnitXML, ownership)
+	case in.Image.OS != runtime.GOOS || in.Image.Arch != runtime.GOARCH || rt.Os != in.Image.OS || rt.Arch != in.Image.Arch && rt.Arch != "any":
+		return fmt.Errorf("%w: the image is %s/%s, the host %s/%s, the environment %s/%s", ErrSpec, in.Image.OS, in.Image.Arch, runtime.GOOS, runtime.GOARCH, rt.Os, rt.Arch)
 	case b != nil && (!slices.Equal(b.Command, in.Gate.Command) || b.ImageID != in.Image.ID || b.OS != in.Image.OS || b.Arch != in.Image.Arch):
 		return fmt.Errorf("%w: the baseline was measured with another command or platform image", ErrSpec)
 	case b != nil && b.Base != in.Base:
@@ -327,8 +379,12 @@ func (v *Verdict) judge(in In, module string, ended bool) {
 	}
 	touched := func(pkg string) bool {
 		rel := strings.TrimPrefix(strings.TrimPrefix(pkg, module), "/")
-		return module != "" && strings.HasPrefix(pkg, module) && slices.ContainsFunc(in.Changed, func(c string) bool {
-			return path.Dir(c) == cmpOr(rel, ".")
+		return slices.ContainsFunc(in.Changed, func(c string) bool {
+			if mod, ok := strings.CutSuffix(c, ".py"); ok && in.Gate.ResultAdapter == results.JUnitXML { // a pytest classname: the dotted module, and class
+				mod = strings.ReplaceAll(mod, "/", ".")
+				return pkg == mod || strings.HasPrefix(pkg, mod+".")
+			}
+			return module != "" && strings.HasPrefix(pkg, module) && path.Dir(c) == cmpOr(rel, ".")
 		})
 	}
 	var mine, theirs int
@@ -366,18 +422,70 @@ func cmpOr(a, b string) string {
 }
 
 // argv is the command the container runs: the profile's, its results path
-// derived.
-func argv(command []string) []string {
-	res := sandbox.ResultsDir + "/" + resultsFile
+// derived, with the cwd probe's environment for a probed adapter.
+func argv(command []string, ad adapter) []string {
+	res := sandbox.ResultsDir + "/" + ad.file
 	cmd, named := make([]string, len(command)), false
 	for i, a := range command {
 		cmd[i] = strings.ReplaceAll(a, placeholder, res)
 		named = named || cmd[i] != a
 	}
 	if !named { // a stdout adapter: the controller writes its stream to the results file
-		return append([]string{"sh", "-c", `exec "$@" >"$0"`, res}, cmd...)
+		cmd = append([]string{"sh", "-c", `exec "$@" >"$0"`, res}, cmd...)
+	} else { // the run's stdout is never read: none reaches the runner's bound
+		cmd = append([]string{"sh", "-c", `exec "$@" >/dev/null`, "sh"}, cmd...)
 	}
-	return append([]string{"sh", "-c", `exec "$@" >/dev/null`, "sh"}, cmd...) // the run's stdout is never read: none reaches the runner's bound
+	if !ad.probed {
+		return cmd
+	}
+	dir := sandbox.ResultsDir + "/" + probeDir
+	return append([]string{"env", "PYTHONPATH=" + dir, "PYTEST_PLUGINS=adc_gate_cwd", "PYTHONDONTWRITEBYTECODE=1",
+		"ADC_GATE_ROOT=" + sandbox.WorkspaceDir, "ADC_GATE_LOG=" + dir + "/log"}, cmd...)
+}
+
+// writeProbe writes the cwd probe into the results mount.
+func writeProbe(res string) error {
+	dir := filepath.Join(res, probeDir)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return err
+	}
+	for _, name := range []string{"sitecustomize.py", "adc_gate_cwd.py"} {
+		b, err := probe.ReadFile("cwd/" + name)
+		if err == nil {
+			err = os.WriteFile(filepath.Join(dir, name), b, 0o600)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// violations counts the probe's records, and those outside the checkout
+// root: sandbox.WorkspaceDir in the container, or ws itself for a host's
+// Runner that runs the command in place.
+func violations(log, ws string) (bad, records int) {
+	b, _ := os.ReadFile(log) // none: no Python loaded the probe
+	for line := range strings.Lines(string(b)) {
+		_, dir, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
+		if records++; dir != sandbox.WorkspaceDir && !sameDir(dir, ws) {
+			bad++
+		}
+	}
+	return bad, records
+}
+
+func sameDir(a, b string) bool {
+	ra, ea := filepath.EvalSymlinks(a)
+	rb, eb := filepath.EvalSymlinks(b)
+	return ea == nil && eb == nil && ra == rb
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // checkout writes tree into ws through a temporary index and returns the

@@ -121,6 +121,12 @@ func TestJUnitStrict(t *testing.T) {
 			t.Errorf("%s: %v, %v; want unreadable", name, outcomes(r), err)
 		}
 	}
+	// Past MaxStream bytes, a whole document then whitespace to the bound
+	// and past it: unreadable, never the part read.
+	big := suite(`tests="1"`, pass) + strings.Repeat(" ", MaxStream)
+	if r, err := ParseJUnitXML(strings.NewReader(big), nil, nil); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("a document past MaxStream: %v, %v; want unreadable", outcomes(r), err)
+	}
 	// Within the lowered bounds, the same shapes read.
 	if r, err := ParseJUnitXML(strings.NewReader(suite(`tests="2" failures="0" errors="1" skipped="0"`, pass+`<testcase classname="m" name="a"><error/></testcase>`)), nil, nil); err != nil || outcomes(r)["m::a"] != Fail {
 		t.Errorf("pytest's teardown shape: %v, %v", outcomes(r), err)

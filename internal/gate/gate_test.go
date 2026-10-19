@@ -325,8 +325,9 @@ func TestGateBaseline(t *testing.T) {
 			env[0].Facts.Runtime.Arch += "x"
 			in.Gate.Environments = env
 		},
-		"another environment": func(in *In) { in.Env = "prod" },
-		"another adapter":     func(in *In) { in.Gate.ResultAdapter = "junit_xml" },
+		"another environment":                     func(in *In) { in.Env = "prod" },
+		"another adapter":                         func(in *In) { in.Gate.ResultAdapter = "tap" },
+		"a go_test_json baseline under junit_xml": func(in *In) { in.Gate.ResultAdapter = results.JUnitXML },
 		// Astra #286 M2: a loaded baseline that is no measurement.
 		"an empty report": with(func(b *Baseline) { b.Report = results.Report{} }),
 		"a baseline that is not green": with(func(b *Baseline) {
