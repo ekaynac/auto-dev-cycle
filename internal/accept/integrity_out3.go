@@ -293,7 +293,8 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 					return
 				}
 			}
-			info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}, Instances: map[*ast.Ident]types.Instance{}}
+			info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}, Instances: map[*ast.Ident]types.Instance{},
+				Types: map[ast.Expr]types.TypeAndValue{}, Uses: map[*ast.Ident]types.Object{}, Defs: map[*ast.Ident]types.Object{}} // Types, Uses, Defs: typedPrint
 			check := im
 			if strings.HasSuffix(name, "_test") && self != nil {
 				check = im.forTest(self)
@@ -392,12 +393,12 @@ func preview(ns []string) string {
 // outTypesHook runs all the types check's work (off: main's layer); outDone,
 // outCheckSeen and outBodyHook (tests') see the text layer's counters at a
 // run's end, each file set the layer checks, and what an init or hook
-// body's pass charges the types budget (Opus #283 L2).
+// body's typed print and its visit charge the types budget (Opus #283 L2).
 var (
 	outTypesHook = true
 	outDone      func(nodes, tags int, over bool)
 	outCheckSeen func(files []*ast.File)
-	outBodyHook  func(charged int)
+	outBodyHook  func(print, visit int)
 )
 
 // typesOff stops the types check for the run, with one warning, never
@@ -424,19 +425,17 @@ func unexpected(errs []error) string {
 // outTypedRefs adds one check's references by types to its files' trefs (a
 // key's largest count on any platform) and S uses to tuses, never to refs;
 // an init or hook body's S uses outside its literals go to its own binding,
-// "init body" or "TestMain body", fingerprinted by typedPrint (P14b-out-3b),
-// and each use's identity, its platform, its offset in the body and its S
-// target, in AST order, joins that fingerprint (Astra #283 H1: uses that
-// swap targets never cancel).
+// "init body" or "TestMain body", whose typed print on pl (typedPrint) joins
+// its fingerprint (P14b-out-3b).
 func (r *run) outTypedRefs(ofs []*outFile, info *types.Info, pl string) {
 	names := map[types.Object]string{}
 	for _, of := range ofs {
-		counts, printed := map[string]int{}, of.tprints != nil
-		if !printed {
+		counts, ords := map[string]int{}, map[string]int{}
+		if of.tprints == nil {
 			of.tprints = map[string]string{}
 		}
 		for _, u := range of.units {
-			r.typedIn(u, false, info, names, func(pkg, ref string, _ token.Pos) {
+			r.typedIn(u, false, info, names, func(pkg, ref string) {
 				if r.chargeTypes(len(u.where)+len(ref)) && u.where != "" {
 					counts[pkg+"\x00"+u.where+"\x00"+ref]++
 				}
@@ -444,21 +443,17 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info, pl string) {
 			})
 			if d, ok := u.n.(*ast.FuncDecl); ok && u.bind == "init literal" { // its body outside its literals (P14b-out-3b)
 				bind, before := d.Name.Name+" body", r.out.tnodes
-				if !printed {
-					r.typedPrint(of, d, bind)
-				}
-				tf := r.out.fset.File(of.f.Pos())
-				r.typedIn(u, true, info, names, func(pkg, ref string, at token.Pos) {
-					id := fmt.Sprintf("%s\x00%d\x00%s", pl, tf.Offset(at)-tf.Offset(d.Pos()), ref)
-					if r.chargeTypes(len(bind) + len(ref) + len(id)) { // its references too, as a literal's (Opus #283 H1)
+				r.typedPrint(of, d, bind, fmt.Sprint(pl, "\x00", ords[bind]), info)
+				ords[bind]++
+				printed := r.out.tnodes
+				r.typedIn(u, true, info, names, func(pkg, ref string) {
+					if r.chargeTypes(len(bind) + len(ref)) { // its references too, as a literal's (Opus #283 H1)
 						counts[pkg+"\x00"+bind+"\x00"+ref]++
 						of.tuses[bind+"\x00"+pkg] = true
-						h := sha256.Sum256(append([]byte(of.tprints[bind]), id...))
-						of.tprints[bind] = string(h[:])
 					}
 				})
 				if outBodyHook != nil {
-					outBodyHook(r.out.tnodes - before)
+					outBodyHook(printed-before, r.out.tnodes-printed)
 				}
 			}
 		}
@@ -468,27 +463,46 @@ func (r *run) outTypedRefs(ofs []*outFile, info *types.Info, pl string) {
 	}
 }
 
-// typedPrint combines d's spans outside its function literals (the text
-// binding "init literal" holds those) into of's typed fingerprint for
-// bind, sha256(prev||span) in source order, on the types budget.
-func (r *run) typedPrint(of *outFile, d *ast.FuncDecl, bind string) {
-	tf, at := r.out.fset.File(of.f.Pos()), d.Pos()
-	var spans [][2]token.Pos
+// typedPrint adds d's typed print to of's fingerprint for bind (#283's
+// split): at (its platform and its ordinal among bind's declarations), then
+// each node outside its function literals (a literal one opaque node), in
+// walk order: its kind, an expression's type, an identifier's object, an
+// instance's type arguments (aliases resolved), and the source outside the
+// literals; never an offset. Every byte is on the types budget.
+func (r *run) typedPrint(of *outFile, d *ast.FuncDecl, bind, at string, info *types.Info) {
+	h, tf, from, ok := sha256.New(), r.out.fset.File(of.f.Pos()), d.Pos(), true
+	emit := func(s string) {
+		h.Write([]byte(s))
+		ok = ok && r.chargeTypes(len(s))
+	}
+	str := func(t types.Type) string { return " " + types.TypeString(types.Unalias(t), nil) }
+	emit(of.tprints[bind] + at)
 	ast.Inspect(d, func(n ast.Node) bool {
-		if l, ok := n.(*ast.FuncLit); ok {
-			spans, at = append(spans, [2]token.Pos{at, l.Pos()}), l.End()
+		if n == nil || !ok {
 			return false
 		}
-		return n == nil || r.chargeTypes(1)
-	})
-	for _, sp := range append(spans, [2]token.Pos{at, d.End()}) {
-		s := of.src[tf.Offset(sp[0]):tf.Offset(sp[1])]
-		if !r.chargeTypes(len(s)) {
-			return
+		s := fmt.Sprintf("\x00%T", n)
+		if e, isE := n.(ast.Expr); isE && info.Types[e].Type != nil {
+			s += str(info.Types[e].Type)
 		}
-		h := sha256.Sum256(append([]byte(of.tprints[bind]), s...))
-		of.tprints[bind] = string(h[:])
-	}
+		if id, isI := n.(*ast.Ident); isI {
+			if o := cmp.Or(info.Uses[id], info.Defs[id]); o != nil {
+				s += fmt.Sprint(" ", o.Pkg(), ".", o.Name()) + str(o.Type())
+			}
+			for t := range info.Instances[id].TypeArgs.Types() {
+				s += " [" + str(t)
+			}
+		}
+		if l, isL := n.(*ast.FuncLit); isL {
+			emit(string(of.src[tf.Offset(from):tf.Offset(l.Pos())]))
+			from = l.End()
+		}
+		emit(s)
+		_, lit := n.(*ast.FuncLit)
+		return !lit
+	})
+	emit(string(of.src[tf.Offset(from):tf.Offset(d.End())]))
+	of.tprints[bind] = string(h.Sum(nil))
 }
 
 // sObj: o, named name, is in S: the layer's, or the base guard's as its
@@ -528,7 +542,7 @@ func sMethod(o *types.Func) bool {
 // typedIn calls add for each S method through a value and each S type
 // argument in u (inside its function literals only, with lits; outside
 // them, with body).
-func (r *run) typedIn(u unit, body bool, info *types.Info, names map[types.Object]string, add func(pkg, ref string, at token.Pos)) {
+func (r *run) typedIn(u unit, body bool, info *types.Info, names map[types.Object]string, add func(pkg, ref string)) {
 	visit := func(n ast.Node) bool {
 		if n == nil || !r.chargeTypes(1) {
 			return n == nil
@@ -537,7 +551,7 @@ func (r *run) typedIn(u unit, body bool, info *types.Info, names map[types.Objec
 		case *ast.SelectorExpr:
 			if s := info.Selections[x]; s != nil && s.Kind() != types.FieldVal {
 				if o, _ := s.Obj().(*types.Func); o != nil && sMethod(o) {
-					add(o.Pkg().Path(), r.methodName(o.Origin(), names), x.Pos())
+					add(o.Pkg().Path(), r.methodName(o.Origin(), names))
 				}
 			}
 		case *ast.Ident:
@@ -547,7 +561,7 @@ func (r *run) typedIn(u unit, body bool, info *types.Info, names map[types.Objec
 						t = p.Elem()
 					}
 					if nt, ok := types.Unalias(t).(*types.Named); ok && sObj(nt.Obj(), nt.Obj().Name()) {
-						add(nt.Obj().Pkg().Path(), bound(x.Name)+"["+r.typeName(nt.Obj(), names)+"]", x.Pos())
+						add(nt.Obj().Pkg().Path(), bound(x.Name)+"["+r.typeName(nt.Obj(), names)+"]")
 					}
 				}
 			}

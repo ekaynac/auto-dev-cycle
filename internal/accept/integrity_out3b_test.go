@@ -24,6 +24,10 @@ func TestOutTypedBodies(t *testing.T) {
 	st := func(pkg string) string {
 		return "package " + pkg + "\n\nimport \"flag\"\n\ntype T struct{}\n\nfunc (*T) Parse([]string) error { return nil }\n\ntype FS = flag.FlagSet\n\nvar safe = &T{}\n\nvar fatal = flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse func([]string) error\n"
 	}
+	gst := func(pkg string) string {
+		return "package " + pkg + "\n\nimport \"flag\"\n\ntype Safe struct{}\n\ntype FS = flag.FlagSet\n\nfunc g[A, B any]() {}\n\nfunc h[A, B any](func(A), func(B)) {}\n\nvar fa func(X)\n\nvar fb func(Y)\n"
+	}
+	xy, yx := "type X = Safe\n\ntype Y = FS\n", "type X = FS\n\ntype Y = Safe\n"
 	tmain := "import (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) {\n\tparse = x.Parse\n\tos.Exit(m.Run())\n}\n"
 	base := map[string]string{
 		"iv/iv.go":      "package iv\n\n" + fs + "\nfunc init() { parse = safe.Parse }\n",
@@ -57,6 +61,29 @@ func TestOutTypedBodies(t *testing.T) {
 		"sg/st.go":      "package sg\n\nimport (\n\t\"flag\"\n\t\"io\"\n\t\"log\"\n)\n\nvar fs *flag.FlagSet\n\nvar lg *log.Logger\n\nvar setA, setB func(io.Writer)\n",
 		"sg/v.go":       "package sg\n\nvar x = fs\n\nvar y = lg\n",
 		"sg/a.go":       "package sg\n\nfunc init() {\n\tsetA = x.SetOutput\n\tsetB = y.SetOutput\n}\n",
+		// Astra #283 r2 H1: two inits, swapped on arm64 alone.
+		"tw/st.go":      st("tw") + "\nvar spare func([]string) error\n",
+		"tw/v_amd64.go": "package tw\n\nvar x = safe\n\nvar y = fatal\n",
+		"tw/v_arm64.go": "package tw\n\nvar x = safe\n\nvar y = fatal\n",
+		"tw/a.go":       "package tw\n\nfunc init() { parse = x.Parse }\n\nfunc init() { spare = y.Parse }\n",
+		// Astra #283 r2 H2: type-argument slots swap, explicit (g) and
+		// inferred through composite parameters (h), in init and TestMain.
+		"ga/st.go":     gst("ga"),
+		"ga/v.go":      "package ga\n\n" + xy,
+		"ga/a.go":      "package ga\n\nfunc init() { g[X, Y]() }\n",
+		"gi/st.go":     gst("gi"),
+		"gi/v.go":      "package gi\n\n" + xy,
+		"gi/a.go":      "package gi\n\nfunc init() { h(fa, fb) }\n",
+		"gm/st.go":     gst("gm"),
+		"gm/v.go":      "package gm\n\n" + xy,
+		"gm/m_test.go": "package gm\n\n" + strings.Replace(tmain, "parse = x.Parse", "g[X, Y]()", 1),
+		"gn/st.go":     gst("gn"),
+		"gn/v.go":      "package gn\n\n" + xy,
+		"gn/m_test.go": "package gn\n\n" + strings.Replace(tmain, "parse = x.Parse", "h(fa, fb)", 1),
+		// The declarations' boundary: the first of two inits alone changes.
+		"t2/i.go": "package t2\n\n" + fs + "\nfunc init() { parse = safe.Parse }\n\nfunc init() { hook = nil }\n",
+		// Astra #283 r2 L3: an S use after a literal whose contents alone change.
+		"lt/l.go": "package lt\n\n" + fs + "\nfunc init() {\n\thook = func() { flag.Parse() }\n\tparse = fatal.Parse\n}\n",
 	}
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
@@ -97,6 +124,14 @@ func TestOutTypedBodies(t *testing.T) {
 		"Astra H1 an init's uses swap":           {edit("sw/v.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("sw/a.go", "init body")}, nil, ""},
 		"Astra H1 a TestMain's uses swap":        {edit("sm/v.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("sm/m_test.go", "TestMain body")}, nil, ""},
 		"Astra H1 a swap on arm64 alone":         {edit("sp/v_arm64.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("sp/a.go", "init body")}, nil, ""},
+		"r2 H1 two inits swap on arm64 alone":    {edit("tw/v_arm64.go", "x = safe\n\nvar y = fatal", "x = fatal\n\nvar y = safe"), []string{body("tw/a.go", "init body")}, nil, ""},
+		"the first of two inits changes":         {edit("t2/i.go", "= safe.Parse", "= fatal.Parse"), []string{body("t2/i.go", "init body")}, nil, ""},
+		"a statement moves to the next init":     {edit("t2/i.go", "{ parse = safe.Parse }\n\nfunc init() { hook = nil }", "{}\n\nfunc init() { parse = safe.Parse; hook = nil }"), []string{body("t2/i.go", "init body")}, nil, ""},
+		"r2 H2 an init's explicit slots swap":    {map[string]string{"ga/v.go": "package ga\n\n" + yx}, []string{body("ga/a.go", "init body")}, nil, ""},
+		"r2 H2 an init's inferred slots swap":    {map[string]string{"gi/v.go": "package gi\n\n" + yx}, []string{body("gi/a.go", "init body")}, nil, ""},
+		"r2 H2 a TestMain's explicit slots swap": {map[string]string{"gm/v.go": "package gm\n\n" + yx}, []string{body("gm/m_test.go", "TestMain body")}, nil, ""},
+		"r2 H2 a TestMain's inferred slots swap": {map[string]string{"gn/v.go": "package gn\n\n" + yx}, []string{body("gn/m_test.go", "TestMain body")}, nil, ""},
+		"r2 L3 an S use after a changed literal": {edit("lt/l.go", "flag.Parse() }", "flag.Parse(); _ = 1 }"), nil, []string{body("lt/l.go", "init literal")}, ""},
 		"Astra H1 two S targets swap":            {edit("sg/v.go", "x = fs\n\nvar y = lg", "x = lg\n\nvar y = fs"), []string{body("sg/a.go", "init body"), "sg/a.go changed bodies that use log (1: init body)"}, nil, ""},
 	} {
 		v := outGuarded(t, f, c.files)
@@ -130,10 +165,10 @@ func TestOutTypedBodies(t *testing.T) {
 }
 
 // TestOutTypedBodyCharge (Opus #283 L2): a body pass charges the types
-// budget, deterministically: its fingerprint's nodes and bytes, its visit's
-// nodes, and each reference by types (the bind's and the name's bytes), as
-// outBodyHook sees it on the first platform, where the fingerprint is made;
-// each use's identity too (Astra #283 H1).
+// budget, deterministically, on every platform (#283's split), as
+// outBodyHook sees it once a platform: its typed print at least its node
+// kinds and its source bytes; its visit exactly its nodes and each reference
+// by types (the bind's and the name's bytes), and the names once.
 func TestOutTypedBodyCharge(t *testing.T) {
 	const refs = 200
 	src := "package bb\n\nimport \"flag\"\n\nvar w *flag.FlagSet\n\nfunc init() {\n" + strings.Repeat("\t_ = w.Parse\n", refs) + "}\n"
@@ -143,21 +178,21 @@ func TestOutTypedBodyCharge(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := file.Decls[len(file.Decls)-1].(*ast.FuncDecl)
-	nodes, ids := 0, 0
+	nodes, kinds := 0, 0
 	ast.Inspect(d, func(n ast.Node) bool {
-		if x, ok := n.(*ast.SelectorExpr); ok { // a use's identity (Astra #283 H1): the first platform, its offset, its target
-			ids += len(fmt.Sprintf("%s/%s\x00%d\x00(*flag.FlagSet).Parse", platforms[0][0], platforms[0][1], fset.Position(x.Pos()).Offset-fset.Position(d.Pos()).Offset))
+		if n != nil {
+			nodes, kinds = nodes+1, kinds+len(fmt.Sprintf("\x00%T", n))
 		}
-		nodes += b2i(n != nil)
 		return true
 	})
 	bytes := fset.Position(d.End()).Offset - fset.Position(d.Pos()).Offset
-	least := 2*nodes + bytes + refs*len("init body"+"(*flag.FlagSet).Parse") + ids // and the names, once: len("Parse"+"flag"+"FlagSet")
-	var charged []int
-	outBodyHook = func(n int) { charged = append(charged, n) }
+	visit := nodes + refs*len("init body"+"(*flag.FlagSet).Parse") + len("Parse"+"flag"+"FlagSet")
+	var prints, visits []int
+	outBodyHook = func(p, v int) { prints, visits = append(prints, p), append(visits, v) }
 	defer func() { outBodyHook = nil }()
 	v := outGuarded(t, newGuardFixture(t), map[string]string{"bb/b.go": src})
-	if most := slices.Max(append(charged, 0)); !v.Accepted() || most < least || most > least+len("Parse"+"flag"+"FlagSet") {
-		t.Errorf("the body pass charged %v; at least %d (%d nodes twice, %d bytes, %d references); blocks %q", charged, least, nodes, bytes, refs, whats(v.Blocks))
+	if !v.Accepted() || len(prints) != len(platforms) || slices.Min(prints) < kinds+bytes || !slices.Equal(visits, []int{visit, visit}) {
+		t.Errorf("the body pass charged %v (print), %v (visit); at least %d (%d kinds' bytes, %d bytes), exactly %d (%d nodes, %d references); blocks %q",
+			prints, visits, kinds+bytes, kinds, bytes, visit, nodes, refs, whats(v.Blocks))
 	}
 }
