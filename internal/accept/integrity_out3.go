@@ -5,6 +5,7 @@ package accept
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -292,7 +293,8 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 					return
 				}
 			}
-			info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}, Instances: map[*ast.Ident]types.Instance{}}
+			info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}, Instances: map[*ast.Ident]types.Instance{},
+				Types: map[ast.Expr]types.TypeAndValue{}, Uses: map[*ast.Ident]types.Object{}, Defs: map[*ast.Ident]types.Object{}} // Types, Uses, Defs: typedPrint
 			check := im
 			if strings.HasSuffix(name, "_test") && self != nil {
 				check = im.forTest(self)
@@ -310,7 +312,7 @@ func (r *run) outTyped(dir string, t *tree, ofs []*outFile) {
 			} else if !strings.HasSuffix(name, "_test") {
 				self = pkg
 			}
-			if r.outTypedRefs(groups[name], info); !r.chargeTypes(0) {
+			if r.outTypedRefs(groups[name], info, pl[0]+"/"+pl[1]); !r.chargeTypes(0) {
 				r.typesOff(dir)
 				return
 			}
@@ -342,7 +344,7 @@ func (r *run) outTypedWarn(p, what string) {
 // references warning names, a binding using the package by text): no text
 // entry ever changes (Astra #282 r3 H1). After a types stop, none.
 func (r *run) outTypedSignals(dir string, b, a outFacts, changed map[string][]string) {
-	if !r.chargeTypes(len(b.trefs) + len(a.trefs)) {
+	if !r.chargeTypes(len(b.trefs) + len(a.trefs) + len(b.tprints) + len(a.tprints)) {
 		r.typesOff(dir)
 	}
 	if r.out.typedOff {
@@ -357,8 +359,15 @@ func (r *run) outTypedSignals(dir string, b, a outFacts, changed map[string][]st
 	for _, k := range keys(b.tuses, a.tuses) { // in a binding outBodies reads as changed
 		f := strings.Split(k, "\x00") // file, binding, package
 		kb, fp, fn := f[0]+"\x00"+f[1], f[0]+"\x00"+f[2], strings.TrimPrefix(f[1], "func ")
-		bp, inB := b.prints[kb]
-		if ap, inA := a.prints[kb]; !inB && !inA || inB && inA && bp == ap || (!inB || !inA) && strings.HasPrefix(f[1], "func ") {
+		print := func(fa outFacts) (string, bool) { // a text binding's, or an init or hook body's by types (P14b-out-3b)
+			if h, ok := fa.prints[kb]; ok {
+				return h, ok
+			}
+			h, ok := fa.tprints[kb]
+			return h, ok
+		}
+		bp, inB := print(b)
+		if ap, inA := print(a); !inB && !inA || inB && inA && bp == ap || (!inB || !inA) && strings.HasPrefix(f[1], "func ") {
 			continue
 		} else if !b.uses[kb][f[2]] && !a.uses[kb][f[2]] && !slices.Contains(changed[fp], fn) && !slices.Contains(refs[fp], fn) {
 			bodies[fp] = append(bodies[fp], f[1])
@@ -381,13 +390,19 @@ func preview(ns []string) string {
 	return fmt.Sprintf("%d: %s%s", len(ns), strings.Join(ns[:min(3, len(ns))], ", "), map[bool]string{true: ", …"}[len(ns) > 3])
 }
 
-// outTypesHook runs all the types check's work (off: main's layer); outDone
-// and outCheckSeen (tests') see the text layer's counters at a run's end and
-// each file set the layer checks.
+// outTypesHook runs all the types check's work (off: main's layer); outDone,
+// outCheckSeen, outBodyHook and outTargetHook (tests') see the text layer's
+// counters at a run's end, each file set the layer checks, an init or hook
+// body's budget at its start, what its pass charges and what its print
+// hashes (Opus #283 L2, Astra #283 r3 L2), and each S target its print
+// commits, at its walk index, with the budget spent once it was charged
+// (#283 round 6, Astra #283 r5 L1).
 var (
-	outTypesHook = true
-	outDone      func(nodes, tags int, over bool)
-	outCheckSeen func(files []*ast.File)
+	outTypesHook  = true
+	outDone       func(nodes, tags int, over bool)
+	outCheckSeen  func(files []*ast.File)
+	outBodyHook   func(start, charged, hashed int)
+	outTargetHook func(i int, ref string, charged int)
 )
 
 // typesOff stops the types check for the run, with one warning, never
@@ -412,22 +427,241 @@ func unexpected(errs []error) string {
 }
 
 // outTypedRefs adds one check's references by types to its files' trefs (a
-// key's largest count on any platform) and S uses to tuses, never to refs.
-func (r *run) outTypedRefs(ofs []*outFile, info *types.Info) {
+// key's largest count on any platform) and S uses to tuses, never to refs;
+// an init or hook body's S uses outside its literals go to its own binding,
+// "init body" or "TestMain body", whose typed print on pl (typedPrint) joins
+// its fingerprint (P14b-out-3b).
+func (r *run) outTypedRefs(ofs []*outFile, info *types.Info, pl string) {
 	names := map[types.Object]string{}
 	for _, of := range ofs {
-		counts := map[string]int{}
+		counts, ords := map[string]int{}, map[string]int{}
+		if of.tprints == nil {
+			of.tprints = map[string]string{}
+		}
 		for _, u := range of.units {
+			if !r.chargeTypes(0) { // the budget is out: nothing more (Astra #283 r3 L2)
+				return
+			}
 			r.typedIn(u, info, names, func(pkg, ref string) {
 				if r.chargeTypes(len(u.where)+len(ref)) && u.where != "" {
 					counts[pkg+"\x00"+u.where+"\x00"+ref]++
 				}
 				of.tuses[u.bind+"\x00"+pkg] = true
 			})
+			if d, ok := u.n.(*ast.FuncDecl); ok && u.bind == "init literal" { // its body outside its literals (P14b-out-3b)
+				bind, before := d.Name.Name+" body", r.out.tnodes
+				hashed := r.typedPrint(of, d, bind, fmt.Sprint(pl, "\x00", ords[bind]), info, names, func(ref string) bool {
+					return r.chargeTypes(len(bind) + len(ref)) // its references too, as a literal's (Opus #283 H1)
+				}, func(pkg, ref string) {
+					counts[pkg+"\x00"+bind+"\x00"+ref]++
+					of.tuses[bind+"\x00"+pkg] = true
+				})
+				ords[bind]++
+				if outBodyHook != nil {
+					outBodyHook(before, r.out.tnodes-before, hashed)
+				}
+			}
 		}
 		for k, n := range counts {
 			of.trefs[k] = max(of.trefs[k], n)
 		}
+	}
+}
+
+// typedPrint adds d's typed print to of's fingerprint for bind (#283's
+// split): at (its platform and its ordinal among bind's declarations), then
+// each node outside its function literals (a literal one opaque node), in
+// walk order: its kind, an expression's type, an identifier's object, an
+// instance's type arguments (typeStr), and the S targets sAt resolves at
+// it, which the same walk counts (charge, then commit) (#283 round 6: a use
+// whose target changes changes the print where it is); then the source
+// outside the literals; never an offset. Every byte is charged before it is
+// hashed, and after the first failed charge nothing more is (Astra #283 r3
+// L2); a node's targets are committed only once it is hashed (Astra #283 r5
+// L1). It returns the bytes hashed.
+func (r *run) typedPrint(of *outFile, d *ast.FuncDecl, bind, at string, info *types.Info, names map[types.Object]string, charge func(ref string) bool, commit func(pkg, ref string)) (hashed int) {
+	h, tf, from, ok, i := sha256.New(), r.out.fset.File(of.f.Pos()), d.Pos(), true, 0
+	emit := func(s string) {
+		if ok = ok && r.chargeTypes(len(s)); ok {
+			hashed += len(s)
+			h.Write([]byte(s))
+		}
+	}
+	str := func(t types.Type) string { return " " + typeStr(t, nil) }
+	emit(of.tprints[bind] + at)
+	ast.Inspect(d, func(n ast.Node) bool {
+		if n == nil || !ok {
+			return false
+		}
+		i++
+		s, staged := fmt.Sprintf("\x00%T", n), []sTarget(nil)
+		if e, isE := n.(ast.Expr); isE && info.Types[e].Type != nil {
+			s += str(info.Types[e].Type)
+		}
+		if id, isI := n.(*ast.Ident); isI {
+			if o := cmp.Or(info.Uses[id], info.Defs[id]); o != nil {
+				s += fmt.Sprint(" ", o.Pkg(), ".", o.Name()) + str(o.Type())
+			}
+			for t := range info.Instances[id].TypeArgs.Types() {
+				s += " [" + str(t)
+			}
+		}
+		if l, isL := n.(*ast.FuncLit); isL {
+			emit(string(of.src[tf.Offset(from):tf.Offset(l.Pos())]))
+			from = l.End()
+		} else {
+			r.sAt(n, info, names, func(pkg, ref string) {
+				if ok = ok && charge(ref); ok {
+					s += " →" + ref
+					staged = append(staged, sTarget{pkg, ref, r.out.tnodes})
+				}
+			})
+		}
+		emit(s)
+		for _, t := range staged {
+			if !ok {
+				break
+			}
+			commit(t.pkg, t.ref)
+			if outTargetHook != nil {
+				outTargetHook(i, t.ref, t.charged)
+			}
+		}
+		_, lit := n.(*ast.FuncLit)
+		return !lit
+	})
+	emit(string(of.src[tf.Offset(from):tf.Offset(d.End())]))
+	of.tprints[bind] = string(h.Sum(nil))
+	return hashed
+}
+
+// sTarget is a node's S target, staged until the node is hashed: its
+// package, its name, and the types budget spent once it is charged.
+type sTarget struct {
+	pkg, ref string
+	charged  int
+}
+
+// maxTypeNodes and maxTypeDepth bound typeStr; past them, one "…deep"
+// marker, and no further node is visited (Astra #283 r4 M2).
+const maxTypeNodes, maxTypeDepth = 256, 16
+
+// typeStrHook (tests') sees each typeStr's visits.
+var typeStrHook func(visits int)
+
+// typeStr is t unaliased at every level (Astra #283 r3 H1): a named type by
+// its origin's package path and name and its type arguments, each of which
+// named calls on (nil: none); a signature with its receiver (Astra #283 r4
+// H1). Two types past the bound are equal if their bounded prefixes are.
+func typeStr(t types.Type, named func(*types.TypeName)) string {
+	w := typeW{named: named}
+	w.put(t, 0)
+	if typeStrHook != nil {
+		typeStrHook(w.visits)
+	}
+	return w.b.String()
+}
+
+// typeW is one typeStr's state: its text and its visits.
+type typeW struct {
+	b      strings.Builder
+	visits int
+	named  func(*types.TypeName)
+}
+
+// full: the node budget is spent; every list stops at its next element.
+func (w *typeW) full() bool { return w.visits > maxTypeNodes }
+
+func (w *typeW) put(t types.Type, depth int) {
+	if w.visits++; w.visits > maxTypeNodes+1 { // past the marker: only a fixed composite's next part reaches here
+		return
+	} else if w.full() || depth > maxTypeDepth {
+		w.visits = maxTypeNodes + 1
+		w.b.WriteString("…deep")
+		return
+	}
+	list := func(open, sep, close string, n int, part func(i int)) {
+		w.b.WriteString(open)
+		for i := range n {
+			if w.full() {
+				break
+			}
+			if i > 0 {
+				w.b.WriteString(sep)
+			}
+			part(i)
+		}
+		w.b.WriteString(close)
+	}
+	tuple := func(tu *types.Tuple) {
+		list("(", ", ", ")", tu.Len(), func(i int) {
+			w.b.WriteString(tu.At(i).Name() + " ")
+			w.put(tu.At(i).Type(), depth+1)
+		})
+	}
+	switch t := t.(type) {
+	case *types.Alias:
+		w.visits--
+		w.put(types.Unalias(t), depth)
+	case *types.Pointer:
+		w.b.WriteString("*")
+		w.put(t.Elem(), depth+1)
+	case *types.Slice:
+		w.b.WriteString("[]")
+		w.put(t.Elem(), depth+1)
+	case *types.Array:
+		fmt.Fprintf(&w.b, "[%d]", t.Len())
+		w.put(t.Elem(), depth+1)
+	case *types.Map:
+		w.b.WriteString("map[")
+		w.put(t.Key(), depth+1)
+		w.b.WriteString("]")
+		w.put(t.Elem(), depth+1)
+	case *types.Chan:
+		fmt.Fprintf(&w.b, "chan%d ", t.Dir())
+		w.put(t.Elem(), depth+1)
+	case *types.Signature:
+		w.b.WriteString("func")
+		if rv := t.Recv(); rv != nil { // a method's declaring receiver (Astra #283 r4 H1)
+			w.b.WriteString("<")
+			w.put(rv.Type(), depth+1)
+			w.b.WriteString(">")
+		}
+		tuple(t.Params())
+		tuple(t.Results())
+		fmt.Fprint(&w.b, t.Variadic())
+	case *types.Tuple:
+		tuple(t)
+	case *types.Struct:
+		list("struct{", "; ", "}", t.NumFields(), func(i int) {
+			fmt.Fprintf(&w.b, "%s %v %q ", t.Field(i).Name(), t.Field(i).Embedded(), t.Tag(i))
+			w.put(t.Field(i).Type(), depth+1)
+		})
+	case *types.Interface:
+		list("interface{", "; ", "", t.NumExplicitMethods(), func(i int) {
+			w.b.WriteString(t.ExplicitMethod(i).Name())
+			w.put(t.ExplicitMethod(i).Type(), depth+1)
+		})
+		list("; ", "; ", "}", t.NumEmbeddeds(), func(i int) { w.put(t.EmbeddedType(i), depth+1) })
+	case *types.Union:
+		list("", "|", "", t.Len(), func(i int) {
+			fmt.Fprint(&w.b, t.Term(i).Tilde())
+			w.put(t.Term(i).Type(), depth+1)
+		})
+	case *types.Named:
+		o := t.Origin().Obj()
+		if w.named != nil {
+			w.named(o)
+		}
+		if o.Pkg() != nil {
+			w.b.WriteString(o.Pkg().Path())
+		}
+		w.b.WriteString("." + o.Name())
+		list("[", ", ", "]", t.TypeArgs().Len(), func(i int) { w.put(t.TypeArgs().At(i), depth+1) })
+	case *types.TypeParam:
+		fmt.Fprintf(&w.b, "$%d%s", t.Index(), t.Obj().Name())
+	default: // *types.Basic
+		fmt.Fprintf(&w.b, "%T:%v", t, t)
 	}
 }
 
@@ -465,32 +699,14 @@ func sMethod(o *types.Func) bool {
 		!(p == "os" && recv == "File" && slices.Contains(osReads, o.Name()))
 }
 
-// typedIn calls add for each S method through a value and each S type
-// argument in u (inside its function literals only, with lits).
+// typedIn calls add for each S target (sAt) in u (inside its function
+// literals only, with lits).
 func (r *run) typedIn(u unit, info *types.Info, names map[types.Object]string, add func(pkg, ref string)) {
 	visit := func(n ast.Node) bool {
 		if n == nil || !r.chargeTypes(1) {
 			return n == nil
 		}
-		switch x := n.(type) {
-		case *ast.SelectorExpr:
-			if s := info.Selections[x]; s != nil && s.Kind() != types.FieldVal {
-				if o, _ := s.Obj().(*types.Func); o != nil && sMethod(o) {
-					add(o.Pkg().Path(), r.methodName(o.Origin(), names))
-				}
-			}
-		case *ast.Ident:
-			if in, ok := info.Instances[x]; ok && in.TypeArgs != nil && r.chargeTypes(len(x.Name)) {
-				for t := range in.TypeArgs.Types() {
-					if p, ok := types.Unalias(t).(*types.Pointer); ok {
-						t = p.Elem()
-					}
-					if nt, ok := types.Unalias(t).(*types.Named); ok && sObj(nt.Obj(), nt.Obj().Name()) {
-						add(nt.Obj().Pkg().Path(), bound(x.Name)+"["+r.typeName(nt.Obj(), names)+"]")
-					}
-				}
-			}
-		}
+		r.sAt(n, info, names, add)
 		return true
 	}
 	if !u.lits {
@@ -504,6 +720,30 @@ func (r *run) typedIn(u unit, info *types.Info, names map[types.Object]string, a
 		}
 		return n == nil || r.chargeTypes(1)
 	})
+}
+
+// sAt calls add for n's S target: an S method through a value, or each S
+// named type in an instance's type arguments, aliases resolved at every level
+// (Astra #283 r3 H1). typedIn and typedPrint resolve S uses through it alone.
+func (r *run) sAt(n ast.Node, info *types.Info, names map[types.Object]string, add func(pkg, ref string)) {
+	switch x := n.(type) {
+	case *ast.SelectorExpr:
+		if s := info.Selections[x]; s != nil && s.Kind() != types.FieldVal {
+			if o, _ := s.Obj().(*types.Func); o != nil && sMethod(o) {
+				add(o.Pkg().Path(), r.methodName(o.Origin(), names))
+			}
+		}
+	case *ast.Ident:
+		if in, ok := info.Instances[x]; ok && in.TypeArgs != nil && r.chargeTypes(len(x.Name)) {
+			for t := range in.TypeArgs.Types() {
+				r.chargeTypes(len(typeStr(t, func(o *types.TypeName) {
+					if sObj(o, o.Name()) {
+						add(o.Pkg().Path(), bound(x.Name)+"["+r.typeName(o, names)+"]")
+					}
+				})))
+			}
+		}
+	}
 }
 
 // methodName is o's full name from bounded parts, once an object:
