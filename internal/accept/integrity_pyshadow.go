@@ -39,6 +39,7 @@ type pyBase struct {
 	bad          map[string]bool        // a base closure module that is not inert, writes, imports dynamically or uses sys
 	linkTargets  []string               // a base symlink's target in the root; "" when out of it (Opus #281 H4)
 	opaque       map[string]bool        // a module name under a base symlink or gitlink (Opus #279 M1)
+	other        map[string]string      // a module name's non-source form (.pyc, an extension), its path (Astra #281 r4 H3)
 	changed      map[string]bool        // the changes' paths: a changed judged file's own code is P14c-2a-allow's, a changed module's warns
 
 	// entries are main's (the root, pythonpath, the basedirs) and resolve; extra are the roots an install
@@ -233,6 +234,12 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	owner, indent, deco, bodies := -1, 0, []ptok(nil), []int(nil)
 	future, inert, starSeen := false, true, map[string]bool{} // pyInert, every module-level statement
 	conftest, defIn := path.Base(q) == "conftest.py", -1      // a def's body does not run at import
+	trust := map[string]bool{}                                // the decorators' roots: pyTrusted proves each binding (Astra #281 r4 H2)
+	stmt := func(st []ptok) bool {                            // inert: main's allowlist and the positive grammar (Astra #281 r4)
+		r, ok := pyDeco(st)
+		trust[r] = trust[r] || st[0].text == "@"
+		return st[0].text == "@" && ok || st[0].text != "@" && pyStmt(st)
+	}
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
@@ -246,13 +253,13 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 			f.active = f.active || atImport && (slices.Contains(pyWriteWords, k.text) || slices.Contains(pyImportPath, pyStr(k))) // getattr(M, '__path__')
 			f.runs = f.runs || slices.Contains(pyRunWords, k.text) && !pyExactImport(line, i) || bare && slices.Contains([]string{"exec", "eval", "compile"}, k.text)
 		}
-		for _, st := range pySplit(l.toks, ";") { // a statement run at import: pyAllowed only (Opus #281 H1)
+		for _, st := range pySplit(l.toks, ";") { // a statement run at import: pyAllowed and pyStmt only (Opus #281 H1, Astra #281 r4)
 			if len(st) == 0 || defIn >= 0 || len(st) == 5 && st[0].text == "from" && st[1].text == "." && st[4].text == "*" {
 				continue // an exact relative star is P14c-2a-star's
 			} else if pyMain(st) {
 				defIn = l.indent // the exact __main__ guard's body does not run at import
 				continue
-			} else if names, _ := pyBinds(st); pyAllowed(st, conftest) != "" || !pyConst(l.inner) || slices.ContainsFunc(names, func(n string) bool {
+			} else if names, _ := pyBinds(st); pyAllowed(st, conftest) != "" || !stmt(st) || !pyConst(l.inner) || slices.ContainsFunc(names, func(n string) bool {
 				return strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__"
 			}) {
 				f.impure = true
@@ -393,6 +400,9 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				}
 			}
 		}
+	}
+	for r, used := range trust {
+		f.impure = f.impure || used && !pyTrusted(lines, r)
 	}
 	f.units, f.binders = units, binders
 	f.plain = inert && !f.unread

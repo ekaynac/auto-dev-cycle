@@ -262,12 +262,12 @@ func (pb *pyBase) starSourceOf(p string) (string, error) {
 // No write is attributed to a module (the split: widen-b). Every path and
 // root expansion is charged first (r3 M1).
 func (pb *pyBase) closure() error {
-	pb.opaque, pb.bad = map[string]bool{}, map[string]bool{}
+	pb.opaque, pb.bad, pb.other = map[string]bool{}, map[string]bool{}, map[string]string{}
 	over := func() error {
 		pb.holderUnread = cmp.Or(pb.holderUnread, "the base conditions' analysis is over the guard's work bound")
 		return pb.r.ctx.Err()
 	}
-	if _, ok := pb.forms(pb.r.files, false, pb.alts); !ok {
+	if _, ok := pb.forms(pb.r.files, false, pb.alts, pb.other); !ok {
 		return over()
 	}
 	for p, mode := range pb.r.links {
@@ -323,8 +323,12 @@ func (pb *pyBase) closure() error {
 					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+n+" is a symlink or a gitlink in the base") // Opus #281 H4
 				} else if names[n] = true; pb.alts[n] > 1 {
 					pb.holderUnread = cmp.Or(pb.holderUnread, "the module name "+n+" has more than one file") // Astra #281 r3 H3
-				} else if cmp.Or(pb.mods[n], pb.shadowMods[n]) != "" {
-					g, err := pb.file(cmp.Or(pb.mods[n], pb.shadowMods[n]))
+				} else if pb.other[n] != "" {
+					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+n+" is not one plain source ("+pb.other[n]+")") // Astra #281 r4 H3
+				} else if q := cmp.Or(pb.mods[n], pb.shadowMods[n]); q != "" && (slices.Contains(strings.Split(q, "/"), "__pycache__") || parts[0] == "pytest") {
+					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+q+" is under __pycache__ or is pytest's") // Astra #281 r4 H4, H2
+				} else if q != "" {
+					g, err := pb.file(q)
 					if err != nil {
 						return err
 					}
@@ -360,14 +364,22 @@ func (pb *pyBase) risky(f *pyBaseFile) string {
 // and that the base closure did not reach as one (Opus #281 M1, Astra #281
 // r3). Each path and import is charged first, each path queued once.
 func (pb *pyBase) candClosure() (string, error) {
-	alts := map[string]int{}
-	mods, ok := pb.forms(pb.r.cand, true, alts)
+	alts, other := map[string]int{}, map[string]string{}
+	mods, ok := pb.forms(pb.r.cand, true, alts, other)
 	if !ok {
 		return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
 	}
-	queue, queued := []string(nil), map[string]bool{}
+	queue, queued, seen := []string(nil), map[string]bool{}, map[string]bool{}
 	for p := range pb.r.cand {
-		if queued[p] = path.Ext(p) == ".py" && (pyTested(p) || pb.r.pyTestDir(p) || pb.changed[p]); queued[p] {
+		if path.Ext(p) != ".py" {
+			continue
+		}
+		for d := path.Dir(p); d != "." && !seen[d]; d = path.Dir(d) { // each directory's entries charged once, before pyTestDir reads them (Astra #281 r4 M2)
+			seen[d], pb.r.work = true, pb.r.work+len(pb.r.baseDirs[d])+len(pb.r.candDirs[d])
+		}
+		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
+		} else if queued[p] = pyTested(p) || pb.r.pyTestDir(p) || pb.changed[p]; queued[p] {
 			queue = append(queue, p)
 		}
 	}
@@ -389,8 +401,8 @@ func (pb *pyBase) candClosure() (string, error) {
 					return p, nil // a name past the depth bound
 				}
 				for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
-					if n := strings.Join(parts[:k], "."); pb.opaque[n] || alts[n] > 1 {
-						return p, nil // a base link or gitlink, or a name two files answer to, newly reached (Astra #281 r2 H5, r3 H3)
+					if n := strings.Join(parts[:k], "."); pb.opaque[n] || alts[n] > 1 || other[n] != "" || slices.Contains(strings.Split(mods[n], "/"), "__pycache__") {
+						return p, nil // a base link or gitlink, a name two files answer to, a non-source form or a module under __pycache__, newly reached (Astra #281 r2 H5, r3 H3, r4 H3, H4)
 					} else if q := mods[n]; q != "" && !queued[q] {
 						queued[q], queue = true, append(queue, q)
 					}
@@ -403,19 +415,25 @@ func (pb *pyBase) candClosure() (string, error) {
 
 // forms counts into alts how many of tree's files CPython's file finder
 // may load (pyForm), the .py ones only when py, answer to each dotted name
-// over every root, and names each name's .py file (Astra #281 r3 H3). Each
-// path is charged before its names are built; false: over the work bound.
-func (pb *pyBase) forms(tree map[string]string, py bool, alts map[string]int) (map[string]string, bool) {
+// over every root (Astra #281 r3 H3); other keeps a name's non-source form
+// (r4 H3); and names each name's .py file, under its own __pycache__ (r4
+// H4). Each path is charged before its names are built; false: over the
+// work bound.
+func (pb *pyBase) forms(tree map[string]string, py bool, alts map[string]int, other map[string]string) (map[string]string, bool) {
 	mods := map[string]string{}
 	for p := range tree {
-		if m, ok := pyForm(p); ok && (py || path.Ext(p) != ".py") {
-			if pb.r.work += 1 + len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
-				return nil, false
-			}
-			for _, n := range pyModNames(m, pb.shadowEntries, false) {
-				if alts[n]++; path.Ext(p) == ".py" {
-					mods[n] = p
-				}
+		m, ok := pyForm(p)
+		src := path.Ext(p) == ".py"
+		if !ok || !py && src {
+			continue
+		} else if pb.r.work += 1 + len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return nil, false
+		}
+		for _, n := range pyModNames(m, pb.shadowEntries, false) {
+			if alts[n]++; src {
+				mods[n] = p
+			} else {
+				other[n] = cmp.Or(other[n], p)
 			}
 		}
 	}
@@ -424,11 +442,12 @@ func (pb *pyBase) forms(tree map[string]string, py bool, alts map[string]int) (m
 
 // pyForm: the module file p is a form of for CPython's file finder, as
 // dir/x.py (a package's: dir/x/__init__.py): x.py, x.pyc, an extension
-// x.*.so or x.*.pyd, or bytecode cached in __pycache__.
+// x.*.so or x.*.pyd, or bytecode cached in __pycache__ (only a .pyc's
+// __pycache__ is dropped: Astra #281 r4 H4).
 func pyForm(p string) (string, bool) {
 	d, b := path.Dir(p), path.Base(p)
 	x, _, _ := strings.Cut(b, ".") // a.b.py is no form of a, but counts as one: fail closed
-	if path.Base(d) == "__pycache__" {
+	if path.Base(d) == "__pycache__" && path.Ext(b) == ".pyc" {
 		d = path.Dir(d)
 	}
 	return path.Join(d, x) + ".py", x != "" && slices.Contains([]string{".py", ".pyc", ".so", ".pyd"}, path.Ext(b))

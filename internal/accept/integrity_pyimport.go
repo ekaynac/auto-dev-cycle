@@ -21,10 +21,19 @@ var (
 )
 
 // pyTestDir: p is under a test directory: one named test or tests, or one
-// below the root holding a test module or conftest (base or candidate).
+// below the root holding a test module or conftest (base or candidate);
+// each directory classified once (Astra #281 r4 M2).
 func (r *run) pyTestDir(p string) bool {
+	if r.pyTests == nil {
+		r.pyTests = map[string]bool{}
+	}
 	for d := path.Dir(p); d != "."; d = path.Dir(d) {
-		if b := path.Base(d); b == "test" || b == "tests" || slices.ContainsFunc(append(slices.Clone(r.baseDirs[d]), r.candDirs[d]...), pyTested) {
+		t, ok := r.pyTests[d]
+		if b := path.Base(d); !ok {
+			t = b == "test" || b == "tests" || slices.ContainsFunc(r.baseDirs[d], pyTested) || slices.ContainsFunc(r.candDirs[d], pyTested)
+			r.pyTests[d] = t
+		}
+		if t {
 			return true
 		}
 	}
@@ -196,9 +205,9 @@ func pyAllowed(t []ptok, conftest bool) string {
 				params, j = slices.Delete(params, j, j+1), j-1
 			}
 		}
-		return ok(pyConst(params) && pyHeader(d))
+		return ok(pyConst(params))
 	case d[0].text == "class" && len(h[0]) > 1:
-		return ok(pyConst(h[0][2:]) && !slices.ContainsFunc(h[0][2:], func(k ptok) bool { return k.kind != 'n' && !strings.Contains("(),.", k.text) }) && // bases only names (Astra #281 r3)
+		return ok(pyConst(h[0][2:]) && !named(h[0], "metaclass") && !slices.ContainsFunc(h[0], func(k ptok) bool { return k.text == "*" }) &&
 			len(t) == len(h[0])+1+b2i(t[len(t)-1].text == "pass"))
 	case len(d) == 1 && (d[0].text == "pass" || d[0].kind == 's' && !strings.ContainsAny(d[0].text[:strings.IndexAny(d[0].text, `"'`)], "fFtT")):
 		return ""
@@ -207,9 +216,6 @@ func pyAllowed(t []ptok, conftest bool) string {
 	for _, target := range parts[:len(parts)-1] {
 		if !pyConst(target) {
 			return why
-		}
-		if a := pySplit(target, ":"); len(a) > 2 || len(a) == 2 && !pyTrivial(a[1]) {
-			return why // an annotation runs at import: a name or a literal only (Astra #281 r3)
 		}
 		for _, n := range pySplit(pySplit(target, ":")[0], ",") {
 			if len(n) != 1 || n[0].kind != 'n' || slices.Contains(pyFixtures, n[0].text) || conftest && strings.HasPrefix(n[0].text, "collect_ignore") {
@@ -224,33 +230,161 @@ func pyAllowed(t []ptok, conftest bool) string {
 // suite runs at import (try: M.x = v).
 var pyCompound = strings.Fields("try except finally else elif if while for with")
 
-// pyHeader: def statement d evaluates at import only pyTrivial forms:
-// each default and annotation, the return one too (Astra #281 r3 H2).
-func pyHeader(d []ptok) bool {
-	end := pyDepthEnd(d, 2)
-	if len(d) < 4 || d[2].text != "(" || end < 0 {
+// pyStmt: statement st, run at import, is inert by a positive grammar, and
+// nothing else is (Astra #281 r4): an import without a star, a docstring,
+// pass, ONE bare name = a pyExpr (annotated by a pyExpr), or a def or class
+// whose header is inert (pyHeader). A decorator is pyDeco's.
+func pyStmt(st []ptok) bool {
+	d := st[b2i(st[0].text == "async"):]
+	switch {
+	case len(d) == 0:
 		return false
-	} else if ret := pySplit(d[end+1:], ":")[0]; len(ret) > 0 && (len(ret) < 3 || ret[0].text != "-" || ret[1].text != ">" || !pyTrivial(ret[2:])) {
+	case d[0].text == "import" || d[0].text == "from":
+		return !slices.ContainsFunc(d, func(k ptok) bool { return k.text == "*" })
+	case len(d) == 1 && (d[0].text == "pass" || d[0].kind == 's'):
+		return d[0].text == "pass" || pyExpr(d)
+	case d[0].text == "def" || d[0].text == "class":
+		return pyHeader(d)
+	}
+	parts := pyAssign(st)
+	tg := pySplit(parts[0], ":")
+	return len(parts) == 2 && len(tg[0]) == 1 && pyName(tg[0]) && (len(tg) == 1 || len(tg) == 2 && pyExpr(tg[1])) && pyExpr(parts[1])
+}
+
+// pyExpr: t is an inert expression: a number, -number, strings (no f- or
+// t-string), True, False, None, a name or dotted name, or a tuple, list,
+// set or dict display of pyExprs. Nothing else is: no comprehension, call,
+// subscript, operator, lambda, conditional, walrus or starred (r4 H1).
+func pyExpr(t []ptok) bool {
+	if es := pySplit(t, ","); len(es) > 1 {
+		return pyElems(es, false)
+	} else if len(t) == 0 {
 		return false
 	}
-	for _, p := range pySplit(d[3:end], ",") {
-		for len(p) > 0 && strings.Trim(p[0].text, "*") == "" { // *args, **kwargs, a bare *
-			p = p[1:]
-		}
-		eq := slices.IndexFunc(p, func(k ptok) bool { return k.text == "=" })
-		if eq < 0 {
-			eq = len(p)
-		}
-		if len(p) > 0 && p[0].text != "/" && (p[0].kind != 'n' || eq > 1 && (p[1].text != ":" || !pyTrivial(p[2:eq])) || eq < len(p) && !pyTrivial(p[eq+1:])) {
+	switch k := t[0]; {
+	case len(t) == 1 && k.kind == '1', len(t) == 2 && k.text == "-" && t[1].kind == '1':
+		return true
+	case k.kind == 's':
+		return !slices.ContainsFunc(t, func(k ptok) bool {
+			return k.kind != 's' || strings.ContainsAny(k.text[:strings.IndexAny(k.text, `"'`)], "fFtT")
+		})
+	case k.kind == 'o' && strings.Contains("([{", k.text) && pyClosed(t):
+		return pyElems(pySplit(t[1:len(t)-1], ","), k.text == "{")
+	}
+	return pyName(t)
+}
+
+// pyElems: each element of a display is a pyExpr (key: value in a dict).
+func pyElems(es [][]ptok, dict bool) bool {
+	return pyElemsBy(es, func(e []ptok) bool {
+		kv := pySplit(e, ":")
+		return !dict && pyExpr(e) || dict && len(kv) <= 2 && pyExpr(kv[0]) && (len(kv) == 1 || pyExpr(kv[1]))
+	})
+}
+
+// pyName: t is a name or a dotted name: no keyword (try: X = 1 is no
+// annotated name try), True, False and None aside.
+func pyName(t []ptok) bool {
+	for i, k := range t {
+		if i%2 == 0 && (k.kind != 'n' || slices.Contains(pyHard, k.text)) || i%2 == 1 && k.text != "." {
 			return false
 		}
 	}
-	return true
+	return len(t)%2 == 1
 }
 
-// pyTrivial: t evaluates to a name or a pyLiteral, running nothing.
-func pyTrivial(t []ptok) bool {
-	return len(t) == 1 && t[0].kind == 'n' || pyLiteral(t)
+// pyHard are Python's keywords but True, False and None.
+var pyHard = strings.Fields("and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield")
+
+// pyClosed: t's first bracket closes at its last token.
+func pyClosed(t []ptok) bool {
+	depth := 0
+	for i, k := range t {
+		if k.kind == 'o' && strings.Contains("([{", k.text) {
+			depth++
+		} else if k.kind == 'o' && strings.Contains(")]}", k.text) {
+			depth--
+		}
+		if depth == 0 {
+			return i == len(t)-1
+		}
+	}
+	return false
+}
+
+// pyHeader: def or class statement d evaluates only pyExprs at import: each
+// default and annotation, the return one too; a class's bases bare or
+// dotted names, no keyword (r3 H2, r4).
+func pyHeader(d []ptok) bool {
+	h := pySplit(d, ":")
+	if len(d) < 3 || d[1].kind != 'n' || len(h) < 2 {
+		return false
+	} else if d[0].text == "class" {
+		return len(h[0]) == 2 || h[0][2].text == "(" && pyClosed(h[0][2:]) && pyElemsBy(pySplit(h[0][3:len(h[0])-1], ","), pyName)
+	}
+	sig := pySplit(h[0][2:], "-")
+	if len(sig) > 2 || len(sig[0]) < 2 || sig[0][0].text != "(" || !pyClosed(sig[0]) || len(sig) == 2 && (len(sig[1]) < 2 || sig[1][0].text != ">" || !pyExpr(sig[1][1:])) {
+		return false
+	}
+	return pyElemsBy(pySplit(sig[0][1:len(sig[0])-1], ","), func(p []ptok) bool {
+		for len(p) > 0 && p[0].text == "*" { // *args, **kwargs, a bare *
+			p = p[1:]
+		}
+		if len(p) == 0 || len(p) == 1 && p[0].text == "/" {
+			return true
+		}
+		kv := pySplit(p[1:], "=")
+		return pyName(p[:1]) && len(kv) <= 2 && (len(kv[0]) == 0 || kv[0][0].text == ":" && pyExpr(kv[0][1:])) && (len(kv) == 1 || pyExpr(kv[1]))
+	})
+}
+
+// pyElemsBy: each of es passes ok; a trailing comma leaves one empty.
+func pyElemsBy(es [][]ptok, ok func([]ptok) bool) bool {
+	if len(es[len(es)-1]) == 0 {
+		es = es[:len(es)-1]
+	}
+	return !slices.ContainsFunc(es, func(e []ptok) bool { return !ok(e) })
+}
+
+// pyDeco: decorator st calls a trusted pytest chain (pyPytest without
+// patch: rooted at pytest or fixture) with pyExpr arguments; its root,
+// whose binding pyTrusted must prove (Astra #281 r4 H2).
+func pyDeco(st []ptok) (string, bool) {
+	end := slices.IndexFunc(st, func(k ptok) bool { return k.text == "(" })
+	if end < 0 {
+		end = len(st)
+	}
+	c := pyJoin(st[1:end])
+	root, _, _ := strings.Cut(c, ".")
+	return root, pyName(st[1:end]) && pyPytest(c, false) && (end == len(st) || pyClosed(st[end:]) &&
+		pyElemsBy(pySplit(st[end+1:len(st)-1], ","), func(a []ptok) bool {
+			if len(a) > 2 && a[0].kind == 'n' && a[1].text == "=" { // a keyword argument
+				a = a[2:]
+			}
+			return pyExpr(a)
+		}))
+}
+
+// pyTrusted: name r is bound in the file only by import pytest (r is
+// pytest) or from pytest import r, and never rebound: no star import, and
+// every other r not after . is r. or @r (Astra #281 r4 H2).
+func pyTrusted(lines []pline, r string) bool {
+	proof := false
+	for _, l := range lines {
+		for _, st := range pySplit(slices.Concat(l.toks, l.inner), ";") {
+			if len(st) > 1 && (st[0].text == "import" && r == "pytest" || pyJoin(st[:min(3, len(st))]) == "frompytestimport" && r != "pytest") &&
+				slices.ContainsFunc(pyImportParts(st), func(p []ptok) bool { return len(p) == 1 && p[0].text == r }) {
+				proof = true
+				continue
+			}
+			for i, k := range st {
+				if k.text == "*" && i > 0 && st[i-1].text == "import" || k.kind == 'n' && k.text == r && (i == 0 || st[i-1].text != "." && st[i-1].text != "@") && (i+1 == len(st) || st[i+1].text != ".") {
+					return false
+				}
+			}
+		}
+	}
+	return proof
 }
 
 func pyJoin(t []ptok) string {

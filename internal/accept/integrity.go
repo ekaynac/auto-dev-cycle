@@ -94,6 +94,7 @@ type run struct {
 	files, cand        map[string]string   // the base's and the candidate's paths, to blobs
 	links              map[string]string   // the base's symlinks and gitlinks, to their mode (Opus #279 M1)
 	baseDirs, candDirs map[string][]string // their files by directory
+	pyTests            map[string]bool     // pyTestDir's verdict for a directory, once (Astra #281 r4 M2)
 	touched            map[string]bool     // directories of changed Go files
 	trees              [2]*tree            // the base and the candidate
 	vendorChanged      map[string]bool     // vendor/ directories with a file changed
