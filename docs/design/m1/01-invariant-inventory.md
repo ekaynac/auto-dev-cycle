@@ -246,8 +246,8 @@ through `lease.completed`. P21a keeps this check.
 | Check | Today | Status | Item |
 |---|---|---|---|
 | admission | none: there are no task acceptance blobs | GAP | P3 (classed restricted from builder and reviewer) |
-| fold/replay | none: no `manifest.intent` of a build or review exists to check | GAP | P16 (the builder's and reviewer's intent; I18 moved from P14, #226 entry 71; the folds refuse an acceptance ref in a build's or review's intent) |
-| consumption | `graph.Context` renders only claimed inputs. `graph/content.go:classed` filters **evidence results only**; every other result kind is rendered whole, so it establishes nothing for acceptance blobs or gate results | kept + GAP | P3 (acceptance blobs classed), P22a (acceptance refs refused as build or review inputs, with consumption-path fault evidence), P15 (gate results sanitised for consumers: failure text kept as a diagnostic blob), P16 (manifests and renderers take ids and statuses only); plus X1's stub-log canary |
+| fold/replay | none: no `manifest.intent` of a build or review is recorded yet to check | GAP | P22a (the folds refuse an acceptance ref in a recorded build's or review's intent, once intents are recorded; I18 moved from P14, #226 entry 71) |
+| consumption | `graph.Context` renders only claimed inputs. `graph/content.go:classed` filters **evidence results only**. P16a's `intent.Builder` and `intent.Reviewer` refuse an input that is, or derives at any depth from, an acceptance blob, walking authoritative ref records (`graph.Records`: identity and complete lineage, bounded), and a reviewer input that is a review's result (a fresh context per round); nothing calls them until P22a | kept + partial | P3 (acceptance blobs classed), P16a (the builder's and reviewer's intent), P22a (calls them for every build and review, with consumption-path fault evidence), P15 (gate results sanitised for consumers); plus X1's stub-log canary |
 | effect | n/a: the stub-log canary assertion (X1) is the check | n/a | — |
 
 ## I19. Liveness: every non-terminal task has a frontier (D63)
