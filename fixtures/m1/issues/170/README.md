@@ -6,7 +6,7 @@ This is the first real target for M1's checkpoint (a), chosen under slice plan ย
 |---|---|
 | `task.json` | The `task.create` scope: project, title, an exact requirement, and the acceptance attachment by path and digest. |
 | `baseline.json` | A provisional `go test -json ./internal/cli/...` record at the base, and the acceptance tests' expected results, as counts only. |
-| `baseline-report.json` | The same run as the gate's base: `results.ParseGoTestJSON`'s own `Report` encoding, recorded in the prepared Go image (P32), with its command and the three tests that skip as root. Provisional until the image digest is pushed. |
+| `baseline-report.json` | The same run as the gate's base: `results.ParseGoTestJSON`'s own `Report` encoding, recorded in the prepared Go image (P32), with its command and the three tests that skip as root. Provisional until P15 re-records it in the pinned image (`ghcr.io/ekaynac/adc-prepared-go@sha256:1d2fa05bf24dc73dff179b0b08e6ee89cb82d8ac47b0c133cc578210fcce744b`). |
 
 ## Selection evidence (ยง2.2)
 
