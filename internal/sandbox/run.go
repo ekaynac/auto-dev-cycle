@@ -23,6 +23,10 @@ import (
 // ErrSpec marks a run that is refused before anything starts.
 var ErrSpec = errors.New("sandbox: run refused")
 
+// ErrLeft marks a run that ran and left more than its bounds, or what
+// cannot be measured (within): what it did, not a refusal to start it.
+var ErrLeft = errors.New("sandbox: the run left more than its bounds")
+
 // Limits bound one run.
 type Limits struct {
 	Memory  int64         // bytes (podman --memory)
@@ -171,6 +175,9 @@ func (a *Attempt) within(disk int64) error {
 	}
 	if err != nil && !errors.Is(err, ErrSpec) {
 		err = fmt.Errorf("%w: the run left what cannot be measured: %w", ErrSpec, err)
+	}
+	if err != nil {
+		err = errors.Join(ErrLeft, err)
 	}
 	return err
 }

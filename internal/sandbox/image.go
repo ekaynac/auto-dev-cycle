@@ -13,6 +13,7 @@ import (
 	"maps"
 	"os"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -25,7 +26,8 @@ const ManifestLabel = "dev.adc.prepared"
 const maxLockfile = 16 << 20
 
 var (
-	// ErrImage: the pinned image is absent, or its digest differs.
+	// ErrImage: the pinned image is absent, its digest differs, or it is
+	// built for another OS or architecture than the host's.
 	ErrImage = errors.New("sandbox: the pinned image is not present at its digest")
 	// ErrManifest: the image was not prepared for this toolchain and base.
 	ErrManifest = errors.New("sandbox: the image manifest does not match the pinned toolchain and the base's lockfiles")
@@ -35,10 +37,12 @@ var (
 )
 
 // Image is a pinned image resolved in the host's storage. A run starts the
-// resolved ID, so the reference cannot move between check and start.
+// resolved ID, so the reference cannot move between check and start. OS
+// and Arch are the image's platform: the host's, by Resolve.
 type Image struct {
 	Pinned   string
 	ID       string
+	OS, Arch string
 	Manifest Manifest
 }
 
@@ -49,7 +53,10 @@ type Manifest struct {
 }
 
 // Resolve finds ref (name@sha256:hex) in the host's storage, never
-// pulling: an image whose digest differs from the pin is refused.
+// pulling: an image whose digest differs from the pin is refused, and so
+// is one built for another OS or architecture than the host's (#226 entry
+// 88: with an emulator registered, an index digest can sit on another
+// platform's image, which would run emulated).
 func (h Host) Resolve(ctx context.Context, ref string) (Image, error) {
 	// Podman's RepoDigests name the registry (docker.io/library/debian@…);
 	// a short name is refused rather than guessed.
@@ -62,15 +69,20 @@ func (h Host) Resolve(ctx context.Context, ref string) (Image, error) {
 		return Image{}, fmt.Errorf("%w: %w", ErrImage, err)
 	}
 	var found []struct {
-		ID          string            `json:"Id"`
-		RepoDigests []string          `json:"RepoDigests"`
-		Labels      map[string]string `json:"Labels"`
+		ID           string            `json:"Id"`
+		RepoDigests  []string          `json:"RepoDigests"`
+		Labels       map[string]string `json:"Labels"`
+		OS           string            `json:"Os"`
+		Architecture string            `json:"Architecture"`
 	}
 	if err := json.Unmarshal(out, &found); err != nil || len(found) != 1 || !imgID.MatchString(found[0].ID) ||
 		!slices.Contains(found[0].RepoDigests, ref) {
 		return Image{}, ErrImage
 	}
-	img := Image{Pinned: ref, ID: found[0].ID}
+	if found[0].OS != runtime.GOOS || found[0].Architecture != runtime.GOARCH {
+		return Image{}, fmt.Errorf("%w: the image is %s/%s, the host %s/%s", ErrImage, found[0].OS, found[0].Architecture, runtime.GOOS, runtime.GOARCH)
+	}
+	img := Image{Pinned: ref, ID: found[0].ID, OS: found[0].OS, Arch: found[0].Architecture}
 	if raw, ok := found[0].Labels[ManifestLabel]; ok {
 		if err := json.Unmarshal([]byte(raw), &img.Manifest); err != nil {
 			return Image{}, fmt.Errorf("%w: the manifest label is not JSON", ErrManifest)

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -214,14 +215,17 @@ func TestTimeoutRemovesContainer(t *testing.T) {
 
 func TestResolve(t *testing.T) {
 	ref := "docker.io/library/debian@sha256:" + strings.Repeat("a", 64)
-	inspect := func(digests string) func(context.Context, []string) ([]byte, error) {
+	inspectOn := func(digests, platform string) func(context.Context, []string) ([]byte, error) {
 		return func(context.Context, []string) ([]byte, error) {
-			return []byte(`[{"Id":"` + testID + `","RepoDigests":[` + digests + `],"Labels":{"dev.adc.prepared":"{\"toolchain\":\"go\",\"lockfiles\":{\"go.sum\":\"sha256:1\"}}"}}]`), nil
+			return []byte(`[{"Id":"` + testID + `","RepoDigests":[` + digests + `],` + platform + `"Labels":{"dev.adc.prepared":"{\"toolchain\":\"go\",\"lockfiles\":{\"go.sum\":\"sha256:1\"}}"}}]`), nil
 		}
 	}
+	host := `"Os":"` + runtime.GOOS + `","Architecture":"` + runtime.GOARCH + `",`
+	inspect := func(digests string) func(context.Context, []string) ([]byte, error) { return inspectOn(digests, host) }
+	foreign := map[string]string{"amd64": "arm64", "arm64": "amd64"}[runtime.GOARCH]
 	h := testHost(t, &fake{fn: inspect(`"` + ref + `"`)})
 	img, err := h.Resolve(context.Background(), ref)
-	if err != nil || img.ID != testID || img.Manifest.Toolchain != "go" || img.Manifest.Lockfiles["go.sum"] != "sha256:1" {
+	if err != nil || img.ID != testID || img.OS != runtime.GOOS || img.Arch != runtime.GOARCH || img.Manifest.Toolchain != "go" || img.Manifest.Lockfiles["go.sum"] != "sha256:1" {
 		t.Fatalf("Resolve = %+v, %v", img, err)
 	}
 	// The F fault for images: another digest under the same name.
@@ -229,6 +233,11 @@ func TestResolve(t *testing.T) {
 	for name, h := range map[string]Host{
 		"digest differs": testHost(t, &fake{fn: inspect(`"` + other + `"`)}),
 		"absent":         testHost(t, &fake{fn: func(context.Context, []string) ([]byte, error) { return nil, errors.New("image not known") }}),
+		// #226 entry 88: the right digest on another platform's image, or
+		// on one that names no platform.
+		"another architecture": testHost(t, &fake{fn: inspectOn(`"`+ref+`"`, `"Os":"`+runtime.GOOS+`","Architecture":"`+foreign+`",`)}),
+		"another OS":           testHost(t, &fake{fn: inspectOn(`"`+ref+`"`, `"Os":"windows","Architecture":"`+runtime.GOARCH+`",`)}),
+		"no platform":          testHost(t, &fake{fn: inspectOn(`"`+ref+`"`, ``)}),
 	} {
 		if _, err := h.Resolve(context.Background(), ref); !errors.Is(err, ErrImage) {
 			t.Errorf("%s: %v, want ErrImage", name, err)
