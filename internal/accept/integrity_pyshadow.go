@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"bytes"
 	"cmp"
 	"maps"
 	"path"
@@ -72,6 +73,8 @@ type pyBaseFile struct {
 	impure  bool     // a statement run at import outside pyAllowed (P14c-2a-allow judges a test file's)
 	runs    bool     // a dynamic import or code from a string: import_module, __import__, importlib, runpy, exec, eval, compile (Opus #281 H3)
 	writes  []string // its attribute, subscript and del targets at import, whatever their head (the split)
+	blunt   string   // an import the closures cannot follow, read at token level: a star outside a package __init__.py, an import in a class body or of a class-private name, \N{…}, a decorator argument not rooted in one import (Astra #281 r5)
+	argMods []string // the modules a decorator's dotted arguments are rooted in: each must be a repository module (r5 H4)
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -223,6 +226,9 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		return nil, err
 	}
 	f.unread = why+why2 != "" || pb.tree == nil && pb.r.links[q] != "" // a base symlink is read as its link text (Opus #281 H4); the candidate's closure blocks on reaching one
+	if bytes.Contains(b, []byte(`\N{`)) {
+		f.blunt = `names a character by \N{…}, whose decoding may import unicodedata` // anywhere: compiling precedes running (Astra #281 r5 M2)
+	}
 	pure, aliases := pyPure(pb.r.ctx, lines)
 	rel, in := pyRel(path.Dir(q), pyBasedir(tree, q))
 	pkg := strings.Split(rel, "/") // q's package (a relative import's base)
@@ -232,20 +238,26 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	var units [][]ptok            // module-level statements, def and class bodies
 	binders := map[string][]int{} // a name, to the units binding it
 	owner, indent, deco, bodies := -1, 0, []ptok(nil), []int(nil)
-	future, inert, starSeen := false, true, map[string]bool{} // pyInert, every module-level statement
-	conftest, defIn := path.Base(q) == "conftest.py", -1      // a def's body does not run at import
-	trust := map[string]bool{}                                // the decorators' roots: pyTrusted proves each binding (Astra #281 r4 H2)
-	stmt := func(st []ptok) bool {                            // inert: main's allowlist and the positive grammar (Astra #281 r4)
-		r, ok := pyDeco(st)
-		trust[r] = trust[r] || st[0].text == "@"
+	future, inert, starSeen := false, true, map[string]bool{}                      // pyInert, every module-level statement
+	conftest, defIn, classIn := path.Base(q) == "conftest.py", -1, -1              // a def's body does not run at import; a class body does
+	trust, roots, binds := map[string]bool{}, []string(nil), map[string][]string{} // the decorators' roots (pyTrusted, Astra #281 r4 H2), their dotted arguments' roots, each name's imported modules (r5 H4)
+	stmt := func(st []ptok) bool {                                                 // inert: main's allowlist and the positive grammar (Astra #281 r4)
+		r, args, ok := pyDeco(st)
+		if trust[r] = trust[r] || st[0].text == "@"; st[0].text == "@" {
+			roots = append(roots, args...)
+		}
 		return st[0].text == "@" && ok || st[0].text != "@" && pyStmt(st)
 	}
+	isInit := path.Base(q) == "__init__.py"
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
 		f.sysUnread = f.sysUnread || !pySysUse(l.toks)
 		if defIn >= 0 && l.indent <= defIn {
 			defIn = -1
+		}
+		if classIn >= 0 && l.indent <= classIn {
+			classIn = -1
 		}
 		atImport := defIn < 0    // this line's header expressions run at import, a def's defaults too (Astra #281 r3 H2)
 		for i, k := range line { // the words of a write by call or of code run from a string, anywhere (Opus #281 H2, H3)
@@ -255,17 +267,22 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		}
 		for _, st := range pySplit(l.toks, ";") { // a statement run at import: pyAllowed and pyStmt only (Opus #281 H1, Astra #281 r4)
 			if len(st) == 0 || defIn >= 0 || len(st) == 5 && st[0].text == "from" && st[1].text == "." && st[4].text == "*" {
-				continue // an exact relative star is P14c-2a-star's
+				continue // an exact relative star is P14c-2a-star's in a package __init__.py, and risky elsewhere
 			} else if pyMain(st) {
 				defIn = l.indent // the exact __main__ guard's body does not run at import
 				continue
-			} else if names, _ := pyBinds(st); pyAllowed(st, conftest) != "" || !stmt(st) || !pyConst(l.inner) || slices.ContainsFunc(names, func(n string) bool {
+			} else if pyOpaque(st) || pyOpaque(l.inner) { // a changed module's too: no recognizer reads its targets (Astra #281 r5 H1)
+				f.blunt = cmp.Or(f.blunt, "holds a lambda, a comprehension or a generator at import")
+			}
+			if names, _ := pyBinds(st); pyAllowed(st, conftest) != "" || !stmt(st) || !pyConst(l.inner) || slices.ContainsFunc(names, func(n string) bool {
 				return strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__" || n == "object" // def __getattr__, __init_subclass__, …; a class(object) base rebound
 			}) {
 				f.impure = true
 			}
 			if d := st[b2i(st[0].text == "async"):]; d[0].text == "def" {
 				defIn = l.indent
+			} else if d[0].text == "class" && classIn < 0 {
+				classIn = l.indent
 			}
 		}
 		for _, st := range pySplit(line, ";") { // any attribute, subscript or del target at import, whatever its head (the split)
@@ -296,12 +313,12 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		}
 		for i := 1; i < len(l.toks); i++ { // a star import at token level, in any form (Astra #277 r2 H1)
 			if l.toks[i].text == "*" && l.toks[i-1].text == "import" {
-				if t := l.toks; l.indent == 0 && len(t) == 5 && t[0].text == "from" && t[1].text == "." && t[2].kind == 'n' {
+				if t := l.toks; isInit && l.indent == 0 && len(t) == 5 && t[0].text == "from" && t[1].text == "." && t[2].kind == 'n' {
 					if !starSeen[t[2].text] { // each source once (Astra #279 M1)
 						starSeen[t[2].text], f.starSrc = true, append(f.starSrc, t[2].text)
 					}
-				} else {
-					f.badStar = true
+				} else { // its __all__ may import submodules the closures do not follow (Astra #281 r5 H2)
+					f.badStar, f.blunt = true, cmp.Or(f.blunt, "has a star import other than from .x import * in a package __init__.py")
 				}
 			}
 		}
@@ -333,6 +350,11 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				continue
 			}
 			st := pySplit(l.toks[i:], ";")[0]
+			if classIn >= 0 && defIn < 0 && (l.indent > classIn || i > 0) || slices.ContainsFunc(st, func(k ptok) bool {
+				return k.kind == 'n' && strings.HasPrefix(k.text, "__") && !strings.HasSuffix(k.text, "__")
+			}) { // a class body's import binds in its scope, and a private name is mangled there (Astra #281 r5 H3)
+				f.blunt = cmp.Or(f.blunt, "imports in a class body or imports a class-private name")
+			}
 			for _, part := range pyImportParts(st) {
 				d, as := pyJoin(pySplit(part, "as")[0]), part[len(part)-1].text
 				if k.text == "from" { // a relative import from q's package (Mythos #267 r2 H3 i, the security review)
@@ -346,6 +368,11 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				}
 				if star, ok := strings.CutSuffix(d, ".*"); ok {
 					f.stars = append(f.stars, star)
+				}
+				if k.text == "import" && !named(part, "as") {
+					binds[as] = append(binds[as], part[0].text) // import a.b binds a, the module a
+				} else {
+					binds[as] = append(binds[as], d) // from m import x, import a.b as c
 				}
 				f.mods, f.from[as] = append(f.mods, d), d
 			}
@@ -403,6 +430,13 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	}
 	for r, used := range trust {
 		f.impure = f.impure || used && !pyTrusted(lines, r)
+	}
+	for _, r := range roots { // one import binds r, and nothing else does (Astra #281 r5 H4)
+		if ms := slices.Compact(slices.Sorted(slices.Values(binds[r]))); len(ms) == 1 && pyImported(lines, r) {
+			f.argMods = append(f.argMods, ms[0])
+		} else {
+			f.blunt = cmp.Or(f.blunt, "reads a decorator argument through "+r+", which one import does not bind")
+		}
 	}
 	f.units, f.binders = units, binders
 	f.plain = inert && !f.unread

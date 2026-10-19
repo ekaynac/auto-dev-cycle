@@ -267,8 +267,13 @@ func (pb *pyBase) closure() error {
 		pb.holderUnread = cmp.Or(pb.holderUnread, "the base conditions' analysis is over the guard's work bound")
 		return pb.r.ctx.Err()
 	}
-	if _, ok := pb.forms(pb.r.files, false, pb.alts, pb.other); !ok {
+	if _, ok := pb.forms(pb.r.files, pb.r.baseDirs, false, pb.alts, pb.other); !ok {
 		return over()
+	}
+	for _, s := range pyStdlib { // a top-level module an external one may import lazily (Astra #281 r5 H4)
+		if q := cmp.Or(pb.shadowMods[s], pb.other[s]); q != "" {
+			pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+q+" shadows the standard library's "+s)
+		}
 	}
 	for p, mode := range pb.r.links {
 		if pb.r.work += 1 + len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
@@ -306,6 +311,16 @@ func (pb *pyBase) closure() error {
 		} else if f.impure && !(pb.changed[f.path] && (pyTested(f.path) || pb.r.pyTestDir(f.path))) { // a judged file too (Astra #281 r3)
 			pb.holderUnread, pb.bad[f.path] = cmp.Or(pb.holderUnread, "the module "+f.path+" runs code at import outside the allowlist"), true
 		}
+		if why, err := pb.starsOf(f.path, f); err != nil { // a package __init__.py's own stars, proved in every reached one (Astra #281 r5 H2)
+			return err
+		} else if why != "" {
+			pb.holderUnread, pb.bad[f.path] = cmp.Or(pb.holderUnread, "the package "+strings.ReplaceAll(path.Dir(f.path), "/", ".")+" "+why), true
+		}
+		for _, m := range f.argMods { // a decorator's dotted argument: a repository module's, which the closure reads (Astra #281 r5 H4)
+			if cmp.Or(pb.mods[m], pb.shadowMods[m]) == "" {
+				pb.holderUnread, pb.bad[f.path] = cmp.Or(pb.holderUnread, "the module "+f.path+" reads a decorator argument from "+m+", not a repository module"), true
+			}
+		}
 		tried := map[string]bool{}
 		for _, m := range f.mods { // every package on the way runs too; each attempt charged, a new name by its bytes, before it is split (Astra #281 M1)
 			if pb.r.work += 1 + len(m)*b2i(!tried[m]); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
@@ -341,14 +356,17 @@ func (pb *pyBase) closure() error {
 }
 
 // risky: why closure module f may change what a condition reads, or "": a
-// dynamic import, an unread file or base link (Astra #281 H5, r2 H5), a
-// write word, or any attribute, subscript or del target run at import.
+// dynamic import, an unread file or base link (Astra #281 H5, r2 H5), an
+// import the closures cannot follow (r5), a write word, or any attribute,
+// subscript or del target run at import.
 func (pb *pyBase) risky(f *pyBaseFile) string {
 	switch {
 	case f.runs:
 		return "the module " + f.path + " imports or runs code dynamically"
 	case f.unread:
 		return "the module " + f.path + " is unread"
+	case f.blunt != "":
+		return "the module " + f.path + " " + f.blunt
 	case f.active:
 		return "the module " + f.path + " writes by a call or through a target the guard cannot read"
 	case len(f.writes) > 0:
@@ -365,9 +383,14 @@ func (pb *pyBase) risky(f *pyBaseFile) string {
 // r3). Each path and import is charged first, each path queued once.
 func (pb *pyBase) candClosure() (string, error) {
 	alts, other := map[string]int{}, map[string]string{}
-	mods, ok := pb.forms(pb.r.cand, true, alts, other)
+	mods, ok := pb.forms(pb.r.cand, pb.r.candDirs, true, alts, other)
 	if !ok {
 		return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
+	}
+	for _, s := range pyStdlib { // a top-level module an external one may import lazily, added (Astra #281 r5 H4)
+		if q := cmp.Or(mods[s], other[s]); q != "" && pb.r.files[q] != pb.r.cand[q] {
+			return q, nil
+		}
 	}
 	queue, queued, seen := []string(nil), map[string]bool{}, map[string]bool{}
 	for p := range pb.r.cand {
@@ -377,9 +400,10 @@ func (pb *pyBase) candClosure() (string, error) {
 		for d := path.Dir(p); d != "." && !seen[d]; d = path.Dir(d) { // each directory's entries charged once, before pyTestDir reads them (Astra #281 r4 M2)
 			seen[d], pb.r.work = true, pb.r.work+len(pb.r.baseDirs[d])+len(pb.r.candDirs[d])
 		}
-		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+		t, n := pb.r.pyTestWalk(p) // each directory walked once, each visit charged (Astra #281 r5 M1)
+		if pb.r.work += 1 + n; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
 			return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
-		} else if queued[p] = pyTested(p) || pb.r.pyTestDir(p) || pb.changed[p]; queued[p] {
+		} else if queued[p] = pyTested(p) || t || pb.changed[p]; queued[p] {
 			queue = append(queue, p)
 		}
 	}
@@ -393,6 +417,10 @@ func (pb *pyBase) candClosure() (string, error) {
 			return "", err
 		} else if (pb.risky(f) != "" || f.sysUnread || f.impure && !pb.changed[p]) && !pb.bad[p] {
 			return p, nil
+		} else if why, err := pb.candStars(p, f); err != nil {
+			return "", err
+		} else if (why != "" || slices.ContainsFunc(f.argMods, func(m string) bool { return mods[m] == "" })) && !pb.bad[p] {
+			return p, nil // an unproved star, or a decorator argument not a repository module's (Astra #281 r5 H2, H4)
 		} else {
 			for _, m := range f.mods {
 				if pb.r.work += 1 + len(m); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
@@ -416,10 +444,11 @@ func (pb *pyBase) candClosure() (string, error) {
 // forms counts into alts how many of tree's files CPython's file finder
 // may load (pyForm), the .py ones only when py, answer to each dotted name
 // over every root (Astra #281 r3 H3); other keeps a name's non-source form
-// (r4 H3); and names each name's .py file, under its own __pycache__ (r4
-// H4). Each path is charged before its names are built; false: over the
-// work bound.
-func (pb *pyBase) forms(tree map[string]string, py bool, alts map[string]int, other map[string]string) (map[string]string, bool) {
+// (r4 H3), or a namespace portion, a directory holding no form, when no
+// file answers to its name (r5 L1); and names each name's .py file,
+// under its own __pycache__ (r4 H4). Each path and directory is charged
+// before its names are built; false: over the work bound.
+func (pb *pyBase) forms(tree map[string]string, dirs map[string][]string, py bool, alts map[string]int, other map[string]string) (map[string]string, bool) {
 	mods := map[string]string{}
 	for p := range tree {
 		m, ok := pyForm(p)
@@ -437,7 +466,37 @@ func (pb *pyBase) forms(tree map[string]string, py bool, alts map[string]int, ot
 			}
 		}
 	}
+	for d, fs := range dirs {
+		if d == "." || slices.ContainsFunc(fs, func(p string) bool { _, ok := pyForm(p); return ok }) {
+			continue
+		} else if pb.r.work += 1 + len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return nil, false
+		}
+		for _, n := range pyModNames(d, pb.shadowEntries, false) {
+			if alts[n] == 0 {
+				other[n] = cmp.Or(other[n], d+"/")
+			}
+		}
+	}
 	return mods, true
+}
+
+// starsOf: why f's own stars are not proved (starCheck), or "": none.
+func (pb *pyBase) starsOf(q string, f *pyBaseFile) (string, error) {
+	if len(f.starSrc) == 0 {
+		return "", nil
+	}
+	return pb.starCheck(q, f)
+}
+
+// candStars: why the candidate's file f's own stars are not proved, or "":
+// an unchanged file whose stars the base closure judged is not judged again
+// (a change to a star source or its forms blocks: starSourceOf).
+func (pb *pyBase) candStars(q string, f *pyBaseFile) (string, error) {
+	if b := pb.files[q]; pb.r.files[q] == pb.r.cand[q] && b != nil && b.starWhy != nil {
+		return "", nil
+	}
+	return pb.cand.starsOf(q, f)
 }
 
 // pyForm: the module file p is a form of for CPython's file finder, as
@@ -667,3 +726,31 @@ func (pb *pyBase) binding(n string) ([]string, string, error) {
 	}
 	return pb.byName[n], "", nil
 }
+
+// pyStdlib is CPython 3.12's sys.stdlib_module_names (Python 3.12.3, sorted):
+// a base top-level module by one of these names may run where an external
+// module imports it lazily (Astra #281 r5 H4).
+var pyStdlib = strings.Fields("__future__ _abc _aix_support _ast _asyncio _bisect _blake2 _bz2 _codecs _codecs_cn _codecs_hk _codecs_iso2022 " +
+	"_codecs_jp _codecs_kr _codecs_tw _collections _collections_abc _compat_pickle _compression _contextvars _crypt " +
+	"_csv _ctypes _curses _curses_panel _datetime _dbm _decimal _elementtree _frozen_importlib " +
+	"_frozen_importlib_external _functools _gdbm _hashlib _heapq _imp _io _json _locale _lsprof _lzma _markupbase " +
+	"_md5 _msi _multibytecodec _multiprocessing _opcode _operator _osx_support _overlapped _pickle _posixshmem " +
+	"_posixsubprocess _py_abc _pydatetime _pydecimal _pyio _pylong _queue _random _scproxy _sha1 _sha2 _sha3 " +
+	"_signal _sitebuiltins _socket _sqlite3 _sre _ssl _stat _statistics _string _strptime _struct _symtable _thread " +
+	"_threading_local _tkinter _tokenize _tracemalloc _typing _uuid _warnings _weakref _weakrefset _winapi " +
+	"_zoneinfo abc aifc antigravity argparse array ast asyncio atexit audioop base64 bdb binascii bisect builtins " +
+	"bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs codeop collections colorsys compileall concurrent " +
+	"configparser contextlib contextvars copy copyreg crypt csv ctypes curses dataclasses datetime dbm decimal " +
+	"difflib dis doctest email encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch " +
+	"fractions ftplib functools gc genericpath getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac " +
+	"html http idlelib imaplib imghdr importlib inspect io ipaddress itertools json keyword lib2to3 linecache " +
+	"locale logging lzma mailbox mailcap marshal math mimetypes mmap modulefinder msilib msvcrt multiprocessing " +
+	"netrc nis nntplib nt ntpath nturl2path numbers opcode operator optparse os ossaudiodev pathlib pdb pickle " +
+	"pickletools pipes pkgutil platform plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile " +
+	"pyclbr pydoc pydoc_data pyexpat queue quopri random re readline reprlib resource rlcompleter runpy sched " +
+	"secrets select selectors shelve shlex shutil signal site smtplib sndhdr socket socketserver spwd sqlite3 " +
+	"sre_compile sre_constants sre_parse ssl stat statistics string stringprep struct subprocess sunau symtable sys " +
+	"sysconfig syslog tabnanny tarfile telnetlib tempfile termios textwrap this threading time timeit tkinter token " +
+	"tokenize tomllib trace traceback tracemalloc tty turtle turtledemo types typing unicodedata unittest urllib uu " +
+	"uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xdrlib xml xmlrpc zipapp zipfile zipimport " +
+	"zlib zoneinfo")

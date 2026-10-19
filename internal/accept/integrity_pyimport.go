@@ -21,23 +21,36 @@ var (
 )
 
 // pyTestDir: p is under a test directory: one named test or tests, or one
-// below the root holding a test module or conftest (base or candidate);
-// each directory classified once (Astra #281 r4 M2).
+// below the root holding a test module or conftest (base or candidate).
 func (r *run) pyTestDir(p string) bool {
+	t, _ := r.pyTestWalk(p)
+	return t
+}
+
+// pyTestWalk is pyTestDir's verdict, and how many directories it walked
+// that had no verdict yet: each directory's verdict, its ancestors'
+// included, is cached once, so a directory is walked once (Astra #281 r4
+// M2, r5 M1).
+func (r *run) pyTestWalk(p string) (bool, int) {
 	if r.pyTests == nil {
 		r.pyTests = map[string]bool{}
 	}
+	t, n, todo := false, 0, []string(nil)
 	for d := path.Dir(p); d != "."; d = path.Dir(d) {
-		t, ok := r.pyTests[d]
-		if b := path.Base(d); !ok {
-			t = b == "test" || b == "tests" || slices.ContainsFunc(r.baseDirs[d], pyTested) || slices.ContainsFunc(r.candDirs[d], pyTested)
-			r.pyTests[d] = t
+		cached, ok := r.pyTests[d]
+		if b := path.Base(d); ok {
+			t = cached
+			break
+		} else if n++; b == "test" || b == "tests" || slices.ContainsFunc(r.baseDirs[d], pyTested) || slices.ContainsFunc(r.candDirs[d], pyTested) {
+			t, r.pyTests[d] = true, true
+			break
 		}
-		if t {
-			return true
-		}
+		todo = append(todo, d)
 	}
-	return false
+	for _, d := range todo { // below a test directory, or not, as its parent
+		r.pyTests[d] = t
+	}
+	return t, n
 }
 
 // chain is the attribute chain ending t ("pytest.mark.x").
@@ -246,9 +259,18 @@ func pyStmt(st []ptok) bool {
 	case d[0].text == "def" || d[0].text == "class":
 		return pyHeader(d)
 	}
-	parts := pyAssign(st)
+	parts := pyAssign(st) // all of st: pyAssign stops only at a lambda, and pyOpaque makes any lambda risky (Astra #281 r5 H1)
 	tg := pySplit(parts[0], ":")
 	return len(parts) == 2 && len(tg[0]) == 1 && pyName(tg[0]) && (len(tg) == 1 || len(tg) == 2 && pyExpr(tg[1])) && pyExpr(parts[1])
+}
+
+// pyOpaque: t holds a lambda, or a for past its first token (a
+// comprehension or generator, anywhere; an async one too, whose async is
+// always followed by for): code run at import no recognizer reads, risky
+// at token level (Astra #281 r5 H1).
+func pyOpaque(t []ptok) bool {
+	return slices.ContainsFunc(t, func(k ptok) bool { return k.kind == 'n' && k.text == "lambda" }) ||
+		slices.ContainsFunc(t[min(1, len(t)):], func(k ptok) bool { return k.kind == 'n' && k.text == "for" })
 }
 
 // pyExpr: t is an inert expression: a number, -number, strings (no f- or
@@ -350,34 +372,53 @@ func pyElemsBy(es [][]ptok, ok func([]ptok) bool) bool {
 
 // pyDeco: decorator st calls a trusted pytest chain (pyPytest without
 // patch: rooted at pytest or fixture) with pyExpr arguments, or a dotted
-// name as one (a skipif's condition, read from an inert closure module);
-// its root, whose binding pyTrusted must prove (Astra #281 r4 H2).
-func pyDeco(st []ptok) (string, bool) {
+// name as one (a skipif's condition); its root, whose binding pyTrusted
+// must prove (Astra #281 r4 H2), and each dotted argument's root, which
+// must be a repository module's (r5 H4).
+func pyDeco(st []ptok) (root string, args []string, ok bool) {
 	end := slices.IndexFunc(st, func(k ptok) bool { return k.text == "(" })
 	if end < 0 {
 		end = len(st)
 	}
 	c := pyJoin(st[1:end])
-	root, _, _ := strings.Cut(c, ".")
-	return root, pyName(st[1:end]) && pyPytest(c, false) && (end == len(st) || pyClosed(st[end:]) &&
+	root, _, _ = strings.Cut(c, ".")
+	ok = pyName(st[1:end]) && pyPytest(c, false) && (end == len(st) || pyClosed(st[end:]) &&
 		pyElemsBy(pySplit(st[end+1:len(st)-1], ","), func(a []ptok) bool {
 			if len(a) > 2 && a[0].kind == 'n' && a[1].text == "=" { // a keyword argument
 				a = a[2:]
 			}
-			return pyExpr(a) || pyName(a)
+			if !pyExpr(a) && pyName(a) {
+				args = append(args, a[0].text)
+				return true
+			}
+			return pyExpr(a)
 		}))
+	return root, args, ok
 }
 
 // pyTrusted: name r is bound in the file only by import pytest (r is
-// pytest) or from pytest import r, and never rebound: no star import, and
-// every other r not after . is r. or @r (Astra #281 r4 H2).
+// pytest) or from pytest import r (Astra #281 r4 H2).
 func pyTrusted(lines []pline, r string) bool {
-	proof := false
+	return pyBoundBy(lines, r, func(st []ptok) bool {
+		return len(st) > 1 && (st[0].text == "import" && r == "pytest" || pyJoin(st[:min(3, len(st))]) == "frompytestimport" && r != "pytest") &&
+			slices.ContainsFunc(pyImportParts(st), func(p []ptok) bool { return len(p) == 1 && p[0].text == r })
+	})
+}
+
+// pyImported: name r is bound in the file only by imports (r5 H4).
+func pyImported(lines []pline, r string) bool {
+	return pyBoundBy(lines, r, func(st []ptok) bool { return len(st) > 1 && (st[0].text == "import" || st[0].text == "from") })
+}
+
+// pyBoundBy: name r is bound in the file by a statement proof accepts, and
+// never otherwise: no star import, and every other r not after . is r. or
+// @r.
+func pyBoundBy(lines []pline, r string, proof func([]ptok) bool) bool {
+	bound := false
 	for _, l := range lines {
 		for _, st := range pySplit(slices.Concat(l.toks, l.inner), ";") {
-			if len(st) > 1 && (st[0].text == "import" && r == "pytest" || pyJoin(st[:min(3, len(st))]) == "frompytestimport" && r != "pytest") &&
-				slices.ContainsFunc(pyImportParts(st), func(p []ptok) bool { return len(p) == 1 && p[0].text == r }) {
-				proof = true
+			if proof(st) {
+				bound = true
 				continue
 			}
 			for i, k := range st {
@@ -387,7 +428,7 @@ func pyTrusted(lines []pline, r string) bool {
 			}
 		}
 	}
-	return proof
+	return bound
 }
 
 func pyJoin(t []ptok) string {
