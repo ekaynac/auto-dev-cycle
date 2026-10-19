@@ -240,13 +240,27 @@ func ParseGoTestJSON(stream io.Reader, expected []Test, base *Report) (Report, e
 		return Report{}, fmt.Errorf("%w: no events", ErrUnreadable)
 	}
 
-	rep := Report{Packages: map[string]Outcome{}}
-	for p, s := range pkgs {
+	ended := func(s *state) Outcome {
 		if s.open || s.outcome == "" {
-			s.outcome = worse(s.outcome, Incomplete)
+			return worse(s.outcome, Incomplete)
 		}
-		rep.Packages[p] = s.outcome
+		return s.outcome
 	}
+	byTest, byPkg := map[Test]Outcome{}, map[string]Outcome{}
+	for t, s := range tests {
+		byTest[t] = ended(s)
+	}
+	for p, s := range pkgs {
+		byPkg[p] = ended(s)
+	}
+	return assemble(byTest, byPkg, expected, base)
+}
+
+// assemble is the report of an adapter's per-test and per-package
+// outcomes against base and expected: what either has and the stream does
+// not is Missing. Any adapter's report is built here.
+func assemble(tests map[Test]Outcome, pkgs map[string]Outcome, expected []Test, base *Report) (Report, error) {
+	rep := Report{Packages: pkgs}
 	at := map[Test]Outcome{}
 	if base != nil {
 		for p := range base.Packages {
@@ -256,8 +270,8 @@ func ParseGoTestJSON(stream io.Reader, expected []Test, base *Report) (Report, e
 		}
 		for _, x := range base.Results {
 			at[x.Test] = x.Outcome
-			if tests[x.Test] == nil {
-				tests[x.Test] = &state{outcome: Missing}
+			if _, ok := tests[x.Test]; !ok {
+				tests[x.Test] = Missing
 			}
 		}
 	}
@@ -267,18 +281,14 @@ func ParseGoTestJSON(stream io.Reader, expected []Test, base *Report) (Report, e
 			return Report{}, errors.New("results: an expected test names its package and its name")
 		}
 		want[t] = true
-		if tests[t] == nil {
-			tests[t] = &state{outcome: Missing}
+		if _, ok := tests[t]; !ok {
+			tests[t] = Missing
 		}
 	}
 	for _, t := range slices.SortedFunc(maps.Keys(tests), func(a, b Test) int {
 		return cmp.Or(cmp.Compare(a.Package, b.Package), cmp.Compare(a.Name, b.Name))
 	}) {
-		s := tests[t]
-		if s.open || s.outcome == "" {
-			s.outcome = worse(s.outcome, Incomplete)
-		}
-		rep.Results = append(rep.Results, Result{Test: t, Outcome: s.outcome, Base: at[t], Expected: want[t]})
+		rep.Results = append(rep.Results, Result{Test: t, Outcome: tests[t], Base: at[t], Expected: want[t]})
 	}
 	return rep, nil
 }
