@@ -196,9 +196,9 @@ func pyAllowed(t []ptok, conftest bool) string {
 				params, j = slices.Delete(params, j, j+1), j-1
 			}
 		}
-		return ok(pyConst(params))
+		return ok(pyConst(params) && pyHeader(d))
 	case d[0].text == "class" && len(h[0]) > 1:
-		return ok(pyConst(h[0][2:]) && !named(h[0], "metaclass") && !slices.ContainsFunc(h[0], func(k ptok) bool { return k.text == "*" }) &&
+		return ok(pyConst(h[0][2:]) && !slices.ContainsFunc(h[0][2:], func(k ptok) bool { return k.kind != 'n' && !strings.Contains("(),.", k.text) }) && // bases only names (Astra #281 r3)
 			len(t) == len(h[0])+1+b2i(t[len(t)-1].text == "pass"))
 	case len(d) == 1 && (d[0].text == "pass" || d[0].kind == 's' && !strings.ContainsAny(d[0].text[:strings.IndexAny(d[0].text, `"'`)], "fFtT")):
 		return ""
@@ -208,6 +208,9 @@ func pyAllowed(t []ptok, conftest bool) string {
 		if !pyConst(target) {
 			return why
 		}
+		if a := pySplit(target, ":"); len(a) > 2 || len(a) == 2 && !pyTrivial(a[1]) {
+			return why // an annotation runs at import: a name or a literal only (Astra #281 r3)
+		}
 		for _, n := range pySplit(pySplit(target, ":")[0], ",") {
 			if len(n) != 1 || n[0].kind != 'n' || slices.Contains(pyFixtures, n[0].text) || conftest && strings.HasPrefix(n[0].text, "collect_ignore") {
 				return why
@@ -215,6 +218,39 @@ func pyAllowed(t []ptok, conftest bool) string {
 		}
 	}
 	return ok(len(parts) > 1 && pyConst(t)) // the whole statement: a lambda cut pyAssign short
+}
+
+// pyCompound are the keywords heading a compound statement whose inline
+// suite runs at import (try: M.x = v).
+var pyCompound = strings.Fields("try except finally else elif if while for with")
+
+// pyHeader: def statement d evaluates at import only pyTrivial forms:
+// each default and annotation, the return one too (Astra #281 r3 H2).
+func pyHeader(d []ptok) bool {
+	end := pyDepthEnd(d, 2)
+	if len(d) < 4 || d[2].text != "(" || end < 0 {
+		return false
+	} else if ret := pySplit(d[end+1:], ":")[0]; len(ret) > 0 && (len(ret) < 3 || ret[0].text != "-" || ret[1].text != ">" || !pyTrivial(ret[2:])) {
+		return false
+	}
+	for _, p := range pySplit(d[3:end], ",") {
+		for len(p) > 0 && strings.Trim(p[0].text, "*") == "" { // *args, **kwargs, a bare *
+			p = p[1:]
+		}
+		eq := slices.IndexFunc(p, func(k ptok) bool { return k.text == "=" })
+		if eq < 0 {
+			eq = len(p)
+		}
+		if len(p) > 0 && p[0].text != "/" && (p[0].kind != 'n' || eq > 1 && (p[1].text != ":" || !pyTrivial(p[2:eq])) || eq < len(p) && !pyTrivial(p[eq+1:])) {
+			return false
+		}
+	}
+	return true
+}
+
+// pyTrivial: t evaluates to a name or a pyLiteral, running nothing.
+func pyTrivial(t []ptok) bool {
+	return len(t) == 1 && t[0].kind == 'n' || pyLiteral(t)
 }
 
 func pyJoin(t []ptok) string {

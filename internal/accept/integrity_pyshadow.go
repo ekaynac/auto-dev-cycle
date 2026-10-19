@@ -39,6 +39,7 @@ type pyBase struct {
 	bad          map[string]bool        // a base closure module that is not inert, writes, imports dynamically or uses sys
 	linkTargets  []string               // a base symlink's target in the root; "" when out of it (Opus #281 H4)
 	opaque       map[string]bool        // a module name under a base symlink or gitlink (Opus #279 M1)
+	changed      map[string]bool        // the changes' paths: a changed judged file's own code is P14c-2a-allow's, a changed module's warns
 
 	// entries are main's (the root, pythonpath, the basedirs) and resolve; extra are the roots an install
 	// adds (pyInstall), which name modules for pyShadow only (Opus #275 H2)
@@ -62,14 +63,14 @@ type pyBaseFile struct {
 	binders   map[string][]int  // a name, to the units binding it
 	sysUnread bool              // it names sys.path, or sys in a way pySysUse does not read
 
-	plain     bool     // a package whose submodules resolve in its own directory: read, every module-level statement pyInert (Astra #275 H6)
-	starSrc   []string // x of each exact "from .x import *" at module level (P14c-2a-star)
-	badStar   bool     // any other import followed by * anywhere in its tokens
-	starWhy   *string  // starCheck's verdict, cached (Astra #279 M1)
-	active    bool     // a write word at import: setattr, __dict__, vars, globals, … (Opus #281 H2)
-	impure    bool     // a statement run at import outside pyAllowed (P14c-2a-allow judges a test file's)
-	runs      bool     // a dynamic import or code from a string: import_module, __import__, importlib, runpy, exec, eval, compile (Opus #281 H3)
-	impWrites []string // its attribute, subscript and del targets at import, whatever their head (the split)
+	plain   bool     // a package whose submodules resolve in its own directory: read, every module-level statement pyInert (Astra #275 H6)
+	starSrc []string // x of each exact "from .x import *" at module level (P14c-2a-star)
+	badStar bool     // any other import followed by * anywhere in its tokens
+	starWhy *string  // starCheck's verdict, cached (Astra #279 M1)
+	active  bool     // a write word at import: setattr, __dict__, vars, globals, … (Opus #281 H2)
+	impure  bool     // a statement run at import outside pyAllowed (P14c-2a-allow judges a test file's)
+	runs    bool     // a dynamic import or code from a string: import_module, __import__, importlib, runpy, exec, eval, compile (Opus #281 H3)
+	writes  []string // its attribute, subscript and del targets at import, whatever their head (the split)
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -155,6 +156,8 @@ func (pb *pyBase) load() error {
 	for _, q := range pb.paths {
 		if path.Ext(q) != ".py" {
 			continue
+		} else if pb.err = pb.r.ctx.Err(); pb.err != nil { // main's indexing, uncharged (its work-bound rows), but cancellable (Astra #281 r3 M1)
+			return pb.err
 		}
 		for _, n := range pyModNames(q, pb.entries, false) {
 			pb.mods[n] = cmp.Or(pb.mods[n], q)
@@ -237,9 +240,10 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 		if defIn >= 0 && l.indent <= defIn {
 			defIn = -1
 		}
+		atImport := defIn < 0    // this line's header expressions run at import, a def's defaults too (Astra #281 r3 H2)
 		for i, k := range line { // the words of a write by call or of code run from a string, anywhere (Opus #281 H2, H3)
 			bare := i == 0 || line[i-1].text != "."
-			f.active = f.active || defIn < 0 && (slices.Contains(pyWriteWords, k.text) || slices.Contains(pyImportPath, pyStr(k))) // getattr(M, '__path__')
+			f.active = f.active || atImport && (slices.Contains(pyWriteWords, k.text) || slices.Contains(pyImportPath, pyStr(k))) // getattr(M, '__path__')
 			f.runs = f.runs || slices.Contains(pyRunWords, k.text) && !pyExactImport(line, i) || bare && slices.Contains([]string{"exec", "eval", "compile"}, k.text)
 		}
 		for _, st := range pySplit(l.toks, ";") { // a statement run at import: pyAllowed only (Opus #281 H1)
@@ -257,22 +261,29 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				defIn = l.indent
 			}
 		}
-		for _, st := range pySplit(line, ";") { // any attribute, subscript or del target at import, whatever its head (the split); a compound header's suite too
-			parts, targets := pyAssign(st), [][]ptok(nil)
-			if targets = parts[:len(parts)-1]; len(st) > 1 && st[0].text == "del" {
-				targets = [][]ptok{st[1:]}
-			}
-			for i := range st { // a.b.__path__.insert(…), a.__spec__…: the package's import path, moved in place
+		for _, st := range pySplit(line, ";") { // any attribute, subscript or del target at import, whatever its head (the split)
+			var targets [][]ptok
+			for i := range st { // a.b.__path__.insert(…), a.__spec__…: the package's import path, moved in place, in a header too
 				if i+2 < len(st) && st[i+1].text == "." && slices.Contains(pyImportPath, st[i+2].text) {
 					targets = append(targets, st[:i+3])
 				}
 			}
-			for _, tg := range targets {
+			for len(st) > 0 && slices.Contains(pyCompound, st[0].text) { // an inline suite runs too (Astra #281 r3 H1)
+				st = st[min(len(pySplit(st, ":")[0])+1, len(st)):]
+			}
+			parts := pyAssign(st)
+			for _, tg := range parts[:len(parts)-1] {
 				if len(tg) > 1 && tg[1].text == ":" {
 					tg = tg[:1] // NAME: annotation = value binds NAME only
 				}
-				if defIn < 0 && slices.ContainsFunc(tg, func(k ptok) bool { return k.text == "." || k.text == "[" || k.text == "(" }) {
-					f.impWrites = append(f.impWrites, ptext(tg)) // its first tokens only
+				targets = append(targets, tg)
+			}
+			if len(st) > 1 && st[0].text == "del" {
+				targets = append(targets, st[1:])
+			}
+			for _, tg := range targets {
+				if atImport && slices.ContainsFunc(tg, func(k ptok) bool { return k.text == "." || k.text == "[" || k.text == "(" }) {
+					f.writes = append(f.writes, ptext(tg)) // its first tokens only
 				}
 			}
 		}

@@ -254,15 +254,26 @@ func (pb *pyBase) starSourceOf(p string) (string, error) {
 }
 
 // closure: the base modules that run because a judged file imports them,
-// transitively, under every root (P14c-2a-widen). In each, a sys use
-// pySysUse does not read leaves the base unread, as in a judged file; so
-// does any signal risky names, and a statement run at import outside
-// pyAllowed in an application module (a judged file's is P14c-2a-allow's).
-// No write is attributed to a module (the split: widen-b). Base symlinks
-// and gitlinks name opaque modules.
+// transitively, under every root (P14c-2a-widen). Each must be inert
+// (every statement it runs at import passes pyAllowed; a changed judged
+// file's own code is P14c-2a-allow's) and give no signal risky names, or
+// the base is unread (Astra #281 r3), as on a sys use pySysUse does not
+// read, a name two files answer to (r3 H3), or a base symlink or gitlink.
+// No write is attributed to a module (the split: widen-b). Every path and
+// root expansion is charged first (r3 M1).
 func (pb *pyBase) closure() error {
 	pb.opaque, pb.bad = map[string]bool{}, map[string]bool{}
+	over := func() error {
+		pb.holderUnread = cmp.Or(pb.holderUnread, "the base conditions' analysis is over the guard's work bound")
+		return pb.r.ctx.Err()
+	}
+	if _, ok := pb.forms(pb.r.files, false, pb.alts); !ok {
+		return over()
+	}
 	for p, mode := range pb.r.links {
+		if pb.r.work += 1 + len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return over()
+		}
 		for _, n := range pyModNames(p, pb.shadowEntries, false) {
 			pb.opaque[n] = true
 		}
@@ -285,22 +296,20 @@ func (pb *pyBase) closure() error {
 	for ; len(queue) > 0; queue = queue[1:] {
 		f := queue[0]
 		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
-			pb.holderUnread = cmp.Or(pb.holderUnread, "the base conditions' analysis is over the guard's work bound")
-			return pb.r.ctx.Err()
+			return over()
 		} else if seen[f] {
 			continue
 		}
 		seen[f], pb.sysUnread = true, pb.sysUnread || f.sysUnread
 		if why := pb.risky(f); why != "" || f.sysUnread {
 			pb.holderUnread, pb.bad[f.path] = cmp.Or(pb.holderUnread, why), true
-		} else if f.impure && !pyTested(f.path) && !pb.r.pyTestDir(f.path) {
-			pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+f.path+" runs code at import outside the allowlist")
+		} else if f.impure && !(pb.changed[f.path] && (pyTested(f.path) || pb.r.pyTestDir(f.path))) { // a judged file too (Astra #281 r3)
+			pb.holderUnread, pb.bad[f.path] = cmp.Or(pb.holderUnread, "the module "+f.path+" runs code at import outside the allowlist"), true
 		}
 		tried := map[string]bool{}
 		for _, m := range f.mods { // every package on the way runs too; each attempt charged, a new name by its bytes, before it is split (Astra #281 M1)
 			if pb.r.work += 1 + len(m)*b2i(!tried[m]); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
-				pb.holderUnread = cmp.Or(pb.holderUnread, "the base conditions' analysis is over the guard's work bound")
-				return pb.r.ctx.Err()
+				return over()
 			} else if tried[m] {
 				continue
 			} else if tried[m] = true; strings.Count(m, ".") >= pyMaxDepth {
@@ -312,7 +321,9 @@ func (pb *pyBase) closure() error {
 					continue // each name once
 				} else if pb.opaque[n] {
 					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+n+" is a symlink or a gitlink in the base") // Opus #281 H4
-				} else if names[n] = true; cmp.Or(pb.mods[n], pb.shadowMods[n]) != "" {
+				} else if names[n] = true; pb.alts[n] > 1 {
+					pb.holderUnread = cmp.Or(pb.holderUnread, "the module name "+n+" has more than one file") // Astra #281 r3 H3
+				} else if cmp.Or(pb.mods[n], pb.shadowMods[n]) != "" {
 					g, err := pb.file(cmp.Or(pb.mods[n], pb.shadowMods[n]))
 					if err != nil {
 						return err
@@ -325,12 +336,9 @@ func (pb *pyBase) closure() error {
 	return nil
 }
 
-// risky: why f, a closure module, may change what a condition reads, or
-// "": a dynamic import, an unread file or a base link (Astra #281 H5), a
-// write word or a target the recognizer cannot read, or any attribute,
-// subscript or del target run at import, whatever its head (the split:
-// attribution is widen-b's). In the candidate's closure, a statement run
-// at import outside pyAllowed alone stays main's warning (Opus #266 M1).
+// risky: why closure module f may change what a condition reads, or "": a
+// dynamic import, an unread file or base link (Astra #281 H5, r2 H5), a
+// write word, or any attribute, subscript or del target run at import.
 func (pb *pyBase) risky(f *pyBaseFile) string {
 	switch {
 	case f.runs:
@@ -339,38 +347,31 @@ func (pb *pyBase) risky(f *pyBaseFile) string {
 		return "the module " + f.path + " is unread"
 	case f.active:
 		return "the module " + f.path + " writes by a call or through a target the guard cannot read"
-	case len(f.impWrites) > 0:
-		return "the module " + f.path + " writes " + f.impWrites[0] + " at import"
+	case len(f.writes) > 0:
+		return "the module " + f.path + " writes " + f.writes[0] + " at import"
 	}
 	return ""
 }
 
 // candClosure is the first module the candidate's closure (from its judged
-// files and the changed files) reaches that is not inert, writes, imports
-// dynamically, uses sys or is unread, and that the base closure did not
-// reach as one (Opus #281 M1, Astra #281 H5). Each import is charged by its
-// bytes before it is split, and each path queued once (Astra #281 M1).
-func (pb *pyBase) candClosure(changed []string) (string, error) {
-	mods := map[string]string{}
-	for _, p := range slices.Sorted(maps.Keys(pb.r.cand)) {
-		for _, n := range pyModNames(p, pb.shadowEntries, false) {
-			if path.Ext(p) == ".py" && mods[n] == "" {
-				mods[n] = p
-			}
-		}
+// files and the changed files) reaches that is risky, uses sys, or is not
+// inert and not changed (a changed module's own code stays main's warning,
+// Opus #266 M1), or that imports a base link or a name two files answer to;
+// and that the base closure did not reach as one (Opus #281 M1, Astra #281
+// r3). Each path and import is charged first, each path queued once.
+func (pb *pyBase) candClosure() (string, error) {
+	alts := map[string]int{}
+	mods, ok := pb.forms(pb.r.cand, true, alts)
+	if !ok {
+		return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
 	}
-	queue := slices.Clone(changed)
+	queue, queued := []string(nil), map[string]bool{}
 	for p := range pb.r.cand {
-		if path.Ext(p) == ".py" && (pyTested(p) || pb.r.pyTestDir(p)) {
+		if queued[p] = path.Ext(p) == ".py" && (pyTested(p) || pb.r.pyTestDir(p) || pb.changed[p]); queued[p] {
 			queue = append(queue, p)
 		}
 	}
 	slices.Sort(queue)
-	queue = slices.Compact(queue)
-	queued := map[string]bool{}
-	for _, p := range queue {
-		queued[p] = true
-	}
 	for ; len(queue) > 0; queue = queue[1:] {
 		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
 			return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
@@ -378,7 +379,7 @@ func (pb *pyBase) candClosure(changed []string) (string, error) {
 			continue
 		} else if f, err := pb.candFile(p); err != nil {
 			return "", err
-		} else if (pb.risky(f) != "" || f.sysUnread) && !pb.bad[p] {
+		} else if (pb.risky(f) != "" || f.sysUnread || f.impure && !pb.changed[p]) && !pb.bad[p] {
 			return p, nil
 		} else {
 			for _, m := range f.mods {
@@ -388,8 +389,8 @@ func (pb *pyBase) candClosure(changed []string) (string, error) {
 					return p, nil // a name past the depth bound
 				}
 				for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
-					if n := strings.Join(parts[:k], "."); pb.opaque[n] {
-						return p, nil // a base link or gitlink newly reached (Astra #281 r2 H5)
+					if n := strings.Join(parts[:k], "."); pb.opaque[n] || alts[n] > 1 {
+						return p, nil // a base link or gitlink, or a name two files answer to, newly reached (Astra #281 r2 H5, r3 H3)
 					} else if q := mods[n]; q != "" && !queued[q] {
 						queued[q], queue = true, append(queue, q)
 					}
@@ -398,6 +399,39 @@ func (pb *pyBase) candClosure(changed []string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// forms counts into alts how many of tree's files CPython's file finder
+// may load (pyForm), the .py ones only when py, answer to each dotted name
+// over every root, and names each name's .py file (Astra #281 r3 H3). Each
+// path is charged before its names are built; false: over the work bound.
+func (pb *pyBase) forms(tree map[string]string, py bool, alts map[string]int) (map[string]string, bool) {
+	mods := map[string]string{}
+	for p := range tree {
+		if m, ok := pyForm(p); ok && (py || path.Ext(p) != ".py") {
+			if pb.r.work += 1 + len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+				return nil, false
+			}
+			for _, n := range pyModNames(m, pb.shadowEntries, false) {
+				if alts[n]++; path.Ext(p) == ".py" {
+					mods[n] = p
+				}
+			}
+		}
+	}
+	return mods, true
+}
+
+// pyForm: the module file p is a form of for CPython's file finder, as
+// dir/x.py (a package's: dir/x/__init__.py): x.py, x.pyc, an extension
+// x.*.so or x.*.pyd, or bytecode cached in __pycache__.
+func pyForm(p string) (string, bool) {
+	d, b := path.Dir(p), path.Base(p)
+	x, _, _ := strings.Cut(b, ".") // a.b.py is no form of a, but counts as one: fail closed
+	if path.Base(d) == "__pycache__" {
+		d = path.Dir(d)
+	}
+	return path.Join(d, x) + ".py", x != "" && slices.Contains([]string{".py", ".pyc", ".so", ".pyd"}, path.Ext(b))
 }
 
 // candFile is the candidate's version of q, read with the candidate's tree.
