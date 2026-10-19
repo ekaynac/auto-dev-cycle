@@ -126,7 +126,7 @@ func TestJUnitStrict(t *testing.T) {
 		"text after the root":             suite(`tests="1"`, pass) + "5 passed",
 		"a processing instruction after":  suite(`tests="1"`, pass) + `<?pass yes?>`,
 		"a repeated attribute":            suite(`tests="1"`, `<testcase classname="m" name="t" name="a"/>`),
-		"a namespaced attribute":          suite(`tests="1"`, `<testcase classname="m" name="t" x:name="a"/>`),
+		"a namespaced attribute":          suite(`tests="1"`, `<testcase classname="m" name="t" x:time="1"/>`),
 		"errors miscounted, two children": suite(`tests="1" errors="1"`, `<testcase classname="m" name="a"><error/><error/></testcase>`),
 	} {
 		if r, err := ParseJUnitXML(strings.NewReader(doc), nil, nil); !errors.Is(err, ErrUnreadable) {
