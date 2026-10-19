@@ -1,5 +1,5 @@
 {
-  "note": "The base Report for #170's gate (results.ParseGoTestJSON's own encoding; decode it as a results.Report, whose fields are results and packages). Recorded in the prepared Go image, offline, with the sandbox's flags (--network=none, read-only root, 256 MiB /tmp tmpfs, HOME on tmpfs, --cap-drop=all, uid 0). The three skips are tests that skip as root; a head that skips them too is not blocked by them. Provisional until the image digest is pushed (P32's operator steps); re-record then.",
+  "note": "The base Report for #170's gate (results.ParseGoTestJSON's own encoding; decode it as a results.Report, whose fields are results and packages). Recorded in the prepared Go image, offline, with the sandbox's flags (--network=none, read-only root, 256 MiB /tmp tmpfs, HOME on tmpfs, --cap-drop=all, uid 0). The three skips are tests that skip as root; a head that skips them too is not blocked by them. Provisional until P15 re-records it in the pinned image (ghcr.io/ekaynac/adc-prepared-go@sha256:1d2fa05bf24dc73dff179b0b08e6ee89cb82d8ac47b0c133cc578210fcce744b).",
   "base": "0d3e81dba68473ecbe4e8cb5f2c0665a28e0cbeb",
   "command": [
     "go",
