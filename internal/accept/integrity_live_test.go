@@ -53,7 +53,7 @@ func TestLiveSandboxLister(t *testing.T) {
 		"a forgery": {map[string]string{"pkg/forge.go": forgeGo}, func(v Verdict) bool { return finds(v.Blocks, "can forge") }},
 	} {
 		begin := time.Now()
-		v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, c.files), Policy: f.policy, Guard: Integrity(f.repo, f.base, list)})
+		v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, c.files), Policy: f.policy, Guard: Integrity(f.repo, f.base, list, filepath.Join(root, "runs"))})
 		t.Logf("%s: %v, blocks %q", name, time.Since(begin).Round(time.Millisecond), whats(v.Blocks))
 		if err != nil || !c.ok(v) {
 			t.Errorf("%s: %v %q", name, err, whats(v.Blocks))

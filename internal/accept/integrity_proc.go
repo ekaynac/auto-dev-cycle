@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/gob"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -38,10 +40,19 @@ var procStarted func(*os.Process)
 
 const childArg, childEnv = "adc-accept-integrity-guard", "ADC_ACCEPT_INTEGRITY_GUARD"
 
-func init() {
-	if len(os.Args) == 2 && os.Args[1] == childArg && os.Getenv(childEnv) == "1" {
-		os.Exit(child(os.Stdin, os.Stdout))
+// RunChildIfAsked runs this process as Integrity's child, and exits, when
+// the controller started it as one (its argument, and its environment
+// naming its parent); otherwise it returns at once. A binary that runs
+// Integrity calls it first in main (os.Executable() is the child's
+// binary), as this package's TestMain does: never in an init, which would
+// run the guard before a later file's init.
+func RunChildIfAsked() {
+	if len(os.Args) != 2 || os.Args[1] != childArg || os.Getenv(childEnv) == "" {
+		return
+	} else if os.Getenv(childEnv) != strconv.Itoa(os.Getppid()) { // its controller died before Pdeathsig held
+		os.Exit(2)
 	}
+	os.Exit(child(os.Stdin, os.Stdout))
 }
 
 // procMsg is one message, either way: the run (the controller's first); a
@@ -63,6 +74,7 @@ type procMsg struct {
 	OK               bool
 	Listed           map[string]Listed
 	Err, Panic       string
+	Erred, Panicked  bool // an error or a panic, whatever its text
 	Blocks, Warnings []wireBlock
 }
 
@@ -95,14 +107,21 @@ func fromWire(ws []wireBlock) ([]Block, error) {
 // Integrity is the integrity guard for a candidate of base in repo, for
 // Accept's In.Guard: the base's files listed here through a temporary
 // index, the guard in a child process reading blobs through read and
-// imports' types through list (nil: every Go package unverifiable).
-func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
+// imports' types through list (nil: every Go package unverifiable). The
+// run's own directory, what list copies out, is made under scratch: the
+// sandbox root's runs/ for SandboxLister (a filesystem of its own); "" is
+// the system's temporary directory.
+func Integrity(repo sandbox.Repo, base string, list Lister, scratch string) Guard {
 	return func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
 		files, err := listBase(ctx, repo, base)
 		if err != nil {
 			return nil, nil, err
+		} else if scratch != "" {
+			if err := os.MkdirAll(scratch, 0o700); err != nil {
+				return nil, nil, err
+			}
 		}
-		dir, err := os.MkdirTemp("", "adc-guard-")
+		dir, err := os.MkdirTemp(scratch, "adc-guard-")
 		if err != nil {
 			return nil, nil, err
 		}
@@ -124,8 +143,8 @@ func isolated(ctx context.Context, end time.Time, req procMsg, read Reader, list
 	}
 	runCtx, cancel := context.WithDeadline(ctx, end)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, exe, childArg)
-	cmd.Env, cmd.Dir, cmd.WaitDelay = []string{childEnv + "=1"}, "/", time.Second
+	cmd, stderr := exec.CommandContext(runCtx, exe, childArg), &head{n: 4096}
+	cmd.Env, cmd.Dir, cmd.Stderr, cmd.WaitDelay = []string{childEnv + "=" + strconv.Itoa(os.Getpid())}, "/", stderr, time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL} // a controller that dies takes it along
 	in, err := cmd.StdinPipe()
 	out, err2 := cmd.StdoutPipe()
@@ -136,6 +155,8 @@ func isolated(ctx context.Context, end time.Time, req procMsg, read Reader, list
 		return unverifiable("the guard's process did not start")
 	}
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }() // its abandoned type checks with it
+	// The kernel's first choice when memory runs out: the child, not the controller.
+	_ = os.WriteFile("/proc/"+strconv.Itoa(cmd.Process.Pid)+"/oom_score_adj", []byte("1000"), 0)
 	if procStarted != nil {
 		procStarted(cmd.Process)
 	}
@@ -146,43 +167,58 @@ func isolated(ctx context.Context, end time.Time, req procMsg, read Reader, list
 			break
 		} else if m.Op != "done" {
 			continue
+		} else if ctx.Err() != nil { // a listing it cut reads as not loaded: the context's error, as in this process
+			return nil, nil, ctx.Err()
 		}
 		blocks, err := fromWire(m.Blocks)
 		warnings, err2 := fromWire(m.Warnings)
 		if err = errors.Join(err, err2); err != nil {
 			return unverifiable("the guard's process gave an unknown reason")
-		} else if m.Err != "" {
+		} else if m.Erred {
 			return blocks, warnings, cmp.Or(readErr, errors.New(m.Err))
 		}
 		return blocks, warnings, nil
 	}
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait() // its stderr is whole once Wait returns
 	switch {
 	case ctx.Err() != nil:
 		return nil, nil, ctx.Err()
 	case runCtx.Err() != nil:
 		return unverifiable("the guard did not finish by its whole-run deadline")
 	}
-	return unverifiable("the guard's process ended without its result")
+	return unverifiable(fmt.Sprintf("the guard's process ended without its result (%s)", bytes.TrimSpace(stderr.b)))
+}
+
+// head keeps the first n bytes written (a crash's reason comes first).
+type head struct {
+	b []byte
+	n int
+}
+
+func (h *head) Write(p []byte) (int, error) {
+	h.b = append(h.b, p[:min(len(p), max(h.n-len(h.b), 0))]...)
+	return len(p), nil
 }
 
 // serve answers a child's read or list; a panic is passed back, the guard's
-// fault as in this process.
+// fault as in this process. A read is bounded by maxFile whatever it asks.
 func serve(ctx context.Context, req, got procMsg, read Reader, list Lister, readErr *error) (m procMsg) {
 	defer func() {
 		if p := recover(); p != nil {
-			m = procMsg{Panic: fmt.Sprint(p)}
+			m = procMsg{Panic: fmt.Sprint(p), Panicked: true}
 		}
 	}()
 	switch {
 	case got.Op == "read":
-		b, ok, err := read(ctx, got.Blob, got.Max)
+		b, ok, err := read(ctx, got.Blob, min(got.Max, maxFile))
 		*readErr = cmp.Or(*readErr, err)
-		return procMsg{B: b, OK: ok, Err: errText(err)}
+		return procMsg{B: b, OK: ok, Err: errText(err), Erred: err != nil}
 	case got.Op == "list" && list != nil:
 		lctx, cancel := context.WithDeadline(ctx, req.ListEnd)
 		defer cancel()
 		l, err := list(lctx, req.Dir, got.Platform, got.GoMod, got.GoSum, got.Paths)
-		return procMsg{Listed: l, Err: errText(err)}
+		return procMsg{Listed: l, Err: errText(err), Erred: err != nil}
 	}
 	panic("an unknown request from the guard's process")
 }
@@ -198,33 +234,33 @@ func child(in io.Reader, out io.Writer) int {
 		var rep procMsg
 		if enc.Encode(m) != nil || dec.Decode(&rep) != nil {
 			os.Exit(2) // the controller is gone
-		} else if rep.Panic != "" {
+		} else if rep.Panicked {
 			panic(rep.Panic)
 		}
 		return rep
 	}
-	errOf := func(s string) error {
-		if s == "" {
+	errOf := func(rep procMsg) error {
+		if !rep.Erred {
 			return nil
 		}
-		return errors.New(s)
+		return errors.New(rep.Err)
 	}
 	read := func(_ context.Context, blob string, max int64) ([]byte, bool, error) {
 		rep := call(procMsg{Op: "read", Blob: blob, Max: max})
-		return rep.B, rep.OK, errOf(rep.Err)
+		return rep.B, rep.OK, errOf(rep)
 	}
 	var list Lister
 	if req.Lister {
 		list = func(_ context.Context, _ string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
 			rep := call(procMsg{Op: "list", Platform: pl, GoMod: gomod, GoSum: gosum, Paths: paths})
-			return rep.Listed, errOf(rep.Err)
+			return rep.Listed, errOf(rep)
 		}
 	}
 	if req.Files == nil && !req.Over { // gob sends no empty map
 		req.Files = map[string]string{}
 	}
 	blocks, warnings, err := guard(context.Background(), req.Changes, read, list, req.Files, req.ListEnd, req.Dir)
-	if enc.Encode(procMsg{Op: "done", Blocks: toWire(blocks), Warnings: toWire(warnings), Err: errText(err)}) != nil {
+	if enc.Encode(procMsg{Op: "done", Blocks: toWire(blocks), Warnings: toWire(warnings), Err: errText(err), Erred: err != nil}) != nil {
 		return 2
 	}
 	return 0

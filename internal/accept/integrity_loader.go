@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -32,30 +33,43 @@ var GoEnv = []string{"GOFLAGS=-mod=readonly -buildvcs=false", "GOTOOLCHAIN=local
 var goImage = []string{"PATH=/usr/local/go/bin:/usr/bin:/bin", "GOPATH=/go", "GOCACHE=/opt/adc/gocache"}
 
 // listScript lists "$@" into $1/list, a package a line (its path, export
-// data file and quoted error), copies the export data into $1/x and writes
-// go's version into $1/version. An error listed with the image's read-only
-// build cache (a miss: a platform or package it was not warmed for) lists
-// again with a cold cache in the run's /tmp.
+// data file and quoted error), copies into $1/x the export data whose file
+// name $1/have does not hold (the cache names it by its content), and
+// writes go's version into $1/version. A miss in the image's read-only
+// build cache (a platform or package it was not warmed for: an error
+// naming the cache or a read-only file system) lists again with a cold
+// cache in the run's /tmp.
 const listScript = `set -eu
 r=$1
 shift
 go env GOVERSION >"$r/version"
 f='{{.ImportPath}}{{"\t"}}{{.Export}}{{"\t"}}{{with .Error}}{{printf "%q" .Err}}{{end}}'
 go list -e -export -deps -f "$f" -- "$@" >"$r/list"
-if cut -f3 "$r/list" | grep -q .; then GOCACHE=/tmp/gocache go list -e -export -deps -f "$f" -- "$@" >"$r/list"; fi
+if cut -f3 "$r/list" | grep -qF -e 'read-only file system' -e "$GOCACHE"; then
+  GOCACHE=/tmp/gocache go list -e -export -deps -f "$f" -- "$@" >"$r/list"
+fi
 mkdir "$r/x"
-cut -f2 "$r/list" | while read -r e; do if [ -n "$e" ]; then cp -- "$e" "$r/x/"; fi; done
+cut -f2 "$r/list" | while read -r e; do
+  if [ -n "$e" ] && ! grep -qxF -- "${e##*/}" "$r/have"; then cp -- "$e" "$r/x/"; fi
+done
+rm -- "$r/have"
 `
 
 // SandboxLister is the production Lister (operator answer "loader b"): go
 // list -export runs in img, the prepared Go image, through h's sandbox in
 // gate mode (no network; only the run's workspace and results mounted),
 // under GoEnv, with only go.mod and go.sum in its workspace. Only the list
-// and the export data come out, into the guard run's directory. go's
-// release must be the guard's (one export data format); lim bounds each run.
+// and the export data come out, into the guard run's directory (Integrity's
+// scratch: h.Root's runs/), each export data file once a run, all within
+// maxRunCopy. go's release must be the guard's (one export data format);
+// lim bounds each run.
 func SandboxLister(h sandbox.Host, img sandbox.Image, lim sandbox.Limits) Lister {
 	return boxLister(h, img, lim)
 }
+
+// maxRunCopy bounds what one guard run's listings copy out, in all: the
+// export data both versions' typers may read, and each listing's list.
+func maxRunCopy() int64 { return 2*maxExport + maxList*int64(maxListRuns) }
 
 // box is the sandbox a loader runs in (a sandbox.Host).
 type box interface {
@@ -77,6 +91,30 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	if err := listable(gomod, paths); err != nil {
 		return nil, err
 	}
+	x := filepath.Join(dir, "x") // the run's export data, by file name
+	if err := os.MkdirAll(x, 0o700); err != nil {
+		return nil, err
+	}
+	var used int64 // what the run's listings copied out so far
+	var have []string
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		} else if filepath.Dir(p) == x {
+			have = append(have, d.Name())
+		}
+		used += fi.Size()
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	} else if used >= maxRunCopy() {
+		return nil, errors.New("over the guard run's export data bound")
+	}
 	a, err := h.NewAttempt()
 	if err != nil {
 		return nil, err
@@ -89,6 +127,9 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	if err == nil && gosum != nil {
 		err = os.WriteFile(filepath.Join(a.Workspace(), "go.sum"), gosum, 0o600)
 	}
+	if err == nil {
+		err = os.WriteFile(filepath.Join(a.Results(), "have"), []byte(strings.Join(have, "\n")+"\n"), 0o600)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -100,10 +141,19 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 	if err != nil {
 		return nil, err
 	}
-	if err := a.CopyOut(filepath.Join(out, "r"), maxExport+maxList); err != nil {
+	out = filepath.Join(out, "r")
+	if err := a.CopyOut(out, maxRunCopy()-used); err != nil {
 		return nil, err
 	}
-	out = filepath.Join(out, "r")
+	news, err := os.ReadDir(filepath.Join(out, "x"))
+	for _, e := range news { // into the run's: a name it holds is the same content
+		if _, serr := os.Lstat(filepath.Join(x, e.Name())); err == nil && errors.Is(serr, fs.ErrNotExist) {
+			err = os.Rename(filepath.Join(out, "x", e.Name()), filepath.Join(x, e.Name()))
+		}
+	}
+	if err = errors.Join(err, os.RemoveAll(filepath.Join(out, "x"))); err != nil {
+		return nil, err
+	}
 	v, err := os.ReadFile(filepath.Join(out, "version"))
 	if err != nil {
 		return nil, err
@@ -128,9 +178,9 @@ func boxList(ctx context.Context, h box, img sandbox.Image, lim sandbox.Limits, 
 			}
 			l.Error = &struct{ Err string }{why}
 		}
-		if x := filepath.Join(out, "x", path.Base(f[1])); f[1] != "" { // the copy of that name, never the path go listed
-			if st, err := os.Lstat(x); err == nil && st.Mode().IsRegular() {
-				l.Export = x
+		if e := filepath.Join(x, path.Base(f[1])); f[1] != "" { // the run's copy of that name, never the path go listed
+			if st, err := os.Lstat(e); err == nil && st.Mode().IsRegular() {
+				l.Export = e
 			}
 		}
 		if f[1] != "" && l.Export == "" && l.Error == nil {

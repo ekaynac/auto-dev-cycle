@@ -6,6 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,12 +26,18 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
+// TestMain: the test binary is Integrity's child when asked (RunChildIfAsked).
+func TestMain(m *testing.M) {
+	RunChildIfAsked()
+	os.Exit(m.Run())
+}
+
 // isolated accepts a patch of the base through Integrity: the guard in its
 // own process.
 func (f fixture) isolated(t *testing.T, list Lister, files map[string]string, gone ...string) Verdict {
 	t.Helper()
 	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, files, gone...), Policy: f.policy,
-		Guard: Integrity(f.repo, f.base, list)})
+		Guard: Integrity(f.repo, f.base, list, "")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,9 +88,16 @@ func TestIntegrityProcess(t *testing.T) {
 		"typed and text warnings": {"tool/mv.go": edit("tool/mv.go", "= safe.Parse", "= fatal.Parse"), "tool/val.go": edit("tool/val.go", "func v() {}", "func v() { _ = w.Parse(nil) }"),
 			"tool/mx.go": strings.Replace(edit("tool/mx.go", "flag.Parse() }", "flag.Parse(); _ = 1 }"), "w.Parse }", "w.Parse; _ = 2 }", 1)},
 		"an unloaded import": {"pkg/x.go": "package pkg\n\nimport \"example.org/none\"\n\nvar _ = none.X\n"},
+		// H1 (Opus #287): decision A's Python classes are the child's too.
+		"python os._exit":         {"tests/test_money.py": baseFiles["tests/test_money.py"] + "\ndef test_exit():\n    import os\n    os._exit(0)\n"},
+		"python module-level run": {"money.py": baseFiles["money.py"] + "\nimport subprocess\nsubprocess.run(['true'])\n"},
+		"python print('PASSED')":  {"tests/test_money.py": baseFiles["tests/test_money.py"] + "\nprint('PASSED')\n"},
 	} {
 		in, out := f.guarded(t, files), f.isolated(t, testLister(t), files)
-		if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || len(out.Blocks)+len(out.Warnings) == 0 && name != "a plain change" {
+		if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || len(out.Blocks)+len(out.Warnings) == 0 && name != "a plain change" ||
+			strings.HasPrefix(name, "python") && !slices.ContainsFunc(out.Blocks, func(b Block) bool {
+				return strings.Contains(b.What, "decision A") || strings.Contains(b.What, "allowlist")
+			}) {
 			t.Errorf("%s: in this process %+v %+v, in its own %+v %+v", name, in.Blocks, in.Warnings, out.Blocks, out.Warnings)
 		}
 	}
@@ -157,6 +174,7 @@ type localBox struct {
 	ws      *[]string // the workspace's entries at each start
 	mutate  func(results string)
 	started atomic.Int32
+	copied  []int // export data files each run copied out
 }
 
 func newLocalBox(t *testing.T) *localBox {
@@ -207,6 +225,8 @@ func (b *localBox) Start(ctx context.Context, r sandbox.Run) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = r.Attempt.Workspace()
 	out, err := cmd.Output()
+	xs, _ := os.ReadDir(filepath.Join(r.Attempt.Results(), "x"))
+	b.copied = append(b.copied, len(xs))
 	if err == nil && b.mutate != nil {
 		b.mutate(r.Attempt.Results())
 	}
@@ -277,6 +297,79 @@ func TestSandboxLister(t *testing.T) {
 	if v := f.isolated(t, list, maps2(change, "go.mod", guardBase["go.mod"]+"\nreplace golang.org/x/sys => ../sys\n")); !finds(v.Blocks, "go.mod replaces a module by a directory") {
 		t.Errorf("a directory replacement: %q", whats(v.Blocks))
 	}
+	// M1 (Opus #287): five modules listing the same heavy import copy its
+	// export data once in the run, all within one budget; past it, a
+	// listing fails (not loaded).
+	dir, amd64 := t.TempDir(), [2]string{"linux", "amd64"}
+	box.copied = nil
+	for i := range 5 {
+		got, err := list(context.Background(), dir, amd64, fmt.Appendf(nil, "module example.com/m%d\n\ngo 1.26.0\n", i), nil, []string{"net/http"})
+		if err != nil || got["net/http"].Export == "" {
+			t.Fatalf("listing %d: %v %+v", i, err, got["net/http"])
+		}
+	}
+	var size int64
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, _ error) error {
+		if fi, err := d.Info(); err == nil && !d.IsDir() {
+			size += fi.Size()
+		}
+		return nil
+	})
+	if len(box.copied) != 5 || box.copied[0] == 0 || slices.Max(box.copied[1:]) != 0 || size > maxRunCopy() {
+		t.Errorf("five listings of net/http: copied %v, %d bytes (bound %d)", box.copied, size, maxRunCopy())
+	}
+	oldExport, oldList, oldRuns := maxExport, maxList, maxListRuns
+	maxExport, maxList, maxListRuns = 1<<20, 1<<10, 1
+	_, err := list(context.Background(), t.TempDir(), amd64, []byte("module example.com/m\n\ngo 1.26.0\n"), nil, []string{"net/http"})
+	if maxExport, maxList, maxListRuns = oldExport, oldList, oldRuns; err == nil || !strings.Contains(err.Error(), "more than") {
+		t.Errorf("past the run's copy bound: %v", err)
+	}
+}
+
+// TestGoEnv (L5, Opus #287): the gate's Go environment, whole.
+func TestGoEnv(t *testing.T) {
+	want := []string{"GOFLAGS=-mod=readonly -buildvcs=false", "GOTOOLCHAIN=local", "GOWORK=off", "GOPROXY=off", "GOSUMDB=off",
+		"GOENV=off", "GOTELEMETRY=off", "GODEBUG=goindex=0", "CGO_ENABLED=0", "GO111MODULE=on", "GOEXPERIMENT=", "GOAMD64=v1", "GOARM64=v8.0"}
+	if !slices.Equal(GoEnv, want) {
+		t.Errorf("GoEnv: %q", GoEnv)
+	}
+}
+
+// TestNoInit (H1, Opus #287): no file of the package has an init (Go runs
+// them in file-name order: a child dispatched from one would run the guard
+// before a later one), and adcd's main asks first.
+func TestNoInit(t *testing.T) {
+	paths, _ := filepath.Glob("*.go")
+	for _, p := range append(paths, "../../cmd/adcd/main.go") {
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "init" {
+				t.Errorf("%s has an init", p)
+			} else if ok && p == "../../cmd/adcd/main.go" && fn.Name.Name == "main" && !firstCall(fn, "RunChildIfAsked") {
+				t.Errorf("adcd's main does not ask first")
+			}
+		}
+	}
+	if len(paths) < 20 {
+		t.Fatalf("only %d files", len(paths))
+	}
+}
+
+// firstCall: fn's first statement calls a function named name.
+func firstCall(fn *ast.FuncDecl, name string) bool {
+	s, ok := fn.Body.List[0].(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	c, ok := s.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := c.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == name
 }
 
 // maps2 is m with k set to v.
