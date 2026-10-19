@@ -15,7 +15,8 @@ FROM docker.io/library/golang:1.27.1-bookworm@sha256:8d48e12ec56735e9358640898b9
 # The sandbox runs with a read-only root, /tmp (256 MiB) and HOME on tmpfs,
 # and no network: no module fetch, no other toolchain. A cold build of the
 # dependencies does not fit in /tmp, so the build cache is warmed here and
-# read-only at run time (go reads it and compiles misses in /tmp).
+# read-only at run time (go fails on a miss; the guard's loader then lists
+# again with a cold cache in /tmp).
 ENV GOTOOLCHAIN=local \
     GOFLAGS="-mod=readonly -buildvcs=false" \
     GOTELEMETRY=off \
@@ -26,10 +27,15 @@ WORKDIR /opt/adc/prepare
 COPY go.mod go.sum warm.txt ./
 # The only networked step: download and verify every module of the
 # lockfiles. Then compile the standard library and the third-party packages
-# the tests import (warm.txt, from go list at the base): a cache only, so a
-# stale list costs time, never correctness.
+# the tests import (warm.txt, from go list at the base), for each gate
+# platform (the integrity guard's go list types both; P14e-2c): a cache
+# only, so a stale list costs time, never correctness.
 RUN go mod download -x && go mod verify \
- && mkdir -p "$GOCACHE" && go build std && xargs -r go build < warm.txt \
+ && mkdir -p "$GOCACHE" \
+ && for arch in amd64 arm64; do \
+      export GOOS=linux GOARCH="$arch" GOAMD64=v1 GOARM64=v8.0 \
+      && go build std && xargs -r go build < warm.txt || exit 1; \
+    done \
  && rm -rf /root/.cache
 
 # goindex=0: the module index would be written into the read-only cache.

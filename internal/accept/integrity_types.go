@@ -30,7 +30,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -73,7 +72,9 @@ type Listed struct {
 
 // Lister lists paths and their dependencies with their export data, for a
 // platform, in the module whose go.mod and go.sum are given (nil: none).
-type Lister func(ctx context.Context, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error)
+// Export data it copies out it keeps under dir, the guard run's own
+// directory, removed when the run ends.
+type Lister func(ctx context.Context, dir string, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error)
 
 // LocalLister is a Lister running the go command gobin with env added (its
 // caches: GOCACHE, GOMODCACHE, HOME), offline: no proxy, no checksum
@@ -95,7 +96,7 @@ func LocalLister(gobin string, env []string, timeout time.Duration, mem int64) L
 		}
 		return cmp.Or(err, err2)
 	})
-	return func(ctx context.Context, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+	return func(ctx context.Context, _ string, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
 		if err := version(); err != nil {
 			return nil, fmt.Errorf("go list: %w", err)
 		}
@@ -124,13 +125,16 @@ func LocalLister(gobin string, env []string, timeout time.Duration, mem int64) L
 	}
 }
 
-func goList(ctx context.Context, gobin string, env []string, timeout time.Duration, mem int64, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+// listable refuses a go.mod replacing a module by a directory (only the
+// module cache's source is read), and a path go list would not take as one
+// import path (a flag, a pattern, a reserved name).
+func listable(gomod []byte, paths []string) error {
 	if gomod != nil {
 		f, err := modfile.Parse("go.mod", gomod, nil)
 		if err != nil {
-			return nil, fmt.Errorf("go.mod not parsed: %w", err)
+			return fmt.Errorf("go.mod not parsed: %w", err)
 		} else if slices.ContainsFunc(f.Replace, func(r *modfile.Replace) bool { return r.New.Version == "" }) {
-			return nil, errors.New("go.mod replaces a module by a directory")
+			return errors.New("go.mod replaces a module by a directory")
 		}
 	}
 	for _, p := range paths { // no flag, pattern or reserved name
@@ -138,8 +142,15 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 			strings.HasPrefix(p, "cmd/") || strings.ContainsFunc(p, func(r rune) bool {
 			return r > unicode.MaxASCII || !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("-._~+/", r)
 		}) {
-			return nil, fmt.Errorf("an import path go list cannot take (%q)", p)
+			return fmt.Errorf("an import path go list cannot take (%q)", p)
 		}
+	}
+	return nil
+}
+
+func goList(ctx context.Context, gobin string, env []string, timeout time.Duration, mem int64, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+	if err := listable(gomod, paths); err != nil {
+		return nil, err
 	}
 	dir, err := os.MkdirTemp("", "adc-golist-")
 	if err != nil {
@@ -457,7 +468,7 @@ func (ty *typer) need(files []*ast.File) error {
 		err = errors.New("over the guard's go list bound")
 	} else if ty.r.lister != nil {
 		ctx, cancel := context.WithDeadline(ty.r.ctx, ty.r.listEnd)
-		got, err = ty.r.lister(ctx, ty.platform, ty.gomod, ty.gosum, ext)
+		got, err = ty.r.lister(ctx, ty.r.dir, ty.platform, ty.gomod, ty.gosum, ext)
 		cancel()
 	}
 	if ctxErr := ty.r.ctx.Err(); ctxErr != nil {
@@ -527,34 +538,16 @@ func (ty *typer) Import(p string) (*types.Package, error) {
 
 // typeCheck runs conf.Check (it cannot be cancelled) by the guard's deadline:
 // past it, or on a done context, the guard stops (recovered) and the check is
-// abandoned, its CPU the residual (a killable loader is P14e-2b's).
+// abandoned. Integrity runs the guard in a process of its own, killed once
+// its result is read (P14e-2c): an abandoned check ends with it, and no
+// later run sees it.
 func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, files []*ast.File, info *types.Info) *types.Package {
-	if n := abandoned.Load(); n > 0 { // its CPU and memory still taken, and its fault not seen
-		by := "unknown"
-		if p := abandonedBy.Load(); p != nil {
-			by = *p
-		}
-		panic(fmt.Sprintf("%d type check(s) abandoned by an earlier guard run (%s) still running: not a finding against this change", n, by))
-	}
-	done, state := make(chan any, 1), new(atomic.Int32) // 0 running, 1 ended, 2 abandoned
+	done := make(chan any, 1)
 	go func() {
 		var v any
-		defer func() {
-			if !state.CompareAndSwap(0, 1) {
-				abandoned.Add(-1)
-			}
-			done <- cmp.Or(recover(), v) // its panic is the guard's
-		}()
+		defer func() { done <- cmp.Or(recover(), v) }() // its panic is the guard's
 		v, _ = conf.Check(path, fset, files, info)
 	}()
-	abandon := func(why any) {
-		if state.CompareAndSwap(0, 2) {
-			by := fmt.Sprintf("on base %.12s, started %s", r.base, r.started.Format(time.RFC3339))
-			abandonedBy.Store(&by)
-			abandoned.Add(1)
-		}
-		panic(why)
-	}
 	select {
 	case v := <-done:
 		if pkg, ok := v.(*types.Package); ok {
@@ -562,20 +555,11 @@ func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, fi
 		}
 		panic(v)
 	case <-r.ctx.Done():
-		abandon(r.ctx.Err())
+		panic(r.ctx.Err())
 	case <-time.After(time.Until(r.listEnd)):
-		abandon("a type check over the guard's deadline (" + path + ")")
+		panic("a type check over the guard's deadline (" + path + ")")
 	}
-	return nil
 }
-
-// abandoned is the type checks given up on that still run: go/types cannot
-// be stopped (a killable process is P14e-2c), so while one runs a new Go
-// guard run is unverifiable.
-var (
-	abandoned   atomic.Int64
-	abandonedBy atomic.Pointer[string] // the run that last abandoned one
-)
 
 type importFunc func(string) (*types.Package, error)
 
