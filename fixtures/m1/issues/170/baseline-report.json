@@ -1,6 +1,7 @@
 {
-  "note": "The base Report for #170's gate (results.ParseGoTestJSON's own encoding; decode it as a results.Report, whose fields are results and packages). Recorded in the prepared Go image, offline, with the sandbox's flags (--network=none, read-only root, 256 MiB /tmp tmpfs, HOME on tmpfs, --cap-drop=all, uid 0). The three skips are tests that skip as root; a head that skips them too is not blocked by them. Provisional until P15 re-records it in the pinned image (ghcr.io/ekaynac/adc-prepared-go@sha256:1d2fa05bf24dc73dff179b0b08e6ee89cb82d8ac47b0c133cc578210fcce744b).",
+  "note": "The measured baseline for #170's gate: gate.Baseline's encoding (gate.Measure, P15). Measured by gate.Measure in the pinned prepared Go image (ghcr.io/ekaynac/adc-prepared-go@sha256:1d2fa05bf24dc73dff179b0b08e6ee89cb82d8ac47b0c133cc578210fcce744b, image e0abcae7d1bd, linux/arm64), offline, in gate mode (--network=none, read-only root, 256 MiB /tmp tmpfs, HOME on tmpfs, --cap-drop=all, uid 0), at base 0d3e81d (tree a75ab3a). The run ended on its own (exit 0) and is green; the three skips are tests that skip as root, and a head that skips them too is not blocked by them. baseline-stream.json is the measured run's go test -json stream.",
   "base": "0d3e81dba68473ecbe4e8cb5f2c0665a28e0cbeb",
+  "base_tree": "a75ab3a24c230fd6dcc58817d7d5c399fc92f8da",
   "command": [
     "go",
     "test",
@@ -8,7 +9,10 @@
     "-json",
     "./internal/cli/..."
   ],
-  "image": "fixtures/m1/images/go/Containerfile via scripts/prepare-go-image.sh (linux/arm64, a local build; no registry digest yet), dev.adc.prepared={\"toolchain\":\"go\",\"lockfiles\":{\"go.mod\":\"sha256:da34c313f1ddc72389060fcfe4ce0019ab769f4878fbc593e290bbbf131a1aeb\",\"go.sum\":\"sha256:078e20cd152d09fffa7455bf9a9babe1c74e0850701e60ddea4a17cdfc4097cf\"}}",
+  "image": "ghcr.io/ekaynac/adc-prepared-go@sha256:1d2fa05bf24dc73dff179b0b08e6ee89cb82d8ac47b0c133cc578210fcce744b",
+  "image_id": "e0abcae7d1bd0cf725025444c675750d0ac9ddea39cfb1916d27d9aa598409b7",
+  "os": "linux",
+  "arch": "arm64",
   "skipped_root_only": [
     "TestTokenOutSystemErrorCouldNotRun",
     "TestVerifyLogCouldNotRun",

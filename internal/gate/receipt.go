@@ -29,6 +29,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -43,6 +44,7 @@ import (
 const (
 	reportSchema = "adc.gate-report/v1"
 	maxReported  = 1000 // blocking findings in a report
+	maxID        = 256  // bytes of a reported package or test name
 	evidenceType = "application/x-go-test-json"
 )
 
@@ -98,6 +100,9 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 	seal := func(t types.RefType, id string, d types.Digest) (types.Ref, error) {
 		return knowledge.Seal(types.Ref{Type: t, ID: id, Scope: types.RefScope{Project: &s.Project},
 			Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: d})
+	}
+	if v.measured {
+		return types.Result{}, fmt.Errorf("%w: a measurement is no gate result", ErrSpec)
 	}
 	stream, err := put(v.Stream)
 	if err != nil {
@@ -157,20 +162,28 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 
 // Report is the D55 record of one gate node: the run's elapsed time, its
 // verdict and blocking findings (test ids and outcomes, at most
-// maxReported, the rest counted), and its charge links (none).
+// maxReported, the rest counted, each id cut to maxID bytes: a name is the
+// candidate's text, Opus #286 L2), and its charge links (none). It holds
+// at most about maxReported × 2 maxID bytes of ids.
 func (v Verdict) Report() ([]byte, error) {
 	type finding struct {
 		Package string          `json:"package"`
 		Name    string          `json:"name,omitempty"`
 		Outcome results.Outcome `json:"outcome"`
 	}
+	id := func(s string) string {
+		if len(s) <= maxID {
+			return s
+		}
+		return strings.ToValidUTF8(s[:maxID], "") + "…"
+	}
 	var blocking []finding
 	for _, x := range v.Results.Blocking() {
-		blocking = append(blocking, finding{x.Package, x.Name, x.Outcome})
+		blocking = append(blocking, finding{id(x.Package), id(x.Name), x.Outcome})
 	}
 	pkgs := v.Results.BlockingPackages()
 	for _, p := range slices.Sorted(maps.Keys(pkgs)) {
-		blocking = append(blocking, finding{Package: p, Outcome: pkgs[p]})
+		blocking = append(blocking, finding{Package: id(p), Outcome: pkgs[p]})
 	}
 	truncated := max(0, len(blocking)-maxReported)
 	return json.Marshal(struct {
