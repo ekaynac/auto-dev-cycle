@@ -14,16 +14,22 @@ package results
 //     pass): a malformed or partial document, a DTD or entity, an element
 //     this schema does not know, content after the root, no testcase, a
 //     count attribute (tests, failures, errors, skipped) that is not the
-//     number of testcases below it, and any bound passed: MaxStream bytes,
-//     maxElements elements, maxDepth levels, maxName bytes in an
-//     attribute. Free text (messages, tracebacks, output) is read past,
-//     never kept.
+//     number of testcases (tests) or child elements (failures, errors,
+//     skipped: pytest >= 9.1 counts each child, a setup error and a
+//     teardown error of one testcase two; older pytest subtracts double
+//     failures, which reads as unreadable, Opus #290 M1) below it, a
+//     namespaced or repeated attribute, text or a processing instruction
+//     after the root, and any bound passed: MaxStream bytes, maxElements
+//     elements, maxDepth levels, maxName bytes in an attribute read
+//     (classname, name, the counts). Free text (messages, tracebacks,
+//     output) is read past, never kept: MaxStream bounds it.
 //   - Two testcases of one identity are unreadable, but for pytest's own
 //     shape: a test that fails or passes and then errors in teardown is a
 //     second testcase holding an error alone. It is merged, as Fail: it can
 //     only make the test fail.
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -47,6 +53,9 @@ var known = map[string][]string{
 	"properties": {"property"},
 }
 
+// read are the attributes the adapter reads, each within maxName.
+var read = []string{"classname", "name", "tests", "failures", "errors", "skipped"}
+
 // suite counts the testcases below an open testsuite (or testsuites).
 type suite struct {
 	tests, failures, errors, skipped int
@@ -63,10 +72,10 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 	d := xml.NewDecoder(lr)
 	d.Strict, d.Entity = true, map[string]string{}
 	tests := map[Test]Outcome{}
-	var path []string        // the open elements
-	var suites []*suite      // the open testsuites
-	var test *Test           // the open testcase
-	has := map[string]bool{} // its failure, error and skipped children
+	var path []string       // the open elements
+	var suites []*suite     // the open testsuites
+	var test *Test          // the open testcase
+	has := map[string]int{} // its failure, error and skipped children
 	elements, rootDone := 0, false
 	for {
 		tok, err := d.Token()
@@ -79,6 +88,14 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 		switch t := tok.(type) {
 		case xml.Directive:
 			return unreadable("a DTD or directive")
+		case xml.CharData:
+			if rootDone && len(bytes.TrimSpace(t)) > 0 {
+				return unreadable("text after the root")
+			}
+		case xml.ProcInst:
+			if rootDone || elements > 0 || t.Target != "xml" {
+				return unreadable("a processing instruction other than the declaration")
+			}
 		case xml.StartElement:
 			parent := ""
 			if len(path) > 0 {
@@ -91,7 +108,9 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 			path = append(path, t.Name.Local)
 			attr := map[string]string{}
 			for _, a := range t.Attr {
-				if len(a.Value) > maxName {
+				if _, twice := attr[a.Name.Local]; twice || a.Name.Space != "" {
+					return unreadable("an attribute %q repeated or namespaced", a.Name.Local)
+				} else if len(a.Value) > maxName && slices.Contains(read, a.Name.Local) {
 					return unreadable("an attribute beyond %d bytes", maxName)
 				}
 				attr[a.Name.Local] = a.Value
@@ -116,16 +135,16 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 					return unreadable("a testcase with no name")
 				}
 			case "failure", "error", "skipped":
-				has[t.Name.Local] = true
+				has[t.Name.Local]++
 			}
 		case xml.EndElement:
 			switch path = path[:len(path)-1]; t.Name.Local {
 			case "testcase":
 				o := Pass
-				if has["skipped"] {
+				if has["skipped"] > 0 {
 					o = Skip
 				}
-				if has["failure"] || has["error"] && !mutation.Is(mutation.JUnitErrorPasses) {
+				if has["failure"] > 0 || has["error"] > 0 && !mutation.Is(mutation.JUnitErrorPasses) {
 					o = Fail
 				}
 				// A second testcase of one identity is unreadable, but for
@@ -133,16 +152,16 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 				// error alone, which can only make it fail.
 				if prior, dup := tests[*test]; !dup {
 					tests[*test] = o
-				} else if has["error"] && !has["failure"] && !has["skipped"] {
+				} else if has["error"] > 0 && has["failure"]+has["skipped"] == 0 {
 					tests[*test] = worse(prior, Fail)
 				} else {
 					return unreadable("two testcases %s %s", test.Package, test.Name)
 				}
 				for _, s := range suites {
 					s.tests++
-					s.failures += b2i(has["failure"])
-					s.errors += b2i(has["error"])
-					s.skipped += b2i(has["skipped"])
+					s.failures += has["failure"]
+					s.errors += has["error"]
+					s.skipped += has["skipped"]
 				}
 			case "testsuites", "testsuite":
 				s := suites[len(suites)-1]
@@ -161,11 +180,4 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 		return unreadable("no testcase")
 	}
 	return assemble(tests, map[string]Outcome{}, expected, base)
-}
-
-func b2i(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

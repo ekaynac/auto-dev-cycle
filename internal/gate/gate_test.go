@@ -528,7 +528,7 @@ func TestGateIssue170(t *testing.T) {
 	p.Gate.Command = b.Command
 	pin := p.Toolchain.Images["go"] // the profile's own pin, read apart from the baseline (Astra #286 r2 L2)
 	in := In{Image: sandbox.Image{Pinned: pin, ID: b.ImageID, OS: b.OS, Arch: b.Arch}, Gate: p.Gate, Env: "ci", Base: b.Base, Baseline: &b}
-	if err := in.check(); err != nil || pin == "" || b.Image != pin || len(b.Results) != 72 || !b.Green() {
+	if err := in.bound(); err != nil || pin == "" || b.Image != pin || len(b.Results) != 72 || !b.Green() {
 		t.Fatalf("#170's baseline is not bound to this gate: %v (%s, the profile pins %s; %d results)", err, b.Image, pin, len(b.Results))
 	}
 	var v Verdict

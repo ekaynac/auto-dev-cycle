@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="2" failures="0" skipped="0" tests="2" time="0.009" timestamp="2026-10-19T18:59:05.553208+03:00" hostname="sandbox"><testcase classname="tests.test_double" name="test_both" time="0.000"><error message="failed on setup with &quot;RuntimeError: setup&quot;">a = None
+
+    @pytest.fixture
+    def b(a):
+&gt;       raise RuntimeError("setup")
+E       RuntimeError: setup
+
+tests/test_double.py:10: RuntimeError</error><error message="failed on teardown with &quot;RuntimeError: teardown&quot;">@pytest.fixture
+    def a():
+        yield
+&gt;       raise RuntimeError("teardown")
+E       RuntimeError: teardown
+
+tests/test_double.py:6: RuntimeError</error></testcase><testcase classname="tests.test_double" name="test_fine" time="0.000" /></testsuite></testsuites>

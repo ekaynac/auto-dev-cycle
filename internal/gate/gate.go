@@ -40,17 +40,22 @@
 //     must be the one asked for (a commit id or another tree is refused),
 //     and the receipt is about it (receipt.go).
 //   - The cwd contract (#275), for junit_xml (pytest) only: a Go test may
-//     run Python from its package directory (Opus #286 M3). Every Python
-//     process of the run starts in the checkout root, and none changes
-//     directory before pytest has collected; a probe the controller writes
-//     into the results mount records both (cwd/). A record elsewhere, no
-//     record at all (Python that never loaded the probe), or a log over
-//     its bound invalidates the run (could_not_run/runner_fault). The probe
-//     runs in-process, writable by the run, so these escape it (decision
-//     A's residual, Opus #286 L1): a run that deletes or rewrites the probe
-//     or its log after a first record, Python started with -E, -I or -S
-//     beside one that loaded it, and a wrapper that drops PYTHONPATH for
-//     some processes (tox's default environment does).
+//     run Python from its package directory (Opus #286 M3). Every pytest
+//     process of the run (the runner, a worker, a wrapper that execs
+//     pytest) starts in the checkout root, and none changes directory
+//     before pytest has collected; a probe the controller writes into the
+//     results mount, first on PYTHONPATH, records both (cwd/), and only for
+//     a process that loads its pytest plugin or execs pytest: a test's own
+//     subprocess, in any directory, is not judged (Opus #290 M4). A record
+//     elsewhere, no record at all (no pytest loaded the probe: python -E or
+//     -I cannot load the plugin), or a log over its bound invalidates the
+//     run (could_not_run/runner_fault). The probe runs in-process, writable
+//     by the run, so these escape it (decision A's residual, Opus #286
+//     L1): a run that deletes or rewrites the probe or its log after a
+//     first record, and a pytest process that does not load the plugin
+//     beside one that does. A profile command that sets PYTHONPATH itself,
+//     rather than extending it, is unsupported (its pytest cannot load
+//     the plugin: no record, invalidated).
 //   - A gate environment's runtime.arch "any" (py-mini) relaxes only that
 //     environment's check: the image is still the host's OS and
 //     architecture.
@@ -338,11 +343,21 @@ func (b *Baseline) Digest() (types.Digest, error) {
 	return types.Digest("sha256:" + hex.EncodeToString(sum[:])), err
 }
 
-// check refuses a gate this package cannot run as asked: another adapter
-// or ownership rules, an image of another platform than the gate
-// environment's runtime (#226 entry 88), or a baseline measured with
-// another command, platform image or base tree (Opus #286 M2, L3).
+// check refuses a gate this package cannot run as asked: an image that is
+// not the host's OS and architecture (Opus #290 H1: the binding part
+// alone is a measured baseline's, wherever it is read), then bound.
 func (in In) check() error {
+	if in.Image.OS != runtime.GOOS || in.Image.Arch != runtime.GOARCH {
+		return fmt.Errorf("%w: the image is %s/%s, the host %s/%s", ErrSpec, in.Image.OS, in.Image.Arch, runtime.GOOS, runtime.GOARCH)
+	}
+	return in.bound()
+}
+
+// bound refuses another adapter or ownership rules, an image of another
+// platform than the gate environment's runtime (#226 entry 88), or a
+// baseline measured with another command, platform image or base tree
+// (Opus #286 M2, L3).
+func (in In) bound() error {
 	i := slices.IndexFunc(in.Gate.Environments, func(e types.ProjectProfileGateEnvironmentsItem) bool { return string(e.Name) == in.Env })
 	if i < 0 {
 		return fmt.Errorf("%w: no gate environment %q", ErrSpec, in.Env)
@@ -351,8 +366,8 @@ func (in In) check() error {
 	switch {
 	case adapters[in.Gate.ResultAdapter].file == "" || in.Gate.OwnershipRules != ownership:
 		return fmt.Errorf("%w: result adapter %q with ownership rules %q (only %s or %s, %s)", ErrSpec, in.Gate.ResultAdapter, in.Gate.OwnershipRules, results.GoTestJSON, results.JUnitXML, ownership)
-	case in.Image.OS != runtime.GOOS || in.Image.Arch != runtime.GOARCH || rt.Os != in.Image.OS || rt.Arch != in.Image.Arch && rt.Arch != "any":
-		return fmt.Errorf("%w: the image is %s/%s, the host %s/%s, the environment %s/%s", ErrSpec, in.Image.OS, in.Image.Arch, runtime.GOOS, runtime.GOARCH, rt.Os, rt.Arch)
+	case rt.Os != in.Image.OS || rt.Arch != in.Image.Arch && rt.Arch != "any":
+		return fmt.Errorf("%w: the image is %s/%s, the environment %s/%s", ErrSpec, in.Image.OS, in.Image.Arch, rt.Os, rt.Arch)
 	case b != nil && (!slices.Equal(b.Command, in.Gate.Command) || b.ImageID != in.Image.ID || b.OS != in.Image.OS || b.Arch != in.Image.Arch):
 		return fmt.Errorf("%w: the baseline was measured with another command or platform image", ErrSpec)
 	case b != nil && b.Base != in.Base:
@@ -377,14 +392,24 @@ func (v *Verdict) judge(in In, module string, ended bool) {
 		}
 		return
 	}
+	under := func(pkg, mod string) bool { return mod == "" || pkg == mod || strings.HasPrefix(pkg, mod+".") } // a dotted module, or a prefix of it
+	var broken []string                                                                                       // pytest's collection errors: a module (or package) the candidate's change can break (Opus #290 M3)
+	for _, x := range v.Results.Results {
+		if x.Package == "" && x.Outcome == results.Fail && in.Gate.ResultAdapter == results.JUnitXML {
+			broken = append(broken, x.Name)
+		}
+	}
 	touched := func(pkg string) bool {
 		rel := strings.TrimPrefix(strings.TrimPrefix(pkg, module), "/")
-		return slices.ContainsFunc(in.Changed, func(c string) bool {
-			if mod, ok := strings.CutSuffix(c, ".py"); ok && in.Gate.ResultAdapter == results.JUnitXML { // a pytest classname: the dotted module, and class
-				mod = strings.ReplaceAll(mod, "/", ".")
-				return pkg == mod || strings.HasPrefix(pkg, mod+".")
+		return slices.ContainsFunc(broken, func(m string) bool { return m != "" && under(pkg, m) }) || slices.ContainsFunc(in.Changed, func(c string) bool {
+			mod, ok := strings.CutSuffix(c, ".py")
+			switch {
+			case !ok || in.Gate.ResultAdapter != results.JUnitXML:
+				return module != "" && strings.HasPrefix(pkg, module) && path.Dir(c) == cmpOr(rel, ".")
+			case path.Base(c) == "conftest.py" || path.Base(c) == "__init__.py": // its directory's modules
+				mod = strings.TrimPrefix(path.Dir(c), ".")
 			}
-			return module != "" && strings.HasPrefix(pkg, module) && path.Dir(c) == cmpOr(rel, ".")
+			return under(pkg, strings.ReplaceAll(mod, "/", ".")) // a pytest classname: the dotted module, and class
 		})
 	}
 	var mine, theirs int
@@ -438,9 +463,9 @@ func argv(command []string, ad adapter) []string {
 	if !ad.probed {
 		return cmd
 	}
-	dir := sandbox.ResultsDir + "/" + probeDir
-	return append([]string{"env", "PYTHONPATH=" + dir, "PYTEST_PLUGINS=adc_gate_cwd", "PYTHONDONTWRITEBYTECODE=1",
-		"ADC_GATE_ROOT=" + sandbox.WorkspaceDir, "ADC_GATE_LOG=" + dir + "/log"}, cmd...)
+	dir := sandbox.ResultsDir + "/" + probeDir // first on PYTHONPATH, the image's after it (Opus #290 L4)
+	return append([]string{"env", "PYTEST_PLUGINS=adc_gate_cwd", "PYTHONDONTWRITEBYTECODE=1", "ADC_GATE_ROOT=" + sandbox.WorkspaceDir,
+		"ADC_GATE_LOG=" + dir + "/log", "sh", "-c", `PYTHONPATH="$0${PYTHONPATH:+:$PYTHONPATH}" exec "$@"`, dir}, cmd...)
 }
 
 // writeProbe writes the cwd probe into the results mount.
@@ -462,23 +487,21 @@ func writeProbe(res string) error {
 }
 
 // violations counts the probe's records, and those outside the checkout
-// root: sandbox.WorkspaceDir in the container, or ws itself for a host's
-// Runner that runs the command in place.
+// root: sandbox.WorkspaceDir in the container, or ws, resolved once, for a
+// host's Runner that runs the command in place (os.getcwd() is resolved);
+// no path a run wrote is resolved on the controller (Opus #290 L6).
 func violations(log, ws string) (bad, records int) {
-	b, _ := os.ReadFile(log) // none: no Python loaded the probe
+	b, _ := os.ReadFile(log) // none: no pytest process loaded the probe
+	if r, err := filepath.EvalSymlinks(ws); err == nil {
+		ws = r
+	}
 	for line := range strings.Lines(string(b)) {
 		_, dir, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
-		if records++; dir != sandbox.WorkspaceDir && !sameDir(dir, ws) {
+		if records++; dir != sandbox.WorkspaceDir && dir != ws {
 			bad++
 		}
 	}
 	return bad, records
-}
-
-func sameDir(a, b string) bool {
-	ra, ea := filepath.EvalSymlinks(a)
-	rb, eb := filepath.EvalSymlinks(b)
-	return ea == nil && eb == nil && ra == rb
 }
 
 func b2i(b bool) int {

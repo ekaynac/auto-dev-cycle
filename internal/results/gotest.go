@@ -58,8 +58,9 @@ const (
 	MaxLine   = 4 << 20
 )
 
-// ErrUnreadable: the stream is not a go test -json stream within bounds.
-var ErrUnreadable = errors.New("results: unreadable go test -json stream")
+// ErrUnreadable: the results are not their adapter's format within its
+// bounds (a go test -json stream, a JUnit XML document).
+var ErrUnreadable = errors.New("results: unreadable results")
 
 // Outcome is one test's or one package's result.
 type Outcome string

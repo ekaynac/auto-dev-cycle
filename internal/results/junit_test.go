@@ -60,6 +60,12 @@ func TestJUnitPytest(t *testing.T) {
 			t.Errorf("%s: %v, %v", name, outcomes(r), err)
 		}
 	}
+	// Opus #290 M1: real pytest 9.1.1, a setup error and a teardown error
+	// in one testcase, counted as two errors.
+	r, err = ParseJUnitXML(strings.NewReader(junit(t, "pytest-double-error.xml")), nil, nil)
+	if got := outcomes(r); err != nil || got["tests.test_double::test_both"] != Fail || got["tests.test_double::test_fine"] != Pass {
+		t.Errorf("a setup and a teardown error: %v, %v", got, err)
+	}
 	r, err = ParseJUnitXML(strings.NewReader(junit(t, "pytest-collect-error.xml")), nil, nil)
 	if err != nil || outcomes(r)["::tests.test_broken"] != Fail || r.Clean() {
 		t.Errorf("a collection error: %v, %v", outcomes(r), err)
@@ -116,6 +122,12 @@ func TestJUnitStrict(t *testing.T) {
 		"a name beyond its bound":      suite(`tests="1"`, `<testcase classname="m" name="`+strings.Repeat("n", 65)+`"/>`),
 		"levels beyond their bound":    strings.Repeat("<testsuite>", 9) + pass + strings.Repeat("</testsuite>", 9),
 		"elements beyond their bound":  suite(`tests="35"`, many(35)),
+		// Opus #290 L1, L2.
+		"text after the root":             suite(`tests="1"`, pass) + "5 passed",
+		"a processing instruction after":  suite(`tests="1"`, pass) + `<?pass yes?>`,
+		"a repeated attribute":            suite(`tests="1"`, `<testcase classname="m" name="t" name="a"/>`),
+		"a namespaced attribute":          suite(`tests="1"`, `<testcase classname="m" name="t" x:name="a"/>`),
+		"errors miscounted, two children": suite(`tests="1" errors="1"`, `<testcase classname="m" name="a"><error/><error/></testcase>`),
 	} {
 		if r, err := ParseJUnitXML(strings.NewReader(doc), nil, nil); !errors.Is(err, ErrUnreadable) {
 			t.Errorf("%s: %v, %v; want unreadable", name, outcomes(r), err)
@@ -127,7 +139,12 @@ func TestJUnitStrict(t *testing.T) {
 	if r, err := ParseJUnitXML(strings.NewReader(big), nil, nil); !errors.Is(err, ErrUnreadable) {
 		t.Errorf("a document past MaxStream: %v, %v; want unreadable", outcomes(r), err)
 	}
-	// Within the lowered bounds, the same shapes read.
+	// Within the lowered bounds, the same shapes read; a failure message
+	// past maxName is free text, never read (Opus #290 M2: a 5,012-byte one).
+	long := suite(`tests="1" failures="1"`, `<testcase classname="m" name="a"><failure message="`+strings.Repeat("x", 5012)+`"/></testcase>`)
+	if r, err := ParseJUnitXML(strings.NewReader(long), nil, nil); err != nil || outcomes(r)["m::a"] != Fail {
+		t.Errorf("a 5,012-byte failure message: %v, %v", outcomes(r), err)
+	}
 	if r, err := ParseJUnitXML(strings.NewReader(suite(`tests="2" failures="0" errors="1" skipped="0"`, pass+`<testcase classname="m" name="a"><error/></testcase>`)), nil, nil); err != nil || outcomes(r)["m::a"] != Fail {
 		t.Errorf("pytest's teardown shape: %v, %v", outcomes(r), err)
 	}
