@@ -39,6 +39,11 @@ var (
 	// pyFiles change what pytest collects or how (P14c reads them).
 	pyFiles = []string{"conftest.py", "pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg",
 		"pyproject.toml", "pyvenv.cfg"}
+	// vendorBlock: a vendor/ directory beside a go.mod, in either version,
+	// blocks (the operator's decision on #287): GoEnv's gate reads the module
+	// cache, the guard's typers vendor/. The tests of that typing, kept for
+	// the item that pins -mod=vendor, turn it off.
+	vendorBlock = true
 )
 
 // stat is one test's evidence on one platform (cert: goOn's).
@@ -181,6 +186,11 @@ func (r *run) check(changes []Change) error {
 	r.trees = [2]*tree{{r.files, r.baseDirs, map[string]*typer{}, vendors(keys(r.files))}, {r.cand, r.candDirs, map[string]*typer{}, vendors(keys(r.cand))}}
 	r.anyTest = slices.ContainsFunc(keys(r.files, r.cand), goByName)
 	r.vendorChanged = vendors(slices.DeleteFunc(keys(r.files, r.cand), func(p string) bool { return r.files[p] == r.cand[p] }))
+	for _, v := range keys(r.trees[0].vendors, r.trees[1].vendors) { // P14e-2c: until the gate pins -mod=vendor for them
+		if mod := path.Join(path.Dir(strings.TrimSuffix(v, "/")), "go.mod"); vendorBlock && (r.files[mod] != "" || r.cand[mod] != "") {
+			add(&r.blocks, v, "unverifiable: a vendored module: the gate builds from the module cache (GOFLAGS=-mod=readonly), not vendor/")
+		}
+	}
 	py := slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), func(p string) bool { return path.Ext(p) == ".py" })
 	cgo := slices.ContainsFunc(changes, func(c Change) bool { return path.Ext(c.Src) != ".go" || path.Ext(c.Dst) != ".go" }) && r.usesCgo()
 	for _, c := range changes {

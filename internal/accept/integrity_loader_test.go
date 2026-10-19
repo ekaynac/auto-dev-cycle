@@ -289,3 +289,43 @@ func maps2(m map[string]string, k, v string) map[string]string {
 	}
 	return out
 }
+
+// vendorTyping turns vendorBlock off for t: its fixtures test the guard's
+// typing of vendor/, kept for the item that pins -mod=vendor.
+func vendorTyping(t *testing.T) {
+	vendorBlock = false
+	t.Cleanup(func() { vendorBlock = true })
+}
+
+// TestIntegrityVendored (the operator's decision on #287): a vendor/
+// directory beside a go.mod, in the base or the candidate, at the root or in
+// a nested module, blocks with its reason (the gate builds from the module
+// cache under GoEnv, the guard would type vendor/); a vendor/ directory
+// beside no go.mod is not Go's.
+func TestIntegrityVendored(t *testing.T) {
+	const why = "unverifiable: a vendored module: the gate builds from the module cache (GOFLAGS=-mod=readonly), not vendor/"
+	lib := map[string]string{"go.mod": guardBase["go.mod"] + "\nrequire example.org/lib v1.0.0\n",
+		"vendor/modules.txt":            "# golang.org/x/sys v0.48.0\n## explicit\n# example.org/lib v1.0.0\n## explicit\nexample.org/lib\n",
+		"vendor/example.org/lib/lib.go": "package lib\n\nfunc F() int { return 1 }\n",
+		"sub/go.mod":                    "module example.com/sub\n\ngo 1.26.0\n", "sub/vendor/modules.txt": "", "tools/vendor/notes.txt": "x\n"}
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, lib)
+		plain(t, src, "add", "--all")
+	})
+	plainGo := map[string]string{"pkg/x.go": "package pkg\n\nimport \"example.org/lib\"\n\nfunc G() int { return lib.F() }\n"}
+	v := f.guarded(t, plainGo)
+	if !slices.Contains(whats(v.Blocks), "vendor/: "+why) || !slices.Contains(whats(v.Blocks), "sub/vendor/: "+why) || finds(v.Blocks, "tools/vendor/") {
+		t.Errorf("a vendored base: %q", whats(v.Blocks))
+	}
+	if w := f.isolated(t, testLister(t), plainGo); !reflect.DeepEqual(v.Blocks, w.Blocks) {
+		t.Errorf("a vendored base in its own process: %q", whats(w.Blocks))
+	}
+	g := newGuardFixture(t)
+	if v := g.guarded(t, map[string]string{"vendor/example.org/lib/lib.go": lib["vendor/example.org/lib/lib.go"]}); !slices.Contains(whats(v.Blocks), "vendor/: "+why) {
+		t.Errorf("a candidate adding vendor/: %q", whats(v.Blocks))
+	}
+	if v := g.guarded(t, map[string]string{"tools/vendor/notes.txt": "x\n"}); !v.Accepted() {
+		t.Errorf("a vendor/ beside no go.mod: %q", whats(v.Blocks))
+	}
+}
