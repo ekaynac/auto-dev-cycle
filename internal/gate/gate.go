@@ -53,6 +53,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -165,7 +166,10 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	if err := in.check(); err != nil {
 		return v, err
 	}
-	v.baseline = in.Baseline
+	// The validated baseline, copied before execution (Astra #286 r2 M1):
+	// the comparison and the receipt's demand use this copy, never the
+	// caller's object, which may change before Result.
+	v.baseline = in.Baseline.snapshot()
 	a, err := in.Host.NewAttempt()
 	if err != nil {
 		return v, err
@@ -212,8 +216,8 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 		return v, nil
 	}
 	var base *results.Report
-	if in.Baseline != nil {
-		base = &in.Baseline.Report
+	if v.baseline != nil {
+		base = &v.baseline.Report
 	}
 	if v.Results, err = results.ParseGoTestJSON(bytes.NewReader(v.Stream), in.Expected, base); err != nil {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results are not a go test -json stream")
@@ -221,6 +225,16 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	}
 	v.judge(in, module, zero)
 	return v, nil
+}
+
+// snapshot is a deep copy of b (nil for none).
+func (b *Baseline) snapshot() *Baseline {
+	if b == nil {
+		return nil
+	}
+	c := *b
+	c.Command, c.Results, c.Packages = slices.Clone(b.Command), slices.Clone(b.Results), maps.Clone(b.Packages)
+	return &c
 }
 
 // ending is how a run ended: zero, on its own with exit status 0; normal,

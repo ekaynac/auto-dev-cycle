@@ -507,7 +507,10 @@ func TestGateSanitised(t *testing.T) {
 // it in this repository's gate environment, is clean.
 func TestGateIssue170(t *testing.T) {
 	var b Baseline
-	var p struct{ Gate types.ProjectProfileGate }
+	var p struct {
+		Gate      types.ProjectProfileGate
+		Toolchain struct{ Images map[string]string }
+	}
 	for file, into := range map[string]any{"../../fixtures/m1/issues/170/baseline-report.json": &b, "../../fixtures/m1/profiles/auto-dev-cycle.json": &p} {
 		raw, err := os.ReadFile(file)
 		if err == nil {
@@ -522,9 +525,10 @@ func TestGateIssue170(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.Gate.Command = b.Command
-	in := In{Image: sandbox.Image{Pinned: b.Image, ID: b.ImageID, OS: b.OS, Arch: b.Arch}, Gate: p.Gate, Env: "ci", Base: b.Base, Baseline: &b}
-	if err := in.check(); err != nil || !strings.HasPrefix(b.Image, "ghcr.io/ekaynac/adc-prepared-go@sha256:") || len(b.Results) != 72 || !b.Green() {
-		t.Fatalf("#170's baseline is not bound to this gate: %v (%s, %d results)", err, b.Image, len(b.Results))
+	pin := p.Toolchain.Images["go"] // the profile's own pin, read apart from the baseline (Astra #286 r2 L2)
+	in := In{Image: sandbox.Image{Pinned: pin, ID: b.ImageID, OS: b.OS, Arch: b.Arch}, Gate: p.Gate, Env: "ci", Base: b.Base, Baseline: &b}
+	if err := in.check(); err != nil || pin == "" || b.Image != pin || len(b.Results) != 72 || !b.Green() {
+		t.Fatalf("#170's baseline is not bound to this gate: %v (%s, the profile pins %s; %d results)", err, b.Image, pin, len(b.Results))
 	}
 	var v Verdict
 	if v.Results, err = results.ParseGoTestJSON(strings.NewReader(string(run)), nil, &b.Report); err != nil {
@@ -532,5 +536,47 @@ func TestGateIssue170(t *testing.T) {
 	}
 	if v.judge(in, "github.com/ekaynac/auto-dev-cycle", true); !is(v, vocab.Empty, vocab.ReasonCompletedClean) {
 		t.Errorf("#170's base against its baseline: %v", v)
+	}
+}
+
+// TestGateBaselineHeld (Astra #286 r2 M1): the receipt binds the baseline
+// as it was validated, before the run: changing or replacing the caller's
+// baseline object between Run and Result changes nothing.
+func TestGateBaselineHeld(t *testing.T) {
+	f := newFixture(t, map[string]string{"clean.json": stream["clean.json"]}, "cat", "clean.json")
+	var b1 *Baseline // B1, copied apart from the code under test
+	if enc, err := json.Marshal(f.in.Baseline); err != nil || json.Unmarshal(enc, &b1) != nil {
+		t.Fatal(err)
+	}
+	v := gated(t, f.in)
+	f.in.Baseline.Results[1].Outcome = results.Skip // in place, then the whole object
+	b2 := *f.in.Baseline.snapshot()
+	b2.Base = strings.Repeat("f", 40)
+	*f.in.Baseline = b2
+	blobs, err := blobstore.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract, _ := Contract(f.in.Gate, testImage)
+	s := Subject{Project: "prj_01m3250vz2ezn81cgvbkcn17jd", Revision: "1"}
+	res, err := Result(types.ComputationKey{Key: types.Digest("sha256:" + strings.Repeat("1", 64))}, v, contract, testImage, s, "cmd_01m3250vz2ezn81cgvbkcn17jd", blobs, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rcpt types.Receipt
+	if err := json.Unmarshal(read(t, blobs, res.Value[0].ContentDigest), &rcpt); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		b     *Baseline
+		holds bool
+	}{"B1, as judged": {b1, true}, "B2, the caller's object now": {&b2, false}} {
+		req, err := Requirement(contract, f.tree, testImage, s, c.b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := receipt.Applies(rcpt, req, time.Now()); (err == nil) != c.holds {
+			t.Errorf("against %s: %v", name, err)
+		}
 	}
 }
