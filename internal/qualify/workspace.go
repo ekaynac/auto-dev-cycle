@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -54,8 +55,16 @@ func (s Suite) Prompt(ctx context.Context, c Case, gobin, dir string, env []stri
 	if err != nil {
 		return nil, err
 	}
-	return review.Prompt(review.PromptInput{Requirement: req, Diff: string(diff), Gate: g})
+	p, err := review.Prompt(review.PromptInput{Requirement: req, Diff: string(diff), Gate: g})
+	if err == nil && digest(p) != c.PromptDigest { // the suite pins each rendered prompt (Opus #306 M2)
+		return p, fmt.Errorf("%w: case %s's prompt is %s, suite.json pins %s", ErrPromptDrift, c.ID, digest(p), c.PromptDigest)
+	}
+	return p, err
 }
+
+// ErrPromptDrift: a case's rendered prompt is not the one suite.json pins
+// (its requirement, base, overlay, patch, gate or the template moved).
+var ErrPromptDrift = errors.New("qualify: a case's prompt drifted")
 
 // Gate runs gobin's `go test -count=1 -json ./...` in dir with env, and is
 // its summary: each test's last action counted once.

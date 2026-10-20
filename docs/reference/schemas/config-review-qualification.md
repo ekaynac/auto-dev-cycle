@@ -4,7 +4,7 @@
 
 `schemas/config/review-qualification.json`
 
-One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-plan.md): the reviewer route that ran it, the digests of the prompt template and of the suite it ran, each case's expected and returned verdict with its D55 review report's digest, and the score. Committed under fixtures/m1/review-qualification/records/; internal/qualify.Check reads it, and the route is qualified only when the route, prompt and suite digests are the current ones and the score meets the suite's bar (all planted defects no_go, at least three of four clean controls go). The record holds no prompt, diff or reviewer text.
+One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-plan.md): the reviewer route that ran it, the digests of the prompt template and of the suite it ran, each case's expected and returned verdict with its D55 review report's digest, and the score. Committed under fixtures/m1/review-qualification/records/; internal/qualify.Check reads it, and the route is qualified only when its latest record (by ran_at) has the current route, prompt, adapter and suite digests, every report agrees with it, and the score meets the suite's bar (all planted defects no_go, at least three of four clean controls go). The record holds no prompt, diff or reviewer text.
 
 ## Fields of the document
 
@@ -13,7 +13,8 @@ One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-p
 | `schema` | yes | `adc.review-qualification/v1` |  |
 | `route` | yes | [QualifiedRoute](#qualifiedroute) |  |
 | `prompt_digest` | yes | [Digest](common-defs.md#digest) | internal/review.PromptDigest: the reviewer prompt's template. |
-| `suite_digest` | yes | [Digest](common-defs.md#digest) | internal/qualify.Suite's digest: suite.json, every case's patch and every sealed file. |
+| `adapter_digest` | yes | [Digest](common-defs.md#digest) | internal/qualify.AdapterDigest: the http-chat adapter's source, package.json and the workspace lockfile, and the reviewer's limits (Opus #306 M6): any change makes the record stale. |
+| `suite_digest` | yes | [Digest](common-defs.md#digest) | internal/qualify.Suite's digest: suite.json (each case's rendered prompt digest included), every case's patch and every sealed file. |
 | `ran_at` | yes | [Time](common-defs.md#time) |  |
 | `cases` | yes | array of [QualifiedCase](#qualifiedcase) (minItems `1`, maxItems `64`) |  |
 | `no_go_on_defects` | yes | integer (minimum `0`, maximum `64`) |  |
@@ -49,6 +50,7 @@ No other fields are allowed.
 |---|---|---|---|
 | `id` | yes | string (pattern `^[a-z0-9][a-z0-9-]{0,95}$`) |  |
 | `expect` | yes | one of `go`, `no_go` |  |
+| `prompt_digest` | yes | [Digest](common-defs.md#digest) | The digest of the case's rendered review.Prompt, as suite.json pins it (Opus #306 M2). |
 | `decision` | yes | one of `go`, `no_go`, `none` | The reviewer's typed decision; none when it returned none or one internal/review.Parse refuses (a miss). |
 | `report_digest` | yes | [Digest](common-defs.md#digest) | The case's adc.review-report/v1 (internal/review.Report), committed beside the record. |
 

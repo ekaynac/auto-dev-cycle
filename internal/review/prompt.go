@@ -50,10 +50,25 @@ Decide "go" only when the change meets every part of the task and introduces no 
 %s
 `
 
-// PromptDigest is the digest of the prompt's template and bounds.
+// PromptDigest is the digest of the prompt as Prompt renders it: its output
+// on fixed inputs, a green gate and a red one, a diff holding a backtick
+// run, and the bounds (Opus #306 M1). Any change to the template or to the
+// rendering moves it, and every qualification record goes stale.
 var PromptDigest = func() types.Digest {
-	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%d\x00%d", promptTemplate, maxRequirement, maxDiff))
-	return types.Digest("sha256:" + hex.EncodeToString(sum[:]))
+	h := sha256.New()
+	fmt.Fprintf(h, "%d\x00%d\x00", maxRequirement, maxDiff)
+	for _, in := range []PromptInput{
+		{Requirement: "Requirement R.", Diff: "diff --git a/x b/x\n+x\n", Gate: Gate{Passed: 3, Green: true}},
+		{Requirement: "Requirement S.", Diff: "diff --git a/y b/y\n+ ```\n+``\n", Gate: Gate{Passed: 2, Failed: 1, Skipped: 1}},
+	} {
+		p, err := Prompt(in)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Fprintf(h, "%d\x00", len(p))
+		h.Write(p)
+	}
+	return types.Digest("sha256:" + hex.EncodeToString(h.Sum(nil)))
 }()
 
 // Gate is the gate's summary a reviewer sees: its verdict and its counts.
@@ -84,5 +99,20 @@ func Prompt(in PromptInput) ([]byte, error) {
 		verdict = "green: every test it ran passed"
 	}
 	gate := fmt.Sprintf("%s (%d passed, %d failed, %d skipped).", verdict, in.Gate.Passed, in.Gate.Failed, in.Gate.Skipped)
-	return fmt.Appendf(nil, promptTemplate, strings.TrimSpace(in.Requirement), gate, "```diff\n"+strings.TrimRight(in.Diff, "\n")+"\n```"), nil
+	fence := strings.Repeat("`", max(3, longestRun(in.Diff, '`')+1)) // no line of the diff closes it (Opus #306 L5)
+	return fmt.Appendf(nil, promptTemplate, strings.TrimSpace(in.Requirement), gate, fence+"diff\n"+strings.TrimRight(in.Diff, "\n")+"\n"+fence), nil
+}
+
+// longestRun is the length of the longest run of c in s.
+func longestRun(s string, c byte) int {
+	longest, n := 0, 0
+	for i := range len(s) {
+		if s[i] == c {
+			n++
+			longest = max(longest, n)
+		} else {
+			n = 0
+		}
+	}
+	return longest
 }

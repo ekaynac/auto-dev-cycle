@@ -139,20 +139,34 @@ func TestRoute(t *testing.T) {
 		}
 		prompts[c.ID] = p
 	}
-	run := func(reply func(c Case) string) map[string]Outcome {
+	byPrompt := map[string]Case{}
+	for _, c := range s.Cases {
+		byPrompt[string(prompts[c.ID])] = c
+	}
+	run := func(reply func(c Case) string) map[string]Outcome { // the upstream answers the prompt it was sent, not the loop's case (Opus #306 M5)
 		out := map[string]Outcome{}
 		for _, c := range s.Cases {
+			var got string
 			up.mu.Lock()
-			up.reply = func(string) string { return reply(c) }
+			up.reply = func(p string) string {
+				got = p
+				if x, ok := byPrompt[p]; ok {
+					return reply(x)
+				}
+				return "an unknown prompt"
+			}
 			up.mu.Unlock()
 			o, err := r.Review(ctx, prompts[c.ID])
 			if err != nil {
 				t.Fatalf("%s: %v", c.ID, err)
 			}
-			var rep struct {
-				Schema, Decision string
+			up.mu.Lock()
+			if got != string(prompts[c.ID]) {
+				t.Errorf("%s: the provider was sent another prompt (%d bytes, want %d)", c.ID, len(got), len(prompts[c.ID]))
 			}
-			if err := json.Unmarshal(o.Report, &rep); err != nil || rep.Schema != "adc.review-report/v1" || rep.Decision != o.Decision {
+			up.mu.Unlock()
+			var rep report
+			if err := readReport(o.Report, &rep); err != nil || rep.Schema != "adc.review-report/v1" || rep.Decision != o.Decision {
 				t.Errorf("%s: the report %s, %v", c.ID, o.Report, err)
 			}
 			out[c.ID] = o
@@ -200,6 +214,17 @@ func TestRoute(t *testing.T) {
 	}
 	if err := Check(lax, qr, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "under the bar") {
 		t.Errorf("the all-go reviewer's record: %v", err)
+	}
+	noGos := t.TempDir() // Opus #306 L1: a reviewer that always says no_go
+	allNoGo := run(func(Case) string { return decision(review.NoGo) })
+	if noGo, goes, ok := s.Score(decided(allNoGo)); ok || noGo != 4 || goes != 0 {
+		t.Errorf("the all-no_go reviewer: %d no_go, %d go, qualified %v", noGo, goes, ok)
+	}
+	if _, err := s.Record(noGos, "all-no-go", qr, time.Now(), allNoGo); err != nil {
+		t.Fatal(err)
+	}
+	if err := Check(noGos, qr, s); !errors.Is(err, ErrUnqualified) || !strings.Contains(err.Error(), "under the bar: 4 of 4 defects no_go, 0 go") {
+		t.Errorf("the all-no_go reviewer's record: %v", err)
 	}
 	for id, o := range run(func(Case) string { return "not a decision" }) {
 		if o.Decision != "" {

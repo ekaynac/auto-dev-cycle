@@ -140,7 +140,7 @@ func (r Route) Review(ctx context.Context, prompt []byte) (o Outcome, err error)
 	defer func() { err = errors.Join(err, srv.Close()) }()
 	adapter := r.Adapter
 	adapter.Env = append(append([]string{}, adapter.Env...), "ADC_GATEWAY_SOCKET="+sock)
-	limits := types.AdapterPrepareParamsLimits{MaxTurns: 1, MaxOutputTokens: 8000, WallSeconds: max(1, int64(cmpDur(r.Bounds.Result, 10*time.Minute)/time.Second))}
+	limits := types.AdapterPrepareParamsLimits{MaxTurns: MaxTurns, MaxOutputTokens: MaxOutputTokens, WallSeconds: max(1, int64(cmpDur(r.Bounds.Result, 10*time.Minute)/time.Second))}
 	spec := adapterhost.Spec{Lease: l.ID, LeaseRevision: 2, Attempt: types.AttemptID(idv["att"]), Call: call, Prompt: prompt, Bounds: r.Bounds, Adapter: adapter,
 		Base: types.AttemptBase{Tree: types.GitID("git:" + strings.Repeat("0", 40)), ContractRevision: "1"},
 		Prepare: types.AdapterPrepareParams{Role: "reviewer", Executor: e.ID, Model: e.Model, Limits: limits,
