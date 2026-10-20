@@ -443,7 +443,7 @@ func TestDistAdaptersRefusals(t *testing.T) {
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("%v %s", err, out)
 			}
-		}, "fixtures/m1/stub-provider/server.mjs is missing"},
+		}, "fixtures/m1/stub-provider/server.mjs is not committed"},
 		"no main.ts": {goodListing, func(root string, env *[]string) {
 			cmd := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "rm")
 			mustRun(t, root, "git", "rm", "-q", "--cached", "--", "adapters/fake/src/main.ts")
@@ -484,7 +484,7 @@ func TestDistAdaptersRefusals(t *testing.T) {
 			want := []string{"LICENSE", "NOTICE", "adapters/contract/package.json", "adapters/contract/src/index.ts", "adapters/fake/package.json",
 				"adapters/fake/src/.keep", "adapters/fake/src/main.ts", "adapters/http-chat/package.json", "adapters/http-chat/src/main.ts",
 				"fixtures/m1/cases/c/case.json", "fixtures/m1/config/groups.json", "fixtures/m1/config/registry-stub.json", "fixtures/m1/profiles/go-mini.json",
-				"fixtures/m1/stub-provider/scenarios/s.json", "fixtures/m1/stub-provider/server.mjs", "fixtures/m1/stub/go-mini/baseline.json",
+				"fixtures/m1/stub/go-mini/baseline.json", "fixtures/m1/stub-provider/scenarios/s.json", "fixtures/m1/stub-provider/server.mjs",
 				"fixtures/t0/go-mini/repo/go.mod", "fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json",
 				"fixtures/t0/py-mini/repo/m.py", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json",
 				"gen/ts/formats.cjs", "gen/ts/package.json", "gen/ts/validators.cjs", "node_modules/@adc/contract", "node_modules/@adc/contract-gen",
