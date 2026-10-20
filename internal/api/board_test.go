@@ -292,9 +292,11 @@ func TestBoardColumns(t *testing.T) {
 		"the repair's own review go":         {authority.TaskAdmitted, nil, append(slices.Clone(repaired), completed(round(review, 2), types.OutcomeEmpty)), types.BoardPlacedCardColumnDoneCandidate},
 		"a structural waiting(input)":        {authority.TaskAdmitted, nil, []graph.NodeView{waitingOn(gate, "candidate", &types.ResultSource{Type: "result", Producer: build.Node.ID})}, types.BoardPlacedCardColumnReady},
 		"a review_requirement claimed":       {authority.TaskAdmitted, nil, []graph.NodeView{node(t, types.NodeKindReviewRequirement, types.NodeStateStateClaimed)}, types.BoardPlacedCardColumnReady},
+		"a cancelled task":                   {authority.TaskCancelledState, approval(authority.ApprovalInForce), nil, types.BoardPlacedCardColumnDone},
 	} {
 		card, ok := api.BoardCard(taskIn(t, c.state, c.approval), c.nodes, now, true).Variant.(*types.BoardPlacedCard)
-		if !ok || card.Column != c.column || card.Admitted != (c.state == authority.TaskAdmitted) || len(card.Nodes) != len(c.nodes) {
+		if !ok || card.Column != c.column || card.Admitted != (c.state == authority.TaskAdmitted) || card.Cancelled != (c.state == authority.TaskCancelledState) ||
+			len(card.Nodes) != len(c.nodes) {
 			t.Errorf("%s: %+v; want %s", name, card, c.column)
 		}
 	}
@@ -346,7 +348,8 @@ func TestBoardUnderivable(t *testing.T) {
 		nodes    []graph.NodeView
 		reason   types.BoardUnplacedCardReason
 	}{
-		"an unknown task state":         {"cancelled", nil, nil, types.BoardUnplacedCardReasonUnknownState},
+		"an unknown task state":         {"withdrawn", nil, nil, types.BoardUnplacedCardReasonUnknownState},
+		"a cancelled task with a node":  {authority.TaskCancelledState, nil, []graph.NodeView{node(t, types.NodeKindBuild, types.NodeStateStateClaimed)}, types.BoardUnplacedCardReasonNodesBeforeAdmission},
 		"a Ready task with a node":      {authority.TaskReady, nil, []graph.NodeView{node(t, types.NodeKindBuild, types.NodeStateStateClaimed)}, types.BoardUnplacedCardReasonNodesBeforeAdmission},
 		"an unknown approval status":    {authority.TaskReady, &authority.TaskApproval{Status: "pending"}, nil, types.BoardUnplacedCardReasonUnknownState},
 		"a kind outside M1(a)":          {authority.TaskAdmitted, nil, []graph.NodeView{merge}, types.BoardUnplacedCardReasonDeferredNodeKind},

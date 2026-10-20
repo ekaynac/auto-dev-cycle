@@ -66,7 +66,7 @@ and is never edited apart from it.
 | I12 Build facts and accept | partial | P14b-out, P14c-2a, P14c-2a-allow, P14c-2a2, P14c-2a3, P14c-2b, P14d, P22a (P14a, P14b, P14c-1 done, inert) | `launch`: all |
 | I13 Gate verdict and receipts | partial | P15 | `review`: all |
 | I14 Single merge delivery | partial | P18, P19, P27 | `merge-local`: all but the GitHub effect check; `merge-github`: all |
-| I15 Deferred surfaces | partial | P22a | `intake`: admission (the guard); every other capability: all |
+| I15 Deferred surfaces | enforced | P22a | `intake`: admission (the guard); every other capability: all |
 | I16 Rails | unenforced | P17 | `launch`: all |
 | I17 Containment | unenforced | P9, P14a, P15 (P11 done, inert) | `launch`: all |
 | I18 Acceptance confidentiality | partial | P3, P15, P16 (the builder's I18, moved from P14), P22a | `intake`: admission; `review`: all |
@@ -75,7 +75,9 @@ and is never edited apart from it.
 | I21 Launch readiness (D51) | unenforced | P17, P22a (P8b, P11 done, inert) | `launch`: all |
 | I22 One admitted task, held included (D51) | unenforced | P22a | `admission`, `launch`, `repeat`: all |
 
-**Lead decision (#245, M1 review of P6).** `answers` is activated by P6 with I15's admission row still a P22a gap: no template is reachable through `answers` (adcd wires no producer of graph events or owed inputs before P16). P22a must re-check this before activating any capability that reaches a template.
+**Lead decision (#245, M1 review of P6).** `answers` is activated by P6 with I15's admission row still a P22a gap: no template is reachable through `answers` (adcd wires no producer of graph events or owed inputs before P16). P22a must re-check this before activating any capability that reaches a template. **Re-checked by P22a-2:** the guard (`graph.CheckSurface`) keeps I15's admission row, so `answers` now holds every row it needs. `adcd` still records no template; the first one (P22a-3) goes through the guard.
+
+**In code (P22a-2).** `internal/capability.Table` is §1's table, with one bit per required row, set by the PR that keeps the row. `adcd` wires a capability's actions and registers its effect kinds only when every bit is set and nothing is pending; `adc dev capabilities --json` prints it. `TestKeptIsTheInventory` ties each bit to this file's status (kept or n/a).
 
 **Effect implementations land inert.** The `model_call` kind (P12a) and the `git` and GitHub targets (P18, P27) are
 built and tested in their own items. Only P22a registers `model_call`, and only P22b registers `merge` and constructs
@@ -218,7 +220,7 @@ through `lease.completed`. P21a keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `checkEvidence` (`graph/events.go`); no M1 template exists, so nothing refuses a deferred kind in it | kept + GAP | P22a (the guard refuses an `evidence` node and asserts that `Env.Contracts` is empty; gate contracts live apart, P15) |
+| admission | `checkEvidence` (`graph/events.go`); the deferred-surface guard `graph.CheckSurface` (P22a-2) refuses a template holding an `evidence`, `deploy`, `runtime_verify` or `integration` node, and an `Env` with instrument contracts (gate contracts live apart, P15). Every template `adcd` records goes through it; none is recorded before P22a-3 | kept | — |
 | fold/replay | the evidence-node folds (`graph/evidence.go`) | kept | — |
 | consumption | `graph.ClaimEvidence` → `contractOf` (`graph/evidence.go`) fails closed with no contracts; `adcd` passes none | kept | — |
 | effect | `eventstore.Tx.IntendEffect` refuses an unregistered kind; `remote_process` (`evidence.RemoteProcessKind`) is not registered in `adcd` | kept | — |
@@ -245,7 +247,7 @@ through `lease.completed`. P21a keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | none: there are no task acceptance blobs | GAP | P3 (classed restricted from builder and reviewer) |
+| admission | `task.create` (P3) records a task's acceptance as its spec's attachments, each classed `restricted` and withheld from builder and reviewer (`authority/task.go:acceptanceOf`); the fold refuses any other classing (`classed`). Recorded as kept by P22a-2: P3 closed it, and this row was not updated | kept | — |
 | fold/replay | none: no `manifest.intent` of a build or review is recorded yet to check | GAP | P22a (the folds refuse an acceptance ref in a recorded build's or review's intent, once intents are recorded; I18 moved from P14, #226 entry 71) |
 | consumption | `graph.Context` renders only claimed inputs. `graph/content.go:classed` filters **evidence results only**. P16a's `intent.Builder` and `intent.Reviewer` refuse an input that is, or derives at any depth from, an acceptance blob, walking authoritative ref records (`graph.Records`: identity and complete lineage, bounded) against the task's own acceptance (`authority.TaskAcceptance`), and a reviewer input that is a review's result or its content (a fresh context per round); nothing calls them until P22a. Lineage stays truthful: a gate result that ran the acceptance overlay derives from it, so the builder never takes its report, and the reviewer takes the sanitised gate report only through an explicit controller declassification on the record (P22a, #226 entry 91) | kept + GAP | P3 (acceptance blobs classed), P16a (the builder's and reviewer's intent), P22a (calls them for every build and review, with consumption-path fault evidence; the reviewer's declassification of the sanitised gate report), P15 (gate results sanitised for consumers); plus X1's stub-log canary |
 | effect | n/a: the stub-log canary assertion (X1) is the check | n/a | — |
@@ -289,6 +291,6 @@ through `lease.completed`. P21a keeps this check.
 
 ## Count
 
-88 rows across 22 invariants. **50 rows have a gap**: 19 are GAP and 31 are kept + GAP. 32 are kept and 6 are n/a (after P6, which also flipped P3's and P5's I1 and I2 rows, #226 entry 45; and after P7, P8a, P8b, P11, P11b, P20's `model_call` half, P21a and P21b, whose rows are kept in code, with the wiring left to P22a; P8a's I8 fold row is kept, since `adcd` wires `graph.Units`; P22a-1 kept the I9 fold row and the I11 consumption row, wiring the model calls' bindings and restart recovery at start). A recount on 2026-10-14 corrected the earlier figures (29 GAP, 28 kept).
+88 rows across 22 invariants. **48 rows have a gap**: 18 are GAP and 30 are kept + GAP. 34 are kept and 6 are n/a (after P6, which also flipped P3's and P5's I1 and I2 rows, #226 entry 45; and after P7, P8a, P8b, P11, P11b, P20's `model_call` half, P21a and P21b, whose rows are kept in code, with the wiring left to P22a; P8a's I8 fold row is kept, since `adcd` wires `graph.Units`; P22a-1 kept the I9 fold row and the I11 consumption row, wiring the model calls' bindings and restart recovery at start; P22a-2 kept I15's admission row, with the guard, and I18's, which P3 had closed). A recount on 2026-10-14 corrected the earlier figures (29 GAP, 28 kept).
 Every gap is closed by an item of `00-slice-plan.md` §5. None is left to a later milestone, except where 01 §4.1 or
 §6's clarifications place it. The evidence rows of 12 follow #187's trigger (slice plan §4).

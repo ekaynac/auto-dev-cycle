@@ -7,14 +7,22 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/ekaynac/auto-dev-cycle/internal/capability"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
 
 // Class is how this build answers a registered action (14 D1).
 type Class string
 
 const (
-	// Wired: a handler, and exactly one of a logic and an issuer.
+	// Wired: a handler, and exactly one of a logic, an issuer and a request.
 	Wired Class = "wired"
 	// Deferred: could_not_run/action_deferred, with nothing submitted.
 	Deferred Class = "deferred"
@@ -34,12 +42,22 @@ const Unassigned = "unassigned"
 // deferred to its owning milestone (14 D1). An action is wired or listed
 // here in the PR that registers it: Matrix refuses one that is neither.
 var deferred = map[string]Owner{
-	"project.create":                      {Milestone: "M1", Ref: "design/m1/00 §1 intake: handler built (P1), activated by P22a"},
 	"profile.adopt":                       {Milestone: "M4", Ref: "design/m1/00 Q7: with B2's required-configuration holds"},
-	"task.create":                         {Milestone: "M1", Ref: "design/m1/00 §1 intake: handler built (P3), activated by P22a"},
 	"review.request":                      {Milestone: "M5", Ref: "design/m1/00 Q7: where planning first asks for an ad-hoc review"},
 	"knowledge.change_protected_document": {Milestone: "M2", Ref: "design/m1/00 Q7: with the protected-document operation (plan/01 §4.1; plan/03 §4.6, §9)"},
 	"integration.change_topology":         {Milestone: "post-M6", Ref: "design/m1/00 Q7: with sandbox phase 3 (plan/01 §4.1)"},
+}
+
+// deferredActions are deferred and the gated actions of every capability
+// not active yet (capability.Table), each owned by the item activating it.
+func deferredActions() map[string]Owner {
+	out := maps.Clone(deferred)
+	for action := range gated() {
+		if c, _ := capability.Gating(action); !c.Active() {
+			out[action] = Owner{Milestone: "M1", Ref: fmt.Sprintf("design/m1/00 §1 %s: handler built, activated by %s", c.Name, c.ActivatedBy)}
+		}
+	}
+	return out
 }
 
 // wiredNotes are the wired actions whose handler, in this build, refuses
@@ -65,7 +83,8 @@ type Row struct {
 // issuer without a handler, and a deferred action reg does not register.
 func Matrix(reg *vocab.Registry) ([]Row, error) {
 	az := authorizer(reg)
-	hs, ls, is := handlers(), logics(az), issuers(az)
+	hs, ls, is, rs := handlers(), logics(az), issuers(az), requests(az, nil)
+	deferred := deferredActions()
 	for action := range ls {
 		if hs[action] == nil {
 			return nil, fmt.Errorf("daemon: %s has a logic and no handler", action)
@@ -74,6 +93,11 @@ func Matrix(reg *vocab.Registry) ([]Row, error) {
 	for action := range is {
 		if hs[action] == nil {
 			return nil, fmt.Errorf("daemon: %s has an issuer and no handler", action)
+		}
+	}
+	for action := range rs {
+		if hs[action] == nil {
+			return nil, fmt.Errorf("daemon: %s has a request and no handler", action)
 		}
 	}
 	for action := range deferred {
@@ -97,12 +121,14 @@ func Matrix(reg *vocab.Registry) ([]Row, error) {
 			r.Class = Unregistered
 		case wired && isDeferred:
 			return nil, fmt.Errorf("daemon: %s is both wired and deferred", action)
-		case wired && (ls[action] == nil) == (is[action] == nil):
-			return nil, fmt.Errorf("daemon: %s has a handler and not exactly one of a logic and an issuer", action)
+		case wired && b2i(ls[action] != nil)+b2i(is[action] != nil)+b2i(rs[action] != nil) != 1:
+			return nil, fmt.Errorf("daemon: %s has a handler and not exactly one of a logic, an issuer and a request", action)
 		case wired && ls[action] != nil:
 			r.Class, r.Via, r.Note = Wired, "logic", wiredNotes[action]
-		case wired:
+		case wired && is[action] != nil:
 			r.Class, r.Via, r.Note = Wired, "issuer", wiredNotes[action]
+		case wired:
+			r.Class, r.Via, r.Note = Wired, "request", wiredNotes[action]
 		case isDeferred && owner.Milestone == "":
 			return nil, fmt.Errorf("daemon: deferred %s has no milestone; write %s where none is named", action, Unassigned)
 		case isDeferred:

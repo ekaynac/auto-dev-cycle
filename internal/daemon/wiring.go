@@ -11,6 +11,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
+	"github.com/ekaynac/auto-dev-cycle/internal/capability"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
@@ -62,13 +63,9 @@ func authorizer(reg *vocab.Registry) authority.Authorizer {
 // handlers are the wired actions' handlers: proposal.confirm,
 // proposal.withdraw, note.add, the seat's, agent.enrol and actor.revoke
 // (14 PR 7a), grant.create, grant.revoke and grant.extend (14 PR 7c, 7d),
-// and token.issue, token.revoke and token.replace (14 M4, PR 7b). Every
-// other registered action has none and is refused. project.create has a
-// handler (authority.ProjectCreateHandler) that is not wired here: it stays
-// deferred until P22a activates the intake capability (M1 slice plan §1);
-// so does task.create's (authority.TaskCreateHandler, P3). input.answer
-// (authority.InputAnswerHandler, P5) is wired: P6 activates the answers
-// capability, with the graph fold checking the recorded answers.
+// token.issue, token.revoke and token.replace (14 M4, PR 7b), and the
+// gated actions of every active capability (gated). Every other
+// registered action has none and is refused.
 func handlers() map[string]authority.Handler {
 	hs := authority.SeatHandlers(0)
 	maps.Copy(hs, authority.AdminHandlers())
@@ -79,8 +76,22 @@ func handlers() map[string]authority.Handler {
 	hs[authority.GrantCreateAction] = authority.GrantCreateHandler{}
 	hs[authority.GrantRevokeAction] = authority.GrantRevokeHandler{}
 	hs[authority.GrantExtendAction] = authority.GrantExtendHandler{}
-	hs[authority.InputAnswerAction] = authority.InputAnswerHandler{}
+	for action, h := range gated() {
+		if c, _ := capability.Gating(action); c.Active() {
+			hs[action] = h
+		}
+	}
 	return hs
+}
+
+// gated are the handlers of the actions a capability wires
+// (capability.Table): intake's project.create and task.create (P1, P3)
+// and task.cancel (#226 entry 23), and answers' input.answer (P5, P6).
+// Each is wired only while its capability is active, and deferred
+// otherwise (deferredActions).
+func gated() map[string]authority.Handler {
+	return map[string]authority.Handler{authority.ProjectCreateAction: authority.ProjectCreateHandler{}, authority.TaskCreateAction: authority.TaskCreateHandler{},
+		authority.TaskCancelAction: authority.TaskCancelHandler{}, authority.InputAnswerAction: authority.InputAnswerHandler{}}
 }
 
 // logic is a wired action's command logic, which the request layer passes
@@ -92,6 +103,10 @@ type logic func(eventstore.Command) eventstore.Decide
 // submit with the command and the delivery of what that commits.
 type issuer func(context.Context, *eventstore.Store, eventstore.Command) (eventstore.Decide, func(eventstore.Committed) (identity.Secret, bool), error)
 
+// request is the request layer of an action that acts again once its
+// command is decided: the logic, and what runs on the commit.
+type request func(eventstore.Command) (eventstore.Decide, func(eventstore.Committed) error)
+
 // issuers are the credential-issuing actions' request layers: agent.enrol,
 // token.issue and token.replace.
 func issuers(az authority.Authorizer) map[string]issuer {
@@ -99,19 +114,51 @@ func issuers(az authority.Authorizer) map[string]issuer {
 		authority.TokenReplaceAction: az.TokenReplaceRequest}
 }
 
+// requests are the wired actions' request layers that act on the commit:
+// task.create, which drops the uploads it published (P3).
+func requests(az authority.Authorizer, uploads authority.Uploads) map[string]request {
+	out := map[string]request{}
+	if az.Handlers[authority.TaskCreateAction] != nil {
+		out[authority.TaskCreateAction] = authority.TaskCreate{Uploads: uploads}.Request
+	}
+	return out
+}
+
 // logics are the wired actions' logic, by action: every action handlers
-// wires has one, or an issuer (a test checks), and an action without
-// either is refused before anything is submitted (14 D1).
+// wires has one, an issuer or a request (Matrix checks), and an action
+// without any is refused before anything is submitted (14 D1).
 func logics(az authority.Authorizer) map[string]logic {
 	out := map[string]logic{authority.ConfirmAction: az.Confirm, authority.WithdrawAction: az.Withdraw, authority.NoteAction: authority.AddNote, authority.RevokeActorAction: az.RevokeActor,
 		authority.GrantCreateAction: authority.GrantCreateHandler{}.Logic, authority.GrantRevokeAction: authority.GrantRevokeHandler{}.Logic,
-		authority.GrantExtendAction: authority.GrantExtendHandler{}.Logic, authority.TokenRevokeAction: az.RevokeToken, authority.InputAnswerAction: authority.InputAnswer}
+		authority.GrantExtendAction: authority.GrantExtendHandler{}.Logic, authority.TokenRevokeAction: az.RevokeToken}
+	for action, l := range map[string]logic{authority.ProjectCreateAction: authority.CreateProject, authority.TaskCancelAction: authority.CancelTask, authority.InputAnswerAction: authority.InputAnswer} {
+		if az.Handlers[action] != nil {
+			out[action] = l
+		}
+	}
 	for action, h := range az.Handlers {
 		if s, ok := h.(authority.SeatHandler); ok {
 			out[action] = s.Logic
 		}
 	}
 	return out
+}
+
+// effectKinds are the effect kinds of the active capabilities
+// (capability.EffectKinds), each as the package implementing it defines
+// it: model_call (P12a). An active kind no package defines refuses the
+// start; any other kind stays unregistered, and IntendEffect refuses it
+// (I15 effect).
+func effectKinds() (eventstore.EffectKinds, error) {
+	defs, out := modelcall.Effects(), eventstore.EffectKinds{}
+	for _, k := range capability.EffectKinds() {
+		d, ok := defs[k]
+		if !ok {
+			return nil, fmt.Errorf("daemon: the active effect kind %s has no definition in this build", k)
+		}
+		out[k] = d
+	}
+	return out, nil
 }
 
 // eventKinds merges the event kinds of every package the writer projects;

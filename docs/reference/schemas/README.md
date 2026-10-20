@@ -38,6 +38,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/scope/proposal-withdraw.json`](api-scope-proposal-withdraw.md) | ProposalWithdrawScope |
 | [`api/scope/seat-release.json`](api-scope-seat-release.md) | SeatReleaseScope |
 | [`api/scope/seat-take.json`](api-scope-seat-take.md) | SeatTakeScope |
+| [`api/scope/task-cancel.json`](api-scope-task-cancel.md) | TaskCancelScope |
 | [`api/scope/task-create.json`](api-scope-task-create.md) | TaskCreateScope |
 | [`api/scope/token-issue.json`](api-scope-token-issue.md) | TokenIssueScope |
 | [`api/scope/token-replace.json`](api-scope-token-replace.md) | TokenReplaceScope |
@@ -89,6 +90,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/review-node-params.json`](records-review-node-params.md) | ReviewNodeParams |
 | [`records/review-requirement.json`](records-review-requirement.md) | ReviewRequirement |
 | [`records/seat-event.json`](records-seat-event.md) | SeatEvent |
+| [`records/task-cancelled.json`](records-task-cancelled.md) | TaskCancelled |
 | [`records/task.json`](records-task.md) | Task |
 | [`records/token-recovered.json`](records-token-recovered.md) | TokenRecovered |
 | [`records/token.json`](records-token.md) | Token |

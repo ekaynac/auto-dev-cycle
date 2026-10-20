@@ -583,6 +583,34 @@ paths:
           description: The request body is too large; nothing was decided.
         "503":
           description: Too many authentications in progress (Retry-After); nothing was decided.
+  /v1/commands/task.cancel:
+    post:
+      operationId: command.task.cancel
+      tags:
+        - task
+      summary: 'Cancel a task still in Ready, terminally, with a reason; an admitted task keeps the hold and revoke path (backlog #226 entry 23).'
+      x-adc-action: task.cancel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/api.command-request'
+      responses:
+        "200":
+          description: 'The command was decided: applied, proposed or refused.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
+        "401":
+          description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/task.create:
     post:
       operationId: command.task.create
@@ -1005,6 +1033,7 @@ components:
             - title
             - column
             - admitted
+            - cancelled
             - approval
             - created_at
             - nodes
@@ -1020,15 +1049,19 @@ components:
               minLength: 1
               maxLength: 200
             column:
-              description: 'awaiting_approval: Ready, its spec''s approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task''s latest round completed go, merge inactive.'
+              description: 'awaiting_approval: Ready, its spec''s approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task''s latest round completed go, merge inactive; done: cancelled (with the cancelled badge).'
               enum:
                 - awaiting_approval
                 - ready
                 - running
                 - verifying
                 - done_candidate
+                - done
             admitted:
               description: 'The admitted badge: the task holds admitted WIP, held or not.'
+              type: boolean
+            cancelled:
+              description: 'The cancelled badge: the task was cancelled from Ready (task.cancel), terminally; its column is done.'
               type: boolean
             approval:
               description: 'Its spec''s approval: none, in force, or revoked.'

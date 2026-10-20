@@ -432,7 +432,7 @@ func TestRefuseAllAfterSystemActor(t *testing.T) {
 		t.Fatalf("the daemon holds %s's principal, not the system actor's", d.system.Actor())
 	}
 	cmd := newID(t, "cmd")
-	if _, err := d.store.SubmitApplied(context.Background(), d.system.Command(cmd, "task.create", cmd, []byte(`{}`), nil), noop); !errors.Is(err, ErrCommandsRefused) {
+	if _, err := d.store.SubmitApplied(context.Background(), d.system.Command(cmd, "review.request", cmd, []byte(`{}`), nil), noop); !errors.Is(err, ErrCommandsRefused) {
 		t.Fatalf("the system principal's command was not refused: %v", err)
 	}
 	// note.add is wired: its handler checks the scope, and refuses a note
