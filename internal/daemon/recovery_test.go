@@ -30,10 +30,11 @@ func cutStore(t *testing.T) (dir string, cfg Config, a types.AttemptID, l types.
 	sys := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSystem, Name: "system"}
 	sys.CreatedBy = sys.ID
 	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(sys) })
+	_, admitted := admittedTask(t, w, sys.ID) // a claim takes an admitted task (P22a-3)
 	n := types.Node{ID: types.NodeID(newID(t, "nod")), Kind: types.NodeKindPlan, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{}`),
 		Inputs: []types.InputSpec{}, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
 	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.Record(types.NodeRecorded{Task: types.TaskID(newID(t, "tsk")), Project: graphProject, Node: n})
+		return graph.Record(types.NodeRecorded{Task: admitted, Project: graphProject, Node: n})
 	})
 	w.do(sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return graph.Claim(tx, n.ID, map[string]graph.Resolved{}, 1)

@@ -57,24 +57,11 @@ func (f *fixture) task(project string, approved bool) types.Task {
 	return t
 }
 
-// admit writes task's record as admitted, as P22a's task.admitted fold
-// will (no fold writes it before P22a).
+// admit admits task through the controller's admitting command, with no
+// template (the test records its own nodes): task.admitted, folded.
 func (f *fixture) admit(task types.TaskID) {
-	f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		raw, _, err := tx.Get(authority.TaskProjection, task)
-		var r authority.TaskRecord
-		if err == nil {
-			err = json.Unmarshal(raw, &r)
-		}
-		r.State = authority.TaskAdmitted
-		b, merr := json.Marshal(r)
-		if err == nil {
-			err = merr
-		}
-		if err == nil {
-			err = tx.Put(authority.TaskProjection, task, b)
-		}
-		return []eventstore.Event{{ID: newID(f.t, "evt"), Kind: "fixture.appended/v1", Subject: prjA, Payload: []byte(`{}`)}}, err
+	f.must(f.sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return authority.AdmitTask(tx, task, nil, graph.M1Kinds)
 	})
 }
 
@@ -293,6 +280,8 @@ func TestBoardColumns(t *testing.T) {
 		"a structural waiting(input)":        {authority.TaskAdmitted, nil, []graph.NodeView{waitingOn(gate, "candidate", &types.ResultSource{Type: "result", Producer: build.Node.ID})}, types.BoardPlacedCardColumnReady},
 		"a review_requirement claimed":       {authority.TaskAdmitted, nil, []graph.NodeView{node(t, types.NodeKindReviewRequirement, types.NodeStateStateClaimed)}, types.BoardPlacedCardColumnReady},
 		"a cancelled task":                   {authority.TaskCancelledState, approval(authority.ApprovalInForce), nil, types.BoardPlacedCardColumnDone},
+		"a done task (task.done)":            {authority.TaskDoneState, approval(authority.ApprovalInForce), done, types.BoardPlacedCardColumnDoneCandidate},
+		"a done task, a node still claimed":  {authority.TaskDoneState, nil, []graph.NodeView{build}, types.BoardPlacedCardColumnDoneCandidate},
 	} {
 		card, ok := api.BoardCard(taskIn(t, c.state, c.approval), c.nodes, now, true).Variant.(*types.BoardPlacedCard)
 		if !ok || card.Column != c.column || card.Admitted != (c.state == authority.TaskAdmitted) || card.Cancelled != (c.state == authority.TaskCancelledState) ||

@@ -302,11 +302,14 @@ func claimNode(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved, 
 // checks no recorded answer: only the M0 fixtures, whose answers are the
 // owed-answer fake's, and tests use it. adcd folds with Projector
 // (eligible.go).
-func ProjectM0(tx *eventstore.Tx, evs []eventstore.Event) error { return project(tx, evs, nil, nil) }
+func ProjectM0(tx *eventstore.Tx, evs []eventstore.Event) error {
+	return project(tx, evs, nil, nil, nil)
+}
 
 // project folds evs, checking each event's answers first under auth (nil:
-// none, M0's fold).
-func project(tx *eventstore.Tx, evs []eventstore.Event, auth Authority, allowed []types.NodeKind) error {
+// none, M0's fold), then the task a claim or reuse takes under tasks (nil:
+// none).
+func project(tx *eventstore.Tx, evs []eventstore.Event, auth Authority, allowed []types.NodeKind, tasks Tasks) error {
 	for _, ev := range evs {
 		if !slices.Contains(kinds, ev.Kind) {
 			continue
@@ -318,6 +321,9 @@ func project(tx *eventstore.Tx, evs []eventstore.Event, auth Authority, allowed 
 		}
 		if err == nil && auth != nil {
 			err = eligible(tx, ev, g.Variant, auth)
+		}
+		if err == nil {
+			err = taken(tx, ev, g.Variant, tasks)
 		}
 		if err == nil {
 			err = fold(tx, ev, g.Variant, auth != nil)
