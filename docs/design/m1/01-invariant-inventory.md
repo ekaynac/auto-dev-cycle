@@ -73,7 +73,7 @@ and is never edited apart from it.
 | I19 Liveness (D63) | unenforced | P29 | `repeat`: all |
 | I20 Merge approval, fresh review, required configuration | partial | P19, P28, P22b | `merge-local`: consumption, effect; `merge-github`: all |
 | I21 Launch readiness (D51) | unenforced | P17, P22a (P8b, P11 done, inert) | `launch`: all |
-| I22 One admitted task, held included (D51) | unenforced | P22a | `admission`, `launch`, `repeat`: all |
+| I22 One admitted task, held included (D51) | enforced | P22a (P22a-3) | `admission`, `launch`, `repeat`: all |
 
 **Lead decision (#245, M1 review of P6).** `answers` is activated by P6 with I15's admission row still a P22a gap: no template is reachable through `answers` (adcd wires no producer of graph events or owed inputs before P16). P22a must re-check this before activating any capability that reaches a template. **Re-checked by P22a-2:** `adcd`'s graph fold refuses every node kind outside M1(a)'s (I15 admission), so `answers` now holds every row it needs.
 
@@ -90,7 +90,7 @@ implementation item.
 |---|---|---|---|
 | admission | `authority.Authorizer.Authorize` (`authority/derive.go`) decides each command against actor and grants. A task's approval is recorded with `task.create` (`authority/task.go`, P3; deferred until P22a); an answer's with `input.answer` (`authority/answer.go:InputAnswer`, `answerable`, P5; wired by P6) | kept | — |
 | fold/replay | `recordApproval` (`authority/proposals.go`) hands a task's approval to `recordTaskApproval` (`authority/task.go`, P3) and an answer to `recordAnswer` (`authority/answer.go`, P5); the graph folds check the answers a claim, reuse or result takes (`graph/eligible.go:eligible`, P6) | kept | — |
-| consumption | graph answers come from `authority.Answers` (`authority/owed.go`, P5), the real `graph.Authority`; nothing consumes a task's approval | kept + GAP | P22a (the first build claim requires the task approval in force) |
+| consumption | graph answers come from `authority.Answers` (`authority/owed.go`, P5), the real `graph.Authority`. A task's approval: `adcd`'s graph fold (`graph.Projector.Tasks` = `authority.Tasks`, P22a-3) refuses a claim or reuse of a node of a task whose approval is not in force, `failed/authority_revoked`, so a revocation before the first claim starts no attempt | kept | — |
 | effect | `graph.Operate` → `revalidate` re-checks a merge's answer inputs before its intent; the task's approval is not re-checked; the fold does not check a raw `node.operated` (P6 checks claims, reuses and results) | kept + GAP | P22b (the merge intent re-checks the task approval; a fold check of `node.operated` by `inForce`, so a raw intent does not replay once merge is registered) |
 
 ## I2. An answer binds its owed input's revision and reaches only the node that declared it
@@ -284,13 +284,13 @@ through `lease.completed`. P21a keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | none: there is no admission, and `task.create` is deferred | GAP | P22a (`task.admitted` only when no other admitted task is non-terminal, a held one included; creation only puts a task in Ready, at most five per project, P3) |
-| fold/replay | none | GAP | P22a (the fold refuses a second `task.admitted` while an admitted task is non-terminal) |
-| consumption | none: a claim does not check its task's admission | GAP | P22a (a node of an unadmitted task is never claimed; fixture `admission-held`) |
+| admission | `authority.AdmitTask` (P22a-3), in the controller's admitting command: `task.admitted/v1` only of a task in Ready (rechecked there: a task cancelled since is refused) with its approval in force, while no admitted task is non-terminal (the tasks projection's `admitted` key, a held task included; only `task.done/v1` frees it), then the candidate template under the guard. Creation only puts a task in Ready, at most five per project (P3) | kept | — |
+| fold/replay | `authority/admit.go:admitTask`: the fold refuses, from the log alone, an admission by any actor but the system's, of a task not in Ready or without its approval in force, naming another approval, or while the `admitted` key is held; `doneTask` frees it, of the admitted task only | kept | — |
+| consumption | `graph.Projector.Tasks` (`authority.Tasks`, wired in `adcd`): the fold refuses a `node.claimed` or `node.reused` of a node whose task is not admitted (`graph.ErrNotAdmitted`), on append and on replay. The fixture `admission-held` is P22a-7's | kept | — |
 | effect | n/a: admission is no external effect | n/a | — |
 
 ## Count
 
-88 rows across 22 invariants. **48 rows have a gap**: 14 are GAP and 34 are kept + GAP (after P17a, whose four I16 rows are kept in code, inert until P22a). 34 are kept and 6 are n/a (after P6, which also flipped P3's and P5's I1 and I2 rows, #226 entry 45; and after P7, P8a, P8b, P11, P11b, P20's `model_call` half, P21a and P21b, whose rows are kept in code, with the wiring left to P22a; P8a's I8 fold row is kept, since `adcd` wires `graph.Units`; P22a-1 kept the I9 fold row and the I11 consumption row, wiring the model calls' bindings and restart recovery at start; P22a-2 kept I15's admission row, with the guard, and I18's, which P3 had closed). A recount on 2026-10-14 corrected the earlier figures (29 GAP, 28 kept).
+88 rows across 22 invariants. **44 rows have a gap**: 11 are GAP and 33 are kept + GAP (after P17a, whose four I16 rows are kept in code, inert until P22a). 38 are kept and 6 are n/a (after P6, which also flipped P3's and P5's I1 and I2 rows, #226 entry 45; and after P7, P8a, P8b, P11, P11b, P20's `model_call` half, P21a and P21b, whose rows are kept in code, with the wiring left to P22a; P8a's I8 fold row is kept, since `adcd` wires `graph.Units`; P22a-1 kept the I9 fold row and the I11 consumption row, wiring the model calls' bindings and restart recovery at start; P22a-2 kept I15's admission row, with the guard, and I18's, which P3 had closed; P22a-3 kept I22's admission, fold and consumption rows and I1's consumption row, activating `admission`). A recount on 2026-10-14 corrected the earlier figures (29 GAP, 28 kept).
 Every gap is closed by an item of `00-slice-plan.md` §5. None is left to a later milestone, except where 01 §4.1 or
 §6's clarifications place it. The evidence rows of 12 follow #187's trigger (slice plan §4).

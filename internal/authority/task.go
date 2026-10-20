@@ -49,7 +49,7 @@ const (
 	TaskProjection     = "tasks"
 	TaskObjectType     = "task"
 	TaskReady          = "ready"
-	TaskAdmitted       = "admitted" // P22a's task.admitted; the board reads it (P22a's obligations: backlog #226 entry 42)
+	TaskAdmitted       = "admitted" // task.admitted (admit.go); the board reads it
 	MaxReadyTasks      = 5
 	ApprovalInForce    = "in_force"
 	ApprovalRevoked    = "revoked"
@@ -81,11 +81,13 @@ type TaskApproval struct {
 func TaskIDs(tx *eventstore.Tx) ([]types.TaskID, error) { return tx.Keys(TaskProjection, "tsk_") }
 
 // TaskKinds registers the task event kinds: task.created (records/task),
-// task.rail_raised (records/rail-raised, P17a) and task.cancelled
-// (records/task-cancelled).
+// task.rail_raised (records/rail-raised, P17a), task.cancelled
+// (records/task-cancelled), task.admitted (records/task-admitted) and
+// task.done (records/task-done).
 func TaskKinds() eventstore.Kinds {
 	return eventstore.Kinds{TaskCreated: {Schema: "records/task"}, TaskRailRaised: {Schema: "records/rail-raised"},
-		TaskCancelled: {Schema: "records/task-cancelled"}}
+		TaskCancelled: {Schema: "records/task-cancelled"}, TaskAdmittedEvent: {Schema: "records/task-admitted"},
+		TaskDoneEvent: {Schema: "records/task-done"}}
 }
 
 // TaskRecordOf is task id's record, which --expect is checked against.
@@ -250,9 +252,10 @@ func TaskApprovalOf(t types.Task, spec json.RawMessage, id types.ApprovalID, at 
 		Answers:      []types.OwedInputID{}, Supersedes: []types.ApprovalID{}, Reason: taskApprovalReason, At: at}
 }
 
-// TaskProjector admits task.created and task.cancelled events and revokes
-// a revoked actor's task approvals; it runs after the projects projector.
-// A task's approval
+// TaskProjector admits task.created, task.cancelled, task.admitted and
+// task.done events and revokes a revoked actor's task approvals; it runs
+// after the projects projector and before the graph's, whose claims read
+// the admission. A task's approval
 // is folded by recordApproval, which hands it to recordTaskApproval.
 type TaskProjector struct{}
 
@@ -267,6 +270,10 @@ func (TaskProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 			err = railRaised(tx, ev)
 		case TaskCancelled:
 			err = cancelTask(tx, ev)
+		case TaskAdmittedEvent:
+			err = admitTask(tx, ev)
+		case TaskDoneEvent:
+			err = doneTask(tx, ev)
 		case identity.ActorRevoked + "/v1":
 			var a types.IdentityEvent
 			if err = json.Unmarshal(ev.Payload, &a); err == nil && a.Actor != nil {
