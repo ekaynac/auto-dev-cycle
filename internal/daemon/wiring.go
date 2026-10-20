@@ -17,6 +17,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
+	"github.com/ekaynac/auto-dev-cycle/internal/recovery"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -34,13 +36,22 @@ var ErrCommandsRefused = authority.ErrActionNotWired
 // (authority.NoReviewSource) until receipts are recorded.
 func hooks(az authority.Authorizer, project func(*eventstore.Tx, []eventstore.Event) error) eventstore.Hooks {
 	authorize := func(t *eventstore.Tx, c eventstore.Command) error {
-		if slices.Contains([]string{bootstrapAction, issueAction, renewAction, recoverAction, api.PurgeAction}, c.Action) {
+		if slices.Contains(systemActions, c.Action) {
 			return authorizeSystem(t, c)
 		}
 		return az.Authorize(t, c)
 	}
 	return eventstore.Hooks{Identify: identity.Recheck, Authorize: authorize, Project: project}
 }
+
+// systemActions are the controller's own commands, the system actor's
+// alone: the bootstrap's, the upload purge, restart recovery's steps and
+// its orphan refusal (P21a, P21b; #226 entry 81), and the model calls'
+// intent, count and reconciliation (P12a, P11b, P20; #226 entry 60). None
+// is a registered action a principal may ask for.
+var systemActions = []string{bootstrapAction, issueAction, renewAction, recoverAction, api.PurgeAction,
+	recovery.ActionLose, string(recovery.Revoke), string(recovery.Seal), string(recovery.Settle), recovery.ActionRefuse,
+	modelcall.Action, modelcall.Counted, ledger.ReconcileAction}
 
 // authorizer is the one authorizer over the wired handlers: the writer's
 // Authorize hook and the request layer's logic (logics, issuers) share it.
@@ -107,7 +118,7 @@ func logics(az authority.Authorizer) map[string]logic {
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {
 	all := eventstore.Kinds{}
-	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), authority.OwedKinds(), lease.Kinds(), ledger.Kinds(), graph.Kinds(), api.BlobKinds()} {
+	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), authority.OwedKinds(), lease.Kinds(), ledger.Kinds(), modelcall.Kinds(), graph.Kinds(), api.BlobKinds()} {
 		for k := range ks {
 			if _, dup := all[k]; dup {
 				return nil, fmt.Errorf("daemon: event kind %s is registered twice", k)
@@ -121,7 +132,7 @@ func eventKinds() (eventstore.Kinds, error) {
 // projector is the writer's Project hook, composed as a rebuild replays
 // it: each event goes through identity, then grants, the seat, proposals,
 // notes, projects, tasks, owed inputs, leases with their capacity reservations, the usage
-// ledger, then the graph, before the next event (eventstore.ProjectEach).
+// ledger, the model calls' bindings, then the graph, before the next event (eventstore.ProjectEach).
 // The graph comes after leases, whose projections its supersession fold
 // reads. Units are nodes (graph.Units): an attempt starts only on a claimed
 // node's unit, and a seal binds its node's project and task. No graph
@@ -141,6 +152,7 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		authority.OwedProjector{}.Project,
 		capacity.Hook(leases, r),
 		ledger.Project,
+		modelcall.Project,                                     // each call's binding, by call and by lease: the settlement's (#226 entries 70, 78)
 		graph.Projector{Answers: authority.Answers{}}.Project, // the folds check the recorded answers (M1 P6)
 	)
 }

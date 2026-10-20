@@ -26,8 +26,9 @@
 //     attempt's recovery only (it stays at its last step until the next run), never another attempt's.
 //   - The cut calls' effects are uncertain by the restart rule (MarkPendingUncertain); P20's Reconciler settles them,
 //     and late usage recomputes the liability (P12b). Recovery queries no provider.
-//   - Inert: P22a constructs it, runs it at start after MarkPendingUncertain and before any other command, and
-//     authorises its actions for the system actor only. It then runs RefuseOrphans, whose failure never blocks start.
+//   - adcd runs Run at every non-offline start, after MarkPendingUncertain and before any other command, its actions
+//     the system actor's alone (P22a-1). RefuseOrphans, whose failure never blocks start, runs from P22a-5, once the
+//     adapter host's exchange root exists.
 package recovery
 
 import (
@@ -83,6 +84,9 @@ type Recovery struct {
 	Blobs lease.Publisher // where the seal's record is published
 	// Exchanges is where exchange roots are made (adapterhost.Host.Root); empty: RefuseOrphans does nothing.
 	Exchanges string
+	// Principal is the system actor's principal, which the writer's Identify hook rechecks (adcd); nil in a store
+	// whose hook takes any command.
+	Principal eventstore.Principal
 }
 
 // Run runs step 1, then steps 2 to 4 for every attempt cut, each to its end; it reports every failure.
@@ -155,7 +159,7 @@ func (r Recovery) submit(ctx context.Context, action, key string, attempt *types
 		key = cmd
 	}
 	if err = errors.Join(err, merr); err == nil {
-		_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: string(r.Actor), Action: action, IdempotencyKey: key, Input: input},
+		_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: string(r.Actor), Action: action, IdempotencyKey: key, Input: input, Principal: r.Principal},
 			eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 				evs, err := decide(tx)
 				return evs, json.RawMessage(`{}`), err

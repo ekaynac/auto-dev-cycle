@@ -18,6 +18,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/recovery"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -155,14 +157,50 @@ func checkProjections(ctx context.Context, s *eventstore.Store) error {
 // markPending is the restart rule's transition; a test makes it fail.
 var markPending = (*eventstore.Store).MarkPendingUncertain
 
+// runRecovery runs restart recovery; a test makes it fail.
+var runRecovery = func(ctx context.Context, r recovery.Recovery) error { return r.Run(ctx) }
+
+// recoverAtStart runs restart recovery (P21a: X3's steps 1-4, each its own
+// command, recovery.Recovery.Run) as the system actor, units bound to graph
+// nodes and seals published to the blob store. Step 1 must hold: an attempt
+// still running after it refuses the start, since its fence would stay
+// open (I8). A later step that fails stops that attempt's recovery only; it
+// is reported in the startup note and resumed at the next start (its
+// cleanup never blocks start, #226 entry 81). The orphan stage needs the
+// adapter host's exchange root, which launch constructs (P22a-5).
+func recoverAtStart(ctx context.Context, store *eventstore.Store, system identity.Principal, blobs lease.Publisher) (note string, err error) {
+	rerr := runRecovery(ctx, recovery.Recovery{Store: store, Actor: system.Actor(), Units: graph.Units{}, Blobs: blobs, Principal: system})
+	if rerr == nil {
+		return "", nil
+	}
+	running := false
+	verr := store.View(ctx, func(tx *eventstore.Tx) error {
+		ids, err := tx.Keys(lease.AttemptProjection, "")
+		for _, id := range ids {
+			a, _, ok, aerr := lease.AttemptAt(tx, types.AttemptID(id))
+			if err = errors.Join(err, aerr); ok && a.Status == types.AttemptStatusRunning {
+				running = true
+			}
+		}
+		return err
+	})
+	switch {
+	case verr != nil:
+		return "", couldNotRun(vocab.ReasonStoreUnreadable, "the attempts cannot be read after restart recovery failed", errors.Join(rerr, verr))
+	case running: // the store reads fine: recovery did not run (Opus #297 L3)
+		return "", couldNotRun(vocab.ReasonAmbiguousState, "restart recovery did not close every running attempt", rerr)
+	}
+	// Its cause names attempts, steps and errnos, never a secret (Opus #297 M1).
+	return fmt.Sprintf("adcd: restart recovery left work for the next start (it resumes there): %v", rerr), nil
+}
+
 // systemActor loads the persisted system actor, or creates it in a store
 // whose log is still empty, through the store's one unauthorized
 // operation (Bootstrap), which only ever writes an empty log's first event.
 // No request reaches it and nothing outside Start names the identity. A
 // store with actors but not exactly one system actor, or with events but
-// no actor, is refused, and so is an empty one unless create. created
-// reports a store this start bootstrapped.
-func systemActor(ctx context.Context, s *eventstore.Store, create bool) (_ types.ActorID, created bool, err error) {
+// no actor, is refused, and so is an empty one unless create.
+func systemActor(ctx context.Context, s *eventstore.Store, create bool) (_ types.ActorID, err error) {
 	var system []types.ActorID
 	actors := 0
 	if err := s.View(ctx, func(tx *eventstore.Tx) error {
@@ -182,15 +220,15 @@ func systemActor(ctx context.Context, s *eventstore.Store, create bool) (_ types
 		}
 		return err
 	}); err != nil {
-		return "", false, couldNotRun(vocab.ReasonStoreUnreadable, "the identity projection cannot be read", err)
+		return "", couldNotRun(vocab.ReasonStoreUnreadable, "the identity projection cannot be read", err)
 	}
 	switch {
 	case len(system) == 1:
-		return system[0], false, nil
+		return system[0], nil
 	case actors > 0:
-		return "", false, couldNotRun(vocab.ReasonAmbiguousState, "the store holds actors but not exactly one system actor", nil)
+		return "", couldNotRun(vocab.ReasonAmbiguousState, "the store holds actors but not exactly one system actor", nil)
 	case !create:
-		return "", false, couldNotRun(vocab.ReasonAmbiguousState, "the store has no system actor; an offline command runs only on an existing store", nil)
+		return "", couldNotRun(vocab.ReasonAmbiguousState, "the store has no system actor; an offline command runs only on an existing store", nil)
 	}
 	id, ierr := ids.New("act")
 	cmd, cerr := ids.New("cmd")
@@ -200,10 +238,10 @@ func systemActor(ctx context.Context, s *eventstore.Store, create bool) (_ types
 		_, err = s.Bootstrap(ctx, eventstore.Command{ID: cmd, Actor: id, Action: "actor.create_system", IdempotencyKey: cmd, Input: []byte(`{}`)}, evs[0])
 	}
 	if errors.Is(err, eventstore.ErrNotBootstrap) {
-		return "", false, couldNotRun(vocab.ReasonAmbiguousState, "the store holds events or effects but no actor", err)
+		return "", couldNotRun(vocab.ReasonAmbiguousState, "the store holds events or effects but no actor", err)
 	}
 	if err != nil {
-		return "", false, couldNotRun(vocab.ReasonStoreUnreadable, "the system actor cannot be recorded", err)
+		return "", couldNotRun(vocab.ReasonStoreUnreadable, "the system actor cannot be recorded", err)
 	}
-	return a.ID, true, nil
+	return a.ID, nil
 }

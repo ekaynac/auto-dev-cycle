@@ -452,3 +452,21 @@ func TestEffectStringsAreValidUTF8(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// RestartMarked (#226 entry 64): false on a store just opened, true once
+// the restart rule ran on it, an empty store's included, where it marks
+// nothing; a reopened store needs it again.
+func TestRestartMarked(t *testing.T) {
+	dir := stateDir(t)
+	e := openEffectsAt(t, dir)
+	if e.s.RestartMarked() {
+		t.Fatal("marked before the rule ran")
+	}
+	if n, err := e.s.MarkPendingUncertain(context.Background(), sysActor); err != nil || n != 0 || !e.s.RestartMarked() {
+		t.Fatalf("an empty store: %d %v, marked %v", n, err, e.s.RestartMarked())
+	}
+	e.close()
+	if again := openEffectsAt(t, dir); again.s.RestartMarked() {
+		t.Error("a reopened store marked before the rule ran")
+	}
+}
