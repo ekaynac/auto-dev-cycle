@@ -1,20 +1,20 @@
-{"Time":"2026-10-20T14:07:24.233736712Z","Action":"start","Package":"example.com/go-mini/money"}
-{"Time":"2026-10-20T14:07:24.237052415Z","Action":"run","Package":"example.com/go-mini/money","Test":"TestParse"}
-{"Time":"2026-10-20T14:07:24.237143264Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestParse","Output":"=== RUN   TestParse\n","OutputType":"frame"}
-{"Time":"2026-10-20T14:07:24.237174496Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestParse","Output":"--- PASS: TestParse (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T14:07:24.237179456Z","Action":"pass","Package":"example.com/go-mini/money","Test":"TestParse","Elapsed":0}
-{"Time":"2026-10-20T14:07:24.237185984Z","Action":"run","Package":"example.com/go-mini/money","Test":"TestString"}
-{"Time":"2026-10-20T14:07:24.237188272Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestString","Output":"=== RUN   TestString\n","OutputType":"frame"}
-{"Time":"2026-10-20T14:07:24.237194352Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestString","Output":"--- PASS: TestString (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T14:07:24.237196896Z","Action":"pass","Package":"example.com/go-mini/money","Test":"TestString","Elapsed":0}
-{"Time":"2026-10-20T14:07:24.237199232Z","Action":"run","Package":"example.com/go-mini/money","Test":"TestAdd"}
-{"Time":"2026-10-20T14:07:24.237201824Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestAdd","Output":"=== RUN   TestAdd\n","OutputType":"frame"}
-{"Time":"2026-10-20T14:07:24.237204976Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestAdd","Output":"--- PASS: TestAdd (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T14:07:24.237207552Z","Action":"pass","Package":"example.com/go-mini/money","Test":"TestAdd","Elapsed":0}
-{"Time":"2026-10-20T14:07:24.237210016Z","Action":"run","Package":"example.com/go-mini/money","Test":"TestRoundTrip"}
-{"Time":"2026-10-20T14:07:24.237212864Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestRoundTrip","Output":"=== RUN   TestRoundTrip\n","OutputType":"frame"}
-{"Time":"2026-10-20T14:07:24.237216065Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestRoundTrip","Output":"--- PASS: TestRoundTrip (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-10-20T14:07:24.237218785Z","Action":"pass","Package":"example.com/go-mini/money","Test":"TestRoundTrip","Elapsed":0}
-{"Time":"2026-10-20T14:07:24.237221457Z","Action":"output","Package":"example.com/go-mini/money","Output":"PASS\n","OutputType":"frame"}
-{"Time":"2026-10-20T14:07:24.237623557Z","Action":"output","Package":"example.com/go-mini/money","Output":"ok  \texample.com/go-mini/money\t0.004s\n"}
-{"Time":"2026-10-20T14:07:24.237656774Z","Action":"pass","Package":"example.com/go-mini/money","Elapsed":0.004}
+{"Time":"2026-10-20T14:17:43.727547712Z","Action":"start","Package":"example.com/go-mini/money"}
+{"Time":"2026-10-20T14:17:43.731113868Z","Action":"run","Package":"example.com/go-mini/money","Test":"TestParse"}
+{"Time":"2026-10-20T14:17:43.731175932Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestParse","Output":"=== RUN   TestParse\n","OutputType":"frame"}
+{"Time":"2026-10-20T14:17:43.731196812Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestParse","Output":"--- PASS: TestParse (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T14:17:43.7312015Z","Action":"pass","Package":"example.com/go-mini/money","Test":"TestParse","Elapsed":0}
+{"Time":"2026-10-20T14:17:43.731206988Z","Action":"run","Package":"example.com/go-mini/money","Test":"TestString"}
+{"Time":"2026-10-20T14:17:43.731209276Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestString","Output":"=== RUN   TestString\n","OutputType":"frame"}
+{"Time":"2026-10-20T14:17:43.731213916Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestString","Output":"--- PASS: TestString (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T14:17:43.731216829Z","Action":"pass","Package":"example.com/go-mini/money","Test":"TestString","Elapsed":0}
+{"Time":"2026-10-20T14:17:43.731220173Z","Action":"run","Package":"example.com/go-mini/money","Test":"TestAdd"}
+{"Time":"2026-10-20T14:17:43.731222733Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestAdd","Output":"=== RUN   TestAdd\n","OutputType":"frame"}
+{"Time":"2026-10-20T14:17:43.731225869Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestAdd","Output":"--- PASS: TestAdd (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T14:17:43.731228413Z","Action":"pass","Package":"example.com/go-mini/money","Test":"TestAdd","Elapsed":0}
+{"Time":"2026-10-20T14:17:43.731230669Z","Action":"run","Package":"example.com/go-mini/money","Test":"TestRoundTrip"}
+{"Time":"2026-10-20T14:17:43.731232541Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestRoundTrip","Output":"=== RUN   TestRoundTrip\n","OutputType":"frame"}
+{"Time":"2026-10-20T14:17:43.731235661Z","Action":"output","Package":"example.com/go-mini/money","Test":"TestRoundTrip","Output":"--- PASS: TestRoundTrip (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-20T14:17:43.731238141Z","Action":"pass","Package":"example.com/go-mini/money","Test":"TestRoundTrip","Elapsed":0}
+{"Time":"2026-10-20T14:17:43.731240781Z","Action":"output","Package":"example.com/go-mini/money","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-10-20T14:17:43.731628224Z","Action":"output","Package":"example.com/go-mini/money","Output":"ok  \texample.com/go-mini/money\t0.003s\n"}
+{"Time":"2026-10-20T14:17:43.73165392Z","Action":"pass","Package":"example.com/go-mini/money","Elapsed":0.004}
