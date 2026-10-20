@@ -29,10 +29,11 @@
 set -euo pipefail
 
 # The shared secret scan (scripts/lib/secrets.sh: secrets, die, forms,
-# known, scan), mounted at /secrets.sh inside the sandbox.
+# known, scan), mounted at /secrets.sh inside the sandbox: the --inside run
+# sources that, the outer run the file beside this script.
 SECRETS_TAG=installed-smoke
 secrets_lib="$(dirname "${BASH_SOURCE[0]}")/lib/secrets.sh"
-[[ -e /secrets.sh && "${ADC_SMOKE_SANDBOX:-}" == 1 ]] && secrets_lib=/secrets.sh
+[[ "${1:-}" == --inside && "${ADC_SMOKE_SANDBOX:-}" == 1 ]] && secrets_lib=/secrets.sh
 # shellcheck source=lib/secrets.sh
 . "$secrets_lib"
 
@@ -234,9 +235,9 @@ fi
 timeout 60 /p/bin/adc dev verify-log --state /tmp/state >"$out/verify.out" 2>&1 || die "the stopped adcd's log does not verify"
 
 step "no secret outside the token files"
-scan "" "$boot"
-scan /tmp/op/.config/adc/token "$op_tok"
-scan /tmp/sup/.config/adc/token "$sup_tok"
+scan "" "$boot" /tmp
+scan /tmp/op/.config/adc/token "$op_tok" /tmp
+scan /tmp/sup/.config/adc/token "$sup_tok" /tmp
 
 step "result 9: py-mini-feature-1 through the installed harness, Node and fake adapter"
 lib=/p/lib/adc

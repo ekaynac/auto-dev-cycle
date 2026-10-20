@@ -6,8 +6,10 @@
 #   - secrets holds every form of every secret known so far, and die never
 #     prints one: it redacts each, then exits 1 with the caller's tag
 #     (SECRETS_TAG, set before sourcing).
-#   - known SECRET adds SECRET's forms; scan OWN SECRET fails when a form of
-#     SECRET appears in any file under SECRETS_ROOT (default /tmp) but OWN.
+#   - known SECRET adds SECRET's forms; scan OWN SECRET DIR... fails when a
+#     form of SECRET appears in any file under the DIRs but OWN, and fails
+#     closed when a DIR is not a readable directory or grep cannot read a
+#     file under one.
 
 secrets=()
 die() {
@@ -36,12 +38,20 @@ known() {
     secrets+=("$f")
   done < <(forms "$1")
 }
-# scan OWN SECRET: no form of SECRET in any file under SECRETS_ROOT but
+# scan OWN SECRET DIR...: no form of SECRET in any file under the DIRs but
 # OWN (none: "").
 scan() {
-  local own="$1" f leaks
+  local own="$1" secret="$2" f d leaks rc
+  shift 2
+  (($# > 0)) || die "scan: no directory to scan"
+  for d in "$@"; do
+    [[ -d "$d" && -r "$d" && -x "$d" ]] || die "scan: $d is not a readable directory"
+  done
   while IFS= read -r f; do
-    leaks="$(grep -rlaF -- "$f" "${SECRETS_ROOT:-/tmp}" | grep -vxF -e "$own" || true)"
+    rc=0
+    leaks="$(grep -rlaF -- "$f" "$@")" || rc=$?
+    ((rc <= 1)) || die "scan: grep could not read everything under $* (exit $rc)"
+    leaks="$(grep -vxF -e "$own" <<<"$leaks" || true)"
     [[ -z "$leaks" ]] || die "a secret appears in: $leaks"
-  done < <(forms "$2")
+  done < <(forms "$secret")
 }
