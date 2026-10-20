@@ -245,8 +245,10 @@ func (r *run) pyRead(want bool, p, blob string) ([]byte, bool, error) {
 }
 
 // pyConf is what pytest may read of p (H4): pytest.ini or pytest.toml
-// whole; TOML naming pytest or escaping; iniconfig's pytest sections (a '['
-// line naming pytest opens one, only a surely closed other header ends it).
+// whole; of other TOML naming pytest or escaping, the statements pyTOML
+// reads, or the file whole where it does not lex; iniconfig's pytest
+// sections (a '[' line naming pytest opens one, only a surely closed other
+// header ends it).
 func pyConf(p string, b []byte, present bool) string {
 	s := string(b)
 	switch {
@@ -255,6 +257,9 @@ func pyConf(p string, b []byte, present bool) string {
 	case strings.HasPrefix(strings.TrimPrefix(path.Base(p), "."), "pytest."):
 		return "present\n" + s
 	case path.Ext(p) == ".toml" && (strings.Contains(strings.ToLower(s), "pytest") || strings.Contains(s, `\`)):
+		if t, ok := pyTOML(s); ok {
+			return t
+		}
 		return s
 	case path.Ext(p) == ".toml":
 		return ""
