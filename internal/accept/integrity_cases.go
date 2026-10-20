@@ -107,7 +107,12 @@ import (
 //     built by appends or a helper, a row skipped by its loop's own code
 //     (if tc.name == "zero" { continue }: Opus #318 L1), and a literal a
 //     helper calls only under a condition (if t == nil { f() }), as a
-//     literal passed to a helper names no case (Opus #318 r2 L2).
+//     literal passed to a helper names no case (Opus #318 r2 L2). So,
+//     inside a literal passed to a helper or to another package's function
+//     (withFn(t, func() { t.Run("x", …) }), sync.OnceFunc), removing a
+//     subtest or a row, renaming a subtest, or unwrapping one while keeping
+//     its assertion is silent unless main's assertion count falls (Opus
+//     #318 r3 L1).
 
 // maxCaseDepth bounds drives' reading of closures within one another;
 // maxPrefix, an identity's subtest prefix, past which it is a digest.
