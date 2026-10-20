@@ -526,11 +526,11 @@ Repair rounds count as their kind.
 | interventions | operator and supervisor commands attributed to the task, per stage (approvals, answers, rail raises); rescues are counted apart and must be zero in (c) |
 | outcome | the closure's `(outcome, reason)`, or the task's hold |
 
-- **Recorder:** `adc dev bench record --task T… --json` (P25), reading `adc task show` and the ledger over the API.
-- **Output:** `benchmarks/m1/<date>-<arch>.json` (`records/benchmark-run`, P25), one file per checkpoint, with the build commit, schema set,
+- **Recorder:** `adc dev bench record --task T… --json` (P25), reading `adc task show` and the ledger over the API, then `internal/bench.Record`, which computes the metrics from them, project-agnostic.
+- **Output:** `benchmarks/m1/<date>-<arch>-<checkpoint>.json` (`records/benchmark-run`, P25), one file per checkpoint, with the build commit, schema set,
   routes (executor ids and families) and fixture digests. A summary goes in the exit record.
-- **Re-runs:** every later exit re-runs it with the same command and records the deltas. It reports regressions and
-  never gates on them.
+- **Re-runs:** every later exit re-runs it with the same command and records the deltas (`bench.Compare`). It reports regressions and
+  never gates on them. The exit record follows `exit-record-template.md`.
 
 ## 3. Invariant-enforcement inventory (D45, D58)
 
@@ -653,7 +653,7 @@ Rough sizes in lines; **H** marks high-risk contracts (external review by Astra)
 | P29 | liveness check in the reconcile driver; the `stalled` hold registered (§2.5) | P22a | c | 300 | a frontierless task with no hold |
 | P30 | gate ledger read model over the gate, accept and review records that P14a-P16 keep from (a)'s first live attempt. False blocks and escapes are operator annotations (`note.add` on the node's subject), kept from (a) as well. The `adc.accept-report/v1` schema, bounded, with its inventory entry (#226 entry 67) | P22a | c | 300 | an unknown charge reported as zero |
 | P24 | the installed cycle harness, fixtures, stub provider and `scripts/lib/secrets.sh`; `make installed-cycle-stub` in `make ci` | P22a; the cases follow their capabilities | a, b, c | 500 (M) | — |
-| P25 | benchmark recorder, `records/benchmark-run`, and the per-checkpoint exit records | P24 | a, b, c | 350 | — |
+| P25 | benchmark recorder, `records/benchmark-run`, and the per-checkpoint exit records. Done without P22a and P24b: the schema, `internal/bench` (`Record`, `Compare`, `Summary`, project-agnostic) and `exit-record-template.md`; `adc dev bench record` reads over the API once W18 (`adc task show`) lands | P24 | a, b, c | 350 | — |
 | P23 | action owners per Q7; regenerate `action-matrix.md` | — | any | 60 | — |
 | P10 | the allowlisted registry proxy (phase 1 for changing dependencies) | P9 | backlog | 500 | an install script contacting another host |
 | P26a-d | 15's D7 follow-ups (Q6 note) | — | backlog, off the M1 path | 600 | per item |
