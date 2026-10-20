@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -394,13 +395,16 @@ func TestIntegrityRealTypes(t *testing.T) {
 		fmt.Fprintf(&chain, "\ntype S%d struct{ A, B, C, D, E, F, G, H S%d }\n", i, i+1)
 	}
 	chain.WriteString("\ntype S8 int\n")
+	unit := f.ordinary(t, unitGo) // before the chain: no check abandoned, the guard's own deadline (Opus #317 M1)
+	const chainTime = 2 * time.Second
 	oldTime := maxListTime
-	maxListTime = 2 * time.Second
+	maxListTime = chainTime
 	begin := time.Now()
 	cv := f.guarded(t, map[string]string{"pkg/chain.go": chain.String()})
-	if maxListTime = oldTime; !finds(cv.Blocks, "over the guard's deadline") || time.Since(begin) > time.Minute {
-		t.Errorf("a struct chain: %v %q", time.Since(begin), whats(cv.Blocks))
+	if took := time.Since(begin); !finds(cv.Blocks, "over the guard's deadline") || !within(t, took-chainTime, unit, 20) { // its deadline, then the rest of a run
+		t.Errorf("a struct chain: %v %q", took, whats(cv.Blocks))
 	}
+	maxListTime = oldTime
 	plainGo := map[string]string{"pkg/x.go": "package pkg\n\nfunc G() int { return 1 }\n"}
 	if v := f.guarded(t, plainGo); !finds(v.Blocks, "abandoned by an earlier guard run (on base "+f.base[:12]+", started ") {
 		t.Errorf("a run beside an abandoned check: %q", whats(v.Blocks))
@@ -422,7 +426,7 @@ func TestIntegrityRealTypes(t *testing.T) {
 	}
 	dag.WriteString("\ntype A12 = int\n")
 	start := time.Now()
-	if v := f.guarded(t, map[string]string{"pkg/dag.go": dag.String()}); time.Since(start) > 30*time.Second {
+	if v := f.guarded(t, map[string]string{"pkg/dag.go": dag.String()}); !within(t, time.Since(start), unit, 20) {
 		t.Errorf("an alias DAG: %v (%q)", time.Since(start), whats(v.Blocks))
 	}
 
@@ -594,22 +598,32 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	failing := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
 		return nil, errors.New("no toolchain")
 	}
+	unit := f.ordinary(t, unitGo)
 	for name, c := range map[string]struct {
 		list Lister
 		why  string
+		wait time.Duration // each go call's fixed time limit, waited out
 	}{
-		"no loader":      {nil, "(testing: no Go type loader)"},
-		"a loader fails": {failing, "(testing: no toolchain)"},
-		"a missing go":   {LocalLister("/nonexistent/go", nil, time.Minute, 0), "(testing: go list: lstat /nonexistent"},
+		"no loader":      {nil, "(testing: no Go type loader)", 0},
+		"a loader fails": {failing, "(testing: no toolchain)", 0},
+		"a missing go":   {LocalLister("/nonexistent/go", nil, time.Minute, 0), "(testing: go list: lstat /nonexistent", 0},
 		"a go of another release": {LocalLister(filepath.Join(old, "bin/go"), nil, time.Minute, 0),
-			"(testing: go list: the toolchain is go1.0, not the guard's " + runtime.Version() + ")"},
-		"a go over time":   {LocalLister(filepath.Join(bin, "slow"), nil, 200*time.Millisecond, 0), "(testing: go list: context deadline exceeded)"},
-		"a go over memory": {LocalLister(filepath.Join(bin, "limit"), nil, time.Minute, 1<<30), "(testing: go list: exit status 1: 1048576)"},
+			"(testing: go list: the toolchain is go1.0, not the guard's " + runtime.Version() + ")", 0},
+		"a go over time":   {LocalLister(filepath.Join(bin, "slow"), nil, 200*time.Millisecond, 0), "(testing: go list: context deadline exceeded)", 200 * time.Millisecond},
+		"a go over memory": {LocalLister(filepath.Join(bin, "limit"), nil, time.Minute, 1<<30), "(testing: go list: exit status 1: 1048576)", 0},
 	} {
+		var calls atomic.Int64 // the go calls the guard makes, each waiting out c.wait at most (Opus #317 M2): at most one per version and platform of its one module (r2 L2)
+		list := c.list
+		if list != nil {
+			list = func(ctx context.Context, dir string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+				calls.Add(1)
+				return c.list(ctx, dir, pl, gomod, gosum, paths)
+			}
+		}
 		start := time.Now()
-		v, err := accept(context.Background(), c.list)
-		if err != nil || !finds(v.Blocks, "pkg:pkg unverifiable: linux/amd64: the types of its imports not loaded "+c.why) || time.Since(start) > 20*time.Second {
-			t.Errorf("%s (%v): %v %q", name, time.Since(start), err, whats(v.Blocks))
+		v, err := accept(context.Background(), list)
+		if took := time.Since(start); err != nil || !finds(v.Blocks, "pkg:pkg unverifiable: linux/amd64: the types of its imports not loaded "+c.why) || calls.Load() > int64(2*len(platforms)) || !within(t, took-time.Duration(calls.Load())*c.wait, unit, 20) {
+			t.Errorf("%s (%v, %d go calls): %v %q", name, time.Since(start), calls.Load(), err, whats(v.Blocks))
 		}
 	}
 	if v, err := accept(context.Background(), LocalLister(filepath.Join(bin, "child"), nil, 300*time.Millisecond, 0)); err != nil || v.Accepted() {

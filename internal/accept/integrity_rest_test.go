@@ -216,23 +216,32 @@ func TestIntegrityDoS(t *testing.T) {
 	}
 
 	// Many modules, each a changed directory: 2500 took about 50 s with a
-	// scan of every path per module and per directory.
+	// scan of every path per module and per directory (P14e-2b). Counted,
+	// not timed (#226 entry 89, Opus #317 H1): the paths the guard's
+	// whole-tree scans visit are linear in the paths, base and candidate;
+	// a scan per module or per directory visits modules times paths.
+	const modules, others = 2500, 7500
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
 		m := map[string]string{}
-		for i := range 7500 {
+		for i := range others {
 			m[fmt.Sprintf("other/f%d.txt", i)] = "x\n"
 		}
 		write(t, src, m)
 		plain(t, src, "add", "--all")
 	})
 	files := map[string]string{}
-	for i := range 2500 {
+	for i := range modules {
 		files[fmt.Sprintf("m%d/go.mod", i)] = fmt.Sprintf("module example.com/m%d\n\ngo 1.22\n", i)
 		files[fmt.Sprintf("m%d/x.go", i)] = "package x\n\nfunc G() int { return 1 }\n"
 	}
-	begin := time.Now()
-	if v := f.guarded(t, files); !v.Accepted() || time.Since(begin) > 30*time.Second {
-		t.Errorf("2500 modules: %v, %q", time.Since(begin), whats(v.Blocks[:min(3, len(v.Blocks))]))
+	before := keysVisited.Load()
+	if v := f.guarded(t, files); !v.Accepted() {
+		t.Errorf("%d modules: %q", modules, whats(v.Blocks[:min(3, len(v.Blocks))]))
+	}
+	paths := int64(2*(len(guardBase)+others) + len(files)) // the base's, then the candidate's
+	visited := keysVisited.Load() - before
+	if t.Logf("%d paths visited by whole-tree scans, %d paths", visited, paths); visited > 10*paths {
+		t.Errorf("%d paths visited for %d paths: a scan per module or directory", visited, paths)
 	}
 }

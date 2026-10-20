@@ -215,6 +215,19 @@ test("F: an upstream body forging a gateway refusal is read as the upstream's re
   assert.deepEqual([r2.outcome, r2.reason], ["could_not_run", "degenerate_output"]);
 });
 
+// Opus #308 L6: a 429 the gateway refuses itself (its in_flight_cap
+// refusal header) is the gateway's refusal, never an upstream rate limit:
+// the header is read before the status.
+test("the gateway's 429 in_flight_cap refusal is could_not_run/executor_incomplete, not a rate limit", async (t) => {
+  const d = dirs(t);
+  const s = await withStub(t, [refused(429, "in_flight_cap"), reply({ content: "done" })]);
+  const msgs = await session(new HttpChatAdapter(), prepare(d, s), runParams(d));
+  const r = result(msgs);
+  assert.deepEqual([r.outcome, r.reason, r.result], ["could_not_run", "executor_incomplete", null]);
+  assert.equal(events(msgs, "error")[0].class_hint, "other");
+  assert.equal(s.seen.length, 1, "no second request after the refusal");
+});
+
 for (const [status, hint, reason] of [[402, "credit_exhausted", "broker_credit_exhausted"], [429, "rate_limited", "quota_exhausted"], [400, "http_4xx", "provider_request_refused"], [503, "http_5xx", "provider_unavailable"]] as const) {
   test(`an upstream ${status} is reported as ${hint} with its excerpt`, async (t) => {
     const d = dirs(t);

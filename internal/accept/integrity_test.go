@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"math"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -104,6 +105,33 @@ func (f fixture) guarded(t *testing.T, files map[string]string, gone ...string) 
 		t.Fatal(err)
 	}
 	return v
+}
+
+// unitGo is an ordinary Go change: one new package with one function.
+var unitGo = map[string]string{"zzunit/u.go": "package zzunit\n\nfunc U() int { return 1 }\n"}
+
+// ordinary is the time of an ordinary run of f's guard on change, for a
+// row's bound relative to the same test run (#226 entry 89: under a loaded
+// host both slow alike; no row has a fixed wall-clock bound). Timed before
+// the row, the least of three, so a stall or a warm cache cannot lift the
+// bound (Opus #317 M3). f is a plain fixture, never a row's own whose base
+// does the work the row bounds (Opus #317 H2).
+func (f fixture) ordinary(t *testing.T, change map[string]string) time.Duration {
+	t.Helper()
+	unit := time.Duration(math.MaxInt64)
+	for range 3 {
+		start := time.Now()
+		f.guarded(t, change)
+		unit = min(unit, time.Since(start))
+	}
+	return unit
+}
+
+// within: took, a row's time, is within n ordinary runs of unit.
+func within(t *testing.T, took, unit time.Duration, n int) bool {
+	t.Helper()
+	t.Logf("%v: %.1f ordinary runs of %v (bound %d)", took, float64(took)/float64(unit), unit, n)
+	return took <= time.Duration(n)*unit
 }
 
 func whats(bs []Block) []string {
