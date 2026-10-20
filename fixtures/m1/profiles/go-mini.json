@@ -20,7 +20,7 @@
     }
   },
   "gate": {
-    "command": ["go", "test", "-count=1", "-json", "./money/..."],
+    "command": ["go", "test", "-count=1", "-json", "./..."],
     "result_adapter": "go_test_json",
     "baseline": {"kind": "measured", "relock_requires": "approval"},
     "environments": [

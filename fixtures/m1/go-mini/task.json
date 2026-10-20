@@ -1,8 +1,0 @@
-{
-  "project": "prj_01m3250vkwffc979nzjw0gmn01",
-  "title": "money: split an amount into equal parts",
-  "requirement": "In package money (money/money.go), add `func Split(c Cents, n int) ([]Cents, error)` and `var ErrParts = errors.New(\"money: at least one part\")`.\n\n1. Split returns n parts that add up to c exactly.\n2. The parts differ by at most one cent. The larger parts come first: Split(1000, 3) is [334 333 333] and Split(5, 3) is [2 2 1].\n3. A negative amount splits like its absolute value, every part negated: Split(-1000, 3) is [-334 -333 -333].\n4. For n < 1, Split returns nil and ErrParts.\n\nDo not change Parse, String or Add, or the existing tests. Identifiers starting with `TestAcceptGmz` are reserved.",
-  "attachments": [
-    {"name": "money/accept_test.go", "digest": "sha256:f172ed70d444a4d344f46b8b94a2ac7ad838e6e7217572c63b98bae787eb468a"}
-  ]
-}
