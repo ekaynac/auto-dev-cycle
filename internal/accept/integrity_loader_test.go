@@ -118,7 +118,8 @@ func TestIntegrityProcess(t *testing.T) {
 		fmt.Fprintf(&many, "\nfunc f%d() { fmt.Println() }\n", i)
 	}
 	// Astra #293 r2 #3: 1,001 functions of 971-byte names: warnings of
-	// 1,000-byte paths exhaust the report's bytes before its count.
+	// 1,000-byte paths exhaust the report's bytes before its count, after a
+	// warning the verdict holds before the guard's (TestProcFit has more).
 	var wide strings.Builder
 	wide.WriteString("package tool7\n\nimport \"fmt\"\n")
 	for i := range 1001 {
@@ -128,7 +129,6 @@ func TestIntegrityProcess(t *testing.T) {
 	for name, files := range map[string]map[string]string{
 		"a path past the frame's bound":      {"tool9/long.go": "package tool9\n\nimport \"fmt\"\n\nfunc f" + strings.Repeat("a", 5000) + "() { fmt.Println(1) }\n"},
 		"warnings past a rank's maxReported": {"tool8/many.go": many.String()},
-		"Astra's 1,001 wide warnings":        {"tool7/many.go": wide.String()},
 		"after the verdict's own warning":    {"tool7/many.go": wide.String()},
 	} {
 		in, out := f.guarded(t, files), f.loaded(t, testLister(t), files)
