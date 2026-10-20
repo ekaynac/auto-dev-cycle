@@ -1,0 +1,53 @@
+{
+  "project": "go-mini",
+  "repo": "fixtures/t0/go-mini/repo",
+  "base_tree": "ab5dba4edb5fabdc80d94127565b60dde00ab3c4",
+  "command": [
+    "go",
+    "test",
+    "-count=1",
+    "-json",
+    "./..."
+  ],
+  "environment": {
+    "image": "ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97",
+    "image_id": "d1a298571f62cfddb6deaea8eaf43ea32365a52ac6e5ec4e371700931c6e73ae",
+    "platform": "linux/arm64",
+    "pin": "provisional: go-mini's own prepared image replaces it before P22a-5 (#226 entry 97)",
+    "sandbox": "gate mode: --network=none, read-only root, tmpfs /tmp and HOME, --cap-drop=all",
+    "measured_by": "gate.Measure (P15): a run that ended on its own with green results",
+    "report": "baseline-report.json, with the run's stream in baseline-stream.json"
+  },
+  "result": {
+    "tests_passed": 5,
+    "failed": 0,
+    "skipped": 0
+  },
+  "acceptance": {
+    "task": "go-mini-feature-1",
+    "task_dir": "fixtures/t0/go-mini/tasks/go-mini-feature-1",
+    "hidden_tests": [
+      {
+        "path": "inventory/transfer_hidden_test.go",
+        "digest": "sha256:a93813288048c4e2a0e9fe831f8bcc6057db3d23a807ef058f792d83dd3f1129"
+      }
+    ],
+    "reference_digest": "sha256:0fbedf0d312220bf0ad3fc4e02e436ec86801e2cfea9a79dfb46f24cc69ca24b",
+    "at_base": {
+      "green": false,
+      "detail": "with the hidden test overlaid the package does not build (Transfer, ErrSameStore undefined): no result"
+    },
+    "with_reference": {
+      "green": true,
+      "tests_passed": 9,
+      "hidden_tests_passed": 4,
+      "hidden": [
+        "TestHiddenTransferAllDropsSourceItem",
+        "TestHiddenTransferFailureChangesNothing",
+        "TestHiddenTransferMovesStockAndPrice",
+        "TestHiddenTransferToSelfIsRejected"
+      ]
+    },
+    "measured_by": "gate.Measure in the pinned image, the hidden test overlaid, at the base and with the reference patch applied"
+  }
+}

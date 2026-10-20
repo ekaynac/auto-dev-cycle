@@ -45,7 +45,10 @@ func plain(t *testing.T, dir string, args ...string) string {
 // attempt's directories. It is the sandbox's Runner boundary. end, when
 // set, is how the run then ends, injected there (Astra #286 M5): a
 // timeout, a kill or the caller's cancellation, after the results exist.
-type local struct{ end func() error }
+type local struct {
+	end func() error
+	env []string // more of the command's environment (a real go test: its caches)
+}
 
 func (l *local) Run(ctx context.Context, _ string, args, _ []string) ([]byte, error) {
 	if !slices.Contains(args, "run") { // after podman's global flags
@@ -69,7 +72,7 @@ func (l *local) Run(ctx context.Context, _ string, args, _ []string) ([]byte, er
 		argv = append(argv, mapped.Replace(a))
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin"}
+	cmd.Dir, cmd.Env = ws, append([]string{"PATH=/usr/bin:/bin"}, l.env...)
 	out, err := cmd.Output()
 	if l.end != nil {
 		err = errors.Join(err, l.end())
@@ -525,8 +528,8 @@ func TestGateIssue170(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.Gate.Command = b.Command
-	pin := p.Toolchain.Images["go"] // the profile's own pin, read apart from the baseline (Astra #286 r2 L2)
-	in := In{Image: sandbox.Image{Pinned: pin, ID: b.ImageID, OS: b.OS, Arch: b.Arch}, Gate: p.Gate, Env: "ci", Base: b.Base, Baseline: &b}
+	pin := p.Toolchain.Images["go"]                                                                                                               // the profile's own pin, read apart from the baseline (Astra #286 r2 L2)
+	in := In{Image: sandbox.Image{Pinned: pin, ID: pinnedARM64, OS: "linux", Arch: "arm64"}, Gate: p.Gate, Env: "ci", Base: b.Base, Baseline: &b} // the image id recorded apart (Opus #300 L1)
 	if err := in.check(); err != nil || pin == "" || b.Image != pin || len(b.Results) != 72 || !b.Green() {
 		t.Fatalf("#170's baseline is not bound to this gate: %v (%s, the profile pins %s; %d results)", err, b.Image, pin, len(b.Results))
 	}
