@@ -267,11 +267,11 @@ func (pb *pyBase) closure() error {
 		pb.holderUnread = cmp.Or(pb.holderUnread, "the base conditions' analysis is over the guard's work bound")
 		return pb.r.ctx.Err()
 	}
-	if _, ok := pb.forms(pb.r.files, pb.r.baseDirs, false, pb.alts, pb.other); !ok {
+	if _, ok := pb.forms(pb.r.files, false, pb.alts, pb.other); !ok {
 		return over()
 	}
-	for _, s := range pyStdlib { // a top-level module an external one may import lazily (Astra #281 r5 H4)
-		if q := cmp.Or(pb.shadowMods[s], pb.other[s]); q != "" {
+	for _, s := range pyStdlib { // a top-level module an external one may import lazily (Astra #281 r5 H4); a namespace portion never shadows a regular stdlib module
+		if q := cmp.Or(pb.shadowMods[s], pb.other[s]); q != "" && !strings.HasSuffix(q, "/") {
 			pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+q+" shadows the standard library's "+s)
 		}
 	}
@@ -383,12 +383,12 @@ func (pb *pyBase) risky(f *pyBaseFile) string {
 // r3). Each path and import is charged first, each path queued once.
 func (pb *pyBase) candClosure() (string, error) {
 	alts, other := map[string]int{}, map[string]string{}
-	mods, ok := pb.forms(pb.r.cand, pb.r.candDirs, true, alts, other)
+	mods, ok := pb.forms(pb.r.cand, true, alts, other)
 	if !ok {
 		return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
 	}
 	for _, s := range pyStdlib { // a top-level module an external one may import lazily, added (Astra #281 r5 H4)
-		if q := cmp.Or(mods[s], other[s]); q != "" && pb.r.files[q] != pb.r.cand[q] {
+		if q := cmp.Or(mods[s], other[s]); q != "" && !strings.HasSuffix(q, "/") && pb.r.files[q] != pb.r.cand[q] {
 			return q, nil
 		}
 	}
@@ -444,11 +444,13 @@ func (pb *pyBase) candClosure() (string, error) {
 // forms counts into alts how many of tree's files CPython's file finder
 // may load (pyForm), the .py ones only when py, answer to each dotted name
 // over every root (Astra #281 r3 H3); other keeps a name's non-source form
-// (r4 H3), or a namespace portion, a directory holding no form, when no
-// file answers to its name (r5 L1); and names each name's .py file,
-// under its own __pycache__ (r4 H4). Each path and directory is charged
-// before its names are built; false: over the work bound.
-func (pb *pyBase) forms(tree map[string]string, dirs map[string][]string, py bool, alts map[string]int, other map[string]string) (map[string]string, bool) {
+// (r4 H3), or a namespace portion: any directory, every ancestor of every
+// path, that no form answers to by its own name (its __init__, or a
+// same-name module), whatever its children (r5 L1, r6 L1); and names each
+// name's .py file, under its own __pycache__ (r4 H4). Each path and each
+// directory, once, is charged before its names are built; false: over the
+// work bound.
+func (pb *pyBase) forms(tree map[string]string, py bool, alts map[string]int, other map[string]string) (map[string]string, bool) {
 	mods := map[string]string{}
 	for p := range tree {
 		m, ok := pyForm(p)
@@ -466,15 +468,16 @@ func (pb *pyBase) forms(tree map[string]string, dirs map[string][]string, py boo
 			}
 		}
 	}
-	for d, fs := range dirs {
-		if d == "." || slices.ContainsFunc(fs, func(p string) bool { _, ok := pyForm(p); return ok }) {
-			continue
-		} else if pb.r.work += 1 + len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
-			return nil, false
-		}
-		for _, n := range pyModNames(d, pb.shadowEntries, false) {
-			if alts[n] == 0 {
-				other[n] = cmp.Or(other[n], d+"/")
+	seen := map[string]bool{}
+	for p := range tree {
+		for d := path.Dir(p); d != "." && !seen[d]; d = path.Dir(d) {
+			if seen[d], pb.r.work = true, pb.r.work+1+len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+				return nil, false
+			}
+			for _, n := range pyModNames(d, pb.shadowEntries, false) {
+				if alts[n] == 0 {
+					other[n] = cmp.Or(other[n], d+"/")
+				}
 			}
 		}
 	}

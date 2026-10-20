@@ -101,6 +101,9 @@ type run struct {
 	anyTest            bool                // a Go test in either version (a helper anywhere the tests may call)
 	blocks, warnings   []Block
 	out                additive // decision A outside initialization (P14b-out-1): its own findings and work
+
+	// a Python blob's binding verdicts (pyBindings), once in either tree (Astra #281 r6 M2)
+	pyBinds map[string][2]map[string]bool
 }
 
 // cgoSources is what cgo compiles beside a package's Go files, and objects

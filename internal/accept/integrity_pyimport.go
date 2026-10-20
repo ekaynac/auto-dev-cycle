@@ -374,7 +374,9 @@ func pyElemsBy(es [][]ptok, ok func([]ptok) bool) bool {
 // patch: rooted at pytest or fixture) with pyExpr arguments, or a dotted
 // name as one (a skipif's condition); its root, whose binding pyTrusted
 // must prove (Astra #281 r4 H2), and each dotted argument's root, which
-// must be a repository module's (r5 H4).
+// must be a repository module's (r5 H4). A call with exactly one
+// positional argument and no keyword applies that argument as a function
+// (pytest's MarkDecorator.__call__), so it must be a pyLiteral (r6 M1).
 func pyDeco(st []ptok) (root string, args []string, ok bool) {
 	end := slices.IndexFunc(st, func(k ptok) bool { return k.text == "(" })
 	if end < 0 {
@@ -393,43 +395,70 @@ func pyDeco(st []ptok) (root string, args []string, ok bool) {
 			}
 			return pyExpr(a)
 		}))
+	if ok && end < len(st) && !strings.HasSuffix(c, ".with_args") { // with_args stores its arguments, never applies them
+		as := pySplit(st[end+1:len(st)-1], ",")
+		if len(as[len(as)-1]) == 0 {
+			as = as[:len(as)-1] // () or a trailing comma
+		}
+		ok = len(as) != 1 || len(as[0]) > 1 && as[0][1].text == "=" || pyLiteral(as[0])
+	}
 	return root, args, ok
 }
 
-// pyTrusted: name r is bound in the file only by import pytest (r is
-// pytest) or from pytest import r (Astra #281 r4 H2).
-func pyTrusted(lines []pline, r string) bool {
-	return pyBoundBy(lines, r, func(st []ptok) bool {
-		return len(st) > 1 && (st[0].text == "import" && r == "pytest" || pyJoin(st[:min(3, len(st))]) == "frompytestimport" && r != "pytest") &&
-			slices.ContainsFunc(pyImportParts(st), func(p []ptok) bool { return len(p) == 1 && p[0].text == r })
-	})
-}
-
-// pyImported: name r is bound in the file only by imports (r5 H4).
-func pyImported(lines []pline, r string) bool {
-	return pyBoundBy(lines, r, func(st []ptok) bool { return len(st) > 1 && (st[0].text == "import" || st[0].text == "from") })
-}
-
-// pyBoundBy: name r is bound in the file by a statement proof accepts, and
-// never otherwise: no star import, and every other r not after . is r. or
-// @r.
-func pyBoundBy(lines []pline, r string, proof func([]ptok) bool) bool {
-	bound := false
+// pyBindings is, in one scan of the file's tokens (its caller charges them
+// first: Astra #281 r6 M2), for each trusted name r whether it is bound
+// only by import pytest (r is pytest) or from pytest import r (r4 H2), and
+// for each imported name whether it is bound only by imports (r5 H4): the
+// file has no star import, and every other r not after . is r. or @r.
+func pyBindings(lines []pline, trusted, imported []string) (map[string]bool, map[string]bool) {
+	type use struct {
+		trusted bool
+		r       string
+	}
+	names, proved, rebound, star := map[string][]use{}, map[use]bool{}, map[use]bool{}, false
+	for _, r := range trusted {
+		names[r] = append(names[r], use{true, r})
+	}
+	for _, r := range imported {
+		names[r] = append(names[r], use{false, r})
+	}
 	for _, l := range lines {
 		for _, st := range pySplit(slices.Concat(l.toks, l.inner), ";") {
-			if proof(st) {
-				bound = true
-				continue
-			}
+			imp := len(st) > 1 && (st[0].text == "import" || st[0].text == "from")
 			for i, k := range st {
-				if k.text == "*" && i > 0 && st[i-1].text == "import" || k.kind == 'n' && k.text == r && (i == 0 || st[i-1].text != "." && st[i-1].text != "@") && (i+1 == len(st) || st[i+1].text != ".") {
-					return false
+				if star = star || k.text == "*" && i > 0 && st[i-1].text == "import"; k.kind != 'n' || len(names[k.text]) == 0 {
+					continue
+				}
+				free := (i == 0 || st[i-1].text != "." && st[i-1].text != "@") && (i+1 == len(st) || st[i+1].text != ".")
+				for _, u := range names[k.text] { // an import proving r binds it however it names it (import r.x)
+					if imp && (!u.trusted || pyTrustProof(st, u.r)) {
+						proved[u] = true
+					} else if free {
+						rebound[u] = true
+					}
 				}
 			}
 		}
 	}
-	return bound
+	verdicts := func(ns []string, trusted bool) map[string]bool {
+		v := map[string]bool{}
+		for _, r := range ns {
+			v[r] = proved[use{trusted, r}] && !rebound[use{trusted, r}] && !star
+		}
+		return v
+	}
+	return verdicts(trusted, true), verdicts(imported, false)
 }
+
+// pyTrustProof: st is import pytest (r is pytest) or from pytest import r.
+func pyTrustProof(st []ptok, r string) bool {
+	return (st[0].text == "import" && r == "pytest" || pyJoin(st[:min(3, len(st))]) == "frompytestimport" && r != "pytest") &&
+		slices.ContainsFunc(pyImportParts(st), func(p []ptok) bool { return len(p) == 1 && p[0].text == r })
+}
+
+// pyMaxRoots bounds the distinct names a file's binding analysis proves:
+// past it, the file is not inert (Astra #281 r6 M2).
+const pyMaxRoots = 16
 
 func pyJoin(t []ptok) string {
 	var b strings.Builder

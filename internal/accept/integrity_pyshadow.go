@@ -428,14 +428,42 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 			}
 		}
 	}
-	for r, used := range trust {
-		f.impure = f.impure || used && !pyTrusted(lines, r)
+	if roots = slices.Compact(slices.Sorted(slices.Values(roots))); len(roots) > pyMaxRoots { // each distinct root once, at most pyMaxRoots (Astra #281 r6 M2)
+		f.blunt, roots = cmp.Or(f.blunt, "reads decorator arguments through too many names"), nil
 	}
-	for _, r := range roots { // one import binds r, and nothing else does (Astra #281 r5 H4)
-		if ms := slices.Compact(slices.Sorted(slices.Values(binds[r]))); len(ms) == 1 && pyImported(lines, r) {
-			f.argMods = append(f.argMods, ms[0])
-		} else {
-			f.blunt = cmp.Or(f.blunt, "reads a decorator argument through "+r+", which one import does not bind")
+	var trusted []string // a decorator rooted elsewhere fails pyDeco: pyPytest admits only pytest and fixture
+	for _, r := range []string{"fixture", "pytest"} {
+		if trust[r] {
+			trusted = append(trusted, r)
+		}
+	}
+	if len(trusted)+len(roots) > 0 { // one scan of the file's tokens, charged first, for every name at once, once per blob in either tree (r6 M2)
+		v, ok := pb.r.pyBinds[tree[q]]
+		if !ok {
+			for _, l := range lines { // each token visit
+				pb.r.work += len(l.toks) + len(l.inner)
+			}
+			if pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+				f.blunt, trusted, roots = cmp.Or(f.blunt, "is over the guard's work bound in its binding analysis"), nil, nil
+				if err := pb.r.ctx.Err(); err != nil {
+					return nil, err
+				}
+			} else if v[0], v[1] = pyBindings(lines, trusted, roots); pb.r.pyBinds == nil {
+				pb.r.pyBinds = map[string][2]map[string]bool{tree[q]: v}
+			} else {
+				pb.r.pyBinds[tree[q]] = v
+			}
+		}
+		tv, iv := v[0], v[1]
+		for _, r := range trusted {
+			f.impure = f.impure || !tv[r]
+		}
+		for _, r := range roots { // one import binds r, and nothing else does (Astra #281 r5 H4)
+			if ms := slices.Compact(slices.Sorted(slices.Values(binds[r]))); len(ms) == 1 && iv[r] {
+				f.argMods = append(f.argMods, ms[0])
+			} else {
+				f.blunt = cmp.Or(f.blunt, "reads a decorator argument through "+r+", which one import does not bind")
+			}
 		}
 	}
 	f.units, f.binders = units, binders

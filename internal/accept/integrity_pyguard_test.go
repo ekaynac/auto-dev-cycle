@@ -400,8 +400,8 @@ func TestPyGuardShadows(t *testing.T) {
 		"flag from .. import core":                                                  {map[string]string{"pkgr/core.py": "X = 1\n"}, nil, "pkgr/core.py: a module a condition reads is unread (the module tests/test_requests.py runs code at import outside the allowlist)"},
 		"flag an __init__.py removed outside tests":                                 {nil, []string{"pkgz/__init__.py"}, "pkgz/tests/test_z.py: a test file's basedir moves"},
 		"flag a case-only name (imports are case-sensitive) (a stated false block)": {map[string]string{"Money.py": "X = 1\n"}, nil, "a module a condition reads is unread (the module tests/test_requests.py runs code at import"},
-		"flag a .pyi beside a .py (never imported)":                                 {map[string]string{"money.pyi": "def add(a: int, b: int) -> int: ...\n"}, nil, ""},
-		"flag a .so beside a .py":                                                   {map[string]string{"money.cpython-312-x86_64-linux-gnu.so": "x"}, nil, "unverifiable: compiled Python, an extension module"},
+		"flag a .pyi beside a .py (never imported; round 8: the base's lib is a namespace package, a stated false block)": {map[string]string{"money.pyi": "def add(a: int, b: int) -> int: ...\n"}, nil, "tests/test_requests.py: a module the tests now import runs code at import"},
+		"flag a .so beside a .py": {map[string]string{"money.cpython-312-x86_64-linux-gnu.so": "x"}, nil, "unverifiable: compiled Python, an extension module"},
 		// Opus #270: M3 (a basedir moved up), M4 (a judged helper's imports).
 		"o M3 an __init__.py added above a test package":            {map[string]string{"pkgm/__init__.py": ""}, nil, "pkgm/tests/test_m.py: a test file's basedir moves"},
 		"o M4 a test helper's import":                               {map[string]string{"deepdiff.py": "X = 1\n"}, nil, "deepdiff.py: a module a condition reads is unread (the module tests/test_requests.py runs code at import outside the allowlist)"},
@@ -1316,7 +1316,7 @@ func TestPyGuardStarWork(t *testing.T) {
 	})
 	old := maxWork
 	t.Cleanup(func() { maxWork = old })
-	maxWork = 50000
+	maxWork = 52000 // round 8: the binding analysis charges its one scan of the test file (Astra #281 r6 M2)
 	if v := g.guarded(t, map[string]string{"other.py": "O = 2\n"}); len(pyOwn(v.Blocks)) > 0 {
 		t.Errorf("repeated stars within the work bound: %q, want no block", whats(pyOwn(v.Blocks)))
 	}
@@ -1597,7 +1597,7 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 		"r4 H3 a sole compiled module":                                        {astra(map[string]string{"conftest.py": "import helper\n", "helper.py": "import parker\n", "parker.pyc": "\x00"}), "cfg.py: a module a condition reads is unread (the module parker is not one plain source (parker.pyc))"},
 		"r4 H3 a sole extension module":                                       {astra(map[string]string{"conftest.py": "import helper\n", "helper.py": "import parker\n", "parker.cpython-312-x86_64-linux-gnu.so": "\x00"}), "cfg.py: a module a condition reads is unread (the module parker is not one plain source (parker.cpython-312-x86_64-linux-gnu.so))"},
 		"r4 H3 a package's sole compiled __init__":                            {astra(map[string]string{"conftest.py": "import helper\n", "helper.py": "import parker\n", "parker/__init__.pyc": "\x00"}), "cfg.py: a module a condition reads is unread (the module parker is not one plain source (parker/__init__.pyc))"},
-		"r4 H4 a module under __pycache__":                                    {astra(map[string]string{"conftest.py": "from __pycache__ import parker\n", "__pycache__/parker.py": "X = 1\n"}), "cfg.py: a module a condition reads is unread (the module __pycache__/parker.py is under __pycache__ or is pytest's)"},
+		"r4 H4 a module under __pycache__":                                    {astra(map[string]string{"conftest.py": "from __pycache__ import parker\n", "__pycache__/parker.py": "X = 1\n"}), "cfg.py: a module a condition reads is unread (the module __pycache__ is not one plain source (__pycache__/))"},
 		"pre-check a module __getattr__ behind a dotted default":              {astra(map[string]string{"conftest.py": "import cfg\n\ndef f(x=cfg.FOO):\n    pass\n", "cfg.py": "def __getattr__(name):\n    import feature.flags\n    feature.flags.SKIP = True\n    return 1\n\nSKIP = False\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py runs code at import outside the allowlist)"},
 		"pre-check a dotted default on an inert module":                       {astra(map[string]string{"conftest.py": "import cfg\n\ndef f(x=cfg.SKIP):\n    pass\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py runs code at import outside the allowlist)"},
 		"pre-check a dotted value":                                            {astra(map[string]string{"conftest.py": "import cfg\nX = cfg.FOO\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py runs code at import outside the allowlist)"},
@@ -1633,6 +1633,17 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 		"r5 L1 a module beside a data directory stays read":                   {astra(map[string]string{"feature/flags.py": "from cfg import SKIP\n", "conftest.py": "import data\n", "data.py": "X = 1\n", "data/x.txt": "x\n"}), read},
 		"r5 L1 a namespace-only import":                                       {astra(map[string]string{"conftest.py": "import ns\n", "ns/data.txt": "x\n"}), "cfg.py: a module a condition reads is unread (the module ns is not one plain source (ns/))"},
 		"r5 a package star rebinding pytest":                                  {astra(map[string]string{"feature/flags.py": "from cfg import SKIP\n", "conftest.py": "import pkg\n", "pkg/__init__.py": "import pytest\nfrom .x import *\n\n@pytest.fixture\ndef f():\n    pass\n", "pkg/x.py": "pytest = 1\n"}), "cfg.py: a module a condition reads is unread (the module pkg/__init__.py runs code at import outside the allowlist)"},
+		"r6 M1 a mark applied to a repository function":                       {map[string]string{"cfg.py": "ENABLE = False\n", "flags.py": "SKIP = False\n", "conftest.py": "import pytest\nimport cfg\nimport flags\n\ndef park(f):\n    flags.SKIP = cfg.ENABLE\n    return f\n\n@pytest.mark.usefixtures(park)\ndef unused():\n    pass\n", "tests/test_z.py": "import pytest\nimport flags\n\n@pytest.mark.skipif(flags.SKIP, reason='r')\ndef test_z():\n    assert False\n"}, "cfg.py: a module a condition reads is unread (the module conftest.py runs code at import outside the allowlist)"},
+		"r6 M1 a mark with one dotted positional argument":                    {astra(map[string]string{"conftest.py": "import pytest\nimport feature.flags\n\n@pytest.mark.usefixtures(feature.flags.SKIP)\ndef unused():\n    pass\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py runs code at import outside the allowlist)"},
+		"r6 M1 a mark with one literal argument stays read":                   {astra(map[string]string{"feature/flags.py": "from cfg import SKIP\n", "conftest.py": "import pytest\n\n@pytest.mark.usefixtures('db')\ndef unused():\n    pass\n"}), read},
+		"r6 M1 with_args stays read":                                          {astra(map[string]string{"feature/flags.py": "from cfg import SKIP\n", "conftest.py": "import pytest\n\nX = 1\n\n@pytest.mark.slow.with_args(X)\ndef unused():\n    pass\n"}), read},
+		"r6 L1 a namespace with a module":                                     {astra(map[string]string{"conftest.py": "import ns\n", "ns/leaf.py": "X = 1\n"}), "cfg.py: a module a condition reads is unread (the module ns is not one plain source (ns/))"},
+		"r6 L1 a namespace with only a nested directory":                      {astra(map[string]string{"conftest.py": "import ns\n", "ns/sub/data.txt": "x\n"}), "cfg.py: a module a condition reads is unread (the module ns is not one plain source (ns/))"},
+		"r6 L1 a reached namespace ancestor":                                  {astra(map[string]string{"conftest.py": "import ns.leaf\n", "ns/leaf.py": "X = 1\n"}), "cfg.py: a module a condition reads is unread (the module ns is not one plain source (ns/))"},
+		"r6 L1 a stdlib-named directory with no __init__ stays read":          {astra(map[string]string{"feature/flags.py": "from cfg import SKIP\n", "cmd/main.go": "package main\n", "email/x.py": "X = 1\n"}), read},
+		"r6 L1 a reached stdlib-named namespace is unread":                    {astra(map[string]string{"conftest.py": "import email.x\n", "email/x.py": "X = 1\n"}), "cfg.py: a module a condition reads is unread (the module email is not one plain source (email/))"},
+		"r6 M1 a trailing comma after one positional argument":                {astra(map[string]string{"conftest.py": "import pytest\n\ndef park(f):\n    return f\n\n@pytest.mark.usefixtures(park,)\ndef unused():\n    pass\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py runs code at import outside the allowlist)"},
+		"r6 a module under a regular __pycache__ package":                     {astra(map[string]string{"conftest.py": "from __pycache__ import parker\n", "__pycache__/__init__.py": "", "__pycache__/parker.py": "X = 1\n"}), "cfg.py: a module a condition reads is unread (the module __pycache__/__init__.py is under __pycache__ or is pytest's)"},
 		"r4 a base module named pytest":                                       {astra(map[string]string{"pytest.py": "X = 1\n"}), "cfg.py: a module a condition reads is unread (the module pytest.py is under __pycache__ or is pytest's)"},
 		"r4 an inert package that is not plain":                               {astra(map[string]string{"feature/__init__.py": "class C:\n    pass\n"}), "cfg.py: a module a condition reads is unread (the package feature is not plain"},
 		"r4 a default with an operator":                                       {astra(map[string]string{"conftest.py": "def f(x=1 + 2):\n    pass\n"}), "cfg.py: a module a condition reads is unread (the module conftest.py runs code at import outside the allowlist)"},
@@ -1718,6 +1729,16 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 			map[string]string{"helper.py": "import feature\nX = getattr(feature, '__path__')\n"}, "helper.py: a module the tests now import runs code at import"},
 		"r5 H2 a new test reaching a package star the base never judged": {astra(map[string]string{"pkg/__init__.py": "from .x import *\n", "pkg/x/__init__.py": "__all__ = ['parker']\n", "pkg/x/parker.py": "import feature.flags\nfeature.flags.SKIP = True\n"}),
 			map[string]string{"tests/test_a.py": "import pkg\n\ndef test_a():\n    pass\n"}, "pkg/__init__.py: a module the tests now import runs code at import"},
+		"r6 M1 a new test reaching a mark applied to a function": {astra(map[string]string{"helper.py": "import pytest\nimport feature.flags\n\ndef park(f):\n    feature.flags.SKIP = True\n    return f\n\n@pytest.mark.usefixtures(park)\ndef unused():\n    pass\n"}),
+			map[string]string{"tests/test_a.py": "import helper\n\ndef test_a():\n    pass\n"}, "helper.py: a module the tests now import runs code at import"},
+		"r6 L1 a changed helper newly reaching a namespace with a module": {astra(map[string]string{"conftest.py": "import helper\n", "helper.py": "X = 1\n", "ns/leaf.py": "X = 1\n"}),
+			map[string]string{"helper.py": "import ns\nX = 1\n"}, "helper.py: a module the tests now import runs code at import"},
+		"r6 an unchanged impure test stays the base's verdict": {astra(map[string]string{"tests/test_y.py": "import os\nX = os.getpid()\n\ndef test_y():\n    pass\n"}),
+			map[string]string{"notes.txt": "x\n"}, ""},
+		"r6 a changed helper newly reaching a module under a regular __pycache__ package": {astra(map[string]string{"conftest.py": "import helper\n", "helper.py": "X = 1\n", "__pycache__/__init__.py": "", "__pycache__/parker.py": "import feature.flags\nfeature.flags.SKIP = True\n"}),
+			map[string]string{"helper.py": "import __pycache__.parker\nX = 1\n"}, "helper.py: a module the tests now import runs code at import"},
+		"r6 a source under __pycache__ is no form of its namesake, newly reached": {astra(map[string]string{"conftest.py": "import helper\n", "helper.py": "X = 1\n", "parker.py": "X = 1\n", "__pycache__/parker.py": "X = 2\n"}),
+			map[string]string{"helper.py": "import parker\nX = 1\n"}, ""},
 		"H1 a candidate helper newly importing an alias writer": {astra(map[string]string{"conftest.py": "import helper\n", "helper.py": "X = 1\n", "parker.py": "import feature.flags\nm = feature.flags\nm.SKIP = True\n"}),
 			map[string]string{"helper.py": "import parker\nX = 1\n"}, "parker.py: a module the tests now import runs code at import"},
 		"H5 a new test importing an unread module": {astra(map[string]string{"parker.py": "# coding: latin-1\nimport feature.flags\nfeature.flags.SKIP = True\n"}),
@@ -1877,6 +1898,31 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 	start = time.Now()
 	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); time.Since(start) > 20*time.Second || !pyFinds(pyOwn(v.Blocks), "the candidate's closure is over the guard's work bound") {
 		t.Errorf("r4 M2 the candidate's seeding charged (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))
+	}
+	many := "import pytest\nimport feature.flags\n\n" // Astra #281 r6 M2: 2,000 decorators reading one dotted root (her 10,000, scaled), a test-only bound
+	for i := range 2000 {
+		many += fmt.Sprintf("@pytest.mark.slow(tag=feature.flags.SKIP)\ndef f%05d():\n    pass\n\n", i)
+	}
+	g = newFixtureWith(t, func(src string) {
+		write(t, src, astra(map[string]string{"feature/flags.py": "from cfg import SKIP\n", "conftest.py": many}))
+		plain(t, src, "add", "--all")
+	})
+	maxWork = 60000 // one binding scan per file (about 44,000 in all): one per decorator would pass it
+	start = time.Now()
+	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); time.Since(start) > 20*time.Second || !pyFinds(pyOwn(v.Blocks), "cfg.py: a skipif or xfail condition in tests/test_z.py reads SKIP") {
+		t.Errorf("r6 M2 one binding scan per file (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))
+	}
+	roots := "import pytest\n" // and 17 distinct roots: past pyMaxRoots, not inert
+	for i := range 17 {
+		roots += fmt.Sprintf("import m%d\n\n@pytest.mark.slow(tag=m%d.X)\ndef f%d():\n    pass\n\n", i, i, i)
+	}
+	g = newFixtureWith(t, func(src string) {
+		write(t, src, astra(map[string]string{"conftest.py": roots}))
+		plain(t, src, "add", "--all")
+	})
+	maxWork = old
+	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the module conftest.py reads decorator arguments through too many names)") {
+		t.Errorf("r6 M2 too many roots: %q", whats(pyOwn(v.Blocks)))
 	}
 	deep = astra(nil) // Astra #281 r5 M1: 2,000 modules beneath 200 one-letter directories (her 20,000 and 1,000, scaled), a test-only bound
 	dir := strings.Repeat("d/", 200)
