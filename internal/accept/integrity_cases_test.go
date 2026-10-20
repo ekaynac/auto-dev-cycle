@@ -82,6 +82,15 @@ func TestPlain(t *testing.T) {
 		t.Fatal("add")
 	}
 }
+
+func TestArgs(t *testing.T) {
+	id := []string{"-c", "x"}
+	for _, args := range [][]string{{"status"}, append(id, "commit", "-m")} {
+		if len(args) == 0 {
+			t.Fatal(args)
+		}
+	}
+}
 `
 
 // TestIntegrityCases (P14d; #226 entries 74, 85; Astra #255 H5, H6, M9 and
@@ -114,6 +123,8 @@ func TestIntegrityCases(t *testing.T) {
 		"a table row removed":              {edit("\t\t{\"zero\", 0, 0},\n", ""), `1 test cases removed (table rows or subtests: row "zero")`, nil},
 		"a table row added":                {edit("\t\t{\"neg\", -1, -1},\n", "\t\t{\"neg\", -1, -1},\n\t\t{\"two\", 2, 2},\n"), "", nil},
 		"a row edited under its name":      {edit(`{"zero", 0, 0}`, `{"zero", 0, 1}`), "", both("TestTable: " + changed)},
+		"a call row edited under its name": {edit(`append(id, "commit", "-m")`, `{id[0], "commit", "-m"}`), "", both("TestArgs: " + changed)}, // a real commit's edit (c09ac49)
+		"a call row removed":               {edit(`, append(id, "commit", "-m")`, `, id`), `1 test cases removed (table rows or subtests: row "commit")`, nil},
 		"a map case removed":               {edit(`"one": 1, "two": 2`, `"one": 1`), `1 test cases removed (table rows or subtests: row "two")`, nil},
 		"a nested subtest renamed":         {edit(`t.Run("other"`, `t.Run("another"`), "1 test cases removed (table rows or subtests: run outer/other)", nil},
 		"a subtest removed":                {edit("\t\tt.Run(\"other\", func(t *testing.T) {\n\t\t\tif Add(2, 2) != 4 {\n\t\t\t\tt.Fatal(\"other\")\n\t\t\t}\n\t\t})\n", ""), "test cases removed (table rows or subtests: run outer/other)", nil},

@@ -205,7 +205,8 @@ func (s *pkgScan) testCases(body ast.Node, text func(ast.Node) string) (ids map[
 }
 
 // rowName is a row's identity: a string key or value, else its first
-// string literal field, else its text.
+// string literal field (or a call's first string literal argument, as in
+// append(id, "commit")), else its text.
 func rowName(e ast.Expr, text func(ast.Node) string) string {
 	str := func(e ast.Expr) (string, bool) {
 		lit, ok := ast.Unparen(e).(*ast.BasicLit)
@@ -218,14 +219,19 @@ func rowName(e ast.Expr, text func(ast.Node) string) string {
 	if v, ok := str(e); ok {
 		return strconv.Quote(v)
 	}
-	if lit, ok := ast.Unparen(e).(*ast.CompositeLit); ok {
-		for _, f := range lit.Elts {
-			if kv, ok := f.(*ast.KeyValueExpr); ok {
-				f = kv.Value
-			}
-			if v, ok := str(f); ok {
-				return strconv.Quote(v)
-			}
+	var fields []ast.Expr
+	switch x := ast.Unparen(e).(type) {
+	case *ast.CompositeLit:
+		fields = x.Elts
+	case *ast.CallExpr: // append(id, "commit", …): its first string literal argument
+		fields = x.Args
+	}
+	for _, f := range fields {
+		if kv, ok := f.(*ast.KeyValueExpr); ok {
+			f = kv.Value
+		}
+		if v, ok := str(f); ok {
+			return strconv.Quote(v)
 		}
 	}
 	return text(e)
