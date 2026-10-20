@@ -89,8 +89,11 @@ type Spec struct {
 	Prompt  []byte
 	Bounds  Bounds // the waits on the adapter; zero: as Bounds says
 	// Tools are the only tools the adapter may describe (EditLoopTools for
-	// adcd's launches, #226 entry 65); nil: any.
+	// adcd's launches, #226 entry 65); nil: none.
 	Tools []types.AdapterLabel
+	// AnyTool allows any described tool: only the M0 harness and the
+	// contract fixtures, whose adapters describe their own tools, set it.
+	AnyTool bool
 }
 
 // Outcome is what an attempt left.
@@ -305,7 +308,7 @@ func (r *attemptRun) converse(ctx context.Context, s *session.Session) (types.Ad
 		return types.AdapterRunResult{}, err
 	}
 	p := r.spec.Prepare
-	if err := exclusive(r.spec.Tools, d.ToolSurface); err != nil {
+	if err := exclusive(r.spec, d.ToolSurface); err != nil {
 		return types.AdapterRunResult{}, err
 	}
 	p.Attempt, p.FencingToken, p.Inputs = r.spec.Attempt, r.token, []types.AdapterHandle{r.x.prompt}
@@ -334,14 +337,14 @@ func (r *attemptRun) converse(ctx context.Context, s *session.Session) (types.Ad
 // confinement holds only while that loop is its sole writer (#226 entry 65).
 var EditLoopTools = []types.AdapterLabel{"read_file", "list_dir", "write_file", "delete_file"}
 
-// ErrToolRefused: the adapter has a tool outside its Spec.Tools.
-var ErrToolRefused = errors.New("adapterhost: the adapter has a tool other than the edit loop's own (#226 entry 65)")
+// ErrToolRefused: the adapter describes a tool its Spec does not allow.
+var ErrToolRefused = errors.New("adapterhost: the adapter has a tool its launch does not allow (#226 entry 65)")
 
-// exclusive refuses an adapter whose described tools reach past tools;
-// nil tools allows any (the M0 harness and the contract fixtures).
-func exclusive(tools, surface []types.AdapterLabel) error {
+// exclusive refuses an adapter whose described tools reach past spec's:
+// its Tools, none when nil (fail closed), any only with AnyTool.
+func exclusive(spec Spec, surface []types.AdapterLabel) error {
 	for _, t := range surface {
-		if tools != nil && !slices.Contains(tools, t) {
+		if !spec.AnyTool && !slices.Contains(spec.Tools, t) {
 			return fmt.Errorf("%w: %q", ErrToolRefused, t)
 		}
 	}

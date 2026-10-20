@@ -114,14 +114,16 @@ func TestUnservedToolNotificationsRefuseTheRun(t *testing.T) {
 // #226 entry 65: under a launch allowing the edit loop's tools alone
 // (Spec.Tools), an adapter that describes another (an executable one) is
 // refused before it is prepared, and its attempt ends lost with nothing
-// submitted; one with the edit loop's tools runs.
+// submitted; one with the edit loop's tools runs. A launch naming no tools
+// (nil) refuses every described tool (fail closed); one with no tool
+// described runs under it.
 func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 	w := newWorld(t)
 	var prepared bool
 	testHook = func(stage string) { prepared = prepared || stage == "prepare" }
 	t.Cleanup(func() { testHook = nil })
 	sp := spec(stub(t, stubPlan{Tools: []string{"read_file", "run_command"}, Result: clean}))
-	sp.Tools = EditLoopTools
+	sp.AnyTool, sp.Tools = false, EditLoopTools
 	out, err := w.host.Run(context.Background(), sp)
 	if err != nil || !errors.Is(out.Session, ErrToolRefused) || out.Submitted != nil || prepared {
 		t.Fatalf("run: %v, session %v, submitted %v, prepared %v", err, out.Session, out.Submitted, prepared)
@@ -131,9 +133,22 @@ func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 	}
 	w = newWorld(t)
 	sp = spec(stub(t, stubPlan{Tools: []string{"read_file", "list_dir", "write_file", "delete_file"}}))
-	sp.Tools = EditLoopTools
+	sp.AnyTool, sp.Tools = false, EditLoopTools
 	if out, err := w.host.Run(context.Background(), sp); err != nil || errors.Is(out.Session, ErrToolRefused) || !prepared {
 		t.Fatalf("the edit loop's own tools: %v, session %v", err, out.Session)
+	}
+	for name, tc := range map[string]struct {
+		tools   []string
+		refused bool
+	}{"a tool under nil": {[]string{"read_file"}, true}, "no tool under nil": {nil, false}} {
+		w = newWorld(t)
+		prepared = false
+		sp = spec(stub(t, stubPlan{Tools: tc.tools}))
+		sp.AnyTool, sp.Tools = false, nil
+		out, err := w.host.Run(context.Background(), sp)
+		if err != nil || errors.Is(out.Session, ErrToolRefused) != tc.refused || prepared == tc.refused {
+			t.Errorf("%s: %v, session %v, prepared %v", name, err, out.Session, prepared)
+		}
 	}
 }
 
