@@ -6,7 +6,7 @@ This is the first real target for M1's checkpoint (a), chosen under slice plan ย
 |---|---|
 | `task.json` | The `task.create` scope: project, title, an exact requirement, and the acceptance attachment by path and digest. |
 | `baseline.json` | The `go test -count=1 -json ./internal/cli/...` record at the base, as counts, with the image it was measured in, and the acceptance tests' expected results. |
-| `baseline-report.json` | The gate's measured baseline (`gate.Baseline`, P15): measured by `gate.Measure` in the pinned image (`ghcr.io/ekaynac/adc-prepared-go@sha256:1d2fa05bf24dc73dff179b0b08e6ee89cb82d8ac47b0c133cc578210fcce744b`, image `e0abcae7d1bd`, linux/arm64), bound to its command, that platform image and the base tree, with the three tests that skip as root. |
+| `baseline-report.json` | The gate's measured baseline (`gate.Baseline`, P15): measured by `gate.Measure` in the pinned image (`ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97`, image `d1a298571f62`, linux/arm64), bound to its command, that platform image and the base tree, with the three tests that skip as root. |
 | `baseline-stream.json` | The measured run's `go test -json` stream, which the gate's row judges against the baseline. |
 
 ## Selection evidence (ยง2.2)
