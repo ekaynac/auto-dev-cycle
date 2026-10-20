@@ -13,6 +13,6 @@ go-mini is the small Go project that checkpoint (a)'s CI stub cases run on. The 
 - At the base, the package does not build, so the run is not green.
 - With its reference change, all nine tests pass: the five ordinary ones and the four hidden ones.
 
-**Provisional pin.** The profile pins this repository's prepared Go image. Its manifest names this repository's lockfiles, so `sandbox.Image.CheckManifest` would refuse it for go-mini. go-mini gets its own prepared image before P22a-5 (#226 entry 97). Then the profile's pin changes and this baseline is re-recorded.
+**Provisional pin.** The profile pins this repository's prepared Go image. Its manifest names this repository's lockfiles, so `sandbox.Image.CheckManifest` would refuse it for go-mini. go-mini gets its own prepared image before P22a-5 (#226 entry 97), built by the same recipe: `scripts/prepare-go-image.sh build go-mini NAME` (the same base and toolchain, labelled with go-mini's `go.mod`). Then the profile's pin changes and this baseline is re-recorded.
 
 **Re-recording.** Re-record with `gate.Measure` in the pinned image whenever T0's `repo/` or the pin changes. The gate refuses a baseline of another command, platform image or base tree, and `TestGateGoMini` fails when `repo/`'s tree is no longer the baseline's.
