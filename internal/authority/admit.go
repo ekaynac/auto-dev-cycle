@@ -155,8 +155,9 @@ func done(tx *eventstore.Tx, task types.TaskID, as types.TaskDoneAs, reason *typ
 
 // endable refuses t's end as as unless t is admitted and: as a candidate,
 // none of its current nodes is claimed or held (Opus #309 M2); abandoned,
-// its approval is not in force and no lease on any of its nodes is live
-// (no attempt of it runs).
+// its approval is not in force and nothing runs any of its nodes: every
+// lease on their units has ended and every attempt on them is sealed (no
+// attempt of it runs; Opus #312 M3).
 func endable(tx *eventstore.Tx, t TaskRecord, as types.TaskDoneAs) error {
 	if t.State != TaskAdmitted {
 		return fmt.Errorf("task %s is %s, not admitted", t.ID, t.State)
@@ -169,13 +170,14 @@ func endable(tx *eventstore.Tx, t TaskRecord, as types.TaskDoneAs) error {
 		if err != nil || n.Task != t.ID {
 			continue
 		}
-		var live bool
+		var what string
+		var running bool
 		switch s := n.State.State; {
 		case as == types.TaskDoneAsCandidate && (s == types.NodeStateStateClaimed || s == types.NodeStateStateHeld):
 			return fmt.Errorf("task %s's node %s is %s", t.ID, n.Node.ID, s)
 		case as == types.TaskDoneAsAbandoned:
-			if _, live, err = lease.LiveOn(tx, graph.UnitOf(n.Node.ID)); err == nil && live {
-				return fmt.Errorf("task %s's node %s has a live lease", t.ID, n.Node.ID)
+			if what, running, err = lease.Unended(tx, graph.UnitOf(n.Node.ID)); err == nil && running {
+				return fmt.Errorf("task %s's node %s still runs: %s", t.ID, n.Node.ID, what)
 			}
 		}
 	}

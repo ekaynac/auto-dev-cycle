@@ -194,6 +194,41 @@ func LiveOn(tx *eventstore.Tx, unit types.UnitID) (types.LeaseID, bool, error) {
 	return "", false, err
 }
 
+// Unended names a lease on unit that has not ended (settled or released),
+// or an attempt on it that is not sealed (sealed, completed or superseded),
+// if any: what still runs a node, for its task's abandonment (Opus #312
+// M3). It scans every lease and attempt: M1 runs one admitted task.
+func Unended(tx *eventstore.Tx, unit types.UnitID) (string, bool, error) {
+	leases, err := tx.Keys(LeaseProjection, "")
+	attempts, aerr := tx.Keys(AttemptProjection, "")
+	if err = errors.Join(err, aerr); err != nil {
+		return "", false, err
+	}
+	for _, k := range leases {
+		l, _, _, err := load[types.Lease](tx, LeaseProjection, k)
+		if err != nil {
+			return "", false, err
+		}
+		if l.Unit == unit && !Ended(l.State) {
+			return fmt.Sprintf("lease %s is %s", l.ID, l.State), true, nil
+		}
+	}
+	for _, k := range attempts {
+		a, _, _, err := load[types.Attempt](tx, AttemptProjection, k)
+		if err != nil {
+			return "", false, err
+		}
+		switch a.Status {
+		case types.AttemptStatusSealed, types.AttemptStatusCompleted, types.AttemptStatusSuperseded:
+		default:
+			if a.Unit == unit {
+				return fmt.Sprintf("attempt %s is %s", a.ID, a.Status), true, nil
+			}
+		}
+	}
+	return "", false, nil
+}
+
 // RequestGranted requests l and grants it, holding no evidence target, in
 // one command (lease.requested, then lease.granted): capacity reserves at
 // the grant or refuses the command, so a refused grant records no lease.

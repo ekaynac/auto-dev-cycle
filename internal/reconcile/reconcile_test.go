@@ -14,7 +14,8 @@ import (
 // the next task while none is admitted, abandons the admitted task once its
 // approval is revoked (#226 entry 100), whatever is runnable, and evaluates
 // the admitted task's runnable nodes only when evaluation is allowed; a
-// busy store calls for nothing. Each action expects every subject it read
+// busy store calls for nothing; nothing is admitted while admission is
+// off (Opus #312 L4). Each action expects every subject it read
 // at the version it read it.
 func TestDecide(t *testing.T) {
 	next := Versioned{ID: "tsk_01m3250v9xft08ssr4ygq6g2np", Version: 7}
@@ -24,13 +25,14 @@ func TestDecide(t *testing.T) {
 		s    Snapshot
 		want []Action
 	}{
-		"nothing to do":                      {Snapshot{}, nil},
-		"a task to admit":                    {Snapshot{Next: next}, []Action{Admit{Task: next}}},
-		"admitted, nothing runnable":         {Snapshot{Admitted: admitted, Evaluates: true}, nil},
-		"admitted, runnable, evaluation off": {Snapshot{Admitted: admitted, Runnable: []Versioned{plan}}, nil},
-		"admitted, runnable":                 {Snapshot{Admitted: admitted, Runnable: []Versioned{plan}, Evaluates: true}, []Action{Evaluate{Task: types.TaskID(admitted.ID), Goals: []Versioned{plan}}}},
-		"admitted, and a next (never both)":  {Snapshot{Admitted: admitted, Next: next, Evaluates: true}, nil},
-		"admitted, its approval revoked":     {Snapshot{Admitted: admitted, Revoked: true, Runnable: []Versioned{plan}, Evaluates: true}, []Action{Abandon{Task: admitted}}},
+		"nothing to do":                     {Snapshot{}, nil},
+		"a task to admit":                   {Snapshot{Next: next, Gates: Gates{Admits: true}}, []Action{Admit{Task: next}}},
+		"a task to admit, admission off":    {Snapshot{Next: next}, nil},
+		"admitted, nothing runnable":        {Snapshot{Admitted: admitted, Evaluates: true}, nil},
+		"admitted, open, evaluation off":    {Snapshot{Admitted: admitted, Open: []Versioned{plan}}, nil},
+		"admitted, open":                    {Snapshot{Admitted: admitted, Open: []Versioned{plan}, Evaluates: true}, []Action{Evaluate{Task: types.TaskID(admitted.ID), Goals: []Versioned{plan}}}},
+		"admitted, and a next (never both)": {Snapshot{Admitted: admitted, Next: next, Evaluates: true}, nil},
+		"admitted, its approval revoked":    {Snapshot{Admitted: admitted, Revoked: true, Open: []Versioned{plan}, Evaluates: true}, []Action{Abandon{Task: admitted}}},
 	} {
 		if got := Decide(c.s); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: %#v, want %#v", name, got, c.want)

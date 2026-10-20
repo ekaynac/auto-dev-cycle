@@ -136,7 +136,9 @@ func withSystem(t *testing.T) (*seeder, types.ActorID) {
 // authority_revoked, appending nothing: a build's claim, the plan's
 // re-claim by invalidation, and the attempt start on the plan's granted
 // lease (no attempt recorded). The task is not abandoned while that lease
-// is live; once it ends, it is, and the slot frees.
+// is live, nor once it expires while it is still releasing (Opus #312 M3:
+// a lease that has not ended); once it is released, it is, and the slot
+// frees.
 func TestDaemonClaimTakesAdmission(t *testing.T) {
 	w, sys := withSystem(t)
 	op, ready := readyTask(t, w, sys)
@@ -202,8 +204,14 @@ func TestDaemonClaimTakesAdmission(t *testing.T) {
 	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.ChangeLease(tx, ls.ID, 2, lease.LeaseEvent{Kind: lease.Expired}, nil)
 	})
+	if err := abandon(); !errors.Is(err, eventstore.ErrStaleExpectedState) || !strings.Contains(err.Error(), "releasing") {
+		t.Errorf("an abandonment while the plan's lease is releasing: %v", err)
+	}
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, ls.ID, 3, lease.LeaseEvent{Kind: lease.Released}, nil)
+	})
 	if err := abandon(); err != nil {
-		t.Fatalf("the abandonment once no lease is live: %v", err)
+		t.Fatalf("the abandonment once the lease is released: %v", err)
 	}
 	w.view(func(tx *eventstore.Tx) error {
 		if _, busy, err := authority.AdmittedTask(tx); err != nil || busy {
@@ -213,17 +221,10 @@ func TestDaemonClaimTakesAdmission(t *testing.T) {
 	})
 }
 
-// Opus #309 H1, input 2, through adcd's own fold: task A's plan completed
-// and A done, B admitted; invalidating A's plan, which would claim it again
-// at its next generation, is refused (A is not admitted): a done task runs
-// nothing while another is admitted.
-func TestDaemonDoneTaskRunsNothing(t *testing.T) {
-	w, sys := withSystem(t)
-	_, first := admittedTask(t, w, sys)
-	plan := templateNodes(w, first)[types.NodeKindPlan]
-	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
-	})
+// completePlan commits a completed result of plan, claimed at round 1, as
+// sys.
+func completePlan(t *testing.T, w *seeder, sys types.ActorID, plan types.NodeID) {
+	t.Helper()
 	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		nodes, err := graph.Nodes(tx)
 		var key types.ComputationKey
@@ -240,6 +241,20 @@ func TestDaemonDoneTaskRunsNothing(t *testing.T) {
 		none := func(types.Node, types.InputSpec) (*receipt.Requirement, error) { return nil, nil }
 		return nil, graph.Commit(tx, plan, r, graph.Env{Need: none, Authority: authority.Answers{}})
 	})
+}
+
+// Opus #309 H1, input 2, through adcd's own fold: task A's plan completed
+// and A done, B admitted; invalidating A's plan, which would claim it again
+// at its next generation, is refused (A is not admitted): a done task runs
+// nothing while another is admitted.
+func TestDaemonDoneTaskRunsNothing(t *testing.T) {
+	w, sys := withSystem(t)
+	_, first := admittedTask(t, w, sys)
+	plan := templateNodes(w, first)[types.NodeKindPlan]
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Claim(tx, plan, map[string]graph.Resolved{}, 1)
+	})
+	completePlan(t, w, sys, plan)
 	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, first) })
 	_, second := admittedTask(t, w, sys)
 	if len(templateNodes(w, second)) != 4 {

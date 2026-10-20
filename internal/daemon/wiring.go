@@ -62,14 +62,20 @@ var systemActions = append([]string{bootstrapAction, issueAction, renewAction, r
 // 5 s, plus a nudge after each applied command).
 const reconcileEvery = 5 * time.Second
 
-// reconciler is adcd's reconcile loop: it admits under the admission
-// capability's command, and evaluates the admitted task's nodes only once
-// launch is active (P22a-5), which brings the gate's requirements and the
-// receipt blobs into its Env.
-func reconciler(d *Daemon, logw io.Writer) *reconcile.Loop {
+// reconciler is adcd's reconcile loop, a pass every every (0:
+// reconcileEvery): it admits only while the admission capability is active
+// (Opus #312 L4), and evaluates the admitted task's nodes only once launch
+// is active. Obligation for P22a-5: before launch.Active(), the Env carries
+// Need (the gate's requirements) and Blobs (the receipt blobs), without
+// which graph.Evaluate refuses every evaluation (Opus #312 L5).
+func reconciler(d *Daemon, every time.Duration, logw io.Writer) *reconcile.Loop {
+	admission, _ := capability.Of("admission")
 	launch, _ := capability.Of("launch")
+	if every == 0 {
+		every = reconcileEvery
+	}
 	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: graph.Env{Authority: authority.Answers{}}}
-	return reconcile.NewLoop(x, launch.Active(), reconcileEvery, logw)
+	return reconcile.NewLoop(x, reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active()}, every, logw)
 }
 
 // authorizer is the one authorizer over the wired handlers: the writer's
