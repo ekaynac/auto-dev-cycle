@@ -124,6 +124,7 @@ lint: go-check ## gofmt, go vet, go mod tidy check, SPDX headers, shell syntax (
 	@unformatted="$$($(GOROOT_PIN)/bin/gofmt -l cmd internal schemas test tools gen fixtures/contract)"; \
 	  if [[ -n "$$unformatted" ]]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	@$(GO) vet ./...
+	@$(GO) vet -tags corpus ./internal/accept/ # the corpus runner, compiled, never run (Opus #296 L6)
 	@$(GO) mod tidy -diff
 	@for f in $(SHELL_SCRIPTS); do bash -n "$$f"; done
 	@scripts/check-spdx.sh
