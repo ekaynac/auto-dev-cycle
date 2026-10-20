@@ -156,6 +156,9 @@ func (g graphStore) completedAs(kind types.NodeKind, rk types.ResultKind, value 
 		rec.Node.Params = reviewParams(exeA)
 	}
 	n := g.record(rec)
+	if kind == types.NodeKindBuild {
+		g.leaseOn(n, exeC) // its builder: gpt, apart from the tests' claude reviewers (P16b)
+	}
 	g.must(g.claimOf(n))
 	r := unrecorded(g.t, *g.state(n).Key)
 	r.Kind, r.Outcome, r.Reason, r.Detail, r.Value, r.Conclusions = rk, types.OutcomeEmpty, vocab.ReasonCompletedClean, "", value, ptr(conclusions)

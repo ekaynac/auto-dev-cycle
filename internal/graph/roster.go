@@ -22,6 +22,7 @@ package graph
 //     resolved now, is the prior's claimed key, with the same inputs.
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,12 +44,25 @@ type Families interface {
 }
 
 // ErrNotIndependent: a roster member's family is unknown, or is not the
-// one the registry now derives for its executor (06 rule 3). Its outcome is
-// could_not_run/reviewer_not_independent.
-type ErrNotIndependent struct{ Executor types.ExecutorID }
+// one the registry now derives for its executor, or contributed to the
+// candidate, or a contributor's family is unknown (06 rule 3; P16b). Its
+// outcome is could_not_run/reviewer_not_independent; Cause says which, and
+// Signal is what the hold waits on ("" for registry:<Executor>, the
+// reviewer's own entry).
+type ErrNotIndependent struct {
+	Executor types.ExecutorID
+	Cause    string
+	Signal   string
+}
+
+// SignalInstance is the signal a hold on e waits for: the contributor a
+// contribution names, else the reviewer's registry entry.
+func (e ErrNotIndependent) SignalInstance() string {
+	return cmp.Or(e.Signal, "registry:"+string(e.Executor))
+}
 
 func (e ErrNotIndependent) Error() string {
-	return "graph: executor " + string(e.Executor) + " has no registered model family of its roster"
+	return "graph: reviewer " + string(e.Executor) + " is not independent: " + e.Cause
 }
 
 // Reason is the refusal's reason code; the evaluator holds the node on
@@ -74,7 +88,7 @@ func registered(n types.Node, families Families) error {
 	}
 	for _, m := range roster {
 		if types.Name(families.Family(m.Executor)) != m.Family { // an unknown family is no roster family (checkRoster)
-			return ErrNotIndependent{m.Executor}
+			return ErrNotIndependent{m.Executor, "its family is not the registry's", ""}
 		}
 	}
 	return checkRoster(roster)
@@ -90,13 +104,17 @@ func RecordReview(r types.NodeRecorded, families Families) ([]eventstore.Event, 
 }
 
 // ClaimReview is Claim for a review or review_requirement node: its roster
-// is checked against the registry again, whoever recorded it.
+// is checked against the registry again, whoever recorded it, and a
+// review's roster against its task's contributors (contributors.go).
 func ClaimReview(tx *eventstore.Tx, node types.NodeID, resolved map[string]Resolved, generation int64, families Families) ([]eventstore.Event, error) {
 	rec, err := loadNode(tx, node)
 	if err != nil {
 		return nil, err
 	}
 	if err := registered(rec.Recorded.Node, families); err != nil {
+		return nil, err
+	}
+	if _, err := independentOf(tx, rec, families); err != nil {
 		return nil, err
 	}
 	return claimNode(tx, rec, resolved, generation)
@@ -129,7 +147,7 @@ func checkRoster(roster []types.RosterMember) error {
 	}
 	for i, m := range roster {
 		if m.Family == receipt.UnknownFamily {
-			return ErrNotIndependent{m.Executor}
+			return ErrNotIndependent{m.Executor, "its family is unknown", ""}
 		}
 		if i > 0 && roster[i-1].Executor >= m.Executor {
 			return errors.New("graph: a roster is sorted by executor and names each once")

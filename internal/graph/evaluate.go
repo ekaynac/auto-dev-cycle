@@ -288,7 +288,7 @@ func (e *evaluation) claim(rec nodeRecord, resolved map[string]Resolved) error {
 			return ierr
 		}
 		evs, err = Raise(e.tx, rec.Recorded.Node.ID, types.NodeHold{ID: types.HoldID(id), Hold: "reviewer_unavailable",
-			SignalInstance: "registry:" + string(notIndependent.Executor), Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+			SignalInstance: notIndependent.SignalInstance(), Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
 	} else if errors.As(err, &taken) {
 		holder, herr := loadNode(e.tx, taken.Node)
 		if herr != nil || holder.State.State != types.NodeStateStateCompleted {
@@ -355,6 +355,9 @@ func commitRecorded(tx *eventstore.Tx, rr types.ResultRecorded, env Env) error {
 		return errors.New("graph: a commit runs in a command's transaction")
 	}
 	if err := revalidate(tx, rr.Node, env); err != nil {
+		return err
+	}
+	if err := reviewIndependent(tx, rr, env); err != nil { // P16b: a review receipt's reviewer, against the contributors now
 		return err
 	}
 	evs, err := recordResult(tx, rr, env.Blobs)
