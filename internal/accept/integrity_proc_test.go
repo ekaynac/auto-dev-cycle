@@ -377,7 +377,7 @@ func TestProcFit(t *testing.T) {
 		p := []Block{{vocab.ReasonCompletedWithFindings, strings.Repeat("o", n), "output .gitignore kept out of the diff", false, false}}
 		with, _, _, _, _ := selection([2][]Block{nil, slices.Concat(p, smaller)})
 		without, _, _, _, _ := selection([2][]Block{nil, smaller})
-		afterBlock, _, _, _, _ := selection([2][]Block{{tooLarge}, smaller}) // Accept's block shifts the budget too
+		afterBlock, _, _, _, _ := selection([2][]Block{{tooLarge}, smaller})                        // Accept's block shifts the budget too
 		if last := len(smaller) - 1; with[1][1+last] && !without[1][last] && !afterBlock[1][last] { // taken only after the prefix
 			ignored = p
 		}
