@@ -171,6 +171,23 @@ func run(ctx context.Context, name, action string, args []string, stdout, stderr
 		}
 		*scope = string(b)
 	}
+	// task.cancel records its reason in its scope, since the envelope's is
+	// not recorded with commands yet (#147): --reason fills a scope that
+	// names none (Opus #298 L5).
+	if action == "task.cancel" {
+		var o map[string]json.RawMessage
+		if json.Unmarshal([]byte(*scope), &o) == nil && o != nil && o["reason"] == nil {
+			r, err := json.Marshal(*reason)
+			if err == nil {
+				o["reason"] = r
+				r, err = json.Marshal(o)
+			}
+			if err != nil {
+				return usage("--reason: %v", err)
+			}
+			*scope = string(r)
+		}
+	}
 	req := types.CommandRequest{IdempotencyKey: *key, Expected: expected, Scope: json.RawMessage(*scope), Reason: *reason}
 	// The bytes validated are the bytes sent.
 	body, err := contract.Encode("api/command-request", req)

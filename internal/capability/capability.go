@@ -31,9 +31,10 @@ type Capability struct {
 	// ActivatedBy is the slice-plan item that activates it.
 	ActivatedBy string
 	// Actions are the registered actions it wires; EffectKinds the effect
-	// kinds it registers.
-	Actions, EffectKinds []string
-	Rows                 []Row
+	// kinds it registers; NodeKinds the node kinds it adds to M1(a)'s
+	// (graph.M1Kinds), which adcd records.
+	Actions, EffectKinds, NodeKinds []string
+	Rows                            []Row
 	// Pending are its prerequisites outside the inventory, each one open:
 	// a capability with any is not active.
 	Pending []string
@@ -79,13 +80,13 @@ var Table = []Capability{
 		Rows:    all("I5", "I7", "I13", "I18", "I15"),
 		Pending: []string{"P31's qualification on record"}},
 	{Name: "merge-local", Checkpoint: "b", ActivatedBy: "P22b",
-		EffectKinds: []string{"merge"},
-		Rows:        slices.Concat(of("I1", Effect), all("I6"), of("I14", Admission, Fold, Consumption), of("I20", Consumption, Effect), all("I15")),
-		Pending:     []string{"P20's merge half"}},
+		EffectKinds: []string{"merge"}, NodeKinds: []string{"merge"},
+		Rows:    slices.Concat(of("I1", Effect), all("I6"), of("I14", Admission, Fold, Consumption), of("I20", Consumption, Effect), all("I15")),
+		Pending: []string{"P20's merge half"}},
 	{Name: "merge-github", Checkpoint: "b", ActivatedBy: "P22b",
-		EffectKinds: []string{"merge"},
-		Rows:        slices.Concat(of("I1", Effect), all("I6", "I14", "I20", "I15")),
-		Pending:     []string{"P20's merge half, with its GitHub settlement rules and effect_uncertain"}},
+		EffectKinds: []string{"merge"}, NodeKinds: []string{"merge"},
+		Rows:    slices.Concat(of("I1", Effect), all("I6", "I14", "I20", "I15")),
+		Pending: []string{"P20's merge half, with its GitHub settlement rules and effect_uncertain"}},
 	{Name: "repeat", Checkpoint: "c", ActivatedBy: "P29",
 		Rows: all("I19", "I22", "I15")},
 }
@@ -150,11 +151,17 @@ func Gating(action string) (Capability, bool) {
 }
 
 // EffectKinds are the effect kinds of the active capabilities, sorted, each once.
-func EffectKinds() []string {
+func EffectKinds() []string { return active(func(c Capability) []string { return c.EffectKinds }) }
+
+// NodeKinds are the node kinds the active capabilities add, sorted, each once.
+func NodeKinds() []string { return active(func(c Capability) []string { return c.NodeKinds }) }
+
+// active is of's union over the active capabilities, sorted, each once.
+func active(of func(Capability) []string) []string {
 	var out []string
 	for _, c := range Table {
 		if c.Active() {
-			out = append(out, c.EffectKinds...)
+			out = append(out, of(c)...)
 		}
 	}
 	slices.Sort(out)
