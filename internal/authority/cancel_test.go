@@ -15,6 +15,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -114,7 +115,7 @@ func TestTaskCancelRefusals(t *testing.T) {
 		return nil, approve(tx, approved, b.op.Actor())
 	})
 	admitted := b.newTask(b.op, prjA)
-	if err := b.admitWith(b.sys, admitted, templateOf(t, admitted)); err != nil { // P22a-3's admission
+	if err := b.admitWith(b.sys, admitted, graph.M1Kinds); err != nil { // P22a-3's admission
 		t.Fatal(err)
 	}
 	h := b.head()

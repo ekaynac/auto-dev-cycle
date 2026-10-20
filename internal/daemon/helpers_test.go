@@ -51,6 +51,9 @@ type seeder struct {
 	s     *eventstore.Store
 	holds map[string]types.Hold
 	done  func()
+	// sys and op are the system actor and the operator a test seeded, if
+	// any (readyTaskIn, plannedIn).
+	sys, op types.ActorID
 }
 
 type projectFor func(blobs lease.Blobs, holds map[string]types.Hold) func(*eventstore.Tx, []eventstore.Event) error
@@ -187,6 +190,7 @@ func fullHistory(t *testing.T, w *seeder) types.ActorID {
 	sup := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "supervisor", CreatedBy: op.ID}
 	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(sys) })
 	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(op) })
+	w.sys, w.op = sys.ID, op.ID
 	now := time.Now().UTC()
 	g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{"prj_01m3250vkwffc979nzjw0g2sa1"}},
 		Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{}},

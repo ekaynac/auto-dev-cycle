@@ -19,26 +19,30 @@ import (
 
 const graphProject = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sa1")
 
-// heldNode records, through w, a plan node of a new task and raises
-// source_invalid_config on it, the operator's hold. It returns the node.
+// heldNode is heldNodeIn graphProject.
 func heldNode(t *testing.T, w *seeder, actor types.ActorID) types.NodeID {
 	t.Helper()
 	return heldNodeIn(t, w, actor, graphProject)
 }
 
-// heldNodeIn is heldNode, in project.
+// heldNodeIn records, through w, the plan node of a new task in project,
+// admitted with its candidate template (P22a-3: a node is recorded only
+// for an admitted task), and raises source_invalid_config on it, the
+// operator's hold, as actor. It returns the node.
 func heldNodeIn(t *testing.T, w *seeder, actor types.ActorID, project types.ProjectID) types.NodeID {
 	t.Helper()
-	n := types.Node{ID: types.NodeID(newID(t, "nod")), Kind: types.NodeKindPlan, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{}`),
-		Inputs: []types.InputSpec{}, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
-	w.do(actor, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.Record(types.NodeRecorded{Task: types.TaskID(newID(t, "tsk")), Project: project, Node: n})
-	})
+	n := plannedIn(t, w, project)
+	raiseOn(t, w, actor, n)
+	return n
+}
+
+// raiseOn raises source_invalid_config on node, the operator's hold.
+func raiseOn(t *testing.T, w *seeder, actor types.ActorID, node types.NodeID) {
+	t.Helper()
 	w.do(actor, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.Raise(tx, n.ID, types.NodeHold{ID: types.HoldID(newID(t, "hld")), Hold: "source_invalid_config", SignalInstance: "cfg@2",
+		return graph.Raise(tx, node, types.NodeHold{ID: types.HoldID(newID(t, "hld")), Hold: "source_invalid_config", SignalInstance: "cfg@2",
 			Owner: types.OwnerOperator, Pages: []types.NodeHoldPagesItem{}}, nil)
 	})
-	return n.ID
 }
 
 // graphStore is fullStore with a held graph node: every projector the
@@ -56,7 +60,7 @@ func graphStore(t *testing.T) (string, Config) {
 // edited behind replay is refused.
 func TestGraphReplayedAtStart(t *testing.T) {
 	dir, cfg := graphStore(t)
-	if n := count(t, dir, `SELECT count(*) FROM proj_kv WHERE projection = '`+graph.NodeProjection+`'`); n != 1 {
+	if n := count(t, dir, `SELECT count(*) FROM proj_kv WHERE projection = '`+graph.NodeProjection+`'`); n != 4 { // the admitted task's template
 		t.Fatalf("%d graph nodes projected", n)
 	}
 	for range 2 {
@@ -132,8 +136,8 @@ func TestHoldsList(t *testing.T) {
 	}
 }
 
-// adc board reads the installed board: empty before any task; a node of
-// no recorded task is listed unplaced, with no column, in its project.
+// adc board reads the installed board: empty before any task; an admitted
+// task with its plan held is placed running, its four nodes on its card.
 func TestBoardCommand(t *testing.T) {
 	c := runCommanded(t)
 	if code, out, errb := c.adc(c.op.Reveal(), "board", "--json"); code != entry.ExitOK || !strings.Contains(out, `"resource":"board"`) ||
@@ -145,9 +149,9 @@ func TestBoardCommand(t *testing.T) {
 	}
 	c = runCommanded(t, func(w *seeder, op types.ActorID) { heldNode(t, w, op) })
 	code, out, errb := c.adc(c.op.Reveal(), "board", "--json")
-	if code != entry.ExitOK || !strings.Contains(out, `"type":"unplaced"`) || !strings.Contains(out, `"reason":"task_unrecorded"`) ||
-		!strings.Contains(out, `"project":"`+string(graphProject)+`"`) || strings.Contains(out, `"column"`) {
-		t.Fatalf("a node of no task: %d %s %s", code, out, errb)
+	if code != entry.ExitOK || !strings.Contains(out, `"type":"placed"`) || !strings.Contains(out, `"column":"running"`) ||
+		!strings.Contains(out, `"admitted":true`) || !strings.Contains(out, `"project":"`+string(graphProject)+`"`) {
+		t.Fatalf("an admitted task, its plan held: %d %s %s", code, out, errb)
 	}
 }
 

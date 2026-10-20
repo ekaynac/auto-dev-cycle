@@ -57,12 +57,14 @@ const (
 )
 
 // TaskRecord is a task as recorded: the task.created payload, its state,
-// the approval of its spec digest (nil: none) and its creating command.
+// the approval of its spec digest (nil: none), its creating command, and,
+// once done, what it ended as (candidate or abandoned).
 type TaskRecord struct {
 	types.Task
 	State    string        `json:"state"`
 	Approval *TaskApproval `json:"approval"`
 	Command  string        `json:"command"`
+	DoneAs   string        `json:"done_as,omitempty"`
 }
 
 // TaskApproval is the approval bound to a task's spec digest, in force or
