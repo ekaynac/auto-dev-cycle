@@ -16,17 +16,26 @@ package dispatch
 //     the reservation and the reports and the gateway's counts
 //     (ledger.StandingOf), at the higher token rate. So a hostile zero
 //     final still counts (#226 entry 69).
-//   - Pricing saturates, as the liability ledger does: a standing the
-//     reports cannot be summed into (ledger.StandingOf's saturated figure),
-//     or any price past the contract's integers, costs past every rail, so
-//     it refuses with the hold rather than wedging placement. A standing
-//     flagged inconsistent with a figure (a final under the gateway's
-//     counts, mixed currencies) costs its conservative figure: tokens are
-//     priced at the declared price whatever the reported currency.
+//   - Pricing saturates, as the liability ledger does: an amount past the
+//     contract's integers is unaffordable whatever the declared rate,
+//     costing past every rail, so it refuses with the hold rather than
+//     wedging placement (Astra #302 H1). That is a standing whose reports
+//     could not be summed (ledger.Standing.Saturated), a liability clipped
+//     at the contract's limit (capacity.LiabilitiesOf), and any price past
+//     the contract's integers: their figures are stand-ins, not upper
+//     bounds. A standing flagged inconsistent with a finite figure (a final
+//     under the gateway's counts, mixed currencies) costs that conservative
+//     figure: tokens are priced at the declared price whatever the reported
+//     currency.
 //   - A lease of more than one group or call is not counted: it is an
 //     error (Match places one group, and a lease binds one call).
-//   - An executor with no price (a local or free route) costs nothing, and
-//     a lease that reserves nothing priced is not checked.
+//   - An executor with no price (a local or free route) costs nothing and is
+//     not checked. A priced one is checked whatever it reserves: a lease
+//     reserving nothing priced (slots) still needs the rails and its spend
+//     within them.
+//   - One command places at most one priced lease: each Match reads the
+//     spend committed before its command, so the lease fold refuses a
+//     second priced grant in one command (Astra #302 H2), for both rails.
 //   - A liability stays on its lease's grant day; a new day does not
 //     release it, it only starts a new day's rail.
 //   - At a rail, the placement's budget check fails, could_not_run/
@@ -36,8 +45,8 @@ package dispatch
 //     only by a profile change, or the next day.
 //   - Fail closed: no rails (Dispatcher.Rails nil), or a USD rail no
 //     profile set (graph.NoUSDRail, DefaultCaps'), refuses a priced
-//     executor (could_not_run/precondition_failed). adcd always passes its
-//     Rails (P22a).
+//     executor, whatever it reserves (could_not_run/precondition_failed).
+//     adcd always passes its Rails (P22a).
 
 import (
 	"fmt"
@@ -83,9 +92,8 @@ func (d Dispatcher) usdRail(tx *eventstore.Tx, card Card, executor types.Executo
 		return pass, nil, err
 	}
 	e, _ := d.Registry.Executor(executor)
-	next := reserved(res, e.Price)
-	if next == 0 { // nothing priced: an unpriced executor, or slots
-		pass.Detail = "the lease reserves nothing priced"
+	if e.Price == nil {
+		pass.Detail = "an unpriced executor"
 		return pass, nil, nil
 	}
 	caps := graph.DefaultCaps
@@ -98,6 +106,7 @@ func (d Dispatcher) usdRail(tx *eventstore.Tx, card Card, executor types.Executo
 		return types.PlacementCheck{Outcome: types.OutcomeCouldNotRun, Reason: vocab.ReasonPreconditionFailed,
 			Detail: "no USD rails: a priced executor is placed only under them"}, nil, nil
 	}
+	next := reserved(res, e.Price)
 	day := tx.Now().UTC().Format(time.DateOnly)
 	perTask, perDay, err := spent(tx, task, card.Project, day)
 	if err != nil {
@@ -198,6 +207,8 @@ func cost(tx *eventstore.Tx, l types.Lease) (int64, error) {
 		return priced(ledger.PriceMicros(*s.Usage, *l.Price)), nil
 	case mutation.Is(mutation.USDRailSettledOnly):
 		return 0, nil
+	case s.Saturated:
+		return unaffordable, nil
 	case live:
 		tokens := held
 		if s.Usage != nil {
@@ -205,9 +216,12 @@ func cost(tx *eventstore.Tx, l types.Lease) (int64, error) {
 		}
 		return priced(ledger.PriceTokens(tokens, *l.Price)), nil
 	}
-	owed, _, err := capacity.LiabilitiesOf(tx, l.ID, groupsOf(l)) // an inconsistent liability's amount is already its saturated figure
-	if err != nil {
+	owed, _, clipped, err := capacity.LiabilitiesOf(tx, l.ID, groupsOf(l))
+	switch {
+	case err != nil:
 		return 0, err
+	case clipped: // a stand-in at the contract's limit, not a bound
+		return unaffordable, nil
 	}
 	var c int64
 	for _, r := range l.Reservations { // one: the lease's liability, taken once
