@@ -111,16 +111,18 @@ func TestUnservedToolNotificationsRefuseTheRun(t *testing.T) {
 	})
 }
 
-// #226 entry 65: an adapter that describes a tool past the edit loop's own
-// (an executable one) is refused before it is prepared, and its attempt
-// ends lost with nothing submitted; one with the edit loop's tools alone
-// runs.
+// #226 entry 65: under a launch allowing the edit loop's tools alone
+// (Spec.Tools), an adapter that describes another (an executable one) is
+// refused before it is prepared, and its attempt ends lost with nothing
+// submitted; one with the edit loop's tools runs.
 func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 	w := newWorld(t)
 	var prepared bool
 	testHook = func(stage string) { prepared = prepared || stage == "prepare" }
 	t.Cleanup(func() { testHook = nil })
-	out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{Tools: []string{"read_file", "run_command"}, Result: clean})))
+	sp := spec(stub(t, stubPlan{Tools: []string{"read_file", "run_command"}, Result: clean}))
+	sp.Tools = EditLoopTools
+	out, err := w.host.Run(context.Background(), sp)
 	if err != nil || !errors.Is(out.Session, ErrToolRefused) || out.Submitted != nil || prepared {
 		t.Fatalf("run: %v, session %v, submitted %v, prepared %v", err, out.Session, out.Submitted, prepared)
 	}
@@ -128,7 +130,9 @@ func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 		t.Fatalf("attempt %s", a.Status)
 	}
 	w = newWorld(t)
-	if out, err := w.host.Run(context.Background(), spec(stub(t, stubPlan{Tools: []string{"read_file", "list_dir", "write_file", "delete_file"}}))); err != nil || errors.Is(out.Session, ErrToolRefused) || !prepared {
+	sp = spec(stub(t, stubPlan{Tools: []string{"read_file", "list_dir", "write_file", "delete_file"}}))
+	sp.Tools = EditLoopTools
+	if out, err := w.host.Run(context.Background(), sp); err != nil || errors.Is(out.Session, ErrToolRefused) || !prepared {
 		t.Fatalf("the edit loop's own tools: %v, session %v", err, out.Session)
 	}
 }

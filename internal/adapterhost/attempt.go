@@ -88,6 +88,9 @@ type Spec struct {
 	Prepare types.AdapterPrepareParams
 	Prompt  []byte
 	Bounds  Bounds // the waits on the adapter; zero: as Bounds says
+	// Tools are the only tools the adapter may describe (EditLoopTools for
+	// adcd's launches, #226 entry 65); nil: any.
+	Tools []types.AdapterLabel
 }
 
 // Outcome is what an attempt left.
@@ -302,7 +305,7 @@ func (r *attemptRun) converse(ctx context.Context, s *session.Session) (types.Ad
 		return types.AdapterRunResult{}, err
 	}
 	p := r.spec.Prepare
-	if err := exclusive(d.ToolSurface); err != nil {
+	if err := exclusive(r.spec.Tools, d.ToolSurface); err != nil {
 		return types.AdapterRunResult{}, err
 	}
 	p.Attempt, p.FencingToken, p.Inputs = r.spec.Attempt, r.token, []types.AdapterHandle{r.x.prompt}
@@ -325,20 +328,20 @@ func (r *attemptRun) converse(ctx context.Context, s *session.Session) (types.Ad
 	})
 }
 
-// EditLoopTools are the only tools an attempt's adapter may have: the edit
-// loop's own reads and writes of its workspace, one at a time. No
-// executable or concurrent tool: the workspace's confinement holds only
-// while that loop is its sole writer (#226 entry 65). The launch allows
-// these alone (its prepare params' tool policy).
+// EditLoopTools are the edit loop's own tools: its reads and writes of its
+// workspace, one at a time. adcd's launch makes them an attempt's only ones
+// (Spec.Tools): no executable or concurrent tool, since the workspace's
+// confinement holds only while that loop is its sole writer (#226 entry 65).
 var EditLoopTools = []types.AdapterLabel{"read_file", "list_dir", "write_file", "delete_file"}
 
-// ErrToolRefused: the adapter has a tool outside EditLoopTools.
+// ErrToolRefused: the adapter has a tool outside its Spec.Tools.
 var ErrToolRefused = errors.New("adapterhost: the adapter has a tool other than the edit loop's own (#226 entry 65)")
 
-// exclusive refuses an adapter whose described tools reach past EditLoopTools.
-func exclusive(surface []types.AdapterLabel) error {
+// exclusive refuses an adapter whose described tools reach past tools;
+// nil tools allows any (the M0 harness and the contract fixtures).
+func exclusive(tools, surface []types.AdapterLabel) error {
 	for _, t := range surface {
-		if !slices.Contains(EditLoopTools, t) {
+		if tools != nil && !slices.Contains(tools, t) {
 			return fmt.Errorf("%w: %q", ErrToolRefused, t)
 		}
 	}
