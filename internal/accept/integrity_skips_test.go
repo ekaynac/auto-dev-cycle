@@ -4,8 +4,10 @@ package accept
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 // skipsBase is P14d-a's test file: skipping helpers (a function, a method,
@@ -48,6 +50,51 @@ func check(t *testing.T) {
 	}
 }
 
+func needEnv(t *testing.T) {
+	name := "X"
+	t.Skipf("no %s", name)
+}
+
+func needErr(t *testing.T, err error) {
+	if err != nil {
+		t.Skip(err)
+	}
+}
+
+func needAll(t *testing.T) { requireDocker(t) }
+
+func needThenDecode(t *testing.T, d *xml.Decoder) {
+	t.Skip("x")
+	_ = d.Skip()
+}
+
+var needVarLit = func(t *testing.T) { requireDocker(t) }
+
+var needs = []func(*testing.T){requireDocker}
+
+var byName = map[string]func(*testing.T){"docker": requireDocker}
+
+var cfg = struct{ need func(*testing.T) }{requireDocker}
+
+var holder struct{ f func(*testing.T) }
+
+func init() { holder.f = requireDocker }
+
+func needCyc(t *testing.T) {
+	u := t
+	u = u
+	u.Skip("x")
+}
+
+func needCyc2(t *testing.T) {
+	a := t
+	b := a
+	a = b
+	a.Skip("x")
+}
+
+func TestChecked(t *testing.T) { check(t) }
+
 func skipElement(t *testing.T) error {
 	d := xml.NewDecoder(strings.NewReader(t.Name()))
 	return d.Skip()
@@ -89,31 +136,43 @@ func TestIntegritySkips(t *testing.T) {
 		files map[string]string
 		block string // "": accepted with no warning
 	}{
-		"a skipping helper called":           {in("\trequireDocker(t)\n"), skipped},
-		"through a local":                    {in("\tf := requireDocker\n\tf(t)\n"), skipped},
-		"through a package variable":         {in("\tpkgSkip(t)\n"), skipped},
-		"a method called":                    {in("\th{}.require(t)\n"), skipped},
-		"a method value":                     {in("\tg := h{}.require\n\tg(t)\n"), skipped},
-		"SkipNow by reflection":              {map[string]string{"pkg/skips_test.go": strings.Replace(strings.Replace(skipsBase, plainTest, "\treflect.ValueOf(t).MethodByName(\"SkipNow\").Call(nil)\n"+plainTest, 1), "\"encoding/xml\"", "\"encoding/xml\"\n\t\"reflect\"", 1)}, "unverifiable: reflection on a testing value"},
-		"an asserting helper (control)":      {in("\tcheck(t)\n"), ""},
-		"another file only (control)":        {map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\n// x\n"}, ""},
-		"skipRebound":                        {in("\tx := t\n\trequireDocker(x)\n\tx = nil\n\t_ = x\n"), skipped},
-		"skipSlice":                          {in("\t[]func(*testing.T){requireDocker}[0](t)\n"), skipped},
-		"skipField":                          {in("\tstruct{ f func(*testing.T) }{requireDocker}.f(t)\n"), skipped},
-		"skipWith":                           {in("\twith(t, requireDocker)\n"), skipped},
-		"skipIface":                          {in("\tvar r req = h{}\n\tr.require(t)\n"), skipped},
-		"skipClosureVar":                     {in("\tskipIt(t)\n"), skipped},
-		"skipRaceVariant":                    {in("\trequireX(t)\n"), skipped},
-		"an alias of an alias (H2)":          {in("\tsecond(t)\n"), skipped},
-		"an alias of a literal variable":     {in("\tlitAlias(t)\n"), skipped},
-		"a local alias of an alias":          {in("\tg := second\n\tg(t)\n"), skipped},
-		"an alias set in init":               {chainInit(skipsBase, plainTest), skipped},
-		"a chain of 4 aliases":               {skipChain(4, skipsBase, plainTest), skipped},
-		"a chain of 40 aliases":              {skipChain(40, skipsBase, plainTest), "unverifiable: skipping helpers past the guard's bound"},
-		"a propagated use for a direct skip": {map[string]string{"pkg/skips_test.go": strings.Replace(skipsBase, "\t_ = requireDocker\n", "\tt.Skip(\"unavailable\")\n", 1)}, skipped}, // Astra #292 r2 1
-		"another type's Skip, from t":        {in("\t_ = skipElement(t)\n"), ""},                                                                                                       // Astra #292 r2 4
-		"another type's Skip":                {in("\t_ = skipDecoder(nil)\n"), ""},                                                                                                     // Astra #292 M7
-		"a helper skipping through a copy":   {in("\trequireCopy(t)\n"), skipped},
+		"a skipping helper called":            {in("\trequireDocker(t)\n"), skipped},
+		"through a local":                     {in("\tf := requireDocker\n\tf(t)\n"), skipped},
+		"through a package variable":          {in("\tpkgSkip(t)\n"), skipped},
+		"a method called":                     {in("\th{}.require(t)\n"), skipped},
+		"a method value":                      {in("\tg := h{}.require\n\tg(t)\n"), skipped},
+		"SkipNow by reflection":               {map[string]string{"pkg/skips_test.go": strings.Replace(strings.Replace(skipsBase, plainTest, "\treflect.ValueOf(t).MethodByName(\"SkipNow\").Call(nil)\n"+plainTest, 1), "\"encoding/xml\"", "\"encoding/xml\"\n\t\"reflect\"", 1)}, "unverifiable: reflection on a testing value"},
+		"an asserting helper (control)":       {in("\tcheck(t)\n"), ""},
+		"another file only (control)":         {map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\n// x\n"}, ""},
+		"skipRebound":                         {in("\tx := t\n\trequireDocker(x)\n\tx = nil\n\t_ = x\n"), skipped},
+		"skipSlice":                           {in("\t[]func(*testing.T){requireDocker}[0](t)\n"), skipped},
+		"skipField":                           {in("\tstruct{ f func(*testing.T) }{requireDocker}.f(t)\n"), skipped},
+		"skipWith":                            {in("\twith(t, requireDocker)\n"), skipped},
+		"skipIface":                           {in("\tvar r req = h{}\n\tr.require(t)\n"), skipped},
+		"skipClosureVar":                      {in("\tskipIt(t)\n"), skipped},
+		"skipRaceVariant":                     {in("\trequireX(t)\n"), skipped},
+		"an alias of an alias (H2)":           {in("\tsecond(t)\n"), skipped},
+		"an alias of a literal variable":      {in("\tlitAlias(t)\n"), skipped},
+		"a local alias of an alias":           {in("\tg := second\n\tg(t)\n"), skipped},
+		"an alias set in init":                {chainInit(skipsBase, plainTest), skipped},
+		"a chain of 4 aliases":                {skipChain(4, skipsBase, plainTest), skipped},
+		"a chain of 40 aliases":               {skipChain(40, skipsBase, plainTest), skipped}, // a worklist: no depth limit (Opus #315 H1)
+		"Skipf with an identifier (C1)":       {in("\tneedEnv(t)\n"), skipped},
+		"Skip of an error (C1)":               {in("\tneedErr(t, nil)\n"), skipped},
+		"a helper calling a helper (C1)":      {in("\tneedAll(t)\n"), skipped},
+		"a skip, then another type's Skip":    {in("\tneedThenDecode(t, nil)\n"), skipped}, // never reset (C1)
+		"a literal variable calling a helper": {in("\tneedVarLit(t)\n"), skipped},
+		"an asserting helper made skipping":   {map[string]string{"pkg/skips_test.go": strings.Replace(skipsBase, "func check(t *testing.T) {\n", "func check(t *testing.T) {\n\trequireDocker(t)\n", 1)}, "TestChecked a test skipped"},
+		"a slice in a package variable (H2)":  {in("\tneeds[0](t)\n"), skipped},
+		"a map in a package variable (H2)":    {in("\tbyName[\"docker\"](t)\n"), skipped},
+		"a struct in a package variable":      {in("\tcfg.need(t)\n"), skipped},
+		"a field set in init (H2)":            {in("\tholder.f(t)\n"), skipped},
+		"a cycle of copies (L1)":              {in("\tneedCyc(t)\n"), skipped},
+		"a longer cycle of copies (L1)":       {in("\tneedCyc2(t)\n"), skipped},
+		"a propagated use for a direct skip":  {map[string]string{"pkg/skips_test.go": strings.Replace(skipsBase, "\t_ = requireDocker\n", "\tt.Skip(\"unavailable\")\n", 1)}, skipped}, // Astra #292 r2 1
+		"another type's Skip, from t":         {in("\t_ = skipElement(t)\n"), ""},                                                                                                       // Astra #292 r2 4
+		"another type's Skip":                 {in("\t_ = skipDecoder(nil)\n"), ""},                                                                                                     // Astra #292 M7
+		"a helper skipping through a copy":    {in("\trequireCopy(t)\n"), skipped},
 	} {
 		v := f.guarded(t, c.files)
 		switch {
@@ -142,16 +201,17 @@ func chainInit(base, plainTest string) map[string]string {
 		"pkg/skips_test.go": strings.Replace(base, plainTest, "\tlate(t)\n"+plainTest, 1)}
 }
 
-// TestIntegritySkipsBound (Astra #292 r2 6): the skipping facts' reading
-// stops at the work bound, checked after each charge and between helpers:
-// twenty 20 KB helpers under a 128 KiB bound are read about seven times a
-// scan, never twenty; the package is then unverifiable. Readings are
-// counted, never timed.
+// TestIntegritySkipsBound (Astra #292 r2 6, Opus #315 H1): the skip
+// layer reads each body once a scan, charged to its own bound and checked
+// before each reading: twenty 20 KB helpers under a 128 KiB bound are read
+// at most seven times in all (with the base's bodies, under 30 readings),
+// never twenty a scan (80); the package is then
+// unverifiable. Readings are counted, never timed.
 func TestIntegritySkipsBound(t *testing.T) {
 	f := newGuardFixture(t)
-	old := maxWork
-	t.Cleanup(func() { maxWork = old })
-	maxWork = 1 << 17
+	old := maxSkipWork
+	t.Cleanup(func() { maxSkipWork = old })
+	maxSkipWork = 1 << 17
 	if v := f.guarded(t, map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\n// x\n"}); !v.Accepted() || len(v.Warnings) > 0 {
 		t.Fatalf("the control under the lowered bound: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
 	}
@@ -166,5 +226,76 @@ func TestIntegritySkipsBound(t *testing.T) {
 	t.Logf("twenty 20 KB helpers: %d readings", n)
 	if !finds(v.Blocks, "skipping helpers past the guard's bound") || n > 30 {
 		t.Errorf("twenty 20 KB helpers: %d readings, blocks %q", n, whats(v.Blocks))
+	}
+}
+
+// TestIntegritySkipsManyPackages (Opus #315 H1): a change touching ten
+// packages of about 60 KB of bodies each (2.4 MB of skip reading over the
+// four scans) under a 1 MiB maxWork reaches no bound: the skip layer
+// charges its own, never the run's shared build-constraint work.
+func TestIntegritySkipsManyPackages(t *testing.T) {
+	old := maxWork
+	t.Cleanup(func() { maxWork = old })
+	maxWork = 1 << 20
+	var body strings.Builder
+	for i := range 30 {
+		fmt.Fprintf(&body, "\nfunc helper%d() {\n\tx := 0\n%s\t_ = x\n}\n", i, strings.Repeat("\tx++\n", 400))
+	}
+	files, change := map[string]string{}, map[string]string{}
+	for i := range 10 {
+		dir := fmt.Sprintf("p%d/", i)
+		files[dir+"big.go"] = fmt.Sprintf("package p%d\n", i) + body.String()
+		files[dir+"big_test.go"] = fmt.Sprintf("package p%d\n\nimport \"testing\"\n\nfunc TestBig(t *testing.T) {\n\thelper0()\n\tif 1+1 != 2 {\n\t\tt.Fatal(\"x\")\n\t}\n}\n", i)
+		change[dir+"big.go"] = files[dir+"big.go"] + "\n// x\n"
+	}
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, files)
+		plain(t, src, "add", "--all")
+	})
+	if v := f.guarded(t, change); !v.Accepted() || len(v.Warnings) > 0 {
+		t.Errorf("ten packages: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+}
+
+// TestIntegritySkipsVarLinear (Opus #315 H3): a package variable assigned n
+// distinct functions in init and called n times by a test costs linear
+// work: 4n against n in the same run, a ratio well under the quadratic 16.
+func TestIntegritySkipsVarLinear(t *testing.T) {
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/req_test.go": "package pkg\n\nimport \"testing\"\n\nfunc requireDocker(t *testing.T) { t.Skip(\"x\") }\n"})
+		plain(t, src, "add", "--all")
+	})
+	file := func(n int) map[string]string {
+		var b strings.Builder
+		b.WriteString("package pkg\n\nimport \"testing\"\n\nvar v func(*testing.T)\n")
+		for i := range n {
+			fmt.Fprintf(&b, "\nfunc f%d(*testing.T) {}\n", i)
+		}
+		b.WriteString("\nfunc init() {\n")
+		for i := range n {
+			fmt.Fprintf(&b, "\tv = f%d\n", i)
+		}
+		b.WriteString("}\n\nfunc TestMany(t *testing.T) {\n")
+		b.WriteString(strings.Repeat("\tv(t)\n", n))
+		b.WriteString("\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n}\n")
+		return map[string]string{"pkg/many_test.go": b.String()}
+	}
+	took := func(n int) time.Duration {
+		best := time.Duration(math.MaxInt64)
+		for range 2 {
+			start := time.Now()
+			if v := f.guarded(t, file(n)); !v.Accepted() || len(v.Warnings) > 0 {
+				t.Fatalf("%d: blocks %q, warnings %q", n, whats(v.Blocks), whats(v.Warnings))
+			}
+			best = min(best, time.Since(start))
+		}
+		return best
+	}
+	small, large := took(2000), took(8000)
+	t.Logf("n=2000 %v, n=8000 %v", small, large)
+	if large > 10*small {
+		t.Errorf("4n took %v against n's %v: more than 10 times", large, small)
 	}
 }

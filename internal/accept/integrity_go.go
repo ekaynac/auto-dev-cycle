@@ -323,13 +323,11 @@ type pkgScan struct {
 	skipping  map[*ast.FuncDecl]bool
 	skipNames map[string]bool                        // skipping methods' names (an interface's call)
 	skipVars  map[types.Object]bool                  // skipping variables
-	funcVals  map[types.Object][]types.Object        // a package variable's functions and methods assigned
-	varSrcs   map[types.Object][]types.Object        // its variables assigned
-	litVars   map[types.Object][]*ast.FuncLit        // its literals assigned
+	varVals   map[types.Object][]ast.Expr            // a package variable's values assigned, to it or a field or element of it
 	copies    map[types.Object]map[types.Object]bool // the variables a variable is assigned (direct)
 	indirect  map[types.Object]bool                  // a variable assigned anything else
-	directs   map[types.Object]int8                  // direct's answers: 1 being read, 2 no, 3 yes
-	exhausted bool                                   // the skipping facts did not settle within the bounds
+	directs   map[types.Object]bool                  // direct's answers
+	exhausted bool                                   // the skip layer's bound was reached
 }
 
 // qual is what n names as "importpath.Name", if a package's: by type
@@ -579,10 +577,10 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
 		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{},
-		skipping: map[*ast.FuncDecl]bool{}, skipNames: map[string]bool{}, skipVars: map[types.Object]bool{}, funcVals: map[types.Object][]types.Object{},
-		varSrcs: map[types.Object][]types.Object{}, litVars: map[types.Object][]*ast.FuncLit{},
-		copies: map[types.Object]map[types.Object]bool{}, indirect: map[types.Object]bool{}, directs: map[types.Object]int8{}}
+		skipping: map[*ast.FuncDecl]bool{}, skipNames: map[string]bool{}, skipVars: map[types.Object]bool{}, varVals: map[types.Object][]ast.Expr{},
+		copies: map[types.Object]map[types.Object]bool{}, indirect: map[types.Object]bool{}, directs: map[types.Object]bool{}}
 	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
+		second := i >= len(files)
 		if i == len(files) {
 			clear(s.mentioned) // read again, every alias known (and after: the tvals grew)
 		}
@@ -616,8 +614,8 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 					if id := ident(x.Lhs[min(i, len(x.Lhs)-1)]); id != nil {
 						s.set(cmp.Or(info.Defs[id], info.Uses[id]), v)
 					}
-					if pv, ok := info.Uses[ident(x.Lhs[min(i, len(x.Lhs)-1)])].(*types.Var); ok && pv.Parent() == pkg.Scope() && len(x.Lhs) == len(x.Rhs) {
-						s.assign(pv, v) // a package variable set in a function (init)
+					if second && len(x.Lhs) == len(x.Rhs) {
+						s.held(x.Lhs[i], v) // a package variable, or a field or element of one, set in a function (init)
 					}
 				}
 			case *ast.ValueSpec: // as is a variable of a testing type
@@ -625,8 +623,8 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 					if x.Type != nil && s.mentions(x.Type) || i < len(x.Values) && s.mentions(x.Values[i]) {
 						s.tvals[info.Defs[id]] = "testing.T"
 					}
-					if o := info.Defs[id]; o != nil && o.Parent() == pkg.Scope() && len(x.Values) == len(x.Names) {
-						s.assign(o, x.Values[i])
+					if second && len(x.Values) == len(x.Names) {
+						s.held(id, x.Values[i])
 					}
 					if o := info.Defs[id]; o != nil && len(x.Values) > 0 {
 						s.set(o, x.Values[min(i, len(x.Values)-1)])

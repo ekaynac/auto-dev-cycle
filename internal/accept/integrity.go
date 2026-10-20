@@ -110,6 +110,7 @@ type run struct {
 	listRuns           int
 	budget             int64
 	work               int
+	skipWork           int                 // the skip layer's own (maxSkipWork: Opus #315 H1)
 	blobs              map[string][]byte   // blobs read, once
 	cgoBlobs           map[string][]byte   // read by the cgo pass, not yet charged to the budget
 	files, cand        map[string]string   // the base's and the candidate's paths, to blobs
