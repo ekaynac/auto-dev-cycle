@@ -398,9 +398,10 @@ func TestIntegrityRealTypes(t *testing.T) {
 	maxListTime = 2 * time.Second
 	begin := time.Now()
 	cv := f.guarded(t, map[string]string{"pkg/chain.go": chain.String()})
-	if maxListTime = oldTime; !finds(cv.Blocks, "over the guard's deadline") || time.Since(begin) > time.Minute {
+	if took := time.Since(begin); !finds(cv.Blocks, "over the guard's deadline") || !f.within(t, took-maxListTime, 40) { // its deadline, then the rest of a run
 		t.Errorf("a struct chain: %v %q", time.Since(begin), whats(cv.Blocks))
 	}
+	maxListTime = oldTime
 	plainGo := map[string]string{"pkg/x.go": "package pkg\n\nfunc G() int { return 1 }\n"}
 	if v := f.guarded(t, plainGo); !finds(v.Blocks, "abandoned by an earlier guard run (on base "+f.base[:12]+", started ") {
 		t.Errorf("a run beside an abandoned check: %q", whats(v.Blocks))
@@ -422,7 +423,7 @@ func TestIntegrityRealTypes(t *testing.T) {
 	}
 	dag.WriteString("\ntype A12 = int\n")
 	start := time.Now()
-	if v := f.guarded(t, map[string]string{"pkg/dag.go": dag.String()}); time.Since(start) > 30*time.Second {
+	if v := f.guarded(t, map[string]string{"pkg/dag.go": dag.String()}); !f.within(t, time.Since(start), 40) {
 		t.Errorf("an alias DAG: %v (%q)", time.Since(start), whats(v.Blocks))
 	}
 
@@ -608,7 +609,7 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	} {
 		start := time.Now()
 		v, err := accept(context.Background(), c.list)
-		if err != nil || !finds(v.Blocks, "pkg:pkg unverifiable: linux/amd64: the types of its imports not loaded "+c.why) || time.Since(start) > 20*time.Second {
+		if took := time.Since(start); err != nil || !finds(v.Blocks, "pkg:pkg unverifiable: linux/amd64: the types of its imports not loaded "+c.why) || !f.within(t, took, 60) {
 			t.Errorf("%s (%v): %v %q", name, time.Since(start), err, whats(v.Blocks))
 		}
 	}

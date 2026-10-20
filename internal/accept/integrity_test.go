@@ -106,6 +106,18 @@ func (f fixture) guarded(t *testing.T, files map[string]string, gone ...string) 
 	return v
 }
 
+// within: took, a row's time, is within n ordinary runs of f's guard, the
+// ordinary run timed now, in the same test run (#226 entry 89: under a
+// loaded host both slow alike; no row has a fixed wall-clock bound).
+func (f fixture) within(t *testing.T, took time.Duration, n int) bool {
+	t.Helper()
+	start := time.Now()
+	f.guarded(t, map[string]string{"zzunit/u.go": "package zzunit\n\nfunc U() int { return 1 }\n"})
+	unit := time.Since(start)
+	t.Logf("%v: %.1f ordinary runs of %v (bound %d)", took, float64(took)/float64(unit), unit, n)
+	return took <= time.Duration(n)*unit
+}
+
 func whats(bs []Block) []string {
 	var out []string
 	for _, b := range bs {

@@ -216,7 +216,9 @@ func TestIntegrityDoS(t *testing.T) {
 	}
 
 	// Many modules, each a changed directory: 2500 took about 50 s with a
-	// scan of every path per module and per directory.
+	// scan of every path per module and per directory. Linear (#226 entry
+	// 89: relative to 250 modules timed in the same run, never a fixed
+	// wall-clock bound): 2500 within 25 times 250's time (quadratic: 100).
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
 		m := map[string]string{}
@@ -226,13 +228,20 @@ func TestIntegrityDoS(t *testing.T) {
 		write(t, src, m)
 		plain(t, src, "add", "--all")
 	})
-	files := map[string]string{}
-	for i := range 2500 {
-		files[fmt.Sprintf("m%d/go.mod", i)] = fmt.Sprintf("module example.com/m%d\n\ngo 1.22\n", i)
-		files[fmt.Sprintf("m%d/x.go", i)] = "package x\n\nfunc G() int { return 1 }\n"
+	var took [2]time.Duration
+	for i, n := range []int{250, 2500} {
+		files := map[string]string{}
+		for i := range n {
+			files[fmt.Sprintf("m%d/go.mod", i)] = fmt.Sprintf("module example.com/m%d\n\ngo 1.22\n", i)
+			files[fmt.Sprintf("m%d/x.go", i)] = "package x\n\nfunc G() int { return 1 }\n"
+		}
+		begin := time.Now()
+		if v := f.guarded(t, files); !v.Accepted() {
+			t.Errorf("%d modules: %q", n, whats(v.Blocks[:min(3, len(v.Blocks))]))
+		}
+		took[i] = time.Since(begin)
 	}
-	begin := time.Now()
-	if v := f.guarded(t, files); !v.Accepted() || time.Since(begin) > 30*time.Second {
-		t.Errorf("2500 modules: %v, %q", time.Since(begin), whats(v.Blocks[:min(3, len(v.Blocks))]))
+	if t.Logf("250 modules in %v, 2500 in %v", took[0], took[1]); took[1] > 25*took[0] {
+		t.Errorf("250 modules in %v, 2500 in %v: not linear", took[0], took[1])
 	}
 }
