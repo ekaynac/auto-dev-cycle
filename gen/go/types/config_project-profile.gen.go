@@ -207,14 +207,20 @@ const (
 	ProjectProfileUsageProfileOverrideValueOnPrem   ProjectProfileUsageProfileOverrideValue = "on-prem"
 )
 
-// ProjectProfileBudgetRails: Rails, not budgets: spending stops at them.
+// ProjectProfileBudgetRails: Rails, not budgets: spending stops at them. The count rails (M1 P17) are optional, so a stored adc.project-profile/v1 still validates (#226 entry 10); an absent one is its default: 3 attempts per round, 5 rounds per task, 2 merge operations per generation. Reaching one raises budget_rail; task.raise_rail raises it for one task.
 type ProjectProfileBudgetRails struct {
 	PerTaskUsd USD `json:"per_task_usd"`
 	PerDayUsd  USD `json:"per_day_usd"`
+	// Attempts started on one round's node (its unit), invalidations included. Default 3.
+	AttemptsPerRound *int64 `json:"attempts_per_round,omitempty"`
+	// Rounds of one build lineage: a repair past it waits. Default 5.
+	RoundsPerTask *int64 `json:"rounds_per_task,omitempty"`
+	// Merge operations of one queue generation's merge node, across its invalidations. Default 2.
+	MergeOperationsPerGeneration *int64 `json:"merge_operations_per_generation,omitempty"`
 }
 
 type ProjectProfileBudget struct {
-	// Rails, not budgets: spending stops at them.
+	// Rails, not budgets: spending stops at them. The count rails (M1 P17) are optional, so a stored adc.project-profile/v1 still validates (#226 entry 10); an absent one is its default: 3 attempts per round, 5 rounds per task, 2 merge operations per generation. Reaching one raises budget_rail; task.raise_rail raises it for one task.
 	Rails ProjectProfileBudgetRails `json:"rails"`
 }
 

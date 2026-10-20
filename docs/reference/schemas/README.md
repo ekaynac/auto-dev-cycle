@@ -39,6 +39,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/scope/seat-release.json`](api-scope-seat-release.md) | SeatReleaseScope |
 | [`api/scope/seat-take.json`](api-scope-seat-take.md) | SeatTakeScope |
 | [`api/scope/task-create.json`](api-scope-task-create.md) | TaskCreateScope |
+| [`api/scope/task-raise-rail.json`](api-scope-task-raise-rail.md) | TaskRaiseRailScope |
 | [`api/scope/token-issue.json`](api-scope-token-issue.md) | TokenIssueScope |
 | [`api/scope/token-replace.json`](api-scope-token-replace.md) | TokenReplaceScope |
 | [`api/scope/token-revoke.json`](api-scope-token-revoke.md) | TokenRevokeScope |
@@ -80,6 +81,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/note.json`](records-note.md) | Note |
 | [`records/owed-input.json`](records-owed-input.md) | OwedInput |
 | [`records/proposal.json`](records-proposal.md) | Proposal |
+| [`records/rail-raised.json`](records-rail-raised.md) | RailRaised |
 | [`records/receipt.json`](records-receipt.md) | Receipt |
 | [`records/ref.json`](records-ref.md) | Ref |
 | [`records/remote-process-request.json`](records-remote-process-request.md) | RemoteProcessRequest |

@@ -13,6 +13,7 @@ var commands = map[string]command{
 	"knowledge.change_protected_document": {"project", "change-protected-document"},
 	"integration.change_topology":         {"project", "change-topology"},
 	"task.create":                         {"task", "create"},
+	"task.raise_rail":                     {"task", "raise-rail"},
 	"review.request":                      {"task", "request-review"},
 	"input.answer":                        {"holds", "answer"},
 	"proposal.confirm":                    {"approve", "confirm"},

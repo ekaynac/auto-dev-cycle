@@ -185,7 +185,31 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 	case ready.credential != nil:
 		return credential()
 	}
-	return nil, nil
+	return d.attemptRail(tx, card.Node)
+}
+
+// attemptRail is a miss holding node on its task's attempt rail when the
+// attempts started on its round (graph.RoundAttempts) reach it (P17a).
+func (d Dispatcher) attemptRail(tx *eventstore.Tx, node types.NodeID) (*Miss, error) {
+	task, err := graph.TaskOf(tx, node)
+	if err != nil {
+		return nil, err
+	}
+	caps := graph.DefaultCaps
+	if d.Rails != nil {
+		if caps, err = d.Rails(tx, task); err != nil {
+			return nil, err
+		}
+	}
+	started, err := graph.RoundAttempts(tx, node)
+	if err != nil {
+		return nil, err
+	}
+	if started < caps.AttemptsPerRound {
+		return nil, nil
+	}
+	h, err := graph.RailHold(graph.RailAttempts)
+	return &Miss{Reason: reason(fmt.Sprintf("%d attempts started on the round, its rail %d", started, caps.AttemptsPerRound)), Hold: &h}, err
 }
 
 // maxSignal is records/node-hold's bound on a signal instance.

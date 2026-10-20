@@ -67,7 +67,7 @@ and is never edited apart from it.
 | I13 Gate verdict and receipts | partial | P15 | `review`: all |
 | I14 Single merge delivery | partial | P18, P19, P27 | `merge-local`: all but the GitHub effect check; `merge-github`: all |
 | I15 Deferred surfaces | partial | P22a | `intake`: admission (the guard); every other capability: all |
-| I16 Rails | unenforced | P17 | `launch`: all |
+| I16 Rails | partial | P17b, P22a (P17a done, inert) | `launch`: all |
 | I17 Containment | unenforced | P9, P14a, P15 (P11 done, inert) | `launch`: all |
 | I18 Acceptance confidentiality | partial | P3, P15, P16 (the builder's I18, moved from P14), P22a | `intake`: admission; `review`: all |
 | I19 Liveness (D63) | unenforced | P29 | `repeat`: all |
@@ -227,10 +227,10 @@ through `lease.completed`. P21a keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `graph/holds.go:retry` refuses a reason that names no hold ("the rails decide"); the profile has USD rails only (`budget.rails`) | GAP | P17 (attempt, round and merge-operation caps; `budget_rail`; `task.raise_rail`) |
-| fold/replay | none: no fold counts attempts per round or rounds per task | GAP | P17 |
-| consumption | none: a claim or attempt start beyond a cap is not refused | GAP | P17 |
-| effect | a `failed_confirmed` merge stays the node's outcome until an invalidation (13); there is no bounded re-operation | GAP | P17 |
+| admission | `graph/holds.go:retry` refuses a reason that names no hold ("the rails decide"). The count rails (P17a): optional `budget.rails.attempts_per_round`, `rounds_per_task`, `merge_operations_per_generation` (defaults 3, 5, 2; `graph.CapsOf`); `task.raise_rail` (`authority.TaskRaiseRailHandler`, operator only, above the cap in force) raises one for one task and clears the task's `budget_rail` holds on it (`graph.ClearRail`). Handler built, deferred to P22a | kept + GAP | P17b (the USD rails at lease admission), P22a (wire the handler, `graph.Env.Rails` and `dispatch.Dispatcher.Rails` to `authority.Rails`) |
+| fold/replay | no counter is stored: each count is derived from records no invalidation rewrites (a unit's fencing token; a build's `Round`; the effects intended for each generation of a merge node's claim). The `task.rail_raised` fold admits a raise only of a recorded task, by a live operator, above the last | kept + GAP | P22a |
+| consumption | the evaluator holds a build past its round rail on `budget_rail` (`rail:rounds_per_task`) before claiming it; `dispatch.Launch` refuses the start of an attempt past its round's rail and holds the node (`rail:attempts_per_round`), counting the attempts of every node it replaces (`graph.RoundAttempts`: a superseded review's replacement keeps its round); a refused launch starts no attempt, so it counts against no rail. Only these commands check a rail: the folds do not, and `graph.Claim`, `lease.StartNext`, `lease.SupersedeAttempt`, `lease.StartAttempt` (which `adapterhost.Host.Run` calls directly) and the `hold_cleared` fold do not either. Kept in code, inert until P22a | kept + GAP | P22a (builds are claimed only through `Evaluate`, attempts start only through `dispatch.Launch`, and merges operate only through `Operate`; no other caller of `Claim`, `StartNext`, `SupersedeAttempt` or `StartAttempt` outside fixtures. The adapter host's start, `adapterhost.Host.Run` → `lease.StartAttempt`, goes through `dispatch.Launch` or takes an attempt already started and fenced, P22a-5; Astra #295 L1) |
+| effect | `graph.Operate` holds a merge node whose earlier keys' operations reach its rail on `budget_rail` (`rail:merge_operations_per_generation`) instead of intending another. Kept in code, inert until P22a | kept + GAP | P22a |
 
 ## I17. Containment: builders, tests and adapters cannot reach controller authority (D45)
 
@@ -289,6 +289,6 @@ through `lease.completed`. P21a keeps this check.
 
 ## Count
 
-88 rows across 22 invariants. **52 rows have a gap**: 19 are GAP and 33 are kept + GAP. 30 are kept and 6 are n/a (after P6, which also flipped P3's and P5's I1 and I2 rows, #226 entry 45; and after P7, P8a, P8b, P11, P11b, P20's `model_call` half, P21a and P21b, whose rows are kept in code, with the wiring left to P22a; P8a's I8 fold row is kept, since `adcd` wires `graph.Units`). A recount on 2026-10-14 corrected the earlier figures (29 GAP, 28 kept).
+88 rows across 22 invariants. **52 rows have a gap**: 15 are GAP and 37 are kept + GAP (after P17a, whose four I16 rows are kept in code, inert until P22a). 30 are kept and 6 are n/a (after P6, which also flipped P3's and P5's I1 and I2 rows, #226 entry 45; and after P7, P8a, P8b, P11, P11b, P20's `model_call` half, P21a and P21b, whose rows are kept in code, with the wiring left to P22a; P8a's I8 fold row is kept, since `adcd` wires `graph.Units`). A recount on 2026-10-14 corrected the earlier figures (29 GAP, 28 kept).
 Every gap is closed by an item of `00-slice-plan.md` §5. None is left to a later milestone, except where 01 §4.1 or
 §6's clarifications place it. The evidence rows of 12 follow #187's trigger (slice plan §4).

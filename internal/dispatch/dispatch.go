@@ -85,6 +85,7 @@ type Dispatcher struct {
 	Registry    registry.Registry
 	Images      Images
 	Credentials Credentials
+	Rails       graph.Rails // each task's count rails (P17a); nil: graph.DefaultCaps
 }
 
 // Refused is a match that placed nothing: the placement check that
@@ -174,7 +175,7 @@ func (d Dispatcher) checks(card Card, executor types.ExecutorID, roster []types.
 		Capability:    pass(imageSignal(card.Image)), // bounded: the detail holds 4096
 		Independence:  pass("roster " + digest(roster)),
 		PaidAuthority: pass("not checked here: the rails are P17's"),
-		Budget:        pass("not checked here: the rails are P17's"),
+		Budget:        pass("the attempt rail is checked at launch; the USD rails are P17b's"),
 		FallbackScope: pass("the first step; fallback chains are M2's"),
 	}
 	if err := d.Registry.Admits(card.Policy, executor); err != nil {

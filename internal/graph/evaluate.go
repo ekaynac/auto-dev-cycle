@@ -81,6 +81,7 @@ type Env struct {
 	Authority Authority
 	Contracts Contracts // the instrument contracts evidence nodes run under
 	Families  Families  // the executor registry review rosters are claimed under
+	Rails     Rails     // each task's count rails (P17a); nil: DefaultCaps
 }
 
 // ErrRevalidated: an input no longer resolves to what the claim fixed, so
@@ -202,6 +203,9 @@ func (e *evaluation) visit(n types.NodeID) error {
 		return err // a stale answer: a structural wait for the successor at the current revision
 	}
 	if held, err := e.clear(rec, answered); err != nil || held {
+		return err
+	}
+	if held, err := e.roundRail(rec); err != nil || held {
 		return err
 	}
 	resolved, missing, err := Resolve(e.tx, n, answered, e.env.Need, e.env.Blobs, e.tx.Now())

@@ -212,7 +212,7 @@ No other fields are allowed.
 
 | Field | Required | Type | Description |
 |---|---|---|---|
-| `rails` | yes | object ([fields](#fields-of-budgetrails)) | Rails, not budgets: spending stops at them. |
+| `rails` | yes | object ([fields](#fields-of-budgetrails)) | Rails, not budgets: spending stops at them. The count rails (M1 P17) are optional, so a stored adc.project-profile/v1 still validates (#226 entry 10); an absent one is its default: 3 attempts per round, 5 rounds per task, 2 merge operations per generation. Reaching one raises budget_rail; task.raise_rail raises it for one task. |
 
 No other fields are allowed.
 
@@ -222,6 +222,9 @@ No other fields are allowed.
 |---|---|---|---|
 | `per_task_usd` | yes | [USD](#usd) |  |
 | `per_day_usd` | yes | [USD](#usd) |  |
+| `attempts_per_round` |  | integer (minimum `1`, maximum `1000`) | Attempts started on one round's node (its unit), invalidations included. Default 3. |
+| `rounds_per_task` |  | integer (minimum `1`, maximum `1000`) | Rounds of one build lineage: a repair past it waits. Default 5. |
+| `merge_operations_per_generation` |  | integer (minimum `1`, maximum `1000`) | Merge operations of one queue generation's merge node, across its invalidations. Default 2. |
 
 No other fields are allowed.
 

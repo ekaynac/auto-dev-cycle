@@ -80,8 +80,11 @@ type TaskApproval struct {
 // tsk_ prefix, never the ready/ and approver/ indexes.
 func TaskIDs(tx *eventstore.Tx) ([]types.TaskID, error) { return tx.Keys(TaskProjection, "tsk_") }
 
-// TaskKinds registers the task event kind; its payload is records/task.
-func TaskKinds() eventstore.Kinds { return eventstore.Kinds{TaskCreated: {Schema: "records/task"}} }
+// TaskKinds registers the task event kinds: task.created (records/task)
+// and task.rail_raised (records/rail-raised, P17a).
+func TaskKinds() eventstore.Kinds {
+	return eventstore.Kinds{TaskCreated: {Schema: "records/task"}, TaskRailRaised: {Schema: "records/rail-raised"}}
+}
 
 // TaskRecordOf is task id's record, which --expect is checked against.
 func TaskRecordOf(id types.TaskID) func(*eventstore.Tx) (json.RawMessage, bool, error) {
@@ -257,6 +260,8 @@ func (TaskProjector) Project(tx *eventstore.Tx, evs []eventstore.Event) error {
 		switch ev.Kind {
 		case TaskCreated:
 			err = addTask(tx, ev)
+		case TaskRailRaised:
+			err = railRaised(tx, ev)
 		case identity.ActorRevoked + "/v1":
 			var a types.IdentityEvent
 			if err = json.Unmarshal(ev.Payload, &a); err == nil && a.Actor != nil {
