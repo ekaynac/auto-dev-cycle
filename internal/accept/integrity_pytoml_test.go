@@ -9,15 +9,14 @@ import (
 	"testing"
 )
 
-// pyRealTOML are three real pyproject.toml files without a pytest table, the
-// widen-b baseline's false-block reader (Opus #296 M1): networkx 3.3
-// (7fdddfa2ca, BSD-3-Clause) and setuptools 72.1.0 (441799f8b4, MIT), whose
-// classifier "5 - Production/Stable" main read as the option -, and arrow
-// 17.0.0's python/ (6a2e19a852, Apache-2.0), whose setuptools-scm "git
-// describe --dirty" main read as the option --dirty. Each is its project's
-// file verbatim, under its project's licence: .txt, so that no SPDX header
-// of this repository's is added to it.
-var pyRealTOML = []string{"networkx-3.3.pyproject.txt", "setuptools-72.1.0.pyproject.txt", "arrow-17.0.0.pyproject.txt"}
+// pyRealTOML are three synthetic pyproject.toml files with no pytest table,
+// written for these tests (no upstream text; Opus #303): each reproduces the
+// shapes and the triggering lines of a real one in the widen-b baseline
+// (Opus #296 M1), named in its header: networkx 3.3's and setuptools
+// 72.1.0's classifier "5 - Production/Stable", which main read as the option
+// -, and arrow 17.0.0's setuptools-scm "git describe --dirty", read as the
+// option --dirty; each names pytest only in a test extra.
+var pyRealTOML = []string{"networkx-like.toml", "setuptools-like.toml", "arrow-like.toml"}
 
 func pyRealFile(t *testing.T, name string) string {
 	t.Helper()
@@ -48,6 +47,8 @@ var pyTOMLForges = map[string]string{
 	"a multi-line array with a comment":    "[tool.pytest.ini_options]\naddopts = [\n  \"-p\", # c\n  \"forge\",\n]\n",
 	"a collection setting":                 "[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n",
 	"a stray character after a header":     "[tool.black] x\n[tool.pytest.ini_options]\naddopts = \"-p forge\"\n",
+	"after an escaped quote and four":      "x = \"\"\"a\\\"\"\"\"\n[tool.pytest.ini_options]\naddopts = \"-p forge\"\n",
+	"after five single quotes":             "x = '''a'''''\n[tool.pytest.ini_options]\naddopts = \"-p forge\"\n",
 }
 
 func pyForge(real, forge string) string {
@@ -88,6 +89,8 @@ func TestPyConfTOML(t *testing.T) {
 		"an escaped quote in a string":         {"[project]\ndescription = \"say \\\"pytest - fast\\\"\"\n", ""},
 		"an escaped quote in a multi-line one": {"[project]\ndescription = \"\"\"a \\\"\"\" pytest - b\"\"\"\n", ""},
 		"a literal string ending in \\":        {"[tool.x]\npath = 'C:\\'\nnote = \"pytest - x\"\n", ""},
+		"an escaped quote, then four quotes":   {"[project]\ndescription = \"\"\"a\\\"\"\"\"\nnote = \"pytest - x\"\n", ""},
+		"five single quotes":                   {"[project]\ndescription = '''a'''''\nnote = \"pytest - x\"\n", ""},
 		"a statement after a header, whole":    {"[tool.x] y = 1\n# pytest\n", "y = 1"},
 		"a key with no value elsewhere, whole": {"[tool.x]\nk =\n# pytest\n", "k ="},
 	} {

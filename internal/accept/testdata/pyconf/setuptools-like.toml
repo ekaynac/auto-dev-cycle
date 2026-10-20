@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# A synthetic pyproject.toml, written for this test: no upstream text. It
+# reproduces the shapes of setuptools 72.1.0's (github.com/pypa/setuptools,
+# 441799f8b4): tab indents, inline tables in an array, comments in arrays,
+# single-quoted markers holding double quotes, quoted keys and an empty
+# table at the end; its test extra names pytest, and its classifier "5 -
+# Production/Stable" main's pyConf read as the option - (the widen-b
+# baseline, Opus #296 M1).
+
+[build-system]
+requires = []
+build-backend = "setuptools.build_meta"
+backend-path = ["."]
+
+[project]
+name = "buildlike"
+version = "1.0.0"
+authors = [
+	{ name = "A Packaging Authority", email = "authority@example.org" },
+]
+classifiers = [
+	"Development Status :: 5 - Production/Stable",
+	"Topic :: Utilities",
+]
+dependencies = [
+]
+
+[project.optional-dependencies]
+test = [
+	# upstream
+	"pytest >= 6, != 8.1.*",
+	"pytest-cov",
+	'pytest-perf; sys_platform != "cygwin"', # a workaround
+	"pip>=19.1", # for file:// URLs
+]
+ssl = []
+
+[project.entry-points."distutils.commands"]
+alias = "buildlike.command.alias:alias"
+
+[project.entry-points."egg_info.writers"]
+PKG-INFO = "buildlike.command.egg_info:write_pkg_info"
+"requires.txt" = "buildlike.command.egg_info:write_requirements"
+
+[tool.setuptools.packages.find]
+include = [
+	"buildlike*",
+]
+namespaces = true
+
+[tool.setuptools_scm]
