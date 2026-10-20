@@ -1,0 +1,44 @@
+{
+  "note": "go-mini's measured baseline: gate.Baseline's encoding (gate.Measure, P15). Measured by gate.Measure in the pinned prepared Go image (ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97, image d1a298571f62, linux/arm64), offline, in gate mode, on the tree of fixtures/m1/go-mini/repo (975e77d8479c5b7b46e214f0ff9a12040fc48f5d). The run ended on its own and is green: four tests, no skip. baseline-stream.json is the measured run's go test -json stream.",
+  "command": [
+    "go",
+    "test",
+    "-count=1",
+    "-json",
+    "./money/..."
+  ],
+  "image": "ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97",
+  "image_id": "d1a298571f62cfddb6deaea8eaf43ea32365a52ac6e5ec4e371700931c6e73ae",
+  "os": "linux",
+  "arch": "arm64",
+  "base_tree": "975e77d8479c5b7b46e214f0ff9a12040fc48f5d",
+  "results": [
+    {
+      "package": "example.com/go-mini/money",
+      "name": "TestAdd",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "example.com/go-mini/money",
+      "name": "TestParse",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "example.com/go-mini/money",
+      "name": "TestRoundTrip",
+      "outcome": "pass",
+      "expected": false
+    },
+    {
+      "package": "example.com/go-mini/money",
+      "name": "TestString",
+      "outcome": "pass",
+      "expected": false
+    }
+  ],
+  "packages": {
+    "example.com/go-mini/money": "pass"
+  }
+}
