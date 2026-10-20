@@ -50,6 +50,10 @@ var (
 type stat struct {
 	asserts, skips, cert int
 	cons                 string
+	cases                map[string]int    // table rows and subtests, by identity (P14d)
+	rows                 map[string]string // a row's text, by identity
+	opaque               bool              // a case source the guard cannot follow
+	print                string            // its assertions and skips, with their conditions
 }
 
 // pkgFacts is what the guard reads of one version of a package directory.
@@ -360,15 +364,25 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 		return // the facts are incomplete
 	}
 	for _, k := range slices.Sorted(maps.Keys(b.tests)) {
-		switch bt, at := b.tests[k], a.tests[k]; {
+		bt, at := b.tests[k], a.tests[k]
+		switch {
 		case at == nil:
 			add(&r.blocks, k, "a test deleted or no longer collected")
+			continue
 		case at.cert < bt.cert || at.cert == 1 && at.cons != bt.cons:
 			add(&r.blocks, k, "a test no longer surely collected (its build constraints)")
 		case at.asserts < bt.asserts:
 			add(&r.blocks, k, fmt.Sprintf("fewer assertions in a test (%d → %d)", bt.asserts, at.asserts))
 		case at.skips > bt.skips:
 			add(&r.blocks, k, "a test skipped")
+		}
+		switch first, n := casesRemoved(bt, at); { // P14d
+		case n > 0 && at.opaque:
+			add(&r.blocks, k, fmt.Sprintf("unverifiable: %d test cases no longer where the guard can follow them (%.80s)", n, first))
+		case n > 0:
+			add(&r.blocks, k, fmt.Sprintf("%d test cases removed (table rows or subtests: %.80s)", n, first))
+		case at.asserts == bt.asserts && at.skips == bt.skips && at.cert >= bt.cert && (at.print != bt.print || rowsChanged(bt, at)):
+			add(&r.warnings, k, "an assertion, its condition or a test case changed, with equal counts: review it")
 		}
 	}
 	more := func(a, b []int) bool { // on some platform: none is traded across them
