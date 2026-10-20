@@ -6,8 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -76,11 +79,21 @@ func cutState(t *testing.T, d *Daemon, a types.AttemptID, l types.LeaseID, call 
 	return at, ls, e
 }
 
+// minSeq is the least seq of the events where (an SQL condition) selects,
+// 0 with none.
+func minSeq(t *testing.T, dir, where string) int {
+	t.Helper()
+	return count(t, dir, `SELECT COALESCE(MIN(seq), 0) FROM events WHERE `+where)
+}
+
 // P22a-1 (#226 entries 64, 70, 81): a start marks the restart (a fresh
 // store's too), then recovers the cut attempt before anything else: lost
 // and sealed, its lease settled with the call, uncertain, kept as a
-// liability, which the model calls' bindings (projected in adcd) give; a
-// second start changes nothing.
+// liability, which the model calls' bindings (projected in adcd) give. In
+// the log, the restart rule's transition comes first, then attempt.lost,
+// then whatever else the start appends (here the bootstrap's secret;
+// Opus #297 M2, L5). A second start appends no event; it records one
+// recovery.lose command with none (Opus #297 L4).
 func TestStartRecoversACutAttempt(t *testing.T) {
 	fresh := restart(t, stateDir(t))
 	if !fresh.store.RestartMarked() {
@@ -90,6 +103,7 @@ func TestStartRecoversACutAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir, cfg, a, l, call := cutStore(t)
+	before := lastSeq(t, dir)
 	d, err := Start(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +116,12 @@ func TestStartRecoversACutAttempt(t *testing.T) {
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
+	after := fmt.Sprintf("seq > %d AND ", before)
+	uncertain, lost := minSeq(t, dir, after+`kind = 'effect.uncertain/v1'`), minSeq(t, dir, after+`kind = 'attempt.lost/v1'`)
+	other := minSeq(t, dir, after+`kind NOT LIKE 'effect.%' AND kind NOT LIKE 'attempt.%' AND kind NOT LIKE 'lease.%'`)
+	if uncertain == 0 || lost <= uncertain || other <= lost {
+		t.Errorf("the start's order: the restart rule at %d, attempt.lost at %d, the first other event at %d", uncertain, lost, other)
+	}
 	head := lastSeq(t, dir)
 	d, err = Start(context.Background(), cfg)
 	if err == nil {
@@ -112,14 +132,15 @@ func TestStartRecoversACutAttempt(t *testing.T) {
 	}
 }
 
-// A recovery that leaves an attempt running refuses the start; one that
-// fails after closing every running attempt only notes it, and the start
-// goes on (#226 entry 81).
+// A recovery that leaves an attempt running refuses the start, as an
+// ambiguous state when the store reads (Opus #297 L3); one that fails
+// after closing every running attempt only notes it, with its cause
+// (Opus #297 M1), and the start goes on (#226 entry 81).
 func TestStartRecoveryFailures(t *testing.T) {
 	t.Cleanup(func() { runRecovery = func(ctx context.Context, r recovery.Recovery) error { return r.Run(ctx) } })
 	_, cfg, _, _, _ := cutStore(t)
 	runRecovery = func(context.Context, recovery.Recovery) error { return errors.New("injected") }
-	refused(t, cfg.StateDir, cfg, vocab.CouldNotRun, vocab.ReasonStoreUnreadable, "did not close every running attempt")
+	refused(t, cfg.StateDir, cfg, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "did not close every running attempt")
 	runRecovery = func(ctx context.Context, r recovery.Recovery) error {
 		return errors.Join(r.Run(ctx), errors.New("injected"))
 	}
@@ -127,11 +148,59 @@ func TestStartRecoveryFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(d.note, "restart recovery left work for the next start") {
+	if !strings.Contains(d.note, "restart recovery left work for the next start (it resumes there): injected") {
 		t.Errorf("the note: %q", d.note)
 	}
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// failOnce is a publisher whose first Put fails.
+type failOnce struct {
+	lease.Publisher
+	failed *bool
+}
+
+func (f failOnce) Put(r io.Reader, declared string) (string, error) {
+	if !*f.failed {
+		*f.failed = true
+		return "", fmt.Errorf("injected: %w", syscall.EACCES)
+	}
+	return f.Publisher.Put(r, declared)
+}
+
+// A seal that fails once (Opus #297 L5): the start notes it and goes on,
+// the attempt lost and its lease not settled; the next start resumes the
+// recovery there, to a sealed attempt and a settled lease keeping the
+// call's liability.
+func TestStartResumesRecovery(t *testing.T) {
+	t.Cleanup(func() { runRecovery = func(ctx context.Context, r recovery.Recovery) error { return r.Run(ctx) } })
+	_, cfg, a, l, call := cutStore(t)
+	failed := false
+	runRecovery = func(ctx context.Context, r recovery.Recovery) error {
+		r.Blobs = failOnce{r.Blobs, &failed}
+		return r.Run(ctx)
+	}
+	d, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, ls, _ := cutState(t, d, a, l, call)
+	if !failed || !strings.Contains(d.note, "permission denied") || at.Status != types.AttemptStatusLost || ls.State == types.LeaseStateSettled {
+		t.Errorf("the first start: note %q, attempt %s, lease %s", d.note, at.Status, ls.State)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if d, err = Start(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	at, ls, _ = cutState(t, d, a, l, call)
+	if d.note != "" && strings.Contains(d.note, "restart recovery") || at.Status != types.AttemptStatusSealed || ls.State != types.LeaseStateSettled ||
+		ls.Settlement == nil || !slices.Contains(ls.Settlement.Liabilities, call) {
+		t.Errorf("the next start: note %q, attempt %s, lease %s %+v", d.note, at.Status, ls.State, ls.Settlement)
 	}
 }
 

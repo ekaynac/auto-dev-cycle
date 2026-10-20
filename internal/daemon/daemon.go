@@ -138,11 +138,11 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 			return nil, err
 		}
 	}
-	sys, _, err := systemActor(ctx, store, !offline)
+	sys, err := systemActor(ctx, store, !offline)
 	if err != nil {
 		return nil, err
 	}
-	// The restart rule runs at every start, a store this start created
+	// The restart rule runs at every non-offline start, a store this start created
 	// included (it marks nothing there): the model calls' Recorder refuses a
 	// store where it has not run (#226 entry 64). Then restart recovery
 	// (P21a, X3 steps 1-4), before the writer admits any other command

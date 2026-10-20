@@ -26,8 +26,9 @@
 //     attempt's recovery only (it stays at its last step until the next run), never another attempt's.
 //   - The cut calls' effects are uncertain by the restart rule (MarkPendingUncertain); P20's Reconciler settles them,
 //     and late usage recomputes the liability (P12b). Recovery queries no provider.
-//   - Inert: P22a constructs it, runs it at start after MarkPendingUncertain and before any other command, and
-//     authorises its actions for the system actor only. It then runs RefuseOrphans, whose failure never blocks start.
+//   - adcd runs Run at every non-offline start, after MarkPendingUncertain and before any other command, its actions
+//     the system actor's alone (P22a-1). RefuseOrphans, whose failure never blocks start, runs from P22a-5, once the
+//     adapter host's exchange root exists.
 package recovery
 
 import (
