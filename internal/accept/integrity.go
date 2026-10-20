@@ -274,7 +274,7 @@ func (r *run) list() error {
 
 func byDir(files map[string]string) map[string][]string {
 	out := map[string][]string{}
-	for _, p := range slices.Sorted(maps.Keys(files)) {
+	for _, p := range keys(files) { // once per run, counted as every whole-tree scan (Opus #317 r2 M1)
 		out[path.Dir(p)] = append(out[path.Dir(p)], p)
 	}
 	return out

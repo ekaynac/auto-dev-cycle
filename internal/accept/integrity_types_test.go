@@ -612,7 +612,7 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 		"a go over time":   {LocalLister(filepath.Join(bin, "slow"), nil, 200*time.Millisecond, 0), "(testing: go list: context deadline exceeded)", 200 * time.Millisecond},
 		"a go over memory": {LocalLister(filepath.Join(bin, "limit"), nil, time.Minute, 1<<30), "(testing: go list: exit status 1: 1048576)", 0},
 	} {
-		var calls atomic.Int64 // the go calls the guard makes, each waiting out c.wait at most (Opus #317 M2)
+		var calls atomic.Int64 // the go calls the guard makes, each waiting out c.wait at most (Opus #317 M2): at most one per version and platform of its one module (r2 L2)
 		list := c.list
 		if list != nil {
 			list = func(ctx context.Context, dir string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
@@ -622,8 +622,8 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 		}
 		start := time.Now()
 		v, err := accept(context.Background(), list)
-		if took := time.Since(start); err != nil || !finds(v.Blocks, "pkg:pkg unverifiable: linux/amd64: the types of its imports not loaded "+c.why) || !within(t, took-time.Duration(calls.Load())*c.wait, unit, 20) {
-			t.Errorf("%s (%v): %v %q", name, time.Since(start), err, whats(v.Blocks))
+		if took := time.Since(start); err != nil || !finds(v.Blocks, "pkg:pkg unverifiable: linux/amd64: the types of its imports not loaded "+c.why) || calls.Load() > int64(2*len(platforms)) || !within(t, took-time.Duration(calls.Load())*c.wait, unit, 20) {
+			t.Errorf("%s (%v, %d go calls): %v %q", name, time.Since(start), calls.Load(), err, whats(v.Blocks))
 		}
 	}
 	if v, err := accept(context.Background(), LocalLister(filepath.Join(bin, "child"), nil, 300*time.Millisecond, 0)); err != nil || v.Accepted() {
