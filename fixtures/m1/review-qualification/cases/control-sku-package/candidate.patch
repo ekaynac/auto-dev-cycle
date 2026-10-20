@@ -1,0 +1,85 @@
+diff --git a/inventory/inventory.go b/inventory/inventory.go
+--- a/inventory/inventory.go
++++ b/inventory/inventory.go
+@@ -5,17 +5,18 @@
+ 
+ import (
+ 	"errors"
+-	"fmt"
+ 	"sort"
+-	"strings"
++
++	"example.com/gomini/sku"
+ )
+ 
+ // MaxSKULength is the longest SKU accepted after normalisation.
+-const MaxSKULength = 32
++const MaxSKULength = sku.MaxLength
+ 
+ var (
+ 	// ErrInvalidSKU is returned for an empty, too long or malformed SKU.
+-	ErrInvalidSKU = errors.New("inventory: invalid SKU")
++	// It is the same value as sku.ErrInvalid.
++	ErrInvalidSKU = sku.ErrInvalid
+ 	// ErrInvalidQuantity is returned for a quantity that is not positive.
+ 	ErrInvalidQuantity = errors.New("inventory: quantity must be positive")
+ 	// ErrInvalidPrice is returned for a negative unit price.
+@@ -43,20 +44,9 @@
+ 	return &Store{items: make(map[string]Item)}
+ }
+ 
+-// normalizeSKU trims surrounding spaces and upper-cases the SKU, then checks
+-// that it is 1..MaxSKULength characters of A-Z, 0-9 and '-'.
++// normalizeSKU delegates to sku.Normalize.
+ func normalizeSKU(raw string) (string, error) {
+-	s := strings.ToUpper(strings.TrimSpace(raw))
+-	if s == "" || len(s) > MaxSKULength {
+-		return "", fmt.Errorf("%w: %q", ErrInvalidSKU, raw)
+-	}
+-	for _, r := range s {
+-		ok := (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-'
+-		if !ok {
+-			return "", fmt.Errorf("%w: %q", ErrInvalidSKU, raw)
+-		}
+-	}
+-	return s, nil
++	return sku.Normalize(raw)
+ }
+ 
+ // Add stocks qty units of sku at priceCents each. Adding an SKU that is
+diff --git a/sku/sku.go b/sku/sku.go
+new file mode 100644
+--- /dev/null
++++ b/sku/sku.go
+@@ -0,0 +1,31 @@
++// SPDX-License-Identifier: Apache-2.0
++
++// Package sku normalises and validates stock-keeping unit codes.
++package sku
++
++import (
++	"errors"
++	"fmt"
++	"strings"
++)
++
++// MaxLength is the longest SKU accepted after normalisation.
++const MaxLength = 32
++
++// ErrInvalid is returned, wrapped, for an empty, too long or malformed SKU.
++var ErrInvalid = errors.New("inventory: invalid SKU")
++
++// Normalize trims surrounding whitespace and upper-cases raw, then accepts
++// 1..MaxLength characters of A-Z, 0-9 and '-'. On failure it returns "" and
++// an error wrapping ErrInvalid.
++func Normalize(raw string) (string, error) {
++	s := strings.ToUpper(strings.TrimSpace(raw))
++	if s == "" || len(s) > MaxLength || strings.IndexFunc(s, invalid) >= 0 {
++		return "", fmt.Errorf("%w: %q", ErrInvalid, raw)
++	}
++	return s, nil
++}
++
++func invalid(r rune) bool {
++	return !(r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-')
++}

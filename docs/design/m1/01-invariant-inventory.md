@@ -58,7 +58,7 @@ and is never edited apart from it.
 | I4 Reuse | enforced | P6 | `answers`: all |
 | I5 Consumption | partial | P15, P16, P22a (P8b done, inert) | `launch`: admission; `review`: all |
 | I6 Effect intent | partial | P18, P20 (merge half), P22a, P27 (P12a, P12b and P20's `model_call` half done) | `launch`: the `model_call` rows; `merge-local`, `merge-github`: the merge rows, including P20's GitHub settlement for `merge-github` |
-| I7 Review independence | partial | P22a (P7, P8b, P16b done, inert) | `launch`: consumption; `review`: all |
+| I7 Review independence | partial | P22a (P7, P8b, P16b, P31a done, inert), P31 (the live record) | `launch`: consumption; `review`: all |
 | I8 Fencing and attempt binding | partial | P22a (P8a done; P21a, P21b done, inert) | `launch`: all |
 | I9 Accounting | partial | P22a (P11b, P12a, P12b, P20's `model_call` half and P21a done, inert) | `launch`: all |
 | I10 Egress, data policy, context | partial | P16, P22a (P7, P8b, P11, P11b done, inert) | `launch`: all |
@@ -144,6 +144,10 @@ implementation item.
 | fold/replay | `checkRoster`, `checkReview` (`graph/roster.go`): shape, and no `unknown` family | kept | — |
 | consumption | `bindsRequirement` (`graph/roster.go`), `currentRevision` (`graph/supersede.go`); `dispatch.Match` (P8b, #247) places a rostered node only on its pinned roster member, a reviewer, and any other node only on a builder. Kept in code, inert until P22a | kept + GAP | P22a |
 | effect | `serves` (`graph/requirement.go`): the merge's requirement is served at the subject's selected revision | kept | — |
+
+**Qualification (D56; P31).** A reviewer route is qualified only by a committed record (`adc.review-qualification/v1`, under `fixtures/m1/review-qualification/records/`) whose route, prompt (`review.PromptDigest`) and suite digests are the current ones, and whose cases score all four planted defects no_go and at least three of four clean controls go. `qualify.Check` fails closed on a missing record, a stale digest, a missing or altered report, counts that are not the cases', or a score under the bar.
+- **Obligation P22a-6 (review):** P22a's activation of `review` calls `qualify.Check` for the reviewer route it places reviews on, and renders the review node's input with `review.Prompt`. An unqualified route keeps `review` inactive.
+- **Status:** kept + GAP. P31a (the harness, the suite, `review.Prompt` and `qualify.Check`) is done and inert. The live record is the lead's, and P22a's call is P22a's.
 
 ## I8. Fencing, with attempts bound to nodes
 

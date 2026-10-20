@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/config/review-qualification.json",
+  "title": "ReviewQualification",
+  "description": "One run of the reviewer qualification suite (D56; P31; docs/design/m1/00-slice-plan.md): the reviewer route that ran it, the digests of the prompt template and of the suite it ran, each case's expected and returned verdict with its D55 review report's digest, and the score. Committed under fixtures/m1/review-qualification/records/; internal/qualify.Check reads it, and the route is qualified only when the route, prompt and suite digests are the current ones and the score meets the suite's bar (all planted defects no_go, at least three of four clean controls go). The record holds no prompt, diff or reviewer text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "route", "prompt_digest", "suite_digest", "ran_at", "cases", "no_go_on_defects", "go_on_controls", "qualified"],
+  "properties": {
+    "schema": {"const": "adc.review-qualification/v1"},
+    "route": {"$ref": "#/$defs/QualifiedRoute"},
+    "prompt_digest": {"description": "internal/review.PromptDigest: the reviewer prompt's template.", "$ref": "../common/defs.json#/$defs/Digest"},
+    "suite_digest": {"description": "internal/qualify.Suite's digest: suite.json, every case's patch and every sealed file.", "$ref": "../common/defs.json#/$defs/Digest"},
+    "ran_at": {"$ref": "../common/defs.json#/$defs/Time"},
+    "cases": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/QualifiedCase"}},
+    "no_go_on_defects": {"type": "integer", "minimum": 0, "maximum": 64},
+    "go_on_controls": {"type": "integer", "minimum": 0, "maximum": 64},
+    "qualified": {"type": "boolean"}
+  },
+  "$defs": {
+    "QualifiedRoute": {
+      "description": "The registry's reviewer executor the run went through, by its identity: a change to any field is another route.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executor", "family", "adapter", "model", "destination", "endpoint"],
+      "properties": {
+        "executor": {"$ref": "../common/defs.json#/$defs/ExecutorID"},
+        "family": {"$ref": "../records/receipt.json#/$defs/Name"},
+        "adapter": {"$ref": "project-profile.json#/$defs/Slug"},
+        "model": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$"},
+        "destination": {"$ref": "project-profile.json#/$defs/Slug"},
+        "endpoint": {"type": "string", "minLength": 1, "maxLength": 2048}
+      }
+    },
+    "QualifiedCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "expect", "decision", "report_digest"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,95}$"},
+        "expect": {"enum": ["go", "no_go"]},
+        "decision": {"description": "The reviewer's typed decision; none when it returned none or one internal/review.Parse refuses (a miss).", "enum": ["go", "no_go", "none"]},
+        "report_digest": {"description": "The case's adc.review-report/v1 (internal/review.Report), committed beside the record.", "$ref": "../common/defs.json#/$defs/Digest"}
+      }
+    }
+  }
+}

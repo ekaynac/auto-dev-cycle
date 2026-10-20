@@ -1,0 +1,53 @@
+{
+  "project": "fixtures/t0/go-mini",
+  "pass": {
+    "no_go": 4,
+    "go": 3
+  },
+  "cases": [
+    {
+      "id": "defect-transfer-keeps-destination-price",
+      "task": "go-mini-feature-1",
+      "expect": "no_go",
+      "defect": "a wrong result: Transfer keeps the destination's unit price when it already stocks the SKU; the requirement says the destination takes the source's unit price."
+    },
+    {
+      "id": "defect-lowstock-negative-threshold-panics",
+      "task": "go-mini-bugfix-1",
+      "expect": "no_go",
+      "defect": "an unchecked input that panics: LowStock preallocates make([]string, 0, min(threshold, len)), so a negative threshold panics; the base returned none, and the rest of the package must behave as before."
+    },
+    {
+      "id": "defect-formatcents-test-weakened",
+      "task": "go-mini-failing-then-green-1",
+      "expect": "no_go",
+      "defect": "a deleted assertion: The fix is right, but the 100000 case is deleted from TestFormatCentsPositive; the task says not to change any test."
+    },
+    {
+      "id": "defect-formatcents-loses-sign-below-one-unit",
+      "task": "go-mini-failing-then-green-1",
+      "expect": "no_go",
+      "defect": "an arithmetic edge: FormatCents negates only the fraction: -150 is right (the visible test passes) but -50 renders as \"0.50\" and -1 as \"0.01\"."
+    },
+    {
+      "id": "control-transfer",
+      "task": "go-mini-feature-1",
+      "expect": "go"
+    },
+    {
+      "id": "control-lowstock",
+      "task": "go-mini-bugfix-1",
+      "expect": "go"
+    },
+    {
+      "id": "control-formatcents",
+      "task": "go-mini-failing-then-green-1",
+      "expect": "go"
+    },
+    {
+      "id": "control-sku-package",
+      "task": "go-mini-refactor-1",
+      "expect": "go"
+    }
+  ]
+}

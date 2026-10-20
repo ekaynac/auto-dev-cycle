@@ -48,6 +48,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`common/defs.json`](common-defs.md) | Common definitions |
 | [`config/executor-registry.json`](config-executor-registry.md) | ExecutorRegistry |
 | [`config/project-profile.json`](config-project-profile.md) | ProjectProfile |
+| [`config/review-qualification.json`](config-review-qualification.md) | ReviewQualification |
 | [`records/actor.json`](records-actor.md) | Actor |
 | [`records/approval.json`](records-approval.md) | Approval |
 | [`records/attempt-output-refusal.json`](records-attempt-output-refusal.md) | AttemptOutputRefusal |

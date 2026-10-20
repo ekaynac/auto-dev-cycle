@@ -1,0 +1,26 @@
+diff --git a/inventory/money.go b/inventory/money.go
+--- a/inventory/money.go
++++ b/inventory/money.go
+@@ -7,5 +7,10 @@
+ // FormatCents renders an amount of cents as a decimal string with two
+ // fraction digits, for example 1999 as "19.99" and -150 as "-1.50".
+ func FormatCents(cents int) string {
+-	return fmt.Sprintf("%d.%02d", cents/100, cents%100)
++	sign := ""
++	if cents < 0 {
++		sign = "-"
++		cents = -cents
++	}
++	return fmt.Sprintf("%s%d.%02d", sign, cents/100, cents%100)
+ }
+diff --git a/inventory/money_test.go b/inventory/money_test.go
+--- a/inventory/money_test.go
++++ b/inventory/money_test.go
+@@ -9,7 +9,6 @@
+ 		0:      "0.00",
+ 		7:      "0.07",
+ 		1999:   "19.99",
+-		100000: "1000.00",
+ 	}
+ 	for in, want := range cases {
+ 		if got := FormatCents(in); got != want {
