@@ -15,9 +15,7 @@
         "reason": "test_integrity_violation"
       }
     },
-    "holds": [
-      "budget_rail"
-    ],
+    "holds": [],
     "merge": false,
     "canaries": [
       "TestHiddenTransferMovesStockAndPrice",

@@ -9,7 +9,8 @@
 #
 # Each case runs in a temporary directory, under env -i with a temporary
 # HOME, XDG_* and state directory; the real ~/.config/adc must be
-# unchanged after it (inode and mtime). It builds the base remote from the
+# unchanged after it (every path's inode, size, mtime and mode, and every
+# file's sha256; absent before, absent after). It builds the base remote from the
 # T0 project (scripts/lib/base-remote.sh), starts the stub provider with
 # the case's scenario on loopback, writes the registry with the stub's
 # address, starts the installed adcd and bootstraps the operator. Then:
@@ -20,10 +21,12 @@
 #     task create (P22a-2), admission (P22a-3), launch (P22a-5), review
 #     (P22a-6) and task wait and show (P22a-7): until they land it exits 2,
 #     naming them, and claims nothing.
-# Afterwards, every case stops adcd, verifies its log (adc dev verify-log),
-# restarts it (its projections equal a replay, or it refuses to start),
-# stops it again, and runs the shared secret scan (scripts/lib/secrets.sh)
-# over the whole temporary directory. --routes live is P25's. Every wait is
+# Afterwards, every case stops adcd, verifies its log (adc dev verify-log,
+# whose head is seq N > 0), restarts it (it must report its event log
+# verified to seq N, with no new bootstrap secret: it replayed the same
+# store), stops it again, and runs the shared secret scan
+# (scripts/lib/secrets.sh) over the whole temporary directory, both runs'
+# logs (out/adcd-1.log, out/adcd-2.log) included. --routes live is P25's. Every wait is
 # bounded. Exit 0 only when every check holds; 1 when one fails; 2 when the
 # case cannot run.
 set -euo pipefail
@@ -57,6 +60,7 @@ done
 [[ -n "$routes" && -n "$project" && -n "$case" ]] || usage
 [[ "$routes" == stub ]] || cannot "--routes $routes: live routes are P25's"
 [[ "$project" =~ ^[a-z0-9][a-z0-9-]{0,63}$ && "$case" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || usage
+[[ "$project" == go-mini ]] || cannot "--project $project: only go-mini has cycle cases"
 prefix="$(cd "$prefix" && pwd)" || cannot "no prefix $1"
 lib="$prefix/lib/adc"
 node="$lib/node/bin/node"
@@ -82,14 +86,29 @@ within() {
   done
 }
 
-# The real configuration, which no case may touch.
+# The real configuration, which no case may touch: every path's inode, size,
+# mtime and mode, and every file's sha256, or "absent".
 config="${HOME:-/nonexistent}/.config/adc"
-before="$(stat -c '%i %Y' "$config" 2>/dev/null || echo absent)"
+snapshot() {
+  if [[ -e "$config" || -L "$config" ]]; then
+    find "$config" -printf '%p %i %s %T@ %m\n' | LC_ALL=C sort
+    find "$config" -type f -exec sha256sum -- {} + | LC_ALL=C sort
+  else
+    echo absent
+  fi
+}
+before="$(snapshot)" || cannot "$config cannot be read"
 
 work="$(mktemp -d)"
 cleanup() {
-  local p
-  for p in "${stub:-}" "${adcd:-}"; do [[ -z "$p" ]] || kill "$p" 2>/dev/null || true; done
+  local p i
+  for p in "${stub:-}" "${adcd:-}"; do
+    [[ -n "$p" ]] || continue
+    kill "$p" 2>/dev/null || continue
+    for ((i = 0; i < 100; i++)); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+    kill -9 "$p" 2>/dev/null || true
+    wait "$p" 2>/dev/null || true
+  done
   if ((keep)); then echo "installed-cycle: kept $work" >&2; else rm -rf "$work"; fi
 }
 trap cleanup EXIT
@@ -104,7 +123,8 @@ adc() { "${run_env[@]}" ADC_SOCKET="$sock" timeout 60 "$prefix/bin/adc" "$@"; }
 
 task="go-mini-feature-1" scenario="go-mini-feature-1"
 if [[ -n "$case_file" ]]; then
-  task="$(json "$case_file" d.task)" scenario="$(json "$case_file" d.scenario)"
+  task="$(json "$case_file" d.task)" scenario="$(json "$case_file" d.scenario)" want="$(json "$case_file" d.project)"
+  [[ "$want" == "$project" ]] || cannot "case $case is $want's, not $project's"
 fi
 
 step "the base remote of $project's $task"
@@ -121,15 +141,24 @@ stub=$!
 listening() { kill -0 "$stub" 2>/dev/null || die "the stub provider exited: $(head -c 400 "$work/out/stub.err")"; grep -q '^listening ' "$work/out/stub.out"; }
 within 30 "the stub provider" listening
 base="$(sed -n 's/^listening //p' "$work/out/stub.out")"
-"$node" -e 'const fs = require("node:fs"); const d = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-  for (const e of d.executors) if (e.destination.id === "stub") e.destination.endpoint = process.argv[2];
-  fs.writeFileSync(process.argv[3], JSON.stringify(d))' "$fixtures/m1/config/registry-stub.json" "$base" "$work/registry.json"
+n="$("$node" -e 'const fs = require("node:fs"); const d = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); let n = 0;
+  for (const e of d.executors) if (e.destination.id === "stub") { e.destination.endpoint = process.argv[2]; n++; }
+  fs.writeFileSync(process.argv[3], JSON.stringify(d)); console.log(`${n} ${d.executors.length}`)' "$fixtures/m1/config/registry-stub.json" "$base" "$work/registry.json")"
+[[ "$n" =~ ^([1-9][0-9]*)\ ([0-9]+)$ && "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]] ||
+  die "the registry's executors are not all the stub's (rewritten, of all): $n"
 
+# Each run of adcd writes its own log: out/adcd-1.log, out/adcd-2.log.
+run=0
+start_adcd() {
+  run=$((run + 1))
+  log="$work/out/adcd-$run.log"
+  "${run_env[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" --resource-groups "$fixtures/m1/config/groups.json" \
+    --registry "$work/registry.json" >"$log" 2>&1 &
+  adcd=$!
+}
+started() { kill -0 "$adcd" 2>/dev/null || die "adcd exited: $(head -c 400 "$log")"; grep -q "^adcd: started${1:-}" "$log"; }
 step "the installed adcd"
-"${run_env[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" --resource-groups "$fixtures/m1/config/groups.json" \
-  --registry "$work/registry.json" >"$work/out/adcd.log" 2>&1 &
-adcd=$!
-started() { kill -0 "$adcd" 2>/dev/null || die "adcd exited: $(head -c 400 "$work/out/adcd.log")"; grep -q '^adcd: started' "$work/out/adcd.log"; }
+start_adcd
 within 60 "adcd to start" started
 
 step "bootstrapping the operator"
@@ -141,12 +170,12 @@ known "$tok"
 
 if [[ -z "$case_file" ]]; then
   step "preflight: the stub answers its scenario and its usage query; the operator reads the controller"
-  reply="$(curl -sS --max-time 30 -H 'content-type: application/json' \
+  reply="$(curl -q -sS --noproxy '*' --max-time 30 -H 'content-type: application/json' \
     -d '{"model":"stub-reviewer-1","messages":[{"role":"user","content":"preflight"}],"stream":false}' "$base/chat/completions")" ||
     die "the stub provider did not answer"
   id="$(sed -n 's/^{"id":"\([^"]*\)".*/\1/p' <<<"$reply")"
   [[ -n "$id" && "$reply" == *'\"decision\":\"go\"'* ]] || die "the stub's reply is not its scenario's: $(head -c 300 <<<"$reply")"
-  curl -sS --max-time 30 -f "$base/usage/$id" >/dev/null || die "the stub's usage query failed for $id"
+  curl -q -sS --noproxy '*' --max-time 30 -f "$base/usage/$id" >/dev/null || die "the stub's usage query failed for $id"
   adc board --json >"$work/out/board.out" 2>&1 || die "adc board failed: $(head -c 400 "$work/out/board.out")"
   grep -q '"resource":"board"' "$work/out/board.out" || die "adc board: $(head -c 400 "$work/out/board.out")"
 else
@@ -159,16 +188,19 @@ stop() {
   kill -TERM "$adcd"
   stopped() { ! kill -0 "$adcd" 2>/dev/null; }
   within 60 "adcd to stop" stopped
-  wait "$adcd" || die "adcd stopped with an error: $(tail -c 400 "$work/out/adcd.log")"
+  wait "$adcd" || die "adcd stopped with an error: $(tail -c 400 "$log")"
   adcd=""
 }
 stop
 adc dev verify-log --state "$work/state" >"$work/out/verify.out" 2>&1 || die "the log does not verify: $(head -c 400 "$work/out/verify.out")"
-"${run_env[@]}" "$prefix/bin/adcd" run --state-dir "$work/state" --resource-groups "$fixtures/m1/config/groups.json" \
-  --registry "$work/registry.json" >"$work/out/adcd.log" 2>&1 &
-adcd=$!
-within 60 "adcd to restart" started
+seq="$(sed -n 's/^[a-z_]*\/[a-z_]*: head \([0-9][0-9]*\) .*/\1/p' "$work/out/verify.out" | head -n 1)"
+[[ -n "$seq" ]] && ((seq > 0)) || die "verify-log reports no head past seq 0: $(head -c 400 "$work/out/verify.out")"
+secrets_before="$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)"
+start_adcd
+within 60 "adcd to restart" started "; event log verified to seq $seq;"
 stop
+[[ "$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)" == "$secrets_before" ]] ||
+  die "the restart wrote a new bootstrap secret: it did not replay the store"
 kill "$stub" 2>/dev/null || true
 wait "$stub" 2>/dev/null || true
 stub=""
@@ -176,8 +208,8 @@ stub=""
 step "no secret outside the operator's token file"
 scan "" "$boot" "$work"
 scan "$work/home/.config/adc/token" "$tok" "$work"
-after="$(stat -c '%i %Y' "$config" 2>/dev/null || echo absent)"
-[[ "$after" == "$before" ]] || die "the real ~/.config/adc changed: $before, now $after"
+after="$(snapshot)" || die "$config cannot be read"
+[[ "$after" == "$before" ]] || die "the real ~/.config/adc changed"
 
 if [[ -n "${status:-}" ]]; then
   cannot "$case $why"

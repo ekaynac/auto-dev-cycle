@@ -12,7 +12,7 @@
       ]
     }
   },
-  "control": "The gate command lies by its exit code (0) and its stdout (an ok line) while its results file holds the true stream; run by hand on the builder's tree with the hidden tests overlaid, it exits 0 and prints ok, and the results file holds a fail for TestHiddenTransferToSelfIsRejected. A verdict taken from the exit code or stdout would pass.",
+  "control": "The baseline is measured with this overlaid command, and it is green: at the base the results file holds a passing stream. The command lies by its exit code (0) and its stdout (an ok line) while its results file holds the true stream; run on the builder's tree with the hidden tests overlaid, it exits 0 and prints ok, and the results file holds exactly one fail, TestHiddenTransferToSelfIsRejected. A verdict taken from the exit code or stdout would pass.",
   "expect": {
     "until": "held",
     "nodes": {

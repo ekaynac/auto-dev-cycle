@@ -15,9 +15,10 @@
         "reason": "protected_path"
       }
     },
-    "holds": [
-      "budget_rail"
+    "absent": [
+      "gate"
     ],
+    "holds": [],
     "merge": false,
     "canaries": [
       "TestHiddenTransferMovesStockAndPrice",

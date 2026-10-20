@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -340,6 +341,9 @@ func fakeRepo(t *testing.T, listing string, scripts ...string) (root string, env
 		"fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json": "{}", "fixtures/t0/py-mini/repo/m.py": "",
 		"fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json": "{}", "fixtures/t0/go-mini/repo/go.mod": "",
 		"fixtures/m1/stub-provider/server.mjs": "", "fixtures/m1/profiles/go-mini.json": "{}",
+		"fixtures/m1/config/groups.json": "{}", "fixtures/m1/config/registry-stub.json": "{}", "fixtures/m1/config/registry-live.example.json": "{}",
+		"fixtures/m1/stub-provider/scenarios/s.json": "{}", "fixtures/m1/stub-provider/server.d.mts": "", "fixtures/m1/stub-provider/test/t.mjs": "",
+		"fixtures/m1/cases/c/case.json": "{}", "fixtures/m1/stub/go-mini/baseline.json": "{}", "fixtures/m1/issues/1/issue.json": "{}",
 		"scripts/installed-cycle.sh": "", "scripts/lib/secrets.sh": "", "scripts/lib/base-remote.sh": "",
 	} {
 		write(t, filepath.Join(root, name), content, 0o644)
@@ -479,7 +483,9 @@ func TestDistAdaptersRefusals(t *testing.T) {
 			}
 			want := []string{"LICENSE", "NOTICE", "adapters/contract/package.json", "adapters/contract/src/index.ts", "adapters/fake/package.json",
 				"adapters/fake/src/.keep", "adapters/fake/src/main.ts", "adapters/http-chat/package.json", "adapters/http-chat/src/main.ts",
-				"fixtures/m1/profiles/go-mini.json", "fixtures/m1/stub-provider/server.mjs", "fixtures/t0/go-mini/repo/go.mod", "fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json",
+				"fixtures/m1/cases/c/case.json", "fixtures/m1/config/groups.json", "fixtures/m1/config/registry-stub.json", "fixtures/m1/profiles/go-mini.json",
+				"fixtures/m1/stub-provider/scenarios/s.json", "fixtures/m1/stub-provider/server.mjs", "fixtures/m1/stub/go-mini/baseline.json",
+				"fixtures/t0/go-mini/repo/go.mod", "fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json",
 				"fixtures/t0/py-mini/repo/m.py", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json",
 				"gen/ts/formats.cjs", "gen/ts/package.json", "gen/ts/validators.cjs", "node_modules/@adc/contract", "node_modules/@adc/contract-gen",
 				"node_modules/a/LICENSE", "node_modules/a/index.js", "node_modules/a/package.json", "scripts/installed-cycle.sh", "scripts/lib/base-remote.sh", "scripts/lib/secrets.sh"}
@@ -586,6 +592,11 @@ func TestDistAdapters(t *testing.T) {
 		"fixtures/m1/stub-provider/server.mjs", "fixtures/m1/cases/candidate/case.json", "scripts/installed-cycle.sh", "scripts/lib/secrets.sh"} {
 		if fi, err := os.Lstat(filepath.Join(out, f)); err != nil || !fi.Mode().IsRegular() {
 			t.Errorf("%s: %v", f, err)
+		}
+	}
+	for _, f := range []string{"fixtures/m1/stub-provider/test", "fixtures/m1/issues", "fixtures/m1/images", "fixtures/m1/config/registry-live.example.json"} {
+		if _, err := os.Lstat(filepath.Join(out, f)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s is packaged: %v", f, err)
 		}
 	}
 	node, err := exec.LookPath("node")

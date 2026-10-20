@@ -23,9 +23,11 @@ const m1 = "../../fixtures/m1"
 // valid profile, whose task is one of that project's, whose scenario
 // exists, whose overlay and hook are files of the case, whose expected
 // outcomes are registered reasons of their outcomes and holds registered
-// holds, and whose canaries the scenario does not carry (the positive
-// control: the stub cannot leak them itself). Its usage, when given, is the
-// scenario's sum.
+// holds, whose absent kinds are none of its nodes', and whose canaries
+// each occur in a file of the task's hidden/ (its acceptance) and are not
+// carried by the scenario (the positive control: the stub cannot leak them
+// itself). Its usage, when given, is the scenario's sum, and is given only
+// for a scenario whose every script is replies.
 func TestCycleCases(t *testing.T) {
 	reg, err := vocab.Load()
 	if err != nil {
@@ -87,6 +89,13 @@ func TestCycleCases(t *testing.T) {
 				t.Errorf("%s: node %s: %v", name, node, err)
 			}
 		}
+		if c.Expect.Absent != nil {
+			for _, k := range *c.Expect.Absent {
+				if _, ok := c.Expect.Nodes[string(k)]; ok {
+					t.Errorf("%s: %s is both expected and absent", name, k)
+				}
+			}
+		}
 		for _, h := range c.Expect.Holds {
 			if _, ok := reg.Holds[h]; !ok {
 				t.Errorf("%s: %s is not a registered hold", name, h)
@@ -96,15 +105,36 @@ func TestCycleCases(t *testing.T) {
 		if err != nil {
 			continue
 		}
+		var hidden []string
+		hiddenDir := filepath.Join("../../fixtures/t0", string(c.Project), "tasks", string(c.Task), "hidden")
+		if err := filepath.WalkDir(hiddenDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			b, err := os.ReadFile(path)
+			hidden = append(hidden, string(b))
+			return err
+		}); err != nil {
+			t.Errorf("%s: the task's hidden/: %v", name, err)
+		}
 		for _, canary := range c.Expect.Canaries {
 			if strings.Contains(string(body), canary) {
 				t.Errorf("%s: the scenario itself carries the canary %q", name, canary)
+			}
+			found := false
+			for _, h := range hidden {
+				found = found || strings.Contains(h, canary)
+			}
+			if !found {
+				t.Errorf("%s: the canary %q is in no file of %s", name, canary, hiddenDir)
 			}
 		}
 		if c.Expect.Usage != nil {
 			var s struct {
 				Calls map[string]struct {
-					Replies []struct {
+					Turns      json.RawMessage `json:"turns"`
+					Persistent json.RawMessage `json:"persistent"`
+					Replies    []struct {
 						Usage *struct {
 							PromptTokens     int64 `json:"prompt_tokens"`
 							CompletionTokens int64 `json:"completion_tokens"`
@@ -116,7 +146,10 @@ func TestCycleCases(t *testing.T) {
 				t.Fatal(err)
 			}
 			var in, out int64
-			for _, script := range s.Calls {
+			for call, script := range s.Calls {
+				if script.Turns != nil || script.Persistent != nil || script.Replies == nil {
+					t.Errorf("%s: usage is given, but the scenario's %s is not a replies script", name, call)
+				}
 				for _, r := range script.Replies {
 					if r.Usage != nil {
 						in, out = in+r.Usage.PromptTokens, out+r.Usage.CompletionTokens

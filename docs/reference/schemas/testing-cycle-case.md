@@ -26,11 +26,12 @@ No other fields are allowed.
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `until` | yes | one of `candidate`, `held` | How the task ends: closed as a candidate (after review), or held. |
-| `nodes` | yes | map of one of `plan`, `build`, `accept`, `gate`, `review` to object ([fields](#fields-of-expectnodes)) | The outcome and reason of each named node of the task's graph, by kind. |
+| `nodes` | yes | map of one of `plan`, `build`, `accept`, `gate`, `review` to object ([fields](#fields-of-expectnodes)) | The outcome and reason of the task's graph's nodes, by kind: every node of a listed kind, in every round, has this result. A kind listed neither here nor in absent is not asserted. |
+| `absent` |  | array of one of `plan`, `build`, `accept`, `gate`, `review` (unique items) | Node kinds of which no node is ever claimed for the task; none is also in nodes. |
 | `holds` | yes | array of string (minLength `1`) | The registered holds the task ends with. |
 | `merge` | yes | boolean | Whether a merge node is recorded (checkpoint (a): never). |
-| `canaries` | yes | array of string (minLength `8`) | Lines that appear in no builder or reviewer request the stub provider logs. |
-| `usage` |  | object ([fields](#fields-of-expectusage)) | The task's measured tokens, as the scenario's usage gives them. |
+| `canaries` | yes | array of string (minLength `8`) | Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance). |
+| `usage` |  | object ([fields](#fields-of-expectusage)) | The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts). |
 
 No other fields are allowed.
 

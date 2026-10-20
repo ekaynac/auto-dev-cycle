@@ -21,7 +21,17 @@ type CycleCaseExpectNodesValue struct {
 	Reason  string `json:"reason"`
 }
 
-// CycleCaseExpectUsage: The task's measured tokens, as the scenario's usage gives them.
+type CycleCaseExpectAbsentItem string
+
+const (
+	CycleCaseExpectAbsentItemPlan   CycleCaseExpectAbsentItem = "plan"
+	CycleCaseExpectAbsentItemBuild  CycleCaseExpectAbsentItem = "build"
+	CycleCaseExpectAbsentItemAccept CycleCaseExpectAbsentItem = "accept"
+	CycleCaseExpectAbsentItemGate   CycleCaseExpectAbsentItem = "gate"
+	CycleCaseExpectAbsentItemReview CycleCaseExpectAbsentItem = "review"
+)
+
+// CycleCaseExpectUsage: The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts).
 type CycleCaseExpectUsage struct {
 	In  int64 `json:"in"`
 	Out int64 `json:"out"`
@@ -30,15 +40,17 @@ type CycleCaseExpectUsage struct {
 type CycleCaseExpect struct {
 	// How the task ends: closed as a candidate (after review), or held.
 	Until CycleCaseExpectUntil `json:"until"`
-	// The outcome and reason of each named node of the task's graph, by kind.
+	// The outcome and reason of the task's graph's nodes, by kind: every node of a listed kind, in every round, has this result. A kind listed neither here nor in absent is not asserted.
 	Nodes map[string]CycleCaseExpectNodesValue `json:"nodes"`
+	// Node kinds of which no node is ever claimed for the task; none is also in nodes.
+	Absent *[]CycleCaseExpectAbsentItem `json:"absent,omitempty"`
 	// The registered holds the task ends with.
 	Holds []string `json:"holds"`
 	// Whether a merge node is recorded (checkpoint (a): never).
 	Merge bool `json:"merge"`
-	// Lines that appear in no builder or reviewer request the stub provider logs.
+	// Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance).
 	Canaries []string `json:"canaries"`
-	// The task's measured tokens, as the scenario's usage gives them.
+	// The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts).
 	Usage *CycleCaseExpectUsage `json:"usage,omitempty"`
 }
 
