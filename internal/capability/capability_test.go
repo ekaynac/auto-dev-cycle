@@ -120,6 +120,9 @@ func TestTable(t *testing.T) {
 	if ks := EffectKinds(); len(ks) != 0 {
 		t.Errorf("registered effect kinds before launch: %v", ks)
 	}
+	if ks := NodeKinds(); len(ks) != 0 {
+		t.Errorf("node kinds added before merge: %v", ks)
+	}
 	if _, ok := Gating("grant.create"); ok {
 		t.Error("an ungated action is gated")
 	}
@@ -129,5 +132,92 @@ func TestTable(t *testing.T) {
 	review, _ := Of("review")
 	if review.Active() || len(review.Missing()) == 0 {
 		t.Errorf("review: missing %v", review.Missing())
+	}
+}
+
+// requiredBy is the inventory summary's "Required by" column, row for row
+// (01-invariant-inventory.md: derived from §1's table), as rows per
+// capability. A cell is "`a`, `b`: spec" parts joined by "; ": spec is
+// "all", "all but the GitHub effect check" (no effect row), a list of
+// checks, or "the … rows" (all four: the inventory keeps model_call and
+// merge in the same rows); "every other capability" is each one the cell
+// does not name.
+func requiredBy(t *testing.T) map[string][]Row {
+	t.Helper()
+	raw, err := os.ReadFile("../../docs/design/m1/01-invariant-inventory.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := regexp.MustCompile(`^\| (I[0-9]+) [^|]*\|[^|]*\|[^|]*\| (.*) \|$`)
+	name, paren := regexp.MustCompile("`([a-z-]+)`"), regexp.MustCompile(`\([^)]*\)`)
+	checks := map[string]string{"admission": Admission, "fold": Fold, "consumption": Consumption, "effect": Effect}
+	out := map[string][]Row{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		m := row.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		named := map[string]bool{}
+		for _, part := range strings.Split(m[2], "; ") {
+			who, spec, ok := strings.Cut(part, ": ")
+			if !ok {
+				t.Fatalf("%s: %q", m[1], part)
+			}
+			spec = strings.TrimSpace(paren.ReplaceAllString(spec, ""))
+			var rows []Row
+			switch {
+			case spec == "all", strings.HasPrefix(spec, "the ") && strings.Contains(spec, " rows"):
+				rows = all(m[1])
+			case spec == "all but the GitHub effect check":
+				rows = of(m[1], Admission, Fold, Consumption)
+			default:
+				for _, w := range strings.Split(spec, ", ") {
+					c, ok := checks[w]
+					if !ok {
+						t.Fatalf("%s: check %q", m[1], w)
+					}
+					rows = append(rows, Row{m[1], c})
+				}
+			}
+			var caps []string
+			if who == "every other capability" {
+				for _, c := range Table {
+					if !named[c.Name] {
+						caps = append(caps, c.Name)
+					}
+				}
+			} else {
+				for _, x := range name.FindAllStringSubmatch(who, -1) {
+					caps, named[x[1]] = append(caps, x[1]), true
+				}
+			}
+			for _, c := range caps {
+				out[c] = append(out[c], rows...)
+			}
+		}
+	}
+	return out
+}
+
+// TestRowsAreTheInventory (Opus #298 M1): each capability requires exactly
+// the rows the inventory's "Required by" column gives it.
+func TestRowsAreTheInventory(t *testing.T) {
+	sorted := func(rs []Row) []string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.Invariant+" "+r.Check)
+		}
+		slices.Sort(out)
+		return slices.Compact(out)
+	}
+	doc := requiredBy(t)
+	for _, c := range Table {
+		if got, want := sorted(c.Rows), sorted(doc[c.Name]); !slices.Equal(got, want) {
+			t.Errorf("%s requires %v; the inventory says %v", c.Name, got, want)
+		}
+		delete(doc, c.Name)
+	}
+	if len(doc) != 0 {
+		t.Errorf("capabilities the inventory names and the table does not: %v", doc)
 	}
 }

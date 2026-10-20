@@ -69,15 +69,15 @@ and is never edited apart from it.
 | I15 Deferred surfaces | enforced | P22a | `intake`: admission (the guard); every other capability: all |
 | I16 Rails | partial | P17b, P22a (P17a done, inert) | `launch`: all |
 | I17 Containment | unenforced | P9, P14a, P15 (P11 done, inert) | `launch`: all |
-| I18 Acceptance confidentiality | partial | P3, P15, P16 (the builder's I18, moved from P14), P22a | `intake`: admission; `review`: all |
+| I18 Acceptance confidentiality | partial | P15, P16 (the builder's I18, moved from P14), P22a | `intake`: admission; `review`: all |
 | I19 Liveness (D63) | unenforced | P29 | `repeat`: all |
 | I20 Merge approval, fresh review, required configuration | partial | P19, P28, P22b | `merge-local`: consumption, effect; `merge-github`: all |
 | I21 Launch readiness (D51) | unenforced | P17, P22a (P8b, P11 done, inert) | `launch`: all |
 | I22 One admitted task, held included (D51) | unenforced | P22a | `admission`, `launch`, `repeat`: all |
 
-**Lead decision (#245, M1 review of P6).** `answers` is activated by P6 with I15's admission row still a P22a gap: no template is reachable through `answers` (adcd wires no producer of graph events or owed inputs before P16). P22a must re-check this before activating any capability that reaches a template. **Re-checked by P22a-2:** the guard (`graph.CheckSurface`) keeps I15's admission row, so `answers` now holds every row it needs. `adcd` still records no template; the first one (P22a-3) goes through the guard.
+**Lead decision (#245, M1 review of P6).** `answers` is activated by P6 with I15's admission row still a P22a gap: no template is reachable through `answers` (adcd wires no producer of graph events or owed inputs before P16). P22a must re-check this before activating any capability that reaches a template. **Re-checked by P22a-2:** `adcd`'s graph fold refuses every node kind outside M1(a)'s (I15 admission), so `answers` now holds every row it needs.
 
-**In code (P22a-2).** `internal/capability.Table` is §1's table, with one bit per required row, set by the PR that keeps the row. `adcd` wires a capability's actions and registers its effect kinds only when every bit is set and nothing is pending; `adc dev capabilities --json` prints it. `TestKeptIsTheInventory` ties each bit to this file's status (kept or n/a).
+**In code (P22a-2).** `internal/capability.Table` is §1's table, with one bit per required row, set by the PR that keeps the row. `adcd` wires a capability's actions and registers its effect and node kinds only when every bit is set and nothing is pending; `adc dev capabilities --json` prints the table compiled into `adc`. `TestKeptIsTheInventory` ties each bit to this file's status (kept or n/a), and `TestRowsAreTheInventory` each capability's rows to the "Required by" column above.
 
 **Effect implementations land inert.** The `model_call` kind (P12a) and the `git` and GitHub targets (P18, P27) are
 built and tested in their own items. Only P22a registers `model_call`, and only P22b registers `merge` and constructs
@@ -220,7 +220,7 @@ through `lease.completed`. P21a keeps this check.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `checkEvidence` (`graph/events.go`); the deferred-surface guard `graph.CheckSurface` (P22a-2) refuses a template holding an `evidence`, `deploy`, `runtime_verify` or `integration` node, and an `Env` with instrument contracts (gate contracts live apart, P15). Every template `adcd` records goes through it; none is recorded before P22a-3 | kept | — |
+| admission | `checkEvidence` (`graph/events.go`); the deferred-surface guard (P22a-2, an allowlist: `graph.M1Kinds`, and `merge` only while a merge capability is active). `adcd`'s graph fold refuses a `node.recorded` of any other kind, a template's or not, on append and on replay (`graph.Projector.Kinds`, `daemon/wiring.go:nodeKinds`); `graph.CheckSurface` refuses the same of a template, and an `Env` with instrument contracts (gate contracts live apart, P15) | kept | — |
 | fold/replay | the evidence-node folds (`graph/evidence.go`) | kept | — |
 | consumption | `graph.ClaimEvidence` → `contractOf` (`graph/evidence.go`) fails closed with no contracts; `adcd` passes none | kept | — |
 | effect | `eventstore.Tx.IntendEffect` refuses an unregistered kind; `remote_process` (`evidence.RemoteProcessKind`) is not registered in `adcd` | kept | — |

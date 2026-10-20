@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/capability"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 )
 
@@ -85,6 +87,20 @@ func TestEffectKinds(t *testing.T) {
 	}, func() {
 		if _, err := effectKinds(); err == nil || !strings.Contains(err.Error(), "remote_process") {
 			t.Errorf("an undefined active kind: %v", err)
+		}
+	})
+}
+
+// adcd records M1(a)'s node kinds, and merge only while a merge capability
+// is active (I15 admission; Opus #298 L1).
+func TestNodeKinds(t *testing.T) {
+	if ks := nodeKinds(); !slices.Equal(ks, graph.M1Kinds) {
+		t.Fatalf("this build: %v", ks)
+	}
+	local := slices.IndexFunc(capability.Table, func(c capability.Capability) bool { return c.Name == "merge-local" })
+	withTable(t, func(tb []capability.Capability) { tb[local].Rows, tb[local].Pending = nil, nil }, func() {
+		if ks := nodeKinds(); !slices.Equal(ks, append(slices.Clone(graph.M1Kinds), types.NodeKindMerge)) {
+			t.Errorf("merge-local active: %v", ks)
 		}
 	})
 }

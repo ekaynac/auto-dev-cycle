@@ -175,13 +175,20 @@ func TestTaskCancelFoldRefusesForged(t *testing.T) {
 	if _, _, err := b.cancel(b.op, "done", done); err != nil {
 		t.Fatal(err)
 	}
-	forge := func(task, subject string, by types.ActorID) applyFn {
+	// edit, when set, changes the forged payload or event (Opus #298 L2).
+	forgeWith := func(task, subject string, by types.ActorID, edit func(*types.TaskCancelled, *eventstore.Event)) applyFn {
 		return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			p := string(prjA)
 			x := types.TaskCancelled{Task: types.TaskID(task), Project: prjA, Reason: "forged", By: by, At: types.Time(tx.Now().Format(time.RFC3339Nano))}
-			return []eventstore.Event{{ID: newID(t, "evt"), Kind: authority.TaskCancelled, Subject: subject, Project: &p, Payload: must(json.Marshal(x))}}, nil
+			ev := eventstore.Event{ID: newID(t, "evt"), Kind: authority.TaskCancelled, Subject: subject, Project: &p}
+			if edit != nil {
+				edit(&x, &ev)
+			}
+			ev.Payload = must(json.Marshal(x))
+			return []eventstore.Event{ev}, nil
 		}
 	}
+	forge := func(task, subject string, by types.ActorID) applyFn { return forgeWith(task, subject, by, nil) }
 	h := b.head()
 	for name, c := range map[string]struct {
 		p     identity.Principal
@@ -192,6 +199,14 @@ func TestTaskCancelFoldRefusesForged(t *testing.T) {
 		"another subject":                  {b.op, forge(approved, done, b.op.Actor())},
 		"another actor than the event's":   {b.sup, forge(approved, approved, b.op.Actor())},
 		"an unknown task":                  {b.op, forge(newID(t, "tsk"), approved, b.op.Actor())},
+		"another project in the payload":   {b.op, forgeWith(approved, approved, b.op.Actor(), func(x *types.TaskCancelled, _ *eventstore.Event) { x.Project = prjB })},
+		"another project on the event": {b.op, forgeWith(approved, approved, b.op.Actor(), func(_ *types.TaskCancelled, ev *eventstore.Event) {
+			p := string(prjB)
+			ev.Project = &p
+		})},
+		"another time than the event's": {b.op, forgeWith(approved, approved, b.op.Actor(), func(x *types.TaskCancelled, _ *eventstore.Event) {
+			x.At = types.Time(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano))
+		})},
 	} {
 		if err := b.trySeed(c.p, c.apply); err == nil || b.head() != h {
 			t.Errorf("%s: admitted: %v", name, err)

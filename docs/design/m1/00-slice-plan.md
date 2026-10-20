@@ -132,7 +132,7 @@ is derived from this table, never edited apart from it.
 
 | Capability | Checkpoint | Required inventory rows (all four, unless named) | Activated by | Until then |
 |---|---|---|---|---|
-| `intake`: `project.create`, `task.create` (creation and the Ready backlog) | a | I1 admission (P3), fold (P3, P6, with P5's recorded answers); I18 admission (P3); I15 admission (P22a's guard) | P22a | the actions refuse `action_deferred`. P1's and P3's acceptance runs in-process (unit and `internal/fixtures`); their installed creation smokes are deferred to P22a. No guard is bypassed: the installed binary keeps refusing until P22a |
+| `intake`: `project.create`, `task.create`, `task.cancel` (creation, the Ready backlog and its cancel, #226 entry 23) | a | I1 admission (P3), fold (P3, P6, with P5's recorded answers); I18 admission (P3); I15 admission (P22a's guard) | P22a | the actions refuse `action_deferred`. P1's and P3's acceptance runs in-process (unit and `internal/fixtures`); their installed creation smokes are deferred to P22a. No guard is bypassed: the installed binary keeps refusing until P22a |
 | `answers`: `input.answer` | a | I2, I3, I4; I15 | P6 | `action_deferred` |
 | `admission`: one admitted task, held tasks included (D51) | a | I22; I15 | P22a | no task leaves Ready |
 | `launch`: dispatch and attempts, through `match(card, executor)` | a | I5 admission; I6 `model_call` rows; I7 consumption; I8; I9; I10; I11; I12; I16; I17; I21; I22; I15 | P22a | no attempt starts; `match` returns no assignment; `model_call` unregistered |
@@ -151,7 +151,7 @@ is derived from this table, never edited apart from it.
   only then is B admitted.
 
 **Owned actions.** `internal/daemon/matrix.go:deferred` owns seven actions as M1 (15 D1, A7). This plan wires three:
-`project.create`, `task.create` and `input.answer`. The other four are re-homed per Q7, and P23 records it.
+`project.create`, `task.create` and `input.answer`; P22a-2 adds `task.cancel` (#226 entry 23), a fourth. The other four are re-homed per Q7, and P23 records it.
 
 **Intake fixtures (15 §1.3).**
 - **In M1:** 11:189, 11:196, the answer half of 11:197, 11:239-248 (§2.7's interrupted-call cases), basic gate-result

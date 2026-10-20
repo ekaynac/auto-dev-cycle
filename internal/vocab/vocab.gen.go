@@ -85,7 +85,7 @@ var (
 	ReasonLineageUndeclared = types.ReasonCodeOf("lineage_undeclared")
 	// ReasonLogIntegrityBroken: The event log fails verification: a gap, a broken hash link, an edited event, or (against a trusted head) truncation or a rewritten tail.
 	ReasonLogIntegrityBroken = types.ReasonCodeOf("log_integrity_broken")
-	// ReasonOperatorOnly: The action is an operator's alone in this build: only an operator revokes an actor or issues, revokes or replaces a token, and a supervisor's agent.enrol would wait for a human confirmation this build cannot take (14 R6), so it is refused rather than proposed.
+	// ReasonOperatorOnly: The action is an operator's alone in this build: only an operator revokes an actor or issues, revokes or replaces a token, and a supervisor's agent.enrol would wait for a human confirmation this build cannot take (14 R6), so it is refused rather than proposed; and a supervisor's task.cancel of a task it did not create, or that has an approval in force (#226 entry 23).
 	ReasonOperatorOnly = types.ReasonCodeOf("operator_only")
 	// ReasonP3Banked: A P3 finding banked as background work (plan §2.5).
 	ReasonP3Banked = types.ReasonCodeOf("p3_banked")

@@ -188,7 +188,7 @@ want 0 task
 tsk="$(field task task)" first="$(field task first_seq)"
 [[ "$tsk" == tsk_* && -n "$first" ]] || die "task create: no task id: $(head -c 400 "$out/task.out")"
 grep -q '"state":"ready"' "$out/task.out" || die "task create: not ready: $(head -c 400 "$out/task.out")"
-adc_as /tmp/op cancel task cancel --expect "$first" --reason smoke --json --scope "{\"task\":\"$tsk\",\"reason\":\"smoke\"}"
+adc_as /tmp/op cancel task cancel --expect "$first" --reason smoke --json --scope "{\"task\":\"$tsk\"}"
 want 0 cancel
 adc_as /tmp/op board board --json
 want 0 board

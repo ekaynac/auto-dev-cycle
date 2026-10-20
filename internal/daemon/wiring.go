@@ -161,6 +161,18 @@ func effectKinds() (eventstore.EffectKinds, error) {
 	return out, nil
 }
 
+// nodeKinds are the node kinds adcd records (I15 admission, Opus #298
+// M2): M1(a)'s, and those the active capabilities add (merge, P22b). The
+// graph fold refuses a node.recorded of any other, a template's or not,
+// on append and on replay.
+func nodeKinds() []types.NodeKind {
+	ks := slices.Clone(graph.M1Kinds)
+	for _, k := range capability.NodeKinds() {
+		ks = append(ks, types.NodeKind(k))
+	}
+	return ks
+}
+
 // eventKinds merges the event kinds of every package the writer projects;
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {
@@ -199,7 +211,7 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		authority.OwedProjector{}.Project,
 		capacity.Hook(leases, r),
 		ledger.Project,
-		modelcall.Project,                                     // each call's binding, by call and by lease: the settlement's (#226 entries 70, 78)
-		graph.Projector{Answers: authority.Answers{}}.Project, // the folds check the recorded answers (M1 P6)
+		modelcall.Project, // each call's binding, by call and by lease: the settlement's (#226 entries 70, 78)
+		graph.Projector{Answers: authority.Answers{}, Kinds: nodeKinds()}.Project, // the folds check the recorded answers (M1 P6) and the deferred surfaces (I15)
 	)
 }

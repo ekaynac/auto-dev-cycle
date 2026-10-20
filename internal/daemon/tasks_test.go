@@ -34,7 +34,8 @@ func appliedResult[T any](t *testing.T, what string, code int, out, errb string)
 // P22a-2 (W9, W10): intake is active, so the installed commands create a
 // project (P1's creation smoke) and a task in it, with a scope file and an
 // attachment (P3's), which the board shows in Ready; the operator cancels
-// it, and the board shows it in Done, cancelled.
+// it, its reason taken from --reason (the scope names none; Opus #298 L5),
+// and the board shows it in Done, cancelled.
 func TestIntake(t *testing.T) {
 	c := runCommanded(t)
 	op := c.op.Reveal()
@@ -69,7 +70,7 @@ func TestIntake(t *testing.T) {
 	if code, out, errb = c.adc(op, "board", "--json"); code != entry.ExitOK || !strings.Contains(out, `"column":"ready"`) || !strings.Contains(out, `"cancelled":false`) {
 		t.Fatalf("board: %d %s %s", code, out, errb)
 	}
-	cancel := fmt.Sprintf(`{"task":%q,"reason":"smoke"}`, tsk.Task)
+	cancel := fmt.Sprintf(`{"task":%q}`, tsk.Task)
 	code, out, errb = c.adc(op, "task", "cancel", "--expect", fmt.Sprint(created.FirstSeq), "--reason", "smoke", "--json", "--scope", cancel)
 	if _, res := appliedResult[struct{ State string }](t, "task cancel", code, out, errb); res.State != authority.TaskCancelledState {
 		t.Fatalf("task cancel: %+v", res)
