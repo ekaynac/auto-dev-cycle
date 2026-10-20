@@ -292,7 +292,7 @@ func TestIntegrityProcess(t *testing.T) {
 		},
 		"a reader that never returns": func(context.Context, string, int64) ([]byte, bool, error) { <-stuck; return nil, false, nil },
 	} {
-		maxRunTime = 2*baseline + time.Second
+		maxRunTime = baseline + 250*time.Millisecond // the run reaches its first read well within a whole run's time
 		scratch, n, begin := t.TempDir(), len(procs()), time.Now()
 		g := Integrity(f.repo, f.base, testLister(t), scratch)
 		done := make(chan Verdict, 1)
