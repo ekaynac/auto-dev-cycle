@@ -20,38 +20,51 @@ import (
 )
 
 // P14d-b (#226 entries 74, 85, 99; Astra #255 H5, M9; Astra #292 H3, H4
-// and round 2's 2, 3, 5 to 8), on the package scan of each version and
-// platform. It only adds blocks and warnings to main's comparison.
-// Decision A: what the guard cannot follow is named in a block, never
-// modelled further.
+// and round 2's 2, 3, 5 to 8; Opus #318), on the package scan of each
+// version and platform. It only adds blocks and warnings to main's
+// comparison. Decision A: what the guard cannot follow is named in a
+// block, never modelled further; opacity never hides a removal: a base
+// identity the candidate lacks blocks, as unverifiable when opaque.
 //   - A test's cases are identities, each counted (a name may repeat):
 //   - each row of a literal table (slice, array or map; inline, or a local
 //     the test uses only as a range's expression: any other use, an alias,
 //     a copy, delete, clear, an argument, an address or a write, makes it
-//     opaque) a loop ranges over when its body asserts, skips or runs
-//     subtests (itself, through a local closure it calls, or a helper's
-//     subtests). A row's identity is its loop's (its position among the
-//     test's or the helper's, and whether it checks or only runs subtests:
-//     a row moved under another loop is removed) and its own: its map key,
-//     else its first string literal (or a call's: append(id, "commit")),
-//     else its canonical text (go/printer, no comments: gofmt changes
-//     none). A row whose loop only ran subtests and now checks is kept
-//     (a strengthening); a subtest's name never is so read (Astra r2 2).
-//   - each t.Run with a constant name, nested names joined by "/", read
-//     through its callback: a literal, a local closure, or a package
-//     function (a named callback: Astra H3).
-//   - A same-package helper called with a testing value, and a local
-//     closure called, deferred, given to t.Cleanup or as t.Run's callback
-//     (Astra r2 8), contribute their cases where they are called, under the
+//     opaque) a loop ranges over when its body asserts or skips (checks)
+//     or runs subtests (runs): itself, through a local closure it calls,
+//     or a helper running a subtest whatever its name (Opus #318 H3). A
+//     row's identity is its loop's (its position among the test's or the
+//     helper's, and runs, checks, or runs checks: a row moved under
+//     another loop is removed) and its own: its map key, else its first
+//     string literal (or a call's: append(id, "commit")); a row with
+//     neither is counted per loop, "(nameless)", its text in its hash
+//     (Opus #318 M1). A row whose loop ran subtests and now runs them and
+//     checks is kept (a strengthening); any other change of the loop's
+//     kind removes it (Opus #318 H1); a subtest's name is never so read
+//     (Astra r2 2).
+//   - each t.Run with a constant name, nested names joined by "/" (a
+//     prefix past maxPrefix bytes is a digest: Opus #318 H5), read through
+//     its callback: a literal, a local closure, or a package function (a
+//     named callback: Astra H3).
+//   - A function literal names cases only where it runs (Opus #318 H2):
+//     called on the spot (defer and go too), a testing value's Run or
+//     Cleanup callback, or an argument of a followed helper. A local
+//     closure never assigned again nor addressed is read where it is
+//     called, given to t.Cleanup or as t.Run's callback (Astra r2 8); one
+//     also used as a value is followed so, and opaque (Opus #318 M2). Any
+//     other literal names no case, and makes its summary opaque.
+//   - A same-package helper called with a testing value, and a followed
+//     closure, contribute their cases where they are called, under the
 //     caller's subtest name: each one's summary is read once and composed
-//     per call (Astra H3). A summary whose followed closures and helpers
-//     nest maxCaseDepth deep is not followed, the same wherever it is
-//     called, so no count depends on the order of the calls (Astra r2 5).
-//     A cycle, a helper of several declarations (race, !race), a summary
-//     too deep, a t.Run named by neither a constant nor a row, and a loop
-//     over another source are sources the guard cannot follow (opaque): a
-//     removal is then named unverifiable. A branch a constant condition
-//     never takes names no case.
+//     per call (Astra H3): a summary is read from its own function, at no
+//     caller's depth, so no count depends on the order of the calls
+//     (Astra r2 5). A loop whose drives' reading the depth cut is opaque,
+//     labelled deep when nothing else is known (Opus #318 M3). A helper
+//     declared more than once (race, !race) whose declarations name or run
+//     cases is one identity carrying a digest of every declaration's
+//     canonical text (Opus #318 H4, the lead's decision). A cycle, a t.Run
+//     named by neither a constant nor a row, and a loop over another
+//     source are sources the guard cannot follow (opaque). A branch a
+//     constant condition never takes names no case.
 //   - A test's cases are kept per build-constraint alternative (Astra H4):
 //     a base alternative is compared with the candidate's of the same
 //     constraint, else with what every candidate alternative holds.
@@ -60,42 +73,72 @@ import (
 //     branch around it (an if with its Init, an else with the if it holds,
 //     for, switch and type switch with Init, select, case and comm
 //     clauses), each control's text built once (Astra r2 3, 7). With equal
-//     counts, a changed print warns; a changed row under its identity
-//     warns whatever the counts, when nothing blocks the test.
-//   - Work: canonical text, loop bodies, helper bodies and summaries are
-//     charged to the guard's work bound, which is checked right after each
-//     charge (Astra r2 6); past it, reading stops and the test's file is
-//     unverifiable. drives' answers are cached per body and depth (Astra
-//     r2 5): a depth-limited answer is never reused at another depth.
+//     counts, a changed print warns; a changed row under its identity (a
+//     running hash of its text: Opus #318 H5) warns whatever the counts,
+//     when nothing blocks the test.
+//   - Work: canonical text, bodies, each identity as it is built, and
+//     summaries are charged to the case layer's own bound per package scan
+//     (maxCaseWork, apart from the run's r.work: Opus #318 H6), checked
+//     right after each charge (Astra r2 6), with the run's cancellation;
+//     past it, reading stops and the test's file is unverifiable. drives'
+//     answers are cached per body, mode and depth (Astra r2 5).
+//   - New blocks main has none of, by design: a removed row or subtest
+//     (the purpose); and, as costs: a driving loop inserted before an
+//     existing one (its position shifts); a table used anywhere but its
+//     range; a loop's kind changed other than runs to runs checks; a row's
+//     first string literal edited when it is not its name; a closure never
+//     called whose literal held identities; any change to a helper of
+//     several declarations that names or runs cases.
 //   - Residual: helpers of other packages, testify suites, a table built by
-//     appends or a helper, the cases of a helper of several declarations.
+//     appends or a helper, a row skipped by its loop's own code (if tc.name
+//     == "zero" { continue }: Opus #318 L1).
 
-// maxCaseDepth bounds closures and helpers followed within one another.
-const maxCaseDepth = 8
+// maxCaseDepth bounds drives' reading of closures within one another;
+// maxPrefix, an identity's subtest prefix, past which it is a digest.
+const maxCaseDepth, maxPrefix = 8, 256
 
-// caseScan is a package scan's case state, made on its first test.
+// maxCaseWork is the case layer's own work bound per package scan (Opus
+// #318 H6): canonical text, bodies, identities and summaries, kept apart
+// from the run's r.work, as the skip and out layers keep theirs. Var:
+// tests lower it.
+var maxCaseWork = 1 << 24
+
+// caseScan is a package scan's case state, made on its first test: its
+// work, drives' answers, the summaries, the helpers being summarized and
+// the branches a constant condition never takes.
 type caseScan struct {
-	driven map[driveKey]bool      // drives' answers
-	sums   map[ast.Node]*caseSum  // helpers' and closures' summaries
-	on     map[*ast.FuncDecl]bool // helpers being summarized (a cycle)
-	dead   map[ast.Node]bool      // branches a constant condition never takes
+	work   int
+	driven map[driveKey]drive
+	sums   map[ast.Node]*caseSum
+	on     map[*ast.FuncDecl]bool
+	dead   map[ast.Node]bool
 }
 
 // caseAlts is a test's cases per build-constraint alternative.
 type caseAlts = map[string]*caseSum
 
-// caseSum is a test's or a helper's cases: identities ("row …" or "run …")
-// counted, each row's canonical text, whether a case source is one the
-// guard cannot follow, whether a helper's cycle cut it (never cached), the
-// height of the closures and helpers it follows within one another, and (a
-// test's) its print.
+// caseSum is a test's or a helper's cases: identities ("row …", "run …"
+// or "hlp …") counted, a running hash of each row's canonical text,
+// whether a case source is one the guard cannot follow, whether a helper's
+// cycle cut it (never cached), whether it runs a subtest whatever its name
+// (Opus #318 H3), and (a test's) its print.
 type caseSum struct {
-	ids         map[string]int
-	rows        map[string]string
-	opaque, cyc bool
-	height      int
-	print       string
+	ids               map[string]int
+	rows              map[string][32]byte
+	opaque, cyc, runs bool
+	print             string
 }
+
+func newSum() *caseSum { return &caseSum{ids: map[string]int{}, rows: map[string][32]byte{}} }
+
+// drive is drives' answer: no, yes, or cut by the depth (Opus #318 M3).
+type drive int8
+
+const (
+	driveNo drive = iota + 1 // ordered: max is the strongest answer
+	driveCut
+	driveYes
+)
 
 type driveKey struct {
 	body  ast.Node
@@ -107,18 +150,21 @@ type driveKey struct {
 // work (tests read them: bounds, never a clock).
 var caseVisits, caseWork atomic.Int64
 
-// charge adds n to the work bound; false past it.
+// charge adds n to the case layer's work; false past its bound.
 func (s *pkgScan) charge(n int) bool {
-	s.r.work += n
+	s.cs.work += n
 	caseWork.Add(int64(n))
-	return s.r.work <= maxWork
+	return !s.over()
 }
 
+// over: the case layer is past its bound, or the run is cancelled.
+func (s *pkgScan) over() bool { return s.cs.work > maxCaseWork || s.r.ctx.Err() != nil }
+
 // caseFacts records fn's cases under the test key k and its build
-// constraint cons; past the work bound, its file is unverifiable.
+// constraint cons; past the case layer's bound, its file is unverifiable.
 func (s *pkgScan) caseFacts(fa *pkgFacts, k, path, cons string, fn *ast.FuncDecl) {
 	if s.cs.driven == nil {
-		s.cs = caseScan{map[driveKey]bool{}, map[ast.Node]*caseSum{}, map[*ast.FuncDecl]bool{}, map[ast.Node]bool{}}
+		s.cs = caseScan{0, map[driveKey]drive{}, map[ast.Node]*caseSum{}, map[*ast.FuncDecl]bool{}, map[ast.Node]bool{}}
 	}
 	c := s.cases(fn.Body, "")
 	c.print = s.testPrint(fn.Body)
@@ -128,19 +174,22 @@ func (s *pkgScan) caseFacts(fa *pkgFacts, k, path, cons string, fn *ast.FuncDecl
 	if old := fa.cases[k][cons]; old != nil { // declared twice under one constraint: what both hold
 		c = common(old, c)
 	}
-	if fa.cases[k][cons] = c; s.r.work > maxWork && fa.bad[path] == "" { // another layer's reason kept
+	if fa.cases[k][cons] = c; s.over() && fa.bad[path] == "" { // another layer's reason kept
 		fa.bad[path] = "test cases or assertions past the guard's work bound"
 	}
 }
 
 // caseWalk is one body's reading: its summary, its local tables and the
-// closures followed, the rows' traced names, its loops' label and count,
-// and its function's (the test's or the helper's: its closures' labels).
+// closures followed (valued: also used as a value, so opaque), the rows'
+// traced names, its loops' label and count, and its function's (the
+// test's or the helper's: its closures' labels).
 type caseWalk struct {
 	sum      *caseSum
 	lits     map[types.Object]*ast.CompositeLit
 	closures map[types.Object]*ast.FuncLit
-	defs     map[*ast.FuncLit]bool
+	valued   map[types.Object]bool
+	defs     map[*ast.FuncLit]bool // followed closures' literals: read where called
+	unread   map[*ast.FuncLit]bool // valued ones' literals: they may run unread
 	traced   map[types.Object]bool
 	self     string
 	loops    int
@@ -150,23 +199,25 @@ type caseWalk struct {
 // cases reads body's cases; self labels its loops ("" a test's, "name#" a
 // helper's).
 func (s *pkgScan) cases(body *ast.BlockStmt, self string) *caseSum {
-	w := &caseWalk{sum: &caseSum{ids: map[string]int{}, rows: map[string]string{}}, traced: map[types.Object]bool{}, self: self, root: self, defs: map[*ast.FuncLit]bool{}}
+	w := &caseWalk{sum: newSum(), traced: map[types.Object]bool{}, self: self, root: self, defs: map[*ast.FuncLit]bool{}, unread: map[*ast.FuncLit]bool{}}
 	if !s.charge(int(body.End() - body.Pos())) {
 		return w.sum
 	}
-	w.lits, w.closures = s.locals(body)
-	for _, fl := range w.closures {
-		w.defs[fl] = true
+	w.lits, w.closures, w.valued = s.locals(body)
+	for o, fl := range w.closures {
+		w.defs[fl], w.unread[fl] = true, w.valued[o]
 	}
 	s.walk(w, body, "")
 	return w.sum
 }
 
 // locals are body's local tables and closures the guard follows: a table
-// whose every use is a range's expression, a closure whose every use is a
-// call or a testing value's Cleanup or Run callback (Astra #292 H1; r2 8).
-func (s *pkgScan) locals(body ast.Node) (map[types.Object]*ast.CompositeLit, map[types.Object]*ast.FuncLit) {
-	lits, closures := map[types.Object]*ast.CompositeLit{}, map[types.Object]*ast.FuncLit{}
+// whose every use is a range's expression (Astra #292 H1); a closure never
+// assigned again nor addressed, valued when it has another use than a
+// call or a testing value's Cleanup or Run callback (Opus #318 M2: it is
+// followed where called, and opaque).
+func (s *pkgScan) locals(body ast.Node) (map[types.Object]*ast.CompositeLit, map[types.Object]*ast.FuncLit, map[types.Object]bool) {
+	lits, closures, valued := map[types.Object]*ast.CompositeLit{}, map[types.Object]*ast.FuncLit{}, map[types.Object]bool{}
 	define := func(id *ast.Ident, v ast.Expr) {
 		switch x := ast.Unparen(v).(type) {
 		case *ast.CompositeLit:
@@ -175,14 +226,20 @@ func (s *pkgScan) locals(body ast.Node) (map[types.Object]*ast.CompositeLit, map
 			closures[s.info.Defs[id]] = x
 		}
 	}
-	uses, kept := map[types.Object]int{}, map[types.Object]int{}
+	uses, kept, changed := map[types.Object]int{}, map[types.Object]int{}, map[types.Object]bool{}
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.AssignStmt:
 			for i, l := range x.Lhs {
 				if id := ident(l); id != nil && s.info.Defs[id] != nil && len(x.Lhs) == len(x.Rhs) {
 					define(id, x.Rhs[i])
+				} else if id != nil {
+					changed[s.info.Uses[id]] = true
 				}
+			}
+		case *ast.UnaryExpr:
+			if id := ident(x.X); id != nil && x.Op == token.AND {
+				changed[s.info.Uses[id]] = true
 			}
 		case *ast.ValueSpec:
 			for i, id := range x.Names {
@@ -211,10 +268,13 @@ func (s *pkgScan) locals(body ast.Node) (map[types.Object]*ast.CompositeLit, map
 	for o, n := range uses {
 		if n != kept[o] {
 			delete(lits, o)
+			valued[o] = true
+		}
+		if changed[o] {
 			delete(closures, o)
 		}
 	}
-	return lits, closures
+	return lits, closures, valued
 }
 
 // callback is the function a testing value's Run (its second argument) or
@@ -284,45 +344,80 @@ func (s *pkgScan) constCond(e ast.Expr, v bool) bool {
 	return ok && !v && b.Op == token.LAND && (s.constCond(b.X, false) || s.constCond(b.Y, false))
 }
 
+// walk reads n's cases under prefix. A function literal is read where it
+// runs (Opus #318 H2): called on the spot (under defer or go too), a
+// testing value's Run or Cleanup callback, or an argument of a followed
+// helper; a followed closure where it is called; any other literal names
+// no case, and makes the summary opaque.
 func (s *pkgScan) walk(w *caseWalk, n ast.Node, prefix string) {
+	inPlace := map[*ast.FuncLit]bool{}
 	ast.Inspect(n, func(n ast.Node) bool {
-		if n == nil || s.r.work > maxWork || s.cs.dead[n] {
+		if n == nil || s.over() || s.cs.dead[n] {
 			return false
 		}
 		switch x := n.(type) {
 		case *ast.IfStmt:
 			s.markDead(x)
 		case *ast.FuncLit:
-			return !w.defs[x] // a followed closure is read where it runs
+			if !inPlace[x] && (!w.defs[x] || w.unread[x]) {
+				w.sum.opaque = true
+			}
+			return inPlace[x]
 		case *ast.RangeStmt:
 			s.rows(w, x, prefix)
 		case *ast.CallExpr:
-			if !s.charge(1) {
-				return false
-			}
 			if s.runCall(x) {
 				s.run(w, x, prefix)
 				return false
 			}
-			if _, lit := ast.Unparen(s.callback(x)).(*ast.FuncLit); s.callback(x) != nil && !lit { // Cleanup: a literal is read in place
-				s.follow(w, s.callback(x), prefix)
-			} else if fl := w.closures[s.info.Uses[ident(x.Fun)]]; fl != nil {
+			if fl, ok := ast.Unparen(x.Fun).(*ast.FuncLit); ok {
+				inPlace[fl] = true
+			}
+			if cb := s.callback(x); cb != nil { // Cleanup
+				if fl, ok := ast.Unparen(cb).(*ast.FuncLit); ok {
+					inPlace[fl] = true
+				} else {
+					s.follow(w, cb, prefix)
+				}
+			}
+			if w.closures[s.info.Uses[ident(x.Fun)]] != nil {
 				s.follow(w, x.Fun, prefix)
 			} else if d := s.helper(x); d != nil {
 				s.compose(w, s.helperSum(d), prefix)
+				for _, a := range x.Args {
+					if fl, ok := ast.Unparen(a).(*ast.FuncLit); ok {
+						inPlace[fl] = true
+					}
+				}
 			}
 		}
 		return true
 	})
 }
 
-// rows records a driving loop's rows.
+// rows records a driving loop's rows. Its label is its position and what
+// it does: runs, checks, or runs checks (Opus #318 H1); when the depth cut
+// drives' reading, opaque, and deep if nothing else is known (M3).
 func (s *pkgScan) rows(w *caseWalk, x *ast.RangeStmt, prefix string) {
-	if !s.drives(x.Body, w.closures, true, 0) {
+	checks, runs := s.drives(x.Body, w.closures, false, 0), s.drives(x.Body, w.closures, true, 0)
+	if checks == driveNo && runs == driveNo {
 		return
 	}
 	w.loops++
-	loop := w.self + strconv.Itoa(w.loops) + map[bool]string{true: " checks", false: " runs"}[s.drives(x.Body, w.closures, false, 0)]
+	var kind []string
+	if runs == driveYes {
+		kind = append(kind, "runs")
+	}
+	if checks == driveYes {
+		kind = append(kind, "checks")
+	}
+	if checks == driveCut || runs == driveCut { // what the depth hid is unknown: opaque, and deep when nothing else is known
+		w.sum.opaque = true
+		if kind == nil {
+			kind = []string{"deep"}
+		}
+	}
+	loop := w.self + strconv.Itoa(w.loops) + " " + strings.Join(kind, " ")
 	lit, _ := ast.Unparen(x.X).(*ast.CompositeLit)
 	if id := ident(x.X); id != nil && lit == nil {
 		lit = w.lits[s.info.Uses[id]]
@@ -344,25 +439,47 @@ func (s *pkgScan) rows(w *caseWalk, x *ast.RangeStmt, prefix string) {
 		} else if ok {
 			key = kv.Value // an array's index
 		}
-		k := "row " + prefix + s.rowName(key) + " @" + loop
-		w.sum.ids[k]++
-		w.sum.rows[k] += s.canon(e) + "\n"
-		if s.r.work > maxWork {
+		name, named := s.rowName(key)
+		if isMap && !named {
+			name = s.canon(key) // a map's key names its row
+		} else if !named {
+			name = "(nameless)" // counted (Opus #318 M1): its text is the row's hash's
+		}
+		k := "row " + prefix + name + " @" + loop
+		if !s.charge(len(k)) {
 			return
 		}
+		w.sum.ids[k]++
+		w.sum.rows[k] = rowChain(w.sum.rows[k], s.canon(e))
 	}
+}
+
+// rowChain is h extended by text: a row's running hash (Opus #318 H5: never
+// its text concatenated).
+func rowChain(h [32]byte, text string) [32]byte {
+	return sha256.Sum256(append(h[:], text...))
 }
 
 // run records a t.Run's identity and reads its callback under its name.
 func (s *pkgScan) run(w *caseWalk, x *ast.CallExpr, prefix string) {
+	w.sum.runs = true
 	name := "*" // a traced row's name: its row is the identity
 	if tv := s.info.Types[x.Args[0]]; tv.Value != nil && tv.Value.Kind() == constant.String {
 		name = constant.StringVal(tv.Value) // a literal or a constant
-		w.sum.ids["run "+prefix+name]++
+		id := "run " + prefix + name
+		if !s.charge(len(id)) {
+			return
+		}
+		w.sum.ids[id]++
 	} else if !mentionsAny(x.Args[0], s.info, w.traced) {
 		w.sum.opaque, name = true, "?"
 	}
-	s.follow(w, x.Args[1], prefix+name+"/")
+	next := prefix + name + "/"
+	if len(next) > maxPrefix { // a digest of a long one: identities grow linearly in their names (Opus #318 H5)
+		d := sha256.Sum256([]byte(next))
+		next = "#" + hex.EncodeToString(d[:8]) + "/"
+	}
+	s.follow(w, x.Args[1], next)
 }
 
 // follow reads the function cb runs, under prefix: a literal in place, a
@@ -375,6 +492,7 @@ func (s *pkgScan) follow(w *caseWalk, cb ast.Expr, prefix string) {
 	}
 	id := ident(cb)
 	if fl := w.closures[s.info.Uses[id]]; fl != nil {
+		w.sum.opaque = w.sum.opaque || w.valued[s.info.Uses[id]]
 		s.compose(w, s.closureSum(w, id.Name, fl), prefix)
 	} else if d := s.declOf(cb); d != nil {
 		s.compose(w, s.helperSum(d), prefix)
@@ -390,94 +508,121 @@ func (s *pkgScan) closureSum(w *caseWalk, name string, fl *ast.FuncLit) *caseSum
 		return c
 	}
 	sub := *w // its tables, closures and traced names
-	sub.sum, sub.self, sub.loops = &caseSum{ids: map[string]int{}, rows: map[string]string{}}, w.root+name+"#", 0
+	sub.sum, sub.self, sub.loops = newSum(), w.root+name+"#", 0
+	if !s.charge(int(fl.Body.End() - fl.Body.Pos())) { // each reading paid for
+		return sub.sum
+	}
 	s.walk(&sub, fl.Body, "")
 	s.keep(fl, sub.sum)
 	return sub.sum
 }
 
-// helperSum is d's cases, read once per declaration.
+// helperSum is d's cases, read once per declaration. A helper declared
+// more than once (race, !race), whose declarations name or run cases, is
+// one identity carrying a digest of every declaration's canonical text
+// (Opus #318 H4, the lead's decision): any change of one reads as an
+// unverifiable removal.
 func (s *pkgScan) helperSum(d *ast.FuncDecl) *caseSum {
 	if h := s.cs.sums[d]; h != nil {
 		return h
 	}
-	switch {
-	case len(s.same[declKey(d)]) > 1: // race, !race: not followed
-		return &caseSum{opaque: true}
-	case s.cs.on[d]:
-		return &caseSum{opaque: true, cyc: true}
+	if s.cs.on[d] {
+		return &caseSum{ids: map[string]int{}, rows: map[string][32]byte{}, opaque: true, cyc: true}
 	}
-	s.cs.on[d] = true
-	h := s.cases(d.Body, declKey(d)+"#")
-	delete(s.cs.on, d)
+	ds := s.same[declKey(d)]
+	for _, x := range ds {
+		s.cs.on[x] = true
+	}
+	var h *caseSum
+	if len(ds) > 1 {
+		h = &caseSum{ids: map[string]int{}, rows: map[string][32]byte{}, opaque: true}
+		sum := sha256.New()
+		for _, x := range ds {
+			if x.Body == nil {
+				continue
+			}
+			c := s.cases(x.Body, declKey(x)+"#")
+			h.runs, h.cyc = h.runs || c.runs || len(c.ids) > 0, h.cyc || c.cyc
+			text := *x
+			text.Doc = nil // a comment changes no case
+			_, _ = io.WriteString(sum, s.canon(&text)+"\x00")
+		}
+		if h.runs {
+			h.ids["hlp "+declKey(d)+" "+hex.EncodeToString(sum.Sum(nil)[:8])] = 1
+		}
+	} else {
+		h = s.cases(d.Body, declKey(d)+"#")
+	}
+	for _, x := range ds {
+		delete(s.cs.on, x)
+	}
 	s.keep(d, h)
 	return h
 }
 
 // keep caches a summary, unless a cycle cut it (its answer then depends on
-// where it was first read), or past the work bound.
+// where it was first read), or past the bound.
 func (s *pkgScan) keep(fn ast.Node, h *caseSum) {
-	if !h.cyc && s.r.work <= maxWork {
+	if !h.cyc && !s.over() {
 		s.cs.sums[fn] = h
 	}
 }
 
-// compose adds h's cases to w's under prefix, charged. A summary of height
-// maxCaseDepth is not followed (opaque): the same wherever it is read, so
-// the order of calls never changes a count (Astra #292 r2 5).
+// compose adds h's cases to w's under prefix, each identity charged as it
+// is built (Opus #318 H5). A summary is the same wherever it is read
+// (each read from its own function, at no caller's depth), so the order of
+// calls never changes a count (Astra #292 r2 5).
 func (s *pkgScan) compose(w *caseWalk, h *caseSum, prefix string) {
-	w.sum.opaque, w.sum.cyc = w.sum.opaque || h.opaque, w.sum.cyc || h.cyc
-	if h.height >= maxCaseDepth {
-		w.sum.opaque, w.sum.height = true, maxCaseDepth
-		return
-	}
-	w.sum.height = max(w.sum.height, h.height+1)
-	if !s.charge(len(h.ids)) {
-		return
-	}
+	w.sum.opaque, w.sum.cyc, w.sum.runs = w.sum.opaque || h.opaque, w.sum.cyc || h.cyc, w.sum.runs || h.runs
 	for id, n := range h.ids {
-		w.sum.ids[id[:4]+prefix+id[4:]] += n
-	}
-	for id, t := range h.rows {
-		if !s.charge(len(t)) {
+		k := id[:4] + prefix + id[4:]
+		if !s.charge(len(k)) {
 			return
 		}
-		w.sum.rows[id[:4]+prefix+id[4:]] += t
+		w.sum.ids[k] += n
+		if t, ok := h.rows[id]; ok {
+			w.sum.rows[k] = rowChain(w.sum.rows[k], string(t[:]))
+		}
 	}
 }
 
-// drives: a loop body asserts or skips (checks), or else runs subtests,
-// itself, through a local closure it calls or a helper's subtests, to a
-// depth. Each body's answer is cached with its depth; the bound is checked
-// right after each charge.
-func (s *pkgScan) drives(body ast.Node, closures map[types.Object]*ast.FuncLit, runs bool, depth int) (found bool) {
+// drives: a loop body asserts or skips (checks, runs false), or runs
+// subtests (runs true): itself, through a local closure it calls, or (runs)
+// a helper running a subtest whatever its name (Opus #318 H3), to a depth;
+// past it, cut. Each body's answer is cached with its mode and depth; the
+// bound is checked right after the body's charge, which pays for its
+// reading.
+func (s *pkgScan) drives(body ast.Node, closures map[types.Object]*ast.FuncLit, runs bool, depth int) (found drive) {
 	key := driveKey{body, runs, depth}
 	if v, ok := s.cs.driven[key]; ok {
 		return v
 	}
-	if !s.charge(int(body.End()-body.Pos())) || depth > maxCaseDepth {
-		return false
+	if depth > maxCaseDepth {
+		return driveCut
+	}
+	if !s.charge(int(body.End() - body.Pos())) {
+		return driveNo
 	}
 	defer func() { s.cs.driven[key] = found }()
 	caseVisits.Add(1) // a reading: none past the bound
-	if c := s.count(body); c.asserts+c.skips > 0 {
-		return true
+	if c := s.count(body); !runs && c.asserts+c.skips > 0 {
+		return driveYes
 	}
+	found = driveNo
 	ast.Inspect(body, func(n ast.Node) bool {
-		if found || s.r.work > maxWork {
-			return false
-		}
 		if x, ok := n.(*ast.CallExpr); ok {
 			switch fl, d := closures[s.info.Uses[ident(x.Fun)]], s.helper(x); {
 			case runs && s.runCall(x):
-				found = true
+				found = driveYes
 			case fl != nil:
-				found = s.drives(fl.Body, closures, runs, depth+1)
+				found = max(found, s.drives(fl.Body, closures, runs, depth+1))
 			case runs && d != nil:
-				found = len(s.helperSum(d).ids) > 0
+				if h := s.helperSum(d); h.runs || len(h.ids) > 0 {
+					found = driveYes
+				}
 			}
 		}
-		return !found
+		return found != driveYes
 	})
 	return found
 }
@@ -496,10 +641,10 @@ func (s *pkgScan) canonTo(b *strings.Builder, n ast.Node) {
 	s.charge(b.Len() - l)
 }
 
-// rowName is a row's identity: a string key or value, else its first
-// string literal field (or a call's first string literal argument, as in
-// append(id, "commit")), else its canonical text.
-func (s *pkgScan) rowName(e ast.Expr) string {
+// rowName is a row's name: a string key or value, else its first string
+// literal field (or a call's first string literal argument, as in
+// append(id, "commit")); else it has none.
+func (s *pkgScan) rowName(e ast.Expr) (string, bool) {
 	str := func(e ast.Expr) (string, bool) {
 		lit, ok := ast.Unparen(e).(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
@@ -509,7 +654,7 @@ func (s *pkgScan) rowName(e ast.Expr) string {
 		return v, err == nil
 	}
 	if v, ok := str(e); ok {
-		return strconv.Quote(v)
+		return strconv.Quote(v), true
 	}
 	var fields []ast.Expr
 	switch x := ast.Unparen(e).(type) {
@@ -523,10 +668,10 @@ func (s *pkgScan) rowName(e ast.Expr) string {
 			f = kv.Value
 		}
 		if v, ok := str(f); ok {
-			return strconv.Quote(v)
+			return strconv.Quote(v), true
 		}
 	}
-	return s.canon(e)
+	return "", false
 }
 
 func mentionsAny(e ast.Expr, info *types.Info, objs map[types.Object]bool) (found bool) {
@@ -556,7 +701,7 @@ func (s *pkgScan) testPrint(n ast.Node) string {
 			stack = stack[:len(stack)-1]
 			return true
 		}
-		if s.r.work > maxWork || s.cs.dead[n] {
+		if s.over() || s.cs.dead[n] {
 			return false
 		}
 		top := stack[len(stack)-1]
@@ -581,7 +726,7 @@ func (s *pkgScan) testPrint(n ast.Node) string {
 		case *ast.CaseClause:
 			ctl.WriteString("case")
 			for _, e := range x.List {
-				if s.control(&ctl, "", e); s.r.work > maxWork {
+				if s.control(&ctl, "", e); s.over() {
 					return false
 				}
 			}
@@ -631,7 +776,11 @@ func (r *run) compareCases(add func(*[]Block, string, string), b, a pkgFacts) {
 		for _, c := range slices.Sorted(maps.Keys(b.cases[k])) {
 			bs, as := b.cases[k][c], alts[c]
 			if as == nil { // its constraint changed: what every alternative holds
-				as = common(slices.Collect(maps.Values(alts))...)
+				var all []*caseSum
+				for _, c := range slices.Sorted(maps.Keys(alts)) { // in order: the result never depends on a map's
+					all = append(all, alts[c])
+				}
+				as = common(all...)
 			} else {
 				warn = warn || bs.print != as.print && bt.asserts == at.asserts && bt.skips == at.skips || rowsChanged(bs, as)
 			}
@@ -651,7 +800,7 @@ func (r *run) compareCases(add func(*[]Block, string, string), b, a pkgFacts) {
 // common is what every summary holds: each identity's least count; opaque
 // when any is. It has no rows and no print.
 func common(cs ...*caseSum) *caseSum {
-	out := &caseSum{ids: maps.Clone(cs[0].ids), rows: map[string]string{}}
+	out := &caseSum{ids: maps.Clone(cs[0].ids), rows: map[string][32]byte{}}
 	for _, c := range cs {
 		out.opaque = out.opaque || c.opaque
 		for id, n := range out.ids {
@@ -665,13 +814,14 @@ func common(cs ...*caseSum) *caseSum {
 
 // casesRemoved is the first base case identity the candidate holds fewer
 // of, and how many are fewer. A row whose loop only ran subtests and now
-// checks, at its position, is kept (a strengthening); the reverse is
-// removed, and a subtest's name is compared exactly (Astra r2 2).
+// runs them and checks, at its position, is kept (a strengthening); any
+// other change of its loop's kind is a removal (Opus #318 H1), and a
+// subtest's name is compared exactly (Astra r2 2).
 func casesRemoved(b, a *caseSum) (first string, n int) {
 	for _, k := range slices.Sorted(maps.Keys(b.ids)) {
 		have := a.ids[k]
 		if c, ok := strings.CutSuffix(k, " runs"); ok && strings.HasPrefix(k, "row ") {
-			have += max(0, a.ids[c+" checks"]-b.ids[c+" checks"])
+			have += max(0, a.ids[c+" runs checks"]-b.ids[c+" runs checks"])
 		}
 		if d := b.ids[k] - have; d > 0 {
 			if first == "" {

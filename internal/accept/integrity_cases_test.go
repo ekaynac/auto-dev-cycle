@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"context"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -213,6 +214,111 @@ func TestRecurse(t *testing.T) {
 	recurse(t, 2)
 }
 
+func TestSpot(t *testing.T) {
+	func() {
+		t.Run("spot", func(t *testing.T) {
+			if Add(1, 1) != 2 {
+				t.Fatal("spot")
+			}
+		})
+	}()
+}
+
+func checkOne(t *testing.T) {
+	if Add(1, 1) != 2 {
+		t.Fatal("one")
+	}
+}
+
+func TestRunsFn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fn   func(*testing.T)
+	}{{"a", checkOne}, {"b", checkOne}} {
+		t.Run(tc.name, tc.fn)
+	}
+}
+
+func runNamed(t *testing.T, n string) {
+	t.Run(n, checkOne)
+}
+
+func TestNamedLoop(t *testing.T) {
+	for _, n := range []string{"a", "b"} {
+		runNamed(t, n)
+	}
+}
+
+func TestH(t *testing.T) {
+	raceHelper(t)
+}
+
+func TestControls(t *testing.T) {
+	for i := 0; i < 2; i++ {
+		if Add(i, 0) != i {
+			t.Error("for")
+		}
+	}
+	switch n := Add(1, 0); n {
+	default:
+		if n != 1 {
+			t.Error("switch")
+		}
+	}
+	var x any = Add(1, 0)
+	switch v := x.(type) {
+	case int:
+		if v != 1 {
+			t.Error("type")
+		}
+	}
+	ch := make(chan int, 1)
+	ch <- 1
+	select {
+	case v := <-ch:
+		if v != 1 {
+			t.Error("select")
+		}
+	}
+}
+
+const lax = true
+
+func TestLax(t *testing.T) {
+	if lax {
+		t.Log("lax")
+	} else {
+		t.Error("strict")
+	}
+}
+
+func ping(t *testing.T, n int) {
+	t.Run("ping", func(t *testing.T) {
+		if Add(n, 0) != n {
+			t.Fatal(n)
+		}
+	})
+	if n > 0 {
+		pong(t, n-1)
+	}
+}
+
+func pong(t *testing.T, n int) {
+	t.Run("pong", func(t *testing.T) {
+		if Add(n, 0) != n {
+			t.Fatal(n)
+		}
+	})
+	if n > 0 {
+		ping(t, n-1)
+	}
+}
+
+func TestPing(t *testing.T) {
+	ping(t, 2)
+	pong(t, 2)
+}
+
 const strict = true
 
 func TestStrict(t *testing.T) {
@@ -240,6 +346,22 @@ func raceCases(tag, rows string) string {
 		"func TestRace(t *testing.T) {\n\tfor _, tc := range []struct {\n\t\tn string\n\t\tv int\n\t}{" + rows + "} {\n\t\tif tc.n == \"\" {\n\t\t\tt.Fatal(tc.v)\n\t\t}\n\t}\n}\n"
 }
 
+// raceHelper is raceHelper declared under tag, running a subtest per name
+// in subs (each asserting).
+func raceHelper(tag string, subs ...string) string {
+	var b strings.Builder
+	b.WriteString("//go:build " + tag + "\n\npackage pkg\n\nimport \"testing\"\n\nfunc raceHelper(t *testing.T) {\n")
+	for _, n := range subs {
+		fmt.Fprintf(&b, "\tt.Run(%q, func(t *testing.T) {\n\t\tif Add(1, 1) != 2 {\n\t\t\tt.Fatal(%q)\n\t\t}\n\t})\n", n, n)
+	}
+	return b.String() + "}\n"
+}
+
+// splitCases is TestSplit under tag, with its table's rows.
+func splitCases(tag, rows string) string {
+	return strings.Replace(strings.Replace(raceCases(tag, rows), "TestRace", "TestSplit", 1), "//go:build \n\n", "", 1)
+}
+
 // TestIntegrityCases (P14d-b; #226 entries 74, 85, 99; Astra #255 H5, M9;
 // Astra #292 H3, H4 and round 2's 2, 3, 5, 7, 8): a row per bypass, each
 // with its exact block or warnings, and the clean controls with none.
@@ -247,7 +369,8 @@ func TestIntegrityCases(t *testing.T) {
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
 		write(t, src, map[string]string{"pkg/cases_test.go": casesBase, "pkg/race_cases_test.go": raceCases("race", `{"a", 1}, {"b", 2}`),
-			"pkg/norace_cases_test.go": raceCases("!race", `{"a", 1}, {"c", 3}`)})
+			"pkg/norace_cases_test.go": raceCases("!race", `{"a", 1}, {"c", 3}`), "pkg/race_helper_test.go": raceHelper("race", "a", "b"),
+			"pkg/norace_helper_test.go": raceHelper("!race", "a", "b"), "pkg/split_test.go": splitCases("", `{"a", 1}, {"b", 2}`)})
 		plain(t, src, "add", "--all")
 	})
 	edit := func(from, to string) map[string]string {
@@ -297,7 +420,7 @@ func TestIntegrityCases(t *testing.T) {
 		// A loop that ran subtests now checks too (Astra #292 M6): accepted;
 		// a subtest's name is compared exactly (Astra r2 2).
 		"runs to checks":           {edit("\t\tt.Run(name, func(t *testing.T) {})\n", "\t\tif name == \"\" {\n\t\t\tt.Fatal(name)\n\t\t}\n\t\tt.Run(name, func(t *testing.T) {})\n"), "", nil},
-		"a subtest runs to checks": {edit(`t.Run("a runs"`, `t.Run("a checks"`), "TestNames 1 test cases removed (table rows or subtests: run a runs)", nil},
+		"a subtest runs to checks": {edit(`t.Run("a runs"`, `t.Run("a runs checks"`), "TestNames 1 test cases removed (table rows or subtests: run a runs)", nil},
 		// Every enclosing condition and case (Astra #292 M8), an else if's
 		// own (r2 7).
 		"an outer condition inverted": {edit("\tif enabled {", "\tif !enabled {"), "", both("TestCond: " + changed)},
@@ -305,7 +428,7 @@ func TestIntegrityCases(t *testing.T) {
 		"an else if inverted":         {edit("} else if enabled {", "} else if !enabled {"), "", both("TestElse: " + changed)},
 		// A table driven through a local closure (M4), and the closure also a
 		// Cleanup (r2 8).
-		"closureRowRemoved": {edit("{{1,1}, {2, 2}}", "{{1,1}}"), "TestClosure 1 test cases removed (table rows or subtests: row {2, 2} @", nil},
+		"closureRowRemoved": {edit("{{1,1}, {2, 2}}", "{{1,1}}"), "TestClosure 1 test cases removed (table rows or subtests: row (nameless) @1 checks)", nil},
 		"a closure cleanup": {edit("\tfor range []string{\"a\", \"b\"} {", "\tt.Cleanup(check)\n\tfor range []string{\"a\", \"b\"} {"), "", nil},
 		"a closure's row":   {edit("\tfor range []string{\"a\", \"b\"} {", "\tfor range []string{\"a\"} {"), `TestCleanup 1 test cases removed (table rows or subtests: row "b" @1 checks)`, nil},
 		// As on main, accepted clean.
@@ -328,6 +451,28 @@ func TestIntegrityCases(t *testing.T) {
 		"a helper inlined (the control)":  {edit("\trunCases(t)\n", "\trunCases(t)\n\trunCases(t)\n"), "", nil},
 		"a closure inlined (the control)": {edit("\tsub := func() {\n\t\tt.Run(\"c\", func(t *testing.T) {\n\t\t\tif Add(1, 1) != 2 {\n\t\t\t\tt.Fatal(\"c\")\n\t\t\t}\n\t\t})\n\t}\n\tsub()\n", "\tt.Run(\"c\", func(t *testing.T) {\n\t\tif Add(1, 1) != 2 {\n\t\t\tt.Fatal(\"c\")\n\t\t}\n\t})\n"), "", nil},
 		"a recursive helper (control)":    {edit("\trecurse(t, 2)\n", "\tt.Log(\"r\")\n\trecurse(t, 2)\n"), "", nil},
+		// Opus #318 H1: a loop that ran a subtest per row and now only checks.
+		"a loop's subtests replaced by a check": {edit("\t\tt.Run(tc.name, tc.fn)\n", "\t\tif tc.name == \"\" {\n\t\t\tt.Fatal(tc.name)\n\t\t}\n"), `TestRunsFn 2 test cases removed (table rows or subtests: row "a" @1 runs)`, nil},
+		// H2: a literal that never runs, and a closure never called.
+		"a subtest in a literal never run":     {edit("\t\tt.Run(\"other\", func(t *testing.T) {\n\t\t\tif Add(2, 2) != 4 {\n\t\t\t\tt.Fatal(\"other\")\n\t\t\t}\n\t\t})\n", "\t\t_ = func() {\n\t\t\tt.Run(\"other\", func(t *testing.T) {\n\t\t\t\tif Add(2, 2) != 4 {\n\t\t\t\t\tt.Fatal(\"other\")\n\t\t\t\t}\n\t\t\t})\n\t\t}\n"), "TestSub unverifiable: 1 test cases no longer where the guard can follow them (run outer/other)", nil},
+		"a subtest called on the spot removed": {edit("\t\tt.Run(\"spot\", func(t *testing.T) {\n\t\t\tif Add(1, 1) != 2 {\n\t\t\t\tt.Fatal(\"spot\")\n\t\t\t}\n\t\t})\n", "\t\tif Add(1, 1) != 2 {\n\t\t\tt.Fatal(\"spot\")\n\t\t}\n"), "TestSpot 1 test cases removed (table rows or subtests: run spot)", nil},
+		"a closure no longer called":           {edit("\tsub()\n}", "\t_ = sub\n}"), "TestInline unverifiable: 1 test cases no longer where the guard can follow them (run c)", nil},
+		"a closure also a value (M2)":          {edit("\tfor _, tc := range []struct{ a, want int }{{1,1}, {2, 2}} {", "\t_ = check\n\tfor _, tc := range []struct{ a, want int }{{1,1}, {2, 2}} {"), "", nil},
+		"a nameless row's value edited (M1)":   {edit("{{1,1}, {2, 2}}", "{{1,1}, {2, 3}}"), "", both("TestClosure: " + changed)},
+		// H3: a loop driven through a helper's named-callback subtest.
+		"a helper's subtest per row": {edit(`[]string{"a", "b"} {`+"\n\t\trunNamed", `[]string{"a"} {`+"\n\t\trunNamed"), `TestNamedLoop unverifiable: 1 test cases no longer where the guard can follow them (row "b" @1 runs)`, nil},
+		// H4 (the lead's decision): a helper of several declarations is one identity.
+		"a race helper's subtest":    {map[string]string{"pkg/race_helper_test.go": raceHelper("race", "a")}, "TestH unverifiable: 1 test cases no longer where the guard can follow them (hlp raceHelper ", nil},
+		"a !race helper's subtest":   {map[string]string{"pkg/norace_helper_test.go": raceHelper("!race", "a")}, "TestH unverifiable: 1 test cases no longer where the guard can follow them (hlp raceHelper ", nil},
+		"both helpers' subtest":      {map[string]string{"pkg/race_helper_test.go": raceHelper("race", "a"), "pkg/norace_helper_test.go": raceHelper("!race", "a")}, "TestH unverifiable: 1 test cases no longer where the guard can follow them (hlp raceHelper ", nil},
+		"a test split into variants": {map[string]string{"pkg/split_test.go": "package pkg\n", "pkg/split_race_test.go": splitCases("race", `{"a", 1}`), "pkg/split_norace_test.go": splitCases("!race", `{"a", 1}, {"b", 2}`)}, `TestSplit 1 test cases removed (table rows or subtests: row "b" @`, nil},
+		// L2: every control's part in the print; a dead else; a cycle's order.
+		"a for's condition":           {edit("i < 2; i++", "i < 3; i++"), "", both("TestControls: " + changed)},
+		"a switch's tag":              {edit("Add(1, 0); n {", "Add(1, 0); n + 0 {"), "", both("TestControls: " + changed)},
+		"a type switch's guard":       {edit("switch v := x.(type)", "switch v := (x).(type)"), "", both("TestControls: " + changed)},
+		"a comm clause's receive":     {edit("case v := <-ch:", "case v := <-(ch):"), "", both("TestControls: " + changed)},
+		"a constant flipped, else":    {edit("const lax = true", "const lax = false"), "", both("TestLax: " + changed)},
+		"recursive helpers reordered": {edit("\tping(t, 2)\n\tpong(t, 2)\n", "\tpong(t, 2)\n\tping(t, 2)\n"), "", both("TestPing: " + changed)},
 		// Build alternatives (Astra #292 H4): a row of one variant only.
 		"a race variant's row":          {map[string]string{"pkg/race_cases_test.go": raceCases("race", `{"a", 1}`)}, `TestRace 1 test cases removed (table rows or subtests: row "b" @`, nil},
 		"a !race variant's row":         {map[string]string{"pkg/norace_cases_test.go": raceCases("!race", `{"a", 1}`)}, `TestRace 1 test cases removed (table rows or subtests: row "c" @`, nil},
@@ -379,11 +524,11 @@ func readings(t *testing.T, f fixture, files map[string]string) (Verdict, int64,
 	return v, caseVisits.Load() - v0, caseWork.Load() - w0
 }
 
-// lowered is the guard's work bound lowered to 1<<17 for the test.
+// lowered is the case layer's work bound lowered to 1<<17 for the test.
 func lowered(t *testing.T) {
-	old := maxWork
-	t.Cleanup(func() { maxWork = old })
-	maxWork = 1 << 17
+	old := maxCaseWork
+	t.Cleanup(func() { maxCaseWork = old })
+	maxCaseWork = 1 << 17
 }
 
 // TestIntegrityCasesBound: a test's cases and print, and the loops read
@@ -407,10 +552,66 @@ func TestIntegrityCasesBound(t *testing.T) {
 		fmt.Fprintf(&asserts, "\tt.Error(%d)\n", i)
 	}
 	many := "package pkg\n\nimport \"testing\"\n\nfunc TestMany(t *testing.T) {\n" + asserts.String() + "}\n"
-	for name, file := range map[string]string{"a table": big, "300 nested loops": nested, "8,192 assertions": many, "a 100,000-value case": caseClause(100000)} {
+	var subs strings.Builder
+	for i := range 200 {
+		fmt.Fprintf(&subs, "\tt.Run(\"s%d\", func(t *testing.T) {})\n", i)
+	}
+	fan := "package pkg\n\nimport \"testing\"\n\nfunc many(t *testing.T) {\n" + subs.String() + "}\n\nfunc TestFanOut(t *testing.T) {\n" + strings.Repeat("\tmany(t)\n", 400) + "}\n"
+	longClosure := "package pkg\n\nimport \"testing\"\n\nfunc TestLongClosure(t *testing.T) {\n\tbig := func() {\n\t\tx := 0\n" + strings.Repeat("\t\tx++\n", 14000) + "\t\t_ = x\n\t}\n\tbig()\n}\n"
+	plainBody := "package pkg\n\nimport \"testing\"\n\nfunc TestPlainLong(t *testing.T) {\n\tx := 0\n" + strings.Repeat("\tx++\n", 40000) + "\t_ = x\n}\n"
+	for name, file := range map[string]string{"a table": big, "300 nested loops": nested, "8,192 assertions": many, "a 100,000-value case": caseClause(100000),
+		"a helper's 200 subtests composed 400 times": fan, "a long body": plainBody, "a closure's long body read": longClosure} {
 		if v := f.guarded(t, map[string]string{"pkg/big_test.go": file}); !finds(v.Blocks, "past the guard's work bound") {
 			t.Errorf("%s past the bound: blocks %q", name, whats(v.Blocks))
 		}
+	}
+}
+
+// TestIntegrityCasesRowsStop (Opus #318 L2): a table's rows past the case
+// layer's bound are not read on: each platform's scan charges at most the
+// bound and the row that crossed it.
+func TestIntegrityCasesRowsStop(t *testing.T) {
+	f := newGuardFixture(t)
+	lowered(t)
+	var rows strings.Builder
+	for i := range 4000 {
+		fmt.Fprintf(&rows, "\t\t{\"r%d\", %d},\n", i, i)
+	}
+	file := "package pkg\n\nimport \"testing\"\n\nfunc TestRows(t *testing.T) {\n\tfor _, tc := range []struct {\n\t\tn string\n\t\tv int\n\t}{\n" + rows.String() +
+		"\t} {\n\t\tif tc.v < 0 {\n\t\t\tt.Fatal(tc.n)\n\t\t}\n\t}\n}\n"
+	if v, _, w := readings(t, f, map[string]string{"pkg/rows_test.go": file}); !finds(v.Blocks, "past the guard's work bound") || w > 2*int64(maxCaseWork)+4096 {
+		t.Errorf("4,000 rows past the bound: work %d, blocks %q", w, whats(v.Blocks))
+	}
+}
+
+// TestIntegrityCasesPerScan (Opus #318 H6): the case layer's bound is its
+// own, per package scan: ten packages, each well within it, together past
+// it, reach no bound (the run's r.work is not the case layer's).
+func TestIntegrityCasesPerScan(t *testing.T) {
+	f := newGuardFixture(t)
+	var rows strings.Builder
+	for i := range 300 {
+		fmt.Fprintf(&rows, "\t\t{\"r%d\", %d},\n", i, i)
+	}
+	pkg := func(i int) (string, string) {
+		return fmt.Sprintf("p%d/p_test.go", i), fmt.Sprintf("package p%d\n\nimport \"testing\"\n\nfunc TestRows(t *testing.T) {\n\tfor _, tc := range []struct {\n\t\tn string\n\t\tv int\n\t}{\n", i) + rows.String() +
+			"\t} {\n\t\tif tc.v < 0 {\n\t\t\tt.Fatal(tc.n)\n\t\t}\n\t}\n}\n"
+	}
+	p, src := pkg(0)
+	v, _, one := readings(t, f, map[string]string{p: src})
+	if !v.Accepted() {
+		t.Fatalf("one package: blocks %q", whats(v.Blocks))
+	}
+	old := maxCaseWork
+	t.Cleanup(func() { maxCaseWork = old })
+	maxCaseWork = int(one) // one package's two scans: each within it, ten packages' twenty far past it
+	files := map[string]string{}
+	for i := range 10 {
+		p, src := pkg(i)
+		files[p] = src
+	}
+	if v, _, all := readings(t, f, files); !v.Accepted() || all < 5*one {
+		t.Errorf("ten packages: work %d, blocks %q", all, whats(v.Blocks))
 	}
 }
 
@@ -434,14 +635,21 @@ func TestIntegrityCasesClauseStops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := maxWork
-	t.Cleanup(func() { maxWork = old })
-	maxWork = 1000
-	r := &run{}
+	old := maxCaseWork
+	t.Cleanup(func() { maxCaseWork = old })
+	maxCaseWork = 1000
+	r := &run{ctx: context.Background()}
 	s := &pkgScan{r: r, pkg: types.NewPackage("example.com/m/pkg", "pkg"), info: &types.Info{}, cs: caseScan{dead: map[ast.Node]bool{}}}
 	s.testPrint(file.Decls[1].(*ast.FuncDecl).Body)
-	if r.work > maxWork+16 {
-		t.Errorf("the print read %d past a bound of %d", r.work, maxWork)
+	if s.cs.work > maxCaseWork+16 {
+		t.Errorf("the print read %d past a bound of %d", s.cs.work, maxCaseWork)
+	}
+	maxCaseWork = old // a cancelled run reads no more (Opus #318 H5)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s = &pkgScan{r: &run{ctx: ctx}, pkg: s.pkg, info: s.info, cs: caseScan{dead: map[ast.Node]bool{}}}
+	if s.testPrint(file.Decls[1].(*ast.FuncDecl).Body); s.cs.work > 16 {
+		t.Errorf("a cancelled run's print read %d", s.cs.work)
 	}
 }
 
@@ -457,7 +665,19 @@ func TestIntegrityCasesLinear(t *testing.T) {
 		}
 		return "package pkg\n\nimport \"testing\"\n\nfunc TestDeep(t *testing.T) {\n" + b.String() + strings.Repeat("}\n", n) + "}\n"
 	}
-	for name, file := range map[string]func(int) string{"nested ifs": nested, "a case clause": caseClause} {
+	same := func(n int) string { // rows sharing one name (Opus #318 H5)
+		var b strings.Builder
+		for i := range n {
+			fmt.Fprintf(&b, "\t\t{\"same\", %d},\n", i)
+		}
+		return "package pkg\n\nimport \"testing\"\n\nfunc TestSame(t *testing.T) {\n\tfor _, tc := range []struct {\n\t\tn string\n\t\tv int\n\t}{\n" + b.String() +
+			"\t} {\n\t\tif tc.v < 0 {\n\t\t\tt.Fatal(tc.n)\n\t\t}\n\t}\n}\n"
+	}
+	long := func(n int) string { // subtests nested n deep, each named by a 4 KiB constant (H5)
+		return "package pkg\n\nimport \"testing\"\n\nconst long = \"" + strings.Repeat("x", 4096) + "\"\n\nfunc TestLong(t *testing.T) {\n" +
+			strings.Repeat("t.Run(long, func(t *testing.T) {\n", n) + "t.Error(long)\n" + strings.Repeat("})\n", n) + "}\n"
+	}
+	for name, file := range map[string]func(int) string{"nested ifs": nested, "a case clause": caseClause, "rows sharing a name": same, "4 KiB names nested": func(n int) string { return long(n / 10) }} {
 		work := func(n int) int64 {
 			v, _, w := readings(t, f, map[string]string{"pkg/deep_test.go": file(n)})
 			if !v.Accepted() {
@@ -515,7 +735,7 @@ func TestIntegrityCasesDepth(t *testing.T) {
 	for i := 1; i <= 9; i++ {
 		fmt.Fprintf(&b, "\tk%d := func() { k%d() }\n", i, i-1)
 	}
-	b.WriteString("\tfor range []string{\"a\"} {\n\t\tc2()\n\t}\n\tc9()\n\tk2()\n\tk9()\n}\n")
+	b.WriteString("\tfor range []string{\"a\"} {\n\t\tc2()\n\t}\n\tc9()\n\tk2()\n\tk9()\n\tfor range []string{\"x\", \"y\"} {\n\t\tc9()\n\t}\n}\n")
 	base := b.String()
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
@@ -527,6 +747,9 @@ func TestIntegrityCasesDepth(t *testing.T) {
 	}
 	if v := f.guarded(t, map[string]string{"pkg/chain_test.go": strings.Replace(base, "\tk2()\n\tk9()\n", "\tk9()\n\tk2()\n", 1)}); !v.Accepted() || len(v.Warnings) > 0 {
 		t.Errorf("k9 called before k2: blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	if v := f.guarded(t, map[string]string{"pkg/chain_test.go": strings.Replace(base, `[]string{"x", "y"}`, `[]string{"x"}`, 1)}); !finds(v.Blocks, `TestChain unverifiable: 1 test cases no longer where the guard can follow them (row "y" @2 deep)`) {
+		t.Errorf("a row of a loop past the depth (Opus #318 M3): blocks %q", whats(v.Blocks))
 	}
 	if v := f.guarded(t, map[string]string{"pkg/chain_test.go": strings.Replace(base, "[]string{\"a\"}", "[]string{}", 1)}); !finds(v.Blocks, `TestChain unverifiable: 1 test cases no longer where the guard can follow them (row "a" @1 checks)`) {
 		t.Errorf("the row removed: blocks %q", whats(v.Blocks))
