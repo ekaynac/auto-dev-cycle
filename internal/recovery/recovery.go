@@ -83,6 +83,9 @@ type Recovery struct {
 	Blobs lease.Publisher // where the seal's record is published
 	// Exchanges is where exchange roots are made (adapterhost.Host.Root); empty: RefuseOrphans does nothing.
 	Exchanges string
+	// Principal is the system actor's principal, which the writer's Identify hook rechecks (adcd); nil in a store
+	// whose hook takes any command.
+	Principal eventstore.Principal
 }
 
 // Run runs step 1, then steps 2 to 4 for every attempt cut, each to its end; it reports every failure.
@@ -155,7 +158,7 @@ func (r Recovery) submit(ctx context.Context, action, key string, attempt *types
 		key = cmd
 	}
 	if err = errors.Join(err, merr); err == nil {
-		_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: string(r.Actor), Action: action, IdempotencyKey: key, Input: input},
+		_, err = r.Store.SubmitApplied(ctx, eventstore.Command{ID: cmd, Actor: string(r.Actor), Action: action, IdempotencyKey: key, Input: input, Principal: r.Principal},
 			eventstore.Applies(func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 				evs, err := decide(tx)
 				return evs, json.RawMessage(`{}`), err

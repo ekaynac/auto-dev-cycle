@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package daemon
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
+	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
+	"github.com/ekaynac/auto-dev-cycle/internal/recovery"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
+)
+
+// cutStore is a store a controller died in, mid-call: a claimed node whose
+// attempt runs under its lease, with one model call intended.
+func cutStore(t *testing.T) (dir string, cfg Config, a types.AttemptID, l types.LeaseID, call types.CallID) {
+	t.Helper()
+	dir = stateDir(t)
+	w := seed(t, dir, daemonProjection(t, tokens(10)))
+	sys := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSystem, Name: "system"}
+	sys.CreatedBy = sys.ID
+	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(sys) })
+	n := types.Node{ID: types.NodeID(newID(t, "nod")), Kind: types.NodeKindPlan, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{}`),
+		Inputs: []types.InputSpec{}, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
+	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Record(types.NodeRecorded{Task: types.TaskID(newID(t, "tsk")), Project: graphProject, Node: n})
+	})
+	w.do(sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Claim(tx, n.ID, map[string]graph.Resolved{}, 1)
+	})
+	ls := w.lease(4)
+	ls.Unit = graph.UnitOf(n.ID)
+	w.do(sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, ls) })
+	w.do(sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, ls.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, w.holds)
+	})
+	a, call = types.AttemptID(newID(t, "att")), types.CallID(newID(t, "cal"))
+	w.do(sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.StartAttempt(tx, ls.ID, 2, a, types.AttemptBase{Tree: "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904", ContractRevision: "1"})
+	})
+	w.do(sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return modelcall.Intend(tx, gateway.Binding{Lease: ls.ID, Attempt: a, Call: call}, "stub")
+	})
+	w.done()
+	return dir, Config{StateDir: dir, Groups: []types.ResourceGroup{tokens(10)}}, a, ls.ID, call
+}
+
+// cutState is the attempt, its lease and the call's effect, read from the store.
+func cutState(t *testing.T, d *Daemon, a types.AttemptID, l types.LeaseID, call types.CallID) (types.Attempt, types.Lease, eventstore.Effect) {
+	t.Helper()
+	var at types.Attempt
+	var ls types.Lease
+	if err := d.store.View(context.Background(), func(tx *eventstore.Tx) (err error) {
+		at, _, _, err = lease.AttemptAt(tx, a)
+		if err == nil {
+			ls, _, _, err = lease.LeaseOf(tx, l)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e, err := d.store.LoadEffect(context.Background(), modelcall.EffectOf(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return at, ls, e
+}
+
+// P22a-1 (#226 entries 64, 70, 81): a start marks the restart (a fresh
+// store's too), then recovers the cut attempt before anything else: lost
+// and sealed, its lease settled with the call, uncertain, kept as a
+// liability, which the model calls' bindings (projected in adcd) give; a
+// second start changes nothing.
+func TestStartRecoversACutAttempt(t *testing.T) {
+	fresh := restart(t, stateDir(t))
+	if !fresh.store.RestartMarked() {
+		t.Error("a fresh store is not marked")
+	}
+	if err := fresh.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir, cfg, a, l, call := cutStore(t)
+	d, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, ls, e := cutState(t, d, a, l, call)
+	if !d.store.RestartMarked() || at.Status != types.AttemptStatusSealed || at.LostReason == nil || *at.LostReason != types.AttemptLostReasonValueControllerRestart ||
+		ls.State != types.LeaseStateSettled || ls.Settlement == nil || !slices.Contains(ls.Settlement.Liabilities, call) || e.State != eventstore.EffectUncertain {
+		t.Fatalf("after the start: attempt %+v, lease %s %+v, effect %s", at, ls.State, ls.Settlement, e.State)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	head := lastSeq(t, dir)
+	d, err = Start(context.Background(), cfg)
+	if err == nil {
+		err = d.Close()
+	}
+	if err != nil || lastSeq(t, dir) != head {
+		t.Errorf("a second start: %v, the log from %d to %d", err, head, lastSeq(t, dir))
+	}
+}
+
+// A recovery that leaves an attempt running refuses the start; one that
+// fails after closing every running attempt only notes it, and the start
+// goes on (#226 entry 81).
+func TestStartRecoveryFailures(t *testing.T) {
+	t.Cleanup(func() { runRecovery = func(ctx context.Context, r recovery.Recovery) error { return r.Run(ctx) } })
+	_, cfg, _, _, _ := cutStore(t)
+	runRecovery = func(context.Context, recovery.Recovery) error { return errors.New("injected") }
+	refused(t, cfg.StateDir, cfg, vocab.CouldNotRun, vocab.ReasonStoreUnreadable, "did not close every running attempt")
+	runRecovery = func(ctx context.Context, r recovery.Recovery) error {
+		return errors.Join(r.Run(ctx), errors.New("injected"))
+	}
+	d, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(d.note, "restart recovery left work for the next start") {
+		t.Errorf("the note: %q", d.note)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The controller's own commands are the system actor's alone: each is a
+// system action, and none is a registered action a principal could be
+// authorized for.
+func TestSystemActions(t *testing.T) {
+	reg, err := vocab.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []string{recovery.ActionLose, string(recovery.Revoke), string(recovery.Seal), string(recovery.Settle), recovery.ActionRefuse,
+		modelcall.Action, modelcall.Counted, "model_call.reconcile"} {
+		if !slices.Contains(systemActions, a) {
+			t.Errorf("%s is not a system action", a)
+		}
+		if _, registered := reg.Actions[a]; registered {
+			t.Errorf("%s is a registered action", a)
+		}
+	}
+}

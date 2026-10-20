@@ -18,6 +18,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/recovery"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -154,6 +156,38 @@ func checkProjections(ctx context.Context, s *eventstore.Store) error {
 
 // markPending is the restart rule's transition; a test makes it fail.
 var markPending = (*eventstore.Store).MarkPendingUncertain
+
+// runRecovery runs restart recovery; a test makes it fail.
+var runRecovery = func(ctx context.Context, r recovery.Recovery) error { return r.Run(ctx) }
+
+// recoverAtStart runs restart recovery (P21a: X3's steps 1-4, each its own
+// command, recovery.Recovery.Run) as the system actor, units bound to graph
+// nodes and seals published to the blob store. Step 1 must hold: an attempt
+// still running after it refuses the start, since its fence would stay
+// open (I8). A later step that fails stops that attempt's recovery only; it
+// is reported in the startup note and resumed at the next start (its
+// cleanup never blocks start, #226 entry 81). The orphan stage needs the
+// adapter host's exchange root, which launch constructs (P22a-5).
+func recoverAtStart(ctx context.Context, store *eventstore.Store, system identity.Principal, blobs lease.Publisher) (note string, err error) {
+	rerr := runRecovery(ctx, recovery.Recovery{Store: store, Actor: system.Actor(), Units: graph.Units{}, Blobs: blobs, Principal: system})
+	if rerr == nil {
+		return "", nil
+	}
+	running := false
+	if err := store.View(ctx, func(tx *eventstore.Tx) error {
+		ids, err := tx.Keys(lease.AttemptProjection, "")
+		for _, id := range ids {
+			a, _, ok, aerr := lease.AttemptAt(tx, types.AttemptID(id))
+			if err = errors.Join(err, aerr); ok && a.Status == types.AttemptStatusRunning {
+				running = true
+			}
+		}
+		return err
+	}); err != nil || running {
+		return "", couldNotRun(vocab.ReasonStoreUnreadable, "restart recovery did not close every running attempt", errors.Join(rerr, err))
+	}
+	return "adcd: restart recovery left work for the next start (it resumes there)", nil
+}
 
 // systemActor loads the persisted system actor, or creates it in a store
 // whose log is still empty, through the store's one unauthorized
