@@ -96,8 +96,15 @@ v="$(cd "$scratch" && env -i PATH=/usr/bin:/bin HOME="$scratch" "$node" --versio
   -e 'import(require("node:url").pathToFileURL(process.argv[1]).href).catch((e) => { console.error(e.message); process.exit(1); })' \
   "$prefix/lib/adc/adapters/fake/src/fake.ts") || die "the installed fake adapter does not load with the installed node"
 # The http-chat adapter (P13) runs from the prefix alone: it answers describe and shuts down.
-described="$(cd "$scratch" && printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"describe"}' '{"jsonrpc":"2.0","id":2,"method":"shutdown"}' |
-  env -i PATH=/usr/bin:/bin HOME="$scratch" "$node" "$prefix/lib/adc/adapters/http-chat/src/main.ts")" ||
-  die "the installed http-chat adapter does not run with the installed node"
+# The requests come from a file, not a pipe: an adapter may exit before a
+# pipe's writer has written, and pipefail would then report the writer's
+# SIGPIPE (141) as the adapter failing. Its stderr and exit status go into
+# the error, so a failure is diagnosable.
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"describe"}' '{"jsonrpc":"2.0","id":2,"method":"shutdown"}' >"$scratch/http-chat.requests"
+rc=0
+described="$(cd "$scratch" && env -i PATH=/usr/bin:/bin HOME="$scratch" "$node" "$prefix/lib/adc/adapters/http-chat/src/main.ts" \
+  <"$scratch/http-chat.requests" 2>"$scratch/http-chat.stderr")" || rc=$?
+[[ $rc -eq 0 ]] ||
+  die "the installed http-chat adapter does not run with the installed node (exit $rc): $(cat "$scratch/http-chat.stderr")"
 [[ "$(field harness "$described")" == "http-chat" ]] || die "the installed http-chat adapter does not describe itself"
 echo "install-check: adcd, adc, adc-harness and adc-agent installed into $prefix ($platform, commit $commit, schema set $schemaset), with node $node_version (sha256:$node_sum), the fake and http-chat adapters and py-mini"

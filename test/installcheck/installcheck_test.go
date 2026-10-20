@@ -51,12 +51,18 @@ printf '{"binary":"%s","version":"v","commit":"%s","schema_set":"%s","go_version
 }
 
 // fakeNode stands in for the packaged node: it reports its version, and
-// "loads" a module only when the file exists.
+// "loads" a module only when the file exists. Like a fast adapter, it
+// answers http-chat without reading its input, so it refuses a pipe there:
+// a pipe's writer would race its exit into SIGPIPE under pipefail (#226 98).
 const fakeNode = `#!/bin/sh
 [ -n "$ADC_INSTALLCHECK_MARKER" ] && { echo "the environment leaked" >&2; exit 3; }
 [ "$1" = "--version" ] && { echo v22.0.0; exit 0; }
 [ "$1" = "-e" ] && [ -f "$3" ] && exit 0
-case "$1" in */adapters/http-chat/src/main.ts) [ -f "$1" ] && { echo '{"jsonrpc":"2.0","id":1,"result":{"harness":"http-chat"}}'; exit 0; } ;; esac
+case "$1" in */adapters/http-chat/src/main.ts)
+  [ -p /dev/stdin ] && { echo "requests on a pipe" >&2; exit 5; }
+  [ -f "$1" ] || { echo "cannot find module $1" >&2; exit 4; }
+  echo '{"jsonrpc":"2.0","id":1,"result":{"harness":"http-chat"}}'; exit 0 ;;
+esac
 exit 4
 `
 
@@ -237,7 +243,7 @@ func TestInstallCheck(t *testing.T) {
 		"no http-chat adapter": {func(t *testing.T, root string) {
 			rm(t, filepath.Join(root, arch, "lib/adc/adapters/http-chat/src/main.ts"))
 			sums(t, filepath.Join(root, arch, "lib/adc"))
-		}, "the installed http-chat adapter does not run"},
+		}, "the installed http-chat adapter does not run with the installed node (exit 4): cannot find module"},
 	} {
 		d := dist(t, good())
 		c.change(t, d)
