@@ -80,9 +80,14 @@ type env struct {
 	blobs *blobstore.Store
 }
 
-// unrailed are the count rails' defaults and no USD rail: the rails a
-// test that is not about them passes (P17b: no rails fail closed).
-var unrailed graph.Rails = func(*eventstore.Tx, types.TaskID) (graph.Caps, error) { return graph.DefaultCaps, nil }
+// unrailed are the count rails' defaults and USD rails no test reaches:
+// the rails a test that is not about them passes (P17b: no rails, or no
+// USD rail, fail closed for a priced executor).
+var unrailed graph.Rails = func(*eventstore.Tx, types.TaskID) (graph.Caps, error) {
+	c := graph.DefaultCaps
+	c.PerTaskMicros, c.PerDayMicros = 1<<50, 1<<50
+	return c, nil
+}
 
 // clock is the test stores' clock: now, unless a test moves it.
 var clock = time.Now
@@ -685,7 +690,7 @@ func TestLaunchAttemptRail(t *testing.T) {
 	e := open(t, gs)
 	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true),
 		Rails: func(*eventstore.Tx, types.TaskID) (graph.Caps, error) {
-			return graph.Caps{AttemptsPerRound: 2, RoundsPerTask: 5, MergeOperationsPerGeneration: 2, PerTaskMicros: graph.NoUSDRail, PerDayMicros: graph.NoUSDRail}, nil
+			return graph.Caps{AttemptsPerRound: 2, RoundsPerTask: 5, MergeOperationsPerGeneration: 2, PerTaskMicros: 1 << 50, PerDayMicros: 1 << 50}, nil
 		}}
 	n := e.node(types.NodeKindPlan, reg, false)
 	for i := range 2 {

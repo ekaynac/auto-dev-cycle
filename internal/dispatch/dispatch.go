@@ -86,7 +86,7 @@ type Dispatcher struct {
 	Registry    registry.Registry
 	Images      Images
 	Credentials Credentials
-	Rails       graph.Rails // each task's count rails (P17a); nil: graph.DefaultCaps
+	Rails       graph.Rails // each task's rails (P17a, P17b); nil: graph.DefaultCaps, which has no USD rail, so a priced executor is refused
 }
 
 // Refused is a match that placed nothing: the placement check that
@@ -139,7 +139,7 @@ func (d Dispatcher) Match(tx *eventstore.Tx, card Card, executor types.ExecutorI
 	if err != nil {
 		return nil, "", err
 	}
-	l := types.Lease{ID: types.LeaseID(id), Unit: unit, Role: types.Name(e.Role), Executor: executor, State: types.LeaseStateRequested,
+	l := types.Lease{ID: types.LeaseID(id), Unit: unit, Role: types.Name(e.Role), Executor: executor, Price: e.Price, State: types.LeaseStateRequested,
 		Reservations: []types.LeaseReservationsItem{res}, Priority: card.Priority, Footprint: card.Footprint,
 		Deadline: card.Deadline, PlacementChecks: checks}
 	evs, err := lease.RequestGranted(tx, l)

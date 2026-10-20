@@ -228,17 +228,3 @@ func ClearRail(tx *eventstore.Tx, task types.TaskID, rail string) ([]eventstore.
 	}
 	return out, nil
 }
-
-// UnitOwner is unit's node's task and project; false for a unit of no
-// recorded node.
-func UnitOwner(tx *eventstore.Tx, unit types.UnitID) (types.TaskID, types.ProjectID, bool, error) {
-	n, ok := NodeOf(unit)
-	if !ok {
-		return "", "", false, nil
-	}
-	rec, found, err := load[nodeRecord](tx, NodeProjection, string(n))
-	if err != nil || !found {
-		return "", "", false, err
-	}
-	return rec.Recorded.Task, rec.Recorded.Project, true, nil
-}

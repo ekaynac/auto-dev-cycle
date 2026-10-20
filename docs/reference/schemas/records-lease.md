@@ -14,6 +14,7 @@ A unit's claim on an executor and its resource groups (docs/design/m0/05 "Lease"
 | `unit` | yes | [UnitID](common-defs.md#unitid) |  |
 | `role` | yes | [Name](records-receipt.md#name) |  |
 | `executor` | yes | [ExecutorID](common-defs.md#executorid) |  |
+| `price` |  | [RegistryPrice](config-executor-registry.md#registryprice) | The executor's price declared when the lease was placed (dispatch.Match, M1 P17b), which the USD rails price the lease's spend at; absent for an executor with none. A later registry edit does not change it. |
 | `state` | yes | one of `requested`, `waiting`, `granted`, `active`, `releasing`, `settling`, `restoring`, `restore_failed`, `settling_verified`, `settled`, `released` | requested, waiting, granted, active and releasing; settling, then (evidence targets) restoring, restore_failed and settling_verified; settled and released are terminal. |
 | `reservations` | yes | array of object ([fields](#fields-of-reservations)) | One per resource group, all made or none. |
 | `priority` | yes | integer (minimum `0`, maximum `1000`) |  |

@@ -33,7 +33,7 @@ var (
 	ReasonAuthorityRevoked = types.ReasonCodeOf("authority_revoked")
 	// ReasonBrokerCreditExhausted: The broker balance cannot cover the reservation (402, or stale/unknown balance). Partial work is sealed, never read as no changes.
 	ReasonBrokerCreditExhausted = types.ReasonCodeOf("broker_credit_exhausted")
-	// ReasonBudgetRailReached: A USD rail would be passed by the next lease: the task's spend (per_task_usd) or its project's on the grant's UTC day (per_day_usd), settled calls at their priced usage and unsettled ones at their liabilities, with the lease's priced reservation. Nothing is placed, and the node holds budget_rail until the operator raises the task's rail (task.raise_rail) or the project's profile changes (M1 P17b).
+	// ReasonBudgetRailReached: A USD rail would be passed by the next lease: the task's spend (per_task_usd) or its project's on the grant's UTC day (per_day_usd), settled calls at their priced usage and unsettled ones at their liabilities, with the lease's priced reservation. Nothing is placed, and the node holds budget_rail until the operator raises the task's rail (task.raise_rail) or the project's profile changes (M1 P17b). A lease's whole spend, usage past its reservation included, is charged to its grant's UTC day, so spend within one calendar day can reach about twice per_day_usd.
 	ReasonBudgetRailReached = types.ReasonCodeOf("budget_rail_reached")
 	// ReasonCandidateOwnedSetupError: A setup/teardown error in a test file the candidate added or changed, fully accounted; routed to a builder repair (07 ownership rules).
 	ReasonCandidateOwnedSetupError = types.ReasonCodeOf("candidate_owned_setup_error")

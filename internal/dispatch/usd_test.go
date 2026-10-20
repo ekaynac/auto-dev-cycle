@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,13 +20,17 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
+	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // The stub builder's price (registry-stub.json): $1 and $4 per million
 // input and output tokens. A card reserves 1,000 tokens: 4,000 micros at
-// the higher rate.
-const reservedMicros = 4000
+// the higher rate. noCap is a USD rail no test reaches.
+const (
+	reservedMicros = 4000
+	noCap          = int64(1) << 50
+)
 
 // usdCaps are rails with only the USD caps, in micros (NoUSDRail: none).
 func usdCaps(perTask, perDay *int64) graph.Rails {
@@ -47,12 +52,18 @@ func (e env) nodeIn(t types.TaskID) types.NodeID {
 	return r.Node.ID
 }
 
-// measured records m of call on the lease and attempt.
+// measured records m of call on the lease and attempt, in USD.
 func (e env) measured(call types.CallID, a types.AttemptID, l types.LeaseID, kind types.UsageMeasurementKind, seq, in, out int64, src types.UsageMeasurementSourceOfTruth) {
+	e.t.Helper()
+	e.measuredIn(call, a, l, "USD", kind, seq, in, out, src)
+}
+
+// measuredIn is measured, its cost in currency.
+func (e env) measuredIn(call types.CallID, a types.AttemptID, l types.LeaseID, currency string, kind types.UsageMeasurementKind, seq, in, out int64, src types.UsageMeasurementSourceOfTruth) {
 	e.t.Helper()
 	m := types.UsageMeasurement{ID: types.MeasurementID(must(ids.New("msr"))), Call: call, Attempt: a, Lease: l, Kind: kind, Sequence: seq,
 		Tokens: types.UsageMeasurementTokens{In: in, Out: out}, Turns: 1, Milliseconds: 5,
-		Cost:          types.UsageMeasurementCost{AmountMicros: 1, Currency: "USD", Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
+		Cost:          types.UsageMeasurementCost{AmountMicros: 1, Currency: currency, Basis: types.UsageMeasurementCostBasisCash, Estimate: true},
 		SourceOfTruth: src}
 	e.must(func(*eventstore.Tx) ([]eventstore.Event, error) {
 		ev, err := ledger.Measure(m)
@@ -124,7 +135,7 @@ func refusedOn(t *testing.T, err error, rail string) {
 func TestUSDTaskRail(t *testing.T) {
 	reg, gs := stub(t, nil)
 	e := open(t, gs)
-	perTask, perDay := int64(2*reservedMicros-1), int64(graph.NoUSDRail)
+	perTask, perDay := int64(2*reservedMicros-1), noCap
 	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
 	first := e.nodeIn(task)
 	e.spentOn(d, first, e.hostileZeroFinal)
@@ -159,7 +170,7 @@ func TestUSDDayRail(t *testing.T) {
 	t.Cleanup(func() { clock = time.Now })
 	reg, gs := stub(t, nil)
 	e := open(t, gs)
-	perTask, perDay := int64(graph.NoUSDRail), int64(2*reservedMicros-1)
+	perTask, perDay := noCap, int64(2*reservedMicros-1)
 	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
 	other := types.TaskID("tsk_01m3250v9xft08ssr4ygq6g2nq")
 	yesterday := time.Now().UTC().AddDate(0, 0, -1)
@@ -182,7 +193,7 @@ func TestUSDDayRail(t *testing.T) {
 func TestUSDCost(t *testing.T) {
 	reg, gs := stub(t, nil)
 	e := open(t, gs)
-	perTask, perDay := int64(graph.NoUSDRail), int64(graph.NoUSDRail)
+	perTask, perDay := noCap, noCap
 	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
 	settled := e.spentOn(d, e.nodeIn(task), func(call types.CallID, a types.AttemptID, l types.LeaseID) {
 		e.measured(call, a, l, types.UsageMeasurementKindDelta, 1, 1000, 0, types.UsageMeasurementSourceOfTruthGatewayCount)
@@ -193,33 +204,121 @@ func TestUSDCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.view(func(tx *eventstore.Tx) error {
+		for name, c := range map[string]struct {
+			l    types.LeaseID
+			edit func(*types.Lease)
+			want int64
+		}{
+			"settled at 1,000 input tokens":                       {settled, nil, 1000},
+			"the hostile zero final at its 1,000-token liability": {hostile, nil, reservedMicros},
+			"a live lease at its reservation":                     {live, nil, reservedMicros},
+			"no price":                                            {hostile, func(l *types.Lease) { l.Price = nil }, 0},
+			// the price placed with, not the registry's now (Opus #302 M1)
+			"priced as placed": {settled, func(l *types.Lease) { l.Price.InputUsdMicrosPerMtok = 2_000_000 }, 2000},
+		} {
+			l, _, _, err := lease.LeaseOf(tx, c.l)
+			if err != nil {
+				return err
+			}
+			if c.edit != nil {
+				p := *l.Price
+				l.Price = &p
+				c.edit(&l)
+			}
+			if got, err := cost(tx, l); err != nil || got != c.want {
+				t.Errorf("%s: %d, %v; want %d", name, got, err, c.want)
+			}
+		}
+		// A lease of two groups is not counted: an error (Opus #302 L3).
+		l, _, _, err := lease.LeaseOf(tx, live)
+		if err != nil {
+			return err
+		}
+		l.Reservations = append(l.Reservations, l.Reservations[0])
+		if _, err := cost(tx, l); err == nil || !strings.Contains(err.Error(), "reserves 2 groups") {
+			t.Errorf("a lease of two groups: %v", err)
+		}
+		return nil
+	})
+}
+
+// Saturation (Opus #302 H1): a call with a delta past what a price can hold,
+// or reports the ledger cannot sum (its saturated standing), costs past
+// every rail: the next lease is refused with the hold, never an error that
+// wedges placement.
+func TestUSDSaturates(t *testing.T) {
+	for name, report := range map[string]func(e env) func(types.CallID, types.AttemptID, types.LeaseID){
+		"a huge delta": func(e env) func(types.CallID, types.AttemptID, types.LeaseID) {
+			return func(c types.CallID, a types.AttemptID, l types.LeaseID) {
+				e.measured(c, a, l, types.UsageMeasurementKindDelta, 1, 3_000_000_000_000_000, 0, types.UsageMeasurementSourceOfTruthAdapterReport)
+			}
+		},
+		"an unsummable standing": func(e env) func(types.CallID, types.AttemptID, types.LeaseID) {
+			return func(c types.CallID, a types.AttemptID, l types.LeaseID) {
+				for seq := range int64(3) {
+					e.measured(c, a, l, types.UsageMeasurementKindDelta, seq+1, 1<<53-1, 0, types.UsageMeasurementSourceOfTruthAdapterReport)
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reg, gs := stub(t, nil)
+			e := open(t, gs)
+			perTask, perDay := noCap, noCap
+			d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
+			e.spentOn(d, e.nodeIn(task), report(e))
+			_, err := e.match(d, card(e.nodeIn(task)), builder)
+			refusedOn(t, err, graph.RailTaskUSD)
+		})
+	}
+}
+
+// A retired executor (Opus #302 M1): the registry no longer names the
+// builder the task spent on; its leases still count at their price, and
+// the next lease, on a new builder, is refused at the rail, not wedged. An
+// unpriced executor's lease is placed past the rail, reserving nothing
+// priced (Opus #302 L1).
+func TestUSDRetiredAndUnpriced(t *testing.T) {
+	reg, gs := stub(t, nil)
+	e := open(t, gs)
+	perTask, perDay := int64(reservedMicros+1), noCap
+	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
+	e.spentOn(d, e.nodeIn(task), e.hostileZeroFinal)
+	const successor = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pb")
+	retired := d
+	doc, err := registry.Load(config + "registry-stub.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range doc.Executors {
+		if doc.Executors[i].ID == builder {
+			doc.Executors[i].ID = successor
+		}
+	}
+	groups := slices.Clone(gs)
+	for i := range groups {
+		groups[i].Members = slices.Clone(groups[i].Members)
+		for j, m := range groups[i].Members {
+			if m == builder {
+				groups[i].Members[j] = successor
+			}
+		}
+	}
+	if retired.Registry, err = registry.New(doc, groups); err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.match(retired, card(e.nodeIn(task)), successor)
+	refusedOn(t, err, graph.RailTaskUSD)
 	free := d
 	free.Registry, _ = stub(t, func(doc *types.ExecutorRegistry) {
 		for i := range doc.Executors {
 			doc.Executors[i].Price, doc.Executors[i].CostBasis = nil, types.RegistryExecutorCostBasisFree
 		}
 	})
-	e.view(func(tx *eventstore.Tx) error {
-		for name, c := range map[string]struct {
-			d    Dispatcher
-			l    types.LeaseID
-			want int64
-		}{
-			"settled at 1,000 input tokens":                       {d, settled, 1000},
-			"the hostile zero final at its 1,000-token liability": {d, hostile, reservedMicros},
-			"a live lease at its reservation":                     {d, live, reservedMicros},
-			"no price":                                            {free, hostile, 0},
-		} {
-			l, _, _, err := lease.LeaseOf(tx, c.l)
-			if err != nil {
-				return err
-			}
-			if got, err := c.d.cost(tx, l); err != nil || got != c.want {
-				t.Errorf("%s: %d, %v; want %d", name, got, err, c.want)
-			}
-		}
-		return nil
-	})
+	if _, err := e.match(free, card(e.nodeIn(task)), builder); err != nil {
+		t.Errorf("an unpriced executor past the rail: %v", err)
+	}
 }
 
 // liveOn is node's unit's live lease, if any.
@@ -247,6 +346,11 @@ func TestUSDNoRails(t *testing.T) {
 	}
 	if _, live, err := e.liveOn(n); err != nil || live {
 		t.Fatalf("the refused match placed a lease: %v", err)
+	}
+	// Rails with no USD rail (DefaultCaps') fail closed the same (Opus #302 H2).
+	noUSD := Dispatcher{Registry: reg, Rails: func(*eventstore.Tx, types.TaskID) (graph.Caps, error) { return graph.DefaultCaps, nil }}
+	if _, err := e.match(noUSD, card(n), builder); !errors.As(err, &r) || r.Reason != vocab.ReasonPreconditionFailed {
+		t.Fatalf("a priced executor under no USD rail: %v", err)
 	}
 	free, _ := stub(t, func(doc *types.ExecutorRegistry) {
 		for i := range doc.Executors {

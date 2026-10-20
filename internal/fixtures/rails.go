@@ -8,6 +8,7 @@ import (
 	"errors"
 	"maps"
 	"path/filepath"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
@@ -18,6 +19,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
@@ -38,20 +40,22 @@ const (
 		`"credential_ref":"stub","group":"rg_01m4tm99haemss9tvzd438vq8j","cost_basis":"cash","price":{"input_usd_micros_per_mtok":2000000,"output_usd_micros_per_mtok":8000000}}]}`
 	railsGroups = `[{"id":"rg_01m4tm99haemss9tvzd438vq8j","kind":"account_quota","capacity_model":{"unit":"tokens","limit":2000000,"window":null,` +
 		`"reset_at":null,"quota_state":"known"},"release_rule":"on_settle","members":["exe_01m4tm99haemqt8es2qfbwj8pa","exe_01m4tm99haemr8ajyf09v4ytzb"]}]`
+	// railsProfile is go-mini's profile, its per_task_usd $0.01 (10,000
+	// micros): a 2,000-token card reserves 8,000 at the builder's $4.
+	railsProfile = `{"schema":"adc.project-profile/v1","id":"prj_01m3250vkwffc979nzjw0g2sf9","name":"rails-usd","repo":{"url":"/var/lib/adc/remotes/go-mini.git","base_ref":"refs/heads/main"},"forge":{"kind":"git","capabilities":{"change_requests":false,"protected_branches":false,"required_checks":false},"settings":{}},"source_tests":{"dev_dependencies":true,"vcs_metadata":false},"package":{"recipe":[["go","build","-trimpath","-o","bin/","./..."]],"outputs":["bin"]},"runtime_verification":{"command":null,"facts_from":null},"toolchain":{"images":{"go":"ghcr.io/ekaynac/adc-prepared-go@sha256:8876412b0214ce61f539a52c54c43b60ff6dfb7070c65c167fa63f97eb116a97"},"dependency_recipe":{"lockfiles":["go.mod"],"command":["go","mod","download"],"registries":["goproxy"]}},"gate":{"command":["go","test","-count=1","-json","./..."],"result_adapter":"go_test_json","baseline":{"kind":"measured","relock_requires":"approval"},"environments":[{"name":"ci","facts":{"vcs_metadata":false,"network":"none","runtime":{"language_version":"go1.27.1","os":"linux","arch":"arm64"}},"owner":"operator"}],"ownership_rules":"default"},"integration":{"plugin":"none","topology":null,"receipts_required":[]},"plugins":{"deploy":"none","records":"json_ledger"},"protected_paths":["go.mod","go.sum","go.work","go.work.sum","vendor/**"],"protected_documents":[],"data_policy":{"floor":"contracted","routing":"verified","allowed_destinations":[]},"usage_profile_override":null,"priority":100,"budget":{"rails":{"per_task_usd":"0.01","per_day_usd":"20"}},"retention":{"attempt_continuity_post_closure_ttl":"P7D","supervisor_notes_ttl":null,"blob_payload_ttl":null},"vocabulary":{"task_id_pattern":null,"branch_prefix":"adc/","language":"en"}}`
 	railsBuilder = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pa")
 	railsProject = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sf9")
-	railsTask    = types.TaskID("tsk_01m3250v9xft08ssr4ygq6g2np")
-	// railsReserved is a card's 1,000 tokens at the higher rate, in micros.
-	railsReserved = 4000
 )
 
 // railsUSDLiability (P17b; #226 entry 69; fault 2: "a liability left out
-// of the USD rail"): a task's call ends in a hostile zero final, so its
-// lease settles with the call a liability (empty); the next lease would
-// pass per_task_usd with it and is refused, could_not_run/
+// of the USD rail"): under the rails authority.Rails gives the task (its
+// project profile's per_task_usd), a task's call ends in a hostile zero
+// final, so its lease settles with the call a liability (empty); the next
+// lease would pass per_task_usd with it and is refused, could_not_run/
 // budget_rail_reached, nothing placed; the node is held on budget_rail
-// (empty); the task's rail is raised, which clears the hold (empty); and
-// the lease is placed (empty).
+// (empty); the operator's task.raise_rail (its handler's logic, and the
+// task.rail_raised fold) raises the task's rail and clears the hold
+// (empty); and the lease is placed (empty).
 func railsUSDLiability(ctx context.Context, dir string) (steps []Step, violations []string, err error) {
 	vreg, err := vocab.Load()
 	if err != nil {
@@ -81,22 +85,37 @@ func railsUSDLiability(ctx context.Context, dir string) (steps []Step, violation
 		return nil, nil, err
 	}
 	kinds := graph.Kinds()
-	for _, ks := range []eventstore.Kinds{lease.Kinds(), ledger.Kinds(), modelcall.Kinds()} {
+	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.ProjectKinds(), authority.TaskKinds(), lease.Kinds(), ledger.Kinds(), modelcall.Kinds()} {
 		maps.Copy(kinds, ks)
 	}
+	tsk, err := ids.New("tsk")
+	if err != nil {
+		return nil, nil, err
+	}
+	railsTask := types.TaskID(tsk)
 	none := func(*eventstore.Tx, eventstore.Command) error { return nil }
+	// The raise's object is its task, as the authorizer binds it.
+	bind := func(tx *eventstore.Tx, c eventstore.Command) error {
+		if c.Action != authority.TaskRaiseRailAction {
+			return nil
+		}
+		return tx.BindObject(eventstore.Object{Subject: string(railsTask), Record: authority.TaskRecordOf(railsTask)})
+	}
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Effects: modelcall.Effects(),
-		Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(
+		Hooks: eventstore.Hooks{Identify: none, Authorize: bind, Project: eventstore.ProjectEach(identity.Projector{}.Project,
+			authority.ProjectProjector{}.Project, authority.TaskProjector{}.Project,
 			capacity.Hook(lease.Projector{Blobs: blobs, Holds: vreg.Holds, Units: graph.Units{}}, r), ledger.Project, modelcall.Project,
 			graph.Projector{Answers: authority.Answers{}}.Project)}})
 	if err != nil {
 		return nil, nil, err
 	}
 	defer func() { err = errors.Join(err, s.Close()) }()
-	actor, err := ids.New("act")
-	if err != nil {
+	sys, err1 := ids.New("act")
+	op, err2 := ids.New("act")
+	if err := errors.Join(err1, err2); err != nil {
 		return nil, nil, err
 	}
+	actor := op // the operator's commands
 	do := func(fn func(*eventstore.Tx) ([]eventstore.Event, error)) error {
 		cmd, err := ids.New("cmd")
 		if err != nil {
@@ -109,10 +128,48 @@ func railsUSDLiability(ctx context.Context, dir string) (steps []Step, violation
 			}))
 		return err
 	}
-	perTask := int64(2*railsReserved - 1)
-	d := dispatch.Dispatcher{Registry: reg, Rails: func(*eventstore.Tx, types.TaskID) (graph.Caps, error) {
-		return graph.Caps{AttemptsPerRound: 9, RoundsPerTask: 9, MergeOperationsPerGeneration: 9, PerTaskMicros: perTask, PerDayMicros: graph.NoUSDRail}, nil
-	}}
+	// The system actor, the operator, the project and the task, as their
+	// commands record them.
+	system := types.Actor{ID: types.ActorID(sys), Kind: types.ActorKindSystem, Name: "system", CreatedBy: types.ActorID(sys)}
+	operator := types.Actor{ID: types.ActorID(op), Kind: types.ActorKindOperator, Name: "operator", CreatedBy: types.ActorID(sys)}
+	hidden := types.Attachment{Name: "inventory/hidden_test.go", Digest: types.Digest("sha256:" + string(make64('a')))}
+	spec := types.TaskCreateScope{Project: railsProject, Title: "rails", Requirement: "spend", Attachments: []types.Attachment{hidden}}
+	acceptance := []types.AcceptanceBlob{{Name: hidden.Name, Digest: hidden.Digest, Class: types.AcceptanceBlobClassRestricted,
+		WithheldFrom: []types.AcceptanceBlobWithheldFromItem{types.AcceptanceBlobWithheldFromItemBuilder, types.AcceptanceBlobWithheldFromItemReviewer}}}
+	actor = sys // the system actor records itself and the operator
+	for _, a := range []types.Actor{system, operator} {
+		if err := do(func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(a) }); err != nil {
+			return nil, nil, err
+		}
+	}
+	actor = op
+	for _, setup := range []func(*eventstore.Tx) ([]eventstore.Event, error){
+		func(*eventstore.Tx) ([]eventstore.Event, error) {
+			id, err := ids.New("evt")
+			p := string(railsProject)
+			return []eventstore.Event{{ID: id, Kind: authority.ProjectCreated, Subject: p, Project: &p, Payload: json.RawMessage(railsProfile)}}, err
+		},
+		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			raw, err := json.Marshal(spec)
+			if err != nil {
+				return nil, err
+			}
+			dg, err := eventstore.ContentDigest(raw)
+			if err != nil {
+				return nil, err
+			}
+			payload, err := json.Marshal(types.Task{ID: railsTask, Project: railsProject, Spec: spec, SpecDigest: types.Digest(dg), Acceptance: acceptance,
+				CreatedBy: operator.ID, CreatedAt: types.Time(tx.Now().Format(time.RFC3339Nano))})
+			id, err2 := ids.New("evt")
+			p := string(railsProject)
+			return []eventstore.Event{{ID: id, Kind: authority.TaskCreated, Subject: string(railsTask), Project: &p, Payload: payload}}, errors.Join(err, err2)
+		},
+	} {
+		if err := do(setup); err != nil {
+			return nil, nil, err
+		}
+	}
+	d := dispatch.Dispatcher{Registry: reg, Rails: authority.Rails}
 	node := func() (types.NodeID, error) {
 		id, err := ids.New("nod")
 		rec := types.NodeRecorded{Type: "node_recorded", Task: railsTask, Project: railsProject, Node: types.Node{ID: types.NodeID(id), Kind: types.NodeKindPlan,
@@ -128,7 +185,7 @@ func railsUSDLiability(ctx context.Context, dir string) (steps []Step, violation
 		return rec.Node.ID, err
 	}
 	card := func(n types.NodeID) dispatch.Card {
-		return dispatch.Card{Node: n, Project: railsProject, Image: "localhost/prepared@sha256:" + string(make64('a')), Tokens: 1000, Deadline: "2026-10-04T14:00:00Z",
+		return dispatch.Card{Node: n, Project: railsProject, Image: "localhost/prepared@sha256:" + string(make64('a')), Tokens: 2000, Deadline: "2026-10-04T14:00:00Z",
 			Policy:    types.ProjectProfileDataPolicy{Floor: "contracted", Routing: "verified", AllowedDestinations: []types.Slug{"stub"}},
 			Footprint: types.LeaseFootprint{ContextTokens: 1, ExpectedTurns: 1}}
 	}
@@ -186,7 +243,7 @@ func railsUSDLiability(ctx context.Context, dir string) (steps []Step, violation
 			return lease.LoseRunning(tx, a, types.AttemptLostReasonValueControllerRestart)
 		},
 		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			return lease.SealMinimal(tx, a, 2, graph.Units{}, blobs, nil, types.ActorID(actor))
+			return lease.SealMinimal(tx, a, 2, graph.Units{}, blobs, nil, operator.ID)
 		},
 		func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return lease.ChangeLease(tx, l, 3, lease.LeaseEvent{Kind: lease.Revoked, Reason: "restart"}, nil)
@@ -232,12 +289,27 @@ func railsUSDLiability(ctx context.Context, dir string) (steps []Step, violation
 	if err := o.step(do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return graph.Raise(tx, next, *refused.Hold, nil) })); err != nil {
 		return nil, nil, err
 	}
-	// The raise: the rail above the spend, and the task's holds on it cleared
-	// (task.raise_rail's logic: authority.TaskRaiseRailHandler).
-	perTask = 3 * railsReserved
-	if err := o.step(do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.ClearRail(tx, railsTask, graph.RailTaskUSD)
-	})); err != nil {
+	// The operator raises the task's per_task_usd to $0.02, above the spend
+	// and the next reservation: task.raise_rail's logic, which clears the
+	// task's holds on that rail, and the task.rail_raised fold.
+	raise, err := json.Marshal(map[string]any{"task": railsTask, "rail": graph.RailTaskUSD, "to_usd": "0.02"})
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd, err := ids.New("cmd")
+	if err != nil {
+		return nil, nil, err
+	}
+	raiseCmd := eventstore.Command{ID: cmd, Actor: op, Action: authority.TaskRaiseRailAction, IdempotencyKey: cmd, Input: raise}
+	_, err = s.SubmitApplied(ctx, raiseCmd, authority.TaskRaiseRailHandler{}.Logic(raiseCmd))
+	if err := o.step(err); err != nil {
+		return nil, nil, err
+	}
+	if err := s.View(ctx, func(tx *eventstore.Tx) error {
+		caps, err := authority.Rails(tx, railsTask)
+		o.check(err == nil && caps.PerTaskMicros == 20_000, "the raised rail in force: %d, %v", caps.PerTaskMicros, err)
+		return nil
+	}); err != nil {
 		return nil, nil, err
 	}
 	id, refused, err = match(next)
