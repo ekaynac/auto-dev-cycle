@@ -216,32 +216,32 @@ func TestIntegrityDoS(t *testing.T) {
 	}
 
 	// Many modules, each a changed directory: 2500 took about 50 s with a
-	// scan of every path per module and per directory. Linear (#226 entry
-	// 89: relative to 250 modules timed in the same run, never a fixed
-	// wall-clock bound): 2500 within 25 times 250's time (quadratic: 100).
+	// scan of every path per module and per directory (P14e-2b). Counted,
+	// not timed (#226 entry 89, Opus #317 H1): the paths the guard's
+	// whole-tree scans visit are linear in the paths, base and candidate;
+	// a scan per module or per directory visits modules times paths.
+	const modules, others = 2500, 7500
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
 		m := map[string]string{}
-		for i := range 7500 {
+		for i := range others {
 			m[fmt.Sprintf("other/f%d.txt", i)] = "x\n"
 		}
 		write(t, src, m)
 		plain(t, src, "add", "--all")
 	})
-	var took [2]time.Duration
-	for i, n := range []int{250, 2500} {
-		files := map[string]string{}
-		for i := range n {
-			files[fmt.Sprintf("m%d/go.mod", i)] = fmt.Sprintf("module example.com/m%d\n\ngo 1.22\n", i)
-			files[fmt.Sprintf("m%d/x.go", i)] = "package x\n\nfunc G() int { return 1 }\n"
-		}
-		begin := time.Now()
-		if v := f.guarded(t, files); !v.Accepted() {
-			t.Errorf("%d modules: %q", n, whats(v.Blocks[:min(3, len(v.Blocks))]))
-		}
-		took[i] = time.Since(begin)
+	files := map[string]string{}
+	for i := range modules {
+		files[fmt.Sprintf("m%d/go.mod", i)] = fmt.Sprintf("module example.com/m%d\n\ngo 1.22\n", i)
+		files[fmt.Sprintf("m%d/x.go", i)] = "package x\n\nfunc G() int { return 1 }\n"
 	}
-	if t.Logf("250 modules in %v, 2500 in %v", took[0], took[1]); took[1] > 25*took[0] {
-		t.Errorf("250 modules in %v, 2500 in %v: not linear", took[0], took[1])
+	before := keysVisited.Load()
+	if v := f.guarded(t, files); !v.Accepted() {
+		t.Errorf("%d modules: %q", modules, whats(v.Blocks[:min(3, len(v.Blocks))]))
+	}
+	paths := int64(2*(len(guardBase)+others) + len(files)) // the base's, then the candidate's
+	visited := keysVisited.Load() - before
+	if t.Logf("%d paths visited by whole-tree scans, %d paths", visited, paths); visited > 10*paths {
+		t.Errorf("%d paths visited for %d paths: a scan per module or directory", visited, paths)
 	}
 }

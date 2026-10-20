@@ -15,6 +15,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
@@ -119,6 +120,8 @@ type run struct {
 	trees              [2]*tree            // the base and the candidate
 	vendorChanged      map[string]bool     // vendor/ directories with a file changed
 	anyTest            bool                // a Go test in either version (a helper anywhere the tests may call)
+	baseTest           bool                // a Go test in the base
+	testUnder          map[string]bool     // the base's directories with a Go test under them
 	blocks, warnings   []Block
 	out                additive // decision A outside initialization (P14b-out-1): its own findings and work
 
@@ -185,15 +188,22 @@ func (r *run) check(changes []Change) error {
 		}
 	}
 	r.baseDirs, r.candDirs = byDir(r.files), byDir(r.cand)
-	r.trees = [2]*tree{{r.files, r.baseDirs, map[string]*typer{}, vendors(keys(r.files))}, {r.cand, r.candDirs, map[string]*typer{}, vendors(keys(r.cand))}}
+	basePaths := keys(r.files) // each whole-tree scan once per run, never per module or directory (P14e-2b, Opus #317 L1)
+	r.trees = [2]*tree{{r.files, r.baseDirs, map[string]*typer{}, vendors(basePaths)}, {r.cand, r.candDirs, map[string]*typer{}, vendors(keys(r.cand))}}
 	r.anyTest = slices.ContainsFunc(keys(r.files, r.cand), goByName)
 	r.vendorChanged = vendors(slices.DeleteFunc(keys(r.files, r.cand), func(p string) bool { return r.files[p] == r.cand[p] }))
+	r.baseTest, r.testUnder = slices.ContainsFunc(basePaths, goByName), map[string]bool{}
+	for _, q := range basePaths {
+		for d := path.Dir(q); goByName(q) && d != "." && !r.testUnder[d]; d = path.Dir(d) {
+			r.testUnder[d] = true
+		}
+	}
 	for _, v := range keys(r.trees[0].vendors, r.trees[1].vendors) { // P14e-2c: until the gate pins -mod=vendor for them
 		if mod := path.Join(path.Dir(strings.TrimSuffix(v, "/")), "go.mod"); vendorBlock && (r.files[mod] != "" || r.cand[mod] != "") {
 			add(&r.blocks, v, "unverifiable: a vendored module: the gate builds from the module cache (GOFLAGS=-mod=readonly), not vendor/")
 		}
 	}
-	py := slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), func(p string) bool { return path.Ext(p) == ".py" })
+	py := slices.ContainsFunc(basePaths, func(p string) bool { return path.Ext(p) == ".py" })
 	cgo := slices.ContainsFunc(changes, func(c Change) bool { return path.Ext(c.Src) != ".go" || path.Ext(c.Dst) != ".go" }) && r.usesCgo()
 	for _, c := range changes {
 		for _, p := range slices.Compact([]string{c.Src, c.Dst}) {
@@ -210,8 +220,7 @@ func (r *run) check(changes []Change) error {
 				add(&r.blocks, p, "unverifiable: a non-Go file in a repository that uses cgo")
 			case slices.Contains(cgoSources, path.Ext(p)): // no cgo yet: SWIG turns it on, a C file is refused
 				add(&r.blocks, p, "unverifiable: C, C++, Objective-C, Fortran or SWIG source")
-			case new && path.Base(p) == "go.mod" && p != "go.mod" && c.Status != "M" && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)),
-				func(q string) bool { return goByName(q) && strings.HasPrefix(q, dir+"/") }):
+			case new && path.Base(p) == "go.mod" && p != "go.mod" && c.Status != "M" && r.testUnder[dir]:
 				add(&r.blocks, p, "a go.mod added over tests: they leave the module the gate tests")
 			}
 		}
@@ -335,10 +344,15 @@ func (r *run) pkg(dir string, t *tree) (pkgFacts, error) {
 	return fa, r.analyse(dir, srcs, &fa)
 }
 
+// keysVisited counts the keys keys has visited, any run's: a test bounds the
+// guard's whole-tree scans by this count, not by a clock (Opus #317 H1).
+var keysVisited atomic.Int64
+
 // keys is the sorted union of maps' keys.
 func keys[V any](ms ...map[string]V) []string {
 	var out []string
 	for _, m := range ms {
+		keysVisited.Add(int64(len(m)))
 		out = append(out, slices.Collect(maps.Keys(m))...)
 	}
 	slices.Sort(out)
@@ -381,7 +395,7 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 	more := func(a, b []int) bool { // on some platform: none is traded across them
 		return slices.ContainsFunc(platforms, func(pl [2]string) bool { return a[slices.Index(platforms, pl)] > b[slices.Index(platforms, pl)] })
 	}
-	if more(a.ambient, b.ambient) && slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), goByName) {
+	if more(a.ambient, b.ambient) && r.baseTest {
 		add(&r.blocks, dir, "a skip added outside a test (a helper)")
 	}
 	if more(a.forged, b.forged) {

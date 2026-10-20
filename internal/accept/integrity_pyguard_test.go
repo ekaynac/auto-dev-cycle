@@ -1019,10 +1019,14 @@ func TestPyGuardReach(t *testing.T) {
 			plain(t, src, "add", "--all")
 		})
 	}(t)
+	unit := newFixtureWith(t, func(src string) { // the same shape with no star import: a plain fixture (Opus #317 H2)
+		write(t, src, map[string]string{"other.py": "Y = 1\n", "big.py": "V = False\n", "tests/test_s.py": "import pytest\nfrom big import V\n\n@pytest.mark.skipif(V, reason='r')\ndef test_s():\n    pass\n"})
+		plain(t, src, "add", "--all")
+	}).ordinary(t, map[string]string{"other.py": "Y = 2\n"})
 	maxWork = 100000
 	start := time.Now()
 	v := stars.guarded(t, map[string]string{"other.py": "Y = 2\n"})
-	if took := time.Since(start); !stars.within(t, took, 20) || !pyFinds(pyOwn(v.Blocks), "over the guard's work bound") && !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread") { // big.py is not inert (P14c-2a-widen r2): unread before the expansion
+	if took := time.Since(start); !within(t, took, unit, 60) || !pyFinds(pyOwn(v.Blocks), "over the guard's work bound") && !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread") { // big.py is not inert (P14c-2a-widen r2): unread before the expansion
 		t.Errorf("r5-M1 a star expansion bounded: %v, %q", took, whats(pyOwn(v.Blocks)))
 	}
 	maxWork = old
@@ -1785,13 +1789,19 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 			t.Errorf("%s: %q", name, whats(pyOwn(v.Blocks)))
 		}
 	}
+	unit := newFixtureWith(t, func(src string) { // the bounds' ordinary run: a plain fixture, never a row's own, maxWork as shipped (Opus #317 H2)
+		write(t, src, astra(nil))
+		plain(t, src, "add", "--all")
+	}).ordinary(t, map[string]string{"cfg.py": "SKIP = 'True'\n"})
+	// Each row's bound in ordinary runs: 2 to 11 measured.
+	const runs = 40
 	deep := astra(map[string]string{"conftest.py": "import " + strings.TrimSuffix(strings.Repeat("a.", 100000), ".") + "\n", "a.py": ""}) // M1: 100,000 components, in an inert import (round 5: __import__ is not inert)
 	g := newFixtureWith(t, func(src string) {
 		write(t, src, deep)
 		plain(t, src, "add", "--all")
 	})
 	start := time.Now()
-	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !g.within(t, time.Since(start), 20) || !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the module conftest.py imports a name past the depth bound)") {
+	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !within(t, time.Since(start), unit, runs) || !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the module conftest.py imports a name past the depth bound)") {
 		t.Errorf("M1 a 100,000-component import (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))
 	}
 	old := maxWork // M1: a 60 KB name charged by its bytes, in either closure; the rest of each run is far below the bound
@@ -1844,7 +1854,7 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 		plain(t, src, "add", "--all")
 	})
 	start = time.Now()
-	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !g.within(t, time.Since(start), 20) || !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread") {
+	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !within(t, time.Since(start), unit, runs) || !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread") {
 		t.Errorf("r2 M1 a 60-alias fanout (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))
 	}
 	paths, links := "", []string{"update-index", "--add"} // Astra #281 r3 M1: 2,000 pythonpath roots and 5,000 gitlinks, a test-only bound
@@ -1861,7 +1871,7 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 	})
 	maxWork = 20000
 	start = time.Now()
-	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !g.within(t, time.Since(start), 20) || !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the base conditions' analysis is over the guard's work bound)") {
+	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !within(t, time.Since(start), unit, runs) || !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the base conditions' analysis is over the guard's work bound)") {
 		t.Errorf("r3 M1 roots and gitlinks (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))
 	}
 	forms := map[string]string{"pytest.ini": "[pytest]\npythonpath =" + paths + "\n"} // and 20 compiled forms over the same roots
@@ -1896,7 +1906,7 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 	})
 	maxWork = 13000 // the seeding charges 2,000 visits and 4,000 directory entries: without either, this run fits
 	start = time.Now()
-	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !g.within(t, time.Since(start), 20) || !pyFinds(pyOwn(v.Blocks), "the candidate's closure is over the guard's work bound") {
+	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !within(t, time.Since(start), unit, runs) || !pyFinds(pyOwn(v.Blocks), "the candidate's closure is over the guard's work bound") {
 		t.Errorf("r4 M2 the candidate's seeding charged (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))
 	}
 	many := "import pytest\nimport feature.flags\n\n" // Astra #281 r6 M2: 2,000 decorators reading one dotted root (her 10,000, scaled), a test-only bound
@@ -1909,7 +1919,7 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 	})
 	maxWork = 60000 // one binding scan per file (about 44,000 in all): one per decorator would pass it
 	start = time.Now()
-	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !g.within(t, time.Since(start), 20) || !pyFinds(pyOwn(v.Blocks), "cfg.py: a skipif or xfail condition in tests/test_z.py reads SKIP") {
+	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !within(t, time.Since(start), unit, runs) || !pyFinds(pyOwn(v.Blocks), "cfg.py: a skipif or xfail condition in tests/test_z.py reads SKIP") {
 		t.Errorf("r6 M2 one binding scan per file (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))
 	}
 	roots := "import pytest\n" // and 17 distinct roots: past pyMaxRoots, not inert
@@ -1935,7 +1945,7 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 	})
 	maxWork = 24000 // each directory walked once: 200 walks per file would pass it
 	start = time.Now()
-	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !g.within(t, time.Since(start), 20) || len(pyOwn(v.Blocks)) > 0 {
+	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !within(t, time.Since(start), unit, runs) || len(pyOwn(v.Blocks)) > 0 {
 		t.Errorf("r5 M1 a deep directory walked once (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))
 	}
 	maxWork = old
