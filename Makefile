@@ -127,6 +127,7 @@ lint: go-check ## gofmt, go vet, go mod tidy check, SPDX headers, shell syntax (
 	@$(GO) mod tidy -diff
 	@for f in $(SHELL_SCRIPTS); do bash -n "$$f"; done
 	@scripts/check-spdx.sh
+	@$(GO) vet -tags qualify ./internal/qualify/ # the live qualification run, compiled, never run (P31a)
 	@if command -v shellcheck >/dev/null; then shellcheck $(SHELL_SCRIPTS); \
 	  elif [[ -n "$${CI:-}" ]]; then echo "shellcheck is required in CI" >&2; exit 1; \
 	  else echo "lint: shellcheck not installed; skipped locally (required in CI)"; fi
