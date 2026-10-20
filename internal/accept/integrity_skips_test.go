@@ -4,10 +4,8 @@ package accept
 
 import (
 	"fmt"
-	"math"
 	"strings"
 	"testing"
-	"time"
 )
 
 // skipsBase is P14d-a's test file: skipping helpers (a function, a method,
@@ -86,6 +84,13 @@ func needCyc(t *testing.T) {
 	u.Skip("x")
 }
 
+func rebound(t *testing.T) {
+	u := t
+	u = nil
+	w := u
+	w.Skip()
+}
+
 func needCyc2(t *testing.T) {
 	a := t
 	b := a
@@ -94,6 +99,34 @@ func needCyc2(t *testing.T) {
 }
 
 func TestChecked(t *testing.T) { check(t) }
+
+type S struct{ URL string }
+
+func requireServer(t *testing.T) *S {
+	t.Skip("no server")
+	return &S{}
+}
+
+var shared *S
+
+func setup(t *testing.T) { shared = requireServer(t) }
+
+func url() string {
+	if shared == nil {
+		return ""
+	}
+	return shared.URL
+}
+
+var client *S
+
+func connect(t *testing.T) { client = requireServer(t) }
+
+func closeClient() { client = nil }
+
+func pick() func(*testing.T) { return requireDocker }
+
+var picked = pick()
 
 func skipElement(t *testing.T) error {
 	d := xml.NewDecoder(strings.NewReader(t.Name()))
@@ -167,6 +200,12 @@ func TestIntegritySkips(t *testing.T) {
 		"a map in a package variable (H2)":    {in("\tbyName[\"docker\"](t)\n"), skipped},
 		"a struct in a package variable":      {in("\tcfg.need(t)\n"), skipped},
 		"a field set in init (H2)":            {in("\tholder.f(t)\n"), skipped},
+		"a held result, used (r2 M1)":         {in("\t_ = url()\n"), ""},
+		"a held result, read (r2 M1)":         {in("\tif shared != nil {\n\t\tt.Log(shared.URL)\n\t}\n"), ""},
+		"a held result, cleared (r2 M1)":      {in("\tdefer closeClient()\n"), ""},
+		"a returned helper called":            {in("\tpick()(t)\n"), skipped},
+		"a returned helper held":              {in("\tpicked(t)\n"), skipped},
+		"a copy of a rebound copy":            {in("\trebound(t)\n"), ""},
 		"a cycle of copies (L1)":              {in("\tneedCyc(t)\n"), skipped},
 		"a longer cycle of copies (L1)":       {in("\tneedCyc2(t)\n"), skipped},
 		"a propagated use for a direct skip":  {map[string]string{"pkg/skips_test.go": strings.Replace(skipsBase, "\t_ = requireDocker\n", "\tt.Skip(\"unavailable\")\n", 1)}, skipped}, // Astra #292 r2 1
@@ -258,9 +297,31 @@ func TestIntegritySkipsManyPackages(t *testing.T) {
 	}
 }
 
+// charged is the skip layer's work (skipCharged) in one guarded run of
+// files, which it must accept clean.
+func charged(t *testing.T, f fixture, files map[string]string) int64 {
+	t.Helper()
+	before := skipCharged.Load()
+	if v := f.guarded(t, files); !v.Accepted() || len(v.Warnings) > 0 {
+		t.Fatalf("blocks %q, warnings %q", whats(v.Blocks), whats(v.Warnings))
+	}
+	return skipCharged.Load() - before
+}
+
+// linear: the skip layer's work for 4n is under 5 × n's (4 ×, and n's
+// again as slack: longer names, fixed costs); a quadratic shape is about
+// 16 times, by a count, never a clock (Opus #315 r2 L1).
+func linear(t *testing.T, small, large int64) {
+	t.Helper()
+	t.Logf("work: n %d, 4n %d", small, large)
+	if large > 5*small {
+		t.Errorf("4n's work %d against n's %d: not linear", large, small)
+	}
+}
+
 // TestIntegritySkipsVarLinear (Opus #315 H3): a package variable assigned n
-// distinct functions in init and called n times by a test costs linear
-// work: 4n against n in the same run, a ratio well under the quadratic 16.
+// distinct functions in init and called n times by a test, beside a
+// skipping helper, costs linear work.
 func TestIntegritySkipsVarLinear(t *testing.T) {
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
@@ -282,20 +343,58 @@ func TestIntegritySkipsVarLinear(t *testing.T) {
 		b.WriteString("\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n}\n")
 		return map[string]string{"pkg/many_test.go": b.String()}
 	}
-	took := func(n int) time.Duration {
-		best := time.Duration(math.MaxInt64)
-		for range 2 {
-			start := time.Now()
-			if v := f.guarded(t, file(n)); !v.Accepted() || len(v.Warnings) > 0 {
-				t.Fatalf("%d: blocks %q, warnings %q", n, whats(v.Blocks), whats(v.Warnings))
-			}
-			best = min(best, time.Since(start))
+	linear(t, charged(t, f, file(2000)), charged(t, f, file(8000)))
+}
+
+// TestIntegritySkipsCopyLinear (Opus #315 r2 H1): a base helper copying t
+// down a chain of n variables (u0 = nil at its head) and calling Skip on
+// each, under a comment-only change, costs linear work: the copy search
+// runs once a scan.
+func TestIntegritySkipsCopyLinear(t *testing.T) {
+	work := func(n int) int64 {
+		var b strings.Builder
+		b.WriteString("package pkg\n\nimport \"testing\"\n\nfunc chain(t *testing.T) {\n\tu0 := t\n\tu0 = nil\n")
+		for i := 1; i <= n; i++ {
+			fmt.Fprintf(&b, "\tu%d := u%d\n", i, i-1)
 		}
-		return best
+		for i := n; i >= 1; i-- {
+			fmt.Fprintf(&b, "\tu%d.Skip()\n", i)
+		}
+		b.WriteString("}\n")
+		f := newFixtureWith(t, func(src string) {
+			write(t, src, guardBase)
+			write(t, src, map[string]string{"pkg/chain_test.go": b.String()})
+			plain(t, src, "add", "--all")
+		})
+		return charged(t, f, map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\n// x\n"})
 	}
-	small, large := took(2000), took(8000)
-	t.Logf("n=2000 %v, n=8000 %v", small, large)
-	if large > 10*small {
-		t.Errorf("4n took %v against n's %v: more than 10 times", large, small)
+	linear(t, work(2000), work(8000))
+}
+
+// TestIntegritySkipsCopyBound: the copy search stops at the skip layer's
+// bound, checked at each step: a chain of 4000 copies (about 8000 to index,
+// 8000 to search) under a 12000 bound charges no more than the bound and a
+// step's overshoot, and the package is unverifiable.
+func TestIntegritySkipsCopyBound(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("package pkg\n\nimport \"testing\"\n\nfunc chain(t *testing.T) {\n\tu0 := t\n\tu0 = nil\n")
+	for i := 1; i <= 4000; i++ {
+		fmt.Fprintf(&b, "\tu%d := u%d\n", i, i-1)
+	}
+	b.WriteString("\tu4000.Skip()\n}\n")
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"pkg/chain_test.go": b.String()})
+		plain(t, src, "add", "--all")
+	})
+	old := maxSkipWork
+	t.Cleanup(func() { maxSkipWork = old })
+	maxSkipWork = 12000
+	before := skipCharged.Load()
+	v := f.guarded(t, map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\n// x\n"})
+	n := skipCharged.Load() - before
+	t.Logf("charged %d", n)
+	if !finds(v.Blocks, "skipping helpers past the guard's bound") || n > 12000+64 {
+		t.Errorf("charged %d, blocks %q", n, whats(v.Blocks))
 	}
 }

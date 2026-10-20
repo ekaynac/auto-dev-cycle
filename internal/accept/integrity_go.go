@@ -326,7 +326,7 @@ type pkgScan struct {
 	varVals   map[types.Object][]ast.Expr            // a package variable's values assigned, to it or a field or element of it
 	copies    map[types.Object]map[types.Object]bool // the variables a variable is assigned (direct)
 	indirect  map[types.Object]bool                  // a variable assigned anything else
-	directs   map[types.Object]bool                  // direct's answers
+	notDirect map[types.Object]bool                  // no direct receiver (notDirects)
 	exhausted bool                                   // the skip layer's bound was reached
 }
 
@@ -578,7 +578,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
 		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{},
 		skipping: map[*ast.FuncDecl]bool{}, skipNames: map[string]bool{}, skipVars: map[types.Object]bool{}, varVals: map[types.Object][]ast.Expr{},
-		copies: map[types.Object]map[types.Object]bool{}, indirect: map[types.Object]bool{}, directs: map[types.Object]bool{}}
+		copies: map[types.Object]map[types.Object]bool{}, indirect: map[types.Object]bool{}, notDirect: map[types.Object]bool{}}
 	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		second := i >= len(files)
 		if i == len(files) {
