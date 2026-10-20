@@ -34,15 +34,18 @@ type Daemon struct {
 	lock     *eventstore.Lock
 	store    *eventstore.Store
 	blobs    *blobstore.Store
-	captures *blobstore.Store   // the egress captures' (api.PurgeCaptures)
-	head     eventstore.Head    // verified at start
-	system   identity.Principal // the system actor's, held only here
-	boot     *bootstrapper
-	clock    func() time.Time // the store clock (eventstore.Config.Now), for what is made outside a command
-	note     string           // the bootstrap's startup note, fixed text
-	az       authority.Authorizer
-	once     sync.Once
-	closeErr error
+	captures *blobstore.Store // the egress captures' (api.PurgeCaptures)
+	// capturing is held while a capture is kept and while captures are
+	// purged, so a purge never removes bytes a capture is being kept on.
+	capturing sync.Mutex
+	head      eventstore.Head    // verified at start
+	system    identity.Principal // the system actor's, held only here
+	boot      *bootstrapper
+	clock     func() time.Time // the store clock (eventstore.Config.Now), for what is made outside a command
+	note      string           // the bootstrap's startup note, fixed text
+	az        authority.Authorizer
+	once      sync.Once
+	closeErr  error
 }
 
 // Start brings the daemon up (03): validate the configuration and the
@@ -274,7 +277,10 @@ func (d *Daemon) purgeUploads(ctx context.Context, period time.Duration, logw io
 		if _, err := api.PurgeExpired(ctx, d.store, d.blobs, d.system, d.clock(), logw); err != nil && ctx.Err() == nil {
 			fmt.Fprintf(logw, "adcd: purging expired uploads: %v\n", err)
 		}
-		if _, err := api.PurgeCaptures(ctx, d.store, d.captures, d.system, d.clock(), nil); err != nil && ctx.Err() == nil {
+		d.capturing.Lock()
+		_, err := api.PurgeCaptures(ctx, d.store, d.captures, d.system, d.clock(), nil)
+		d.capturing.Unlock()
+		if err != nil && ctx.Err() == nil {
 			fmt.Fprintf(logw, "adcd: purging expired captures: %v\n", err)
 		}
 		select {

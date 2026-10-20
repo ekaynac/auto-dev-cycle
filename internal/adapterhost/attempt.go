@@ -180,11 +180,13 @@ type attemptRun struct {
 	token int64
 	x     *exchange
 
-	mu        sync.Mutex // the session's reader adds to these
-	usage     []*types.UsageEvent
-	declared  []types.AdapterHandle // final outputs the events declared, deduplicated
-	unserved  bool
-	cancelRun context.CancelFunc
+	mu       sync.Mutex // the session's reader adds to these
+	usage    []*types.UsageEvent
+	declared []types.AdapterHandle // final outputs the events declared, deduplicated
+	unserved bool
+	// toolRefused is a tool the adapter ran that its launch does not allow.
+	toolRefused string
+	cancelRun   context.CancelFunc
 
 	out           Outcome
 	staged        map[types.AdapterHandle]*blobstore.Staged
@@ -219,9 +221,11 @@ func (r *attemptRun) run(ctx context.Context) (out Outcome, err error) {
 	defer cancel()
 	endErr := sessionEnd(fctx, s, shutErr)
 	r.mu.Lock()
-	unserved := r.unserved
+	unserved, toolRefused := r.unserved, r.toolRefused
 	r.mu.Unlock()
 	switch {
+	case toolRefused != "":
+		return r.finish(fctx, nil, fmt.Errorf("%w: %q", ErrToolRefused, toolRefused), false)
 	case errors.Is(waitErr, session.ErrUnverified):
 		return r.finish(fctx, nil, waitErr, false) // the tree may still write: nothing is ingested (09)
 	case unserved && runErr == nil:
@@ -332,12 +336,20 @@ func (r *attemptRun) converse(ctx context.Context, s *session.Session) (types.Ad
 }
 
 // EditLoopTools are the edit loop's own tools: its reads and writes of its
-// workspace, one at a time. adcd's launch makes them an attempt's only ones
-// (Spec.Tools): no executable or concurrent tool, since the workspace's
-// confinement holds only while that loop is its sole writer (#226 entry 65).
-var EditLoopTools = []types.AdapterLabel{"read_file", "list_dir", "write_file", "delete_file"}
+// workspace, one at a time, as a fresh slice. adcd's launch makes them an
+// attempt's only ones (Spec.Tools): no executable or concurrent tool, since
+// the workspace's confinement holds only while that loop is its sole
+// writer (#226 entry 65).
+func EditLoopTools() []types.AdapterLabel {
+	return []types.AdapterLabel{"read_file", "list_dir", "write_file", "delete_file"}
+}
 
-// ErrToolRefused: the adapter describes a tool its Spec does not allow.
+// unknownTool is what the http-chat adapter reports for a tool call it
+// refused and did not run.
+const unknownTool = "unknown"
+
+// ErrToolRefused: the adapter describes, or reports running, a tool its
+// Spec does not allow.
 var ErrToolRefused = errors.New("adapterhost: the adapter has a tool its launch does not allow (#226 entry 65)")
 
 // exclusive refuses an adapter whose described tools reach past spec's:
@@ -373,8 +385,12 @@ func (r *attemptRun) onEvent(e session.Event) {
 	case *types.ToolRequestEvent:
 		r.unserve()
 	case *types.ToolResultEvent:
-		if v.Delivered != nil {
+		switch {
+		case v.Delivered != nil:
 			r.unserve() // no delivery record in this increment can match it
+		case !v.MediatedByController && !r.spec.AnyTool && v.Tool != unknownTool && !slices.Contains(r.spec.Tools, v.Tool):
+			r.toolRefused = string(v.Tool) // a tool it ran that the launch does not allow (Opus #322 L2)
+			r.unserve()
 		}
 	}
 }

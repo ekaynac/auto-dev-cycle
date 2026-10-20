@@ -37,9 +37,10 @@ type Captured struct {
 	ExpiresAt time.Time
 }
 
-// BlobCapture keeps each body as a restricted blob in the controller's
-// store, and hands its record to Record, which an exit run's driver keeps
-// (with the purge evidence) in the exit record.
+// BlobCapture keeps each body as a restricted blob in Blobs (adcd's
+// capture store, a blob store of its own), and hands its record to Record:
+// adcd records it (blob.capture_kept) and purges it at its expiry, which an
+// exit run's record lists.
 type BlobCapture struct {
 	Blobs  *blobstore.Store
 	Now    func() time.Time

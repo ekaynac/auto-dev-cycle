@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Store is a blob store rooted at <state_dir>/blobs.
@@ -266,6 +267,30 @@ func (s *Store) Remove(digest string) error {
 		return err
 	}
 	return syncDir(filepath.Dir(p))
+}
+
+// Blob is a stored blob's digest and the time its file was last written.
+type Blob struct {
+	Digest  string
+	ModTime time.Time
+}
+
+// Stored is every blob in the store, in no order: for a store of its own
+// whose blobs a record must name (the egress captures', to sweep the bytes
+// no record names).
+func (s *Store) Stored() ([]Blob, error) {
+	var out []Blob
+	err := filepath.WalkDir(filepath.Join(s.root, "sha256"), func(p string, e fs.DirEntry, err error) error {
+		if err != nil || !e.Type().IsRegular() {
+			return err
+		}
+		info, err := e.Info()
+		if err == nil {
+			out = append(out, Blob{Digest: "sha256:" + e.Name(), ModTime: info.ModTime()})
+		}
+		return err
+	})
+	return out, err
 }
 
 // Verify re-hashes a stored blob and fails if its bytes changed on disk.
