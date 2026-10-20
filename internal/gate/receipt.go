@@ -61,6 +61,11 @@ type Blobs interface {
 type Subject struct {
 	Project  types.ProjectID
 	Revision string // the profile's contract revision
+	// Acceptance is the acceptance blobs whose overlay the run applied: the
+	// lineage of the receipt and the report, which derive from them
+	// (#226 entry 91(3): the acceptance edge is kept; a reviewer takes them
+	// through graph.RefRecord.Sanitised only).
+	Acceptance []types.Digest
 }
 
 // Contract is the gate's instrument contract for g run in img.
@@ -119,9 +124,13 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 		d, err := blobs.Put(bytes.NewReader(b), "")
 		return types.Digest(d), err
 	}
+	lineage := []string{}
+	for _, a := range slices.Compact(slices.Sorted(slices.Values(s.Acceptance))) {
+		lineage = append(lineage, string(a))
+	}
 	seal := func(t types.RefType, id string, d types.Digest) (types.Ref, error) {
 		return knowledge.Seal(types.Ref{Type: t, ID: id, Scope: types.RefScope{Project: &s.Project},
-			Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: d})
+			Lineage: slices.Clone(lineage), Restrictions: []types.Restriction{}, ContentDigest: d})
 	}
 	stream, err := put(v.Stream)
 	if err != nil {
@@ -224,6 +233,31 @@ func (v Verdict) Report() ([]byte, error) {
 		ChargeLinks []types.CallID `json:"charge_links"`
 	}{reportSchema, v.Elapsed.Milliseconds(), v.Tree, v.Outcome, v.Reason.String(), v.Why, len(v.Results.Results),
 		append([]finding{}, blocking[:len(blocking)-truncated]...), truncated, []types.CallID{}})
+}
+
+// ReportIDs is a gate report's ids (Report's): each blocking finding's
+// package and test name, each once, in order; the ids review.Result keeps
+// out of the builder's findings view (#226 entry 94(2)).
+func ReportIDs(report []byte) ([]string, error) {
+	var r struct {
+		Schema   string `json:"schema"`
+		Blocking []struct {
+			Package string `json:"package"`
+			Name    string `json:"name"`
+		} `json:"blocking"`
+	}
+	if err := json.Unmarshal(report, &r); err != nil || r.Schema != reportSchema {
+		return nil, fmt.Errorf("%w: not a gate report (%v)", ErrSpec, err)
+	}
+	var out []string
+	for _, f := range r.Blocking {
+		for _, id := range []string{f.Package, f.Name} {
+			if id != "" && !slices.Contains(out, id) {
+				out = append(out, id)
+			}
+		}
+	}
+	return out, nil
 }
 
 // String is v's verdict, for logs.

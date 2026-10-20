@@ -32,6 +32,15 @@
 //     result (a prior round's decision): neither a ref a review produced
 //     nor, under whatever id, one whose content a review's result holds.
 //     Each round renders its own claim.
+//   - Declassification is the record's, never the caller's (#226 entries
+//     91(3), 94(2); 22a-6L): a reviewer's input whose record is Sanitised
+//     (a gate's receipt or report), and a builder's whose record is
+//     BuilderSafe (a review's findings view), is checked itself against
+//     the acceptance blobs, and its ancestry is not walked; any other
+//     consumer walks it. A lineage id that is an acceptance digest refuses
+//     before it is resolved.
+//   - Check re-reads a recorded intent the same way: the fold-side I18
+//     check (#226 entry 91(1)).
 package intent
 
 import (
@@ -107,15 +116,8 @@ func build(in In, role, purpose string) (types.ManifestIntent, error) {
 	for _, o := range in.Context.Omitted {
 		all = append(all, o.Ref)
 	}
-	w := newWalk(in.Records)
-	for _, r := range all {
-		rec, err := w.start(r)
-		if err != nil {
-			return types.ManifestIntent{}, err
-		}
-		if role == "reviewer" && (rec.Producer == types.NodeKindReview || in.Records.Reviewed[rec.ContentDigest]) {
-			return types.ManifestIntent{}, fmt.Errorf("%w: %s", ErrNotFresh, r.ID)
-		}
+	if err := walkAll(in.Records, role, all); err != nil {
+		return types.ManifestIntent{}, err
 	}
 	out := in.Call
 	out.Consumer.Role = role
@@ -130,11 +132,57 @@ func build(in In, role, purpose string) (types.ManifestIntent, error) {
 	return out, knowledge.CheckIntent(out)
 }
 
+// walkAll walks refs as role's inputs.
+func walkAll(r Records, role string, refs []types.Ref) error {
+	w := newWalk(r, role)
+	for _, ref := range refs {
+		rec, err := w.start(ref)
+		if err != nil {
+			return err
+		}
+		if role == "reviewer" && (rec.Producer == types.NodeKindReview || r.Reviewed[rec.ContentDigest]) {
+			return fmt.Errorf("%w: %s", ErrNotFresh, ref.ID)
+		}
+	}
+	return nil
+}
+
+// Check is the fold-side I18 check of a recorded intent (#226 entry
+// 91(1)): every ref it lists, as an input, included or omitted, walked
+// under its consumer's role as Builder and Reviewer walk theirs.
+func Check(r Records, mi types.ManifestIntent) error {
+	switch {
+	case r.Resolve == nil || r.Acceptance == nil:
+		return fmt.Errorf("%w: no records", ErrAncestryUnresolved)
+	case mi.Consumer.Role != "builder" && mi.Consumer.Role != "reviewer":
+		return fmt.Errorf("intent: a recorded intent's consumer %q is no builder or reviewer", mi.Consumer.Role)
+	}
+	refs := slices.Clone(mi.Inputs)
+	for _, x := range mi.Included {
+		refs = append(refs, x.Ref)
+	}
+	for _, x := range mi.Omitted {
+		refs = append(refs, x.Ref)
+	}
+	return walkAll(r, mi.Consumer.Role, refs)
+}
+
+// CheckRecorded is Check against task's records in tx (Load): what an
+// intent's fold calls.
+func CheckRecorded(tx *eventstore.Tx, task types.TaskID, mi types.ManifestIntent, extra ...types.Ref) error {
+	r, err := Load(tx, task, extra...)
+	if err != nil {
+		return err
+	}
+	return Check(r, mi)
+}
+
 // walk is one intent's ancestry walk, shared by its inputs: an id walked
 // for one input is not walked again, and an input already walked as
 // another's ancestor is compared with its cached record, not charged
 // again (Astra #289 M2).
 type walk struct {
+	role              string
 	records           graph.RefRecords
 	hidden            map[string]bool            // acceptance digests
 	walked            map[string]bool            // ids scheduled: queued or resolved, each counted once
@@ -143,8 +191,8 @@ type walk struct {
 	peak              int                        // the queue's longest
 }
 
-func newWalk(r Records) *walk {
-	w := &walk{records: r.Resolve, hidden: map[string]bool{}, walked: map[string]bool{}, resolved: map[string]graph.RefRecord{}}
+func newWalk(r Records, role string) *walk {
+	w := &walk{role: role, records: r.Resolve, hidden: map[string]bool{}, walked: map[string]bool{}, resolved: map[string]graph.RefRecord{}}
 	for _, d := range r.Acceptance {
 		w.hidden[string(d)] = true
 	}
@@ -169,8 +217,8 @@ func (w *walk) start(r types.Ref) (graph.RefRecord, error) {
 	if rec.ContentDigest != r.ContentDigest || !slices.Equal(rec.Lineage, r.Lineage) {
 		return rec, fmt.Errorf("%w: %s is not the input its record names", ErrAncestryUnresolved, r.ID)
 	}
-	if done {
-		return rec, nil
+	if done || w.role == "reviewer" && rec.Sanitised || w.role == "builder" && rec.BuilderSafe {
+		return rec, nil // declassified for this consumer: its own identity checked, its ancestry not walked
 	}
 	queue, err := w.enqueue(r.ID, nil, rec.Lineage)
 	for err == nil && len(queue) > 0 {
@@ -187,13 +235,16 @@ func (w *walk) start(r types.Ref) (graph.RefRecord, error) {
 // resolve is id's record, its identity checked against the acceptance
 // blobs: a digest check, apart from walking. It is cached.
 func (w *walk) resolve(input, id string) (graph.RefRecord, error) {
+	if w.hidden[id] { // an acceptance blob, which has no record: refused, never unresolved
+		return graph.RefRecord{}, fmt.Errorf("%w: %s (ancestor %s is an acceptance blob)", ErrAcceptanceInput, input, id)
+	}
 	rec, ok, err := w.records(id)
 	switch {
 	case err != nil:
 		return rec, err
 	case !ok || rec.ID != id:
 		return rec, fmt.Errorf("%w: %s (ancestor %s)", ErrAncestryUnresolved, input, id)
-	case w.hidden[id] || w.hidden[string(rec.ContentDigest)]:
+	case w.hidden[string(rec.ContentDigest)]:
 		return rec, fmt.Errorf("%w: %s (ancestor %s holds acceptance %s)", ErrAcceptanceInput, input, id, rec.ContentDigest)
 	}
 	w.resolved[id] = rec

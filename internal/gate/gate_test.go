@@ -583,3 +583,60 @@ func TestGateBaselineHeld(t *testing.T) {
 		}
 	}
 }
+
+// TestGateLineage (22a-6L; #226 entry 91(3)): the receipt and the report
+// derive from the acceptance blobs the run's overlay applied (each once,
+// sorted), and from nothing when it applied none; ReportIDs reads a
+// report's blocking packages and test names, each once, and refuses what
+// is no gate report.
+func TestGateLineage(t *testing.T) {
+	f := newFixture(t, map[string]string{"failing.json": stream["failing.json"], "a/a.go": "package a\n"}, "cat", "failing.json")
+	f.in.Gate.Command, f.in.Baseline.Command = []string{"cat", "failing.json"}, []string{"cat", "failing.json"}
+	v := gated(t, f.in)
+	blobs, err := blobstore.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Contract(f.in.Gate, testImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dg := func(x string) types.Digest { return types.Digest("sha256:" + strings.Repeat(x, 64)) }
+	for name, acc := range map[string][]types.Digest{"an overlay": {dg("b"), dg("a"), dg("b")}, "none": nil} {
+		res, err := Result(types.ComputationKey{Key: dg("1")}, v, c, testImage, Subject{Project: "prj_01m3250vz2ezn81cgvbkcn17jd", Revision: "1", Acceptance: acc},
+			"cmd_01m3250vz2ezn81cgvbkcn17jd", blobs, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{}
+		if acc != nil {
+			want = []string{string(dg("a")), string(dg("b"))}
+		}
+		for _, ref := range res.Value {
+			if !slices.Equal(ref.Lineage, want) {
+				t.Errorf("%s: the %s's lineage %v, want %v", name, ref.Type, ref.Lineage, want)
+			}
+		}
+		report := read(t, blobs, res.Value[1].ContentDigest)
+		var r struct {
+			Blocking []struct{ Package, Name string } `json:"blocking"`
+		}
+		if err := json.Unmarshal(report, &r); err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, b := range r.Blocking {
+			for _, id := range []string{b.Package, b.Name} {
+				if id != "" && !slices.Contains(ids, id) {
+					ids = append(ids, id)
+				}
+			}
+		}
+		if got, err := ReportIDs(report); err != nil || len(got) < 2 || !slices.Equal(got, ids) {
+			t.Errorf("%s: the report's ids %q, want %q: %v", name, got, ids, err)
+		}
+	}
+	if _, err := ReportIDs([]byte(`{"schema":"adc.review-report/v1","blocking":[{"package":"p"}]}`)); !errors.Is(err, ErrSpec) {
+		t.Errorf("another schema's ids: %v", err)
+	}
+}

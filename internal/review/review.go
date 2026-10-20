@@ -16,11 +16,19 @@
 //     (graph.Repair); no submitted decision → could_not_run with the exit
 //     map's reason; a decision that is not one → could_not_run/
 //     degenerate_output. The adapter's own outcome never decides.
-//   - The result's value is the decision (the repair builder's findings
-//     input), when it is one, and the D55 report, each with the review's
+//   - The result's value is the decision, when it is one, a no_go's
+//     findings view (below: the repair builder's findings input), and the
+//     D55 report, last, each with the review's
 //     rendered input ids as its lineage: the decision derives from what
 //     the reviewer saw, the gate report included (I18). The detail never
 //     echoes the reviewer's text.
+//   - A no_go's result also holds the builder-safe findings view (#226
+//     entry 94(2), the operator's decision; 22a-6L): each finding's
+//     severity and title only, every gate id of at least minRedacted
+//     bytes (Facts.GateIDs) in a title replaced by "[test]", as a view
+//     ref whose lineage is the decision's (truthful): graph.Records marks
+//     it BuilderSafe, so a repair builder takes it where the decision,
+//     derived from the declassified gate report, would refuse its intent.
 //   - D55: the report records the elapsed time, the charge links (the
 //     reviewer's model call ids), the roster, the verdict, each finding's
 //     severity and title (cut to maxTitle bytes), and the reviewed
@@ -56,6 +64,8 @@ const (
 	maxTitle     = 256
 	maxDetail    = 4096
 	maxDecision  = 1 << 20 // bytes: the adapter host's bound on a decision (adapterhost.BoundDecision)
+	viewSchema   = "adc.findings-view/v1"
+	minRedacted  = 4 // bytes: a shorter gate id is no channel, and redacting it would garble titles
 )
 
 // The decision's verdicts.
@@ -93,6 +103,9 @@ type Facts struct {
 	// lineage of its decision and report, which derive from them (I18;
 	// Opus #291 M2).
 	Inputs []string
+	// GateIDs are the ids of the gate report the claim rendered
+	// (gate.ReportIDs): kept out of the findings view.
+	GateIDs []string
 }
 
 // Finding is one finding of a decision.
@@ -197,6 +210,11 @@ func Result(key types.ComputationKey, f Facts, blobs Blobs) (types.Result, error
 			r.Outcome, r.Reason = types.OutcomeEmpty, vocab.ReasonCompletedClean
 		} else {
 			r.Outcome, r.Reason, r.Detail = types.OutcomeFound, vocab.ReasonCompletedWithFindings, fmt.Sprintf("the reviewer's decision is no_go, with %d findings", len(d.Findings))
+			vref, verr := view(f, d, ref.ID, blobs)
+			if verr != nil {
+				return types.Result{}, verr
+			}
+			r.Value = append(r.Value, vref)
 		}
 	}
 	report, err := Report(f, r, d)
@@ -213,6 +231,38 @@ func Result(key types.ComputationKey, f Facts, blobs Blobs) (types.Result, error
 	}
 	r.Value = append(r.Value, pref)
 	return r, graph.Check(r)
+}
+
+// view publishes d's builder-safe findings view, derived from the decision
+// ref decision.
+func view(f Facts, d Decision, decision string, blobs Blobs) (types.Ref, error) {
+	ids := slices.DeleteFunc(slices.Clone(f.GateIDs), func(id string) bool { return len(id) < minRedacted })
+	slices.SortFunc(ids, func(a, b string) int { return len(b) - len(a) }) // the longest first: no id redacted inside another's mark
+	type finding struct {
+		Severity string `json:"severity"`
+		Title    string `json:"title"`
+	}
+	findings := []finding{}
+	for _, x := range d.Findings {
+		title := x.Title
+		for _, id := range ids {
+			title = strings.ReplaceAll(title, id, "[test]")
+		}
+		findings = append(findings, finding{x.Severity, title})
+	}
+	b, err := json.Marshal(struct {
+		Schema   string    `json:"schema"`
+		Findings []finding `json:"findings"`
+	}{viewSchema, findings})
+	if err != nil {
+		return types.Ref{}, err
+	}
+	vd, err := blobs.Put(bytes.NewReader(b), "")
+	if err != nil {
+		return types.Ref{}, err
+	}
+	return knowledge.Seal(types.Ref{Type: types.RefTypeView, ID: vd, Scope: types.RefScope{Project: &f.Project},
+		Lineage: []string{decision}, Restrictions: []types.Restriction{}, ContentDigest: types.Digest(vd)})
 }
 
 // Report is the D55 record of one review node with result r and decision

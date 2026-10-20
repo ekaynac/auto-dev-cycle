@@ -106,10 +106,10 @@ func TestIntentAcceptance(t *testing.T) {
 		input graph.RefRecord
 		want  error
 	}{
-		"the input is an acceptance blob":              {newStore(hiddenInput), hiddenInput, ErrAcceptanceInput},
-		"a parent is one, with no record (unresolved)": {newStore(withParent), withParent, ErrAncestryUnresolved},
-		"one at depth three, with no record (unresolved)": {newStore(tree, rec("patch-1", "2", "build", "spec-1"), rec("spec-1", "3", "", "notes-1"),
-			rec("notes-1", "4", "", accepted)), tree, ErrAncestryUnresolved},
+		"the input is an acceptance blob":                          {newStore(hiddenInput), hiddenInput, ErrAcceptanceInput},
+		"a parent is one, with no record (22a-6L: refused as one)": {newStore(withParent), withParent, ErrAcceptanceInput},
+		"one at depth three, with no record (refused as one)": {newStore(tree, rec("patch-1", "2", "build", "spec-1"), rec("spec-1", "3", "", "notes-1"),
+			rec("notes-1", "4", "", accepted)), tree, ErrAcceptanceInput},
 		"an ancestor under another id holds it (Astra #252 r2 H1)": {newStore(tree, rec("patch-1", "2", "build", "spec-1"), rec("spec-1", acceptance, "")), tree, ErrAcceptanceInput},
 		"an ancestor whose id is the acceptance digest, its content another (Opus #289 M1)": {newStore(withParent, rec(accepted, "2", "build")), withParent,
 			ErrAcceptanceInput},
@@ -199,7 +199,7 @@ func TestIntentBounds(t *testing.T) {
 		}
 	}
 	total := len(s.lookups) // the input, its two layer-0 parents, and every node below
-	w := newWalk(newStore(append(recs, input)...).records())
+	w := newWalk(newStore(append(recs, input)...).records(), "builder")
 	if _, err := w.start(ref(t, input)); err != nil || w.peak > total {
 		t.Errorf("the queue's peak %d, over the %d distinct ids: %v", w.peak, total, err)
 	}
@@ -227,7 +227,7 @@ func TestIntentBounds(t *testing.T) {
 	wide := rec("tree-1", "1", "graph", many...)
 	for name, b := range map[string][2]int{"the edge bound": {10, 1 << 20}, "the byte bound": {1 << 20, 100}} {
 		maxRecords, maxEdges, maxIDBytes = 1<<20, b[0], b[1]
-		w := newWalk(newStore(wide).records())
+		w := newWalk(newStore(wide).records(), "builder")
 		if _, err := w.start(ref(t, wide)); !errors.Is(err, ErrAncestryUnresolved) || !strings.Contains(fmt.Sprint(err), "ancestry is over") || len(w.walked) > 1 || w.peak != 0 {
 			t.Errorf("one wide lineage past %s: %v, %d walked, a queue of %d", name, err, len(w.walked), w.peak)
 		}
@@ -235,7 +235,7 @@ func TestIntentBounds(t *testing.T) {
 	// The same lineage past the record bound only: refused before more ids
 	// than the bound are scheduled (Astra #289 M1).
 	maxRecords, maxEdges, maxIDBytes = 10, 1<<20, 1<<20
-	w = newWalk(newStore(wide).records())
+	w = newWalk(newStore(wide).records(), "builder")
 	if _, err := w.start(ref(t, wide)); !errors.Is(err, ErrAncestryUnresolved) || !strings.Contains(fmt.Sprint(err), "ancestry is over") || len(w.walked) > maxRecords || w.peak >= maxRecords {
 		t.Errorf("one wide lineage past the record bound: %v, %d scheduled, a queue of %d", err, len(w.walked), w.peak)
 	}
@@ -300,5 +300,86 @@ func TestIntentFresh(t *testing.T) {
 	}
 	if _, err := Builder(in(t, s, relay)); err != nil {
 		t.Errorf("a builder taking it: %v", err)
+	}
+}
+
+// TestIntentDeclassified (22a-6L; #226 entries 91(3), 94(2)): a gate
+// report derived from the acceptance (its truthful lineage) is taken by a
+// reviewer through its record's Sanitised only, never by a builder; a
+// review's findings view derived from it is taken by a builder through
+// BuilderSafe only, never by a reviewer (a review's result); a
+// declassified record whose own digest is acceptance is refused; a
+// declassified ancestor is walked through.
+func TestIntentDeclassified(t *testing.T) {
+	accepted := string(digest(acceptance))
+	report := rec("gate-report", "1", types.NodeKindGate, accepted)
+	report.Sanitised = true
+	decision := rec("decision", "2", types.NodeKindReview, "gate-report")
+	view := rec("view", "3", types.NodeKindReview, "decision")
+	view.BuilderSafe = true
+	hidden := rec("hidden-report", acceptance, types.NodeKindGate)
+	hidden.Sanitised, hidden.BuilderSafe = true, true
+	via := rec("via", "4", types.NodeKindAccept, "gate-report")
+	s := newStore(report, decision, view, hidden, via)
+	for name, c := range map[string]struct {
+		input graph.RefRecord
+		want  map[string]error // by role; nil: taken
+	}{
+		"a sanitised gate report":           {report, map[string]error{"builder": ErrAcceptanceInput, "reviewer": nil}},
+		"a builder-safe findings view":      {view, map[string]error{"builder": nil, "reviewer": ErrAcceptanceInput}}, // the reviewer walks it,
+		"the decision it derives from":      {decision, map[string]error{"builder": ErrAcceptanceInput, "reviewer": ErrAcceptanceInput}},
+		"a declassified acceptance blob":    {hidden, map[string]error{"builder": ErrAcceptanceInput, "reviewer": ErrAcceptanceInput}},
+		"a sanitised report as an ancestor": {via, map[string]error{"builder": ErrAcceptanceInput, "reviewer": ErrAcceptanceInput}},
+	} {
+		for role, intent := range roles {
+			_, err := intent(in(t, s, c.input))
+			if want := c.want[role]; want == nil && err != nil || want != nil && !errors.Is(err, want) {
+				t.Errorf("%s, %s: %v, want %v", name, role, err, want)
+			}
+		}
+	}
+}
+
+// TestIntentCheck (22a-6L; #226 entry 91(1)): a recorded intent is
+// checked as it was built, under its consumer's role, each ref it lists
+// (an input, an included or an omitted one); a recorded intent of another
+// consumer, or with no records, is refused.
+func TestIntentCheck(t *testing.T) {
+	tree := rec("tree-1", "1", "graph")
+	report := rec("gate-report", "2", types.NodeKindGate, string(digest(acceptance)))
+	report.Sanitised = true
+	s := newStore(tree, report)
+	recorded := func(role string, inputs, included, omitted []graph.RefRecord) types.ManifestIntent {
+		mi := call()
+		mi.Consumer.Role = role
+		for _, r := range inputs {
+			mi.Inputs = append(mi.Inputs, ref(t, r))
+		}
+		for _, r := range included {
+			mi.Included = append(mi.Included, types.ManifestIntentIncludedItem{Ref: ref(t, r), Bytes: 10, Purpose: "review input"})
+		}
+		for _, r := range omitted {
+			mi.Omitted = append(mi.Omitted, types.ManifestIntentOmittedItem{Ref: ref(t, r), Reason: types.ManifestIntentOmittedItemReasonBudget})
+		}
+		return mi
+	}
+	one := []graph.RefRecord{report}
+	for name, c := range map[string]struct {
+		mi   types.ManifestIntent
+		recs Records
+		ok   bool
+	}{
+		"a reviewer's, the report an input": {recorded("reviewer", one, nil, nil), s.records(), true},
+		"a builder's, the report an input":  {recorded("builder", one, nil, nil), s.records(), false},
+		"a builder's, the report included":  {recorded("builder", nil, one, nil), s.records(), false},
+		"a builder's, the report omitted":   {recorded("builder", nil, nil, one), s.records(), false},
+		"a builder's, a clean tree":         {recorded("builder", []graph.RefRecord{tree}, nil, nil), s.records(), true},
+		"another consumer's, a clean tree":  {recorded("planner", []graph.RefRecord{tree}, nil, nil), s.records(), false},
+		"no records":                        {recorded("reviewer", one, nil, nil), Records{}, false},
+		"the acceptance not read":           {recorded("reviewer", one, nil, nil), Records{Recorded: s.records().Recorded}, false},
+	} {
+		if err := Check(c.recs, c.mi); (err == nil) != c.ok {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

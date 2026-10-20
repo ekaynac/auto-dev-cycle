@@ -5,6 +5,7 @@ package review
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -119,7 +120,7 @@ func TestResult(t *testing.T) {
 		repair  any
 	}{
 		"a go":                 {facts(true, put(decision(Go))), types.OutcomeEmpty, vocab.ReasonCompletedClean, 2, nil},
-		"a no_go":              {facts(true, put(decision(NoGo, finding(long), finding("b")))), types.OutcomeFound, vocab.ReasonCompletedWithFindings, 2, float64(3)},
+		"a no_go":              {facts(true, put(decision(NoGo, finding(long), finding("b")))), types.OutcomeFound, vocab.ReasonCompletedWithFindings, 3, float64(3)},
 		"no submitted result":  {facts(false, ""), types.OutcomeCouldNotRun, vocab.ReasonAttemptStopped, 1, nil},
 		"a decision not typed": {facts(true, put(`{"decision":"go"}`)), types.OutcomeCouldNotRun, vocab.ReasonDegenerateOutput, 1, nil},
 	} {
@@ -129,11 +130,11 @@ func TestResult(t *testing.T) {
 			t.Errorf("%s: %+v %v", name, r, err)
 			continue
 		}
-		if c.refs == 2 && r.Value[0].ContentDigest != c.f.Decision {
+		if c.refs >= 2 && r.Value[0].ContentDigest != c.f.Decision {
 			t.Errorf("%s: the decision is not held", name)
 		}
-		for _, ref := range r.Value { // derived from the review's inputs (I18)
-			if !slices.Equal(ref.Lineage, []string{"candidate", "gate-report"}) {
+		for _, ref := range r.Value { // derived from the review's inputs (I18); the view from the decision
+			if ref.Type != types.RefTypeView && !slices.Equal(ref.Lineage, []string{"candidate", "gate-report"}) {
 				t.Errorf("%s: a ref's lineage %v", name, ref.Lineage)
 			}
 		}
@@ -159,5 +160,42 @@ func TestResult(t *testing.T) {
 func TestDecisionBound(t *testing.T) {
 	if maxDecision != adapterhost.BoundDecision {
 		t.Errorf("maxDecision %d, the adapter host's bound %d", maxDecision, adapterhost.BoundDecision)
+	}
+}
+
+// TestFindingsView (22a-6L; #226 entry 94(2)): a no_go's findings view
+// holds each finding's severity and title only, every gate id of at least
+// minRedacted bytes replaced in titles, the longest first (no id leaks
+// past a shorter one's mark); its ref is a view derived from the decision.
+func TestFindingsView(t *testing.T) {
+	blobs, err := blobstore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := blobs.Put(strings.NewReader(decision(NoGo, finding("TestCanaryXYZsecret fails in pkg"), finding("abc"))), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := Facts{Submitted: true, Decision: types.Digest(d), Project: project, Inputs: []string{"gate-report"},
+		GateIDs: []string{"pkg", "TestCanary", "TestCanaryXYZsecret", "abc"}}
+	r, err := Result(key, f, blobs)
+	if err != nil || len(r.Value) != 3 {
+		t.Fatalf("a no_go: %+v %v", r, err)
+	}
+	v := r.Value[1]
+	if v.Type != types.RefTypeView || !slices.Equal(v.Lineage, []string{r.Value[0].ID}) || v.ID != string(v.ContentDigest) {
+		t.Errorf("the view's ref: %+v", v)
+	}
+	rc, err := blobs.Open(string(v.ContentDigest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	b := new(strings.Builder)
+	if _, err := io.Copy(b, rc); err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"schema":"adc.findings-view/v1","findings":[{"severity":"high","title":"[test] fails in pkg"},{"severity":"high","title":"abc"}]}`; b.String() != want {
+		t.Errorf("the view %s, want %s", b, want)
 	}
 }

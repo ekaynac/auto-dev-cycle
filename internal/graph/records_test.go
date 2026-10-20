@@ -104,3 +104,70 @@ func TestRecords(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordsDeclassified (22a-6L; #226 entries 91(3), 94(2)): a gate
+// node's gate_result refs are Sanitised, a review node's view ref is
+// BuilderSafe, and nothing else is either: a view another node recorded,
+// a review's decision, a tree.
+func TestRecordsDeclassified(t *testing.T) {
+	g := openStore(t)
+	sealed := func(typ types.RefType, id, digest string) types.Ref { return sealedRef(t, typ, id, digest) }
+	g.forgedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{sealed(types.RefTypeBlob, "gate-report", "1")}, nil)
+	g.completedWith(types.NodeKindReview, types.ResultKindReview, []types.Ref{sealed(types.RefTypeBlob, "decision", "2"), sealed(types.RefTypeView, "view", "3")})
+	g.completedWith(types.NodeKindIntegration, types.ResultKindTree, []types.Ref{sealed(types.RefTypeView, "other-view", "4"), sealed(types.RefTypeBlob, "tree", "5")})
+	rs, err := g.records(tskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string][2]bool{"gate-report": {true, false}, "view": {false, true}, "decision": {}, "other-view": {}, "tree": {}} {
+		if rec, ok, _ := rs.Resolve(id); !ok || rec.Sanitised != want[0] || rec.BuilderSafe != want[1] {
+			t.Errorf("%s: %+v %v, want sanitised %v, builder-safe %v", id, rec, ok, want[0], want[1])
+		}
+	}
+}
+
+// TestRecordsDecodeBound (22a-6L): a stored result is decoded only within
+// maxResultBytes, and the results Records reads within maxResultsBytes,
+// each at its exact bound.
+func TestRecordsDecodeBound(t *testing.T) {
+	g := openStore(t)
+	for _, d := range []string{"1", "2", "3"} {
+		g.completedWith(types.NodeKindIntegration, types.ResultKindTree, []types.Ref{sealedRef(t, types.RefTypeBlob, "r"+d, d)})
+	}
+	largest, total := 0, 0
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+		keys, err := tx.Keys(ResultProjection, "")
+		for _, k := range keys {
+			raw, _, _ := tx.Get(ResultProjection, k)
+			largest, total = max(largest, len(raw)), total+len(raw)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func(one, all int) { maxResultBytes, maxResultsBytes = one, all }(maxResultBytes, maxResultsBytes)
+	for name, c := range map[string]struct {
+		one, all int
+		ok       bool
+	}{
+		"at both bounds":       {largest, total, true},
+		"one past its bound":   {largest - 1, total, false},
+		"all past their bound": {largest, total - 1, false},
+	} {
+		maxResultBytes, maxResultsBytes = c.one, c.all
+		if _, err := g.records(tskID); (err == nil) != c.ok {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// sealedRef is a sealed ref of the test project, with no lineage.
+func sealedRef(t *testing.T, typ types.RefType, id, digest string) types.Ref {
+	t.Helper()
+	r, err := knowledge.Seal(types.Ref{Type: typ, ID: id, Scope: types.RefScope{Project: ptr(types.ProjectID(prjID))},
+		Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: types.Digest("sha256:" + strings.Repeat(digest, 64))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}

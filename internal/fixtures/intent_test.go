@@ -121,4 +121,25 @@ func TestIntentLoad(t *testing.T) {
 	if err := build(intent.Builder, gTask, relay); err != nil {
 		t.Errorf("a review's decision re-recorded, builder: %v", err)
 	}
+	// The fold-side check of a recorded intent, on the store (22a-6L).
+	recorded := func(role string, r types.Ref) types.ManifestIntent {
+		mi := call
+		mi.Consumer.Role, mi.Inputs = role, []types.Ref{r}
+		return mi
+	}
+	check := func(task types.TaskID, mi types.ManifestIntent) error {
+		return g.s.View(t.Context(), func(tx *eventstore.Tx) error { return intent.CheckRecorded(tx, task, mi) })
+	}
+	if err := check(gTask, recorded("builder", clean)); err != nil {
+		t.Errorf("a recorded intent of a clean tree: %v", err)
+	}
+	if err := check(gTask, recorded("builder", tree)); !errors.Is(err, intent.ErrAcceptanceInput) {
+		t.Errorf("a recorded intent of the alias's tree: %v", err)
+	}
+	if err := check(gTask, recorded("reviewer", relay)); !errors.Is(err, intent.ErrNotFresh) {
+		t.Errorf("a recorded reviewer's intent of a review's decision: %v", err)
+	}
+	if err := check("tsk_01m3250vkwffc979nzjw0gpym1", recorded("builder", clean)); err == nil {
+		t.Error("a recorded intent of an unknown task")
+	}
 }
