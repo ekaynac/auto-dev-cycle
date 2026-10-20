@@ -22,8 +22,10 @@ package dispatch
 //     or rail:per_day_usd) the caller raises on the node (Refused.Hold).
 //     per_task_usd is raised for the task by task.raise_rail; per_day_usd
 //     only by a profile change, or the next day.
-//   - No rails (Dispatcher.Rails nil), or a USD rail no profile set: not
-//     checked. adcd always passes its Rails (P22a).
+//   - No rails (Dispatcher.Rails nil) fails closed: a priced executor is
+//     not placed (could_not_run/precondition_failed), an unpriced one is.
+//     A USD rail no profile set (graph.NoUSDRail) is not checked. adcd
+//     always passes its Rails (P22a).
 
 import (
 	"fmt"
@@ -47,15 +49,22 @@ func (d Dispatcher) usdRail(tx *eventstore.Tx, card Card, executor types.Executo
 	if err != nil {
 		return pass, nil, err
 	}
+	e, _ := d.Registry.Executor(executor)
+	if d.Rails == nil && !mutation.Is(mutation.NoRailsAdmitsPriced) {
+		if e.Price == nil {
+			pass.Detail = "no rails, and the executor has no price: nothing to count"
+			return pass, nil, nil
+		}
+		return types.PlacementCheck{Outcome: types.OutcomeCouldNotRun, Reason: vocab.ReasonPreconditionFailed,
+			Detail: "no rails: a priced executor is placed only under the USD rails"}, nil, nil
+	}
 	if d.Rails == nil {
-		pass.Detail = "no rails: the USD rails are not checked"
 		return pass, nil, nil
 	}
 	caps, err := d.Rails(tx, task)
 	if err != nil {
 		return pass, nil, err
 	}
-	e, _ := d.Registry.Executor(executor)
 	next, err := reserved(res, e.Price)
 	if err != nil {
 		return pass, nil, err

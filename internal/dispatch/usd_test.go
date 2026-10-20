@@ -232,3 +232,28 @@ func (e env) liveOn(node types.NodeID) (types.LeaseID, bool, error) {
 	})
 	return id, live, err
 }
+
+// No rails fail closed (P17b, decision A): a Dispatcher with no Rails
+// refuses a lease on a priced executor, could_not_run/precondition_failed,
+// naming no hold and placing nothing; on an unpriced one it places it.
+func TestUSDNoRails(t *testing.T) {
+	reg, gs := stub(t, nil)
+	e := open(t, gs)
+	n := e.nodeIn(task)
+	_, err := e.match(Dispatcher{Registry: reg}, card(n), builder)
+	var r *Refused
+	if !errors.As(err, &r) || r.Check != "budget" || r.Outcome != types.OutcomeCouldNotRun || r.Reason != vocab.ReasonPreconditionFailed || r.Hold != nil {
+		t.Fatalf("a priced executor with no rails: %v", err)
+	}
+	if _, live, err := e.liveOn(n); err != nil || live {
+		t.Fatalf("the refused match placed a lease: %v", err)
+	}
+	free, _ := stub(t, func(doc *types.ExecutorRegistry) {
+		for i := range doc.Executors {
+			doc.Executors[i].Price, doc.Executors[i].CostBasis = nil, types.RegistryExecutorCostBasisFree
+		}
+	})
+	if _, err := e.match(Dispatcher{Registry: free}, card(n), builder); err != nil {
+		t.Errorf("an unpriced executor with no rails: %v", err)
+	}
+}
