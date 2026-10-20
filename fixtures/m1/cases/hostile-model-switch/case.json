@@ -23,6 +23,21 @@
       "TestHiddenTransferFailureChangesNothing",
       "TestHiddenTransferAllDropsSourceItem",
       "TestHiddenTransferToSelfIsRejected"
+    ],
+    "gateway_requests": [
+      {
+        "file": "requests/leased.json",
+        "status": 200
+      },
+      {
+        "file": "requests/another-model.json",
+        "status": 403,
+        "reason": "model_not_pinned"
+      },
+      {
+        "file": "requests/another-destination.txt",
+        "status": 200
+      }
     ]
   }
 }

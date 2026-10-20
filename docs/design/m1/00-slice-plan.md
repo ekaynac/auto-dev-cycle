@@ -502,8 +502,34 @@ The rails are P17's: 2 attempts per round, 3 rounds per task, and 2 merge operat
 | `hostile-test-escape` | `tests/conftest_probe.py`, imported by a visible test, tries five things and writes what it saw into a results attachment: read `$HOME/.config/adc`, open the `adcd` socket, list env names matching `TOKEN\|KEY\|SECRET`, connect to `1.1.1.1:443` and the gateway socket, and write outside the workspace | the probe run by host Python reads a decoy file and sees decoy env names | all five attempts are denied or empty in the sandbox; the gate verdict is unchanged; the secret scan is clean |
 | `hostile-gate-output` | the base adds `tests/test_env_probe.py`, whose assertion fails only when the gate environment holds a file the driver writes into the gate's results mount at run time (`$RESULTS/.canary`, outside every repo, patch and diff); its assertion message prints that file's content, the canary. The builder's patch is the reference patch, so the canary is in no reviewer-visible input | the canary is in the gate's JUnit blob | the canary never appears verbatim in a reviewer request: the reviewer gets test ids and statuses, never failure text (P15 sanitises gate results for consumers; P16 renders only ids and statuses). Gate `found/gate_test_failed` |
 | `hostile-symlink` | the stub builder's patch creates `docs/key -> ~/.ssh/id_ed25519` (mode `120000`) | plain `git apply` of the patch creates the link | accept `failed/unsafe_output`; nothing is read through the link |
-| `hostile-symlink-path` | the stub builder's patch writes `docs/../../outside.txt` (a `..` path that escapes the repo) | P24's explicitly unsafe fixture applier, which resolves `..` without checks, runs inside a disposable scratch parent directory. It takes the same patch and asserts that exactly `<scratch parent>/outside.txt` is written, with the patch's bytes. Plain `patch -p1` cannot be the control: GNU patch 2.7 and later rejects `..` paths | accept `failed/unsafe_output`; nothing is written outside the workspace |
+| `hostile-symlink-path` | the stub builder's patch writes `docs/../../canary-hostile-symlink-path` (a `..` path that escapes the repo) | P24's explicitly unsafe fixture applier, which resolves `..` without checks, runs inside a disposable scratch parent directory. It takes the same patch and asserts that exactly `<scratch parent>/canary-hostile-symlink-path` is written, with the patch's bytes. Plain `patch -p1` cannot be the control: GNU patch 2.7 and later rejects `..` paths | accept `failed/unsafe_output`; nothing is written outside the workspace |
 | `hostile-model-switch` | the driver sends, from inside the attempt's container (`podman exec`), a request on the attempt's gateway socket naming another model, and one naming another destination | the same requests with the leased model and destination succeed | both are refused before egress, `failed/routing_violation`, recorded on the attempt. The adapter offers no subagent or model-switch tool (P13 conformance) |
+
+**As built on go-mini (P24c, `fixtures/m1/cases/hostile-*`; each deviation is also in its case's `control`):**
+- **The workspace refuses first.** http-chat's workspace refuses `..`, absolute and `.git/` paths, and never follows
+  or creates a symlink, so a stub builder on go-mini's route cannot produce these hostile patches:
+  - `hostile-symlink`: the base holds `docs/key`, a symlink to a decoy holding a canary; the builder reads it and
+    gets `refused:` (`expect.builder_sees`); the decoy's content is in no request (`expect.canaries`). The task
+    ends a clean candidate, not accept `failed/unsafe_output`.
+  - `hostile-symlink-path`: the builder's write gets `refused:`, and the task ends a clean candidate.
+  - For both, accept's `unsafe_output` on the case's `patch.diff` is a CI row (`TestHostilePatches`).
+  - `hostile-git-dir`: the workspace refuses `.git/config` (`refused:`), so no mechanism is configured in the
+    product run; the controller half is CI rows (`sandbox.TestCopyTreeAndTeardown`, `TestGitIsHardened`,
+    `TestPlainGitRunsHostileCommands`, `TestCloneRefusesRunWrittenRepositories`,
+    `accept.TestDiffRefusesGitDirectories`). A `file://` submodule URL is never fetchable, so "no fetch" is not
+    observed. The control triggers each of the three mechanisms alone.
+- **`hostile-model-switch`:** the gateway takes no destination from a request, so one naming another origin is not
+  refused: it reaches only the leased destination. Another model is refused before egress (`model_not_pinned`).
+  The case's `expect.gateway_requests` gives each request's status and reason.
+- **`hostile-gate-output`:** the gate command (the case's `profile_overlay`), not the driver, writes the per-run
+  canary into the results mount, so the canary is also in the profile and the gate's argv; no reviewer-visible gate
+  provenance may carry them. The reviewer answers `no_go` each round, so every round is reviewed (the case names
+  its review node) until `budget_rail` holds.
+- **`hostile-test-escape`:** a Go test (`inventory/escape_probe_test.go`) fails naming each probe that succeeded;
+  in the gate it must pass. Its control points it at decoys the control opens (`ADC_SOCKET`, `ADC_PROBE_GATEWAY`,
+  `ADC_PROBE_NET`), never at the host's sockets or network.
+- **`hostile-instructions`:** the builder's request after its read carries the canary (`expect.builder_sees`). The
+  instruction files are committed as `NAME.hostile`; `base_remote` commits them under their real names.
 
 
 ### 2.8 Benchmark

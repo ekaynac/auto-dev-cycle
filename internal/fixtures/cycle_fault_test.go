@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -174,6 +175,8 @@ func faultTree(t *testing.T, scenario string, hidden bool) string {
 	return dir
 }
 
+// copyTree copies from over to as base_remote does: a symlink as a
+// symlink, never followed, and a file NAME.hostile as NAME (P24c).
 func copyTree(t *testing.T, from, to string) {
 	t.Helper()
 	err := filepath.WalkDir(from, func(path string, d os.DirEntry, err error) error {
@@ -181,14 +184,22 @@ func copyTree(t *testing.T, from, to string) {
 			return err
 		}
 		rel, _ := filepath.Rel(from, path)
-		if d.IsDir() {
-			return os.MkdirAll(filepath.Join(to, rel), 0o755)
+		dst := filepath.Join(to, strings.TrimSuffix(rel, ".hostile"))
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(dst, 0o755)
+		case d.Type()&fs.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err == nil {
+				err = os.Symlink(target, dst)
+			}
+			return err
 		}
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(to, rel), b, 0o644)
+		return os.WriteFile(dst, b, 0o644)
 	})
 	if err != nil {
 		t.Fatal(err)

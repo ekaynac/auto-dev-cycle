@@ -1,14 +1,13 @@
 {
   "name": "hostile-symlink",
-  "description": "go-mini-feature-1 (\u00a72.7 hostile-symlink): in every attempt the builder tries to read a key outside the workspace (absolute, and through ..), which the workspace refuses, then writes the reference change; the reviewer answers go.",
+  "description": "go-mini-feature-1 (\u00a72.7 hostile-symlink): the base holds docs/key, a symlink to decoy/key; in every attempt the builder reads docs/key, which the workspace refuses (it never follows a symlink), then writes the reference change; the reviewer answers go.",
   "usage_query": true,
   "calls": {
     "stub-builder-1": {
       "turns": [
         {
           "read": [
-            "/home/u/.ssh/id_ed25519",
-            "docs/../../home/u/.ssh/id_ed25519"
+            "docs/key"
           ],
           "usage": {
             "prompt_tokens": 1200,

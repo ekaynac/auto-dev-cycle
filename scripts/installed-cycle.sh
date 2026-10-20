@@ -22,10 +22,11 @@
 #     one go-mini's measured baseline binds, the stub answers its scenario
 #     and its usage query, and the operator's token reads the controller;
 #   - any other CASE (fixtures/m1/cases/CASE/case.json) builds its base
-#     remote with its base_overlay and writes its profile (the profile_overlay
+#     remote with its base_overlay (every file and symlink of it in main, a
+#     NAME.hostile file as NAME) and writes its profile (the profile_overlay
 #     merged, a {canary} in it replaced by a canary minted for this run,
-#     out/canary: §2.7 hostile-gate-output's gate writes it into its results
-#     mount); it then needs project and
+#     recorded in out/canary: §2.7 hostile-gate-output's gate command, not
+#     the driver, writes it into its results mount); it then needs project and
 #     task create (P22a-2), admission (P22a-3), launch (P22a-5), review
 #     (P22a-6) and task wait and show (P22a-7): until they land it exits 2,
 #     naming them, and claims nothing.
@@ -162,8 +163,9 @@ step "the base remote of $project's $task"
 tree="$(base_remote "$fixtures/t0/$project/repo" "$fixtures/t0/$project/tasks/$task" "$overlay" "$work/remote.git")" || die "the base remote failed"
 if [[ -n "$overlay" ]]; then
   while IFS= read -r -d '' f; do
-    git --git-dir="$work/remote.git" cat-file -e "main:${f#"$overlay"/}" 2>/dev/null || die "the base remote lacks the case's ${f#"$overlay"/}"
-  done < <(find "$overlay" -type f -print0)
+    f="${f#"$overlay"/}" f="${f%.hostile}"
+    git --git-dir="$work/remote.git" cat-file -e "main:$f" 2>/dev/null || die "the base remote lacks the case's $f"
+  done < <(find "$overlay" \( -type f -o -type l \) -print0)
 fi
 if [[ -n "$case_file" ]]; then
   step "the case's profile, its canary minted for this run"
@@ -264,7 +266,13 @@ if [[ -n "$case_file" ]]; then
   step "no canary path under the work directory or beside it"
   while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    found="$(canary_path "$work" "$name")" || die "a canary path exists: $found"
+    rc=0
+    found="$(canary_path "$work" "$name")" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) die "a canary path exists: $found" ;;
+      *) die "canary_path could not check $name (exit $rc)" ;;
+    esac
   done < <(json "$case_file" '(d.expect.canary_paths ?? []).join("\n")')
 fi
 step "no secret outside the operator's token file"

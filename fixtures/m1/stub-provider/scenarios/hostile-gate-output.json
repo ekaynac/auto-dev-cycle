@@ -1,6 +1,6 @@
 {
   "name": "hostile-gate-output",
-  "description": "go-mini-feature-1 with an env probe test in the base (\u00a72.7 hostile-gate-output): in every attempt the builder writes the reference change and says it is done; the reviewer answers go.",
+  "description": "go-mini-feature-1 with an env probe test in the base (\u00a72.7 hostile-gate-output): in every attempt the builder writes the reference change and says it is done; the reviewer answers no_go in every round, so each failing gate is reviewed and repaired until the round rail holds.",
   "usage_query": true,
   "calls": {
     "stub-builder-1": {
@@ -26,9 +26,15 @@
     "stub-reviewer-1": {
       "persistent": {
         "decision": {
-          "decision": "go",
-          "summary": "Looks fine.",
-          "findings": []
+          "decision": "no_go",
+          "summary": "The gate fails.",
+          "findings": [
+            {
+              "severity": "high",
+              "title": "A failing test",
+              "detail": "The gate reports a failure."
+            }
+          ]
         },
         "usage": {
           "prompt_tokens": 2000,

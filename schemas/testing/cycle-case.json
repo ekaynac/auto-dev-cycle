@@ -39,8 +39,23 @@
         },
         "holds": {"description": "The registered holds the task ends with.", "type": "array", "items": {"type": "string", "minLength": 1}},
         "merge": {"description": "Whether a merge node is recorded (checkpoint (a): never).", "type": "boolean"},
-        "canaries": {"description": "Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance).", "type": "array", "items": {"type": "string", "minLength": 8}},
-        "reviewer_canaries": {"description": "Lines that appear in no reviewer request the stub provider logs (a builder's may hold them, §2.7): each occurs in a file of the case's base_overlay, or is {canary}, a canary the driver mints for each run and substitutes in the case's profile_overlay.", "type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 8}},
+        "canaries": {"description": "Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance) or of the case's base_overlay (a decoy nothing may read).", "type": "array", "items": {"type": "string", "minLength": 8}},
+        "reviewer_canaries": {"description": "Lines that appear in no reviewer request the stub provider logs (a builder's may hold them, §2.7), which logs at least one reviewer request (a case with reviewer_canaries names its review node): each occurs in a file of the case's base_overlay, or is {canary}, a canary the driver mints for each run and substitutes in the case's profile_overlay.", "type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 8}},
+        "builder_sees": {"description": "Strings each of which appears in the content of a message of at least one builder request the stub provider logs: what the builder's tool calls returned, such as the workspace's refusal (refused: ...) of a hostile call. The scenario never carries one (the stub cannot produce it itself).", "type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 8, "maxLength": 256}},
+        "gateway_requests": {
+          "description": "Requests, files of this case, the driver sends on the attempt's gateway socket with the attempt's token, each with the HTTP status the gateway answers and, for a refusal, the reason its body names.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file", "status"],
+            "properties": {
+              "file": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}/[a-z0-9][a-z0-9.-]{0,63}$"},
+              "status": {"type": "integer", "minimum": 100, "maximum": 599},
+              "reason": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}
+            }
+          }
+        },
         "canary_paths": {"description": "File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-<case>).", "type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"}},
         "usage": {
           "description": "The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts).",

@@ -312,8 +312,8 @@ func TestHostilePatches(t *testing.T) {
 		}
 	}
 	for _, dir := range []string{f.src, filepath.Dir(f.src), f.repo.Dir, filepath.Dir(f.repo.Dir)} {
-		if _, err := os.Lstat(filepath.Join(dir, "outside.txt")); !os.IsNotExist(err) {
-			t.Errorf("accept wrote outside.txt in %s: %v", dir, err)
+		if _, err := os.Lstat(filepath.Join(dir, "canary-hostile-symlink-path")); !os.IsNotExist(err) {
+			t.Errorf("accept wrote canary-hostile-symlink-path in %s: %v", dir, err)
 		}
 	}
 }

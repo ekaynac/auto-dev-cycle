@@ -4,6 +4,7 @@ package fixtures
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,12 +83,21 @@ func TestBaseRemote(t *testing.T) {
 		t.Errorf("a task with visible/: tree %s, %v; %s not at its path", visible, err, shown)
 	}
 	overlay := t.TempDir()
-	if err := os.WriteFile(filepath.Join(overlay, "conftest.go"), []byte("package conftest\n"), 0o644); err != nil {
+	err = os.MkdirAll(filepath.Join(overlay, "docs"), 0o755)
+	for name, body := range map[string]string{"conftest.go": "package conftest\n", "docs/AGENTS.md.hostile": "hostile\n"} {
+		err = errors.Join(err, os.WriteFile(filepath.Join(overlay, name), []byte(body), 0o644))
+	}
+	if err = errors.Join(err, os.Symlink("../conftest.go", filepath.Join(overlay, "docs/key"))); err != nil {
 		t.Fatal(err)
 	}
 	over, remote, _, err := baseRemote(t, repo, "go-mini-feature-1", overlay)
 	if err != nil || over == rec.BaseTree || gitIn(remote, "show", "main:conftest.go") != "package conftest" {
 		t.Errorf("a base overlay: tree %s, %v", over, err)
+	}
+	// P24c: a symlink lands as a symlink; NAME.hostile lands as NAME.
+	if docs := gitIn(remote, "ls-tree", "main", "docs/"); !strings.Contains(docs, "120000 blob") || !strings.HasSuffix(docs, "\tdocs/key") ||
+		!strings.Contains(docs, "\tdocs/AGENTS.md\n") || strings.Contains(docs, ".hostile") {
+		t.Errorf("a base overlay's link and .hostile file: %q", docs)
 	}
 	cmd := exec.Command("bash", "-c", `. ../../scripts/lib/base-remote.sh && base_remote "$@"`, "base_remote", repo,
 		goMiniT0+"/tasks/go-mini-feature-1", "", remote)

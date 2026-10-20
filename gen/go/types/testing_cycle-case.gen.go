@@ -31,6 +31,12 @@ const (
 	CycleCaseExpectAbsentItemReview CycleCaseExpectAbsentItem = "review"
 )
 
+type CycleCaseExpectGatewayRequestsItem struct {
+	File   string  `json:"file"`
+	Status int64   `json:"status"`
+	Reason *string `json:"reason,omitempty"`
+}
+
 // CycleCaseExpectUsage: The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts).
 type CycleCaseExpectUsage struct {
 	In  int64 `json:"in"`
@@ -48,10 +54,14 @@ type CycleCaseExpect struct {
 	Holds []string `json:"holds"`
 	// Whether a merge node is recorded (checkpoint (a): never).
 	Merge bool `json:"merge"`
-	// Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance).
+	// Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance) or of the case's base_overlay (a decoy nothing may read).
 	Canaries []string `json:"canaries"`
-	// Lines that appear in no reviewer request the stub provider logs (a builder's may hold them, §2.7): each occurs in a file of the case's base_overlay, or is {canary}, a canary the driver mints for each run and substitutes in the case's profile_overlay.
+	// Lines that appear in no reviewer request the stub provider logs (a builder's may hold them, §2.7), which logs at least one reviewer request (a case with reviewer_canaries names its review node): each occurs in a file of the case's base_overlay, or is {canary}, a canary the driver mints for each run and substitutes in the case's profile_overlay.
 	ReviewerCanaries *[]string `json:"reviewer_canaries,omitempty"`
+	// Strings each of which appears in the content of a message of at least one builder request the stub provider logs: what the builder's tool calls returned, such as the workspace's refusal (refused: ...) of a hostile call. The scenario never carries one (the stub cannot produce it itself).
+	BuilderSees *[]string `json:"builder_sees,omitempty"`
+	// Requests, files of this case, the driver sends on the attempt's gateway socket with the attempt's token, each with the HTTP status the gateway answers and, for a refusal, the reason its body names.
+	GatewayRequests *[]CycleCaseExpectGatewayRequestsItem `json:"gateway_requests,omitempty"`
 	// File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-<case>).
 	CanaryPaths *[]string `json:"canary_paths,omitempty"`
 	// The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts).

@@ -14,7 +14,7 @@
       ]
     }
   },
-  "control": "The driver mints {canary} for each run; the gate command writes it into the results mount (/results/.canary) on a tree holding the builder's transfer.go only, so the measured baseline stays green; inventory/env_probe_test.go then fails printing it, so it is in the gate's raw stream, which a reviewer given failure text would carry.",
+  "control": "The gate command, not the driver, writes the per-run {canary} into the results mount (/results/.canary), and only on a tree holding the builder's transfer.go, so the measured baseline stays green; the canary is therefore also in the profile and the gate's argv, which no reviewer-visible gate provenance may carry. inventory/env_probe_test.go then fails printing it, so it is in the gate's raw stream. The reviewer answers no_go in every round, so each round is reviewed (with the gate's summary) and repaired until the round rail holds budget_rail.",
   "expect": {
     "until": "held",
     "nodes": {
@@ -29,6 +29,10 @@
       "gate": {
         "outcome": "found",
         "reason": "gate_test_failed"
+      },
+      "review": {
+        "outcome": "found",
+        "reason": "completed_with_findings"
       }
     },
     "holds": [

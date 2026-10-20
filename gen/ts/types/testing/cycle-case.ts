@@ -67,13 +67,25 @@ export interface CycleCase {
      */
     merge: boolean;
     /**
-     * Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance).
+     * Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance) or of the case's base_overlay (a decoy nothing may read).
      */
     canaries: string[];
     /**
-     * Lines that appear in no reviewer request the stub provider logs (a builder's may hold them, §2.7): each occurs in a file of the case's base_overlay, or is {canary}, a canary the driver mints for each run and substitutes in the case's profile_overlay.
+     * Lines that appear in no reviewer request the stub provider logs (a builder's may hold them, §2.7), which logs at least one reviewer request (a case with reviewer_canaries names its review node): each occurs in a file of the case's base_overlay, or is {canary}, a canary the driver mints for each run and substitutes in the case's profile_overlay.
      */
     reviewer_canaries?: string[];
+    /**
+     * Strings each of which appears in the content of a message of at least one builder request the stub provider logs: what the builder's tool calls returned, such as the workspace's refusal (refused: ...) of a hostile call. The scenario never carries one (the stub cannot produce it itself).
+     */
+    builder_sees?: string[];
+    /**
+     * Requests, files of this case, the driver sends on the attempt's gateway socket with the attempt's token, each with the HTTP status the gateway answers and, for a refusal, the reason its body names.
+     */
+    gateway_requests?: {
+      file: string;
+      status: number;
+      reason?: string;
+    }[];
     /**
      * File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-<case>).
      */
