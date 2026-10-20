@@ -106,8 +106,9 @@ type Gateway struct {
 	cfg      Config
 	client   *http.Client
 	mu       sync.Mutex
-	bound    map[[32]byte]Binding // by the token's hash
-	intended map[[32]byte]bool    // tokens whose call's intent is durable, by the token's hash
+	bound    map[[32]byte]Binding          // by the token's hash
+	inflight map[[32]byte]map[*flight]bool // each token's requests in flight (serve.go)
+	intended map[[32]byte]bool             // tokens whose call's intent is durable, by the token's hash
 	observed map[types.AttemptID]Observed
 	// seq numbers every request's count, across calls, so a call's are distinct however often it is bound. A
 	// restart resets it, but no call sends again after one: its effect is then uncertain, and Intend refuses it.
@@ -120,7 +121,7 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.Leases == nil || cfg.Attempts == nil || cfg.Secrets == nil || cfg.Intents == nil || cfg.Counts == nil {
 		return nil, errors.New("gateway: a gateway needs the lease and attempt readers, the secrets, the intents and the counts")
 	}
-	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, intended: map[[32]byte]bool{},
+	return &Gateway{cfg: cfg, client: client(), bound: map[[32]byte]Binding{}, inflight: map[[32]byte]map[*flight]bool{}, intended: map[[32]byte]bool{},
 		observed: map[types.AttemptID]Observed{}}, nil
 }
 
@@ -158,12 +159,17 @@ func (g *Gateway) Bind(b Binding) (string, error) {
 	return token, nil
 }
 
-// Unbind ends token's binding and returns what was observed for its
-// attempt.
+// Unbind ends token's binding, cancels its requests in flight, and returns
+// what was observed for its attempt. It is idempotent: a token unbound
+// already, or never bound, gives Observed{} (serve.go).
 func (g *Gateway) Unbind(token string) Observed {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	key := sha256.Sum256([]byte(token))
+	for f := range g.inflight[key] {
+		f.cancel()
+	}
+	delete(g.inflight, key)
 	b, ok := g.bound[key]
 	if !ok {
 		return Observed{}
@@ -205,16 +211,18 @@ type refusal struct {
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The outbound request keeps this deadline, set before its floor is submitted: the upstream exchange ends within
-	// RequestDeadline of the floor's commit (modelcall.Clock). The floor's own commit and a blocked downstream write
-	// are not bounded by it (#226 entry 78).
+	// RequestDeadline of the floor's commit (modelcall.Clock). The floor's own commit is not bounded by it; a blocked
+	// downstream write is, by its own deadline (serve.go, #226 entry 78).
 	ctx, cancel := context.WithTimeout(r.Context(), RequestDeadline)
 	defer cancel()
 	r = r.WithContext(ctx)
-	b, ok := g.binding(r)
-	if !ok {
-		refuse(w, &refusal{http.StatusUnauthorized, "unbound"})
+	f := &flight{cancel}
+	b, no := g.enter(r, f)
+	if no != nil {
+		refuse(w, no)
 		return
 	}
+	defer g.leave(r, f)
 	resp, s, no := g.forward(r, b)
 	if no != nil {
 		refuse(w, no)
@@ -225,7 +233,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	out := &redacting{w: flushing{w}, secret: []byte(s.cred.Reveal())}
+	out := &redacting{w: flushing{w, http.NewResponseController(w)}, secret: []byte(s.cred.Reveal())}
 	var t tally
 	_, err := io.Copy(out, io.TeeReader(resp.Body, &t))
 	err = errors.Join(err, out.Close())
@@ -371,17 +379,6 @@ func tokenKey(r *http.Request) ([32]byte, bool) {
 	return sha256.Sum256([]byte(token)), ok && token != ""
 }
 
-func (g *Gateway) binding(r *http.Request) (Binding, bool) {
-	key, ok := tokenKey(r)
-	if !ok {
-		return Binding{}, false
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	b, ok := g.bound[key]
-	return b, ok
-}
-
 // forward checks r against b's lease and sends it, returning the response
 // and the credential it injected, or refuses it with nothing sent. The
 // lease is checked before the body is read, so only a running attempt can
@@ -406,7 +403,8 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, sending, 
 	// intent or not, when it is admitted. The residual: all requests already
 	// admitted before a stop, including those whose body is read after it,
 	// may still send (a first one is refused by the Recorder's own check);
-	// P22a bounds them (#226 entry 57), and their late usage is accepted
+	// MaxInFlight bounds them per token, and Unbind cancels them (serve.go,
+	// #226 entry 57), and their late usage is accepted
 	// (#226 entry 59).
 	a, current, ok, err := g.cfg.Attempts.Attempt(ctx, b.Attempt)
 	switch {
@@ -547,16 +545,4 @@ func refuse(w http.ResponseWriter, no *refusal) {
 	w.Header().Set(RefusalHeader, no.code)
 	w.WriteHeader(no.status)
 	_, _ = fmt.Fprintf(w, `{"error":{"type":"gateway_refused","code":%q}}`, no.code)
-}
-
-// flushing flushes after every write, so a streamed response reaches the
-// adapter as it arrives.
-type flushing struct{ w http.ResponseWriter }
-
-func (f flushing) Write(p []byte) (int, error) {
-	n, err := f.w.Write(p)
-	if fl, ok := f.w.(http.Flusher); ok {
-		fl.Flush()
-	}
-	return n, err
 }

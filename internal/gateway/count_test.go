@@ -227,18 +227,24 @@ func TestCountsKeepTheirRequestsSequence(t *testing.T) {
 	if len(order) != 2 || order[0].n.In != 102 || order[0].seq != 1 || order[1].n.In != 101 || order[1].seq != 0 {
 		t.Fatalf("counts in completion order %+v; want request 1's at 1, then request 0's at 0", order)
 	}
-	g, token = rig(t, newUpstream(t, nil), nil)
+	g, _ = rig(t, newUpstream(t, nil), nil)
 	var wg sync.WaitGroup
-	for range 16 {
-		wg.Go(func() { call(g, token, "/chat/completions", good, nil) })
+	for i := range 8 { // 8 calls, each with MaxInFlight requests at once
+		tok, err := g.Bind(Binding{Lease: leaseID, Attempt: attempt, Call: types.CallID(fmt.Sprintf("cal_01m4tm99haemss9tvzd438v%03d", i))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range MaxInFlight {
+			wg.Go(func() { call(g, tok, "/chat/completions", good, nil) })
+		}
 	}
 	wg.Wait()
 	seqs := map[int64]bool{}
 	for _, c := range countsOf(g).all() {
 		seqs[c.seq] = true
 	}
-	if len(seqs) != 16 {
-		t.Fatalf("16 concurrent requests took %d sequences", len(seqs))
+	if len(seqs) != 8*MaxInFlight {
+		t.Fatalf("%d concurrent requests took %d sequences", 8*MaxInFlight, len(seqs))
 	}
 }
 
