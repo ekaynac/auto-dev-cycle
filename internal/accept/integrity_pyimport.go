@@ -23,12 +23,34 @@ var (
 // pyTestDir: p is under a test directory: one named test or tests, or one
 // below the root holding a test module or conftest (base or candidate).
 func (r *run) pyTestDir(p string) bool {
-	for d := path.Dir(p); d != "."; d = path.Dir(d) {
-		if b := path.Base(d); b == "test" || b == "tests" || slices.ContainsFunc(append(slices.Clone(r.baseDirs[d]), r.candDirs[d]...), pyTested) {
-			return true
-		}
+	t, _ := r.pyTestWalk(p)
+	return t
+}
+
+// pyTestWalk is pyTestDir's verdict, and how many directories it walked
+// that had no verdict yet: each directory's verdict, its ancestors'
+// included, is cached once, so a directory is walked once (Astra #281 r4
+// M2, r5 M1).
+func (r *run) pyTestWalk(p string) (bool, int) {
+	if r.pyTests == nil {
+		r.pyTests = map[string]bool{}
 	}
-	return false
+	t, n, todo := false, 0, []string(nil)
+	for d := path.Dir(p); d != "."; d = path.Dir(d) {
+		cached, ok := r.pyTests[d]
+		if b := path.Base(d); ok {
+			t = cached
+			break
+		} else if n++; b == "test" || b == "tests" || slices.ContainsFunc(r.baseDirs[d], pyTested) || slices.ContainsFunc(r.candDirs[d], pyTested) {
+			t, r.pyTests[d] = true, true
+			break
+		}
+		todo = append(todo, d)
+	}
+	for _, d := range todo { // below a test directory, or not, as its parent
+		r.pyTests[d] = t
+	}
+	return t, n
 }
 
 // chain is the attribute chain ending t ("pytest.mark.x").
@@ -216,6 +238,227 @@ func pyAllowed(t []ptok, conftest bool) string {
 	}
 	return ok(len(parts) > 1 && pyConst(t)) // the whole statement: a lambda cut pyAssign short
 }
+
+// pyCompound are the keywords heading a compound statement whose inline
+// suite runs at import (try: M.x = v).
+var pyCompound = strings.Fields("try except finally else elif if while for with")
+
+// pyStmt: statement st, run at import, is inert by a positive grammar, and
+// nothing else is (Astra #281 r4): an import without a star, a docstring,
+// pass, ONE bare name = a pyExpr (annotated by a pyExpr), or a def or class
+// whose header is inert (pyHeader). A decorator is pyDeco's.
+func pyStmt(st []ptok) bool {
+	d := st[b2i(st[0].text == "async"):]
+	switch {
+	case len(d) == 0:
+		return false
+	case d[0].text == "import" || d[0].text == "from":
+		return !slices.ContainsFunc(d, func(k ptok) bool { return k.text == "*" })
+	case len(d) == 1 && (d[0].text == "pass" || d[0].kind == 's'):
+		return d[0].text == "pass" || pyExpr(d)
+	case d[0].text == "def" || d[0].text == "class":
+		return pyHeader(d)
+	}
+	parts := pyAssign(st) // all of st: pyAssign stops only at a lambda, and pyOpaque makes any lambda risky (Astra #281 r5 H1)
+	tg := pySplit(parts[0], ":")
+	return len(parts) == 2 && len(tg[0]) == 1 && pyName(tg[0]) && (len(tg) == 1 || len(tg) == 2 && pyExpr(tg[1])) && pyExpr(parts[1])
+}
+
+// pyOpaque: t holds a lambda, or a for past its first token (a
+// comprehension or generator, anywhere; an async one too, whose async is
+// always followed by for): code run at import no recognizer reads, risky
+// at token level (Astra #281 r5 H1).
+func pyOpaque(t []ptok) bool {
+	return slices.ContainsFunc(t, func(k ptok) bool { return k.kind == 'n' && k.text == "lambda" }) ||
+		slices.ContainsFunc(t[min(1, len(t)):], func(k ptok) bool { return k.kind == 'n' && k.text == "for" })
+}
+
+// pyExpr: t is an inert expression: a number, -number, strings (no f- or
+// t-string), True, False, None, a bare name, or a tuple, list, set or dict
+// display of pyExprs. Nothing else is: no dotted name (a module's
+// __getattr__ runs), comprehension, call, subscript, operator, lambda,
+// conditional, walrus or starred (r4 H1, the lead's pre-check).
+func pyExpr(t []ptok) bool {
+	if es := pySplit(t, ","); len(es) > 1 {
+		return pyElems(es, false)
+	} else if len(t) == 0 {
+		return false
+	}
+	switch k := t[0]; {
+	case len(t) == 1 && k.kind == '1', len(t) == 2 && k.text == "-" && t[1].kind == '1':
+		return true
+	case k.kind == 's':
+		return !slices.ContainsFunc(t, func(k ptok) bool {
+			return k.kind != 's' || strings.ContainsAny(k.text[:strings.IndexAny(k.text, `"'`)], "fFtT")
+		})
+	case k.kind == 'o' && strings.Contains("([{", k.text) && pyClosed(t):
+		return pyElems(pySplit(t[1:len(t)-1], ","), k.text == "{")
+	}
+	return len(t) == 1 && pyName(t)
+}
+
+// pyElems: each element of a display is a pyExpr (key: value in a dict).
+func pyElems(es [][]ptok, dict bool) bool {
+	return pyElemsBy(es, func(e []ptok) bool {
+		kv := pySplit(e, ":")
+		return !dict && pyExpr(e) || dict && len(kv) <= 2 && pyExpr(kv[0]) && (len(kv) == 1 || pyExpr(kv[1]))
+	})
+}
+
+// pyName: t is a name or a dotted name: no keyword (try: X = 1 is no
+// annotated name try), True, False and None aside.
+func pyName(t []ptok) bool {
+	for i, k := range t {
+		if i%2 == 0 && (k.kind != 'n' || slices.Contains(pyHard, k.text)) || i%2 == 1 && k.text != "." {
+			return false
+		}
+	}
+	return len(t)%2 == 1
+}
+
+// pyHard are Python's keywords but True, False and None.
+var pyHard = strings.Fields("and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield")
+
+// pyClosed: t's first bracket closes at its last token.
+func pyClosed(t []ptok) bool {
+	depth := 0
+	for i, k := range t {
+		if k.kind == 'o' && strings.Contains("([{", k.text) {
+			depth++
+		} else if k.kind == 'o' && strings.Contains(")]}", k.text) {
+			depth--
+		}
+		if depth == 0 {
+			return i == len(t)-1
+		}
+	}
+	return false
+}
+
+// pyHeader: def or class statement d evaluates only pyExprs at import: each
+// default and annotation, the return one too; a class has no base but
+// object and no keyword (a base's __init_subclass__ or metaclass runs: the
+// lead's pre-check; the file may not bind object, file's dunder rule).
+func pyHeader(d []ptok) bool {
+	h := pySplit(d, ":")
+	if len(d) < 3 || d[1].kind != 'n' || len(h) < 2 {
+		return false
+	} else if d[0].text == "class" {
+		return slices.Contains([]string{"", "()", "(object)"}, pyJoin(h[0][2:]))
+	}
+	sig := pySplit(h[0][2:], "-")
+	if len(sig) > 2 || len(sig[0]) < 2 || sig[0][0].text != "(" || !pyClosed(sig[0]) || len(sig) == 2 && (len(sig[1]) < 2 || sig[1][0].text != ">" || !pyExpr(sig[1][1:])) {
+		return false
+	}
+	return pyElemsBy(pySplit(sig[0][1:len(sig[0])-1], ","), func(p []ptok) bool {
+		for len(p) > 0 && p[0].text == "*" { // *args, **kwargs, a bare *
+			p = p[1:]
+		}
+		if len(p) == 0 || len(p) == 1 && p[0].text == "/" {
+			return true
+		}
+		kv := pySplit(p[1:], "=")
+		return pyName(p[:1]) && len(kv) <= 2 && (len(kv[0]) == 0 || kv[0][0].text == ":" && pyExpr(kv[0][1:])) && (len(kv) == 1 || pyExpr(kv[1]))
+	})
+}
+
+// pyElemsBy: each of es passes ok; a trailing comma leaves one empty.
+func pyElemsBy(es [][]ptok, ok func([]ptok) bool) bool {
+	if len(es[len(es)-1]) == 0 {
+		es = es[:len(es)-1]
+	}
+	return !slices.ContainsFunc(es, func(e []ptok) bool { return !ok(e) })
+}
+
+// pyDeco: decorator st calls a trusted pytest chain (pyPytest without
+// patch: rooted at pytest or fixture) with pyExpr arguments, or a dotted
+// name as one (a skipif's condition); its root, whose binding pyTrusted
+// must prove (Astra #281 r4 H2), and each dotted argument's root, which
+// must be a repository module's (r5 H4). A call with exactly one
+// positional argument and no keyword applies that argument as a function
+// (pytest's MarkDecorator.__call__), so it must be a pyLiteral (r6 M1).
+func pyDeco(st []ptok) (root string, args []string, ok bool) {
+	end := slices.IndexFunc(st, func(k ptok) bool { return k.text == "(" })
+	if end < 0 {
+		end = len(st)
+	}
+	c := pyJoin(st[1:end])
+	root, _, _ = strings.Cut(c, ".")
+	ok = pyName(st[1:end]) && pyPytest(c, false) && (end == len(st) || pyClosed(st[end:]) &&
+		pyElemsBy(pySplit(st[end+1:len(st)-1], ","), func(a []ptok) bool {
+			if len(a) > 2 && a[0].kind == 'n' && a[1].text == "=" { // a keyword argument
+				a = a[2:]
+			}
+			if !pyExpr(a) && pyName(a) {
+				args = append(args, a[0].text)
+				return true
+			}
+			return pyExpr(a)
+		}))
+	if ok && end < len(st) && !strings.HasSuffix(c, ".with_args") { // with_args stores its arguments, never applies them
+		as := pySplit(st[end+1:len(st)-1], ",")
+		if len(as[len(as)-1]) == 0 {
+			as = as[:len(as)-1] // () or a trailing comma
+		}
+		ok = len(as) != 1 || len(as[0]) > 1 && as[0][1].text == "=" || pyLiteral(as[0])
+	}
+	return root, args, ok
+}
+
+// pyBindings is, in one scan of the file's tokens (its caller charges them
+// first: Astra #281 r6 M2), for each trusted name r whether it is bound
+// only by import pytest (r is pytest) or from pytest import r (r4 H2), and
+// for each imported name whether it is bound only by imports (r5 H4): the
+// file has no star import, and every other r not after . is r. or @r.
+func pyBindings(lines []pline, trusted, imported []string) (map[string]bool, map[string]bool) {
+	type use struct {
+		trusted bool
+		r       string
+	}
+	names, proved, rebound, star := map[string][]use{}, map[use]bool{}, map[use]bool{}, false
+	for _, r := range trusted {
+		names[r] = append(names[r], use{true, r})
+	}
+	for _, r := range imported {
+		names[r] = append(names[r], use{false, r})
+	}
+	for _, l := range lines {
+		for _, st := range pySplit(slices.Concat(l.toks, l.inner), ";") {
+			imp := len(st) > 1 && (st[0].text == "import" || st[0].text == "from")
+			for i, k := range st {
+				if star = star || k.text == "*" && i > 0 && st[i-1].text == "import"; k.kind != 'n' || len(names[k.text]) == 0 {
+					continue
+				}
+				free := (i == 0 || st[i-1].text != "." && st[i-1].text != "@") && (i+1 == len(st) || st[i+1].text != ".")
+				for _, u := range names[k.text] { // an import proving r binds it however it names it (import r.x)
+					if imp && (!u.trusted || pyTrustProof(st, u.r)) {
+						proved[u] = true
+					} else if free {
+						rebound[u] = true
+					}
+				}
+			}
+		}
+	}
+	verdicts := func(ns []string, trusted bool) map[string]bool {
+		v := map[string]bool{}
+		for _, r := range ns {
+			v[r] = proved[use{trusted, r}] && !rebound[use{trusted, r}] && !star
+		}
+		return v
+	}
+	return verdicts(trusted, true), verdicts(imported, false)
+}
+
+// pyTrustProof: st is import pytest (r is pytest) or from pytest import r.
+func pyTrustProof(st []ptok, r string) bool {
+	return (st[0].text == "import" && r == "pytest" || pyJoin(st[:min(3, len(st))]) == "frompytestimport" && r != "pytest") &&
+		slices.ContainsFunc(pyImportParts(st), func(p []ptok) bool { return len(p) == 1 && p[0].text == r })
+}
+
+// pyMaxRoots bounds the distinct names a file's binding analysis proves:
+// past it, the file is not inert (Astra #281 r6 M2).
+const pyMaxRoots = 16
 
 func pyJoin(t []ptok) string {
 	var b strings.Builder

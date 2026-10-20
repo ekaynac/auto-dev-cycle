@@ -3,9 +3,11 @@
 package accept
 
 import (
+	"bytes"
 	"cmp"
 	"maps"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -35,6 +37,11 @@ type pyBase struct {
 	tree         map[string]string      // the files file reads: nil, the base; the candidate for pyStarCandidate
 	cand         *pyBase                // the candidate's files, for its package __init__.py stars
 	dirs         map[string][]string    // a directory's direct entries, built once (Astra #279 M1)
+	bad          map[string]bool        // a base closure module that is not inert, writes, imports dynamically or uses sys
+	linkTargets  []string               // a base symlink's target in the root; "" when out of it (Opus #281 H4)
+	opaque       map[string]bool        // a module name under a base symlink or gitlink (Opus #279 M1)
+	other        map[string]string      // a module name's non-source form (.pyc, an extension), its path (Astra #281 r4 H3)
+	changed      map[string]bool        // the changes' paths: a changed judged file's own code is P14c-2a-allow's, a changed module's warns
 
 	// entries are main's (the root, pythonpath, the basedirs) and resolve; extra are the roots an install
 	// adds (pyInstall), which name modules for pyShadow only (Opus #275 H2)
@@ -62,6 +69,12 @@ type pyBaseFile struct {
 	starSrc []string // x of each exact "from .x import *" at module level (P14c-2a-star)
 	badStar bool     // any other import followed by * anywhere in its tokens
 	starWhy *string  // starCheck's verdict, cached (Astra #279 M1)
+	active  bool     // a write word at import: setattr, __dict__, vars, globals, … (Opus #281 H2)
+	impure  bool     // a statement run at import outside pyAllowed (P14c-2a-allow judges a test file's)
+	runs    bool     // a dynamic import or code from a string: import_module, __import__, importlib, runpy, exec, eval, compile (Opus #281 H3)
+	writes  []string // its attribute, subscript and del targets at import, whatever their head (the split)
+	blunt   string   // an import the closures cannot follow, read at token level: a star outside a package __init__.py, an import in a class body or of a class-private name, \N{…}, a decorator argument not rooted in one import (Astra #281 r5)
+	argMods []string // the modules a decorator's dotted arguments are rooted in: each must be a repository module (r5 H4)
 }
 
 // pyEntries are the sys.path entries the tests import from (Mythos #267
@@ -147,6 +160,8 @@ func (pb *pyBase) load() error {
 	for _, q := range pb.paths {
 		if path.Ext(q) != ".py" {
 			continue
+		} else if pb.err = pb.r.ctx.Err(); pb.err != nil { // main's indexing, uncharged (its work-bound rows), but cancellable (Astra #281 r3 M1)
+			return pb.err
 		}
 		for _, n := range pyModNames(q, pb.entries, false) {
 			pb.mods[n] = cmp.Or(pb.mods[n], q)
@@ -155,8 +170,16 @@ func (pb *pyBase) load() error {
 			pb.shadowMods[n], pb.alts[n] = cmp.Or(pb.shadowMods[n], q), pb.alts[n]+1
 		}
 	}
+	if err := pb.closure(); err != nil {
+		pb.err = err
+		return err
+	}
 	for _, f := range slices.Clone(pb.tests) { // the application modules a judged file imports, one hop (Mythos #270 M2)
 		for _, m := range f.mods {
+			if strings.Count(m, ".") >= pyMaxDepth { // the closure made the base unread (Astra #281 M1)
+				pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+f.path+" imports a name past the depth bound")
+				continue
+			}
 			r, unread, err := pb.resolve(m) // and the module a re-export lands in (Opus #272 M1); unread: no holder known
 			pb.holderUnread = cmp.Or(pb.holderUnread, unread)
 			for _, d := range []string{m, r} {
@@ -202,7 +225,10 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	if err = cmp.Or(err, err2, pb.r.ctx.Err()); err != nil {
 		return nil, err
 	}
-	f.unread = why+why2 != ""
+	f.unread = why+why2 != "" || pb.tree == nil && pb.r.links[q] != "" // a base symlink is read as its link text (Opus #281 H4); the candidate's closure blocks on reaching one
+	if bytes.Contains(b, []byte(`\N{`)) {
+		f.blunt = `names a character by \N{…}, whose decoding may import unicodedata` // anywhere: compiling precedes running (Astra #281 r5 M2)
+	}
 	pure, aliases := pyPure(pb.r.ctx, lines)
 	rel, in := pyRel(path.Dir(q), pyBasedir(tree, q))
 	pkg := strings.Split(rel, "/") // q's package (a relative import's base)
@@ -212,19 +238,87 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 	var units [][]ptok            // module-level statements, def and class bodies
 	binders := map[string][]int{} // a name, to the units binding it
 	owner, indent, deco, bodies := -1, 0, []ptok(nil), []int(nil)
-	future, inert, starSeen := false, true, map[string]bool{} // pyInert, every module-level statement
+	future, inert, starSeen := false, true, map[string]bool{}                      // pyInert, every module-level statement
+	conftest, defIn, classIn := path.Base(q) == "conftest.py", -1, -1              // a def's body does not run at import; a class body does
+	trust, roots, binds := map[string]bool{}, []string(nil), map[string][]string{} // the decorators' roots (pyTrusted, Astra #281 r4 H2), their dotted arguments' roots, each name's imported modules (r5 H4)
+	stmt := func(st []ptok) bool {                                                 // inert: main's allowlist and the positive grammar (Astra #281 r4)
+		r, args, ok := pyDeco(st)
+		if trust[r] = trust[r] || st[0].text == "@"; st[0].text == "@" {
+			roots = append(roots, args...)
+		}
+		return st[0].text == "@" && ok || st[0].text != "@" && pyStmt(st)
+	}
+	isInit := path.Base(q) == "__init__.py"
 	for _, l := range lines {
 		line := slices.Concat(l.toks, l.inner)
 		cond := pySkipString(line, len(l.toks), pure, aliases)
 		f.sysUnread = f.sysUnread || !pySysUse(l.toks)
+		if defIn >= 0 && l.indent <= defIn {
+			defIn = -1
+		}
+		if classIn >= 0 && l.indent <= classIn {
+			classIn = -1
+		}
+		atImport := defIn < 0    // this line's header expressions run at import, a def's defaults too (Astra #281 r3 H2)
+		for i, k := range line { // the words of a write by call or of code run from a string, anywhere (Opus #281 H2, H3)
+			bare := i == 0 || line[i-1].text != "."
+			f.active = f.active || atImport && (slices.Contains(pyWriteWords, k.text) || slices.Contains(pyImportPath, pyStr(k))) // getattr(M, '__path__')
+			f.runs = f.runs || slices.Contains(pyRunWords, k.text) && !pyExactImport(line, i) || bare && slices.Contains([]string{"exec", "eval", "compile"}, k.text)
+		}
+		for _, st := range pySplit(l.toks, ";") { // a statement run at import: pyAllowed and pyStmt only (Opus #281 H1, Astra #281 r4)
+			if len(st) == 0 || defIn >= 0 || len(st) == 5 && st[0].text == "from" && st[1].text == "." && st[4].text == "*" {
+				continue // an exact relative star is P14c-2a-star's in a package __init__.py, and risky elsewhere
+			} else if pyMain(st) {
+				defIn = l.indent // the exact __main__ guard's body does not run at import
+				continue
+			} else if pyOpaque(st) || pyOpaque(l.inner) { // a changed module's too: no recognizer reads its targets (Astra #281 r5 H1)
+				f.blunt = cmp.Or(f.blunt, "holds a lambda, a comprehension or a generator at import")
+			}
+			if names, _ := pyBinds(st); pyAllowed(st, conftest) != "" || !stmt(st) || !pyConst(l.inner) || slices.ContainsFunc(names, func(n string) bool {
+				return strings.HasPrefix(n, "__") && strings.HasSuffix(n, "__") && n != "__all__" && n != "__slots__" || n == "object" // def __getattr__, __init_subclass__, …; a class(object) base rebound
+			}) {
+				f.impure = true
+			}
+			if d := st[b2i(st[0].text == "async"):]; d[0].text == "def" {
+				defIn = l.indent
+			} else if d[0].text == "class" && classIn < 0 {
+				classIn = l.indent
+			}
+		}
+		for _, st := range pySplit(line, ";") { // any attribute, subscript or del target at import, whatever its head (the split)
+			var targets [][]ptok
+			for i := range st { // a.b.__path__.insert(…), a.__spec__…: the package's import path, moved in place, in a header too
+				if i+2 < len(st) && st[i+1].text == "." && slices.Contains(pyImportPath, st[i+2].text) {
+					targets = append(targets, st[:i+3])
+				}
+			}
+			for len(st) > 0 && slices.Contains(pyCompound, st[0].text) { // an inline suite runs too (Astra #281 r3 H1)
+				st = st[min(len(pySplit(st, ":")[0])+1, len(st)):]
+			}
+			parts := pyAssign(st)
+			for _, tg := range parts[:len(parts)-1] {
+				if len(tg) > 1 && tg[1].text == ":" {
+					tg = tg[:1] // NAME: annotation = value binds NAME only
+				}
+				targets = append(targets, tg)
+			}
+			if len(st) > 1 && st[0].text == "del" {
+				targets = append(targets, st[1:])
+			}
+			for _, tg := range targets {
+				if atImport && slices.ContainsFunc(tg, func(k ptok) bool { return k.text == "." || k.text == "[" || k.text == "(" }) {
+					f.writes = append(f.writes, ptext(tg)) // its first tokens only
+				}
+			}
+		}
 		for i := 1; i < len(l.toks); i++ { // a star import at token level, in any form (Astra #277 r2 H1)
 			if l.toks[i].text == "*" && l.toks[i-1].text == "import" {
-				if t := l.toks; l.indent == 0 && len(t) == 5 && t[0].text == "from" && t[1].text == "." && t[2].kind == 'n' {
+				if t := l.toks; isInit && l.indent == 0 && len(t) == 5 && t[0].text == "from" && t[1].text == "." && t[2].kind == 'n' {
 					if !starSeen[t[2].text] { // each source once (Astra #279 M1)
 						starSeen[t[2].text], f.starSrc = true, append(f.starSrc, t[2].text)
 					}
-				} else {
-					f.badStar = true
+				} else { // its __all__ may import submodules the closures do not follow (Astra #281 r5 H2)
+					f.badStar, f.blunt = true, cmp.Or(f.blunt, "has a star import other than from .x import * in a package __init__.py")
 				}
 			}
 		}
@@ -256,6 +350,11 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				continue
 			}
 			st := pySplit(l.toks[i:], ";")[0]
+			if classIn >= 0 && defIn < 0 && (l.indent > classIn || i > 0) || slices.ContainsFunc(st, func(k ptok) bool {
+				return k.kind == 'n' && strings.HasPrefix(k.text, "__") && !strings.HasSuffix(k.text, "__")
+			}) { // a class body's import binds in its scope, and a private name is mangled there (Astra #281 r5 H3)
+				f.blunt = cmp.Or(f.blunt, "imports in a class body or imports a class-private name")
+			}
 			for _, part := range pyImportParts(st) {
 				d, as := pyJoin(pySplit(part, "as")[0]), part[len(part)-1].text
 				if k.text == "from" { // a relative import from q's package (Mythos #267 r2 H3 i, the security review)
@@ -269,6 +368,11 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 				}
 				if star, ok := strings.CutSuffix(d, ".*"); ok {
 					f.stars = append(f.stars, star)
+				}
+				if k.text == "import" && !named(part, "as") {
+					binds[as] = append(binds[as], part[0].text) // import a.b binds a, the module a
+				} else {
+					binds[as] = append(binds[as], d) // from m import x, import a.b as c
 				}
 				f.mods, f.from[as] = append(f.mods, d), d
 			}
@@ -324,6 +428,44 @@ func (pb *pyBase) file(q string) (*pyBaseFile, error) {
 			}
 		}
 	}
+	if roots = slices.Compact(slices.Sorted(slices.Values(roots))); len(roots) > pyMaxRoots { // each distinct root once, at most pyMaxRoots (Astra #281 r6 M2)
+		f.blunt, roots = cmp.Or(f.blunt, "reads decorator arguments through too many names"), nil
+	}
+	var trusted []string // a decorator rooted elsewhere fails pyDeco: pyPytest admits only pytest and fixture
+	for _, r := range []string{"fixture", "pytest"} {
+		if trust[r] {
+			trusted = append(trusted, r)
+		}
+	}
+	if len(trusted)+len(roots) > 0 { // one scan of the file's tokens, charged first, for every name at once, once per blob in either tree (r6 M2)
+		v, ok := pb.r.pyBinds[tree[q]]
+		if !ok {
+			for _, l := range lines { // each token visit
+				pb.r.work += len(l.toks) + len(l.inner)
+			}
+			if pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+				f.blunt, trusted, roots = cmp.Or(f.blunt, "is over the guard's work bound in its binding analysis"), nil, nil
+				if err := pb.r.ctx.Err(); err != nil {
+					return nil, err
+				}
+			} else if v[0], v[1] = pyBindings(lines, trusted, roots); pb.r.pyBinds == nil {
+				pb.r.pyBinds = map[string][2]map[string]bool{tree[q]: v}
+			} else {
+				pb.r.pyBinds[tree[q]] = v
+			}
+		}
+		tv, iv := v[0], v[1]
+		for _, r := range trusted {
+			f.impure = f.impure || !tv[r]
+		}
+		for _, r := range roots { // one import binds r, and nothing else does (Astra #281 r5 H4)
+			if ms := slices.Compact(slices.Sorted(slices.Values(binds[r]))); len(ms) == 1 && iv[r] {
+				f.argMods = append(f.argMods, ms[0])
+			} else {
+				f.blunt = cmp.Or(f.blunt, "reads a decorator argument through "+r+", which one import does not bind")
+			}
+		}
+	}
 	f.units, f.binders = units, binders
 	f.plain = inert && !f.unread
 	return f, nil
@@ -344,6 +486,30 @@ func pyStatic(st []ptok) bool {
 		return !slices.ContainsFunc(parts[1], func(k ptok) bool { return k.text == "(" }) // no call in the value: X = globals().update(…) (the review of d859e60)
 	}
 	return slices.Contains([]string{"ifTYPE_CHECKING:", "iftyping.TYPE_CHECKING:"}, pyJoin(st))
+}
+
+var (
+	pyWriteWords = strings.Fields("__dict__ __setattr__ __setitem__ __delattr__ setattr delattr setitem vars globals") // a write by call (Opus #281 H2)
+	pyRunWords   = strings.Fields("import_module __import__ importlib runpy run_module run_path")                      // an import the closure cannot follow (Opus #281 H3)
+	pyDotted     = regexp.MustCompile(`^(?:'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*'|"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")$`)     // one plain literal of an absolute dotted name (Astra #281 H3)
+)
+
+// pyMaxDepth bounds a dotted name's components: past it, the name is unread (Astra #281 M1).
+const pyMaxDepth = 64
+
+// pyExactImport: line[i], a dynamic-import word, is a form the closure
+// follows exactly: `import importlib`, importlib.import_module, and
+// import_module('mod') or __import__('mod') with one plain string literal
+// of an absolute dotted name, no prefix, escape or concatenation.
+func pyExactImport(line []ptok, i int) bool {
+	at := func(j int, s string) bool { return j < len(line) && line[j].text == s }
+	switch line[i].text {
+	case "importlib":
+		return line[0].text == "import" && len(line) == 2 || at(i+1, ".") && at(i+2, "import_module")
+	case "import_module", "__import__":
+		return at(i+1, "(") && i+3 < len(line) && line[i+2].kind == 's' && pyDotted.MatchString(line[i+2].text) && at(i+3, ")")
+	}
+	return false
 }
 
 // pyInert: module-level statement st of a package runs nothing at import

@@ -3,6 +3,7 @@
 package accept
 
 import (
+	"cmp"
 	"maps"
 	"path"
 	"regexp"
@@ -213,10 +214,7 @@ func (pb *pyBase) starVerdict(q string, f *pyBaseFile) (string, error) {
 // starCandidate: why the candidate's package __init__.py q has a star import
 // that is not inert, judged on the candidate's files (P14c-2a-star).
 func (pb *pyBase) starCandidate(q string) (string, error) {
-	if pb.cand == nil {
-		pb.cand = &pyBase{r: pb.r, tree: pb.r.cand, files: map[string]*pyBaseFile{}, paths: slices.Sorted(maps.Keys(pb.r.cand))}
-	}
-	f, err := pb.cand.file(q)
+	f, err := pb.candFile(q)
 	if err != nil {
 		return "", err
 	} else if f.unread {
@@ -253,6 +251,276 @@ func (pb *pyBase) starSourceOf(p string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// closure: the base modules that run because a judged file imports them,
+// transitively, under every root (P14c-2a-widen). Each must be inert
+// (every statement it runs at import passes pyAllowed; a changed judged
+// file's own code is P14c-2a-allow's) and give no signal risky names, or
+// the base is unread (Astra #281 r3), as on a sys use pySysUse does not
+// read, a name two files answer to (r3 H3), or a base symlink or gitlink.
+// No write is attributed to a module (the split: widen-b). Every path and
+// root expansion is charged first (r3 M1).
+func (pb *pyBase) closure() error {
+	pb.opaque, pb.bad, pb.other = map[string]bool{}, map[string]bool{}, map[string]string{}
+	over := func() error {
+		pb.holderUnread = cmp.Or(pb.holderUnread, "the base conditions' analysis is over the guard's work bound")
+		return pb.r.ctx.Err()
+	}
+	if _, ok := pb.forms(pb.r.files, false, pb.alts, pb.other); !ok {
+		return over()
+	}
+	for _, s := range pyStdlib { // a top-level module an external one may import lazily (Astra #281 r5 H4); a namespace portion never shadows a regular stdlib module
+		if q := cmp.Or(pb.shadowMods[s], pb.other[s]); q != "" && !strings.HasSuffix(q, "/") {
+			pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+q+" shadows the standard library's "+s)
+		}
+	}
+	for p, mode := range pb.r.links {
+		if pb.r.work += 1 + len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return over()
+		}
+		for _, n := range pyModNames(p, pb.shadowEntries, false) {
+			pb.opaque[n] = true
+		}
+		if mode != "120000" {
+			continue // a gitlink has no target in the tree
+		}
+		b, why, err := pb.r.file(pb.r.files[p])
+		if err != nil {
+			return err
+		}
+		// out of the root, the root itself or a .. past the first component: every change (Opus #281 H4, Astra
+		// #281 H4). A target through another link is at or under that link's own target, already matched.
+		if t := path.Join(path.Dir(p), string(b)); why != "" || path.IsAbs(string(b)) || slices.Contains(strings.Split(string(b), "/")[1:], "..") || t == "." || t == ".." || strings.HasPrefix(t, "../") {
+			pb.linkTargets = append(pb.linkTargets, "")
+		} else {
+			pb.linkTargets = append(pb.linkTargets, t)
+		}
+	}
+	seen, names, queue := map[*pyBaseFile]bool{}, map[string]bool{}, slices.Clone(pb.tests)
+	for ; len(queue) > 0; queue = queue[1:] {
+		f := queue[0]
+		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return over()
+		} else if seen[f] {
+			continue
+		}
+		seen[f], pb.sysUnread = true, pb.sysUnread || f.sysUnread
+		if why := pb.risky(f); why != "" || f.sysUnread {
+			pb.holderUnread, pb.bad[f.path] = cmp.Or(pb.holderUnread, why), true
+		} else if f.impure && !(pb.changed[f.path] && (pyTested(f.path) || pb.r.pyTestDir(f.path))) { // a judged file too (Astra #281 r3)
+			pb.holderUnread, pb.bad[f.path] = cmp.Or(pb.holderUnread, "the module "+f.path+" runs code at import outside the allowlist"), true
+		}
+		if why, err := pb.starsOf(f.path, f); err != nil { // a package __init__.py's own stars, proved in every reached one (Astra #281 r5 H2)
+			return err
+		} else if why != "" {
+			pb.holderUnread, pb.bad[f.path] = cmp.Or(pb.holderUnread, "the package "+strings.ReplaceAll(path.Dir(f.path), "/", ".")+" "+why), true
+		}
+		for _, m := range f.argMods { // a decorator's dotted argument: a repository module's, which the closure reads (Astra #281 r5 H4)
+			if cmp.Or(pb.mods[m], pb.shadowMods[m]) == "" {
+				pb.holderUnread, pb.bad[f.path] = cmp.Or(pb.holderUnread, "the module "+f.path+" reads a decorator argument from "+m+", not a repository module"), true
+			}
+		}
+		tried := map[string]bool{}
+		for _, m := range f.mods { // every package on the way runs too; each attempt charged, a new name by its bytes, before it is split (Astra #281 M1)
+			if pb.r.work += 1 + len(m)*b2i(!tried[m]); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+				return over()
+			} else if tried[m] {
+				continue
+			} else if tried[m] = true; strings.Count(m, ".") >= pyMaxDepth {
+				pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+f.path+" imports a name past the depth bound")
+				continue
+			}
+			for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
+				if n := strings.Join(parts[:k], "."); names[n] {
+					continue // each name once
+				} else if pb.opaque[n] {
+					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+n+" is a symlink or a gitlink in the base") // Opus #281 H4
+				} else if names[n] = true; pb.alts[n] > 1 {
+					pb.holderUnread = cmp.Or(pb.holderUnread, "the module name "+n+" has more than one file") // Astra #281 r3 H3
+				} else if pb.other[n] != "" {
+					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+n+" is not one plain source ("+pb.other[n]+")") // Astra #281 r4 H3
+				} else if q := cmp.Or(pb.mods[n], pb.shadowMods[n]); q != "" && (slices.Contains(strings.Split(q, "/"), "__pycache__") || parts[0] == "pytest") {
+					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+q+" is under __pycache__ or is pytest's") // Astra #281 r4 H4, H2
+				} else if q != "" {
+					g, err := pb.file(q)
+					if err != nil {
+						return err
+					}
+					queue = append(queue, g)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// risky: why closure module f may change what a condition reads, or "": a
+// dynamic import, an unread file or base link (Astra #281 H5, r2 H5), an
+// import the closures cannot follow (r5), a write word, or any attribute,
+// subscript or del target run at import.
+func (pb *pyBase) risky(f *pyBaseFile) string {
+	switch {
+	case f.runs:
+		return "the module " + f.path + " imports or runs code dynamically"
+	case f.unread:
+		return "the module " + f.path + " is unread"
+	case f.blunt != "":
+		return "the module " + f.path + " " + f.blunt
+	case f.active:
+		return "the module " + f.path + " writes by a call or through a target the guard cannot read"
+	case len(f.writes) > 0:
+		return "the module " + f.path + " writes " + f.writes[0] + " at import"
+	}
+	return ""
+}
+
+// candClosure is the first module the candidate's closure (from its judged
+// files and the changed files) reaches that is risky, uses sys, or is not
+// inert and not changed (a changed module's own code stays main's warning,
+// Opus #266 M1), or that imports a base link or a name two files answer to;
+// and that the base closure did not reach as one (Opus #281 M1, Astra #281
+// r3). Each path and import is charged first, each path queued once.
+func (pb *pyBase) candClosure() (string, error) {
+	alts, other := map[string]int{}, map[string]string{}
+	mods, ok := pb.forms(pb.r.cand, true, alts, other)
+	if !ok {
+		return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
+	}
+	for _, s := range pyStdlib { // a top-level module an external one may import lazily, added (Astra #281 r5 H4)
+		if q := cmp.Or(mods[s], other[s]); q != "" && !strings.HasSuffix(q, "/") && pb.r.files[q] != pb.r.cand[q] {
+			return q, nil
+		}
+	}
+	queue, queued, seen := []string(nil), map[string]bool{}, map[string]bool{}
+	for p := range pb.r.cand {
+		if path.Ext(p) != ".py" {
+			continue
+		}
+		for d := path.Dir(p); d != "." && !seen[d]; d = path.Dir(d) { // each directory's entries charged once, before pyTestDir reads them (Astra #281 r4 M2)
+			seen[d], pb.r.work = true, pb.r.work+len(pb.r.baseDirs[d])+len(pb.r.candDirs[d])
+		}
+		t, n := pb.r.pyTestWalk(p) // each directory walked once, each visit charged (Astra #281 r5 M1)
+		if pb.r.work += 1 + n; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
+		} else if queued[p] = pyTested(p) || t || pb.changed[p]; queued[p] {
+			queue = append(queue, p)
+		}
+	}
+	slices.Sort(queue)
+	for ; len(queue) > 0; queue = queue[1:] {
+		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
+		} else if p := queue[0]; pb.r.cand[p] == "" {
+			continue
+		} else if f, err := pb.candFile(p); err != nil {
+			return "", err
+		} else if (pb.risky(f) != "" || f.sysUnread || f.impure && !pb.changed[p]) && !pb.bad[p] {
+			return p, nil
+		} else if why, err := pb.candStars(p, f); err != nil {
+			return "", err
+		} else if (why != "" || slices.ContainsFunc(f.argMods, func(m string) bool { return mods[m] == "" })) && !pb.bad[p] {
+			return p, nil // an unproved star, or a decorator argument not a repository module's (Astra #281 r5 H2, H4)
+		} else {
+			for _, m := range f.mods {
+				if pb.r.work += 1 + len(m); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+					return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
+				} else if strings.Count(m, ".") >= pyMaxDepth {
+					return p, nil // a name past the depth bound
+				}
+				for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
+					if n := strings.Join(parts[:k], "."); pb.opaque[n] || alts[n] > 1 || other[n] != "" || slices.Contains(strings.Split(mods[n], "/"), "__pycache__") {
+						return p, nil // a base link or gitlink, a name two files answer to, a non-source form or a module under __pycache__, newly reached (Astra #281 r2 H5, r3 H3, r4 H3, H4)
+					} else if q := mods[n]; q != "" && !queued[q] {
+						queued[q], queue = true, append(queue, q)
+					}
+				}
+			}
+		}
+	}
+	return "", nil
+}
+
+// forms counts into alts how many of tree's files CPython's file finder
+// may load (pyForm), the .py ones only when py, answer to each dotted name
+// over every root (Astra #281 r3 H3); other keeps a name's non-source form
+// (r4 H3), or a namespace portion: any directory, every ancestor of every
+// path, that no form answers to by its own name (its __init__, or a
+// same-name module), whatever its children (r5 L1, r6 L1); and names each
+// name's .py file, under its own __pycache__ (r4 H4). Each path and each
+// directory, once, is charged before its names are built; false: over the
+// work bound.
+func (pb *pyBase) forms(tree map[string]string, py bool, alts map[string]int, other map[string]string) (map[string]string, bool) {
+	mods := map[string]string{}
+	for p := range tree {
+		m, ok := pyForm(p)
+		src := path.Ext(p) == ".py"
+		if !ok || !py && src {
+			continue
+		} else if pb.r.work += 1 + len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return nil, false
+		}
+		for _, n := range pyModNames(m, pb.shadowEntries, false) {
+			if alts[n]++; src {
+				mods[n] = p
+			} else {
+				other[n] = cmp.Or(other[n], p)
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for p := range tree {
+		for d := path.Dir(p); d != "." && !seen[d]; d = path.Dir(d) {
+			if seen[d], pb.r.work = true, pb.r.work+1+len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+				return nil, false
+			}
+			for _, n := range pyModNames(d, pb.shadowEntries, false) {
+				if alts[n] == 0 {
+					other[n] = cmp.Or(other[n], d+"/")
+				}
+			}
+		}
+	}
+	return mods, true
+}
+
+// starsOf: why f's own stars are not proved (starCheck), or "": none.
+func (pb *pyBase) starsOf(q string, f *pyBaseFile) (string, error) {
+	if len(f.starSrc) == 0 {
+		return "", nil
+	}
+	return pb.starCheck(q, f)
+}
+
+// candStars: why the candidate's file f's own stars are not proved, or "":
+// an unchanged file whose stars the base closure judged is not judged again
+// (a change to a star source or its forms blocks: starSourceOf).
+func (pb *pyBase) candStars(q string, f *pyBaseFile) (string, error) {
+	if b := pb.files[q]; pb.r.files[q] == pb.r.cand[q] && b != nil && b.starWhy != nil {
+		return "", nil
+	}
+	return pb.cand.starsOf(q, f)
+}
+
+// pyForm: the module file p is a form of for CPython's file finder, as
+// dir/x.py (a package's: dir/x/__init__.py): x.py, x.pyc, an extension
+// x.*.so or x.*.pyd, or bytecode cached in __pycache__ (only a .pyc's
+// __pycache__ is dropped: Astra #281 r4 H4).
+func pyForm(p string) (string, bool) {
+	d, b := path.Dir(p), path.Base(p)
+	x, _, _ := strings.Cut(b, ".") // a.b.py is no form of a, but counts as one: fail closed
+	if path.Base(d) == "__pycache__" && path.Ext(b) == ".pyc" {
+		d = path.Dir(d)
+	}
+	return path.Join(d, x) + ".py", x != "" && slices.Contains([]string{".py", ".pyc", ".so", ".pyd"}, path.Ext(b))
+}
+
+// candFile is the candidate's version of q, read with the candidate's tree.
+func (pb *pyBase) candFile(q string) (*pyBaseFile, error) {
+	if pb.cand == nil {
+		pb.cand = &pyBase{r: pb.r, tree: pb.r.cand, files: map[string]*pyBaseFile{}, paths: slices.Sorted(maps.Keys(pb.r.cand))}
+	}
+	return pb.cand.file(q)
 }
 
 // pyStarForm: path p is a form of module x in directory d that CPython may
@@ -461,3 +729,31 @@ func (pb *pyBase) binding(n string) ([]string, string, error) {
 	}
 	return pb.byName[n], "", nil
 }
+
+// pyStdlib is CPython 3.12's sys.stdlib_module_names (Python 3.12.3, sorted):
+// a base top-level module by one of these names may run where an external
+// module imports it lazily (Astra #281 r5 H4).
+var pyStdlib = strings.Fields("__future__ _abc _aix_support _ast _asyncio _bisect _blake2 _bz2 _codecs _codecs_cn _codecs_hk _codecs_iso2022 " +
+	"_codecs_jp _codecs_kr _codecs_tw _collections _collections_abc _compat_pickle _compression _contextvars _crypt " +
+	"_csv _ctypes _curses _curses_panel _datetime _dbm _decimal _elementtree _frozen_importlib " +
+	"_frozen_importlib_external _functools _gdbm _hashlib _heapq _imp _io _json _locale _lsprof _lzma _markupbase " +
+	"_md5 _msi _multibytecodec _multiprocessing _opcode _operator _osx_support _overlapped _pickle _posixshmem " +
+	"_posixsubprocess _py_abc _pydatetime _pydecimal _pyio _pylong _queue _random _scproxy _sha1 _sha2 _sha3 " +
+	"_signal _sitebuiltins _socket _sqlite3 _sre _ssl _stat _statistics _string _strptime _struct _symtable _thread " +
+	"_threading_local _tkinter _tokenize _tracemalloc _typing _uuid _warnings _weakref _weakrefset _winapi " +
+	"_zoneinfo abc aifc antigravity argparse array ast asyncio atexit audioop base64 bdb binascii bisect builtins " +
+	"bz2 cProfile calendar cgi cgitb chunk cmath cmd code codecs codeop collections colorsys compileall concurrent " +
+	"configparser contextlib contextvars copy copyreg crypt csv ctypes curses dataclasses datetime dbm decimal " +
+	"difflib dis doctest email encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch " +
+	"fractions ftplib functools gc genericpath getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac " +
+	"html http idlelib imaplib imghdr importlib inspect io ipaddress itertools json keyword lib2to3 linecache " +
+	"locale logging lzma mailbox mailcap marshal math mimetypes mmap modulefinder msilib msvcrt multiprocessing " +
+	"netrc nis nntplib nt ntpath nturl2path numbers opcode operator optparse os ossaudiodev pathlib pdb pickle " +
+	"pickletools pipes pkgutil platform plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile " +
+	"pyclbr pydoc pydoc_data pyexpat queue quopri random re readline reprlib resource rlcompleter runpy sched " +
+	"secrets select selectors shelve shlex shutil signal site smtplib sndhdr socket socketserver spwd sqlite3 " +
+	"sre_compile sre_constants sre_parse ssl stat statistics string stringprep struct subprocess sunau symtable sys " +
+	"sysconfig syslog tabnanny tarfile telnetlib tempfile termios textwrap this threading time timeit tkinter token " +
+	"tokenize tomllib trace traceback tracemalloc tty turtle turtledemo types typing unicodedata unittest urllib uu " +
+	"uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xdrlib xml xmlrpc zipapp zipfile zipimport " +
+	"zlib zoneinfo")

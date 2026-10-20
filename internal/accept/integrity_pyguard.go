@@ -80,12 +80,20 @@ func (r *run) python(changes []Change) error {
 	if err != nil {
 		return err
 	}
-	pb := &pyBase{r: r, extra: installed}
+	pb := &pyBase{r: r, extra: installed, changed: map[string]bool{}}
+	for _, c := range changes {
+		pb.changed[c.Src], pb.changed[c.Dst] = true, true
+	}
 	pb.entries, pb.basedirs = r.pyEntries(paths)
 	if err := pb.load(); err != nil {
 		return err
 	}
 	unread = unread || pb.sysUnread
+	if p, err := pb.candClosure(); err != nil {
+		return err
+	} else if p != "" && !unread && !custom {
+		add(&r.blocks, p, "a module the tests now import runs code at import, writes a module or uses sys (P14c-2a-widen)")
+	}
 	for _, q := range slices.Sorted(maps.Keys(r.files)) { // an __init__.py added, removed or renamed (Opus #270 M3)
 		if pyTested(q) && r.cand[q] != "" && pyBasedir(r.files, q) != pyBasedir(r.cand, q) {
 			add(&r.blocks, q, "a test file's basedir moves (an __init__.py added, removed or renamed)")
@@ -127,6 +135,12 @@ func (r *run) python(changes []Change) error {
 				break
 			}
 		}
+		for _, t := range pb.linkTargets { // a change at or under a base symlink's target, any extension (Opus #281 H4)
+			if t == "" || slices.ContainsFunc([]string{c.Src, c.Dst}, func(p string) bool { return p == t || strings.HasPrefix(p, t+"/") }) {
+				add(&r.blocks, c.Dst, "a change at or under a base symlink's target (or one that leaves the checkout)")
+				break
+			}
+		}
 		if path.Ext(c.Src) != ".py" && path.Ext(c.Dst) != ".py" {
 			continue
 		} else if custom {
@@ -150,6 +164,8 @@ func (r *run) python(changes []Change) error {
 				return err
 			} else if why != "" {
 				add(&r.blocks, c.Dst, why)
+			} else if was, ok := pb.files[c.Src]; !pb.cand.files[c.Dst].plain && (!src || !ok || was.plain) { // plainness lost or new
+				add(&r.blocks, c.Dst, "a package __init__.py that is not plain changed (its submodules may resolve elsewhere)") // P14c-2a-widen
 			}
 		}
 		b, ok, err := r.pyScan(src && path.Ext(c.Src) == ".py", c.Src, c.SrcBlob, judged)

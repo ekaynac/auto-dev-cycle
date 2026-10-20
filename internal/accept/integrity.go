@@ -112,13 +112,18 @@ type run struct {
 	blobs              map[string][]byte   // blobs read, once
 	cgoBlobs           map[string][]byte   // read by the cgo pass, not yet charged to the budget
 	files, cand        map[string]string   // the base's and the candidate's paths, to blobs
+	links              map[string]string   // the base's symlinks and gitlinks, to their mode (Opus #279 M1)
 	baseDirs, candDirs map[string][]string // their files by directory
+	pyTests            map[string]bool     // pyTestDir's verdict for a directory, once (Astra #281 r4 M2)
 	touched            map[string]bool     // directories of changed Go files
 	trees              [2]*tree            // the base and the candidate
 	vendorChanged      map[string]bool     // vendor/ directories with a file changed
 	anyTest            bool                // a Go test in either version (a helper anywhere the tests may call)
 	blocks, warnings   []Block
 	out                additive // decision A outside initialization (P14b-out-1): its own findings and work
+
+	// a Python blob's binding verdicts (pyBindings), once in either tree (Astra #281 r6 M2)
+	pyBinds map[string][2]map[string]bool
 }
 
 // cgoSources is what cgo compiles beside a package's Go files, and objects
@@ -247,10 +252,12 @@ func (r *run) list() error {
 	} else if err != nil {
 		return err
 	}
-	r.files = map[string]string{}
+	r.files, r.links = map[string]string{}, map[string]string{}
 	for _, e := range strings.Split(string(out), "\x00") {
 		if meta, p, ok := strings.Cut(e, "\t"); ok && len(strings.Fields(meta)) == 3 {
-			r.files[p] = strings.Fields(meta)[1]
+			if r.files[p] = strings.Fields(meta)[1]; slices.Contains([]string{"120000", "160000"}, strings.Fields(meta)[0]) {
+				r.links[p] = strings.Fields(meta)[0]
+			}
 		}
 	}
 	return nil
