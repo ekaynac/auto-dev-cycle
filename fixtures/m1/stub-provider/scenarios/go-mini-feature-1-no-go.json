@@ -1,0 +1,48 @@
+{
+  "name": "go-mini-feature-1-no-go",
+  "description": "go-mini-feature-1's reference change, and a reviewer that answers no_go with one finding.",
+  "usage_query": true,
+  "calls": {
+    "stub-builder-1": {
+      "replies": [
+        {
+          "write": {
+            "inventory/transfer.go": "// SPDX-License-Identifier: Apache-2.0\n\npackage inventory\n\nimport \"errors\"\n\n// ErrSameStore is returned when a transfer names the same store as source and destination.\nvar ErrSameStore = errors.New(\"inventory: transfer to the same store\")\n\n// Transfer moves qty units of sku from s to dst, carrying the source unit\n// price over to the destination. On any error neither store changes.\nfunc (s *Store) Transfer(dst *Store, sku string, qty int) error {\n\tif s == dst {\n\t\treturn ErrSameStore\n\t}\n\tkey, err := normalizeSKU(sku)\n\tif err != nil {\n\t\treturn err\n\t}\n\tif qty <= 0 {\n\t\treturn ErrInvalidQuantity\n\t}\n\tit, ok := s.items[key]\n\tif !ok {\n\t\treturn ErrUnknownSKU\n\t}\n\tif qty > it.Qty {\n\t\treturn ErrInsufficientStock\n\t}\n\tif err := s.Remove(key, qty); err != nil {\n\t\treturn err\n\t}\n\treturn dst.Add(key, qty, it.PriceCents)\n}\n"
+          },
+          "usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 800
+          }
+        },
+        {
+          "say": "Added Store.Transfer and ErrSameStore.",
+          "usage": {
+            "prompt_tokens": 1500,
+            "completion_tokens": 20
+          }
+        }
+      ]
+    },
+    "stub-reviewer-1": {
+      "replies": [
+        {
+          "decision": {
+            "decision": "no_go",
+            "summary": "Transfer misses a case.",
+            "findings": [
+              {
+                "severity": "high",
+                "title": "Transfer of an unknown SKU",
+                "detail": "The error path is not covered."
+              }
+            ]
+          },
+          "usage": {
+            "prompt_tokens": 2000,
+            "completion_tokens": 80
+          }
+        }
+      ]
+    }
+  }
+}

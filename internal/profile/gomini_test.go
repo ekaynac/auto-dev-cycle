@@ -40,6 +40,12 @@ func TestGoMiniProfile(t *testing.T) {
 		!slices.Equal(p.Toolchain.DependencyRecipe.Lockfiles, []string{"go.mod"}) {
 		t.Fatalf("the profile: %+v", p)
 	}
+	// The stub benchmark's count rails (slice plan §2.6): 2 attempts per
+	// round, 3 rounds per task, 2 merge operations per generation.
+	if r := p.Budget.Rails; r.AttemptsPerRound == nil || *r.AttemptsPerRound != 2 || r.RoundsPerTask == nil || *r.RoundsPerTask != 3 ||
+		r.MergeOperationsPerGeneration == nil || *r.MergeOperationsPerGeneration != 2 {
+		t.Errorf("the count rails: %+v", r)
+	}
 	if _, err := os.Stat(filepath.Join("../../fixtures/t0/go-mini/repo", "go.mod")); err != nil {
 		t.Fatalf("the repository: %v", err)
 	}

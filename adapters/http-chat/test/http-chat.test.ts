@@ -11,6 +11,7 @@ import { eventMethod, serve } from "@adc/contract";
 import { HttpChatAdapter, maxCallsPerTurn } from "../src/adapter.ts";
 import { requestKeys } from "../src/gateway.ts";
 import { call, refused, reply, stub, type Answer, type Stub } from "./stub.ts";
+import { start } from "../../../fixtures/m1/stub-provider/server.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const att = "att_01m3250vnfeyrv67x6w0ddqr6a";
@@ -336,4 +337,38 @@ test("the process answers describe and shutdown on stdio", () => {
   const [d] = r.stdout.trim().split("\n").map((l) => JSON.parse(l));
   assert.equal(d.result.harness, "http-chat");
   assert.equal(d.result.needs_native_login, false);
+});
+
+// P24a: the stub provider's go-mini-feature-1 scenario through the real
+// adapter. The builder's patch, applied to T0 go-mini's repository, gives
+// the task's reference change (fixtures/t0/go-mini/tasks/go-mini-feature-1/
+// reference.patch); the reviewer's decision is go, and its request carries
+// the decision's response format and no tool.
+test("the stub provider's go-mini-feature-1 scenario writes the reference change, and its reviewer says go", async (t) => {
+  const fixtures = join(here, "../../../fixtures");
+  const scenario = JSON.parse(readFileSync(join(fixtures, "m1/stub-provider/scenarios/go-mini-feature-1.json"), "utf8"));
+  const d = dirs(t, "Add Store.Transfer.");
+  rmSync(d.ws, { recursive: true });
+  execFileSync("cp", ["-R", join(fixtures, "t0/go-mini/repo"), d.ws]);
+  const base = join(d.root, "base"), want = join(d.root, "want");
+  execFileSync("cp", ["-R", d.ws, base]);
+  execFileSync("cp", ["-R", d.ws, want]);
+  execFileSync("git", ["apply", join(fixtures, "t0/go-mini/tasks/go-mini-feature-1/reference.patch")], { cwd: want });
+  const log = join(d.root, "stub.jsonl");
+  const s = await start({ scenario, log });
+  t.after(() => s.close());
+  const upstream: Stub = { base: s.base, seen: [], close: s.close };
+  const r = result(await session(new HttpChatAdapter(), prepare(d, upstream, "builder", { model: "stub-builder-1" }), runParams(d)));
+  assert.deepEqual([r.outcome, r.result.kind], ["found", "patch"]);
+  execFileSync("git", ["apply", "-"], { cwd: base, input: readFileSync(join(d.out, r.result.handle.handle)) });
+  const tree = (dir: string) => execFileSync("find", [".", "-type", "f", "-printf", "%P\\n"], { cwd: dir, encoding: "utf8" }).split("\n").filter(Boolean).sort();
+  assert.deepEqual(tree(base), tree(want));
+  for (const f of tree(want)) assert.equal(readFileSync(join(base, f), "utf8"), readFileSync(join(want, f), "utf8"), f);
+  const review = dirs(t, "Review the change.");
+  const rv = result(await session(new HttpChatAdapter(), prepare(review, upstream, "reviewer", { model: "stub-reviewer-1" }), runParams(review)));
+  assert.deepEqual([rv.outcome, rv.result.kind], ["found", "decision"]);
+  assert.equal(JSON.parse(readFileSync(join(review.out, "decision.json"), "utf8")).decision, "go");
+  const requests = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((e) => e.kind === "request");
+  assert.deepEqual(requests.map((e) => e.model), ["stub-builder-1", "stub-builder-1", "stub-reviewer-1"]);
+  assert.ok(requests[2].body.response_format && !requests[2].body.tools);
 });

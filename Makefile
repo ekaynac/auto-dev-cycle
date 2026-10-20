@@ -45,7 +45,7 @@ AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 
 
 .PHONY: help toolchain go-check ts-deps schema-docs gen gen-check vocab-check build dist install-check fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
 
-SHELL_SCRIPTS = scripts/*.sh fixtures/t0/*/check.sh
+SHELL_SCRIPTS = scripts/*.sh scripts/lib/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
 
 help: ## List targets
@@ -151,6 +151,7 @@ test: go-check ts-deps ## Run all tests inside the test sandbox (refuses to run 
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/fake && node --test "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/conformance && node --test "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
 	@scripts/test-sandbox.sh -- bash -c 'cd adapters/http-chat && node --test "test/*.test.ts" && ./node_modules/.bin/tsc -p tsconfig.json'
+	@scripts/test-sandbox.sh -- bash -c 'cd fixtures/m1/stub-provider && node --test "test/*.test.mjs"'
 
 # The contract fixtures (00 "M0 exit check"): green through the real
 # components with the ordinary adc, and each red under its named mutation
