@@ -125,6 +125,8 @@ type run struct {
 
 	// a Python blob's binding verdicts (pyBindings), once in either tree (Astra #281 r6 M2)
 	pyBinds map[string][2]map[string]bool
+
+	caseWork int // the case layer's work (integrity_cases.go: maxCaseWork)
 }
 
 // cgoSources is what cgo compiles beside a package's Go files, and objects

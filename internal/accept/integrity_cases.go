@@ -45,9 +45,11 @@ import (
 //     prefix past maxPrefix bytes is a digest: Opus #318 H5), read through
 //     its callback: a literal, a local closure, or a package function (a
 //     named callback: Astra H3).
-//   - A function literal names cases only where it runs (Opus #318 H2):
-//     called on the spot (defer and go too), a testing value's Run or
-//     Cleanup callback, or an argument of a followed helper. A local
+//   - A function literal names cases only where it surely runs (Opus #318
+//     H2): called on the spot (defer and go too), or a testing value's Run
+//     or Cleanup callback. A literal passed to a helper is opaque, and
+//     names none (Opus #318 r2 H1, the lead's decision: no reading of which
+//     parameters the helper calls). A local
 //     closure never assigned again nor addressed is read where it is
 //     called, given to t.Cleanup or as t.Run's callback (Astra r2 8); one
 //     also used as a value is followed so, and opaque (Opus #318 M2). Any
@@ -77,37 +79,50 @@ import (
 //     running hash of its text: Opus #318 H5) warns whatever the counts,
 //     when nothing blocks the test.
 //   - Work: canonical text, bodies, each identity as it is built, and
-//     summaries are charged to the case layer's own bound per package scan
-//     (maxCaseWork, apart from the run's r.work: Opus #318 H6), checked
+//     summaries are charged to the case layer's own bound, one counter per
+//     run (r.caseWork against maxCaseWork, scaled to maxRead as P14d-a's
+//     skip bound, apart from the run's r.work: Opus #318 H6, r2 M1), checked
 //     right after each charge (Astra r2 6), with the run's cancellation;
 //     past it, reading stops and the test's file is unverifiable. drives'
 //     answers are cached per body, mode and depth (Astra r2 5).
 //   - New blocks main has none of, by design: a removed row or subtest
-//     (the purpose); and, as costs: a driving loop inserted before an
-//     existing one (its position shifts); a table used anywhere but its
-//     range; a loop's kind changed other than runs to runs checks; a row's
-//     first string literal edited when it is not its name; a closure never
-//     called whose literal held identities; any change to a helper of
-//     several declarations that names or runs cases.
-//   - Residual: helpers of other packages, testify suites, a table built by
-//     appends or a helper, a row skipped by its loop's own code (if tc.name
-//     == "zero" { continue }: Opus #318 L1).
+//     (the purpose); and, as costs:
+//   - a driving loop inserted before an existing one (its position
+//     shifts);
+//   - a table used anywhere but as its range's expression, or moved to a
+//     package variable;
+//   - a loop's kind changed other than runs to runs checks;
+//   - a row's first string literal edited (a []string value included),
+//     and a name added to nameless rows (Opus #318 r2 M2);
+//   - a helper or closure with a driving loop renamed (its name labels its
+//     loops), and a test's loop moved into a helper or out of one;
+//   - a closure that held identities no longer called, assigned again or
+//     addressed;
+//   - a subtest or driving loop moved into a literal never run, or into a
+//     literal passed to a helper (Opus #318 r2 H1);
+//   - any change to a helper of several declarations that names or runs
+//     cases.
+//   - Residual: helpers of other packages, testify suites, a method whose
+//     receiver holds the testing value (h := harness{t}; h.run(n)), a table
+//     built by appends or a helper, a row skipped by its loop's own code
+//     (if tc.name == "zero" { continue }: Opus #318 L1), and a literal a
+//     helper calls only under a condition (if t == nil { f() }), as a
+//     literal passed to a helper names no case (Opus #318 r2 L2).
 
 // maxCaseDepth bounds drives' reading of closures within one another;
 // maxPrefix, an identity's subtest prefix, past which it is a digest.
 const maxCaseDepth, maxPrefix = 8, 256
 
-// maxCaseWork is the case layer's own work bound per package scan (Opus
-// #318 H6): canonical text, bodies, identities and summaries, kept apart
-// from the run's r.work, as the skip and out layers keep theirs. Var:
+// maxCaseWork is the case layer's own work bound per run (Opus #318 H6;
+// r2 M1), scaled as P14d-a's maxSkipWork: one counter, r.caseWork, apart
+// from the run's r.work, across every scan, version and platform. Var:
 // tests lower it.
-var maxCaseWork = 1 << 24
+var maxCaseWork = 16 * len(platforms) * int(maxRead)
 
 // caseScan is a package scan's case state, made on its first test: its
 // work, drives' answers, the summaries, the helpers being summarized and
 // the branches a constant condition never takes.
 type caseScan struct {
-	work   int
 	driven map[driveKey]drive
 	sums   map[ast.Node]*caseSum
 	on     map[*ast.FuncDecl]bool
@@ -146,25 +161,25 @@ type driveKey struct {
 	depth int
 }
 
-// caseVisits counts drives' readings and caseWork the case code's charged
-// work (tests read them: bounds, never a clock).
-var caseVisits, caseWork atomic.Int64
+// caseVisits counts drives' readings and caseCharged the case code's
+// charged work (tests read them: bounds, never a clock).
+var caseVisits, caseCharged atomic.Int64
 
-// charge adds n to the case layer's work; false past its bound.
-func (s *pkgScan) charge(n int) bool {
-	s.cs.work += n
-	caseWork.Add(int64(n))
+// caseCharge adds n to the case layer's work; false past its bound.
+func (s *pkgScan) caseCharge(n int) bool {
+	s.r.caseWork += n
+	caseCharged.Add(int64(n))
 	return !s.over()
 }
 
 // over: the case layer is past its bound, or the run is cancelled.
-func (s *pkgScan) over() bool { return s.cs.work > maxCaseWork || s.r.ctx.Err() != nil }
+func (s *pkgScan) over() bool { return s.r.caseWork > maxCaseWork || s.r.ctx.Err() != nil }
 
 // caseFacts records fn's cases under the test key k and its build
 // constraint cons; past the case layer's bound, its file is unverifiable.
 func (s *pkgScan) caseFacts(fa *pkgFacts, k, path, cons string, fn *ast.FuncDecl) {
 	if s.cs.driven == nil {
-		s.cs = caseScan{0, map[driveKey]drive{}, map[ast.Node]*caseSum{}, map[*ast.FuncDecl]bool{}, map[ast.Node]bool{}}
+		s.cs = caseScan{map[driveKey]drive{}, map[ast.Node]*caseSum{}, map[*ast.FuncDecl]bool{}, map[ast.Node]bool{}}
 	}
 	c := s.cases(fn.Body, "")
 	c.print = s.testPrint(fn.Body)
@@ -200,7 +215,7 @@ type caseWalk struct {
 // helper's).
 func (s *pkgScan) cases(body *ast.BlockStmt, self string) *caseSum {
 	w := &caseWalk{sum: newSum(), traced: map[types.Object]bool{}, self: self, root: self, defs: map[*ast.FuncLit]bool{}, unread: map[*ast.FuncLit]bool{}}
-	if !s.charge(int(body.End() - body.Pos())) {
+	if !s.caseCharge(int(body.End() - body.Pos())) {
 		return w.sum
 	}
 	w.lits, w.closures, w.valued = s.locals(body)
@@ -345,10 +360,10 @@ func (s *pkgScan) constCond(e ast.Expr, v bool) bool {
 }
 
 // walk reads n's cases under prefix. A function literal is read where it
-// runs (Opus #318 H2): called on the spot (under defer or go too), a
-// testing value's Run or Cleanup callback, or an argument of a followed
-// helper; a followed closure where it is called; any other literal names
-// no case, and makes the summary opaque.
+// surely runs (Opus #318 H2; r2 H1): called on the spot (under defer or go
+// too), or a testing value's Run or Cleanup callback; a followed closure
+// where it is called; any other literal, one passed to a helper included,
+// names no case, and makes the summary opaque.
 func (s *pkgScan) walk(w *caseWalk, n ast.Node, prefix string) {
 	inPlace := map[*ast.FuncLit]bool{}
 	ast.Inspect(n, func(n ast.Node) bool {
@@ -384,11 +399,6 @@ func (s *pkgScan) walk(w *caseWalk, n ast.Node, prefix string) {
 				s.follow(w, x.Fun, prefix)
 			} else if d := s.helper(x); d != nil {
 				s.compose(w, s.helperSum(d), prefix)
-				for _, a := range x.Args {
-					if fl, ok := ast.Unparen(a).(*ast.FuncLit); ok {
-						inPlace[fl] = true
-					}
-				}
 			}
 		}
 		return true
@@ -446,7 +456,7 @@ func (s *pkgScan) rows(w *caseWalk, x *ast.RangeStmt, prefix string) {
 			name = "(nameless)" // counted (Opus #318 M1): its text is the row's hash's
 		}
 		k := "row " + prefix + name + " @" + loop
-		if !s.charge(len(k)) {
+		if !s.caseCharge(len(k)) {
 			return
 		}
 		w.sum.ids[k]++
@@ -467,7 +477,7 @@ func (s *pkgScan) run(w *caseWalk, x *ast.CallExpr, prefix string) {
 	if tv := s.info.Types[x.Args[0]]; tv.Value != nil && tv.Value.Kind() == constant.String {
 		name = constant.StringVal(tv.Value) // a literal or a constant
 		id := "run " + prefix + name
-		if !s.charge(len(id)) {
+		if !s.caseCharge(len(id)) {
 			return
 		}
 		w.sum.ids[id]++
@@ -509,7 +519,7 @@ func (s *pkgScan) closureSum(w *caseWalk, name string, fl *ast.FuncLit) *caseSum
 	}
 	sub := *w // its tables, closures and traced names
 	sub.sum, sub.self, sub.loops = newSum(), w.root+name+"#", 0
-	if !s.charge(int(fl.Body.End() - fl.Body.Pos())) { // each reading paid for
+	if !s.caseCharge(int(fl.Body.End() - fl.Body.Pos())) { // each reading paid for
 		return sub.sum
 	}
 	s.walk(&sub, fl.Body, "")
@@ -576,7 +586,7 @@ func (s *pkgScan) compose(w *caseWalk, h *caseSum, prefix string) {
 	w.sum.opaque, w.sum.cyc, w.sum.runs = w.sum.opaque || h.opaque, w.sum.cyc || h.cyc, w.sum.runs || h.runs
 	for id, n := range h.ids {
 		k := id[:4] + prefix + id[4:]
-		if !s.charge(len(k)) {
+		if !s.caseCharge(len(k)) {
 			return
 		}
 		w.sum.ids[k] += n
@@ -600,7 +610,7 @@ func (s *pkgScan) drives(body ast.Node, closures map[types.Object]*ast.FuncLit, 
 	if depth > maxCaseDepth {
 		return driveCut
 	}
-	if !s.charge(int(body.End() - body.Pos())) {
+	if !s.caseCharge(int(body.End() - body.Pos())) {
 		return driveNo
 	}
 	defer func() { s.cs.driven[key] = found }()
@@ -638,7 +648,7 @@ func (s *pkgScan) canon(n ast.Node) string {
 func (s *pkgScan) canonTo(b *strings.Builder, n ast.Node) {
 	l := b.Len()
 	_ = printer.Fprint(b, token.NewFileSet(), n)
-	s.charge(b.Len() - l)
+	s.caseCharge(b.Len() - l)
 }
 
 // rowName is a row's name: a string key or value, else its first string

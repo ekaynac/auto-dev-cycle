@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -192,6 +193,26 @@ func tableHelper(t *testing.T) {
 			t.Fatal(n)
 		}
 	}
+}
+
+func withFn(t *testing.T, f func()) {
+	t.Log("with")
+	f()
+}
+
+func TestArgLit(t *testing.T) {
+	withFn(t, func() {
+		t.Run("x", func(t *testing.T) {
+			if Add(1, 1) != 2 {
+				t.Fatal("x")
+			}
+		})
+	})
+	t.Run("y", func(t *testing.T) {
+		if Add(2, 2) != 4 {
+			t.Fatal("y")
+		}
+	})
 }
 
 func TestNamed(t *testing.T) {
@@ -456,9 +477,15 @@ func TestIntegrityCases(t *testing.T) {
 		// H2: a literal that never runs, and a closure never called.
 		"a subtest in a literal never run":     {edit("\t\tt.Run(\"other\", func(t *testing.T) {\n\t\t\tif Add(2, 2) != 4 {\n\t\t\t\tt.Fatal(\"other\")\n\t\t\t}\n\t\t})\n", "\t\t_ = func() {\n\t\t\tt.Run(\"other\", func(t *testing.T) {\n\t\t\t\tif Add(2, 2) != 4 {\n\t\t\t\t\tt.Fatal(\"other\")\n\t\t\t\t}\n\t\t\t})\n\t\t}\n"), "TestSub unverifiable: 1 test cases no longer where the guard can follow them (run outer/other)", nil},
 		"a subtest called on the spot removed": {edit("\t\tt.Run(\"spot\", func(t *testing.T) {\n\t\t\tif Add(1, 1) != 2 {\n\t\t\t\tt.Fatal(\"spot\")\n\t\t\t}\n\t\t})\n", "\t\tif Add(1, 1) != 2 {\n\t\t\tt.Fatal(\"spot\")\n\t\t}\n"), "TestSpot 1 test cases removed (table rows or subtests: run spot)", nil},
-		"a closure no longer called":           {edit("\tsub()\n}", "\t_ = sub\n}"), "TestInline unverifiable: 1 test cases no longer where the guard can follow them (run c)", nil},
-		"a closure also a value (M2)":          {edit("\tfor _, tc := range []struct{ a, want int }{{1,1}, {2, 2}} {", "\t_ = check\n\tfor _, tc := range []struct{ a, want int }{{1,1}, {2, 2}} {"), "", nil},
-		"a nameless row's value edited (M1)":   {edit("{{1,1}, {2, 2}}", "{{1,1}, {2, 3}}"), "", both("TestClosure: " + changed)},
+		// Opus #318 r2 H1 (the lead's decision): a literal passed to a helper
+		// is opaque and names no case: the helper no longer calling it
+		// removes none (as on main); a subtest moved into one is an
+		// unverifiable removal (a stated false block).
+		"a helper no longer calls its literal":    {edit("\tt.Log(\"with\")\n\tf()\n", "\tt.Log(\"with\")\n\t_ = f\n"), "", nil},
+		"a subtest moved into a helper's literal": {edit("\t})\n\tt.Run(\"y\", func(t *testing.T) {\n\t\tif Add(2, 2) != 4 {\n\t\t\tt.Fatal(\"y\")\n\t\t}\n\t})\n", "\t\tt.Run(\"y\", func(t *testing.T) {\n\t\t\tif Add(2, 2) != 4 {\n\t\t\t\tt.Fatal(\"y\")\n\t\t\t}\n\t\t})\n\t})\n"), "TestArgLit unverifiable: 1 test cases no longer where the guard can follow them (run y)", nil},
+		"a closure no longer called":              {edit("\tsub()\n}", "\t_ = sub\n}"), "TestInline unverifiable: 1 test cases no longer where the guard can follow them (run c)", nil},
+		"a closure also a value (M2)":             {edit("\tfor _, tc := range []struct{ a, want int }{{1,1}, {2, 2}} {", "\t_ = check\n\tfor _, tc := range []struct{ a, want int }{{1,1}, {2, 2}} {"), "", nil},
+		"a nameless row's value edited (M1)":      {edit("{{1,1}, {2, 2}}", "{{1,1}, {2, 3}}"), "", both("TestClosure: " + changed)},
 		// H3: a loop driven through a helper's named-callback subtest.
 		"a helper's subtest per row": {edit(`[]string{"a", "b"} {`+"\n\t\trunNamed", `[]string{"a"} {`+"\n\t\trunNamed"), `TestNamedLoop unverifiable: 1 test cases no longer where the guard can follow them (row "b" @1 runs)`, nil},
 		// H4 (the lead's decision): a helper of several declarations is one identity.
@@ -519,9 +546,9 @@ func movedTable(t *testing.T) map[string]string {
 // readings is the guard on files, with its drives readings and charged
 // case work.
 func readings(t *testing.T, f fixture, files map[string]string) (Verdict, int64, int64) {
-	v0, w0 := caseVisits.Load(), caseWork.Load()
+	v0, w0 := caseVisits.Load(), caseCharged.Load()
 	v := f.guarded(t, files)
-	return v, caseVisits.Load() - v0, caseWork.Load() - w0
+	return v, caseVisits.Load() - v0, caseCharged.Load() - w0
 }
 
 // lowered is the case layer's work bound lowered to 1<<17 for the test.
@@ -584,10 +611,12 @@ func TestIntegrityCasesRowsStop(t *testing.T) {
 	}
 }
 
-// TestIntegrityCasesPerScan (Opus #318 H6): the case layer's bound is its
-// own, per package scan: ten packages, each well within it, together past
-// it, reach no bound (the run's r.work is not the case layer's).
-func TestIntegrityCasesPerScan(t *testing.T) {
+// TestIntegrityCasesPerRun (Opus #318 H6; r2 M1): the case layer's work
+// is its own, one counter per run: ten packages reach no bound when the
+// run's r.work is lowered below their case work (the layer never spends
+// it), and are past the case layer's bound when it is lowered below their
+// total, though each package is within it.
+func TestIntegrityCasesPerRun(t *testing.T) {
 	f := newGuardFixture(t)
 	var rows strings.Builder
 	for i := range 300 {
@@ -602,16 +631,71 @@ func TestIntegrityCasesPerScan(t *testing.T) {
 	if !v.Accepted() {
 		t.Fatalf("one package: blocks %q", whats(v.Blocks))
 	}
-	old := maxCaseWork
-	t.Cleanup(func() { maxCaseWork = old })
-	maxCaseWork = int(one) // one package's two scans: each within it, ten packages' twenty far past it
 	files := map[string]string{}
 	for i := range 10 {
 		p, src := pkg(i)
 		files[p] = src
 	}
+	oldWork, oldCase := maxWork, maxCaseWork
+	t.Cleanup(func() { maxWork, maxCaseWork = oldWork, oldCase })
+	maxWork = int(one) // the run's bound, below the ten packages' case work
 	if v, _, all := readings(t, f, files); !v.Accepted() || all < 5*one {
-		t.Errorf("ten packages: work %d, blocks %q", all, whats(v.Blocks))
+		t.Errorf("ten packages, the run's bound lowered: work %d, blocks %q", all, whats(v.Blocks))
+	}
+	maxWork, maxCaseWork = oldWork, int(5*one) // each package within it, the ten past it
+	if v := f.guarded(t, files); !finds(v.Blocks, "past the guard's work bound") {
+		t.Errorf("ten packages past the case layer's bound: blocks %q", whats(v.Blocks))
+	}
+}
+
+// TestIntegrityCasesCharged (Opus #318 H5): each reading and identity is
+// charged as it is read or built: a called closure's long body twice per
+// scan (its test's body, then its own reading), and a table's long row
+// names three times (the test's body, each identity, each row's text), on
+// each platform.
+func TestIntegrityCasesCharged(t *testing.T) {
+	f := newGuardFixture(t)
+	body := strings.Repeat("\t\tx++\n", 14000)
+	closure := "package pkg\n\nimport \"testing\"\n\nfunc TestLongClosure(t *testing.T) {\n\tbig := func() {\n\t\tx := 0\n" + body + "\t\t_ = x\n\t}\n\tbig()\n}\n"
+	if _, _, w := readings(t, f, map[string]string{"pkg/closure_test.go": closure}); w < int64(3*len(body)) {
+		t.Errorf("a called closure of %d bytes: charged %d", len(body), w)
+	}
+	name := strings.Repeat("n", 200)
+	var rows strings.Builder
+	for i := range 1000 {
+		fmt.Fprintf(&rows, "\t\t{\"%s%d\", %d},\n", name, i, i)
+	}
+	table := "package pkg\n\nimport \"testing\"\n\nfunc TestNames(t *testing.T) {\n\tfor _, tc := range []struct {\n\t\tn string\n\t\tv int\n\t}{\n" + rows.String() +
+		"\t} {\n\t\tif tc.v < 0 {\n\t\t\tt.Fatal(tc.n)\n\t\t}\n\t}\n}\n"
+	if _, _, w := readings(t, f, map[string]string{"pkg/names_test.go": table}); w < int64(5*1000*len(name)) {
+		t.Errorf("1,000 rows of %d-byte names: charged %d", len(name), w)
+	}
+}
+
+// TestIntegrityCasesAllocs (Opus #318 r2 L1): rows sharing one name
+// allocate linearly in the guard as a whole, not only in what is charged:
+// 8,000 rows allocate under three times what 4,000 do (round 1's
+// concatenated row text measured 3.6 times per doubling).
+func TestIntegrityCasesAllocs(t *testing.T) {
+	f := newGuardFixture(t)
+	alloc := func(n int) uint64 {
+		var b strings.Builder
+		for i := range n {
+			fmt.Fprintf(&b, "\t\t{\"same\", %d},\n", i)
+		}
+		file := "package pkg\n\nimport \"testing\"\n\nfunc TestSame(t *testing.T) {\n\tfor _, tc := range []struct {\n\t\tn string\n\t\tv int\n\t}{\n" + b.String() +
+			"\t} {\n\t\tif tc.v < 0 {\n\t\t\tt.Fatal(tc.n)\n\t\t}\n\t}\n}\n"
+		var m0, m1 runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&m0)
+		if v := f.guarded(t, map[string]string{"pkg/same_test.go": file}); !v.Accepted() {
+			t.Fatalf("%d rows: blocks %q", n, whats(v.Blocks))
+		}
+		runtime.ReadMemStats(&m1)
+		return m1.TotalAlloc - m0.TotalAlloc
+	}
+	if a, b := alloc(4000), alloc(8000); b > 3*a {
+		t.Errorf("rows sharing a name: 4,000 allocate %d bytes, 8,000 %d: not linear", a, b)
 	}
 }
 
@@ -641,15 +725,15 @@ func TestIntegrityCasesClauseStops(t *testing.T) {
 	r := &run{ctx: context.Background()}
 	s := &pkgScan{r: r, pkg: types.NewPackage("example.com/m/pkg", "pkg"), info: &types.Info{}, cs: caseScan{dead: map[ast.Node]bool{}}}
 	s.testPrint(file.Decls[1].(*ast.FuncDecl).Body)
-	if s.cs.work > maxCaseWork+16 {
-		t.Errorf("the print read %d past a bound of %d", s.cs.work, maxCaseWork)
+	if s.r.caseWork > maxCaseWork+16 {
+		t.Errorf("the print read %d past a bound of %d", s.r.caseWork, maxCaseWork)
 	}
 	maxCaseWork = old // a cancelled run reads no more (Opus #318 H5)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	s = &pkgScan{r: &run{ctx: ctx}, pkg: s.pkg, info: s.info, cs: caseScan{dead: map[ast.Node]bool{}}}
-	if s.testPrint(file.Decls[1].(*ast.FuncDecl).Body); s.cs.work > 16 {
-		t.Errorf("a cancelled run's print read %d", s.cs.work)
+	if s.testPrint(file.Decls[1].(*ast.FuncDecl).Body); s.r.caseWork > 16 {
+		t.Errorf("a cancelled run's print read %d", s.r.caseWork)
 	}
 }
 
