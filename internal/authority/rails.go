@@ -128,8 +128,9 @@ func (TaskRaiseRailHandler) Logic(c eventstore.Command) eventstore.Decide {
 }
 
 // railRaised admits ev, a raise: of a recorded task, under its id and in
-// its project, by a live operator, at its event's time, above any earlier
-// raise of that rail.
+// its project, by a live operator, at its event's time, above the cap in
+// force (Rails: the profile's, or an earlier raise of that rail), on append
+// and on replay alike (Astra #295 L2).
 func railRaised(tx *eventstore.Tx, ev eventstore.Event) error {
 	var r types.RailRaised
 	if err := json.Unmarshal(ev.Payload, &r); err != nil {
@@ -144,9 +145,12 @@ func railRaised(tx *eventstore.Tx, ev eventstore.Event) error {
 	if err != nil || by.Kind != types.ActorKindOperator {
 		return errors.Join(err, errors.New("a live operator raises a rail"))
 	}
-	was, raised, err := loadJSON[int64](tx, TaskProjection, railKey(r.Task, string(r.Rail)))
-	if err != nil || raised && int64(r.To) <= was {
-		return errors.Join(err, fmt.Errorf("a raise of %s is above its earlier one (%d)", r.Rail, was))
+	caps, err := Rails(tx, r.Task)
+	if err != nil {
+		return err
+	}
+	if cur, ok := caps.Of(string(r.Rail)); !ok || int64(r.To) <= cur {
+		return fmt.Errorf("a raise of %s is above the cap in force (%d)", r.Rail, cur)
 	}
 	return putJSON(tx, TaskProjection, railKey(r.Task, string(r.Rail)), int64(r.To))
 }

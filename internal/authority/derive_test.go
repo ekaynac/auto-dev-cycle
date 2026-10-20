@@ -93,6 +93,10 @@ var storeAt time.Time
 
 func openBoundary(t *testing.T) *boundary { return openBoundaryGrace(t, 0, true) }
 
+// taskFold is the boundary's task projector; a test that needs a log the
+// fold would refuse on append swaps it before opening the boundary.
+var taskFold = authority.TaskProjector{}.Project
+
 // openBoundaryGrace: with the seat projector's grace overridden when
 // positive; seated, the supervisor holds the seat.
 func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary {
@@ -128,7 +132,7 @@ func openBoundaryGrace(t *testing.T, grace time.Duration, seated bool) *boundary
 		}
 		return suiteNow().Add(storeShift)
 	},
-		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, authority.ProposalProjector{}.Project, notesProjection, authority.ProjectProjector{}.Project, authority.TaskProjector{}.Project, authority.OwedProjector{}.Project, graph.Projector{Answers: authority.Answers{}}.Project, b.record),
+		Hooks: eventstore.Hooks{Identify: identity.Recheck, Project: eventstore.ProjectEach(identity.Projector{}.Project, authority.GrantProjector{}.Project, authority.SeatProjector{MinGrace: grace}.Project, authority.ProposalProjector{}.Project, notesProjection, authority.ProjectProjector{}.Project, taskFold, authority.OwedProjector{}.Project, graph.Projector{Answers: authority.Answers{}}.Project, b.record),
 			Authorize: func(tx *eventstore.Tx, c eventstore.Command) error {
 				if c.Action == "test.seed" {
 					return nil
