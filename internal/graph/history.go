@@ -154,16 +154,14 @@ func Held(tx *eventstore.Tx) ([]NodeHolds, error) {
 }
 
 // NodeView is a node as recorded, with its task, project and state, and
-// the outcome and reason of its selected result: nil when none is
-// selected, or when the results projection does not hold it (State.Result
-// tells which).
+// the outcome of its selected result: nil when none is selected, or when
+// the results projection does not hold it (State.Result tells which).
 type NodeView struct {
 	Node    types.Node
 	Task    types.TaskID
 	Project types.ProjectID
 	State   types.NodeState
 	Outcome *types.Outcome
-	Reason  *types.ReasonCode
 }
 
 // TaskProject is the project task's first node pinned (graph_tasks);
@@ -188,7 +186,7 @@ func Nodes(tx *eventstore.Tx) ([]NodeView, error) {
 				return nil, err
 			}
 			if ok {
-				v.Outcome, v.Reason = &r.Result.Outcome, &r.Result.Reason
+				v.Outcome = &r.Result.Outcome
 			}
 		}
 		out = append(out, v)

@@ -54,7 +54,8 @@ type seeder struct {
 	// sys and op are the system actor and the operator a test seeded, if
 	// any (readyTaskIn, plannedIn).
 	sys, op types.ActorID
-	dir     string // the state directory
+	dir     string           // the state directory
+	blobs   *blobstore.Store // the seals' publisher
 }
 
 type projectFor func(blobs lease.Blobs, holds map[string]types.Hold) func(*eventstore.Tx, []eventstore.Event) error
@@ -104,7 +105,7 @@ func seed(t *testing.T, dir string, project projectFor, extra ...string) *seeder
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &seeder{t: t, s: s, holds: reg.Holds, dir: dir, done: func() {
+	return &seeder{t: t, s: s, holds: reg.Holds, dir: dir, blobs: blobs, done: func() {
 		if err := errors.Join(s.Close(), lock.Release()); err != nil {
 			t.Fatal(err)
 		}

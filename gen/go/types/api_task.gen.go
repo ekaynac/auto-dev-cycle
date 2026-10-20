@@ -4,12 +4,12 @@
 
 package types
 
-// TaskRead: One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes, the time from the task's approval to that start, the outcome and reason of that attempt's node's selected result once it has one, and the tokens its lease's model calls measured. adc task show and adc task wait read it. Never the spec's requirement or acceptance.
+// TaskRead: One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. adc task show and adc task wait read it. Never the spec's requirement or acceptance.
 type TaskRead struct {
 	ID      TaskID    `json:"id"`
 	Project ProjectID `json:"project"`
 	Card    BoardCard `json:"card"`
-	// The first attempt of the task, null until one starts.
+	// The first attempt of the task: null until one starts, and null unless the reader also reads attempts (the attempt read kind) in the task's project.
 	FirstAttempt *FirstAttempt `json:"first_attempt"`
 }
 
@@ -21,11 +21,11 @@ type FirstAttempt struct {
 	SecondsAfterApproval *int64 `json:"seconds_after_approval"`
 	// The attempt's status (records/attempt).
 	Status string `json:"status"`
-	// The outcome of the attempt's node's selected result; null while it has none.
+	// The outcome of the result this attempt itself recorded; null while it has recorded none. Never another attempt's result, nor one recorded with no attempt.
 	Outcome *Outcome `json:"outcome"`
-	// That result's reason; null while it has none.
+	// That result's reason; null while it has recorded none.
 	Reason *ReasonCode `json:"reason"`
-	// The input and output tokens of the model calls bound to the attempt's lease, as the call ledger stands them (ledger.StandingOf); null with no call.
+	// The input and output tokens of the model calls bound to the attempt's lease, as the call ledger stands them (ledger.StandingOf); null with no call, and null unless the reader also reads model calls (the model_call read kind) in the task's project.
 	Tokens *Tokens `json:"tokens"`
 }
 

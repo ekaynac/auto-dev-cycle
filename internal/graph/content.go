@@ -84,6 +84,24 @@ func CommitEvidence(tx *eventstore.Tx, node types.NodeID, r types.Result, attemp
 	return r, commitRecorded(tx, types.ResultRecorded{Node: node, Result: r, Attempt: &attempt, Isolation: isolation}, env)
 }
 
+// CommitAttempt is Commit for r, the result attempt recorded: the fold
+// binds it to the attempt (AttemptResultProjection), which must be started
+// on node's unit and have recorded no other.
+func CommitAttempt(tx *eventstore.Tx, node types.NodeID, r types.Result, attempt types.AttemptID, env Env) error {
+	return commitRecorded(tx, types.ResultRecorded{Node: node, Result: r, Attempt: &attempt}, env)
+}
+
+// AttemptResult is the result attempt itself recorded, if any: never one
+// another attempt, or no attempt, recorded on its node.
+func AttemptResult(tx *eventstore.Tx, attempt types.AttemptID) (types.Result, bool, error) {
+	id, ok, err := load[types.ResultID](tx, AttemptResultProjection, string(attempt))
+	if err != nil || !ok {
+		return types.Result{}, false, err
+	}
+	r, ok, err := load[types.ResultRecorded](tx, ResultProjection, string(id))
+	return r.Result, ok, err
+}
+
 // isolated is the result.recorded fold's check of p's attempt and
 // isolation proof.
 func isolated(tx *eventstore.Tx, rec nodeRecord, p *types.ResultRecorded) error {

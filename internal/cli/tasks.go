@@ -2,24 +2,30 @@
 
 package cli
 
-// adc task show and adc task wait (M1 slice plan §2.3; P22a-7, W18), over
-// the task read (GET /v1/tasks):
+// adc task show and adc task wait (M1 slice plan §2.1 step 5, §2.3; P22a-7,
+// W18), over the task read (GET /v1/tasks):
 //   - adc task show TASK [--json] prints the task's record: its board card
 //     and its first-attempt metrics. A task the caller cannot read, or no
 //     task, is refused (exit 1).
-//   - adc task wait TASK --until COLUMN[,COLUMN...] [--timeout D] [--every
-//     D] [--json] reads the task every D until its card's column is one of
-//     the columns, and prints its record then. The exit codes: 0, a column
-//     reached; 1, the task is not readable; 5, the timeout passed first; 6,
-//     the task ended (done or done_candidate) in a column not asked for; 2,
-//     the controller could not be read; 64, a usage error.
+//   - adc task wait TASK --until closed|held [--timeout D] [--every D]
+//     [--json] reads the task every D until it is in one of the states
+//     asked for, and prints its record then. closed: the task is terminal
+//     (its card's column done_candidate or done); held: a node of its card
+//     carries a hold badge. A state counts only when a read sees it: one
+//     entered and left between two reads is not seen. Every read is bounded
+//     by the timeout's deadline. A read the controller could not answer is
+//     retried at the next tick until the deadline; a refusal ends the wait.
+//   - The wait's exit codes: 0, a state asked for was seen; 1, the task is
+//     not readable; 5, the timeout passed first; 6, the task closed when
+//     only held was asked for, or its card is unplaced (its records
+//     determine no column); 2, the context ended; 64, a usage error.
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
-	"slices"
 	"strings"
 	"time"
 
@@ -30,11 +36,10 @@ import (
 // tasksResource is the task read's resource.
 const tasksResource = "tasks"
 
-// columns are the board's columns, and ended the ones a task never leaves.
-var (
-	columns = []types.BoardPlacedCardColumn{types.BoardPlacedCardColumnAwaitingApproval, types.BoardPlacedCardColumnReady, types.BoardPlacedCardColumnRunning,
-		types.BoardPlacedCardColumnVerifying, types.BoardPlacedCardColumnDoneCandidate, types.BoardPlacedCardColumnDone}
-	ended = []types.BoardPlacedCardColumn{types.BoardPlacedCardColumnDoneCandidate, types.BoardPlacedCardColumnDone}
+// The states adc task wait waits for.
+const (
+	stateClosed = "closed"
+	stateHeld   = "held"
 )
 
 // taskArgs parses args into fs: the task id, the first argument, then the
@@ -54,35 +59,58 @@ func taskArgs(fs *flag.FlagSet, args []string, stderr io.Writer) (types.TaskID, 
 	return task, entry.ExitOK, true
 }
 
-// taskRecord reads task's record: its raw JSON and column ("" unplaced),
-// or the exit code and message of a read that failed or found no task.
-func taskRecord(ctx context.Context, name string, task types.TaskID, stderr io.Writer, c Client) (json.RawMessage, types.BoardPlacedCardColumn, int, bool) {
+// taskState is what a wait reads of a task's card.
+type taskState struct {
+	closed, held, unplaced bool
+	column                 types.BoardPlacedCardColumn
+}
+
+// readTask reads task's record: its raw JSON and state; refused when the
+// read found no task the caller reads.
+func readTask(ctx context.Context, task types.TaskID, c Client) (raw json.RawMessage, st taskState, refused bool, err error) {
 	r, ok := c.(Reader)
 	if !ok {
-		return nil, "", failed(stderr, name, ErrNoTransport), false
+		return nil, st, false, ErrNoTransport
 	}
-	raw, err := r.Read(ctx, tasksResource)
+	doc, err := r.Read(ctx, tasksResource)
 	if err != nil {
-		return nil, "", failed(stderr, name, err), false
+		return nil, st, false, err
 	}
 	var list struct{ Items []json.RawMessage }
-	if err := json.Unmarshal(raw, &list); err != nil {
-		say(stderr, "%s: could_not_run: the controller's read is not a list\n", name)
-		return nil, "", entry.ExitCouldNotRun, false
+	if err := json.Unmarshal(doc, &list); err != nil {
+		return nil, st, false, errors.New("the controller's read is not a list")
 	}
 	for _, item := range list.Items {
 		var rec types.TaskRead
 		if json.Unmarshal(item, &rec) != nil || rec.ID != task {
 			continue
 		}
-		var column types.BoardPlacedCardColumn
-		if placed, ok := rec.Card.Variant.(*types.BoardPlacedCard); ok {
-			column = placed.Column
+		placed, ok := rec.Card.Variant.(*types.BoardPlacedCard)
+		if !ok {
+			return item, taskState{unplaced: true}, false, nil
 		}
-		return item, column, entry.ExitOK, true
+		st.column = placed.Column
+		st.closed = placed.Column == types.BoardPlacedCardColumnDoneCandidate || placed.Column == types.BoardPlacedCardColumnDone
+		for _, n := range placed.Nodes {
+			st.held = st.held || len(n.Holds) > 0
+		}
+		return item, st, false, nil
 	}
-	say(stderr, "%s: refused: no task %s that you read\n", name, task)
-	return nil, "", entry.ExitRefused, false
+	return nil, st, true, nil
+}
+
+// taskRecord is readTask for show: the record, or the exit code of a read
+// that failed or found no task, its message said.
+func taskRecord(ctx context.Context, name string, task types.TaskID, stderr io.Writer, c Client) (json.RawMessage, int, bool) {
+	raw, _, refused, err := readTask(ctx, task, c)
+	switch {
+	case err != nil:
+		return nil, failed(stderr, name, err), false
+	case refused:
+		say(stderr, "%s: refused: no task %s that you read\n", name, task)
+		return nil, entry.ExitRefused, false
+	}
+	return raw, entry.ExitOK, true
 }
 
 // printTask prints rec: as is with asJSON, else as a rendered record.
@@ -108,7 +136,7 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer, c Cl
 	if !ok {
 		return code
 	}
-	rec, _, code, ok := taskRecord(ctx, name, task, stderr, c)
+	rec, code, ok := taskRecord(ctx, name, task, stderr, c)
 	if !ok {
 		return code
 	}
@@ -118,7 +146,7 @@ func taskShow(ctx context.Context, args []string, stdout, stderr io.Writer, c Cl
 func taskWait(ctx context.Context, args []string, stdout, stderr io.Writer, c Client) int {
 	const name = "adc task wait"
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	until := fs.String("until", "", "the columns to wait for, comma-separated: awaiting_approval, ready, running, verifying, done_candidate, done (required)")
+	until := fs.String("until", "", "the states to wait for, comma-separated: closed (the task is terminal), held (a node of it is held) (required)")
 	timeout := fs.Duration("timeout", 10*time.Minute, "how long to wait at most")
 	every := fs.Duration("every", time.Second, "how often to read the task (at least 100ms)")
 	asJSON := fs.Bool("json", false, "print the task's record as one JSON document")
@@ -126,39 +154,51 @@ func taskWait(ctx context.Context, args []string, stdout, stderr io.Writer, c Cl
 	if !ok {
 		return code
 	}
-	var want []types.BoardPlacedCardColumn
+	var closed, held bool
 	for _, s := range strings.Split(*until, ",") {
-		col := types.BoardPlacedCardColumn(strings.TrimSpace(s))
-		if !slices.Contains(columns, col) {
-			say(stderr, "%s: --until takes board columns; %q is none\n", name, col)
+		switch strings.TrimSpace(s) {
+		case stateClosed:
+			closed = true
+		case stateHeld:
+			held = true
+		default:
+			say(stderr, "%s: --until takes closed or held; %q is neither\n", name, s)
 			return entry.ExitUsage
 		}
-		want = append(want, col)
 	}
 	if *timeout <= 0 || *every < 100*time.Millisecond {
 		say(stderr, "%s: a positive --timeout and --every of at least 100ms\n", name)
 		return entry.ExitUsage
 	}
-	deadline := time.Now().Add(*timeout)
+	wctx, cancel := context.WithTimeout(ctx, *timeout) // every read is bounded by the deadline too
+	defer cancel()
+	var last error // the last read the controller could not answer
 	for {
-		rec, column, code, ok := taskRecord(ctx, name, task, stderr, c)
+		rec, st, refused, err := readTask(wctx, task, c)
 		switch {
-		case !ok:
-			return code
-		case slices.Contains(want, column):
-			return printTask(name, rec, *asJSON, stdout, stderr)
-		case slices.Contains(ended, column):
-			say(stderr, "%s: task %s ended in %s, not %s\n", name, task, column, *until)
-			return entry.ExitEnded
-		case !time.Now().Before(deadline):
-			say(stderr, "%s: timed out after %s: task %s is in %q\n", name, *timeout, task, column)
-			return entry.ExitTimedOut
-		}
-		select {
-		case <-ctx.Done():
+		case ctx.Err() != nil:
 			say(stderr, "%s: could_not_run: %s\n", name, ctx.Err())
 			return entry.ExitCouldNotRun
-		case <-time.After(min(*every, time.Until(deadline))):
+		case wctx.Err() != nil:
+			say(stderr, "%s: timed out after %s waiting for task %s to be %s (last read: %v)\n", name, *timeout, task, *until, errors.Join(err, last))
+			return entry.ExitTimedOut
+		case err != nil:
+			last = err // retried at the next tick
+		case refused:
+			say(stderr, "%s: refused: no task %s that you read\n", name, task)
+			return entry.ExitRefused
+		case closed && st.closed, held && st.held:
+			return printTask(name, rec, *asJSON, stdout, stderr)
+		case st.unplaced:
+			say(stderr, "%s: task %s's card is unplaced: its records determine no column\n", name, task)
+			return entry.ExitEnded
+		case st.closed:
+			say(stderr, "%s: task %s closed (%s) without being %s\n", name, task, st.column, *until)
+			return entry.ExitEnded
+		}
+		select {
+		case <-wctx.Done():
+		case <-time.After(*every):
 		}
 	}
 }

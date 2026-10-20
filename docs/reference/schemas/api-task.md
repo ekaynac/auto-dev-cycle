@@ -4,7 +4,7 @@
 
 `schemas/api/task.json`
 
-One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes, the time from the task's approval to that start, the outcome and reason of that attempt's node's selected result once it has one, and the tokens its lease's model calls measured. adc task show and adc task wait read it. Never the spec's requirement or acceptance.
+One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. adc task show and adc task wait read it. Never the spec's requirement or acceptance.
 
 ## Fields of the document
 
@@ -13,7 +13,7 @@ One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a re
 | `id` | yes | [TaskID](common-defs.md#taskid) |  |
 | `project` | yes | [ProjectID](common-defs.md#projectid) |  |
 | `card` | yes | [board](api-board.md) |  |
-| `first_attempt` | yes | null or [FirstAttempt](#firstattempt) | The first attempt of the task, null until one starts. |
+| `first_attempt` | yes | null or [FirstAttempt](#firstattempt) | The first attempt of the task: null until one starts, and null unless the reader also reads attempts (the attempt read kind) in the task's project. |
 
 No other fields are allowed.
 
@@ -30,9 +30,9 @@ No other fields are allowed.
 | `started_at` | yes | [Time](common-defs.md#time) |  |
 | `seconds_after_approval` | yes | null or integer (minimum `0`, maximum `9007199254740991`) | Whole seconds from the task's approval to this start; null for a task with no approval recorded. |
 | `status` | yes | string (minLength `1`, maxLength `64`) | The attempt's status (records/attempt). |
-| `outcome` | yes | null or [Outcome](common-defs.md#outcome) | The outcome of the attempt's node's selected result; null while it has none. |
-| `reason` | yes | null or [ReasonCode](common-defs.md#reasoncode) | That result's reason; null while it has none. |
-| `tokens` | yes | null or [Tokens](#tokens) | The input and output tokens of the model calls bound to the attempt's lease, as the call ledger stands them (ledger.StandingOf); null with no call. |
+| `outcome` | yes | null or [Outcome](common-defs.md#outcome) | The outcome of the result this attempt itself recorded; null while it has recorded none. Never another attempt's result, nor one recorded with no attempt. |
+| `reason` | yes | null or [ReasonCode](common-defs.md#reasoncode) | That result's reason; null while it has recorded none. |
+| `tokens` | yes | null or [Tokens](#tokens) | The input and output tokens of the model calls bound to the attempt's lease, as the call ledger stands them (ledger.StandingOf); null with no call, and null unless the reader also reads model calls (the model_call read kind) in the task's project. |
 
 No other fields are allowed.
 

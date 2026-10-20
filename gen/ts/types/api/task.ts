@@ -6,7 +6,7 @@
 export type BoardCard = BoardPlacedCard | BoardUnplacedCard;
 
 /**
- * One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes, the time from the task's approval to that start, the outcome and reason of that attempt's node's selected result once it has one, and the tokens its lease's model calls measured. adc task show and adc task wait read it. Never the spec's requirement or acceptance.
+ * One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes in its own project, the time from the task's approval to that start, the outcome and reason of the result that attempt itself recorded, and the tokens its lease's model calls measured. The attempt's fields are read under the attempt read kind and its tokens under model_call, as adc events gates attempt.* and model_call.*. adc task show and adc task wait read it. Never the spec's requirement or acceptance.
  */
 export interface TaskRead {
   /**
@@ -19,7 +19,7 @@ export interface TaskRead {
   project: string;
   card: BoardCard;
   /**
-   * The first attempt of the task, null until one starts.
+   * The first attempt of the task: null until one starts, and null unless the reader also reads attempts (the attempt read kind) in the task's project.
    */
   first_attempt: null | FirstAttempt;
 }
@@ -157,15 +157,15 @@ export interface FirstAttempt {
    */
   status: string;
   /**
-   * The outcome of the attempt's node's selected result; null while it has none.
+   * The outcome of the result this attempt itself recorded; null while it has recorded none. Never another attempt's result, nor one recorded with no attempt.
    */
   outcome: null | ("found" | "empty" | "could_not_run" | "failed");
   /**
-   * That result's reason; null while it has none.
+   * That result's reason; null while it has recorded none.
    */
   reason: null | string;
   /**
-   * The input and output tokens of the model calls bound to the attempt's lease, as the call ledger stands them (ledger.StandingOf); null with no call.
+   * The input and output tokens of the model calls bound to the attempt's lease, as the call ledger stands them (ledger.StandingOf); null with no call, and null unless the reader also reads model calls (the model_call read kind) in the task's project.
    */
   tokens: null | Tokens;
 }
