@@ -34,7 +34,7 @@ set -euo pipefail
 SECRETS_TAG=installed-smoke
 secrets_lib="$(dirname "${BASH_SOURCE[0]}")/lib/secrets.sh"
 [[ "${1:-}" == --inside && "${ADC_SMOKE_SANDBOX:-}" == 1 ]] && secrets_lib=/secrets.sh
-# shellcheck source=lib/secrets.sh
+# shellcheck source=scripts/lib/secrets.sh
 . "$secrets_lib"
 
 if [[ "${1:-}" != --inside ]]; then
