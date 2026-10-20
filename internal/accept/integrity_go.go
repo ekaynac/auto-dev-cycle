@@ -309,6 +309,7 @@ type fileMeta struct {
 // methods by receiver and asserting helpers (testing values made: the types layer).
 type pkgScan struct {
 	r         *run
+	cs        caseScan // P14d-b (integrity_cases.go)
 	pkg       *types.Package
 	info      *types.Info
 	tvals     map[types.Object]string
@@ -678,6 +679,8 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			case test && goTest(fname):
 				if m.on[pi] > 0 {
 					k, st := platforms[pi][0]+"/"+platforms[pi][1]+" "+dir+":"+name+"."+fname, &stat{c.asserts + output(f, fn), c.skips, m.on[pi], m.cons}
+					s.caseFacts(fa, k, m.path, m.cons, fn) // P14d-b: its cases, per build constraint
+
 					if old := fa.tests[k]; old != nil { // declared again (race, !race): the weakest
 						st = &stat{min(old.asserts, st.asserts), max(old.skips, st.skips), min(old.cert, st.cert), old.cons + st.cons}
 					}
