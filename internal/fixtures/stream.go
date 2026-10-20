@@ -26,11 +26,33 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// frameSlack is scheduling headroom over a poll bound.
+// frameSlack is scheduling headroom over a poll bound, before this run's
+// own measured delay (schedLag) is added to it.
 const frameSlack = 150 * time.Millisecond
 
 // frameWait bounds how long the fixture waits for the stream's next frame.
 const frameWait = 5 * time.Second
+
+// streamWatchdog only stops a hung case: the check is that the stream
+// ended on its own (serve), never how long a loaded run took (#226 entry
+// 86: a fixed 2 s from the case's start counted the store's work under
+// load, and a stream cut by it lost its steps).
+const streamWatchdog = 2 * frameWait
+
+// schedLag is this run's scheduling delay, measured now: the most that n
+// one-millisecond sleeps overran. A timing bound adds it, so the bound is
+// relative to the load the run is under, not a fixed wall-clock figure. It
+// measures timer wake-up delay, not throughput, which CPU load barely
+// moves: the bounds it joins hold through frameSlack (Opus #288 L1).
+func schedLag(n int) time.Duration {
+	var worst time.Duration
+	for range n {
+		start := time.Now()
+		time.Sleep(time.Millisecond)
+		worst = max(worst, time.Since(start)-time.Millisecond)
+	}
+	return worst
+}
 
 // sseFrame is one Server-Sent Events frame: its event name and data.
 type sseFrame struct{ event, data string }
@@ -140,7 +162,7 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 	defer srv.Close()
 	// Room for every wait to time out (a red run) without the fixture
 	// failing to run.
-	ctx, cancel := context.WithTimeout(ctx, 12*frameWait)
+	ctx, cancel := context.WithTimeout(ctx, 6*frameWait+4*streamWatchdog)
 	defer cancel()
 	get := func() (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+api.EventsPath, nil)
@@ -250,17 +272,22 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 			return nil, nil, err
 		}
 		cl := &slowClient{stall: c.stall, delay: c.delay, before: c.end(g)}
-		started := time.Now()
-		bound := 2 * (handler.Poll + frameSlack) // a delivery, then a check
-		cl.serve(ctx, handler, token.Reveal(), 4*bound)
-		o.check(time.Since(started) < 4*bound, "%s: the stream outlived the client by %s", c.name, time.Since(started))
+		lag := schedLag(5)
+		cut := cl.serve(ctx, handler, token.Reveal(), streamWatchdog)
+		lag = max(lag, schedLag(5)) // the load during serve, as well as before it
+		o.check(!cut, "%s: the stream outlived the client (still open after %s)", c.name, streamWatchdog)
 		o.check(cl.maxDeadline <= handler.Poll, "%s: a write deadline of %s, past the poll bound", c.name, cl.maxDeadline)
 		if c.stall {
+			// Timed from the stall itself, never from the case's start: the
+			// stalled write waits out its deadline (at most a poll) and the
+			// stream ends; no store work is in the window (#226 entry 86).
+			o.check(!cl.stalledAt.IsZero() && cl.endedAt.Sub(cl.stalledAt) <= handler.Poll+frameSlack+lag, "%s: the stream ended %s after the stall (bound %s)",
+				c.name, cl.endedAt.Sub(cl.stalledAt), handler.Poll+frameSlack+lag)
 			o.check(cl.written() == "", "%s: frames after the stall: %q", c.name, cl.written())
 			continue
 		}
-		o.check(cl.closedAt.Sub(cl.changedAt) <= handler.Poll+frameSlack, "%s: the change was seen %s after it landed",
-			c.name, cl.closedAt.Sub(cl.changedAt))
+		o.check(cl.closedAt.Sub(cl.changedAt) <= handler.Poll+frameSlack+lag, "%s: the change was seen %s after it landed (bound %s)",
+			c.name, cl.closedAt.Sub(cl.changedAt), handler.Poll+frameSlack+lag)
 		o.steps = append(o.steps, cl.steps()...)
 	}
 	return o.steps, o.violations, nil
@@ -269,7 +296,7 @@ func streamAfterGrantRevocation(ctx context.Context, dir string) (steps []Step, 
 // slowClient is the client as the stream's ResponseWriter sees it: it
 // runs before() once, as the first event frame is written (the change
 // lands during a delivery), and, stalling, blocks every event write
-// until its deadline.
+// until its deadline, or, with no deadline, until the request ends.
 type slowClient struct {
 	mu          sync.Mutex
 	header      http.Header
@@ -278,9 +305,12 @@ type slowClient struct {
 	maxDeadline time.Duration
 	before      func()
 	stall       bool
-	delay       time.Duration // an event write takes this long, and succeeds
-	changedAt   time.Time     // when before ran
-	closedAt    time.Time     // when the closed frame was written
+	delay       time.Duration   // an event write takes this long, and succeeds
+	done        <-chan struct{} // the request's end: a write with no deadline stalls until it
+	changedAt   time.Time       // when before ran
+	closedAt    time.Time       // when the closed frame was written
+	stalledAt   time.Time       // when the first stalled write began
+	endedAt     time.Time       // when the handler returned
 }
 
 func (c *slowClient) Header() http.Header {
@@ -311,7 +341,13 @@ func (c *slowClient) Write(b []byte) (int, error) {
 		if c.stall {
 			c.mu.Lock()
 			d := c.deadline
+			if c.stalledAt.IsZero() {
+				c.stalledAt = time.Now()
+			}
 			c.mu.Unlock()
+			if d.IsZero() {
+				<-c.done // a real client stalls for as long as the stream lets it
+			}
 			time.Sleep(time.Until(d))
 			return 0, os.ErrDeadlineExceeded
 		}
@@ -330,13 +366,17 @@ func (c *slowClient) written() string {
 	return c.body.String()
 }
 
-// serve runs the stream into c until it ends, or bound passes.
-func (c *slowClient) serve(ctx context.Context, h http.Handler, bearer string, bound time.Duration) {
+// serve runs the stream into c until it ends, or bound passes; cut: the
+// bound ended it, not the stream itself.
+func (c *slowClient) serve(ctx context.Context, h http.Handler, bearer string, bound time.Duration) (cut bool) {
 	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, api.EventsPath, nil)
 	req.Header.Set("Authorization", "Bearer "+bearer)
+	c.done = ctx.Done()
 	h.ServeHTTP(c, req)
+	c.endedAt = time.Now()
+	return ctx.Err() != nil
 }
 
 // steps reads c's frames as steps, as next does over HTTP.
