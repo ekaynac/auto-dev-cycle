@@ -50,6 +50,7 @@ func TestIntegrityRest(t *testing.T) {
 	// (as own source); an inconsistent vendor/modules.txt, or an import it
 	// does not list, is unverifiable.
 	vendored := func(modules string, more ...map[string]string) fixture {
+		vendorTyping(t)
 		return newFixtureWith(t, func(src string) {
 			write(t, src, guardBase)
 			for _, m := range more {

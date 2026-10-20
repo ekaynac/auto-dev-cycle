@@ -95,6 +95,7 @@ func outRefs(file, pkg, fns string) string {
 // libcFixture vendors modernc.org/libc (and its sub package), example.org/lib,
 // example.com/mx and example.com/m/evil (the gate is offline).
 func libcFixture(t *testing.T, extra ...map[string]string) (fixture, string) {
+	vendorTyping(t)
 	gomod := guardBase["go.mod"] + "\nrequire (\n\tmodernc.org/libc v1.0.0\n\texample.org/lib v1.0.0\n\texample.com/mx v1.0.0\n\texample.com/m/evil v1.0.0\n)\n"
 	return newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)

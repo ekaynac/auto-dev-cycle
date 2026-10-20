@@ -172,6 +172,7 @@ func TestIntegrityRound2(t *testing.T) {
 	lib := map[string]string{"go.mod": guardBase["go.mod"] + "\nrequire example.org/lib v1.0.0\n",
 		"vendor/example.org/lib/lib.go": "package lib\n\nfunc F() int { return 1 }\n"}
 	vendoredWith := func(modules string, more map[string]string) fixture {
+		vendorTyping(t)
 		return newFixtureWith(t, func(src string) {
 			write(t, src, guardBase)
 			write(t, src, lib)

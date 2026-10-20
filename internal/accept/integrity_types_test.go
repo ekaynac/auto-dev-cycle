@@ -575,7 +575,7 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	f := newGuardFixture(t)
 	change := map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\n"}
 	accept := func(ctx context.Context, list Lister) (Verdict, error) {
-		return Accept(ctx, In{Repo: f.repo, Base: f.base, Patch: f.patch(t, change), Policy: f.policy, Guard: Integrity(f.repo, f.base, list)})
+		return Accept(ctx, In{Repo: f.repo, Base: f.base, Patch: f.patch(t, change), Policy: f.policy, Guard: Integrity(f.repo, f.base, list, "")})
 	}
 	// A go that sleeps, one that reports its address-space limit, and one
 	// that starts a child (M2, Opus #265: the group is killed, not go alone).
@@ -591,7 +591,7 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	failing := func(context.Context, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
+	failing := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
 		return nil, errors.New("no toolchain")
 	}
 	for name, c := range map[string]struct {
@@ -624,15 +624,15 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 		t.Errorf("go's child after a timeout: pid %d, %v, alive %v", pid, err, pid > 0 && alive(pid))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	cancelling := func(ctx context.Context, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+	cancelling := func(ctx context.Context, dir string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
 		cancel()
-		return testLister(t)(ctx, pl, gomod, gosum, paths)
+		return testLister(t)(ctx, dir, pl, gomod, gosum, paths)
 	}
 	if _, err := accept(ctx, cancelling); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled while listing: %v", err)
 	}
 	// H2 (Mythos #265): a guard fault blocks, it does not crash.
-	panicking := func(context.Context, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
+	panicking := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
 		panic("a lister fault")
 	}
 	if v, err := accept(context.Background(), panicking); err != nil || !finds(v.Blocks, "unverifiable: the guard failed (a lister fault)") {

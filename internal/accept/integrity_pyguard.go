@@ -40,23 +40,24 @@ var (
 		"pytestconfig pytester record_property record_testsuite_property record_xml_attribute recwarn subtests testdir " +
 		"tmp_path tmp_path_factory tmpdir tmpdir_factory")
 	// pyClass: 'p' pytest internals; 'f' namespace, frame, comparison; 'e' exit, process; 'o' output, thread.
-	pyClass = map[string]byte{}
-)
-
-func init() {
-	for c, names := range map[byte]string{
-		'p': "_pytest pluggy pluginmanager HookspecMarker ihook record_xml_attribute _xml",
-		'f': "__dict__ __builtins__ builtins __getattr__ __getattribute__ __setattr__ __delattr__ __setitem__ __delitem__ importlib modules __globals__ " +
-			"__code__ __subclasses__ __bases__ settrace setprofile _getframe currentframe f_locals f_globals f_back tb_frame gi_frame get_objects " +
-			"get_referrers get_referents __eq__ __ne__ __bool__ __contains__ __instancecheck__ __subclasscheck__ __lt__ __le__ __gt__ __ge__",
-		'e': "exit _exit abort kill killpg system popen Popen fork forkpty subprocess ctypes atexit posix_spawn posix_spawnp",
-		'o': "print stdout stderr __stdout__ __stderr__ signal faulthandler argv threading Thread _thread multiprocessing",
-	} {
-		for _, n := range strings.Fields(names) {
-			pyClass[n] = c
+	// A variable initializer, never an init: nothing the guard reads waits for one.
+	pyClass = func() map[string]byte {
+		out := map[string]byte{}
+		for c, names := range map[byte]string{
+			'p': "_pytest pluggy pluginmanager HookspecMarker ihook record_xml_attribute _xml",
+			'f': "__dict__ __builtins__ builtins __getattr__ __getattribute__ __setattr__ __delattr__ __setitem__ __delitem__ importlib modules __globals__ " +
+				"__code__ __subclasses__ __bases__ settrace setprofile _getframe currentframe f_locals f_globals f_back tb_frame gi_frame get_objects " +
+				"get_referrers get_referents __eq__ __ne__ __bool__ __contains__ __instancecheck__ __subclasscheck__ __lt__ __le__ __gt__ __ge__",
+			'e': "exit _exit abort kill killpg system popen Popen fork forkpty subprocess ctypes atexit posix_spawn posix_spawnp",
+			'o': "print stdout stderr __stdout__ __stderr__ signal faulthandler argv threading Thread _thread multiprocessing",
+		} {
+			for _, n := range strings.Fields(names) {
+				out[n] = c
+			}
 		}
-	}
-}
+		return out
+	}()
+)
 
 // pySkipDir: pytest never walks dir (its default norecursedirs).
 func pySkipDir(d string) bool {

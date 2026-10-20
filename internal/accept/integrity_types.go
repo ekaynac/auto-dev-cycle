@@ -73,7 +73,9 @@ type Listed struct {
 
 // Lister lists paths and their dependencies with their export data, for a
 // platform, in the module whose go.mod and go.sum are given (nil: none).
-type Lister func(ctx context.Context, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error)
+// Export data it copies out it keeps under dir, the guard run's own
+// directory, removed when the run ends.
+type Lister func(ctx context.Context, dir string, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error)
 
 // LocalLister is a Lister running the go command gobin with env added (its
 // caches: GOCACHE, GOMODCACHE, HOME), offline: no proxy, no checksum
@@ -95,7 +97,7 @@ func LocalLister(gobin string, env []string, timeout time.Duration, mem int64) L
 		}
 		return cmp.Or(err, err2)
 	})
-	return func(ctx context.Context, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+	return func(ctx context.Context, _ string, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
 		if err := version(); err != nil {
 			return nil, fmt.Errorf("go list: %w", err)
 		}
@@ -124,13 +126,16 @@ func LocalLister(gobin string, env []string, timeout time.Duration, mem int64) L
 	}
 }
 
-func goList(ctx context.Context, gobin string, env []string, timeout time.Duration, mem int64, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+// listable refuses a go.mod replacing a module by a directory (only the
+// module cache's source is read), and a path go list would not take as one
+// import path (a flag, a pattern, a reserved name).
+func listable(gomod []byte, paths []string) error {
 	if gomod != nil {
 		f, err := modfile.Parse("go.mod", gomod, nil)
 		if err != nil {
-			return nil, fmt.Errorf("go.mod not parsed: %w", err)
+			return fmt.Errorf("go.mod not parsed: %w", err)
 		} else if slices.ContainsFunc(f.Replace, func(r *modfile.Replace) bool { return r.New.Version == "" }) {
-			return nil, errors.New("go.mod replaces a module by a directory")
+			return errors.New("go.mod replaces a module by a directory")
 		}
 	}
 	for _, p := range paths { // no flag, pattern or reserved name
@@ -138,8 +143,15 @@ func goList(ctx context.Context, gobin string, env []string, timeout time.Durati
 			strings.HasPrefix(p, "cmd/") || strings.ContainsFunc(p, func(r rune) bool {
 			return r > unicode.MaxASCII || !unicode.IsLetter(r) && !unicode.IsDigit(r) && !strings.ContainsRune("-._~+/", r)
 		}) {
-			return nil, fmt.Errorf("an import path go list cannot take (%q)", p)
+			return fmt.Errorf("an import path go list cannot take (%q)", p)
 		}
+	}
+	return nil
+}
+
+func goList(ctx context.Context, gobin string, env []string, timeout time.Duration, mem int64, platform [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+	if err := listable(gomod, paths); err != nil {
+		return nil, err
 	}
 	dir, err := os.MkdirTemp("", "adc-golist-")
 	if err != nil {
@@ -457,7 +469,7 @@ func (ty *typer) need(files []*ast.File) error {
 		err = errors.New("over the guard's go list bound")
 	} else if ty.r.lister != nil {
 		ctx, cancel := context.WithDeadline(ty.r.ctx, ty.r.listEnd)
-		got, err = ty.r.lister(ctx, ty.platform, ty.gomod, ty.gosum, ext)
+		got, err = ty.r.lister(ctx, ty.r.dir, ty.platform, ty.gomod, ty.gosum, ext)
 		cancel()
 	}
 	if ctxErr := ty.r.ctx.Err(); ctxErr != nil {
@@ -474,10 +486,11 @@ func (ty *typer) need(files []*ast.File) error {
 	return nil
 }
 
-// lookup opens a listed package's export data, within the version's bound.
+// lookup opens a listed package's export data, within the version's bound;
+// an entry with an error is not loaded, whatever else it holds.
 func (ty *typer) lookup(p string) (io.ReadCloser, error) {
 	l := ty.listed[p]
-	if l.Export == "" && l.Error != nil {
+	if l.Error != nil {
 		return nil, errors.New(l.Error.Err)
 	} else if l.Export == "" {
 		return nil, errors.New("no export data")

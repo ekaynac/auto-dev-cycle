@@ -11,6 +11,7 @@ import (
 	"go/parser"
 	"go/token"
 	"maps"
+	"os"
 	"path"
 	"slices"
 	"strings"
@@ -38,6 +39,11 @@ var (
 	// pyFiles change what pytest collects or how (P14c reads them).
 	pyFiles = []string{"conftest.py", "pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg",
 		"pyproject.toml", "pyvenv.cfg"}
+	// vendorBlock: a vendor/ directory beside a go.mod, in either version,
+	// blocks (the operator's decision on #287): GoEnv's gate reads the module
+	// cache, the guard's typers vendor/. The tests of that typing, kept for
+	// the item that pins -mod=vendor, turn it off.
+	vendorBlock = true
 )
 
 // stat is one test's evidence on one platform (cert: goOn's).
@@ -62,10 +68,23 @@ type pkgFacts struct {
 
 // Integrity is the integrity guard for a candidate of base in repo, for
 // Accept's In.Guard. It lists the base's files through a temporary index,
-// and imports' types through list (nil: every Go package unverifiable).
-func Integrity(repo sandbox.Repo, base string, list Lister) Guard {
+// and imports' types through list (nil: every Go package unverifiable). The
+// run's own directory, what list copies out, is made under scratch: the
+// sandbox root's runs/ for SandboxLister (a filesystem of its own); "" is
+// the system's temporary directory.
+func Integrity(repo sandbox.Repo, base string, list Lister, scratch string) Guard {
 	return func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, err error) {
-		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, budget: maxRead, blobs: map[string][]byte{}, cgoBlobs: map[string][]byte{}, touched: map[string]bool{},
+		if scratch != "" {
+			if err := os.MkdirAll(scratch, 0o700); err != nil {
+				return nil, nil, err
+			}
+		}
+		dir, err := os.MkdirTemp(scratch, "adc-guard-")
+		if err != nil {
+			return nil, nil, err
+		}
+		defer os.RemoveAll(dir)
+		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, dir: dir, budget: maxRead, blobs: map[string][]byte{}, cgoBlobs: map[string][]byte{}, touched: map[string]bool{},
 			started: time.Now(), listEnd: time.Now().Add(maxListTime)}
 		defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
 			if p := recover(); p != nil && ctx.Err() != nil {
@@ -85,6 +104,7 @@ type run struct {
 	base               string
 	read               Reader
 	lister             Lister
+	dir                string    // the run's own: what the lister copies out
 	started, listEnd   time.Time // every go list run and type check ends by listEnd
 	listRuns           int
 	budget             int64
@@ -163,6 +183,11 @@ func (r *run) check(changes []Change) error {
 	r.trees = [2]*tree{{r.files, r.baseDirs, map[string]*typer{}, vendors(keys(r.files))}, {r.cand, r.candDirs, map[string]*typer{}, vendors(keys(r.cand))}}
 	r.anyTest = slices.ContainsFunc(keys(r.files, r.cand), goByName)
 	r.vendorChanged = vendors(slices.DeleteFunc(keys(r.files, r.cand), func(p string) bool { return r.files[p] == r.cand[p] }))
+	for _, v := range keys(r.trees[0].vendors, r.trees[1].vendors) { // P14e-2c: until the gate pins -mod=vendor for them
+		if mod := path.Join(path.Dir(strings.TrimSuffix(v, "/")), "go.mod"); vendorBlock && (r.files[mod] != "" || r.cand[mod] != "") {
+			add(&r.blocks, v, "unverifiable: a vendored module: the gate builds from the module cache (GOFLAGS=-mod=readonly), not vendor/")
+		}
+	}
 	py := slices.ContainsFunc(slices.Collect(maps.Keys(r.files)), func(p string) bool { return path.Ext(p) == ".py" })
 	cgo := slices.ContainsFunc(changes, func(c Change) bool { return path.Ext(c.Src) != ".go" || path.Ext(c.Dst) != ".go" }) && r.usesCgo()
 	for _, c := range changes {
