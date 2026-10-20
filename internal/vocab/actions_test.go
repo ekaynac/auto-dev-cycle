@@ -47,7 +47,7 @@ func TestChangeClassDefaults(t *testing.T) {
 // dropped from the registry would drop its endpoint and parity mapping.
 func TestActionInventory(t *testing.T) {
 	want := map[string]string{
-		"project.create": "project", "profile.adopt": "project", "task.create": "task", "review.request": "task",
+		"project.create": "project", "profile.adopt": "project", "task.create": "task", "task.raise_rail": "task", "review.request": "task",
 		"input.answer": "holds", "proposal.confirm": "approve", "proposal.withdraw": "propose",
 		"grant.create": "grant", "grant.extend": "grant", "grant.revoke": "grant",
 		"agent.enrol": "admin", "actor.revoke": "admin", "token.issue": "admin", "token.revoke": "admin", "token.replace": "admin", "seat.take": "seat", "seat.release": "seat",
