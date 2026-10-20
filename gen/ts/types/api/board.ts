@@ -17,7 +17,7 @@ export interface BoardPlacedCard {
   project: string;
   title: string;
   /**
-   * awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task's latest round completed go, merge inactive; done: cancelled (with the cancelled badge).
+   * awaiting_approval: Ready, its spec's approval not in force; ready: approved and not admitted, or admitted with nothing running; running: a plan or build node claimed or held; verifying: an accept, gate or review node claimed or held; done_candidate: a review node of the task's latest round completed go, merge inactive; done: cancelled (with the cancelled badge), or abandoned (with the abandoned badge).
    */
   column: "awaiting_approval" | "ready" | "running" | "verifying" | "done_candidate" | "done";
   /**
@@ -28,6 +28,10 @@ export interface BoardPlacedCard {
    * The cancelled badge: the task was cancelled from Ready (task.cancel), terminally; its column is done.
    */
   cancelled: boolean;
+  /**
+   * The abandoned badge: the admitted task ended without a candidate, its approval no longer in force (task.done as abandoned, reason authority_revoked), terminally; its column is done.
+   */
+  abandoned: boolean;
   /**
    * Its spec's approval: none, in force, or revoked.
    */

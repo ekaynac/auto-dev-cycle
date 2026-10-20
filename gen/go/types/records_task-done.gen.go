@@ -4,18 +4,27 @@
 
 package types
 
-// TaskDoneAs: What the task ended as: candidate, the only end of M1(a)'s template.
+// TaskDoneAs: What the task ended as: candidate, the end of M1(a)'s template; or abandoned, with no candidate.
 type TaskDoneAs string
 
 const (
 	TaskDoneAsCandidate TaskDoneAs = "candidate"
+	TaskDoneAsAbandoned TaskDoneAs = "abandoned"
 )
 
-// TaskDone: The payload of task.done/v1 (M1 slice plan §1 admission; D51; I22): an admitted task ended, terminally, as a candidate (M1(a)'s template variant: its review's go selected, merge inactive). It frees admission: the next task is admitted only once the admitted one is done. internal/authority admits it only under its task's id and project, by a live system actor at its event's time, of the admitted task.
+type TaskDoneReasonValue string
+
+const (
+	TaskDoneReasonValueAuthorityRevoked TaskDoneReasonValue = "authority_revoked"
+)
+
+// TaskDone: The payload of task.done/v1 (M1 slice plan §1 admission; D51; I22): an admitted task ended, terminally: as a candidate (M1(a)'s template variant: its review's go selected, merge inactive), or abandoned, its approval no longer in force (reason authority_revoked; #226 entry 100). It frees admission: the next task is admitted only once the admitted one is done. internal/authority admits it only under its task's id and project, by a live system actor at its event's time, of the admitted task: a candidate with none of its current nodes claimed or held; an abandonment with its approval not in force and no live lease on any of its nodes.
 type TaskDone struct {
 	Task    TaskID    `json:"task"`
 	Project ProjectID `json:"project"`
-	// What the task ended as: candidate, the only end of M1(a)'s template.
+	// What the task ended as: candidate, the end of M1(a)'s template; or abandoned, with no candidate.
 	As TaskDoneAs `json:"as"`
-	At Time       `json:"at"`
+	// Why an abandoned task ended (authority_revoked: its approval is no longer in force); null for a candidate.
+	Reason *TaskDoneReasonValue `json:"reason"`
+	At     Time                 `json:"at"`
 }

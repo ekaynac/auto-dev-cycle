@@ -3,10 +3,12 @@
 package graph
 
 import (
+	"context"
 	"slices"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 )
 
 // P22a-3 (W12): the candidate template is plan, build, accept and gate of
@@ -52,5 +54,50 @@ func TestCandidateTemplate(t *testing.T) {
 	}
 	if _, err := RecordTemplate(nodes, task, project, []types.NodeKind{types.NodeKindPlan, types.NodeKindBuild, types.NodeKindAccept}); err == nil {
 		t.Error("the guard passed a gate outside the allowed kinds")
+	}
+	other := slices.Clone(nodes)
+	other[2].Task = tskB
+	if _, err := RecordTemplate(other, task, project, M1Kinds); err == nil {
+		t.Error("a template node of another task was recorded")
+	}
+}
+
+// fakeTasks records the tasks it is asked about, and refuses every one.
+type fakeTasks struct{ recordable, claimable *[]types.TaskID }
+
+func (f fakeTasks) Recordable(_ *eventstore.Tx, task types.TaskID) error {
+	*f.recordable = append(*f.recordable, task)
+	return ErrNotAdmitted{Task: task, State: "ready"}
+}
+
+func (f fakeTasks) Claimable(_ *eventstore.Tx, task types.TaskID) error {
+	*f.claimable = append(*f.claimable, task)
+	return ErrNotAdmitted{Task: task, State: "ready"}
+}
+
+// P22a-3 (Opus #309 H1, M5, F5): the fold takes the task authority for a
+// node recorded (Recordable), and for every event that runs a node again
+// or anew: claimed, reused, invalidated (claimed at its next generation)
+// and renewed (Claimable), each of the node's task; nothing else asks.
+func TestTakenAsksTheTask(t *testing.T) {
+	g := openStore(t)
+	var recordable, claimable []types.TaskID
+	tasks := fakeTasks{&recordable, &claimable}
+	project := string(prjID)
+	ev := eventstore.Event{Project: &project}
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+		for _, v := range []types.GraphEventVariant{
+			&types.NodeRecorded{Task: tskID, Project: prjID},
+			&types.NodeClaimed{Node: g.plan}, &types.NodeReused{Node: g.plan}, &types.NodeInvalidated{Node: g.plan}, &types.NodeRenewed{Node: g.plan},
+			&types.HoldCleared{Node: g.plan},
+		} {
+			_ = taken(tx, ev, v, tasks)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(recordable, []types.TaskID{tskID}) || !slices.Equal(claimable, []types.TaskID{tskID, tskID, tskID, tskID}) {
+		t.Errorf("asked: recordable %v, claimable %v", recordable, claimable)
 	}
 }

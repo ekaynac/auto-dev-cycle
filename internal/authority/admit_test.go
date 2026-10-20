@@ -17,7 +17,6 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
-	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -40,30 +39,43 @@ func (b *tasks) admitNext() error {
 	return b.as(b.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.Admit(tx, graph.M1Kinds) })
 }
 
-// admitWith admits task, decided before this command, with template.
-func (b *tasks) admitWith(p identity.Principal, task string, template func(types.ProjectID) []types.NodeRecorded) error {
+// admitWith admits task, decided before this command, under allowed: its
+// candidate template, as AdmitTask builds it.
+func (b *tasks) admitWith(p identity.Principal, task string, allowed []types.NodeKind) error {
 	return b.as(p, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		r, _, err := tx.Get(authority.TaskProjection, task)
-		var t authority.TaskRecord
-		if err == nil && r != nil {
-			err = json.Unmarshal(r, &t)
-		}
-		if err != nil {
-			return nil, err
-		}
-		return authority.AdmitTask(tx, types.TaskID(task), template(t.Project), graph.M1Kinds)
+		return authority.AdmitTask(tx, types.TaskID(task), allowed)
 	})
 }
 
-// templateOf is task's candidate template.
-func templateOf(t *testing.T, task string) func(types.ProjectID) []types.NodeRecorded {
-	return func(p types.ProjectID) []types.NodeRecorded {
-		n, err := graph.Candidate(types.TaskID(task), p)
-		if err != nil {
-			t.Fatal(err)
+// raw records a raw event of kind on task, its payload built at the
+// command's time, as the system actor: past the command's checks, for the
+// fold to refuse.
+func (b *tasks) raw(kind, task string, payload func(at types.Time) any) error {
+	r, _ := b.task(task)
+	project := string(r.Project)
+	return b.as(b.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		pl, err := json.Marshal(payload(types.Time(tx.Now().Format(time.RFC3339Nano))))
+		return []eventstore.Event{{ID: newID(b.t, "evt"), Kind: kind, Subject: task, Project: &project, Payload: pl}}, err
+	})
+}
+
+// nodeOf is task's node of kind.
+func (b *tasks) nodeOf(task string, kind types.NodeKind) types.NodeID {
+	var id types.NodeID
+	b.view(func(tx *eventstore.Tx) error {
+		nodes, err := graph.Nodes(tx)
+		for _, n := range nodes {
+			if n.Task == types.TaskID(task) && n.Node.Kind == kind {
+				id = n.Node.ID
+			}
 		}
-		return n
-	}
+		return err
+	})
+	return id
+}
+
+func (b *tasks) done(task string) error {
+	return b.as(b.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return authority.DoneTask(tx, types.TaskID(task)) })
 }
 
 func (b *tasks) admitted() (types.TaskID, bool) {
@@ -81,8 +93,9 @@ func (b *tasks) admitted() (types.TaskID, bool) {
 // its approval in force (an older unapproved task waits): task.admitted,
 // then its candidate template (plan, build, accept, gate, no merge, no
 // review while review is inactive), in one command. While it is admitted,
-// held included, nothing else is; its task.done frees admission for the
-// next. The tasks rebuild.
+// held included, nothing else is, and its done is refused while a node of
+// it is held (Opus #309 M2); once the hold clears, its task.done frees
+// admission for the next. The tasks rebuild.
 func TestAdmission(t *testing.T) {
 	b := openCancels(t)
 	unapproved := b.newTask(b.sup, prjA)
@@ -111,20 +124,12 @@ func TestAdmission(t *testing.T) {
 	if r, _ := b.task(first); r.State != authority.TaskAdmitted || x.Approval != r.Approval.ID || b.readyKey(first) {
 		t.Fatalf("the admitted task %+v", r)
 	}
-	// The admitted task's build held: it stays admitted, and nothing else is.
-	var build types.NodeID
-	b.view(func(tx *eventstore.Tx) error {
-		nodes, err := graph.Nodes(tx)
-		for _, n := range nodes {
-			if n.Task == types.TaskID(first) && n.Node.Kind == types.NodeKindBuild {
-				build = n.Node.ID
-			}
-		}
-		return err
-	})
-	hold, _ := ids.New("hld")
+	// The admitted task's build held: it stays admitted, nothing else is,
+	// and it cannot be done.
+	build := b.nodeOf(first, types.NodeKindBuild)
+	hold := types.HoldID(newID(t, "hld"))
 	if err := b.as(b.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.Raise(tx, build, types.NodeHold{ID: types.HoldID(hold), Hold: "reviewer_unavailable", SignalInstance: "fix@1", Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+		return graph.Raise(tx, build, types.NodeHold{ID: hold, Hold: "reviewer_unavailable", SignalInstance: "fix@1", Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -132,12 +137,21 @@ func TestAdmission(t *testing.T) {
 	if _, ok := b.admitted(); ok || b.admitNext() != nil || b.head() != h {
 		t.Fatalf("a second admission while %s is admitted and held", first)
 	}
-	if err := b.as(b.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return authority.DoneTask(tx, types.TaskID(first))
-	}); err != nil {
+	if err := b.done(first); !errors.Is(err, eventstore.ErrStaleExpectedState) {
+		t.Errorf("a done while the build is held: %v", err)
+	}
+	if err := b.raw(authority.TaskDoneEvent, first, func(at types.Time) any {
+		return types.TaskDone{Task: types.TaskID(first), Project: prjA, As: types.TaskDoneAsCandidate, At: at}
+	}); err == nil || b.head() != h {
+		t.Errorf("the fold admitted a raw done while the build is held")
+	}
+	if err := b.as(b.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return graph.Clear(tx, build, hold, "fix@1") }); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ := b.task(first); r.State != authority.TaskDoneState || contract.Validate("records/task-done", b.events(1)[0].Payload) != nil {
+	if err := b.done(first); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := b.task(first); r.State != authority.TaskDoneState || r.DoneAs != string(types.TaskDoneAsCandidate) || contract.Validate("records/task-done", b.events(1)[0].Payload) != nil {
 		t.Fatalf("the done task %+v", r)
 	}
 	if err := b.admitNext(); err != nil {
@@ -151,14 +165,16 @@ func TestAdmission(t *testing.T) {
 	b.rebuilds()
 }
 
-// P22a-3 (I22 admission and fold; Opus #298's obligations): the admitting
-// command re-checks what decided it. A task chosen and then cancelled is
-// refused stale_expected_state, as is a cancelled task, one with no
-// approval in force, and any task while another is admitted; a template
-// the guard refuses (an evidence node, a merge node while merge is
-// inactive) or a node of another task records nothing. The fold refuses,
-// from the log alone, an admission by an operator, a second one, one of a
-// cancelled task, and a done of a task not admitted.
+// P22a-3 (I22 admission and fold; Opus #298's obligations; Opus #309 M4):
+// the admitting command re-checks what decided it. A task chosen and then
+// cancelled is refused stale_expected_state, as is one with no approval in
+// force, an unknown one, and any task while another is admitted; a
+// template the guard refuses records nothing; an operator's admission is
+// refused. The fold refuses, from the log alone, with the slot free, each
+// raw admission that fails one check alone: of a cancelled task, naming
+// another approval, at another time, under another project; and, the slot
+// held, a second admission, a done of a task not admitted, and a
+// candidate's done naming a reason.
 func TestAdmissionRefusals(t *testing.T) {
 	b := openCancels(t)
 	chosen := b.newTask(b.op, prjA)
@@ -169,75 +185,66 @@ func TestAdmissionRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	unapproved, ready := b.newTask(b.sup, prjA), b.newTask(b.op, prjA)
-	kind := func(k types.NodeKind) func(types.ProjectID) []types.NodeRecorded {
-		return func(p types.ProjectID) []types.NodeRecorded {
-			n := templateOf(t, ready)(p)
-			n[3].Node.Kind = k
-			return n
-		}
-	}
-	other := func(p types.ProjectID) []types.NodeRecorded {
-		n := templateOf(t, ready)(p)
-		n[2].Task = types.TaskID(newID(t, "tsk"))
-		return n
-	}
 	h := b.head()
 	stale := func(err error) bool { return errors.Is(err, eventstore.ErrStaleExpectedState) }
+	noGate := slices.DeleteFunc(slices.Clone(graph.M1Kinds), func(k types.NodeKind) bool { return k == types.NodeKindGate })
 	for name, c := range map[string]struct {
-		task     string
-		template func(types.ProjectID) []types.NodeRecorded
-		check    func(error) bool
+		task    string
+		allowed []types.NodeKind
+		check   func(error) bool
 	}{
-		"chosen, then cancelled": {chosen, templateOf(t, chosen), stale},
-		"no approval in force":   {unapproved, templateOf(t, unapproved), stale},
-		"an evidence node":       {ready, kind(types.NodeKindEvidence), func(err error) bool { return err != nil && strings.Contains(err.Error(), "deferred surface") }},
-		"a merge node":           {ready, kind(types.NodeKindMerge), func(err error) bool { return err != nil && strings.Contains(err.Error(), "deferred surface") }},
-		"a node of another task": {ready, other, func(err error) bool { return err != nil && strings.Contains(err.Error(), "not of") }},
-		"an unknown task":        {newID(t, "tsk"), templateOf(t, ready), stale},
+		"chosen, then cancelled":   {chosen, graph.M1Kinds, stale},
+		"no approval in force":     {unapproved, graph.M1Kinds, stale},
+		"an unknown task":          {newID(t, "tsk"), graph.M1Kinds, stale},
+		"a gate outside the kinds": {ready, noGate, func(err error) bool { return err != nil && strings.Contains(err.Error(), "deferred surface") }},
 	} {
-		if err := b.admitWith(b.sys, c.task, c.template); !c.check(err) || b.head() != h {
+		if err := b.admitWith(b.sys, c.task, c.allowed); !c.check(err) || b.head() != h {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if next, ok := b.admitted(); !ok || string(next) != ready {
-		t.Fatalf("after the refusals the next is %s, want %s", next, ready)
-	}
-	if err := b.admitWith(b.op, ready, templateOf(t, ready)); err == nil || !strings.Contains(err.Error(), "not the controller's system actor") {
+	if err := b.admitWith(b.op, ready, graph.M1Kinds); err == nil || !strings.Contains(err.Error(), "not the controller's system actor") {
 		t.Errorf("an operator's admission: %v", err)
+	}
+	cancelled, _ := b.task(chosen)
+	r, _ := b.task(ready)
+	for name, err := range map[string]error{
+		"F1 a cancelled task": b.raw(authority.TaskAdmittedEvent, chosen, func(at types.Time) any {
+			return types.TaskAdmitted{Task: types.TaskID(chosen), Project: prjA, Approval: cancelled.Approval.ID, At: at}
+		}),
+		"F2 another approval": b.raw(authority.TaskAdmittedEvent, ready, func(at types.Time) any {
+			return types.TaskAdmitted{Task: types.TaskID(ready), Project: prjA, Approval: types.ApprovalID(newID(t, "apr")), At: at}
+		}),
+		"F3 another time": b.raw(authority.TaskAdmittedEvent, ready, func(at types.Time) any {
+			earlier, _ := time.Parse(time.RFC3339Nano, string(at))
+			return types.TaskAdmitted{Task: types.TaskID(ready), Project: prjA, Approval: r.Approval.ID, At: types.Time(earlier.Add(-time.Second).Format(time.RFC3339Nano))}
+		}),
+		"F4 another project": b.raw(authority.TaskAdmittedEvent, ready, func(at types.Time) any {
+			return types.TaskAdmitted{Task: types.TaskID(ready), Project: prjB, Approval: r.Approval.ID, At: at}
+		}),
+	} {
+		if err == nil || b.head() != h {
+			t.Errorf("the fold admitted %s, the slot free", name)
+		}
 	}
 	if err := b.admitNext(); err != nil {
 		t.Fatal(err)
 	}
 	another := b.newTask(b.op, prjB)
 	h = b.head()
-	if err := b.admitWith(b.sys, another, templateOf(t, another)); !stale(err) {
+	if err := b.admitWith(b.sys, another, graph.M1Kinds); !stale(err) {
 		t.Errorf("a second admission: %v", err)
 	}
-	// Raw events, past the command's checks: the fold refuses them.
-	// Raw events, past the command's checks, each at its command's time:
-	// the fold refuses them.
-	raw := func(kind, task string, payload func(at types.Time) any) error {
-		r, _ := b.task(task)
-		project := string(r.Project)
-		return b.as(b.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-			pl, err := json.Marshal(payload(types.Time(tx.Now().Format(time.RFC3339Nano))))
-			return []eventstore.Event{{ID: newID(t, "evt"), Kind: kind, Subject: task, Project: &project, Payload: pl}}, err
-		})
-	}
 	second, _ := b.task(another)
-	cancelledApproval := types.ApprovalID(newID(t, "apr"))
-	if r, _ := b.task(chosen); r.Approval != nil {
-		cancelledApproval = r.Approval.ID
-	}
+	reason := types.TaskDoneReasonValueAuthorityRevoked
 	for name, err := range map[string]error{
-		"a second admission": raw(authority.TaskAdmittedEvent, another, func(at types.Time) any {
+		"a second admission": b.raw(authority.TaskAdmittedEvent, another, func(at types.Time) any {
 			return types.TaskAdmitted{Task: types.TaskID(another), Project: second.Project, Approval: second.Approval.ID, At: at}
 		}),
-		"a cancelled task": raw(authority.TaskAdmittedEvent, chosen, func(at types.Time) any {
-			return types.TaskAdmitted{Task: types.TaskID(chosen), Project: prjA, Approval: cancelledApproval, At: at}
-		}),
-		"a done not admitted": raw(authority.TaskDoneEvent, another, func(at types.Time) any {
+		"a done not admitted": b.raw(authority.TaskDoneEvent, another, func(at types.Time) any {
 			return types.TaskDone{Task: types.TaskID(another), Project: second.Project, As: types.TaskDoneAsCandidate, At: at}
+		}),
+		"a candidate's done naming a reason": b.raw(authority.TaskDoneEvent, ready, func(at types.Time) any {
+			return types.TaskDone{Task: types.TaskID(ready), Project: prjA, As: types.TaskDoneAsCandidate, Reason: &reason, At: at}
 		}),
 	} {
 		if err == nil || b.head() != h {
@@ -247,39 +254,37 @@ func TestAdmissionRefusals(t *testing.T) {
 	b.rebuilds()
 }
 
-// P22a-3 (W12, W13; I22, I1 consumption): Tasks, the graph's claim
+// P22a-3 (W12, W13; I22, I1 consumption): Tasks, the graph's task
 // authority, refuses a node of an unrecorded, Ready, cancelled or done
-// task (not admitted), and of an admitted task whose approval was revoked
-// (authority_revoked); it takes an admitted task with its approval in
+// task (not admitted), recorded or run, and a run of an admitted task's
+// node once its approval is revoked (authority_revoked), though its nodes
+// may still be recorded; it takes an admitted task with its approval in
 // force.
 func TestClaimable(t *testing.T) {
 	b := openCancels(t)
-	ready, cancelled := b.newTask(b.op, prjA), b.newTask(b.op, prjA)
+	finished, ready, cancelled := b.newTask(b.op, prjA), b.newTask(b.op, prjA), b.newTask(b.op, prjA)
 	if _, _, err := b.cancel(b.op, "c", cancelled); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.admitNext(); err != nil {
+	if err := errors.Join(b.admitNext(), b.done(finished), b.admitNext()); err != nil {
 		t.Fatal(err)
 	}
 	waiting := b.newTask(b.op, prjB)
-	claimable := func(task string) error {
-		var err error
-		b.view(func(tx *eventstore.Tx) error { err = authority.Tasks{}.Claimable(tx, types.TaskID(task)); return nil })
-		return err
+	check := func(task string) (recordable, claimable error) {
+		b.view(func(tx *eventstore.Tx) error {
+			recordable, claimable = authority.Tasks{}.Recordable(tx, types.TaskID(task)), authority.Tasks{}.Claimable(tx, types.TaskID(task))
+			return nil
+		})
+		return recordable, claimable
 	}
 	notAdmitted := func(err error) bool { var e graph.ErrNotAdmitted; return errors.As(err, &e) }
-	for name, c := range map[string]struct {
-		task  string
-		check func(error) bool
-	}{
-		"admitted":   {ready, func(err error) bool { return err == nil }},
-		"in Ready":   {waiting, notAdmitted},
-		"cancelled":  {cancelled, notAdmitted},
-		"unrecorded": {newID(t, "tsk"), notAdmitted},
-	} {
-		if err := claimable(c.task); !c.check(err) {
-			t.Errorf("%s: %v", name, err)
+	for name, task := range map[string]string{"in Ready": waiting, "cancelled": cancelled, "done": finished, "unrecorded": newID(t, "tsk")} {
+		if r, c := check(task); !notAdmitted(r) || !notAdmitted(c) {
+			t.Errorf("%s: %v, %v", name, r, c)
 		}
+	}
+	if r, c := check(ready); r != nil || c != nil {
+		t.Errorf("admitted: %v, %v", r, c)
 	}
 	if err := b.as(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) { // its approvals are revoked with it
 		return identity.RevokeActor(tx, b.op.Actor(), suiteNow())
@@ -287,26 +292,62 @@ func TestClaimable(t *testing.T) {
 		t.Fatal(err)
 	}
 	var revoked graph.ErrRevalidated
-	if err := claimable(ready); !errors.As(err, &revoked) || revoked.Reason != vocab.ReasonAuthorityRevoked {
-		t.Errorf("an admitted task, its approval revoked: %v", err)
+	if r, c := check(ready); r != nil || !errors.As(c, &revoked) || revoked.Reason != vocab.ReasonAuthorityRevoked {
+		t.Errorf("an admitted task, its approval revoked: %v, %v", r, c)
 	}
 }
 
-// A task whose approval was revoked (its operator revoked) is never
-// admitted: the decision skips it, and the admitting command refuses it
-// stale_expected_state, as the fold does.
+// #226 entry 100 (Opus #309 M3): an admitted task whose approval is no
+// longer in force ends abandoned. Before the revocation it cannot be; after
+// it, a raw abandonment naming no reason is refused, and AbandonTask
+// records task.done as abandoned, authority_revoked: the slot frees. A
+// Ready task whose approval was revoked with it is never admitted: the
+// decision skips it, the admitting command refuses it, and so does the
+// fold, the slot free (F1b).
 func TestAdmissionRevokedApproval(t *testing.T) {
 	b := openCancels(t)
-	task := b.newTask(b.op, prjA)
+	admitted, waiting := b.newTask(b.op, prjA), b.newTask(b.op, prjA)
+	if err := b.admitNext(); err != nil {
+		t.Fatal(err)
+	}
+	abandon := func() error {
+		return b.as(b.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return authority.AbandonTask(tx, types.TaskID(admitted))
+		})
+	}
+	if err := abandon(); !errors.Is(err, eventstore.ErrStaleExpectedState) {
+		t.Errorf("abandoning a task whose approval is in force: %v", err)
+	}
 	if err := b.as(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return identity.RevokeActor(tx, b.op.Actor(), suiteNow())
 	}); err != nil {
 		t.Fatal(err)
 	}
+	h := b.head()
+	if err := b.raw(authority.TaskDoneEvent, admitted, func(at types.Time) any {
+		return types.TaskDone{Task: types.TaskID(admitted), Project: prjA, As: types.TaskDoneAsAbandoned, At: at}
+	}); err == nil || b.head() != h {
+		t.Error("the fold admitted an abandonment naming no reason")
+	}
+	if err := abandon(); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := b.task(admitted); r.State != authority.TaskDoneState || r.DoneAs != string(types.TaskDoneAsAbandoned) ||
+		contract.Validate("records/task-done", b.events(1)[0].Payload) != nil {
+		t.Fatalf("the abandoned task %+v", r)
+	}
 	if next, ok := b.admitted(); ok {
 		t.Errorf("the next admission is %s, whose approval is revoked", next)
 	}
-	if err := b.admitWith(b.sys, task, templateOf(t, task)); !errors.Is(err, eventstore.ErrStaleExpectedState) {
+	h = b.head()
+	if err := b.admitWith(b.sys, waiting, graph.M1Kinds); !errors.Is(err, eventstore.ErrStaleExpectedState) {
 		t.Errorf("admitting a task whose approval is revoked: %v", err)
 	}
+	w, _ := b.task(waiting)
+	if err := b.raw(authority.TaskAdmittedEvent, waiting, func(at types.Time) any {
+		return types.TaskAdmitted{Task: types.TaskID(waiting), Project: prjA, Approval: w.Approval.ID, At: at}
+	}); err == nil || b.head() != h {
+		t.Error("the fold admitted a task whose approval is revoked, the slot free")
+	}
+	b.rebuilds()
 }

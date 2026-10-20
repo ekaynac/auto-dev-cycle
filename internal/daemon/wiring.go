@@ -201,7 +201,7 @@ func eventKinds() (eventstore.Kinds, error) {
 // loop's (P22a-4), so the graph's projections stay empty, and no attempt
 // starts, until it runs.
 func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reservations) func(*eventstore.Tx, []eventstore.Event) error {
-	leases := lease.Projector{Blobs: blobs, Holds: holds, Units: graph.Units{}}
+	leases := lease.Projector{Blobs: blobs, Holds: holds, Units: graph.Units{Tasks: authority.Tasks{}}} // an attempt starts only for an admitted task, its approval in force (Opus #309 M1)
 	return eventstore.ProjectEach(
 		identity.Projector{}.Project,
 		authority.GrantProjector{}.Project,

@@ -86,44 +86,52 @@ func RecordTemplate(template []types.NodeRecorded, task types.TaskID, project ty
 	return evs, nil
 }
 
-// Tasks is the task authority a claim takes (I22 consumption; I1's at the
-// first claim): a node is claimed, or reused, only while its task is
-// admitted and the task's approval is in force, so a revocation before the
-// first claim refuses it and no attempt starts. adcd composes it from
-// authority.Tasks.
+// Tasks is the task authority the graph takes (I22; I1's consumption): a
+// node is recorded only for an admitted task, and claimed, reused,
+// re-claimed (invalidated or renewed) or started only while its task is
+// admitted with its approval in force, so a revocation refuses every run
+// of the task's nodes from then on. adcd composes it from authority.Tasks.
 type Tasks interface {
-	// Claimable refuses a claim of a node of task: ErrNotAdmitted, or
+	// Recordable refuses a node of task unless task is admitted
+	// (ErrNotAdmitted).
+	Recordable(tx *eventstore.Tx, task types.TaskID) error
+	// Claimable refuses a run of a node of task: ErrNotAdmitted, or
 	// ErrRevalidated (authority_revoked) when the task's approval is not in
 	// force.
 	Claimable(tx *eventstore.Tx, task types.TaskID) error
 }
 
-// ErrNotAdmitted: a node of a task that is not admitted is never claimed
-// (I22 consumption).
+// ErrNotAdmitted: a node of a task that is not admitted is never recorded
+// or run (I22).
 type ErrNotAdmitted struct {
 	Task  types.TaskID
 	State string
 }
 
 func (e ErrNotAdmitted) Error() string {
-	return fmt.Sprintf("graph: task %s is %s, not admitted: its nodes are not claimed", e.Task, e.State)
+	return fmt.Sprintf("graph: task %s is %s, not admitted: its nodes are not recorded or run", e.Task, e.State)
 }
 
-// taken: a claim or reuse in v takes a task tasks allows (claimable).
+// taken: v takes a task tasks allows: a node recorded, Recordable; a node
+// claimed, reused, invalidated (claimed again at its next generation) or
+// renewed (its key claimed again), Claimable (Opus #309 H1).
 func taken(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant, tasks Tasks) error {
-	switch p := v.(type) {
-	case *types.NodeClaimed:
-		return claimable(tx, ev, p.Node, tasks)
-	case *types.NodeReused:
-		return claimable(tx, ev, p.Node, tasks)
-	}
-	return nil
-}
-
-// claimable: the claim (or reuse) of node, as ev fixes it, takes a task
-// tasks allows.
-func claimable(tx *eventstore.Tx, ev eventstore.Event, node types.NodeID, tasks Tasks) error {
 	if tasks == nil {
+		return nil
+	}
+	var node types.NodeID
+	switch p := v.(type) {
+	case *types.NodeRecorded:
+		return tasks.Recordable(tx, p.Task)
+	case *types.NodeClaimed:
+		node = p.Node
+	case *types.NodeReused:
+		node = p.Node
+	case *types.NodeInvalidated:
+		node = p.Node
+	case *types.NodeRenewed:
+		node = p.Node
+	default:
 		return nil
 	}
 	rec, err := nodeOf(tx, ev, node)

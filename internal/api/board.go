@@ -18,8 +18,9 @@ package api
 //     latest round (the highest round of its current nodes, so no later
 //     repair) completed go (outcome empty; merge is inactive in M1(a));
 //     else ready, with the admitted badge. A held node keeps its stage's
-//     column and carries its hold badges. A done task (task.done, a
-//     candidate) is done_candidate, with its nodes and no admitted badge.
+//     column and carries its hold badges. A done task (task.done) is
+//     done_candidate as a candidate, or done with the abandoned badge when
+//     abandoned (its approval revoked), with its nodes and no admitted badge.
 //   - A column is never guessed. A task whose records do not determine one
 //     (an unknown state, a node kind outside M1(a)'s template, nodes of a
 //     task not admitted or not recorded, a damaged record, ...) is listed
@@ -122,7 +123,7 @@ var board = Resource{
 		_, _, project, err := boardTask(tx, id)
 		return project, err
 	},
-	Fields: []string{"type", "id", "project", "title", "column", "admitted", "cancelled", "approval", "created_at", "nodes", "reason"},
+	Fields: []string{"type", "id", "project", "title", "column", "admitted", "cancelled", "abandoned", "approval", "created_at", "nodes", "reason"},
 }
 
 // boardTask is task id's record (recorded: it exists and reads as one)
@@ -212,7 +213,11 @@ func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ow
 			goRounds = append(goRounds, n.Node.Round)
 		}
 	}
-	if t.State == authority.TaskDoneState {
+	switch {
+	case t.State == authority.TaskDoneState && t.DoneAs == string(types.TaskDoneAsAbandoned):
+		c.Column, c.Abandoned = types.BoardPlacedCardColumnDone, true
+		return types.BoardCard{Variant: c}
+	case t.State == authority.TaskDoneState:
 		c.Column = types.BoardPlacedCardColumnDoneCandidate
 		return types.BoardCard{Variant: c}
 	}
