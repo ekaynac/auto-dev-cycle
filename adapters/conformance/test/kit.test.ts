@@ -247,6 +247,12 @@ test("oversize: served at the bound, rejected one byte over", async () => {
   assert.ok(checks(await oversize(raw("size-off-by-one"))).includes("describe"));
   // Ending its output is not ending: the process must exit.
   assert.deepEqual(checks(await oversize(raw("size-closes"), {}, 1_000)), ["oversize"]);
+  // A slow host (#226 entry 102): each line over 1 MiB costs the adapter 2 s, at the
+  // bound and past it alike, past a 1 s floor. The grace scales with the at-bound
+  // request, so a rejection is still seen, and a malformed one still is none.
+  const slow = (mode: string): AdapterUnderTest => ({ ...raw(mode), env: { RAW_MODE: mode, RAW_SLOW_MS: "2000" } });
+  assert.deepEqual(await oversize(slow("size-errors"), {}, 1_000), [], "a slow rejection");
+  assert.deepEqual(checks(await oversize(slow("size-error-null"), {}, 1_000)), ["envelope", "oversize"], "a slow malformed rejection");
 });
 
 test("large invalid events do not exhaust a bounded heap", () => {
