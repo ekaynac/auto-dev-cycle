@@ -240,7 +240,7 @@ acceptance tests, baseline). The three (c) issues are chosen the same way, one a
 
 | | |
 |---|---|
-| **Commands** | Live (the exit record, controller host): `installed-cycle.sh $P --routes live --project repo --issue $N --until candidate --bench benchmarks/m1/<date>-<arch>-a.json`. <br>Stub (CI): `--routes stub --project py-mini --case candidate`, the cases `launch-missing-credential`, `launch-missing-image`, `admission-held` and `owed-input` (X6, below), and §2.6's build, accept, gate, review, provider and usage faults, all with `--expect candidate`: each case's `expect.candidate` block applies (no `merge` node, the task closed as a candidate after review), and the benchmark records stages up to review only |
+| **Commands** | Live (the exit record, controller host): `installed-cycle.sh $P --routes live --project repo --issue $N --until candidate --bench benchmarks/m1/<date>-<GOOS>-<GOARCH>-a.json`. <br>Stub (CI): `--routes stub --project py-mini --case candidate`, the cases `launch-missing-credential`, `launch-missing-image`, `admission-held` and `owed-input` (X6, below), and §2.6's build, accept, gate, review, provider and usage faults, all with `--expect candidate`: each case's `expect.candidate` block applies (no `merge` node, the task closed as a candidate after review), and the benchmark records stages up to review only |
 | **Fixtures** | `fixtures/m1/profiles/auto-dev-cycle.json` (P32: `forge.kind: github`, base `refs/heads/main`, the pinned Go image, gate `["go","test","-json","./<pkg>/..."]` with `result_adapter: go_test_json`, `protected_paths` covering criterion 2's paths); `fixtures/m1/issues/<N>/`; `fixtures/m1/profiles/py-mini.json` and the stub provider for CI; `fixtures/m1/review-qualification/` (P31) |
 | **Prerequisites** | §2.1; Q1's runtime with both pinned images present; Q2's two routes inside Q8, with credentials; read access to clone this repository at its base; P31's qualification recorded for the reviewer route |
 | **Assertions** | See below |
@@ -371,7 +371,7 @@ acceptance tests, baseline). The three (c) issues are chosen the same way, one a
 
 | | |
 |---|---|
-| **Commands** | **Live:** `installed-cycle.sh $P --routes live --project repo --issues $I1,$I2,$I3 --until merged --no-rescue --bench benchmarks/m1/<date>-<arch>-c.json`. <br>**Installed:** `adc dev fixtures --contract stalled-task-pages`. <br>**Afterwards:** `adc dev liveness --since <run start> --json`; `adc dev gate-ledger --since <first live attempt> --json` |
+| **Commands** | **Live:** `installed-cycle.sh $P --routes live --project repo --issues $I1,$I2,$I3 --until merged --no-rescue --bench benchmarks/m1/<date>-<GOOS>-<GOARCH>-c.json`. <br>**Installed:** `adc dev fixtures --contract stalled-task-pages`. <br>**Afterwards:** `adc dev liveness --since <run start> --json`; `adc dev gate-ledger --since <first live attempt> --json` |
 | **Fixtures** | `fixtures/m1/issues/<I1..I3>/`, each chosen by §2.2's rules; the contract fixture `stalled-task-pages`, with a golden and a named mutation |
 | **Prerequisites** | (b) passed; P29 and P30 merged; the `stalled` hold registered in `schemas/vocab/holds.yaml` with signal, owner and paging (below) |
 | **Assertions** | See below |
@@ -520,16 +520,16 @@ Repair rounds count as their kind.
 | Metric, per task and per stage | How it is measured |
 |---|---|
 | wall time (s) | **Stage:** from a node's `node.claimed` to its `result.selected`; for `merge`, to `effect.observed` or `effect.reconciled{completed}`; summed over the stage's nodes. **Task:** from `approval.recorded` to the closure's `result.selected`. Controller event times only |
-| tokens: in, out, cache_read, cache_write | Σ `ledger.Reconcile` figures over the calls of the stage's attempts (attempt → node, P8a), with each call's `source_of_truth` |
-| charge | Σ `cost.amount` per `cost.basis`. Outstanding liabilities are listed apart, never counted as zero |
+| tokens: in, out, cache_read, cache_write | Σ each call's `ledger.StandingOf` figure (the gateway's count included) over the calls of the stage's attempts (attempt → node, P8a; a call of two stages is refused), with each call's `source_of_truth` |
+| charge | Σ `cost.amount` of the settled calls per `cost.basis` (the adapter's or provider's, never the gateway's). Outstanding liabilities, the unsettled calls at the larger of their cost and their tokens at the route's registry price, are listed apart, never counted as zero |
 | attempts, rounds | attempts per stage; review and repair rounds |
 | interventions | operator and supervisor commands attributed to the task, per stage (approvals, answers, rail raises); rescues are counted apart and must be zero in (c) |
 | outcome | the closure's `(outcome, reason)`, or the task's hold |
 
 - **Recorder:** `adc dev bench record --task T… --json` (P25), reading `adc task show` and the ledger over the API, then `internal/bench.Record`, which computes the metrics from them, project-agnostic.
-- **Output:** `benchmarks/m1/<date>-<arch>-<checkpoint>.json` (`records/benchmark-run`, P25), one file per checkpoint, with the build commit, schema set,
+- **Output:** `benchmarks/m1/<date>-<GOOS>-<GOARCH>-<checkpoint>.json` (`bench.Path`) (`records/benchmark-run`, P25), one file per checkpoint, with the build commit, schema set,
   routes (executor ids and families) and fixture digests. A summary goes in the exit record.
-- **Re-runs:** every later exit re-runs it with the same command and records the deltas (`bench.Compare`). It reports regressions and
+- **Re-runs:** every later exit re-runs it with the same command and records the deltas (`bench.Compare`, rendered by `bench.Deltas`). It reports regressions and
   never gates on them. The exit record follows `exit-record-template.md`.
 
 ## 3. Invariant-enforcement inventory (D45, D58)

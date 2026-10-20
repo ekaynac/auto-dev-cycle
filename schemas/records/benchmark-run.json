@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/records/benchmark-run.json",
   "title": "BenchmarkRun",
-  "description": "One checkpoint's benchmark (docs/design/m1/00-slice-plan.md §2.8; P25): benchmarks/m1/<date>-<arch>-<checkpoint>.json, written by internal/bench.Record. Per task and per stage: wall time from controller event times only, tokens through internal/capacity/ledger.Reconcile, the charge per basis of the settled calls with the outstanding liabilities listed apart (never as zero), attempts and rounds, and interventions with rescues apart. It records and never gates; re-runs report deltas (bench.Compare).",
+  "description": "One checkpoint's benchmark (docs/design/m1/00-slice-plan.md §2.8; P25): benchmarks/m1/<date>-<GOOS>-<GOARCH>-<checkpoint>.json (bench.Path), written by internal/bench.Record. Per task and per stage: wall time from controller event times only, tokens from each call's internal/capacity/ledger.StandingOf, the charge per basis of the settled calls with the outstanding liabilities listed apart (never as zero), attempts and rounds, and interventions with rescues apart. It records and never gates; re-runs report deltas (bench.Compare).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "checkpoint", "recorded_at", "arch", "build_commit", "schema_set", "routes", "fixtures", "tasks"],
@@ -45,11 +45,14 @@
         "task": {"$ref": "../common/defs.json#/$defs/TaskID"},
         "outcome": {"description": "The closure's outcome; null when the task did not close.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Outcome"}]},
         "reason": {"oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ReasonCode"}]},
-        "hold": {"description": "The task's hold when it did not close.", "oneOf": [{"type": "null"}, {"$ref": "receipt.json#/$defs/Name"}]},
+        "hold": {"description": "The task's hold when it did not close: a hold of schemas/vocab/holds.yaml.", "oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}]},
         "wall_ms": {"description": "From approval.recorded to the closure's result.selected; null when it did not close.", "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 9007199254740991}]},
         "stages": {"type": "array", "items": {"$ref": "#/$defs/BenchmarkStage"}},
         "rescues": {"description": "Rescue interventions over the task; zero in (c).", "type": "integer", "minimum": 0, "maximum": 9007199254740991}
-      }
+      },
+      "if": {"required": ["hold"], "properties": {"hold": {"const": null}}},
+      "then": {"properties": {"outcome": {"not": {"const": null}}, "reason": {"not": {"const": null}}, "wall_ms": {"not": {"const": null}}}},
+      "else": {"properties": {"outcome": {"const": null}, "reason": {"const": null}, "wall_ms": {"const": null}}}
     },
     "BenchmarkStage": {
       "type": "object",
@@ -60,9 +63,9 @@
         "wall_ms": {"description": "Σ over the stage's finished nodes of node.claimed to its result.selected (merge: to the effect's observed or reconciled completed).", "type": "integer", "minimum": 0, "maximum": 9007199254740991},
         "unfinished": {"description": "The stage's nodes claimed and not finished, left out of wall_ms.", "type": "integer", "minimum": 0, "maximum": 9007199254740991},
         "tokens": {"$ref": "#/$defs/BenchmarkTokens"},
-        "sources": {"description": "The source_of_truth values of the stage's usage measurements, sorted.", "type": "array", "items": {"enum": ["provider_usage", "adapter_report", "gateway_count", "gateway_floor", "none"]}},
-        "charge": {"description": "Σ of the settled calls' cost, per basis and currency.", "type": "array", "items": {"$ref": "#/$defs/BenchmarkAmount"}},
-        "outstanding": {"description": "The uncertain calls' liabilities (their best estimate), per basis and currency: never counted as zero.", "type": "array", "items": {"$ref": "#/$defs/BenchmarkAmount"}},
+        "sources": {"description": "The source_of_truth values of the stage's usage measurements, sorted.", "type": "array", "uniqueItems": true, "items": {"enum": ["provider_usage", "adapter_report", "gateway_count", "gateway_floor", "none"]}},
+        "charge": {"description": "Σ of the settled calls' (ledger.StandingOf) reported cost, per basis and currency.", "type": "array", "items": {"$ref": "#/$defs/BenchmarkAmount"}},
+        "outstanding": {"description": "The unsettled calls' liabilities, per basis and currency: each the larger of its reported cost and its tokens (the gateway's count included) at its route's registry price; never counted as zero.", "type": "array", "items": {"$ref": "#/$defs/BenchmarkAmount"}},
         "attempts": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
         "rounds": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
         "interventions": {"$ref": "#/$defs/BenchmarkInterventions"}
@@ -85,7 +88,7 @@
       "required": ["basis", "currency", "amount_micros", "calls"],
       "properties": {
         "basis": {"enum": ["cash", "subscription_equivalent", "free", "local"]},
-        "currency": {"description": "ISO 4217; empty when no report named one.", "type": "string", "pattern": "^([A-Z]{3})?$"},
+        "currency": {"description": "ISO 4217; an unsettled call no report priced is priced in USD at its route's registry price.", "type": "string", "pattern": "^[A-Z]{3}$"},
         "amount_micros": {"$ref": "resource-group.json#/$defs/Amount"},
         "calls": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
       }

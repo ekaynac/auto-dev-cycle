@@ -26,9 +26,9 @@ Every failed live run (§2.5 item 4): what failed, the run's `(outcome, reason)`
 
 ## 5. The benchmark (§2.8)
 
-- **The file:** `benchmarks/m1/<date>-<arch>-<checkpoint>.json` (`records/benchmark-run`, written through `internal/bench.Record`).
+- **The file:** `benchmarks/m1/<date>-<GOOS>-<GOARCH>-<checkpoint>.json` (`bench.Path`) (`records/benchmark-run`, written through `internal/bench.Record`).
 - **The summary:** paste `bench.Summary` of that run.
-- **The deltas:** against the previous checkpoint's run, paste `bench.Compare`'s output.
+- **The deltas:** against the previous checkpoint's run, paste `bench.Deltas(bench.Compare(prev, cur))`.
   - The deltas are reported, never gating.
   - Outstanding liabilities are listed as they are, never as zero.
   - In (c), rescues must be zero.

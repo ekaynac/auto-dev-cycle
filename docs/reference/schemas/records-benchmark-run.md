@@ -4,7 +4,7 @@
 
 `schemas/records/benchmark-run.json`
 
-One checkpoint's benchmark (docs/design/m1/00-slice-plan.md §2.8; P25): benchmarks/m1/&lt;date&gt;-&lt;arch&gt;-&lt;checkpoint&gt;.json, written by internal/bench.Record. Per task and per stage: wall time from controller event times only, tokens through internal/capacity/ledger.Reconcile, the charge per basis of the settled calls with the outstanding liabilities listed apart (never as zero), attempts and rounds, and interventions with rescues apart. It records and never gates; re-runs report deltas (bench.Compare).
+One checkpoint's benchmark (docs/design/m1/00-slice-plan.md §2.8; P25): benchmarks/m1/&lt;date&gt;-&lt;GOOS&gt;-&lt;GOARCH&gt;-&lt;checkpoint&gt;.json (bench.Path), written by internal/bench.Record. Per task and per stage: wall time from controller event times only, tokens from each call's internal/capacity/ledger.StandingOf, the charge per basis of the settled calls with the outstanding liabilities listed apart (never as zero), attempts and rounds, and interventions with rescues apart. It records and never gates; re-runs report deltas (bench.Compare).
 
 ## Fields of the document
 
@@ -56,12 +56,16 @@ No other fields are allowed.
 | `task` | yes | [TaskID](common-defs.md#taskid) |  |
 | `outcome` | yes | null or [Outcome](common-defs.md#outcome) | The closure's outcome; null when the task did not close. |
 | `reason` | yes | null or [ReasonCode](common-defs.md#reasoncode) |  |
-| `hold` | yes | null or [Name](records-receipt.md#name) | The task's hold when it did not close. |
+| `hold` | yes | null or string (pattern `^[a-z][a-z0-9_]*$`) | The task's hold when it did not close: a hold of schemas/vocab/holds.yaml. |
 | `wall_ms` | yes | null or integer (minimum `0`, maximum `9007199254740991`) | From approval.recorded to the closure's result.selected; null when it did not close. |
 | `stages` | yes | array of [BenchmarkStage](#benchmarkstage) |  |
 | `rescues` | yes | integer (minimum `0`, maximum `9007199254740991`) | Rescue interventions over the task; zero in (c). |
 
 No other fields are allowed.
+
+Conditional rules (1, `if`/`then`/`else` in the schema):
+
+- when `hold` `null`, `hold` required, then `outcome` any (not `null`), `reason` any (not `null`), `wall_ms` any (not `null`); otherwise `outcome` `null`, `reason` `null`, `wall_ms` `null`
 
 ### BenchmarkStage
 
@@ -73,9 +77,9 @@ No other fields are allowed.
 | `wall_ms` | yes | integer (minimum `0`, maximum `9007199254740991`) | Σ over the stage's finished nodes of node.claimed to its result.selected (merge: to the effect's observed or reconciled completed). |
 | `unfinished` | yes | integer (minimum `0`, maximum `9007199254740991`) | The stage's nodes claimed and not finished, left out of wall_ms. |
 | `tokens` | yes | [BenchmarkTokens](#benchmarktokens) |  |
-| `sources` | yes | array of one of `provider_usage`, `adapter_report`, `gateway_count`, `gateway_floor`, `none` | The source_of_truth values of the stage's usage measurements, sorted. |
-| `charge` | yes | array of [BenchmarkAmount](#benchmarkamount) | Σ of the settled calls' cost, per basis and currency. |
-| `outstanding` | yes | array of [BenchmarkAmount](#benchmarkamount) | The uncertain calls' liabilities (their best estimate), per basis and currency: never counted as zero. |
+| `sources` | yes | array of one of `provider_usage`, `adapter_report`, `gateway_count`, `gateway_floor`, `none` (unique items) | The source_of_truth values of the stage's usage measurements, sorted. |
+| `charge` | yes | array of [BenchmarkAmount](#benchmarkamount) | Σ of the settled calls' (ledger.StandingOf) reported cost, per basis and currency. |
+| `outstanding` | yes | array of [BenchmarkAmount](#benchmarkamount) | The unsettled calls' liabilities, per basis and currency: each the larger of its reported cost and its tokens (the gateway's count included) at its route's registry price; never counted as zero. |
 | `attempts` | yes | integer (minimum `0`, maximum `9007199254740991`) |  |
 | `rounds` | yes | integer (minimum `0`, maximum `9007199254740991`) |  |
 | `interventions` | yes | [BenchmarkInterventions](#benchmarkinterventions) |  |
@@ -102,7 +106,7 @@ No other fields are allowed.
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `basis` | yes | one of `cash`, `subscription_equivalent`, `free`, `local` |  |
-| `currency` | yes | string (pattern `^([A-Z]{3})?$`) | ISO 4217; empty when no report named one. |
+| `currency` | yes | string (pattern `^[A-Z]{3}$`) | ISO 4217; an unsettled call no report priced is priced in USD at its route's registry price. |
 | `amount_micros` | yes | [Amount](records-resource-group.md#amount) |  |
 | `calls` | yes | integer (minimum `1`, maximum `9007199254740991`) |  |
 

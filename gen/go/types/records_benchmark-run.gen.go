@@ -12,7 +12,7 @@ const (
 	BenchmarkRunCheckpointC BenchmarkRunCheckpoint = "c"
 )
 
-// BenchmarkRun: One checkpoint's benchmark (docs/design/m1/00-slice-plan.md §2.8; P25): benchmarks/m1/<date>-<arch>-<checkpoint>.json, written by internal/bench.Record. Per task and per stage: wall time from controller event times only, tokens through internal/capacity/ledger.Reconcile, the charge per basis of the settled calls with the outstanding liabilities listed apart (never as zero), attempts and rounds, and interventions with rescues apart. It records and never gates; re-runs report deltas (bench.Compare).
+// BenchmarkRun: One checkpoint's benchmark (docs/design/m1/00-slice-plan.md §2.8; P25): benchmarks/m1/<date>-<GOOS>-<GOARCH>-<checkpoint>.json (bench.Path), written by internal/bench.Record. Per task and per stage: wall time from controller event times only, tokens from each call's internal/capacity/ledger.StandingOf, the charge per basis of the settled calls with the outstanding liabilities listed apart (never as zero), attempts and rounds, and interventions with rescues apart. It records and never gates; re-runs report deltas (bench.Compare).
 type BenchmarkRun struct {
 	Schema     string                 `json:"schema"`
 	Checkpoint BenchmarkRunCheckpoint `json:"checkpoint"`
@@ -50,8 +50,8 @@ type BenchmarkTask struct {
 	// The closure's outcome; null when the task did not close.
 	Outcome *Outcome    `json:"outcome"`
 	Reason  *ReasonCode `json:"reason"`
-	// The task's hold when it did not close.
-	Hold *Name `json:"hold"`
+	// The task's hold when it did not close: a hold of schemas/vocab/holds.yaml.
+	Hold *string `json:"hold"`
 	// From approval.recorded to the closure's result.selected; null when it did not close.
 	WallMs *int64           `json:"wall_ms"`
 	Stages []BenchmarkStage `json:"stages"`
@@ -92,9 +92,9 @@ type BenchmarkStage struct {
 	Tokens     BenchmarkTokens `json:"tokens"`
 	// The source_of_truth values of the stage's usage measurements, sorted.
 	Sources []BenchmarkStageSourcesItem `json:"sources"`
-	// Σ of the settled calls' cost, per basis and currency.
+	// Σ of the settled calls' (ledger.StandingOf) reported cost, per basis and currency.
 	Charge []BenchmarkAmount `json:"charge"`
-	// The uncertain calls' liabilities (their best estimate), per basis and currency: never counted as zero.
+	// The unsettled calls' liabilities, per basis and currency: each the larger of its reported cost and its tokens (the gateway's count included) at its route's registry price; never counted as zero.
 	Outstanding   []BenchmarkAmount      `json:"outstanding"`
 	Attempts      int64                  `json:"attempts"`
 	Rounds        int64                  `json:"rounds"`
@@ -119,7 +119,7 @@ const (
 
 type BenchmarkAmount struct {
 	Basis BenchmarkAmountBasis `json:"basis"`
-	// ISO 4217; empty when no report named one.
+	// ISO 4217; an unsettled call no report priced is priced in USD at its route's registry price.
 	Currency     string `json:"currency"`
 	AmountMicros Amount `json:"amount_micros"`
 	Calls        int64  `json:"calls"`
