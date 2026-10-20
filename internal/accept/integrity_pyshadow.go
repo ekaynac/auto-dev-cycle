@@ -163,6 +163,7 @@ func (pb *pyBase) load() error {
 		if path.Ext(q) != ".py" {
 			continue
 		} else if pb.r.work += 1 + len(pb.entries) + len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil { // main's index, each root charged (widen-b, #281's residual)
+			pb.overLinks()
 			pb.holderUnread, pb.err = "the base conditions' analysis is over the guard's work bound", pb.r.ctx.Err()
 			return pb.err
 		}
@@ -206,6 +207,19 @@ func (pb *pyBase) load() error {
 		}
 	}
 	return nil
+}
+
+// overLinks: the base is over the work bound before closure reads every
+// base symlink's target, so with any symlink every change blocks: a non-.py
+// change under a target is no Python change the unread base blocks (Opus
+// #299 M1).
+func (pb *pyBase) overLinks() {
+	for _, mode := range pb.r.links {
+		if mode == "120000" {
+			pb.linkTargets = append(pb.linkTargets, "")
+			return
+		}
+	}
 }
 
 // file reads base file q once: every import statement, after ; or a
@@ -664,6 +678,8 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 			return "an added module shadows the base module " + q, nil
 		} else if b := pb.folds[strings.ToLower(n)]; b != "" && b != n { // one file stands in for the other on a case-insensitive filesystem (widen-b S3)
 			return "an added module's name differs from the base module " + b + " only by case", nil
+		} else if !pyASCII(n) { // a Unicode fold ToLower does not make (Opus #299 L1)
+			return "an added module's name is not ASCII (a filesystem may fold it onto a base module)", nil
 		}
 	}
 	split := func(p string) (string, string) {

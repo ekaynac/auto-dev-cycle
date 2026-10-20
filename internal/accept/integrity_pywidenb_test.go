@@ -5,6 +5,8 @@ package accept
 import (
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -52,6 +54,12 @@ func TestPyGuardWidenB2(t *testing.T) {
 		"S5 control: a type alias's call value":     {base(nil), map[string]string{"tests/test_money.py": test + "\ntype Pair = g()\n"}, "tests/test_money.py: unverifiable: code run at import outside the allowlist"},
 		"S5 control: a type alias naming a fixture": {base(nil), map[string]string{"tests/test_money.py": test + "\ntype capsys = int\n"}, "tests/test_money.py: unverifiable: "},
 		"S5 control: an f-string among the strings": {base(nil), map[string]string{"tests/test_money.py": "\"a\" f\"{X}\"\n" + test}, "tests/test_money.py: unverifiable: code run at import outside the allowlist"},
+		// Opus #299: L1 a module name that is not ASCII (U+017F folds onto s), L3 an import pytest in a def, L4 class C[T].
+		"L1 an added module's name not ASCII":  {base(nil), map[string]string{"feature/flagſ.py": "X = 1\n"}, "feature/flagſ.py: an added module's name is not ASCII"},
+		"L1 a base module's name not ASCII":    {base(map[string]string{"feature/flagſ.py": "X = 1\n"}), map[string]string{"cfg.py": "SKIP = 'True'\n"}, "cfg.py: a module a condition reads is unread (the module name feature.flagſ is not ASCII"},
+		"L1 a changed module newly adding one": {base(map[string]string{"conftest.py": "import helper\n", "helper.py": "X = 1\n"}), map[string]string{"helper.py": "X = 2\n", "lib/flagſ.py": "X = 1\n"}, "lib/flagſ.py: a module the tests now import runs code at import"},
+		"L3 an import pytest inside a def":     {base(nil), map[string]string{"money.py": "def _u():\n    import pytest\n\ndef add(a, b):\n    pytest.xfail('a string')\n    return a + b\n"}, "money.py: unverifiable: a skipif or xfail condition that may be a string"},
+		"L4 a class with type parameters":      {base(nil), map[string]string{"tests/test_money.py": test + "\nclass C[T]:\n    pass\n"}, "tests/test_money.py: unverifiable: code run at import outside the allowlist"},
 	} {
 		g := newFixtureWith(t, func(src string) {
 			write(t, src, c.base)
@@ -82,5 +90,48 @@ func TestPyGuardWidenB2(t *testing.T) {
 	maxWork = old
 	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !strings.Contains(strings.Join(whats(pyOwn(v.Blocks)), "\n"), read) {
 		t.Errorf("S1 control: within the bound the base is read: %q", whats(pyOwn(v.Blocks)))
+	}
+	maxWork = 44000 // L5: 300 new modules 30 directories deep; the walk's visits charged, about 49,000; without them about 39,000 (Opus #299 L5)
+	walk, chain := map[string]string{"notes.txt": "x\n"}, strings.Repeat("a/", 30)
+	for i := range 300 {
+		walk[fmt.Sprintf("w%d/%sm.py", i, chain)] = ""
+	}
+	g = newFixtureWith(t, func(src string) {
+		write(t, src, base(nil))
+		plain(t, src, "add", "--all")
+	})
+	if v := g.guarded(t, walk); !pyFinds(pyOwn(v.Blocks), "the candidate's closure is over the guard's work bound") {
+		t.Errorf("L5 the candidate's walk visits charged: %q", whats(pyOwn(v.Blocks)))
+	}
+	maxWork = old
+	for name, c := range map[string]struct { // Opus #299 M1: over the bound before the closure reads a symlink's target, a change under it blocks
+		conf       string
+		mods, dirs int
+		bound      int
+	}{
+		"M1 roots past the bound, sys.path unread":             {"[pytest]\npythonpath =" + paths + "\n", 20, 0, 60000},
+		"M1 a custom configuration":                            {"[pytest]\npython_files = test_*.py check_*.py\n", 400, 0, 2000},
+		"M1 the closure's forms past the bound, the index not": {"[pytest]\npythonpath =" + paths + "\n", 0, 20, 50000},
+	} {
+		files := map[string]string{"pytest.ini": c.conf, "real_flags.txt": "SKIP = False\n", "feature/__init__.py": "",
+			"tests/test_money.py": "import sys\nsys.path.insert(0, 'vendor')\nimport pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_x():\n    pass\n"}
+		for i := range c.mods {
+			files[fmt.Sprintf("m%d.py", i)] = "X = 1\n"
+		}
+		for i := range c.dirs {
+			files[fmt.Sprintf("data%d/x.txt", i)] = "x\n"
+		}
+		g := newFixtureWith(t, func(src string) {
+			write(t, src, files)
+			if err := os.Symlink("../real_flags.txt", filepath.Join(src, "feature", "flags.py")); err != nil {
+				t.Fatal(err)
+			}
+			plain(t, src, "add", "--all")
+		})
+		maxWork = c.bound
+		if v := g.guarded(t, map[string]string{"real_flags.txt": "SKIP = True\n"}); !pyFinds(pyOwn(v.Blocks), "real_flags.txt: a change at or under a base symlink's target") {
+			t.Errorf("%s: %q", name, whats(pyOwn(v.Blocks)))
+		}
+		maxWork = old
 	}
 }

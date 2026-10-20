@@ -302,7 +302,7 @@ func pyField(s string, depth int, spec, single bool, inner *[]ptok) int {
 			i += eol(s[i:])
 		case c == ':' && nest == 0:
 			return i + 1 + pyField(s[i+1:], depth+1, true, single, inner)
-		case c == '=' && nest == 0 && pyDebug(s[i+1:]): // ==, != and the like reach here as one token
+		case c == '=' && nest == 0 && pyDebug(s[i+1:]): // ==, !=, <= and >= reach here a character at a time: the first = of == has a = next, the last = of each an operand
 			i++ // the debug specifier {x=}: text, not an assignment (Mythos #266 r2 L3)
 		case strings.IndexByte("([{", c) >= 0:
 			nest, i, *inner = nest+1, i+1, append(*inner, ptok{'o', s[i : i+1]})

@@ -111,7 +111,7 @@ func pyPure(ctx context.Context, lines []pline) (pure bool, aliases map[string]b
 			if slices.Contains(b, "pytest") && !(imp && st[0].text == "import" && !named(st, "as")) || imp && slices.ContainsFunc(st, func(k ptok) bool { return k.text == "*" }) {
 				pure = false
 			}
-			imported = imported || imp && st[0].text == "import" && !named(st, "as") && slices.Contains(b, "pytest")
+			imported = imported || l.indent == 0 && imp && st[0].text == "import" && !named(st, "as") && slices.Contains(b, "pytest") // at module level (Opus #299 L3)
 			for _, k := range st {
 				uses[k.text] = append(uses[k.text], len(binds))
 			}

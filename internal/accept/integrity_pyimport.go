@@ -224,6 +224,7 @@ func pyAllowed(t []ptok, conftest bool) string {
 		return ok(pyConst(params))
 	case d[0].text == "class" && len(h[0]) > 1:
 		return ok(pyConst(h[0][2:]) && !named(h[0], "metaclass") && !slices.ContainsFunc(h[0], func(k ptok) bool { return k.text == "*" }) &&
+			(len(h[0]) < 3 || h[0][2].text != "[") && // class C[T]: imports typing at class creation (Opus #299 L4)
 			len(t) == len(h[0])+1+b2i(t[len(t)-1].text == "pass"))
 	case d[0].text == "type" && len(d) > 3 && d[1].kind == 'n' && d[2].text == "=": // type X = …: its value is evaluated lazily (Mythos #266 L6)
 		return ok(pyConst(d[3:]) && !slices.Contains(pyFixtures, d[1].text) && !(conftest && strings.HasPrefix(d[1].text, "collect_ignore")))

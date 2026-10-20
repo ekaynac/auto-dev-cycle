@@ -264,13 +264,17 @@ func (pb *pyBase) starSourceOf(p string) (string, error) {
 func (pb *pyBase) closure() error {
 	pb.opaque, pb.bad, pb.other = map[string]bool{}, map[string]bool{}, map[string]string{}
 	over := func() error {
+		pb.overLinks()
 		pb.holderUnread = cmp.Or(pb.holderUnread, "the base conditions' analysis is over the guard's work bound")
 		return pb.r.ctx.Err()
 	}
+	var wide []string
 	if _, ok := pb.forms(pb.r.files, false, pb.alts, pb.other); !ok {
 		return over()
-	} else if pb.folds, pb.folded, ok = pb.foldsOf(pb.alts, pb.other); !ok {
+	} else if pb.folds, pb.folded, wide, ok = pb.foldsOf(pb.alts, pb.other); !ok {
 		return over()
+	} else if len(wide) > 0 {
+		pb.holderUnread = cmp.Or(pb.holderUnread, "the module name "+wide[0]+" is not ASCII (a filesystem may fold it onto another)") // Opus #299 L1
 	}
 	for _, s := range pyStdlib { // a top-level module an external one may import lazily (Astra #281 r5 H4); a namespace portion never shadows a regular stdlib module
 		if q := cmp.Or(pb.shadowMods[s], pb.other[s]); q != "" && !strings.HasSuffix(q, "/") {
@@ -359,22 +363,32 @@ func (pb *pyBase) closure() error {
 	return nil
 }
 
-// foldsOf: each name of alts and other by its lowercase form, and the
-// lowercase forms two distinct names share: on a case-insensitive
-// filesystem one file stands in for the other (Opus #270 L4; widen-b S3,
-// decided for every host). Each name is charged; false: over the bound.
-func (pb *pyBase) foldsOf(alts map[string]int, other map[string]string) (map[string]string, map[string]bool, bool) {
-	folds, folded := map[string]string{}, map[string]bool{}
+// foldsOf: each name of alts and other by its lowercase form, the
+// lowercase forms two distinct names share, and the names that are not
+// ASCII, sorted: on a case-insensitive filesystem one file stands in for
+// the other (Opus #270 L4; widen-b S3, decided for every host), and a
+// Unicode fold (U+017F long s and s) is not ToLower's (Opus #299 L1).
+// Each name is charged; false: over the bound.
+func (pb *pyBase) foldsOf(alts map[string]int, other map[string]string) (map[string]string, map[string]bool, []string, bool) {
+	folds, folded, wide := map[string]string{}, map[string]bool{}, []string(nil)
 	for _, n := range slices.Concat(slices.Collect(maps.Keys(alts)), slices.Collect(maps.Keys(other))) {
 		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
-			return nil, nil, false
+			return nil, nil, nil, false
+		} else if !pyASCII(n) {
+			wide = append(wide, n)
 		} else if f := strings.ToLower(n); folds[f] == "" || folds[f] == n {
 			folds[f] = n
 		} else {
 			folded[f] = true
 		}
 	}
-	return folds, folded, true
+	slices.Sort(wide)
+	return folds, folded, slices.Compact(wide), true
+}
+
+// pyASCII: s is ASCII, as every name an import statement spells is.
+func pyASCII(s string) bool {
+	return !strings.ContainsFunc(s, func(r rune) bool { return r > 0x7f })
 }
 
 // risky: why closure module f may change what a condition reads, or "": a
@@ -406,9 +420,14 @@ func (pb *pyBase) risky(f *pyBaseFile) string {
 func (pb *pyBase) candClosure() (string, error) {
 	alts, other := map[string]int{}, map[string]string{}
 	mods, ok := pb.forms(pb.r.cand, true, alts, other)
-	_, folded, ok2 := pb.foldsOf(alts, other)
+	_, folded, wide, ok2 := pb.foldsOf(alts, other)
 	if !ok || !ok2 {
 		return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
+	}
+	for _, n := range wide { // a module name that is not ASCII, added (Opus #299 L1)
+		if pb.alts[n] == 0 && pb.other[n] == "" {
+			return cmp.Or(mods[n], other[n], n), nil
+		}
 	}
 	for _, s := range pyStdlib { // a top-level module an external one may import lazily, added (Astra #281 r5 H4)
 		if q := cmp.Or(mods[s], other[s]); q != "" && !strings.HasSuffix(q, "/") && pb.r.files[q] != pb.r.cand[q] {
