@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package daemon
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/api"
+	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
+	"github.com/ekaynac/auto-dev-cycle/internal/registry"
+)
+
+// chat posts a chat completion with token over client, returning the
+// status and the gateway's refusal header.
+func chat(t *testing.T, h func(*http.Request) (*http.Response, error), token string) (int, string, error) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, gateway.BaseURL+"/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := h(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, resp.Header.Get(gateway.RefusalHeader), nil
+}
+
+// P22a-5a (W16; #226 entries 57, 58, 78): adcd's gateway serves an
+// attempt's own socket and mints the adapter's value, a base_url with no
+// path and the binding's token; the attempt's end unbinds the token (a
+// request with it is then refused unbound), closes the socket and, the
+// call never intended, settles nothing; a second end returns the first's.
+func TestEgressAttemptSession(t *testing.T) {
+	d := restart(t, stateDir(t))
+	t.Cleanup(func() { _ = d.Close() })
+	e, err := newEgress(d, registry.Registry{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := gateway.Binding{Lease: types.LeaseID(newID(t, "lea")), Attempt: types.AttemptID(newID(t, "att")), Call: types.CallID(newID(t, "cal"))}
+	socket := filepath.Join(shortDir(t), "gw.sock")
+	v, end, err := e.open(b, socket)
+	if err != nil || v.BaseUrl != gateway.BaseURL || v.Token == "" {
+		t.Fatalf("open: %+v, %v", v, err)
+	}
+	over := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+	}}}
+	if status, refusal, err := chat(t, over.Do, v.Token); err != nil || status != http.StatusConflict || refusal != "lease_not_running_attempt" {
+		t.Fatalf("a request on the attempt's socket: %d %q %v", status, refusal, err)
+	}
+	ctx := context.Background()
+	obs, err := end(ctx)
+	if err != nil {
+		t.Fatalf("the end: %v", err)
+	}
+	if _, _, err := chat(t, over.Do, v.Token); err == nil {
+		t.Error("the socket still serves after the end")
+	}
+	direct := func(r *http.Request) (*http.Response, error) {
+		w := httptest.NewRecorder()
+		e.gw.ServeHTTP(w, r)
+		return w.Result(), nil
+	}
+	if status, refusal, _ := chat(t, direct, v.Token); status != http.StatusUnauthorized || refusal == "lease_not_running_attempt" {
+		t.Errorf("the token after the end: %d %q", status, refusal)
+	}
+	if again, err := end(ctx); err != nil || len(again.Statuses) != len(obs.Statuses) {
+		t.Errorf("a second end: %+v, %v", again, err)
+	}
+}
+
+// P22a-5a (§8 item 4): an exit run's capture keeps the body in the capture
+// store, never the controller's, and records it (blob.capture_kept: the
+// call, restricted, expiring 7 days later). The purge in adcd's loop, run
+// at a time past the expiry, removes the bytes and records
+// blob.capture_purged once; a second run purges nothing more. A digest
+// another live capture holds keeps its bytes until that one's purge.
+func TestEgressCaptureAndPurge(t *testing.T) {
+	dir := stateDir(t)
+	d := restart(t, dir)
+	t.Cleanup(func() { _ = d.Close() })
+	b := gateway.Binding{Lease: types.LeaseID(newID(t, "lea")), Attempt: types.AttemptID(newID(t, "att")), Call: types.CallID(newID(t, "cal"))}
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"canary"}]}`)
+	ctx := context.Background()
+	if err := captureOf(d).Keep(ctx, b, body); err != nil {
+		t.Fatal(err)
+	}
+	later := b
+	later.Call = types.CallID(newID(t, "cal"))
+	clock := time.Now()
+	d.clock = func() time.Time { return clock.Add(3 * 24 * time.Hour) }
+	if err := captureOf(d).Keep(ctx, later, body); err != nil { // the same bytes, kept 3 days later
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(body)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	if has, err := d.captures.Has(digest); err != nil || !has {
+		t.Fatalf("the capture store: %v %v", has, err)
+	}
+	if has, _ := d.blobs.Has(digest); has {
+		t.Error("the capture is in the controller's blob store")
+	}
+	var kept []types.EgressCapture
+	if err := d.store.View(ctx, func(tx *eventstore.Tx) error {
+		keys, err := tx.Keys(api.CaptureProjection, "")
+		for _, k := range keys {
+			raw, _, _ := tx.Get(api.CaptureProjection, k)
+			var c struct{ Record types.EgressCapture }
+			_ = json.Unmarshal(raw, &c)
+			kept = append(kept, c.Record)
+		}
+		return err
+	}); err != nil || len(kept) != 2 || kept[0].Class != gateway.ClassRestricted {
+		t.Fatalf("the captures kept: %+v, %v", kept, err)
+	}
+	purge := func(at time.Time) int {
+		t.Helper()
+		n, err := api.PurgeCaptures(ctx, d.store, d.captures, d.system, at, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := purge(clock.Add(8 * 24 * time.Hour)); n != 1 {
+		t.Fatalf("the first expiry purged %d", n)
+	}
+	if has, _ := d.captures.Has(digest); !has {
+		t.Error("the bytes the later capture holds are gone")
+	}
+	if n := purge(clock.Add(11 * 24 * time.Hour)); n != 1 {
+		t.Fatalf("the second expiry purged %d", n)
+	}
+	if has, _ := d.captures.Has(digest); has {
+		t.Error("the bytes outlive every capture")
+	}
+	if n := purge(clock.Add(12 * 24 * time.Hour)); n != 0 {
+		t.Errorf("a later run purged %d more", n)
+	}
+	if n := count(t, dir, `SELECT count(*) FROM events WHERE kind = '`+api.CapturePurged+`'`); n != 2 {
+		t.Errorf("purge events: %d", n)
+	}
+}
+
+// P22a-5a: adcd's purge loop purges expired captures: a capture seeded
+// expired before the start is purged by the loop's first run (its bytes
+// gone, one blob.capture_purged).
+func TestCapturesPurgedByTheLoop(t *testing.T) {
+	body := []byte("a request body")
+	var digest string
+	c := runCommanded(t, func(w *seeder, _ types.ActorID) {
+		captures, err := blobstore.Open(filepath.Join(w.dir, "captures"))
+		if err == nil {
+			digest, err = captures.Put(bytes.NewReader(body), "")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := types.EgressCapture{Digest: types.Digest(digest), Lease: types.LeaseID(newID(t, "lea")), Attempt: types.AttemptID(newID(t, "att")),
+			Call: types.CallID(newID(t, "cal")), Class: gateway.ClassRestricted, ExpiresAt: types.Time(time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano))}
+		raw, _ := json.Marshal(r)
+		evt := newID(t, "evt")
+		w.do(w.sys, func(*eventstore.Tx) ([]eventstore.Event, error) {
+			return []eventstore.Event{{ID: evt, Kind: api.CaptureKept, Subject: evt, Payload: raw}}, nil
+		})
+	})
+	for deadline := time.Now().Add(10 * time.Second); count(t, c.dir, `SELECT count(*) FROM events WHERE kind = '`+api.CapturePurged+`'`) != 1; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the loop purged no capture")
+		}
+	}
+	if has, err := c.d.captures.Has(digest); err != nil || has {
+		t.Errorf("the purged capture's bytes: %v %v", has, err)
+	}
+}

@@ -56,7 +56,7 @@ func hooks(az authority.Authorizer, project func(*eventstore.Tx, []eventstore.Ev
 // principal may ask for.
 var systemActions = append([]string{bootstrapAction, issueAction, renewAction, recoverAction, api.PurgeAction,
 	recovery.ActionLose, string(recovery.Revoke), string(recovery.Seal), string(recovery.Settle), recovery.ActionRefuse,
-	modelcall.Action, modelcall.Counted, ledger.ReconcileAction}, reconcile.Actions...)
+	modelcall.Action, modelcall.Counted, ledger.ReconcileAction, api.CaptureAction, api.CapturePurgeAction}, reconcile.Actions...)
 
 // reconcileEvery is the reconcile loop's period (P22a-4; lead decision:
 // 5 s, plus a nudge after each applied command).
@@ -201,7 +201,7 @@ func nodeKinds() []types.NodeKind {
 // a kind registered twice is refused rather than silently overwritten.
 func eventKinds() (eventstore.Kinds, error) {
 	all := eventstore.Kinds{}
-	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), authority.OwedKinds(), lease.Kinds(), ledger.Kinds(), modelcall.Kinds(), graph.Kinds(), api.BlobKinds()} {
+	for _, ks := range []eventstore.Kinds{identity.Kinds(), authority.GrantKinds(), authority.SeatKinds(), authority.ProposalKinds(), authority.NoteKinds(), authority.ProjectKinds(), authority.TaskKinds(), authority.OwedKinds(), lease.Kinds(), ledger.Kinds(), modelcall.Kinds(), graph.Kinds(), api.BlobKinds(), api.CaptureKinds()} {
 		for k := range ks {
 			if _, dup := all[k]; dup {
 				return nil, fmt.Errorf("daemon: event kind %s is registered twice", k)
@@ -237,7 +237,8 @@ func projector(blobs lease.Blobs, holds map[string]types.Hold, r capacity.Reserv
 		authority.OwedProjector{}.Project,
 		capacity.Hook(leases, r),
 		ledger.Project,
-		modelcall.Project, // each call's binding, by call and by lease: the settlement's (#226 entries 70, 78)
+		modelcall.Project,   // each call's binding, by call and by lease: the settlement's (#226 entries 70, 78)
+		api.ProjectCaptures, // the egress captures kept and not yet purged (P22a-5a)
 		graph.Projector{Answers: authority.Answers{}, Kinds: nodeKinds(), Tasks: authority.Tasks{}}.Project, // the folds check the recorded answers (M1 P6), the deferred surfaces (I15) and the claims' tasks (I22)
 	)
 }

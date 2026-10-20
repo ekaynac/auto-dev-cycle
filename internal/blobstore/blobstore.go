@@ -253,6 +253,21 @@ func (s *Store) Has(digest string) (bool, error) {
 	return regular(s.path(m[1]))
 }
 
+// Remove deletes the blob stored under the digest, durably; one already
+// gone is no error. Only a store none of whose blobs another record shares
+// removes any: the egress captures' (P22a-5a), apart from the controller's.
+func (s *Store) Remove(digest string) error {
+	m := digestRe.FindStringSubmatch(digest)
+	if m == nil {
+		return fmt.Errorf("blobstore: malformed digest %q", digest)
+	}
+	p := s.path(m[1])
+	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return syncDir(filepath.Dir(p))
+}
+
 // Verify re-hashes a stored blob and fails if its bytes changed on disk.
 func (s *Store) Verify(digest string) error {
 	f, err := s.Open(digest)

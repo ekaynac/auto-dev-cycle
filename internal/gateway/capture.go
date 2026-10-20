@@ -31,6 +31,7 @@ type Capture interface {
 type Captured struct {
 	Lease     types.LeaseID
 	Attempt   types.AttemptID
+	Call      types.CallID
 	Digest    string
 	Class     string
 	ExpiresAt time.Time
@@ -53,6 +54,6 @@ func (c BlobCapture) Keep(ctx context.Context, b Binding, body []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.Record(ctx, Captured{Lease: b.Lease, Attempt: b.Attempt, Digest: digest, Class: ClassRestricted,
+	return c.Record(ctx, Captured{Lease: b.Lease, Attempt: b.Attempt, Call: b.Call, Digest: digest, Class: ClassRestricted,
 		ExpiresAt: c.Now().Add(CaptureTTL).UTC()})
 }

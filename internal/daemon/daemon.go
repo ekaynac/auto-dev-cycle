@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,7 @@ type Daemon struct {
 	lock     *eventstore.Lock
 	store    *eventstore.Store
 	blobs    *blobstore.Store
+	captures *blobstore.Store   // the egress captures' (api.PurgeCaptures)
 	head     eventstore.Head    // verified at start
 	system   identity.Principal // the system actor's, held only here
 	boot     *bootstrapper
@@ -101,6 +103,10 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 		}
 	}
 	blobs, err := blobstore.Open(lock.Dir())
+	var captures *blobstore.Store // a store of its own: a capture's purge removes bytes no other record shares
+	if err == nil {
+		captures, err = blobstore.Open(filepath.Join(lock.Dir(), "captures"))
+	}
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the blob store cannot be opened", err)
 	}
@@ -171,7 +177,7 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	if recovered.note != "" {
 		note = strings.TrimSpace(note + "\n" + recovered.note)
 	}
-	return &Daemon{lock: lock, store: store, blobs: blobs, head: head, system: system, boot: boot, clock: clock, note: note, az: az}, nil
+	return &Daemon{lock: lock, store: store, blobs: blobs, captures: captures, head: head, system: system, boot: boot, clock: clock, note: note, az: az}, nil
 }
 
 // Head is the event log's head verified at start.
@@ -255,17 +261,21 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	return nil
 }
 
-// purgeEvery is how often expired uploads are purged.
+// purgeEvery is how often expired uploads and captures are purged.
 const purgeEvery = time.Minute
 
-// purgeUploads purges expired uploads now and then every period until ctx
-// ends; a failure is logged and retried at the next period.
+// purgeUploads purges expired uploads and egress captures now and then
+// every period until ctx ends; a failure is logged and retried at the next
+// period.
 func (d *Daemon) purgeUploads(ctx context.Context, period time.Duration, logw io.Writer) {
 	t := time.NewTicker(period)
 	defer t.Stop()
 	for {
 		if _, err := api.PurgeExpired(ctx, d.store, d.blobs, d.system, d.clock(), logw); err != nil && ctx.Err() == nil {
 			fmt.Fprintf(logw, "adcd: purging expired uploads: %v\n", err)
+		}
+		if _, err := api.PurgeCaptures(ctx, d.store, d.captures, d.system, d.clock(), nil); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(logw, "adcd: purging expired captures: %v\n", err)
 		}
 		select {
 		case <-ctx.Done():
