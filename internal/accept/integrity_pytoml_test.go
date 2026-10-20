@@ -10,11 +10,14 @@ import (
 )
 
 // pyRealTOML are three real pyproject.toml files without a pytest table, the
-// widen-b baseline's false blocks: networkx 3.3 (7fdddfa2ca) and setuptools
-// 72.1.0 (441799f8b4), whose classifier "5 - Production/Stable" main read
-// as the option -, and arrow 17.0.0's python/ (6a2e19a852), whose
-// setuptools-scm "git describe --dirty" main read as the option --dirty.
-var pyRealTOML = []string{"networkx-3.3.toml", "setuptools-72.1.0.toml", "arrow-17.0.0.toml"}
+// widen-b baseline's false-block reader (Opus #296 M1): networkx 3.3
+// (7fdddfa2ca, BSD-3-Clause) and setuptools 72.1.0 (441799f8b4, MIT), whose
+// classifier "5 - Production/Stable" main read as the option -, and arrow
+// 17.0.0's python/ (6a2e19a852, Apache-2.0), whose setuptools-scm "git
+// describe --dirty" main read as the option --dirty. Each is its project's
+// file verbatim, under its project's licence: .txt, so that no SPDX header
+// of this repository's is added to it.
+var pyRealTOML = []string{"networkx-3.3.pyproject.txt", "setuptools-72.1.0.pyproject.txt", "arrow-17.0.0.pyproject.txt"}
 
 func pyRealFile(t *testing.T, name string) string {
 	t.Helper()
