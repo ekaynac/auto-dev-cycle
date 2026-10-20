@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# The prepared Go image for this repository (P32, 00 §8 item 2): the pinned
-# toolchain with the module cache for go.mod and go.sum baked in, so the gate
-# runs `go test -json` offline. Build it only through
-# scripts/prepare-go-image.sh, which puts exactly the two lockfiles and
-# warm.txt into the build context and sets the dev.adc.prepared manifest label
-# that the sandbox checks (sandbox.Image.CheckManifest).
+# The prepared Go image of a project (P32, 00 §8 item 2; #226 entry 97): this
+# repository's, or go-mini's. It is the pinned toolchain with the module cache
+# for the project's lockfiles baked in, so the gate runs `go test -json`
+# offline. Build it only through scripts/prepare-go-image.sh PROJECT, which
+# puts exactly the project's lockfiles (under lock/) and warm.txt into the
+# build context and sets the dev.adc.prepared manifest label that the sandbox
+# checks (sandbox.Image.CheckManifest).
 #
 # The base is go.mod's toolchain (go1.27.1), pinned by its multi-arch index
 # digest (linux/amd64 and linux/arm64). It is fixed here, not a build
@@ -24,9 +25,9 @@ ENV GOTOOLCHAIN=local \
     GOCACHE=/opt/adc/gocache
 
 WORKDIR /opt/adc/prepare
-COPY go.mod go.sum warm.txt ./
+COPY lock/ warm.txt ./
 # The only networked step: download and verify every module of the
-# lockfiles. Then compile the standard library and the third-party packages
+# lockfiles (none for a project without dependencies). Then compile the standard library and the third-party packages
 # the tests import (warm.txt, from go list at the base), for each gate
 # platform (the integrity guard's go list types both; P14e-2c): a cache
 # only, so a stale list costs time, never correctness.

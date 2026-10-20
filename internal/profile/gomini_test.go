@@ -3,13 +3,16 @@
 package profile
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/results"
+	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
 // go-mini, checkpoint (a)'s stub project (#226 entry 94): its profile passes
@@ -48,5 +51,50 @@ func TestGoMiniProfile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join("../../fixtures/t0/go-mini/repo", "go.mod")); err != nil {
 		t.Fatalf("the repository: %v", err)
+	}
+}
+
+// go-mini's prepared image (#226 entry 97): the recipe's label for go-mini
+// passes P9's check against T0's repo/ under the profile's toolchain key and
+// lockfiles; this repository's label is refused for it, and go-mini's for
+// this repository (the discriminating controls).
+func TestGoMiniPreparedManifest(t *testing.T) {
+	raw, err := os.ReadFile("../../fixtures/m1/profiles/go-mini.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	label := func(project string) sandbox.Image {
+		out, err := exec.Command("bash", prepare, "manifest", project).Output()
+		if err != nil {
+			t.Fatalf("the generator for %s: %v", project, err)
+		}
+		var img sandbox.Image
+		if err := json.Unmarshal(out, &img.Manifest); err != nil {
+			t.Fatalf("the label %q: %v", out, err)
+		}
+		return img
+	}
+	const repo = "../../fixtures/t0/go-mini/repo"
+	goMini, self := label("go-mini"), label("auto-dev-cycle")
+	lockfiles := p.Toolchain.DependencyRecipe.Lockfiles
+	if err := goMini.CheckManifest("go", repo, lockfiles); err != nil {
+		t.Errorf("go-mini's label for go-mini: %v", err)
+	}
+	if err := self.CheckManifest("go", repo, lockfiles); err == nil {
+		t.Error("this repository's label passed for go-mini")
+	}
+	selfProfile, err := Load(loadSelf(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := goMini.CheckManifest("go", repoRoot, selfProfile.Toolchain.DependencyRecipe.Lockfiles); err == nil {
+		t.Error("go-mini's label passed for this repository")
+	}
+	if out, err := exec.Command("bash", prepare, "manifest", "another").CombinedOutput(); err == nil {
+		t.Errorf("an unknown project: %s", out)
 	}
 }
