@@ -93,10 +93,11 @@ func minSeq(t *testing.T, dir, where string) int {
 // and sealed, its lease settled with the call, uncertain, kept as a
 // liability, which the model calls' bindings (projected in adcd) give. In
 // the log, the restart rule's transition comes first, then attempt.lost,
-// then whatever else the start appends, if anything (Opus #297 M2, L5:
-// the bootstrap's secret on a store with no operator; this store has one,
-// since a claim takes an admitted task, P22a-3, so the start appends
-// nothing else). A second start appends no event; it records one
+// then whatever else the start appends, if anything (Opus #297 M2, L5).
+// This store has an operator, since a claim takes an admitted task
+// (P22a-3), so the bootstrap appends nothing, and on every store with a cut
+// attempt the log cannot show recovery before the bootstrap: the types keep
+// that order (recoveredStore, which openBootstrap takes). A second start appends no event; it records one
 // recovery.lose command with none (Opus #297 L4).
 func TestStartRecoversACutAttempt(t *testing.T) {
 	fresh := restart(t, stateDir(t))
