@@ -33,9 +33,9 @@ set -euo pipefail
 
 SECRETS_TAG=installed-cycle
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/secrets.sh
+# shellcheck source=scripts/lib/secrets.sh
 . "$here/lib/secrets.sh"
-# shellcheck source=lib/base-remote.sh
+# shellcheck source=scripts/lib/base-remote.sh
 . "$here/lib/base-remote.sh"
 
 cannot() {
@@ -141,6 +141,7 @@ stub=$!
 listening() { kill -0 "$stub" 2>/dev/null || die "the stub provider exited: $(head -c 400 "$work/out/stub.err")"; grep -q '^listening ' "$work/out/stub.out"; }
 within 30 "the stub provider" listening
 base="$(sed -n 's/^listening //p' "$work/out/stub.out")"
+# shellcheck disable=SC2016 # the single-quoted program is JavaScript for Node: its ${...} are template literals, not shell expansions
 n="$("$node" -e 'const fs = require("node:fs"); const d = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); let n = 0;
   for (const e of d.executors) if (e.destination.id === "stub") { e.destination.endpoint = process.argv[2]; n++; }
   fs.writeFileSync(process.argv[3], JSON.stringify(d)); console.log(`${n} ${d.executors.length}`)' "$fixtures/m1/config/registry-stub.json" "$base" "$work/registry.json")"
@@ -194,7 +195,9 @@ stop() {
 stop
 adc dev verify-log --state "$work/state" >"$work/out/verify.out" 2>&1 || die "the log does not verify: $(head -c 400 "$work/out/verify.out")"
 seq="$(sed -n 's/^[a-z_]*\/[a-z_]*: head \([0-9][0-9]*\) .*/\1/p' "$work/out/verify.out" | head -n 1)"
-[[ -n "$seq" ]] && ((seq > 0)) || die "verify-log reports no head past seq 0: $(head -c 400 "$work/out/verify.out")"
+if [[ -z "$seq" ]] || ((seq <= 0)); then
+  die "verify-log reports no head past seq 0: $(head -c 400 "$work/out/verify.out")"
+fi
 secrets_before="$(find "$work" -name bootstrap.secret -printf '%p %i\n' | LC_ALL=C sort)"
 start_adcd
 within 60 "adcd to restart" started "; event log verified to seq $seq;"
