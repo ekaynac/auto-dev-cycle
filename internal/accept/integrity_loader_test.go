@@ -160,6 +160,21 @@ func TestIntegrityProcess(t *testing.T) {
 			t.Errorf("%s: in this process %q %q, in its own %q %q", name, whats(in.Blocks), whats(in.Warnings), whats(out.Blocks), whats(out.Warnings))
 		}
 	}
+	// The base's links cross to the child (main's Opus #279 M1, Astra #281
+	// r2 H5): a judged base symlink is unread there too.
+	lm := newFixtureWith(t, func(src string) {
+		flags := "import pytest\nimport feature.flags\n\n@pytest.mark.skipif(feature.flags.SKIP, reason='r')\ndef test_z():\n    assert False\n"
+		write(t, src, map[string]string{"feature/__init__.py": "", "feature/flags.py": "SKIP = False\n", "cfg.py": "SKIP = False\n", "tests/test_z.py": flags})
+		if err := os.Symlink("X=1", filepath.Join(src, "tests", "test_y.py")); err != nil {
+			t.Fatal(err)
+		}
+		plain(t, src, "add", "--all")
+	})
+	cfg := map[string]string{"cfg.py": "SKIP = 'True'\n"}
+	if in, out := lm.guarded(t, cfg), lm.loaded(t, testLister(t), cfg); !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) ||
+		!slices.ContainsFunc(out.Blocks, func(b Block) bool { return strings.Contains(b.What, "tests/test_y.py is unread") }) {
+		t.Errorf("a base symlink: in this process %q, in its own %q", whats(in.Blocks), whats(out.Blocks))
+	}
 	// #2 (Astra #293 r2): nine nested modules of identical module files
 	// (each listing's payload sent once, then referred to), within a lowered
 	// output bound that the files resent on every listing would pass.
