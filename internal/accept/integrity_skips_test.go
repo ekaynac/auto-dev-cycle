@@ -128,6 +128,12 @@ func pick() func(*testing.T) { return requireDocker }
 
 var picked = pick()
 
+func register(f func(*testing.T)) bool { return f != nil }
+
+var registered = register(requireDocker)
+
+var count = len([]func(*testing.T){requireDocker})
+
 func skipElement(t *testing.T) error {
 	d := xml.NewDecoder(strings.NewReader(t.Name()))
 	return d.Skip()
@@ -203,6 +209,8 @@ func TestIntegritySkips(t *testing.T) {
 		"a held result, used (r2 M1)":         {in("\t_ = url()\n"), ""},
 		"a held result, read (r2 M1)":         {in("\tif shared != nil {\n\t\tt.Log(shared.URL)\n\t}\n"), ""},
 		"a held result, cleared (r2 M1)":      {in("\tdefer closeClient()\n"), ""},
+		"a plain result of a helper argument": {in("\tif !registered {\n\t\tt.Fatal(\"r\")\n\t}\n"), ""},
+		"a plain result of a helper slice":    {in("\tt.Log(count)\n"), ""},
 		"a returned helper called":            {in("\tpick()(t)\n"), skipped},
 		"a returned helper held":              {in("\tpicked(t)\n"), skipped},
 		"a copy of a rebound copy":            {in("\trebound(t)\n"), ""},
@@ -310,7 +318,10 @@ func charged(t *testing.T, f fixture, files map[string]string) int64 {
 
 // linear: the skip layer's work for 4n is under 5 × n's (4 ×, and n's
 // again as slack: longer names, fixed costs); a quadratic shape is about
-// 16 times, by a count, never a clock (Opus #315 r2 L1).
+// 16 times, by a count, never a clock (Opus #315 r2 L1). The counter sees
+// only charged work: a loop that never calls charge passes these rows
+// whatever its shape (Opus #315 r3 L1). That every loop over references,
+// values and copies charges is review's to keep.
 func linear(t *testing.T, small, large int64) {
 	t.Helper()
 	t.Logf("work: n %d, 4n %d", small, large)

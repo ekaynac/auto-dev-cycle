@@ -38,11 +38,14 @@ import (
 //     scan has no type for it.
 
 // maxSkipWork bounds the skip layer's work in a run, its own: the bytes it
-// reads and each step of its copy search. Every scan reads at most the
-// bytes of its version's touched packages, so a run's reading stays under
-// len(platforms) × maxRead; twice that again is headroom for the steps, and
-// the read bound always binds first (Opus #315 r2 L2). A var: tests lower it.
-var maxSkipWork = 4 * len(platforms) * int(maxRead)
+// reads and each step of its copy search (Opus #315 r2 L2, r3 L3). Each
+// platform scans both versions, and a blob unchanged between them is
+// charged to maxRead once (2 ×); a value assigned in a function is read
+// with its body and again as the variable's value (2 ×); the copy search
+// takes at most about one step per source byte (2 ×). So the work stays
+// under 8 × len(platforms) × maxRead; the bound is twice that. A var:
+// tests lower it.
+var maxSkipWork = 16 * len(platforms) * int(maxRead)
 
 // skipReads counts the skip layer's readings and skipCharged its work in
 // all (tests read them: a bound and a count, never a clock).
@@ -180,9 +183,11 @@ type bodyFacts struct {
 
 // skipRead reads n once, charged; past the bound, nothing. A package
 // variable's value (value) holds what it names, not what it calls: outside
-// a function literal, a function only called there is not counted unless
-// the call's result can hold a function (pick()), so shared =
-// requireServer(t) holds a server, not a skip (Opus #315 r2 M1).
+// a function literal, a call whose result is plain data holds nothing of it,
+// neither its callee nor its receiver nor its arguments (shared =
+// requireServer(t) holds a server; registered = register(requireDocker) a
+// bool); a call whose result can hold a function counts all of it (pick())
+// (Opus #315 r2 M1, r3 M1).
 func (s *pkgScan) skipRead(n ast.Node, value bool) (r bodyFacts) {
 	skipReads.Add(1)
 	if !s.charge(int(n.End() - n.Pos())) {
@@ -204,27 +209,9 @@ func (s *pkgScan) skipVisit(n ast.Node, value bool, r *bodyFacts, walk func(ast.
 			walk(x.Body, false)
 			return false
 		case *ast.CallExpr:
-			if t := s.info.TypeOf(x); t == nil || !plainData(t, map[types.Type]bool{}) {
-				return true // the result can hold a function, or is unknown: all of it
-			}
-			callee := ast.Unparen(x.Fun)
-			switch c := callee.(type) {
-			case *ast.IndexExpr:
-				callee = c.X
-			case *ast.IndexListExpr:
-				callee = c.X
-			}
-			switch c := ast.Unparen(callee).(type) {
-			case *ast.Ident: // called only: not held
-			case *ast.SelectorExpr:
-				walk(c.X, true)
-			default:
-				walk(c, true)
-			}
-			for _, a := range x.Args {
-				walk(a, true)
-			}
-			return false
+			// The result can hold a function, or is unknown: all of it. Plain
+			// data holds none: not its callee, receiver or arguments (Opus #315 r3 M1).
+			return s.info.TypeOf(x) == nil || !plainData(s.info.TypeOf(x), map[types.Type]bool{})
 		}
 	}
 	switch x := n.(type) {
