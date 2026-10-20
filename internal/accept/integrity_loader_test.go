@@ -117,16 +117,74 @@ func TestIntegrityProcess(t *testing.T) {
 	for i := range maxReported + 500 {
 		fmt.Fprintf(&many, "\nfunc f%d() { fmt.Println() }\n", i)
 	}
+	// Astra #293 r2 #3: 1,001 functions of 971-byte names: warnings of
+	// 1,000-byte paths exhaust the report's bytes before its count.
+	var wide strings.Builder
+	wide.WriteString("package tool7\n\nimport \"fmt\"\n")
+	for i := range 1001 {
+		fmt.Fprintf(&wide, "\nfunc f%s%04d() { fmt.Println() }\n", strings.Repeat("a", 966), i)
+	}
+	ignored := []string{"out.bin"} // a warning the verdict holds before the guard's
 	for name, files := range map[string]map[string]string{
 		"a path past the frame's bound":      {"tool9/long.go": "package tool9\n\nimport \"fmt\"\n\nfunc f" + strings.Repeat("a", 5000) + "() { fmt.Println(1) }\n"},
 		"warnings past a rank's maxReported": {"tool8/many.go": many.String()},
+		"Astra's 1,001 wide warnings":        {"tool7/many.go": wide.String()},
+		"after the verdict's own warning":    {"tool7/many.go": wide.String()},
 	} {
 		in, out := f.guarded(t, files), f.loaded(t, testLister(t), files)
+		if name == "after the verdict's own warning" {
+			in, out = f.withIgnored(t, integrity(f.repo, f.base, testLister(t)), files, ignored), f.withIgnored(t, Integrity(f.repo, f.base, testLister(t), ""), files, ignored)
+		}
 		in.Elapsed, out.Elapsed = 0, 0
 		if in.Accepted() != out.Accepted() || len(in.Warnings) == 0 || name != "a path past the frame's bound" && len(in.Warnings) <= maxReported ||
-			len(out.Warnings) != len(in.Warnings) || !sameReport(t, in.Report, out.Report) {
+			len(out.Warnings) != len(in.Warnings) || !sameReport(t, in.Report, out.Report) || detail("", in.Warnings) != detail("", out.Warnings) {
 			t.Errorf("%s: accepted %v, %d warnings; in its own %v, %d warnings; %q", name, in.Accepted(), len(in.Warnings), out.Accepted(), len(out.Warnings), whats(out.Blocks))
 		}
+	}
+	// #1 (Astra #293 r2): an empty root go.mod added, or deleted: the
+	// in-process guard's verdicts (no absent blob read).
+	readme := map[string]string{"README.md": "x\n"}
+	for name, c := range map[string]struct {
+		base, files map[string]string
+		gone        []string
+	}{
+		"an empty go.mod added":   {readme, map[string]string{"go.mod": ""}, nil},
+		"an empty go.mod deleted": {map[string]string{"README.md": "x\n", "go.mod": ""}, nil, []string{"go.mod"}},
+	} {
+		m := newFixtureWith(t, func(src string) {
+			write(t, src, c.base)
+			plain(t, src, "add", "--all")
+		})
+		in, out := m.guarded(t, c.files, c.gone...), m.loaded(t, testLister(t), c.files, c.gone...)
+		if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || !out.Accepted() {
+			t.Errorf("%s: in this process %q %q, in its own %q %q", name, whats(in.Blocks), whats(in.Warnings), whats(out.Blocks), whats(out.Warnings))
+		}
+	}
+	// #2 (Astra #293 r2): nine nested modules of identical module files
+	// (each listing's payload sent once, then referred to), within a lowered
+	// output bound that the files resent on every listing would pass.
+	nested := map[string]string{}
+	for i := range 9 {
+		d := fmt.Sprintf("n%d/", i)
+		nested[d+"go.mod"] = "module example.com/n\n\ngo 1.24\n\n// " + strings.Repeat("p", 100<<10) + "\n"
+		nested[d+"go.sum"] = strings.Repeat("\n", 100<<10)
+		nested[d+"x.go"] = "package n\n\nimport \"strings\"\n\nfunc F() string { return strings.ToUpper(\"a\") }\n"
+	}
+	nm := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, nested)
+		plain(t, src, "add", "--all")
+	})
+	changed := map[string]string{}
+	for i := range 9 {
+		changed[fmt.Sprintf("n%d/x.go", i)] = "package n\n\nimport \"strings\"\n\nfunc F() string { return strings.ToUpper(\"b\") }\n"
+	}
+	oldOut := maxProcOut
+	maxProcOut = 2 << 20 // 36 listings resending both files: about 7 MiB
+	in, out := nm.guarded(t, changed), nm.loaded(t, testLister(t), changed)
+	maxProcOut = oldOut
+	if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || !out.Accepted() {
+		t.Errorf("nine nested modules: in this process %q %q, in its own %q %q", whats(in.Blocks), whats(in.Warnings), whats(out.Blocks), whats(out.Warnings))
 	}
 	// #2 (Astra #287 r2): an absent go.mod (the loader's fallback module)
 	// and a present, empty one cross the frame as they are: the same
@@ -200,7 +258,6 @@ func TestIntegrityProcess(t *testing.T) {
 		t.Errorf("a run after an abandoned check: %q", whats(v.Blocks))
 	}
 	// A child that ends without its result, or writes past its bound, blocks.
-	oldOut := maxProcOut
 	maxProcOut = 64
 	v := f.loaded(t, testLister(t), plainGo)
 	if maxProcOut = oldOut; !finds(v.Blocks, "unverifiable: the guard's process ended without its result") {
@@ -638,4 +695,15 @@ func TestIntegrityVendored(t *testing.T) {
 	if v := g.guarded(t, map[string]string{"tools/vendor/notes.txt": "x\n"}); !v.Accepted() {
 		t.Errorf("a vendor/ beside no go.mod: %q", whats(v.Blocks))
 	}
+}
+
+// withIgnored is guarded's Accept with guard, and ignored paths' warnings
+// before the guard's.
+func (f fixture) withIgnored(t *testing.T, guard Guard, files map[string]string, ignored []string) Verdict {
+	t.Helper()
+	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, files), Policy: f.policy, Ignored: ignored, Guard: guard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }

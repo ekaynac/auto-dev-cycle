@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/gob"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -48,7 +49,7 @@ var maxRunTime = 10 * time.Minute // one guard run, from its start; type checks 
 // what is left of the frame.
 var (
 	maxProcOut    int64 = 256 << 20
-	maxFrame            = 64 << 20 // a result's at most 2 × 3 × maxReported entries of 2 maxResultField bytes
+	maxFrame            = 64 << 20 // a result's at most 2 lists × (detailKept + 2 × maxReported) entries of 2 maxResultField bytes
 	maxMsgEntries       = 1 << 16  // blocks, warnings or paths in one message
 	maxDropped          = 1 << 20  // entries a result's list may leave out, by count
 )
@@ -98,6 +99,7 @@ func RunChildIfAsked() {
 // procMsg is the controller's message to the child: the run, then each answer.
 type procMsg struct {
 	Changes         []Change
+	Prefix          []prefixed // the verdict's warnings before the guard's (reportPrefix)
 	Files           map[string]string
 	Over            bool // the base's file list is over its bound
 	ListEnd         time.Time
@@ -110,6 +112,12 @@ type procMsg struct {
 	Erred, Panicked bool // an error or a panic, whatever its text
 }
 
+// prefixed is a verdict's warning before the guard's, as procMsg carries it.
+type prefixed struct {
+	JSON            []byte
+	Additive, Typed bool
+}
+
 // childMsg is one of the child's: a read ('r'), a list ('l') or the result ('d').
 type childMsg struct {
 	op               byte
@@ -117,6 +125,8 @@ type childMsg struct {
 	max              int64
 	platform         [2]string
 	gomod, gosum     []byte
+	gomodRef         int // 1 + the index of an earlier listing's payload, 0 none (Astra #293 r2 #2)
+	gosumRef         int
 	paths            []string
 	blocks, warnings []Block
 	dropped          [2][4][4]int // per list, by flags (Additive, Typed) and clip (Path, What): entries left out (fit)
@@ -128,9 +138,16 @@ func (m childMsg) frame() []byte {
 	b := []byte{0, 0, 0, 0, m.op}
 	num := func(n int) { b = binary.AppendUvarint(b, uint64(n)) }
 	str := func(s string) { num(len(s)); b = append(b, s...) }
-	opt := func(v []byte) { // presence apart from length: an absent go.mod is not an empty one (Astra #287 r2 #2)
-		if b = append(b, byte(b2i(v != nil))); v != nil {
+	opt := func(v []byte, ref int) { // presence apart from length: an absent go.mod is not an empty one (Astra #287 r2 #2); or an earlier payload's index
+		switch {
+		case ref > 0:
+			b = append(b, 2)
+			num(ref - 1)
+		case v != nil:
+			b = append(b, 1)
 			str(string(v))
+		default:
+			b = append(b, 0)
 		}
 	}
 	switch m.op {
@@ -140,8 +157,8 @@ func (m childMsg) frame() []byte {
 	case 'l':
 		str(m.platform[0])
 		str(m.platform[1])
-		opt(m.gomod)
-		opt(m.gosum)
+		opt(m.gomod, m.gomodRef)
+		opt(m.gosum, m.gosumRef)
 		num(len(m.paths))
 		for _, p := range m.paths {
 			str(p)
@@ -169,8 +186,9 @@ func (m childMsg) frame() []byte {
 }
 
 // readFrame reads one child message, its size, counts and lengths checked
-// before anything is allocated for them; left is what the run may still read.
-func readFrame(r io.Reader, left *int64) (childMsg, error) {
+// before anything is allocated for them; left is what the run may still
+// read, payloads the module files listings sent (each once).
+func readFrame(r io.Reader, left *int64, payloads *[][]byte) (childMsg, error) {
 	var n [4]byte
 	if _, err := io.ReadFull(r, n[:]); err != nil {
 		return childMsg{}, err
@@ -215,10 +233,22 @@ func readFrame(r io.Reader, left *int64) (childMsg, error) {
 		return f == 1
 	}
 	opt := func() []byte {
-		if !bit() {
+		switch flag() {
+		case 0:
 			return nil
+		case 1:
+			v := append([]byte{}, str(int(maxFile))...) // present: never nil, empty or not
+			if !bad {
+				*payloads = append(*payloads, v)
+			}
+			return v
+		case 2:
+			if i := num(len(*payloads)-1, 0); !bad && len(*payloads) > 0 {
+				return (*payloads)[i]
+			}
 		}
-		return append([]byte{}, str(int(maxFile))...) // present: never nil, empty or not
+		bad = true
+		return nil
 	}
 	switch m.op {
 	case 'r':
@@ -332,7 +362,17 @@ func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Cha
 	if procStarted != nil {
 		procStarted(cmd.Process)
 	}
-	req := procMsg{Changes: changes, Files: files, Over: files == nil, ListEnd: time.Now().Add(maxListTime), Dir: dir, Lister: list != nil}
+	var prefix []prefixed // gob sends no reason: each entry as JSON, and its flags
+	if bs, _ := ctx.Value(reportPrefix{}).([]Block); len(bs) > 0 {
+		for _, b := range bs {
+			j, err := json.Marshal(b)
+			if err != nil {
+				return nil, nil, err
+			}
+			prefix = append(prefix, prefixed{j, b.Additive, b.Typed})
+		}
+	}
+	req := procMsg{Changes: changes, Prefix: prefix, Files: files, Over: files == nil, ListEnd: time.Now().Add(maxListTime), Dir: dir, Lister: list != nil}
 	blocks, warnings, err, ok, left := converse(ctx, in, out, req, read, list)
 	inflight = left
 	if !ok {
@@ -380,9 +420,9 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 	for _, c := range req.Changes {
 		s.allowed[c.SrcBlob], s.allowed[c.DstBlob] = true, true
 	}
-	enc, left, slots := gob.NewEncoder(in), maxProcOut, serviceSlots
+	enc, left, slots, payloads := gob.NewEncoder(in), maxProcOut, serviceSlots, [][]byte{}
 	for m := req; enc.Encode(m) == nil; {
-		c, err := readFrame(out, &left)
+		c, err := readFrame(out, &left, &payloads)
 		if err != nil {
 			return nil, nil, nil, false, nil
 		} else if c.op == 'd' {
@@ -420,29 +460,53 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 	return nil, nil, nil, false, nil
 }
 
-// The fillers of an entry fit left out: a field over maxField, as the
-// report counts it clipped, and a short What.
-var clipFill, leftOut = strings.Repeat(".", maxField+1), "an entry the guard's process left out of its result"
+// detailKept: each list's first entries, which Result's detail reads (it
+// stops past 4,000 bytes; an entry's line is 31 bytes at least).
+const detailKept = 200
 
-// fit is bs as the frame carries it, the report unchanged (Opus #293 M1):
-// each rank's first maxReported entries, in order, their Path and What cut
-// to maxResultField; the rest counted, by flags and by which field the
-// report would clip, at most maxDropped in all (past it, uncounted).
-func fit(bs []Block) (kept []Block, dropped [4][4]int) {
-	var perRank [3]int
-	total := 0
-	for _, b := range bs {
-		if r := b2i(b.Additive) + b2i(b.Typed); perRank[r] < maxReported {
-			perRank[r]++
-			b.Path, b.What = cutField(b.Path), cutField(b.What)
-			kept = append(kept, b)
-		} else if total < maxDropped {
-			total++
-			dropped[b2i(b.Additive)|b2i(b.Typed)<<1][b2i(len(b.Path) > maxField)|b2i(len(b.What) > maxField)<<1]++
+// fitReport is the guard's blocks and warnings as the frame carries them,
+// the verdict and its report unchanged (Opus #293 M1; Astra #293 r2 #3):
+// each list's first detailKept entries, and every entry the report selects
+// after the verdict's prefix warnings, with and (no block) without
+// Accept's own block after the guard; their Path and What cut to
+// maxResultField. The rest the report leaves out wherever they stand: they
+// are counted, by flags and by which field it clips, at most maxDropped in
+// all (past it, uncounted).
+func fitReport(prefix, blocks, warnings []Block) (kept [2][]Block, dropped [2][4][4]int) {
+	keep := [2][]bool{make([]bool, len(blocks)), make([]bool, len(warnings))}
+	mark := func(lists [2][]Block, from [2]int) {
+		in, _, _, _, _ := selection(lists)
+		for l := range 2 {
+			for i := from[l]; i < len(lists[l]); i++ {
+				keep[l][i-from[l]] = keep[l][i-from[l]] || in[l][i]
+			}
+		}
+	}
+	mark([2][]Block{blocks, slices.Concat(prefix, warnings)}, [2]int{0, len(prefix)})
+	if len(blocks) == 0 {
+		mark([2][]Block{{tooLarge}, slices.Concat(prefix, warnings)}, [2]int{1, len(prefix)})
+	}
+	for l, bs := range [2][]Block{blocks, warnings} {
+		total := 0
+		for i, b := range bs {
+			if i < detailKept || keep[l][i] {
+				b.Path, b.What = cutField(b.Path), cutField(b.What)
+				kept[l] = append(kept[l], b)
+			} else if total < maxDropped {
+				total++
+				dropped[l][b2i(b.Additive)|b2i(b.Typed)<<1][b2i(len(b.Path) > maxField)|b2i(len(b.What) > maxField)<<1]++
+			}
 		}
 	}
 	return kept, dropped
 }
+
+// fill is a left-out entry's field: maxField bytes, or past it when the
+// report clips it, each byte one JSON escapes most (\u0001, 6 bytes): no
+// entry of the same clipping takes more of the report's budget, so the
+// report leaves a refilled entry out, as it left out the one it stands for
+// (both later, at no more budget or room than it had).
+var fill = [2]string{strings.Repeat("\x01", maxField), strings.Repeat("\x01", maxField+1)}
 
 // cutField is f's first maxResultField bytes at most, ending on a rune's
 // start: its first maxField bytes, all the report keeps, are untouched.
@@ -457,21 +521,15 @@ func cutField(f string) string {
 	return f[:i]
 }
 
-// refill is kept with an entry for each one fit left out, at the end: the
-// same count, ranks and clipping, so the verdict and its report are the
-// in-process guard's.
+// refill is kept with an entry for each one fitReport left out, at the
+// end: the same count, ranks and clipping, each as large as an entry of its
+// clipping can be (fill), so the verdict and its report are the in-process
+// guard's.
 func refill(kept []Block, dropped [4][4]int) []Block {
 	for f := range 4 {
 		for c := range 4 {
 			for range dropped[f][c] {
-				b := Block{vocab.ReasonTestIntegrityViolation, "", leftOut, f&1 != 0, f&2 != 0}
-				if c&1 != 0 {
-					b.Path = clipFill
-				}
-				if c&2 != 0 {
-					b.What = clipFill
-				}
-				kept = append(kept, b)
+				kept = append(kept, Block{vocab.ReasonTestIntegrityViolation, fill[c&1], fill[c>>1], f&1 != 0, f&2 != 0})
 			}
 		}
 	}
@@ -543,8 +601,21 @@ func child(in io.Reader, out io.Writer) int {
 	}
 	var list Lister
 	if req.Lister {
+		sent := map[string]int{} // a payload's content, 1 + its index at the controller
+		ref := func(v []byte) ([]byte, int) {
+			if v == nil {
+				return nil, 0
+			} else if i, ok := sent[string(v)]; ok {
+				return nil, i
+			}
+			sent[string(v)] = len(sent) + 1
+			return v, 0
+		}
 		list = func(_ context.Context, _ string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
-			rep := call(childMsg{op: 'l', platform: pl, gomod: gomod, gosum: gosum, paths: paths})
+			m := childMsg{op: 'l', platform: pl, paths: paths}
+			m.gomod, m.gomodRef = ref(gomod)
+			m.gosum, m.gosumRef = ref(gosum)
+			rep := call(m)
 			return rep.Listed, errOf(rep)
 		}
 	}
@@ -553,8 +624,18 @@ func child(in io.Reader, out io.Writer) int {
 	}
 	blocks, warnings, err := guard(context.Background(), req.Changes, read, list, req.Files, req.ListEnd, req.Dir)
 	m := childMsg{op: 'd', err: errText(err)[:min(len(errText(err)), 4096)], erred: err != nil}
-	m.blocks, m.dropped[0] = fit(blocks)
-	m.warnings, m.dropped[1] = fit(warnings)
+	var prefix []Block
+	for _, p := range req.Prefix {
+		var b Block
+		if err := json.Unmarshal(p.JSON, &b); err != nil {
+			return 2
+		}
+		b.Additive, b.Typed = p.Additive, p.Typed
+		prefix = append(prefix, b)
+	}
+	var kept [2][]Block
+	kept, m.dropped = fitReport(prefix, blocks, warnings)
+	m.blocks, m.warnings = kept[0], kept[1]
 	if _, err := out.Write(m.frame()); err != nil {
 		return 2
 	}

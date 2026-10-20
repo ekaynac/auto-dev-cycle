@@ -8,10 +8,12 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -30,7 +32,7 @@ import (
 // reads back whole.
 func TestProcFrames(t *testing.T) {
 	emptyLists := append(append([]byte{'d'}, make([]byte, 17)...), make([]byte, 17)...) // two lists: no entry, 16 counts of 0
-	if m, err := readFrame(bytes.NewReader(append(binary.BigEndian.AppendUint32(nil, uint32(len(emptyLists)+2)), append(emptyLists, 0, 0)...)), new(int64(maxProcOut))); err != nil || m.erred {
+	if m, err := readFrame(bytes.NewReader(append(binary.BigEndian.AppendUint32(nil, uint32(len(emptyLists)+2)), append(emptyLists, 0, 0)...)), new(int64(maxProcOut)), new([][]byte)); err != nil || m.erred {
 		t.Fatalf("an empty result: %+v %v", m, err)
 	}
 	frame := func(body []byte) []byte {
@@ -56,12 +58,14 @@ func TestProcFrames(t *testing.T) {
 		"an error flag of 2 (Astra's frame)": {frame(append(emptyLists, 0, 2)), maxProcOut, 1 << 20},
 		"an error's text, its flag false":    {frame(append(emptyLists, 1, 'e', 0)), maxProcOut, 1 << 20},
 		"left-out counts past maxDropped":    {frame(append(append(append(append([]byte{'d', 0}, uv(nil, uint64(maxDropped))...), 1), make([]byte, 14+17)...), 0, 0)), maxProcOut, 1 << 20},
-		"a go.mod presence flag of 2":        {frame([]byte{'l', 0, 0, 2, 0, 0}), maxProcOut, 1 << 20},
+		"a go.mod presence flag of 3":        {frame([]byte{'l', 0, 0, 3, 0, 0}), maxProcOut, 1 << 20},
+		// #2 (Astra #293 r2): a reference to a payload no listing sent.
+		"a reference to no payload": {frame([]byte{'l', 0, 0, 2, 0, 0, 0}), maxProcOut, 1 << 20},
 	} {
 		var before, after runtime.MemStats
 		runtime.GC()
 		runtime.ReadMemStats(&before)
-		_, err := readFrame(bytes.NewReader(c.in), &c.left)
+		_, err := readFrame(bytes.NewReader(c.in), &c.left, new([][]byte))
 		runtime.ReadMemStats(&after)
 		if err == nil || after.TotalAlloc-before.TotalAlloc > c.alloc+uint64(len(c.in)) {
 			t.Errorf("%s: %v, %d bytes allocated for %d read", name, err, after.TotalAlloc-before.TotalAlloc, len(c.in))
@@ -69,16 +73,24 @@ func TestProcFrames(t *testing.T) {
 	}
 	honest := childMsg{op: 'd', blocks: []Block{{vocab.ReasonTestIntegrityViolation, "p", "w", false, true}}, err: "e", erred: true}
 	left := maxProcOut
-	if m, err := readFrame(bytes.NewReader(honest.frame()), &left); err != nil || m.blocks[0] != honest.blocks[0] || m.err != "e" || !m.erred || len(m.warnings) != 0 {
+	if m, err := readFrame(bytes.NewReader(honest.frame()), &left, new([][]byte)); err != nil || m.blocks[0] != honest.blocks[0] || m.err != "e" || !m.erred || len(m.warnings) != 0 {
 		t.Errorf("an honest result: %+v %v", m, err)
 	}
 	// #2 (Astra #287 r2): an absent go.mod or go.sum reads back absent, a
 	// present one, empty or not, present.
 	for name, c := range map[string][2][]byte{"absent": {nil, nil}, "present and empty": {{}, {}}, "present": {[]byte("module m\n"), []byte("h1\n")}} {
-		m, err := readFrame(bytes.NewReader(childMsg{op: 'l', platform: [2]string{"linux", "amd64"}, gomod: c[0], gosum: c[1]}.frame()), &left)
+		m, err := readFrame(bytes.NewReader(childMsg{op: 'l', platform: [2]string{"linux", "amd64"}, gomod: c[0], gosum: c[1]}.frame()), &left, new([][]byte))
 		if err != nil || (m.gomod == nil) != (c[0] == nil) || (m.gosum == nil) != (c[1] == nil) || string(m.gomod) != string(c[0]) || string(m.gosum) != string(c[1]) {
 			t.Errorf("a listing, its go.mod %s: %q %q %v", name, m.gomod, m.gosum, err)
 		}
+	}
+	// #2 (Astra #293 r2): a payload sent once, then referred to; an empty
+	// one stays present.
+	payloads := [][]byte{}
+	first, err := readFrame(bytes.NewReader(childMsg{op: 'l', gomod: []byte("module m\n"), gosum: []byte{}}.frame()), &left, &payloads)
+	again, err2 := readFrame(bytes.NewReader(childMsg{op: 'l', gomodRef: 1, gosumRef: 2}.frame()), &left, &payloads)
+	if err != nil || err2 != nil || string(again.gomod) != string(first.gomod) || again.gosum == nil || len(again.gosum) != 0 || len(payloads) != 2 {
+		t.Errorf("a payload referred to: %q %q, %d payloads, %v %v", again.gomod, again.gosum, len(payloads), err, err2)
 	}
 }
 
@@ -338,34 +350,85 @@ func TestProcDispatch(t *testing.T) {
 	}
 }
 
-// TestProcFit (Opus #293 M1): a result fit to the frame keeps each rank's
-// first maxReported entries, a field cut on a rune's start, and counts the
-// rest so refill gives back as many, ranks and clipping alike.
+// TestProcFit (Opus #293 M1; Astra #293 r2 #3): a result fit to the frame
+// keeps what the report and the detail read, a field cut on a rune's
+// start, and counts the rest so that refill gives back as many, ranks and
+// clipping alike: the verdict's report is the in-process one's, byte for
+// byte, whatever warnings the verdict held before the guard's, and with
+// Accept's own block after the guard.
 func TestProcFit(t *testing.T) {
 	long := strings.Repeat("€", maxResultField) // 3 bytes a rune: maxResultField falls inside one
-	var bs []Block
+	var mixed []Block
 	for i := range maxReported + 5 {
-		bs = append(bs, Block{vocab.ReasonTestIntegrityViolation, "p", "w", false, false}, Block{vocab.ReasonTestIntegrityViolation, long, "w" + strconv.Itoa(i), true, true})
+		mixed = append(mixed, Block{vocab.ReasonTestIntegrityViolation, "p", "w", false, false}, Block{vocab.ReasonTestIntegrityViolation, long, "w" + strconv.Itoa(i), true, true})
 	}
-	kept, dropped := fit(bs)
-	if len(kept) != 2*maxReported || dropped[0][0] != 5 || dropped[3][1] != 5 {
-		t.Fatalf("fit: %d kept, %v", len(kept), dropped)
+	// Astra's input: 1,001 warnings of 1,000-byte paths exhaust the
+	// report's bytes before its count; then smaller ones it may take.
+	var wide []Block
+	for i := range 1001 {
+		wide = append(wide, Block{vocab.ReasonTestIntegrityViolation, "tool/many.go: f" + strings.Repeat("a", 966) + fmt.Sprintf("%04d", i), "fmt.Println in f", false, false})
 	}
-	for _, b := range kept {
-		if b.Path == "p" {
-			continue
+	smaller := append(slices.Clone(wide), Block{vocab.ReasonTestIntegrityViolation, "x.go", strings.Repeat("s", 480), false, false})
+	// A warning before the guard's of a size with which the report takes the
+	// smaller one at the end, and without which it does not: the guard's
+	// process must count it.
+	var ignored []Block
+	for n := 1; n < 1200 && ignored == nil; n++ {
+		p := []Block{{vocab.ReasonCompletedWithFindings, strings.Repeat("o", n), "output .gitignore kept out of the diff", false, false}}
+		with, _, _, _, _ := selection([2][]Block{nil, slices.Concat(p, smaller)})
+		without, _, _, _, _ := selection([2][]Block{nil, smaller})
+		afterBlock, _, _, _, _ := selection([2][]Block{{tooLarge}, smaller}) // Accept's block shifts the budget too
+		if last := len(smaller) - 1; with[1][1+last] && !without[1][last] && !afterBlock[1][last] { // taken only after the prefix
+			ignored = p
 		}
-		if len(b.Path) > maxResultField || !utf8.ValidString(b.Path) || !strings.HasPrefix(long, b.Path) || len(b.Path) < maxResultField-utf8.UTFMax {
-			t.Fatalf("a cut path of %d bytes", len(b.Path))
+	}
+	if ignored == nil {
+		t.Fatal("no prefix changes the report's choice")
+	}
+	for name, c := range map[string]struct{ prefix, blocks, warnings []Block }{
+		"ranks past maxReported":          {nil, nil, mixed},
+		"Astra's 1,001 wide warnings":     {nil, nil, wide},
+		"a smaller warning after them":    {nil, nil, smaller},
+		"warnings already in the verdict": {ignored, nil, smaller},
+		"blocks and warnings":             {nil, mixed, wide},
+	} {
+		kept, dropped := fitReport(c.prefix, c.blocks, c.warnings)
+		back := [2][]Block{refill(kept[0], dropped[0]), refill(kept[1], dropped[1])}
+		if len(back[0]) != len(c.blocks) || len(back[1]) != len(c.warnings) {
+			t.Fatalf("%s: refill %d, %d of %d, %d", name, len(back[0]), len(back[1]), len(c.blocks), len(c.warnings))
+		}
+		in, out := Verdict{Blocks: c.blocks, Warnings: slices.Concat(c.prefix, c.warnings)}, Verdict{Blocks: back[0], Warnings: slices.Concat(c.prefix, back[1])}
+		if !sameReport(t, in.Report, out.Report) || detail("", in.Warnings) != detail("", out.Warnings) || detail("", in.Blocks) != detail("", out.Blocks) {
+			t.Errorf("%s: the report or detail of the fit result differs", name)
+		}
+		if len(c.blocks) == 0 { // Accept's own block, after the guard's (none)
+			in.Blocks, out.Blocks = []Block{tooLarge}, []Block{tooLarge}
+			if !sameReport(t, in.Report, out.Report) {
+				t.Errorf("%s, with Accept's block: the report of the fit result differs", name)
+			}
+		}
+		for _, b := range slices.Concat(kept[0], kept[1]) {
+			if b.Path == long[:len(b.Path)] && (len(b.Path) > maxResultField || !utf8.ValidString(b.Path) || len(b.Path) < maxResultField-utf8.UTFMax) {
+				t.Fatalf("%s: a cut path of %d bytes", name, len(b.Path))
+			}
 		}
 	}
-	back := refill(kept, dropped)
-	if len(back) != len(bs) {
-		t.Fatalf("refill: %d of %d", len(back), len(bs))
+	// Left-out entries are counted to maxDropped in all, never past it.
+	old := maxDropped
+	defer func() { maxDropped = old }()
+	maxDropped = 10
+	if _, dropped := fitReport(nil, nil, mixed); sum(dropped[1]) != 10 {
+		t.Errorf("left out past maxDropped: %d counted", sum(dropped[1]))
 	}
-	if a, b := (Verdict{Warnings: bs}).Report, (Verdict{Warnings: back}).Report; !sameReport(t, a, b) {
-		t.Error("the report of the fit result differs")
+}
+
+func sum(d [4][4]int) (n int) {
+	for _, r := range d {
+		for _, x := range r {
+			n += x
+		}
 	}
+	return n
 }
 
 // sameReport: the two reports are byte-identical.

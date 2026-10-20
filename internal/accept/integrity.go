@@ -295,10 +295,12 @@ func (r *run) goMod() error {
 	}
 	var ignores [2]string
 	for i, blob := range []string{r.files["go.mod"], r.cand["go.mod"]} {
-		if b, why, err := r.file(blob); blob != "" && (err != nil || why != "") {
+		if blob == "" { // absent: nothing to read (Astra #293 r2 #1: "" is no blob of the run)
+			continue
+		} else if b, why, err := r.file(blob); err != nil || why != "" {
 			add(&r.blocks, "go.mod", "unverifiable: "+why)
 			return err
-		} else if blob != "" {
+		} else {
 			ignores[i] = goIgnores(b)
 		}
 	}
