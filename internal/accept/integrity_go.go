@@ -319,6 +319,17 @@ type pkgScan struct {
 	mentioned map[ast.Expr]int8 // per alias right-hand side: 1 being read, 2 no, 3 mentions
 	pkgVars   map[*ast.ValueSpec]bool
 	aliases   map[types.Object]ast.Expr // an alias's right-hand side
+	// P14d-a (integrity_skips.go): the skipping functions and variables.
+	skipping  map[*ast.FuncDecl]bool
+	skipNames map[string]bool                        // skipping methods' names (an interface's call)
+	skipVars  map[types.Object]bool                  // skipping variables
+	funcVals  map[types.Object][]types.Object        // a package variable's functions and methods assigned
+	varSrcs   map[types.Object][]types.Object        // its variables assigned
+	litVars   map[types.Object][]*ast.FuncLit        // its literals assigned
+	copies    map[types.Object]map[types.Object]bool // the variables a variable is assigned (direct)
+	indirect  map[types.Object]bool                  // a variable assigned anything else
+	directs   map[types.Object]int8                  // direct's answers: 1 being read, 2 no, 3 yes
+	exhausted bool                                   // the skipping facts did not settle within the bounds
 }
 
 // qual is what n names as "importpath.Name", if a package's: by type
@@ -426,6 +437,7 @@ func (s *pkgScan) mentions(n ast.Node) (found bool) {
 // counts are a declaration's references; refs, its references into S.
 type counts struct {
 	asserts, skips, forged, reflect int
+	uses                            int // skipping functions and variables used (P14d-a)
 	refs                            []string
 }
 
@@ -447,6 +459,7 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 			if b, ok := s.info.Uses[x].(*types.Builtin); ok && sensitive(b.Name()) > 0 {
 				c.refs = append(c.refs, b.Name())
 			}
+			c.uses += b2i(s.skipUse(x))
 		case *ast.BasicLit: // a 0x16 spelled in a string or rune literal
 			c.forged += b2i(x.Kind != token.INT && slices.ContainsFunc(spelled, func(m string) bool { return strings.Contains(x.Value, m) }))
 		case *ast.AssignStmt:
@@ -565,7 +578,10 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	}
 	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
-		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{}}
+		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{},
+		skipping: map[*ast.FuncDecl]bool{}, skipNames: map[string]bool{}, skipVars: map[types.Object]bool{}, funcVals: map[types.Object][]types.Object{},
+		varSrcs: map[types.Object][]types.Object{}, litVars: map[types.Object][]*ast.FuncLit{},
+		copies: map[types.Object]map[types.Object]bool{}, indirect: map[types.Object]bool{}, directs: map[types.Object]int8{}}
 	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		if i == len(files) {
 			clear(s.mentioned) // read again, every alias known (and after: the tvals grew)
@@ -597,11 +613,23 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 					if id := ident(x.Lhs[min(i, len(x.Lhs)-1)]); id != nil && s.mentions(v) {
 						s.tvals[cmp.Or(info.Defs[id], info.Uses[id])] = "testing.T"
 					}
+					if id := ident(x.Lhs[min(i, len(x.Lhs)-1)]); id != nil {
+						s.set(cmp.Or(info.Defs[id], info.Uses[id]), v)
+					}
+					if pv, ok := info.Uses[ident(x.Lhs[min(i, len(x.Lhs)-1)])].(*types.Var); ok && pv.Parent() == pkg.Scope() && len(x.Lhs) == len(x.Rhs) {
+						s.assign(pv, v) // a package variable set in a function (init)
+					}
 				}
 			case *ast.ValueSpec: // as is a variable of a testing type
 				for i, id := range x.Names {
 					if x.Type != nil && s.mentions(x.Type) || i < len(x.Values) && s.mentions(x.Values[i]) {
 						s.tvals[info.Defs[id]] = "testing.T"
+					}
+					if o := info.Defs[id]; o != nil && o.Parent() == pkg.Scope() && len(x.Values) == len(x.Names) {
+						s.assign(o, x.Values[i])
+					}
+					if o := info.Defs[id]; o != nil && len(x.Values) > 0 {
+						s.set(o, x.Values[min(i, len(x.Values)-1)])
 					}
 				}
 			}
@@ -621,6 +649,9 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				}
 			}
 		}
+	}
+	if err := s.skipFacts(); err != nil {
+		return err
 	}
 	var inits, hooks []ast.Node
 	for _, f := range files {
@@ -677,11 +708,13 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				fa.warn["TestMain(*testing.M) of "+dir+":"+name+"\x00"+plat] += string(m.src[fset.Position(d.Pos()).Offset:fset.Position(d.End()).Offset]) // every declaration
 			case test && goTest(fname):
 				if m.on[pi] > 0 {
-					k, st := platforms[pi][0]+"/"+platforms[pi][1]+" "+dir+":"+name+"."+fname, &stat{c.asserts + output(f, fn), c.skips, m.on[pi], m.cons}
+					k, st := platforms[pi][0]+"/"+platforms[pi][1]+" "+dir+":"+name+"."+fname, &stat{c.asserts + output(f, fn), c.skips, m.on[pi], m.cons, c.uses}
 					if old := fa.tests[k]; old != nil { // declared again (race, !race): the weakest
-						st = &stat{min(old.asserts, st.asserts), max(old.skips, st.skips), min(old.cert, st.cert), old.cons + st.cons}
+						st = &stat{min(old.asserts, st.asserts), max(old.skips, st.skips), min(old.cert, st.cert), old.cons + st.cons, max(old.uses, st.uses)}
 					}
-					fa.tests[k] = st
+					if fa.tests[k] = st; s.exhausted {
+						fa.bad[m.path] = "skipping helpers past the guard's bound"
+					}
 				}
 				continue
 			}
