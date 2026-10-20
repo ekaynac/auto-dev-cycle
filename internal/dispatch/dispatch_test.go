@@ -642,3 +642,71 @@ func TestReasonFits(t *testing.T) {
 		t.Fatal("a short reason changed")
 	}
 }
+
+// end loses attempt a under lease id, seals it, and settles the lease, so
+// its node may be placed again.
+func (e env) end(id types.LeaseID, a types.AttemptID) {
+	e.t.Helper()
+	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.LoseRunning(tx, a, types.AttemptLostReasonValueAgentDisconnect)
+	})
+	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.SealMinimal(tx, a, 2, graph.Units{}, e.blobs, nil, actor)
+	})
+	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, id, 3, lease.LeaseEvent{Kind: lease.Revoked, Reason: "test"}, nil)
+	})
+	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, id, 4, lease.LeaseEvent{Kind: lease.Settled,
+			Settlement: &types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: []types.CallID{}}}, nil)
+	})
+}
+
+// The attempt rail (P17a; fault 1: "a counter reset across an
+// invalidation"): a round's attempts are counted through the node's
+// invalidations; the launch past its rail is refused, starts nothing, and
+// holds the node on budget_rail (rail:attempts_per_round), owned by the
+// operator; a refused launch counts against no rail.
+func TestLaunchAttemptRail(t *testing.T) {
+	reg, gs := stub(t, nil)
+	e := open(t, gs)
+	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true),
+		Rails: func(*eventstore.Tx, types.TaskID) (graph.Caps, error) {
+			return graph.Caps{AttemptsPerRound: 2, RoundsPerTask: 5, MergeOperationsPerGeneration: 2}, nil
+		}}
+	n := e.node(types.NodeKindPlan, reg, false)
+	for i := range 2 {
+		id, err := e.match(d, card(n), builder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, miss := e.launch(d, id, card(n), builder)
+		if miss != nil {
+			t.Fatalf("attempt %d: %v", i+1, miss)
+		}
+		e.end(id, a)
+		if i == 0 {
+			e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return graph.Invalidate(tx, n) })
+		}
+	}
+	id, err := e.match(d, card(n), builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, miss := e.launch(d, id, card(n), builder)
+	l, out, cur := e.state(id, n)
+	if miss == nil || miss.Hold == nil || miss.Hold.Hold != "budget_rail" || miss.Hold.SignalInstance != graph.RailSignal(graph.RailAttempts) ||
+		miss.Hold.Owner != types.OwnerOperator || l.State != types.LeaseStateReleased || out != 0 {
+		t.Fatalf("a third attempt over a rail of 2: %v, lease %s, %d reserved", miss, l.State, out)
+	}
+	if cur == nil || cur.FencingToken != 2 {
+		t.Errorf("the refused launch started an attempt: %+v", cur)
+	}
+	e.view(func(tx *eventstore.Tx) error {
+		raw, _, err := tx.Get(graph.NodeProjection, string(n))
+		if !strings.Contains(string(raw), `"hold":"budget_rail"`) || !strings.Contains(string(raw), `"state":"held"`) {
+			t.Errorf("the node is not held: %s", raw)
+		}
+		return err
+	})
+}

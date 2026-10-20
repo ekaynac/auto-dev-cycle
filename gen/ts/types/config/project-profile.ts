@@ -262,11 +262,23 @@ export interface ProjectProfile {
   priority: number;
   budget: {
     /**
-     * Rails, not budgets: spending stops at them.
+     * Rails, not budgets: spending stops at them. The count rails (M1 P17) are optional, so a stored adc.project-profile/v1 still validates (#226 entry 10); an absent one is its default: 3 attempts per round, 5 rounds per task, 2 merge operations per generation. Reaching one raises budget_rail; task.raise_rail raises it for one task.
      */
     rails: {
       per_task_usd: USD;
       per_day_usd: USD;
+      /**
+       * Attempts started on one round's node (its unit), invalidations included. Default 3.
+       */
+      attempts_per_round?: number;
+      /**
+       * Rounds of one build lineage: a repair past it waits. Default 5.
+       */
+      rounds_per_task?: number;
+      /**
+       * Merge operations of one queue generation's merge node, across its invalidations. Default 2.
+       */
+      merge_operations_per_generation?: number;
     };
   };
   retention: {

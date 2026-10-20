@@ -611,6 +611,34 @@ paths:
           description: The request body is too large; nothing was decided.
         "503":
           description: Too many authentications in progress (Retry-After); nothing was decided.
+  /v1/commands/task.raise_rail:
+    post:
+      operationId: command.task.raise_rail
+      tags:
+        - task
+      summary: Raise one of a task's count rails and clear its budget_rail holds on it.
+      x-adc-action: task.raise_rail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/api.command-request'
+      responses:
+        "200":
+          description: 'The command was decided: applied, proposed or refused.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/api.command-response'
+        "400":
+          description: Not a valid CommandRequest, or a scope or input the action refuses; nothing was decided.
+        "401":
+          description: No valid bearer token; nothing was decided.
+        "413":
+          description: The request body is too large; nothing was decided.
+        "503":
+          description: Too many authentications in progress (Retry-After); nothing was decided.
   /v1/commands/token.issue:
     post:
       operationId: command.token.issue

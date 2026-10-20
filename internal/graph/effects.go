@@ -78,11 +78,14 @@ type EffectRequest struct {
 }
 
 // Operation is node's effect operation: its effect, of Kind, for Request.
+// Rail names the rail that held the node instead (P17a): no effect is
+// intended then.
 type Operation struct {
 	Node    types.NodeID
 	Effect  string
 	Kind    string
 	Request EffectRequest
+	Rail    string
 }
 
 // ErrTargetBusy: effect Live on Target is pending or uncertain, so no
@@ -199,6 +202,12 @@ func Operate(tx *eventstore.Tx, node types.NodeID, env Env) (Operation, error) {
 	if busy && !mutation.Is(mutation.EffectTargetUnfenced) {
 		return op, ErrTargetBusy{r.Target, live.ID}
 	}
+	if held, err := mergeRail(tx, node, r, kind, env.Rails); err != nil || held {
+		if held {
+			op.Rail = RailMergeOps
+		}
+		return op, err
+	}
 	if err := revalidate(tx, node, env); err != nil {
 		return op, err
 	}
@@ -213,6 +222,50 @@ func Operate(tx *eventstore.Tx, node types.NodeID, env Env) (Operation, error) {
 		return op, err
 	}
 	return op, tx.Emit(evs...)
+}
+
+// mergeRail holds node, a merge about to intend its operation of request
+// r, on its task's merge rail when its earlier keys' operations (one an
+// invalidation never forgets: the effects intended for each earlier
+// generation of its claim) reach it; the hold's events are emitted.
+func mergeRail(tx *eventstore.Tx, node types.NodeID, r EffectRequest, kind string, rails Rails) (held bool, err error) {
+	rec, err := loadNode(tx, node)
+	c, _, cerr := load[claim](tx, ClaimProjection, string(node))
+	if err = errors.Join(err, cerr); err != nil || rec.Recorded.Node.Kind != types.NodeKindMerge {
+		return false, err
+	}
+	caps, err := rails.of(tx, rec.Recorded.Task)
+	if err != nil {
+		return false, err
+	}
+	ops := int64(0)
+	for g := int64(1); g < c.Key.Generation; g++ {
+		earlier := r
+		if earlier.Key, err = Key(rec.Recorded.Node, resolutions(c.Inputs), g); err != nil {
+			return false, err
+		}
+		b, err := json.Marshal(earlier)
+		if err != nil {
+			return false, err
+		}
+		if _, ok, err := tx.EffectFor(kind, b); err != nil {
+			return false, ambiguous(err)
+		} else if ok {
+			ops++
+		}
+	}
+	if ops < caps.MergeOperationsPerGeneration {
+		return false, nil
+	}
+	h, err := RailHold(RailMergeOps)
+	if err != nil {
+		return true, err
+	}
+	evs, err := Raise(tx, node, h, nil)
+	if err == nil {
+		err = tx.Emit(evs...)
+	}
+	return true, err
 }
 
 // EffectRequestOf is the RFC 8785 form of node's effect request: what a
