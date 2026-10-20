@@ -147,6 +147,11 @@ func TestGateFixtures(t *testing.T) {
 	}{
 		"an ancestor's helper": {map[string]string{"tests/test_a.py": "def check():\n    pass\n", "tests/test_a/TestB_test.py": "from tests.test_a import check as test_x\n"}, "runner_fault: the run's results name a test two module files could have reported"},
 		"one module file":      {map[string]string{"tests/test_a.py": "def check():\n    pass\n"}, "empty/completed_clean"},
+		// Astra #290 r4 H1: tests/test_a -> ../.payload holds the module the
+		// walk does not reach; any directory link is refused. A leaf .py
+		// link is walked (the control).
+		"a directory link": {map[string]string{"tests/test_a.py": "def check():\n    pass\n", "tests/test_a": "symlink:../.payload", ".payload/TestB_test.py": "from tests.test_a import check as test_x\n"}, "runner_fault: the tree holds a directory link"},
+		"a leaf .py link":  {map[string]string{"tests/test_a.py": "def check():\n    pass\n", "tests/helper.py": "symlink:test_a.py"}, "empty/completed_clean"},
 	} {
 		c.files["report.xml"] = at("tests/test_a.py")
 		f := pyFixture(t, c.files, false, pytest...)
@@ -155,7 +160,7 @@ func TestGateFixtures(t *testing.T) {
 			t.Errorf("%s: %v, want %s", name, v, c.want)
 		}
 		f.in.Baseline = nil
-		if b, v, err := Measure(context.Background(), f.in); err != nil || name == "an ancestor's helper" && (b.Results != nil || !strings.Contains(v.String(), c.want)) {
+		if b, v, err := Measure(context.Background(), f.in); err != nil || strings.Contains(c.want, "runner_fault") && (b.Results != nil || !strings.Contains(v.String(), c.want)) {
 			t.Errorf("%s, measured: %v, %v", name, v, err)
 		}
 	}
