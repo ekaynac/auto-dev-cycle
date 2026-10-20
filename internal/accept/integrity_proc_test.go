@@ -9,12 +9,17 @@ import (
 	"encoding/gob"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -24,6 +29,10 @@ import (
 // frame, a frame past maxFrame or the run's maxProcOut; and an honest one
 // reads back whole.
 func TestProcFrames(t *testing.T) {
+	emptyLists := append(append([]byte{'d'}, make([]byte, 17)...), make([]byte, 17)...) // two lists: no entry, 16 counts of 0
+	if m, err := readFrame(bytes.NewReader(append(binary.BigEndian.AppendUint32(nil, uint32(len(emptyLists)+2)), append(emptyLists, 0, 0)...)), new(int64(maxProcOut))); err != nil || m.erred {
+		t.Fatalf("an empty result: %+v %v", m, err)
+	}
 	frame := func(body []byte) []byte {
 		return append(binary.BigEndian.AppendUint32(nil, uint32(len(body))), body...)
 	}
@@ -43,8 +52,10 @@ func TestProcFrames(t *testing.T) {
 		"a field left over":                        {frame(uv(uv(uv([]byte{'r'}, 0), 0), 0)), maxProcOut, 1 << 20},
 		"a reason not registered":                  {frame(append(uv(uv(uv(uv(uv(uv([]byte{'d'}, 1), 1), 'x'), 0), 0), 0), 0, 0, 0)), maxProcOut, 1 << 20},
 		// #6 (Astra #287 r2): a flag past 1, and an error's text with no error.
-		"an error flag of 2 (Astra's frame)": {[]byte{0, 0, 0, 5, 'd', 0, 0, 0, 2}, maxProcOut, 1 << 20},
-		"an error's text, its flag false":    {frame([]byte{'d', 0, 0, 1, 'e', 0}), maxProcOut, 1 << 20},
+		// Astra's frame, with this protocol's left-out counts (zero) per list.
+		"an error flag of 2 (Astra's frame)": {frame(append(emptyLists, 0, 2)), maxProcOut, 1 << 20},
+		"an error's text, its flag false":    {frame(append(emptyLists, 1, 'e', 0)), maxProcOut, 1 << 20},
+		"left-out counts past maxDropped":    {frame(append(append(append(append([]byte{'d', 0}, uv(nil, uint64(maxDropped))...), 1), make([]byte, 14+17)...), 0, 0)), maxProcOut, 1 << 20},
 		"a go.mod presence flag of 2":        {frame([]byte{'l', 0, 0, 2, 0, 0}), maxProcOut, 1 << 20},
 	} {
 		var before, after runtime.MemStats
@@ -97,7 +108,8 @@ func fakeChildIn(ctx context.Context, req procMsg, read Reader, list Lister, pla
 	}()
 	defer cr.Close()
 	defer pr.Close() // a child still writing ends
-	return converse(ctx, cw, pr, req, read, list)
+	blocks, warnings, err, ok, _ := converse(ctx, cw, pr, req, read, list)
+	return blocks, warnings, err, ok
 }
 
 // TestProcService (M4, M5, Astra #287): what the controller saw is
@@ -172,6 +184,15 @@ func TestProcService(t *testing.T) {
 	if !ok || lists != maxListRuns || !has(blocks, "past its go list bound") {
 		t.Errorf("listings past the bound: %v, %d lists, %q", ok, lists, whats(blocks))
 	}
+	// M1 (Opus #293): a result's left-out entries come back, as many, at its end.
+	var dropped [2][4][4]int
+	dropped[1][3][2] = 3
+	_, warnings, _, ok := fakeChild(req, read, boom, func(next func(childMsg) procMsg) {
+		next(childMsg{op: 'd', warnings: []Block{{vocab.ReasonTestIntegrityViolation, "p", "w", false, false}}, dropped: dropped})
+	})
+	if !ok || len(warnings) != 4 || !warnings[3].Typed || len(warnings[3].What) <= maxField {
+		t.Errorf("left-out warnings: %v %d", ok, len(warnings))
+	}
 	// #5 (Astra #287 r2): a listing's failure, then a clean result: blocked.
 	failed := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
 		return nil, errors.New("copy-out failed")
@@ -185,11 +206,14 @@ func TestProcService(t *testing.T) {
 	}
 }
 
-// TestProcServiceSlots (#1, Astra #287 r2): services stuck past their
-// runs' deadlines keep their slots until their calls really return; with
-// every slot held, a later run's request is refused at once, never served,
-// so repeated runs leave at most the slots' count of stuck calls; once the
-// calls return, runs are served again.
+// TestProcServiceSlots (#1, Astra #287 r2; Opus #293 M2, L1, L3):
+// services stuck past their runs' deadlines keep their slots until their
+// calls really return; with every slot held, a later run waits until its
+// own deadline and is never served, so repeated runs leave at most the
+// slots' count of stuck calls; once the calls return, runs are served
+// again, each slot freed before its reply; and more healthy runs than
+// slots all pass, waiting their turn. The 200 ms deadline is only the
+// stuck runs'.
 func TestProcServiceSlots(t *testing.T) {
 	old := serviceSlots
 	serviceSlots = make(chan struct{}, 2)
@@ -203,23 +227,26 @@ func TestProcServiceSlots(t *testing.T) {
 		<-release
 		return nil, false, nil
 	}
-	run := func(read Reader) ([]Block, bool) {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		defer cancel()
+	run := func(ctx context.Context, read Reader) ([]Block, bool) {
 		blocks, _, _, ok := fakeChildIn(ctx, req, read, nil, func(next func(childMsg) procMsg) {
 			next(childMsg{op: 'r', blob: own, max: 1})
 			next(childMsg{op: 'd'})
 		})
 		return blocks, ok
 	}
+	deadline := func() context.Context {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		t.Cleanup(cancel)
+		return ctx
+	}
 	for i := range 2 {
-		if _, ok := run(stuck); ok {
+		if _, ok := run(deadline(), stuck); ok {
 			t.Errorf("run %d: a stuck read gave a result", i)
 		}
 	}
 	for i := range 3 {
-		if blocks, ok := run(stuck); !ok || len(blocks) != 1 || !strings.Contains(blocks[0].What, "every guard service is held") {
-			t.Errorf("run %d with every slot held: %v %q", i+2, ok, whats(blocks))
+		if _, ok := run(deadline(), stuck); ok {
+			t.Errorf("run %d with every slot held: a result", i+2)
 		}
 	}
 	if n := entered.Load(); n != 2 || len(serviceSlots) != 2 {
@@ -230,9 +257,126 @@ func TestProcServiceSlots(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	served := func(context.Context, string, int64) ([]byte, bool, error) { return []byte("x"), true, nil }
-	if blocks, ok := run(served); !ok || len(blocks) != 0 || len(serviceSlots) != 0 {
+	if blocks, ok := run(context.Background(), served); !ok || len(blocks) != 0 || len(serviceSlots) != 0 {
 		t.Errorf("once the calls returned: %v %q, %d slots held", ok, whats(blocks), len(serviceSlots))
 	}
+	slow := func(context.Context, string, int64) ([]byte, bool, error) {
+		time.Sleep(100 * time.Millisecond)
+		return []byte("x"), true, nil
+	}
+	results := make(chan bool, 3)
+	for range 3 {
+		go func() { blocks, ok := run(context.Background(), slow); results <- ok && len(blocks) == 0 }()
+	}
+	for i := range 3 {
+		if !<-results {
+			t.Errorf("healthy run %d of 3 over 2 slots: refused", i)
+		}
+	}
+}
+
+// TestProcInflight (Opus #293 L2): converse, ending with a call still
+// running, hands back a channel closed once that call returns.
+func TestProcInflight(t *testing.T) {
+	const own = "1111111111111111111111111111111111111111"
+	release := make(chan struct{})
+	stuck := func(context.Context, string, int64) ([]byte, bool, error) { <-release; return nil, false, nil }
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	cr, cw := io.Pipe()
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		var first procMsg
+		if gob.NewDecoder(cr).Decode(&first) == nil {
+			_, _ = pw.Write(childMsg{op: 'r', blob: own, max: 1}.frame())
+		}
+	}()
+	_, _, _, ok, inflight := converse(ctx, cw, pr, procMsg{Files: map[string]string{"a.go": own}}, stuck, nil)
+	cr.Close()
+	pr.Close()
+	if ok || inflight == nil {
+		t.Fatalf("a stuck call: %v, inflight %v", ok, inflight)
+	}
+	select {
+	case <-inflight:
+		t.Error("inflight closed while its call runs")
+	default:
+	}
+	close(release)
+	select {
+	case <-inflight:
+	case <-time.After(10 * time.Second):
+		t.Error("inflight not closed once its call returned")
+	}
+}
+
+// TestProcDispatch (Opus #293 L4): a binary that does not dispatch the
+// guard's process starts none; a child whose environment names another
+// parent exits at once, its guard never run.
+func TestProcDispatch(t *testing.T) {
+	dispatches.Store(false)
+	defer dispatches.Store(true)
+	var started bool
+	procStarted = func(*os.Process) { started = true }
+	defer func() { procStarted = nil }()
+	blocks, _, err := isolated(context.Background(), sandbox.Repo{}, "", nil, nil, nil, t.TempDir())
+	if err != nil || started || len(blocks) != 1 || blocks[0].What != "unverifiable: this binary does not dispatch the guard's process" {
+		t.Errorf("no dispatch: %q %v, started %v", whats(blocks), err, started)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, childArg)
+	cmd.Env = []string{childEnv + "=1"} // not its parent
+	cmd.Stdin = strings.NewReader("")
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 3 || len(out) != 0 {
+		t.Errorf("a child of another parent: %v, %q", err, out)
+	}
+}
+
+// TestProcFit (Opus #293 M1): a result fit to the frame keeps each rank's
+// first maxReported entries, a field cut on a rune's start, and counts the
+// rest so refill gives back as many, ranks and clipping alike.
+func TestProcFit(t *testing.T) {
+	long := strings.Repeat("€", maxResultField) // 3 bytes a rune: maxResultField falls inside one
+	var bs []Block
+	for i := range maxReported + 5 {
+		bs = append(bs, Block{vocab.ReasonTestIntegrityViolation, "p", "w", false, false}, Block{vocab.ReasonTestIntegrityViolation, long, "w" + strconv.Itoa(i), true, true})
+	}
+	kept, dropped := fit(bs)
+	if len(kept) != 2*maxReported || dropped[0][0] != 5 || dropped[3][1] != 5 {
+		t.Fatalf("fit: %d kept, %v", len(kept), dropped)
+	}
+	for _, b := range kept {
+		if b.Path == "p" {
+			continue
+		}
+		if len(b.Path) > maxResultField || !utf8.ValidString(b.Path) || !strings.HasPrefix(long, b.Path) || len(b.Path) < maxResultField-utf8.UTFMax {
+			t.Fatalf("a cut path of %d bytes", len(b.Path))
+		}
+	}
+	back := refill(kept, dropped)
+	if len(back) != len(bs) {
+		t.Fatalf("refill: %d of %d", len(back), len(bs))
+	}
+	if a, b := (Verdict{Warnings: bs}).Report, (Verdict{Warnings: back}).Report; !sameReport(t, a, b) {
+		t.Error("the report of the fit result differs")
+	}
+}
+
+// sameReport: the two reports are byte-identical.
+func sameReport(t *testing.T, a, b func() ([]byte, error)) bool {
+	t.Helper()
+	ra, err := a()
+	rb, err2 := b()
+	if err = errors.Join(err, err2); err != nil {
+		t.Fatal(err)
+	}
+	return bytes.Equal(ra, rb)
 }
 
 // TestListerKeepsPresence (#2, Astra #287 r2): LocalLister's cache keeps an

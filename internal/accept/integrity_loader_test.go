@@ -107,6 +107,24 @@ func TestIntegrityProcess(t *testing.T) {
 	if ps := procs(); len(ps) == 0 || !slices.ContainsFunc(ps, exited) {
 		t.Fatalf("no child ran, or none ended: %d", len(ps))
 	}
+	// M1 (Opus #293): results past the frame's bounds (a Path past 4,096
+	// bytes; 70,000 warnings) fit to it: the same Accepted() and the same
+	// report, byte for byte.
+	var many strings.Builder
+	many.WriteString("package tool8\n\nimport \"fmt\"\n")
+	for i := range 70_000 {
+		fmt.Fprintf(&many, "\nfunc f%d() { fmt.Println() }\n", i)
+	}
+	for name, files := range map[string]map[string]string{
+		"a path past the frame's bound": {"tool9/long.go": "package tool9\n\nimport \"fmt\"\n\nfunc f" + strings.Repeat("a", 5000) + "() { fmt.Println(1) }\n"},
+		"70,000 warnings":               {"tool8/many.go": many.String()},
+	} {
+		in, out := f.guarded(t, files), f.loaded(t, testLister(t), files)
+		in.Elapsed, out.Elapsed = 0, 0
+		if in.Accepted() != out.Accepted() || len(in.Warnings) == 0 || !sameReport(t, in.Report, out.Report) {
+			t.Errorf("%s: accepted %v, %d warnings; in its own %v, %d warnings; %q", name, in.Accepted(), len(in.Warnings), out.Accepted(), len(out.Warnings), whats(out.Blocks))
+		}
+	}
 	// #2 (Astra #287 r2): an absent go.mod (the loader's fallback module)
 	// and a present, empty one cross the frame as they are: the same
 	// verdicts as in this process, and the absent one typed.
@@ -186,10 +204,12 @@ func TestIntegrityProcess(t *testing.T) {
 		t.Errorf("a child over its output bound: %q", whats(v.Blocks))
 	}
 	// H3 (Astra #287): one deadline for the whole run. A reader that waits
-	// for its context, and one that never returns: the run ends at the
-	// deadline, its child reaped and its directory removed.
+	// for its context, and one that does not: the run ends at the deadline,
+	// its child reaped; its directory is removed once no call runs in it,
+	// the stuck one's only when it returns (Opus #293 L2).
 	stuck := make(chan struct{})
-	defer close(stuck)
+	var once sync.Once
+	defer once.Do(func() { close(stuck) })
 	for name, read := range map[string]Reader{
 		"a reader waiting for its context": func(ctx context.Context, _ string, _ int64) ([]byte, bool, error) {
 			<-ctx.Done()
@@ -209,8 +229,18 @@ func TestIntegrityProcess(t *testing.T) {
 		select {
 		case v := <-done:
 			left, _ := os.ReadDir(scratch)
-			if ps := procs(); !finds(v.Blocks, "did not finish by its whole-run deadline") || len(ps) != n+1 || !exited(ps[n]) || len(left) != 0 {
+			want := map[bool]int{true: 1}[name == "a reader that never returns"] // its call still runs
+			if ps := procs(); !finds(v.Blocks, "did not finish by its whole-run deadline") || len(ps) != n+1 || !exited(ps[n]) || len(left) != want {
 				t.Errorf("%s: %q, %d children, left %d", name, whats(v.Blocks), len(ps)-n, len(left))
+			}
+			if want == 1 {
+				once.Do(func() { close(stuck) })
+				for end := time.Now().Add(10 * time.Second); len(left) != 0 && time.Now().Before(end); left, _ = os.ReadDir(scratch) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				if len(left) != 0 {
+					t.Errorf("%s: its directory kept once the call returned", name)
+				}
 			}
 		case <-time.After(maxRunTime + 10*baseline + 30*time.Second):
 			t.Errorf("%s: no verdict in %v", name, time.Since(begin))

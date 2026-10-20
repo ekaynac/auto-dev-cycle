@@ -15,8 +15,11 @@ import (
 	"os/exec"
 	"slices"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -45,18 +48,31 @@ var maxRunTime = 10 * time.Minute // one guard run, from its start; type checks 
 // what is left of the frame.
 var (
 	maxProcOut    int64 = 256 << 20
-	maxFrame            = 16 << 20
-	maxMsgEntries       = 1 << 16 // blocks, warnings or paths in one message
+	maxFrame            = 64 << 20 // a result's at most 2 × 3 × maxReported entries of 2 maxResultField bytes
+	maxMsgEntries       = 1 << 16  // blocks, warnings or paths in one message
+	maxDropped          = 1 << 20  // entries a result's list may leave out, by count
 )
+
+// maxResultField bounds a result entry's Path and What in the frame. A cut
+// to it is invisible downstream (Opus #293 M1): the report clips a field to
+// maxField bytes and counts it clipped either way, and a result's detail
+// stops at a line of 4,000 bytes, which such a field already passes.
+const maxResultField = 4096
 
 // serviceSlots bound the controller's services across every run (Astra
 // #287 r2 #1): a slot is taken for each read or listing served and held
 // until that call really returns, a call stuck past its run's deadline
-// included. With every slot held, a run's next request is refused, and
-// the run is unverifiable: what stuck services keep (a run's file map and
-// changes, their goroutines) stays within maxServices of them. A var, so a
-// test can use a smaller one.
+// included. With every slot held, a run waits for one until its own
+// deadline (Opus #293 M2: healthy concurrent runs only wait), and ends
+// unverifiable if none frees: what stuck services keep (a run's file map
+// and changes, their goroutines) stays within the slots' count of them. A
+// var, so a test can use a smaller one.
 var serviceSlots = make(chan struct{}, 16)
+
+// dispatches: this binary dispatches the guard's process (RunChildIfAsked
+// ran in it). Without it, Integrity starts nothing (Opus #293 L4): the
+// binary would run as its own child whatever its main does.
+var dispatches atomic.Bool
 
 // procStarted is a test's: a run's child, once started.
 var procStarted func(*os.Process)
@@ -71,9 +87,10 @@ const childArg, childEnv = "adc-accept-integrity-guard", "ADC_ACCEPT_INTEGRITY_G
 // run the guard before a later file's init.
 func RunChildIfAsked() {
 	if len(os.Args) != 2 || os.Args[1] != childArg || os.Getenv(childEnv) == "" {
+		dispatches.Store(true)
 		return
 	} else if os.Getenv(childEnv) != strconv.Itoa(os.Getppid()) { // its controller died before Pdeathsig held
-		os.Exit(2)
+		os.Exit(3)
 	}
 	os.Exit(child(os.Stdin, os.Stdout))
 }
@@ -102,6 +119,7 @@ type childMsg struct {
 	gomod, gosum     []byte
 	paths            []string
 	blocks, warnings []Block
+	dropped          [2][4][4]int // per list, by flags (Additive, Typed) and clip (Path, What): entries left out (fit)
 	err              string
 	erred            bool
 }
@@ -129,13 +147,18 @@ func (m childMsg) frame() []byte {
 			str(p)
 		}
 	case 'd':
-		for _, bs := range [][]Block{m.blocks, m.warnings} {
+		for l, bs := range [][]Block{m.blocks, m.warnings} {
 			num(len(bs))
 			for _, x := range bs {
 				str(x.Reason.String())
 				str(x.Path)
 				str(x.What)
 				b = append(b, byte(b2i(x.Additive)|b2i(x.Typed)<<1))
+			}
+			for f := range 4 {
+				for c := range 4 {
+					num(m.dropped[l][f][c])
+				}
 			}
 		}
 		str(m.err)
@@ -208,13 +231,21 @@ func readFrame(r io.Reader, left *int64) (childMsg, error) {
 			m.paths[i] = str(4096)
 		}
 	case 'd':
-		for _, to := range []*[]Block{&m.blocks, &m.warnings} {
+		for l, to := range []*[]Block{&m.blocks, &m.warnings} {
 			*to = make([]Block, num(maxMsgEntries, 4))
 			for i := range *to {
-				reason, path, what, f := str(64), str(4096), str(1<<16), flag()
+				reason, path, what, f := str(64), str(maxResultField), str(maxResultField), flag()
 				bad = bad || reason != vocab.ReasonTestIntegrityViolation.String() || f > 3 // the guard's only reason
 				(*to)[i] = Block{vocab.ReasonTestIntegrityViolation, path, what, f&1 != 0, f&2 != 0}
 			}
+			total := 0
+			for f := range 4 {
+				for c := range 4 {
+					m.dropped[l][f][c] = num(maxDropped, 0)
+					total += m.dropped[l][f][c]
+				}
+			}
+			bad = bad || total > maxDropped
 		}
 		m.err, m.erred = str(4096), bit()
 		bad = bad || !m.erred && m.err != "" // an error's text with no error
@@ -257,6 +288,9 @@ func unverifiable(why string) []Block {
 // lists; a stuck service never holds up the child's kill, its reaping or
 // the directory's removal.
 func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Change, read Reader, list Lister, scratch string) ([]Block, []Block, error) {
+	if !dispatches.Load() {
+		return unverifiable("this binary does not dispatch the guard's process"), nil, nil
+	}
 	files, err := listBase(ctx, repo, base)
 	if err != nil {
 		return nil, nil, err
@@ -269,7 +303,14 @@ func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Cha
 	if err != nil {
 		return nil, nil, err
 	}
-	defer os.RemoveAll(dir) // after the child ends: it reads what list copies here
+	var inflight <-chan struct{} // a call left running when converse returned
+	defer func() {               // after the child ends: it reads what list copies here
+		if inflight == nil {
+			_ = os.RemoveAll(dir)
+			return
+		}
+		go func() { <-inflight; _ = os.RemoveAll(dir) }() // once the call stops copying into it (Opus #293 L2)
+	}()
 	exe, err := os.Executable()
 	if err != nil {
 		return unverifiable("the guard's process did not start"), nil, nil
@@ -292,7 +333,8 @@ func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Cha
 		procStarted(cmd.Process)
 	}
 	req := procMsg{Changes: changes, Files: files, Over: files == nil, ListEnd: time.Now().Add(maxListTime), Dir: dir, Lister: list != nil}
-	blocks, warnings, err, ok := converse(ctx, in, out, req, read, list)
+	blocks, warnings, err, ok, left := converse(ctx, in, out, req, read, list)
+	inflight = left
 	if !ok {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait() // its stderr is whole once Wait returns
@@ -328,8 +370,9 @@ type service struct {
 }
 
 // converse serves the child on in and out until its result (ok), ctx's end
-// or a message refused.
-func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, read Reader, list Lister) ([]Block, []Block, error, bool) {
+// or a message refused. A call still running when it returns (its context
+// ignored) is inflight's, closed once the call returns.
+func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, read Reader, list Lister) (blocks, warnings []Block, err error, ok bool, inflight <-chan struct{}) {
 	s := &service{req: req, allowed: map[string]bool{}, read: read, list: list, readLeft: maxRead + maxCgoRead}
 	for _, b := range req.Files {
 		s.allowed[b] = true
@@ -341,37 +384,98 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 	for m := req; enc.Encode(m) == nil; {
 		c, err := readFrame(out, &left)
 		if err != nil {
-			return nil, nil, nil, false
+			return nil, nil, nil, false, nil
 		} else if c.op == 'd' {
+			blocks, warnings := refill(c.blocks, c.dropped[0]), refill(c.warnings, c.dropped[1])
 			switch {
 			case s.readErr != nil: // the reader's error is the guard's, whatever the child says
-				return c.blocks, c.warnings, s.readErr, true
+				return blocks, warnings, s.readErr, true, nil
 			case s.failed != "" && !slices.ContainsFunc(c.blocks, func(b Block) bool { return b.What == s.failed }):
-				return append(c.blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.failed, false, false}), c.warnings, nil, true
-			case s.listFailed != "" && len(c.blocks) == 0:
-				return append(c.blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.listFailed, false, false}), c.warnings, nil, true
+				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.failed, false, false}), warnings, nil, true, nil
+			case s.listFailed != "" && len(blocks) == 0:
+				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.listFailed, false, false}), warnings, nil, true, nil
 			case c.erred:
-				return c.blocks, c.warnings, errors.New(c.err), true
+				return blocks, warnings, errors.New(c.err), true, nil
 			}
-			return c.blocks, c.warnings, nil, true
+			return blocks, warnings, nil, true, nil
 		}
 		select {
 		case slots <- struct{}{}:
-		default: // every slot held by a call still running, this run's or another's
-			return unverifiable("every guard service is held by a call still running"), nil, nil, true
+		case <-ctx.Done(): // every slot held until the run's end
+			return nil, nil, nil, false, nil
 		}
-		served := make(chan procMsg, 1)
+		served, done := make(chan procMsg, 1), make(chan struct{})
 		go func() {
-			defer func() { <-slots }() // once the call really returns
-			served <- s.serve(ctx, c)
+			defer close(done)
+			m := s.serve(ctx, c) // serve recovers its own panics
+			<-slots              // once the call really returns, before the reply (Opus #293 L1)
+			served <- m
 		}()
 		select {
 		case m = <-served:
 		case <-ctx.Done(): // a service stuck past the deadline is left behind
-			return nil, nil, nil, false
+			return nil, nil, nil, false, done
 		}
 	}
-	return nil, nil, nil, false
+	return nil, nil, nil, false, nil
+}
+
+// The fillers of an entry fit left out: a field over maxField, as the
+// report counts it clipped, and a short What.
+var clipFill, leftOut = strings.Repeat(".", maxField+1), "an entry the guard's process left out of its result"
+
+// fit is bs as the frame carries it, the report unchanged (Opus #293 M1):
+// each rank's first maxReported entries, in order, their Path and What cut
+// to maxResultField; the rest counted, by flags and by which field the
+// report would clip, at most maxDropped in all (past it, uncounted).
+func fit(bs []Block) (kept []Block, dropped [4][4]int) {
+	var perRank [3]int
+	total := 0
+	for _, b := range bs {
+		if r := b2i(b.Additive) + b2i(b.Typed); perRank[r] < maxReported {
+			perRank[r]++
+			b.Path, b.What = cutField(b.Path), cutField(b.What)
+			kept = append(kept, b)
+		} else if total < maxDropped {
+			total++
+			dropped[b2i(b.Additive)|b2i(b.Typed)<<1][b2i(len(b.Path) > maxField)|b2i(len(b.What) > maxField)<<1]++
+		}
+	}
+	return kept, dropped
+}
+
+// cutField is f's first maxResultField bytes at most, ending on a rune's
+// start: its first maxField bytes, all the report keeps, are untouched.
+func cutField(f string) string {
+	if len(f) <= maxResultField {
+		return f
+	}
+	i := maxResultField
+	for i > maxResultField-utf8.UTFMax && !utf8.RuneStart(f[i]) {
+		i--
+	}
+	return f[:i]
+}
+
+// refill is kept with an entry for each one fit left out, at the end: the
+// same count, ranks and clipping, so the verdict and its report are the
+// in-process guard's.
+func refill(kept []Block, dropped [4][4]int) []Block {
+	for f := range 4 {
+		for c := range 4 {
+			for range dropped[f][c] {
+				b := Block{vocab.ReasonTestIntegrityViolation, "", leftOut, f&1 != 0, f&2 != 0}
+				if c&1 != 0 {
+					b.Path = clipFill
+				}
+				if c&2 != 0 {
+					b.What = clipFill
+				}
+				kept = append(kept, b)
+			}
+		}
+	}
+	return kept
 }
 
 // serve answers a child's read or list; a panic is passed back, the guard's
@@ -448,7 +552,10 @@ func child(in io.Reader, out io.Writer) int {
 		req.Files = map[string]string{}
 	}
 	blocks, warnings, err := guard(context.Background(), req.Changes, read, list, req.Files, req.ListEnd, req.Dir)
-	if _, err := out.Write(childMsg{op: 'd', blocks: blocks, warnings: warnings, err: errText(err)[:min(len(errText(err)), 4096)], erred: err != nil}.frame()); err != nil {
+	m := childMsg{op: 'd', err: errText(err)[:min(len(errText(err)), 4096)], erred: err != nil}
+	m.blocks, m.dropped[0] = fit(blocks)
+	m.warnings, m.dropped[1] = fit(warnings)
+	if _, err := out.Write(m.frame()); err != nil {
 		return 2
 	}
 	return 0
