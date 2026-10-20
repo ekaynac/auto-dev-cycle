@@ -50,6 +50,9 @@ type commands struct {
 	// authenticated, when set, runs after a request is authenticated and
 	// before its command is submitted: a test revokes the caller there.
 	authenticated func(identity.Principal)
+	// applied, when set, runs after a command is applied: it nudges the
+	// reconcile loop (P22a-4).
+	applied func()
 }
 
 func (h commands) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -100,6 +103,9 @@ func (h commands) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		h.fault(w, r.PathValue("action"), err)
 		return
+	}
+	if _, ok := v.(*types.CommandApplied); ok && h.applied != nil {
+		h.applied()
 	}
 	h.respond(w, v)
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
+	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/recovery"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -214,7 +215,7 @@ func TestSystemActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, a := range []string{recovery.ActionLose, string(recovery.Revoke), string(recovery.Seal), string(recovery.Settle), recovery.ActionRefuse,
-		modelcall.Action, modelcall.Counted, "model_call.reconcile"} {
+		modelcall.Action, modelcall.Counted, "model_call.reconcile", reconcile.AdmitAction, reconcile.AbandonAction, reconcile.EvaluateAction} {
 		if !slices.Contains(systemActions, a) {
 			t.Errorf("%s is not a system action", a)
 		}

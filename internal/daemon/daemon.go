@@ -209,8 +209,9 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	if err != nil {
 		return err
 	}
+	loop := reconciler(d, logw)
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
-		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated})
+		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated, applied: loop.Nudge})
 	if err == nil && tc != nil {
 		if err = srv.listenHTTPS(d.store, cfg.HTTPS.Addr, tc); err != nil {
 			_ = srv.close() // the refusal is err
@@ -235,6 +236,8 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	purging, stopPurge := context.WithCancel(ctx)
 	purged := make(chan struct{})
 	go func() { defer close(purged); d.purgeUploads(purging, purgeEvery, logw) }()
+	reconciled := make(chan struct{})
+	go func() { defer close(reconciled); loop.Run(purging) }() // resynchronises now, then every reconcileEvery and on a nudge
 	var failed error
 	select {
 	case <-ctx.Done():
@@ -242,6 +245,7 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	}
 	stopPurge()
 	<-purged
+	<-reconciled
 	serr := srv.close()
 	if err := d.Close(); err != nil {
 		return couldNotRun(vocab.ReasonStoreUnreadable, "the event store did not close cleanly", err)
