@@ -37,3 +37,13 @@ base_remote() {
   rm -rf "$work"
   return "$rc"
 }
+
+# canary_path WORK NAME (§2.7's canary_paths, P24c) prints the first path
+# named NAME under WORK, or beside it (WORK's parent, at depth 1), and fails
+# when there is one: a hostile case's file written outside where it ran.
+canary_path() {
+  local work="$1" name="$2" found
+  [[ -d "$work" && -n "$name" && "$name" != */* ]] || { echo "canary_path: WORK must exist, NAME be a plain name" >&2; return 2; }
+  found="$(find "$work" -name "$name" -print -quit)$(find "$(dirname "$work")" -mindepth 1 -maxdepth 1 -name "$name" -print -quit)"
+  [[ -z "$found" ]] || { printf '%s\n' "$found"; return 1; }
+}

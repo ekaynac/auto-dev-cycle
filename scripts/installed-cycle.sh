@@ -32,8 +32,8 @@
 # Afterwards, every case stops adcd, verifies its log (adc dev verify-log,
 # whose head is seq N > 0), restarts it (it must report its event log
 # verified to seq N, with no new bootstrap secret: it replayed the same
-# store), stops it again, checks that no path under the work directory is
-# named as one of the case's canary_paths (§2.7), and runs the shared secret scan
+# store), stops it again, checks that no path under the work directory, or
+# beside it, is named as one of the case's canary_paths (§2.7), and runs the shared secret scan
 # (scripts/lib/secrets.sh) over the whole temporary directory, both runs'
 # logs (out/adcd-1.log, out/adcd-2.log) included. --routes live is P25's. Every wait is
 # bounded. Exit 0 only when every check holds; 1 when one fails; 2 when the
@@ -160,6 +160,11 @@ fi
 
 step "the base remote of $project's $task"
 tree="$(base_remote "$fixtures/t0/$project/repo" "$fixtures/t0/$project/tasks/$task" "$overlay" "$work/remote.git")" || die "the base remote failed"
+if [[ -n "$overlay" ]]; then
+  while IFS= read -r -d '' f; do
+    git --git-dir="$work/remote.git" cat-file -e "main:${f#"$overlay"/}" 2>/dev/null || die "the base remote lacks the case's ${f#"$overlay"/}"
+  done < <(find "$overlay" -type f -print0)
+fi
 if [[ -n "$case_file" ]]; then
   step "the case's profile, its canary minted for this run"
   canary="ADC-CANARY-$case-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
@@ -256,10 +261,10 @@ wait "$stub" 2>/dev/null || true
 stub=""
 
 if [[ -n "$case_file" ]]; then
+  step "no canary path under the work directory or beside it"
   while IFS= read -r name; do
     [[ -z "$name" ]] && continue
-    found="$(find "$work" -name "$name" -print -quit)"
-    [[ -z "$found" ]] || die "a canary path exists: $found"
+    found="$(canary_path "$work" "$name")" || die "a canary path exists: $found"
   done < <(json "$case_file" '(d.expect.canary_paths ?? []).join("\n")')
 fi
 step "no secret outside the operator's token file"

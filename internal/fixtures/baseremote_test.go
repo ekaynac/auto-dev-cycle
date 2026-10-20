@@ -110,3 +110,30 @@ func TestBaseRemote(t *testing.T) {
 	}
 	empty("a failed copy", tmp)
 }
+
+// TestCanaryPath (P24c): canary_path finds a canary path anywhere under the
+// work directory, or beside it, never deeper beside it, and passes when
+// there is none.
+func TestCanaryPath(t *testing.T) {
+	parent := t.TempDir()
+	work := filepath.Join(parent, "work")
+	for _, d := range []string{"work/state/run/tree", "other"} {
+		if err := os.MkdirAll(filepath.Join(parent, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plant := map[string]string{"canary-deep": "work/state/canary-deep", "canary-beside": "canary-beside", "canary-far": "other/canary-far"}
+	for _, p := range plant {
+		if err := os.WriteFile(filepath.Join(parent, p), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]string{"canary-deep": plant["canary-deep"], "canary-beside": plant["canary-beside"], "canary-far": "", "canary-none": ""} {
+		cmd := exec.Command("bash", "-c", `. ../../scripts/lib/base-remote.sh && canary_path "$@"`, "canary_path", work, name)
+		cmd.Env = append(testguard.HomeEnv(t), "PATH=/usr/bin:/bin")
+		out, err := cmd.Output()
+		if got := strings.TrimSpace(string(out)); want == "" && (err != nil || got != "") || want != "" && (err == nil || got != filepath.Join(parent, want)) {
+			t.Errorf("%s: %q, %v", name, got, err)
+		}
+	}
+}
