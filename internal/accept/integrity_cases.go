@@ -128,7 +128,7 @@ func (s *pkgScan) caseFacts(fa *pkgFacts, k, path, cons string, fn *ast.FuncDecl
 	if old := fa.cases[k][cons]; old != nil { // declared twice under one constraint: what both hold
 		c = common(old, c)
 	}
-	if fa.cases[k][cons] = c; s.r.work > maxWork {
+	if fa.cases[k][cons] = c; s.r.work > maxWork && fa.bad[path] == "" { // another layer's reason kept
 		fa.bad[path] = "test cases or assertions past the guard's work bound"
 	}
 }

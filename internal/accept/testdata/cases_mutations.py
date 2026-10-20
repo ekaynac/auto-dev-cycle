@@ -49,7 +49,7 @@ MUTS = [
     ("drives reads past the bound (r2 6)", C, 'if !s.charge(int(body.End()-body.Pos())) || depth > maxCaseDepth {', 'if s.charge(int(body.End()-body.Pos())); depth > maxCaseDepth {'),
     ("a summary too deep composed (r2 5)", C, '\tif h.height >= maxCaseDepth {\n', '\tif false {\n'),
     ("summaries' heights not counted", C, '\tw.sum.height = max(w.sum.height, h.height+1)\n', ''),
-    ("past the bound, a test still verified", C, 'if fa.cases[k][cons] = c; s.r.work > maxWork {', 'if fa.cases[k][cons] = c; false {'),
+    ("past the bound, a test still verified", C, 'if fa.cases[k][cons] = c; s.r.work > maxWork && fa.bad[path] == "" {', 'if fa.cases[k][cons] = c; false {'),
 ]
 
 

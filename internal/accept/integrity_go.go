@@ -673,14 +673,15 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			} else if hook {
 				hooks = append(hooks, fn.Body)
 			}
+			if test && !hook && goTest(fname) && m.on[pi] > 0 { // P14d-b: its cases, per build constraint
+				s.caseFacts(fa, plat+" "+dir+":"+name+"."+fname, m.path, m.cons, fn)
+			}
 			switch {
 			case hook:
 				fa.warn["TestMain(*testing.M) of "+dir+":"+name+"\x00"+plat] += string(m.src[fset.Position(d.Pos()).Offset:fset.Position(d.End()).Offset]) // every declaration
 			case test && goTest(fname):
 				if m.on[pi] > 0 {
 					k, st := platforms[pi][0]+"/"+platforms[pi][1]+" "+dir+":"+name+"."+fname, &stat{c.asserts + output(f, fn), c.skips, m.on[pi], m.cons}
-					s.caseFacts(fa, k, m.path, m.cons, fn) // P14d-b: its cases, per build constraint
-
 					if old := fa.tests[k]; old != nil { // declared again (race, !race): the weakest
 						st = &stat{min(old.asserts, st.asserts), max(old.skips, st.skips), min(old.cert, st.cert), old.cons + st.cons}
 					}
