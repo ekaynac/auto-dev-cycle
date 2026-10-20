@@ -99,6 +99,7 @@ func TestGateFixtures(t *testing.T) {
 		"fault-unreadable-results":               {"", "", "runner_fault: the run never wrote its results"},
 		"a clean pytest run":                     {whole, "", "empty/completed_clean"},
 		"a half-written document":                {whole[:100], "", "runner_fault: the run's results are not a JUnit XML document"},
+		"a test defined in a shared helper":      {strings.Replace(whole, `name="test_sub" file="tests/test_money.py"`, `name="test_sub" file="helpers.py"`, 1), "", "runner_fault: the run's results are not a JUnit XML document"}, // Astra #290 r2 H1
 		"test_sub missing, its file changed":     {junit("test_add=pass"), "tests/test_money.py", "found/gate_test_failed"},
 		"test_sub missing, money.py changed":     {junit("test_add=pass"), "money.py", "runner_fault: 1 results missing"},
 		"test_sub missing, tests/conftest.py":    {junit("test_add=pass"), "tests/conftest.py", "found/gate_test_failed"},
@@ -145,23 +146,25 @@ func TestGateFixtures(t *testing.T) {
 func TestGateCommand(t *testing.T) {
 	report := map[string]string{"report.xml": junit("test_add=pass", "test_sub=pass")}
 	for name, command := range map[string][]string{
-		"sh -c":              {"sh", "-c", "python3 -m pytest -q"},
-		"a wrapper script":   {"python3", "run_gate.py"},
-		"cd runner &&":       {"cd", "runner", "&&", "python3", "-m", "pytest"},
-		"env":                {"env", "PYTHONPATH=src", "python3", "-m", "pytest"},
-		"--rootdir":          {"python3", "-m", "pytest", "--rootdir=.."},
-		"-c":                 {"pytest", "-c", "other.ini"},
-		"-p a plugin":        {"pytest", "-p", "myplugin"},
-		"-o pythonpath":      {"pytest", "-o", "pythonpath=src"},
-		"--confcutdir":       {"pytest", "--confcutdir=tests"},
-		"--pyargs":           {"pytest", "--pyargs", "money"},
-		"an absolute path":   {"pytest", "/workspace/tests"},
-		"..":                 {"pytest", "../tests"},
-		"another --junitxml": {"pytest", "--junitxml=out.xml"},
-		"-n with no count":   {"pytest", "-n", "auto"},
-		"python, not -m":     {"python3", "pytest.py"},
-		"python -m another":  {"python3", "-m", "unittest"},
-		"no command":         {},
+		"sh -c":                       {"sh", "-c", "python3 -m pytest -q"},
+		"a wrapper script":            {"python3", "run_gate.py"},
+		"cd runner &&":                {"cd", "runner", "&&", "python3", "-m", "pytest"},
+		"env":                         {"env", "PYTHONPATH=src", "python3", "-m", "pytest"},
+		"--rootdir":                   {"python3", "-m", "pytest", "--rootdir=.."},
+		"-c":                          {"pytest", "-c", "other.ini"},
+		"-p a plugin":                 {"pytest", "-p", "myplugin"},
+		"-o pythonpath":               {"pytest", "-o", "pythonpath=src"},
+		"--confcutdir":                {"pytest", "--confcutdir=tests"},
+		"--pyargs":                    {"pytest", "--pyargs", "money"},
+		"an absolute path":            {"pytest", "/workspace/tests"},
+		"..":                          {"pytest", "../tests"},
+		"an argument file":            {"python3", "-m", "pytest", "@args.txt"}, // Astra #290 r2 H2
+		"an argument file in a value": {"pytest", "-k", "@args.txt"},
+		"another --junitxml":          {"pytest", "--junitxml=out.xml"},
+		"-n with no count":            {"pytest", "-n", "auto"},
+		"python, not -m":              {"python3", "pytest.py"},
+		"python -m another":           {"python3", "-m", "unittest"},
+		"no command":                  {},
 	} {
 		f := pyFixture(t, maps.Clone(report), false, command...)
 		if _, err := Run(context.Background(), f.in); !errors.Is(err, ErrSpec) {
@@ -204,6 +207,7 @@ func TestGatePytest(t *testing.T) {
 	}{
 		"a clean run":                         {map[string]string{"tests/test_money.py": money, "money.py": "CASES = [1]\n"}, "", "empty/completed_clean"},
 		"a class's collection error":          {map[string]string{"tests/test_money.py": money, "tests/test_rates.py": rates, "money.py": "CASES = None\n"}, "money.py", "found/gate_test_failed"},
+		"a test defined in a shared helper":   {map[string]string{"tests/test_money.py": money, "helpers.py": "def check():\n    pass\n", "tests/test_a.py": "from helpers import check\n\n\nclass TestB_test:\n    test_x = staticmethod(check)\n", "money.py": "CASES = [1]\n"}, "", "runner_fault: the run's results are not a JUnit XML document"},
 		"test_sub moved to tests/test_money/": {map[string]string{"tests/test_money.py": money[:strings.Index(money, "\n\n\ndef test_sub")] + "\n", "tests/test_money/sub_test.py": "def test_sub():\n    pass\n", "money.py": "CASES = [1]\n"}, "", "runner_fault: 1 results missing"},
 	} {
 		f := pyFixture(t, c.files, true, "python3", "-m", "pytest", "-q", "-p", "no:cacheprovider")

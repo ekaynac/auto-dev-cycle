@@ -46,6 +46,10 @@
 //     controller appends --junitxml={results_path} (unless named) and -o
 //     junit_family=xunit1, so each testcase names its file. Anything else
 //     is refused (ErrSpec), never run. A Go test may run Python anywhere.
+//     The command alone does not isolate the run: a checkout's pytest.py
+//     (python -m finds it first), pytest.ini, addopts and PYTEST_ADDOPTS
+//     still reach pytest. Isolating them is P15c (#226 entry 93); the
+//     Python profile stays inactive until P15c and P14c-2b.
 //   - Ownership for junit_xml: when the report holds any failure or error
 //     (a collection error included, of a module or a class: Astra #290
 //     M5), a missing test is the candidate's; otherwise a missing test is
@@ -447,9 +451,16 @@ var iniKeys = []string{"xfail_strict", "log_level", "console_output_style", "jun
 // -q, -x, -p no:<plugin>, -k and -m expressions, --maxfail=<n>, -o for
 // iniKeys, -n <workers>, and --junitxml={results_path}. Anything else
 // (--rootdir, -c, --confcutdir, -p <plugin>, --pyargs, --import-mode, -W,
-// another -o) is refused: it could move what pytest collects, and where.
+// another -o, an @file of arguments in any position, a value included) is
+// refused: it could move what pytest collects, and where. What the
+// checkout itself configures or shadows (pytest.ini, addopts, a local
+// pytest.py) is P15c's (#226 entry 93): until then, a junit_xml gate is no
+// verdict on a live Python candidate.
 func direct(cmd []string) error {
 	refuse := func(why string) error { return fmt.Errorf("%w: the junit_xml gate command %s", ErrSpec, why) }
+	if slices.ContainsFunc(cmd, func(a string) bool { return strings.HasPrefix(a, "@") }) { // pytest reads arguments from @file (Astra #290 r2 H2)
+		return refuse("has an argument file (@)")
+	}
 	var args []string
 	switch {
 	case len(cmd) > 0 && cmd[0] == "pytest":

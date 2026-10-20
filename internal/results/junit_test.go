@@ -75,6 +75,11 @@ func TestJUnitPytest(t *testing.T) {
 	if _, err := ParseJUnitXML(strings.NewReader(junit(t, "pytest-xunit2.xml")), nil, nil); !errors.Is(err, ErrUnreadable) {
 		t.Errorf("an xunit2 document: %v", err)
 	}
+	// Astra #290 r2 H1: a test defined in a shared helper (pytest's file is
+	// where its function is): unreadable, never tests/test_a.py's test.
+	if _, err := ParseJUnitXML(strings.NewReader(junit(t, "pytest-shared-helper.xml")), nil, nil); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("a test defined in a shared helper: %v", err)
+	}
 	// Astra #290 H4: tests/test_a.py::TestB_test::test_x, replaced by
 	// tests/test_a/TestB_test.py::test_x (one classname and name): missing.
 	base, err := ParseJUnitXML(strings.NewReader(junit(t, "pytest-h4-base.xml")), nil, nil)
@@ -103,7 +108,7 @@ func TestJUnitPytest(t *testing.T) {
 func TestJUnitStrict(t *testing.T) {
 	suite := func(attrs, body string) string {
 		return `<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" ` + attrs + `>` +
-			strings.ReplaceAll(body, "<testcase ", `<testcase file="f.py" `) + `</testsuite></testsuites>`
+			strings.ReplaceAll(body, "<testcase ", `<testcase file="m.py" `) + `</testsuite></testsuites>`
 	}
 	pass, errored := `<testcase classname="m" name="a"/>`, `<testcase classname="m" name="a"><error/></testcase>`
 	mix := junit(t, "pytest-mix.xml")
@@ -117,17 +122,22 @@ func TestJUnitStrict(t *testing.T) {
 	defer func(e, d, n int) { maxElements, maxDepth, maxName = e, d, n }(maxElements, maxDepth, maxName)
 	maxElements, maxDepth, maxName = 64, 8, 64
 	for name, doc := range map[string]string{
-		"empty":                        "",
-		"malformed":                    suite(`tests="1"`, `<testcase classname="m" name="a">`),
-		"partial":                      mix[:len(mix)/2],
-		"a DTD":                        strings.Replace(suite(`tests="1"`, pass), "?>", `?><!DOCTYPE x [<!ENTITY e "x">]>`, 1),
-		"an entity":                    suite(`tests="1"`, `<testcase classname="m" name="&e;"/>`),
-		"an unknown element":           suite(`tests="1"`, `<testcase classname="m" name="a"><rerunFailure/></testcase>`),
-		"a namespaced element":         suite(`tests="1"`, `<x:testcase xmlns:x="u" classname="m" name="a"/>`),
-		"a second root":                suite(`tests="1"`, pass) + `<testsuite tests="0"/>`,
-		"no testcase":                  suite(`tests="0"`, ``),
-		"a testcase with no name":      suite(`tests="1"`, `<testcase classname="m"/>`),
-		"a testcase with no file":      strings.Replace(suite(`tests="1"`, pass), `file="f.py" `, ``, 1),
+		"empty":                   "",
+		"malformed":               suite(`tests="1"`, `<testcase classname="m" name="a">`),
+		"partial":                 mix[:len(mix)/2],
+		"a DTD":                   strings.Replace(suite(`tests="1"`, pass), "?>", `?><!DOCTYPE x [<!ENTITY e "x">]>`, 1),
+		"an entity":               suite(`tests="1"`, `<testcase classname="m" name="&e;"/>`),
+		"an unknown element":      suite(`tests="1"`, `<testcase classname="m" name="a"><rerunFailure/></testcase>`),
+		"a namespaced element":    suite(`tests="1"`, `<x:testcase xmlns:x="u" classname="m" name="a"/>`),
+		"a second root":           suite(`tests="1"`, pass) + `<testsuite tests="0"/>`,
+		"no testcase":             suite(`tests="0"`, ``),
+		"a testcase with no name": suite(`tests="1"`, `<testcase classname="m"/>`),
+		"a testcase with no file": strings.Replace(suite(`tests="1"`, pass), `file="m.py" `, ``, 1),
+		// Astra #290 r2 H1: a file that is not the classname's module.
+		"a file of another module":     strings.Replace(suite(`tests="1"`, pass), `file="m.py"`, `file="helpers.py"`, 1),
+		"a file below the module":      strings.Replace(suite(`tests="1"`, pass), `file="m.py"`, `file="m/x.py"`, 1),
+		"a file that is no module":     strings.Replace(suite(`tests="1"`, pass), `file="m.py"`, `file="m"`, 1),
+		"a module error of another":    suite(`tests="1" errors="1"`, `<testcase classname="" name="n"><error/></testcase>`),
 		"one identity twice":           suite(`tests="2"`, pass+pass),
 		"one identity, then a failure": suite(`tests="2" failures="1"`, pass+`<testcase classname="m" name="a"><failure/></testcase>`),
 		"tests miscounted":             suite(`tests="2"`, pass),
@@ -137,7 +147,7 @@ func TestJUnitStrict(t *testing.T) {
 		"a count that is no number":    suite(`tests="one"`, pass),
 		"a root count miscounted":      strings.Replace(suite(`tests="1"`, pass), `<testsuites name="pytest tests">`, `<testsuites tests="3">`, 1),
 		"a name beyond its bound":      suite(`tests="1"`, `<testcase classname="m" name="`+strings.Repeat("n", 65)+`"/>`),
-		"levels beyond their bound":    strings.Repeat("<testsuite>", 9) + `<testcase file="f.py" classname="m" name="a"/>` + strings.Repeat("</testsuite>", 9),
+		"levels beyond their bound":    strings.Repeat("<testsuite>", 9) + `<testcase file="m.py" classname="m" name="a"/>` + strings.Repeat("</testsuite>", 9),
 		"elements beyond their bound":  suite(`tests="35"`, many(35)),
 		// Opus #290 L1, L2; Astra #290 L7.
 		"text after the root":             suite(`tests="1"`, pass) + "5 passed",
@@ -153,6 +163,16 @@ func TestJUnitStrict(t *testing.T) {
 		"two teardown successors":     suite(`tests="3" errors="2"`, pass+errored+errored),
 		"a successor with two errors": suite(`tests="2" errors="2"`, pass+`<testcase classname="m" name="a"><error/><error/></testcase>`),
 		"a successor after a skip":    suite(`tests="2" errors="1" skipped="1"`, `<testcase classname="m" name="a"><skipped/></testcase>`+errored),
+		// Astra #290 r2 L5: after an error, or a mixed testcase.
+		"a successor after an error":               suite(`tests="2" errors="2"`, errored+errored),
+		"a successor after a failure and a skip":   suite(`tests="2" failures="1" errors="1" skipped="1"`, `<testcase classname="m" name="a"><failure/><skipped/></testcase>`+errored),
+		"a successor after a failure and an error": suite(`tests="2" failures="1" errors="2"`, `<testcase classname="m" name="a"><failure/><error/></testcase>`+errored),
+		// Astra #290 r2 L6: the declaration's grammar.
+		"a declaration of garbage":          strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml garbage?>`, 1),
+		"a declaration with no version":     strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml encoding="utf-8"?>`, 1),
+		"a declaration's version twice":     strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml version="1.0" version="1.0"?>`, 1),
+		"a declaration's unknown attribute": strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml version="1.0" pass="yes"?>`, 1),
+		"a declaration out of order":        strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml encoding="utf-8" version="1.0"?>`, 1),
 	} {
 		if r, err := ParseJUnitXML(strings.NewReader(doc), nil, nil); !errors.Is(err, ErrUnreadable) {
 			t.Errorf("%s: %v, %v; want unreadable", name, outcomes(r), err)
@@ -168,10 +188,10 @@ func TestJUnitStrict(t *testing.T) {
 	// past maxName is free text, never read (Opus #290 M2: a 5,012-byte one);
 	// a comment inside the root, whitespace around it.
 	long := suite(`tests="1" failures="1"`, `<testcase classname="m" name="a"><failure message="`+strings.Repeat("x", 5012)+`"/></testcase>`)
-	if r, err := ParseJUnitXML(strings.NewReader(long), nil, nil); err != nil || outcomes(r)["f.py::m::a"] != Fail {
+	if r, err := ParseJUnitXML(strings.NewReader(long), nil, nil); err != nil || outcomes(r)["m.py::m::a"] != Fail {
 		t.Errorf("a 5,012-byte failure message: %v, %v", outcomes(r), err)
 	}
-	if r, err := ParseJUnitXML(strings.NewReader(suite(`tests="2" failures="0" errors="1" skipped="0"`, pass+errored)), nil, nil); err != nil || outcomes(r)["f.py::m::a"] != Fail {
+	if r, err := ParseJUnitXML(strings.NewReader(suite(`tests="2" failures="0" errors="1" skipped="0"`, pass+errored)), nil, nil); err != nil || outcomes(r)["m.py::m::a"] != Fail {
 		t.Errorf("pytest's teardown shape: %v, %v", outcomes(r), err)
 	}
 	if r, err := ParseJUnitXML(strings.NewReader(suite(`tests="30"`, many(30)+"<!-- in -->")+"\n"), nil, nil); err != nil || !r.Clean() {

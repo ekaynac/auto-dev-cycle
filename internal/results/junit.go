@@ -10,6 +10,13 @@ package results
 //     (Astra #290 H4: tests/test_a.py::TestB_test::test_x and
 //     tests/test_a/TestB_test.py::test_x share their classname and name). A
 //     collection error is a testcase with an error, its file the module's.
+//   - The file must be the module classname names (Astra #290 r2 H1):
+//     tests/test_a.py for tests.test_a, or tests.test_a.TestB_test (its
+//     class), or tests/test_a/TestB_test.py for module
+//     tests.test_a.TestB_test; a module's collection error (no classname)
+//     names its module. pytest's file is where the function is defined: a
+//     test defined elsewhere (a shared helper's, file="helpers.py") is
+//     unreadable, never another test's identity.
 //   - Only a testcase with no failure, error or skipped child is a pass.
 //     An error (setup, teardown, collection) counts as a failure (Fail); a
 //     skipped one (skip, xfail) is Skip; the worst child decides. Packages
@@ -23,22 +30,26 @@ package results
 //     teardown error of one testcase two; older pytest subtracts double
 //     failures, which reads as unreadable, Opus #290 M1) below it, a
 //     namespaced or repeated attribute, text or a comment outside the root,
-//     a processing instruction but the declaration (first), and any bound
+//     a processing instruction but the declaration (first, version, then
+//     encoding and standalone, each once at most: Astra #290 r2 L6), and any bound
 //     passed: MaxStream bytes, maxElements elements, maxDepth levels,
 //     maxName bytes in an attribute read (file, classname, name, counts). Free text (messages, tracebacks,
 //     output) is read past, never kept: MaxStream bounds it.
 //   - Two testcases of one identity are unreadable, but for pytest's own
 //     shape: a test that passes or fails and then errors in teardown is a
-//     second testcase holding one error alone. It is merged, as Fail: it can
-//     only make the test fail; a third, or another shape, is unreadable.
+//     second testcase holding one error alone, after a testcase holding no
+//     error or skipped child (Astra #290 r2 L5). It is merged, as Fail: it
+//     can only make the test fail; a third, or another shape, is unreadable.
 
 import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 )
@@ -56,6 +67,10 @@ var known = map[string][]string{
 	"testcase":   {"failure", "error", "skipped", "properties", "system-out", "system-err"},
 	"properties": {"property"},
 }
+
+// decl is the XML declaration's grammar (XML 1.0 §2.8, VersionNum 1.x).
+var decl = regexp.MustCompile(`^\s*version\s*=\s*("1\.[0-9]+"|'1\.[0-9]+')(\s+encoding\s*=\s*("[A-Za-z][A-Za-z0-9._-]*"|'[A-Za-z][A-Za-z0-9._-]*'))?` +
+	`(\s+standalone\s*=\s*("(yes|no)"|'(yes|no)'))?\s*$`)
 
 // read are the attributes the adapter reads, each within maxName.
 var read = []string{"file", "classname", "name", "tests", "failures", "errors", "skipped"}
@@ -81,7 +96,8 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 	var test *Test          // the open testcase
 	has := map[string]int{} // its failure, error and skipped children
 	elements, rootDone := 0, false
-	dups := map[Test]bool{} // the identities that had their one successor
+	dups := map[Test]bool{}  // the identities that had their one successor
+	clean := map[Test]bool{} // a first testcase with no error or skipped child: a successor may follow
 	for {
 		tok, err := d.Token()
 		if err == io.EOF {
@@ -102,7 +118,7 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 				return unreadable("a comment outside the root")
 			}
 		case xml.ProcInst: // the declaration, first, alone
-			if t.Target != "xml" || d.InputOffset() != int64(len("<?xml ?>")+len(t.Inst)) {
+			if t.Target != "xml" || d.InputOffset() != int64(len("<?xml ?>")+len(t.Inst)) || !decl.Match(t.Inst) {
 				return unreadable("a processing instruction other than the declaration, first")
 			}
 		case xml.StartElement:
@@ -140,8 +156,8 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 			case "testcase": // xunit1's file, its path: one classname may be two modules' (Astra #290 H4)
 				test = &Test{Package: attr["file"] + "::" + attr["classname"], Name: attr["name"]}
 				clear(has)
-				if test.Name == "" || attr["file"] == "" {
-					return unreadable("a testcase with no name or no file (junit_family=xunit1)")
+				if test.Name == "" || !module(attr["file"], cmpOr(attr["classname"], test.Name)) { // no file: xunit2
+					return unreadable("a testcase with no name, or whose file is not its classname's module (%.64q, %.64q)", attr["file"], attr["classname"])
 				}
 			case "failure", "error", "skipped":
 				has[t.Name.Local]++
@@ -160,8 +176,8 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 				// pytest's own shape: one teardown error after a pass or a
 				// failure, its one error alone, which can only make it fail.
 				if prior, dup := tests[*test]; !dup {
-					tests[*test] = o
-				} else if !dups[*test] && prior != Skip && has["error"] == 1 && has["failure"]+has["skipped"] == 0 {
+					tests[*test], clean[*test] = o, has["error"]+has["skipped"] == 0
+				} else if !dups[*test] && clean[*test] && has["error"] == 1 && has["failure"]+has["skipped"] == 0 {
 					tests[*test], dups[*test] = worse(prior, Fail), true
 				} else {
 					return unreadable("two testcases %s %s", test.Package, test.Name)
@@ -189,4 +205,20 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 		return unreadable("no testcase")
 	}
 	return assemble(tests, map[string]Outcome{}, expected, base)
+}
+
+// module: file is the module classname names, or its module's (classname's
+// prefix, a class below it): tests/test_a.py for tests.test_a or
+// tests.test_a.TestB_test.
+func module(file, classname string) bool {
+	mod, ok := strings.CutSuffix(file, ".py")
+	mod = strings.ReplaceAll(mod, "/", ".")
+	return ok && mod != "" && (classname == mod || strings.HasPrefix(classname, mod+"."))
+}
+
+func cmpOr(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a
 }
