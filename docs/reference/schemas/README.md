@@ -97,4 +97,5 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/usage-measurement.json`](records-usage-measurement.md) | UsageMeasurement |
 | [`records/view-fingerprint.json`](records-view-fingerprint.md) | ViewFingerprint |
 | [`testing/contract-fixture.json`](testing-contract-fixture.md) | ContractFixture |
+| [`testing/cycle-case.json`](testing-cycle-case.md) | CycleCase |
 | [`vocab/registry.json`](vocab-registry.md) | VocabRegistry |

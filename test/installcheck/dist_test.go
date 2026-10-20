@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -338,6 +339,12 @@ func fakeRepo(t *testing.T, listing string, scripts ...string) (root string, env
 		"adapters/http-chat/package.json": "{}", "adapters/http-chat/src/main.ts": "", "adapters/http-chat/test/http-chat.test.ts": "",
 		"gen/ts/package.json": "{}", "gen/ts/validators.cjs": "", "gen/ts/formats.cjs": "", "gen/ts/types/x.ts": "",
 		"fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json": "{}", "fixtures/t0/py-mini/repo/m.py": "",
+		"fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json": "{}", "fixtures/t0/go-mini/repo/go.mod": "",
+		"fixtures/m1/stub-provider/server.mjs": "", "fixtures/m1/profiles/go-mini.json": "{}",
+		"fixtures/m1/config/groups.json": "{}", "fixtures/m1/config/registry-stub.json": "{}", "fixtures/m1/config/registry-live.example.json": "{}",
+		"fixtures/m1/stub-provider/scenarios/s.json": "{}", "fixtures/m1/stub-provider/server.d.mts": "", "fixtures/m1/stub-provider/test/t.mjs": "",
+		"fixtures/m1/cases/c/case.json": "{}", "fixtures/m1/stub/go-mini/baseline.json": "{}", "fixtures/m1/issues/1/issue.json": "{}",
+		"scripts/installed-cycle.sh": "", "scripts/lib/secrets.sh": "", "scripts/lib/base-remote.sh": "",
 	} {
 		write(t, filepath.Join(root, name), content, 0o644)
 	}
@@ -429,6 +436,14 @@ func TestDistAdaptersRefusals(t *testing.T) {
 				t.Fatalf("%v %s", err, out)
 			}
 		}, "py-mini-feature-1 is missing"},
+		"no stub provider": {goodListing, func(root string, env *[]string) {
+			cmd := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "rm")
+			mustRun(t, root, "git", "rm", "-q", "--cached", "--", "fixtures/m1/stub-provider/server.mjs")
+			cmd.Dir, cmd.Env = root, *env
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%v %s", err, out)
+			}
+		}, "fixtures/m1/stub-provider/server.mjs is not committed"},
 		"no main.ts": {goodListing, func(root string, env *[]string) {
 			cmd := exec.Command("git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "rm")
 			mustRun(t, root, "git", "rm", "-q", "--cached", "--", "adapters/fake/src/main.ts")
@@ -467,9 +482,13 @@ func TestDistAdaptersRefusals(t *testing.T) {
 				t.Fatalf("%v: %s", err, text)
 			}
 			want := []string{"LICENSE", "NOTICE", "adapters/contract/package.json", "adapters/contract/src/index.ts", "adapters/fake/package.json",
-				"adapters/fake/src/.keep", "adapters/fake/src/main.ts", "adapters/http-chat/package.json", "adapters/http-chat/src/main.ts", "fixtures/t0/py-mini/repo/m.py", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json",
+				"adapters/fake/src/.keep", "adapters/fake/src/main.ts", "adapters/http-chat/package.json", "adapters/http-chat/src/main.ts",
+				"fixtures/m1/cases/c/case.json", "fixtures/m1/config/groups.json", "fixtures/m1/config/registry-stub.json", "fixtures/m1/profiles/go-mini.json",
+				"fixtures/m1/stub/go-mini/baseline.json", "fixtures/m1/stub-provider/scenarios/s.json", "fixtures/m1/stub-provider/server.mjs",
+				"fixtures/t0/go-mini/repo/go.mod", "fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json",
+				"fixtures/t0/py-mini/repo/m.py", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json",
 				"gen/ts/formats.cjs", "gen/ts/package.json", "gen/ts/validators.cjs", "node_modules/@adc/contract", "node_modules/@adc/contract-gen",
-				"node_modules/a/LICENSE", "node_modules/a/index.js", "node_modules/a/package.json"}
+				"node_modules/a/LICENSE", "node_modules/a/index.js", "node_modules/a/package.json", "scripts/installed-cycle.sh", "scripts/lib/base-remote.sh", "scripts/lib/secrets.sh"}
 			if got := files(out); !slices.Equal(got, want) {
 				t.Fatalf("packaged %v", got)
 			}
@@ -569,9 +588,15 @@ func TestDistAdapters(t *testing.T) {
 		t.Errorf("third-party packages %v, want %v", names, want)
 	}
 	for _, f := range []string{"LICENSE", "NOTICE", "adapters/fake/src/main.ts", "adapters/http-chat/src/main.ts", "adapters/contract/src/index.ts", "gen/ts/validators.cjs",
-		"node_modules/require-from-string/license", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json"} {
+		"node_modules/require-from-string/license", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json", "fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json",
+		"fixtures/m1/stub-provider/server.mjs", "fixtures/m1/cases/candidate/case.json", "scripts/installed-cycle.sh", "scripts/lib/secrets.sh"} {
 		if fi, err := os.Lstat(filepath.Join(out, f)); err != nil || !fi.Mode().IsRegular() {
 			t.Errorf("%s: %v", f, err)
+		}
+	}
+	for _, f := range []string{"fixtures/m1/stub-provider/test", "fixtures/m1/issues", "fixtures/m1/images", "fixtures/m1/config/registry-live.example.json"} {
+		if _, err := os.Lstat(filepath.Join(out, f)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s is packaged: %v", f, err)
 		}
 	}
 	node, err := exec.LookPath("node")

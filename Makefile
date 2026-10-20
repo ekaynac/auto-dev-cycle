@@ -43,7 +43,7 @@ BINARIES   := adcd adc adc-harness adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check vocab-check build dist install-check fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
+.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check vocab-check build dist install-check installed-cycle-stub fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh scripts/lib/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
@@ -81,11 +81,18 @@ dist: go-check ts-deps ## Cross-build release binaries into dist/<os>-<arch>/; f
 	@scripts/dist-lib.sh $(DIST_DIR) $(SERVER_PLATFORMS)
 	@find $(DIST_DIR) -mindepth 2 -maxdepth 2 | sort
 
+# INSTALL_PREFIX installs the dist build into $$tmp/prefix, a fresh temporary directory removed on exit.
+INSTALL_PREFIX = tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+  scripts/install-check.sh --expect "$$($(BIN_DIR)/adc version --json | sed -n 's/.*"schema_set":"\([^"]*\)".*/\1/p')" "$$tmp/prefix"
+
 install-check: dist build ## Install the dist build into an empty prefix, check what the installed binaries report, run their contract fixtures and the installed smoke in isolation (00 exit check, 14 PR 12)
-	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
-	  scripts/install-check.sh --expect "$$($(BIN_DIR)/adc version --json | sed -n 's/.*"schema_set":"\([^"]*\)".*/\1/p')" "$$tmp/prefix" \
+	@$(INSTALL_PREFIX) \
 	  && scripts/installed-fixtures.sh "$$tmp/prefix" \
 	  && scripts/installed-smoke.sh "$$tmp/prefix"
+
+installed-cycle-stub: dist build ## Install the dist build into an empty prefix and run the installed cycle harness's stub cases from outside the checkout (P24; preflight until P22a lands)
+	@$(INSTALL_PREFIX) \
+	  && mkdir "$$tmp/cwd" && (cd "$$tmp/cwd" && "$$tmp/prefix/lib/adc/scripts/installed-cycle.sh" "$$tmp/prefix" --routes stub --project go-mini --case preflight)
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go
@@ -204,7 +211,7 @@ vocab-check: build ## Registries cross-check; reasons only through generated con
 	@# The check type-checks the module through go list, so the pinned go is put first on PATH.
 	@PATH="$(GOROOT_PIN)/bin:$$PATH" $(BIN_DIR)/adc dev vocab check --root .
 
-ci: lint gen-check build vocab-check test fixtures-contract release-guard test-sandbox-selftest dist install-check ## Everything CI runs
+ci: lint gen-check build vocab-check test fixtures-contract release-guard test-sandbox-selftest dist install-check installed-cycle-stub ## Everything CI runs
 
 clean: ## Remove build outputs
 	@rm -rf $(BIN_DIR) $(DIST_DIR)

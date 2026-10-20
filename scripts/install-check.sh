@@ -65,7 +65,8 @@ lib="$prefix/lib/adc"
 (cd "$lib" && sha256sum --check --strict --quiet SHA256SUMS) || die "lib/adc does not match its SHA256SUMS"
 [[ "$(cd "$lib" && sed 's/^[0-9a-f]\{64\}  //' SHA256SUMS | sort)" == "$(cd "$lib" && find . -type f ! -path ./SHA256SUMS | sort)" ]] ||
   die "lib/adc holds files its SHA256SUMS does not list"
-for f in LICENSE NOTICE node/LICENSE fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json; do
+for f in LICENSE NOTICE node/LICENSE fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json \
+  fixtures/m1/stub-provider/server.mjs scripts/installed-cycle.sh scripts/lib/secrets.sh scripts/lib/base-remote.sh; do
   [[ -f "$lib/$f" ]] || die "lib/adc/$f is not installed"
 done
 

@@ -1,0 +1,19 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "go-mini-feature-1",
+  "control": "The scenario's builder writes the reference change, so an accept, gate or review that did not run, or ran on another tree, would leave a node's outcome other than expected; the hidden tests' names are canaries no request may carry.",
+  "expect": {
+    "until": "candidate",
+    "nodes": {
+      "build": {"outcome": "found", "reason": "completed_with_findings"},
+      "accept": {"outcome": "empty", "reason": "completed_clean"},
+      "gate": {"outcome": "empty", "reason": "completed_clean"},
+      "review": {"outcome": "empty", "reason": "completed_clean"}
+    },
+    "holds": [],
+    "merge": false,
+    "canaries": ["TestHiddenTransferMovesStockAndPrice", "TestHiddenTransferFailureChangesNothing", "TestHiddenTransferAllDropsSourceItem", "TestHiddenTransferToSelfIsRejected"],
+    "usage": {"in": 4700, "out": 880}
+  }
+}
