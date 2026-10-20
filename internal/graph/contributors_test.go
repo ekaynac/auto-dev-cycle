@@ -46,6 +46,14 @@ func (g graphStore) evaluated(n types.NodeID) string {
 	return string(st.State)
 }
 
+// signal is n's one hold's signal instance ("" with none).
+func (g graphStore) signal(n types.NodeID) string {
+	if hs := g.state(n).Holds; len(hs) == 1 {
+		return hs[0].SignalInstance
+	}
+	return ""
+}
+
 // TestContributorFamilies (I7, P16b; fault 1): a review's claim refuses a
 // roster member of a family that holds a lease on a build node of its
 // task, another executor of that family included, and any member once a
@@ -69,8 +77,9 @@ func TestContributorFamilies(t *testing.T) {
 	}
 	build := g.record(g.newNode(types.NodeKindBuild))
 	g.leaseOn(build, exeB) // claude, another executor than the reviewer's
-	if got := g.evaluated(g.reviewBy(exeA)); got != refused {
-		t.Errorf("a reviewer of a contributing family (fault 1): %s", got)
+	held := g.reviewBy(exeA)
+	if got := g.evaluated(held); got != refused || g.signal(held) != "contributor:"+string(exeB) {
+		t.Errorf("a reviewer of a contributing family (fault 1): %s, on %q", got, g.signal(held))
 	}
 	if got := g.evaluated(g.reviewBy(exeA, exeC)); got != refused {
 		t.Errorf("a roster with one member of a contributing family: %s", got)
@@ -79,8 +88,9 @@ func TestContributorFamilies(t *testing.T) {
 		t.Errorf("a reviewer of another family: %s", got)
 	}
 	g.leaseOn(g.record(g.newNode(types.NodeKindBuild)), exeX) // a repair round on an unregistered executor
-	if got := g.evaluated(g.reviewBy(exeC)); got != refused {
-		t.Errorf("an unknown contributor: %s", got)
+	// The hold names the contributor, not the reviewer's registry entry (Astra #291 L3).
+	if held := g.reviewBy(exeC); g.evaluated(held) != refused || g.signal(held) != "contributor:"+string(exeX) {
+		t.Errorf("an unknown contributor: %s, on %q", g.evaluated(held), g.signal(held))
 	}
 	var got []string
 	if err := g.s.View(t.Context(), func(tx *eventstore.Tx) (err error) {
@@ -146,37 +156,59 @@ func TestReviewCommitIndependent(t *testing.T) {
 	}
 }
 
-// unleased completes a build of the task whose result no lease produced.
-func (g graphStore) unleased() types.NodeID {
+// unleased records a build of the task whose result no lease produced: a
+// completed one, selected, or a could_not_run one, never selected.
+func (g graphStore) unleased(o types.Outcome) types.NodeID {
 	g.t.Helper()
 	n := g.record(g.newNode(types.NodeKindBuild))
 	g.must(g.claimOf(n))
 	r := unrecorded(g.t, *g.state(n).Key)
 	r.Kind, r.Outcome, r.Reason, r.Detail = types.ResultKindPatch, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+	if o == types.OutcomeCouldNotRun {
+		r.Outcome, r.Reason, r.Detail, r.Completed = o, vocab.ReasonExecutorIncomplete, "no accepted result; nothing changed", false
+	}
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
 	})
-	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, r.ID) })
+	if o != types.OutcomeCouldNotRun {
+		g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, r.ID) })
+	}
 	return n
 }
 
-// TestUnleasedBuildIsUnknown (Opus #291 M1): a build of the task with a
-// recorded result and no lease has a contributor of unknown family: a
-// review is held at its claim, and a review claimed before it appears is
-// refused at the commit.
+// TestUnleasedBuildIsUnknown (Opus #291 M1, Astra #291 M1, L3): a build of
+// the task with any recorded result and no lease (a completed one, a
+// could_not_run one never selected, a completed one since invalidated) has
+// a contributor of unknown family: a review is held at its claim, its hold
+// naming that build, and a GO review claimed before it is refused at the
+// commit.
 func TestUnleasedBuildIsUnknown(t *testing.T) {
-	g := openStore(t)
-	env := g.env(noRequirement)
-	claimed := g.reviewBy(exeA)
-	if got := g.evaluated(claimed); got != "claimed" {
-		t.Fatalf("the review is %s", got)
-	}
-	g.unleased()
-	if got := g.evaluated(g.reviewBy(exeA)); got != "reviewer_unavailable" {
-		t.Errorf("a review after an unleased build: %s", got)
-	}
-	var e ErrNotIndependent
-	if err := g.do(commit(claimed, g.reviewResult(claimed), env)); !errors.As(err, &e) || !strings.Contains(e.Cause, "unknown") {
-		t.Errorf("a GO review committed after an unleased build: %v", err)
+	for name, unleased := range map[string]func(g graphStore) types.NodeID{
+		"a completed build":     func(g graphStore) types.NodeID { return g.unleased(types.OutcomeEmpty) },
+		"a could_not_run build": func(g graphStore) types.NodeID { return g.unleased(types.OutcomeCouldNotRun) },
+		"a build since invalidated": func(g graphStore) types.NodeID {
+			n := g.unleased(types.OutcomeEmpty)
+			g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Invalidate(tx, n) })
+			return n
+		},
+	} {
+		g := openStore(t)
+		env := g.env(noRequirement)
+		claimed := g.reviewBy(exeA)
+		if got := g.evaluated(claimed); got != "claimed" {
+			t.Fatalf("%s: the review is %s", name, got)
+		}
+		n := unleased(g)
+		if g.state(n).Result != nil && name != "a completed build" {
+			t.Fatalf("%s: a selected result", name)
+		}
+		held := g.reviewBy(exeA)
+		if got := g.evaluated(held); got != "reviewer_unavailable" || g.signal(held) != "contributor:"+string(n) {
+			t.Errorf("%s: a review after it: %s, on %q", name, got, g.signal(held))
+		}
+		var e ErrNotIndependent
+		if err := g.do(commit(claimed, g.reviewResult(claimed), env)); !errors.As(err, &e) || !strings.Contains(e.Cause, string(n)) {
+			t.Errorf("%s: a GO review committed after it: %v", name, err)
+		}
 	}
 }

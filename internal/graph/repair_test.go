@@ -4,6 +4,7 @@ package graph
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -73,6 +74,21 @@ func TestRepair(t *testing.T) {
 	if in := third.Node.Inputs; err != nil || third.Node.Round != 3 || len(in) != 5 || in[3].Name != "findings-2" || in[4].Name != "candidate-2" ||
 		in[4].Source.Variant.(*types.ResultSource).Producer != next.Node.ID {
 		t.Errorf("the second repair: %+v %v", third, err)
+	}
+	// Astra #291 M2: a no_go review of P1, then the build invalidated and
+	// completed with P2: the review's findings are about P1, so no repair
+	// until P2 is reviewed.
+	rerun, _ := g.completedWith(types.NodeKindBuild, types.ResultKindPatch, []types.Ref{})
+	ofP1 := g.reviewed(rerun, types.OutcomeFound)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return Invalidate(tx, rerun) })
+	p2 := unrecorded(g.t, *g.state(rerun).Key)
+	p2.Kind, p2.Outcome, p2.Reason, p2.Detail = types.ResultKindPatch, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+	g.must(commit(rerun, p2, g.env(noRequirement)))
+	if _, err := g.repair(rerun, ofP1); err == nil || !strings.Contains(err.Error(), "did not review its selected patch") {
+		t.Errorf("a review of P1, the build at P2: %v", err)
+	}
+	if _, err := g.repair(rerun, g.reviewed(rerun, types.OutcomeFound)); err != nil {
+		t.Errorf("a review of P2: %v", err)
 	}
 	other, otherRes := g.completedWith(types.NodeKindBuild, types.ResultKindPatch, []types.Ref{})
 	planReview, _ := g.completedWith(types.NodeKindReview, types.ResultKindReview, []types.Ref{})

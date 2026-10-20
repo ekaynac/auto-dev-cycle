@@ -22,6 +22,7 @@ package graph
 //     resolved now, is the prior's claimed key, with the same inputs.
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,10 +46,19 @@ type Families interface {
 // ErrNotIndependent: a roster member's family is unknown, or is not the
 // one the registry now derives for its executor, or contributed to the
 // candidate, or a contributor's family is unknown (06 rule 3; P16b). Its
-// outcome is could_not_run/reviewer_not_independent; Cause says which.
+// outcome is could_not_run/reviewer_not_independent; Cause says which, and
+// Signal is what the hold waits on ("" for registry:<Executor>, the
+// reviewer's own entry).
 type ErrNotIndependent struct {
 	Executor types.ExecutorID
 	Cause    string
+	Signal   string
+}
+
+// SignalInstance is the signal a hold on e waits for: the contributor a
+// contribution names, else the reviewer's registry entry.
+func (e ErrNotIndependent) SignalInstance() string {
+	return cmp.Or(e.Signal, "registry:"+string(e.Executor))
 }
 
 func (e ErrNotIndependent) Error() string {
@@ -78,7 +88,7 @@ func registered(n types.Node, families Families) error {
 	}
 	for _, m := range roster {
 		if types.Name(families.Family(m.Executor)) != m.Family { // an unknown family is no roster family (checkRoster)
-			return ErrNotIndependent{m.Executor, "its family is not the registry's"}
+			return ErrNotIndependent{m.Executor, "its family is not the registry's", ""}
 		}
 	}
 	return checkRoster(roster)
@@ -137,7 +147,7 @@ func checkRoster(roster []types.RosterMember) error {
 	}
 	for i, m := range roster {
 		if m.Family == receipt.UnknownFamily {
-			return ErrNotIndependent{m.Executor, "its family is unknown"}
+			return ErrNotIndependent{m.Executor, "its family is unknown", ""}
 		}
 		if i > 0 && roster[i-1].Executor >= m.Executor {
 			return errors.New("graph: a roster is sorted by executor and names each once")

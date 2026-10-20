@@ -13,9 +13,10 @@ package graph
 //     the set errs toward more: a reviewer is never independent of a
 //     family that could have shaped the candidate.
 //   - An executor the registry does not hold counts as
-//     receipt.UnknownFamily, and so does a build node of the task with a
-//     recorded result and no lease on its unit (its proposer's family is
-//     not known, Opus #291 M1). An unknown contributor makes no reviewer
+//     receipt.UnknownFamily, and so does a build node of the task with any
+//     recorded result, selected, unselected or invalidated, and no lease on
+//     its unit (its proposer's family is not known; Opus #291 M1, Astra
+//     #291 M1). An unknown contributor makes no reviewer
 //     independent (06 rule 3).
 //   - The family is today's registry's for the lease's executor, not a
 //     snapshot taken at the lease: the operator does not re-declare an
@@ -43,6 +44,22 @@ import (
 
 // Contributors are the model families of task's builder attempts, sorted.
 func Contributors(tx *eventstore.Tx, task types.TaskID, families Families) ([]string, error) {
+	cs, err := contributions(tx, task, families)
+	out := []string{}
+	for _, c := range cs {
+		out = append(out, c.family)
+	}
+	slices.Sort(out)
+	return slices.Compact(out), err
+}
+
+// contribution is one contributor: its family, and what contributed (a
+// lease's executor, or a build node whose result no lease produced: its
+// node id).
+type contribution struct{ family, by string }
+
+// contributions are task's contributors, in store order.
+func contributions(tx *eventstore.Tx, task types.TaskID, families Families) ([]contribution, error) {
 	if families == nil {
 		return nil, errors.New("graph: contributors are read through an executor registry")
 	}
@@ -50,7 +67,7 @@ func Contributors(tx *eventstore.Tx, task types.TaskID, families Families) ([]st
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	var out []contribution
 	leased := map[types.NodeID]bool{}
 	for _, k := range keys {
 		l, _, ok, err := lease.LeaseOf(tx, types.LeaseID(k))
@@ -66,29 +83,40 @@ func Contributors(tx *eventstore.Tx, task types.TaskID, families Families) ([]st
 			return nil, err
 		}
 		if ok && rec.Recorded.Task == task && rec.Recorded.Node.Kind == types.NodeKindBuild {
-			out, leased[node] = append(out, families.Family(l.Executor)), true
+			out, leased[node] = append(out, contribution{families.Family(l.Executor), string(l.Executor)}), true
 		}
 	}
-	nodes, err := tx.Keys(NodeProjection, "")
+	// Any result ever recorded, selected or not, invalidated or not (Astra
+	// #291 M1): a build's result no lease of ours produced is of a family
+	// not known.
+	results, err := tx.Keys(ResultProjection, "")
 	if err != nil {
 		return nil, err
 	}
-	for _, k := range nodes {
-		rec, err := loadNode(tx, types.NodeID(k))
+	for _, k := range results {
+		rr, _, err := load[types.ResultRecorded](tx, ResultProjection, k)
 		if err != nil {
 			return nil, err
 		}
-		if rec.Recorded.Task == task && rec.Recorded.Node.Kind == types.NodeKindBuild && rec.State.Result != nil && !leased[rec.Recorded.Node.ID] {
-			out = append(out, receipt.UnknownFamily) // a result no lease of ours produced
+		if leased[rr.Node] {
+			continue
+		}
+		rec, err := loadNode(tx, rr.Node)
+		if err != nil {
+			return nil, err
+		}
+		if rec.Recorded.Task == task && rec.Recorded.Node.Kind == types.NodeKindBuild {
+			out = append(out, contribution{receipt.UnknownFamily, string(rr.Node)})
 		}
 	}
-	slices.Sort(out)
-	return slices.Compact(out), nil
+	return out, nil
 }
 
 // independentOf: rec is no review, or no member of its roster is of a
 // contributing family and every contributor's family is known. It returns
-// the contributors it read.
+// the contributors' families. A refusal names its cause, and its signal
+// names the contributor, never the reviewer's registry entry (Astra #291
+// L3).
 func independentOf(tx *eventstore.Tx, rec nodeRecord, families Families) ([]string, error) {
 	if rec.Recorded.Node.Kind != types.NodeKindReview {
 		return nil, nil
@@ -97,20 +125,21 @@ func independentOf(tx *eventstore.Tx, rec nodeRecord, families Families) ([]stri
 	if err != nil {
 		return nil, err
 	}
-	contributors, err := Contributors(tx, rec.Recorded.Task, families)
+	cs, err := contributions(tx, rec.Recorded.Task, families)
 	if err != nil {
 		return nil, err
 	}
-	unknown := slices.Contains(contributors, receipt.UnknownFamily)
-	for _, m := range roster {
-		switch {
-		case unknown:
-			return nil, ErrNotIndependent{m.Executor, "a contributor's family is unknown"}
-		case slices.Contains(contributors, string(m.Family)):
-			return nil, ErrNotIndependent{m.Executor, "its family " + string(m.Family) + " contributed to the candidate"}
+	for _, c := range cs {
+		for _, m := range roster {
+			switch {
+			case c.family == receipt.UnknownFamily:
+				return nil, ErrNotIndependent{m.Executor, "the family of contributor " + c.by + " is unknown", "contributor:" + c.by}
+			case string(m.Family) == c.family:
+				return nil, ErrNotIndependent{m.Executor, "its family " + c.family + " contributed to the candidate (" + c.by + ")", "contributor:" + c.by}
+			}
 		}
 	}
-	return contributors, nil
+	return Contributors(tx, rec.Recorded.Task, families)
 }
 
 // reviewIndependent: rr, a review's result, is committed only by a roster

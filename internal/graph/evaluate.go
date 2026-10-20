@@ -288,7 +288,7 @@ func (e *evaluation) claim(rec nodeRecord, resolved map[string]Resolved) error {
 			return ierr
 		}
 		evs, err = Raise(e.tx, rec.Recorded.Node.ID, types.NodeHold{ID: types.HoldID(id), Hold: "reviewer_unavailable",
-			SignalInstance: "registry:" + string(notIndependent.Executor), Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
+			SignalInstance: notIndependent.SignalInstance(), Owner: types.OwnerSystem, Pages: []types.NodeHoldPagesItem{}}, nil)
 	} else if errors.As(err, &taken) {
 		holder, herr := loadNode(e.tx, taken.Node)
 		if herr != nil || holder.State.State != types.NodeStateStateCompleted {
