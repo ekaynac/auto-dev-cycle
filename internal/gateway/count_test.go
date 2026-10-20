@@ -349,7 +349,7 @@ func serve(ctx context.Context, g *Gateway, token, body string) (*httptest.Respo
 	r := httptest.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(body)).WithContext(ctx)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w, done := httptest.NewRecorder(), make(chan struct{})
-	go func() { defer close(done); g.ServeHTTP(w, r) }()
+	go func() { defer close(done); g.ServeHTTP(deadlined{w}, r) }()
 	return w, done
 }
 

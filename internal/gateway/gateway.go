@@ -222,13 +222,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(w, no)
 		return
 	}
-	defer g.leave(r, f)
-	resp, s, no := g.forward(r, b)
+	release := sync.OnceFunc(func() { g.leave(r, f) })
+	defer release()
+	resp, s, no := g.forward(r, b, f)
 	if no != nil {
 		refuse(w, no)
 		return
 	}
-	defer resp.Body.Close()
 	if ct, ok := contentType(resp.Header.Get("Content-Type")); ok {
 		w.Header().Set("Content-Type", ct)
 	}
@@ -236,7 +236,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	out := &redacting{w: flushing{w, http.NewResponseController(w)}, secret: []byte(s.cred.Reveal())}
 	var t tally
 	_, err := io.Copy(out, io.TeeReader(resp.Body, &t))
-	err = errors.Join(err, out.Close())
+	err = errors.Join(err, out.Close(), resp.Body.Close())
+	release() // the upstream exchange is over: the count's commit holds no slot (Opus #308 L4)
 	if out.hit {
 		g.observe(b.Attempt, 0, RouteEchoed)
 	}
@@ -383,7 +384,7 @@ func tokenKey(r *http.Request) ([32]byte, bool) {
 // and the credential it injected, or refuses it with nothing sent. The
 // lease is checked before the body is read, so only a running attempt can
 // make the gateway buffer one.
-func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, sending, *refusal) {
+func (g *Gateway) forward(r *http.Request, b Binding, f *flight) (*http.Response, sending, *refusal) {
 	ctx, none := r.Context(), sending{}
 	if r.Method != http.MethodPost {
 		return nil, none, &refusal{http.StatusMethodNotAllowed, "method"}
@@ -449,6 +450,9 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, sending, 
 			return nil, none, &refusal{http.StatusServiceUnavailable, "capture_failed"}
 		}
 	}
+	if !g.live(r, f) { // unbound meanwhile: no intent (Opus #308 M2)
+		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
+	}
 	if err := g.intend(r, b, e.Destination.ID); err != nil {
 		return nil, none, &refusal{http.StatusServiceUnavailable, "intent_unrecorded"}
 	}
@@ -457,6 +461,11 @@ func (g *Gateway) forward(r *http.Request, b Binding) (*http.Response, sending, 
 		return nil, none, &refusal{http.StatusForbidden, "destination_not_admitted"}
 	}
 	g.mu.Lock()
+	key, _ := tokenKey(r)
+	if !g.inflight[key][f] || ctx.Err() != nil { // unbound meanwhile: no floor (Opus #308 M2)
+		g.mu.Unlock()
+		return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
+	}
 	s := sending{cred, g.seq, len(out)}
 	g.seq++
 	g.mu.Unlock()

@@ -27,9 +27,18 @@ import (
 //     upstream response is closed, and the call keeps its floor (a
 //     response not forwarded whole). The server's WriteTimeout is the
 //     backstop past RequestDeadline.
+//   - A slot is held for the upstream exchange only: it is released once
+//     the response is forwarded (or cut) and closed, before its count
+//     commits (Opus #308 L4).
 //   - Unbind is idempotent, and cancels the token's requests in flight:
 //     their upstream exchanges end and keep their floors, and nothing they
-//     do afterwards binds or observes again.
+//     do afterwards binds or observes again. A request Unbind finds before
+//     its intent, or before its floor's sequence is taken, records neither
+//     (Opus #308 M2); a floor decided just before Unbind may still commit
+//     just after it returns, as the request it counts may already be sent.
+//   - Served unwrapped: each write needs its deadline, so a ResponseWriter
+//     that cannot set one ends the request rather than write without it
+//     (Opus #308 L5).
 
 // BaseURL is the base_url Mint hands an adapter: no path.
 const BaseURL = "http://adc-gateway"
@@ -53,7 +62,8 @@ func (g *Gateway) Mint(b Binding) (types.AdapterPrepareParamsGatewayValue, error
 }
 
 // Server is the gateway's socket server: serve it on a listener with
-// Serve, and Close it at shutdown.
+// Serve, and Close it at shutdown. Serve g itself: a middleware whose
+// ResponseWriter cannot set a write deadline makes every response fail.
 func (g *Gateway) Server() *http.Server {
 	return &http.Server{Handler: g, ReadHeaderTimeout: readHeaderTimeout, ReadTimeout: time.Minute,
 		WriteTimeout: RequestDeadline + time.Minute, IdleTimeout: time.Minute}
@@ -85,6 +95,14 @@ func (g *Gateway) enter(r *http.Request, f *flight) (Binding, *refusal) {
 	return b, nil
 }
 
+// live: f is still in flight on r's token, and r is not cancelled.
+func (g *Gateway) live(r *http.Request, f *flight) bool {
+	key, _ := tokenKey(r)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.inflight[key][f] && r.Context().Err() == nil
+}
+
 func (g *Gateway) leave(r *http.Request, f *flight) {
 	key, _ := tokenKey(r)
 	g.mu.Lock()
@@ -102,7 +120,9 @@ type flushing struct {
 }
 
 func (f flushing) Write(p []byte) (int, error) {
-	_ = f.rc.SetWriteDeadline(time.Now().Add(writeIdle)) // not supported off a connection (a recorder): unbounded there
+	if err := f.rc.SetWriteDeadline(time.Now().Add(writeIdle)); err != nil {
+		return 0, err // never a write without its deadline (Opus #308 L5)
+	}
 	n, err := f.w.Write(p)
 	if err == nil {
 		err = f.rc.Flush()
