@@ -39,7 +39,7 @@
   "data_policy": {"floor": "contracted", "routing": "verified", "allowed_destinations": []},
   "usage_profile_override": null,
   "priority": 100,
-  "budget": {"rails": {"per_task_usd": "5", "per_day_usd": "20"}},
+  "budget": {"rails": {"per_task_usd": "5", "per_day_usd": "20", "attempts_per_round": 2, "rounds_per_task": 3, "merge_operations_per_generation": 2}},
   "retention": {"attempt_continuity_post_closure_ttl": "P7D", "supervisor_notes_ttl": null, "blob_payload_ttl": null},
   "vocabulary": {"task_id_pattern": null, "branch_prefix": "adc/", "language": "en"}
 }

@@ -28,14 +28,14 @@
 # Usage: scripts/installed-smoke.sh PREFIX
 set -euo pipefail
 
-# secrets is every form of every secret known so far; die never prints one.
-secrets=()
-die() {
-  local msg="$*" v
-  for v in "${secrets[@]}"; do msg="${msg//"$v"/[redacted]}"; done
-  echo "installed-smoke: $msg" >&2
-  exit 1
-}
+# The shared secret scan (scripts/lib/secrets.sh: secrets, die, forms,
+# known, scan), mounted at /secrets.sh inside the sandbox: the --inside run
+# sources that, the outer run the file beside this script.
+SECRETS_TAG=installed-smoke
+secrets_lib="$(dirname "${BASH_SOURCE[0]}")/lib/secrets.sh"
+[[ "${1:-}" == --inside && "${ADC_SMOKE_SANDBOX:-}" == 1 ]] && secrets_lib=/secrets.sh
+# shellcheck source=scripts/lib/secrets.sh
+. "$secrets_lib"
 
 if [[ "${1:-}" != --inside ]]; then
   [[ $# -eq 1 ]] || die "usage: installed-smoke.sh PREFIX"
@@ -54,7 +54,7 @@ if [[ "${1:-}" != --inside ]]; then
     if [[ -e "$n" ]]; then sys+=(--ro-bind /dev/null "$n"); fi
   done
   exec env -i PATH=/usr/bin:/bin timeout --foreground --kill-after=10 300 bwrap --unshare-all --die-with-parent "${sys[@]}" \
-    --ro-bind "$prefix" /p --ro-bind "$self" /smoke.sh --tmpfs /tmp --proc /proc --dev /dev \
+    --ro-bind "$prefix" /p --ro-bind "$self" /smoke.sh --ro-bind "$(dirname "$self")/lib/secrets.sh" /secrets.sh --tmpfs /tmp --proc /proc --dev /dev \
     --chdir /tmp --setenv HOME /tmp --setenv TMPDIR /tmp --setenv ADC_SMOKE_SANDBOX 1 -- bash /smoke.sh --inside
 fi
 # Only ever inside the sandbox: it would otherwise write to the real /tmp.
@@ -111,34 +111,6 @@ within() {
     ((SECONDS < deadline)) || die "timed out waiting for $what"
     sleep 0.1
   done
-}
-# forms SECRET: the forms a leak of SECRET (base64url, or a token
-# tok_ID.SECRET) may take: as is, its secret part, that in standard base64,
-# the hex of its bytes, its first and last 16 characters, and the base64
-# of the whole.
-forms() {
-  local s="${1#*.}" std pad
-  std="$(tr -- '-_' '+/' <<<"$s")"
-  pad="$std"
-  while ((${#pad} % 4)); do pad+="="; done
-  printf '%s\n' "$1" "$s" "$std" "${s:0:16}" "${s: -16}" "$(base64 -d <<<"$pad" | od -An -tx1 | tr -d ' \n')" \
-    "$(printf '%s' "$1" | base64 -w0)"
-}
-# known SECRET: every form of SECRET is redacted from now on.
-known() {
-  local f
-  while IFS= read -r f; do
-    [[ ${#f} -ge 16 ]] || die "a secret form is shorter than expected"
-    secrets+=("$f")
-  done < <(forms "$1")
-}
-# scan OWN SECRET: no form of SECRET in any file but OWN (none: "").
-scan() {
-  local own="$1" f leaks
-  while IFS= read -r f; do
-    leaks="$(grep -rlaF -- "$f" /tmp | grep -vxF -e "$own" || true)"
-    [[ -z "$leaks" ]] || die "a secret appears in: $leaks"
-  done < <(forms "$2")
 }
 alive() { kill -0 "$adcd" 2>/dev/null || die "adcd exited: $(head -c 400 "$out/adcd.log")"; }
 started() { alive && grep -q '^adcd: started' "$out/adcd.log"; }
@@ -263,9 +235,9 @@ fi
 timeout 60 /p/bin/adc dev verify-log --state /tmp/state >"$out/verify.out" 2>&1 || die "the stopped adcd's log does not verify"
 
 step "no secret outside the token files"
-scan "" "$boot"
-scan /tmp/op/.config/adc/token "$op_tok"
-scan /tmp/sup/.config/adc/token "$sup_tok"
+scan "" "$boot" /tmp
+scan /tmp/op/.config/adc/token "$op_tok" /tmp
+scan /tmp/sup/.config/adc/token "$sup_tok" /tmp
 
 step "result 9: py-mini-feature-1 through the installed harness, Node and fake adapter"
 lib=/p/lib/adc
