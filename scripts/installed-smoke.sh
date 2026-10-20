@@ -220,8 +220,9 @@ adc_as /tmp/op cancel task cancel --expect "$first" --reason smoke --json --scop
 want 0 cancel
 adc_as /tmp/op board board --json
 want 0 board
-grep -q '"column":"done"' "$out/board.out" && grep -q '"cancelled":true' "$out/board.out" ||
+if ! grep -q '"column":"done"' "$out/board.out" || ! grep -q '"cancelled":true' "$out/board.out"; then
   die "board: the cancelled task is not in Done: $(head -c 400 "$out/board.out")"
+fi
 
 step "a scoped read returns only granted records"
 get notes "$sup_tok" /v1/notes
