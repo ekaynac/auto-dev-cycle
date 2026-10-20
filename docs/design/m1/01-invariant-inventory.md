@@ -289,6 +289,6 @@ through `lease.completed`. P21a keeps this check.
 
 ## Count
 
-88 rows across 22 invariants. **50 rows have a gap**: 19 are GAP and 31 are kept + GAP. 32 are kept and 6 are n/a (after P6, which also flipped P3's and P5's I1 and I2 rows, #226 entry 45; and after P7, P8a, P8b, P11, P11b, P20's `model_call` half, P21a and P21b, whose rows are kept in code, with the wiring left to P22a; P8a's I8 fold row is kept, since `adcd` wires `graph.Units`; P22a-1 kept the I9 fold row and the I11 consumption row, wiring the model calls' bindings and restart recovery at start). A recount on 2026-10-14 corrected the earlier figures (29 GAP, 28 kept).
+88 rows across 22 invariants. **52 rows have a gap**: 15 are GAP and 37 are kept + GAP (after P17a, whose four I16 rows are kept in code, inert until P22a). 30 are kept and 6 are n/a (after P6, which also flipped P3's and P5's I1 and I2 rows, #226 entry 45; and after P7, P8a, P8b, P11, P11b, P20's `model_call` half, P21a and P21b, whose rows are kept in code, with the wiring left to P22a; P8a's I8 fold row is kept, since `adcd` wires `graph.Units`). A recount on 2026-10-14 corrected the earlier figures (29 GAP, 28 kept).
 Every gap is closed by an item of `00-slice-plan.md` §5. None is left to a later milestone, except where 01 §4.1 or
 §6's clarifications place it. The evidence rows of 12 follow #187's trigger (slice plan §4).
