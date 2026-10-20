@@ -56,6 +56,8 @@ var runners = map[string]runner{
 	"same-bytes-different-lineage":           sameBytesDifferentLineage,
 	"declared-only-coverage":                 declaredOnlyCoverage,
 	"nested-receipt-lie":                     nestedReceiptLie,
+	"junit-lying-runner":                     junitLyingRunner,
+	"junit-unreadable-results":               junitUnreadableResults,
 	"omitted-required-predicate":             omittedRequiredPredicate,
 	"unknown-reviewer-family":                unknownReviewerFamily,
 	"unrelated-go-reuse":                     unrelatedGOReuse,

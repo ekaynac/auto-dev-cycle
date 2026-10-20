@@ -1,0 +1,12 @@
+{
+  "name": "junit-unreadable-results",
+  "invariant": "junit_xml results that were never written, are partial, hold suite counts that disagree with their testcases, or hold two testcases of one identity are could_not_run/runner_fault, never a pass (M1 P15b, slice plan §2.6 fault-unreadable-results); a whole document reads.",
+  "expected": [
+    {"outcome": "could_not_run", "reason": "runner_fault"},
+    {"outcome": "could_not_run", "reason": "runner_fault"},
+    {"outcome": "could_not_run", "reason": "runner_fault"},
+    {"outcome": "could_not_run", "reason": "runner_fault"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "results.junit-counts-unchecked"
+}

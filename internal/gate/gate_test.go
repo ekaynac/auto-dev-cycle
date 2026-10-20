@@ -45,7 +45,10 @@ func plain(t *testing.T, dir string, args ...string) string {
 // attempt's directories. It is the sandbox's Runner boundary. end, when
 // set, is how the run then ends, injected there (Astra #286 M5): a
 // timeout, a kill or the caller's cancellation, after the results exist.
-type local struct{ end func() error }
+type local struct {
+	end  func() error
+	path string // a directory first on PATH (a python with pytest)
+}
 
 func (l *local) Run(ctx context.Context, _ string, args, _ []string) ([]byte, error) {
 	if !slices.Contains(args, "run") { // after podman's global flags
@@ -69,7 +72,7 @@ func (l *local) Run(ctx context.Context, _ string, args, _ []string) ([]byte, er
 		argv = append(argv, mapped.Replace(a))
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin"}
+	cmd.Dir, cmd.Env = ws, []string{"PATH=" + l.path + ":/usr/bin:/bin"}
 	out, err := cmd.Output()
 	if l.end != nil {
 		err = errors.Join(err, l.end())
@@ -326,7 +329,12 @@ func TestGateBaseline(t *testing.T) {
 			in.Gate.Environments = env
 		},
 		"another environment": func(in *In) { in.Env = "prod" },
-		"another adapter":     func(in *In) { in.Gate.ResultAdapter = "junit_xml" },
+		"another adapter":     func(in *In) { in.Gate.ResultAdapter = "tap" },
+		"a go_test_json baseline under junit_xml": func(in *In) {
+			in.Gate.ResultAdapter, in.Gate.Command = results.JUnitXML, []string{"pytest"} // a direct command: only the baseline is wrong
+			b := *in.Baseline
+			b.Command, in.Baseline = in.Gate.Command, &b
+		},
 		// Astra #286 M2: a loaded baseline that is no measurement.
 		"an empty report": with(func(b *Baseline) { b.Report = results.Report{} }),
 		"a baseline that is not green": with(func(b *Baseline) {
@@ -527,7 +535,7 @@ func TestGateIssue170(t *testing.T) {
 	p.Gate.Command = b.Command
 	pin := p.Toolchain.Images["go"] // the profile's own pin, read apart from the baseline (Astra #286 r2 L2)
 	in := In{Image: sandbox.Image{Pinned: pin, ID: b.ImageID, OS: b.OS, Arch: b.Arch}, Gate: p.Gate, Env: "ci", Base: b.Base, Baseline: &b}
-	if err := in.check(); err != nil || pin == "" || b.Image != pin || len(b.Results) != 72 || !b.Green() {
+	if err := in.bound(); err != nil || pin == "" || b.Image != pin || len(b.Results) != 72 || !b.Green() {
 		t.Fatalf("#170's baseline is not bound to this gate: %v (%s, the profile pins %s; %d results)", err, b.Image, pin, len(b.Results))
 	}
 	var v Verdict

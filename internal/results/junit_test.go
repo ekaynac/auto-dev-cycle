@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package results
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// The testdata documents are real pytest 9.1.1 --junitxml output, run with
+// -o junit_family=xunit1 as the gate runs it (pytest-xunit2.xml without),
+// its paths, times and host name rewritten.
+func junit(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile("testdata/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func outcomes(r Report) map[string]Outcome {
+	m := map[string]Outcome{}
+	for _, x := range r.Results {
+		m[x.Package+"::"+x.Name] = x.Outcome
+	}
+	return m
+}
+
+// TestJUnitPytest: pytest's own documents. Only a testcase with no
+// failure, error or skipped child passes; an error (setup, teardown,
+// collection, a class's collection) is a failure, and a skip or xfail a
+// skip; pytest's second testcase for a teardown error makes its test fail.
+// A test is its file, classname and name.
+func TestJUnitPytest(t *testing.T) {
+	r, err := ParseJUnitXML(strings.NewReader(junit(t, "pytest-mix.xml")), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := "tests/test_mix.py::tests.test_mix::"
+	want := map[string]Outcome{m + "test_pass": Pass, m + "test_fail": Fail, m + "test_skip": Skip, m + "test_xfail": Skip,
+		m + "test_setup_error": Fail, m + "test_fail_and_teardown": Fail, m + "test_param[1]": Pass, m + "test_param[2]": Pass,
+		"tests/test_mix.py::tests.test_mix.TestK::test_m": Pass, "tests/test_ok.py::tests.test_ok::test_ok": Pass}
+	got := outcomes(r)
+	if len(got) != len(want) || r.Clean() || r.Green() {
+		t.Fatalf("mix: %v", got)
+	}
+	for k, o := range want {
+		if got[k] != o {
+			t.Errorf("%s: %s, want %s", k, got[k], o)
+		}
+	}
+	if b, _ := json.Marshal(r); strings.Contains(string(b), "CANARY") {
+		t.Errorf("the report keeps failure text")
+	}
+	if r, err := ParseJUnitXML(strings.NewReader(junit(t, "pytest-ok.xml")), nil, nil); err != nil || !r.Clean() || !r.Green() {
+		t.Errorf("pytest-ok.xml: %v, %v", outcomes(r), err)
+	}
+	// Opus #290 M1: a setup error and a teardown error in one testcase,
+	// counted as two errors.
+	r, err = ParseJUnitXML(strings.NewReader(junit(t, "pytest-double-error.xml")), nil, nil)
+	if got := outcomes(r); err != nil || got["tests/test_double.py::tests.test_double::test_both"] != Fail || got["tests/test_double.py::tests.test_double::test_fine"] != Pass {
+		t.Errorf("a setup and a teardown error: %v, %v", got, err)
+	}
+	for name, id := range map[string]string{"pytest-collect-error.xml": "tests/test_broken.py::::tests.test_broken", "pytest-class-collect-error.xml": "tests/test_rates.py::tests.test_rates::TestRates"} {
+		if r, err := ParseJUnitXML(strings.NewReader(junit(t, name)), nil, nil); err != nil || outcomes(r)[id] != Fail || r.Clean() {
+			t.Errorf("%s: %v, %v", name, outcomes(r), err)
+		}
+	}
+	// xunit2 has no file: unreadable.
+	if _, err := ParseJUnitXML(strings.NewReader(junit(t, "pytest-xunit2.xml")), nil, nil); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("an xunit2 document: %v", err)
+	}
+	// Astra #290 r2 H1: a test defined in a shared helper (pytest's file is
+	// where its function is): unreadable, never tests/test_a.py's test.
+	if _, err := ParseJUnitXML(strings.NewReader(junit(t, "pytest-shared-helper.xml")), nil, nil); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("a test defined in a shared helper: %v", err)
+	}
+	// Astra #290 r3 H1: tests/test_a.py's check, imported as test_x by
+	// tests/test_a/TestB_test.py (real pytest: file="tests/test_a.py"), with
+	// both module files in the tree, is ambiguous; with one, it reads.
+	r, err = ParseJUnitXML(strings.NewReader(junit(t, "pytest-ancestor-helper.xml")), nil, nil)
+	tree := func(files ...string) func(string) bool {
+		return func(p string) bool { return slices.Contains(files, p) }
+	}
+	if err := CheckJUnitTree(r, tree("tests/__init__.py", "tests/test_a.py", "tests/test_a/TestB_test.py")); err == nil || !errors.Is(err, ErrUnreadable) {
+		t.Errorf("an ancestor's helper beside the module: %v", err)
+	}
+	if err := CheckJUnitTree(r, tree("tests/__init__.py", "tests/test_a.py")); err != nil {
+		t.Errorf("one module file for the identity: %v", err)
+	}
+	// Astra #290 H4: tests/test_a.py::TestB_test::test_x, replaced by
+	// tests/test_a/TestB_test.py::test_x (one classname and name): missing.
+	base, err := ParseJUnitXML(strings.NewReader(junit(t, "pytest-h4-base.xml")), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = ParseJUnitXML(strings.NewReader(junit(t, "pytest-h4-cand.xml")), nil, &base)
+	if got := outcomes(r); err != nil || got["tests/test_a.py::tests.test_a.TestB_test::test_x"] != Missing || r.Clean() {
+		t.Errorf("a test replaced by one of its classname and name: %v, %v", got, err)
+	}
+	// Against a base and an expected test: what the document does not
+	// report is Missing.
+	base, err = ParseJUnitXML(strings.NewReader(junit(t, "pytest-mix.xml")), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = ParseJUnitXML(strings.NewReader(junit(t, "pytest-ok.xml")), []Test{{"tests/test_hidden.py::tests.test_hidden", "test_acceptance"}}, &base)
+	got = outcomes(r)
+	if err != nil || got[m+"test_pass"] != Missing || got["tests/test_hidden.py::tests.test_hidden::test_acceptance"] != Missing || got["tests/test_ok.py::tests.test_ok::test_ok"] != Pass || r.Clean() {
+		t.Errorf("against a base: %v, %v", got, err)
+	}
+}
+
+// TestJUnitStrict: everything but a well-formed pytest-shaped document
+// within bounds is unreadable, never a pass.
+func TestJUnitStrict(t *testing.T) {
+	suite := func(attrs, body string) string {
+		return `<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" ` + attrs + `>` +
+			strings.ReplaceAll(body, "<testcase ", `<testcase file="m.py" `) + `</testsuite></testsuites>`
+	}
+	pass, errored := `<testcase classname="m" name="a"/>`, `<testcase classname="m" name="a"><error/></testcase>`
+	mix := junit(t, "pytest-mix.xml")
+	many := func(n int) string { // n distinct passing testcases, each with its output
+		var b strings.Builder
+		for i := range n {
+			fmt.Fprintf(&b, `<testcase classname="m" name="t%d"><system-out/></testcase>`, i)
+		}
+		return b.String()
+	}
+	defer func(e, d, n int) { maxElements, maxDepth, maxName = e, d, n }(maxElements, maxDepth, maxName)
+	maxElements, maxDepth, maxName = 64, 8, 64
+	for name, doc := range map[string]string{
+		"empty":                   "",
+		"malformed":               suite(`tests="1"`, `<testcase classname="m" name="a">`),
+		"partial":                 mix[:len(mix)/2],
+		"a DTD":                   strings.Replace(suite(`tests="1"`, pass), "?>", `?><!DOCTYPE x [<!ENTITY e "x">]>`, 1),
+		"an entity":               suite(`tests="1"`, `<testcase classname="m" name="&e;"/>`),
+		"an unknown element":      suite(`tests="1"`, `<testcase classname="m" name="a"><rerunFailure/></testcase>`),
+		"a namespaced element":    suite(`tests="1"`, `<x:testcase xmlns:x="u" classname="m" name="a"/>`),
+		"a second root":           suite(`tests="1"`, pass) + `<testsuite tests="0"/>`,
+		"no testcase":             suite(`tests="0"`, ``),
+		"a testcase with no name": suite(`tests="1"`, `<testcase classname="m"/>`),
+		"a testcase with no file": strings.Replace(suite(`tests="1"`, pass), `file="m.py" `, ``, 1),
+		// Astra #290 r2 H1: a file that is not the classname's module.
+		"a file of another module":     strings.Replace(suite(`tests="1"`, pass), `file="m.py"`, `file="helpers.py"`, 1),
+		"a file below the module":      strings.Replace(suite(`tests="1"`, pass), `file="m.py"`, `file="m/x.py"`, 1),
+		"a file that is no module":     strings.Replace(suite(`tests="1"`, pass), `file="m.py"`, `file="m"`, 1),
+		"a module error of another":    suite(`tests="1" errors="1"`, `<testcase classname="" name="n"><error/></testcase>`),
+		"one identity twice":           suite(`tests="2"`, pass+pass),
+		"one identity, then a failure": suite(`tests="2" failures="1"`, pass+`<testcase classname="m" name="a"><failure/></testcase>`),
+		"tests miscounted":             suite(`tests="2"`, pass),
+		"failures miscounted":          suite(`tests="1" failures="0"`, `<testcase classname="m" name="a"><failure/></testcase>`),
+		"errors miscounted":            suite(`tests="1" errors="0"`, errored),
+		"skipped miscounted":           suite(`tests="1" skipped="0"`, `<testcase classname="m" name="a"><skipped/></testcase>`),
+		"a count that is no number":    suite(`tests="one"`, pass),
+		"a root count miscounted":      strings.Replace(suite(`tests="1"`, pass), `<testsuites name="pytest tests">`, `<testsuites tests="3">`, 1),
+		"a name beyond its bound":      suite(`tests="1"`, `<testcase classname="m" name="`+strings.Repeat("n", 65)+`"/>`),
+		"levels beyond their bound":    strings.Repeat("<testsuite>", 9) + `<testcase file="m.py" classname="m" name="a"/>` + strings.Repeat("</testsuite>", 9),
+		"elements beyond their bound":  suite(`tests="35"`, many(35)),
+		// Opus #290 L1, L2; Astra #290 L7.
+		"text after the root":             suite(`tests="1"`, pass) + "5 passed",
+		"text before the root":            strings.Replace(suite(`tests="1"`, pass), "<testsuites", "junk<testsuites", 1),
+		"a comment after the root":        suite(`tests="1"`, pass) + "<!-- trailing -->",
+		"a comment before the root":       strings.Replace(suite(`tests="1"`, pass), "<testsuites", "<!-- x --><testsuites", 1),
+		"a declaration not first":         "\n" + suite(`tests="1"`, pass),
+		"a processing instruction after":  suite(`tests="1"`, pass) + `<?pass yes?>`,
+		"a repeated attribute":            suite(`tests="1"`, `<testcase classname="m" name="t" name="a"/>`),
+		"a namespaced attribute":          suite(`tests="1"`, `<testcase classname="m" name="t" x:time="1"/>`),
+		"errors miscounted, two children": suite(`tests="1" errors="1"`, `<testcase classname="m" name="a"><error/><error/></testcase>`),
+		// Astra #290 L8: one successor only, one error alone, after a pass or failure.
+		"two teardown successors":     suite(`tests="3" errors="2"`, pass+errored+errored),
+		"a successor with two errors": suite(`tests="2" errors="2"`, pass+`<testcase classname="m" name="a"><error/><error/></testcase>`),
+		"a successor after a skip":    suite(`tests="2" errors="1" skipped="1"`, `<testcase classname="m" name="a"><skipped/></testcase>`+errored),
+		// Astra #290 r2 L5: after an error, or a mixed testcase.
+		"a successor after an error":               suite(`tests="2" errors="2"`, errored+errored),
+		"a successor after a failure and a skip":   suite(`tests="2" failures="1" errors="1" skipped="1"`, `<testcase classname="m" name="a"><failure/><skipped/></testcase>`+errored),
+		"a successor after a failure and an error": suite(`tests="2" failures="1" errors="2"`, `<testcase classname="m" name="a"><failure/><error/></testcase>`+errored),
+		// Astra #290 r2 L6: the declaration's grammar.
+		"a declaration of garbage":          strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml garbage?>`, 1),
+		"a declaration with no version":     strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml encoding="utf-8"?>`, 1),
+		"a declaration's version twice":     strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml version="1.0" version="1.0"?>`, 1),
+		"a declaration's unknown attribute": strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml version="1.0" pass="yes"?>`, 1),
+		"a declaration out of order":        strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml encoding="utf-8" version="1.0"?>`, 1),
+		"a declaration with a form feed":    strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, "<?xml version=\"1.0\"\f?>", 1), // Astra #290 r3 L6
+	} {
+		if r, err := ParseJUnitXML(strings.NewReader(doc), nil, nil); !errors.Is(err, ErrUnreadable) {
+			t.Errorf("%s: %v, %v; want unreadable", name, outcomes(r), err)
+		}
+	}
+	// Past MaxStream bytes, a whole document then whitespace to the bound
+	// and past it: unreadable, never the part read.
+	big := suite(`tests="1"`, pass) + strings.Repeat(" ", MaxStream)
+	if r, err := ParseJUnitXML(strings.NewReader(big), nil, nil); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("a document past MaxStream: %v, %v; want unreadable", outcomes(r), err)
+	}
+	// Within the lowered bounds, the same shapes read; a failure message
+	// past maxName is free text, never read (Opus #290 M2: a 5,012-byte one);
+	// a comment inside the root, whitespace around it.
+	long := suite(`tests="1" failures="1"`, `<testcase classname="m" name="a"><failure message="`+strings.Repeat("x", 5012)+`"/></testcase>`)
+	if r, err := ParseJUnitXML(strings.NewReader(long), nil, nil); err != nil || outcomes(r)["m.py::m::a"] != Fail {
+		t.Errorf("a 5,012-byte failure message: %v, %v", outcomes(r), err)
+	}
+	if r, err := ParseJUnitXML(strings.NewReader(suite(`tests="2" failures="0" errors="1" skipped="0"`, pass+errored)), nil, nil); err != nil || outcomes(r)["m.py::m::a"] != Fail {
+		t.Errorf("pytest's teardown shape: %v, %v", outcomes(r), err)
+	}
+	if r, err := ParseJUnitXML(strings.NewReader(suite(`tests="30"`, many(30)+"<!-- in -->")+"\n"), nil, nil); err != nil || !r.Clean() {
+		t.Errorf("elements within their bound: %v", err)
+	}
+}

@@ -39,9 +39,25 @@
 //   - The tree gated is the one checked out: the checkout's own tree id
 //     must be the one asked for (a commit id or another tree is refused),
 //     and the receipt is about it (receipt.go).
-//   - The cwd contract (#275) is P15b's, with the junit_xml (pytest)
-//     adapter: a Go gate runs no Python probe (go test runs each test
-//     binary in its package directory, Opus #286 M3).
+//   - The cwd contract (#275), for junit_xml (pytest), by construction
+//     (Astra #290): the command is pytest run directly (pytest, or python
+//     -m pytest; no shell, wrapper or env) with allowlisted arguments only
+//     (direct), in the checkout root the sandbox makes its workdir; the
+//     controller appends --junitxml={results_path} (unless named) and -o
+//     junit_family=xunit1, so each testcase names its file. Anything else
+//     is refused (ErrSpec), never run. A Go test may run Python anywhere.
+//     The command alone does not isolate the run: a checkout's pytest.py
+//     (python -m finds it first), pytest.ini, addopts and PYTEST_ADDOPTS
+//     still reach pytest. Isolating them is P15c (#226 entry 93); the
+//     Python profile stays inactive until P15c and P14c-2b.
+//   - Ownership for junit_xml: when the report holds any failure or error
+//     (a collection error included, of a module or a class: Astra #290
+//     M5), a missing test is the candidate's; otherwise a missing test is
+//     the candidate's when its file, or a conftest.py or __init__.py above
+//     it, changed.
+//   - A gate environment's runtime.arch "any" (py-mini) relaxes only that
+//     environment's check: the image is still the host's OS and
+//     architecture.
 //   - Acceptance tests are overlaid on the gate workspace only.
 package gate
 
@@ -53,12 +69,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -71,7 +90,6 @@ import (
 )
 
 const (
-	resultsFile = "go-test.json"    // the derived results file, in the results mount
 	placeholder = "{results_path}"  // the profile's name for the derived path
 	maxResults  = results.MaxStream // what a run's results may hold
 	maxOverlay  = 16 << 20          // acceptance files, in all
@@ -86,7 +104,22 @@ var (
 
 	objectID = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	imageID  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+	// adapters are the result adapters the gate reads: the derived results
+	// file, its parser and its name, and whether its runs are pytest's,
+	// under the direct-command rule (direct).
+	adapters = map[string]adapter{
+		results.GoTestJSON: {"go-test.json", results.ParseGoTestJSON, "a go test -json stream", false},
+		results.JUnitXML:   {"junit.xml", results.ParseJUnitXML, "a JUnit XML document", true},
+	}
 )
+
+type adapter struct {
+	file   string
+	parse  func(io.Reader, []results.Test, *results.Report) (results.Report, error)
+	what   string
+	pytest bool
+}
 
 // Baseline is a measured baseline (fixtures/m1/issues/*/baseline-report.json):
 // the command, the image (its pinned reference, and the platform image
@@ -189,7 +222,24 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	// refused before it started, or cut by its caller, is no verdict at
 	// all. A run that left too much is judged by what it wrote: copy-out
 	// bounds it again.
-	_, runErr := in.Host.Start(ctx, sandbox.Run{Image: in.Image, Mode: sandbox.Gate, Attempt: a, Limits: in.Limits, Argv: argv(in.Gate.Command)})
+	ad := adapters[in.Gate.ResultAdapter]
+	py, dirLink := map[string]bool{}, false // the checkout's module files, and a link to a directory, read before the run (Astra #290 r3 H1, r4 H1)
+	if ad.pytest {
+		ws := a.Workspace()
+		if err := filepath.WalkDir(ws, func(p string, d fs.DirEntry, err error) error {
+			if rel, _ := filepath.Rel(ws, p); err == nil && !d.IsDir() && strings.HasSuffix(p, ".py") {
+				py[filepath.ToSlash(rel)] = true
+			}
+			if err == nil && d.Type()&fs.ModeSymlink != 0 { // pytest follows it: the module files below it are not walked
+				st, serr := os.Stat(p)
+				dirLink = dirLink || serr == nil && st.IsDir()
+			}
+			return err
+		}); err != nil {
+			return v, err
+		}
+	}
+	_, runErr := in.Host.Start(ctx, sandbox.Run{Image: in.Image, Mode: sandbox.Gate, Attempt: a, Limits: in.Limits, Argv: argv(in.Gate.Command, ad)})
 	if (errors.Is(runErr, sandbox.ErrSpec) || errors.Is(runErr, sandbox.ErrHost)) && !errors.Is(runErr, sandbox.ErrLeft) {
 		return v, runErr
 	}
@@ -210,7 +260,7 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run did not finish (its timeout, a signal or the runner)")
 		return v, nil
 	}
-	v.Stream, err = os.ReadFile(filepath.Join(out, resultsFile))
+	v.Stream, err = os.ReadFile(filepath.Join(out, ad.file))
 	if err != nil {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run never wrote its results")
 		return v, nil
@@ -219,8 +269,16 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	if v.baseline != nil {
 		base = &v.baseline.Report
 	}
-	if v.Results, err = results.ParseGoTestJSON(bytes.NewReader(v.Stream), in.Expected, base); err != nil {
-		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results are not a go test -json stream")
+	if v.Results, err = ad.parse(bytes.NewReader(v.Stream), in.Expected, base); err != nil {
+		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results are not "+ad.what)
+		return v, nil
+	}
+	if dirLink { // until P15c's node-id record
+		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the tree holds a directory link")
+		return v, nil
+	}
+	if ad.pytest && results.CheckJUnitTree(v.Results, func(p string) bool { return py[p] }) != nil { // a baseline's too, measured
+		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results name a test two module files could have reported (ambiguous)")
 		return v, nil
 	}
 	v.judge(in, module, zero)
@@ -258,7 +316,8 @@ func ending(runErr error) (zero, normal bool) {
 
 // valid: b is a measured baseline (Astra #286 M2): every binding field
 // present, its base a full tree id, and a green report with results, each
-// result's package among its packages for go_test_json.
+// result's package among its packages for go_test_json, and none for
+// junit_xml (its adapter, by its report's shape).
 func (b *Baseline) valid(adapter string) error {
 	refuse := func(why string) error { return fmt.Errorf("%w: the baseline %s", ErrSpec, why) }
 	switch {
@@ -270,8 +329,8 @@ func (b *Baseline) valid(adapter string) error {
 	seen := map[results.Test]bool{}
 	for _, x := range b.Results {
 		_, pkg := b.Packages[x.Package]
-		if seen[x.Test] || adapter == results.GoTestJSON && !pkg {
-			return refuse("holds a test twice, or a test of no package it reports")
+		if seen[x.Test] || adapter == results.GoTestJSON && !pkg || adapter == results.JUnitXML && len(b.Packages) > 0 {
+			return refuse("holds a test twice, a test of no package it reports, or (junit_xml) a package outcome")
 		}
 		seen[x.Test] = true
 	}
@@ -286,20 +345,32 @@ func (b *Baseline) Digest() (types.Digest, error) {
 	return types.Digest("sha256:" + hex.EncodeToString(sum[:])), err
 }
 
-// check refuses a gate this package cannot run as asked: another adapter
-// or ownership rules, an image of another platform than the gate
-// environment's runtime (#226 entry 88), or a baseline measured with
-// another command, platform image or base tree (Opus #286 M2, L3).
+// check refuses a gate this package cannot run as asked: an image that is
+// not the host's OS and architecture (Opus #290 H1: the binding part
+// alone is a measured baseline's, wherever it is read), then bound.
 func (in In) check() error {
+	if in.Image.OS != runtime.GOOS || in.Image.Arch != runtime.GOARCH {
+		return fmt.Errorf("%w: the image is %s/%s, the host %s/%s", ErrSpec, in.Image.OS, in.Image.Arch, runtime.GOOS, runtime.GOARCH)
+	}
+	return in.bound()
+}
+
+// bound refuses another adapter or ownership rules, an image of another
+// platform than the gate environment's runtime (#226 entry 88), or a
+// baseline measured with another command, platform image or base tree
+// (Opus #286 M2, L3).
+func (in In) bound() error {
 	i := slices.IndexFunc(in.Gate.Environments, func(e types.ProjectProfileGateEnvironmentsItem) bool { return string(e.Name) == in.Env })
 	if i < 0 {
 		return fmt.Errorf("%w: no gate environment %q", ErrSpec, in.Env)
 	}
 	rt, b := in.Gate.Environments[i].Facts.Runtime, in.Baseline
 	switch {
-	case in.Gate.ResultAdapter != results.GoTestJSON || in.Gate.OwnershipRules != ownership:
-		return fmt.Errorf("%w: result adapter %q with ownership rules %q (only %s, %s)", ErrSpec, in.Gate.ResultAdapter, in.Gate.OwnershipRules, results.GoTestJSON, ownership)
-	case rt.Os != in.Image.OS || rt.Arch != in.Image.Arch:
+	case adapters[in.Gate.ResultAdapter].file == "" || in.Gate.OwnershipRules != ownership:
+		return fmt.Errorf("%w: result adapter %q with ownership rules %q (only %s or %s, %s)", ErrSpec, in.Gate.ResultAdapter, in.Gate.OwnershipRules, results.GoTestJSON, results.JUnitXML, ownership)
+	case adapters[in.Gate.ResultAdapter].pytest && direct(in.Gate.Command) != nil:
+		return direct(in.Gate.Command)
+	case rt.Os != in.Image.OS || rt.Arch != in.Image.Arch && rt.Arch != "any":
 		return fmt.Errorf("%w: the image is %s/%s, the environment %s/%s", ErrSpec, in.Image.OS, in.Image.Arch, rt.Os, rt.Arch)
 	case b != nil && (!slices.Equal(b.Command, in.Gate.Command) || b.ImageID != in.Image.ID || b.OS != in.Image.OS || b.Arch != in.Image.Arch):
 		return fmt.Errorf("%w: the baseline was measured with another command or platform image", ErrSpec)
@@ -325,10 +396,21 @@ func (v *Verdict) judge(in In, module string, ended bool) {
 		}
 		return
 	}
+	junit, failed := in.Gate.ResultAdapter == results.JUnitXML, false
+	for _, x := range v.Results.Results {
+		failed = failed || junit && x.Outcome == results.Fail // a collection error too (Astra #290 M5)
+	}
 	touched := func(pkg string) bool {
+		file, _, _ := strings.Cut(pkg, "::") // junit_xml: file::classname
 		rel := strings.TrimPrefix(strings.TrimPrefix(pkg, module), "/")
-		return module != "" && strings.HasPrefix(pkg, module) && slices.ContainsFunc(in.Changed, func(c string) bool {
-			return path.Dir(c) == cmpOr(rel, ".")
+		return failed || slices.ContainsFunc(in.Changed, func(c string) bool {
+			switch {
+			case !junit:
+				return module != "" && strings.HasPrefix(pkg, module) && path.Dir(c) == cmpOr(rel, ".")
+			case path.Base(c) == "conftest.py" || path.Base(c) == "__init__.py": // the files below it
+				return path.Dir(c) == "." || strings.HasPrefix(file, path.Dir(c)+"/")
+			}
+			return c == file
 		})
 	}
 	var mine, theirs int
@@ -366,18 +448,76 @@ func cmpOr(a, b string) string {
 }
 
 // argv is the command the container runs: the profile's, its results path
-// derived.
-func argv(command []string) []string {
-	res := sandbox.ResultsDir + "/" + resultsFile
+// derived; for pytest, with --junitxml (unless named) and xunit1 forced.
+func argv(command []string, ad adapter) []string {
+	res := sandbox.ResultsDir + "/" + ad.file
 	cmd, named := make([]string, len(command)), false
 	for i, a := range command {
 		cmd[i] = strings.ReplaceAll(a, placeholder, res)
 		named = named || cmd[i] != a
 	}
+	if ad.pytest {
+		if !named {
+			cmd, named = append(cmd, "--junitxml="+res), true
+		}
+		cmd = append(cmd, "-o", "junit_family=xunit1")
+	}
 	if !named { // a stdout adapter: the controller writes its stream to the results file
 		return append([]string{"sh", "-c", `exec "$@" >"$0"`, res}, cmd...)
 	}
 	return append([]string{"sh", "-c", `exec "$@" >/dev/null`, "sh"}, cmd...) // the run's stdout is never read: none reaches the runner's bound
+}
+
+// iniKeys are the ini options a gate command may set with -o.
+var iniKeys = []string{"xfail_strict", "log_level", "console_output_style", "junit_logging"}
+
+// direct refuses a pytest gate command that is not pytest run directly
+// with allowlisted arguments: test paths or node ids inside the checkout,
+// -q, -x, -p no:<plugin>, -k and -m expressions, --maxfail=<n>, -o for
+// iniKeys, -n <workers>, and --junitxml={results_path}. Anything else
+// (--rootdir, -c, --confcutdir, -p <plugin>, --pyargs, --import-mode, -W,
+// another -o, an @file of arguments in any position, a value included) is
+// refused: it could move what pytest collects, and where. What the
+// checkout itself configures or shadows (pytest.ini, addopts, a local
+// pytest.py) is P15c's (#226 entry 93): until then, a junit_xml gate is no
+// verdict on a live Python candidate.
+func direct(cmd []string) error {
+	refuse := func(why string) error { return fmt.Errorf("%w: the junit_xml gate command %s", ErrSpec, why) }
+	if slices.ContainsFunc(cmd, func(a string) bool { return strings.HasPrefix(a, "@") }) { // pytest reads arguments from @file (Astra #290 r2 H2)
+		return refuse("has an argument file (@)")
+	}
+	var args []string
+	switch {
+	case len(cmd) > 0 && cmd[0] == "pytest":
+		args = cmd[1:]
+	case len(cmd) > 2 && (cmd[0] == "python" || cmd[0] == "python3") && cmd[1] == "-m" && cmd[2] == "pytest":
+		args = cmd[3:]
+	default:
+		return refuse("is not pytest, or python -m pytest, run directly")
+	}
+	for i := 0; i < len(args); i++ {
+		a, next := args[i], ""
+		if i+1 < len(args) {
+			next = args[i+1]
+		}
+		file, _, _ := strings.Cut(a, "::")
+		switch _, nerr := strconv.Atoi(strings.TrimPrefix(a, "--maxfail=")); {
+		case a == "-q" || a == "-x" || a == "--junitxml="+placeholder || strings.HasPrefix(a, "--maxfail=") && nerr == nil:
+		case a == "-p" && strings.HasPrefix(next, "no:"), a == "-k" && next != "", a == "-m" && next != "":
+			i++
+		case a == "-o" && slices.Contains(iniKeys, strings.SplitN(next, "=", 2)[0]):
+			i++
+		case a == "-n":
+			if _, err := strconv.Atoi(next); err != nil {
+				return refuse("has -n without a worker count")
+			}
+			i++
+		case !strings.HasPrefix(a, "-") && filepath.IsLocal(file) && path.Clean(file) == file && !strings.Contains(a, `\`):
+		default:
+			return refuse(fmt.Sprintf("has an argument outside its allowlist (%.64q)", a))
+		}
+	}
+	return nil
 }
 
 // checkout writes tree into ws through a temporary index and returns the

@@ -1,0 +1,11 @@
+{
+  "name": "junit-lying-runner",
+  "invariant": "A pytest gate is judged by its junit_xml results alone, never by a runner that says green (M1 P15b, slice plan §2.6 fault-lying-runner): a failed test, a test that errored in setup (an error is a failure) and a missing acceptance test each fail the gate; a document whose every expected test passed is clean.",
+  "expected": [
+    {"outcome": "found", "reason": "gate_test_failed"},
+    {"outcome": "found", "reason": "gate_test_failed"},
+    {"outcome": "found", "reason": "gate_test_failed"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "results.junit-error-passes"
+}
