@@ -320,6 +320,7 @@ type pkgScan struct {
 	pkgVars   map[*ast.ValueSpec]bool
 	aliases   map[types.Object]ast.Expr       // an alias's right-hand side
 	skipping  map[*ast.FuncDecl]bool          // P14d (integrity_cases.go): skipping helpers
+	driven    map[driveKey]bool               // drives' answers, per body
 	skipNames map[string]bool                 // their methods' names (an interface's call)
 	skipVars  map[types.Object]bool           // package variables holding a literal that skips
 	litVars   map[types.Object]*ast.FuncLit   // package variables holding a literal
@@ -574,7 +575,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
 		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{},
-		skipping: map[*ast.FuncDecl]bool{}, skipNames: map[string]bool{}, skipVars: map[types.Object]bool{}, litVars: map[types.Object]*ast.FuncLit{},
+		driven: map[driveKey]bool{}, skipping: map[*ast.FuncDecl]bool{}, skipNames: map[string]bool{}, skipVars: map[types.Object]bool{}, litVars: map[types.Object]*ast.FuncLit{},
 		funcVals: map[types.Object][]types.Object{}, rebound: map[types.Object]bool{}}
 	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		if i == len(files) {
@@ -646,13 +647,13 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			}
 		}
 	}
-	for changed, i := true, 0; changed && i < 32; i++ { // the skipping helpers (P14d), so
+	for changed, i := true, 0; changed && i < 32 && r.work <= maxWork; i++ { // the skipping helpers (P14d), charged: past the bound, each test of the package is unverifiable (below)
 		if err := r.ctx.Err(); err != nil {
 			return err
 		}
 		changed = false
-		for _, ds := range s.same { // skipping when any declaration skips (race, !race: Opus #292 M3)
-			if !s.skipping[ds[0]] && slices.ContainsFunc(ds, func(d *ast.FuncDecl) bool { return d.Body != nil && s.count(d.Body).skips > 0 }) {
+		for _, ds := range s.same { // skipping when any declaration skips (race, !race: Opus #292 M3), by types (Astra #292 M7)
+			if !s.skipping[ds[0]] && slices.ContainsFunc(ds, func(d *ast.FuncDecl) bool { return d.Body != nil && s.skipsIn(d.Body) }) {
 				for _, d := range ds {
 					s.skipping[d], changed = true, true
 				}
@@ -660,7 +661,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			}
 		}
 		for o, fl := range s.litVars {
-			if !s.skipVars[o] && s.count(fl.Body).skips > 0 {
+			if !s.skipVars[o] && s.skipsIn(fl.Body) {
 				s.skipVars[o], changed = true, true
 			}
 		}

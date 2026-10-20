@@ -14,18 +14,21 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // P14d (#226 entry 74; Astra #255 H5, H6, M9; #226 entry 85), on the
 // package scan of each version and platform. Decision A: what the guard
 // cannot follow warns or refuses, never modelled further.
 //   - A test's cases are identities: each row of a literal table (slice,
-//     array or map; inline, or a local the test defines and never assigns
-//     again, takes the address of or passes to a call: Opus #292 H1) a loop
+//     array or map; inline, or a local the test defines and uses only as a
+//     range's expression: an alias, a copy, delete, clear, an argument, an
+//     address or a write makes it opaque, Opus #292 H1, Astra #292 H1) a loop
 //     ranges over when its body asserts, skips or runs subtests (itself, or
 //     through a local closure it calls: M4). A row's identity is its loop's
 //     (its position among the test's, and whether it checks or only runs
-//     subtests: a row moved under another loop is removed, H1; the loop's
+//     subtests: a row moved under another loop is removed, H1, but one whose
+//     loop only ran subtests and now checks is kept, Astra M6; the loop's
 //     print would make any edit of its assertions a removal, as in the
 //     replay's c09ac49) and its own: the row's map key, else its first string
 //     literal (or a call's, append(id, "commit")), else its canonical text
@@ -34,28 +37,35 @@ import (
 //     the candidate's test lacks blocks; a loop over another source, or a
 //     t.Run named by neither, is a source the guard cannot follow (opaque),
 //     named in that block. What a constant condition never runs names none.
-//   - A package function any declaration of which skips (directly, or
-//     through another, to a bound; M3), and a package variable holding a
+//   - A package function any declaration of which skips (Skip, SkipNow or
+//     Skipf of a testing.T, B, F or TB, never another type's: Astra M7;
+//     directly, or through another, to a bound; M3), and a package variable holding a
 //     literal that skips, are skipping: any use of one is a skip, a call
 //     whatever its arguments or a value (a slice, a field, a runner's
 //     argument, an alias: H2), and so is a call of an interface method a
 //     skipping package method's name.
 //   - A test's print is its assertions and skips, in order, each a hash of
-//     its canonical text, the innermost condition around it (an if's Init
-//     too) and its depth, charged to the work bound (H3, M1). With equal
+//     its canonical text and a rolling hash of every control statement and
+//     branch around it (ifs with their Init, else, for, switch, select and
+//     their cases), charged to the work bound (H3, M1, Astra M8). With equal
 //     counts, a changed print warns; a changed row under its identity warns
 //     whatever the counts, when nothing blocks (Astra #255 M9).
 //   - An assertion or skip in a branch a constant condition never takes
 //     (const strict = false; if strict && …) is not counted, and a
 //     variable ever assigned a value that is no testing value is no
 //     testing value to an assertion (var x E = t; x = fake{}). Rows and
-//     assertions are charged by their canonical text.
+//     assertions are charged by their canonical text, loop bodies and the
+//     skipping helpers by their size; past the bound, reading stops at once
+//     and the test's file is unverifiable (Astra H5).
 //   - Residual: helpers of other packages receiving the testing value (the
 //     gate's go_test_json adapter refuses a skip at head), testify suites
 //     (no M1 profile uses testify), a table built by appends or a helper; a
 //     testing value rebound through a call mentioning it (x = wrap(t)) stays
-//     one (Opus #292 L3); a .Skip of another type in a helper makes it
-//     skipping (L6: a false block, never a miss).
+//     one (Opus #292 L3). P14d-2 (#226 entry 95): skipping facts through a
+//     package variable's alias of an alias (var second = first: Astra #292
+//     H2), literal subtests in a same-package helper the test calls (H3), and
+//     identities of one build variant only, which the merge of variants
+//     drops (H4).
 
 // deadRanges are the branches a constant condition never takes, in files,
 // sorted and merged for isDead's binary search (Opus #292 M5).
@@ -140,13 +150,46 @@ func (s *pkgScan) funcOf(e ast.Expr) types.Object {
 	return nil
 }
 
-// drives: a loop body asserts or skips (checks), or else runs subtests,
-// itself or through a local closure it calls (to a depth), its reading
-// charged (M5).
-func (s *pkgScan) drives(body ast.Node, closures map[types.Object]*ast.FuncLit, runs bool, depth int) (found bool) {
+// skipsIn: body skips a test (Astra #292 M7): Skip, SkipNow or Skipf of a
+// testing.T, B, F or TB (by its type, or a testing value the scan knows:
+// the scan's imports may be unresolved), or a use of a skipping function;
+// its reading charged.
+func (s *pkgScan) skipsIn(body ast.Node) (found bool) {
 	s.r.work += int(body.End() - body.Pos())
-	if c := s.count(body); c.asserts+c.skips > 0 || depth > 8 {
-		return c.asserts+c.skips > 0
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.SelectorExpr:
+			t := s.info.TypeOf(x.X)
+			if p, ok := t.(*types.Pointer); ok {
+				t = p.Elem()
+			}
+			nt, _ := types.Unalias(t).(*types.Named)
+			typed := nt != nil && nt.Obj().Pkg() != nil && nt.Obj().Pkg().Path() == "testing" && slices.Contains([]string{"T", "B", "F", "TB"}, nt.Obj().Name())
+			found = found || slices.Contains(goSkips, x.Sel.Name) && (typed || slices.Contains([]string{"testing.T", "testing.B", "testing.F", "testing.TB"}, s.tval(x.X))) && !s.isDead(x.Pos())
+		case *ast.Ident:
+			found = found || s.skipUse(x) && !s.isDead(x.Pos())
+		}
+		return !found
+	})
+	return found
+}
+
+// drives: a loop body asserts or skips (checks), or else runs subtests,
+// itself or through a local closure it calls (to a depth), each body's
+// answer cached and its reading charged; past the work bound, false at
+// once (the caller's test is then unverifiable: Astra #292 H5).
+func (s *pkgScan) drives(body ast.Node, closures map[types.Object]*ast.FuncLit, runs bool, depth int) (found bool) {
+	key := driveKey{body, runs}
+	if v, ok := s.driven[key]; ok {
+		return v
+	}
+	defer func() { s.driven[key] = found }()
+	caseVisits.Add(1)
+	if s.r.work += int(body.End() - body.Pos()); depth > 8 { // the bound: checked by the walk before, and below during
+		return false
+	}
+	if c := s.count(body); c.asserts+c.skips > 0 {
+		return true
 	}
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch x := n.(type) {
@@ -157,10 +200,18 @@ func (s *pkgScan) drives(body ast.Node, closures map[types.Object]*ast.FuncLit, 
 				found = s.drives(fl.Body, closures, runs, depth+1)
 			}
 		}
-		return !found
+		return !found && s.r.work <= maxWork
 	})
 	return found
 }
+
+type driveKey struct {
+	body ast.Node
+	runs bool
+}
+
+// caseVisits counts drives' readings (tests read it: a bound, never a clock).
+var caseVisits atomic.Int64
 
 func (s *pkgScan) runCall(c *ast.CallExpr) bool {
 	sel, ok := ast.Unparen(c.Fun).(*ast.SelectorExpr)
@@ -173,7 +224,7 @@ func (s *pkgScan) runCall(c *ast.CallExpr) bool {
 func (s *pkgScan) testCases(body ast.Node) (ids map[string]int, rows map[string]string, opaque bool) {
 	ids, rows = map[string]int{}, map[string]string{}
 	lits, closures := map[types.Object]*ast.CompositeLit{}, map[types.Object]*ast.FuncLit{} // a local table; a local closure
-	tainted, traced := map[types.Object]bool{}, map[types.Object]bool{}                     // assigned again, addressed or passed; a table's range key and value
+	traced := map[types.Object]bool{}                                                       // a table's range key and value
 	define := func(id *ast.Ident, v ast.Expr) {
 		switch x := ast.Unparen(v).(type) {
 		case *ast.CompositeLit:
@@ -182,19 +233,17 @@ func (s *pkgScan) testCases(body ast.Node) (ids map[string]int, rows map[string]
 			closures[s.info.Defs[id]] = x
 		}
 	}
-	taint := func(e ast.Expr) {
-		if id := ident(s.root(e)); id != nil && s.info.Uses[id] != nil {
-			tainted[s.info.Uses[id]] = true
-		}
-	}
+	// A table is followed only where its every use is a range's expression,
+	// a closure only where its every use is a call: any other use (an alias,
+	// a copy, delete, clear, an argument, an address, a write) may change
+	// it, so it is not followed (Astra #292 H1).
+	uses, kept := map[types.Object]int{}, map[types.Object]int{}
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.AssignStmt:
 			for i, l := range x.Lhs {
 				if id := ident(l); id != nil && s.info.Defs[id] != nil && len(x.Lhs) == len(x.Rhs) {
 					define(id, x.Rhs[i])
-				} else {
-					taint(l)
 				}
 			}
 		case *ast.ValueSpec:
@@ -203,29 +252,31 @@ func (s *pkgScan) testCases(body ast.Node) (ids map[string]int, rows map[string]
 					define(id, x.Values[i])
 				}
 			}
-		case *ast.IncDecStmt:
-			taint(x.X)
-		case *ast.UnaryExpr:
-			if x.Op == token.AND {
-				taint(x.X)
+		case *ast.RangeStmt:
+			if id := ident(x.X); id != nil {
+				kept[s.info.Uses[id]]++
 			}
 		case *ast.CallExpr:
-			for _, a := range x.Args {
-				taint(a)
+			if id := ident(x.Fun); id != nil {
+				kept[s.info.Uses[id]]++
 			}
+		case *ast.Ident:
+			uses[s.info.Uses[x]]++
 		}
 		return true
 	})
-	for o := range tainted {
-		delete(lits, o)
-		delete(closures, o)
+	for o, n := range uses {
+		if n != kept[o] {
+			delete(lits, o)
+			delete(closures, o)
+		}
 	}
 	loops := 0 // the test's driving loops, in order
 	var walk func(n ast.Node, prefix string)
 	walk = func(n ast.Node, prefix string) {
 		ast.Inspect(n, func(n ast.Node) bool {
-			if n != nil && s.isDead(n.Pos()) {
-				return false // a branch never taken names no case (Opus #292 L4)
+			if n != nil && s.isDead(n.Pos()) || s.r.work > maxWork {
+				return false // a branch never taken names no case (Opus #292 L4); past the bound, nothing more is read
 			}
 			switch x := n.(type) {
 			case *ast.RangeStmt:
@@ -336,23 +387,56 @@ func mentionsAny(e ast.Expr, info *types.Info, objs map[types.Object]bool) (foun
 }
 
 // testPrint is n's assertions and skips, in order, each a hash of its
-// canonical text, the innermost if (its Init too, and which branch), for
-// or switch around it and the depth of those (linear: Opus #292 H3);
-// charged to the work bound, and cut past it.
+// canonical text and a rolling hash of every control statement around it:
+// each if (its Init and condition, and which branch), for, switch and type
+// switch (Init and tag), select, and case or comm clause, each read once on
+// entry (linear: Opus #292 H3; Astra #292 M8); charged to the work bound,
+// and cut past it. A range is a level, never its expression (an added row
+// changes no print).
 func (s *pkgScan) testPrint(n ast.Node) string {
 	var b strings.Builder
-	var stack []ast.Node
-	var conds []int // the stack's indexes of ifs, fors and switches
+	type level struct {
+		node ast.Node
+		sum  [32]byte
+	}
+	stack := []level{{}}
 	ast.Inspect(n, func(n ast.Node) bool {
 		if n == nil {
-			if len(conds) > 0 && conds[len(conds)-1] == len(stack)-1 {
-				conds = conds[:len(conds)-1]
-			}
 			stack = stack[:len(stack)-1]
 			return true
 		}
 		if s.r.work > maxWork {
 			return false
+		}
+		top := stack[len(stack)-1]
+		ctl := ""
+		switch x := n.(type) {
+		case *ast.IfStmt:
+			ctl = "if " + s.canonOpt(x.Init) + "; " + s.canon(x.Cond)
+		case *ast.ForStmt:
+			ctl = "for " + s.canonOpt(x.Init) + "; " + s.canonOpt(x.Cond) + "; " + s.canonOpt(x.Post)
+		case *ast.RangeStmt:
+			ctl = "range"
+		case *ast.SwitchStmt:
+			ctl = "switch " + s.canonOpt(x.Init) + "; " + s.canonOpt(x.Tag)
+		case *ast.TypeSwitchStmt:
+			ctl = "type switch " + s.canonOpt(x.Init) + "; " + s.canon(x.Assign)
+		case *ast.SelectStmt:
+			ctl = "select"
+		case *ast.CaseClause:
+			ctl = "case"
+			for _, e := range x.List {
+				ctl += " " + s.canon(e)
+			}
+		case *ast.CommClause:
+			ctl = "comm " + s.canonOpt(x.Comm)
+		}
+		if ifs, ok := top.node.(*ast.IfStmt); ok && n == ifs.Else {
+			ctl = "else"
+		}
+		sum := top.sum
+		if ctl != "" {
+			sum = sha256.Sum256(append(top.sum[:], ctl...))
 		}
 		event := ""
 		switch x := n.(type) {
@@ -366,29 +450,10 @@ func (s *pkgScan) testPrint(n ast.Node) string {
 			}
 		}
 		if event != "" && !s.isDead(n.Pos()) {
-			cond := ""
-			if len(conds) > 0 {
-				i := conds[len(conds)-1]
-				switch x := stack[i].(type) {
-				case *ast.IfStmt:
-					cond = "if " + s.canonOpt(x.Init) + "; " + s.canon(x.Cond)
-					if i+1 < len(stack) && stack[i+1] == x.Else {
-						cond = "else of " + cond
-					}
-				case *ast.ForStmt:
-					cond = "for " + s.canonOpt(x.Cond)
-				case *ast.SwitchStmt:
-					cond = "switch " + s.canonOpt(x.Tag)
-				}
-			}
-			sum := sha256.Sum256([]byte(event + "\x00" + cond + "\x00" + strconv.Itoa(len(conds))))
-			b.WriteString(hex.EncodeToString(sum[:8]))
+			e := sha256.Sum256(append(sum[:], event...))
+			b.WriteString(hex.EncodeToString(e[:8]))
 		}
-		switch n.(type) {
-		case *ast.IfStmt, *ast.ForStmt, *ast.SwitchStmt:
-			conds = append(conds, len(stack))
-		}
-		stack = append(stack, n)
+		stack = append(stack, level{n, sum})
 		return true
 	})
 	return b.String()
@@ -403,9 +468,15 @@ func (s *pkgScan) canonOpt(n ast.Node) string {
 
 // casesRemoved is the first base case identity the candidate's test
 // holds fewer of, and how many are fewer.
+// A row whose loop only ran subtests and now checks, at its position,
+// is kept (Astra #292 M6: a strengthening); the reverse is removed.
 func casesRemoved(b, a *stat) (first string, n int) {
 	for _, k := range sortedKeys(b.cases) {
-		if d := b.cases[k] - a.cases[k]; d > 0 {
+		have := a.cases[k]
+		if c, ok := strings.CutSuffix(k, " runs"); ok {
+			have += max(0, a.cases[c+" checks"]-b.cases[c+" checks"])
+		}
+		if d := b.cases[k] - have; d > 0 {
 			first, n = cmpOrS(first, k), n+d
 		}
 	}

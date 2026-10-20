@@ -122,6 +122,27 @@ func TestClosure(t *testing.T) {
 	}
 }
 
+func TestCond(t *testing.T) {
+	enabled := Add(1, 0) == 1
+	if enabled {
+		if Add(1, 1) != 2 {
+			t.Error("bad")
+		}
+	}
+	switch Add(1, 0) {
+	case 1:
+		if Add(2, 2) != 4 {
+			t.Error("four")
+		}
+	}
+}
+
+func TestRuns(t *testing.T) {
+	for _, name := range []string{"a"} {
+		t.Run(name, func(t *testing.T) {})
+	}
+}
+
 func TestLits(t *testing.T) {
 	if len([]int{1}) != 1 {
 		t.Fatal("len")
@@ -148,7 +169,7 @@ func raceCases(tag, rows, body string) string {
 func TestIntegrityCases(t *testing.T) {
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
-		write(t, src, map[string]string{"pkg/cases_test.go": casesBase, "pkg/race_cases_test.go": raceCases("race", `{"a", 1}, {"b", 2}`, ` t.Skip("race") `),
+		write(t, src, map[string]string{"pkg/cases_test.go": casesBase, "pkg/xml_test.go": "package pkg\n\nimport \"encoding/xml\"\n\nfunc skipElement(d *xml.Decoder) error { return d.Skip() }\n", "pkg/race_cases_test.go": raceCases("race", `{"a", 1}, {"b", 2}`, ` t.Skip("race") `),
 			"pkg/norace_cases_test.go": raceCases("!race", `{"a", 1}, {"b", 2}`, "")})
 		plain(t, src, "add", "--all")
 	})
@@ -202,9 +223,19 @@ func TestIntegrityCases(t *testing.T) {
 		"a table passed to a call": {edit("\tfor _, tc := range tests {", "\tclear(tests)\n\tfor _, tc := range tests {"), "TestLocal unverifiable: 2 test cases no longer where the guard can follow them", nil},
 		"a table's address taken":  {edit("\tfor _, tc := range tests {", "\tp := &tests\n\t*p = nil\n\tfor _, tc := range tests {"), "TestLocal unverifiable: 2 test cases no longer where the guard can follow them", nil},
 		"a map case deleted":       {edit("\tfor name, n := range cases {", "\tdelete(cases, \"two\")\n\tfor name, n := range cases {"), "TestMap unverifiable: 2 test cases no longer where the guard can follow them", nil},
-		"a map value incremented":  {edit("\tfor name, n := range cases {", "\tcases[\"one\"]++\n\tfor name, n := range cases {"), "TestMap unverifiable: 2 test cases no longer where the guard can follow them", nil},
-		"a loop's check moved out": {map[string]string{"pkg/cases_test.go": strings.NewReplacer("\t\tif Add(tc.a, 0) != tc.want {\n\t\t\tt.Errorf(\"%s\", tc.name)\n\t\t}\n", "\t\tt.Run(tc.name, func(t *testing.T) {})\n", "func TestTable(t *testing.T) {\n", "func TestTable(t *testing.T) {\n\tif Add(9, 0) != 9 {\n\t\tt.Error(\"nine\")\n\t}\n").Replace(casesBase)}, "TestTable 3 test cases removed", nil},
-		"moveRow":                  {moveRow(), `TestTable 1 test cases removed (table rows or subtests: row "zero" @`, nil},
+		// Astra #292 H1: any use of a table but its range's.
+		"an alias deleted from": {edit("\tfor name, n := range cases {", "\talias := cases\n\tdelete(alias, \"two\")\n\tfor name, n := range cases {"), "TestMap unverifiable: 2 test cases no longer where the guard can follow them", nil},
+		"an alias cleared":      {edit("\tfor name, n := range cases {", "\talias := cases\n\tclear(alias)\n\tfor name, n := range cases {"), "TestMap unverifiable: 2 test cases no longer where the guard can follow them", nil},
+		// Astra #292 M6: a loop that ran subtests now checks too (accepted).
+		"runs to checks": {edit("\t\tt.Run(name, func(t *testing.T) {})\n", "\t\tif name == \"\" {\n\t\t\tt.Fatal(name)\n\t\t}\n\t\tt.Run(name, func(t *testing.T) {})\n"), "", nil},
+		// Astra #292 M7: a helper calling another type's Skip is no skipping helper.
+		"an xml.Decoder's Skip": {inPlain("\t_ = skipElement(nil)\n"), "", nil},
+		// Astra #292 M8: every enclosing condition and case.
+		"an outer condition inverted": {edit("\tif enabled {", "\tif !enabled {"), "", both("TestCond: " + changed)},
+		"a case changed":              {edit("\tcase 1:\n", "\tcase 2:\n"), "", both("TestCond: " + changed)},
+		"a map value incremented":     {edit("\tfor name, n := range cases {", "\tcases[\"one\"]++\n\tfor name, n := range cases {"), "TestMap unverifiable: 2 test cases no longer where the guard can follow them", nil},
+		"a loop's check moved out":    {map[string]string{"pkg/cases_test.go": strings.NewReplacer("\t\tif Add(tc.a, 0) != tc.want {\n\t\t\tt.Errorf(\"%s\", tc.name)\n\t\t}\n", "\t\tt.Run(tc.name, func(t *testing.T) {})\n", "func TestTable(t *testing.T) {\n", "func TestTable(t *testing.T) {\n\tif Add(9, 0) != 9 {\n\t\tt.Error(\"nine\")\n\t}\n").Replace(casesBase)}, "TestTable 3 test cases removed", nil},
+		"moveRow":                     {moveRow(), `TestTable 1 test cases removed (table rows or subtests: row "zero" @`, nil},
 		// H2: any use of a skipping function, whatever its arguments.
 		"skipRebound":    {inPlain("\tx := t\n\trequireDocker(x)\n\tx = nil\n\t_ = x\n"), "TestPlain a test skipped", nil},
 		"skipSlice":      {inPlain("\t[]func(*testing.T){requireDocker}[0](t)\n"), "TestPlain a test skipped", nil},
@@ -324,5 +355,40 @@ func TestIntegrityCasesNested(t *testing.T) {
 	t.Logf("nested ifs: 1,000 allocate %d bytes, 2,000 %d", a, b)
 	if b > 3*a {
 		t.Errorf("not linear")
+	}
+}
+
+// TestIntegrityCasesStops (Astra #292 H5): the guard stops at once past
+// its work bound, and reads each loop body and closure once: thousands of
+// nested empty ranges are unverifiable after a few readings, and a fan-out
+// of closures (c0 … c8, each calling its predecessor ten times) is read in
+// a few dozen, never 10^8. Readings are counted, never timed.
+func TestIntegrityCasesStops(t *testing.T) {
+	f := newGuardFixture(t)
+	old := maxWork
+	t.Cleanup(func() { maxWork = old })
+	maxWork = 1 << 17
+	read := func(name, file string) (Verdict, int64) {
+		before := caseVisits.Load()
+		v := f.guarded(t, map[string]string{"pkg/" + name + "_test.go": file})
+		return v, caseVisits.Load() - before
+	}
+	nested := "package pkg\n\nimport \"testing\"\n\nfunc TestNested(t *testing.T) {\n" + strings.Repeat("for range []int{1} {\n", 3000) + strings.Repeat("}\n", 3000) + "}\n"
+	if v, n := read("nested", nested); !finds(v.Blocks, "past the guard's work bound") || n > 100 {
+		t.Errorf("3,000 nested ranges: %d readings, blocks %q", n, whats(v.Blocks))
+	}
+	// The skipping helpers' summaries are charged: a helper of 200 KB.
+	helper := "package pkg\n\nfunc helper() {\n\tx := 0\n" + strings.Repeat("\tx++\n", 40000) + "\t_ = x\n}\n"
+	if v, _ := read("helper", helper); !finds(v.Blocks, "past the guard's work bound") {
+		t.Errorf("a helper past the bound: blocks %q", whats(v.Blocks))
+	}
+	var fan strings.Builder
+	fan.WriteString("package pkg\n\nimport \"testing\"\n\nfunc TestFan(t *testing.T) {\n\tc0 := func() {}\n")
+	for i := 1; i <= 8; i++ {
+		fmt.Fprintf(&fan, "\tc%d := func() {%s }\n", i, strings.Repeat(fmt.Sprintf(" c%d();", i-1), 10))
+	}
+	fan.WriteString("\tfor range []int{1} {\n\t\tc8()\n\t}\n}\n")
+	if v, n := read("fan", fan.String()); !v.Accepted() || n > 100 {
+		t.Errorf("a fan-out of closures: %d readings, blocks %q", n, whats(v.Blocks))
 	}
 }
