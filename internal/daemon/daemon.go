@@ -26,6 +26,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
+	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -213,7 +214,14 @@ func Run(ctx context.Context, cfg Config, logw io.Writer, ready func(*Daemon)) e
 	if err != nil {
 		return err
 	}
-	loop := reconciler(d, cfg.reconcileEvery, logw)
+	var reg registry.Registry // Validate checked it against the groups
+	if cfg.Registry != nil {
+		if reg, err = registry.New(*cfg.Registry, cfg.Groups); err != nil {
+			_ = d.Close()
+			return err
+		}
+	}
+	loop := reconciler(d, reg, cfg.reconcileEvery, logw)
 	srv, err := serve(d.store, d.boot, d.lock.Dir(), cfg.Shared, defaultLimits, commands{store: d.store, reg: d.az.Registry, logic: logics(d.az), issue: issuers(d.az), request: requests(d.az, d.blobs), log: logw,
 		blobs: d.blobs, clock: d.clock, probe: cfg.Sandbox, authenticated: cfg.authenticated, applied: loop.Nudge})
 	if err == nil && tc != nil {

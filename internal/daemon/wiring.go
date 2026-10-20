@@ -21,8 +21,10 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
+	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/reconcile"
 	"github.com/ekaynac/auto-dev-cycle/internal/recovery"
+	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
@@ -65,17 +67,35 @@ const reconcileEvery = 5 * time.Second
 // reconciler is adcd's reconcile loop, a pass every every (0:
 // reconcileEvery): it admits only while the admission capability is active
 // (Opus #312 L4), and evaluates the admitted task's nodes only once launch
-// is active. Obligation for P22a-5: before launch.Active(), the Env carries
-// Need (the gate's requirements) and Blobs (the receipt blobs), without
-// which graph.Evaluate refuses every evaluation (Opus #312 L5).
-func reconciler(d *Daemon, every time.Duration, logw io.Writer) *reconcile.Loop {
+// is active, under adcd's Env (env).
+func reconciler(d *Daemon, reg registry.Registry, every time.Duration, logw io.Writer) *reconcile.Loop {
 	admission, _ := capability.Of("admission")
 	launch, _ := capability.Of("launch")
 	if every == 0 {
 		every = reconcileEvery
 	}
-	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: graph.Env{Authority: authority.Answers{}}}
+	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: env(d, reg)}
 	return reconcile.NewLoop(x, reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active()}, every, logw)
+}
+
+// env is what evaluation reads in adcd (P22a-5b; Opus #312 L5): the
+// recorded answers, M1(a)'s requirements (needs), the receipt blobs, the
+// registry's families and each task's rails (P17a).
+func env(d *Daemon, reg registry.Registry) graph.Env {
+	return graph.Env{Authority: authority.Answers{}, Need: needs, Blobs: d.blobs, Families: reg, Rails: authority.Rails}
+}
+
+// needs are M1(a)'s requirements: none on the inputs of the plan, the
+// build, accept and the gate, which take results whole (the gate its
+// accepted tree, P14a). A review's inputs need P16's review requirement,
+// which comes with the review capability (22a-6): until then they are
+// refused, so no review is claimed on a requirement left out.
+func needs(n types.Node, in types.InputSpec) (*receipt.Requirement, error) {
+	switch n.Kind {
+	case types.NodeKindPlan, types.NodeKindBuild, types.NodeKindAccept, types.NodeKindGate:
+		return nil, nil
+	}
+	return nil, fmt.Errorf("daemon: the %s node's input %s needs a requirement adcd does not resolve before the review capability (P22a-6)", n.Kind, in.Name)
 }
 
 // authorizer is the one authorizer over the wired handlers: the writer's
@@ -115,7 +135,8 @@ func handlers() map[string]authority.Handler {
 // otherwise (deferredActions).
 func gated() map[string]authority.Handler {
 	return map[string]authority.Handler{authority.ProjectCreateAction: authority.ProjectCreateHandler{}, authority.TaskCreateAction: authority.TaskCreateHandler{},
-		authority.TaskCancelAction: authority.TaskCancelHandler{}, authority.InputAnswerAction: authority.InputAnswerHandler{}}
+		authority.TaskCancelAction: authority.TaskCancelHandler{}, authority.InputAnswerAction: authority.InputAnswerHandler{},
+		authority.TaskRaiseRailAction: authority.TaskRaiseRailHandler{}} // launch's (P17a's handler; P22a-5b)
 }
 
 // logic is a wired action's command logic, which the request layer passes
