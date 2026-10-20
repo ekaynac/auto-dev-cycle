@@ -161,6 +161,17 @@ func TestTaskCreate(t *testing.T) {
 			t.Errorf("an acceptance blob not withheld from builder and reviewer: %+v", x)
 		}
 	}
+	// TaskAcceptance reads the digests from the record (P16a); an unknown
+	// task is refused.
+	b.view(func(tx *eventstore.Tx) error {
+		if got, err := authority.TaskAcceptance(tx, types.TaskID(evs[0].Subject)); err != nil || len(got) != 2 || string(got[0]) != a || string(got[1]) != h {
+			t.Errorf("the task's acceptance: %v %v", got, err)
+		}
+		if _, err := authority.TaskAcceptance(tx, types.TaskID(newID(t, "tsk"))); err == nil {
+			t.Error("an unknown task's acceptance")
+		}
+		return nil
+	})
 	// Published into the store; the uploads dropped after the commit.
 	for _, d := range []string{a, h} {
 		if has, err := b.up.Has(d); err != nil || !has {

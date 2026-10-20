@@ -88,6 +88,26 @@ func TaskRecordOf(id types.TaskID) func(*eventstore.Tx) (json.RawMessage, bool, 
 	return func(tx *eventstore.Tx) (json.RawMessage, bool, error) { return tx.Get(TaskProjection, id) }
 }
 
+// TaskAcceptance is the content digests of task id's acceptance blobs, from
+// its record (I18: an intent is checked against them, never against a
+// caller's list). The fold admits a task only with one acceptance blob per
+// attachment (classed), so a task with attachments never reads as having
+// none. An unknown task is refused.
+func TaskAcceptance(tx *eventstore.Tx, id types.TaskID) ([]types.Digest, error) {
+	t, ok, err := loadJSON[TaskRecord](tx, TaskProjection, id)
+	switch {
+	case err != nil:
+		return nil, err
+	case !ok:
+		return nil, fmt.Errorf("authority: task %s has no record", id)
+	}
+	out := make([]types.Digest, len(t.Acceptance))
+	for i, a := range t.Acceptance {
+		out[i] = a.Digest
+	}
+	return out, nil
+}
+
 // TaskCreateHandler derives task.create.
 type TaskCreateHandler struct{}
 
