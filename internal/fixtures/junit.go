@@ -18,17 +18,17 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-// junitDoc is a pytest-shaped document: one suite holding body, with the
+// junitDoc is a pytest-shaped document (xunit1, as the gate runs pytest): one suite holding body, with the
 // counts attrs declares.
 func junitDoc(attrs, body string) string {
 	return `<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" ` + attrs + `>` + body + `</testsuite></testsuites>`
 }
 
 const (
-	junitPass   = `<testcase classname="tests.test_money" name="test_add" time="0.001" />`
-	junitPass2  = `<testcase classname="tests.test_money" name="test_sub" time="0.001" />`
-	junitFail   = `<testcase classname="tests.test_money" name="test_sub" time="0.001"><failure message="assert 1 == 2">assert 1 == 2</failure></testcase>`
-	junitErrors = `<testcase classname="tests.test_money" name="test_sub" time="0.000"><error message="failed on setup with &quot;RuntimeError&quot;">RuntimeError</error></testcase>`
+	junitPass   = `<testcase file="tests/test_money.py" classname="tests.test_money" name="test_add" time="0.001" />`
+	junitPass2  = `<testcase file="tests/test_money.py" classname="tests.test_money" name="test_sub" time="0.001" />`
+	junitFail   = `<testcase file="tests/test_money.py" classname="tests.test_money" name="test_sub" time="0.001"><failure message="assert 1 == 2">assert 1 == 2</failure></testcase>`
+	junitErrors = `<testcase file="tests/test_money.py" classname="tests.test_money" name="test_sub" time="0.000"><error message="failed on setup with &quot;RuntimeError&quot;">RuntimeError</error></testcase>`
 )
 
 // junitStep reads doc against expected as the gate does.
@@ -62,8 +62,8 @@ func junitSteps(docs []string, expected []results.Test) ([]Step, error) {
 // failure) and a missing acceptance test each fail the gate, each step on
 // that fault alone; a clean document passes.
 func junitLyingRunner(_ context.Context, _ string) ([]Step, []string, error) {
-	acceptance := []results.Test{{Package: "tests.test_hidden", Name: "test_acceptance"}}
-	accepted := `<testcase classname="tests.test_hidden" name="test_acceptance" time="0.001" />`
+	acceptance := []results.Test{{Package: "tests/test_hidden.py::tests.test_hidden", Name: "test_acceptance"}}
+	accepted := `<testcase file="tests/test_hidden.py" classname="tests.test_hidden" name="test_acceptance" time="0.001" />`
 	steps, err := junitSteps([]string{
 		junitDoc(`errors="0" failures="1" skipped="0" tests="3"`, junitPass+junitFail+accepted),
 		junitDoc(`errors="1" failures="0" skipped="0" tests="3"`, junitPass+junitErrors+accepted),

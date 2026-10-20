@@ -3,9 +3,13 @@
 package results
 
 // Decisions for junit_xml (P15b; pytest's --junitxml, xunit1 and xunit2):
-//   - A test is a testcase, named by its classname (Package: pytest's
-//     dotted module, and class) and its name (with its parameter ids). A
-//     collection error is a testcase with no classname and an error.
+//   - A test is a testcase, named by its file, classname and name (Package:
+//     "file::classname", pytest's file, dotted module and class; Name, with
+//     its parameter ids). The gate forces junit_family=xunit1, whose
+//     testcases carry their file: without it, a testcase is unreadable
+//     (Astra #290 H4: tests/test_a.py::TestB_test::test_x and
+//     tests/test_a/TestB_test.py::test_x share their classname and name). A
+//     collection error is a testcase with an error, its file the module's.
 //   - Only a testcase with no failure, error or skipped child is a pass.
 //     An error (setup, teardown, collection) counts as a failure (Fail); a
 //     skipped one (skip, xfail) is Skip; the worst child decides. Packages
@@ -18,15 +22,15 @@ package results
 //     skipped: pytest >= 9.1 counts each child, a setup error and a
 //     teardown error of one testcase two; older pytest subtracts double
 //     failures, which reads as unreadable, Opus #290 M1) below it, a
-//     namespaced or repeated attribute, text or a processing instruction
-//     after the root, and any bound passed: MaxStream bytes, maxElements
-//     elements, maxDepth levels, maxName bytes in an attribute read
-//     (classname, name, the counts). Free text (messages, tracebacks,
+//     namespaced or repeated attribute, text or a comment outside the root,
+//     a processing instruction but the declaration (first), and any bound
+//     passed: MaxStream bytes, maxElements elements, maxDepth levels,
+//     maxName bytes in an attribute read (file, classname, name, counts). Free text (messages, tracebacks,
 //     output) is read past, never kept: MaxStream bounds it.
 //   - Two testcases of one identity are unreadable, but for pytest's own
-//     shape: a test that fails or passes and then errors in teardown is a
-//     second testcase holding an error alone. It is merged, as Fail: it can
-//     only make the test fail.
+//     shape: a test that passes or fails and then errors in teardown is a
+//     second testcase holding one error alone. It is merged, as Fail: it can
+//     only make the test fail; a third, or another shape, is unreadable.
 
 import (
 	"bytes"
@@ -54,7 +58,7 @@ var known = map[string][]string{
 }
 
 // read are the attributes the adapter reads, each within maxName.
-var read = []string{"classname", "name", "tests", "failures", "errors", "skipped"}
+var read = []string{"file", "classname", "name", "tests", "failures", "errors", "skipped"}
 
 // suite counts the testcases below an open testsuite (or testsuites).
 type suite struct {
@@ -77,6 +81,7 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 	var test *Test          // the open testcase
 	has := map[string]int{} // its failure, error and skipped children
 	elements, rootDone := 0, false
+	dups := map[Test]bool{} // the identities that had their one successor
 	for {
 		tok, err := d.Token()
 		if err == io.EOF {
@@ -89,12 +94,16 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 		case xml.Directive:
 			return unreadable("a DTD or directive")
 		case xml.CharData:
-			if rootDone && len(bytes.TrimSpace(t)) > 0 {
-				return unreadable("text after the root")
+			if (rootDone || elements == 0) && len(bytes.TrimSpace(t)) > 0 {
+				return unreadable("text outside the root")
 			}
-		case xml.ProcInst:
-			if rootDone || elements > 0 || t.Target != "xml" {
-				return unreadable("a processing instruction other than the declaration")
+		case xml.Comment:
+			if rootDone || elements == 0 {
+				return unreadable("a comment outside the root")
+			}
+		case xml.ProcInst: // the declaration, first, alone
+			if t.Target != "xml" || d.InputOffset() != int64(len("<?xml ?>")+len(t.Inst)) {
+				return unreadable("a processing instruction other than the declaration, first")
 			}
 		case xml.StartElement:
 			parent := ""
@@ -128,11 +137,11 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 					}
 				}
 				suites = append(suites, s)
-			case "testcase":
-				test = &Test{Package: attr["classname"], Name: attr["name"]}
+			case "testcase": // xunit1's file, its path: one classname may be two modules' (Astra #290 H4)
+				test = &Test{Package: attr["file"] + "::" + attr["classname"], Name: attr["name"]}
 				clear(has)
-				if test.Name == "" {
-					return unreadable("a testcase with no name")
+				if test.Name == "" || attr["file"] == "" {
+					return unreadable("a testcase with no name or no file (junit_family=xunit1)")
 				}
 			case "failure", "error", "skipped":
 				has[t.Name.Local]++
@@ -148,12 +157,12 @@ func ParseJUnitXML(doc io.Reader, expected []Test, base *Report) (Report, error)
 					o = Fail
 				}
 				// A second testcase of one identity is unreadable, but for
-				// pytest's own shape: a teardown error after the test, an
-				// error alone, which can only make it fail.
+				// pytest's own shape: one teardown error after a pass or a
+				// failure, its one error alone, which can only make it fail.
 				if prior, dup := tests[*test]; !dup {
 					tests[*test] = o
-				} else if has["error"] > 0 && has["failure"]+has["skipped"] == 0 {
-					tests[*test] = worse(prior, Fail)
+				} else if !dups[*test] && prior != Skip && has["error"] == 1 && has["failure"]+has["skipped"] == 0 {
+					tests[*test], dups[*test] = worse(prior, Fail), true
 				} else {
 					return unreadable("two testcases %s %s", test.Package, test.Name)
 				}

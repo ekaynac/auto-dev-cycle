@@ -39,23 +39,18 @@
 //   - The tree gated is the one checked out: the checkout's own tree id
 //     must be the one asked for (a commit id or another tree is refused),
 //     and the receipt is about it (receipt.go).
-//   - The cwd contract (#275), for junit_xml (pytest) only: a Go test may
-//     run Python from its package directory (Opus #286 M3). Every pytest
-//     process of the run (the runner, a worker, a wrapper that execs
-//     pytest) starts in the checkout root, and none changes directory
-//     before pytest has collected; a probe the controller writes into the
-//     results mount, first on PYTHONPATH, records both (cwd/), and only for
-//     a process that loads its pytest plugin or execs pytest: a test's own
-//     subprocess, in any directory, is not judged (Opus #290 M4). A record
-//     elsewhere, no record at all (no pytest loaded the probe: python -E or
-//     -I cannot load the plugin), or a log over its bound invalidates the
-//     run (could_not_run/runner_fault). The probe runs in-process, writable
-//     by the run, so these escape it (decision A's residual, Opus #286
-//     L1): a run that deletes or rewrites the probe or its log after a
-//     first record, and a pytest process that does not load the plugin
-//     beside one that does. A profile command that sets PYTHONPATH itself,
-//     rather than extending it, is unsupported (its pytest cannot load
-//     the plugin: no record, invalidated).
+//   - The cwd contract (#275), for junit_xml (pytest), by construction
+//     (Astra #290): the command is pytest run directly (pytest, or python
+//     -m pytest; no shell, wrapper or env) with allowlisted arguments only
+//     (direct), in the checkout root the sandbox makes its workdir; the
+//     controller appends --junitxml={results_path} (unless named) and -o
+//     junit_family=xunit1, so each testcase names its file. Anything else
+//     is refused (ErrSpec), never run. A Go test may run Python anywhere.
+//   - Ownership for junit_xml: when the report holds any failure or error
+//     (a collection error included, of a module or a class: Astra #290
+//     M5), a missing test is the candidate's; otherwise a missing test is
+//     the candidate's when its file, or a conftest.py or __init__.py above
+//     it, changed.
 //   - A gate environment's runtime.arch "any" (py-mini) relaxes only that
 //     environment's check: the image is still the host's OS and
 //     architecture.
@@ -66,7 +61,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -90,13 +84,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
-//go:embed cwd/*.py
-var probe embed.FS
-
 const (
 	placeholder = "{results_path}"  // the profile's name for the derived path
-	probeDir    = ".adc-cwd"        // the cwd probe, in the results mount
-	maxProbeLog = 1 << 20           // what the cwd probe's log may hold
 	maxResults  = results.MaxStream // what a run's results may hold
 	maxOverlay  = 16 << 20          // acceptance files, in all
 	maxGoMod    = 1 << 20           // the root go.mod, read as its blob
@@ -113,7 +102,7 @@ var (
 
 	// adapters are the result adapters the gate reads: the derived results
 	// file, its parser and its name, and whether its runs are pytest's,
-	// under the cwd probe (probed).
+	// under the direct-command rule (direct).
 	adapters = map[string]adapter{
 		results.GoTestJSON: {"go-test.json", results.ParseGoTestJSON, "a go test -json stream", false},
 		results.JUnitXML:   {"junit.xml", results.ParseJUnitXML, "a JUnit XML document", true},
@@ -124,7 +113,7 @@ type adapter struct {
 	file   string
 	parse  func(io.Reader, []results.Test, *results.Report) (results.Report, error)
 	what   string
-	probed bool
+	pytest bool
 }
 
 // Baseline is a measured baseline (fixtures/m1/issues/*/baseline-report.json):
@@ -229,11 +218,6 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	// all. A run that left too much is judged by what it wrote: copy-out
 	// bounds it again.
 	ad := adapters[in.Gate.ResultAdapter]
-	if ad.probed {
-		if err := writeProbe(a.Results()); err != nil {
-			return v, err
-		}
-	}
 	_, runErr := in.Host.Start(ctx, sandbox.Run{Image: in.Image, Mode: sandbox.Gate, Attempt: a, Limits: in.Limits, Argv: argv(in.Gate.Command, ad)})
 	if (errors.Is(runErr, sandbox.ErrSpec) || errors.Is(runErr, sandbox.ErrHost)) && !errors.Is(runErr, sandbox.ErrLeft) {
 		return v, runErr
@@ -242,7 +226,7 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 		return v, fmt.Errorf("gate: the run was cut: %w", ctx.Err())
 	}
 	out := filepath.Join(a.Dir, "out")
-	if err := a.CopyOut(out, maxResults+int64(b2i(ad.probed))*(maxProbeLog+64<<10)); err != nil {
+	if err := a.CopyOut(out, maxResults); err != nil {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results could not be copied out within their bounds")
 		return v, nil
 	}
@@ -254,17 +238,6 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	if in.Baseline != nil && !normal {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run did not finish (its timeout, a signal or the runner)")
 		return v, nil
-	}
-	if ad.probed {
-		log := filepath.Join(out, probeDir, "log")
-		if st, err := os.Stat(log); err == nil && st.Size() > maxProbeLog {
-			v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the cwd probe's log is over its bound")
-			return v, nil
-		}
-		if bad, records := violations(log, a.Workspace()); bad > 0 || records == 0 {
-			v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, fmt.Sprintf("invalidated: %d Python process starts or early chdirs outside the checkout root, of %d recorded (the cwd contract)", bad, records))
-			return v, nil
-		}
 	}
 	v.Stream, err = os.ReadFile(filepath.Join(out, ad.file))
 	if err != nil {
@@ -366,6 +339,8 @@ func (in In) bound() error {
 	switch {
 	case adapters[in.Gate.ResultAdapter].file == "" || in.Gate.OwnershipRules != ownership:
 		return fmt.Errorf("%w: result adapter %q with ownership rules %q (only %s or %s, %s)", ErrSpec, in.Gate.ResultAdapter, in.Gate.OwnershipRules, results.GoTestJSON, results.JUnitXML, ownership)
+	case adapters[in.Gate.ResultAdapter].pytest && direct(in.Gate.Command) != nil:
+		return direct(in.Gate.Command)
 	case rt.Os != in.Image.OS || rt.Arch != in.Image.Arch && rt.Arch != "any":
 		return fmt.Errorf("%w: the image is %s/%s, the environment %s/%s", ErrSpec, in.Image.OS, in.Image.Arch, rt.Os, rt.Arch)
 	case b != nil && (!slices.Equal(b.Command, in.Gate.Command) || b.ImageID != in.Image.ID || b.OS != in.Image.OS || b.Arch != in.Image.Arch):
@@ -392,24 +367,21 @@ func (v *Verdict) judge(in In, module string, ended bool) {
 		}
 		return
 	}
-	under := func(pkg, mod string) bool { return mod == "" || pkg == mod || strings.HasPrefix(pkg, mod+".") } // a dotted module, or a prefix of it
-	var broken []string                                                                                       // pytest's collection errors: a module (or package) the candidate's change can break (Opus #290 M3)
+	junit, failed := in.Gate.ResultAdapter == results.JUnitXML, false
 	for _, x := range v.Results.Results {
-		if x.Package == "" && x.Outcome == results.Fail && in.Gate.ResultAdapter == results.JUnitXML {
-			broken = append(broken, x.Name)
-		}
+		failed = failed || junit && x.Outcome == results.Fail // a collection error too (Astra #290 M5)
 	}
 	touched := func(pkg string) bool {
+		file, _, _ := strings.Cut(pkg, "::") // junit_xml: file::classname
 		rel := strings.TrimPrefix(strings.TrimPrefix(pkg, module), "/")
-		return slices.ContainsFunc(broken, func(m string) bool { return m != "" && under(pkg, m) }) || slices.ContainsFunc(in.Changed, func(c string) bool {
-			mod, ok := strings.CutSuffix(c, ".py")
+		return failed || slices.ContainsFunc(in.Changed, func(c string) bool {
 			switch {
-			case !ok || in.Gate.ResultAdapter != results.JUnitXML:
+			case !junit:
 				return module != "" && strings.HasPrefix(pkg, module) && path.Dir(c) == cmpOr(rel, ".")
-			case path.Base(c) == "conftest.py" || path.Base(c) == "__init__.py": // its directory's modules
-				mod = strings.TrimPrefix(path.Dir(c), ".")
+			case path.Base(c) == "conftest.py" || path.Base(c) == "__init__.py": // the files below it
+				return path.Dir(c) == "." || strings.HasPrefix(file, path.Dir(c)+"/")
 			}
-			return under(pkg, strings.ReplaceAll(mod, "/", ".")) // a pytest classname: the dotted module, and class
+			return c == file
 		})
 	}
 	var mine, theirs int
@@ -447,7 +419,7 @@ func cmpOr(a, b string) string {
 }
 
 // argv is the command the container runs: the profile's, its results path
-// derived, with the cwd probe's environment for a probed adapter.
+// derived; for pytest, with --junitxml (unless named) and xunit1 forced.
 func argv(command []string, ad adapter) []string {
 	res := sandbox.ResultsDir + "/" + ad.file
 	cmd, named := make([]string, len(command)), false
@@ -455,60 +427,61 @@ func argv(command []string, ad adapter) []string {
 		cmd[i] = strings.ReplaceAll(a, placeholder, res)
 		named = named || cmd[i] != a
 	}
+	if ad.pytest {
+		if !named {
+			cmd, named = append(cmd, "--junitxml="+res), true
+		}
+		cmd = append(cmd, "-o", "junit_family=xunit1")
+	}
 	if !named { // a stdout adapter: the controller writes its stream to the results file
-		cmd = append([]string{"sh", "-c", `exec "$@" >"$0"`, res}, cmd...)
-	} else { // the run's stdout is never read: none reaches the runner's bound
-		cmd = append([]string{"sh", "-c", `exec "$@" >/dev/null`, "sh"}, cmd...)
+		return append([]string{"sh", "-c", `exec "$@" >"$0"`, res}, cmd...)
 	}
-	if !ad.probed {
-		return cmd
-	}
-	dir := sandbox.ResultsDir + "/" + probeDir // first on PYTHONPATH, the image's after it (Opus #290 L4)
-	return append([]string{"env", "PYTEST_PLUGINS=adc_gate_cwd", "PYTHONDONTWRITEBYTECODE=1", "ADC_GATE_ROOT=" + sandbox.WorkspaceDir,
-		"ADC_GATE_LOG=" + dir + "/log", "sh", "-c", `PYTHONPATH="$0${PYTHONPATH:+:$PYTHONPATH}" exec "$@"`, dir}, cmd...)
+	return append([]string{"sh", "-c", `exec "$@" >/dev/null`, "sh"}, cmd...) // the run's stdout is never read: none reaches the runner's bound
 }
 
-// writeProbe writes the cwd probe into the results mount.
-func writeProbe(res string) error {
-	dir := filepath.Join(res, probeDir)
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		return err
+// iniKeys are the ini options a gate command may set with -o.
+var iniKeys = []string{"xfail_strict", "log_level", "console_output_style", "junit_logging"}
+
+// direct refuses a pytest gate command that is not pytest run directly
+// with allowlisted arguments: test paths or node ids inside the checkout,
+// -q, -x, -p no:<plugin>, -k and -m expressions, --maxfail=<n>, -o for
+// iniKeys, -n <workers>, and --junitxml={results_path}. Anything else
+// (--rootdir, -c, --confcutdir, -p <plugin>, --pyargs, --import-mode, -W,
+// another -o) is refused: it could move what pytest collects, and where.
+func direct(cmd []string) error {
+	refuse := func(why string) error { return fmt.Errorf("%w: the junit_xml gate command %s", ErrSpec, why) }
+	var args []string
+	switch {
+	case len(cmd) > 0 && cmd[0] == "pytest":
+		args = cmd[1:]
+	case len(cmd) > 2 && (cmd[0] == "python" || cmd[0] == "python3") && cmd[1] == "-m" && cmd[2] == "pytest":
+		args = cmd[3:]
+	default:
+		return refuse("is not pytest, or python -m pytest, run directly")
 	}
-	for _, name := range []string{"sitecustomize.py", "adc_gate_cwd.py"} {
-		b, err := probe.ReadFile("cwd/" + name)
-		if err == nil {
-			err = os.WriteFile(filepath.Join(dir, name), b, 0o600)
+	for i := 0; i < len(args); i++ {
+		a, next := args[i], ""
+		if i+1 < len(args) {
+			next = args[i+1]
 		}
-		if err != nil {
-			return err
+		file, _, _ := strings.Cut(a, "::")
+		switch _, nerr := strconv.Atoi(strings.TrimPrefix(a, "--maxfail=")); {
+		case a == "-q" || a == "-x" || a == "--junitxml="+placeholder || strings.HasPrefix(a, "--maxfail=") && nerr == nil:
+		case a == "-p" && strings.HasPrefix(next, "no:"), a == "-k" && next != "", a == "-m" && next != "":
+			i++
+		case a == "-o" && slices.Contains(iniKeys, strings.SplitN(next, "=", 2)[0]):
+			i++
+		case a == "-n":
+			if _, err := strconv.Atoi(next); err != nil {
+				return refuse("has -n without a worker count")
+			}
+			i++
+		case !strings.HasPrefix(a, "-") && filepath.IsLocal(file) && path.Clean(file) == file && !strings.Contains(a, `\`):
+		default:
+			return refuse(fmt.Sprintf("has an argument outside its allowlist (%.64q)", a))
 		}
 	}
 	return nil
-}
-
-// violations counts the probe's records, and those outside the checkout
-// root: sandbox.WorkspaceDir in the container, or ws, resolved once, for a
-// host's Runner that runs the command in place (os.getcwd() is resolved);
-// no path a run wrote is resolved on the controller (Opus #290 L6).
-func violations(log, ws string) (bad, records int) {
-	b, _ := os.ReadFile(log) // none: no pytest process loaded the probe
-	if r, err := filepath.EvalSymlinks(ws); err == nil {
-		ws = r
-	}
-	for line := range strings.Lines(string(b)) {
-		_, dir, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
-		if records++; dir != sandbox.WorkspaceDir && dir != ws {
-			bad++
-		}
-	}
-	return bad, records
-}
-
-func b2i(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // checkout writes tree into ws through a temporary index and returns the

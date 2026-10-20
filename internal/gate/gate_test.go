@@ -45,7 +45,10 @@ func plain(t *testing.T, dir string, args ...string) string {
 // attempt's directories. It is the sandbox's Runner boundary. end, when
 // set, is how the run then ends, injected there (Astra #286 M5): a
 // timeout, a kill or the caller's cancellation, after the results exist.
-type local struct{ end func() error }
+type local struct {
+	end  func() error
+	path string // a directory first on PATH (a python with pytest)
+}
 
 func (l *local) Run(ctx context.Context, _ string, args, _ []string) ([]byte, error) {
 	if !slices.Contains(args, "run") { // after podman's global flags
@@ -69,7 +72,7 @@ func (l *local) Run(ctx context.Context, _ string, args, _ []string) ([]byte, er
 		argv = append(argv, mapped.Replace(a))
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir, cmd.Env = ws, []string{"PATH=/usr/bin:/bin"}
+	cmd.Dir, cmd.Env = ws, []string{"PATH=" + l.path + ":/usr/bin:/bin"}
 	out, err := cmd.Output()
 	if l.end != nil {
 		err = errors.Join(err, l.end())
