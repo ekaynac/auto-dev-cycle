@@ -31,7 +31,7 @@ func TestDecide(t *testing.T) {
 		"admitted, nothing runnable":        {Snapshot{Admitted: admitted, Evaluates: true}, nil},
 		"admitted, open, evaluation off":    {Snapshot{Admitted: admitted, Open: []Versioned{plan}}, nil},
 		"admitted, open":                    {Snapshot{Admitted: admitted, Open: []Versioned{plan}, Evaluates: true}, []Action{Evaluate{Task: types.TaskID(admitted.ID), Goals: []Versioned{plan}}}},
-		"admitted, and a next (never both)": {Snapshot{Admitted: admitted, Next: next, Evaluates: true}, nil},
+		"admitted, and a next (never both)": {Snapshot{Admitted: admitted, Next: next, Gates: Gates{Admits: true, Evaluates: true}}, nil},
 		"admitted, its approval revoked":    {Snapshot{Admitted: admitted, Revoked: true, Open: []Versioned{plan}, Evaluates: true}, []Action{Abandon{Task: admitted}}},
 	} {
 		if got := Decide(c.s); !reflect.DeepEqual(got, c.want) {
