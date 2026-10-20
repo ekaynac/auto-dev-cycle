@@ -364,7 +364,7 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 		return // the facts are incomplete
 	}
 	for _, k := range slices.Sorted(maps.Keys(b.tests)) {
-		bt, at := b.tests[k], a.tests[k]
+		bt, at, blocked := b.tests[k], a.tests[k], true
 		switch {
 		case at == nil:
 			add(&r.blocks, k, "a test deleted or no longer collected")
@@ -375,14 +375,16 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.blocks, k, fmt.Sprintf("fewer assertions in a test (%d → %d)", bt.asserts, at.asserts))
 		case at.skips > bt.skips:
 			add(&r.blocks, k, "a test skipped")
+		default:
+			blocked = false
 		}
 		switch first, n := casesRemoved(bt, at); { // P14d
 		case n > 0 && at.opaque:
 			add(&r.blocks, k, fmt.Sprintf("unverifiable: %d test cases no longer where the guard can follow them (%.80s)", n, first))
 		case n > 0:
 			add(&r.blocks, k, fmt.Sprintf("%d test cases removed (table rows or subtests: %.80s)", n, first))
-		case at.asserts == bt.asserts && at.skips == bt.skips && at.cert >= bt.cert && (at.print != bt.print || rowsChanged(bt, at)):
-			add(&r.warnings, k, "an assertion, its condition or a test case changed, with equal counts: review it")
+		case !blocked && (at.asserts == bt.asserts && at.skips == bt.skips && at.print != bt.print || rowsChanged(bt, at)): // a row whatever the counts (Opus #292 M1)
+			add(&r.warnings, k, "an assertion, its condition or a test case changed: review it")
 		}
 	}
 	more := func(a, b []int) bool { // on some platform: none is traded across them

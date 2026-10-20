@@ -320,6 +320,9 @@ type pkgScan struct {
 	pkgVars   map[*ast.ValueSpec]bool
 	aliases   map[types.Object]ast.Expr       // an alias's right-hand side
 	skipping  map[*ast.FuncDecl]bool          // P14d (integrity_cases.go): skipping helpers
+	skipNames map[string]bool                 // their methods' names (an interface's call)
+	skipVars  map[types.Object]bool           // package variables holding a literal that skips
+	litVars   map[types.Object]*ast.FuncLit   // package variables holding a literal
 	funcVals  map[types.Object][]types.Object // a variable's package functions assigned
 	rebound   map[types.Object]bool           // a variable assigned a value that is no testing value
 	dead      [][2]token.Pos                  // branches a constant condition never takes
@@ -451,6 +454,7 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 			if b, ok := s.info.Uses[x].(*types.Builtin); ok && sensitive(b.Name()) > 0 {
 				c.refs = append(c.refs, b.Name())
 			}
+			c.skips += b2i(s.skipUse(x) && !s.isDead(x.Pos())) // a skipping function used, called or not (P14d)
 		case *ast.BasicLit: // a 0x16 spelled in a string or rune literal
 			c.forged += b2i(x.Kind != token.INT && slices.ContainsFunc(spelled, func(m string) bool { return strings.Contains(x.Value, m) }))
 		case *ast.AssignStmt:
@@ -469,7 +473,6 @@ func (s *pkgScan) count(n ast.Node) (c counts) {
 				return false
 			}
 			c.asserts += b2i(s.assertion(x) && !s.isDead(x.Pos()))
-			c.skips += b2i(s.skipCall(x) && !s.isDead(x.Pos()))
 			fun, args := ast.Unparen(x.Fun), x.Args
 			f, _ := fn(fun)
 			sel, isSel := f.(*ast.SelectorExpr)
@@ -571,11 +574,13 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
 		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{},
-		skipping: map[*ast.FuncDecl]bool{}, funcVals: map[types.Object][]types.Object{}, rebound: map[types.Object]bool{}}
+		skipping: map[*ast.FuncDecl]bool{}, skipNames: map[string]bool{}, skipVars: map[types.Object]bool{}, litVars: map[types.Object]*ast.FuncLit{},
+		funcVals: map[types.Object][]types.Object{}, rebound: map[types.Object]bool{}}
 	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		if i == len(files) {
 			clear(s.mentioned) // read again, every alias known (and after: the tvals grew)
 		}
+		second := i >= len(files) // rebound once every testing value is known (Opus #292 L2)
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.TypeSpec:
@@ -604,11 +609,8 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 					o := cmp.Or(info.Defs[id], info.Uses[id])
 					if id != nil && s.mentions(v) {
 						s.tvals[o] = "testing.T"
-					} else if id != nil && x.Tok == token.ASSIGN && len(x.Lhs) == len(x.Rhs) {
+					} else if id != nil && x.Tok == token.ASSIGN && len(x.Lhs) == len(x.Rhs) && second {
 						s.rebound[o] = true
-					}
-					if f := s.funcOf(v); id != nil && f != nil && len(x.Lhs) == len(x.Rhs) && !slices.Contains(s.funcVals[o], f) {
-						s.funcVals[o] = append(s.funcVals[o], f)
 					}
 				}
 			case *ast.ValueSpec: // as is a variable of a testing type
@@ -619,15 +621,18 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 					if i < len(x.Values) && len(x.Values) == len(x.Names) && s.funcOf(x.Values[i]) != nil && !slices.Contains(s.funcVals[info.Defs[id]], s.funcOf(x.Values[i])) {
 						s.funcVals[info.Defs[id]] = append(s.funcVals[info.Defs[id]], s.funcOf(x.Values[i]))
 					}
+					if len(x.Values) == len(x.Names) && info.Defs[id] != nil && info.Defs[id].Parent() == pkg.Scope() {
+						if fl, ok := ast.Unparen(x.Values[i]).(*ast.FuncLit); ok {
+							s.litVars[info.Defs[id]] = fl
+						}
+					}
 				}
 			}
 			return true
 		})
 	}
 	clear(s.mentioned)
-	for _, f := range files {
-		s.deadRanges(f)
-	}
+	s.deadRanges(files)
 	for changed, i := true, 0; changed && i < 32; i++ { // the asserting helpers, to a bounded depth
 		if err := r.ctx.Err(); err != nil {
 			return err
@@ -646,11 +651,17 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			return err
 		}
 		changed = false
-		for _, ds := range s.same { // skipping only when every declaration skips
-			if !s.skipping[ds[0]] && !slices.ContainsFunc(ds, func(d *ast.FuncDecl) bool { return d.Body == nil || s.count(d.Body).skips == 0 }) {
+		for _, ds := range s.same { // skipping when any declaration skips (race, !race: Opus #292 M3)
+			if !s.skipping[ds[0]] && slices.ContainsFunc(ds, func(d *ast.FuncDecl) bool { return d.Body != nil && s.count(d.Body).skips > 0 }) {
 				for _, d := range ds {
 					s.skipping[d], changed = true, true
 				}
+				s.skipNames[ds[0].Name.Name] = s.skipNames[ds[0].Name.Name] || ds[0].Recv != nil
+			}
+		}
+		for o, fl := range s.litVars {
+			if !s.skipVars[o] && s.count(fl.Body).skips > 0 {
+				s.skipVars[o], changed = true, true
 			}
 		}
 	}
@@ -709,19 +720,19 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				fa.warn["TestMain(*testing.M) of "+dir+":"+name+"\x00"+plat] += string(m.src[fset.Position(d.Pos()).Offset:fset.Position(d.End()).Offset]) // every declaration
 			case test && goTest(fname):
 				if m.on[pi] > 0 {
-					text := func(n ast.Node) string {
-						return strings.Join(strings.Fields(string(m.src[fset.Position(n.Pos()).Offset:fset.Position(n.End()).Offset])), " ")
-					}
-					ids, rows, opaque := s.testCases(fn.Body, text)
+					ids, rows, opaque := s.testCases(fn.Body)
 					k, st := platforms[pi][0]+"/"+platforms[pi][1]+" "+dir+":"+name+"."+fname, &stat{c.asserts + output(f, fn), c.skips, m.on[pi], m.cons, ids, rows, opaque, s.testPrint(fn.Body)}
 					if old := fa.tests[k]; old != nil { // declared again (race, !race): the weakest
 						for id, n := range st.cases {
 							st.cases[id] = min(n, old.cases[id])
 						}
+						for id, t := range old.rows {
+							st.rows[id] = t + st.rows[id]
+						}
 						st = &stat{min(old.asserts, st.asserts), max(old.skips, st.skips), min(old.cert, st.cert), old.cons + st.cons, st.cases, st.rows, old.opaque || st.opaque, old.print + st.print}
 					}
 					if fa.tests[k] = st; r.work > maxWork {
-						fa.bad[m.path] = "test cases past the guard's work bound"
+						fa.bad[m.path] = "test cases or assertions past the guard's work bound"
 					}
 				}
 				continue
