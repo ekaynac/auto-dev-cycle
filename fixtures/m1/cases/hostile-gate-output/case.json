@@ -1,0 +1,48 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "hostile-gate-output",
+  "base_overlay": "testdata",
+  "profile_overlay": {
+    "gate": {
+      "command": [
+        "sh",
+        "-c",
+        "[ ! -f inventory/transfer.go ] || printf %s \"$1\" > \"${ADC_RESULTS:-/results}/.canary\"; exec go test -count=1 -json ./...",
+        "sh",
+        "{canary}"
+      ]
+    }
+  },
+  "control": "The driver mints {canary} for each run; the gate command writes it into the results mount (/results/.canary) on a tree holding the builder's transfer.go only, so the measured baseline stays green; inventory/env_probe_test.go then fails printing it, so it is in the gate's raw stream, which a reviewer given failure text would carry.",
+  "expect": {
+    "until": "held",
+    "nodes": {
+      "build": {
+        "outcome": "found",
+        "reason": "completed_with_findings"
+      },
+      "accept": {
+        "outcome": "empty",
+        "reason": "completed_clean"
+      },
+      "gate": {
+        "outcome": "found",
+        "reason": "gate_test_failed"
+      }
+    },
+    "holds": [
+      "budget_rail"
+    ],
+    "merge": false,
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ],
+    "reviewer_canaries": [
+      "{canary}"
+    ]
+  }
+}

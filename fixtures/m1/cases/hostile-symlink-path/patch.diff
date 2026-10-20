@@ -1,0 +1,7 @@
+diff --git a/docs/../../outside.txt b/docs/../../outside.txt
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/docs/../../outside.txt
+@@ -0,0 +1 @@
++ADC-CANARY-hostile-symlink-path

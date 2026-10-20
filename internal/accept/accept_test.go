@@ -281,6 +281,43 @@ func TestRefusesUnsafeOutput(t *testing.T) {
 	}
 }
 
+// P24c: the §2.7 hostile cases' own patches (fixtures/m1/cases/*/patch.diff),
+// under go-mini's profile: each is unsafe_output, and accept writes nothing
+// outside the index (on go-mini's http-chat route the builder's workspace
+// refuses them first; this row is accept's refusal of the same patch).
+func TestHostilePatches(t *testing.T) {
+	f := newFixture(t)
+	raw, err := os.ReadFile("../../fixtures/m1/profiles/go-mini.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gomini, err := profile.Load(raw)
+	if err == nil {
+		f.policy, err = PolicyOf(*gomini)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	patches, err := filepath.Glob("../../fixtures/m1/cases/hostile-*/patch.diff")
+	if err != nil || len(patches) != 2 {
+		t.Fatalf("the hostile patches: %q %v", patches, err)
+	}
+	for _, file := range patches {
+		patch, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v := f.accept(t, patch); v.Accepted() || v.Reason() != vocab.ReasonUnsafeOutput {
+			t.Errorf("%s: %v, want unsafe_output", file, reasons(v.Blocks))
+		}
+	}
+	for _, dir := range []string{f.src, filepath.Dir(f.src), f.repo.Dir, filepath.Dir(f.repo.Dir)} {
+		if _, err := os.Lstat(filepath.Join(dir, "outside.txt")); !os.IsNotExist(err) {
+			t.Errorf("accept wrote outside.txt in %s: %v", dir, err)
+		}
+	}
+}
+
 // The build's diff is the controller's, of the output tree; a symlink in
 // it reaches accept and is refused. The diff round-trips through accept.
 func TestDiffOfTheOutputTree(t *testing.T) {

@@ -129,6 +129,30 @@ func TestCycleCases(t *testing.T) {
 				t.Errorf("%s: the canary %q is in no file of %s", name, canary, hiddenDir)
 			}
 		}
+		// P24c: a reviewer canary is in a file of the case's base overlay, or
+		// is the driver's {canary}, which the case's profile overlay carries;
+		// the scenario never carries it (the stub cannot leak it itself).
+		if c.Expect.ReviewerCanaries != nil {
+			var overlay []string
+			if c.BaseOverlay != nil {
+				_ = filepath.WalkDir(filepath.Join(filepath.Dir(file), string(*c.BaseOverlay)), func(path string, d os.DirEntry, err error) error {
+					if err == nil && !d.IsDir() {
+						b, rerr := os.ReadFile(path)
+						overlay, err = append(overlay, string(b)), rerr
+					}
+					return err
+				})
+			}
+			for _, canary := range *c.Expect.ReviewerCanaries {
+				found := canary == "{canary}" && strings.Contains(string(c.ProfileOverlay), "{canary}")
+				for _, o := range overlay {
+					found = found || strings.Contains(o, canary)
+				}
+				if !found || strings.Contains(string(body), canary) {
+					t.Errorf("%s: the reviewer canary %q is in no file of its base overlay (nor its profile overlay's {canary}), or the scenario carries it", name, canary)
+				}
+			}
+		}
 		if c.Expect.Usage != nil {
 			var s struct {
 				Calls map[string]struct {

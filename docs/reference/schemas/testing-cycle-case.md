@@ -31,6 +31,8 @@ No other fields are allowed.
 | `holds` | yes | array of string (minLength `1`) | The registered holds the task ends with. |
 | `merge` | yes | boolean | Whether a merge node is recorded (checkpoint (a): never). |
 | `canaries` | yes | array of string (minLength `8`) | Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance). |
+| `reviewer_canaries` |  | array of string (minLength `8`) (unique items) | Lines that appear in no reviewer request the stub provider logs (a builder's may hold them, §2.7): each occurs in a file of the case's base_overlay, or is {canary}, a canary the driver mints for each run and substitutes in the case's profile_overlay. |
+| `canary_paths` |  | array of string (pattern `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`) (unique items) | File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-&lt;case&gt;). |
 | `usage` |  | object ([fields](#fields-of-expectusage)) | The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts). |
 
 No other fields are allowed.

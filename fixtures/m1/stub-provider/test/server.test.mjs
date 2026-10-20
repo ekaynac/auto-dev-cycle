@@ -94,6 +94,14 @@ test("a turns script replays its sequence in every attempt, by the conversation'
   assert.deepEqual(s.log().filter((e) => e.kind === "request").map((e) => e.turn), [0, 1, 2, 0, 1, 2]);
 });
 
+test("a read is the adapter's read_file calls, before its writes (P24c)", async (t) => {
+  const s = await serve(t, { name: "reads", calls: { b: { replies: [{ read: ["AGENTS.md", "b.md"], write: { "a.go": "package a\n" } }] } } });
+  const calls = (await (await chat(s, "b")).json()).choices[0].message.tool_calls.map((c) => [c.function.name, JSON.parse(c.function.arguments).path]);
+  assert.deepEqual(calls, [["read_file", "AGENTS.md"], ["read_file", "b.md"], ["write_file", "a.go"]]);
+  assert.throws(() => check({ name: "x", calls: { b: { replies: [{ read: "AGENTS.md" }] } } }), /read is not a list of paths/);
+  assert.throws(() => check({ name: "x", calls: { b: { replies: [{ read: ["a"], say: "done" }] } } }), /not exactly one/);
+});
+
 test("a write is the adapter's tool calls, in path order; a decision is its JSON content", async (t) => {
   const s = await serve(t, { name: "forms", calls: {
     b: { replies: [{ write: { "z.go": "package z\n", "a/b.go": "package b\n" }, delete: ["old.go"] }] },

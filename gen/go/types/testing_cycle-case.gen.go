@@ -50,6 +50,10 @@ type CycleCaseExpect struct {
 	Merge bool `json:"merge"`
 	// Lines that appear in no builder or reviewer request the stub provider logs; each occurs in a file of the task's hidden/ (its acceptance).
 	Canaries []string `json:"canaries"`
+	// Lines that appear in no reviewer request the stub provider logs (a builder's may hold them, §2.7): each occurs in a file of the case's base_overlay, or is {canary}, a canary the driver mints for each run and substitutes in the case's profile_overlay.
+	ReviewerCanaries *[]string `json:"reviewer_canaries,omitempty"`
+	// File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-<case>).
+	CanaryPaths *[]string `json:"canary_paths,omitempty"`
 	// The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts).
 	Usage *CycleCaseExpectUsage `json:"usage,omitempty"`
 }

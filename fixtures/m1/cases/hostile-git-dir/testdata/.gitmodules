@@ -1,0 +1,3 @@
+[submodule "sub"]
+	path = sub
+	url = file:///nonexistent/adc-hostile-git-dir.git

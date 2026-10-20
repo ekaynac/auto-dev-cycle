@@ -71,6 +71,14 @@ export interface CycleCase {
      */
     canaries: string[];
     /**
+     * Lines that appear in no reviewer request the stub provider logs (a builder's may hold them, §2.7): each occurs in a file of the case's base_overlay, or is {canary}, a canary the driver mints for each run and substitutes in the case's profile_overlay.
+     */
+    reviewer_canaries?: string[];
+    /**
+     * File names that no path under the run's work directory may have when it ends: what a hostile setup would create if the controller ran it (§2.7: $W/canary-<case>).
+     */
+    canary_paths?: string[];
+    /**
      * The task's measured tokens, as the scenario's usage gives them; only for a scenario whose every script is replies (the totals of turns and persistent scripts depend on the number of attempts).
      */
     usage?: {

@@ -19,8 +19,9 @@
 //     which starts a conversation afresh, replays the same sequence.
 // A call past the list is refused with a 500 that names the scenario. A
 // REPLY has exactly one form:
-//   - {"write": {PATH: CONTENT}, "delete": [PATH]} (either or both): tool
-//     calls (write_file, delete_file) as the model sends them, in path order;
+//   - {"read": [PATH], "write": {PATH: CONTENT}, "delete": [PATH]} (any of
+//     them): tool calls (read_file, write_file, delete_file) as the model
+//     sends them, reads first, then writes in path order, then deletes;
 //   - {"say": TEXT}: an assistant message with no tool call (a builder's
 //     summary, which ends its edit loop);
 //   - {"decision": OBJECT}: a reviewer's decision, its JSON as the content;
@@ -52,7 +53,7 @@ import { fileURLToPath } from "node:url";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const maxBody = 8 << 20;
 const scenarioKeys = new Set(["name", "description", "usage_query", "calls"]);
-const forms = [["write", "delete"], ["say"], ["decision"], ["body"]];
+const forms = [["read", "write", "delete"], ["say"], ["decision"], ["body"]];
 const replyKeys = new Set([...forms.flat(), "usage", "status", "stall_ms", "trickle_ms", "partial", "barrier", "barrier_timeout_ms"]);
 const loopback = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -75,7 +76,8 @@ export function check(scenario) {
       const at = `${model} reply ${i}`;
       if (typeof r !== "object" || r === null) fail(`${at}: not an object`);
       for (const k of Object.keys(r)) if (!replyKeys.has(k)) fail(`${at}: unknown key ${k}`);
-      if (forms.filter((f) => f.some((k) => k in r)).length !== 1) fail(`${at}: not exactly one of write/delete, say, decision or body`);
+      if (forms.filter((f) => f.some((k) => k in r)).length !== 1) fail(`${at}: not exactly one of read/write/delete, say, decision or body`);
+      if ("read" in r && !(Array.isArray(r.read) && r.read.every((p) => typeof p === "string"))) fail(`${at}: read is not a list of paths`);
       for (const k of ["stall_ms", "trickle_ms", "partial", "barrier_timeout_ms"]) if (k in r && !count(r[k])) fail(`${at}: ${k} is not a count`);
       if ("status" in r && !(Number.isInteger(r.status) && r.status >= 100 && r.status <= 599)) fail(`${at}: status is not an HTTP status`);
       if ("barrier" in r && !/^[a-z0-9-]{1,64}$/.test(r.barrier)) fail(`${at}: barrier is not a name`);
@@ -90,11 +92,12 @@ export function check(scenario) {
 export function body(r, id) {
   if ("body" in r) return r.body;
   const message = { role: "assistant", content: null };
-  if (r.write || r.delete) {
+  if (r.read || r.write || r.delete) {
+    const reads = (r.read ?? []).map((path, i) => ({ id: `${id}-r${i}`, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path }) } }));
     const writes = Object.keys(r.write ?? {}).sort().map((path, i) => ({ id: `${id}-w${i}`, type: "function",
       function: { name: "write_file", arguments: JSON.stringify({ path, content: r.write[path] }) } }));
     const deletes = (r.delete ?? []).map((path, i) => ({ id: `${id}-d${i}`, type: "function", function: { name: "delete_file", arguments: JSON.stringify({ path }) } }));
-    message.tool_calls = [...writes, ...deletes];
+    message.tool_calls = [...reads, ...writes, ...deletes];
   } else if ("decision" in r) {
     message.content = JSON.stringify(r.decision);
   } else {
