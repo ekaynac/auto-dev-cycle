@@ -10,7 +10,11 @@
 # Each case runs in a temporary directory, under env -i with a temporary
 # HOME, XDG_* and state directory; the real ~/.config/adc must be
 # unchanged after it (every path's inode, size, mtime and mode, and every
-# file's sha256; absent before, absent after). It builds the base remote from the
+# file's sha256; absent before, absent after). adcd accepts its state and
+# run directories only on ext2/ext3/ext4, xfs, btrfs or tmpfs, so the
+# temporary directory is a private one (0700) under the first of $TMPDIR
+# (else /tmp), $XDG_RUNTIME_DIR and /dev/shm on one of those; with none, the
+# case cannot run (exit 2) and adcd is never started. It builds the base remote from the
 # T0 project (scripts/lib/base-remote.sh), starts the stub provider with
 # the case's scenario on loopback, writes the registry with the stub's
 # address, starts the installed adcd and bootstraps the operator. Then:
@@ -99,7 +103,26 @@ snapshot() {
 }
 before="$(snapshot)" || cannot "$config cannot be read"
 
-work="$(mktemp -d)"
+# The work directory holds adcd's state and run directories: only a
+# filesystem adcd accepts (internal/daemon/server.go: aclFilesystems), and
+# no fallback to any other.
+fs_known() {
+  case "$(stat -f -c %T -- "$1" 2>/dev/null)" in
+    ext2/ext3 | xfs | btrfs | tmpfs) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+parent="" tried=""
+for d in "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-}" /dev/shm; do
+  [[ -n "$d" ]] || continue
+  if [[ -d "$d" && -w "$d" ]] && fs_known "$d"; then
+    parent="$d"
+    break
+  fi
+  tried+=" $d ($(stat -f -c %T -- "$d" 2>/dev/null || echo missing))"
+done
+[[ -n "$parent" ]] || cannot "no writable temporary directory on ext2/ext3/ext4, xfs, btrfs or tmpfs, which adcd's state needs; tried:$tried"
+work="$(mktemp -d -p "$parent")" || cannot "mktemp in $parent failed"
 cleanup() {
   local p i
   for p in "${stub:-}" "${adcd:-}"; do
@@ -112,6 +135,7 @@ cleanup() {
   if ((keep)); then echo "installed-cycle: kept $work" >&2; else rm -rf "$work"; fi
 }
 trap cleanup EXIT
+fs_known "$work" || die "$work is not on ext2/ext3/ext4, xfs, btrfs or tmpfs"
 cd "$work"
 umask 077
 mkdir home state out
