@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 )
 
 // P24c: each §2.7 hostile case's positive control, run here, outside the
@@ -23,8 +25,9 @@ func TestCycleHostileControls(t *testing.T) {
 	if err != nil {
 		goBin = filepath.Join(runtime.GOROOT(), "bin", "go")
 	}
-	base := []string{"PATH=" + filepath.Dir(goBin) + ":/usr/bin:/bin", "GOPROXY=off", "GOTOOLCHAIN=local", "GOWORK=off", "GOFLAGS=-mod=readonly",
-		"GOCACHE=" + goEnv(t, goBin, "GOCACHE"), "GOMODCACHE=" + goEnv(t, goBin, "GOMODCACHE"), "HOME=" + t.TempDir()}
+	home := testguard.HomeEnv(t)
+	base := append([]string{"PATH=" + filepath.Dir(goBin) + ":/usr/bin:/bin", "GOPROXY=off", "GOTOOLCHAIN=local", "GOWORK=off", "GOFLAGS=-mod=readonly",
+		"GOCACHE=" + goEnv(t, goBin, "GOCACHE"), "GOMODCACHE=" + goEnv(t, goBin, "GOMODCACHE")}, home...)
 	run := func(dir string, env []string, argv ...string) (string, error) {
 		t.Helper()
 		cmd := exec.Command(argv[0], argv[1:]...)
@@ -98,11 +101,12 @@ func TestCycleHostileControls(t *testing.T) {
 
 	t.Run("hostile-test-escape", func(t *testing.T) {
 		parent, dir := tree("hostile-test-escape")
-		home := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(home, ".config/adc"), 0o700); err != nil {
+		// The decoy: the child's own home (testguard's, HomeEnv's first entry) with a .config/adc.
+		_, h, _ := strings.Cut(home[0], "=")
+		if err := os.MkdirAll(filepath.Join(h, ".config/adc"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		out, err := run(dir, []string{"HOME=" + home, "ADC_DECOY_TOKEN=x"}, "go", "test", "-count=1", "-v", "-run", "TestEscapeProbe", "./inventory/")
+		out, err := run(dir, []string{"ADC_DECOY_TOKEN=x"}, "go", "test", "-count=1", "-v", "-run", "TestEscapeProbe", "./inventory/")
 		if err != nil {
 			t.Fatalf("the probe: %v %s", err, out)
 		}
