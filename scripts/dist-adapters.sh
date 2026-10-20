@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Packages the fake adapter and the http-chat adapter (P13) with their workspace dependencies, and
-# fixtures/t0/py-mini, into OUTDIR (dist's lib/adc; docs/design/m0/15 S2). The repository's own files are its committed content (git archive HEAD: never
+# Packages the fake adapter and the http-chat adapter (P13) with their workspace dependencies,
+# fixtures/t0/py-mini and go-mini, fixtures/m1 and the installed cycle harness (P24: scripts/installed-cycle.sh and
+# scripts/lib), into OUTDIR (dist's lib/adc; docs/design/m0/15 S2). The repository's own files are its committed content (git archive HEAD: never
 # an untracked .env or .venv, nor an uncommitted edit), with its LICENSE and NOTICE. The workspace packages keep their source paths
 # (adapters/fake, adapters/http-chat, adapters/contract, gen/ts): Node strips TypeScript types only outside node_modules, so
 # node_modules/@adc holds two relative symlinks to them. The third-party packages are the adapters' production
@@ -26,7 +27,8 @@ git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$root is 
 mkdir -p -- "$out/node_modules/@adc"
 committed=(LICENSE NOTICE adapters/fake/package.json adapters/fake/src adapters/http-chat/package.json adapters/http-chat/src
   adapters/contract/package.json adapters/contract/src
-  gen/ts/package.json gen/ts/validators.cjs gen/ts/formats.cjs fixtures/t0/py-mini)
+  gen/ts/package.json gen/ts/validators.cjs gen/ts/formats.cjs fixtures/t0/py-mini
+  fixtures/t0/go-mini fixtures/m1 scripts/installed-cycle.sh scripts/lib)
 for p in "${committed[@]}"; do
   git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null || die "$p is not committed"
 done
@@ -36,6 +38,10 @@ for f in LICENSE NOTICE adapters/fake/src/main.ts adapters/http-chat/src/main.ts
   [[ -f "$out/$f" ]] || die "$f is missing"
 done
 [[ -f "$out/fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json" ]] || die "py-mini-feature-1 is missing"
+for f in fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json fixtures/m1/stub-provider/server.mjs fixtures/m1/profiles/go-mini.json \
+  scripts/installed-cycle.sh scripts/lib/secrets.sh scripts/lib/base-remote.sh; do
+  [[ -f "$out/$f" ]] || die "$f is missing"
+done
 ln -s ../../adapters/contract "$out/node_modules/@adc/contract"
 ln -s ../../gen/ts "$out/node_modules/@adc/contract-gen"
 
@@ -66,4 +72,4 @@ done <<<"$deps"
 # The two @adc links are the only symlinks packaged.
 links="$(cd "$out" && find . -type l | sort)"
 [[ "$links" == $'./node_modules/@adc/contract\n./node_modules/@adc/contract-gen' ]] || die "unexpected symlinks: $links"
-echo "dist-adapters: the fake and http-chat adapters, $third third-party packages and py-mini into $out"
+echo "dist-adapters: the fake and http-chat adapters, $third third-party packages, py-mini, go-mini, fixtures/m1 and the cycle harness into $out"

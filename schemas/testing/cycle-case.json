@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/testing/cycle-case.json",
+  "title": "CycleCase",
+  "description": "A case of the installed cycle harness (M1 slice plan §2.6, P24): fixtures/m1/cases/<case>/case.json, run by lib/adc/scripts/installed-cycle.sh. Its project is a T0 project (fixtures/t0/<project>), its task one of that project's tasks, whose committed hidden/ files are its acceptance; the stub provider serves its scenario (fixtures/m1/stub-provider/scenarios/<scenario>.json). control is the positive control proving the setup discriminates (§2.7). expect is what the run must show.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project", "task", "scenario", "control", "expect"],
+  "properties": {
+    "project": {"description": "The T0 project, with its profile at fixtures/m1/profiles/<project>.json.", "$ref": "#/$defs/CaseName"},
+    "task": {"description": "The T0 task id under fixtures/t0/<project>/tasks/.", "$ref": "#/$defs/CaseName"},
+    "scenario": {"description": "The stub provider's scenario.", "$ref": "#/$defs/CaseName"},
+    "profile_overlay": {"description": "Fields merged over the project profile (an RFC 7396 merge patch).", "type": "object", "x-adc-open-payload": "project"},
+    "base_overlay": {"description": "A directory of this case, copied over the base before its first commit.", "$ref": "#/$defs/CaseName"},
+    "remote_hook": {"description": "A hook installed in the base remote (pre-receive), a file of this case.", "$ref": "#/$defs/CaseName"},
+    "control": {"description": "The positive control: what, with this setup, would make the case fail if the controller misbehaved.", "type": "string", "minLength": 1, "maxLength": 1024},
+    "expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["until", "nodes", "holds", "merge", "canaries"],
+      "properties": {
+        "until": {"description": "How the task ends: closed as a candidate (after review), or held.", "enum": ["candidate", "held"]},
+        "nodes": {
+          "description": "The outcome and reason of each named node of the task's graph, by kind.",
+          "type": "object",
+          "propertyNames": {"enum": ["plan", "build", "accept", "gate", "review"]},
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "reason"],
+            "properties": {"outcome": {"type": "string", "minLength": 1}, "reason": {"type": "string", "minLength": 1}}
+          }
+        },
+        "holds": {"description": "The registered holds the task ends with.", "type": "array", "items": {"type": "string", "minLength": 1}},
+        "merge": {"description": "Whether a merge node is recorded (checkpoint (a): never).", "type": "boolean"},
+        "canaries": {"description": "Lines that appear in no builder or reviewer request the stub provider logs.", "type": "array", "items": {"type": "string", "minLength": 8}},
+        "usage": {
+          "description": "The task's measured tokens, as the scenario's usage gives them.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["in", "out"],
+          "properties": {"in": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "out": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "CaseName": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"}
+  }
+}

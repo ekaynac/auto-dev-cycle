@@ -16,6 +16,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
+	"github.com/ekaynac/auto-dev-cycle/internal/profile"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/testguard"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -177,6 +178,33 @@ func TestRefusesProtectedPaths(t *testing.T) {
 	// Deleting one is touching it too.
 	if v := f.accept(t, f.patch(t, nil, "conftest.py")); v.Reason() != vocab.ReasonProtectedPath {
 		t.Errorf("a deleted protected path: %v", reasons(v.Blocks))
+	}
+	// go-mini's own profile (P24b, fault-protected-path): go.mod, go.sum,
+	// go.work, go.work.sum and vendor/** at the root.
+	raw, err := os.ReadFile("../../fixtures/m1/profiles/go-mini.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gomini, err := profile.Load(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.policy, err = PolicyOf(*gomini); err != nil {
+		t.Fatal(err)
+	}
+	for _, files := range []map[string]string{
+		{"go.work": "go 1.27.0\n\nuse .\n"},
+		{"go.mod": "module example.com/gomini\n\ngo 1.27.0\n\nreplace example.com/x => ../x\n"},
+		{"go.sum": "example.com/x v1.0.0 h1:x=\n"},
+		{"go.work.sum": "x\n"},
+		{"vendor/modules.txt": "# example.com/x v1.0.0\n"},
+	} {
+		if v := f.accept(t, f.patch(t, files)); v.Accepted() || v.Reason() != vocab.ReasonProtectedPath {
+			t.Errorf("go-mini: %v: %v, want protected_path", files, reasons(v.Blocks))
+		}
+	}
+	if v := f.accept(t, f.patch(t, map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\nfunc Sub(a, b int) int { return a - b }\n"})); !v.Accepted() {
+		t.Errorf("go-mini: an ordinary change: %v", reasons(v.Blocks))
 	}
 }
 

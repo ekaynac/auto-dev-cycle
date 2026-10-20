@@ -1,0 +1,29 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "fault-protected-path",
+  "control": "go.work is in go-mini's profile's protected_paths; without it the change is the reference one, which accept takes (the candidate case).",
+  "expect": {
+    "until": "held",
+    "nodes": {
+      "build": {
+        "outcome": "found",
+        "reason": "completed_with_findings"
+      },
+      "accept": {
+        "outcome": "failed",
+        "reason": "protected_path"
+      }
+    },
+    "holds": [
+      "budget_rail"
+    ],
+    "merge": false,
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ]
+  }
+}

@@ -69,6 +69,8 @@ func lib(t *testing.T, root, dir string) {
 		"node/bin/node": fakeNode, "node/LICENSE": "node", "LICENSE": "apache", "NOTICE": "notice",
 		"adapters/fake/src/fake.ts": "export {};\n", "adapters/http-chat/src/main.ts": "", "adapters/contract/package.json": "{}",
 		"gen/ts/package.json": "{}", "fixtures/t0/py-mini/tasks/py-mini-feature-1/task.json": "{}",
+		"fixtures/t0/go-mini/tasks/go-mini-feature-1/task.json": "{}", "fixtures/m1/stub-provider/server.mjs": "",
+		"scripts/installed-cycle.sh": "", "scripts/lib/secrets.sh": "", "scripts/lib/base-remote.sh": "",
 	} {
 		write(t, filepath.Join(l, name), content, 0o755)
 	}
@@ -230,6 +232,10 @@ func TestInstallCheck(t *testing.T) {
 			rm(t, filepath.Join(root, arch, "lib/adc/fixtures"))
 			sums(t, filepath.Join(root, arch, "lib/adc"))
 		}, "py-mini-feature-1/task.json is not installed"},
+		"no cycle harness": {func(t *testing.T, root string) {
+			rm(t, filepath.Join(root, arch, "lib/adc/scripts/installed-cycle.sh"))
+			sums(t, filepath.Join(root, arch, "lib/adc"))
+		}, "scripts/installed-cycle.sh is not installed"},
 		"no fake adapter": {func(t *testing.T, root string) {
 			rm(t, filepath.Join(root, arch, "lib/adc/adapters/fake/src/fake.ts"))
 			sums(t, filepath.Join(root, arch, "lib/adc"))

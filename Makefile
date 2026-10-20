@@ -43,7 +43,7 @@ BINARIES   := adcd adc adc-harness adc-agent
 SERVER_PLATFORMS := linux/amd64 linux/arm64
 AGENT_PLATFORMS  := $(SERVER_PLATFORMS) darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check vocab-check build dist install-check fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
+.PHONY: help toolchain go-check ts-deps schema-docs gen gen-check vocab-check build dist install-check installed-cycle-stub fixtures-contract release-guard lint test test-sandbox-selftest fixtures-check ci clean
 
 SHELL_SCRIPTS = scripts/*.sh scripts/lib/*.sh fixtures/t0/*/check.sh
 T0_CHECKS     := $(wildcard fixtures/t0/*/check.sh)
@@ -85,7 +85,13 @@ install-check: dist build ## Install the dist build into an empty prefix, check 
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 	  scripts/install-check.sh --expect "$$($(BIN_DIR)/adc version --json | sed -n 's/.*"schema_set":"\([^"]*\)".*/\1/p')" "$$tmp/prefix" \
 	  && scripts/installed-fixtures.sh "$$tmp/prefix" \
-	  && scripts/installed-smoke.sh "$$tmp/prefix"
+	  && scripts/installed-smoke.sh "$$tmp/prefix" \
+	  && (cd "$$(mktemp -d)" && "$$tmp/prefix/lib/adc/scripts/installed-cycle.sh" "$$tmp/prefix" --routes stub --project go-mini --case preflight)
+
+installed-cycle-stub: dist build ## Install the dist build into an empty prefix and run the installed cycle harness's stub cases from outside the checkout (P24; preflight until P22a lands)
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	  scripts/install-check.sh --expect "$$($(BIN_DIR)/adc version --json | sed -n 's/.*"schema_set":"\([^"]*\)".*/\1/p')" "$$tmp/prefix" \
+	  && (cd "$$(mktemp -d)" && "$$tmp/prefix/lib/adc/scripts/installed-cycle.sh" "$$tmp/prefix" --routes stub --project go-mini --case preflight)
 
 GEN_GO    := gen/go/types
 VOCAB_GEN := internal/vocab/vocab.gen.go

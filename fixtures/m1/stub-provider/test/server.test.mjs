@@ -4,12 +4,12 @@
 // scenario check and the loopback rule.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request } from "node:http";
 import { spawnSync } from "node:child_process";
-import { start } from "../server.mjs";
+import { check, start } from "../server.mjs";
 
 async function serve(t, scenario, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), "adc-stub-"));
@@ -210,6 +210,17 @@ test("the log is bounded: past it a request is refused and one log_full entry wr
   const log = s.log();
   assert.deepEqual(log.map((e) => e.kind), ["request", "log_full"]);
   assert.equal(log[0].body.pad.length, 200);
+});
+
+test("every committed scenario passes the check, named as its file", () => {
+  const dir = join(import.meta.dirname, "../scenarios");
+  const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+  assert.ok(files.length >= 7);
+  for (const f of files) {
+    const scenario = JSON.parse(readFileSync(join(dir, f), "utf8"));
+    check(scenario);
+    assert.equal(`${scenario.name}.json`, f);
+  }
 });
 
 test("a scenario with an unknown key or a malformed reply is refused at start", async () => {

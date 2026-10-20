@@ -1,0 +1,29 @@
+{
+  "project": "go-mini",
+  "task": "go-mini-feature-1",
+  "scenario": "fault-test-deletion",
+  "control": "Without the deletion the change is the reference one, which accept takes (the candidate case); the deleted file holds base tests that run green.",
+  "expect": {
+    "until": "held",
+    "nodes": {
+      "build": {
+        "outcome": "found",
+        "reason": "completed_with_findings"
+      },
+      "accept": {
+        "outcome": "failed",
+        "reason": "test_integrity_violation"
+      }
+    },
+    "holds": [
+      "budget_rail"
+    ],
+    "merge": false,
+    "canaries": [
+      "TestHiddenTransferMovesStockAndPrice",
+      "TestHiddenTransferFailureChangesNothing",
+      "TestHiddenTransferAllDropsSourceItem",
+      "TestHiddenTransferToSelfIsRejected"
+    ]
+  }
+}
