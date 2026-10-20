@@ -232,6 +232,42 @@ func TestIntentBounds(t *testing.T) {
 			t.Errorf("one wide lineage past %s: %v, %d walked, a queue of %d", name, err, len(w.walked), w.peak)
 		}
 	}
+	// The same lineage past the record bound only: refused before more ids
+	// than the bound are scheduled (Astra #289 M1).
+	maxRecords, maxEdges, maxIDBytes = 10, 1<<20, 1<<20
+	w = newWalk(newStore(wide).records())
+	if _, err := w.start(ref(t, wide)); !errors.Is(err, ErrAncestryUnresolved) || !strings.Contains(fmt.Sprint(err), "ancestry is over") || len(w.walked) > maxRecords || w.peak >= maxRecords {
+		t.Errorf("one wide lineage past the record bound: %v, %d scheduled, a queue of %d", err, len(w.walked), w.peak)
+	}
+	// A chain of exactly the record bound, its head and its leaf both
+	// inputs: each record charged and resolved once (Astra #289 M2).
+	maxRecords, maxEdges, maxIDBytes = 10_000, 100_000, 4<<20
+	chain := make([]graph.RefRecord, maxRecords)
+	for i := range chain {
+		var parents []string
+		if i+1 < len(chain) {
+			parents = []string{fmt.Sprintf("c-%05d", i+1)}
+		}
+		chain[i] = rec(fmt.Sprintf("c-%05d", i), "1", "build", parents...)
+	}
+	s = newStore(chain...)
+	if _, err := Builder(in(t, s, chain[0], chain[len(chain)-1])); err != nil {
+		t.Errorf("a chain at the record bound, head and leaf supplied: %v", err)
+	}
+	for id, n := range s.lookups {
+		if n != 1 {
+			t.Errorf("%s resolved %d times", id, n)
+		}
+	}
+	// A supplied ancestor is still compared with its record.
+	forged := chain[len(chain)-1]
+	forged.Lineage = []string{"c-00000"}
+	x := in(t, newStore(chain...), chain[0])
+	f := ref(t, forged)
+	x.Context.Included, x.Bytes[f.IdentityDigest] = append(x.Context.Included, f), 10
+	if _, err := Builder(x); !errors.Is(err, ErrAncestryUnresolved) {
+		t.Errorf("a supplied ancestor whose ref is not its record: %v", err)
+	}
 	maxRecords, maxEdges, maxIDBytes = 1<<20, 1<<20, 1<<20
 	cycle := newStore(rec("tree-1", "1", "graph", "a"), rec("a", "2", "build", "b"), rec("b", "3", "build", "a"))
 	if _, err := Builder(in(t, cycle, rec("tree-1", "1", "graph", "a"))); err != nil {

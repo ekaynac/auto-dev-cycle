@@ -20,10 +20,11 @@
 //     digest equals it. An ancestor id equal to an input's content digest
 //     is resolved.
 //   - The walk is bounded: a parent is deduplicated before it is enqueued,
-//     so the queue never holds an id twice; at most maxRecords records
-//     (inclusive) are resolved; a lineage is refused before any of it is
-//     enqueued when it would take the walk past maxEdges lineage entries or
-//     maxIDBytes bytes of ids.
+//     so the queue never holds an id twice; each distinct id is counted
+//     once against maxRecords (inclusive), before it enters the walk, and
+//     each distinct record expanded once, however many inputs reach it; a
+//     lineage is refused before any of it is enqueued when it would take
+//     the walk past maxEdges lineage entries or maxIDBytes bytes of ids.
 //   - The resolver is trusted controller code: a resolver that hides a
 //     record or a parent defeats this check, which cannot see what it is
 //     not shown. graph.Records answers from the event store's results.
@@ -130,17 +131,20 @@ func build(in In, role, purpose string) (types.ManifestIntent, error) {
 }
 
 // walk is one intent's ancestry walk, shared by its inputs: an id walked
-// for one input is not walked again.
+// for one input is not walked again, and an input already walked as
+// another's ancestor is compared with its cached record, not charged
+// again (Astra #289 M2).
 type walk struct {
 	records           graph.RefRecords
-	hidden            map[string]bool // acceptance digests
-	walked            map[string]bool // ids enqueued or walked
-	n, edges, idBytes int
-	peak              int // the queue's longest
+	hidden            map[string]bool            // acceptance digests
+	walked            map[string]bool            // ids scheduled: queued or resolved, each counted once
+	resolved          map[string]graph.RefRecord // ids resolved and expanded
+	n, edges, idBytes int                        // n: the ids scheduled
+	peak              int                        // the queue's longest
 }
 
 func newWalk(r Records) *walk {
-	w := &walk{records: r.Resolve, hidden: map[string]bool{}, walked: map[string]bool{}}
+	w := &walk{records: r.Resolve, hidden: map[string]bool{}, walked: map[string]bool{}, resolved: map[string]graph.RefRecord{}}
 	for _, d := range r.Acceptance {
 		w.hidden[string(d)] = true
 	}
@@ -148,33 +152,40 @@ func newWalk(r Records) *walk {
 }
 
 // start resolves r's own record, which must be r (its content digest and
-// lineage), then walks its ancestry.
+// lineage), then walks its ancestry. An r already walked (an ancestor of
+// an earlier input) is compared with its record only.
 func (w *walk) start(r types.Ref) (graph.RefRecord, error) {
-	w.idBytes += len(r.ID)
-	if err := w.over(r.ID); err != nil {
-		return graph.RefRecord{}, err
-	}
-	rec, err := w.resolve(r.ID, r.ID)
-	if err != nil {
-		return rec, err
+	rec, done := w.resolved[r.ID]
+	if !done {
+		w.idBytes += len(r.ID)
+		var err error
+		if err = w.schedule(r.ID, r.ID); err == nil {
+			rec, err = w.resolve(r.ID, r.ID)
+		}
+		if err != nil {
+			return rec, err
+		}
 	}
 	if rec.ContentDigest != r.ContentDigest || !slices.Equal(rec.Lineage, r.Lineage) {
 		return rec, fmt.Errorf("%w: %s is not the input its record names", ErrAncestryUnresolved, r.ID)
 	}
-	queue, err := w.enqueue(r.ID, nil, r.ID, rec.Lineage)
+	if done {
+		return rec, nil
+	}
+	queue, err := w.enqueue(r.ID, nil, rec.Lineage)
 	for err == nil && len(queue) > 0 {
 		id := queue[0]
 		queue = queue[1:]
 		var parent graph.RefRecord
 		if parent, err = w.resolve(r.ID, id); err == nil {
-			queue, err = w.enqueue(r.ID, queue, id, parent.Lineage)
+			queue, err = w.enqueue(r.ID, queue, parent.Lineage)
 		}
 	}
 	return rec, err
 }
 
 // resolve is id's record, its identity checked against the acceptance
-// blobs: a digest check, apart from walking.
+// blobs: a digest check, apart from walking. It is cached.
 func (w *walk) resolve(input, id string) (graph.RefRecord, error) {
 	rec, ok, err := w.records(id)
 	switch {
@@ -185,15 +196,26 @@ func (w *walk) resolve(input, id string) (graph.RefRecord, error) {
 	case w.hidden[id] || w.hidden[string(rec.ContentDigest)]:
 		return rec, fmt.Errorf("%w: %s (ancestor %s holds acceptance %s)", ErrAcceptanceInput, input, id, rec.ContentDigest)
 	}
-	w.n++
-	return rec, w.over(input)
+	w.resolved[id] = rec
+	return rec, nil
 }
 
-// enqueue marks id walked and appends its parents not yet walked or
-// queued: each id is enqueued once. A lineage that would take the walk
-// past its edge or byte bound is refused before any of it is enqueued.
-func (w *walk) enqueue(input string, queue []string, id string, parents []string) ([]string, error) {
+// schedule counts id, a new one, against the inclusive record bound before
+// it enters the walk (Astra #289 M1).
+func (w *walk) schedule(input, id string) error {
+	if w.n+1 > maxRecords {
+		return w.overErr(input)
+	}
+	w.n++
 	w.walked[id] = true
+	return nil
+}
+
+// enqueue appends a resolved record's parents not yet scheduled: each id
+// is enqueued once. A lineage that would take the walk past its edge or
+// byte bound is refused before any of it is enqueued, and each new parent
+// is counted against the record bound before it is.
+func (w *walk) enqueue(input string, queue []string, parents []string) ([]string, error) {
 	w.edges += len(parents)
 	for _, p := range parents {
 		w.idBytes += len(p)
@@ -203,7 +225,9 @@ func (w *walk) enqueue(input string, queue []string, id string, parents []string
 	}
 	for _, p := range parents {
 		if !w.walked[p] {
-			w.walked[p] = true // queued: its own lineage follows once it resolves
+			if err := w.schedule(input, p); err != nil {
+				return nil, err
+			}
 			queue = append(queue, p)
 		}
 	}
@@ -211,10 +235,14 @@ func (w *walk) enqueue(input string, queue []string, id string, parents []string
 	return queue, nil
 }
 
-// over refuses a walk past its bounds; the record bound is inclusive.
+// over refuses a walk past its edge or byte bound.
 func (w *walk) over(input string) error {
-	if w.n > maxRecords || w.edges > maxEdges || w.idBytes > maxIDBytes {
-		return fmt.Errorf("%w: %s's ancestry is over %d records, %d edges or %d bytes of ids", ErrAncestryUnresolved, input, maxRecords, maxEdges, maxIDBytes)
+	if w.edges > maxEdges || w.idBytes > maxIDBytes {
+		return w.overErr(input)
 	}
 	return nil
+}
+
+func (w *walk) overErr(input string) error {
+	return fmt.Errorf("%w: %s's ancestry is over %d records, %d edges or %d bytes of ids", ErrAncestryUnresolved, input, maxRecords, maxEdges, maxIDBytes)
 }

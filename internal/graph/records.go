@@ -33,9 +33,12 @@ type Recorded struct {
 	Reviewed map[types.Digest]bool
 }
 
-// maxTaskRefs bounds the refs Records keeps for one task; past it, Records
-// refuses (Opus #289 L3). A var, so a test can lower it.
-var maxTaskRefs = 100_000
+// Records' bounds for one task (Opus #289 L3, Astra #289 L3): the refs it
+// keeps, and their lineage entries and bytes of ids in all, each checked
+// before a ref's lineage is copied; past any, Records refuses. Vars, so a
+// test can lower them. The results themselves are decoded whole before
+// these apply: a bounded decode is P22a's, with the activation.
+var maxTaskRefs, maxTaskLineage, maxTaskIDBytes = 100_000, 1_000_000, 64 << 20
 
 // Records is task's Recorded, from the event store: every ref a recorded
 // result of the task holds, with its producer's kind, and the extra refs
@@ -44,10 +47,14 @@ var maxTaskRefs = 100_000
 // resolves to nothing. It reads the store once, at the call.
 func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded, error) {
 	byID, ambiguous, reviewed := map[string]RefRecord{}, map[string]bool{}, map[types.Digest]bool{}
-	n := 0
+	n, lineage, idBytes := 0, 0, 0
 	add := func(r types.Ref, producer types.NodeKind) error {
-		if n++; n > maxTaskRefs {
-			return fmt.Errorf("graph: task %s holds over %d refs", task, maxTaskRefs)
+		n, lineage, idBytes = n+1, lineage+len(r.Lineage), idBytes+len(r.ID)
+		for _, p := range r.Lineage {
+			idBytes += len(p)
+		}
+		if n > maxTaskRefs || lineage > maxTaskLineage || idBytes > maxTaskIDBytes {
+			return fmt.Errorf("graph: task %s holds over %d refs, %d lineage entries or %d bytes of ids", task, maxTaskRefs, maxTaskLineage, maxTaskIDBytes)
 		}
 		rec := RefRecord{ID: r.ID, ContentDigest: r.ContentDigest, Lineage: slices.Clone(r.Lineage), Producer: producer}
 		if prior, ok := byID[r.ID]; ok && (prior.ContentDigest != rec.ContentDigest || !slices.Equal(prior.Lineage, rec.Lineage) || prior.Producer != rec.Producer) {

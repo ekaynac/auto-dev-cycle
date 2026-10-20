@@ -78,12 +78,29 @@ func TestRecords(t *testing.T) {
 	} else if _, ok, _ := other.Resolve("findings-1"); ok {
 		t.Errorf("another task's ref resolved")
 	}
-	defer func(n int) { maxTaskRefs = n }(maxTaskRefs)
+	defer func(n, l, b int) { maxTaskRefs, maxTaskLineage, maxTaskIDBytes = n, l, b }(maxTaskRefs, maxTaskLineage, maxTaskIDBytes)
 	maxTaskRefs = 10 // the task's results hold 10 refs
 	if _, err := g.records(tskID); err != nil {
 		t.Errorf("exactly the ref bound: %v", err)
 	}
 	if _, err := g.records(tskID, approval); err == nil {
 		t.Error("one ref past the bound")
+	}
+	// The task's results hold 2 lineage entries and 90 bytes of ids, their
+	// lineage's included.
+	maxTaskRefs = 100
+	for name, c := range map[string]struct {
+		lineage, bytes int
+		ok             bool
+	}{
+		"exactly the lineage bound": {2, 1 << 20, true},
+		"one entry past it":         {1, 1 << 20, false},
+		"exactly the byte bound":    {1 << 20, 90, true},
+		"one byte past it":          {1 << 20, 89, false},
+	} {
+		maxTaskLineage, maxTaskIDBytes = c.lineage, c.bytes
+		if _, err := g.records(tskID); (err == nil) != c.ok {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }
