@@ -66,45 +66,47 @@ type pkgFacts struct {
 	tree                        *tree               // the version read
 }
 
-// Integrity is the integrity guard for a candidate of base in repo, for
-// Accept's In.Guard. It lists the base's files through a temporary index,
-// and imports' types through list (nil: every Go package unverifiable). The
-// run's own directory, what list copies out, is made under scratch: the
-// sandbox root's runs/ for SandboxLister (a filesystem of its own); "" is
-// the system's temporary directory.
-func Integrity(repo sandbox.Repo, base string, list Lister, scratch string) Guard {
-	return func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, err error) {
-		if scratch != "" {
-			if err := os.MkdirAll(scratch, 0o700); err != nil {
-				return nil, nil, err
-			}
+// integrity is the guard in this process: Integrity's child runs it
+// (integrity_proc.go), and the tests. It lists the base's files through a
+// temporary index, and imports' types through list (nil: every Go package
+// unverifiable).
+func integrity(repo sandbox.Repo, base string, list Lister) Guard {
+	return func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
+		files, err := listBase(ctx, repo, base)
+		if err != nil {
+			return nil, nil, err
 		}
-		dir, err := os.MkdirTemp(scratch, "adc-guard-")
+		dir, err := os.MkdirTemp("", "adc-guard-")
 		if err != nil {
 			return nil, nil, err
 		}
 		defer os.RemoveAll(dir)
-		r := &run{ctx: ctx, repo: repo, base: base, read: read, lister: list, dir: dir, budget: maxRead, blobs: map[string][]byte{}, cgoBlobs: map[string][]byte{}, touched: map[string]bool{},
-			started: time.Now(), listEnd: time.Now().Add(maxListTime)}
-		defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
-			if p := recover(); p != nil && ctx.Err() != nil {
-				blocks, warnings, err = append(r.blocks, r.out.blocks...), append(r.warnings, r.out.warnings...), ctx.Err()
-			} else if p != nil {
-				blocks, warnings, err = append(append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p), false, false}), r.out.blocks...), append(r.warnings, r.out.warnings...), nil
-			}
-		}()
-		err = r.check(changes)
-		return append(r.blocks, r.out.blocks...), append(r.warnings, r.out.warnings...), err
+		return guard(ctx, changes, read, list, files, time.Now().Add(maxListTime), dir)
 	}
+}
+
+// guard checks changes against the base's files (nil: their list is over
+// its bound); go list runs and type checks end by listEnd; dir is the run's,
+// for what list copies out.
+func guard(ctx context.Context, changes []Change, read Reader, list Lister, files map[string]string, listEnd time.Time, dir string) (blocks, warnings []Block, err error) {
+	r := &run{ctx: ctx, read: read, lister: list, dir: dir, files: files, budget: maxRead, blobs: map[string][]byte{}, cgoBlobs: map[string][]byte{},
+		touched: map[string]bool{}, started: time.Now(), listEnd: listEnd}
+	defer func() { // fail closed: a guard fault blocks, never crashes the controller; a done context stops it
+		if p := recover(); p != nil && ctx.Err() != nil {
+			blocks, warnings, err = append(r.blocks, r.out.blocks...), append(r.warnings, r.out.warnings...), ctx.Err()
+		} else if p != nil {
+			blocks, warnings, err = append(append(r.blocks, Block{vocab.ReasonTestIntegrityViolation, "", fmt.Sprintf("unverifiable: the guard failed (%v)", p), false, false}), r.out.blocks...), append(r.warnings, r.out.warnings...), nil
+		}
+	}()
+	err = r.check(changes)
+	return append(r.blocks, r.out.blocks...), append(r.warnings, r.out.warnings...), err
 }
 
 type run struct {
 	ctx                context.Context
-	repo               sandbox.Repo
-	base               string
 	read               Reader
 	lister             Lister
-	dir                string    // the run's own: what the lister copies out
+	dir                string    // the run's own directory: what the lister copies out
 	started, listEnd   time.Time // every go list run and type check ends by listEnd
 	listRuns           int
 	budget             int64
@@ -167,8 +169,9 @@ func add(to *[]Block, p, what string) {
 }
 
 func (r *run) check(changes []Change) error {
-	if err := r.list(); err != nil || r.files == nil {
-		return err // a base list over its bound is blocked
+	if r.files == nil { // the base's list over its bound: the base's size, not the candidate's, blocked as unknown
+		add(&r.blocks, "", "unverifiable: the base's file list is over its bound")
+		return nil
 	}
 	r.cand = maps.Clone(r.files)
 	for _, c := range changes {
@@ -232,28 +235,27 @@ func (r *run) check(changes []Change) error {
 	return nil
 }
 
-// list reads the base's paths and blobs (ls-files -s), once. A list over
-// its bound is the base's size, not the candidate's: blocked, as unknown.
-func (r *run) list() error {
-	g, cleanup, err := newIndex(r.ctx, r.repo, r.base)
+// listBase reads the base's paths and blobs (ls-files -s); nil when the
+// list is over its bound.
+func listBase(ctx context.Context, repo sandbox.Repo, base string) (map[string]string, error) {
+	g, cleanup, err := newIndex(ctx, repo, base)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer cleanup()
-	out, err := g.run(r.ctx, nil, "ls-files", "-s", "-z")
+	out, err := g.run(ctx, nil, "ls-files", "-s", "-z")
 	if errors.Is(err, ErrTooLarge) {
-		add(&r.blocks, "", "unverifiable: the base's file list is over its bound")
-		return nil
+		return nil, nil
 	} else if err != nil {
-		return err
+		return nil, err
 	}
-	r.files = map[string]string{}
+	files := map[string]string{}
 	for _, e := range strings.Split(string(out), "\x00") {
 		if meta, p, ok := strings.Cut(e, "\t"); ok && len(strings.Fields(meta)) == 3 {
-			r.files[p] = strings.Fields(meta)[1]
+			files[p] = strings.Fields(meta)[1]
 		}
 	}
-	return nil
+	return files, nil
 }
 
 func byDir(files map[string]string) map[string][]string {

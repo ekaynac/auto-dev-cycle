@@ -99,7 +99,7 @@ func newGuardFixture(t *testing.T) fixture {
 func (f fixture) guarded(t *testing.T, files map[string]string, gone ...string) Verdict {
 	t.Helper()
 	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, files, gone...), Policy: f.policy,
-		Guard: Integrity(f.repo, f.base, testLister(t), "")})
+		Guard: integrity(f.repo, f.base, testLister(t))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +503,7 @@ func TestIntegrityBounds(t *testing.T) {
 	}
 	ctx := &countCtx{Context: context.Background()}
 	ctx.n.Store(1 << 40)
-	in := In{Repo: f.repo, Base: f.base, Patch: f.patch(t, map[string]string{"pkg/h_test.go": heavy}), Policy: f.policy, Guard: Integrity(f.repo, f.base, testLister(t), "")}
+	in := In{Repo: f.repo, Base: f.base, Patch: f.patch(t, map[string]string{"pkg/h_test.go": heavy}), Policy: f.policy, Guard: integrity(f.repo, f.base, testLister(t))}
 	start := time.Now()
 	if _, err := Accept(ctx, in); err != nil {
 		t.Fatal(err)

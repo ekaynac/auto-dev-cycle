@@ -1159,7 +1159,7 @@ func TestPyGuardBounded(t *testing.T) {
 	maxWork = old
 	ctx := &countCtx{Context: context.Background()}
 	ctx.n.Store(1 << 40)
-	in := In{Repo: f.repo, Base: f.base, Patch: f.patch(t, body(1<<20)), Policy: f.policy, Guard: Integrity(f.repo, f.base, testLister(t), "")}
+	in := In{Repo: f.repo, Base: f.base, Patch: f.patch(t, body(1<<20)), Policy: f.policy, Guard: integrity(f.repo, f.base, testLister(t))}
 	if _, err := Accept(ctx, in); err != nil {
 		t.Fatal(err)
 	}
