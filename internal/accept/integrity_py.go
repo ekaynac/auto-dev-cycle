@@ -302,6 +302,8 @@ func pyField(s string, depth int, spec, single bool, inner *[]ptok) int {
 			i += eol(s[i:])
 		case c == ':' && nest == 0:
 			return i + 1 + pyField(s[i+1:], depth+1, true, single, inner)
+		case c == '=' && nest == 0 && pyDebug(s[i+1:]): // ==, != and the like reach here as one token
+			i++ // the debug specifier {x=}: text, not an assignment (Mythos #266 r2 L3)
 		case strings.IndexByte("([{", c) >= 0:
 			nest, i, *inner = nest+1, i+1, append(*inner, ptok{'o', s[i : i+1]})
 		case strings.IndexByte(")]}", c) >= 0:
@@ -313,4 +315,11 @@ func pyField(s string, depth int, spec, single bool, inner *[]ptok) int {
 		}
 	}
 	panic(errLex)
+}
+
+// pyDebug: s, after a field's top-level =, ends the field's code: the =
+// is the debug specifier (}, a conversion or a format spec next).
+func pyDebug(s string) bool {
+	s = strings.TrimLeft(s, " \t\n")
+	return s != "" && strings.IndexByte("}!:", s[0]) >= 0
 }

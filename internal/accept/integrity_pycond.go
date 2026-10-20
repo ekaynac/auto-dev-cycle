@@ -74,11 +74,14 @@ func pyBool(t []ptok) bool {
 	return len(t) > 0
 }
 
-// pyPure: the file binds pytest only by import pytest: no parameter,
-// target, attribute or alias named pytest (Opus #267 M2, Mythos #267 M2);
+// pyPure: the file binds pytest by import pytest and only so: no parameter,
+// target, attribute or alias named pytest (Opus #267 M2, Mythos #267 M2), and
+// no star import that may bind it (Mythos #267 r3: never vacuously);
 // aliases are the names bound to a chain ending in .skipif or .xfail.
 func pyPure(ctx context.Context, lines []pline) (pure bool, aliases map[string]bool) {
 	pure, aliases = true, map[string]bool{}
+	imported := false
+	defer func() { pure = pure && imported }()
 	var binds [][]string // each statement's bindings
 	var owners []string  // each statement's def, by indent, and whether it holds a mark (Mythos #270 r2 H1)
 	var marks []bool
@@ -105,9 +108,10 @@ func pyPure(ctx context.Context, lines []pline) (pure bool, aliases map[string]b
 				continue
 			}
 			b, imp := pyBinds(st)
-			if slices.Contains(b, "pytest") && !(imp && st[0].text == "import" && !named(st, "as")) {
+			if slices.Contains(b, "pytest") && !(imp && st[0].text == "import" && !named(st, "as")) || imp && slices.ContainsFunc(st, func(k ptok) bool { return k.text == "*" }) {
 				pure = false
 			}
+			imported = imported || imp && st[0].text == "import" && !named(st, "as") && slices.Contains(b, "pytest")
 			for _, k := range st {
 				uses[k.text] = append(uses[k.text], len(binds))
 			}

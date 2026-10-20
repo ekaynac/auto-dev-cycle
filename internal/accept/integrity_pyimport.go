@@ -213,6 +213,9 @@ func pyAllowed(t []ptok, conftest bool) string {
 		return ""
 	case d[0].text == "def" && len(h[0]) > 1:
 		params := slices.Clone(h[0][2:]) // *args and **kwargs are parameters, not unpacking (Mythos #266 M2)
+		if end := pyDepthEnd(params, 0); len(params) > 0 && params[0].text == "[" && end > 0 && pyElemsBy(pySplit(params[1:end], ","), func(p []ptok) bool { return len(p) == 1 && p[0].kind == 'n' }) {
+			params = params[end+1:] // def f[T, U](…): bare type parameters, no bound to evaluate (Mythos #266 L6)
+		}
 		for j := 1; j < len(params); j++ {
 			if params[j].text == "*" && strings.Contains("(,*", params[j-1].text) {
 				params, j = slices.Delete(params, j, j+1), j-1
@@ -222,8 +225,12 @@ func pyAllowed(t []ptok, conftest bool) string {
 	case d[0].text == "class" && len(h[0]) > 1:
 		return ok(pyConst(h[0][2:]) && !named(h[0], "metaclass") && !slices.ContainsFunc(h[0], func(k ptok) bool { return k.text == "*" }) &&
 			len(t) == len(h[0])+1+b2i(t[len(t)-1].text == "pass"))
-	case len(d) == 1 && (d[0].text == "pass" || d[0].kind == 's' && !strings.ContainsAny(d[0].text[:strings.IndexAny(d[0].text, `"'`)], "fFtT")):
-		return ""
+	case d[0].text == "type" && len(d) > 3 && d[1].kind == 'n' && d[2].text == "=": // type X = …: its value is evaluated lazily (Mythos #266 L6)
+		return ok(pyConst(d[3:]) && !slices.Contains(pyFixtures, d[1].text) && !(conftest && strings.HasPrefix(d[1].text, "collect_ignore")))
+	case len(d) == 1 && d[0].text == "pass" || !slices.ContainsFunc(d, func(k ptok) bool {
+		return k.kind != 's' || strings.ContainsAny(k.text[:strings.IndexAny(k.text, `"'`)], "fFtT")
+	}):
+		return "" // pass, or a docstring, its strings concatenated too (Mythos #266 L6)
 	}
 	parts := pyAssign(t)
 	for _, target := range parts[:len(parts)-1] {

@@ -269,6 +269,8 @@ func (pb *pyBase) closure() error {
 	}
 	if _, ok := pb.forms(pb.r.files, false, pb.alts, pb.other); !ok {
 		return over()
+	} else if pb.folds, pb.folded, ok = pb.foldsOf(pb.alts, pb.other); !ok {
+		return over()
 	}
 	for _, s := range pyStdlib { // a top-level module an external one may import lazily (Astra #281 r5 H4); a namespace portion never shadows a regular stdlib module
 		if q := cmp.Or(pb.shadowMods[s], pb.other[s]); q != "" && !strings.HasSuffix(q, "/") {
@@ -338,6 +340,8 @@ func (pb *pyBase) closure() error {
 					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+n+" is a symlink or a gitlink in the base") // Opus #281 H4
 				} else if names[n] = true; pb.alts[n] > 1 {
 					pb.holderUnread = cmp.Or(pb.holderUnread, "the module name "+n+" has more than one file") // Astra #281 r3 H3
+				} else if pb.folded[strings.ToLower(n)] {
+					pb.holderUnread = cmp.Or(pb.holderUnread, "the module name "+n+" differs from another only by case") // widen-b S3, on every host
 				} else if pb.other[n] != "" {
 					pb.holderUnread = cmp.Or(pb.holderUnread, "the module "+n+" is not one plain source ("+pb.other[n]+")") // Astra #281 r4 H3
 				} else if q := cmp.Or(pb.mods[n], pb.shadowMods[n]); q != "" && (slices.Contains(strings.Split(q, "/"), "__pycache__") || parts[0] == "pytest") {
@@ -353,6 +357,24 @@ func (pb *pyBase) closure() error {
 		}
 	}
 	return nil
+}
+
+// foldsOf: each name of alts and other by its lowercase form, and the
+// lowercase forms two distinct names share: on a case-insensitive
+// filesystem one file stands in for the other (Opus #270 L4; widen-b S3,
+// decided for every host). Each name is charged; false: over the bound.
+func (pb *pyBase) foldsOf(alts map[string]int, other map[string]string) (map[string]string, map[string]bool, bool) {
+	folds, folded := map[string]string{}, map[string]bool{}
+	for _, n := range slices.Concat(slices.Collect(maps.Keys(alts)), slices.Collect(maps.Keys(other))) {
+		if pb.r.work++; pb.r.work > maxWork || pb.r.ctx.Err() != nil {
+			return nil, nil, false
+		} else if f := strings.ToLower(n); folds[f] == "" || folds[f] == n {
+			folds[f] = n
+		} else {
+			folded[f] = true
+		}
+	}
+	return folds, folded, true
 }
 
 // risky: why closure module f may change what a condition reads, or "": a
@@ -384,7 +406,8 @@ func (pb *pyBase) risky(f *pyBaseFile) string {
 func (pb *pyBase) candClosure() (string, error) {
 	alts, other := map[string]int{}, map[string]string{}
 	mods, ok := pb.forms(pb.r.cand, true, alts, other)
-	if !ok {
+	_, folded, ok2 := pb.foldsOf(alts, other)
+	if !ok || !ok2 {
 		return "the candidate's closure is over the guard's work bound", pb.r.ctx.Err()
 	}
 	for _, s := range pyStdlib { // a top-level module an external one may import lazily, added (Astra #281 r5 H4)
@@ -429,8 +452,8 @@ func (pb *pyBase) candClosure() (string, error) {
 					return p, nil // a name past the depth bound
 				}
 				for parts, k := strings.Split(m, "."), 1; k <= len(parts); k++ {
-					if n := strings.Join(parts[:k], "."); pb.opaque[n] || alts[n] > 1 || other[n] != "" || slices.Contains(strings.Split(mods[n], "/"), "__pycache__") {
-						return p, nil // a base link or gitlink, a name two files answer to, a non-source form or a module under __pycache__, newly reached (Astra #281 r2 H5, r3 H3, r4 H3, H4)
+					if n := strings.Join(parts[:k], "."); pb.opaque[n] || alts[n] > 1 || folded[strings.ToLower(n)] || other[n] != "" || slices.Contains(strings.Split(mods[n], "/"), "__pycache__") {
+						return p, nil // a base link or gitlink, a name two files answer to (or two that differ only by case), a non-source form or a module under __pycache__, newly reached (Astra #281 r2 H5, r3 H3, r4 H3, H4; widen-b S3)
 					} else if q := mods[n]; q != "" && !queued[q] {
 						queued[q], queue = true, append(queue, q)
 					}
