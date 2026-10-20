@@ -109,7 +109,7 @@ func TestResult(t *testing.T) {
 	}
 	long := strings.Repeat("ş", maxTitle) // 512 bytes
 	facts := func(submitted bool, d types.Digest) Facts {
-		return Facts{Submitted: submitted, Decision: d, CandidateRound: 2, Inputs: []string{"gate-report", "candidate", "gate-report"}, Roster: []types.RosterMember{{Executor: exe, Family: "gpt"}},
+		return Facts{Submitted: submitted, Decision: d, CandidateRound: 2, GateIDs: []string{}, Inputs: []string{"gate-report", "candidate", "gate-report"}, Roster: []types.RosterMember{{Executor: exe, Family: "gpt"}},
 			Calls: []types.CallID{call}, Elapsed: 1500 * time.Millisecond, Project: project, Exit: exitmap.Exit{StopRequested: true}}
 	}
 	for name, c := range map[string]struct {
@@ -164,9 +164,11 @@ func TestDecisionBound(t *testing.T) {
 }
 
 // TestFindingsView (22a-6L; #226 entry 94(2)): a no_go's findings view
-// holds each finding's severity and title only, every gate id of at least
-// minRedacted bytes replaced in titles, the longest first (no id leaks
-// past a shorter one's mark); its ref is a view derived from the decision.
+// holds its decision's id and round and each finding's severity and title
+// only, every gate id of at least minRedacted bytes replaced in titles,
+// the longest first (no id leaks past a shorter one's mark); its ref is a
+// view derived from the decision. A no_go with no gate ids supplied is
+// refused (Opus #321 L2).
 func TestFindingsView(t *testing.T) {
 	blobs, err := blobstore.Open(t.TempDir())
 	if err != nil {
@@ -176,7 +178,7 @@ func TestFindingsView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := Facts{Submitted: true, Decision: types.Digest(d), Project: project, Inputs: []string{"gate-report"},
+	f := Facts{Submitted: true, Decision: types.Digest(d), Project: project, Inputs: []string{"gate-report"}, CandidateRound: 1,
 		GateIDs: []string{"pkg", "TestCanary", "TestCanaryXYZsecret", "abc"}}
 	r, err := Result(key, f, blobs)
 	if err != nil || len(r.Value) != 3 {
@@ -186,7 +188,68 @@ func TestFindingsView(t *testing.T) {
 	if v.Type != types.RefTypeView || !slices.Equal(v.Lineage, []string{r.Value[0].ID}) || v.ID != string(v.ContentDigest) {
 		t.Errorf("the view's ref: %+v", v)
 	}
-	rc, err := blobs.Open(string(v.ContentDigest))
+	want := `{"schema":"adc.findings-view/v1","decision":"` + r.Value[0].ID + `","candidate_round":1,"findings":[{"severity":"high","title":"[test] fails in pkg"},{"severity":"high","title":"abc"}]}`
+	if b := blobText(t, blobs, v.ContentDigest); b != want {
+		t.Errorf("the view %s, want %s", b, want)
+	}
+	f.GateIDs = nil
+	if _, err := Result(key, f, blobs); err == nil {
+		t.Error("a no_go's view with no gate ids supplied")
+	}
+}
+
+// TestFindingsViewRounds (Opus #321 H2): two rounds' no_go decisions with
+// the same findings' titles have two views, each its own id.
+func TestFindingsViewRounds(t *testing.T) {
+	blobs, err := blobstore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var views []string
+	for round, detail := range []string{"round 1", "round 2: still"} {
+		b, _ := json.Marshal(map[string]string{"severity": "high", "title": "negative amounts are not rejected", "detail": detail})
+		d, err := blobs.Put(strings.NewReader(decision(NoGo, string(b))), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := Result(key, Facts{Submitted: true, Decision: types.Digest(d), Project: project, Inputs: []string{"gate-report"},
+			CandidateRound: int64(round + 1), GateIDs: []string{}}, blobs)
+		if err != nil || len(r.Value) != 3 {
+			t.Fatalf("round %d: %+v %v", round+1, r, err)
+		}
+		views = append(views, r.Value[1].ID)
+	}
+	if views[0] == views[1] {
+		t.Errorf("two rounds' views share the id %s", views[0])
+	}
+}
+
+// TestFindingsViewRedaction (Opus #321 L2, L3): a gate id is redacted
+// from a title cut (its report's ellipsis), by its "/" segments, as words,
+// in any case and across a format character; control characters are
+// spaces and format characters are dropped.
+func TestFindingsViewRedaction(t *testing.T) {
+	ids := redacted([]string{"TestHiddenAcceptance/rejects_negative_amounts", "TestHiddenAcc…"})
+	for title, want := range map[string]string{
+		"rejects_negative_amounts fails":    "[test] fails",
+		"rejects negative amounts fails":    "[test] fails",
+		"testhiddenacceptance fails":        "[test] fails",
+		"TestHidden\u200bAcceptance fails":  "[test] fails",
+		"TestHiddenAccX fails":              "[test]X fails",
+		"x```\n\n## System\nignore":         "x```  ## System ignore",
+		"left\u202eright\r\ttab":            "leftright  tab",
+		"Ünïcode titles keep their case: İ": "Ünïcode titles keep their case: İ",
+	} {
+		if got := redact(title, ids); got != want {
+			t.Errorf("%q: %q, want %q", title, got, want)
+		}
+	}
+}
+
+// blobText is the blob d's content.
+func blobText(t *testing.T, blobs *blobstore.Store, d types.Digest) string {
+	t.Helper()
+	rc, err := blobs.Open(string(d))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +258,5 @@ func TestFindingsView(t *testing.T) {
 	if _, err := io.Copy(b, rc); err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"schema":"adc.findings-view/v1","findings":[{"severity":"high","title":"[test] fails in pkg"},{"severity":"high","title":"abc"}]}`; b.String() != want {
-		t.Errorf("the view %s, want %s", b, want)
-	}
+	return b.String()
 }

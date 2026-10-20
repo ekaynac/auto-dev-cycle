@@ -124,6 +124,9 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 		d, err := blobs.Put(bytes.NewReader(b), "")
 		return types.Digest(d), err
 	}
+	if v.overlaid && len(s.Acceptance) == 0 { // a lineage that is not the run's: the report would read as derived from nothing
+		return types.Result{}, fmt.Errorf("%w: the run applied an acceptance overlay, and the subject names no acceptance blob", ErrSpec)
+	}
 	lineage := []string{}
 	for _, a := range slices.Compact(slices.Sorted(slices.Values(s.Acceptance))) {
 		lineage = append(lineage, string(a))
@@ -197,8 +200,10 @@ func Result(key types.ComputationKey, v Verdict, c types.InstrumentContract, img
 // maxReported, the rest counted, each id cut to at most maxID bytes, its
 // ellipsis included: a name is the candidate's text, Opus #286 L2), and
 // its charge links (none). It holds at most about maxReported × 2 maxID
-// bytes of ids. A short id stays verbatim, by design (the
-// hostile-gate-output fixture): the reviewer's handling of ids is P16's.
+// bytes of ids. A short id stays verbatim: no prompt renders the report's
+// bytes (Opus #321 L7: `review.Prompt` renders counts and the verdict
+// only, the hostile-gate-output fixture's decision), and the findings
+// view redacts the ids it is given (review.Facts.GateIDs).
 func (v Verdict) Report() ([]byte, error) {
 	type finding struct {
 		Package string          `json:"package"`

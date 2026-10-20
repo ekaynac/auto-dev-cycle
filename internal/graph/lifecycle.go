@@ -29,6 +29,7 @@ package graph
 //     claim at the new generation. Its dependants' claims stay (G6b).
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -82,6 +83,9 @@ func recordResult(tx *eventstore.Tx, r types.ResultRecorded, blobs receipt.Blobs
 		r.ReceiptValidUntil = rcpt.ValidUntil
 	}
 	r.Type = "result_recorded"
+	if b, err := json.Marshal(&r); err != nil || len(b) > maxResultBytes { // Records' read bound, on the write side (Opus #321 M1)
+		return nil, errors.Join(err, fmt.Errorf("graph: result %s is over %d bytes", r.Result.ID, maxResultBytes))
+	}
 	return event(ResultRecorded, string(r.Result.ID), rec.Recorded.Project, &r)
 }
 
@@ -194,6 +198,9 @@ func resultRecorded(tx *eventstore.Tx, ev eventstore.Event, p *types.ResultRecor
 		if err := put(tx, RenewalProjection, string(p.Node), ren); err != nil {
 			return err
 		}
+	}
+	if err := put(tx, TaskResultProjection, string(rec.Recorded.Task)+"/"+string(p.Result.ID), true); err != nil {
+		return err
 	}
 	return put(tx, ResultProjection, string(p.Result.ID), p)
 }

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# 22a-6L's mutations (W17's library-level parts: #226 entries 91, 94(2)):
+# 22a-6L's mutations (W17's library-level parts: #226 entries 91, 94(2);
+# the Opus #321 answers: H1, H2, M1, M2, L1-L5):
 # each is applied alone to a clean copy of the repository, and the tests
 # of intent, graph, gate, review and fixtures must fail on it (KILLED).
 # Run from the repository root:
@@ -16,10 +17,15 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 I, G, Q, R = 'internal/intent/intent.go', 'internal/graph/records.go', 'internal/gate/receipt.go', 'internal/review/review.go'
+L, GG = 'internal/graph/lifecycle.go', 'internal/gate/gate.go'
 MUTS = [
-    # The bounded decode.
-    ("a result past its bound decoded", G, 'len(raw) > maxResultBytes || read > maxResultsBytes', 'read > maxResultsBytes'),
-    ("the results past their bound decoded", G, 'len(raw) > maxResultBytes || read > maxResultsBytes', 'len(raw) > maxResultBytes'),
+    # The bounded decode, the task's own (Opus #321 M1, L5).
+    ("a result past its bound decoded", G, 'size > int64(maxResultBytes) || read > int64(maxResultsBytes)', 'read > int64(maxResultsBytes)'),
+    ("the results past their bound decoded", G, 'size > int64(maxResultBytes) || read > int64(maxResultsBytes)', 'size > int64(maxResultBytes)'),
+    ("another task's results read", G, 'tx.Keys(TaskResultProjection, prefix)', 'tx.Keys(TaskResultProjection, "")'),
+    ("a node record read unbounded", G, '!ok || size > int64(maxNodeBytes)', '!ok'),
+    ("the task's result index not written", L, 'if err := put(tx, TaskResultProjection, string(rec.Recorded.Task)+"/"+string(p.Result.ID), true); err != nil {', 'if err := error(nil); err != nil {'),
+    ("a result past its bound recorded", L, 'err != nil || len(b) > maxResultBytes {', 'err != nil {'),
     # The declassifications, set by Records only.
     ("every ref sanitised", G, 'Sanitised:   producer == types.NodeKindGate && kind == types.ResultKindGateResult,', 'Sanitised:   true,'),
     ("no ref sanitised", G, 'Sanitised:   producer == types.NodeKindGate && kind == types.ResultKindGateResult,', 'Sanitised:   false,'),
@@ -30,25 +36,45 @@ MUTS = [
     ("the gate's lineage not each once, sorted", Q, 'range slices.Compact(slices.Sorted(slices.Values(s.Acceptance)))', 'range s.Acceptance'),
     ("another report's ids read", Q, 'err != nil || r.Schema != reportSchema {', 'err != nil {'),
     ("an id read twice", Q, 'if id != "" && !slices.Contains(out, id) {', 'if id != "" {'),
+    ("an overlaid run published with no acceptance", Q, 'if v.overlaid && len(s.Acceptance) == 0 {', 'if false {'),
+    ("the overlay not marked", GG, 'v.overlaid = len(in.Overlay) > 0', 'v.overlaid = false'),
     # The walk's declassifications.
     ("an acceptance ancestor only unresolved", I, '\tif w.hidden[id] { // an acceptance blob', '\tif false { // an acceptance blob'),
     ("the builder takes a sanitised report", I, 'w.role == "reviewer" && rec.Sanitised', 'rec.Sanitised'),
     ("the reviewer takes no sanitised report", I, 'w.role == "reviewer" && rec.Sanitised', 'false'),
     ("the reviewer takes a builder-safe view", I, 'w.role == "builder" && rec.BuilderSafe', 'rec.BuilderSafe'),
     ("the builder takes no builder-safe view", I, 'w.role == "builder" && rec.BuilderSafe', 'false'),
+    ("a declassified input never expanded as an ancestor", I, 'case w.shallow[p]:', 'case false:'),
+    ("records not Load's built from", I, 'case !in.Records.loaded:', 'case false:'),
+    ("records not Load's checked against", I, 'case !r.loaded || r.Resolve == nil || r.Acceptance == nil:', 'case r.Resolve == nil || r.Acceptance == nil:'),
     # The fold-side check.
     ("a recorded intent's included refs unchecked", I, '\tfor _, x := range mi.Included {\n\t\trefs = append(refs, x.Ref)\n\t}\n', ''),
     ("a recorded intent's omitted refs unchecked", I, '\tfor _, x := range mi.Omitted {\n\t\trefs = append(refs, x.Ref)\n\t}\n', ''),
-    ("another consumer's intent checked as a builder's", I, 'case mi.Consumer.Role != "builder" && mi.Consumer.Role != "reviewer":', 'case false:'),
-    ("a recorded intent checked with no acceptance", I, 'case r.Resolve == nil || r.Acceptance == nil:', 'case r.Resolve == nil:'),
-    ("the fold's check skipped", I, '\treturn Check(r, mi)\n', '\treturn nil\n'),
+    ("another consumer's intent checked as a builder's", I, 'case role != "builder" && role != "reviewer":', 'case false:'),
+    ("a recorded intent checked with no acceptance", I, 'case !r.loaded || r.Resolve == nil || r.Acceptance == nil:', 'case !r.loaded || r.Resolve == nil:'),
+    ("the fold's check skipped", I, '\treturn Check(r, role, mi)\n', '\treturn nil\n'),
+    # The consumer's role, its attempt's node's (Opus #321 H1).
+    ("the role taken from the intent", I, '\treturn role, nil\n}', '\treturn mi.Consumer.Role, nil\n}'),
+    ("a stated role that differs accepted", I, 'case mi.Consumer.Role != role:', 'case false:'),
+    ("another task's intent checked", I, 'case mi.Task == nil || *mi.Task != task:', 'case mi.Task == nil:'),
+    ("an intent with no attempt checked", I, '\tcase mi.Attempt == nil:\n\t\treturn "", fmt.Errorf("%w: it names no attempt", ErrConsumer)\n', ''),
+    ("an attempt of another task's node accepted", I, 'case !ok || n.Task != task:', 'case !ok:'),
+    ("a plan's attempt a builder's", I, 'map[types.NodeKind]string{types.NodeKindBuild: "builder",', 'map[types.NodeKind]string{types.NodeKindPlan: "builder", types.NodeKindBuild: "builder",'),
     # The builder-safe findings view.
     ("no view for a no_go", R, '\t\t\tr.Value = append(r.Value, vref)\n', ''),
     ("a view that is a blob", R, 'Type: types.RefTypeView, ID: vd', 'Type: types.RefTypeBlob, ID: vd'),
     ("a view derived from nothing", R, 'Lineage: []string{decision}', 'Lineage: []string{}'),
-    ("gate ids kept in titles", R, '\t\t\ttitle = strings.ReplaceAll(title, id, "[test]")\n', ''),
+    ("a view not bound to its decision", R, '{viewSchema, decision, f.CandidateRound, findings}', '{viewSchema, "", 0, findings}'),
+    ("a view with no gate ids supplied", R, 'if f.GateIDs == nil {', 'if false {'),
+    ("gate ids kept in titles", R, 'return strings.HasPrefix(low[i:], id)', 'return false'),
     ("a short id's mark first", R, '\tslices.SortFunc(ids, func(a, b string) int { return len(b) - len(a) })', '\tslices.Sort(ids)'),
-    ("every id redacted", R, 'return len(id) < minRedacted', 'return false'),
+    ("every id redacted", R, 'len(v) >= minRedacted && ', ''),
+    ("a cut id's ellipsis kept", R, '\t\tid = strings.TrimSuffix(id, "…")\n', ''),
+    ("an id's segments not redacted", R, '\t\tfor _, seg := range strings.Split(id, "/") {\n\t\t\tadd(seg)\n\t\t}\n', ''),
+    ("an id's words not redacted", R, '[]string{id, strings.ReplaceAll(id, "_", " ")}', '[]string{id}'),
+    ("ids matched in their case", R, '\t\t\treturn l\n', '\t\t\treturn r\n'),
+    ("format characters kept in titles", R, 'case unicode.Is(unicode.Cf, r):', 'case false:'),
+    ("control characters kept in titles", R, 'case unicode.IsControl(r):', 'case false:'),
 ]
 
 

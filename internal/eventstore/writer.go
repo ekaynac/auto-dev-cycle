@@ -272,6 +272,23 @@ func (t *Tx) Get(projection, key string) (json.RawMessage, bool, error) {
 	return json.RawMessage(v), true, nil
 }
 
+// Size is the byte length of the projection record under key, if any,
+// read without reading the record (a bound checked before a Get).
+func (t *Tx) Size(projection, key string) (int64, bool, error) {
+	if err := checkProjection(projection, key); err != nil {
+		return 0, false, err
+	}
+	var n int64
+	err := t.tx.QueryRowContext(t.ctx, `SELECT length(CAST(value AS BLOB)) FROM `+t.table()+` WHERE projection = ? AND key = ?`, projection, key).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, t.io(err)
+	}
+	return n, true, nil
+}
+
 // Put sets the projection record under key to value (stored canonical).
 func (t *Tx) Put(projection, key string, value json.RawMessage) error {
 	if t.readOnly {

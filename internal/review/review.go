@@ -25,7 +25,10 @@
 //   - A no_go's result also holds the builder-safe findings view (#226
 //     entry 94(2), the operator's decision; 22a-6L): each finding's
 //     severity and title only, every gate id of at least minRedacted
-//     bytes (Facts.GateIDs) in a title replaced by "[test]", as a view
+//     bytes (Facts.GateIDs, which a no_go requires; its "/" segments, its
+//     words, matched folded) in a title replaced by "[test]", and control
+//     and format characters dropped; the view names its decision and
+//     round, so each round's view is its own ref; it is a view
 //     ref whose lineage is the decision's (truthful): graph.Records marks
 //     it BuilderSafe, so a repair builder takes it where the decision,
 //     derived from the declassified gate report, would refuse its intent.
@@ -45,6 +48,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -234,26 +238,29 @@ func Result(key types.ComputationKey, f Facts, blobs Blobs) (types.Result, error
 }
 
 // view publishes d's builder-safe findings view, derived from the decision
-// ref decision.
+// ref decision. Its bytes name the decision and the candidate's round
+// (Opus #321 H2): a view's id is its digest, so two rounds' views of the
+// same titles are two refs, each of its own lineage, never one ambiguous
+// id. Each title is redacted (redact).
 func view(f Facts, d Decision, decision string, blobs Blobs) (types.Ref, error) {
-	ids := slices.DeleteFunc(slices.Clone(f.GateIDs), func(id string) bool { return len(id) < minRedacted })
-	slices.SortFunc(ids, func(a, b string) int { return len(b) - len(a) }) // the longest first: no id redacted inside another's mark
+	if f.GateIDs == nil {
+		return types.Ref{}, errors.New("review: no gate ids supplied for the findings view (an empty list: none)")
+	}
+	ids := redacted(f.GateIDs)
 	type finding struct {
 		Severity string `json:"severity"`
 		Title    string `json:"title"`
 	}
 	findings := []finding{}
 	for _, x := range d.Findings {
-		title := x.Title
-		for _, id := range ids {
-			title = strings.ReplaceAll(title, id, "[test]")
-		}
-		findings = append(findings, finding{x.Severity, title})
+		findings = append(findings, finding{x.Severity, redact(x.Title, ids)})
 	}
 	b, err := json.Marshal(struct {
 		Schema   string    `json:"schema"`
+		Decision string    `json:"decision"`
+		Round    int64     `json:"candidate_round"`
 		Findings []finding `json:"findings"`
-	}{viewSchema, findings})
+	}{viewSchema, decision, f.CandidateRound, findings})
 	if err != nil {
 		return types.Ref{}, err
 	}
@@ -263,6 +270,84 @@ func view(f Facts, d Decision, decision string, blobs Blobs) (types.Ref, error) 
 	}
 	return knowledge.Seal(types.Ref{Type: types.RefTypeView, ID: vd, Scope: types.RefScope{Project: &f.Project},
 		Lineage: []string{decision}, Restrictions: []types.Restriction{}, ContentDigest: types.Digest(vd)})
+}
+
+// redacted are the marks a view's titles lose, folded (fold), the longest
+// first (no mark redacted inside another's), each at least minRedacted
+// bytes (Opus #321 L2): every gate id, its report's ellipsis cut off, each
+// of its "/" segments, and each of these with its underscores as spaces
+// (a test name's words).
+func redacted(gateIDs []string) []string {
+	var ids []string
+	add := func(id string) {
+		for _, v := range []string{id, strings.ReplaceAll(id, "_", " ")} {
+			if v = fold(v); len(v) >= minRedacted && !slices.Contains(ids, v) {
+				ids = append(ids, v)
+			}
+		}
+	}
+	for _, id := range gateIDs {
+		id = strings.TrimSuffix(id, "…")
+		add(id)
+		for _, seg := range strings.Split(id, "/") {
+			add(seg)
+		}
+	}
+	slices.SortFunc(ids, func(a, b string) int { return len(b) - len(a) })
+	return ids
+}
+
+// fold is s as titles are matched: lower case (lower), with no Unicode
+// format character (a zero-width space splits no id).
+func fold(s string) string {
+	return lower(strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, s))
+}
+
+// lower is s in lower case, each rune kept at its byte length (a rune
+// whose lower case is another length is kept), so lower(s)'s byte offsets
+// are s's.
+func lower(s string) string {
+	return strings.Map(func(r rune) rune {
+		if l := unicode.ToLower(r); utf8.RuneLen(l) == utf8.RuneLen(r) {
+			return l
+		}
+		return r
+	}, s)
+}
+
+// redact is title for the view: every control and format character a
+// space or gone (no newline, fence break or bidi override reaches the
+// repair builder's renderer: Opus #321 L3), then every mark of ids
+// (redacted) replaced by "[test]", matched in one pass over the title
+// folded.
+func redact(title string, ids []string) string {
+	t := strings.Map(func(r rune) rune {
+		switch {
+		case unicode.Is(unicode.Cf, r):
+			return -1
+		case unicode.IsControl(r):
+			return ' '
+		}
+		return r
+	}, title)
+	low := lower(t)
+	var out strings.Builder
+	for i := 0; i < len(low); {
+		j := slices.IndexFunc(ids, func(id string) bool { return strings.HasPrefix(low[i:], id) })
+		if j < 0 {
+			out.WriteByte(t[i])
+			i++
+			continue
+		}
+		out.WriteString("[test]")
+		i += len(ids[j])
+	}
+	return out.String()
 }
 
 // Report is the D55 record of one review node with result r and decision

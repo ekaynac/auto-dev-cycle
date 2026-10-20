@@ -76,7 +76,7 @@ func in(t *testing.T, s *store, inputs ...graph.RefRecord) In {
 
 // records are s's Records, under the one acceptance blob.
 func (s *store) records() Records {
-	return Records{Recorded: graph.Recorded{Resolve: s.resolve, Reviewed: s.reviewed}, Acceptance: []types.Digest{digest(acceptance)}}
+	return Records{Recorded: graph.Recorded{Resolve: s.resolve, Reviewed: s.reviewed}, Acceptance: []types.Digest{digest(acceptance)}, loaded: true}
 }
 
 // roles are both intents, by role.
@@ -309,7 +309,8 @@ func TestIntentFresh(t *testing.T) {
 // review's findings view derived from it is taken by a builder through
 // BuilderSafe only, never by a reviewer (a review's result); a
 // declassified record whose own digest is acceptance is refused; a
-// declassified ancestor is walked through.
+// declassified ancestor is walked through, whatever the inputs' order
+// (Opus #321 L1).
 func TestIntentDeclassified(t *testing.T) {
 	accepted := string(digest(acceptance))
 	report := rec("gate-report", "1", types.NodeKindGate, accepted)
@@ -338,12 +339,18 @@ func TestIntentDeclassified(t *testing.T) {
 			}
 		}
 	}
+	for name, order := range map[string][]graph.RefRecord{"the report first": {report, via}, "the report last": {via, report}} {
+		if _, err := Reviewer(in(t, s, order...)); !errors.Is(err, ErrAcceptanceInput) {
+			t.Errorf("a reviewer's sanitised report and an input derived from it, %s: %v", name, err)
+		}
+	}
 }
 
 // TestIntentCheck (22a-6L; #226 entry 91(1)): a recorded intent is
 // checked as it was built, under its consumer's role, each ref it lists
 // (an input, an included or an omitted one); a recorded intent of another
-// consumer, or with no records, is refused.
+// consumer, one stating another role than its consumer's (Opus #321
+// H1), or with no records or records not Load's (L4), is refused.
 func TestIntentCheck(t *testing.T) {
 	tree := rec("tree-1", "1", "graph")
 	report := rec("gate-report", "2", types.NodeKindGate, string(digest(acceptance)))
@@ -366,20 +373,32 @@ func TestIntentCheck(t *testing.T) {
 	one := []graph.RefRecord{report}
 	for name, c := range map[string]struct {
 		mi   types.ManifestIntent
+		role string
 		recs Records
 		ok   bool
 	}{
-		"a reviewer's, the report an input": {recorded("reviewer", one, nil, nil), s.records(), true},
-		"a builder's, the report an input":  {recorded("builder", one, nil, nil), s.records(), false},
-		"a builder's, the report included":  {recorded("builder", nil, one, nil), s.records(), false},
-		"a builder's, the report omitted":   {recorded("builder", nil, nil, one), s.records(), false},
-		"a builder's, a clean tree":         {recorded("builder", []graph.RefRecord{tree}, nil, nil), s.records(), true},
-		"another consumer's, a clean tree":  {recorded("planner", []graph.RefRecord{tree}, nil, nil), s.records(), false},
-		"no records":                        {recorded("reviewer", one, nil, nil), Records{}, false},
-		"the acceptance not read":           {recorded("reviewer", one, nil, nil), Records{Recorded: s.records().Recorded}, false},
+		"a reviewer's, the report an input":   {recorded("reviewer", one, nil, nil), "reviewer", s.records(), true},
+		"a builder's, the report an input":    {recorded("builder", one, nil, nil), "builder", s.records(), false},
+		"a builder's, the report included":    {recorded("builder", nil, one, nil), "builder", s.records(), false},
+		"a builder's, the report omitted":     {recorded("builder", nil, nil, one), "builder", s.records(), false},
+		"a builder's, a clean tree":           {recorded("builder", []graph.RefRecord{tree}, nil, nil), "builder", s.records(), true},
+		"another consumer's, a clean tree":    {recorded("planner", []graph.RefRecord{tree}, nil, nil), "planner", s.records(), false},
+		"no records":                          {recorded("reviewer", one, nil, nil), "reviewer", Records{}, false},
+		"the acceptance not read":             {recorded("reviewer", one, nil, nil), "reviewer", Records{Recorded: s.records().Recorded, loaded: true}, false},
+		"a builder's, stated as a reviewer's": {recorded("reviewer", one, nil, nil), "builder", s.records(), false},
+		"a reviewer's, stated as a builder's": {recorded("builder", []graph.RefRecord{tree}, nil, nil), "reviewer", s.records(), false},
+		"records not Load's":                  {recorded("reviewer", one, nil, nil), "reviewer", Records{Recorded: s.records().Recorded, Acceptance: s.records().Acceptance}, false},
 	} {
-		if err := Check(c.recs, c.mi); (err == nil) != c.ok {
+		if err := Check(c.recs, c.role, c.mi); (err == nil) != c.ok {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// An intent is built from Load's records only (Opus #321 L4).
+	built := in(t, s, tree)
+	built.Records.loaded = false
+	for role, intent := range roles {
+		if _, err := intent(built); !errors.Is(err, ErrAcceptanceInput) {
+			t.Errorf("%s from records not Load's: %v", role, err)
 		}
 	}
 }

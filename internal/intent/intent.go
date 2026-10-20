@@ -40,7 +40,16 @@
 //     consumer walks it. A lineage id that is an acceptance digest refuses
 //     before it is resolved.
 //   - Check re-reads a recorded intent the same way: the fold-side I18
-//     check (#226 entry 91(1)).
+//     check (#226 entry 91(1)). The consumer's role is never the intent's
+//     own word (Opus #321 H1): CheckRecorded derives it from the intent's
+//     attempt's node (a build's builder, a review's reviewer), refuses an
+//     intent of another task, with no attempt, or stating another role,
+//     and walks under the derived role.
+//   - Records are Load's only (Opus #321 L4): Records built otherwise, a
+//     caller's resolver declassifying what it likes, are refused.
+//   - Check is the I18 check only (Opus #321 L6): it does not compare an
+//     intent's Included with the node's rendered context, so a restricted
+//     artifact that is not acceptance is the renderer's (graph.Context).
 package intent
 
 import (
@@ -64,6 +73,9 @@ var (
 	ErrAncestryUnresolved = fmt.Errorf("%w: its ancestry is not resolvable", ErrAcceptanceInput)
 	// ErrNotFresh: a reviewer's context would carry a review's result.
 	ErrNotFresh = errors.New("intent: a review's result among a reviewer's inputs (a fresh context per round)")
+	// ErrConsumer: a recorded intent's task, attempt or role is not its
+	// consumer's.
+	ErrConsumer = errors.New("intent: a recorded intent's task, attempt or role is not its consumer's")
 )
 
 // The walk's bounds, per intent (var: tests lower them).
@@ -74,6 +86,7 @@ var maxRecords, maxEdges, maxIDBytes = 10_000, 100_000, 4 << 20
 type Records struct {
 	graph.Recorded
 	Acceptance []types.Digest // nil: not read
+	loaded     bool           // set by Load only
 }
 
 // Load is task's Records in tx: graph.Records (with the controller's extra
@@ -84,7 +97,7 @@ func Load(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Records, er
 		return Records{}, err
 	}
 	acc, err := authority.TaskAcceptance(tx, task)
-	return Records{Recorded: rec, Acceptance: append([]types.Digest{}, acc...)}, err
+	return Records{Recorded: rec, Acceptance: append([]types.Digest{}, acc...), loaded: true}, err
 }
 
 // In is what an intent is built from: the call's record (id, call,
@@ -107,6 +120,8 @@ func Reviewer(in In) (types.ManifestIntent, error) { return build(in, "reviewer"
 
 func build(in In, role, purpose string) (types.ManifestIntent, error) {
 	switch {
+	case !in.Records.loaded:
+		return types.ManifestIntent{}, fmt.Errorf("%w: the records are not Load's", ErrAncestryUnresolved)
 	case in.Records.Resolve == nil:
 		return types.ManifestIntent{}, fmt.Errorf("%w: no resolver", ErrAncestryUnresolved)
 	case in.Records.Acceptance == nil:
@@ -149,13 +164,16 @@ func walkAll(r Records, role string, refs []types.Ref) error {
 
 // Check is the fold-side I18 check of a recorded intent (#226 entry
 // 91(1)): every ref it lists, as an input, included or omitted, walked
-// under its consumer's role as Builder and Reviewer walk theirs.
-func Check(r Records, mi types.ManifestIntent) error {
+// under role, its consumer's, as Builder and Reviewer walk theirs. An
+// intent stating another role is refused.
+func Check(r Records, role string, mi types.ManifestIntent) error {
 	switch {
-	case r.Resolve == nil || r.Acceptance == nil:
+	case !r.loaded || r.Resolve == nil || r.Acceptance == nil:
 		return fmt.Errorf("%w: no records", ErrAncestryUnresolved)
-	case mi.Consumer.Role != "builder" && mi.Consumer.Role != "reviewer":
-		return fmt.Errorf("intent: a recorded intent's consumer %q is no builder or reviewer", mi.Consumer.Role)
+	case role != "builder" && role != "reviewer":
+		return fmt.Errorf("%w: %q is no builder or reviewer", ErrConsumer, role)
+	case mi.Consumer.Role != role:
+		return fmt.Errorf("%w: it states %q, its consumer is a %s", ErrConsumer, mi.Consumer.Role, role)
 	}
 	refs := slices.Clone(mi.Inputs)
 	for _, x := range mi.Included {
@@ -164,17 +182,50 @@ func Check(r Records, mi types.ManifestIntent) error {
 	for _, x := range mi.Omitted {
 		refs = append(refs, x.Ref)
 	}
-	return walkAll(r, mi.Consumer.Role, refs)
+	return walkAll(r, role, refs)
 }
 
-// CheckRecorded is Check against task's records in tx (Load): what an
-// intent's fold calls.
+// CheckRecorded is Check against task's records in tx (Load), under the
+// role of the intent's attempt's node (consumer): what an intent's fold
+// calls.
 func CheckRecorded(tx *eventstore.Tx, task types.TaskID, mi types.ManifestIntent, extra ...types.Ref) error {
+	role, err := consumer(tx, task, mi)
+	if err != nil {
+		return err
+	}
 	r, err := Load(tx, task, extra...)
 	if err != nil {
 		return err
 	}
-	return Check(r, mi)
+	return Check(r, role, mi)
+}
+
+// roleOf is the consumer role of each node kind that has one.
+var roleOf = map[types.NodeKind]string{types.NodeKindBuild: "builder", types.NodeKindReview: "reviewer"}
+
+// consumer is the role of mi's consumer, derived from what is recorded of
+// its attempt (its node's kind), never from the intent's own word: an
+// intent of another task than task, with no attempt, or whose attempt ran
+// for no build or review node of task, is refused.
+func consumer(tx *eventstore.Tx, task types.TaskID, mi types.ManifestIntent) (string, error) {
+	switch {
+	case mi.Task == nil || *mi.Task != task:
+		return "", fmt.Errorf("%w: it is not task %s's", ErrConsumer, task)
+	case mi.Attempt == nil:
+		return "", fmt.Errorf("%w: it names no attempt", ErrConsumer)
+	}
+	n, ok, err := graph.AttemptNode(tx, *mi.Attempt)
+	switch {
+	case err != nil:
+		return "", err
+	case !ok || n.Task != task:
+		return "", fmt.Errorf("%w: attempt %s ran for no node of task %s", ErrConsumer, *mi.Attempt, task)
+	}
+	role, ok := roleOf[n.Node.Kind]
+	if !ok {
+		return "", fmt.Errorf("%w: attempt %s ran for a %s node", ErrConsumer, *mi.Attempt, n.Node.Kind)
+	}
+	return role, nil
 }
 
 // walk is one intent's ancestry walk, shared by its inputs: an id walked
@@ -186,13 +237,14 @@ type walk struct {
 	records           graph.RefRecords
 	hidden            map[string]bool            // acceptance digests
 	walked            map[string]bool            // ids scheduled: queued or resolved, each counted once
+	shallow           map[string]bool            // inputs declassified, so not expanded: expanded when reached as an ancestor
 	resolved          map[string]graph.RefRecord // ids resolved and expanded
 	n, edges, idBytes int                        // n: the ids scheduled
 	peak              int                        // the queue's longest
 }
 
 func newWalk(r Records, role string) *walk {
-	w := &walk{role: role, records: r.Resolve, hidden: map[string]bool{}, walked: map[string]bool{}, resolved: map[string]graph.RefRecord{}}
+	w := &walk{role: role, records: r.Resolve, hidden: map[string]bool{}, walked: map[string]bool{}, shallow: map[string]bool{}, resolved: map[string]graph.RefRecord{}}
 	for _, d := range r.Acceptance {
 		w.hidden[string(d)] = true
 	}
@@ -217,7 +269,11 @@ func (w *walk) start(r types.Ref) (graph.RefRecord, error) {
 	if rec.ContentDigest != r.ContentDigest || !slices.Equal(rec.Lineage, r.Lineage) {
 		return rec, fmt.Errorf("%w: %s is not the input its record names", ErrAncestryUnresolved, r.ID)
 	}
-	if done || w.role == "reviewer" && rec.Sanitised || w.role == "builder" && rec.BuilderSafe {
+	if done {
+		return rec, nil
+	}
+	if w.role == "reviewer" && rec.Sanitised || w.role == "builder" && rec.BuilderSafe {
+		w.shallow[r.ID] = true
 		return rec, nil // declassified for this consumer: its own identity checked, its ancestry not walked
 	}
 	queue, err := w.enqueue(r.ID, nil, rec.Lineage)
@@ -275,10 +331,14 @@ func (w *walk) enqueue(input string, queue []string, parents []string) ([]string
 		return nil, err
 	}
 	for _, p := range parents {
-		if !w.walked[p] {
+		switch {
+		case !w.walked[p]:
 			if err := w.schedule(input, p); err != nil {
 				return nil, err
 			}
+			queue = append(queue, p)
+		case w.shallow[p]: // a declassified input, now an ancestor: walked through, whatever the inputs' order (Opus #321 L1)
+			delete(w.shallow, p)
 			queue = append(queue, p)
 		}
 	}

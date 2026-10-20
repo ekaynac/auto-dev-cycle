@@ -66,19 +66,20 @@ const (
 	QueueObserved   = "queue.observed/v1"
 	EventSchema     = "records/graph-event"
 
-	NodeProjection      = "graph_nodes"      // node id → nodeRecord
-	ClaimProjection     = "graph_claims"     // node id → claim
-	KeyProjection       = "graph_keys"       // task/computation key → the memoizable node that claimed it
-	ReuseProjection     = "graph_reuses"     // task/computation key → the nodes bound to it by reuse
-	RenewalProjection   = "graph_renewals"   // node id → its selection boundary (renewal)
-	SuccessorProjection = "graph_successors" // node id → its one successor
-	TaskProjection      = "graph_tasks"      // task id → its project
-	ResultProjection    = "graph_results"    // result id → the result.recorded payload
-	GenProjection       = "graph_gens"       // task/identity → its current generation (memoizable kinds)
-	HoldProjection      = "graph_holds"      // hold id → the node that last held it (heldBy)
-	RetryProjection     = "graph_retries"    // could_not_run result id → its retry wait's hold id
-	EffectProjection    = "graph_effects"    // effect node id → its operation (node.operated)
-	ObservedProjection  = "graph_observed"   // task/branch → the latest observation of its base head
+	NodeProjection       = "graph_nodes"        // node id → nodeRecord
+	ClaimProjection      = "graph_claims"       // node id → claim
+	KeyProjection        = "graph_keys"         // task/computation key → the memoizable node that claimed it
+	ReuseProjection      = "graph_reuses"       // task/computation key → the nodes bound to it by reuse
+	RenewalProjection    = "graph_renewals"     // node id → its selection boundary (renewal)
+	SuccessorProjection  = "graph_successors"   // node id → its one successor
+	TaskProjection       = "graph_tasks"        // task id → its project
+	ResultProjection     = "graph_results"      // result id → the result.recorded payload
+	TaskResultProjection = "graph_task_results" // task/result id → true: the task's results (Records)
+	GenProjection        = "graph_gens"         // task/identity → its current generation (memoizable kinds)
+	HoldProjection       = "graph_holds"        // hold id → the node that last held it (heldBy)
+	RetryProjection      = "graph_retries"      // could_not_run result id → its retry wait's hold id
+	EffectProjection     = "graph_effects"      // effect node id → its operation (node.operated)
+	ObservedProjection   = "graph_observed"     // task/branch → the latest observation of its base head
 )
 
 // memoizable are the kinds whose results are reused (13 "v1 scope").

@@ -588,7 +588,8 @@ func TestGateBaselineHeld(t *testing.T) {
 // derive from the acceptance blobs the run's overlay applied (each once,
 // sorted), and from nothing when it applied none; ReportIDs reads a
 // report's blocking packages and test names, each once, and refuses what
-// is no gate report.
+// is no gate report; an overlaid run published with no acceptance blob is
+// refused.
 func TestGateLineage(t *testing.T) {
 	f := newFixture(t, map[string]string{"failing.json": stream["failing.json"], "a/a.go": "package a\n"}, "cat", "failing.json")
 	f.in.Gate.Command, f.in.Baseline.Command = []string{"cat", "failing.json"}, []string{"cat", "failing.json"}
@@ -638,5 +639,16 @@ func TestGateLineage(t *testing.T) {
 	}
 	if _, err := ReportIDs([]byte(`{"schema":"adc.review-report/v1","blocking":[{"package":"p"}]}`)); !errors.Is(err, ErrSpec) {
 		t.Errorf("another schema's ids: %v", err)
+	}
+	// A run that applied an overlay is published only with the overlay's
+	// digests (Opus #321 M2): never with a lineage of nothing.
+	f.in.Overlay = map[string][]byte{"hidden/acceptance.txt": []byte("hidden\n")}
+	overlaid := gated(t, f.in)
+	for name, acc := range map[string][]types.Digest{"none": nil, "empty": {}, "the overlay's": {dg("a")}} {
+		_, err := Result(types.ComputationKey{Key: dg("1")}, overlaid, c, testImage, Subject{Project: "prj_01m3250vz2ezn81cgvbkcn17jd", Revision: "1", Acceptance: acc},
+			"cmd_01m3250vz2ezn81cgvbkcn17jd", blobs, time.Now())
+		if want := len(acc) > 0; (err == nil) != want || err != nil && !errors.Is(err, ErrSpec) {
+			t.Errorf("an overlaid run published with %s acceptance: %v", name, err)
+		}
 	}
 }

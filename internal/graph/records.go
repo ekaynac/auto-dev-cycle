@@ -3,12 +3,14 @@
 package graph
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 )
 
 // RefRecord is a ref's authoritative record (I18, P16a): its identity (id
@@ -48,22 +50,25 @@ type Recorded struct {
 // before a ref's lineage is copied; past any, Records refuses. Vars, so a
 // test can lower them. The results themselves are decoded whole before
 // these apply, each within maxResultBytes and all within maxResultsBytes
-// (22a-6L): a stored result past either is refused before it is decoded.
+// (22a-6L): a stored result past either is refused before it is read.
 var maxTaskRefs, maxTaskLineage, maxTaskIDBytes = 100_000, 1_000_000, 64 << 20
 
-// The results' bounds: one stored result, and every one Records reads
-// (results are keyed by id, so it reads the store's: the bound is the
-// store's, not the task's).
-var maxResultBytes, maxResultsBytes = 4 << 20, 256 << 20
+// The results' bounds, the task's alone (Opus #321 M1): one stored result
+// (enforced as well when one is recorded: recordResult), and every one of
+// the task's Records reads (TaskResultProjection: another task's results
+// are never read). maxNodeBytes bounds a result's node record, read the
+// same way (Opus #321 L5).
+var maxResultBytes, maxResultsBytes, maxNodeBytes = 4 << 20, 256 << 20, 4 << 20
 
 // Records is task's Recorded, from the event store: every ref a recorded
 // result of the task holds, with its producer's kind, and the extra refs
 // the controller rendered from its authority (Context's approvals). An id
 // recorded with two identities, lineages or producers is ambiguous and
-// resolves to nothing. It reads the store once, at the call.
+// resolves to nothing. It reads the task's results only, at the call.
 func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded, error) {
 	byID, ambiguous, reviewed := map[string]RefRecord{}, map[string]bool{}, map[types.Digest]bool{}
-	n, lineage, idBytes, read := 0, 0, 0, 0
+	n, lineage, idBytes := 0, 0, 0
+	var read int64
 	add := func(r types.Ref, producer types.NodeKind, kind types.ResultKind) error {
 		n, lineage, idBytes = n+1, lineage+len(r.Lineage), idBytes+len(r.ID)
 		for _, p := range r.Lineage {
@@ -85,28 +90,36 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 		byID[r.ID] = rec
 		return nil
 	}
-	keys, err := tx.Keys(ResultProjection, "")
+	prefix := string(task) + "/"
+	keys, err := tx.Keys(TaskResultProjection, prefix)
 	if err != nil {
 		return Recorded{}, err
 	}
 	for _, k := range keys {
-		raw, _, err := tx.Get(ResultProjection, k)
+		id := strings.TrimPrefix(k, prefix)
+		size, ok, err := tx.Size(ResultProjection, id)
+		switch {
+		case err != nil:
+			return Recorded{}, err
+		case !ok:
+			return Recorded{}, fmt.Errorf("graph: task %s's result %s is not recorded", task, id)
+		}
+		if read += size; size > int64(maxResultBytes) || read > int64(maxResultsBytes) {
+			return Recorded{}, fmt.Errorf("graph: result %s is over %d bytes, or task %s's results over %d", id, maxResultBytes, task, maxResultsBytes)
+		}
+		rr, _, err := load[types.ResultRecorded](tx, ResultProjection, id)
 		if err != nil {
 			return Recorded{}, err
 		}
-		if read += len(raw); len(raw) > maxResultBytes || read > maxResultsBytes {
-			return Recorded{}, fmt.Errorf("graph: result %s is over %d bytes, or the results over %d", k, maxResultBytes, maxResultsBytes)
+		if size, ok, err := tx.Size(NodeProjection, string(rr.Node)); err != nil || !ok || size > int64(maxNodeBytes) {
+			return Recorded{}, errors.Join(err, fmt.Errorf("graph: result %s's node %s is not recorded, or is over %d bytes", id, rr.Node, maxNodeBytes))
 		}
-		var rr types.ResultRecorded
-		if err := json.Unmarshal(raw, &rr); err != nil {
-			return Recorded{}, err
-		}
-		node, ok, err := load[nodeRecord](tx, NodeProjection, string(rr.Node))
+		node, _, err := load[nodeRecord](tx, NodeProjection, string(rr.Node))
 		if err != nil {
 			return Recorded{}, err
 		}
-		if !ok || node.Recorded.Task != task {
-			continue
+		if node.Recorded.Task != task {
+			return Recorded{}, fmt.Errorf("graph: result %s is indexed under task %s, its node under %s", id, task, node.Recorded.Task)
 		}
 		for _, r := range rr.Result.Value {
 			if err := add(r, node.Recorded.Node.Kind, rr.Result.Kind); err != nil {
@@ -123,4 +136,19 @@ func Records(tx *eventstore.Tx, task types.TaskID, extra ...types.Ref) (Recorded
 		rec, ok := byID[id]
 		return rec, ok && !ambiguous[id], nil
 	}, Reviewed: reviewed}, nil
+}
+
+// AttemptNode is the node attempt ran for, as recorded (its task and
+// kind): false when attempt was never started or its unit is no node's.
+func AttemptNode(tx *eventstore.Tx, attempt types.AttemptID) (types.NodeRecorded, bool, error) {
+	a, _, ok, err := lease.AttemptOf(tx, attempt)
+	if err != nil || !ok {
+		return types.NodeRecorded{}, false, err
+	}
+	n, ok := NodeOf(a.Unit)
+	if !ok {
+		return types.NodeRecorded{}, false, nil
+	}
+	rec, ok, err := load[nodeRecord](tx, NodeProjection, string(n))
+	return rec.Recorded, ok, err
 }

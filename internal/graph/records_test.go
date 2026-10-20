@@ -4,6 +4,8 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -126,37 +128,76 @@ func TestRecordsDeclassified(t *testing.T) {
 	}
 }
 
-// TestRecordsDecodeBound (22a-6L): a stored result is decoded only within
-// maxResultBytes, and the results Records reads within maxResultsBytes,
-// each at its exact bound.
+// TestRecordsDecodeBound (22a-6L; Opus #321 M1, L5): a stored result is
+// read only within maxResultBytes, and the task's results within
+// maxResultsBytes, each at its exact bound; another task's results are
+// never read, however large; a result past maxResultBytes is refused when
+// it is recorded.
 func TestRecordsDecodeBound(t *testing.T) {
 	g := openStore(t)
 	for _, d := range []string{"1", "2", "3"} {
 		g.completedWith(types.NodeKindIntegration, types.ResultKindTree, []types.Ref{sealedRef(t, types.RefTypeBlob, "r"+d, d)})
 	}
-	largest, total := 0, 0
+	largest, total := int64(0), int64(0)
+	var stored types.ResultRecorded
 	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
 		keys, err := tx.Keys(ResultProjection, "")
 		for _, k := range keys {
-			raw, _, _ := tx.Get(ResultProjection, k)
-			largest, total = max(largest, len(raw)), total+len(raw)
+			n, _, _ := tx.Size(ResultProjection, k)
+			largest, total = max(largest, n), total+n
+			stored, _, _ = load[types.ResultRecorded](tx, ResultProjection, k)
 		}
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Another task's result, past every bound (put directly: the write
+	// side refuses it).
+	other := types.TaskID("tsk_01m3250v9xft08ssr4ygq6g2nq")
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return nil, errors.Join(tx.Put(ResultProjection, "res_other", json.RawMessage(`{"pad":"`+strings.Repeat("x", int(total))+`"}`)),
+			tx.Put(TaskResultProjection, string(other)+"/res_other", json.RawMessage(`true`)))
+	})
 	defer func(one, all int) { maxResultBytes, maxResultsBytes = one, all }(maxResultBytes, maxResultsBytes)
 	for name, c := range map[string]struct {
-		one, all int
+		one, all int64
 		ok       bool
 	}{
 		"at both bounds":       {largest, total, true},
 		"one past its bound":   {largest - 1, total, false},
 		"all past their bound": {largest, total - 1, false},
 	} {
-		maxResultBytes, maxResultsBytes = c.one, c.all
+		maxResultBytes, maxResultsBytes = int(c.one), int(c.all)
 		if _, err := g.records(tskID); (err == nil) != c.ok {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+	maxResultBytes, maxResultsBytes = int(largest), int(total)
+	if _, err := g.records(other); err == nil {
+		t.Error("another task's result past the bound read")
+	}
+	// A result's node record is read within maxNodeBytes.
+	defer func(n int) { maxNodeBytes = n }(maxNodeBytes)
+	maxNodeBytes = 10
+	if _, err := g.records(tskID); err == nil {
+		t.Error("a node record past its bound read")
+	}
+	maxNodeBytes = 4 << 20
+	// The write side: a result exactly at the bound is recorded, one past
+	// it refused.
+	stored.Result.ID = "res_01m3250v9xft08ssr4ygq6g2nr"
+	b, err := json.Marshal(&stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for bound, ok := range map[int]bool{len(b): true, len(b) - 1: false} {
+		maxResultBytes = bound
+		err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+			_, err := recordResult(tx, stored, g.blobs)
+			return err
+		})
+		if (err == nil) != ok {
+			t.Errorf("a result of %d bytes recorded under the bound %d: %v", len(b), bound, err)
 		}
 	}
 }
