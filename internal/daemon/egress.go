@@ -11,10 +11,11 @@ package daemon
 //   - Each attempt gets the gateway on its own Unix socket (Server, so the
 //     per-write deadlines and the in-flight cap per token apply) and
 //     Mint's value for its prepare params: a base_url with no path and the
-//     binding's token. The attempt's end, on every path, calls its end
-//     once: Unbind (its requests in flight cancelled, nothing bound after),
-//     the socket server closed, then the call's settlement
-//     (Reconciler.Ended) when the call was ever intended.
+//     binding's token. The attempt's end, on every path, calls its end:
+//     Unbind (its requests in flight cancelled, nothing bound after) and
+//     the socket server closed, once; then the call's settlement
+//     (Reconciler.Ended), when the call was ever intended, under its own
+//     bounded context, retried by a later end until it succeeds.
 //   - Egress capture (§8 item 4) is configured only for an exit run
 //     (Config.CaptureEgress): each body sent is kept in the capture store
 //     and recorded (api.RecordCapture), and purged at its expiry.
@@ -25,6 +26,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/api"
@@ -59,20 +61,39 @@ func newEgress(d *Daemon, reg registry.Registry, capture bool) (*egress, error) 
 }
 
 // captureOf is d's egress capture: each body kept in its capture store and
-// recorded as the system actor.
-func captureOf(d *Daemon) gateway.BlobCapture {
-	return gateway.BlobCapture{Blobs: d.captures, Now: d.clock, Record: func(ctx context.Context, c gateway.Captured) error {
-		return api.RecordCapture(ctx, d.store, d.system, c)
-	}}
+// recorded as the system actor, whatever becomes of the request (the
+// record outlives its context: Opus #322 M1), under the lock the purge
+// takes too (L1).
+func captureOf(d *Daemon) gateway.Capture {
+	return lockedCapture{mu: &d.capturing, c: gateway.BlobCapture{Blobs: d.captures, Now: d.clock, Record: func(ctx context.Context, c gateway.Captured) error {
+		return api.RecordCapture(context.WithoutCancel(ctx), d.store, d.system, c)
+	}}}
+}
+
+// lockedCapture is c under mu.
+type lockedCapture struct {
+	mu *sync.Mutex
+	c  gateway.Capture
+}
+
+func (l lockedCapture) Keep(ctx context.Context, b gateway.Binding, body []byte) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.c.Keep(ctx, b, body)
 }
 
 // attemptEnd ends an attempt's gateway: what the gateway observed of its
 // token, and the failures of closing its socket or settling its call.
 type attemptEnd func(ctx context.Context) (gateway.Observed, error)
 
+// settleBound bounds one end's settlement of the call (Reconciler.Ended).
+const settleBound = time.Minute
+
 // open serves the gateway on socket for b's attempt and mints the adapter's
-// gateway value. Its end is idempotent: the first call does the work, and
-// every later one returns what it returned.
+// gateway value. Its end unbinds the token and closes the socket once; it
+// settles the call under a context of its own, which the caller's
+// cancellation does not end, within settleBound, and a later end retries a
+// settlement that failed until one succeeds (Opus #322 M2).
 func (e *egress) open(b gateway.Binding, socket string) (types.AdapterPrepareParamsGatewayValue, attemptEnd, error) {
 	l, err := net.Listen("unix", socket)
 	if err != nil {
@@ -86,16 +107,26 @@ func (e *egress) open(b gateway.Binding, socket string) (types.AdapterPreparePar
 	served := make(chan struct{})
 	go func() { defer close(served); _ = srv.Serve(l) }()
 	var once sync.Once
+	var mu sync.Mutex
 	var obs gateway.Observed
-	var endErr error
+	var closeErr error
+	settled := false
 	end := func(ctx context.Context) (gateway.Observed, error) {
 		once.Do(func() {
 			obs = e.gw.Unbind(v.Token)
-			endErr = srv.Close()
+			closeErr = srv.Close()
 			<-served
-			endErr = errors.Join(endErr, e.settle(ctx, b.Call))
 		})
-		return obs, endErr
+		mu.Lock()
+		defer mu.Unlock()
+		if settled {
+			return obs, closeErr
+		}
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleBound)
+		defer cancel()
+		err := e.settle(sctx, b.Call)
+		settled = err == nil
+		return obs, errors.Join(closeErr, err)
 	}
 	return v, end, nil
 }

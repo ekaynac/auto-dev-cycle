@@ -16,6 +16,9 @@ package api
 //     blob already gone is no error) and the commit replays, adding no
 //     second event. A digest another unpurged capture still holds keeps its
 //     bytes until that one's purge.
+//   - It also sweeps the capture store's bytes that no kept capture names
+//     and that are older than CaptureGrace: a body whose record never
+//     committed (Opus #322 M1). The store is the captures' alone.
 //   - Both events stream their fields (none is secret); the body never.
 
 import (
@@ -27,6 +30,7 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
@@ -110,13 +114,22 @@ func RecordCapture(ctx context.Context, store *eventstore.Store, system identity
 	return err
 }
 
-// Remover is what PurgeCaptures needs of the capture store.
-type Remover interface{ Remove(digest string) error }
+// CaptureGrace is how old a blob of the capture store no kept capture
+// names must be before the purge sweeps it: a body Keep stored whose record
+// never committed (a crash, a refused record; Opus #322 M1), never one
+// whose record is still on its way.
+const CaptureGrace = time.Hour
+
+// CaptureStore is what PurgeCaptures needs of the capture store.
+type CaptureStore interface {
+	Remove(digest string) error
+	Stored() ([]blobstore.Blob, error)
+}
 
 // PurgeCaptures purges as system every capture expired at now, and returns
 // how many it purged; one whose purge fails is left to the next run, the
 // others purged, and every failure returned.
-func PurgeCaptures(ctx context.Context, store *eventstore.Store, blobs Remover, system identity.Principal, now time.Time, log io.Writer) (int, error) {
+func PurgeCaptures(ctx context.Context, store *eventstore.Store, blobs CaptureStore, system identity.Principal, now time.Time, log io.Writer) (int, error) {
 	var kept []keptCapture
 	if err := store.View(ctx, func(tx *eventstore.Tx) error {
 		keys, err := tx.Keys(CaptureProjection, "")
@@ -159,8 +172,19 @@ func PurgeCaptures(ctx context.Context, store *eventstore.Store, blobs Remover, 
 		}
 		n++
 	}
-	if len(failed) > 0 && log != nil {
-		fmt.Fprintf(log, "adcd: captures: %v\n", errors.Join(failed...))
+	named := map[types.Digest]bool{} // the bytes a capture still kept names
+	for _, c := range kept {
+		named[c.Record.Digest] = named[c.Record.Digest] || !expired(c.Record, now) || live[c.Record.Digest] > 0
+	}
+	stored, err := blobs.Stored()
+	failed = append(failed, err)
+	for _, b := range stored {
+		if !named[types.Digest(b.Digest)] && now.Sub(b.ModTime) > CaptureGrace {
+			failed = append(failed, blobs.Remove(b.Digest)) // bytes no record names: swept
+		}
+	}
+	if err := errors.Join(failed...); err != nil && log != nil {
+		fmt.Fprintf(log, "adcd: captures: %v\n", err)
 	}
 	return n, errors.Join(failed...)
 }

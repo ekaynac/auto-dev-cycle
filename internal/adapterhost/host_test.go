@@ -123,7 +123,7 @@ func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 	testHook = func(stage string) { prepared = prepared || stage == "prepare" }
 	t.Cleanup(func() { testHook = nil })
 	sp := spec(stub(t, stubPlan{Tools: []string{"read_file", "run_command"}, Result: clean}))
-	sp.AnyTool, sp.Tools = false, EditLoopTools
+	sp.AnyTool, sp.Tools = false, EditLoopTools()
 	out, err := w.host.Run(context.Background(), sp)
 	if err != nil || !errors.Is(out.Session, ErrToolRefused) || out.Submitted != nil || prepared {
 		t.Fatalf("run: %v, session %v, submitted %v, prepared %v", err, out.Session, out.Submitted, prepared)
@@ -133,9 +133,26 @@ func TestAToolPastTheEditLoopIsRefused(t *testing.T) {
 	}
 	w = newWorld(t)
 	sp = spec(stub(t, stubPlan{Tools: []string{"read_file", "list_dir", "write_file", "delete_file"}}))
-	sp.AnyTool, sp.Tools = false, EditLoopTools
+	sp.AnyTool, sp.Tools = false, EditLoopTools()
 	if out, err := w.host.Run(context.Background(), sp); err != nil || errors.Is(out.Session, ErrToolRefused) || !prepared {
 		t.Fatalf("the edit loop's own tools: %v, session %v", err, out.Session)
+	}
+	// Opus #322 L2: a tool it reports running, past its launch's, refuses
+	// the run too; the http-chat adapter's "unknown" (refused, not run)
+	// does not.
+	for name, tc := range map[string]struct {
+		tool    string
+		refused bool
+	}{"run_command ran": {"run_command", true}, "unknown, not run": {"unknown", false}} {
+		w = newWorld(t)
+		sp = spec(stub(t, stubPlan{Tools: []string{"read_file"}, Files: map[string]string{"patch.diff": patch},
+			Events: []string{`"event":"tool.result","turn":1,"tool":"` + tc.tool + `","mediated_by_controller":false,"delivered":null,"bytes":1`, usageEvent(10)},
+			Result: resultJSON("patch", handleJSON(att, "patch.diff", patch), 10)}))
+		sp.AnyTool, sp.Tools = false, EditLoopTools()
+		out, err := w.host.Run(context.Background(), sp)
+		if err != nil || errors.Is(out.Session, ErrToolRefused) != tc.refused || (out.Submitted == nil) != tc.refused {
+			t.Errorf("%s: %v, session %v, submitted %v", name, err, out.Session, out.Submitted)
+		}
 	}
 	for name, tc := range map[string]struct {
 		tools   []string

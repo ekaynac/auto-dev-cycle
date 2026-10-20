@@ -21,6 +21,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gateway"
+	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 )
 
@@ -185,4 +186,85 @@ func TestCapturesPurgedByTheLoop(t *testing.T) {
 	if has, err := c.d.captures.Has(digest); err != nil || has {
 		t.Errorf("the purged capture's bytes: %v %v", has, err)
 	}
+}
+
+// Opus #322 M2: an end called with a cancelled context (a stop, a
+// shutdown) still settles an intended call: the settlement runs under a
+// bounded context of its own, so the restart's uncertain effect is
+// reconciled (its observation moves); a later end finds it settled.
+func TestEgressEndSettlesUnderACancelledContext(t *testing.T) {
+	_, cfg, a, l, call := cutStore(t)
+	d, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	before, err := d.store.LoadEffect(context.Background(), modelcall.EffectOf(call))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := newEgress(d, registry.Registry{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, end, err := e.open(gateway.Binding{Lease: l, Attempt: a, Call: call}, filepath.Join(shortDir(t), "gw.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := end(cancelled); err != nil {
+		t.Fatalf("an end under a cancelled context: %v", err)
+	}
+	after, err := d.store.LoadEffect(context.Background(), modelcall.EffectOf(call))
+	if err != nil || after.LastObservation == before.LastObservation {
+		t.Fatalf("the call was not settled: %q → %q, %v", before.LastObservation, after.LastObservation, err)
+	}
+	if _, err := end(cancelled); err != nil {
+		t.Errorf("a later end: %v", err)
+	}
+}
+
+// Opus #322 M1: a capture kept under a cancelled context is still recorded;
+// bytes of the capture store that no kept capture names (a record that
+// never committed) are swept once older than the grace, never before.
+func TestEgressCaptureOutlivesItsRequest(t *testing.T) {
+	d := restart(t, stateDir(t))
+	t.Cleanup(func() { _ = d.Close() })
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	b := gateway.Binding{Lease: types.LeaseID(newID(t, "lea")), Attempt: types.AttemptID(newID(t, "att")), Call: types.CallID(newID(t, "cal"))}
+	if err := captureOf(d).Keep(cancelled, b, []byte("a body whose request ended")); err != nil {
+		t.Fatalf("a capture under a cancelled context: %v", err)
+	}
+	if n := count(t, d.lock.Dir(), `SELECT count(*) FROM events WHERE kind = '`+api.CaptureKept+`'`); n != 1 {
+		t.Fatalf("captures recorded: %d", n)
+	}
+	orphan, err := d.captures.Put(bytes.NewReader([]byte("bytes no record names")), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := api.PurgeCaptures(ctx, d.store, d.captures, d.system, time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if has, _ := d.captures.Has(orphan); !has {
+		t.Fatal("bytes within the grace were swept")
+	}
+	if _, err := api.PurgeCaptures(ctx, d.store, d.captures, d.system, time.Now().Add(api.CaptureGrace+time.Minute), nil); err != nil {
+		t.Fatal(err)
+	}
+	if has, _ := d.captures.Has(orphan); has {
+		t.Error("bytes no record names outlived the grace")
+	}
+	kept := blobDigest([]byte("a body whose request ended"))
+	if has, _ := d.captures.Has(kept); !has {
+		t.Error("a kept capture's bytes were swept")
+	}
+}
+
+// blobDigest is b's blob digest.
+func blobDigest(b []byte) string {
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
