@@ -70,6 +70,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -222,6 +223,18 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	// all. A run that left too much is judged by what it wrote: copy-out
 	// bounds it again.
 	ad := adapters[in.Gate.ResultAdapter]
+	py := map[string]bool{} // the checkout's module files, read before the run (Astra #290 r3 H1)
+	if ad.pytest {
+		ws := a.Workspace()
+		if err := filepath.WalkDir(ws, func(p string, d fs.DirEntry, err error) error {
+			if rel, _ := filepath.Rel(ws, p); err == nil && !d.IsDir() && strings.HasSuffix(p, ".py") {
+				py[filepath.ToSlash(rel)] = true
+			}
+			return err
+		}); err != nil {
+			return v, err
+		}
+	}
 	_, runErr := in.Host.Start(ctx, sandbox.Run{Image: in.Image, Mode: sandbox.Gate, Attempt: a, Limits: in.Limits, Argv: argv(in.Gate.Command, ad)})
 	if (errors.Is(runErr, sandbox.ErrSpec) || errors.Is(runErr, sandbox.ErrHost)) && !errors.Is(runErr, sandbox.ErrLeft) {
 		return v, runErr
@@ -254,6 +267,10 @@ func run(ctx context.Context, in In) (v Verdict, err error) {
 	}
 	if v.Results, err = ad.parse(bytes.NewReader(v.Stream), in.Expected, base); err != nil {
 		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results are not "+ad.what)
+		return v, nil
+	}
+	if ad.pytest && results.CheckJUnitTree(v.Results, func(p string) bool { return py[p] }) != nil { // a baseline's too, measured
+		v.set(vocab.CouldNotRun, vocab.ReasonRunnerFault, "the run's results name a test two module files could have reported (ambiguous)")
 		return v, nil
 	}
 	v.judge(in, module, zero)

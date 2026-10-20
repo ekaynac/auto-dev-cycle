@@ -137,6 +137,28 @@ func TestGateFixtures(t *testing.T) {
 	if v := gated(t, f.in); is(v, vocab.Empty, vocab.ReasonCompletedClean) {
 		t.Errorf("a test replaced by one of its classname and name: %v", v)
 	}
+	// Astra #290 r3 H1: the same identity, file="tests/test_a.py", with
+	// tests/test_a/TestB_test.py beside the module (an ancestor's helper
+	// imported as the test): ambiguous, never present; measured too. With
+	// one module file (the control), it reads.
+	for name, c := range map[string]struct {
+		files map[string]string
+		want  string
+	}{
+		"an ancestor's helper": {map[string]string{"tests/test_a.py": "def check():\n    pass\n", "tests/test_a/TestB_test.py": "from tests.test_a import check as test_x\n"}, "runner_fault: the run's results name a test two module files could have reported"},
+		"one module file":      {map[string]string{"tests/test_a.py": "def check():\n    pass\n"}, "empty/completed_clean"},
+	} {
+		c.files["report.xml"] = at("tests/test_a.py")
+		f := pyFixture(t, c.files, false, pytest...)
+		f.in.Baseline.Report = base
+		if v := gated(t, f.in); !strings.Contains(v.String(), c.want) {
+			t.Errorf("%s: %v, want %s", name, v, c.want)
+		}
+		f.in.Baseline = nil
+		if b, v, err := Measure(context.Background(), f.in); err != nil || name == "an ancestor's helper" && (b.Results != nil || !strings.Contains(v.String(), c.want)) {
+			t.Errorf("%s, measured: %v, %v", name, v, err)
+		}
+	}
 }
 
 // TestGateCommand (#275, Astra #290): a junit_xml gate runs pytest
@@ -205,10 +227,11 @@ func TestGatePytest(t *testing.T) {
 		changed string
 		want    string
 	}{
-		"a clean run":                         {map[string]string{"tests/test_money.py": money, "money.py": "CASES = [1]\n"}, "", "empty/completed_clean"},
-		"a class's collection error":          {map[string]string{"tests/test_money.py": money, "tests/test_rates.py": rates, "money.py": "CASES = None\n"}, "money.py", "found/gate_test_failed"},
-		"a test defined in a shared helper":   {map[string]string{"tests/test_money.py": money, "helpers.py": "def check():\n    pass\n", "tests/test_a.py": "from helpers import check\n\n\nclass TestB_test:\n    test_x = staticmethod(check)\n", "money.py": "CASES = [1]\n"}, "", "runner_fault: the run's results are not a JUnit XML document"},
-		"test_sub moved to tests/test_money/": {map[string]string{"tests/test_money.py": money[:strings.Index(money, "\n\n\ndef test_sub")] + "\n", "tests/test_money/sub_test.py": "def test_sub():\n    pass\n", "money.py": "CASES = [1]\n"}, "", "runner_fault: 1 results missing"},
+		"a clean run":                            {map[string]string{"tests/test_money.py": money, "money.py": "CASES = [1]\n"}, "", "empty/completed_clean"},
+		"a class's collection error":             {map[string]string{"tests/test_money.py": money, "tests/test_rates.py": rates, "money.py": "CASES = None\n"}, "money.py", "found/gate_test_failed"},
+		"a test defined in a shared helper":      {map[string]string{"tests/test_money.py": money, "helpers.py": "def check():\n    pass\n", "tests/test_a.py": "from helpers import check\n\n\nclass TestB_test:\n    test_x = staticmethod(check)\n", "money.py": "CASES = [1]\n"}, "", "runner_fault: the run's results are not a JUnit XML document"},
+		"an ancestor's helper beside the module": {map[string]string{"tests/test_money.py": money, "tests/__init__.py": "", "tests/test_a.py": "def check():\n    pass\n", "tests/test_a/TestB_test.py": "from tests.test_a import check as test_x\n", "money.py": "CASES = [1]\n"}, "", "runner_fault: the run's results name a test two module files could have reported"},
+		"test_sub moved to tests/test_money/":    {map[string]string{"tests/test_money.py": money[:strings.Index(money, "\n\n\ndef test_sub")] + "\n", "tests/test_money/sub_test.py": "def test_sub():\n    pass\n", "money.py": "CASES = [1]\n"}, "", "runner_fault: the run's results name a test two module files could have reported"}, // tests.test_money.sub_test: tests/test_money.py's class, or this module
 	} {
 		f := pyFixture(t, c.files, true, "python3", "-m", "pytest", "-q", "-p", "no:cacheprovider")
 		f.in.Host.Runner = &local{path: filepath.Dir(py)}

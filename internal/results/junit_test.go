@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -79,6 +80,19 @@ func TestJUnitPytest(t *testing.T) {
 	// where its function is): unreadable, never tests/test_a.py's test.
 	if _, err := ParseJUnitXML(strings.NewReader(junit(t, "pytest-shared-helper.xml")), nil, nil); !errors.Is(err, ErrUnreadable) {
 		t.Errorf("a test defined in a shared helper: %v", err)
+	}
+	// Astra #290 r3 H1: tests/test_a.py's check, imported as test_x by
+	// tests/test_a/TestB_test.py (real pytest: file="tests/test_a.py"), with
+	// both module files in the tree, is ambiguous; with one, it reads.
+	r, err = ParseJUnitXML(strings.NewReader(junit(t, "pytest-ancestor-helper.xml")), nil, nil)
+	tree := func(files ...string) func(string) bool {
+		return func(p string) bool { return slices.Contains(files, p) }
+	}
+	if err := CheckJUnitTree(r, tree("tests/__init__.py", "tests/test_a.py", "tests/test_a/TestB_test.py")); err == nil || !errors.Is(err, ErrUnreadable) {
+		t.Errorf("an ancestor's helper beside the module: %v", err)
+	}
+	if err := CheckJUnitTree(r, tree("tests/__init__.py", "tests/test_a.py")); err != nil {
+		t.Errorf("one module file for the identity: %v", err)
 	}
 	// Astra #290 H4: tests/test_a.py::TestB_test::test_x, replaced by
 	// tests/test_a/TestB_test.py::test_x (one classname and name): missing.
@@ -173,6 +187,7 @@ func TestJUnitStrict(t *testing.T) {
 		"a declaration's version twice":     strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml version="1.0" version="1.0"?>`, 1),
 		"a declaration's unknown attribute": strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml version="1.0" pass="yes"?>`, 1),
 		"a declaration out of order":        strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, `<?xml encoding="utf-8" version="1.0"?>`, 1),
+		"a declaration with a form feed":    strings.Replace(suite(`tests="1"`, pass), `<?xml version="1.0" encoding="utf-8"?>`, "<?xml version=\"1.0\"\f?>", 1), // Astra #290 r3 L6
 	} {
 		if r, err := ParseJUnitXML(strings.NewReader(doc), nil, nil); !errors.Is(err, ErrUnreadable) {
 			t.Errorf("%s: %v, %v; want unreadable", name, outcomes(r), err)

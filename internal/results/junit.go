@@ -16,7 +16,12 @@ package results
 //     tests.test_a.TestB_test; a module's collection error (no classname)
 //     names its module. pytest's file is where the function is defined: a
 //     test defined elsewhere (a shared helper's, file="helpers.py") is
-//     unreadable, never another test's identity.
+//     unreadable, never another test's identity. And with the run's tree
+//     (the gate's, read before the run), an identity two module files
+//     could have reported (tests/test_a.py and tests/test_a/TestB_test.py
+//     for tests.test_a.TestB_test) is ambiguous, unreadable (CheckJUnitTree,
+//     Astra #290 r3 H1): trusted node ids (a controller's collection
+//     record) are P15c's.
 //   - Only a testcase with no failure, error or skipped child is a pass.
 //     An error (setup, teardown, collection) counts as a failure (Fail); a
 //     skipped one (skip, xfail) is Skip; the worst child decides. Packages
@@ -68,9 +73,10 @@ var known = map[string][]string{
 	"properties": {"property"},
 }
 
-// decl is the XML declaration's grammar (XML 1.0 §2.8, VersionNum 1.x).
-var decl = regexp.MustCompile(`^\s*version\s*=\s*("1\.[0-9]+"|'1\.[0-9]+')(\s+encoding\s*=\s*("[A-Za-z][A-Za-z0-9._-]*"|'[A-Za-z][A-Za-z0-9._-]*'))?` +
-	`(\s+standalone\s*=\s*("(yes|no)"|'(yes|no)'))?\s*$`)
+// decl is the XML declaration's grammar (XML 1.0 §2.8, VersionNum 1.x;
+// S is space, tab, CR and LF only: Astra #290 r3 L6).
+var decl = regexp.MustCompile(`^[ \t\r\n]*version[ \t\r\n]*=[ \t\r\n]*("1\.[0-9]+"|'1\.[0-9]+')([ \t\r\n]+encoding[ \t\r\n]*=[ \t\r\n]*("[A-Za-z][A-Za-z0-9._-]*"|'[A-Za-z][A-Za-z0-9._-]*'))?` +
+	`([ \t\r\n]+standalone[ \t\r\n]*=[ \t\r\n]*("(yes|no)"|'(yes|no)'))?[ \t\r\n]*$`)
 
 // read are the attributes the adapter reads, each within maxName.
 var read = []string{"file", "classname", "name", "tests", "failures", "errors", "skipped"}
@@ -221,4 +227,27 @@ func cmpOr(a, b string) string {
 		return b
 	}
 	return a
+}
+
+// CheckJUnitTree refuses a report a testcase of which two module files of
+// the run's tree could have reported (Astra #290 r3 H1): pytest's classname
+// flattens tests/test_a.py::TestB_test::test_x and
+// tests/test_a/TestB_test.py::test_x alike, and its file is where the
+// function is defined, so with both files present the identity is
+// ambiguous, unreadable, never present. module says whether a path (p/q.py)
+// is a module file of the tree, read before the run.
+func CheckJUnitTree(r Report, module func(path string) bool) error {
+	for _, x := range r.Results {
+		_, classname, _ := strings.Cut(x.Package, "::")
+		parts, n := strings.Split(classname, "."), 0
+		for k := 1; k <= len(parts) && x.Outcome != Missing; k++ {
+			if module(strings.Join(parts[:k], "/") + ".py") {
+				n++
+			}
+		}
+		if n > 1 {
+			return fmt.Errorf("%w (junit_xml): %.64q %.64q is ambiguous: %d module files could have reported it", ErrUnreadable, classname, x.Name, n)
+		}
+	}
+	return nil
 }
