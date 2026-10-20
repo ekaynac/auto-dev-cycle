@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
@@ -294,7 +295,7 @@ func send(g *gateway.Gateway, token string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(good))
 	r.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-	g.ServeHTTP(rec, r)
+	g.ServeHTTP(deadlined{rec}, r)
 	return rec
 }
 
@@ -659,7 +660,7 @@ func TestRequestsAdmittedBeforeAStop(t *testing.T) {
 		h := held{pw, httptest.NewRecorder(), make(chan struct{})}
 		r := httptest.NewRequest(http.MethodPost, "/chat/completions", pr)
 		r.Header.Set("Authorization", "Bearer "+tk)
-		go func() { g.ServeHTTP(h.rec, r); close(h.done) }()
+		go func() { g.ServeHTTP(deadlined{h.rec}, r); close(h.done) }()
 		<-at.checked // admitted: the attempt was running; the body is not read yet
 		return h
 	}
@@ -718,3 +719,9 @@ func TestIntendNeedsAPositiveReservationAndOneCall(t *testing.T) {
 		t.Fatalf("the bound call, intended again while pending: %v", err)
 	}
 }
+
+// deadlined is a recorder that takes write deadlines, as the gateway's
+// socket connection does: the gateway never writes without one (Opus #308 L5).
+type deadlined struct{ *httptest.ResponseRecorder }
+
+func (deadlined) SetWriteDeadline(time.Time) error { return nil }

@@ -221,9 +221,15 @@ func call(g *Gateway, token, path, body string, header map[string]string) *httpt
 		r.Header.Set(k, v)
 	}
 	w := httptest.NewRecorder()
-	g.ServeHTTP(w, r)
+	g.ServeHTTP(deadlined{w}, r)
 	return w
 }
+
+// deadlined is a recorder that takes write deadlines, as a connection does:
+// the gateway never writes without one (Opus #308 L5).
+type deadlined struct{ *httptest.ResponseRecorder }
+
+func (deadlined) SetWriteDeadline(time.Time) error { return nil }
 
 const good = `{"model":"stub-builder-1","messages":[{"role":"user","content":"hi"}]}`
 
