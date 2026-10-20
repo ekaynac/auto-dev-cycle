@@ -92,8 +92,10 @@ func minSeq(t *testing.T, dir, where string) int {
 // and sealed, its lease settled with the call, uncertain, kept as a
 // liability, which the model calls' bindings (projected in adcd) give. In
 // the log, the restart rule's transition comes first, then attempt.lost,
-// then whatever else the start appends (here the bootstrap's secret;
-// Opus #297 M2, L5). A second start appends no event; it records one
+// then whatever else the start appends, if anything (Opus #297 M2, L5:
+// the bootstrap's secret on a store with no operator; this store has one,
+// since a claim takes an admitted task, P22a-3, so the start appends
+// nothing else). A second start appends no event; it records one
 // recovery.lose command with none (Opus #297 L4).
 func TestStartRecoversACutAttempt(t *testing.T) {
 	fresh := restart(t, stateDir(t))
@@ -120,7 +122,7 @@ func TestStartRecoversACutAttempt(t *testing.T) {
 	after := fmt.Sprintf("seq > %d AND ", before)
 	uncertain, lost := minSeq(t, dir, after+`kind = 'effect.uncertain/v1'`), minSeq(t, dir, after+`kind = 'attempt.lost/v1'`)
 	other := minSeq(t, dir, after+`kind NOT LIKE 'effect.%' AND kind NOT LIKE 'attempt.%' AND kind NOT LIKE 'lease.%'`)
-	if uncertain == 0 || lost <= uncertain || other <= lost {
+	if uncertain == 0 || lost <= uncertain || other != 0 && other <= lost {
 		t.Errorf("the start's order: the restart rule at %d, attempt.lost at %d, the first other event at %d", uncertain, lost, other)
 	}
 	head := lastSeq(t, dir)
