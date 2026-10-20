@@ -108,20 +108,23 @@ func TestIntegrityProcess(t *testing.T) {
 		t.Fatalf("no child ran, or none ended: %d", len(ps))
 	}
 	// M1 (Opus #293): results past the frame's bounds (a Path past 4,096
-	// bytes; 70,000 warnings) fit to it: the same Accepted() and the same
-	// report, byte for byte.
+	// bytes; more warnings than a rank keeps, maxReported) fit to it: the
+	// same Accepted() and the same report, byte for byte. Opus's probe had
+	// 70,000 warnings (142 s here); past maxReported, any count takes the
+	// same path, and 1,500 keeps the package within its time.
 	var many strings.Builder
 	many.WriteString("package tool8\n\nimport \"fmt\"\n")
-	for i := range 70_000 {
+	for i := range maxReported + 500 {
 		fmt.Fprintf(&many, "\nfunc f%d() { fmt.Println() }\n", i)
 	}
 	for name, files := range map[string]map[string]string{
-		"a path past the frame's bound": {"tool9/long.go": "package tool9\n\nimport \"fmt\"\n\nfunc f" + strings.Repeat("a", 5000) + "() { fmt.Println(1) }\n"},
-		"70,000 warnings":               {"tool8/many.go": many.String()},
+		"a path past the frame's bound":      {"tool9/long.go": "package tool9\n\nimport \"fmt\"\n\nfunc f" + strings.Repeat("a", 5000) + "() { fmt.Println(1) }\n"},
+		"warnings past a rank's maxReported": {"tool8/many.go": many.String()},
 	} {
 		in, out := f.guarded(t, files), f.loaded(t, testLister(t), files)
 		in.Elapsed, out.Elapsed = 0, 0
-		if in.Accepted() != out.Accepted() || len(in.Warnings) == 0 || !sameReport(t, in.Report, out.Report) {
+		if in.Accepted() != out.Accepted() || len(in.Warnings) == 0 || name != "a path past the frame's bound" && len(in.Warnings) <= maxReported ||
+			len(out.Warnings) != len(in.Warnings) || !sameReport(t, in.Report, out.Report) {
 			t.Errorf("%s: accepted %v, %d warnings; in its own %v, %d warnings; %q", name, in.Accepted(), len(in.Warnings), out.Accepted(), len(out.Warnings), whats(out.Blocks))
 		}
 	}
@@ -229,18 +232,20 @@ func TestIntegrityProcess(t *testing.T) {
 		select {
 		case v := <-done:
 			left, _ := os.ReadDir(scratch)
-			want := map[bool]int{true: 1}[name == "a reader that never returns"] // its call still runs
-			if ps := procs(); !finds(v.Blocks, "did not finish by its whole-run deadline") || len(ps) != n+1 || !exited(ps[n]) || len(left) != want {
+			stuckCall := name == "a reader that never returns" // its call still runs: its directory stays
+			if ps := procs(); !finds(v.Blocks, "did not finish by its whole-run deadline") || len(ps) != n+1 || !exited(ps[n]) || stuckCall && len(left) != 1 {
 				t.Errorf("%s: %q, %d children, left %d", name, whats(v.Blocks), len(ps)-n, len(left))
 			}
-			if want == 1 {
+			if stuckCall {
 				once.Do(func() { close(stuck) })
-				for end := time.Now().Add(10 * time.Second); len(left) != 0 && time.Now().Before(end); left, _ = os.ReadDir(scratch) {
-					time.Sleep(10 * time.Millisecond)
-				}
-				if len(left) != 0 {
-					t.Errorf("%s: its directory kept once the call returned", name)
-				}
+			}
+			// The directory goes once no call runs in it: a reader that
+			// returns as its context ends can outlive the run by a moment.
+			for end := time.Now().Add(10 * time.Second); len(left) != 0 && time.Now().Before(end); left, _ = os.ReadDir(scratch) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if len(left) != 0 {
+				t.Errorf("%s: its directory kept once no call runs in it", name)
 			}
 		case <-time.After(maxRunTime + 10*baseline + 30*time.Second):
 			t.Errorf("%s: no verdict in %v", name, time.Since(begin))
