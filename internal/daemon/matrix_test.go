@@ -125,14 +125,14 @@ func TestMatrixRefusesMisclassification(t *testing.T) {
 		"unclassified":   with(func(m map[string]Owner) { delete(m, "review.request") }),
 		"wired+deferred": with(func(m map[string]Owner) { m["seat.take"] = Owner{Milestone: Unassigned} }),
 		"unregistered":   with(func(m map[string]Owner) { m["no.such"] = Owner{Milestone: Unassigned} }),
-		"no milestone":   with(func(m map[string]Owner) { m["task.create"] = Owner{} }),
+		"no milestone":   with(func(m map[string]Owner) { m["review.request"] = Owner{} }),
 	} {
 		deferred = list
 		if _, err := Matrix(mustLoad(t)); err == nil {
 			t.Errorf("%s: no error", name)
 		}
 	}
-	deferred, wiredNotes = savedDeferred, map[string]string{"task.create": "a note on a deferred action"}
+	deferred, wiredNotes = savedDeferred, map[string]string{"review.request": "a note on a deferred action"}
 	if _, err := Matrix(mustLoad(t)); err == nil {
 		t.Error("a note on an unwired action: no error")
 	}

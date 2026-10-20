@@ -12,8 +12,11 @@
 # token goes to --token-out, grants it, and has it take the seat, add a
 # note and release the seat; a scoped read returns only granted records;
 # stale, refused and deferred commands give their registered reasons and
-# exit codes; adc doctor warns a supervisor run as the daemon uid and not
-# an operator; the event stream shows the events in seq order. Then the
+# exit codes; intake (P22a-2): the operator creates M1's py-mini project
+# (its profile mounted read-only at /py-mini.json) and a task with an
+# attachment, and cancels it, which the board shows in Done; adc doctor
+# warns a supervisor run as the daemon uid and not an operator; the event
+# stream shows the events in seq order. Then the
 # grant and the supervisor's token are revoked, the revoked bearer gets
 # HTTP 401, adcd stops cleanly on SIGTERM, its log verifies, and no secret
 # appears in any log, output or state file besides the two token files.
@@ -44,6 +47,8 @@ if [[ "${1:-}" != --inside ]]; then
   [[ -x "$prefix/bin/adc-harness" && -x "$prefix/lib/adc/node/bin/node" ]] || die "adc-harness and lib/adc are not installed in $prefix"
   for t in bwrap curl timeout; do command -v "$t" >/dev/null || die "$t is required"; done
   self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  profile="$(dirname "$self")/../fixtures/m1/profiles/py-mini.json"
+  [[ -f "$profile" ]] || die "no M1 py-mini profile at $profile"
   sys=(--ro-bind /usr /usr)
   for d in bin sbin lib lib64 lib32; do
     if [[ -L "/$d" ]]; then sys+=(--symlink "$(readlink "/$d")" "/$d")
@@ -54,7 +59,7 @@ if [[ "${1:-}" != --inside ]]; then
     if [[ -e "$n" ]]; then sys+=(--ro-bind /dev/null "$n"); fi
   done
   exec env -i PATH=/usr/bin:/bin timeout --foreground --kill-after=10 300 bwrap --unshare-all --die-with-parent "${sys[@]}" \
-    --ro-bind "$prefix" /p --ro-bind "$self" /smoke.sh --ro-bind "$(dirname "$self")/lib/secrets.sh" /secrets.sh --tmpfs /tmp --proc /proc --dev /dev \
+    --ro-bind "$prefix" /p --ro-bind "$self" /smoke.sh --ro-bind "$(dirname "$self")/lib/secrets.sh" /secrets.sh --ro-bind "$profile" /py-mini.json --tmpfs /tmp --proc /proc --dev /dev \
     --chdir /tmp --setenv HOME /tmp --setenv TMPDIR /tmp --setenv ADC_SMOKE_SANDBOX 1 -- bash /smoke.sh --inside
 fi
 # Only ever inside the sandbox: it would otherwise write to the real /tmp.
@@ -169,6 +174,27 @@ want 0 opnote
 adc_as /tmp/op deferred task request-review --expect 0 --reason smoke --json
 want 2 deferred action_deferred
 
+step "intake: the operator creates a project and a task, and cancels the task (P22a-2)"
+# field NAME KEY: the first "KEY":"value" or "KEY":number in NAME's output.
+field() { sed -n "s/.*\"$2\":\"\{0,1\}\([a-z0-9_]*\).*/\1/p" "$out/$1.out" | head -n 1; }
+adc_as /tmp/op project project create --expect 0 --reason smoke --json --scope "$(cat /py-mini.json)"
+want 0 project
+prj="$(field project project)"
+[[ "$prj" == prj_* ]] || die "project create: no project id: $(head -c 400 "$out/project.out")"
+printf '{"project":"%s","title":"smoke","requirement":"r"}' "$prj" >/tmp/spec.json
+printf 'def test_smoke():\n    pass\n' >/tmp/test_smoke.py
+adc_as /tmp/op task task create --expect 0 --reason smoke --json --scope-file /tmp/spec.json --attach /tmp/test_smoke.py
+want 0 task
+tsk="$(field task task)" first="$(field task first_seq)"
+[[ "$tsk" == tsk_* && -n "$first" ]] || die "task create: no task id: $(head -c 400 "$out/task.out")"
+grep -q '"state":"ready"' "$out/task.out" || die "task create: not ready: $(head -c 400 "$out/task.out")"
+adc_as /tmp/op cancel task cancel --expect "$first" --reason smoke --json --scope "{\"task\":\"$tsk\",\"reason\":\"smoke\"}"
+want 0 cancel
+adc_as /tmp/op board board --json
+want 0 board
+grep -q '"column":"done"' "$out/board.out" && grep -q '"cancelled":true' "$out/board.out" ||
+  die "board: the cancelled task is not in Done: $(head -c 400 "$out/board.out")"
+
 step "a scoped read returns only granted records"
 get notes "$sup_tok" /v1/notes
 [[ $code == 200 ]] || die "the supervisor's notes read: HTTP $code"
@@ -258,4 +284,4 @@ env -i PATH="$hpath" HOME=/tmp TMPDIR=/tmp ADC_FAKE_SCENARIO=safe-output timeout
 grep -q '"submitted":{"call":"cal_[0-9a-z]*","outcome":"found","reason":"completed_with_findings","kind":"patch","blob":"sha256:[0-9a-f]\{64\}"}' "$out/harness.out" ||
   die "adc-harness submitted no patch result: $(head -c 600 "$out/harness.out")"
 grep -q '"usage":\[{"id":"msr_' "$out/harness.out" || die "adc-harness recorded no usage: $(head -c 600 "$out/harness.out")"
-step "ok: bootstrap, enrolment, grant, seat, notes, reads, the event stream, revocation and the fake adapter run (result 9) through the installed binaries"
+step "ok: bootstrap, enrolment, grant, seat, notes, reads, intake, the event stream, revocation and the fake adapter run (result 9) through the installed binaries"

@@ -47,6 +47,9 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 	if len(args) >= 2 && args[0] == "dev" && args[1] == "verify-log" {
 		return verifyLog(ctx, args[2:], stdout, stderr)
 	}
+	if len(args) >= 2 && args[0] == "dev" && args[1] == "capabilities" {
+		return devCapabilities(args[2:], stdout, stderr)
+	}
 	if len(args) >= 1 && args[0] == "events" {
 		return events(ctx, args[1:], stdout, stderr, c)
 	}

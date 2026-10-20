@@ -10,6 +10,7 @@ actions:
   - {action: project.create, family: project, description: "Register a project and its first profile revision.", introduced: 0.1.0, deprecated: null, source: "07"}
   - {action: profile.adopt, family: project, description: "Adopt a project profile revision; authority classifies what it widens or weakens.", introduced: 0.1.0, deprecated: null, source: "07"}
   - {action: task.create, family: task, description: "Create a task in a project.", introduced: 0.1.0, deprecated: null, source: "08"}
+  - {action: task.cancel, family: task, description: "Cancel a task still in Ready, terminally, with a reason; an admitted task keeps the hold and revoke path (backlog #226 entry 23).", introduced: 0.1.0, deprecated: null, source: "08"}
   - {action: task.raise_rail, family: task, description: "Raise one of a task's count rails and clear its budget_rail holds on it.", introduced: 0.1.0, deprecated: null, source: "08"}
   - {action: review.request, family: task, description: "Ask for an independent review of a subject.", introduced: 0.1.0, deprecated: null, source: "06"}
   - {action: input.answer, family: holds, description: "Answer an owed input of kind ruling or data, bound to its revision [PR5-1].", introduced: 0.1.0, deprecated: null, source: "04"}
