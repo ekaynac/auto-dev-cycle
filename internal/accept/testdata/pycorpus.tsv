@@ -1,0 +1,12 @@
+# The Python guard's false-block corpus (P14c-2a-widen-b, D55): the
+# repositories Opus #266 measured, each at a pinned tag and commit. A dir
+# is relative to ADC_PY_CORPUS_ROOT, or $NAME: the directory that
+# environment variable names (a repository read in place, never written).
+# name	url	tag	commit	dir
+numpy	https://github.com/numpy/numpy	v2.1.0	2f7fe64b8b6d7591dd208942f1cc74473d5db4cb	numpy
+networkx	https://github.com/networkx/networkx	networkx-3.3	7fdddfa2caa8275f7862c46524b803db99ff2cde	networkx
+setuptools	https://github.com/pypa/setuptools	v72.1.0	441799f8b45a1a01c608db49333403db1b0d7100	setuptools
+arrow	https://github.com/apache/arrow	apache-arrow-17.0.0	6a2e19a852b367c72d7b12da4d104456491ed8b7	arrow
+sympy	https://github.com/sympy/sympy	sympy-1.13.2	2197797741156d9cb73a8d1462f7985598e9b1a9	sympy
+TransformerEngine	https://github.com/NVIDIA/TransformerEngine	v1.9	e79d915aa0ae1bfc69a6c6491357ce4dfc7befe8	TransformerEngine
+inframedic	https://github.com/ekaynac/inframedic	-	828f682c3b60a7cc74dbaab2af059b9a0e1c1f70	$ADC_PY_CORPUS_INFRAMEDIC
