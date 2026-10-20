@@ -58,7 +58,7 @@ and is never edited apart from it.
 | I4 Reuse | enforced | P6 | `answers`: all |
 | I5 Consumption | partial | P15, P16, P22a (P8b done, inert) | `launch`: admission; `review`: all |
 | I6 Effect intent | partial | P18, P20 (merge half), P22a, P27 (P12a, P12b and P20's `model_call` half done) | `launch`: the `model_call` rows; `merge-local`, `merge-github`: the merge rows, including P20's GitHub settlement for `merge-github` |
-| I7 Review independence | partial | P16, P22a (P7, P8b done, inert) | `launch`: consumption; `review`: all |
+| I7 Review independence | partial | P22a (P7, P8b, P16b done, inert) | `launch`: consumption; `review`: all |
 | I8 Fencing and attempt binding | partial | P22a (P8a done; P21a, P21b done, inert) | `launch`: all |
 | I9 Accounting | partial | P22a (P11b, P12a, P12b, P20's `model_call` half and P21a done, inert) | `launch`: all |
 | I10 Egress, data policy, context | partial | P16, P22a (P7, P8b, P11, P11b done, inert) | `launch`: all |
@@ -140,7 +140,7 @@ implementation item.
 
 | Check | Today | Status | Item |
 |---|---|---|---|
-| admission | `graph.RecordReview`, `ClaimReview` → `registered` (`graph/roster.go`) against `graph.Families`. The registry (`internal/registry`, P7 #236; `adcd run --registry`) refuses equal builder and reviewer families at start (`distinct`) and implements `graph.Families` (`Registry.Family`). Contributor families (P16b): `graph.Contributors` reads the families of every lease on the task's build nodes; `ClaimReview` and the commit of a review's result refuse a roster member of a contributing family, or any member once a contributor's family is unknown, and a review receipt the result holds is checked by `receipt.Independent` against them. Kept in code, inert until P22a | kept + GAP | P22a |
+| admission | `graph.RecordReview`, `ClaimReview` → `registered` (`graph/roster.go`) against `graph.Families`. The registry (`internal/registry`, P7 #236; `adcd run --registry`) refuses equal builder and reviewer families at start (`distinct`) and implements `graph.Families` (`Registry.Family`). Contributor families (P16b): `graph.Contributors` reads the families of every lease on the task's build nodes, through today's registry (the operator never re-declares an executor id under another family), and counts `unknown` for a build with a recorded result and no lease; `ClaimReview` and the commit of a review's result (but a `could_not_run` one) refuse a roster member of a contributing family, or any member once a contributor's family is unknown, and a review receipt the result holds is checked by `receipt.Independent` against them. Kept in code, inert until P22a | kept + GAP | P22a |
 | fold/replay | `checkRoster`, `checkReview` (`graph/roster.go`): shape, and no `unknown` family | kept | — |
 | consumption | `bindsRequirement` (`graph/roster.go`), `currentRevision` (`graph/supersede.go`); `dispatch.Match` (P8b, #247) places a rostered node only on its pinned roster member, a reviewer, and any other node only on a builder. Kept in code, inert until P22a | kept + GAP | P22a |
 | effect | `serves` (`graph/requirement.go`): the merge's requirement is served at the subject's selected revision | kept | — |

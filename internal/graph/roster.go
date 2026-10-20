@@ -43,12 +43,16 @@ type Families interface {
 }
 
 // ErrNotIndependent: a roster member's family is unknown, or is not the
-// one the registry now derives for its executor (06 rule 3). Its outcome is
-// could_not_run/reviewer_not_independent.
-type ErrNotIndependent struct{ Executor types.ExecutorID }
+// one the registry now derives for its executor, or contributed to the
+// candidate, or a contributor's family is unknown (06 rule 3; P16b). Its
+// outcome is could_not_run/reviewer_not_independent; Cause says which.
+type ErrNotIndependent struct {
+	Executor types.ExecutorID
+	Cause    string
+}
 
 func (e ErrNotIndependent) Error() string {
-	return "graph: executor " + string(e.Executor) + " has no registered model family of its roster"
+	return "graph: reviewer " + string(e.Executor) + " is not independent: " + e.Cause
 }
 
 // Reason is the refusal's reason code; the evaluator holds the node on
@@ -74,7 +78,7 @@ func registered(n types.Node, families Families) error {
 	}
 	for _, m := range roster {
 		if types.Name(families.Family(m.Executor)) != m.Family { // an unknown family is no roster family (checkRoster)
-			return ErrNotIndependent{m.Executor}
+			return ErrNotIndependent{m.Executor, "its family is not the registry's"}
 		}
 	}
 	return checkRoster(roster)
@@ -133,7 +137,7 @@ func checkRoster(roster []types.RosterMember) error {
 	}
 	for i, m := range roster {
 		if m.Family == receipt.UnknownFamily {
-			return ErrNotIndependent{m.Executor}
+			return ErrNotIndependent{m.Executor, "its family is unknown"}
 		}
 		if i > 0 && roster[i-1].Executor >= m.Executor {
 			return errors.New("graph: a roster is sorted by executor and names each once")

@@ -5,11 +5,13 @@ package review
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab/exitmap"
@@ -46,6 +48,11 @@ func TestParse(t *testing.T) {
 	}
 	for name, b := range map[string]string{
 		"a duplicate decision":     `{"decision":"go","decision":"no_go","summary":"","findings":[]}`,
+		"Decision beside decision": `{"decision":"no_go","summary":"","findings":[],"Decision":"go"}`,
+		"DECISION for decision":    `{"DECISION":"go","summary":"","findings":[]}`,
+		"a finding's Severity":     `{"decision":"no_go","summary":"","findings":[{"severity":"high","title":"t","detail":"d","Severity":"low"}]}`,
+		"a finding as a string":    `{"decision":"no_go","summary":"","findings":["t"]}`,
+		"a summary as a number":    `{"decision":"go","summary":1,"findings":[]}`,
 		"an unknown field":         `{"decision":"go","summary":"","findings":[],"approve":true}`,
 		"trailing data":            decision(Go) + `{}`,
 		"no findings":              `{"decision":"go","summary":""}`,
@@ -101,7 +108,7 @@ func TestResult(t *testing.T) {
 	}
 	long := strings.Repeat("ş", maxTitle) // 512 bytes
 	facts := func(submitted bool, d types.Digest) Facts {
-		return Facts{Submitted: submitted, Decision: d, Round: 2, Roster: []types.RosterMember{{Executor: exe, Family: "gpt"}},
+		return Facts{Submitted: submitted, Decision: d, CandidateRound: 2, Inputs: []string{"gate-report", "candidate", "gate-report"}, Roster: []types.RosterMember{{Executor: exe, Family: "gpt"}},
 			Calls: []types.CallID{call}, Elapsed: 1500 * time.Millisecond, Project: project, Exit: exitmap.Exit{StopRequested: true}}
 	}
 	for name, c := range map[string]struct {
@@ -125,8 +132,13 @@ func TestResult(t *testing.T) {
 		if c.refs == 2 && r.Value[0].ContentDigest != c.f.Decision {
 			t.Errorf("%s: the decision is not held", name)
 		}
+		for _, ref := range r.Value { // derived from the review's inputs (I18)
+			if !slices.Equal(ref.Lineage, []string{"candidate", "gate-report"}) {
+				t.Errorf("%s: a ref's lineage %v", name, ref.Lineage)
+			}
+		}
 		rep := report(t, blobs, r)
-		if rep["schema"] != reportSchema || rep["elapsed_ms"] != float64(1500) || rep["round"] != float64(2) || rep["repair_round"] != c.repair ||
+		if rep["schema"] != reportSchema || rep["elapsed_ms"] != float64(1500) || rep["candidate_round"] != float64(2) || rep["repair_round"] != c.repair ||
 			rep["outcome"] != string(c.outcome) || fmt.Sprint(rep["charge_links"]) != "["+string(call)+"]" || fmt.Sprint(rep["roster"]) != "[map[executor:"+string(exe)+" family:gpt]]" {
 			t.Errorf("%s: the report %v", name, rep)
 		}
@@ -140,5 +152,12 @@ func TestResult(t *testing.T) {
 	}
 	if _, err := Result(key, facts(true, types.Digest("sha256:"+strings.Repeat("0", 64))), blobs); err == nil {
 		t.Error("a decision blob that is not in the store")
+	}
+}
+
+// The controller's bound on a decision is the adapter host's.
+func TestDecisionBound(t *testing.T) {
+	if maxDecision != adapterhost.BoundDecision {
+		t.Errorf("maxDecision %d, the adapter host's bound %d", maxDecision, adapterhost.BoundDecision)
 	}
 }

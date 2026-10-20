@@ -340,6 +340,9 @@ func (g *graphFix) requirementResult(n types.NodeID, b json.RawMessage) error {
 // a result of kind holding value.
 func (g *graphFix) complete(kind types.NodeKind, params json.RawMessage, input []types.InputSpec, resolved map[string]graph.Resolved, rk types.ResultKind, value []types.Ref, conclusions *json.RawMessage) (types.NodeID, types.ResultID, error) {
 	n, err := g.record(kind, params, input)
+	if err == nil && kind == types.NodeKindBuild {
+		err = g.builtBy(n, exeC)
+	}
 	if err == nil {
 		err = g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			if kind == types.NodeKindReview || kind == types.NodeKindReviewRequirement {
@@ -353,6 +356,17 @@ func (g *graphFix) complete(kind types.NodeKind, params json.RawMessage, input [
 	}
 	r, err := g.selectResult(n, rk, value, conclusions)
 	return n, r, err
+}
+
+// builtBy requests a builder lease for e on build n's unit: its contributor
+// (graph.Contributors; P16b), gpt for the fixtures' claude reviewers.
+func (g *graphFix) builtBy(n types.NodeID, e types.ExecutorID) error {
+	l, _, err := freshLease()
+	if err != nil {
+		return err
+	}
+	l.Unit, l.Executor = graph.UnitOf(n), e
+	return g.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, l) })
 }
 
 // withRequired is resolved with n's review requirement inputs resolved to

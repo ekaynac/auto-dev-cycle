@@ -5,6 +5,7 @@ package graph
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -136,5 +137,46 @@ func TestReviewCommitIndependent(t *testing.T) {
 	g.leaseOn(g.record(g.newNode(types.NodeKindBuild)), exeC) // gpt builds after the claim
 	if err := g.do(commit(later, g.reviewResult(later), env)); !refused(err) {
 		t.Errorf("a contributor after the claim: %v", err)
+	}
+	// Its could_not_run result is still recorded, never selected (Opus #291 L3).
+	cnr := g.reviewResult(later)
+	cnr.Outcome, cnr.Reason, cnr.Detail, cnr.Completed = types.OutcomeCouldNotRun, vocab.ReasonReviewerNotIndependent, "a contributing family", false
+	if err := g.do(commit(later, cnr, env)); err != nil {
+		t.Errorf("a could_not_run result after a contributor: %v", err)
+	}
+}
+
+// unleased completes a build of the task whose result no lease produced.
+func (g graphStore) unleased() types.NodeID {
+	g.t.Helper()
+	n := g.record(g.newNode(types.NodeKindBuild))
+	g.must(g.claimOf(n))
+	r := unrecorded(g.t, *g.state(n).Key)
+	r.Kind, r.Outcome, r.Reason, r.Detail = types.ResultKindPatch, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return recordResult(tx, types.ResultRecorded{Node: n, Result: r}, g.blobs)
+	})
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, n, r.ID) })
+	return n
+}
+
+// TestUnleasedBuildIsUnknown (Opus #291 M1): a build of the task with a
+// recorded result and no lease has a contributor of unknown family: a
+// review is held at its claim, and a review claimed before it appears is
+// refused at the commit.
+func TestUnleasedBuildIsUnknown(t *testing.T) {
+	g := openStore(t)
+	env := g.env(noRequirement)
+	claimed := g.reviewBy(exeA)
+	if got := g.evaluated(claimed); got != "claimed" {
+		t.Fatalf("the review is %s", got)
+	}
+	g.unleased()
+	if got := g.evaluated(g.reviewBy(exeA)); got != "reviewer_unavailable" {
+		t.Errorf("a review after an unleased build: %s", got)
+	}
+	var e ErrNotIndependent
+	if err := g.do(commit(claimed, g.reviewResult(claimed), env)); !errors.As(err, &e) || !strings.Contains(e.Cause, "unknown") {
+		t.Errorf("a GO review committed after an unleased build: %v", err)
 	}
 }

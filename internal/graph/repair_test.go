@@ -62,6 +62,18 @@ func TestRepair(t *testing.T) {
 	if st := g.state(next.Node.ID).State; st != types.NodeStateStateClaimed {
 		t.Errorf("the repair round is %s", st)
 	}
+	// Round 2 completes and is reviewed no_go: round 3 takes findings-2
+	// and candidate-2 after round 1's inputs.
+	g.leaseOn(next.Node.ID, exeC)
+	r2 := unrecorded(g.t, *g.state(next.Node.ID).Key)
+	r2.Kind, r2.Outcome, r2.Reason, r2.Detail = types.ResultKindPatch, types.OutcomeEmpty, vocab.ReasonCompletedClean, ""
+	g.must(commit(next.Node.ID, r2, g.env(noRequirement)))
+	noGo2 := g.reviewed(next.Node.ID, types.OutcomeFound)
+	third, err := g.repair(next.Node.ID, noGo2)
+	if in := third.Node.Inputs; err != nil || third.Node.Round != 3 || len(in) != 5 || in[3].Name != "findings-2" || in[4].Name != "candidate-2" ||
+		in[4].Source.Variant.(*types.ResultSource).Producer != next.Node.ID {
+		t.Errorf("the second repair: %+v %v", third, err)
+	}
 	other, otherRes := g.completedWith(types.NodeKindBuild, types.ResultKindPatch, []types.Ref{})
 	planReview, _ := g.completedWith(types.NodeKindReview, types.ResultKindReview, []types.Ref{})
 	// A no_go review of other's candidate recorded in another task.
@@ -80,11 +92,12 @@ func TestRepair(t *testing.T) {
 	})
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return selectResult(tx, fn, fr.ID) })
 	for name, c := range map[string][2]types.NodeID{
-		"a go review":                     {other, g.reviewed(other, types.OutcomeEmpty)},
-		"a review of another node":        {other, planReview},
-		"a review of another build":       {other, noGo},
-		"a repair of a review, not build": {noGo, noGo},
-		"a review in another task":        {other, fn},
+		"a go review":                                    {other, g.reviewed(other, types.OutcomeEmpty)},
+		"a review of another node":                       {other, planReview},
+		"a review of another build":                      {other, noGo},
+		"a review that does not take the build (itself)": {noGo, noGo},
+		"a second repair of the same round (a fork)":     {build, noGo},
+		"a review in another task":                       {other, fn},
 	} {
 		if _, err := g.repair(c[0], c[1]); err == nil {
 			t.Errorf("%s: repaired", name)

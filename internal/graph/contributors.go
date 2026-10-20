@@ -13,14 +13,22 @@ package graph
 //     the set errs toward more: a reviewer is never independent of a
 //     family that could have shaped the candidate.
 //   - An executor the registry does not hold counts as
-//     receipt.UnknownFamily, and an unknown contributor makes no reviewer
+//     receipt.UnknownFamily, and so does a build node of the task with a
+//     recorded result and no lease on its unit (its proposer's family is
+//     not known, Opus #291 M1). An unknown contributor makes no reviewer
 //     independent (06 rule 3).
+//   - The family is today's registry's for the lease's executor, not a
+//     snapshot taken at the lease: the operator does not re-declare an
+//     executor id under another family (Opus #291 L4).
 //   - A review's claim (ClaimReview) and the commit of its result both
 //     refuse a roster member of a contributing family (ErrNotIndependent:
 //     the evaluator holds the node on reviewer_unavailable), each against
-//     the contributors at its own time. A review result that holds a review
-//     receipt is also checked by receipt.Independent: its recorded model
-//     families against the contributors.
+//     the contributors at its own time. A could_not_run result is
+//     committed regardless: it is never selected, and it is how P22a
+//     records a review that cannot run independently (Opus #291 L3). A
+//     review result that holds a review receipt is also checked by
+//     receipt.Independent: its recorded model families against the
+//     contributors.
 
 import (
 	"errors"
@@ -43,6 +51,7 @@ func Contributors(tx *eventstore.Tx, task types.TaskID, families Families) ([]st
 		return nil, err
 	}
 	var out []string
+	leased := map[types.NodeID]bool{}
 	for _, k := range keys {
 		l, _, ok, err := lease.LeaseOf(tx, types.LeaseID(k))
 		if err != nil || !ok {
@@ -57,7 +66,20 @@ func Contributors(tx *eventstore.Tx, task types.TaskID, families Families) ([]st
 			return nil, err
 		}
 		if ok && rec.Recorded.Task == task && rec.Recorded.Node.Kind == types.NodeKindBuild {
-			out = append(out, families.Family(l.Executor))
+			out, leased[node] = append(out, families.Family(l.Executor)), true
+		}
+	}
+	nodes, err := tx.Keys(NodeProjection, "")
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range nodes {
+		rec, err := loadNode(tx, types.NodeID(k))
+		if err != nil {
+			return nil, err
+		}
+		if rec.Recorded.Task == task && rec.Recorded.Node.Kind == types.NodeKindBuild && rec.State.Result != nil && !leased[rec.Recorded.Node.ID] {
+			out = append(out, receipt.UnknownFamily) // a result no lease of ours produced
 		}
 	}
 	slices.Sort(out)
@@ -79,9 +101,13 @@ func independentOf(tx *eventstore.Tx, rec nodeRecord, families Families) ([]stri
 	if err != nil {
 		return nil, err
 	}
+	unknown := slices.Contains(contributors, receipt.UnknownFamily)
 	for _, m := range roster {
-		if slices.Contains(contributors, string(m.Family)) || slices.Contains(contributors, receipt.UnknownFamily) {
-			return nil, ErrNotIndependent{m.Executor}
+		switch {
+		case unknown:
+			return nil, ErrNotIndependent{m.Executor, "a contributor's family is unknown"}
+		case slices.Contains(contributors, string(m.Family)):
+			return nil, ErrNotIndependent{m.Executor, "its family " + string(m.Family) + " contributed to the candidate"}
 		}
 	}
 	return contributors, nil
@@ -89,10 +115,11 @@ func independentOf(tx *eventstore.Tx, rec nodeRecord, families Families) ([]stri
 
 // reviewIndependent: rr, a review's result, is committed only by a roster
 // independent of the contributors now, and a review receipt it holds is
-// independent of them (receipt.Independent).
+// independent of them (receipt.Independent). A could_not_run result is
+// exempt.
 func reviewIndependent(tx *eventstore.Tx, rr types.ResultRecorded, env Env) error {
 	rec, err := loadNode(tx, rr.Node)
-	if err != nil || rec.Recorded.Node.Kind != types.NodeKindReview {
+	if err != nil || rec.Recorded.Node.Kind != types.NodeKindReview || rr.Result.Outcome == types.OutcomeCouldNotRun {
 		return err
 	}
 	contributors, err := independentOf(tx, rec, env.Families)

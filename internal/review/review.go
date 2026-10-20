@@ -8,20 +8,24 @@
 //     (adapters/http-chat's defaultDecisionSchema: go or no_go, a summary,
 //     findings), admitted to the blob store by the adapter host. The
 //     controller reads it again strictly (contract.ReadStrict: no
-//     duplicate key, valid UTF-8, no trailing data; no unknown field) and
-//     within the schema's bounds; it never trusts the adapter's check.
+//     duplicate key, valid UTF-8, no trailing data; exactly the schema's
+//     keys, in their case) and within the schema's bounds; it never trusts
+//     the adapter's check.
 //   - The outcome table: go → empty/completed_clean; no_go →
 //     found/completed_with_findings, which a repair round takes
 //     (graph.Repair); no submitted decision → could_not_run with the exit
 //     map's reason; a decision that is not one → could_not_run/
 //     degenerate_output. The adapter's own outcome never decides.
 //   - The result's value is the decision (the repair builder's findings
-//     input), when it is one, and the D55 report. The detail never echoes
-//     the reviewer's text.
+//     input), when it is one, and the D55 report, each with the review's
+//     rendered input ids as its lineage: the decision derives from what
+//     the reviewer saw, the gate report included (I18). The detail never
+//     echoes the reviewer's text.
 //   - D55: the report records the elapsed time, the charge links (the
 //     reviewer's model call ids), the roster, the verdict, each finding's
-//     severity and title (cut to maxTitle bytes), and the round, and for a
-//     no_go the repair round it causes (round + 1). P30's ledger reads it.
+//     severity and title (cut to maxTitle bytes), and the reviewed
+//     candidate's round, and for a no_go the repair round it causes
+//     (that round + 1). P30's ledger reads it.
 package review
 
 import (
@@ -76,12 +80,19 @@ type Facts struct {
 	Submitted bool
 	Decision  types.Digest
 	// Exit is what the controller knows of a reviewer that did not complete.
-	Exit    exitmap.Exit
-	Round   int64
-	Roster  []types.RosterMember
-	Calls   []types.CallID // the reviewer's model calls: the charge links
-	Elapsed time.Duration
-	Project types.ProjectID
+	Exit exitmap.Exit
+	// CandidateRound is the round of the build whose candidate was
+	// reviewed (graph.Repair's n), not the review's own round: a review of
+	// a repaired build is a new node, always round 1 (Opus #291 L1).
+	CandidateRound int64
+	Roster         []types.RosterMember
+	Calls          []types.CallID // the reviewer's model calls: the charge links
+	Elapsed        time.Duration
+	Project        types.ProjectID
+	// Inputs are the ids of the refs the review's claim rendered: the
+	// lineage of its decision and report, which derive from them (I18;
+	// Opus #291 M2).
+	Inputs []string
 }
 
 // Finding is one finding of a decision.
@@ -98,44 +109,61 @@ type Decision struct {
 	Findings []Finding `json:"findings"`
 }
 
-// Parse reads b as a decision, strictly and within its bounds.
+// Parse reads b as a decision, strictly and within its bounds: from the
+// tree contract.ReadStrict reads (no duplicate key, valid UTF-8, no
+// trailing data), whose objects must have exactly the schema's keys, in
+// their case (Opus #291 H1: a decoder matching keys in any case read
+// "Decision" beside "decision").
 func Parse(b []byte) (Decision, error) {
 	if len(b) > maxDecision {
 		return Decision{}, fmt.Errorf("review: a decision of over %d bytes", maxDecision)
 	}
-	if _, err := contract.ReadStrict(b); err != nil {
+	v, err := contract.ReadStrict(b)
+	if err != nil {
 		return Decision{}, err
 	}
-	type finding struct { // a field left out decodes to nil: every one is required
-		Severity *string `json:"severity"`
-		Title    *string `json:"title"`
-		Detail   *string `json:"detail"`
+	top, ok := exactly(v, "decision", "summary", "findings")
+	if !ok {
+		return Decision{}, errors.New("review: a decision has exactly a decision, a summary and findings")
 	}
-	var raw struct {
-		Decision *string    `json:"decision"`
-		Summary  *string    `json:"summary"`
-		Findings *[]finding `json:"findings"`
-	}
-	if err := contract.UnmarshalStrict(b, &raw); err != nil {
-		return Decision{}, err
-	}
+	verdict, ok1 := top["decision"].(string)
+	summary, ok2 := top["summary"].(string)
+	findings, ok3 := top["findings"].([]any)
 	switch {
-	case raw.Decision == nil || raw.Summary == nil || raw.Findings == nil:
-		return Decision{}, errors.New("review: a decision has a decision, a summary and findings")
-	case *raw.Decision != Go && *raw.Decision != NoGo:
+	case !ok1 || !ok2 || !ok3:
+		return Decision{}, errors.New("review: a decision's fields are not of their types")
+	case verdict != Go && verdict != NoGo:
 		return Decision{}, errors.New("review: the decision is go or no_go")
-	case utf8.RuneCountInString(*raw.Summary) > maxSummary || len(*raw.Findings) > maxFindings:
+	case utf8.RuneCountInString(summary) > maxSummary || len(findings) > maxFindings:
 		return Decision{}, errors.New("review: the decision is past its bounds")
 	}
-	d := Decision{Decision: *raw.Decision, Summary: *raw.Summary, Findings: []Finding{}}
-	for _, f := range *raw.Findings {
-		if f.Severity == nil || f.Title == nil || f.Detail == nil || !slices.Contains(severities, *f.Severity) ||
-			utf8.RuneCountInString(*f.Title) > maxTitle || utf8.RuneCountInString(*f.Detail) > maxDetail {
+	d := Decision{Decision: verdict, Summary: summary, Findings: []Finding{}}
+	for _, x := range findings {
+		f, ok := exactly(x, "severity", "title", "detail")
+		severity, ok1 := f["severity"].(string)
+		title, ok2 := f["title"].(string)
+		detail, ok3 := f["detail"].(string)
+		if !ok || !ok1 || !ok2 || !ok3 || !slices.Contains(severities, severity) ||
+			utf8.RuneCountInString(title) > maxTitle || utf8.RuneCountInString(detail) > maxDetail {
 			return Decision{}, errors.New("review: a finding is not one")
 		}
-		d.Findings = append(d.Findings, Finding{*f.Severity, *f.Title, *f.Detail})
+		d.Findings = append(d.Findings, Finding{severity, title, detail})
 	}
 	return d, nil
+}
+
+// exactly is v as an object when its keys are exactly keys.
+func exactly(v any, keys ...string) (map[string]any, bool) {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) != len(keys) {
+		return nil, false
+	}
+	for _, k := range keys {
+		if _, ok := m[k]; !ok {
+			return nil, false
+		}
+	}
+	return m, true
 }
 
 // Result is the review node's result for key under f, publishing its D55
@@ -160,7 +188,7 @@ func Result(key types.ComputationKey, f Facts, blobs Blobs) (types.Result, error
 			d = Decision{}
 			break
 		}
-		ref, serr := seal(f.Project, f.Decision)
+		ref, serr := seal(f, f.Decision)
 		if serr != nil {
 			return types.Result{}, serr
 		}
@@ -179,7 +207,7 @@ func Result(key types.ComputationKey, f Facts, blobs Blobs) (types.Result, error
 	if err != nil {
 		return types.Result{}, err
 	}
-	pref, err := seal(f.Project, types.Digest(pd))
+	pref, err := seal(f, types.Digest(pd))
 	if err != nil {
 		return types.Result{}, err
 	}
@@ -204,13 +232,13 @@ func Report(f Facts, r types.Result, d Decision) ([]byte, error) {
 	}
 	var repair *int64
 	if d.Decision == NoGo {
-		next := f.Round + 1
+		next := f.CandidateRound + 1
 		repair = &next
 	}
 	return json.Marshal(struct {
 		Schema      string               `json:"schema"`
 		ElapsedMS   int64                `json:"elapsed_ms"`
-		Round       int64                `json:"round"`
+		Round       int64                `json:"candidate_round"`
 		Roster      []types.RosterMember `json:"roster"`
 		Outcome     types.Outcome        `json:"outcome"`
 		Reason      string               `json:"reason"`
@@ -218,7 +246,7 @@ func Report(f Facts, r types.Result, d Decision) ([]byte, error) {
 		Findings    []finding            `json:"findings"`
 		RepairRound *int64               `json:"repair_round"`
 		ChargeLinks []types.CallID       `json:"charge_links"`
-	}{reportSchema, f.Elapsed.Milliseconds(), f.Round, append([]types.RosterMember{}, f.Roster...), r.Outcome, r.Reason.String(), d.Decision,
+	}{reportSchema, f.Elapsed.Milliseconds(), f.CandidateRound, append([]types.RosterMember{}, f.Roster...), r.Outcome, r.Reason.String(), d.Decision,
 		findings, repair, append([]types.CallID{}, f.Calls...)})
 }
 
@@ -233,8 +261,10 @@ func read(blobs Blobs, d types.Digest) ([]byte, error) {
 	return b, errors.Join(err, rc.Close())
 }
 
-// seal is the blob ref of content d, in project.
-func seal(project types.ProjectID, d types.Digest) (types.Ref, error) {
-	return knowledge.Seal(types.Ref{Type: types.RefTypeBlob, ID: string(d), Scope: types.RefScope{Project: &project},
-		Lineage: []string{}, Restrictions: []types.Restriction{}, ContentDigest: d})
+// seal is the blob ref of content d, in f's project, derived from the
+// review's inputs (sorted, each once).
+func seal(f Facts, d types.Digest) (types.Ref, error) {
+	lineage := slices.Compact(slices.Sorted(slices.Values(f.Inputs)))
+	return knowledge.Seal(types.Ref{Type: types.RefTypeBlob, ID: string(d), Scope: types.RefScope{Project: &f.Project},
+		Lineage: append([]string{}, lineage...), Restrictions: []types.Restriction{}, ContentDigest: d})
 }
