@@ -78,6 +78,12 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer, c Client
 	if args[0] == "admin" && args[1] == "bootstrap" {
 		return adminBootstrap(ctx, args[2:], stdout, stderr, c)
 	}
+	if args[0] == "task" && args[1] == "show" {
+		return taskShow(ctx, args[2:], stdout, stderr, c)
+	}
+	if args[0] == "task" && args[1] == "wait" {
+		return taskWait(ctx, args[2:], stdout, stderr, c)
+	}
 	if resource, ok := reads[command{args[0], args[1]}]; ok {
 		return read(ctx, "adc "+args[0]+" "+args[1], resource, args[2:], stdout, stderr, c)
 	}

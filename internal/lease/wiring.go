@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
@@ -22,7 +23,8 @@ const (
 	LeaseProjection   = "leases"
 	AttemptProjection = "attempts"
 	UnitProjection    = "unit_attempts"
-	StopProjection    = "attempt_stops" // attempt id → the command that requested its stop
+	StopProjection    = "attempt_stops"  // attempt id → the command that requested its stop
+	StartProjection   = "attempt_starts" // attempt id → its start's time, RFC 3339 (adc task show's metrics, P22a-7)
 )
 
 // StaleRecord refuses a command that expected another revision of a record.
@@ -509,9 +511,9 @@ func (p Projector) apply(tx *eventstore.Tx, ev eventstore.Event, pl payload) err
 		}
 		return p.changeAttempt(tx, pl.Transition, *pl.Attempt)
 	case AttemptStarted:
-		return p.start(tx, *pl.Lease, *pl.Attempt, nil)
+		return errors.Join(started(tx, ev, pl.Attempt.ID), p.start(tx, *pl.Lease, *pl.Attempt, nil))
 	case Superseded:
-		return p.start(tx, *pl.Lease, *pl.Successor, pl.Attempt)
+		return errors.Join(started(tx, ev, pl.Successor.ID), p.start(tx, *pl.Lease, *pl.Successor, pl.Attempt))
 	case StopRequested:
 		cmd, err := json.Marshal(ev.Command)
 		if err == nil {
@@ -530,6 +532,29 @@ func (p Projector) apply(tx *eventstore.Tx, ev eventstore.Event, pl payload) err
 		}
 	}
 	return p.changeLease(tx, pl.Transition, pl.Reason, *pl.Lease)
+}
+
+// started records attempt's start time, ev's.
+func started(tx *eventstore.Tx, ev eventstore.Event, attempt types.AttemptID) error {
+	at, err := json.Marshal(ev.At)
+	if err == nil {
+		err = tx.Put(StartProjection, string(attempt), at)
+	}
+	return err
+}
+
+// StartedAt is attempt id's start time; false for an attempt never started.
+func StartedAt(tx *eventstore.Tx, id types.AttemptID) (time.Time, bool, error) {
+	raw, ok, err := tx.Get(StartProjection, string(id))
+	var at string
+	if err == nil && ok {
+		err = json.Unmarshal(raw, &at)
+	}
+	if err != nil || !ok {
+		return time.Time{}, false, err
+	}
+	t, err := time.Parse(time.RFC3339Nano, at)
+	return t, err == nil, err
 }
 
 // same compares two records by their canonical JSON.

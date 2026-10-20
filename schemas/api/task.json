@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/task.json",
+  "title": "TaskRead",
+  "description": "One record of GET /v1/tasks (M1 slice plan §2.3 assertion 5; P22a-7, W18): a recorded task's board card, read under the board read kind like GET /v1/board, and its first-attempt metrics: the earliest attempt started on any of its nodes, the time from the task's approval to that start, the outcome and reason of that attempt's node's selected result once it has one, and the tokens its lease's model calls measured. adc task show and adc task wait read it. Never the spec's requirement or acceptance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "project", "card", "first_attempt"],
+  "properties": {
+    "id": {"$ref": "../common/defs.json#/$defs/TaskID"},
+    "project": {"$ref": "../common/defs.json#/$defs/ProjectID"},
+    "card": {"$ref": "board.json"},
+    "first_attempt": {"description": "The first attempt of the task, null until one starts.", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/FirstAttempt"}]}
+  },
+  "$defs": {
+    "FirstAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempt", "node", "started_at", "seconds_after_approval", "status", "outcome", "reason", "tokens"],
+      "properties": {
+        "attempt": {"$ref": "../common/defs.json#/$defs/AttemptID"},
+        "node": {"$ref": "../common/defs.json#/$defs/NodeID"},
+        "started_at": {"$ref": "../common/defs.json#/$defs/Time"},
+        "seconds_after_approval": {"description": "Whole seconds from the task's approval to this start; null for a task with no approval recorded.", "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0, "maximum": 9007199254740991}]},
+        "status": {"description": "The attempt's status (records/attempt).", "type": "string", "minLength": 1, "maxLength": 64},
+        "outcome": {"description": "The outcome of the attempt's node's selected result; null while it has none.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/Outcome"}]},
+        "reason": {"description": "That result's reason; null while it has none.", "oneOf": [{"type": "null"}, {"$ref": "../common/defs.json#/$defs/ReasonCode"}]},
+        "tokens": {"description": "The input and output tokens of the model calls bound to the attempt's lease, as the call ledger stands them (ledger.StandingOf); null with no call.", "oneOf": [{"type": "null"}, {"$ref": "#/$defs/Tokens"}]}
+      }
+    },
+    "Tokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["in", "out"],
+      "properties": {
+        "in": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "out": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
+      }
+    }
+  }
+}

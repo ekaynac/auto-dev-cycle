@@ -79,6 +79,8 @@ the HTTPS listener, `HOST` an IP literal or a DNS name). Setting both is refused
   | 2 | `could_not_run` (controller or dependency could not run it) |
   | 3 | proposed: waiting for confirmation |
   | 4 | stale: `stale_expected_state`, `stale_attempt`, `idempotency_key_reused` |
+  | 5 | a wait timed out (`adc task wait`, M1 P22a-7) |
+  | 6 | a waited-for task ended in a state not waited for (`adc task wait`) |
   | 64 | usage error (unknown flag, bad arguments) |
 
 - **Explicit identity for approvals** [M13]. Approving, confirming or adopting anything requires `--expect

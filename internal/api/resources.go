@@ -24,7 +24,7 @@ import (
 // Registered is the daemon's resources, by path segment; each resource
 // family joins it with its projection.
 func Registered() map[string]Resource {
-	return map[string]Resource{"grants": grants, "proposals": proposals, "seat": seat, "notes": notes, "projects": projects, "holds": holds, "board": board}
+	return map[string]Resource{"grants": grants, "proposals": proposals, "seat": seat, "notes": notes, "projects": projects, "holds": holds, "board": board, "tasks": tasks}
 }
 
 // projects are every registered project, in id order. A project's project
