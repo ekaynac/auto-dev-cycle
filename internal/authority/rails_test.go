@@ -49,13 +49,13 @@ func TestTaskRaiseRail(t *testing.T) {
 		ids[key] = b.events(2)[0].Subject
 	}
 	one, two := ids["one"], ids["two"]
-	if c := b.rails(one); c != (graph.Caps{AttemptsPerRound: 3, RoundsPerTask: 5, MergeOperationsPerGeneration: 2}) {
+	if c := b.rails(one); c != (graph.Caps{AttemptsPerRound: 2, RoundsPerTask: 3, MergeOperationsPerGeneration: 2}) { // py-mini's, not the defaults
 		t.Fatalf("the profile's caps: %+v", c)
 	}
 	if err := b.raise(b.op, one, graph.RailRounds, 7); err != nil {
 		t.Fatal(err)
 	}
-	if c := b.rails(one); c.RoundsPerTask != 7 || c.AttemptsPerRound != 3 || b.rails(two).RoundsPerTask != 5 {
+	if c := b.rails(one); c.RoundsPerTask != 7 || c.AttemptsPerRound != 2 || b.rails(two).RoundsPerTask != 3 {
 		t.Errorf("after the raise: %+v, the other task %+v", c, b.rails(two))
 	}
 	head := b.head()
@@ -65,7 +65,7 @@ func TestTaskRaiseRail(t *testing.T) {
 		to         int
 	}{
 		"to the cap in force":  {b.op, one, graph.RailRounds, 7},
-		"to the profile's cap": {b.op, two, graph.RailRounds, 5},
+		"to the profile's cap": {b.op, two, graph.RailRounds, 3},
 		"below it":             {b.op, one, graph.RailRounds, 6},
 		"by a supervisor":      {b.sup, one, graph.RailAttempts, 9},
 		"a USD rail":           {b.op, one, "per_day_usd", 9},

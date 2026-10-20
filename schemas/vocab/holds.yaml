@@ -60,7 +60,7 @@ holds:
     escalate_to: null
   - hold: budget_rail
     signal: approval
-    signal_detail: An approval raising the rail.
+    signal_detail: The operator raises the rail (task.raise_rail, recorded as task.rail_raised); the hold clears on the signal instance rail:<name>.
     owner: operator
     page_after: PT1H
     escalate_to: null

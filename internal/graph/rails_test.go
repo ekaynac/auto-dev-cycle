@@ -3,6 +3,7 @@
 package graph
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -42,8 +43,8 @@ func TestCapsOf(t *testing.T) {
 
 // TestRoundRail (P17a): a repair round past its task's round rail is held
 // on budget_rail, owned by the operator, before it is claimed; raising the
-// rail clears the hold and the round is claimed; a round within it is
-// claimed at once.
+// rail clears the hold and the round is claimed, while another task's hold
+// on the same rail stays; a round within it is claimed at once.
 func TestRoundRail(t *testing.T) {
 	g := openStore(t)
 	build, _ := g.completedWith(types.NodeKindBuild, types.ResultKindPatch, []types.Ref{})
@@ -66,7 +67,21 @@ func TestRoundRail(t *testing.T) {
 	if _, held := g.railHold(next.Node.ID, RailRounds); !held {
 		t.Error("another rail's raise cleared the round rail")
 	}
+	otherPlan, _ := g.planOf("tsk_01m3250v9xft08ssr4ygq6g2nq", prjID)
+	rec := g.nodeOn(types.NodeKindBuild, otherPlan)
+	rec.Task = "tsk_01m3250v9xft08ssr4ygq6g2nq"
+	other := g.record(rec)
+	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		h, err := RailHold(RailRounds)
+		if err != nil {
+			return nil, err
+		}
+		return Raise(tx, other, h, nil)
+	})
 	g.must(clearRail(RailRounds))
+	if _, held := g.railHold(other, RailRounds); !held {
+		t.Error("a raise of one task cleared another task's hold")
+	}
 	two := g.env(noRequirement)
 	two.Rails = capped(Caps{3, 2, 2})
 	g.must(evaluate(two, next.Node.ID))
@@ -108,5 +123,29 @@ func TestMergeRail(t *testing.T) {
 	})
 	if raised.Effect == "" || raised.Rail != "" {
 		t.Errorf("the third operation once the rail is 3: %+v", raised)
+	}
+}
+
+// TestRoundAttempts (P17a; Opus #295 L5): a superseded review's
+// replacement keeps its round, so the attempts started on the review count
+// against the replacement's attempt rail; a node replacing none counts its
+// own unit's alone.
+func TestRoundAttempts(t *testing.T) {
+	g := openStore(t)
+	review, _, next := g.superseding()
+	g.runningOn(review)
+	count := func(n types.NodeID) (c int64) {
+		if err := g.s.View(context.Background(), func(tx *eventstore.Tx) (err error) { c, err = RoundAttempts(tx, n); return err }); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if c := count(review); c != 1 {
+		t.Fatalf("the review's own attempt: %d", c)
+	}
+	g.must(supersede(review, next))
+	rep := *g.state(review).SupersededBy
+	if c := count(rep); c != 1 {
+		t.Errorf("the replacement's round, before its own attempt: %d", c)
 	}
 }

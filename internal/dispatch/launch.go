@@ -185,13 +185,12 @@ func (d Dispatcher) miss(tx *eventstore.Tx, l types.Lease, card Card, ready Read
 	case ready.credential != nil:
 		return credential()
 	}
-	return d.attemptRail(tx, l.Unit, card.Node)
+	return d.attemptRail(tx, card.Node)
 }
 
 // attemptRail is a miss holding node on its task's attempt rail when the
-// attempts started on its unit (its fencing token: every attempt, through
-// every invalidation of the node) reach it (P17a).
-func (d Dispatcher) attemptRail(tx *eventstore.Tx, unit types.UnitID, node types.NodeID) (*Miss, error) {
+// attempts started on its round (graph.RoundAttempts) reach it (P17a).
+func (d Dispatcher) attemptRail(tx *eventstore.Tx, node types.NodeID) (*Miss, error) {
 	task, err := graph.TaskOf(tx, node)
 	if err != nil {
 		return nil, err
@@ -202,15 +201,9 @@ func (d Dispatcher) attemptRail(tx *eventstore.Tx, unit types.UnitID, node types
 			return nil, err
 		}
 	}
-	started := int64(0)
-	if cur, ok, err := lease.CurrentAttempt(tx, unit); err != nil {
+	started, err := graph.RoundAttempts(tx, node)
+	if err != nil {
 		return nil, err
-	} else if ok {
-		a, _, _, err := lease.AttemptOf(tx, cur)
-		if err != nil {
-			return nil, err
-		}
-		started = a.FencingToken
 	}
 	if started < caps.AttemptsPerRound {
 		return nil, nil

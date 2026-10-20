@@ -27,6 +27,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // The count rails, by their profile and task.raise_rail names.
@@ -87,7 +89,7 @@ func RailSignal(rail string) string { return "rail:" + rail }
 // RailHold is a budget_rail hold on rail, as Raise takes it.
 func RailHold(rail string) (types.NodeHold, error) {
 	id, err := ids.New("hld")
-	return types.NodeHold{ID: types.HoldID(id), Hold: "budget_rail", SignalInstance: RailSignal(rail), Owner: types.OwnerOperator,
+	return types.NodeHold{ID: types.HoldID(id), Hold: vocab.HoldBudgetRail, SignalInstance: RailSignal(rail), Owner: types.OwnerOperator,
 		Pages: []types.NodeHoldPagesItem{}}, err
 }
 
@@ -97,10 +99,38 @@ func TaskOf(tx *eventstore.Tx, node types.NodeID) (types.TaskID, error) {
 	return rec.Recorded.Task, err
 }
 
+// RoundAttempts are the attempts started on node's round, which its
+// attempt rail counts (P17a): its unit's fencing token (every attempt,
+// through every invalidation of the node), added up with those of the
+// nodes it replaces, since a superseded review's replacement keeps its
+// round (13:173).
+func RoundAttempts(tx *eventstore.Tx, node types.NodeID) (int64, error) {
+	started := int64(0)
+	for id := &node; id != nil; {
+		rec, err := loadNode(tx, *id)
+		if err != nil {
+			return 0, err
+		}
+		cur, ok, err := lease.CurrentAttempt(tx, UnitOf(*id))
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			a, _, _, err := lease.AttemptOf(tx, cur)
+			if err != nil {
+				return 0, err
+			}
+			started += a.FencingToken
+		}
+		id = rec.Replaces
+	}
+	return started, nil
+}
+
 // railHeld: rec already holds budget_rail on rail.
 func railHeld(rec nodeRecord, rail string) bool {
 	for _, h := range rec.State.Holds {
-		if h.Hold == "budget_rail" && h.SignalInstance == RailSignal(rail) {
+		if h.Hold == vocab.HoldBudgetRail && h.SignalInstance == RailSignal(rail) {
 			return true
 		}
 	}
@@ -149,7 +179,7 @@ func ClearRail(tx *eventstore.Tx, task types.TaskID, rail string) ([]eventstore.
 			continue
 		}
 		for _, h := range rec.State.Holds {
-			if h.Hold == "budget_rail" && h.SignalInstance == RailSignal(rail) {
+			if h.Hold == vocab.HoldBudgetRail && h.SignalInstance == RailSignal(rail) {
 				evs, err := Clear(tx, rec.Recorded.Node.ID, h.ID, h.SignalInstance)
 				if err != nil {
 					return nil, err
