@@ -219,7 +219,8 @@ func TestUSDCost(t *testing.T) {
 
 // Saturation (Opus #302 H1): a call with a delta past what a price can hold,
 // or reports the ledger cannot sum (its saturated standing), costs past
-// every rail: the next lease is refused with the hold, never an error that
+// every rail: the next lease, on a builder of another group (so no
+// capacity masks it), is refused with the hold, never an error that
 // wedges placement.
 func TestUSDSaturates(t *testing.T) {
 	for name, report := range map[string]func(e env) func(types.CallID, types.AttemptID, types.LeaseID){
@@ -237,27 +238,55 @@ func TestUSDSaturates(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			reg, gs := stub(t, nil)
+			reg, gs := twoBuilders(t, types.RegistryPrice{InputUsdMicrosPerMtok: 1_000_000, OutputUsdMicrosPerMtok: 4_000_000})
 			e := open(t, gs)
 			perTask, perDay := noCap, noCap
 			d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true), Rails: usdCaps(&perTask, &perDay)}
 			e.spentOn(d, e.nodeIn(task), report(e))
-			_, err := e.match(d, card(e.nodeIn(task)), builder)
+			_, err := e.match(d, onSecond(e.nodeIn(task)), second)
 			refusedOn(t, err, graph.RailTaskUSD)
 		})
 	}
 }
 
-// lowRate is the stub builder priced at 1 USD micro per million tokens,
-// both ways (Astra #302 H1's input), and rails is $10,000 for both.
-func lowRate(t *testing.T) (registry.Registry, []types.ResourceGroup, int64) {
-	reg, gs := stub(t, func(doc *types.ExecutorRegistry) {
-		for i := range doc.Executors {
-			if doc.Executors[i].Price != nil {
-				doc.Executors[i].Price = &types.RegistryPrice{InputUsdMicrosPerMtok: 1, OutputUsdMicrosPerMtok: 1}
-			}
+// second is a second builder, alone in its own quota group, so a lease on
+// it never meets the first group's capacity: what refuses it is the USD
+// rail alone (Astra #302 H1: "another resource group").
+const second = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pc")
+
+// twoBuilders is the stub registry with second added, both builders at
+// price.
+func twoBuilders(t *testing.T, price types.RegistryPrice) (registry.Registry, []types.ResourceGroup) {
+	_, gs := stub(t, nil)
+	doc, err := registry.Load(config + "registry-stub.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := gs[0]
+	own.ID, own.Members = "rg_01m4tm99haemtbemfkdve21grh", []types.ExecutorID{second}
+	for i := range doc.Executors {
+		if doc.Executors[i].ID == builder {
+			doc.Executors[i].Price = &price
+			extra := doc.Executors[i]
+			ref := types.Slug("stub-second")
+			extra.ID, extra.Group, extra.CredentialRef = second, own.ID, &ref
+			extra.Destination.ID, extra.Destination.Endpoint = "stub-second", "http://127.0.0.1:18081/v1"
+			doc.Executors = append(doc.Executors, extra)
+			break
 		}
-	})
+	}
+	gs = append(slices.Clone(gs), own)
+	reg, err := registry.New(doc, gs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reg, gs
+}
+
+// lowRate is twoBuilders at 1 USD micro per million tokens both ways
+// (Astra #302 H1's input), and rail is $10,000.
+func lowRate(t *testing.T) (registry.Registry, []types.ResourceGroup, int64) {
+	reg, gs := twoBuilders(t, types.RegistryPrice{InputUsdMicrosPerMtok: 1, OutputUsdMicrosPerMtok: 1})
 	return reg, gs, 10_000_000_000
 }
 
@@ -287,7 +316,9 @@ func (e env) settle(id types.LeaseID, a types.AttemptID) {
 	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.LoseRunning(tx, a, types.AttemptLostReasonValueAgentDisconnect)
 	})
-	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.SealMinimal(tx, a, 2, graph.Units{}, e.blobs, nil, actor) })
+	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.SealMinimal(tx, a, 2, graph.Units{}, e.blobs, nil, actor)
+	})
 	e.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.ChangeLease(tx, id, 3, lease.LeaseEvent{Kind: lease.Revoked, Reason: "test"}, nil)
 	})
@@ -333,7 +364,7 @@ func TestUSDSaturatedAtAnyRate(t *testing.T) {
 	if !e.clipped(id) {
 		t.Error("the settled liability of a saturated standing is not saturated")
 	}
-	_, err = e.match(d, card(e.nodeIn(task)), builder)
+	_, err = e.match(d, onSecond(e.nodeIn(task)), second)
 	refusedOn(t, err, graph.RailTaskUSD)
 }
 
@@ -355,7 +386,7 @@ func TestUSDLiveToSettled(t *testing.T) {
 	if !e.clipped(id) {
 		t.Error("the settled liability past 2^53−1 tokens is not saturated")
 	}
-	_, err = e.match(d, card(e.nodeIn(task)), builder)
+	_, err = e.match(d, onSecond(e.nodeIn(task)), second)
 	refusedOn(t, err, graph.RailTaskUSD)
 }
 
@@ -506,4 +537,11 @@ func TestUSDNoRails(t *testing.T) {
 	if _, err := e.match(Dispatcher{Registry: free}, card(n), builder); err != nil {
 		t.Errorf("an unpriced executor with no rails: %v", err)
 	}
+}
+
+// onSecond is node's card, its policy allowing second's destination too.
+func onSecond(node types.NodeID) Card {
+	c := card(node)
+	c.Policy.AllowedDestinations = []types.Slug{"stub", "stub-second"}
+	return c
 }
