@@ -120,7 +120,7 @@ func TestJUnitStrict(t *testing.T) {
 		"empty":                        "",
 		"malformed":                    suite(`tests="1"`, `<testcase classname="m" name="a">`),
 		"partial":                      mix[:len(mix)/2],
-		"a DTD":                        `<?xml version="1.0"?><!DOCTYPE x [<!ENTITY e "x">]>` + suite(`tests="1"`, pass),
+		"a DTD":                        strings.Replace(suite(`tests="1"`, pass), "?>", `?><!DOCTYPE x [<!ENTITY e "x">]>`, 1),
 		"an entity":                    suite(`tests="1"`, `<testcase classname="m" name="&e;"/>`),
 		"an unknown element":           suite(`tests="1"`, `<testcase classname="m" name="a"><rerunFailure/></testcase>`),
 		"a namespaced element":         suite(`tests="1"`, `<x:testcase xmlns:x="u" classname="m" name="a"/>`),
@@ -137,7 +137,7 @@ func TestJUnitStrict(t *testing.T) {
 		"a count that is no number":    suite(`tests="one"`, pass),
 		"a root count miscounted":      strings.Replace(suite(`tests="1"`, pass), `<testsuites name="pytest tests">`, `<testsuites tests="3">`, 1),
 		"a name beyond its bound":      suite(`tests="1"`, `<testcase classname="m" name="`+strings.Repeat("n", 65)+`"/>`),
-		"levels beyond their bound":    strings.Repeat("<testsuite>", 9) + pass + strings.Repeat("</testsuite>", 9),
+		"levels beyond their bound":    strings.Repeat("<testsuite>", 9) + `<testcase file="f.py" classname="m" name="a"/>` + strings.Repeat("</testsuite>", 9),
 		"elements beyond their bound":  suite(`tests="35"`, many(35)),
 		// Opus #290 L1, L2; Astra #290 L7.
 		"text after the root":             suite(`tests="1"`, pass) + "5 passed",
