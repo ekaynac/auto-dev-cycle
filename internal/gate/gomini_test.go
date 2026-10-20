@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/results"
@@ -131,6 +132,10 @@ func TestGateGoMini(t *testing.T) {
 	here.Gate.Environments[0].Facts.Runtime.Os, here.Gate.Environments[0].Facts.Runtime.Arch = runtime.GOOS, runtime.GOARCH
 	here.Host.Runner = &local{env: append(testguard.HomeEnv(t), "PATH="+filepath.Dir(gobin)+":/usr/bin:/bin", "GOCACHE="+filepath.Join(cache, "build"),
 		"GOPATH="+filepath.Join(cache, "path"), "GOTOOLCHAIN=local", "GOPROXY=off", "GOFLAGS=-mod=readonly", "GOWORK=off")}
+	// The fixture's one-minute run limit cut this real go test (cold caches)
+	// on a loaded runner, and a cut stream is unreadable (#226 entry 102):
+	// the row checks the results, not the time, so its limit is generous.
+	here.Limits.Timeout = 10 * time.Minute
 	got, mv, err := Measure(context.Background(), here)
 	names := func(r results.Report) (out []string) {
 		for _, x := range r.Results {
