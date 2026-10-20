@@ -2,17 +2,17 @@
 
 package authority
 
-// The count rails' raise (M1 slice plan P17a; §6 L3): task.raise_rail lets
-// an operator raise one of a task's count rails for that task, and clears
-// the task's budget_rail holds on that rail in the same command.
+// The rails' raise (M1 slice plan P17a, P17b; §6 L3): task.raise_rail lets
+// an operator raise one of a task's rails for that task, a count rail (to)
+// or per_task_usd (to_usd, held in micros), and clears the task's
+// budget_rail holds on that rail in the same command.
 //   - A task's caps in force (Rails, a graph.Rails) are its project
 //     profile's budget.rails, a default for each one absent
 //     (graph.CapsOf), each raised to the task's latest raise of it.
 //   - The raise must be above the cap in force; the fold admits a raise
 //     only of a recorded task, by a live operator, at its event's time and
 //     above any earlier raise of that rail (raises never lower a rail).
-//   - per_day_usd is the project's, raised by a profile change only; the
-//     USD rails are P17b's.
+//   - per_day_usd is the project's, raised by a profile change only.
 //   - Inert until P22a: the handler is built and deferred, as task.create.
 
 import (
@@ -37,7 +37,7 @@ const (
 // railKey is a task's raise of rail in TaskProjection.
 func railKey(task types.TaskID, rail string) string { return "rails/" + string(task) + "/" + rail }
 
-// Rails is a task's count rails in force (a graph.Rails): its project
+// Rails is a task's rails in force (a graph.Rails): its project
 // profile's, raised by task.raise_rail.
 func Rails(tx *eventstore.Tx, task types.TaskID) (graph.Caps, error) {
 	t, ok, err := loadJSON[TaskRecord](tx, TaskProjection, string(task))
@@ -56,7 +56,8 @@ func Rails(tx *eventstore.Tx, task types.TaskID) (graph.Caps, error) {
 	for _, f := range []struct {
 		rail string
 		to   *int64
-	}{{graph.RailAttempts, &caps.AttemptsPerRound}, {graph.RailRounds, &caps.RoundsPerTask}, {graph.RailMergeOps, &caps.MergeOperationsPerGeneration}} {
+	}{{graph.RailAttempts, &caps.AttemptsPerRound}, {graph.RailRounds, &caps.RoundsPerTask}, {graph.RailMergeOps, &caps.MergeOperationsPerGeneration},
+		{graph.RailTaskUSD, &caps.PerTaskMicros}} {
 		raised, ok, err := loadJSON[int64](tx, TaskProjection, railKey(task, f.rail))
 		if err != nil {
 			return graph.Caps{}, err
@@ -66,6 +67,18 @@ func Rails(tx *eventstore.Tx, task types.TaskID) (graph.Caps, error) {
 		}
 	}
 	return caps, nil
+}
+
+// raisedTo is a raise's cap, as Rails holds it: a count rail's to, or
+// per_task_usd's to_usd in micros; each rail takes exactly its own field.
+func raisedTo(rail types.RaisableRail, to *types.RailCap, toUSD *types.USD) (int64, error) {
+	switch {
+	case rail == types.RaisableRailPerTaskUsd && toUSD != nil && to == nil:
+		return graph.USDMicros(*toUSD)
+	case rail != types.RaisableRailPerTaskUsd && to != nil && toUSD == nil:
+		return *to, nil
+	}
+	return 0, fmt.Errorf("authority: a raise of %s takes %s alone", rail, map[bool]string{true: "to_usd", false: "to"}[rail == types.RaisableRailPerTaskUsd])
 }
 
 // TaskRaiseRailHandler derives task.raise_rail: the task is its object.
@@ -107,22 +120,26 @@ func (TaskRaiseRailHandler) Logic(c eventstore.Command) eventstore.Decide {
 		if err != nil {
 			return nil, nil, err
 		}
+		to, err := raisedTo(in.Rail, in.To, in.ToUsd)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: %w", ErrInvalidScope, err)
+		}
 		caps, err := Rails(tx, in.Task)
 		if err != nil {
 			return nil, nil, err
 		}
-		if cur, _ := caps.Of(string(in.Rail)); int64(in.To) <= cur {
-			return nil, nil, fmt.Errorf("authority: %w: %s's %s is %d, not below %d", eventstore.ErrStaleExpectedState, in.Task, in.Rail, cur, in.To)
+		if cur, _ := caps.Of(string(in.Rail)); to <= cur {
+			return nil, nil, fmt.Errorf("authority: %w: %s's %s is %d, not below %d", eventstore.ErrStaleExpectedState, in.Task, in.Rail, cur, to)
 		}
 		t, _, err := loadJSON[TaskRecord](tx, TaskProjection, string(in.Task))
 		if err != nil {
 			return nil, nil, err
 		}
-		r := types.RailRaised{Task: in.Task, Project: t.Project, Rail: in.Rail, To: in.To, By: types.ActorID(c.Actor),
+		r := types.RailRaised{Task: in.Task, Project: t.Project, Rail: in.Rail, To: in.To, ToUsd: in.ToUsd, By: types.ActorID(c.Actor),
 			At: types.Time(tx.Now().Format(time.RFC3339Nano))}
 		evs, err := event(TaskRailRaised, string(in.Task), &t.Project, r)
 		cleared, err2 := graph.ClearRail(tx, in.Task, string(in.Rail))
-		res, err3 := json.Marshal(map[string]any{"task": in.Task, "rail": in.Rail, "to": in.To, "cleared": len(cleared)})
+		res, err3 := json.Marshal(map[string]any{"task": in.Task, "rail": in.Rail, "to": to, "cleared": len(cleared)})
 		return append(evs, cleared...), res, errors.Join(err, err2, err3)
 	})
 }
@@ -145,12 +162,16 @@ func railRaised(tx *eventstore.Tx, ev eventstore.Event) error {
 	if err != nil || by.Kind != types.ActorKindOperator {
 		return errors.Join(err, errors.New("a live operator raises a rail"))
 	}
+	to, err := raisedTo(r.Rail, r.To, r.ToUsd)
+	if err != nil {
+		return err
+	}
 	caps, err := Rails(tx, r.Task)
 	if err != nil {
 		return err
 	}
-	if cur, ok := caps.Of(string(r.Rail)); !ok || int64(r.To) <= cur {
+	if cur, ok := caps.Of(string(r.Rail)); !ok || to <= cur {
 		return fmt.Errorf("a raise of %s is above the cap in force (%d)", r.Rail, cur)
 	}
-	return putJSON(tx, TaskProjection, railKey(r.Task, string(r.Rail)), int64(r.To))
+	return putJSON(tx, TaskProjection, railKey(r.Task, string(r.Rail)), to)
 }

@@ -1,0 +1,12 @@
+{
+  "name": "rails-usd-liability",
+  "invariant": "A liability counts against the USD rail: a call whose final is a hostile zero stays a liability at its conservative figure, and the next lease that would pass per_task_usd with it is refused and the node held on budget_rail until the task's rail is raised (M1 P17b; #226 entry 69).",
+  "expected": [
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "could_not_run", "reason": "budget_rail_reached"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"},
+    {"outcome": "empty", "reason": "completed_clean"}
+  ],
+  "mutation": "rails.usd-settled-only"
+}

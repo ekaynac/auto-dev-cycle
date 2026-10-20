@@ -7,20 +7,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
+	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/ids"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/modelcall"
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
@@ -76,9 +80,12 @@ type env struct {
 	blobs *blobstore.Store
 }
 
-// open is a store with the lease fold over capacity and the checked graph
-// fold (graph.Projector over authority.Answers),
-// as adcd composes them.
+// clock is the test stores' clock: now, unless a test moves it.
+var clock = time.Now
+
+// open is a store with the lease fold over capacity, the usage ledger and
+// the model calls' bindings, and the checked graph fold (graph.Projector
+// over authority.Answers), as adcd composes them.
 func open(t *testing.T, groups []types.ResourceGroup) env {
 	t.Helper()
 	state := filepath.Join(t.TempDir(), "state")
@@ -86,13 +93,15 @@ func open(t *testing.T, groups []types.ResourceGroup) env {
 	blobs := must(blobstore.Open(state))
 	r := must(capacity.NewReservations(groups))
 	kinds := graph.Kinds()
-	for k, v := range lease.Kinds() {
-		kinds[k] = v
+	for _, ks := range []eventstore.Kinds{lease.Kinds(), ledger.Kinds(), modelcall.Kinds()} {
+		maps.Copy(kinds, ks)
 	}
 	none := func(*eventstore.Tx, eventstore.Command) error { return nil }
-	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
+	s, err := eventstore.Open(context.Background(), lock, eventstore.Config{Kinds: kinds, Blobs: blobs, Effects: modelcall.Effects(),
+		Now: func() time.Time { return clock() },
 		Hooks: eventstore.Hooks{Identify: none, Authorize: none, Project: eventstore.ProjectEach(
-			capacity.Hook(lease.Projector{Blobs: blobs, Units: graph.Units{}}, r), graph.Projector{Answers: authority.Answers{}}.Project)}})
+			capacity.Hook(lease.Projector{Blobs: blobs, Units: graph.Units{}}, r), ledger.Project, modelcall.Project,
+			graph.Projector{Answers: authority.Answers{}}.Project)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -672,7 +681,7 @@ func TestLaunchAttemptRail(t *testing.T) {
 	e := open(t, gs)
 	d := Dispatcher{Registry: reg, Images: images{}, Credentials: creds(true),
 		Rails: func(*eventstore.Tx, types.TaskID) (graph.Caps, error) {
-			return graph.Caps{AttemptsPerRound: 2, RoundsPerTask: 5, MergeOperationsPerGeneration: 2}, nil
+			return graph.Caps{AttemptsPerRound: 2, RoundsPerTask: 5, MergeOperationsPerGeneration: 2, PerTaskMicros: graph.NoUSDRail, PerDayMicros: graph.NoUSDRail}, nil
 		}}
 	n := e.node(types.NodeKindPlan, reg, false)
 	for i := range 2 {

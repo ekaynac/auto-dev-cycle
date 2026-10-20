@@ -62,6 +62,7 @@ var runners = map[string]runner{
 	"widened-profile-edit":                   widenedProfileEdit,
 	"protected-change-widens":                protectedChangeWidens,
 	"stale-attempt-usage-counted":            staleAttemptUsageCounted,
+	"rails-usd-liability":                    railsUSDLiability,
 	"duplicate-usage-deltas":                 duplicateUsageDeltas,
 	"hash-chain-edit-truncation":             hashChainEditAndTruncation,
 	"concurrent-conflicting-approvals":       concurrentConflictingApprovals,

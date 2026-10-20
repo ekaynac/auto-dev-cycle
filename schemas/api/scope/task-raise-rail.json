@@ -2,17 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ekaynac/auto-dev-cycle/schemas/api/scope/task-raise-rail.json",
   "title": "TaskRaiseRailScope",
-  "description": "The scope of task.raise_rail (M1 slice plan P17a; §6 L3): an operator raises one of a task's count rails to a higher cap, for that task only, and every budget_rail hold of the task on that rail clears. The USD rails are P17b's; per_day_usd is the project's, raised only by a profile change.",
+  "description": "The scope of task.raise_rail (M1 slice plan P17a, P17b; §6 L3): an operator raises one of a task's rails above the cap in force, for that task only, and every budget_rail hold of the task on that rail clears. A count rail takes to; per_task_usd takes to_usd (P17b); per_day_usd is the project's, raised only by a profile change.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["task", "rail", "to"],
+  "required": ["task", "rail"],
   "properties": {
     "task": {"$ref": "../../common/defs.json#/$defs/TaskID"},
-    "rail": {"$ref": "#/$defs/CountRail"},
-    "to": {"$ref": "#/$defs/RailCap"}
+    "rail": {"$ref": "#/$defs/RaisableRail"},
+    "to": {"$ref": "#/$defs/RailCap"},
+    "to_usd": {"$ref": "../../config/project-profile.json#/$defs/USD"}
   },
   "$defs": {
-    "CountRail": {"description": "A count rail of the project profile's budget.rails.", "enum": ["attempts_per_round", "rounds_per_task", "merge_operations_per_generation"]},
-    "RailCap": {"description": "A raised cap: above the one in force.", "type": "integer", "minimum": 2, "maximum": 1000}
+    "RaisableRail": {"description": "A rail of the project profile's budget.rails a task raises: a count rail, or per_task_usd.", "enum": ["attempts_per_round", "rounds_per_task", "merge_operations_per_generation", "per_task_usd"]},
+    "RailCap": {"description": "A raised count cap: above the one in force.", "type": "integer", "minimum": 2, "maximum": 1000}
   }
 }

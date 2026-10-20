@@ -223,6 +223,12 @@ const (
 	// HoldRaiseSkipsAnswer admits an awaiting_input wait on no answer its
 	// node declares, which nothing can then end.
 	HoldRaiseSkipsAnswer = "graph.hold-raise-skips-answer"
+	// USDRailSettledOnly leaves unsettled calls (their liabilities) out of
+	// the USD rails' spend (P17b).
+	USDRailSettledOnly = "rails.usd-settled-only"
+	// DayRailIgnoresOtherTasks counts only the task's own leases against
+	// its project's day rail (P17b).
+	DayRailIgnoresOtherTasks = "rails.day-ignores-other-tasks"
 )
 
 // Known lists every named mutation; a fixture golden may name only these.
@@ -242,7 +248,7 @@ var Known = []string{IdempotencyIgnoresInput, ExpectedStateUnchecked, LockNotExc
 	SupersessionAdmitsRunningAttempt,
 	IsolationUnchecked, RestrictedArtifactRendered,
 	SupersessionDropsHolds, SupersessionTransfersEveryHold, ReplacementKeepsMovedAnswer, DisplacedQuestionUnchecked,
-	ReuseSkipsAuthority, ContextNeedsNoAuthority,
+	ReuseSkipsAuthority, ContextNeedsNoAuthority, USDRailSettledOnly, DayRailIgnoresOtherTasks,
 	RequirementRevisionUnchecked,
 	GenerationKeepsReview, MergeCASOnHead,
 	RecordedFoldSkipsOwed, ClaimFoldSkipsAnswers, ReuseFoldSkipsAnswers, ResultFoldSkipsAnswers, SupersessionFoldSkipsMoves, HoldFoldSkipsAnswers,

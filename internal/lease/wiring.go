@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
@@ -23,7 +24,22 @@ const (
 	AttemptProjection = "attempts"
 	UnitProjection    = "unit_attempts"
 	StopProjection    = "attempt_stops" // attempt id → the command that requested its stop
+	GrantProjection   = "lease_grants"  // lease id → its grant's time, RFC 3339 (the USD day rail, P17b)
 )
+
+// GrantedAt is lease id's grant time; false for a lease never granted.
+func GrantedAt(tx *eventstore.Tx, id types.LeaseID) (time.Time, bool, error) {
+	raw, ok, err := tx.Get(GrantProjection, string(id))
+	if err != nil || !ok {
+		return time.Time{}, false, err
+	}
+	var at string
+	if err := json.Unmarshal(raw, &at); err != nil {
+		return time.Time{}, false, err
+	}
+	t, err := time.Parse(time.RFC3339Nano, at)
+	return t, err == nil, err
+}
 
 // StaleRecord refuses a command that expected another revision of a record.
 type StaleRecord struct{ Detail string }
@@ -491,6 +507,15 @@ func (p Projector) apply(tx *eventstore.Tx, ev eventstore.Event, pl payload) err
 	}
 	if pl.Targets != nil { // only a grant's; records/lease-event refuses one elsewhere
 		if err := granted(tx, *pl.Lease, *pl.Targets); err != nil {
+			return err
+		}
+	}
+	if pl.Transition == Granted {
+		at, err := json.Marshal(ev.At)
+		if err == nil {
+			err = tx.Put(GrantProjection, string(pl.Lease.ID), at)
+		}
+		if err != nil {
 			return err
 		}
 	}
