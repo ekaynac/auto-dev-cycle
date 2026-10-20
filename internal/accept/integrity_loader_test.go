@@ -7,16 +7,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,7 +29,14 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/sandbox"
 )
 
-// loaded accepts a patch of the base through the guard with list.
+// TestMain: the test binary is Integrity's child when asked (RunChildIfAsked).
+func TestMain(m *testing.M) {
+	RunChildIfAsked()
+	os.Exit(m.Run())
+}
+
+// loaded accepts a patch of the base through Integrity with list: the
+// guard in its own process.
 func (f fixture) loaded(t *testing.T, list Lister, files map[string]string, gone ...string) Verdict {
 	t.Helper()
 	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, files, gone...), Policy: f.policy,
@@ -33,6 +45,270 @@ func (f fixture) loaded(t *testing.T, list Lister, files map[string]string, gone
 		t.Fatal(err)
 	}
 	return v
+}
+
+// children records each run's child, and kills any left at the end.
+func children(t *testing.T) func() []*os.Process {
+	var mu sync.Mutex
+	var procs []*os.Process
+	procStarted = func(p *os.Process) { mu.Lock(); procs = append(procs, p); mu.Unlock() }
+	t.Cleanup(func() {
+		procStarted = nil
+		for _, p := range procs {
+			_ = p.Kill()
+		}
+	})
+	return func() []*os.Process { mu.Lock(); defer mu.Unlock(); return slices.Clone(procs) }
+}
+
+// exited: p has exited (and been waited for).
+func exited(p *os.Process) bool { return !alive(p.Pid) }
+
+// TestIntegrityProcess (P14e-2c): the guard runs in a child the controller
+// kills: its verdicts are the in-process guard's, a type check that never
+// ends is killed at the whole-run deadline, an abandoned one ends with its
+// process (the cap on abandoned checks is gone: no later run sees it), and
+// every way the child fails blocks.
+func TestIntegrityProcess(t *testing.T) {
+	base := map[string]string{
+		"tool/mv.go":  "package tool\n\nimport \"flag\"\n\nvar safe = flag.NewFlagSet(\"s\", flag.ContinueOnError)\n\nvar fatal = flag.NewFlagSet(\"f\", flag.ExitOnError)\n\nvar parse4 = safe.Parse\n",
+		"tool/val.go": "package tool\n\nimport \"flag\"\n\nvar w = flag.NewFlagSet(\"w\", flag.ContinueOnError)\n\nfunc v() {}\n",
+		"tool/mx.go":  "package tool\n\nimport \"flag\"\n\nfunc x1() { flag.Parse() }\n\nfunc x2() { _ = w.Parse }\n",
+	}
+	f := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, base)
+		plain(t, src, "add", "--all")
+	})
+	procs := children(t)
+	edit := func(file, from, to string) string { return strings.Replace(base[file], from, to, 1) }
+	plainGo := map[string]string{"pkg/x.go": "package pkg\n\nfunc G() int { return 1 }\n"}
+	// The same verdicts as in this process: blocks, warnings (Additive and
+	// Typed too), in order; a reader's error is the guard's.
+	for name, files := range map[string]map[string]string{
+		"a plain change": plainGo,
+		"a forgery":      {"pkg/forge.go": forgeGo},
+		"typed and text warnings": {"tool/mv.go": edit("tool/mv.go", "= safe.Parse", "= fatal.Parse"), "tool/val.go": edit("tool/val.go", "func v() {}", "func v() { _ = w.Parse(nil) }"),
+			"tool/mx.go": strings.Replace(edit("tool/mx.go", "flag.Parse() }", "flag.Parse(); _ = 1 }"), "w.Parse }", "w.Parse; _ = 2 }", 1)},
+		"an unloaded import": {"pkg/x.go": "package pkg\n\nimport \"example.org/none\"\n\nvar _ = none.X\n"},
+		// H1 (Opus #287): decision A's Python classes are the child's too.
+		"python os._exit":         {"tests/test_money.py": baseFiles["tests/test_money.py"] + "\ndef test_exit():\n    import os\n    os._exit(0)\n"},
+		"python module-level run": {"money.py": baseFiles["money.py"] + "\nimport subprocess\nsubprocess.run(['true'])\n"},
+		"python print('PASSED')":  {"tests/test_money.py": baseFiles["tests/test_money.py"] + "\nprint('PASSED')\n"},
+	} {
+		in, out := f.guarded(t, files), f.loaded(t, testLister(t), files)
+		if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || len(out.Blocks)+len(out.Warnings) == 0 && name != "a plain change" ||
+			strings.HasPrefix(name, "python") && !slices.ContainsFunc(out.Blocks, func(b Block) bool {
+				return strings.Contains(b.What, "decision A") || strings.Contains(b.What, "allowlist")
+			}) {
+			t.Errorf("%s: in this process %+v %+v, in its own %+v %+v", name, in.Blocks, in.Warnings, out.Blocks, out.Warnings)
+		}
+	}
+	if ps := procs(); len(ps) == 0 || !slices.ContainsFunc(ps, exited) {
+		t.Fatalf("no child ran, or none ended: %d", len(ps))
+	}
+	// M1 (Opus #293): results past the frame's bounds (a Path past 4,096
+	// bytes; more warnings than a rank keeps, maxReported) fit to it: the
+	// same Accepted() and the same report, byte for byte. Opus's probe had
+	// 70,000 warnings (142 s here); past maxReported, any count takes the
+	// same path, and 1,500 keeps the package within its time.
+	var many strings.Builder
+	many.WriteString("package tool8\n\nimport \"fmt\"\n")
+	for i := range maxReported + 500 {
+		fmt.Fprintf(&many, "\nfunc f%d() { fmt.Println() }\n", i)
+	}
+	// Astra #293 r2 #3: 1,001 functions of 971-byte names: warnings of
+	// 1,000-byte paths exhaust the report's bytes before its count, after a
+	// warning the verdict holds before the guard's (TestProcFit has more).
+	var wide strings.Builder
+	wide.WriteString("package tool7\n\nimport \"fmt\"\n")
+	for i := range 1001 {
+		fmt.Fprintf(&wide, "\nfunc f%s%04d() { fmt.Println() }\n", strings.Repeat("a", 966), i)
+	}
+	ignored := []string{"out.bin"} // a warning the verdict holds before the guard's
+	for name, files := range map[string]map[string]string{
+		"a path past the frame's bound":      {"tool9/long.go": "package tool9\n\nimport \"fmt\"\n\nfunc f" + strings.Repeat("a", 5000) + "() { fmt.Println(1) }\n"},
+		"warnings past a rank's maxReported": {"tool8/many.go": many.String()},
+		"after the verdict's own warning":    {"tool7/many.go": wide.String()},
+	} {
+		in, out := f.guarded(t, files), f.loaded(t, testLister(t), files)
+		if name == "after the verdict's own warning" {
+			in, out = f.withIgnored(t, integrity(f.repo, f.base, testLister(t)), files, ignored), f.withIgnored(t, Integrity(f.repo, f.base, testLister(t), ""), files, ignored)
+		}
+		in.Elapsed, out.Elapsed = 0, 0
+		if in.Accepted() != out.Accepted() || len(in.Warnings) == 0 || name != "a path past the frame's bound" && len(in.Warnings) <= maxReported ||
+			len(out.Warnings) != len(in.Warnings) || !sameReport(t, in.Report, out.Report) || detail("", in.Warnings) != detail("", out.Warnings) {
+			t.Errorf("%s: accepted %v, %d warnings; in its own %v, %d warnings; %q", name, in.Accepted(), len(in.Warnings), out.Accepted(), len(out.Warnings), whats(out.Blocks))
+		}
+	}
+	// #1 (Astra #293 r2): an empty root go.mod added, or deleted: the
+	// in-process guard's verdicts (no absent blob read).
+	readme := map[string]string{"README.md": "x\n"}
+	for name, c := range map[string]struct {
+		base, files map[string]string
+		gone        []string
+	}{
+		"an empty go.mod added":   {readme, map[string]string{"go.mod": ""}, nil},
+		"an empty go.mod deleted": {map[string]string{"README.md": "x\n", "go.mod": ""}, nil, []string{"go.mod"}},
+	} {
+		m := newFixtureWith(t, func(src string) {
+			write(t, src, c.base)
+			plain(t, src, "add", "--all")
+		})
+		in, out := m.guarded(t, c.files, c.gone...), m.loaded(t, testLister(t), c.files, c.gone...)
+		if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || !out.Accepted() {
+			t.Errorf("%s: in this process %q %q, in its own %q %q", name, whats(in.Blocks), whats(in.Warnings), whats(out.Blocks), whats(out.Warnings))
+		}
+	}
+	// #2 (Astra #293 r2): nine nested modules of identical module files
+	// (each listing's payload sent once, then referred to), within a lowered
+	// output bound that the files resent on every listing would pass.
+	nested := map[string]string{}
+	for i := range 9 {
+		d := fmt.Sprintf("n%d/", i)
+		nested[d+"go.mod"] = "module example.com/n\n\ngo 1.24\n\n// " + strings.Repeat("p", 100<<10) + "\n"
+		nested[d+"go.sum"] = strings.Repeat("\n", 100<<10)
+		nested[d+"x.go"] = "package n\n\nimport \"strings\"\n\nfunc F() string { return strings.ToUpper(\"a\") }\n"
+	}
+	nm := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, nested)
+		plain(t, src, "add", "--all")
+	})
+	changed := map[string]string{}
+	for i := range 9 {
+		changed[fmt.Sprintf("n%d/x.go", i)] = "package n\n\nimport \"strings\"\n\nfunc F() string { return strings.ToUpper(\"b\") }\n"
+	}
+	oldOut := maxProcOut
+	maxProcOut = 2 << 20 // 36 listings resending both files: about 7 MiB
+	in, out := nm.guarded(t, changed), nm.loaded(t, testLister(t), changed)
+	maxProcOut = oldOut
+	if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || !out.Accepted() {
+		t.Errorf("nine nested modules: in this process %q %q, in its own %q %q", whats(in.Blocks), whats(in.Warnings), whats(out.Blocks), whats(out.Warnings))
+	}
+	// #2 (Astra #287 r2): an absent go.mod (the loader's fallback module)
+	// and a present, empty one cross the frame as they are: the same
+	// verdicts as in this process, and the absent one typed.
+	helper := map[string]string{"pkg/help.go": "package pkg\n\nimport \"fmt\"\n\nfunc H() string { return fmt.Sprint(1) }\n"}
+	for name, mod := range map[string]map[string]string{"no go.mod": nil, "an empty go.mod": {"go.mod": ""}} {
+		m := newFixtureWith(t, func(src string) {
+			b := maps.Clone(guardBase)
+			delete(b, "go.mod")
+			delete(b, "go.sum")
+			write(t, src, b)
+			write(t, src, mod)
+			plain(t, src, "add", "--all")
+		})
+		in, out := m.guarded(t, helper), m.loaded(t, testLister(t), helper)
+		if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || mod == nil && !out.Accepted() {
+			t.Errorf("%s: in this process %q %q, in its own %q %q", name, whats(in.Blocks), whats(in.Warnings), whats(out.Blocks), whats(out.Warnings))
+		}
+	}
+	// The baseline: an ordinary run in its own process.
+	begin := time.Now()
+	if v := f.loaded(t, testLister(t), plainGo); !v.Accepted() {
+		t.Fatalf("the baseline: %q", whats(v.Blocks))
+	}
+	baseline := time.Since(begin)
+	// F: a type check that never ends (validType on a chain of 40), no type
+	// check deadline before the whole-run deadline: the child is killed at
+	// it, the change unverifiable; a later ordinary run is accepted.
+	var chain strings.Builder
+	chain.WriteString("package pkg\n")
+	for i := range 40 {
+		fmt.Fprintf(&chain, "\ntype S%d struct{ A, B, C, D, E, F, G, H S%d }\n", i, i+1)
+	}
+	chain.WriteString("\ntype S40 int\n")
+	oldList, oldRun := maxListTime, maxRunTime
+	t.Cleanup(func() { maxListTime, maxRunTime = oldList, oldRun })
+	maxListTime, maxRunTime = time.Hour, 2*baseline+time.Second
+	n, begin := len(procs()), time.Now()
+	done := make(chan Verdict, 1)
+	go func() { done <- f.loaded(t, testLister(t), map[string]string{"pkg/chain.go": chain.String()}) }()
+	select {
+	case v := <-done:
+		took := time.Since(begin)
+		if !finds(v.Blocks, "unverifiable: the guard did not finish by its whole-run deadline") || took > maxRunTime+2*baseline+5*time.Second {
+			t.Errorf("a type check that never ends: %v (deadline %v), %q", took, maxRunTime, whats(v.Blocks))
+		}
+	case <-time.After(maxRunTime + 10*baseline + 30*time.Second):
+		t.Fatalf("a type check that never ends: no verdict in %v", time.Since(begin))
+	}
+	if ps := procs(); len(ps) != n+1 || !exited(ps[n]) {
+		t.Errorf("the killed child: %d children, the last alive", len(ps)-n)
+	}
+	maxListTime, maxRunTime = oldList, oldRun
+	if v := f.loaded(t, testLister(t), plainGo); !v.Accepted() {
+		t.Errorf("a run after the kill: %q", whats(v.Blocks))
+	}
+	// Past the type check deadline in the child: abandoned there (main's
+	// block), the child ended with its result, and a later run accepted
+	// (main blocked it while the check ran: a reviewed relaxation). The
+	// deadline is the baseline's twice: listing is over by then (Astra L7).
+	maxListTime = 2*baseline + time.Second
+	n = len(procs())
+	if v := f.loaded(t, testLister(t), map[string]string{"pkg/chain.go": chain.String()}); !finds(v.Blocks, "unverifiable: the guard failed (a type check over the guard's deadline (") {
+		t.Errorf("past the type check deadline: %q", whats(v.Blocks))
+	}
+	maxListTime = oldList
+	if ps := procs(); len(ps) != n+1 || !exited(ps[n]) {
+		t.Errorf("an abandoned check's child: %d children, the last alive", len(ps)-n)
+	}
+	if v := f.loaded(t, testLister(t), plainGo); !v.Accepted() {
+		t.Errorf("a run after an abandoned check: %q", whats(v.Blocks))
+	}
+	// A child that ends without its result, or writes past its bound, blocks.
+	maxProcOut = 64
+	v := f.loaded(t, testLister(t), plainGo)
+	if maxProcOut = oldOut; !finds(v.Blocks, "unverifiable: the guard's process ended without its result") {
+		t.Errorf("a child over its output bound: %q", whats(v.Blocks))
+	}
+	// H3 (Astra #287): one deadline for the whole run. A reader that waits
+	// for its context, and one that does not: the run ends at the deadline,
+	// its child reaped; its directory is removed once no call runs in it,
+	// the stuck one's only when it returns (Opus #293 L2).
+	stuck := make(chan struct{})
+	var once sync.Once
+	defer once.Do(func() { close(stuck) })
+	for name, read := range map[string]Reader{
+		"a reader waiting for its context": func(ctx context.Context, _ string, _ int64) ([]byte, bool, error) {
+			<-ctx.Done()
+			return nil, false, ctx.Err()
+		},
+		"a reader that never returns": func(context.Context, string, int64) ([]byte, bool, error) { <-stuck; return nil, false, nil },
+	} {
+		maxRunTime = 2*baseline + time.Second
+		scratch, n, begin := t.TempDir(), len(procs()), time.Now()
+		g := Integrity(f.repo, f.base, testLister(t), scratch)
+		done := make(chan Verdict, 1)
+		go func() {
+			v, _ := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, plainGo), Policy: f.policy,
+				Guard: func(ctx context.Context, c []Change, _ Reader) ([]Block, []Block, error) { return g(ctx, c, read) }})
+			done <- v
+		}()
+		select {
+		case v := <-done:
+			left, _ := os.ReadDir(scratch)
+			stuckCall := name == "a reader that never returns" // its call still runs: its directory stays
+			if ps := procs(); !finds(v.Blocks, "did not finish by its whole-run deadline") || len(ps) != n+1 || !exited(ps[n]) || stuckCall && len(left) != 1 {
+				t.Errorf("%s: %q, %d children, left %d", name, whats(v.Blocks), len(ps)-n, len(left))
+			}
+			if stuckCall {
+				once.Do(func() { close(stuck) })
+			}
+			// The directory goes once no call runs in it: a reader that
+			// returns as its context ends can outlive the run by a moment.
+			for end := time.Now().Add(10 * time.Second); len(left) != 0 && time.Now().Before(end); left, _ = os.ReadDir(scratch) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if len(left) != 0 {
+				t.Errorf("%s: its directory kept once no call runs in it", name)
+			}
+		case <-time.After(maxRunTime + 10*baseline + 30*time.Second):
+			t.Errorf("%s: no verdict in %v", name, time.Since(begin))
+		}
+		maxRunTime = oldRun
+	}
 }
 
 // localBox runs a sandbox run's argv here, as the image would: the mounts
@@ -336,6 +612,43 @@ func TestGoEnv(t *testing.T) {
 	}
 }
 
+// TestNoInit (H1, Opus #287): no file of the package has an init (Go runs
+// them in file-name order: a child dispatched from one would run the guard
+// before a later one), and adcd's main asks first.
+func TestNoInit(t *testing.T) {
+	paths, _ := filepath.Glob("*.go")
+	for _, p := range append(paths, "../../cmd/adcd/main.go") {
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "init" {
+				t.Errorf("%s has an init", p)
+			} else if ok && p == "../../cmd/adcd/main.go" && fn.Name.Name == "main" && !firstCall(fn, "RunChildIfAsked") {
+				t.Errorf("adcd's main does not ask first")
+			}
+		}
+	}
+	if len(paths) < 20 {
+		t.Fatalf("only %d files", len(paths))
+	}
+}
+
+// firstCall: fn's first statement calls a function named name.
+func firstCall(fn *ast.FuncDecl, name string) bool {
+	s, ok := fn.Body.List[0].(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	c, ok := s.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := c.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == name
+}
+
 // maps2 is m with k set to v.
 func maps2(m map[string]string, k, v string) map[string]string {
 	out := map[string]string{k: v}
@@ -382,4 +695,15 @@ func TestIntegrityVendored(t *testing.T) {
 	if v := g.guarded(t, map[string]string{"tools/vendor/notes.txt": "x\n"}); !v.Accepted() {
 		t.Errorf("a vendor/ beside no go.mod: %q", whats(v.Blocks))
 	}
+}
+
+// withIgnored is guarded's Accept with guard, and ignored paths' warnings
+// before the guard's.
+func (f fixture) withIgnored(t *testing.T, guard Guard, files map[string]string, ignored []string) Verdict {
+	t.Helper()
+	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, files), Policy: f.policy, Ignored: ignored, Guard: guard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }

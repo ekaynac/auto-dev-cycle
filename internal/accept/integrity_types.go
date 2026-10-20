@@ -30,7 +30,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -103,7 +102,11 @@ func LocalLister(gobin string, env []string, timeout time.Duration, mem int64) L
 		}
 		h := sha256.New()
 		for _, b := range append([][]byte{[]byte(platform[0] + "/" + platform[1]), gomod, gosum}, []byte(strings.Join(paths, "\n"))) {
-			_ = binary.Write(h, binary.BigEndian, int64(len(b)))
+			n := int64(len(b))
+			if b == nil {
+				n = -1 // absent, not empty: an absent go.mod lists with the fallback module, an empty one fails (Astra #287 r2 #2)
+			}
+			_ = binary.Write(h, binary.BigEndian, n)
 			h.Write(b)
 		}
 		key := [32]byte(h.Sum(nil))
@@ -540,34 +543,16 @@ func (ty *typer) Import(p string) (*types.Package, error) {
 
 // typeCheck runs conf.Check (it cannot be cancelled) by the guard's deadline:
 // past it, or on a done context, the guard stops (recovered) and the check is
-// abandoned, its CPU the residual (a killable loader is P14e-2b's).
+// abandoned. Integrity runs the guard in a process of its own, killed once
+// its result is read (P14e-2c): an abandoned check ends with it, and no
+// later run sees it.
 func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, files []*ast.File, info *types.Info) *types.Package {
-	if n := abandoned.Load(); n > 0 { // its CPU and memory still taken, and its fault not seen
-		by := "unknown"
-		if p := abandonedBy.Load(); p != nil {
-			by = *p
-		}
-		panic(fmt.Sprintf("%d type check(s) abandoned by an earlier guard run (%s) still running: not a finding against this change", n, by))
-	}
-	done, state := make(chan any, 1), new(atomic.Int32) // 0 running, 1 ended, 2 abandoned
+	done := make(chan any, 1)
 	go func() {
 		var v any
-		defer func() {
-			if !state.CompareAndSwap(0, 1) {
-				abandoned.Add(-1)
-			}
-			done <- cmp.Or(recover(), v) // its panic is the guard's
-		}()
+		defer func() { done <- cmp.Or(recover(), v) }() // its panic is the guard's
 		v, _ = conf.Check(path, fset, files, info)
 	}()
-	abandon := func(why any) {
-		if state.CompareAndSwap(0, 2) {
-			by := fmt.Sprintf("on base %.12s, started %s", r.base, r.started.Format(time.RFC3339))
-			abandonedBy.Store(&by)
-			abandoned.Add(1)
-		}
-		panic(why)
-	}
 	select {
 	case v := <-done:
 		if pkg, ok := v.(*types.Package); ok {
@@ -575,20 +560,11 @@ func (r *run) typeCheck(conf *types.Config, path string, fset *token.FileSet, fi
 		}
 		panic(v)
 	case <-r.ctx.Done():
-		abandon(r.ctx.Err())
+		panic(r.ctx.Err())
 	case <-time.After(time.Until(r.listEnd)):
-		abandon("a type check over the guard's deadline (" + path + ")")
+		panic("a type check over the guard's deadline (" + path + ")")
 	}
-	return nil
 }
-
-// abandoned is the type checks given up on that still run: go/types cannot
-// be stopped (a killable process is P14e-2c), so while one runs a new Go
-// guard run is unverifiable.
-var (
-	abandoned   atomic.Int64
-	abandonedBy atomic.Pointer[string] // the run that last abandoned one
-)
 
 type importFunc func(string) (*types.Package, error)
 

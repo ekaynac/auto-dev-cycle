@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -94,6 +95,14 @@ type Change struct {
 	Src, Dst                                   string // Dst is Src unless renamed or copied
 }
 
+// tooLarge is Accept's block for a git output over its bound, after the guard too.
+var tooLarge = Block{vocab.ReasonUnsafeOutput, "", "a git output is over its bound", false, false}
+
+// reportPrefix keys a guard's context: the warnings the verdict holds
+// before the guard's, which its report counts first (Integrity's process
+// fits its result to the report with them: Astra #293 r2 #3).
+type reportPrefix struct{}
+
 // Guard is the integrity guard's seam (P14b owns 01 §2.5's guard): it
 // sees the changes of a candidate that passed every structural and
 // protected-path check, and reads their blobs through read. Its blocks
@@ -117,7 +126,7 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 		// git's diagnostics) is the candidate's size, never the
 		// controller's fault: unsafe_output, with no accepted tree.
 		if errors.Is(err, ErrTooLarge) {
-			v.Blocks = append(v.Blocks, Block{vocab.ReasonUnsafeOutput, "", "a git output is over its bound", false, false})
+			v.Blocks = append(v.Blocks, tooLarge)
 			v.Tree, v.TreeDigest, err = "", "", nil
 		}
 		v.Elapsed = in.Now().Sub(start)
@@ -161,7 +170,7 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 	// A structural refusal is final: no blob of a refused candidate (a
 	// gitlink's commit id, say) is ever read.
 	if in.Guard != nil && v.Accepted() {
-		blocks, warnings, err := in.Guard(ctx, changes, g.blob)
+		blocks, warnings, err := in.Guard(context.WithValue(ctx, reportPrefix{}, slices.Clone(v.Warnings)), changes, g.blob)
 		if err != nil {
 			return v, err
 		}

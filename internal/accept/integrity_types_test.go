@@ -385,9 +385,8 @@ func TestIntegrityRealTypes(t *testing.T) {
 	}
 	// Round 4 (the lead, on main): go/types' validType is exponential on a
 	// chain of struct types; a check past the guard's deadline is abandoned
-	// and the change unverifiable, in-process. P14e-2b: while the abandoned
-	// check still runs, a new Go guard run is unverifiable; once it ends
-	// (here, a chain of 8 that ends in seconds), runs go on.
+	// and the change unverifiable, in-process. P14e-2c replaced the cap on
+	// abandoned checks by the guard's own process (TestIntegrityProcess).
 	var chain strings.Builder
 	chain.WriteString("package pkg\n")
 	for i := range 8 {
@@ -400,16 +399,6 @@ func TestIntegrityRealTypes(t *testing.T) {
 	cv := f.guarded(t, map[string]string{"pkg/chain.go": chain.String()})
 	if maxListTime = oldTime; !finds(cv.Blocks, "over the guard's deadline") || time.Since(begin) > time.Minute {
 		t.Errorf("a struct chain: %v %q", time.Since(begin), whats(cv.Blocks))
-	}
-	plainGo := map[string]string{"pkg/x.go": "package pkg\n\nfunc G() int { return 1 }\n"}
-	if v := f.guarded(t, plainGo); !finds(v.Blocks, "abandoned by an earlier guard run (on base "+f.base[:12]+", started ") {
-		t.Errorf("a run beside an abandoned check: %q", whats(v.Blocks))
-	}
-	for end := time.Now().Add(3 * time.Minute); abandoned.Load() > 0 && time.Now().Before(end); {
-		time.Sleep(100 * time.Millisecond)
-	}
-	if v := f.guarded(t, plainGo); abandoned.Load() != 0 || !v.Accepted() {
-		t.Errorf("a run once it ended: %d %q", abandoned.Load(), whats(v.Blocks))
 	}
 
 	// Mythos #269 M1 (on main): an alias DAG made mentions exponential (8^12
@@ -637,6 +626,12 @@ func TestIntegrityTypesFailClosed(t *testing.T) {
 	}
 	if v, err := accept(context.Background(), panicking); err != nil || !finds(v.Blocks, "unverifiable: the guard failed (a lister fault)") {
 		t.Errorf("a panic in the guard: %v %q", err, whats(v.Blocks))
+	}
+	empty := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
+		panic("")
+	} // L2, Opus #287: a panic whatever its text
+	if v, err := accept(context.Background(), empty); err != nil || !finds(v.Blocks, "unverifiable: the guard failed ()") {
+		t.Errorf("an empty panic in the guard: %v %q", err, whats(v.Blocks))
 	}
 	oldPkgs, oldExport, oldRuns := maxPkgs, maxExport, maxListRuns
 	t.Cleanup(func() { maxPkgs, maxExport, maxListRuns = oldPkgs, oldExport, oldRuns })

@@ -33,35 +33,11 @@ var reported, reportedBytes = maxReported, maxEntries // tests lower them
 // together at most maxEntries encoded bytes; the entries left out are
 // counted in truncated, and the fields cut to maxField bytes in clipped.
 func (v Verdict) Report() ([]byte, error) {
-	budget, truncated, clipped := reportedBytes, 0, 0
-	var err error
-	cut := func(out, bs []Block, rank int) []Block { // the base guard's findings first, P14b-out's text ones, then its types check's alone (Astra #282 r2 H1), in what is left
-		for _, b := range bs {
-			if b2i(b.Additive)+b2i(b.Typed) != rank {
-				continue
-			}
-			for _, f := range []*string{&b.Path, &b.What} {
-				if len(*f) > maxField {
-					*f, clipped = strings.ToValidUTF8((*f)[:maxField], ""), clipped+1
-				}
-			}
-			e, merr := json.Marshal(b)
-			err = errors.Join(err, merr)
-			if len(out) == reported || len(e)+1 > budget {
-				truncated++
-				continue
-			}
-			budget -= len(e) + 1
-			out = append(out, b)
-		}
-		return out
-	}
-	blocks, warnings := cut([]Block{}, v.Blocks, 0), cut([]Block{}, v.Warnings, 0)
-	blocks, warnings = cut(blocks, v.Blocks, 1), cut(warnings, v.Warnings, 1)
-	blocks, warnings = cut(blocks, v.Blocks, 2), cut(warnings, v.Warnings, 2)
+	_, out, truncated, clipped, err := selection([2][]Block{v.Blocks, v.Warnings})
 	if err != nil {
 		return nil, err
 	}
+	blocks, warnings := out[0], out[1]
 	return json.Marshal(struct {
 		Schema     string       `json:"schema"`
 		ElapsedMS  int64        `json:"elapsed_ms"`
@@ -73,6 +49,40 @@ func (v Verdict) Report() ([]byte, error) {
 		Tree       string       `json:"tree"`
 		TreeDigest types.Digest `json:"tree_digest"`
 	}{reportSchema, v.Elapsed.Milliseconds(), blocks, warnings, truncated, clipped, v.Files, v.Tree, v.TreeDigest})
+}
+
+// selection is the report's choice of blocks (lists[0]) and warnings
+// (lists[1]): the base guard's findings first, P14b-out's text ones, then
+// its types check's alone (Astra #282 r2 H1), each list in turn in what is
+// left; in, which entries it keeps, the guard's process too (fitReport).
+func selection(lists [2][]Block) (in [2][]bool, out [2][]Block, truncated, clipped int, err error) {
+	budget := reportedBytes
+	for l := range 2 {
+		in[l], out[l] = make([]bool, len(lists[l])), []Block{}
+	}
+	for rank := range 3 {
+		for l := range 2 {
+			for i, b := range lists[l] {
+				if b2i(b.Additive)+b2i(b.Typed) != rank {
+					continue
+				}
+				for _, f := range []*string{&b.Path, &b.What} {
+					if len(*f) > maxField {
+						*f, clipped = strings.ToValidUTF8((*f)[:maxField], ""), clipped+1
+					}
+				}
+				e, merr := json.Marshal(b)
+				err = errors.Join(err, merr)
+				if len(out[l]) == reported || len(e)+1 > budget {
+					truncated++
+					continue
+				}
+				budget -= len(e) + 1
+				out[l], in[l][i] = append(out[l], b), true
+			}
+		}
+	}
+	return in, out, truncated, clipped, err
 }
 
 // Result is the accept node's completed result for key, kind tree.
