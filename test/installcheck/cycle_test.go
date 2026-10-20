@@ -14,11 +14,13 @@ import (
 
 // P24b: the installed cycle harness puts its work directory, which holds
 // adcd's state and run directories, only on a filesystem adcd accepts
-// (ext2/ext3/ext4, xfs, btrfs, tmpfs), trying $TMPDIR, $XDG_RUNTIME_DIR and
-// /dev/shm in that order. With none, it exits 2 naming what it tried,
-// creates no directory and never starts adcd; it never falls back to
-// another filesystem. A fake stat reports each directory's type (overlayfs
-// unless listed in FAKE_TMPFS); a fake adcd records that it was started.
+// (ext2/ext3/ext4, xfs, btrfs, tmpfs), trying $TMPDIR, the runtime
+// directory and /dev/shm in that order (the child here has no runtime
+// directory: testguard.HomeEnv sets none). With none accepted, it exits 2
+// naming what it tried, creates no directory and never starts adcd; it
+// never falls back to another filesystem. A fake stat reports each
+// directory's type (overlayfs unless under one listed in FAKE_TMPFS); a
+// fake adcd records that it was started.
 func TestInstalledCycleWorkFilesystem(t *testing.T) {
 	root := t.TempDir()
 	prefix := filepath.Join(root, "prefix")
@@ -55,18 +57,16 @@ if [[ "$1" == -f ]]; then
 fi
 exec `+realStat+` "$@"
 `, 0o755)
-	tmp, runtime := filepath.Join(root, "tmp"), filepath.Join(root, "run")
-	for _, d := range []string{tmp, runtime} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			t.Fatal(err)
-		}
+	tmp := filepath.Join(root, "tmp")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatal(err)
 	}
 	run := func(fakeTmpfs string) (string, int) {
 		t.Helper()
 		os.Remove(marker)
 		cmd := exec.Command(filepath.Join(lib, "scripts/installed-cycle.sh"), prefix, "--routes", "stub", "--project", "go-mini", "--case", "preflight", "--keep")
 		cmd.Dir = root
-		cmd.Env = append(testguard.HomeEnv(t), "PATH="+shims+":/usr/bin:/bin", "TMPDIR="+tmp, "XDG_RUNTIME_DIR="+runtime, "FAKE_TMPFS="+fakeTmpfs)
+		cmd.Env = append(testguard.HomeEnv(t), "PATH="+shims+":/usr/bin:/bin", "TMPDIR="+tmp, "FAKE_TMPFS="+fakeTmpfs)
 		out, err := cmd.CombinedOutput()
 		code := 0
 		if e, ok := err.(*exec.ExitError); ok {
@@ -83,29 +83,45 @@ exec `+realStat+` "$@"
 		}
 		return es
 	}
+	// kept is the work directory the driver kept (--keep), removed at the
+	// test's end.
+	kept := func(out string) string {
+		_, after, ok := strings.Cut(out, "installed-cycle: kept ")
+		if !ok {
+			return ""
+		}
+		dir, _, _ := strings.Cut(after, "\n")
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		return dir
+	}
 
 	out, code := run("")
 	if code != 2 || !strings.Contains(out, "could_not_run: no writable temporary directory on ext2/ext3/ext4, xfs, btrfs or tmpfs") ||
-		!strings.Contains(out, tmp+" (overlayfs)") || !strings.Contains(out, runtime+" (overlayfs)") || !strings.Contains(out, "/dev/shm (overlayfs)") {
+		!strings.Contains(out, tmp+" (overlayfs)") || !strings.Contains(out, "/dev/shm (overlayfs)") {
 		t.Errorf("no supported filesystem: exit %d, %s", code, out)
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Error("no supported filesystem: adcd was started")
 	}
-	if len(entries(tmp))+len(entries(runtime)) != 0 {
+	if len(entries(tmp)) != 0 || kept(out) != "" {
 		t.Error("no supported filesystem: a work directory was created")
 	}
 
-	// The positive control: $TMPDIR is overlayfs, $XDG_RUNTIME_DIR tmpfs, so
-	// the work directory is a private one under $XDG_RUNTIME_DIR, and the
-	// driver gets past the selection (to fail on the fake prefix).
-	out, code = run(runtime)
-	if code == 2 || !strings.Contains(out, "installed-cycle: kept "+runtime+"/") {
-		t.Errorf("a tmpfs $XDG_RUNTIME_DIR: exit %d, %s", code, out)
+	// The positive controls: the driver gets past the selection (to fail on
+	// the fake prefix) with a private work directory under $TMPDIR when that
+	// is tmpfs, and under /dev/shm when only that is.
+	for _, c := range []struct{ tmpfs, parent string }{{tmp, tmp}, {"/dev/shm", "/dev/shm"}} {
+		out, code = run(c.tmpfs)
+		dir := kept(out)
+		if code == 2 || filepath.Dir(dir) != c.parent {
+			t.Errorf("tmpfs %s: exit %d, %s", c.tmpfs, code, out)
+			continue
+		}
+		if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+			t.Errorf("tmpfs %s: the work directory is not private: %v", c.tmpfs, err)
+		}
 	}
-	if len(entries(tmp)) != 0 || len(entries(runtime)) != 1 {
-		t.Errorf("a tmpfs $XDG_RUNTIME_DIR: the work directory is not under it")
-	} else if fi, err := os.Stat(filepath.Join(runtime, entries(runtime)[0].Name())); err != nil || fi.Mode().Perm() != 0o700 {
-		t.Errorf("the work directory is not private: %v %v", fi.Mode(), err)
+	if len(entries(tmp)) != 1 {
+		t.Errorf("tmpfs /dev/shm: a work directory was made under $TMPDIR too")
 	}
 }
