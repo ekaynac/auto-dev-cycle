@@ -5,7 +5,6 @@ package sandbox
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -97,8 +96,9 @@ func TestAdapterDigest(t *testing.T) {
 
 // What cannot be listed is refused: a FIFO, a missing closure path, a
 // closure path under a symlinked parent, a name that would make the
-// listing ambiguous, more entries than the bound. A symlink in place of a
-// closure path is listed as a link, never followed out of the root.
+// listing ambiguous, more entries than the bound, and a link whose target
+// is absolute, unclean or lands outside the closure (#373 L1), in the root
+// or out of it. @adc's two links land inside it and pass (closureTree).
 func TestAdapterDigestRefuses(t *testing.T) {
 	outside := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(outside, "bin"), 0o755); err != nil {
@@ -107,6 +107,11 @@ func TestAdapterDigestRefuses(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(outside, "bin/node"), []byte("node/bin/node\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	link := func(target, at string) func(d string) error {
+		return func(d string) error {
+			return errors.Join(os.RemoveAll(filepath.Join(d, at)), os.Symlink(target, filepath.Join(d, at)))
+		}
+	}
 	refused := map[string]func(dir string) error{
 		"a FIFO":           func(d string) error { return syscall.Mkfifo(filepath.Join(d, "node_modules/ajv/fifo"), 0o644) },
 		"a missing gen/ts": func(d string) error { return os.RemoveAll(filepath.Join(d, "gen/ts")) },
@@ -114,11 +119,15 @@ func TestAdapterDigestRefuses(t *testing.T) {
 		"a symlinked node/ (in the root)": func(d string) error {
 			return errors.Join(os.Rename(filepath.Join(d, "node"), filepath.Join(d, "real")), os.Symlink("real", filepath.Join(d, "node")))
 		},
-		"a symlinked node/ (out of it)": func(d string) error {
-			return errors.Join(os.RemoveAll(filepath.Join(d, "node")), os.Symlink(outside, filepath.Join(d, "node")))
-		},
-		"a space in a name":   func(d string) error { return os.WriteFile(filepath.Join(d, "gen/ts/a b"), nil, 0o644) },
-		"a newline in a link": func(d string) error { return os.Symlink("a\nf b", filepath.Join(d, "gen/ts/l")) },
+		"a symlinked node/ (out of it)":   link(outside, "node"),
+		"gen/ts linked out of the root":   link(outside, "gen/ts"),
+		"an absolute target in the root":  link(filepath.Join("/", "gen/ts"), "node_modules/@adc/contract-gen"),
+		"a link to adapters/fake":         link("../adapters/fake", "node_modules/ajv"),
+		"a link climbing out of the root": link("../../../../etc", "node_modules/@adc/contract"),
+		"an unclean target":               link("../../gen/ts/../ts", "node_modules/@adc/contract-gen"),
+		"gen/ts linked to adapters/fake":  link("../adapters/fake", "gen/ts"),
+		"a space in a name":               func(d string) error { return os.WriteFile(filepath.Join(d, "gen/ts/a b"), nil, 0o644) },
+		"a newline in a link":             func(d string) error { return os.Symlink("a\nf b", filepath.Join(d, "gen/ts/l")) },
 		"too many entries": func(d string) error {
 			many := filepath.Join(d, "node_modules/many")
 			err := os.Mkdir(many, 0o755)
@@ -140,23 +149,19 @@ func TestAdapterDigestRefuses(t *testing.T) {
 	if _, err := AdapterDigest(filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Error("an absent root was digested")
 	}
-
-	base := adapterDigest(t, closureTree(t))
+	// A link that lands inside the closure, through a climb or not, is listed.
 	dir := closureTree(t)
-	if err := errors.Join(os.RemoveAll(filepath.Join(dir, "gen/ts")), os.Symlink(outside, filepath.Join(dir, "gen/ts"))); err != nil {
+	err := errors.Join(os.Symlink("index.js", filepath.Join(dir, "node_modules/ajv/main.js")),
+		os.Symlink("../../node/bin/node", filepath.Join(dir, "gen/ts/node")))
+	if err != nil {
 		t.Fatal(err)
 	}
-	linked := adapterDigest(t, dir)
-	if err := os.WriteFile(filepath.Join(outside, "bin/node"), []byte("changed"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if again := adapterDigest(t, dir); linked == base || again != linked {
-		t.Errorf("gen/ts linked out of the root: %s, after its target changed %s; the closure's %s", linked, again, base)
-	}
+	adapterDigest(t, dir)
 }
 
 // CheckAdapter passes only the image's own platform's entry, equal to the
-// installed release's digest.
+// installed release's digest; a refusal is ErrAdapter, an ErrManifest with
+// its own text (#373 L3).
 func TestCheckAdapter(t *testing.T) {
 	want := "sha256:" + hex.EncodeToString(make([]byte, 32))
 	other := "sha256:" + hex.EncodeToString(sha256.New().Sum(nil))
@@ -178,7 +183,8 @@ func TestCheckAdapter(t *testing.T) {
 		"not a digest on both sides": {map[string]string{"linux/arm64": "x"}, "x"},
 	}
 	for name, c := range refused {
-		if err := img(c.adapter).CheckAdapter(c.want); !errors.Is(err, ErrManifest) {
+		err := img(c.adapter).CheckAdapter(c.want)
+		if !errors.Is(err, ErrAdapter) || !errors.Is(err, ErrManifest) || err.Error() != "sandbox: the image's adapter is not the installed release's" {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -186,7 +192,9 @@ func TestCheckAdapter(t *testing.T) {
 
 // A label with and without the adapter parses as Resolve parses it, and
 // CheckManifest (the gate's) passes both: images prepared before P22a-5d
-// keep passing the gate.
+// keep passing the gate. The reader is strict (#373 L2): a duplicate key
+// at any level, a key in another case, another key, or anything but one
+// object is refused.
 func TestManifestAdapterLabel(t *testing.T) {
 	base := t.TempDir()
 	mod := []byte("module example.com/m\n")
@@ -196,14 +204,18 @@ func TestManifestAdapterLabel(t *testing.T) {
 	sum := sha256.Sum256(mod)
 	lock := `{"toolchain":"go","lockfiles":{"go.mod":"sha256:` + hex.EncodeToString(sum[:]) + `"}`
 	digest := "sha256:" + hex.EncodeToString(make([]byte, 32))
+	other := "sha256:" + hex.EncodeToString(sha256.New().Sum(nil))
+	both := `{"linux/amd64":"` + digest + `","linux/arm64":"` + digest + `"}`
 	for label, adapter := range map[string]map[string]string{
-		lock + "}": nil,
-		lock + `,"adapter":{"linux/amd64":"` + digest + `","linux/arm64":"` + digest + `"}}`: {"linux/amd64": digest, "linux/arm64": digest},
+		lock + "}":                        nil,
+		lock + `,"adapter":` + both + "}": {"linux/amd64": digest, "linux/arm64": digest},
 	} {
 		img := Image{OS: "linux", Arch: "amd64"}
-		if err := json.Unmarshal([]byte(label), &img.Manifest); err != nil {
+		m, err := ParseManifest([]byte(label))
+		if err != nil {
 			t.Fatalf("%s: %v", label, err)
 		}
+		img.Manifest = m
 		if err := img.CheckManifest("go", base, []string{"go.mod"}); err != nil {
 			t.Errorf("%s: CheckManifest: %v", label, err)
 		}
@@ -212,6 +224,22 @@ func TestManifestAdapterLabel(t *testing.T) {
 		}
 		if err := img.CheckAdapter(digest); (err == nil) != (adapter != nil) {
 			t.Errorf("%s: CheckAdapter: %v", label, err)
+		}
+	}
+	for _, label := range []string{
+		lock + `,"adapter":{"linux/amd64":"` + other + `","linux/amd64":"` + digest + `"}}`,
+		lock + `,"adapter":{"linux/amd64":"` + other + `"},"adapter":{"linux/arm64":"` + digest + `"}}`,
+		lock + `,"adapter":{"linux/amd64":"` + other + `"},"Adapter":` + both + "}",
+		lock + `,"ADAPTER":` + both + "}",
+		lock + `,"Toolchain":"go"}`,
+		lock + `,"extra":1}`,
+		`{"toolchain":"go","toolchain":"go","lockfiles":{}}`,
+		lock + `,"adapter":` + both + "}{}",
+		`[` + lock + "}]",
+		lock + `,"adapter":["linux/amd64"]}`,
+	} {
+		if m, err := ParseManifest([]byte(label)); !errors.Is(err, ErrManifest) {
+			t.Errorf("%s: %+v, %v", label, m, err)
 		}
 	}
 }

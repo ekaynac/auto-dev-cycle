@@ -36,12 +36,15 @@ var digestPin = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 // AdapterClosure's paths under root, one line each, sorted by path: a
 // directory "d PATH", a regular file "f PATH X SHA256" (X is x when any
 // execute bit is set, else -; no other mode bit counts), a symlink
-// "l PATH TARGET", never followed. Any other file type, a missing closure
-// path, a closure path's parent that is not a real directory, a name or
-// target with a space or a control character, or more than the bounded
-// entries or bytes is an error. Root is opened with os.OpenRoot: nothing
-// outside it is read. Two copies of a closure have the same digest; a
-// changed byte, execute bit, file or link target changes it.
+// "l PATH TARGET", never followed. A link's target must be relative,
+// clean, with its ".." only leading, and lexically within the closure:
+// so the closure holds everything the adapter reaches through it. Any
+// other file type, a missing closure path, a closure path's parent that is
+// not a real directory, a name or target with a space or a control
+// character, or more than the bounded entries or bytes is an error. Root
+// is opened with os.OpenRoot: nothing outside it is read. Two copies of a
+// closure have the same digest; a changed byte, execute bit, file or link
+// target changes it.
 func AdapterDigest(root string) (string, error) {
 	r, err := os.OpenRoot(root)
 	if err != nil {
@@ -97,6 +100,9 @@ func (w *walker) walk(p string) error {
 		}
 		if !plainName(target) {
 			return fmt.Errorf("the link %s's target holds a space or a control character", p)
+		}
+		if !inClosure(p, target) {
+			return fmt.Errorf("the link %s points outside the closure", p)
 		}
 		w.lines = append(w.lines, [2]string{p, "l " + p + " " + target})
 		return nil
@@ -168,13 +174,38 @@ func plainName(s string) bool {
 	return s != "" && !strings.ContainsFunc(s, func(r rune) bool { return r <= ' ' || r == 0x7f })
 }
 
-// CheckAdapter refuses an image whose adapter, for its own platform, is
-// not want: the digest of the installed release's closure (AdapterDigest).
-// An image without one, or with only another platform's, is refused.
+// inClosure: a link's target, read from the link's directory, stays in
+// AdapterClosure by its text alone. It is relative and clean, so its ".."
+// are only leading: they climb the link's own parents (real directories,
+// as walked) before it descends, and where it lands is a closure path or
+// below one.
+func inClosure(link, target string) bool {
+	if path.IsAbs(target) || path.Clean(target) != target {
+		return false
+	}
+	r := path.Join(path.Dir(link), target)
+	return slices.ContainsFunc(AdapterClosure, func(c string) bool { return r == c || strings.HasPrefix(r, c+"/") })
+}
+
+// ErrAdapter: the image's adapter is not the installed release's. It is an
+// ErrManifest, with its own text.
+var ErrAdapter error = adapterError{}
+
+type adapterError struct{}
+
+func (adapterError) Error() string {
+	return "sandbox: the image's adapter is not the installed release's"
+}
+func (adapterError) Unwrap() error { return ErrManifest }
+
+// CheckAdapter refuses (ErrAdapter) an image whose adapter, for its own
+// platform, is not want: the digest of the installed release's closure
+// (AdapterDigest). An image without one, or with only another platform's,
+// is refused.
 func (img Image) CheckAdapter(want string) error {
 	got, ok := img.Manifest.Adapter[img.OS+"/"+img.Arch]
 	if !ok || !digestPin.MatchString(want) || got != want {
-		return fmt.Errorf("%w: the image's adapter is not the installed release's", ErrManifest)
+		return ErrAdapter
 	}
 	return nil
 }
