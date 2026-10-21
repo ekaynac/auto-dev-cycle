@@ -218,3 +218,46 @@ func TestBuildProjectionsRecordVersions(t *testing.T) {
 		t.Fatal("a refused build changed the store")
 	}
 }
+
+// A store opened with Config.Projections compares its record of built
+// projections on a rebuild, as a start does (Opus #342 L1): a record of a
+// projection not registered is a difference, one that does not decode is
+// ErrBuildRecord. Opened without, the record is left out. An invalid
+// Config.Projections is refused at open.
+func TestRebuildComparesTheRecord(t *testing.T) {
+	dir := stateDir(t)
+	e := openRegistered(t, dir, counting(nil), counted)
+	populate(t, e)
+	if _, diffs, err := e.s.BuildProjections(context.Background(), counted, nil); err != nil || len(diffs) != 0 {
+		t.Fatalf("the build: %+v, %v", diffs, err)
+	}
+	if diffs, err := e.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("a recorded store: %+v, %v", diffs, err)
+	}
+	mustExec(t, raw(t, dir), `INSERT INTO proj_kv(projection, key, value) VALUES ('`+builtRecord+`', 'zzz', '{"version":1}')`)
+	diffs, err := e.s.RebuildProjections(context.Background())
+	if err != nil || len(diffs) != 1 || !diffs[0].BuildRecord() || diffs[0].Key != "zzz" || *diffs[0].Live != `{"version":1}` || diffs[0].Rebuilt != nil {
+		t.Fatalf("an unregistered record: %+v, %v", diffs, err)
+	}
+	e.close()
+	bare := openProjected(t, dir, counting(nil))
+	if diffs, err := bare.s.RebuildProjections(context.Background()); err != nil || len(diffs) != 0 {
+		t.Fatalf("without Config.Projections: %+v, %v", diffs, err)
+	}
+	bare.close()
+	mustExec(t, raw(t, dir), `UPDATE proj_kv SET value = 'x' WHERE projection = '`+builtRecord+`' AND key = 'zzz'`)
+	e = openRegistered(t, dir, counting(nil), counted)
+	if _, err := e.s.RebuildProjections(context.Background()); !errors.Is(err, ErrBuildRecord) {
+		t.Fatalf("an undecodable record: %v", err)
+	}
+	e.close()
+	lock, err := AcquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	if s, err := Open(context.Background(), lock, Config{Kinds: testKinds, Blobs: e.blobs, Projections: []Projection{{Name: "kinds", Version: 0}}}); err == nil {
+		s.Close()
+		t.Fatal("an invalid Config.Projections was accepted")
+	}
+}

@@ -156,6 +156,9 @@ type Store struct {
 	blobs     BlobChecker
 	hooks     Hooks
 	effects   EffectKinds
+	// projections: Config.Projections by name, at their versions; nil when
+	// not set.
+	projections map[string]int
 	// systemClaimed: ClaimSystem has handed out the system claim.
 	systemClaimed atomic.Bool
 	// restartMarked: MarkPendingUncertain has run on this open store.
@@ -184,6 +187,11 @@ type Config struct {
 	// Existing opens only a store that already exists: no database file,
 	// schema or genesis is ever created (an offline command's open).
 	Existing bool
+	// Projections are the projections Hooks.Project folds, the registration
+	// BuildProjections is given. When set, RebuildProjections compares the
+	// store's record of built projections with them; nil leaves the record
+	// out.
+	Projections []Projection
 }
 
 // ErrNoStore: Config.Existing found no initialized store.
@@ -265,7 +273,19 @@ func Open(ctx context.Context, lock *Lock, cfg Config) (s *Store, err error) {
 		}
 		effects[k] = v
 	}
-	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs, hooks: cfg.Hooks, effects: effects, existing: cfg.Existing, clock: cfg.Now}
+	var projections map[string]int
+	if cfg.Projections != nil {
+		if err := checkRegistered(cfg.Projections, nil); err != nil {
+			w.Close()
+			r.Close()
+			return nil, err
+		}
+		projections = map[string]int{}
+		for _, p := range cfg.Projections {
+			projections[p.Name] = p.Version
+		}
+	}
+	s = &Store{w: w, r: r, lock: lock, claim: claim, file: file, schemaSet: set, kinds: kinds, blobs: cfg.Blobs, hooks: cfg.Hooks, effects: effects, existing: cfg.Existing, clock: cfg.Now, projections: projections}
 	if s.clock == nil {
 		s.clock = time.Now
 	}

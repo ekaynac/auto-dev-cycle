@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -138,11 +139,14 @@ func checkKinds(ctx context.Context, s *eventstore.Store) error {
 // compares every projection with the replay (eventstore.BuildProjections).
 // Any difference, or a replay the projector refuses, is ambiguous_state,
 // and nothing is kept: a projection the store built once, emptied since,
-// is a difference, never one to build. A record of built projections that
-// cannot be read, and a replay that cannot run (storage, cancellation), are
-// store_unreadable. Startup never repairs a projection, and one it has not
-// matched is never trusted. A start refused by a later check keeps what
-// this one built and recorded: it equals the log.
+// is a difference, never one to build. A record of built projections naming
+// a projection this build does not fold is a difference with its own detail
+// (the store opens with Config.Projections, so a rebuild reports it too).
+// A record of built projections that cannot be read, and a replay that
+// cannot run (storage, cancellation), are store_unreadable. Startup never
+// repairs a projection, and one it has not matched is never trusted. A
+// start refused by a later check keeps what this one built and recorded:
+// it equals the log.
 func checkProjections(ctx context.Context, s *eventstore.Store) error {
 	_, diffs, err := s.BuildProjections(ctx, projections, builtBeforeRecord)
 	switch {
@@ -154,6 +158,9 @@ func checkProjections(ctx context.Context, s *eventstore.Store) error {
 		return couldNotRun(vocab.ReasonStoreUnreadable, "the record of built projections cannot be read", err)
 	case err != nil:
 		return couldNotRun(vocab.ReasonStoreUnreadable, "the event log cannot be replayed", err)
+	}
+	if slices.ContainsFunc(diffs, eventstore.ProjectionDiff.BuildRecord) {
+		return couldNotRun(vocab.ReasonAmbiguousState, "the record of built projections names a projection this build does not fold", nil)
 	}
 	if len(diffs) > 0 {
 		return couldNotRun(vocab.ReasonAmbiguousState, "the persisted projections differ from a replay of the event log", nil)

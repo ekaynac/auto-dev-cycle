@@ -36,6 +36,12 @@ var rebuildBatch = 512
 // time, in log order: a projector that is not a fold (see Hooks.Project)
 // shows up as drift. A projector's error with no storage error behind it is
 // ErrReplayRefused; a storage error or cancellation is returned as itself.
+//
+// The store's record of built projections (build.go) is no projection: it
+// is compared only when the store was opened with Config.Projections. Then
+// a record of a projection not registered there is a difference, as at
+// start (ProjectionDiff.BuildRecord), and a record that does not decode is
+// ErrBuildRecord.
 func (s *Store) RebuildProjections(ctx context.Context) ([]ProjectionDiff, error) {
 	var diffs []ProjectionDiff
 	err := s.do(func() error {
@@ -64,7 +70,16 @@ func (s *Store) rebuild(ctx context.Context, tx *sql.Tx) ([]ProjectionDiff, erro
 	if err := s.replayFresh(ctx, tx); err != nil {
 		return nil, err
 	}
-	return compareLive(ctx, tx)
+	diffs, err := compareLive(ctx, tx)
+	if err != nil || s.projections == nil {
+		return diffs, err
+	}
+	recorded, err := builtProjections(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	// _built sorts before every projection name: the order stays compare's.
+	return append(unknownRecords(recorded, s.projections), diffs...), nil
 }
 
 // replayFresh verifies the chain and replays it into a fresh scratch table,

@@ -348,19 +348,20 @@ func TestForgedRecordBuildsNoAssumedProjection(t *testing.T) {
 }
 
 // A record of built projections that names a projection this build does not
-// fold is a difference (Opus #341 L1). One that records a later version
-// than this build folds (a later build wrote the store, L2), or that does
-// not decode (L3, L4), is store_unreadable, never read as absent.
+// fold is a difference with its own detail (Opus #341 L1, #342 L1). One
+// that records a later version than this build folds (a later build wrote
+// the store, L2), or that does not decode (L3, L4), is store_unreadable,
+// never read as absent.
 func TestBuildRecordRefused(t *testing.T) {
 	for name, c := range map[string]struct {
 		stmt   string
 		reason vocab.Reason
 		detail string
 	}{
-		"unknown":     {`INSERT INTO proj_kv(projection, key, value) VALUES ('_built', 'zzz', '{"version":1}')`, vocab.ReasonAmbiguousState, "differ from a replay"},
-		"later":       {`UPDATE proj_kv SET value = '{"version":99}' WHERE projection = '_built' AND key = 'leases'`, vocab.ReasonStoreUnreadable, "record of built projections"},
-		"undecodable": {`UPDATE proj_kv SET value = 'x' WHERE projection = '_built' AND key = 'leases'`, vocab.ReasonStoreUnreadable, "record of built projections"},
-		"bad name":    {`INSERT INTO proj_kv(projection, key, value) VALUES ('_built', 'Bad Name', '{"version":1}')`, vocab.ReasonStoreUnreadable, "record of built projections"},
+		"unknown":     {`INSERT INTO proj_kv(projection, key, value) VALUES ('_built', 'zzz', '{"version":1}')`, vocab.ReasonAmbiguousState, "names a projection this build does not fold"},
+		"later":       {`UPDATE proj_kv SET value = '{"version":99}' WHERE projection = '_built' AND key = 'leases'`, vocab.ReasonStoreUnreadable, "record of built projections cannot be read"},
+		"undecodable": {`UPDATE proj_kv SET value = 'x' WHERE projection = '_built' AND key = 'leases'`, vocab.ReasonStoreUnreadable, "record of built projections cannot be read"},
+		"bad name":    {`INSERT INTO proj_kv(projection, key, value) VALUES ('_built', 'Bad Name', '{"version":1}')`, vocab.ReasonStoreUnreadable, "record of built projections cannot be read"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir, cfg := leaseStore(t)
@@ -373,6 +374,24 @@ func TestBuildRecordRefused(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The daemon's store is opened with its projections (Opus #342 L1): a
+// rebuild reports a record of a projection this build does not fold, the
+// difference the next start refuses, so an operator following the refusal
+// sees it.
+func TestRebuildReportsUnknownRecord(t *testing.T) {
+	dir, cfg := leaseStore(t)
+	d, err := Start(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execSQL(t, dir, `INSERT INTO proj_kv(projection, key, value) VALUES ('_built', 'zzz', '{"version":1}')`)
+	diffs, err := d.store.RebuildProjections(context.Background())
+	if err := errors.Join(err, d.Close()); err != nil || len(diffs) != 1 || !diffs[0].BuildRecord() || diffs[0].Key != "zzz" {
+		t.Fatalf("the rebuild: %+v, %v", diffs, err)
+	}
+	refused(t, dir, cfg, vocab.CouldNotRun, vocab.ReasonAmbiguousState, "names a projection this build does not fold")
 }
 
 // declaredProjections are the projection names the code declares: every

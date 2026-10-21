@@ -117,17 +117,14 @@ func (s *Store) build(ctx context.Context, tx *sql.Tx, registered []Projection, 
 	for _, p := range registered {
 		versions[p.Name] = p.Version
 	}
-	// A record of a projection this build does not fold is a difference; one
-	// at a later version than it folds is a store a later build wrote.
-	var unknown []ProjectionDiff
+	// A record at a later version than this build folds is a store a later
+	// build wrote.
 	for name, r := range recorded {
-		if v, ok := versions[name]; !ok {
-			unknown = append(unknown, ProjectionDiff{Projection: builtRecord, Key: name, Live: &r.value})
-		} else if r.version > v {
+		if v, ok := versions[name]; ok && r.version > v {
 			return nil, nil, fmt.Errorf("%w: projection %s is recorded at version %d, this build folds version %d", ErrBuildRecord, name, r.version, v)
 		}
 	}
-	sort.Slice(unknown, func(i, j int) bool { return unknown[i].Key < unknown[j].Key })
+	unknown := unknownRecords(recorded, versions)
 	taken := map[string]bool{}
 	for name := range recorded {
 		taken[name] = true
@@ -172,6 +169,24 @@ func (s *Store) build(ctx context.Context, tx *sql.Tx, registered []Projection, 
 	}
 	return built, nil, nil
 }
+
+// unknownRecords are the differences a record of built projections makes:
+// one row per projection it names that versions does not register, sorted
+// by name (ProjectionDiff.BuildRecord).
+func unknownRecords(recorded map[string]recordedBuild, versions map[string]int) []ProjectionDiff {
+	var unknown []ProjectionDiff
+	for name, r := range recorded {
+		if _, ok := versions[name]; !ok {
+			unknown = append(unknown, ProjectionDiff{Projection: builtRecord, Key: name, Live: &r.value})
+		}
+	}
+	sort.Slice(unknown, func(i, j int) bool { return unknown[i].Key < unknown[j].Key })
+	return unknown
+}
+
+// BuildRecord reports a difference in the store's record of built
+// projections: a record of a projection this build does not fold.
+func (d ProjectionDiff) BuildRecord() bool { return d.Projection == builtRecord }
 
 type recordedBuild struct {
 	version int

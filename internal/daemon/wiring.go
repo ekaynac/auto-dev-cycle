@@ -244,7 +244,14 @@ var builtBeforeRecord = []string{
 
 // addedSinceRecord are the projections projector folds that
 // builtBeforeRecord does not hold, in the order they were added. A new
-// projection is appended here, at version 1 in projections.
+// projection is appended here, at version 1 in projections. Declare every
+// projection name as a `const …Projection` string: TestProjectionsRegistered
+// finds only those, and one it misses is compared, never built (Opus #342
+// L2). A projection declared before its projector is wired is registered
+// too, so a store records it as built while it is still empty; wiring it
+// later over existing events is then refused, as on main, and that
+// projection loses the build at start. Wire a projection's fold in the PR
+// that declares it.
 var addedSinceRecord = []string{
 	lease.GrantProjection,                          // #328
 	lease.OpenProjection, graph.TaskNodeProjection, // #333
