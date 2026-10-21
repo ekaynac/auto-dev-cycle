@@ -189,12 +189,12 @@ func (s *pkgScan) possiblyTesting(t ast.Expr) bool {
 // testing, above); a cycle is possibly testing; memoized for the scan
 // (each alias followed once).
 func (s *pkgScan) aliasTesting(tn *types.TypeName) bool {
-	if v, ok := s.aliasClass[tn]; ok {
+	if v, ok := s.aliasMemo[tn]; ok {
 		return v != 2 // 1 testing, 2 not, 3 being followed: a cycle, possibly
 	}
-	s.aliasClass[tn] = 3
+	s.aliasMemo[tn] = 3
 	v := s.possiblyTesting(s.aliases[tn])
-	s.aliasClass[tn] = 2 - int8(b2i(v))
+	s.aliasMemo[tn] = 2 - int8(b2i(v))
 	return v
 }
 

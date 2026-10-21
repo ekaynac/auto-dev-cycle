@@ -386,7 +386,7 @@ func TestIntegritySkipsCancel(t *testing.T) {
 	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
 	pkg, _ := (&types.Config{Error: func(error) {}}).Check("p", fset, []*ast.File{f}, info)
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &pkgScan{r: &run{ctx: ctx}, pkg: pkg, info: info, tvals: map[types.Object]string{}, aliases: map[types.Object]ast.Expr{}, aliasClass: map[types.Object]int8{}}
+	s := &pkgScan{r: &run{ctx: ctx}, pkg: pkg, info: info, tvals: map[types.Object]string{}, aliases: map[types.Object]ast.Expr{}, aliasMemo: map[types.Object]int8{}}
 	d := f.Decls[1].(*ast.FuncDecl)
 	params := s.testingParams(d)
 	if found, err := s.skipsDirectly(d, params); !found || err != nil {
@@ -412,7 +412,7 @@ func TestIntegritySkipsAliases(t *testing.T) {
 		info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}, Types: map[ast.Expr]types.TypeAndValue{}}
 		pkg, _ := (&types.Config{Error: func(error) {}, Importer: importer.Default()}).Check("p", fset, []*ast.File{f}, info) // type errors kept: the scan reads on
 		s := &pkgScan{r: &run{ctx: context.Background(), modFirsts: map[string]bool{"example.com": true, "m": true}}, pkg: pkg, info: info,
-			tvals: map[types.Object]string{}, aliases: map[types.Object]ast.Expr{}, aliasClass: map[types.Object]int8{}}
+			tvals: map[types.Object]string{}, aliases: map[types.Object]ast.Expr{}, aliasMemo: map[types.Object]int8{}}
 		decls := map[string]*ast.FuncDecl{}
 		for _, d := range f.Decls {
 			switch d := d.(type) {
