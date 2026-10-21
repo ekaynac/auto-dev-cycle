@@ -123,6 +123,34 @@ func runSkipped(t *testing.T) {
 
 func needDeref(t *testing.T) { (*t).Skip("x") }
 
+type TT = testing.T
+
+type TBA = testing.TB
+
+type PTT = *TT
+
+func needAlias(t *TT) { t.Skip("x") }
+
+func needAliasTB(tb TBA) { tb.SkipNow() }
+
+func needParen(t (*testing.T)) { t.Skip("x") }
+
+func needStarParen(t *(testing.T)) { t.Skip("x") }
+
+func needPtrAlias(t PTT) { t.Skip("x") }
+
+func viaCopy(t *testing.T) {
+	u := t
+	u.Skip("x")
+}
+
+func TestViaCopy(t *testing.T) {
+	viaCopy(t)
+	if Add(1, 1) != 2 {
+		t.Fatal("add")
+	}
+}
+
 type S struct{ URL string }
 
 func requireServer(t *testing.T) *S {
@@ -216,6 +244,14 @@ func TestIntegritySkips(t *testing.T) {
 		"a skip, then another type's Skip":    {in("\tneedThenDecode(t, nil)\n"), skipped}, // never reset (C1)
 		"a skip, then the parameter nil (H1)": {in("\tneedThenNil(t)\n"), skipped},         // Astra #315 H1
 		"through (*t)":                        {in("\tneedDeref(t)\n"), skipped},
+		"a type alias of testing.T (M1)":      {in("\tneedAlias(t)\n"), skipped}, // Opus #350 M1
+		"a type alias of testing.TB (M1)":     {in("\tneedAliasTB(t)\n"), skipped},
+		"a parenthesized type (M1)":           {in("\tneedParen(t)\n"), skipped},
+		"a pointer to a parenthesized type":   {in("\tneedStarParen(t)\n"), skipped},
+		"an alias of a pointer alias":         {in("\tneedPtrAlias(t)\n"), skipped},
+		// Opus #350 M2, stated (a false block): a helper skipping through a
+		// copy, rewritten to skip its parameter directly, blocks its callers.
+		"a2 helper rewritten to direct (M2)":  {map[string]string{"pkg/skips_test.go": strings.Replace(skipsBase, "\tu := t\n\tu.Skip(\"x\")\n", "\tt.Skip(\"x\")\n", 1)}, "TestViaCopy a test skipped"},
 		"a held result, used (r2 M1)":         {in("\t_ = url()\n"), ""},
 		"a held result, read (r2 M1)":         {in("\tif shared != nil {\n\t\tt.Log(shared.URL)\n\t}\n"), ""},
 		"a held result, cleared (r2 M1)":      {in("\tdefer closeClient()\n"), ""},

@@ -83,13 +83,21 @@ func (s *pkgScan) skipFacts() error {
 }
 
 // testingParams is d's parameters declared of a testing type (*testing.T,
-// B, F or TB), by the declaration's syntax.
+// B, F or TB), by the declaration's syntax: through parentheses, a pointer
+// and the scan's own type aliases (type TT = testing.T), as mentions reads
+// them (Opus #350 M1).
 func (s *pkgScan) testingParams(d *ast.FuncDecl) map[types.Object]bool {
 	params := map[types.Object]bool{}
 	for _, fl := range d.Type.Params.List {
-		t := fl.Type
-		if st, ok := t.(*ast.StarExpr); ok {
-			t = st.X
+		t := ast.Unparen(fl.Type)
+		for range 8 { // a bound: an alias of a pointer of an alias…
+			if st, ok := t.(*ast.StarExpr); ok {
+				t = ast.Unparen(st.X)
+			} else if a := s.alias(t); a != nil {
+				t = ast.Unparen(a)
+			} else {
+				break
+			}
 		}
 		if slices.Contains(testTypes[:4], s.qual(t)) {
 			for _, id := range fl.Names {
