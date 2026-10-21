@@ -19,7 +19,9 @@ jobs:
     # Self-hosted x86 runner in the homelab (ekaynac/homelab docs/services/ci-runner.md):
     # GitHub-hosted minutes ran out. Ubuntu 24.04, same as the ubuntu-24.04 image.
     runs-on: [self-hosted, homelab]
-    timeout-minutes: 20
+    # Successful runs take about 19 minutes on the one runner (2026-10-21), so a
+    # 20-minute limit cut healthy runs, main's included (#226 entry 102).
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
