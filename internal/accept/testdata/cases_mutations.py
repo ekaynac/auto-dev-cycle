@@ -19,7 +19,7 @@ C = 'internal/accept/integrity_cases.go'
 MUTS = [
     # Identities and their comparison.
     ("a removed case not counted", C, 'if d := b.ids[k] - have; d > 0 {', 'if d := b.ids[k] - have; d > 99 {'),
-    ("no runs-to-runs-checks transition", C, '\t\t\thave += max(0, a.ids[c+" runs checks"]-b.ids[c+" runs checks"])\n', ''),
+    ("no runs-to-runs-checks transition", C, '\t\t\thave += max(0, a.ids[c+" runs checks"]-b.ids[c+" runs checks"])\n', '\t\t\t_ = c\n'),
     ("runs to checks accepted (Opus #318 H1)", C, '\t\t\thave += max(0, a.ids[c+" runs checks"]-b.ids[c+" runs checks"])\n', '\t\t\thave += max(0, a.ids[c+" checks"]-b.ids[c+" checks"]) + max(0, a.ids[c+" runs checks"]-b.ids[c+" runs checks"])\n'),
     ("the transition for subtests too (r2 2)", C, 'ok && strings.HasPrefix(k, "row ") {', 'ok {'),
     ("a loop's runs bit unlabelled (H1)", C, '\t\tkind = append(kind, "runs")\n', ''),
@@ -62,7 +62,7 @@ MUTS = [
     ("the kinds' pass uncharged", C, '\tif !s.caseCharge(int(body.End() - body.Pos())) {\n\t\treturn out\n', '\tif false {\n\t\treturn out\n'),
     ("canon's span uncharged (Opus #344 H1)", C, '\tif !s.caseCharge(len(span)) {\n\t\treturn\n\t}\n\tvar sc', '\tvar sc'),
     ("canon keeps semicolons", C, '\t\tcase tok == token.SEMICOLON: // a newline', '\t\tcase false: // a newline'),
-    ("canon without separators", C, '\t\tcase !first:\n\t\t\tb.WriteByte(\' \')\n', ''),
+    ("canon without separators", C, '\t\tcase !first:\n\t\t\tb.WriteByte(\' \')\n', '\t\tcase !first:\n'),
     ("no return or branch in the print (Opus #344 M1)", C, '\t\tcase *ast.ReturnStmt, *ast.BranchStmt: // an early exit', '\t\tcase *ast.EmptyStmt: // an early exit'),
     ("a row's identity uncharged, read on", C, '\t\tif !s.caseCharge(len(k)) {\n\t\t\treturn\n\t\t}\n\t\tw.sum.ids[k]++\n', '\t\tw.sum.ids[k]++\n'),
     ("a long prefix kept whole (H5)", C, '\tif len(next) > maxPrefix {', '\tif false {'),
@@ -74,6 +74,8 @@ def main():
     repo = subprocess.run(['git', 'rev-parse', '--show-toplevel'], capture_output=True, text=True, check=True).stdout.strip()
     jobs = int(sys.argv[1]) if len(sys.argv) > 1 else 4
     sel = [int(a) for a in sys.argv[2:]] or list(range(len(MUTS)))
+    if os.path.realpath(tempfile.gettempdir()).startswith(os.path.realpath(os.path.expanduser('~'))):
+        sys.exit('the copies must not be under $HOME (testguard fails every run there): unset TMPDIR')
     work = tempfile.mkdtemp(prefix='cases-mutations-')
     copies = []
     for w in range(jobs):
@@ -92,6 +94,10 @@ def main():
                 continue
             open(p, 'w').write(src.replace(old, new))
             try:
+                vet = subprocess.run(['go', 'vet', './internal/accept/'], cwd=copies[w], capture_output=True, text=True)
+                if vet.returncode:  # a mutation that does not compile proves nothing
+                    out.append((i, name, 'NOCOMPILE'))
+                    continue
                 r = subprocess.run(['go', 'test', '-count=1', '-timeout', '600s', '-run', 'TestIntegrityCases', './internal/accept/'], cwd=copies[w], capture_output=True, text=True)
             finally:
                 open(p, 'w').write(src)
@@ -106,6 +112,8 @@ def main():
         clean = subprocess.run(['diff', '-r', '-q', os.path.join(d, 'internal'), os.path.join(repo, 'internal')], capture_output=True).returncode == 0
         print('copy', os.path.basename(d), 'clean' if clean else 'DIRTY')
     shutil.rmtree(work, ignore_errors=True)
+    counts = {k: sum(r == k for _, _, r in results) for k in ('KILLED', 'SURVIVED', 'NOCOMPILE', 'BADSTRING')}
+    print(' '.join(f'{k.lower()} {n}' for k, n in counts.items()))
     sys.exit(1 if any(r != 'KILLED' for _, _, r in results) else 0)
 
 
