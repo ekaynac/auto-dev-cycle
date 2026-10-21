@@ -411,7 +411,11 @@ func TestRedactKeepsOnlyAllowedPaths(t *testing.T) {
 
 // clientWriter is a client as the handler's ResponseWriter sees it: it
 // records frames and write deadlines, can run a hook before an event
-// frame is written, and can stall (a write blocks until its deadline).
+// frame is written, and can stall. A stalled write never finishes: only
+// its deadline ends it, so it fails at once if one is set, as a write
+// does when its deadline comes, and with none it counts as unbounded
+// (a real one would hold the stream for good). No clock is read (#226
+// entry 113).
 type clientWriter struct {
 	mu        sync.Mutex
 	header    http.Header
@@ -421,6 +425,9 @@ type clientWriter struct {
 	events    int
 	before    func(n int) // before the n-th event frame (1-based)
 	stall     bool
+	cut       bool          // a stalled write was ended by its deadline
+	unbounded int           // stalled writes with no deadline set
+	afterCut  int           // calls into the writer after the cut
 	delay     time.Duration // each event write takes this long, and succeeds
 	closedAt  time.Time     // when the closed frame was written
 }
@@ -433,16 +440,29 @@ func (c *clientWriter) Header() http.Header {
 }
 func (c *clientWriter) WriteHeader(int) {}
 func (c *clientWriter) FlushError() error {
+	c.touched()
 	return nil
 }
 func (c *clientWriter) SetWriteDeadline(d time.Time) error {
+	c.touched()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deadline = d
 	c.deadlines = append(c.deadlines, time.Until(d))
 	return nil
 }
+
+// touched counts a call into the writer after the cut.
+func (c *clientWriter) touched() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cut {
+		c.afterCut++
+	}
+}
+
 func (c *clientWriter) Write(b []byte) (int, error) {
+	c.touched()
 	if strings.Contains(string(b), "event: event") {
 		c.events++
 		if c.before != nil {
@@ -450,9 +470,11 @@ func (c *clientWriter) Write(b []byte) (int, error) {
 		}
 		if c.stall {
 			c.mu.Lock()
-			d := c.deadline
-			c.mu.Unlock()
-			time.Sleep(time.Until(d))
+			defer c.mu.Unlock()
+			if c.deadline.IsZero() {
+				c.unbounded++
+			}
+			c.cut = true
 			return 0, os.ErrDeadlineExceeded
 		}
 	}
@@ -525,8 +547,11 @@ func TestStreamStopsMidDelivery(t *testing.T) {
 }
 
 // A client that stalls is cut off within the poll bound: every write has a
-// deadline no later than it, and nothing is sent after the stall, whatever
-// changes meanwhile.
+// deadline no later than it, the stalled write is ended by its deadline,
+// and the stream then ends on its own, sending nothing more, whatever
+// changes meanwhile. By the order of what the writer sees, never by a
+// clock (#226 entry 113): serve fails the row if the stream ends only once
+// the client leaves.
 func TestStreamCutsOffAStalledClient(t *testing.T) {
 	f := open(t)
 	for range 3 {
@@ -538,13 +563,12 @@ func TestStreamCutsOffAStalledClient(t *testing.T) {
 			f.revokeGrant()
 		}
 	}}
-	start := time.Now()
 	f.serve(c, poll, f.supTk.Reveal())
-	if took := time.Since(start); took > 2*time.Second {
-		t.Errorf("a stalled client held the stream for %s", took)
+	if !c.cut || c.unbounded > 0 {
+		t.Errorf("the stalled write: cut %v, %d with no deadline (never cut off)", c.cut, c.unbounded)
 	}
-	if out := c.String(); strings.Contains(out, "event: ") {
-		t.Errorf("frames after the stall: %q", out)
+	if out := c.String(); strings.Contains(out, "event: ") || c.afterCut > 0 {
+		t.Errorf("after the stall, %d calls into the writer and frames %q", c.afterCut, out)
 	}
 	for _, d := range c.deadlines {
 		if d > poll {
