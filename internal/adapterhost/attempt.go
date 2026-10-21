@@ -128,7 +128,8 @@ var (
 )
 
 // ErrNotStarted: the prepared attempt is not one its caller started: not
-// running on the spec's lease as its unit's current attempt.
+// running on the spec's lease, from the spec's base, as its unit's current
+// attempt.
 var ErrNotStarted = errors.New("adapterhost: the attempt is not started on its lease (the host never starts one)")
 
 func hook(stage string) {
@@ -142,7 +143,11 @@ type Prepared struct {
 	h    *Host
 	spec Spec
 	x    *exchange
+	used bool // Run or Discard was called: a Prepared is single-use (Opus #326 L3)
 }
+
+// ErrUsed: a Prepared is run or discarded once.
+var ErrUsed = errors.New("adapterhost: the prepared attempt was already run or discarded")
 
 // Prepare makes spec's exchange and runs the prelaunch check on it, before
 // any start (I16): the caller starts the attempt only once it passes
@@ -161,16 +166,28 @@ func (h *Host) Prepare(spec Spec) (*Prepared, error) {
 }
 
 // Discard removes an exchange its caller will not run (a refused start).
-func (p *Prepared) Discard() error { return p.x.remove() }
+func (p *Prepared) Discard() error {
+	if p.used {
+		return ErrUsed
+	}
+	p.used = true
+	return p.x.remove()
+}
 
 // Run runs the prepared attempt, which its caller started, to its end, and
-// removes the exchange. The host never starts an attempt: one that is not
-// running on the spec's lease as its unit's current attempt is refused
-// (ErrNotStarted), nothing launched. Its fencing token is the attempt's. An
-// error is the host's (the stores, the exchange root, a spawn, an
-// ingestion fault), with a fixed text; the adapter's failures are in the
-// Outcome.
+// removes the exchange; once (ErrUsed after). The host never starts an
+// attempt: one that is not running on the spec's lease, from the spec's
+// base, as its unit's current attempt is refused (ErrNotStarted), nothing
+// launched. Its fencing token is the attempt's. An error is the host's (the
+// stores, the exchange root, a spawn, an ingestion fault), with a fixed
+// text; the adapter's failures are in the Outcome. After a host error the
+// attempt may still be running: its caller loses it (lease.LoseRunning)
+// and starts the next through dispatch.Launch, never by running it again.
 func (p *Prepared) Run(ctx context.Context) (out Outcome, err error) {
+	if p.used {
+		return Outcome{}, ErrUsed
+	}
+	p.used = true
 	defer func() { err = errors.Join(err, p.x.remove()) }()
 	var a types.Attempt
 	var current types.AttemptID
@@ -184,7 +201,7 @@ func (p *Prepared) Run(ctx context.Context) (out Outcome, err error) {
 	}); err != nil {
 		return Outcome{}, err
 	}
-	if !ok || !started || current != p.spec.Attempt || a.Status != types.AttemptStatusRunning || a.Lease != p.spec.Lease {
+	if !ok || !started || current != p.spec.Attempt || a.Status != types.AttemptStatusRunning || a.Lease != p.spec.Lease || a.Base != p.spec.Base {
 		return Outcome{}, ErrNotStarted
 	}
 	r := &attemptRun{h: p.h, spec: p.spec, token: a.FencingToken, x: p.x}

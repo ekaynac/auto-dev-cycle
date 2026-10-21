@@ -33,6 +33,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost"
+	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/ingest"
 	"github.com/ekaynac/auto-dev-cycle/internal/adapterhost/session"
 	"github.com/ekaynac/auto-dev-cycle/internal/blobstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
@@ -267,23 +268,39 @@ func run(ctx context.Context, command, env []string, workspace string, prompt []
 			Limits:     types.AdapterPrepareParamsLimits{MaxTurns: 8, MaxOutputTokens: 8000, WallSeconds: max(1, int64(b.Result/time.Second))},
 			ToolPolicy: types.AdapterPrepareParamsToolPolicy{Allowed: []string{"Edit"}, Mediated: []string{}}}}
 	host := &adapterhost.Host{Store: s, Blobs: blobs, Actor: idv["act"], Root: root}
-	// The harness is its own controller: it starts the attempt once the
-	// host's prelaunch check passes, and refuses the start otherwise (the
-	// host never starts one: I16).
-	p, perr := host.Prepare(spec)
-	if perr != nil {
-		err = submit(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	p, err := startPrepared(host, spec, func() error {
+		return submit(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.StartAttempt(tx, l.ID, 2, spec.Attempt, spec.Base)
+		})
+	}, func() error {
+		return submit(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 			return lease.ChangeLease(tx, l.ID, 2, lease.LeaseEvent{Kind: lease.StartRefused, Reason: vocab.ReasonPreconditionFailed.String()}, nil)
 		})
-		return spec, out, errors.Join(fmt.Errorf("%w: %w", errStartRefused, perr), err)
-	}
-	if err := submit(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
-		return lease.StartAttempt(tx, l.ID, 2, spec.Attempt, spec.Base)
-	}); err != nil {
-		return spec, out, errors.Join(err, p.Discard())
+	})
+	if err != nil {
+		return spec, out, err
 	}
 	out, err = p.Run(ctx)
 	return spec, out, err
+}
+
+// startPrepared is the harness as its own controller (a private store, no
+// rails): it prepares spec on host and starts the attempt (start) once the
+// prelaunch check passes, the host never starting one (I16). A failed check
+// alone refuses the start (refuse; errStartRefused); any other Prepare
+// error is the host's, returned as is, nothing recorded (Opus #326 M1).
+func startPrepared(host *adapterhost.Host, spec adapterhost.Spec, start, refuse func() error) (*adapterhost.Prepared, error) {
+	p, err := host.Prepare(spec)
+	switch {
+	case errors.Is(err, ingest.ErrUnsupported):
+		return nil, errors.Join(fmt.Errorf("%w: %w", errStartRefused, err), refuse())
+	case err != nil:
+		return nil, err
+	}
+	if err := start(); err != nil {
+		return nil, errors.Join(err, p.Discard())
+	}
+	return p, nil
 }
 
 // errStartRefused: the host's prelaunch check failed, and the harness

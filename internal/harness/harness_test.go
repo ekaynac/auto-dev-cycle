@@ -477,3 +477,23 @@ func TestRemoveStateWalksOnlyWhenTold(t *testing.T) {
 		t.Fatal("the state is still there")
 	}
 }
+
+// Opus #326 M1: only a failed prelaunch check refuses the start. Another
+// Prepare failure (an exchange root it cannot write) is the host's,
+// returned as is: neither refused nor started.
+func TestOnlyTheProbeRefusesTheStart(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.Mkdir(root, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
+	var started, refused bool
+	_, err := startPrepared(&adapterhost.Host{Root: root}, adapterhost.Spec{Attempt: "att_01m3250vnfeyrv67x6w0ddqr6a", Prompt: []byte("p")},
+		func() error { started = true; return nil }, func() error { refused = true; return nil })
+	if err == nil || errors.Is(err, errStartRefused) || started || refused {
+		t.Fatalf("an unwritable root: %v, started %v, refused %v", err, started, refused)
+	}
+	if r, code := report(context.Background(), adapterhost.Spec{}, adapterhost.Outcome{}, err); code != entry.ExitCouldNotRun || r.Reason != vocab.ReasonExecutorIncomplete.String() {
+		t.Errorf("the report: %d %s", code, r.Reason)
+	}
+}

@@ -184,6 +184,25 @@ func TestProjectCreate(t *testing.T) {
 		}
 	}
 	b.rebuilds()
+	// Opus #326 L9: a record whose profile no longer loads, whose digest is
+	// not its profile's, or whose profile is another project's is an error.
+	for name, edit := range map[string]func(*authority.ProjectRecord){
+		"a profile that no longer loads": func(r *authority.ProjectRecord) { r.Profile = json.RawMessage(`{"schema":"adc.project-profile/v1"}`) },
+		"another digest":                 func(r *authority.ProjectRecord) { r.ProfileDigest = "sha256:" + strings.Repeat("0", 64) },
+		"another project's profile":      func(r *authority.ProjectRecord) { r.ID = "prj_01m3250vkwffc979nzjw0g2sa9" },
+	} {
+		bad := r
+		edit(&bad)
+		b.seed(b.op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return nil, tx.Put(authority.ProjectProjection, string(bad.ID), must(json.Marshal(bad)))
+		})
+		b.view(func(tx *eventstore.Tx) error {
+			if got, ok, err := authority.ProjectProfile(tx, bad.ID); err == nil || ok || got != nil {
+				t.Errorf("%s: %+v, %v, %v", name, got, ok, err)
+			}
+			return nil
+		})
+	}
 }
 
 // An invalid profile is refused before authority and the logic, with no

@@ -507,7 +507,7 @@ func stuckAfterIngestion(t *testing.T, w *world) {
 }
 
 // Astra #109 round 3: a refused output whose staging could not remove its
-// temporary file is still refused, and Host.Run reports the cleanup failure
+// temporary file is still refused, and Prepared.Run reports the cleanup failure
 // (ErrCleanup) apart from it: a digest mismatch, and a post-copy refusal.
 func TestARefusalWithACleanupFailure(t *testing.T) {
 	for name, check := range map[string]string{"digest": ingest.CheckDigest, "replaced": ingest.CheckReplaced} {

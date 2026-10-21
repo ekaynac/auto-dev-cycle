@@ -68,7 +68,7 @@ func newWorld(t *testing.T) *world {
 	}
 	kinds := lease.Kinds()
 	maps.Copy(kinds, ledger.Kinds())
-	project := lease.Projector{Blobs: blobs, Holds: reg.Holds, Units: anyUnit{}}.Project
+	project := lease.Projector{Blobs: blobs, Holds: reg.Holds, Units: worldUnits}.Project
 	s, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Blobs: blobs,
 		Hooks: eventstore.Hooks{Identify: func(*eventstore.Tx, eventstore.Command) error { return nil }, Authorize: func(*eventstore.Tx, eventstore.Command) error { return nil },
 			Project: func(tx *eventstore.Tx, evs []eventstore.Event) error {
@@ -403,6 +403,9 @@ func TestTheHostNeverStartsAnAttempt(t *testing.T) {
 		t.Fatalf("the exchange root was left behind: %v %v", entries, err)
 	}
 }
+
+// worldUnits are newWorld's projector's units (a test binds them).
+var worldUnits lease.Units = anyUnit{}
 
 // anyUnit admits an attempt on every unit and binds none to a project and
 // task: these tests run leases with no graph (M1 P8a's binding).

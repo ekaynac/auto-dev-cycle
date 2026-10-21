@@ -60,6 +60,8 @@ type stubPlan struct {
 	Shutdown string `json:"shutdown,omitempty"`
 	// Tools is the described tool surface (default none).
 	Tools []string `json:"tools,omitempty"`
+	// PrepareTo: the prepare's fencing token is written to this file.
+	PrepareTo string `json:"prepare_to,omitempty"`
 }
 
 const stubDescribe = `{"harness":"stub","harness_version":"1.0.0","adapter_version":"0.1.0","contract_version":"1.0.0",` +
@@ -105,6 +107,9 @@ func runStub(raw string) {
 			reply(req.ID, d)
 		case "prepare":
 			dir = req.Params.Exchange.Out
+			if plan.PrepareTo != "" {
+				_ = os.WriteFile(plan.PrepareTo, []byte(fmt.Sprint(req.Params.FencingToken)), 0o600)
+			}
 			reply(req.ID, clean)
 		case "run":
 			for name, content := range plan.Files {
