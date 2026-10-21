@@ -137,7 +137,9 @@ func (s *pkgScan) testingParams(d *ast.FuncDecl) map[types.Object]bool {
 			return nil
 		} else if s.possiblyTesting(fl.Type) {
 			for _, id := range fl.Names {
-				if o := s.info.Defs[id]; o != nil {
+				if !s.skipStep() { // a done context, inside one group too (Astra #356 r2 M2)
+					return nil
+				} else if o := s.info.Defs[id]; o != nil {
 					params[o] = true
 				}
 			}

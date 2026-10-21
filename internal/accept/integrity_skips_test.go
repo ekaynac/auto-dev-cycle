@@ -606,6 +606,12 @@ func TestIntegritySkipsSignatures(t *testing.T) {
 		t.Errorf("8,000 names in one group: %v, %d charged", err, skipCharged.Load()-before)
 	}
 	_ = d
+	// A context done once the group's reading starts stops it inside the
+	// group (Astra #356 r2): at most one check's interval of its names.
+	s, _ = parse(errAfter{context.Background(), new(int)}, "func ordinary("+strings.TrimSuffix(names.String(), ", ")+" *testing.T) {}\n")
+	if err := s.skipFacts(); err != context.Canceled || s.skipSteps > 2*skipCheckEvery {
+		t.Errorf("8,000 names, a context done in the group: %v after %d steps", err, s.skipSteps)
+	}
 	var chain strings.Builder
 	chain.WriteString("type A0 = int\n")
 	for i := 1; i <= 100_000; i++ {
@@ -619,4 +625,18 @@ func TestIntegritySkipsSignatures(t *testing.T) {
 	if err := s.skipFacts(); err != context.Canceled || skipCharged.Load()-before > 1000 {
 		t.Errorf("100,000 aliases, a done context: %v, %d charged", err, skipCharged.Load()-before)
 	}
+}
+
+// errAfter is a context whose Err is nil once, then Canceled: done just
+// after the first check.
+type errAfter struct {
+	context.Context
+	n *int
+}
+
+func (c errAfter) Err() error {
+	if *c.n++; *c.n > 1 {
+		return context.Canceled
+	}
+	return nil
 }
