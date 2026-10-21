@@ -72,6 +72,7 @@ type Verdict struct {
 	Tree       string        `json:"tree,omitempty"`
 	TreeDigest types.Digest  `json:"tree_digest,omitempty"`
 	Elapsed    time.Duration `json:"elapsed_ns"`
+	omitted    Omitted       // the guard's entries left out of Blocks and Warnings
 }
 
 // Accepted reports whether nothing blocks the candidate.
@@ -107,8 +108,15 @@ type reportPrefix struct{}
 // sees the changes of a candidate that passed every structural and
 // protected-path check, and reads their blobs through read. Its blocks
 // refuse the candidate (test_integrity_violation); its warnings go to the
-// reviewer.
-type Guard func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, err error)
+// reviewer; omitted counts the entries of each list it leaves out.
+type Guard func(ctx context.Context, changes []Change, read Reader) (blocks, warnings []Block, omitted Omitted, err error)
+
+// Omitted is what a guard's blocks (0) and warnings (1) leave out, counted:
+// entries its report would not select (Integrity's process: fitReport),
+// and how many of their fields the report would clip. The report counts
+// them in truncated and clipped, and a result's detail among its "more"
+// (Astra #311 #2): exact counts, never placeholder entries.
+type Omitted [2]struct{ Entries, Clipped int }
 
 // Reader reads a blob of the candidate's repository: ok false, and
 // nothing read, when it is over max bytes.
@@ -170,11 +178,11 @@ func Accept(ctx context.Context, in In) (v Verdict, err error) {
 	// A structural refusal is final: no blob of a refused candidate (a
 	// gitlink's commit id, say) is ever read.
 	if in.Guard != nil && v.Accepted() {
-		blocks, warnings, err := in.Guard(context.WithValue(ctx, reportPrefix{}, slices.Clone(v.Warnings)), changes, g.blob)
+		blocks, warnings, omitted, err := in.Guard(context.WithValue(ctx, reportPrefix{}, slices.Clone(v.Warnings)), changes, g.blob)
 		if err != nil {
 			return v, err
 		}
-		v.Blocks, v.Warnings = append(v.Blocks, blocks...), append(v.Warnings, warnings...)
+		v.Blocks, v.Warnings, v.omitted = append(v.Blocks, blocks...), append(v.Warnings, warnings...), omitted
 	}
 	if !v.Accepted() {
 		return v, nil

@@ -344,13 +344,13 @@ func TestReportBounded(t *testing.T) {
 func TestGuardSeam(t *testing.T) {
 	f := newFixture(t)
 	calls := 0
-	guard := func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
+	guard := func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, Omitted, error) {
 		calls++
 		b, ok, err := read(ctx, changes[0].DstBlob, 1<<20)
 		if _, small, _ := read(ctx, changes[0].DstBlob, 1); err != nil || !ok || string(b) != "x = 1\n" || small {
 			t.Errorf("read: %q, %t, %v", b, ok, err)
 		}
-		return []Block{{vocab.ReasonTestIntegrityViolation, changes[0].Dst, "guarded", false, false}}, nil, nil
+		return []Block{{vocab.ReasonTestIntegrityViolation, changes[0].Dst, "guarded", false, false}}, nil, Omitted{}, nil
 	}
 	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, map[string]string{"money.py": "x = 1\n"}), Policy: f.policy, Guard: guard})
 	if err != nil || calls != 1 || v.Reason() != vocab.ReasonTestIntegrityViolation {
@@ -371,9 +371,9 @@ func TestStructuralRefusalSkipsGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guard := func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
+	guard := func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, Omitted, error) {
 		_, _, err := read(ctx, changes[0].SrcBlob, 1<<20)
-		return nil, nil, err
+		return nil, nil, Omitted{}, err
 	}
 	v, err := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: d, Policy: f.policy, Guard: guard})
 	if err != nil || v.Reason() != vocab.ReasonUnsafeOutput {

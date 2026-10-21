@@ -125,20 +125,56 @@ func TestIntegrityProcess(t *testing.T) {
 	for i := range 1001 {
 		fmt.Fprintf(&wide, "\nfunc f%s%04d() { fmt.Println() }\n", strings.Repeat("a", 966), i)
 	}
-	ignored := []string{"out.bin"} // a warning the verdict holds before the guard's
-	for name, files := range map[string]map[string]string{
-		"a path past the frame's bound":      {"tool9/long.go": "package tool9\n\nimport \"fmt\"\n\nfunc f" + strings.Repeat("a", 5000) + "() { fmt.Println(1) }\n"},
-		"warnings past a rank's maxReported": {"tool8/many.go": many.String()},
-		"after the verdict's own warning":    {"tool7/many.go": wide.String()},
-	} {
-		in, out := f.guarded(t, files), f.loaded(t, testLister(t), files)
-		if name == "after the verdict's own warning" {
-			in, out = f.withIgnored(t, integrity(f.repo, f.base, testLister(t)), files, ignored), f.withIgnored(t, Integrity(f.repo, f.base, testLister(t), ""), files, ignored)
+	// Astra #311 #1: A, 425, 1 and 1 functions whose warnings cost 1,050,
+	// 1,049, 1,002 and 999 bytes, after ignored paths with invalid UTF-8:
+	// the report's last bytes go to c's and d's warnings or not by a few
+	// bytes of the prefix's cost.
+	edge := func(a int) string {
+		var b strings.Builder
+		b.WriteString("package tool\n\nimport \"fmt\"\n")
+		for _, g := range []struct {
+			n      int
+			prefix string
+			xs     int
+		}{{a, "a", 855}, {425, "b", 854}, {1, "c", 811}, {1, "d", 808}} {
+			for i := range g.n {
+				name := g.prefix + fmt.Sprintf("%04d", i)
+				if g.n == 1 {
+					name = g.prefix
+				}
+				fmt.Fprintf(&b, "\nfunc %s%s() { fmt.Println() }\n", name, strings.Repeat("x", g.xs))
+			}
 		}
+		return b.String()
+	}
+	// The second: a 1,030-byte ignored path, 30 invalid bytes past 1,000,
+	// which the report clips to 1,000 bytes; through JSON (round 3's) each
+	// invalid byte would become 3, the clipped path 1,024 bytes, and the
+	// report's 1,006 bytes left after c's would no longer hold d's.
+	clipped := strings.Repeat("o", 1000) + strings.Repeat("\xff", 30)
+	for name, c := range map[string]struct {
+		files   map[string]string
+		ignored []string // warnings the verdict holds before the guard's
+		shows   []string // function names the in-process report must show: the input reaches the budget's edge
+	}{
+		"a path past the frame's bound":        {map[string]string{"tool9/long.go": "package tool9\n\nimport \"fmt\"\n\nfunc f" + strings.Repeat("a", 5000) + "() { fmt.Println(1) }\n"}, nil, nil},
+		"warnings past a rank's maxReported":   {map[string]string{"tool8/many.go": many.String()}, nil, nil},
+		"after the verdict's own warning":      {map[string]string{"tool7/many.go": wide.String()}, []string{"out.bin"}, nil},
+		"Astra's input, after an invalid byte": {map[string]string{"tool/many.go": edge(573)}, []string{"\xff"}, []string{"c" + strings.Repeat("x", 811)}},
+		"after a clipped invalid UTF-8 path":   {map[string]string{"tool/many.go": edge(571)}, []string{"\xff", clipped}, []string{"c" + strings.Repeat("x", 811), "d" + strings.Repeat("x", 808)}},
+	} {
+		in, out := f.withIgnored(t, integrity(f.repo, f.base, testLister(t)), c.files, c.ignored), f.withIgnored(t, Integrity(f.repo, f.base, testLister(t), ""), c.files, c.ignored)
 		in.Elapsed, out.Elapsed = 0, 0
-		if in.Accepted() != out.Accepted() || len(in.Warnings) == 0 || name != "a path past the frame's bound" && len(in.Warnings) <= maxReported ||
-			len(out.Warnings) != len(in.Warnings) || !sameReport(t, in.Report, out.Report) || detail("", in.Warnings) != detail("", out.Warnings) {
-			t.Errorf("%s: accepted %v, %d warnings; in its own %v, %d warnings; %q", name, in.Accepted(), len(in.Warnings), out.Accepted(), len(out.Warnings), whats(out.Blocks))
+		if in.Accepted() != out.Accepted() || len(in.Warnings) == 0 || name != "a path past the frame's bound" && c.shows == nil && len(in.Warnings) <= maxReported ||
+			len(out.Warnings)+out.omitted[1].Entries != len(in.Warnings) || !sameReport(t, in.Report, out.Report) ||
+			detail("", in.Warnings, 0) != detail("", out.Warnings, out.omitted[1].Entries) {
+			t.Errorf("%s: accepted %v, %d warnings; in its own %v, %d warnings and %d left out; %q", name, in.Accepted(), len(in.Warnings), out.Accepted(), len(out.Warnings), out.omitted[1].Entries, whats(out.Blocks))
+		}
+		report, _ := in.Report()
+		for _, fn := range c.shows {
+			if !bytes.Contains(report, []byte("fmt.Println in "+fn)) {
+				t.Errorf("%s: the in-process report does not show %.8s…'s warning: the input no longer reaches the budget's edge", name, fn)
+			}
 		}
 	}
 	// #1 (Astra #293 r2): an empty root go.mod added, or deleted: the
@@ -298,7 +334,9 @@ func TestIntegrityProcess(t *testing.T) {
 		done := make(chan Verdict, 1)
 		go func() {
 			v, _ := Accept(context.Background(), In{Repo: f.repo, Base: f.base, Patch: f.patch(t, plainGo), Policy: f.policy,
-				Guard: func(ctx context.Context, c []Change, _ Reader) ([]Block, []Block, error) { return g(ctx, c, read) }})
+				Guard: func(ctx context.Context, c []Change, _ Reader) ([]Block, []Block, Omitted, error) {
+					return g(ctx, c, read)
+				}})
 			done <- v
 		}()
 		select {

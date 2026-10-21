@@ -229,7 +229,7 @@ func measureCorpus(t *testing.T, c corpusRepo) (corpusRepoResult, []corpusFile) 
 			}
 			return g.blob(ctx, id, max)
 		}
-		blocks, _, err := Integrity(repo, c.commit, nil, "")(ctx, []Change{{SrcMode: "100644", DstMode: "100644", SrcBlob: r.files[q], DstBlob: fake, Status: "M", Src: q, Dst: q}}, read)
+		blocks, _, _, err := Integrity(repo, c.commit, nil, "")(ctx, []Change{{SrcMode: "100644", DstMode: "100644", SrcBlob: r.files[q], DstBlob: fake, Status: "M", Src: q, Dst: q}}, read)
 		if err != nil {
 			t.Fatal(err)
 		}

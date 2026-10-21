@@ -71,17 +71,18 @@ type pkgFacts struct {
 // temporary index, and imports' types through list (nil: every Go package
 // unverifiable).
 func integrity(repo sandbox.Repo, base string, list Lister) Guard {
-	return func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
+	return func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, Omitted, error) {
 		files, links, err := listBase(ctx, repo, base)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, Omitted{}, err
 		}
 		dir, err := os.MkdirTemp("", "adc-guard-")
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, Omitted{}, err
 		}
 		defer os.RemoveAll(dir)
-		return guard(ctx, changes, read, list, files, links, time.Now().Add(maxListTime), dir)
+		blocks, warnings, err := guard(ctx, changes, read, list, files, links, time.Now().Add(maxListTime), dir)
+		return blocks, warnings, Omitted{}, err
 	}
 }
 

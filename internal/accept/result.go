@@ -31,11 +31,15 @@ var reported, reportedBytes = maxReported, maxEntries // tests lower them
 // from the first live attempt: elapsed time, blocks, warnings, files,
 // tree. Each list keeps at most maxReported entries, and all entries
 // together at most maxEntries encoded bytes; the entries left out are
-// counted in truncated, and the fields cut to maxField bytes in clipped.
+// counted in truncated, and the fields cut to maxField bytes in clipped,
+// those of the entries the guard left out (omitted) too.
 func (v Verdict) Report() ([]byte, error) {
 	_, out, truncated, clipped, err := selection([2][]Block{v.Blocks, v.Warnings})
 	if err != nil {
 		return nil, err
+	}
+	for _, o := range v.omitted {
+		truncated, clipped = truncated+o.Entries, clipped+o.Clipped
 	}
 	blocks, warnings := out[0], out[1]
 	return json.Marshal(struct {
@@ -104,7 +108,7 @@ func Result(key types.ComputationKey, v Verdict, project types.ProjectID, report
 	r := types.Result{ID: types.ResultID(id), Computation: key.Key, Kind: types.ResultKindTree, Value: []types.Ref{rep}, Completed: true}
 	switch {
 	case !v.Accepted():
-		r.Outcome, r.Reason, r.Detail = types.OutcomeFailed, v.Reason(), detail("accept refused the candidate", v.Blocks)
+		r.Outcome, r.Reason, r.Detail = types.OutcomeFailed, v.Reason(), detail("accept refused the candidate", v.Blocks, v.omitted[0].Entries)
 		return r, nil
 	case v.TreeDigest == "":
 		return types.Result{}, errors.New("accept: an accepted verdict without its tree")
@@ -116,20 +120,22 @@ func Result(key types.ComputationKey, v Verdict, project types.ProjectID, report
 	r.Value = []types.Ref{tree, rep}
 	r.Outcome, r.Reason = types.OutcomeEmpty, vocab.ReasonCompletedClean
 	if len(v.Warnings) > 0 {
-		r.Outcome, r.Reason, r.Detail = types.OutcomeFound, vocab.ReasonCompletedWithFindings, detail("accepted, with warnings for the reviewer", v.Warnings)
+		r.Outcome, r.Reason, r.Detail = types.OutcomeFound, vocab.ReasonCompletedWithFindings, detail("accepted, with warnings for the reviewer", v.Warnings, v.omitted[1].Entries)
 	}
 	return r, nil
 }
 
 // detail lists findings within the result's detail bound; paths are the
-// candidate's, so each is quoted.
-func detail(head string, bs []Block) string {
+// candidate's, so each is quoted. omitted entries, left out after bs's,
+// are among the "more" (an omission keeps a list's first detailKept
+// entries, which pass the bound).
+func detail(head string, bs []Block, omitted int) string {
 	var b strings.Builder
 	b.WriteString(head)
 	for i, x := range bs {
 		line := fmt.Sprintf("; %s %q: %s", x.Reason, x.Path, x.What)
 		if b.Len()+len(line) > 4000 {
-			fmt.Fprintf(&b, "; and %d more", len(bs)-i)
+			fmt.Fprintf(&b, "; and %d more", len(bs)-i+omitted)
 			break
 		}
 		b.WriteString(line)

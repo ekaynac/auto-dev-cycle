@@ -7,9 +7,11 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/gob"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"runtime"
@@ -31,7 +33,7 @@ import (
 // frame, a frame past maxFrame or the run's maxProcOut; and an honest one
 // reads back whole.
 func TestProcFrames(t *testing.T) {
-	emptyLists := append(append([]byte{'d'}, make([]byte, 17)...), make([]byte, 17)...) // two lists: no entry, 16 counts of 0
+	emptyLists := append(append([]byte{'d'}, make([]byte, 3)...), make([]byte, 3)...) // two lists: no entry, no entry left out, no field clipped
 	if m, err := readFrame(bytes.NewReader(append(binary.BigEndian.AppendUint32(nil, uint32(len(emptyLists)+2)), append(emptyLists, 0, 0)...)), new(int64(maxProcOut)), new([][]byte)); err != nil || m.erred {
 		t.Fatalf("an empty result: %+v %v", m, err)
 	}
@@ -55,10 +57,11 @@ func TestProcFrames(t *testing.T) {
 		"a reason not registered":                  {frame(append(uv(uv(uv(uv(uv(uv([]byte{'d'}, 1), 1), 'x'), 0), 0), 0), 0, 0, 0)), maxProcOut, 1 << 20},
 		// #6 (Astra #287 r2): a flag past 1, and an error's text with no error.
 		// Astra's frame, with this protocol's left-out counts (zero) per list.
-		"an error flag of 2 (Astra's frame)": {frame(append(emptyLists, 0, 2)), maxProcOut, 1 << 20},
-		"an error's text, its flag false":    {frame(append(emptyLists, 1, 'e', 0)), maxProcOut, 1 << 20},
-		"left-out counts past maxDropped":    {frame(append(append(append(append([]byte{'d', 0}, uv(nil, uint64(maxDropped))...), 1), make([]byte, 14+17)...), 0, 0)), maxProcOut, 1 << 20},
-		"a go.mod presence flag of 3":        {frame([]byte{'l', 0, 0, 3, 0, 0}), maxProcOut, 1 << 20},
+		"an error flag of 2 (Astra's frame)":  {frame(append(emptyLists, 0, 2)), maxProcOut, 1 << 20},
+		"an error's text, its flag false":     {frame(append(emptyLists, 1, 'e', 0)), maxProcOut, 1 << 20},
+		"left-out entries past maxOmitted":    {frame(append(append(uv([]byte{'d', 0}, uint64(maxOmitted)+1), make([]byte, 1+3)...), 0, 0)), maxProcOut, 1 << 20},
+		"more clipped fields than 2 an entry": {frame([]byte{'d', 0, 1, 3, 0, 0, 0, 0, 0}), maxProcOut, 1 << 20},
+		"a go.mod presence flag of 3":         {frame([]byte{'l', 0, 0, 3, 0, 0}), maxProcOut, 1 << 20},
 		// #2 (Astra #293 r2): a reference to a payload no listing sent.
 		"a reference to no payload": {frame([]byte{'l', 0, 0, 2, 0, 0, 0}), maxProcOut, 1 << 20},
 	} {
@@ -101,6 +104,16 @@ func fakeChild(req procMsg, read Reader, list Lister, play func(next func(childM
 
 // fakeChildIn is fakeChild until ctx ends.
 func fakeChildIn(ctx context.Context, req procMsg, read Reader, list Lister, play func(next func(childMsg) procMsg)) ([]Block, []Block, error, bool) {
+	blocks, warnings, _, err, ok := fakeChildOmittedIn(ctx, req, read, list, play)
+	return blocks, warnings, err, ok
+}
+
+// fakeChildOmitted is fakeChild, with the result's entries left out.
+func fakeChildOmitted(req procMsg, read Reader, list Lister, play func(next func(childMsg) procMsg)) ([]Block, []Block, Omitted, error, bool) {
+	return fakeChildOmittedIn(context.Background(), req, read, list, play)
+}
+
+func fakeChildOmittedIn(ctx context.Context, req procMsg, read Reader, list Lister, play func(next func(childMsg) procMsg)) ([]Block, []Block, Omitted, error, bool) {
 	cr, cw := io.Pipe()
 	pr, pw := io.Pipe()
 	go func() {
@@ -120,8 +133,8 @@ func fakeChildIn(ctx context.Context, req procMsg, read Reader, list Lister, pla
 	}()
 	defer cr.Close()
 	defer pr.Close() // a child still writing ends
-	blocks, warnings, err, ok, _ := converse(ctx, cw, pr, req, read, list)
-	return blocks, warnings, err, ok
+	blocks, warnings, omitted, err, ok, _ := converse(ctx, cw, pr, req, read, list)
+	return blocks, warnings, omitted, err, ok
 }
 
 // TestProcService (M4, M5, Astra #287): what the controller saw is
@@ -196,14 +209,14 @@ func TestProcService(t *testing.T) {
 	if !ok || lists != maxListRuns || !has(blocks, "past its go list bound") {
 		t.Errorf("listings past the bound: %v, %d lists, %q", ok, lists, whats(blocks))
 	}
-	// M1 (Opus #293): a result's left-out entries come back, as many, at its end.
-	var dropped [2][4][4]int
-	dropped[1][3][2] = 3
-	_, warnings, _, ok := fakeChild(req, read, boom, func(next func(childMsg) procMsg) {
-		next(childMsg{op: 'd', warnings: []Block{{vocab.ReasonTestIntegrityViolation, "p", "w", false, false}}, dropped: dropped})
+	// Astra #311 #2: a result's left-out entries come back as their counts.
+	var omitted Omitted
+	omitted[1].Entries, omitted[1].Clipped = 1<<30, 3
+	_, warnings, back, _, ok := fakeChildOmitted(req, read, boom, func(next func(childMsg) procMsg) {
+		next(childMsg{op: 'd', warnings: []Block{{vocab.ReasonTestIntegrityViolation, "p", "w", false, false}}, omitted: omitted})
 	})
-	if !ok || len(warnings) != 4 || !warnings[3].Typed || len(warnings[3].What) <= maxField {
-		t.Errorf("left-out warnings: %v %d", ok, len(warnings))
+	if !ok || len(warnings) != 1 || back != omitted {
+		t.Errorf("left-out warnings: %v %d %v", ok, len(warnings), back)
 	}
 	// #5 (Astra #287 r2): a listing's failure, then a clean result: blocked.
 	failed := func(context.Context, string, [2]string, []byte, []byte, []string) (map[string]Listed, error) {
@@ -304,7 +317,7 @@ func TestProcInflight(t *testing.T) {
 			_, _ = pw.Write(childMsg{op: 'r', blob: own, max: 1}.frame())
 		}
 	}()
-	_, _, _, ok, inflight := converse(ctx, cw, pr, procMsg{Files: map[string]string{"a.go": own}}, stuck, nil)
+	_, _, _, _, ok, inflight := converse(ctx, cw, pr, procMsg{Files: map[string]string{"a.go": own}}, stuck, nil)
 	cr.Close()
 	pr.Close()
 	if ok || inflight == nil {
@@ -332,7 +345,7 @@ func TestProcDispatch(t *testing.T) {
 	var started bool
 	procStarted = func(*os.Process) { started = true }
 	defer func() { procStarted = nil }()
-	blocks, _, err := isolated(context.Background(), sandbox.Repo{}, "", nil, nil, nil, t.TempDir())
+	blocks, _, _, err := isolated(context.Background(), sandbox.Repo{}, "", nil, nil, nil, t.TempDir())
 	if err != nil || started || len(blocks) != 1 || blocks[0].What != "unverifiable: this binary does not dispatch the guard's process" {
 		t.Errorf("no dispatch: %q %v, started %v", whats(blocks), err, started)
 	}
@@ -350,12 +363,56 @@ func TestProcDispatch(t *testing.T) {
 	}
 }
 
-// TestProcFit (Opus #293 M1; Astra #293 r2 #3): a result fit to the frame
-// keeps what the report and the detail read, a field cut on a rune's
-// start, and counts the rest so that refill gives back as many, ranks and
-// clipping alike: the verdict's report is the in-process one's, byte for
-// byte, whatever warnings the verdict held before the guard's, and with
-// Accept's own block after the guard.
+// viaChild is a guard's result as Integrity's process gives it back: the
+// prefix through gob as procMsg carries it, the result fit (fitReport) and
+// through its frame, read back as converse reads it; the verdict that
+// Accept makes of it.
+func viaChild(t *testing.T, prefix, blocks, warnings []Block) Verdict {
+	t.Helper()
+	var buf bytes.Buffer
+	var req procMsg
+	if err := gob.NewEncoder(&buf).Encode(procMsg{Prefix: prefixOf(prefix)}); err != nil {
+		t.Fatal(err)
+	} else if err := gob.NewDecoder(&buf).Decode(&req); err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := blocksOf(req.Prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, omitted := fitReport(theirs, blocks, warnings)
+	m, err := readFrame(bytes.NewReader(childMsg{op: 'd', blocks: kept[0], warnings: kept[1], omitted: omitted}.frame()), new(int64(maxProcOut)), new([][]byte))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Verdict{Blocks: m.blocks, Warnings: slices.Concat(prefix, m.warnings), omitted: m.omitted}
+}
+
+// sameAsInProcess: the verdict through the child (viaChild) reports as the
+// in-process one, byte for byte: its report, its detail, its acceptance
+// and reason; and with Accept's own block after the guard's (none).
+func sameAsInProcess(t *testing.T, name string, prefix, blocks, warnings []Block) {
+	t.Helper()
+	in, out := Verdict{Blocks: blocks, Warnings: slices.Concat(prefix, warnings)}, viaChild(t, prefix, blocks, warnings)
+	if !sameReport(t, in.Report, out.Report) || in.Accepted() != out.Accepted() || in.Reason() != out.Reason() ||
+		detail("", in.Warnings, 0) != detail("", out.Warnings, out.omitted[1].Entries) || detail("", in.Blocks, 0) != detail("", out.Blocks, out.omitted[0].Entries) {
+		a, _ := in.Report()
+		b, _ := out.Report()
+		t.Errorf("%s: the report or detail through the child differs (%d and %d bytes)", name, len(a), len(b))
+	}
+	if len(blocks) == 0 {
+		in.Blocks, out.Blocks = []Block{tooLarge}, []Block{tooLarge}
+		if !sameReport(t, in.Report, out.Report) {
+			t.Errorf("%s, with Accept's block: the report through the child differs", name)
+		}
+	}
+}
+
+// TestProcFit (Opus #293 M1; Astra #293 r2 #3, #311): a result fit to the
+// frame keeps what the report and the detail read, a field cut on a rune's
+// start, and counts the rest exactly: the verdict's report is the
+// in-process one's, byte for byte, whatever warnings the verdict held
+// before the guard's, and with Accept's own block after the guard.
 func TestProcFit(t *testing.T) {
 	long := strings.Repeat("€", maxResultField) // 3 bytes a rune: maxResultField falls inside one
 	var mixed []Block
@@ -392,43 +449,128 @@ func TestProcFit(t *testing.T) {
 		"warnings already in the verdict": {ignored, nil, smaller},
 		"blocks and warnings":             {nil, mixed, wide},
 	} {
-		kept, dropped := fitReport(c.prefix, c.blocks, c.warnings)
-		back := [2][]Block{refill(kept[0], dropped[0]), refill(kept[1], dropped[1])}
-		if len(back[0]) != len(c.blocks) || len(back[1]) != len(c.warnings) {
-			t.Fatalf("%s: refill %d, %d of %d, %d", name, len(back[0]), len(back[1]), len(c.blocks), len(c.warnings))
-		}
-		in, out := Verdict{Blocks: c.blocks, Warnings: slices.Concat(c.prefix, c.warnings)}, Verdict{Blocks: back[0], Warnings: slices.Concat(c.prefix, back[1])}
-		if !sameReport(t, in.Report, out.Report) || detail("", in.Warnings) != detail("", out.Warnings) || detail("", in.Blocks) != detail("", out.Blocks) {
-			t.Errorf("%s: the report or detail of the fit result differs", name)
-		}
-		if len(c.blocks) == 0 { // Accept's own block, after the guard's (none)
-			in.Blocks, out.Blocks = []Block{tooLarge}, []Block{tooLarge}
-			if !sameReport(t, in.Report, out.Report) {
-				t.Errorf("%s, with Accept's block: the report of the fit result differs", name)
-			}
-		}
+		sameAsInProcess(t, name, c.prefix, c.blocks, c.warnings)
+		kept, _ := fitReport(c.prefix, c.blocks, c.warnings)
 		for _, b := range slices.Concat(kept[0], kept[1]) {
 			if b.Path == long[:len(b.Path)] && (len(b.Path) > maxResultField || !utf8.ValidString(b.Path) || len(b.Path) < maxResultField-utf8.UTFMax) {
 				t.Fatalf("%s: a cut path of %d bytes", name, len(b.Path))
 			}
 		}
 	}
-	// Left-out entries are counted to maxDropped in all, never past it.
-	old := maxDropped
-	defer func() { maxDropped = old }()
-	maxDropped = 10
-	if _, dropped := fitReport(nil, nil, mixed); sum(dropped[1]) != 10 {
-		t.Errorf("left out past maxDropped: %d counted", sum(dropped[1]))
+}
+
+// TestProcFitManyOmitted (Astra #311 #2): 1,049,577 short warnings, every
+// 1,000th with a field the report clips: the report's truncated (1,048,577)
+// and clipped, and the detail's "more", are the in-process guard's, past
+// any count of entries the frame could carry.
+func TestProcFitManyOmitted(t *testing.T) {
+	clip := strings.Repeat("c", maxField+1)
+	warnings := make([]Block, 1_049_577)
+	for i := range warnings {
+		warnings[i] = Block{vocab.ReasonTestIntegrityViolation, "p", "w", false, false}
+		if i%1000 == 999 {
+			warnings[i].What = clip
+		}
+	}
+	sameAsInProcess(t, "1,049,577 warnings", nil, nil, warnings)
+	report, err := viaChild(t, nil, nil, warnings).Report()
+	var r struct{ Truncated, Clipped int }
+	if err != nil || json.Unmarshal(report, &r) != nil || r.Truncated != 1_048_577 || r.Clipped != 1_049 {
+		t.Errorf("through the child: truncated %d, clipped %d, %v; want 1,048,577 and 1,049", r.Truncated, r.Clipped, err)
 	}
 }
 
-func sum(d [4][4]int) (n int) {
-	for _, r := range d {
-		for _, x := range r {
-			n += x
+// TestProcFitDifferential (Astra #311): generated guard results, the same
+// for every run (a seeded generator, a fixed count), each reported in this
+// process and through the child (viaChild), byte for byte. Each case lowers
+// the report's bounds (reported, reportedBytes) so that its lists cross
+// them, and mixes the edges where a fit can go wrong: list lengths around
+// detailKept and the bounds, the three ranks, fields at and past maxField
+// and maxResultField (multi-byte runes across the cuts), invalid UTF-8 in
+// the prefix and the guard's own entries, a budget ending a byte either
+// side of an entry's end, blocks with warnings and without.
+func TestProcFitDifferential(t *testing.T) {
+	oldN, oldBytes := reported, reportedBytes
+	defer func() { reported, reportedBytes = oldN, oldBytes }()
+	rng := rand.New(rand.NewPCG(311, 4))
+	pieces := []string{"a", "€", "\xff", "\xc3", "\x01", "\"", "\n", "é"}
+	field := func() string {
+		var n int
+		switch rng.IntN(6) {
+		case 0:
+			n = maxField - 2 + rng.IntN(5)
+		case 1:
+			n = maxResultField - 3 + rng.IntN(7)
+		case 2:
+			n = rng.IntN(3)
+		default:
+			n = rng.IntN(200)
 		}
+		var b strings.Builder
+		for b.Len() < n {
+			if rng.IntN(8) == 0 {
+				b.WriteString(pieces[rng.IntN(len(pieces))])
+			} else {
+				b.WriteByte(byte('a' + rng.IntN(26)))
+			}
+		}
+		return b.String()
 	}
-	return n
+	edges := []int{0, 1, 2, detailKept - 1, detailKept, detailKept + 1, 250, 400}
+	list := func(reason vocab.Reason, max int) []Block {
+		bs := make([]Block, min(edges[rng.IntN(len(edges))], max))
+		for i := range bs {
+			rank := rng.IntN(3)
+			bs[i] = Block{reason, field(), field(), rank > 0, rank > 1}
+		}
+		return bs
+	}
+	const cases = 400
+	var omitting, invalid, probes, withBlocks int // what the cases reached: the generator's own check
+	for c := range cases {
+		reported = []int{1, 5, 50, 199, 201, maxReported}[rng.IntN(6)]
+		reportedBytes = 500 + rng.IntN(40_000)
+		prefix := list(vocab.ReasonCompletedWithFindings, 3)
+		for i := range prefix {
+			prefix[i].Additive, prefix[i].Typed = false, false
+		}
+		var blocks []Block
+		if rng.IntN(3) == 0 {
+			blocks = list(vocab.ReasonTestIntegrityViolation, 400)
+		}
+		warnings := list(vocab.ReasonTestIntegrityViolation, 400)
+		// Two cases in three, the budget ends a byte either side of where an
+		// entry the report takes ends: the choice a cost's change flips.
+		if rng.IntN(3) > 0 {
+			reportedBytes = 1 << 30
+			if _, out, _, _, _ := selection([2][]Block{blocks, slices.Concat(prefix, warnings)}); len(out[0])+len(out[1]) > 0 {
+				var ends []int
+				used := 0
+				for _, l := range out {
+					for _, b := range l {
+						e, _ := json.Marshal(b)
+						used += len(e) + 1
+						ends = append(ends, used)
+					}
+				}
+				reportedBytes, probes = max(ends[rng.IntN(len(ends))]+rng.IntN(3)-1, 1), probes+1
+			} else {
+				reportedBytes = 500 + rng.IntN(40_000)
+			}
+		}
+		if _, o := fitReport(prefix, blocks, warnings); o[0].Entries+o[1].Entries > 0 {
+			omitting++
+		}
+		if slices.ContainsFunc(prefix, func(b Block) bool { return !utf8.ValidString(b.Path + b.What) }) {
+			invalid++
+		}
+		withBlocks += b2i(len(blocks) > 0)
+		sameAsInProcess(t, fmt.Sprintf("case %d (reported %d, %d bytes; %d prefix, %d blocks, %d warnings)", c, reported, reportedBytes, len(prefix), len(blocks), len(warnings)), prefix, blocks, warnings)
+	}
+	t.Logf("%d cases: %d leave entries out, %d with an invalid UTF-8 prefix, %d with the budget at an entry's edge, %d with blocks", cases, omitting, invalid, probes, withBlocks)
+	if omitting < cases/4 || invalid < cases/10 || probes < cases/10 || withBlocks < cases/10 {
+		t.Error("the generator no longer reaches the edges it is for")
+	}
 }
 
 // sameReport: the two reports are byte-identical.

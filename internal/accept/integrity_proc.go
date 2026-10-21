@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/gob"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +15,6 @@ import (
 	"os/exec"
 	"slices"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -51,7 +49,7 @@ var (
 	maxProcOut    int64 = 256 << 20
 	maxFrame            = 64 << 20 // a result's at most 2 lists × (detailKept + 2 × maxReported) entries of 2 maxResultField bytes
 	maxMsgEntries       = 1 << 16  // blocks, warnings or paths in one message
-	maxDropped          = 1 << 20  // entries a result's list may leave out, by count
+	maxOmitted          = 1 << 40  // entries a result's list may leave out, by count: past what a process holds
 )
 
 // maxResultField bounds a result entry's Path and What in the frame. A cut
@@ -99,7 +97,7 @@ func RunChildIfAsked() {
 // procMsg is the controller's message to the child: the run, then each answer.
 type procMsg struct {
 	Changes         []Change
-	Prefix          []prefixed // the verdict's warnings before the guard's (reportPrefix)
+	Prefix          []prefixed // the verdict's warnings before the guard's (reportPrefix), byte for byte
 	Files           map[string]string
 	Links           map[string]string // the base's symlinks and gitlinks, to their mode
 	Over            bool              // the base's file list is over its bound
@@ -113,10 +111,35 @@ type procMsg struct {
 	Erred, Panicked bool // an error or a panic, whatever its text
 }
 
-// prefixed is a verdict's warning before the guard's, as procMsg carries it.
+// prefixed is a verdict's warning before the guard's, as procMsg carries
+// it: its reason's code, and its fields as they are, never through JSON,
+// which would replace an invalid UTF-8 byte and change its report cost
+// (Astra #311 #1).
 type prefixed struct {
-	JSON            []byte
-	Additive, Typed bool
+	Reason, Path, What string
+	Additive, Typed    bool
+}
+
+// prefixOf is the verdict's warnings before the guard's, for procMsg.
+func prefixOf(bs []Block) []prefixed {
+	var p []prefixed
+	for _, b := range bs {
+		p = append(p, prefixed{b.Reason.String(), b.Path, b.What, b.Additive, b.Typed})
+	}
+	return p
+}
+
+// blocksOf is the warnings prefixOf carried, as the verdict holds them.
+func blocksOf(p []prefixed) ([]Block, error) {
+	var bs []Block
+	for _, x := range p {
+		r, err := vocab.ParseReason(x.Reason)
+		if err != nil {
+			return nil, err
+		}
+		bs = append(bs, Block{r, x.Path, x.What, x.Additive, x.Typed})
+	}
+	return bs, nil
 }
 
 // childMsg is one of the child's: a read ('r'), a list ('l') or the result ('d').
@@ -130,7 +153,7 @@ type childMsg struct {
 	gosumRef         int
 	paths            []string
 	blocks, warnings []Block
-	dropped          [2][4][4]int // per list, by flags (Additive, Typed) and clip (Path, What): entries left out (fit)
+	omitted          Omitted // per list, the entries fitReport left out and their fields the report clips
 	err              string
 	erred            bool
 }
@@ -173,11 +196,8 @@ func (m childMsg) frame() []byte {
 				str(x.What)
 				b = append(b, byte(b2i(x.Additive)|b2i(x.Typed)<<1))
 			}
-			for f := range 4 {
-				for c := range 4 {
-					num(m.dropped[l][f][c])
-				}
-			}
+			num(m.omitted[l].Entries)
+			num(m.omitted[l].Clipped)
 		}
 		str(m.err)
 		b = append(b, byte(b2i(m.erred)))
@@ -269,14 +289,8 @@ func readFrame(r io.Reader, left *int64, payloads *[][]byte) (childMsg, error) {
 				bad = bad || reason != vocab.ReasonTestIntegrityViolation.String() || f > 3 // the guard's only reason
 				(*to)[i] = Block{vocab.ReasonTestIntegrityViolation, path, what, f&1 != 0, f&2 != 0}
 			}
-			total := 0
-			for f := range 4 {
-				for c := range 4 {
-					m.dropped[l][f][c] = num(maxDropped, 0)
-					total += m.dropped[l][f][c]
-				}
-			}
-			bad = bad || total > maxDropped
+			m.omitted[l].Entries = num(maxOmitted, 0)
+			m.omitted[l].Clipped = num(2*m.omitted[l].Entries, 0) // two fields an entry at most
 		}
 		m.err, m.erred = str(4096), bit()
 		bad = bad || !m.erred && m.err != "" // an error's text with no error
@@ -297,17 +311,17 @@ func readFrame(r io.Reader, left *int64, payloads *[][]byte) (childMsg, error) {
 // under scratch: the sandbox root's runs/ for SandboxLister (a filesystem
 // of its own); "" is the system's temporary directory.
 func Integrity(repo sandbox.Repo, base string, list Lister, scratch string) Guard {
-	return func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, error) {
+	return func(ctx context.Context, changes []Change, read Reader) ([]Block, []Block, Omitted, error) {
 		runCtx, cancel := context.WithTimeout(ctx, maxRunTime)
 		defer cancel()
-		blocks, warnings, err := isolated(runCtx, repo, base, changes, read, list, scratch)
+		blocks, warnings, omitted, err := isolated(runCtx, repo, base, changes, read, list, scratch)
 		switch {
 		case ctx.Err() != nil:
-			return nil, nil, ctx.Err()
+			return nil, nil, Omitted{}, ctx.Err()
 		case runCtx.Err() != nil: // a result past it, too
-			return unverifiable("the guard did not finish by its whole-run deadline"), nil, nil
+			return unverifiable("the guard did not finish by its whole-run deadline"), nil, Omitted{}, nil
 		}
-		return blocks, warnings, err
+		return blocks, warnings, omitted, err
 	}
 }
 
@@ -318,21 +332,21 @@ func unverifiable(why string) []Block {
 // isolated runs the guard in a child until ctx ends, serving its reads and
 // lists; a stuck service never holds up the child's kill, its reaping or
 // the directory's removal.
-func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Change, read Reader, list Lister, scratch string) ([]Block, []Block, error) {
+func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Change, read Reader, list Lister, scratch string) ([]Block, []Block, Omitted, error) {
 	if !dispatches.Load() {
-		return unverifiable("this binary does not dispatch the guard's process"), nil, nil
+		return unverifiable("this binary does not dispatch the guard's process"), nil, Omitted{}, nil
 	}
 	files, links, err := listBase(ctx, repo, base)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, Omitted{}, err
 	} else if scratch != "" {
 		if err := os.MkdirAll(scratch, 0o700); err != nil {
-			return nil, nil, err
+			return nil, nil, Omitted{}, err
 		}
 	}
 	dir, err := os.MkdirTemp(scratch, "adc-guard-")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, Omitted{}, err
 	}
 	var inflight <-chan struct{} // a call left running when converse returned
 	defer func() {               // after the child ends: it reads what list copies here
@@ -344,7 +358,7 @@ func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Cha
 	}()
 	exe, err := os.Executable()
 	if err != nil {
-		return unverifiable("the guard's process did not start"), nil, nil
+		return unverifiable("the guard's process did not start"), nil, Omitted{}, nil
 	}
 	cmd, stderr := exec.CommandContext(ctx, exe, childArg), &head{n: 4096}
 	cmd.Env, cmd.Dir, cmd.Stderr, cmd.WaitDelay = []string{childEnv + "=" + strconv.Itoa(os.Getpid())}, "/", stderr, time.Second
@@ -355,7 +369,7 @@ func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Cha
 		err = cmd.Start()
 	}
 	if err != nil {
-		return unverifiable("the guard's process did not start"), nil, nil
+		return unverifiable("the guard's process did not start"), nil, Omitted{}, nil
 	}
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }() // its abandoned type checks with it
 	// The kernel's first choice when memory runs out: the child, not the controller.
@@ -363,25 +377,16 @@ func isolated(ctx context.Context, repo sandbox.Repo, base string, changes []Cha
 	if procStarted != nil {
 		procStarted(cmd.Process)
 	}
-	var prefix []prefixed // gob sends no reason: each entry as JSON, and its flags
-	if bs, _ := ctx.Value(reportPrefix{}).([]Block); len(bs) > 0 {
-		for _, b := range bs {
-			j, err := json.Marshal(b)
-			if err != nil {
-				return nil, nil, err
-			}
-			prefix = append(prefix, prefixed{j, b.Additive, b.Typed})
-		}
-	}
-	req := procMsg{Changes: changes, Prefix: prefix, Files: files, Links: links, Over: files == nil, ListEnd: time.Now().Add(maxListTime), Dir: dir, Lister: list != nil}
-	blocks, warnings, err, ok, left := converse(ctx, in, out, req, read, list)
+	bs, _ := ctx.Value(reportPrefix{}).([]Block)
+	req := procMsg{Changes: changes, Prefix: prefixOf(bs), Files: files, Links: links, Over: files == nil, ListEnd: time.Now().Add(maxListTime), Dir: dir, Lister: list != nil}
+	blocks, warnings, omitted, err, ok, left := converse(ctx, in, out, req, read, list)
 	inflight = left
 	if !ok {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait() // its stderr is whole once Wait returns
-		return unverifiable(fmt.Sprintf("the guard's process ended without its result (%s)", bytes.TrimSpace(stderr.b))), nil, nil
+		return unverifiable(fmt.Sprintf("the guard's process ended without its result (%s)", bytes.TrimSpace(stderr.b))), nil, Omitted{}, nil
 	}
-	return blocks, warnings, err
+	return blocks, warnings, omitted, err
 }
 
 // head keeps the first n bytes written (a crash's reason comes first).
@@ -413,7 +418,7 @@ type service struct {
 // converse serves the child on in and out until its result (ok), ctx's end
 // or a message refused. A call still running when it returns (its context
 // ignored) is inflight's, closed once the call returns.
-func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, read Reader, list Lister) (blocks, warnings []Block, err error, ok bool, inflight <-chan struct{}) {
+func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, read Reader, list Lister) (blocks, warnings []Block, omitted Omitted, err error, ok bool, inflight <-chan struct{}) {
 	s := &service{req: req, allowed: map[string]bool{}, read: read, list: list, readLeft: maxRead + maxCgoRead}
 	for _, b := range req.Files {
 		s.allowed[b] = true
@@ -425,25 +430,25 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 	for m := req; enc.Encode(m) == nil; {
 		c, err := readFrame(out, &left, &payloads)
 		if err != nil {
-			return nil, nil, nil, false, nil
+			return nil, nil, Omitted{}, nil, false, nil
 		} else if c.op == 'd' {
-			blocks, warnings := refill(c.blocks, c.dropped[0]), refill(c.warnings, c.dropped[1])
+			blocks, warnings, omitted := c.blocks, c.warnings, c.omitted
 			switch {
 			case s.readErr != nil: // the reader's error is the guard's, whatever the child says
-				return blocks, warnings, s.readErr, true, nil
+				return blocks, warnings, omitted, s.readErr, true, nil
 			case s.failed != "" && !slices.ContainsFunc(c.blocks, func(b Block) bool { return b.What == s.failed }):
-				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.failed, false, false}), warnings, nil, true, nil
+				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.failed, false, false}), warnings, omitted, nil, true, nil
 			case s.listFailed != "" && len(blocks) == 0:
-				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.listFailed, false, false}), warnings, nil, true, nil
+				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.listFailed, false, false}), warnings, omitted, nil, true, nil
 			case c.erred:
-				return blocks, warnings, errors.New(c.err), true, nil
+				return blocks, warnings, omitted, errors.New(c.err), true, nil
 			}
-			return blocks, warnings, nil, true, nil
+			return blocks, warnings, omitted, nil, true, nil
 		}
 		select {
 		case slots <- struct{}{}:
 		case <-ctx.Done(): // every slot held until the run's end
-			return nil, nil, nil, false, nil
+			return nil, nil, Omitted{}, nil, false, nil
 		}
 		served, done := make(chan procMsg, 1), make(chan struct{})
 		go func() {
@@ -455,10 +460,10 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 		select {
 		case m = <-served:
 		case <-ctx.Done(): // a service stuck past the deadline is left behind
-			return nil, nil, nil, false, done
+			return nil, nil, Omitted{}, nil, false, done
 		}
 	}
-	return nil, nil, nil, false, nil
+	return nil, nil, Omitted{}, nil, false, nil
 }
 
 // detailKept: each list's first entries, which Result's detail reads (it
@@ -466,14 +471,14 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 const detailKept = 200
 
 // fitReport is the guard's blocks and warnings as the frame carries them,
-// the verdict and its report unchanged (Opus #293 M1; Astra #293 r2 #3):
-// each list's first detailKept entries, and every entry the report selects
-// after the verdict's prefix warnings, with and (no block) without
-// Accept's own block after the guard; their Path and What cut to
-// maxResultField. The rest the report leaves out wherever they stand: they
-// are counted, by flags and by which field it clips, at most maxDropped in
-// all (past it, uncounted).
-func fitReport(prefix, blocks, warnings []Block) (kept [2][]Block, dropped [2][4][4]int) {
+// the verdict, its report and its detail unchanged (Opus #293 M1; Astra
+// #293 r2 #3, #311 #2): each list's first detailKept entries, and every
+// entry the report selects after the verdict's prefix warnings, with and
+// (no block) without Accept's own block after the guard; their Path and
+// What cut to maxResultField. The rest the report never selects, wherever
+// they stand, so leaving them out changes no other choice: each list's
+// are counted exactly (omitted), with the fields the report clips of them.
+func fitReport(prefix, blocks, warnings []Block) (kept [2][]Block, omitted Omitted) {
 	keep := [2][]bool{make([]bool, len(blocks)), make([]bool, len(warnings))}
 	mark := func(lists [2][]Block, from [2]int) {
 		in, _, _, _, _ := selection(lists)
@@ -488,26 +493,18 @@ func fitReport(prefix, blocks, warnings []Block) (kept [2][]Block, dropped [2][4
 		mark([2][]Block{{tooLarge}, slices.Concat(prefix, warnings)}, [2]int{1, len(prefix)})
 	}
 	for l, bs := range [2][]Block{blocks, warnings} {
-		total := 0
 		for i, b := range bs {
 			if i < detailKept || keep[l][i] {
 				b.Path, b.What = cutField(b.Path), cutField(b.What)
 				kept[l] = append(kept[l], b)
-			} else if total < maxDropped {
-				total++
-				dropped[l][b2i(b.Additive)|b2i(b.Typed)<<1][b2i(len(b.Path) > maxField)|b2i(len(b.What) > maxField)<<1]++
+			} else {
+				omitted[l].Entries++
+				omitted[l].Clipped += b2i(len(b.Path) > maxField) + b2i(len(b.What) > maxField)
 			}
 		}
 	}
-	return kept, dropped
+	return kept, omitted
 }
-
-// fill is a left-out entry's field: maxField bytes, or past it when the
-// report clips it, each byte one JSON escapes most (\u0001, 6 bytes): no
-// entry of the same clipping takes more of the report's budget, so the
-// report leaves a refilled entry out, as it left out the one it stands for
-// (both later, at no more budget or room than it had).
-var fill = [2]string{strings.Repeat("\x01", maxField), strings.Repeat("\x01", maxField+1)}
 
 // cutField is f's first maxResultField bytes at most, ending on a rune's
 // start: its first maxField bytes, all the report keeps, are untouched.
@@ -520,21 +517,6 @@ func cutField(f string) string {
 		i--
 	}
 	return f[:i]
-}
-
-// refill is kept with an entry for each one fitReport left out, at the
-// end: the same count, ranks and clipping, each as large as an entry of its
-// clipping can be (fill), so the verdict and its report are the in-process
-// guard's.
-func refill(kept []Block, dropped [4][4]int) []Block {
-	for f := range 4 {
-		for c := range 4 {
-			for range dropped[f][c] {
-				kept = append(kept, Block{vocab.ReasonTestIntegrityViolation, fill[c&1], fill[c>>1], f&1 != 0, f&2 != 0})
-			}
-		}
-	}
-	return kept
 }
 
 // serve answers a child's read or list; a panic is passed back, the guard's
@@ -625,17 +607,12 @@ func child(in io.Reader, out io.Writer) int {
 	}
 	blocks, warnings, err := guard(context.Background(), req.Changes, read, list, req.Files, req.Links, req.ListEnd, req.Dir)
 	m := childMsg{op: 'd', err: errText(err)[:min(len(errText(err)), 4096)], erred: err != nil}
-	var prefix []Block
-	for _, p := range req.Prefix {
-		var b Block
-		if err := json.Unmarshal(p.JSON, &b); err != nil {
-			return 2
-		}
-		b.Additive, b.Typed = p.Additive, p.Typed
-		prefix = append(prefix, b)
+	prefix, perr := blocksOf(req.Prefix)
+	if perr != nil {
+		return 2
 	}
 	var kept [2][]Block
-	kept, m.dropped = fitReport(prefix, blocks, warnings)
+	kept, m.omitted = fitReport(prefix, blocks, warnings)
 	m.blocks, m.warnings = kept[0], kept[1]
 	if _, err := out.Write(m.frame()); err != nil {
 		return 2
