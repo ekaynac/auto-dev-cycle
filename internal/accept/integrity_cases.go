@@ -120,6 +120,7 @@ type caseSum struct {
 	rows   map[string][32]byte
 	opaque bool
 	print  string
+	exits  string // the print's early exits, compared whatever the counts (Opus #344 r2 L2)
 }
 
 // caseVisits counts the loops whose kind was read and caseCharged the
@@ -144,7 +145,7 @@ func (s *pkgScan) caseFacts(fa *pkgFacts, k, path, cons string, fn *ast.FuncDecl
 	}
 	s.cs.file, s.cs.src = file, src
 	c := s.cases(fn.Body)
-	c.print = s.testPrint(fn.Body)
+	c.print, c.exits = s.testPrint(fn.Body)
 	if fa.cases[k] == nil {
 		fa.cases[k] = caseAlts{}
 	}
@@ -423,40 +424,128 @@ func (s *pkgScan) canon(n ast.Node) string {
 	return b.String()
 }
 
+// eventText is a print event's canonical text: canon's, the bodies of the
+// function literals in it read as a marker, as their assertions are events
+// of their own (Opus #344 r2 L1: each byte read once, however deeply
+// asserting literals nest).
+func (s *pkgScan) eventText(n ast.Node) string {
+	var bodies []ast.Node
+	ast.Inspect(n, func(x ast.Node) bool {
+		if fl, ok := x.(*ast.FuncLit); ok {
+			bodies = append(bodies, fl.Body)
+			return false
+		}
+		return !s.over()
+	})
+	var b strings.Builder
+	s.canonSkip(&b, n, bodies)
+	return b.String()
+}
+
 // It is n's source span read by go/scanner, each token once, separated by
-// one space: comments and semicolons (written or a newline's) are dropped,
-// so gofmt changes none; its work is linear in the span, which is charged
+// one space (canonTokens: what gofmt changes is normalized); its work is linear in the span, which is charged
 // before it is read (Opus #344 H1: go/printer's grows with the nesting of
 // function literals). A node of another file than the one read is opaque
 // text.
-func (s *pkgScan) canonTo(b *strings.Builder, n ast.Node) {
+func (s *pkgScan) canonTo(b *strings.Builder, n ast.Node) { s.canonSkip(b, n, nil) }
+
+// canonSkip is canonTo with the spans of skip (nodes within n, in source
+// order, none within another) read as a marker, "{…}", and not charged.
+func (s *pkgScan) canonSkip(b *strings.Builder, n ast.Node, skip []ast.Node) {
 	f := s.cs.file
 	if f == nil || f.Size() != len(s.cs.src) || f.Base() > int(n.Pos()) || int(n.End()) > f.Base()+f.Size() {
 		b.WriteString("?")
 		return
 	}
-	span := s.cs.src[f.Offset(n.Pos()):f.Offset(n.End())]
-	if !s.caseCharge(len(span)) {
-		return
+	t := canonTokens{b: b, first: true}
+	at := n.Pos()
+	for _, k := range append(skip, nil) {
+		end := n.End()
+		if k != nil {
+			end = k.Pos()
+		}
+		span := s.cs.src[f.Offset(at):f.Offset(end)]
+		if !s.caseCharge(len(span)) {
+			return
+		}
+		t.scan(span)
+		if k == nil {
+			break
+		}
+		t.write(token.LBRACE, "…}")
+		at = k.End()
 	}
+	t.flush()
+}
+
+// canonTokens writes a canonical text's tokens: one space apart; comments
+// and semicolons (written, or a newline's) dropped; a comma before a
+// closing bracket dropped; a number's prefix and exponent letters lower
+// case. So gofmt changes none (Opus #344 r2 M1).
+type canonTokens struct {
+	b            *strings.Builder
+	first, comma bool
+}
+
+func (t *canonTokens) scan(span []byte) {
 	var sc scanner.Scanner
 	sc.Init(token.NewFileSet().AddFile("", -1, len(span)), span, nil, 0)
-	for first := true; ; first = false {
+	for {
 		_, tok, lit := sc.Scan()
-		switch {
-		case tok == token.EOF:
+		switch tok {
+		case token.EOF:
 			return
-		case tok == token.SEMICOLON: // a newline's or a written one: gofmt moves between them
+		case token.SEMICOLON: // a newline's or a written one: gofmt moves between them
 			continue
-		case !first:
-			b.WriteByte(' ')
+		case token.INT, token.FLOAT, token.IMAG:
+			lit = number(lit)
 		}
-		if lit != "" {
-			b.WriteString(lit)
-		} else {
-			b.WriteString(tok.String())
+		t.write(tok, lit)
+	}
+}
+
+func (t *canonTokens) write(tok token.Token, lit string) {
+	closing := tok == token.RBRACE || tok == token.RPAREN || tok == token.RBRACK
+	if t.comma && !closing {
+		t.put(",")
+	}
+	if t.comma = tok == token.COMMA; t.comma {
+		return // written before the next token, unless that one closes
+	}
+	if lit == "" {
+		lit = tok.String()
+	}
+	t.put(lit)
+}
+
+func (t *canonTokens) put(text string) {
+	if !t.first {
+		t.b.WriteByte(' ')
+	}
+	t.first = false
+	t.b.WriteString(text)
+}
+
+func (t *canonTokens) flush() {
+	if t.comma {
+		t.put(",")
+	}
+}
+
+// number is lit with its base prefix's letter and its exponent's in lower
+// case, as gofmt writes them; a hexadecimal mantissa's digits are kept.
+func number(lit string) string {
+	b := []byte(lit)
+	hex := len(b) > 1 && b[0] == '0' && (b[1] == 'x' || b[1] == 'X')
+	for i, c := range b {
+		switch {
+		case i == 1 && b[0] == '0' && (c == 'X' || c == 'B' || c == 'O'):
+			b[i] = c + 'a' - 'A'
+		case hex && c == 'P', !hex && c == 'E':
+			b[i] = c + 'a' - 'A'
 		}
 	}
+	return string(b)
 }
 
 // rowName is a row's name: a string key or value, else its first string
@@ -507,8 +596,8 @@ func mentionsAny(e ast.Expr, info *types.Info, objs map[types.Object]bool) (foun
 // control's text built once into one builder, charged per expression
 // (Astra r2 3); an else is hashed with the if it holds (r2 7). A range is
 // a level, never its expression (an added row changes no print).
-func (s *pkgScan) testPrint(n ast.Node) string {
-	var out, ctl strings.Builder
+func (s *pkgScan) testPrint(n ast.Node) (string, string) {
+	var out, ctl, exits strings.Builder
 	type level struct {
 		node ast.Node
 		sum  [32]byte
@@ -567,13 +656,16 @@ func (s *pkgScan) testPrint(n ast.Node) string {
 			event = true
 		}
 		if event {
-			e := sha256.Sum256(append(sum[:], s.canon(n)...))
+			e := sha256.Sum256(append(sum[:], s.eventText(n)...))
 			out.WriteString(hex.EncodeToString(e[:8]))
+			if _, call := n.(*ast.CallExpr); !call {
+				exits.WriteString(hex.EncodeToString(e[:8]))
+			}
 		}
 		stack = append(stack, level{n, sum})
 		return true
 	})
-	return out.String()
+	return out.String(), exits.String()
 }
 
 // control writes a control's keyword and its parts' canonical text into b.
@@ -606,7 +698,7 @@ func (r *run) compareCases(add func(*[]Block, string, string), b, a pkgFacts) {
 				}
 				as = common(all...)
 			} else {
-				warn = warn || bs.print != as.print && bt.asserts == at.asserts && bt.skips == at.skips || rowsChanged(bs, as)
+				warn = warn || bs.print != as.print && bt.asserts == at.asserts && bt.skips == at.skips || bs.exits != as.exits || rowsChanged(bs, as)
 			}
 			switch first, n := casesRemoved(bs, as); {
 			case n > 0 && as.opaque:

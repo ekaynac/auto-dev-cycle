@@ -109,6 +109,14 @@ func TestNameless(t *testing.T) {
 	}
 }
 
+func TestHexKeys(t *testing.T) {
+	for k, v := range map[int]int{0X1F: 31, 2: 2} {
+		if k != v && k != 0x1f {
+			t.Fatal(k)
+		}
+	}
+}
+
 func TestNestedRows(t *testing.T) {
 	for _, a := range []string{"p", "q"} {
 		for _, b := range []string{"x"} {
@@ -502,6 +510,11 @@ func TestIntegrityCases(t *testing.T) {
 		// range's own expression drives nothing.
 		"an outer loop's row":        {edit(`[]string{"p", "q"}`, `[]string{"p"}`), `TestNestedRows 1 test cases removed (table rows or subtests: row "q" @1 checks)`, nil},
 		"a range expression's check": {edit("[]int{one(t), 2}", "[]int{one(t)}"), "", nil},
+		// Opus #344 r2 M1: gofmt's changes change no identity.
+		"gofmt on a hex map key":   {edit("0X1F: 31", "0x1F: 31"), "", nil},
+		"a trailing comma dropped": {edit(`{"zero", 0, 0}`, `{"zero", 0, 0,}`), "", nil},
+		// Opus #344 r2 L2: an early exit added with an assertion warns.
+		"an exit and an assertion added": {edit("\tt.Run(\"outer\", func(t *testing.T) {\n", "\tif Add(1, 1) != 2 {\n\t\tt.Error(\"more\")\n\t}\n\tif Add(1, 1) == 2 {\n\t\treturn\n\t}\n\tt.Run(\"outer\", func(t *testing.T) {\n"), "", both("TestSub: " + changed)},
 		// Opus #344 M1: an early exit added, the counts equal, warns.
 		"a return before a subtest":        {edit("\tt.Run(\"outer\", func(t *testing.T) {\n", "\tif Add(1, 1) == 2 {\n\t\treturn\n\t}\n\tt.Run(\"outer\", func(t *testing.T) {\n"), "", both("TestSub: " + changed)},
 		"a return in a subtest's callback": {edit("\t\tt.Run(\"inner\", func(t *testing.T) {\n", "\t\tif Add(1, 1) == 2 {\n\t\t\treturn\n\t\t}\n\t\tt.Run(\"inner\", func(t *testing.T) {\n"), "", both("TestSub: " + changed)},
@@ -745,8 +758,8 @@ func TestIntegrityCasesNestedLiterals(t *testing.T) {
 	a1, c1 := run(100)
 	a2, c2 := run(200)
 	t.Logf("nested literals: 100 allocate %d bytes, charge %d; 200 allocate %d, charge %d", a1, c1, a2, c2)
-	if float64(a2)/float64(a1) > float64(c2)/float64(c1) {
-		t.Errorf("allocation grows faster than the charged work: %d → %d bytes, %d → %d charged", a1, a2, c1, c2)
+	if float64(a2)/float64(a1) > float64(c2)/float64(c1) || c2 > 5*c1/2 {
+		t.Errorf("not linear, or allocating past the charged work: %d → %d bytes, %d → %d charged", a1, a2, c1, c2)
 	}
 }
 
@@ -795,7 +808,8 @@ func TestIntegrityCasesClauseStops(t *testing.T) {
 // tokens, one space apart, whatever gofmt or a comment changes, never a
 // newline's semicolon; its span is charged.
 func TestIntegrityCasesCanon(t *testing.T) {
-	src := []byte("package p\n\nvar a = f(x,y)\nvar b = f(x, // why\n\ty)\nvar c = func() {\n\tg(); h()\n}\nvar d = f(x, z)\n")
+	src := []byte("package p\n\nvar a = f(x,y)\nvar b = f(x, // why\n\ty)\nvar c = func() {\n\tg(); h()\n}\nvar d = f(x, z)\n" +
+		"var e = []float64{0X1F, 1E3, 0x1.8P3, 0xAE, 0B1, 0O7,}\nvar g = []float64{0x1F, 1e3, 0x1.8p3, 0xAE, 0b1, 0o7}\n")
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "p.go", src, parser.ParseComments)
 	if err != nil {
@@ -810,6 +824,11 @@ func TestIntegrityCasesCanon(t *testing.T) {
 	}
 	if b, c, d := s.canon(value(1)), s.canon(value(2)), s.canon(value(3)); a != "f ( x , y )" || b != a || c != "func ( ) { g ( ) h ( ) }" || d == a {
 		t.Errorf("canonical texts %q %q %q %q", a, b, c, d)
+	}
+	// Opus #344 r2 M1: a number's prefix and exponent letters, and a comma
+	// before a closing bracket, as gofmt writes them; a hex digit is kept.
+	if e, g := s.canon(value(4)), s.canon(value(5)); e != g || e != "[ ] float64 { 0x1F , 1e3 , 0x1.8p3 , 0xAE , 0b1 , 0o7 }" {
+		t.Errorf("numbers and a trailing comma: %q, gofmt's %q", e, g)
 	}
 }
 
