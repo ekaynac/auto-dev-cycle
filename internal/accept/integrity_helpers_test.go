@@ -202,6 +202,109 @@ func libCheck(t testing.TB) {
 }
 `
 
+// moreFile is Opus #376's inputs: helpers renamed (through a var, a t.Run
+// name, a direct call), a table of closures, and testing values reached
+// through a field and an embedding.
+const moreFile = `package pkg
+
+import "testing"
+
+var renVar = renCase
+
+func renCase(t *testing.T) {
+	if Add(1, 2) != 3 {
+		t.Fatal("ren")
+	}
+}
+
+func TestRenVar(t *testing.T) { t.Run("a", renVar) }
+
+func renRun(t *testing.T) {
+	if Add(1, 2) != 3 {
+		t.Fatal("run")
+	}
+}
+
+func TestRenRun(t *testing.T) { t.Run("a", renRun) }
+
+func renTwo(t *testing.T) {
+	if Add(1, 2) != 3 {
+		t.Fatal("two")
+	}
+	if Add(2, 2) != 4 {
+		t.Fatal("two2")
+	}
+}
+
+func TestRenTwo(t *testing.T) { renTwo(t) }
+
+func TestRenTwoB(t *testing.T) { renTwo(t) }
+
+func outer2(t *testing.T) {
+	inner2(t)
+	renRun(t)
+}
+
+func inner2(t *testing.T) {
+	if Add(1, 2) != 3 {
+		t.Fatal("in1")
+	}
+	if Add(2, 2) != 4 {
+		t.Fatal("in2")
+	}
+}
+
+func TestOuter2(t *testing.T) { outer2(t) }
+
+var table = []struct {
+	name string
+	f    func(*testing.T)
+}{{"one", func(t *testing.T) {
+	if Add(1, 2) != 3 {
+		t.Fatal("one")
+	}
+}}}
+
+func TestTable(t *testing.T) {
+	for _, c := range table {
+		t.Run(c.name, c.f)
+	}
+}
+
+type suite struct{ t *testing.T }
+
+func (s suite) check() {
+	if Add(1, 2) != 3 {
+		s.t.Fatal("suite")
+	}
+}
+
+type emb struct{ *testing.T }
+
+func (e *emb) check() {
+	if Add(1, 2) != 3 {
+		e.Fatal("emb")
+	}
+}
+
+func TestSuite(t *testing.T) {
+	suite{t}.check()
+	(&emb{t}).check()
+}
+
+type own struct{ *testing.T }
+
+func (own) Fatal(...any) {}
+
+func (o own) check() {
+	if Add(1, 2) != 3 {
+		o.Fatal("own")
+	}
+}
+
+func TestOwn(t *testing.T) { own{t}.check() }
+`
+
 // TestIntegrityHelpers (P14d-w1, #226 entries 122, 129): a function of
 // the test files whose own direct assertions the head reduces blocks,
 // whether a test reaches it or not; an assertion under a branch a constant
@@ -211,7 +314,7 @@ func libCheck(t testing.TB) {
 func TestIntegrityHelpers(t *testing.T) {
 	f := newFixtureWith(t, func(src string) {
 		write(t, src, guardBase)
-		write(t, src, map[string]string{"pkg/lib.go": libFile, "pkg/helpers_test.go": helpersBase, "pkg/alias_test.go": aliasFile, "pkg/cycle_test.go": cycleFile,
+		write(t, src, map[string]string{"pkg/lib.go": libFile, "pkg/helpers_test.go": helpersBase, "pkg/alias_test.go": aliasFile, "pkg/cycle_test.go": cycleFile, "pkg/more_test.go": moreFile,
 			"pkg/race_h_test.go": raceNeedX("race", 2), "pkg/norace_h_test.go": raceNeedX("!race", 1), "pkg/race_r_test.go": raceTestR("race"), "pkg/norace_r_test.go": raceTestR("!race")})
 		plain(t, src, "add", "--all")
 	})
@@ -227,6 +330,8 @@ func TestIntegrityHelpers(t *testing.T) {
 		}
 		return map[string]string{file: strings.Replace(base, old, new, 1)}
 	}
+	inner2Base := "func outer2(t *testing.T) {\n\tinner2(t)\n\trenRun(t)\n}\n\nfunc inner2(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"in1\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"in2\")\n\t}\n}\n"
+	inner2Head := "func outer2(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"in1\")\n\t}\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"in2\")\n\t}\n\trenRun(t)\n}\n"
 	fives := []string{"\tif Add(5, 0) != 5 {\n\t\tt.Fatal(\"five\")\n\t}\n", "\tif Add(5, 1) != 6 {\n\t\tt.Fatal(\"six\")\n\t}\n", "\tif Add(5, 2) != 7 {\n\t\tt.Fatal(\"seven\")\n\t}\n"}
 	one := "\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n"
 	weakened := "a helper's assertions weakened"
@@ -242,7 +347,7 @@ func TestIntegrityHelpers(t *testing.T) {
 		"a method helper's assertion removed":                  {edit("\tif Add(0, 0) != 0 {\n\t\tt.Error(\"zero\")\n\t}\n", "\t_ = t\n"), "pkg:pkg.env.check " + weakened + " (1 → 0)"},
 		"a var's function literal weakened":                    {edit("\tif Add(7, 0) != 7 {\n\t\tt.Fatal(\"var\")\n\t}\n", "\t_ = t\n"), "pkg:pkg.checkVar " + weakened + " (1 → 0)"},
 		"a test's own assertion made dead":                     {map[string]string{"pkg/calc_test.go": strings.Replace(baseFiles["pkg/calc_test.go"], "if Add(1, 2) != 3", "if false", 1)}, "a test's assertions made dead (1 → 0 live)"},
-		"a helper removed while still used":                    {edit("func checkCase(t *testing.T) {\n"+one+"}\n", "var checkCase = checkTwo\n"), "pkg:pkg.checkCase a helper with assertions removed while still used"},
+		"a helper removed while still used":                    {map[string]string{"pkg/helpers_test.go": strings.NewReplacer("func checkCase(t *testing.T) {\n"+one+"}\n", "", "t.Run(\"a\", checkCase)", "checkCase := checkTwo\n\tt.Run(\"a\", checkCase)").Replace(helpersBase)}, "pkg:pkg.checkCase a helper with assertions removed while still used"},
 		"a helper gains an assertion (clean)":                  {edit("func checkCase(t *testing.T) {\n", "func checkCase(t *testing.T) {\n\tif Add(0, 1) != 1 {\n\t\tt.Fatal(\"one\")\n\t}\n"), ""},
 		"a helper's assertion rewritten (clean)":               {edit("Add(2, 2) != 4", "Add(3, 1) != 4"), ""},
 		"another file only (control)":                          {map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\n// x\n"}, ""},
@@ -259,7 +364,21 @@ func TestIntegrityHelpers(t *testing.T) {
 		"Astra's cycle input, b's own assertion removed": {in("pkg/cycle_test.go", cycleFile, "\tif Add(2, 2) != 4 {\n\t\tt.Fatal(\"b\")\n\t}\n", ""), "pkg:pkg.b " + weakened + " (1 → 0)"},
 		// Astra #369 H4: a default another clause must match is dead.
 		"Astra's default input": {edit("\tswitch false {\n", "\tswitch true {\n"), "pkg:pkg.checkDefault " + weakened + " (1 → 0)"},
+		// Opus #376 H1: a helper renamed while weakened blocks, through a
+		// var, a t.Run name or a direct call; renamed whole is clean.
+		"a helper renamed weaker, through a var":                      {in("pkg/more_test.go", moreFile, "var renVar = renCase\n\nfunc renCase(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"ren\")\n\t}\n}\n", "var renVar = renCase2\n\nfunc renCase2(t *testing.T) {}\n"), "pkg:pkg.renCase a helper renamed or replaced, weaker (1 → 0)"},
+		"a helper renamed whole, through a var (clean)":               {in("pkg/more_test.go", moreFile, "var renVar = renCase\n\nfunc renCase(t *testing.T) {\n", "var renVar = renCase2\n\nfunc renCase2(t *testing.T) {\n"), ""},
+		"a helper renamed weaker, a t.Run name":                       {map[string]string{"pkg/more_test.go": strings.NewReplacer("func renRun(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"run\")\n\t}\n}\n", "func renRun2(t *testing.T) {}\n", "t.Run(\"a\", renRun)", "t.Run(\"a\", renRun2)", "\trenRun(t)\n", "\trenRun2(t)\n").Replace(moreFile)}, "pkg:pkg.renRun a helper renamed or replaced, weaker (1 → 0)"},
+		"a helper renamed weaker, a direct call":                      {map[string]string{"pkg/more_test.go": strings.NewReplacer("func renTwo(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"two\")\n\t}\n", "func renOne(t *testing.T) {\n", "renTwo(t) }", "renOne(t) }").Replace(moreFile)}, "pkg:pkg.renTwo a helper renamed or replaced, weaker (2 → 1)"},
+		"a helper inlined beside an existing one and deleted (clean)": {in("pkg/more_test.go", moreFile, inner2Base, inner2Head), ""},
+		// Opus #376 M2: a var's whole value, a table of closures.
+		"a table of closures weakened": {in("pkg/more_test.go", moreFile, "\t\tt.Fatal(\"one\")\n", "\t\t_ = t\n"), "pkg:pkg.table " + weakened + " (1 → 0)"},
+		// Opus #376 M1: a testing value through a field or an embedding.
+		"a suite field's assertion removed":                     {in("pkg/more_test.go", moreFile, "\t\ts.t.Fatal(\"suite\")\n", "\t\t_ = s\n"), "pkg:pkg.suite.check " + weakened + " (1 → 0)"},
+		"a struct's own Fatal method, its call removed (clean)": {in("pkg/more_test.go", moreFile, "\t\to.Fatal(\"own\")\n", "\t\t_ = o\n"), ""},
+		"an embedded value's assertion removed":                 {in("pkg/more_test.go", moreFile, "\t\te.Fatal(\"emb\")\n", "\t\t_ = e\n"), "pkg:pkg.emb.check " + weakened + " (1 → 0)"},
 		// Stated false blocks (main accepts each).
+		"a function replaced by a var naming another (stated false block)":     {edit("func checkCase(t *testing.T) {\n"+one+"}\n", "var checkCase = checkTwo\n"), "pkg:pkg.checkCase " + weakened + " (1 → 0)"},
 		"a body extracted into a new helper (stated false block)":              {edit("func checkTwo(t *testing.T) {\n", "func checkTwo(t *testing.T) { checkTwoAt(t) }\n\nfunc checkTwoAt(t *testing.T) {\n"), "pkg:pkg.checkTwo " + weakened + " (2 → 0)"},
 		"an unused helper weakened (stated false block)":                       {edit("\t\tt.Fatal(\"unused\")\n", "\t\t_ = t\n"), "pkg:pkg.unused " + weakened + " (1 → 0)"},
 		"an assertion moved into a package file's helper (stated false block)": {edit("\tif Add(3, 0) != 3 {\n\t\tt.Fatal(\"via\")\n\t}\n", "\tlibCheck(t)\n"), "pkg:pkg.viaLib " + weakened + " (1 → 0)"},

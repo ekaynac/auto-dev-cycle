@@ -324,6 +324,7 @@ type pkgScan struct {
 	aliasMemo map[types.Object]int8     // possiblyTesting's memo per alias: 1 testing, 2 not, 3 being followed
 	skipBad   string                    // why the skip layer's facts are unknown (its bound): its tests unverifiable
 	skipNames map[string]bool           // the skipping helpers' names: an unbound use counts (Astra #356 H1)
+	fieldT    map[types.Object]string   // struct fields of a testing type, embedded too, read from the syntax (P14d-w1's only)
 	skipErr   error                     // a done context, seen in the signatures' classification
 	skipSteps int                       // classification steps, for the context's check
 }
@@ -580,7 +581,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 	plat := platforms[pi][0] + "/" + platforms[pi][1]
 	s := &pkgScan{r: r, pkg: pkg, info: info, tvals: map[types.Object]string{}, decls: map[types.Object]*ast.FuncDecl{},
 		pi: pi, same: map[string][]*ast.FuncDecl{}, mentioned: map[ast.Expr]int8{}, asserting: map[*ast.FuncDecl]bool{}, pkgVars: map[*ast.ValueSpec]bool{}, aliases: map[types.Object]ast.Expr{},
-		skipping: map[*ast.FuncDecl]bool{}, aliasMemo: map[types.Object]int8{}, skipNames: map[string]bool{}}
+		skipping: map[*ast.FuncDecl]bool{}, aliasMemo: map[types.Object]int8{}, skipNames: map[string]bool{}, fieldT: map[types.Object]string{}}
 	for i, f := range slices.Concat(files, files) { // twice: an alias or a copy declared after its use
 		if i == len(files) {
 			clear(s.mentioned) // read again, every alias known (and after: the tvals grew)
@@ -600,6 +601,21 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 					if q := s.qual(t); slices.Contains(testTypes, q) {
 						for _, id := range fl.Names {
 							s.tvals[info.Defs[id]] = q
+						}
+					}
+				}
+			case *ast.StructType: // P14d-w1: a field of a testing type (Opus #376 M1)
+				for _, fl := range x.Fields.List {
+					t := fl.Type
+					if st, ok := t.(*ast.StarExpr); ok {
+						t = st.X
+					}
+					if q := s.qual(t); slices.Contains(testTypes, q) {
+						for _, id := range fl.Names {
+							s.fieldT[info.Defs[id]] = q
+						}
+						if sel, ok := t.(*ast.SelectorExpr); ok && fl.Names == nil {
+							s.fieldT[info.Defs[sel.Sel]] = q
 						}
 					}
 				}
