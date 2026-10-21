@@ -504,7 +504,7 @@ func TestIntegrityRealTypesAccepts(t *testing.T) {
 	f := newGuardFixture(t)
 	goT := baseFiles["pkg/calc_test.go"]
 	for name, files := range map[string]map[string]string{
-		"a generic of plain data": {"pkg/calc_test.go": strings.Replace(goT, "Add(1, 2)", "Add(first(1, 0), 2)", 1) +
+		"a generic of plain data": {"pkg/calc_test.go": strings.Replace(goT, "\tif Add(1, 2)", "\t_ = Add(first(1, 0), 2)\n\tif Add(1, 2)", 1) + // beside the assertion: a changed condition warns (M9, TestIntegrityCases)
 			"\nfunc first[T any](v ...T) T { return v[0] }\n"},
 		"a fixture holding t": {"pkg/calc_test.go": strings.Replace(goT, "t.Fatal(\"add\")", "fx := fixture{t}\n\t\tfx.t.Helper()\n\t\tt.Fatal(\"add\")", 1) +
 			"\ntype fixture struct{ t *testing.T }\n"},

@@ -417,7 +417,7 @@ func TestIntegrityAcceptsAndWarns(t *testing.T) {
 		"go test moved":       {map[string]string{"pkg/calc_test.go": "package pkg\n", "pkg/more_test.go": goT}, nil, ""},
 		"go:build linux":      {map[string]string{"pkg/calc_test.go": "//go:build linux && !windows && go1.20\n\n" + goT}, nil, ""},
 		"an assertion added":  {map[string]string{"pkg/calc_test.go": strings.Replace(goT, "{\n\tif", "{\n\tif Add(0, 0) != 0 {\n\t\tt.Error(\"zero\")\n\t}\n\tif", 1)}, nil, ""},
-		"a helper that fails": {map[string]string{"pkg/calc_test.go": strings.Replace(goT, "if Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}", "checkAdd(t, Add(1, 2))", 1) + "\nfunc checkAdd(t *testing.T, got int) {\n\tif got != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n}\n"}, nil, ""},
+		"a helper that fails": {map[string]string{"pkg/calc_test.go": strings.Replace(goT, "if Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}", "checkAdd(t, Add(1, 2))", 1) + "\nfunc checkAdd(t *testing.T, got int) {\n\tif got != 3 {\n\t\tt.Fatal(\"add\")\n\t}\n}\n"}, nil, "pkg:pkg.TestAdd an assertion, its condition or a test case changed: review it"}, // M9 (P14d-b): the assertion moved into a helper
 		"a subtest":           {map[string]string{"pkg/calc_test.go": strings.Replace(goT, "t.Fatal(\"add\")", "t.Run(\"x\", func(t *testing.T) { t.Fatal(\"add\") })", 1)}, nil, ""},
 		"a comment and a doc": {map[string]string{"pkg/calc.go": calc + "\n// t.Skip() in a comment\nvar doc = \"t.Skip()\"\n"}, nil, ""},
 		"an ordinary init":    {map[string]string{"pkg/calc.go": calc + "\nvar table = map[string]int{}\n\nfunc init() { table[\"one\"] = Add(0, 1) }\n"}, nil, ""},
