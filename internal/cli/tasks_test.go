@@ -67,16 +67,19 @@ func (c *lost) Read(context.Context, string) ([]byte, error) {
 
 // Astra #335 M2: a wait whose token stops authenticating (401) or whose
 // last grant goes (403 failed/action_not_granted) mid-wait is refused at
-// once, exit 1, never retried to its hour's timeout; a could_not_run
-// answer (503 store_unreadable) is retried, to the timeout.
+// once, exit 1, never retried to its hour's timeout; so does a controller
+// that serves no task read (404, an adcd from before it: exit 2, as adc task
+// show; Mythos #353 L1); a could_not_run answer (503 store_unreadable) is
+// retried, to the timeout.
 func TestTaskWaitRefusalsEndIt(t *testing.T) {
 	for name, c := range map[string]struct {
 		err  error
 		want int
 	}{
-		"the token lost": {client.ErrUnauthenticated, entry.ExitRefused},
-		"the grant lost": {&client.Refused{Result: vocab.Result{Outcome: vocab.Failed, Reason: vocab.ReasonActionNotGranted}}, entry.ExitRefused},
-		"could_not_run":  {&client.Refused{Result: vocab.Result{Outcome: vocab.CouldNotRun, Reason: vocab.ReasonStoreUnreadable}}, entry.ExitTimedOut},
+		"the token lost":            {client.ErrUnauthenticated, entry.ExitRefused},
+		"the grant lost":            {&client.Refused{Result: vocab.Result{Outcome: vocab.Failed, Reason: vocab.ReasonActionNotGranted}}, entry.ExitRefused},
+		"an adcd with no task read": {client.ErrNoResource, entry.ExitCouldNotRun},
+		"could_not_run":             {&client.Refused{Result: vocab.Result{Outcome: vocab.CouldNotRun, Reason: vocab.ReasonStoreUnreadable}}, entry.ExitTimedOut},
 	} {
 		t.Run(name, func(t *testing.T) {
 			timeout := "60m"
@@ -95,7 +98,7 @@ func TestTaskWaitRefusalsEndIt(t *testing.T) {
 			}()
 			select {
 			case e := <-done:
-				if n := r.reads.Load(); e.code != c.want || c.want == entry.ExitRefused && n != 3 {
+				if n := r.reads.Load(); e.code != c.want || c.want != entry.ExitTimedOut && n != 3 {
 					t.Errorf("exit %d after %d reads: %s", e.code, n, e.errb)
 				}
 			case <-time.After(10 * time.Second):
