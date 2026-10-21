@@ -583,3 +583,142 @@ func TestGateBaselineHeld(t *testing.T) {
 		}
 	}
 }
+
+// TestGateLineage (22a-6L; #226 entry 91(3)): the receipt and the report
+// derive from the acceptance blobs the run's overlay applied (each once,
+// sorted), and from nothing when it applied none; ReportIDs reads a
+// report's blocking packages and test names, each once, and refuses what
+// is no gate report; an overlaid run published with no acceptance blob is
+// refused.
+func TestGateLineage(t *testing.T) {
+	f := newFixture(t, map[string]string{"failing.json": stream["failing.json"], "a/a.go": "package a\n"}, "cat", "failing.json")
+	f.in.Gate.Command, f.in.Baseline.Command = []string{"cat", "failing.json"}, []string{"cat", "failing.json"}
+	v := gated(t, f.in)
+	blobs, err := blobstore.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Contract(f.in.Gate, testImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dg := func(x string) types.Digest { return types.Digest("sha256:" + strings.Repeat(x, 64)) }
+	for name, acc := range map[string][]types.Digest{"an overlay": {dg("b"), dg("a"), dg("b")}, "none": nil} {
+		res, err := Result(types.ComputationKey{Key: dg("1")}, v, c, testImage, Subject{Project: "prj_01m3250vz2ezn81cgvbkcn17jd", Revision: "1", Acceptance: acc},
+			"cmd_01m3250vz2ezn81cgvbkcn17jd", blobs, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{}
+		if acc != nil {
+			want = []string{string(dg("a")), string(dg("b"))}
+		}
+		for _, ref := range res.Value {
+			if !slices.Equal(ref.Lineage, want) {
+				t.Errorf("%s: the %s's lineage %v, want %v", name, ref.Type, ref.Lineage, want)
+			}
+		}
+		report := read(t, blobs, res.Value[1].ContentDigest)
+		var r struct {
+			Blocking []struct{ Package, Name string } `json:"blocking"`
+		}
+		if err := json.Unmarshal(report, &r); err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, b := range r.Blocking {
+			for _, id := range []string{b.Package, b.Name} {
+				if id != "" && !slices.Contains(ids, id) {
+					ids = append(ids, id)
+				}
+			}
+		}
+		if got, err := ReportIDs(report); err != nil || len(got) < 2 || !slices.Equal(got, ids) {
+			t.Errorf("%s: the report's ids %q, want %q: %v", name, got, ids, err)
+		}
+		// The report is a gate report's bytes exactly (Astra #321 H1); its
+		// neighbours are not.
+		if err := CheckReport(report); err != nil {
+			t.Errorf("%s: the report: %v", name, err)
+		}
+		for what, b := range map[string][]byte{
+			"another key":     append([]byte(`{"raw":"x",`), report[1:]...),
+			"trailing bytes":  append(slices.Clone(report), ' '),
+			"the raw results": []byte(stream["failing.json"]),
+			"spaced":          append([]byte("{ "), report[1:]...),
+		} {
+			if err := CheckReport(b); !errors.Is(err, ErrSpec) {
+				t.Errorf("%s: %s: %v", name, what, err)
+			}
+		}
+		// Its content is checked (Opus #321 r2 M2): Report's own bytes with
+		// a field changed, re-marshalled, each at its bound.
+		var base reportRecord
+		if err := json.Unmarshal(report, &base); err != nil || len(base.Blocking) == 0 {
+			t.Fatal(base, err)
+		}
+		canary := "hidden_test.py:12: assert refund(-5) == 'CANARY-7f3a'"
+		for what, c := range map[string]struct {
+			edit func(*reportRecord)
+			ok   bool
+		}{
+			// Mythos #348 L1: the detail is one of the controller's phrases.
+			"a detail of 1024 bytes of canary":   {func(r *reportRecord) { r.Detail = canary + strings.Repeat("x", MaxDetail-len(canary)) }, false},
+			"a fixed phrase":                     {func(r *reportRecord) { r.Detail = whyNonePassed }, true},
+			"a phrase with its count":            {func(r *reportRecord) { r.Detail = "12 tests pass against the baseline" }, true},
+			"a phrase with its two counts":       {func(r *reportRecord) { r.Detail = fmt.Sprintf(whyTheirs, 3, 0) }, true},
+			"a phrase with a word for its count": {func(r *reportRecord) { r.Detail = "many tests pass against the baseline" }, false},
+			"a phrase with text after it":        {func(r *reportRecord) { r.Detail = "no test passed: " + canary }, false},
+			"a phrase cut short":                 {func(r *reportRecord) { r.Detail = "no test pass" }, false},
+			"a count of 20 digits":               {func(r *reportRecord) { r.Detail = strings.Repeat("9", 20) + " tests pass against the baseline" }, false},
+			"an empty detail":                    {func(r *reportRecord) { r.Detail = "" }, false},
+			"a phrase with its count missing":    {func(r *reportRecord) { r.Detail = " tests pass against the baseline" }, false},
+			"a SHA-256 tree":                     {func(r *reportRecord) { r.Tree = strings.Repeat("0a", 32) }, true},
+			"a tree that is no git id":           {func(r *reportRecord) { r.Tree = canary }, false},
+			"an upper-case tree":                 {func(r *reportRecord) { r.Tree = strings.Repeat("AB", 20) }, false},
+			"a hex tree of another length":       {func(r *reportRecord) { r.Tree = strings.Repeat("ab", 21) }, false},
+			"an empty tree":                      {func(r *reportRecord) { r.Tree = "" }, false},
+			"a reason that is no code":           {func(r *reportRecord) { r.Reason = canary }, false},
+			"an outcome that is none":            {func(r *reportRecord) { r.Outcome = vocab.Outcome(canary) }, false},
+			"a finding's outcome that is none":   {func(r *reportRecord) { r.Blocking[0].Outcome = results.Outcome(canary) }, false},
+			"negative elapsed time":              {func(r *reportRecord) { r.ElapsedMS = -1 }, false},
+			"negative tests":                     {func(r *reportRecord) { r.Tests = -1 }, false},
+			"negative truncated":                 {func(r *reportRecord) { r.Truncated = -1 }, false},
+			"zero counts":                        {func(r *reportRecord) { r.ElapsedMS, r.Tests, r.Truncated = 0, 0, 0 }, true},
+		} {
+			r := base
+			r.Blocking = slices.Clone(base.Blocking)
+			c.edit(&r)
+			b, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := CheckReport(b); (err == nil) != c.ok || err != nil && !errors.Is(err, ErrSpec) {
+				t.Errorf("%s: %s: %v", name, what, err)
+			}
+		}
+	}
+	// A clean report's ids are an empty list, not nil (Astra #321 M3: nil
+	// is "not supplied" to the findings view).
+	if got, err := ReportIDs([]byte(`{"schema":"adc.gate-report/v1","blocking":[]}`)); err != nil || got == nil || len(got) != 0 {
+		t.Errorf("a clean report's ids: %#v, %v", got, err)
+	}
+	if _, err := ReportIDs([]byte(`{"schema":"adc.review-report/v1","blocking":[{"package":"p"}]}`)); !errors.Is(err, ErrSpec) {
+		t.Errorf("another schema's ids: %v", err)
+	}
+	// A run that applied an overlay is published only with the overlay's
+	// digests (Opus #321 M2): never with a lineage of nothing.
+	f.in.Overlay = map[string][]byte{"hidden/acceptance.txt": []byte("hidden\n")}
+	overlaid := gated(t, f.in)
+	for name, acc := range map[string][]types.Digest{"none": nil, "empty": {}, "the overlay's": {dg("a")}} {
+		_, err := Result(types.ComputationKey{Key: dg("1")}, overlaid, c, testImage, Subject{Project: "prj_01m3250vz2ezn81cgvbkcn17jd", Revision: "1", Acceptance: acc},
+			"cmd_01m3250vz2ezn81cgvbkcn17jd", blobs, time.Now())
+		if want := len(acc) > 0; (err == nil) != want || err != nil && !errors.Is(err, ErrSpec) {
+			t.Errorf("an overlaid run published with %s acceptance: %v", name, err)
+		}
+	}
+}
+
+// reportRecord is Report's record, under a name a test's report bytes do
+// not shadow.
+type reportRecord = report
