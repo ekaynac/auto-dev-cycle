@@ -485,9 +485,9 @@ func TestIntegrityCases(t *testing.T) {
 		"another file only (the control)":  {map[string]string{"pkg/calc.go": baseFiles["pkg/calc.go"] + "\n// x\n"}, "", nil},
 		// M9: equal counts, a changed condition.
 		"a condition inverted":   {edit("Add(1, 2) != 3", "Add(1, 2) == 3"), "", both("TestPlain: " + changed)},
-		"if false":               {edit("\tif Add(1, 2) != 3 {", "\tif false {"), "TestPlain a helper's assertions weakened (1 → 0)", nil}, // main counts it; P14d-w: a dead assertion is removed
-		"a dead else":            {edit("\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}", "\tif true {\n\t} else {\n\t\tt.Fatal(\"add\")\n\t}"), "TestPlain a helper's assertions weakened (1 → 0)", nil},
-		"a constant flipped":     {edit("const strict = true", "const strict = false"), "TestStrict a helper's assertions weakened (1 → 0)", nil}, // main counts it; P14d-w: a dead assertion is removed
+		"if false":               {edit("\tif Add(1, 2) != 3 {", "\tif false {"), "TestPlain a test's assertions made dead (1 → 0 live)", nil}, // main counts it; P14d-w: a dead assertion is removed
+		"a dead else":            {edit("\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}", "\tif true {\n\t} else {\n\t\tt.Fatal(\"add\")\n\t}"), "TestPlain a test's assertions made dead (1 → 0 live)", nil},
+		"a constant flipped":     {edit("const strict = true", "const strict = false"), "TestStrict a test's assertions made dead (1 → 0 live)", nil}, // main counts it; P14d-w: a dead assertion is removed
 		"an if and else swapped": {edit("\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"add\")\n\t}", "\tif Add(1, 2) != 3 {\n\t} else {\n\t\tt.Fatal(\"add\")\n\t}"), "", both("TestPlain: " + changed)},
 		// A local table changed before its loop; a row moved under another loop.
 		"truncLocal":               {edit("\tfor _, tc := range tests {", "\ttests = tests[:1]\n\tfor _, tc := range tests {"), "TestLocal unverifiable: 2 test cases no longer where the guard can follow them", nil},
