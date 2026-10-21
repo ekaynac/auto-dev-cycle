@@ -33,22 +33,30 @@ effects (external side effects; durable identities) [M2]
 ```
 
 Projections (`proj_*`) are derived, rebuildable caches, updated **in the same transaction** as the events that change
-them. `adc dev rebuild-projections` replays the log into fresh tables and compares them with the live ones. At start,
+them. `Store.RebuildProjections` replays the log into fresh tables and compares them with the live ones (no `adc dev
+rebuild-projections` command wires it yet). At start,
 the daemon first builds from the log, in one transaction, each registered projection the store has never built (one
 a later build added: no live record and no record of its build in the store's `_built` rows), then compares every
 projection; a projection the store built and has since emptied is a difference, never built again (#226 entry 107).
 Any difference keeps nothing, and so does a `_built` row that does not decode or records a later version than the build
 folds (`store_unreadable`); a `_built` row of a projection the build does not fold is a difference, refused with its own
-detail ("names a projection this build does not fold"), and a rebuild on the daemon's store, which is opened with its
-projections (`Config.Projections`), reports it too. Every projection
+detail ("names a projection this build does not fold"). `Store.RebuildProjections` on the daemon's store, which is
+opened with its projections (`Config.Projections`), reports both the same way: the unknown row as a difference, the
+undecodable or later one as `ErrBuildRecord`. Every projection
 main folded at the record's base (`builtBeforeRecord` in `internal/daemon/wiring.go`: all but `lease_grants`, #328) is
 always taken as built, whatever the `_built` rows say, so no edit of them makes one of those a projection to build; a
 projection added since (`lease_grants`, `unit_open`, `graph_task_nodes`, and later ones) is built in a store that has
-neither its rows nor its `_built` row. A version raised by a later build rebuilds nothing. A start refused by a later
+neither its rows nor its `_built` row. So a store written before the record starts only if it holds every projection of
+`builtBeforeRecord` as its log derives them: one written after the last addition to that list (P12b,
+`capacity_liable_calls`) and before #328 starts, its `lease_grants` built; one written before P12b that holds a settled
+liability lacks `capacity_liable_calls` rows its replay yields, and is refused (`ambiguous_state`), as before the record.
+A version raised by a later build rebuilds nothing. A start refused by a later
 check (the system actor, recovery) keeps what this step built and recorded, which equals the log. The upgrade is one
 way: a build before the record reads the `_built` rows as drift and refuses the store. A projection declared before its
 projector is wired is registered too, so a store records it as built while it is still empty; wiring it later over
-existing events is refused, as before the record, and that projection loses the build at start.
+existing events is refused, as before the record, and that projection loses the build at start. A projection name is
+never removed or renamed without a store migration: every store started since keeps its `_built` row, which a build that
+no longer registers the name refuses as a record of a projection it does not fold (`ambiguous_state`), failing closed.
 
 Large payloads live in a **content-addressed blob store** (`<state_dir>/blobs/sha256/ab/cd…`). A blob is written to a
 temp file, fsynced, digest-verified and renamed into place **before** any event references it. Blobs are immutable.

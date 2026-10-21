@@ -117,12 +117,8 @@ func (s *Store) build(ctx context.Context, tx *sql.Tx, registered []Projection, 
 	for _, p := range registered {
 		versions[p.Name] = p.Version
 	}
-	// A record at a later version than this build folds is a store a later
-	// build wrote.
-	for name, r := range recorded {
-		if v, ok := versions[name]; ok && r.version > v {
-			return nil, nil, fmt.Errorf("%w: projection %s is recorded at version %d, this build folds version %d", ErrBuildRecord, name, r.version, v)
-		}
+	if err := laterRecords(recorded, versions); err != nil {
+		return nil, nil, err
 	}
 	unknown := unknownRecords(recorded, versions)
 	taken := map[string]bool{}
@@ -168,6 +164,18 @@ func (s *Store) build(ctx context.Context, tx *sql.Tx, registered []Projection, 
 		return nil, nil, err
 	}
 	return built, nil, nil
+}
+
+// laterRecords refuses a record at a later version than this build folds: a
+// later build wrote the store (ErrBuildRecord). The start and a rebuild
+// both call it, so they refuse the same record (Mythos #342 L2).
+func laterRecords(recorded map[string]recordedBuild, versions map[string]int) error {
+	for name, r := range recorded {
+		if v, ok := versions[name]; ok && r.version > v {
+			return fmt.Errorf("%w: projection %s is recorded at version %d, this build folds version %d", ErrBuildRecord, name, r.version, v)
+		}
+	}
+	return nil
 }
 
 // unknownRecords are the differences a record of built projections makes:
