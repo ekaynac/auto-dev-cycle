@@ -26,7 +26,7 @@ import (
 
 // TestProcFrames (H1, Astra #287): a child's message is refused before
 // the controller allocates for it: Astra's 32<<20 empty entries, a count
-// past what is left of the frame, maxResultEntries or maxMsgEntries, a length past its
+// past what is left of the frame or maxResultEntries, a length past its
 // frame, a frame past maxFrame or the run's maxProcOut; and an honest one
 // reads back whole.
 func TestProcFrames(t *testing.T) {
@@ -46,7 +46,8 @@ func TestProcFrames(t *testing.T) {
 		"32<<20 empty entries":                        {frame(uv([]byte{'d'}, 32<<20)), maxProcOut, 1 << 20},
 		"maxResultEntries entries, no bytes for them": {frame(uv([]byte{'d'}, uint64(maxResultEntries))), maxProcOut, 1 << 20},
 		"maxResultEntries+1 entries":                  {frame(append(uv([]byte{'d'}, uint64(maxResultEntries)+1), make([]byte, 4*(maxResultEntries+1))...)), maxProcOut, 4 << 20},
-		"maxMsgEntries+1 paths":                       {frame(append(uv([]byte{'l', 0, 0, 0, 0}, uint64(maxMsgEntries)+1), make([]byte, maxMsgEntries+1)...)), maxProcOut, 4 << 20},
+		"maxResultEntries+1 paths":                    {frame(append(uv([]byte{'l', 0, 0, 0, 0}, uint64(maxResultEntries)+1), make([]byte, maxResultEntries+1)...)), maxProcOut, 4 << 20},
+		"paths, no bytes for them":                    {frame(uv([]byte{'l', 0, 0, 0, 0}, 1000)), maxProcOut, 1 << 20},
 		"a length past its frame":                     {frame(uv([]byte{'r'}, 1<<30)), maxProcOut, 1 << 20},
 		"a frame past maxFrame":                       {binary.BigEndian.AppendUint32(nil, uint32(maxFrame)+1), maxProcOut, 1 << 20},
 		"a frame past the run's bound":                {frame(uv(uv([]byte{'r'}, 0), 0)), 4, 1 << 20},

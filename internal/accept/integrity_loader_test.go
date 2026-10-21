@@ -171,6 +171,127 @@ func TestIntegrityProcess(t *testing.T) {
 	if len(over.Blocks) != 1 || len(over.Warnings) != 0 || over.Blocks[0].What != fmt.Sprintf("unverifiable: the guard's result is over its bound (0 blocks, %d warnings)", maxReported+500) {
 		t.Errorf("a result past its bound: %q, %d warnings", whats(over.Blocks), len(over.Warnings))
 	}
+	// The bytes branch (Opus #339 L1): one 3.4 MB function name and 20
+	// references into S make a result of about 71 MB, past maxFrame: the
+	// stated block, a false block (main accepts with 21 warnings).
+	var huge strings.Builder
+	huge.WriteString("package tool6\n\nimport (\n\t\"fmt\"\n\t\"log\"\n\t\"os\"\n)\n\nfunc f" + strings.Repeat("a", 3_400_000) + "() {\n")
+	for _, ref := range []string{"fmt.Println()", "fmt.Print()", "fmt.Printf(\"\")", "fmt.Fprintln(os.Stdout)", "fmt.Fprint(os.Stdout)", "fmt.Fprintf(os.Stdout, \"\")",
+		"os.Exit(0)", "log.Fatal()", "log.Fatalf(\"\")", "log.Fatalln()", "log.Panic()", "log.Panicf(\"\")", "log.Panicln()", "log.Print()", "log.Printf(\"\")",
+		"log.Println()", "_ = os.Stdout", "_ = os.Stderr", "_ = os.Args", "_ = os.Getpid()"} {
+		huge.WriteString("\t" + ref + "\n")
+	}
+	huge.WriteString("}\n")
+	bytesOver := f.withIgnored(t, Integrity(f.repo, f.base, testLister(t), ""), map[string]string{"tool6/x.go": huge.String()}, nil)
+	if len(bytesOver.Blocks) != 1 || len(bytesOver.Warnings) != 0 || !strings.HasPrefix(bytesOver.Blocks[0].What, "unverifiable: the guard's result is over its bound (") ||
+		!strings.HasSuffix(bytesOver.Blocks[0].What, " bytes)") {
+		t.Errorf("a result past maxFrame: %q, %d warnings", whats(bytesOver.Blocks), len(bytesOver.Warnings))
+	}
+	// Listing requests as main makes them (Opus #339 M2): an import path of
+	// 4,097 bytes, and 2^16+1 distinct imports, each listed whole. A
+	// Lister that loads none: the same "not loaded" verdicts either way.
+	none := func(_ context.Context, _ string, _ [2]string, _, _ []byte, paths []string) (map[string]Listed, error) {
+		l := map[string]Listed{}
+		for _, q := range paths {
+			l[q] = Listed{ImportPath: q, Error: &struct{ Err string }{fmt.Sprintf("not loaded (%d bytes)", len(q))}}
+		}
+		return l, nil
+	}
+	var imports strings.Builder
+	imports.WriteString("package pkg\n\nimport (\n")
+	for i := range 1<<16 + 1 {
+		fmt.Fprintf(&imports, "\t_ \"a%06d\"\n", i)
+	}
+	imports.WriteString(")\n")
+	for name, files := range map[string]map[string]string{
+		"an import path of 4,097 bytes": {"pkg/x.go": "package pkg\n\nimport _ \"example.org/" + strings.Repeat("a", 4097) + "\"\n"},
+		"2^16+1 imports":                {"pkg/x.go": imports.String()},
+	} {
+		in, out := f.withIgnored(t, integrity(f.repo, f.base, none), files, nil), f.withIgnored(t, Integrity(f.repo, f.base, none, ""), files, nil)
+		in.Elapsed, out.Elapsed = 0, 0
+		if len(in.Blocks) == 0 || !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || !sameVerdict(t, in, out) {
+			t.Errorf("%s: in this process %.300q, in its own %.300q", name, whats(in.Blocks), whats(out.Blocks))
+		}
+	}
+	// Every recover of the guard's that turns a service's panic into a block
+	// (Opus #339 M1): the guard's own ("the guard failed") and decision A's
+	// ("…outside-initialization check failed", reading vendor/modules.txt
+	// first, Opus's input). The child's block acknowledges the panic; the
+	// latch adds none. Enumerated: a Reader panicking on each blob a change
+	// reads, in turn, and a Lister on each of its calls, so every recover a
+	// service call reaches is met; the others (pyLex's, the Python scan's,
+	// the types checks' workers) run no service call (the PR lists them).
+	vb := newFixtureWith(t, func(src string) {
+		write(t, src, guardBase)
+		write(t, src, map[string]string{"go.work": "go 1.26.0\n\nuse .\n", "vendor/modules.txt": "## workspace\n"})
+		plain(t, src, "add", "--all")
+	})
+	goChange := map[string]string{"pkg/calc.go": "package pkg\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc Add(a, b int) int {\n\tfmt.Println(\"x\")\n\t_ = os.Getpid()\n\treturn a + b\n}\n"}
+	changes := map[string]struct {
+		at    fixture
+		files map[string]string
+	}{
+		"a Go change, vendored (Opus's)": {vb, goChange},
+		"a Go change, listed":            {g, goChange},
+		"a Python change":                {vb, map[string]string{"money.py": baseFiles["money.py"] + "\nimport os\nos._exit(0)\n"}},
+	}
+	modules := []byte("## workspace\n")
+	decisionA, listings := false, 0
+	for name, c := range changes {
+		vb, change := c.at, c.files
+		var blobs, calls []string // what the change reads and lists, in this process
+		record := func(guard func(Lister) Guard) Guard {
+			lister := func(ctx context.Context, dir string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+				calls = append(calls, pl[0]+"/"+pl[1]+" "+strings.Join(paths, ","))
+				return testLister(t)(ctx, dir, pl, gomod, gosum, paths)
+			}
+			g := guard(lister)
+			return func(ctx context.Context, c []Change, read Reader) ([]Block, []Block, error) {
+				return g(ctx, c, func(ctx context.Context, blob string, max int64) ([]byte, bool, error) {
+					blobs = append(blobs, blob)
+					return read(ctx, blob, max)
+				})
+			}
+		}
+		vb.withIgnored(t, record(func(l Lister) Guard { return integrity(vb.repo, vb.base, l) }), change, nil)
+		blobs, calls = slices.Compact(slices.Sorted(slices.Values(blobs))), slices.Compact(slices.Sorted(slices.Values(calls)))
+		for _, at := range slices.Concat(blobs, calls) {
+			text := "boom " + at[:min(len(at), 40)] + " é€" // multi-byte, whole
+			panicking := func(guard func(Lister) Guard) Guard {
+				lister := func(ctx context.Context, dir string, pl [2]string, gomod, gosum []byte, paths []string) (map[string]Listed, error) {
+					if pl[0]+"/"+pl[1]+" "+strings.Join(paths, ",") == at {
+						panic(text)
+					}
+					return testLister(t)(ctx, dir, pl, gomod, gosum, paths)
+				}
+				g := guard(lister)
+				return func(ctx context.Context, c []Change, read Reader) ([]Block, []Block, error) {
+					return g(ctx, c, func(ctx context.Context, blob string, max int64) ([]byte, bool, error) {
+						b, ok, err := read(ctx, blob, max)
+						if blob == at {
+							decisionA = decisionA || bytes.Equal(b, modules)
+							panic(text)
+						}
+						return b, ok, err
+					})
+				}
+			}
+			in := vb.withIgnored(t, panicking(func(l Lister) Guard { return integrity(vb.repo, vb.base, l) }), change, nil)
+			out := vb.withIgnored(t, panicking(func(l Lister) Guard { return Integrity(vb.repo, vb.base, l, "") }), change, nil)
+			in.Elapsed, out.Elapsed = 0, 0
+			if !reflect.DeepEqual(in.Blocks, out.Blocks) || !reflect.DeepEqual(in.Warnings, out.Warnings) || !sameVerdict(t, in, out) {
+				t.Errorf("%s, a panic at %.60s: in this process %q, in its own %q", name, at, whats(in.Blocks), whats(out.Blocks))
+			}
+			if bytes.Contains([]byte(strings.Join(whats(in.Blocks), "\n")), []byte("decision A's outside-initialization check failed ("+text+")")) {
+				decisionA = true
+			}
+		}
+		t.Logf("%s: a panic at each of %d blobs and %d listings", name, len(blobs), len(calls))
+		listings += len(calls)
+	}
+	if !decisionA || listings == 0 {
+		t.Errorf("decision A's recover met: %v; %d listings: the enumeration no longer meets them", decisionA, listings)
+	}
 	// #1 (Astra #293 r2): an empty root go.mod added, or deleted: the
 	// in-process guard's verdicts (no absent blob read).
 	readme := map[string]string{"README.md": "x\n"}

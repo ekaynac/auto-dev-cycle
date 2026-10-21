@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -51,7 +52,6 @@ var maxRunTime = 10 * time.Minute // one guard run, from its start; type checks 
 var (
 	maxProcOut       int64 = 256 << 20
 	maxFrame               = 64 << 20 // one message; a result's whole lists
-	maxMsgEntries          = 1 << 16  // paths in one listing request
 	maxResultEntries       = 1 << 20  // blocks, or warnings, in a result
 )
 
@@ -240,9 +240,8 @@ func readFrame(r io.Reader, left *int64, payloads *[][]byte) (childMsg, error) {
 	case 'l':
 		m.platform = [2]string{str(16), str(16)}
 		m.gomod, m.gosum = opt(), opt()
-		m.paths = make([]string, num(maxMsgEntries, 1))
-		for i := range m.paths {
-			m.paths[i] = str(4096)
+		for n := num(maxResultEntries, 1); len(m.paths) < n && !bad; { // as main lists them: bounded by the frame (Opus #339 M2)
+			m.paths = append(m.paths, str(maxFrame))
 		}
 	case 'd':
 		for _, to := range []*[]Block{&m.blocks, &m.warnings} {
@@ -371,7 +370,8 @@ type service struct {
 	readLeft        int64
 	requests, lists int
 	readErr         error
-	failed          string // a block the result must hold
+	failed          string // a block the result must hold, unless it holds the panic's (panicked)
+	panicked        string // the first service panic's text: the guard's recovers wrap it as "unverifiable: …(text)"
 	listFailed      string // a listing's failure: the result must block (Astra #287 r2 #5)
 }
 
@@ -396,7 +396,7 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 			switch {
 			case s.readErr != nil: // the reader's error is the guard's, whatever the child says
 				return blocks, warnings, s.readErr, true, nil
-			case s.failed != "" && !slices.ContainsFunc(c.blocks, func(b Block) bool { return b.What == s.failed }):
+			case s.failed != "" && !slices.ContainsFunc(c.blocks, s.acknowledges):
 				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.failed, false, false}), warnings, nil, true, nil
 			case s.listFailed != "" && len(blocks) == 0:
 				return append(blocks, Block{vocab.ReasonTestIntegrityViolation, "", s.listFailed, false, false}), warnings, nil, true, nil
@@ -426,13 +426,27 @@ func converse(ctx context.Context, in io.Writer, out io.Reader, req procMsg, rea
 	return nil, nil, nil, false, nil
 }
 
+// acknowledges: b is a block of the guard's recovering the service's
+// panic, whichever recover made it (the guard's own, "the guard failed";
+// decision A's, "…check failed"): unverifiable, the panic's whole text in
+// its closing parentheses (Opus #339 M1). A service failure that is no
+// panic (a request refused) has its own text, which a block must equal.
+func (s *service) acknowledges(b Block) bool {
+	if s.panicked == "" {
+		return b.What == s.failed
+	}
+	return strings.HasPrefix(b.What, "unverifiable: ") && strings.HasSuffix(b.What, "("+s.panicked+")")
+}
+
 // serve answers a child's read or list; a panic is passed back, the guard's
 // fault as in this process, and latched. A request outside the run's blobs
 // or budgets is refused as one.
 func (s *service) serve(ctx context.Context, c childMsg) (m procMsg) {
 	defer func() {
 		if p := recover(); p != nil {
-			s.failed = cmp.Or(s.failed, fmt.Sprintf("unverifiable: the guard failed (%v)", p))
+			if s.failed == "" {
+				s.failed, s.panicked = fmt.Sprintf("unverifiable: the guard failed (%v)", p), fmt.Sprint(p)
+			}
 			m = procMsg{Panic: fmt.Sprint(p), Panicked: true}
 		}
 	}()
@@ -513,11 +527,10 @@ func child(in io.Reader, out io.Writer) int {
 		req.Files = map[string]string{}
 	}
 	blocks, warnings, err := guard(context.Background(), req.Changes, read, list, req.Files, req.Links, req.ListEnd, req.Dir)
-	m := childMsg{op: 'd', blocks: blocks, warnings: warnings, err: errText(err), erred: err != nil}
-	f := m.frame()
-	if len(blocks) > req.MaxEntries || len(warnings) > req.MaxEntries {
+	var f []byte
+	if len(blocks) > req.MaxEntries || len(warnings) > req.MaxEntries { // before a frame of them is built (Opus #339 L2)
 		f = childMsg{op: 'd', blocks: unverifiable(fmt.Sprintf("the guard's result is over its bound (%d blocks, %d warnings)", len(blocks), len(warnings)))}.frame()
-	} else if len(f)-4 > maxFrame {
+	} else if f = (childMsg{op: 'd', blocks: blocks, warnings: warnings, err: errText(err), erred: err != nil}).frame(); len(f)-4 > maxFrame {
 		f = childMsg{op: 'd', blocks: unverifiable(fmt.Sprintf("the guard's result is over its bound (%d bytes)", len(f)-4))}.frame()
 	}
 	if _, err := out.Write(f); err != nil {
