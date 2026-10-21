@@ -674,7 +674,7 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 				hooks = append(hooks, fn.Body)
 			}
 			if test && !hook && goTest(fname) && m.on[pi] > 0 { // P14d-b: its cases, per build constraint
-				s.caseFacts(fa, plat+" "+dir+":"+name+"."+fname, m.path, m.cons, fn)
+				s.caseFacts(fa, plat+" "+dir+":"+name+"."+fname, m.path, m.cons, fn, fset.File(fn.Pos()), m.src)
 			}
 			switch {
 			case hook:

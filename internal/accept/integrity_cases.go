@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
-	"go/printer"
+	"go/scanner"
 	"go/token"
 	"go/types"
 	"io"
@@ -98,10 +98,16 @@ const maxPrefix = 256
 var maxCaseWork = 16 * len(platforms) * int(maxRead)
 
 // caseScan is a package scan's case state: the branches a constant
-// condition never takes.
+// condition never takes, and the file being read with its source (canon's).
 type caseScan struct {
 	dead map[ast.Node]bool
+	file *token.File
+	src  []byte
 }
+
+// loopKind is what a range statement's own body does, outside any function
+// literal: asserts or skips (checks), calls t.Run (runs).
+type loopKind struct{ checks, runs bool }
 
 // caseAlts is a test's cases per build-constraint alternative.
 type caseAlts = map[string]*caseSum
@@ -116,7 +122,7 @@ type caseSum struct {
 	print  string
 }
 
-// caseVisits counts loop bodies read for their kind and caseCharged the
+// caseVisits counts the loops whose kind was read and caseCharged the
 // case code's charged work (tests read them: bounds, never a clock).
 var caseVisits, caseCharged atomic.Int64
 
@@ -132,10 +138,11 @@ func (s *pkgScan) over() bool { return s.r.caseWork > maxCaseWork || s.r.ctx.Err
 
 // caseFacts records fn's cases under the test key k and its build
 // constraint cons; past the case layer's bound, its file is unverifiable.
-func (s *pkgScan) caseFacts(fa *pkgFacts, k, path, cons string, fn *ast.FuncDecl) {
+func (s *pkgScan) caseFacts(fa *pkgFacts, k, path, cons string, fn *ast.FuncDecl, file *token.File, src []byte) {
 	if s.cs.dead == nil {
-		s.cs = caseScan{map[ast.Node]bool{}}
+		s.cs.dead = map[ast.Node]bool{}
 	}
+	s.cs.file, s.cs.src = file, src
 	c := s.cases(fn.Body)
 	c.print = s.testPrint(fn.Body)
 	if fa.cases[k] == nil {
@@ -153,6 +160,7 @@ func (s *pkgScan) caseFacts(fa *pkgFacts, k, path, cons string, fn *ast.FuncDecl
 // rows' traced names, and its driving loops' count.
 type caseWalk struct {
 	sum    *caseSum
+	kinds  map[*ast.RangeStmt]loopKind
 	lits   map[types.Object]*ast.CompositeLit
 	traced map[types.Object]bool
 	loops  int
@@ -164,7 +172,7 @@ func (s *pkgScan) cases(body *ast.BlockStmt) *caseSum {
 	if !s.caseCharge(int(body.End() - body.Pos())) {
 		return w.sum
 	}
-	w.lits = s.locals(body)
+	w.lits, w.kinds = s.locals(body), s.kinds(body)
 	s.walk(w, body, "")
 	return w.sum
 }
@@ -265,37 +273,70 @@ func (s *pkgScan) walk(w *caseWalk, n ast.Node, prefix string) {
 	})
 }
 
-// kind is what a loop's own body does, outside any function literal:
-// asserts or skips (checks), and calls t.Run (runs) (Astra #318 1). Its
-// reading is charged, and stops past the bound.
-func (s *pkgScan) kind(body *ast.BlockStmt) (checks, runs bool) {
+// kinds is, for each range statement of body, what its own body does,
+// outside any function literal (Astra #318 1): asserts or skips on a
+// testing value (checks), calls t.Run (runs); a loop holds what the loops
+// inside it hold. One bottom-up pass, each node read once and the body
+// charged once (Opus #344 L1).
+func (s *pkgScan) kinds(body ast.Node) map[*ast.RangeStmt]loopKind {
+	out := map[*ast.RangeStmt]loopKind{}
 	if !s.caseCharge(int(body.End() - body.Pos())) {
-		return false, false
+		return out
 	}
-	caseVisits.Add(1) // a reading: none past the bound
+	type frame struct {
+		loop *ast.RangeStmt // nil: a function literal, which no loop outside it holds
+		k    loopKind
+	}
+	var nodes []ast.Node
+	var frames []frame
 	ast.Inspect(body, func(n ast.Node) bool {
-		if n == nil || s.over() || s.cs.dead[n] || checks && runs {
+		if n == nil {
+			top := nodes[len(nodes)-1]
+			nodes = nodes[:len(nodes)-1]
+			switch top.(type) {
+			case *ast.RangeStmt, *ast.FuncLit:
+				f := frames[len(frames)-1]
+				frames = frames[:len(frames)-1]
+				if f.loop == nil {
+					break
+				}
+				out[f.loop] = f.k
+				caseVisits.Add(1) // a loop read: none past the bound
+				if p := len(frames) - 1; p >= 0 && frames[p].loop != nil {
+					frames[p].k = loopKind{frames[p].k.checks || f.k.checks, frames[p].k.runs || f.k.runs}
+				}
+			}
+			return true
+		}
+		if s.over() || s.cs.dead[n] {
 			return false
 		}
 		switch x := n.(type) {
 		case *ast.IfStmt:
 			s.markDead(x)
+		case *ast.RangeStmt:
+			frames = append(frames, frame{loop: x})
 		case *ast.FuncLit:
-			return false
+			frames = append(frames, frame{})
 		case *ast.CallExpr:
-			runs = runs || s.runCall(x) // its literal callback is the subtest's, not the loop's own check (above)
-			sel, isSel := ast.Unparen(x.Fun).(*ast.SelectorExpr)
-			checks = checks || s.assertion(x) || isSel && slices.Contains(goSkips, sel.Sel.Name) && s.tval(sel.X) != ""
+			if p := len(frames) - 1; p >= 0 && frames[p].loop != nil && x.Pos() >= frames[p].loop.Body.Pos() {
+				sel, isSel := ast.Unparen(x.Fun).(*ast.SelectorExpr)
+				k := &frames[p].k
+				k.runs = k.runs || s.runCall(x) // its literal callback is the subtest's (a function literal)
+				k.checks = k.checks || s.assertion(x) || isSel && slices.Contains(goSkips, sel.Sel.Name) && s.tval(sel.X) != ""
+			}
 		}
+		nodes = append(nodes, n)
 		return true
 	})
-	return checks, runs
+	return out
 }
 
 // rows records a driving loop's rows. Its label is its position and what
 // it does: runs, checks, or runs checks (Opus #318 H1).
 func (s *pkgScan) rows(w *caseWalk, x *ast.RangeStmt, prefix string) {
-	checks, runs := s.kind(x.Body)
+	k := w.kinds[x]
+	checks, runs := k.checks, k.runs
 	if !checks && !runs {
 		return
 	}
@@ -382,10 +423,40 @@ func (s *pkgScan) canon(n ast.Node) string {
 	return b.String()
 }
 
+// It is n's source span read by go/scanner, each token once, separated by
+// one space: comments and semicolons (written or a newline's) are dropped,
+// so gofmt changes none; its work is linear in the span, which is charged
+// before it is read (Opus #344 H1: go/printer's grows with the nesting of
+// function literals). A node of another file than the one read is opaque
+// text.
 func (s *pkgScan) canonTo(b *strings.Builder, n ast.Node) {
-	l := b.Len()
-	_ = printer.Fprint(b, token.NewFileSet(), n)
-	s.caseCharge(b.Len() - l)
+	f := s.cs.file
+	if f == nil || f.Size() != len(s.cs.src) || f.Base() > int(n.Pos()) || int(n.End()) > f.Base()+f.Size() {
+		b.WriteString("?")
+		return
+	}
+	span := s.cs.src[f.Offset(n.Pos()):f.Offset(n.End())]
+	if !s.caseCharge(len(span)) {
+		return
+	}
+	var sc scanner.Scanner
+	sc.Init(token.NewFileSet().AddFile("", -1, len(span)), span, nil, 0)
+	for first := true; ; first = false {
+		_, tok, lit := sc.Scan()
+		switch {
+		case tok == token.EOF:
+			return
+		case tok == token.SEMICOLON: // a newline's or a written one: gofmt moves between them
+			continue
+		case !first:
+			b.WriteByte(' ')
+		}
+		if lit != "" {
+			b.WriteString(lit)
+		} else {
+			b.WriteString(tok.String())
+		}
+	}
 }
 
 // rowName is a row's name: a string key or value, else its first string
@@ -487,11 +558,17 @@ func (s *pkgScan) testPrint(n ast.Node) string {
 			_, _ = io.WriteString(h, ctl.String())
 			h.Sum(sum[:0])
 		}
-		if x, ok := n.(*ast.CallExpr); ok {
-			if sel, isSel := ast.Unparen(x.Fun).(*ast.SelectorExpr); s.assertion(x) || isSel && slices.Contains(goSkips, sel.Sel.Name) {
-				e := sha256.Sum256(append(sum[:], s.canon(x)...))
-				out.WriteString(hex.EncodeToString(e[:8]))
-			}
+		event := false
+		switch x := n.(type) {
+		case *ast.CallExpr:
+			sel, isSel := ast.Unparen(x.Fun).(*ast.SelectorExpr)
+			event = s.assertion(x) || isSel && slices.Contains(goSkips, sel.Sel.Name)
+		case *ast.ReturnStmt, *ast.BranchStmt: // an early exit, which may skip what follows (Opus #344 M1)
+			event = true
+		}
+		if event {
+			e := sha256.Sum256(append(sum[:], s.canon(n)...))
+			out.WriteString(hex.EncodeToString(e[:8]))
 		}
 		stack = append(stack, level{n, sum})
 		return true

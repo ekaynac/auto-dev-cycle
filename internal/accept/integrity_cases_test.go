@@ -109,6 +109,29 @@ func TestNameless(t *testing.T) {
 	}
 }
 
+func TestNestedRows(t *testing.T) {
+	for _, a := range []string{"p", "q"} {
+		for _, b := range []string{"x"} {
+			if a+b == "" {
+				t.Fatal(a)
+			}
+		}
+	}
+}
+
+func one(t *testing.T) int {
+	if Add(1, 0) != 1 {
+		t.Fatal("one")
+	}
+	return 1
+}
+
+func TestRangeExpr(t *testing.T) {
+	for _, n := range []int{one(t), 2} {
+		_ = n
+	}
+}
+
 type skipper struct{}
 
 func (skipper) Skip() {}
@@ -475,6 +498,15 @@ func TestIntegrityCases(t *testing.T) {
 		"a loop's t.Run in a literal never run": {edit("\t\tt.Run(tc.name, tc.fn)\n", "\t\t_ = func() { t.Run(tc.name, tc.fn) }\n"), `TestRunsFn unverifiable: 2 test cases no longer where the guard can follow them (row "a" @1 runs)`, nil},
 		"a loop's check moved into a literal":   {edit("\t\tif Add(tc.a, 0) != tc.want {\n\t\t\tt.Errorf(\"%s\", tc.name)\n\t\t}\n", "\t\tfunc() {\n\t\t\tif Add(tc.a, 0) != tc.want {\n\t\t\t\tt.Errorf(\"%s\", tc.name)\n\t\t\t}\n\t\t}()\n"), `TestTable unverifiable: 3 test cases no longer where the guard can follow them (row "neg" @1 checks)`, nil},
 		"another type's Skip drives no loop":    {edit(`[]string{"s1", "s2"}`, `[]string{"s1"}`), "", nil},
+		// Opus #344 L1: an outer loop holds what its inner loop does; a
+		// range's own expression drives nothing.
+		"an outer loop's row":        {edit(`[]string{"p", "q"}`, `[]string{"p"}`), `TestNestedRows 1 test cases removed (table rows or subtests: row "q" @1 checks)`, nil},
+		"a range expression's check": {edit("[]int{one(t), 2}", "[]int{one(t)}"), "", nil},
+		// Opus #344 M1: an early exit added, the counts equal, warns.
+		"a return before a subtest":        {edit("\tt.Run(\"outer\", func(t *testing.T) {\n", "\tif Add(1, 1) == 2 {\n\t\treturn\n\t}\n\tt.Run(\"outer\", func(t *testing.T) {\n"), "", both("TestSub: " + changed)},
+		"a return in a subtest's callback": {edit("\t\tt.Run(\"inner\", func(t *testing.T) {\n", "\t\tif Add(1, 1) == 2 {\n\t\t\treturn\n\t\t}\n\t\tt.Run(\"inner\", func(t *testing.T) {\n"), "", both("TestSub: " + changed)},
+		"a break after a loop's subtest":   {edit("\t\tt.Run(tc.name, tc.fn)\n", "\t\tt.Run(tc.name, tc.fn)\n\t\tif tc.name == \"a\" {\n\t\t\tbreak\n\t\t}\n"), "", both("TestRunsFn: " + changed)},
+		"a return in a checking loop":      {edit("\t\tif Add(tc.a, 0) != tc.want {\n\t\t\tt.Errorf(\"%s\", tc.name)", "\t\tif tc.name == \"zero\" {\n\t\t\treturn\n\t\t}\n\t\tif Add(tc.a, 0) != tc.want {\n\t\t\tt.Errorf(\"%s\", tc.name)"), "", both("TestTable: " + changed)},
 		// As on main, accepted clean.
 		"namelessFmt":     {edit("{{3,3}, {4, 4}}", "{{3, 3}, {4, 4}}"), "", nil},
 		"namelessComment": {edit("{{3,3}, {4, 4}}", "{\n\t\t{3, // three\n\t\t\t3},\n\t\t{4, 4},\n\t}"), "", nil},
@@ -577,14 +609,13 @@ func TestIntegrityCasesBound(t *testing.T) {
 	}
 	big := "package pkg\n\nimport \"testing\"\n\nfunc TestBig(t *testing.T) {\n\tfor _, tc := range []struct{ a, b int }{\n" + rows.String() +
 		"\t} {\n\t\tif Add(tc.a, 0) != tc.b {\n\t\t\tt.Fatal(tc.a)\n\t\t}\n\t}\n}\n"
-	nested := "package pkg\n\nimport \"testing\"\n\nfunc TestNested(t *testing.T) {\n" + strings.Repeat("for range []int{1} {\n", 300) + strings.Repeat("}\n", 300) + "}\n"
 	var asserts strings.Builder
 	for i := range 1 << 13 {
 		fmt.Fprintf(&asserts, "\tt.Error(%d)\n", i)
 	}
 	many := "package pkg\n\nimport \"testing\"\n\nfunc TestMany(t *testing.T) {\n" + asserts.String() + "}\n"
 	plainBody := "package pkg\n\nimport \"testing\"\n\nfunc TestPlainLong(t *testing.T) {\n\tx := 0\n" + strings.Repeat("\tx++\n", 40000) + "\t_ = x\n}\n"
-	for name, file := range map[string]string{"a table": big, "300 nested loops": nested, "8,192 assertions": many, "a 100,000-value case": caseClause(100000),
+	for name, file := range map[string]string{"a table": big, "8,192 assertions": many, "a 100,000-value case": caseClause(100000),
 		"a long body": plainBody} {
 		if v := f.guarded(t, map[string]string{"pkg/big_test.go": file}); !finds(v.Blocks, "past the guard's work bound") {
 			t.Errorf("%s past the bound: blocks %q", name, whats(v.Blocks))
@@ -660,7 +691,7 @@ func TestIntegrityCasesCharged(t *testing.T) {
 	}
 	table := "package pkg\n\nimport \"testing\"\n\nfunc TestNames(t *testing.T) {\n\tfor _, tc := range []struct {\n\t\tn string\n\t\tv int\n\t}{\n" + rows.String() +
 		"\t} {\n\t\tif tc.v < 0 {\n\t\t\tt.Fatal(tc.n)\n\t\t}\n\t}\n}\n"
-	if _, _, w := readings(t, f, map[string]string{"pkg/names_test.go": table}); w < int64(5*1000*len(name)) {
+	if _, _, w := readings(t, f, map[string]string{"pkg/names_test.go": table}); w < int64(7*1000*len(name)) { // the bodies, each identity and each row's text, on two platforms
 		t.Errorf("1,000 rows of %d-byte names: charged %d", len(name), w)
 	}
 }
@@ -692,6 +723,33 @@ func TestIntegrityCasesAllocs(t *testing.T) {
 	}
 }
 
+// TestIntegrityCasesNestedLiterals (Opus #344 H1): an assertion whose
+// argument nests n asserting function literals: the guard allocates no
+// faster than the case work it charges grows (go/printer's canonical text
+// grew with the nesting, uncharged: 365 MB at 200, 51 GB at 400).
+func TestIntegrityCasesNestedLiterals(t *testing.T) {
+	f := newGuardFixture(t)
+	run := func(n int) (alloc uint64, charged int64) {
+		file := "package pkg\n\nimport \"testing\"\n\nfunc TestNest(t *testing.T) {\n\tt.Error(" +
+			strings.Repeat("func() int {\n\tt.Error(", n) + "0" + strings.Repeat(")\n\treturn 0\n}()", n) + ")\n}\n"
+		var m0, m1 runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&m0)
+		v, _, w := readings(t, f, map[string]string{"pkg/nest_test.go": file})
+		runtime.ReadMemStats(&m1)
+		if !v.Accepted() {
+			t.Fatalf("%d nested literals: blocks %q", n, whats(v.Blocks))
+		}
+		return m1.TotalAlloc - m0.TotalAlloc, w
+	}
+	a1, c1 := run(100)
+	a2, c2 := run(200)
+	t.Logf("nested literals: 100 allocate %d bytes, charge %d; 200 allocate %d, charge %d", a1, c1, a2, c2)
+	if float64(a2)/float64(a1) > float64(c2)/float64(c1) {
+		t.Errorf("allocation grows faster than the charged work: %d → %d bytes, %d → %d charged", a1, a2, c1, c2)
+	}
+}
+
 // caseClause is a test with one case clause listing n integers around an
 // assertion (Astra #292 r2 3).
 func caseClause(n int) string {
@@ -708,15 +766,18 @@ func caseClause(n int) string {
 // a case clause's values once past the bound, after the value that crossed
 // it, never reading the rest.
 func TestIntegrityCasesClauseStops(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "clause_test.go", caseClause(20000), 0)
+	src := []byte(caseClause(20000))
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "clause_test.go", src, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	read := caseScan{dead: map[ast.Node]bool{}, file: fset.File(file.Pos()), src: src}
 	old := maxCaseWork
 	t.Cleanup(func() { maxCaseWork = old })
 	maxCaseWork = 1000
 	r := &run{ctx: context.Background()}
-	s := &pkgScan{r: r, pkg: types.NewPackage("example.com/m/pkg", "pkg"), info: &types.Info{}, cs: caseScan{dead: map[ast.Node]bool{}}}
+	s := &pkgScan{r: r, pkg: types.NewPackage("example.com/m/pkg", "pkg"), info: &types.Info{}, cs: read}
 	s.testPrint(file.Decls[1].(*ast.FuncDecl).Body)
 	if s.r.caseWork > maxCaseWork+16 {
 		t.Errorf("the print read %d past a bound of %d", s.r.caseWork, maxCaseWork)
@@ -724,9 +785,31 @@ func TestIntegrityCasesClauseStops(t *testing.T) {
 	maxCaseWork = old // a cancelled run reads no more (Opus #318 H5)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	s = &pkgScan{r: &run{ctx: ctx}, pkg: s.pkg, info: s.info, cs: caseScan{dead: map[ast.Node]bool{}}}
+	s = &pkgScan{r: &run{ctx: ctx}, pkg: s.pkg, info: s.info, cs: read}
 	if s.testPrint(file.Decls[1].(*ast.FuncDecl).Body); s.r.caseWork > 16 {
 		t.Errorf("a cancelled run's print read %d", s.r.caseWork)
+	}
+}
+
+// TestIntegrityCasesCanon (Opus #344 H1): a node's canonical text is its
+// tokens, one space apart, whatever gofmt or a comment changes, never a
+// newline's semicolon; its span is charged.
+func TestIntegrityCasesCanon(t *testing.T) {
+	src := []byte("package p\n\nvar a = f(x,y)\nvar b = f(x, // why\n\ty)\nvar c = func() {\n\tg(); h()\n}\nvar d = f(x, z)\n")
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "p.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &pkgScan{r: &run{ctx: context.Background()}, cs: caseScan{dead: map[ast.Node]bool{}, file: fset.File(file.Pos()), src: src}}
+	value := func(i int) ast.Expr { return file.Decls[i].(*ast.GenDecl).Specs[0].(*ast.ValueSpec).Values[0] }
+	before := s.r.caseWork
+	a := s.canon(value(0))
+	if span := int(value(0).End() - value(0).Pos()); s.r.caseWork-before != span {
+		t.Errorf("charged %d for a span of %d", s.r.caseWork-before, span)
+	}
+	if b, c, d := s.canon(value(1)), s.canon(value(2)), s.canon(value(3)); a != "f ( x , y )" || b != a || c != "func ( ) { g ( ) h ( ) }" || d == a {
+		t.Errorf("canonical texts %q %q %q %q", a, b, c, d)
 	}
 }
 
@@ -754,7 +837,15 @@ func TestIntegrityCasesLinear(t *testing.T) {
 		return "package pkg\n\nimport \"testing\"\n\nconst long = \"" + strings.Repeat("x", 4096) + "\"\n\nfunc TestLong(t *testing.T) {\n" +
 			strings.Repeat("t.Run(long, func(t *testing.T) {\n", n) + "t.Error(long)\n" + strings.Repeat("})\n", n) + "}\n"
 	}
-	for name, file := range map[string]func(int) string{"nested ifs": nested, "a case clause": caseClause, "rows sharing a name": same, "4 KiB names nested": func(n int) string { return long(n / 10) }} {
+	ranges := func(n int) string { // nested ranges, each asserting (Opus #344 L1)
+		var b strings.Builder
+		for i := range n {
+			fmt.Fprintf(&b, "for range []int{%d} {\nt.Error(%d)\n", i, i)
+		}
+		return "package pkg\n\nimport \"testing\"\n\nfunc TestRanges(t *testing.T) {\n" + b.String() + strings.Repeat("}\n", n) + "}\n"
+	}
+	for name, file := range map[string]func(int) string{"nested ifs": nested, "a case clause": caseClause, "rows sharing a name": same, "4 KiB names nested": func(n int) string { return long(n / 10) },
+		"nested asserting ranges": ranges} {
 		work := func(n int) int64 {
 			v, _, w := readings(t, f, map[string]string{"pkg/deep_test.go": file(n)})
 			if !v.Accepted() {

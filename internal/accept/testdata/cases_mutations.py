@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # The Go test-case identities' mutations (P14d-b1; Astra #292 H3, H4 and
-# round 2's 2, 3, 6, 7; Opus #318; Astra #318): each is applied alone to a clean copy of the
+# round 2's 2, 3, 6, 7; Opus #318; Astra #318; Opus #344): each is applied alone to a clean copy of the
 # repository, and `go test -run TestIntegrityCases ./internal/accept/` must
 # fail on it (KILLED). Run from the repository root:
 #
@@ -32,14 +32,16 @@ MUTS = [
     ("rows' text unchecked", C, ' || rowsChanged(bs, as)', ''),
     ("the print unchecked", C, 'bs.print != as.print && bt.asserts', 'false && bt.asserts'),
     # The direct forms (Astra #318 1).
-    ("a literal's t.Run drives its loop (Astra #318 1)", C, '\t\tcase *ast.FuncLit:\n\t\t\treturn false\n\t\tcase *ast.CallExpr:\n\t\t\truns = runs', '\t\tcase *ast.FuncLit:\n\t\t\treturn true\n\t\tcase *ast.CallExpr:\n\t\t\truns = runs'),
+    ("a literal's t.Run drives its loop (Astra #318 1)", C, '\t\tcase *ast.FuncLit:\n\t\t\tframes = append(frames, frame{})\n', '\t\tcase *ast.FuncLit:\n'),
+    ("an inner loop's kind not held by the outer (Opus #344 L1)", C, '\t\t\t\t\tframes[p].k = loopKind{frames[p].k.checks || f.k.checks, frames[p].k.runs || f.k.runs}\n', ''),
+    ("a range's own expression drives it", C, ' && x.Pos() >= frames[p].loop.Body.Pos() {', ' {'),
     ("a literal read in place", C, '\t\tcase *ast.FuncLit:\n\t\t\tw.sum.opaque = true\n\t\t\treturn false', '\t\tcase *ast.FuncLit:\n\t\t\treturn true'),
     ("a literal not opaque", C, '\t\tcase *ast.FuncLit:\n\t\t\tw.sum.opaque = true\n', '\t\tcase *ast.FuncLit:\n'),
     ("a Run's literal callback unread", C, '\tif fl, ok := ast.Unparen(x.Args[1]).(*ast.FuncLit); ok {\n\t\ts.walk(w, fl.Body, next)', '\tif fl, ok := ast.Unparen(x.Args[1]).(*ast.FuncLit); ok && false {\n\t\ts.walk(w, fl.Body, next)'),
     ("a skip on another type checks", C, 'slices.Contains(goSkips, sel.Sel.Name) && s.tval(sel.X) != ""', 'slices.Contains(goSkips, sel.Sel.Name)'),
     # Constant conditions.
     ("a dead branch named", C, '\t\tif n == nil || s.over() || s.cs.dead[n] {\n\t\t\treturn false\n\t\t}\n\t\tswitch x := n.(type) {\n\t\tcase *ast.IfStmt:\n\t\t\ts.markDead(x)\n\t\tcase *ast.FuncLit:\n\t\t\tw.sum', '\t\tif n == nil || s.over() {\n\t\t\treturn false\n\t\t}\n\t\tswitch x := n.(type) {\n\t\tcase *ast.IfStmt:\n\t\t\ts.markDead(x)\n\t\tcase *ast.FuncLit:\n\t\t\tw.sum'),
-    ("a dead branch printed", C, '\t\tif s.over() || s.cs.dead[n] {', '\t\tif s.over() {'),
+    ("a dead branch printed", C, '\t\tif s.over() || s.cs.dead[n] {\n\t\t\treturn false\n\t\t}\n\t\ttop := stack', '\t\tif s.over() {\n\t\t\treturn false\n\t\t}\n\t\ttop := stack'),
     ("a dead else unmarked", C, '} else if s.constCond(x.Cond, true) && x.Else != nil {', '} else if false {'),
     # The print's controls (r2 3, 7; Opus #318 L2).
     ("a case clause's values unprinted", C, '\t\t\tfor _, e := range x.List {', '\t\t\tfor _, e := range x.List[:0] {'),
@@ -57,7 +59,11 @@ MUTS = [
     ("the run's work, not the layer's (H6)", C, '\ts.r.caseWork += n\n', '\ts.r.work += n\n\ts.r.caseWork = s.r.work\n'),
     ("the run's cancellation unread", C, ' || s.r.ctx.Err() != nil }', ' }'),
     ("a test body uncharged", C, '\tif !s.caseCharge(int(body.End() - body.Pos())) {\n\t\treturn w.sum\n', '\tif false {\n\t\treturn w.sum\n'),
-    ("a loop body uncharged", C, '\tif !s.caseCharge(int(body.End() - body.Pos())) {\n\t\treturn false, false\n', '\tif false {\n\t\treturn false, false\n'),
+    ("the kinds' pass uncharged", C, '\tif !s.caseCharge(int(body.End() - body.Pos())) {\n\t\treturn out\n', '\tif false {\n\t\treturn out\n'),
+    ("canon's span uncharged (Opus #344 H1)", C, '\tif !s.caseCharge(len(span)) {\n\t\treturn\n\t}\n\tvar sc', '\tvar sc'),
+    ("canon keeps semicolons", C, '\t\tcase tok == token.SEMICOLON: // a newline', '\t\tcase false: // a newline'),
+    ("canon without separators", C, '\t\tcase !first:\n\t\t\tb.WriteByte(\' \')\n', ''),
+    ("no return or branch in the print (Opus #344 M1)", C, '\t\tcase *ast.ReturnStmt, *ast.BranchStmt: // an early exit', '\t\tcase *ast.EmptyStmt: // an early exit'),
     ("a row's identity uncharged, read on", C, '\t\tif !s.caseCharge(len(k)) {\n\t\t\treturn\n\t\t}\n\t\tw.sum.ids[k]++\n', '\t\tw.sum.ids[k]++\n'),
     ("a long prefix kept whole (H5)", C, '\tif len(next) > maxPrefix {', '\tif false {'),
     ("past the bound, a test still verified", C, 'if fa.cases[k][cons] = c; s.over() && fa.bad[path] == "" {', 'if fa.cases[k][cons] = c; false {'),
