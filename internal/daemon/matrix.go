@@ -43,7 +43,6 @@ const Unassigned = "unassigned"
 // here in the PR that registers it: Matrix refuses one that is neither.
 var deferred = map[string]Owner{
 	"profile.adopt":                       {Milestone: "M4", Ref: "design/m1/00 Q7: with B2's required-configuration holds"},
-	"task.raise_rail":                     {Milestone: "M1", Ref: "design/m1/00 §6 L3 rails: handler built (P17a); P22a-5b (#325) makes it launch's action, wired while launch is active"},
 	"review.request":                      {Milestone: "M5", Ref: "design/m1/00 Q7: where planning first asks for an ad-hoc review"},
 	"knowledge.change_protected_document": {Milestone: "M2", Ref: "design/m1/00 Q7: with the protected-document operation (plan/01 §4.1; plan/03 §4.6, §9)"},
 	"integration.change_topology":         {Milestone: "post-M6", Ref: "design/m1/00 Q7: with sandbox phase 3 (plan/01 §4.1)"},
