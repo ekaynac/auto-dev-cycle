@@ -119,6 +119,9 @@ MUTS = [
     ("a settled non-USD call refused at a zero floor", B, 'c != "USD" && priced > 0:', 'c != "USD":'),
     # L2.
     ("an unsettled floor under its reported basis", B, '\t\t\t\tbasis = "cash"\n', ''),
+    # The re-review of #313 by Mythos (docs/reviews/2026-10-21-pr313-mythos-r2.md): L1.
+    ("a floored charge under its reported basis", B, 'if priced > reported {', 'if false {'),
+    ("every settled charge under cash", B, 'if priced > reported {', 'if true {'),
 ]
 
 

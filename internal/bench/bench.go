@@ -27,7 +27,9 @@
 //     the ledger holds for each of them, and as a call's liability the
 //     usd_micros group's amount of capacity.LiabilitiesOf once the lease
 //     has settled, and the lease's usd_micros reservation while it has
-//     not; zero only when the lease has neither.
+//     not; zero only when the lease has neither. A lease's liability is
+//     passed once per lease, on one of its unmeasured or unsettled calls,
+//     and zero on the others; never repeated per call.
 //   - Wall time uses controller event times only. A stage's wall time sums
 //     its nodes', so two nodes running side by side count twice (§2.8,
 //     "summed over the stage's nodes"). A node never claimed is counted
@@ -38,8 +40,10 @@
 //     included. A settled call, on any basis, is charged at no less than
 //     its tokens at the route's registry price (ledger.PriceMicros), as the
 //     ledger never trusts a reported cost nor its basis label (#226 entry
-//     62); free and local routes declare a zero price, so there it leaves
-//     no floor. An unsettled call is outstanding, under basis cash, at the
+//     62), and a charge the floor raised is recorded under basis cash, any
+//     other under its reported basis; free and local routes declare a zero
+//     price, so there it leaves no floor. An unsettled call is outstanding,
+//     under basis cash, at the
 //     largest of its reported USD cost, that price and its liability, never
 //     as zero nor as settled. No currency is converted: a settled call in
 //     another currency is refused when its floor is positive, and an
@@ -437,6 +441,9 @@ func stage(s types.BenchmarkStageStage, t Task, usage []types.UsageMeasurement, 
 				// basis label (#226 entry 62); a free or local route's zero
 				// price leaves no floor.
 				into, owed, micros, currency = settled, false, max(reported, priced), c
+				if priced > reported {
+					basis = "cash" // the floor is a cash valuation
+				}
 			case c != "" && c != "USD" && reported != 0:
 				return st, false, fmt.Errorf("call %s: an unsettled %s amount, which cannot be compared with its USD valuation", id, c)
 			default:

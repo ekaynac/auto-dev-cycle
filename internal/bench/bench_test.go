@@ -404,13 +404,17 @@ func TestRecordSettledFloor(t *testing.T) {
 		{"a reported cost above the price kept", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
 			return []types.UsageMeasurement{measure(t, c, a, "final", 0, 2000, 10, 9000, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count")}
 		}, false, "cash", "USD", 9000},
-		{"a zero subscription-equivalent final, floored", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+		// Mythos r2 L1: a charge the floor raised is a cash valuation, under cash.
+		{"a zero subscription-equivalent final, floored under cash", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
 			return basis("subscription_equivalent", measure(t, c, a, "final", 0, 2000, 10, 0, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count"))
-		}, false, "subscription_equivalent", "USD", 2100},
+		}, false, "cash", "USD", 2100},
 		// Mythos H1: Opus's input 1, its adapter labelling it free.
-		{"a zero final labelled free on a priced route, floored", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+		{"a zero final labelled free on a priced route, floored under cash", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
 			return basis("free", measure(t, c, a, "final", 0, 2000, 10, 0, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count"))
-		}, false, "free", "USD", 2100},
+		}, false, "cash", "USD", 2100},
+		{"a subscription-equivalent cost above the floor keeps its basis", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			return basis("subscription_equivalent", measure(t, c, a, "final", 0, 2000, 10, 9000, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count"))
+		}, false, "subscription_equivalent", "USD", 9000},
 		{"a zero free final on a zero-priced route", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
 			return basis("free", measure(t, c, a, "final", 0, 2000, 10, 0, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count"))
 		}, true, "free", "USD", 0},
