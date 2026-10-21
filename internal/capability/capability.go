@@ -74,6 +74,7 @@ var Table = []Capability{
 	// I6 and I7 are named by their rows in §1 (I6's model_call rows: the
 	// inventory keeps model_call and merge in the same four).
 	{Name: "launch", Checkpoint: "a", ActivatedBy: "P22a",
+		Actions:     []string{"task.raise_rail"}, // a task's count rails (P17a): raised only where attempts run
 		EffectKinds: []string{"model_call"},
 		Rows:        slices.Concat(of("I5", Admission), all("I6"), of("I7", Consumption), all("I8", "I9", "I10", "I11", "I12", "I16", "I17", "I21", "I22", "I15"))},
 	{Name: "review", Checkpoint: "a", ActivatedBy: "P22a",
