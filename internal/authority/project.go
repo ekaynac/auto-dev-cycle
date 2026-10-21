@@ -77,6 +77,29 @@ func ProjectRecordOf(id types.ProjectID) func(*eventstore.Tx) (json.RawMessage, 
 	return func(tx *eventstore.Tx) (json.RawMessage, bool, error) { return tx.Get(ProjectProjection, id) }
 }
 
+// ProjectProfile is project id's adopted profile, as its record holds it;
+// false: no such project. A record whose profile no longer loads, whose
+// digest is not its profile's, or whose profile is another project's is an
+// error, never a profile (launch fails closed on it; Opus #326 L9).
+func ProjectProfile(tx *eventstore.Tx, id types.ProjectID) (*types.ProjectProfile, bool, error) {
+	raw, ok, err := tx.Get(ProjectProjection, string(id))
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	var rec ProjectRecord
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return nil, false, err
+	}
+	p, err := profiles.Load(rec.Profile)
+	if err != nil {
+		return nil, false, fmt.Errorf("authority: project %s's profile: %w", id, err)
+	}
+	if dg, err := eventstore.ContentDigest(rec.Profile); err != nil || dg != rec.ProfileDigest || p.ID != id {
+		return nil, false, errors.Join(err, fmt.Errorf("authority: project %s's record does not hold its profile", id))
+	}
+	return p, true, nil
+}
+
 // ProjectCreateHandler derives project.create.
 type ProjectCreateHandler struct{}
 
