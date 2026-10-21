@@ -109,7 +109,7 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 		clock = time.Now
 	}
 	az := authorizer(reg)
-	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Effects: effects, Blobs: blobs, Existing: offline, Now: clock,
+	store, err := eventstore.Open(ctx, lock, eventstore.Config{Kinds: kinds, Effects: effects, Blobs: blobs, Existing: offline, Now: clock, Projections: projections,
 		Hooks: hooks(az, projector(blobs, reg.Holds, reservations))})
 	if err != nil {
 		return nil, couldNotRun(vocab.ReasonStoreUnreadable, "the event store cannot be opened", err)

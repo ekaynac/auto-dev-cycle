@@ -56,6 +56,12 @@ func counting(fail *bool) func(*Tx, []Event) error {
 
 func openProjected(t *testing.T, dir string, project func(*Tx, []Event) error) *env {
 	t.Helper()
+	return openRegistered(t, dir, project, nil)
+}
+
+// openRegistered is openProjected with Config.Projections.
+func openRegistered(t *testing.T, dir string, project func(*Tx, []Event) error, projections []Projection) *env {
+	t.Helper()
 	lock, err := AcquireLock(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +71,7 @@ func openProjected(t *testing.T, dir string, project func(*Tx, []Event) error) *
 		t.Fatal(err)
 	}
 	s, err := Open(context.Background(), lock, Config{Kinds: testKinds, Blobs: blobs, Effects: testEffects,
-		Hooks: Hooks{Identify: allow, Authorize: allow, Project: project}})
+		Hooks: Hooks{Identify: allow, Authorize: allow, Project: project}, Projections: projections})
 	if err != nil {
 		lock.Release()
 		t.Fatal(err)

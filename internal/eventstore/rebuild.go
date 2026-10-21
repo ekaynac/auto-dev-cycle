@@ -36,6 +36,12 @@ var rebuildBatch = 512
 // time, in log order: a projector that is not a fold (see Hooks.Project)
 // shows up as drift. A projector's error with no storage error behind it is
 // ErrReplayRefused; a storage error or cancellation is returned as itself.
+//
+// The store's record of built projections (build.go) is no projection: it
+// is compared only when the store was opened with Config.Projections. Then
+// a record of a projection not registered there is a difference, as at
+// start (ProjectionDiff.BuildRecord), and a record that does not decode is
+// ErrBuildRecord.
 func (s *Store) RebuildProjections(ctx context.Context) ([]ProjectionDiff, error) {
 	var diffs []ProjectionDiff
 	err := s.do(func() error {
@@ -61,23 +67,44 @@ func (s *Store) RebuildProjections(ctx context.Context) ([]ProjectionDiff, error
 }
 
 func (s *Store) rebuild(ctx context.Context, tx *sql.Tx) ([]ProjectionDiff, error) {
+	if err := s.replayFresh(ctx, tx); err != nil {
+		return nil, err
+	}
+	diffs, err := compareLive(ctx, tx)
+	if err != nil || s.projections == nil {
+		return diffs, err
+	}
+	recorded, err := builtProjections(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	// _built sorts before every projection name: the order stays compare's.
+	return append(unknownRecords(recorded, s.projections), diffs...), nil
+}
+
+// replayFresh verifies the chain and replays it into a fresh scratch table,
+// in tx.
+func (s *Store) replayFresh(ctx context.Context, tx *sql.Tx) error {
 	// The chain is verified inside this transaction, so the log replayed is
 	// exactly the log verified (03 rule 3).
 	if _, err := s.verify(ctx, tx, nil); err != nil {
-		return nil, err
+		return err
 	}
 	// A fresh scratch table; one left by a failed rollback is dropped first.
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+rebuildProjections); err != nil {
-		return nil, err
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE proj_rebuild (
 		projection TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (projection, key)) WITHOUT ROWID`); err != nil {
-		return nil, err
+		return err
 	}
-	if err := s.replay(ctx, tx); err != nil {
-		return nil, err
-	}
-	live, err := projections(ctx, tx, `SELECT projection, key, value FROM `+liveProjections)
+	return s.replay(ctx, tx)
+}
+
+// compareLive compares the live projections, the store's record of the
+// projections it built aside (build.go), with the scratch table.
+func compareLive(ctx context.Context, tx *sql.Tx) ([]ProjectionDiff, error) {
+	live, err := projections(ctx, tx, `SELECT projection, key, value FROM `+liveProjections+` WHERE projection <> '`+builtRecord+`'`)
 	if err != nil {
 		return nil, err
 	}
