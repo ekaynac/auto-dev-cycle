@@ -812,3 +812,46 @@ func TestVerifiedWithoutReceiptRefused(t *testing.T) {
 		t.Fatalf("no receipt: %v", err)
 	}
 }
+
+// Astra #335 M1: a unit's first attempt is the earliest start, then the
+// smallest id, whatever order the starts are folded in.
+func TestFirstOnKeepsTheEarliest(t *testing.T) {
+	w := openWorld(t)
+	unit := types.UnitID("unt_01m3250v9xft08ssr4ygq6g2np")
+	at := func(id types.AttemptID, when string) {
+		w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			b, err := json.Marshal(when)
+			if err == nil {
+				err = tx.Put(StartProjection, string(id), b)
+			}
+			if err == nil {
+				err = first(tx, unit, id)
+			}
+			return nil, err
+		})
+	}
+	firstIs := func(want types.AttemptID) {
+		t.Helper()
+		var got types.AttemptID
+		w.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			id, ok, err := FirstOn(tx, unit)
+			if !ok {
+				id = ""
+			}
+			got = id
+			return nil, err
+		})
+		if got != want {
+			t.Errorf("the first attempt: %q, want %q", got, want)
+		}
+	}
+	firstIs("")
+	at("att_01m3250v9xft08ssr4ygq6g2nc", "2026-10-21T00:00:02Z")
+	firstIs("att_01m3250v9xft08ssr4ygq6g2nc")
+	at("att_01m3250v9xft08ssr4ygq6g2nd", "2026-10-21T00:00:03Z") // later
+	firstIs("att_01m3250v9xft08ssr4ygq6g2nc")
+	at("att_01m3250v9xft08ssr4ygq6g2nb", "2026-10-21T00:00:02Z") // as early, a smaller id
+	firstIs("att_01m3250v9xft08ssr4ygq6g2nb")
+	at("att_01m3250v9xft08ssr4ygq6g2ne", "2026-10-21T00:00:01Z") // earlier, a larger id
+	firstIs("att_01m3250v9xft08ssr4ygq6g2ne")
+}

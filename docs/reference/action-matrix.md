@@ -52,6 +52,7 @@ and the generated API description (gen-check pins the committed `schemas/openapi
 | projects | `GET /v1/projects` | `adc project list` |
 | proposals | `GET /v1/proposals` | `adc propose list` |
 | seat | `GET /v1/seat` | `adc seat status` |
+| tasks | `GET /v1/tasks` | `adc task show` |
 | whoami | `GET /v1/whoami` | `adc admin whoami` |
 | bootstrap | `POST /v1/bootstrap` | `adc admin bootstrap` |
 | blob upload | `POST /v1/blobs` | `adc blob put` |
