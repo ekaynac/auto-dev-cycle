@@ -21,6 +21,8 @@ const (
 	ExitCouldNotRun = 2
 	ExitProposed    = 3 // waiting for confirmation
 	ExitStale       = 4 // stale_expected_state, stale_attempt, idempotency_key_reused
+	ExitTimedOut    = 5 // a wait's timeout passed first (adc task wait)
+	ExitEnded       = 6 // a waited-for task ended in another state (adc task wait)
 	ExitUsage       = 64
 )
 
