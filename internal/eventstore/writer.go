@@ -274,6 +274,34 @@ func (t *Tx) Get(projection, key string) (json.RawMessage, bool, error) {
 	return json.RawMessage(v), true, nil
 }
 
+// Size is the byte length of the projection record under key, if any,
+// read without reading the record (a bound checked before a Get).
+func (t *Tx) Size(projection, key string) (int64, bool, error) {
+	if err := checkProjection(projection, key); err != nil {
+		return 0, false, err
+	}
+	var n int64
+	projectionRows.Add(1)
+	err := t.tx.QueryRowContext(t.ctx, `SELECT length(CAST(value AS BLOB)) FROM `+t.table()+` WHERE projection = ? AND key = ?`, projection, key).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, t.io(err)
+	}
+	return n, true, nil
+}
+
+// KeysAtMost is Keys for a non-empty prefix, at most n of them (Astra #321
+// M5): the prefix's range, read with a LIMIT, so a caller stops at its
+// budget.
+func (t *Tx) KeysAtMost(projection, prefix string, n int) ([]string, error) {
+	if err := checkProjection(projection, prefix); err != nil || n < 0 {
+		return nil, errors.Join(err, fmt.Errorf("eventstore: keys at most %d", n))
+	}
+	return t.keys(projection, prefix, n)
+}
+
 // Put sets the projection record under key to value (stored canonical).
 func (t *Tx) Put(projection, key string, value json.RawMessage) error {
 	if t.readOnly {
