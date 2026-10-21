@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -57,6 +58,10 @@ const (
 	maxDetail    = 4096
 	maxDecision  = 1 << 20 // bytes: the adapter host's bound on a decision (adapterhost.BoundDecision)
 )
+
+// MaxReport is the longest report ReadReport reads, in bytes: past the
+// longest Report writes for a decision (maxFindings titles, HTML-escaped).
+const MaxReport = 1 << 20
 
 // The decision's verdicts.
 const (
@@ -215,39 +220,152 @@ func Result(key types.ComputationKey, f Facts, blobs Blobs) (types.Result, error
 	return r, graph.Check(r)
 }
 
+// ReportDoc is a D55 review report (adc.review-report/v1): Report writes
+// it, ReadReport reads it.
+type ReportDoc struct {
+	Schema      string               `json:"schema"`
+	ElapsedMS   int64                `json:"elapsed_ms"`
+	Round       int64                `json:"candidate_round"`
+	Roster      []types.RosterMember `json:"roster"`
+	Outcome     types.Outcome        `json:"outcome"`
+	Reason      string               `json:"reason"`
+	Decision    string               `json:"decision"`
+	Findings    []ReportFinding      `json:"findings"`
+	RepairRound *int64               `json:"repair_round"`
+	ChargeLinks []types.CallID       `json:"charge_links"`
+}
+
+// ReportFinding is a finding as a report records it: no detail.
+type ReportFinding struct {
+	Severity string `json:"severity"`
+	Title    string `json:"title"`
+}
+
 // Report is the D55 record of one review node with result r and decision
 // d (empty when there is none).
 func Report(f Facts, r types.Result, d Decision) ([]byte, error) {
-	type finding struct {
-		Severity string `json:"severity"`
-		Title    string `json:"title"`
-	}
-	findings := []finding{}
+	findings := []ReportFinding{}
 	for _, x := range d.Findings {
 		title := x.Title
 		if len(title) > maxTitle {
 			title = strings.ToValidUTF8(title[:maxTitle-len("…")], "") + "…"
 		}
-		findings = append(findings, finding{x.Severity, title})
+		findings = append(findings, ReportFinding{x.Severity, title})
 	}
 	var repair *int64
 	if d.Decision == NoGo {
 		next := f.CandidateRound + 1
 		repair = &next
 	}
-	return json.Marshal(struct {
-		Schema      string               `json:"schema"`
-		ElapsedMS   int64                `json:"elapsed_ms"`
-		Round       int64                `json:"candidate_round"`
-		Roster      []types.RosterMember `json:"roster"`
-		Outcome     types.Outcome        `json:"outcome"`
-		Reason      string               `json:"reason"`
-		Decision    string               `json:"decision"`
-		Findings    []finding            `json:"findings"`
-		RepairRound *int64               `json:"repair_round"`
-		ChargeLinks []types.CallID       `json:"charge_links"`
-	}{reportSchema, f.Elapsed.Milliseconds(), f.CandidateRound, append([]types.RosterMember{}, f.Roster...), r.Outcome, r.Reason.String(), d.Decision,
+	return json.Marshal(ReportDoc{reportSchema, f.Elapsed.Milliseconds(), f.CandidateRound, append([]types.RosterMember{}, f.Roster...), r.Outcome, r.Reason.String(), d.Decision,
 		findings, repair, append([]types.CallID{}, f.Calls...)})
+}
+
+// reportKeys are a report's keys, in their case.
+var reportKeys = []string{"schema", "elapsed_ms", "candidate_round", "roster", "outcome", "reason", "decision", "findings", "repair_round", "charge_links"}
+
+// reportOutcome is the outcome, and the reason when it is fixed, of each
+// decision (Result's outcome table; "" is no decision).
+var reportOutcome = map[string]struct {
+	outcome types.Outcome
+	reason  string
+}{Go: {types.OutcomeEmpty, vocab.ReasonCompletedClean.String()}, NoGo: {types.OutcomeFound, vocab.ReasonCompletedWithFindings.String()}, "": {types.OutcomeCouldNotRun, ""}}
+
+var familyName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+
+// ReadReport reads b as a D55 report, strictly, as Parse reads a decision
+// (Astra #306 H2): from contract.ReadStrict's tree, every object with
+// exactly its keys in their case (no alias, no extra key), every field of
+// its type (no null but repair_round's), and the report's invariants:
+// the outcome and reason are its decision's (could_not_run with a
+// registered reason when there is none), the repair round is the next
+// round on a no_go and null otherwise, a report without a decision has no
+// finding, and every id, severity and title is one Report writes.
+func ReadReport(b []byte) (ReportDoc, error) {
+	bad := func(what string) (ReportDoc, error) { return ReportDoc{}, errors.New("review: not a report: " + what) }
+	if len(b) > MaxReport {
+		return bad("too long")
+	}
+	v, err := contract.ReadStrict(b)
+	if err != nil {
+		return ReportDoc{}, err
+	}
+	top, ok := exactly(v, reportKeys...)
+	if !ok {
+		return bad("its keys")
+	}
+	var r ReportDoc
+	var ok1, ok2, ok3 bool
+	r.Schema, ok1 = top["schema"].(string)
+	r.ElapsedMS, ok2 = integer(top["elapsed_ms"])
+	r.Round, ok3 = integer(top["candidate_round"])
+	outcome, ok4 := top["outcome"].(string)
+	reason, ok5 := top["reason"].(string)
+	decision, ok6 := top["decision"].(string)
+	r.Outcome, r.Reason, r.Decision = types.Outcome(outcome), reason, decision
+	want, known := reportOutcome[decision]
+	switch {
+	case !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6:
+		return bad("a field is not of its type")
+	case r.Schema != reportSchema || r.ElapsedMS < 0 || r.Round < 1:
+		return bad("its schema, time or round")
+	case !known || r.Outcome != want.outcome || want.reason != "" && reason != want.reason:
+		return bad("an outcome or reason not its decision's")
+	}
+	if _, err := vocab.ParseReason(reason); err != nil {
+		return bad("an unregistered reason")
+	}
+	if rr := top["repair_round"]; rr != nil || decision == NoGo {
+		n, ok := integer(rr)
+		if !ok || decision != NoGo || n != r.Round+1 {
+			return bad("a repair round not the next round's on a no_go")
+		}
+		r.RepairRound = &n
+	}
+	roster, ok1 := top["roster"].([]any)
+	findings, ok2 := top["findings"].([]any)
+	links, ok3 := top["charge_links"].([]any)
+	if !ok1 || !ok2 || !ok3 || len(roster) == 0 || len(findings) > maxFindings || decision == "" && len(findings) > 0 {
+		return bad("its roster, findings or charge links")
+	}
+	for _, x := range roster {
+		m, ok := exactly(x, "executor", "family")
+		exe, ok1 := m["executor"].(string)
+		family, ok2 := m["family"].(string)
+		if !ok || !ok1 || !ok2 || ids.Check(exe, "exe") != nil || !familyName.MatchString(family) {
+			return bad("a roster member")
+		}
+		r.Roster = append(r.Roster, types.RosterMember{Executor: types.ExecutorID(exe), Family: types.Name(family)})
+	}
+	r.Findings = []ReportFinding{}
+	for _, x := range findings {
+		m, ok := exactly(x, "severity", "title")
+		severity, ok1 := m["severity"].(string)
+		title, ok2 := m["title"].(string)
+		if !ok || !ok1 || !ok2 || !slices.Contains(severities, severity) || len(title) > maxTitle {
+			return bad("a finding")
+		}
+		r.Findings = append(r.Findings, ReportFinding{severity, title})
+	}
+	r.ChargeLinks = []types.CallID{}
+	for _, x := range links {
+		call, ok := x.(string)
+		if !ok || ids.Check(call, "cal") != nil {
+			return bad("a charge link")
+		}
+		r.ChargeLinks = append(r.ChargeLinks, types.CallID(call))
+	}
+	return r, nil
+}
+
+// integer is v as an integer: a JSON number with no fraction or exponent.
+func integer(v any) (int64, bool) {
+	n, ok := v.(json.Number)
+	if !ok {
+		return 0, false
+	}
+	i, err := n.Int64()
+	return i, err == nil
 }
 
 // read is the blob d's bytes, at most maxDecision of them and one more:

@@ -5,6 +5,7 @@ package review
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -75,18 +76,97 @@ func TestParse(t *testing.T) {
 }
 
 // report reads r's D55 report: its last ref.
-func report(t *testing.T, blobs *blobstore.Store, r types.Result) map[string]any {
+func report(t *testing.T, blobs *blobstore.Store, r types.Result) []byte {
 	t.Helper()
 	rc, err := blobs.Open(string(r.Value[len(r.Value)-1].ContentDigest))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// reportMap is a report as a map, read loosely.
+func reportMap(t *testing.T, b []byte) map[string]any {
+	t.Helper()
 	var out map[string]any
-	if err := json.NewDecoder(rc).Decode(&out); err != nil {
+	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// TestReadReport: a report is read as strictly as a decision (Astra #306
+// H2): exactly its keys in their case at every level, every field of its
+// type and no null but repair_round, and the report's invariants.
+func TestReadReport(t *testing.T) {
+	noGo := `{"schema":"adc.review-report/v1","elapsed_ms":1500,"candidate_round":2,"roster":[{"executor":"` + string(exe) + `","family":"gpt"}],` +
+		`"outcome":"found","reason":"completed_with_findings","decision":"no_go","findings":[{"severity":"high","title":"t"}],"repair_round":3,"charge_links":["` + string(call) + `"]}`
+	goes := strings.NewReplacer(`"outcome":"found"`, `"outcome":"empty"`, `"reason":"completed_with_findings"`, `"reason":"completed_clean"`, `"decision":"no_go"`, `"decision":"go"`,
+		`"repair_round":3`, `"repair_round":null`).Replace(noGo)
+	none := strings.NewReplacer(`"outcome":"found"`, `"outcome":"could_not_run"`, `"reason":"completed_with_findings"`, `"reason":"attempt_stopped"`, `"decision":"no_go"`, `"decision":""`,
+		`"repair_round":3`, `"repair_round":null`, `[{"severity":"high","title":"t"}]`, `[]`).Replace(noGo)
+	for name, b := range map[string]string{"a no_go": noGo, "a go": goes, "no decision": none} {
+		if r, err := ReadReport([]byte(b)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		} else if got, _ := json.Marshal(r); string(got) != b {
+			t.Errorf("%s reads as %s", name, got)
+		}
+	}
+	in := func(base, old, new string) string {
+		if !strings.Contains(base, old) {
+			t.Fatalf("%q is not in the report", old)
+		}
+		return strings.Replace(base, old, new, 1)
+	}
+	end := func(base, extra string) string { return strings.TrimSuffix(base, "}") + extra + "}" }
+	for name, b := range map[string]string{
+		"Decision and Outcome beside theirs (Astra)": end(goes, `,"Decision":"no_go","Outcome":"found"`),
+		"DECISION for decision":                      in(noGo, `"decision"`, `"DECISION"`),
+		"an extra key":                               end(noGo, `,"approve":true`),
+		"a duplicate key":                            end(noGo, `,"decision":"go"`),
+		"a roster member's Executor":                 in(noGo, `"executor"`, `"Executor"`),
+		"a roster member's extra key":                in(noGo, `"family":"gpt"`, `"family":"gpt","role":"reviewer"`),
+		"a finding's Severity":                       in(noGo, `"severity":"high"`, `"Severity":"high"`),
+		"a finding's detail":                         in(noGo, `"title":"t"`, `"title":"t","detail":"d"`),
+		"a null decision":                            in(noGo, `"decision":"no_go"`, `"decision":null`),
+		"a null roster":                              in(noGo, `[{"executor":"`+string(exe)+`","family":"gpt"}]`, `null`),
+		"null findings":                              in(noGo, `[{"severity":"high","title":"t"}]`, `null`),
+		"null charge links":                          in(noGo, `["`+string(call)+`"]`, `null`),
+		"a null charge link":                         in(noGo, `["`+string(call)+`"]`, `[null]`),
+		"a null roster member":                       in(noGo, `[{"executor":"`+string(exe)+`","family":"gpt"}]`, `[null]`),
+		"a null elapsed time":                        in(noGo, `"elapsed_ms":1500`, `"elapsed_ms":null`),
+		"an elapsed time as a string":                in(noGo, `"elapsed_ms":1500`, `"elapsed_ms":"1500"`),
+		"a fractional elapsed time":                  in(noGo, `"elapsed_ms":1500`, `"elapsed_ms":1500.5`),
+		"a negative elapsed time":                    in(noGo, `"elapsed_ms":1500`, `"elapsed_ms":-1`),
+		"round 0":                                    in(goes, `"candidate_round":2`, `"candidate_round":0`),
+		"another schema":                             in(noGo, `adc.review-report/v1`, `adc.review-report/v2`),
+		"another verdict":                            in(noGo, `"decision":"no_go"`, `"decision":"approve"`),
+		"an outcome not the decision's":              in(noGo, `"outcome":"found"`, `"outcome":"empty"`),
+		"a reason not the decision's":                in(noGo, `"reason":"completed_with_findings"`, `"reason":"completed_clean"`),
+		"an unregistered reason":                     in(none, `"reason":"attempt_stopped"`, `"reason":"made_up"`),
+		"a no_go without its repair round":           in(noGo, `"repair_round":3`, `"repair_round":null`),
+		"a repair round not the next":                in(noGo, `"repair_round":3`, `"repair_round":4`),
+		"a go with a repair round":                   in(goes, `"repair_round":null`, `"repair_round":3`),
+		"findings without a decision":                in(none, `"findings":[]`, `"findings":[{"severity":"high","title":"t"}]`),
+		"another severity":                           in(noGo, `"severity":"high"`, `"severity":"none"`),
+		"a title past its bound":                     in(noGo, `"title":"t"`, `"title":"`+strings.Repeat("t", maxTitle+1)+`"`),
+		"an empty roster":                            in(noGo, `[{"executor":"`+string(exe)+`","family":"gpt"}]`, `[]`),
+		"an executor that is not one":                in(noGo, string(exe), "exe_1"),
+		"a family that is not one":                   in(noGo, `"family":"gpt"`, `"family":"GPT"`),
+		"a charge link that is not a call":           in(noGo, string(call), string(exe)),
+		"trailing data":                              noGo + `{}`,
+		"a report past its bound":                    noGo + strings.Repeat(" ", MaxReport),
+		"an array":                                   `[` + noGo + `]`,
+	} {
+		if r, err := ReadReport([]byte(b)); err == nil {
+			t.Errorf("%s: read as %+v", name, r)
+		}
+	}
 }
 
 // TestResult (D55): the decision decides the outcome, never the adapter;
@@ -137,7 +217,7 @@ func TestResult(t *testing.T) {
 				t.Errorf("%s: a ref's lineage %v", name, ref.Lineage)
 			}
 		}
-		rep := report(t, blobs, r)
+		rep := reportMap(t, report(t, blobs, r))
 		if rep["schema"] != reportSchema || rep["elapsed_ms"] != float64(1500) || rep["candidate_round"] != float64(2) || rep["repair_round"] != c.repair ||
 			rep["outcome"] != string(c.outcome) || fmt.Sprint(rep["charge_links"]) != "["+string(call)+"]" || fmt.Sprint(rep["roster"]) != "[map[executor:"+string(exe)+" family:gpt]]" {
 			t.Errorf("%s: the report %v", name, rep)
@@ -148,6 +228,10 @@ func TestResult(t *testing.T) {
 			if len(fs) != 2 || len(title) > maxTitle || !strings.HasSuffix(title, "…") || fs[1].(map[string]any)["title"] != "b" {
 				t.Errorf("the findings %v", fs)
 			}
+		}
+		if back, err := ReadReport(report(t, blobs, r)); err != nil || back.Decision != rep["decision"] || back.Outcome != c.outcome || back.Reason != c.reason.String() ||
+			!slices.Equal(back.ChargeLinks, []types.CallID{call}) || back.Round != 2 || back.ElapsedMS != 1500 {
+			t.Errorf("%s: the report reads back as %+v, %v", name, back, err) // ReadReport reads every report Report writes
 		}
 	}
 	if _, err := Result(key, facts(true, types.Digest("sha256:"+strings.Repeat("0", 64))), blobs); err == nil {
