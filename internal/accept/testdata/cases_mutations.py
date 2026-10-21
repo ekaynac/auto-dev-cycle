@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # The Go test-case identities' mutations (P14d-b1; Astra #292 H3, H4 and
-# round 2's 2, 3, 6, 7; Opus #318; Astra #318; Opus #344): each is applied alone to a clean copy of the
+# round 2's 2, 3, 6, 7; Opus #318; Astra #318; Opus #344; Mythos #344): each is applied alone to a clean copy of the
 # repository, and `go test -run TestIntegrityCases ./internal/accept/` must
 # fail on it (KILLED). Run from the repository root:
 #
@@ -40,7 +40,13 @@ MUTS = [
     ("a Run's literal callback unread", C, '\tif fl, ok := ast.Unparen(x.Args[1]).(*ast.FuncLit); ok {\n\t\ts.walk(w, fl.Body, next)', '\tif fl, ok := ast.Unparen(x.Args[1]).(*ast.FuncLit); ok && false {\n\t\ts.walk(w, fl.Body, next)'),
     ("a skip on another type checks", C, 'slices.Contains(goSkips, sel.Sel.Name) && s.tval(sel.X) != ""', 'slices.Contains(goSkips, sel.Sel.Name)'),
     # Constant conditions.
-    ("a dead branch named", C, '\t\tif n == nil || s.over() || s.cs.dead[n] {\n\t\t\treturn false\n\t\t}\n\t\tswitch x := n.(type) {\n\t\tcase *ast.IfStmt:\n\t\t\ts.markDead(x)\n\t\tcase *ast.FuncLit:\n\t\t\tw.sum', '\t\tif n == nil || s.over() {\n\t\t\treturn false\n\t\t}\n\t\tswitch x := n.(type) {\n\t\tcase *ast.IfStmt:\n\t\t\ts.markDead(x)\n\t\tcase *ast.FuncLit:\n\t\t\tw.sum'),
+    ("a dead branch named", C, '\t\tif n == nil || s.over() || s.cs.dead[n] {\n\t\t\treturn false\n\t\t}\n\t\ts.markDead(n)\n\t\tswitch x := n.(type) {\n\t\tcase *ast.FuncLit:\n\t\t\tw.sum', '\t\tif n == nil || s.over() {\n\t\t\treturn false\n\t\t}\n\t\ts.markDead(n)\n\t\tswitch x := n.(type) {\n\t\tcase *ast.FuncLit:\n\t\t\tw.sum'),
+    ("a for false read (Mythos #344 H1)", C, '\t\tif x.Cond != nil && s.constCond(x.Cond, false) {', '\t\tif false {'),
+    ("a switch's false clause read", C, '\t\t\tif taken || !slices.ContainsFunc(cc.List, func(e ast.Expr) bool { return !s.never(e, tag) }) {', '\t\t\tif taken {'),
+    ("a clause after a true one read", C, '\t\t\tif taken || !slices.ContainsFunc(cc.List, func(e ast.Expr) bool { return !s.never(e, tag) }) {', '\t\t\tif !slices.ContainsFunc(cc.List, func(e ast.Expr) bool { return !s.never(e, tag) }) {'),
+    ("a constant tag's other case read", C, '\treturn v != nil && v.Kind() == tag.Kind() && !constant.Compare(v, token.EQL, tag)', '\treturn v != nil && false'),
+    ("a constant tag's own case not taken", C, '\treturn v != nil && v.Kind() == tag.Kind() && constant.Compare(v, token.EQL, tag)', '\treturn v != nil && false'),
+    ("a live switch's clauses dead", C, '\t\t\t\treturn // not constant: every clause may run', '\t\t\t\ttag = constant.MakeBool(false)'),
     ("a dead branch printed", C, '\t\tif s.over() || s.cs.dead[n] {\n\t\t\treturn false\n\t\t}\n\t\ttop := stack', '\t\tif s.over() {\n\t\t\treturn false\n\t\t}\n\t\ttop := stack'),
     ("a dead else unmarked", C, '} else if s.constCond(x.Cond, true) && x.Else != nil {', '} else if false {'),
     # The print's controls (r2 3, 7; Opus #318 L2).
@@ -60,15 +66,24 @@ MUTS = [
     ("the run's cancellation unread", C, ' || s.r.ctx.Err() != nil }', ' }'),
     ("a test body uncharged", C, '\tif !s.caseCharge(int(body.End() - body.Pos())) {\n\t\treturn w.sum\n', '\tif false {\n\t\treturn w.sum\n'),
     ("the kinds' pass uncharged", C, '\tif !s.caseCharge(int(body.End() - body.Pos())) {\n\t\treturn out\n', '\tif false {\n\t\treturn out\n'),
-    ("canon's span uncharged (Opus #344 H1)", C, '\t\tif !s.caseCharge(len(span)) {\n\t\t\treturn\n\t\t}\n\t\tt.scan(span)', '\t\tt.scan(span)'),
+    ("canon's span uncharged (Opus #344 H1)", C, '\t\tif !s.caseCharge(len(span)) {\n\t\t\tbreak\n\t\t}\n\t\tt.scan(span)', '\t\tt.scan(span)'),
     ("a number's prefix kept (Opus #344 r2 M1)", C, "\t\tcase i == 1 && b[0] == '0' && (c == 'X' || c == 'B' || c == 'O'):", "\t\tcase false:"),
     ("a number's exponent kept", C, "\t\tcase hex && c == 'P', !hex && c == 'E':", "\t\tcase hex && false, !hex && false:"),
     ("a hex digit lower-cased", C, "\t\tcase hex && c == 'P', !hex && c == 'E':", "\t\tcase (hex || !hex) && (c == 'P' || c == 'E'):"),
-    ("a comma before a closer kept", C, '\tif t.comma && !closing {', '\tif t.comma && (closing || !closing) {'),
-    ("an event's literal bodies read whole (Opus #344 r2 L1)", C, '\t\t\te := sha256.Sum256(append(sum[:], s.eventText(n)...))', '\t\t\te := sha256.Sum256(append(sum[:], s.canon(n)...))'),
+    ("a comma before a closer kept", C, '\t\t\tif next < n && (t.toks[next].tok == token.RBRACE', '\t\t\tif false && next < n && (t.toks[next].tok == token.RBRACE'),
+    ("doubled parentheses kept (Mythos #344 L1)", C, '\t\t\tdrop[i], drop[match[i]] = true, true', '\t\t\t_ = drop'),
+    ("any parentheses collapsed", C, ' && match[i] >= 0 && match[i] == match[i+1]+1 {', ' && match[i] >= 0 {'),
+    ("an imaginary's zeros kept", C, '\t\tlit = t + "i" // an integer imaginary literal', '\t\t_ = t // an integer imaginary literal'),
+    ("an event's literal bodies read whole (Opus #344 r2 L1)", C, '\t\t\t\ttext = s.eventText(n)\n', '\t\t\t\ttext = s.canon(n)\n'),
     ("exits compared only with equal counts (Opus #344 r2 L2)", C, ' || bs.exits != as.exits || rowsChanged', ' || rowsChanged'),
-    ("canon keeps semicolons", C, '\t\tcase token.SEMICOLON: // a newline\'s or a written one: gofmt moves between them\n\t\t\tcontinue', '\t\tcase token.SEMICOLON: // a newline\'s or a written one: gofmt moves between them\n\t\t\tt.write(tok, ";")\n\t\t\tcontinue'),
-    ("canon without separators", C, "\tif !t.first {\n\t\tt.b.WriteByte(' ')\n\t}", "\tif !t.first {\n\t}"),
+    ("canon keeps semicolons", C, '\t\tcase token.SEMICOLON: // a newline\'s or a written one: gofmt moves between them\n\t\t\tcontinue', '\t\tcase token.SEMICOLON: // a newline\'s or a written one: gofmt moves between them\n\t\t\tt.toks = append(t.toks, canonToken{tok, ";"})\n\t\t\tcontinue'),
+    ("canon without separators", C, "\t\tif !first {\n\t\t\tt.b.WriteByte(' ')\n\t\t}", "\t\tif !first {\n\t\t}"),
+    ("a control's literal bodies read whole (Mythos #344 L3)", C, '\t\t\tb.WriteString(s.eventText(p)) // its literals', '\t\t\tb.WriteString(s.canon(p)) // its literals'),
+    ("a subtest no print entry (Mythos #344 M1)", C, '\t\t\tevent = event || run\n', ''),
+    ("a subtest's callback unprinted", C, '\t\t\t\ttext += s.eventText(x.Args[1])\n', ''),
+    ("a constant subtest name by its text", C, '\t\t\t\t\ttext = "run " + strconv.Quote(constant.StringVal(tv.Value)) + " "', '\t\t\t\t\ttext = "run " + s.canon(x.Args[0]) + " "'),
+    ("a subtest's entry not with the exits", C, '\t\t\tif _, call := n.(*ast.CallExpr); !call || run {', '\t\t\tif _, call := n.(*ast.CallExpr); !call {'),
+    ("a constant key by its text (Mythos #344 L2)", C, '\t\tif tv := s.info.Types[key]; tv.Value != nil && tv.Value.Kind() == constant.String {', '\t\tif tv := s.info.Types[key]; false && tv.Value != nil {'),
     ("no return or branch in the print (Opus #344 M1)", C, '\t\tcase *ast.ReturnStmt, *ast.BranchStmt: // an early exit', '\t\tcase *ast.EmptyStmt: // an early exit'),
     ("a row's identity uncharged, read on", C, '\t\tif !s.caseCharge(len(k)) {\n\t\t\treturn\n\t\t}\n\t\tw.sum.ids[k]++\n', '\t\tw.sum.ids[k]++\n'),
     ("a long prefix kept whole (H5)", C, '\tif len(next) > maxPrefix {', '\tif false {'),

@@ -50,7 +50,8 @@ import (
 //     a helper, or never run) names no case and makes the summary opaque; a
 //     helper, a named callback or a closure is not followed. Following them
 //     is P14d-b2 (#226 entry 106). A branch a constant condition never
-//     takes names no case.
+//     takes names no case: an if's, a for false's, and a switch clause a
+//     constant condition or tag never selects (Mythos #344 H1).
 //   - A test's cases are kept per build-constraint alternative (Astra #292
 //     H4): a base alternative is compared with the candidate's of the same
 //     constraint, else with what every candidate alternative holds.
@@ -60,8 +61,11 @@ import (
 //     for, switch and type switch with Init, select, case and comm
 //     clauses), each control's text built once (Astra r2 3, 7). With equal
 //     counts, a changed print warns; a changed row under its identity (a
-//     running hash of its text: Opus #318 H5) warns whatever the counts,
-//     when nothing blocks the test.
+//     running hash of its text: Opus #318 H5), an early exit (return,
+//     break, continue, goto) and a direct t.Run (its name's value and its
+//     callback: Mythos #344 M1) warn whatever the counts, when nothing
+//     blocks the test. The text of an event and of a control reads the
+//     bodies of the function literals in it as a marker: each byte once.
 //   - Work: canonical text, bodies and each identity as it is built are
 //     charged to the case layer's own bound, one counter per run
 //     (r.caseWork against maxCaseWork, scaled to maxRead as P14d-a's skip
@@ -81,12 +85,14 @@ import (
 //   - a row's first string literal edited (a []string value included),
 //     and a name added to nameless rows;
 //   - a subtest moved into anything but a t.Run's literal callback (a
-//     literal, a closure, a helper).
+//     literal, a closure, a helper);
+//   - a local table ranged by many loops, each hashing its rows, past the
+//     work bound (Mythos #344 L3: pathological, bounded).
 //   - Residual (P14d-b2): the cases of helpers, named callbacks, closures
 //     and literals; helpers of other packages, testify suites, a method
-//     whose receiver holds the testing value, a table built by appends or
-//     a helper, and a row its loop's own code skips (if tc.name == "zero" {
-//     continue }).
+//     whose receiver holds the testing value, and a table built by appends
+//     or a helper. A row its loop's own code skips (if tc.name == "zero" {
+//     continue }) warns, the exit an event (Mythos #344 residual).
 
 // maxPrefix is an identity's subtest prefix, past which it is a digest.
 const maxPrefix = 256
@@ -120,7 +126,7 @@ type caseSum struct {
 	rows   map[string][32]byte
 	opaque bool
 	print  string
-	exits  string // the print's early exits, compared whatever the counts (Opus #344 r2 L2)
+	exits  string // the print's early exits and subtests, compared whatever the counts (Opus #344 r2 L2; Mythos #344 M1)
 }
 
 // caseVisits counts the loops whose kind was read and caseCharged the
@@ -229,12 +235,63 @@ func (s *pkgScan) runCall(c *ast.CallExpr) bool {
 
 // markDead records the branch of x a constant condition never takes
 // (before ast.Inspect reaches it: pre-order).
-func (s *pkgScan) markDead(x *ast.IfStmt) {
-	if s.constCond(x.Cond, false) {
-		s.cs.dead[x.Body] = true
-	} else if s.constCond(x.Cond, true) && x.Else != nil {
-		s.cs.dead[x.Else] = true
+//
+// An if's branch; a for whose condition is constant false; in a tagless
+// switch, a clause whose every expression is constant false and every
+// clause after one that is constant true; with a constant tag, a clause
+// whose expressions are all constants unequal to it and every clause after
+// one equal to it (Mythos #344 H1). A switch it cannot so decide names its
+// cases as written: what it reads as dead names no case, never more.
+func (s *pkgScan) markDead(n ast.Node) {
+	switch x := n.(type) {
+	case *ast.IfStmt:
+		if s.constCond(x.Cond, false) {
+			s.cs.dead[x.Body] = true
+		} else if s.constCond(x.Cond, true) && x.Else != nil {
+			s.cs.dead[x.Else] = true
+		}
+	case *ast.ForStmt:
+		if x.Cond != nil && s.constCond(x.Cond, false) {
+			s.cs.dead[x.Body] = true
+		}
+	case *ast.SwitchStmt:
+		var tag constant.Value
+		if x.Tag != nil {
+			if tag = s.info.Types[x.Tag].Value; tag == nil {
+				return // not constant: every clause may run
+			}
+		}
+		taken := false
+		for _, st := range x.Body.List {
+			cc, ok := st.(*ast.CaseClause)
+			if !ok || cc.List == nil { // default: taken whenever no clause is
+				continue
+			}
+			if taken || !slices.ContainsFunc(cc.List, func(e ast.Expr) bool { return !s.never(e, tag) }) {
+				s.cs.dead[cc] = true
+			}
+			taken = taken || slices.ContainsFunc(cc.List, func(e ast.Expr) bool { return s.always(e, tag) })
+		}
 	}
+}
+
+// never: a switch clause's expression e is a constant that never selects
+// it (false with no tag; unequal to the constant tag).
+func (s *pkgScan) never(e ast.Expr, tag constant.Value) bool {
+	if tag == nil {
+		return s.constCond(e, false)
+	}
+	v := s.info.Types[e].Value
+	return v != nil && v.Kind() == tag.Kind() && !constant.Compare(v, token.EQL, tag)
+}
+
+// always: e is a constant that always selects its clause.
+func (s *pkgScan) always(e ast.Expr, tag constant.Value) bool {
+	if tag == nil {
+		return s.constCond(e, true)
+	}
+	v := s.info.Types[e].Value
+	return v != nil && v.Kind() == tag.Kind() && constant.Compare(v, token.EQL, tag)
 }
 
 // constCond: e is the constant v, or (for false) a conjunction one of
@@ -256,9 +313,8 @@ func (s *pkgScan) walk(w *caseWalk, n ast.Node, prefix string) {
 		if n == nil || s.over() || s.cs.dead[n] {
 			return false
 		}
+		s.markDead(n)
 		switch x := n.(type) {
-		case *ast.IfStmt:
-			s.markDead(x)
 		case *ast.FuncLit:
 			w.sum.opaque = true
 			return false
@@ -312,9 +368,8 @@ func (s *pkgScan) kinds(body ast.Node) map[*ast.RangeStmt]loopKind {
 		if s.over() || s.cs.dead[n] {
 			return false
 		}
+		s.markDead(n)
 		switch x := n.(type) {
-		case *ast.IfStmt:
-			s.markDead(x)
 		case *ast.RangeStmt:
 			frames = append(frames, frame{loop: x})
 		case *ast.FuncLit:
@@ -372,6 +427,9 @@ func (s *pkgScan) rows(w *caseWalk, x *ast.RangeStmt, prefix string) {
 			key = kv.Value // an array's index
 		}
 		name, named := s.rowName(key)
+		if tv := s.info.Types[key]; tv.Value != nil && tv.Value.Kind() == constant.String {
+			name, named = strconv.Quote(constant.StringVal(tv.Value)), true // a constant key by its value (Mythos #344 L2)
+		}
 		if isMap && !named {
 			name = s.canon(key) // a map's key names its row
 		} else if !named {
@@ -457,7 +515,7 @@ func (s *pkgScan) canonSkip(b *strings.Builder, n ast.Node, skip []ast.Node) {
 		b.WriteString("?")
 		return
 	}
-	t := canonTokens{b: b, first: true}
+	t := canonTokens{b: b}
 	at := n.Pos()
 	for _, k := range append(skip, nil) {
 		end := n.End()
@@ -466,25 +524,32 @@ func (s *pkgScan) canonSkip(b *strings.Builder, n ast.Node, skip []ast.Node) {
 		}
 		span := s.cs.src[f.Offset(at):f.Offset(end)]
 		if !s.caseCharge(len(span)) {
-			return
+			break
 		}
 		t.scan(span)
 		if k == nil {
 			break
 		}
-		t.write(token.LBRACE, "…}")
+		t.toks = append(t.toks, canonToken{token.ILLEGAL, "{…}"})
 		at = k.End()
 	}
 	t.flush()
 }
 
-// canonTokens writes a canonical text's tokens: one space apart; comments
-// and semicolons (written, or a newline's) dropped; a comma before a
-// closing bracket dropped; a number's prefix and exponent letters lower
-// case. So gofmt changes none (Opus #344 r2 M1).
+// canonTokens are a canonical text's tokens, written by flush one space
+// apart: comments and semicolons (written, or a newline's) dropped; a
+// comma before a closing bracket dropped; doubled parentheses collapsed
+// (((x)) is (x)); a number's prefix and exponent letters lower case, and an
+// integer imaginary literal's leading zeros trimmed. So gofmt changes none
+// (Opus #344 r2 M1; Mythos #344 L1).
 type canonTokens struct {
-	b            *strings.Builder
-	first, comma bool
+	b    *strings.Builder
+	toks []canonToken
+}
+
+type canonToken struct {
+	tok token.Token
+	lit string
 }
 
 func (t *canonTokens) scan(span []byte) {
@@ -500,41 +565,61 @@ func (t *canonTokens) scan(span []byte) {
 		case token.INT, token.FLOAT, token.IMAG:
 			lit = number(lit)
 		}
-		t.write(tok, lit)
+		if lit == "" {
+			lit = tok.String()
+		}
+		t.toks = append(t.toks, canonToken{tok, lit})
 	}
-}
-
-func (t *canonTokens) write(tok token.Token, lit string) {
-	closing := tok == token.RBRACE || tok == token.RPAREN || tok == token.RBRACK
-	if t.comma && !closing {
-		t.put(",")
-	}
-	if t.comma = tok == token.COMMA; t.comma {
-		return // written before the next token, unless that one closes
-	}
-	if lit == "" {
-		lit = tok.String()
-	}
-	t.put(lit)
-}
-
-func (t *canonTokens) put(text string) {
-	if !t.first {
-		t.b.WriteByte(' ')
-	}
-	t.first = false
-	t.b.WriteString(text)
 }
 
 func (t *canonTokens) flush() {
-	if t.comma {
-		t.put(",")
+	n := len(t.toks)
+	match, open, drop := make([]int, n), []int{}, make([]bool, n)
+	for i, x := range t.toks {
+		match[i] = -1
+		switch x.tok {
+		case token.LPAREN:
+			open = append(open, i)
+		case token.RPAREN:
+			if k := len(open); k > 0 {
+				match[open[k-1]], match[i] = i, open[k-1]
+				open = open[:k-1]
+			}
+		}
+	}
+	for i := 0; i+1 < n; i++ { // ( ( … ) ): the outer pair goes
+		if t.toks[i].tok == token.LPAREN && t.toks[i+1].tok == token.LPAREN && match[i] >= 0 && match[i] == match[i+1]+1 {
+			drop[i], drop[match[i]] = true, true
+		}
+	}
+	first := true
+	for i, x := range t.toks {
+		if drop[i] {
+			continue
+		}
+		if x.tok == token.COMMA {
+			next := i + 1
+			for next < n && drop[next] {
+				next++
+			}
+			if next < n && (t.toks[next].tok == token.RBRACE || t.toks[next].tok == token.RPAREN || t.toks[next].tok == token.RBRACK) {
+				continue
+			}
+		}
+		if !first {
+			t.b.WriteByte(' ')
+		}
+		first = false
+		t.b.WriteString(x.lit)
 	}
 }
 
 // number is lit with its base prefix's letter and its exponent's in lower
 // case, as gofmt writes them; a hexadecimal mantissa's digits are kept.
 func number(lit string) string {
+	if t := strings.TrimLeft(strings.TrimSuffix(lit, "i"), "0"); strings.HasSuffix(lit, "i") && t != "" && strings.Trim(t, "0123456789_") == "" {
+		lit = t + "i" // an integer imaginary literal: gofmt trims its leading zeros (Mythos #344 L1)
+	}
 	b := []byte(lit)
 	hex := len(b) > 1 && b[0] == '0' && (b[1] == 'x' || b[1] == 'X')
 	for i, c := range b {
@@ -616,9 +701,9 @@ func (s *pkgScan) testPrint(n ast.Node) (string, string) {
 		if ifs, ok := top.node.(*ast.IfStmt); ok && n == ifs.Else {
 			ctl.WriteString("else ")
 		}
+		s.markDead(n)
 		switch x := n.(type) {
 		case *ast.IfStmt:
-			s.markDead(x)
 			s.control(&ctl, "if", x.Init, x.Cond)
 		case *ast.ForStmt:
 			s.control(&ctl, "for", x.Init, x.Cond, x.Post)
@@ -647,18 +732,31 @@ func (s *pkgScan) testPrint(n ast.Node) (string, string) {
 			_, _ = io.WriteString(h, ctl.String())
 			h.Sum(sum[:0])
 		}
-		event := false
+		event, run := false, false
 		switch x := n.(type) {
 		case *ast.CallExpr:
 			sel, isSel := ast.Unparen(x.Fun).(*ast.SelectorExpr)
 			event = s.assertion(x) || isSel && slices.Contains(goSkips, sel.Sel.Name)
+			run = s.runCall(x) // a subtest: its name and callback (Mythos #344 M1)
+			event = event || run
 		case *ast.ReturnStmt, *ast.BranchStmt: // an early exit, which may skip what follows (Opus #344 M1)
 			event = true
 		}
 		if event {
-			e := sha256.Sum256(append(sum[:], s.eventText(n)...))
+			text := ""
+			if x, ok := n.(*ast.CallExpr); ok && run {
+				if tv := s.info.Types[x.Args[0]]; tv.Value != nil && tv.Value.Kind() == constant.String {
+					text = "run " + strconv.Quote(constant.StringVal(tv.Value)) + " " // a constant name by its value, as its identity
+				} else {
+					text = "run " + s.canon(x.Args[0]) + " "
+				}
+				text += s.eventText(x.Args[1])
+			} else {
+				text = s.eventText(n)
+			}
+			e := sha256.Sum256(append(sum[:], text...))
 			out.WriteString(hex.EncodeToString(e[:8]))
-			if _, call := n.(*ast.CallExpr); !call {
+			if _, call := n.(*ast.CallExpr); !call || run {
 				exits.WriteString(hex.EncodeToString(e[:8]))
 			}
 		}
@@ -674,7 +772,7 @@ func (s *pkgScan) control(b *strings.Builder, kw string, parts ...ast.Node) {
 	for _, p := range parts {
 		b.WriteString("; ")
 		if p != nil { // an absent Init, Cond, Post, Tag or Comm
-			s.canonTo(b, p)
+			b.WriteString(s.eventText(p)) // its literals' bodies a marker: their controls are levels of their own (Mythos #344 L3)
 		}
 	}
 }

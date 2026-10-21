@@ -109,6 +109,16 @@ func TestNameless(t *testing.T) {
 	}
 }
 
+const keyOne = "one"
+
+func TestConstKeys(t *testing.T) {
+	for k, v := range map[string]int{keyOne: 1, "two": 2} {
+		if len(k) != v+2 {
+			t.Fatal(k)
+		}
+	}
+}
+
 func TestHexKeys(t *testing.T) {
 	for k, v := range map[int]int{0X1F: 31, 2: 2} {
 		if k != v && k != 0x1f {
@@ -510,6 +520,22 @@ func TestIntegrityCases(t *testing.T) {
 		// range's own expression drives nothing.
 		"an outer loop's row":        {edit(`[]string{"p", "q"}`, `[]string{"p"}`), `TestNestedRows 1 test cases removed (table rows or subtests: row "q" @1 checks)`, nil},
 		"a range expression's check": {edit("[]int{one(t), 2}", "[]int{one(t)}"), "", nil},
+		// Mythos #344 H1: a subtest in a branch a constant switch or for
+		// never takes is removed.
+		"a loop's t.Run under switch { case false }":  {edit("\t\tt.Run(tc.name, tc.fn)\n", "\t\tswitch {\n\t\tcase false:\n\t\t\tt.Run(tc.name, tc.fn)\n\t\t}\n"), `TestRunsFn 2 test cases removed (table rows or subtests: row "a" @1 runs)`, nil},
+		"a loop's t.Run under for false":              {edit("\t\tt.Run(tc.name, tc.fn)\n", "\t\tfor false {\n\t\t\tt.Run(tc.name, tc.fn)\n\t\t}\n"), `TestRunsFn 2 test cases removed (table rows or subtests: row "a" @1 runs)`, nil},
+		"a subtest under switch { case false }":       {edit("\t\tt.Run(\"other\", func(t *testing.T) {\n\t\t\tif Add(2, 2) != 4 {\n\t\t\t\tt.Fatal(\"other\")\n\t\t\t}\n\t\t})\n", "\t\tif Add(2, 2) != 4 {\n\t\t\tt.Fatal(\"other\")\n\t\t}\n\t\tswitch {\n\t\tcase false:\n\t\t\tt.Run(\"other\", func(t *testing.T) {})\n\t\t}\n"), "TestSub 1 test cases removed (table rows or subtests: run outer/other)", nil},
+		"a subtest after a switch's true clause":      {edit("\t\tt.Run(\"other\", func(t *testing.T) {\n\t\t\tif Add(2, 2) != 4 {\n\t\t\t\tt.Fatal(\"other\")\n\t\t\t}\n\t\t})\n", "\t\tif Add(2, 2) != 4 {\n\t\t\tt.Fatal(\"other\")\n\t\t}\n\t\tswitch {\n\t\tcase true:\n\t\tcase Add(1, 1) == 2:\n\t\t\tt.Run(\"other\", func(t *testing.T) {})\n\t\t}\n"), "TestSub 1 test cases removed (table rows or subtests: run outer/other)", nil},
+		"a subtest under a constant tag's other case": {edit("\t\tt.Run(\"other\", func(t *testing.T) {\n\t\t\tif Add(2, 2) != 4 {\n\t\t\t\tt.Fatal(\"other\")\n\t\t\t}\n\t\t})\n", "\t\tif Add(2, 2) != 4 {\n\t\t\tt.Fatal(\"other\")\n\t\t}\n\t\tswitch 1 {\n\t\tcase 2:\n\t\t\tt.Run(\"other\", func(t *testing.T) {})\n\t\t}\n"), "TestSub 1 test cases removed (table rows or subtests: run outer/other)", nil},
+		"a subtest after a constant tag's own case":   {edit("\t\tt.Run(\"other\", func(t *testing.T) {\n\t\t\tif Add(2, 2) != 4 {\n\t\t\t\tt.Fatal(\"other\")\n\t\t\t}\n\t\t})\n", "\t\tif Add(2, 2) != 4 {\n\t\t\tt.Fatal(\"other\")\n\t\t}\n\t\tswitch 1 {\n\t\tcase 1:\n\t\tcase Add(0, 1):\n\t\t\tt.Run(\"other\", func(t *testing.T) {})\n\t\t}\n"), "TestSub 1 test cases removed (table rows or subtests: run outer/other)", nil},
+		"a subtest under a live switch (the control)": {edit("\t\tt.Run(\"other\", func(t *testing.T) {\n\t\t\tif Add(2, 2) != 4 {\n\t\t\t\tt.Fatal(\"other\")\n\t\t\t}\n\t\t})\n", "\t\ton := Add(1, 1) == 2\n\t\tswitch on {\n\t\tcase false:\n\t\tcase true:\n\t\t\tt.Run(\"other\", func(t *testing.T) {\n\t\t\t\tif Add(2, 2) != 4 {\n\t\t\t\t\tt.Fatal(\"other\")\n\t\t\t\t}\n\t\t\t})\n\t\t}\n"), "", both("TestSub: " + changed)},
+		// Mythos #344 M1: a t.Run's callback swapped for an empty literal.
+		"a loop's callback emptied":              {edit("\t\tt.Run(tc.name, tc.fn)\n", "\t\tt.Run(tc.name, func(t *testing.T) {})\n"), "", both("TestRunsFn: " + changed)},
+		"a callback emptied, an assertion added": {edit("\t\tt.Run(tc.name, tc.fn)\n", "\t\tif Add(1, 1) != 2 {\n\t\t\tt.Error(\"x\")\n\t\t}\n\t\tt.Run(tc.name, func(t *testing.T) {})\n"), "", both("TestRunsFn: " + changed)},
+		"a named callback emptied":               {edit(`t.Run("named", namedCase)`, `t.Run("named", func(t *testing.T) {})`), "", both("TestNamed: " + changed)},
+		// Mythos #344 L2: a constant key by its value.
+		"a constant key's value changed": {edit(`const keyOne = "one"`, `const keyOne = "uno"`), `TestConstKeys 1 test cases removed (table rows or subtests: row "one" @`, nil},
+		"a constant key's name changed":  {map[string]string{"pkg/cases_test.go": strings.NewReplacer(`const keyOne = "one"`, `const keyUno = "one"`, "keyOne: 1", "keyUno: 1").Replace(casesBase)}, "", both("TestConstKeys: " + changed)}, // its row's text
 		// Opus #344 r2 M1: gofmt's changes change no identity.
 		"gofmt on a hex map key":   {edit("0X1F: 31", "0x1F: 31"), "", nil},
 		"a trailing comma dropped": {edit(`{"zero", 0, 0}`, `{"zero", 0, 0,}`), "", nil},
@@ -809,7 +835,8 @@ func TestIntegrityCasesClauseStops(t *testing.T) {
 // newline's semicolon; its span is charged.
 func TestIntegrityCasesCanon(t *testing.T) {
 	src := []byte("package p\n\nvar a = f(x,y)\nvar b = f(x, // why\n\ty)\nvar c = func() {\n\tg(); h()\n}\nvar d = f(x, z)\n" +
-		"var e = []float64{0X1F, 1E3, 0x1.8P3, 0xAE, 0B1, 0O7,}\nvar g = []float64{0x1F, 1e3, 0x1.8p3, 0xAE, 0b1, 0o7}\n")
+		"var e = []float64{0X1F, 1E3, 0x1.8P3, 0xAE, 0B1, 0O7,}\nvar g = []float64{0x1F, 1e3, 0x1.8p3, 0xAE, 0b1, 0o7}\n" +
+		"var h = []any{0765i, ((x)), (((y))), f((z)), (a)+(b), ((a)+(b)), 0i}\nvar k = []any{765i, (x), (y), f(z), (a)+(b), ((a)+(b)), 0i}\n")
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "p.go", src, parser.ParseComments)
 	if err != nil {
@@ -829,6 +856,11 @@ func TestIntegrityCasesCanon(t *testing.T) {
 	// before a closing bracket, as gofmt writes them; a hex digit is kept.
 	if e, g := s.canon(value(4)), s.canon(value(5)); e != g || e != "[ ] float64 { 0x1F , 1e3 , 0x1.8p3 , 0xAE , 0b1 , 0o7 }" {
 		t.Errorf("numbers and a trailing comma: %q, gofmt's %q", e, g)
+	}
+	// Mythos #344 L1: an integer imaginary literal's leading zeros, and
+	// doubled parentheses, as gofmt writes them; (a)+(b) is no doubling.
+	if h, k := s.canon(value(6)), s.canon(value(7)); h != k || k != "[ ] any { 765i , ( x ) , ( y ) , f ( z ) , ( a ) + ( b ) , ( ( a ) + ( b ) ) , 0i }" {
+		t.Errorf("imaginary zeros and doubled parentheses: %q, gofmt's %q", h, k)
 	}
 }
 
@@ -856,6 +888,10 @@ func TestIntegrityCasesLinear(t *testing.T) {
 		return "package pkg\n\nimport \"testing\"\n\nconst long = \"" + strings.Repeat("x", 4096) + "\"\n\nfunc TestLong(t *testing.T) {\n" +
 			strings.Repeat("t.Run(long, func(t *testing.T) {\n", n) + "t.Error(long)\n" + strings.Repeat("})\n", n) + "}\n"
 	}
+	conds := func(n int) string { // a condition nesting n asserting literals, each with its own condition (Mythos #344 L3)
+		return "package pkg\n\nimport \"testing\"\n\nfunc TestConds(t *testing.T) {\n\tif " +
+			strings.Repeat("func() bool {\n\tif ", n) + "true" + strings.Repeat(" {\n\t\tt.Error(1)\n\t}\n\treturn true\n}()", n) + " {\n\t\tt.Error(0)\n\t}\n}\n"
+	}
 	ranges := func(n int) string { // nested ranges, each asserting (Opus #344 L1)
 		var b strings.Builder
 		for i := range n {
@@ -864,7 +900,7 @@ func TestIntegrityCasesLinear(t *testing.T) {
 		return "package pkg\n\nimport \"testing\"\n\nfunc TestRanges(t *testing.T) {\n" + b.String() + strings.Repeat("}\n", n) + "}\n"
 	}
 	for name, file := range map[string]func(int) string{"nested ifs": nested, "a case clause": caseClause, "rows sharing a name": same, "4 KiB names nested": func(n int) string { return long(n / 10) },
-		"nested asserting ranges": ranges} {
+		"nested asserting ranges": ranges, "nested asserting conditions": func(n int) string { return conds(n / 10) }} {
 		work := func(n int) int64 {
 			v, _, w := readings(t, f, map[string]string{"pkg/deep_test.go": file(n)})
 			if !v.Accepted() {
