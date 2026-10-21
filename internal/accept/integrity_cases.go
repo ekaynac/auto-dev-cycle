@@ -107,6 +107,7 @@ var maxCaseWork = 16 * len(platforms) * int(maxRead)
 // condition never takes, and the file being read with its source (canon's).
 type caseScan struct {
 	dead map[ast.Node]bool
+	fell int // clauses never selected but fallen into, kept live
 	file *token.File
 	src  []byte
 }
@@ -240,7 +241,9 @@ func (s *pkgScan) runCall(c *ast.CallExpr) bool {
 // switch, a clause whose every expression is constant false and every
 // clause after one that is constant true; with a constant tag, a clause
 // whose expressions are all constants unequal to it and every clause after
-// one equal to it (Mythos #344 H1). A switch it cannot so decide names its
+// one equal to it (Mythos #344 H1); the default when another clause must
+// match (Astra #369 H4). A clause the one before it falls through into is
+// kept live (fail closed, s.cs.fell). A switch it cannot so decide names its
 // cases as written: what it reads as dead names no case, never more.
 func (s *pkgScan) markDead(n ast.Node) {
 	switch x := n.(type) {
@@ -261,18 +264,42 @@ func (s *pkgScan) markDead(n ast.Node) {
 				return // not constant: every clause may run
 			}
 		}
-		taken := false
+		taken, falls, defFalls := false, false, false
+		var def *ast.CaseClause
 		for _, st := range x.Body.List {
 			cc, ok := st.(*ast.CaseClause)
-			if !ok || cc.List == nil { // default: taken whenever no clause is
+			if !ok {
 				continue
 			}
-			if taken || !slices.ContainsFunc(cc.List, func(e ast.Expr) bool { return !s.never(e, tag) }) {
-				s.cs.dead[cc] = true
+			if cc.List == nil { // default: dead when another clause must match (below)
+				def, defFalls = cc, falls
+			} else if taken || !slices.ContainsFunc(cc.List, func(e ast.Expr) bool { return !s.never(e, tag) }) {
+				s.deadClause(cc, falls)
 			}
 			taken = taken || slices.ContainsFunc(cc.List, func(e ast.Expr) bool { return s.always(e, tag) })
+			falls = len(cc.Body) > 0 && isFallthrough(cc.Body[len(cc.Body)-1])
+		}
+		if def != nil && taken { // Astra #369 H4
+			s.deadClause(def, defFalls)
 		}
 	}
+}
+
+// deadClause marks cc, a clause never selected, dead; one the clause
+// before it falls through into is kept live, fail closed, and counted
+// (s.cs.fell: P14d-w1 warns of it).
+func (s *pkgScan) deadClause(cc *ast.CaseClause, falls bool) {
+	if falls {
+		s.cs.fell++
+		return
+	}
+	s.cs.dead[cc] = true
+}
+
+// isFallthrough: st is a fallthrough statement.
+func isFallthrough(st ast.Stmt) bool {
+	b, ok := st.(*ast.BranchStmt)
+	return ok && b.Tok == token.FALLTHROUGH
 }
 
 // never: a switch clause's expression e is a constant that never selects

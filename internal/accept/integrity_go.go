@@ -393,11 +393,16 @@ func (s *pkgScan) alias(e ast.Expr) (rhs ast.Expr) {
 
 func (s *pkgScan) assertion(call *ast.CallExpr) bool {
 	passes := slices.ContainsFunc(call.Args, func(a ast.Expr) bool { t := s.tval(a); return t != "" && t != "testing.M" })
+	return s.direct(call) || passes && s.asserting[s.callee(call)]
+}
+
+// direct: call is an assertion itself, read from the syntax: a testing
+// value's failing method, or testify's.
+func (s *pkgScan) direct(call *ast.CallExpr) bool {
 	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 	q := s.qual(ast.Unparen(call.Fun))
 	return ok && slices.Contains(goFails, sel.Sel.Name) && s.tval(sel.X) != "" && s.tval(sel.X) != "testing.M" ||
-		q != "" && slices.Contains(testify, q[:strings.LastIndex(q, ".")]) ||
-		passes && s.asserting[s.callee(call)]
+		q != "" && slices.Contains(testify, q[:strings.LastIndex(q, ".")])
 }
 
 // mRun: call is os.Exit(m.Run()) on a testing.M, TestMain's one allowed exit.
@@ -685,8 +690,8 @@ func (r *run) group(pi int, dir, name string, fset *token.FileSet, files []*ast.
 			} else if hook {
 				hooks = append(hooks, fn.Body)
 			}
-			if test && m.on[pi] > 0 { // P14d-w: the test files' functions' own assertions, and the names they use
-				s.helperFacts(fa, plat, dir, name, m.path, d, c.asserts)
+			if test && m.on[pi] > 0 { // P14d-w1: the test files' functions' own assertions, and the names they use
+				s.helperFacts(fa, plat, dir, name, m.path, d)
 			}
 			if test && !hook && goTest(fname) && m.on[pi] > 0 { // P14d-b: its cases, per build constraint
 				s.caseFacts(fa, plat+" "+dir+":"+name+"."+fname, m.path, m.cons, fn, fset.File(fn.Pos()), m.src)

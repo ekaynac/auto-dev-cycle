@@ -406,8 +406,8 @@ func (r *run) compare(dir string, b, a pkgFacts) {
 			add(&r.blocks, k, "a test skipped (a skipping helper used)")
 		}
 	}
-	r.compareCases(add, b, a)            // P14d-b: the tests' cases
-	compareHelpers(add, &r.blocks, b, a) // P14d-w: the test files' functions' own assertions
+	r.compareCases(add, b, a)                         // P14d-b: the tests' cases
+	compareHelpers(add, &r.blocks, &r.warnings, b, a) // P14d-w1: the test files' functions' own assertions
 
 	more := func(a, b []int) bool { // on some platform: none is traded across them
 		return slices.ContainsFunc(platforms, func(pl [2]string) bool { return a[slices.Index(platforms, pl)] > b[slices.Index(platforms, pl)] })
