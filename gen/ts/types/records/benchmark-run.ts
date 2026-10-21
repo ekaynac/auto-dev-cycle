@@ -100,17 +100,21 @@ export interface BenchmarkStage {
    * The stage's nodes claimed and not finished, left out of wall_ms.
    */
   unfinished: number;
+  /**
+   * The stage's nodes planned and never claimed, left out of wall_ms, attempts and rounds.
+   */
+  pending: number;
   tokens: BenchmarkTokens;
   /**
    * The source_of_truth values of the stage's usage measurements, sorted.
    */
   sources: ("provider_usage" | "adapter_report" | "gateway_count" | "gateway_floor" | "none")[];
   /**
-   * Σ of the settled calls' (ledger.StandingOf) reported cost, per basis and currency.
+   * Σ of the settled calls' (ledger.StandingOf) cost, per basis and currency: a cash call at no less than its tokens at the route's registry price.
    */
   charge: BenchmarkAmount[];
   /**
-   * The unsettled calls' liabilities, per basis and currency: each the larger of its reported cost and its tokens (the gateway's count included) at its route's registry price; never counted as zero.
+   * The unsettled and unmeasured calls' liabilities, per basis and currency: each the largest of its reported USD cost, its tokens (the gateway's count included) at its route's registry price, and its ledger liability; never counted as zero.
    */
   outstanding: BenchmarkAmount[];
   attempts: number;

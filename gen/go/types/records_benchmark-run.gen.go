@@ -88,13 +88,15 @@ type BenchmarkStage struct {
 	// Σ over the stage's finished nodes of node.claimed to its result.selected (merge: to the effect's observed or reconciled completed).
 	WallMs int64 `json:"wall_ms"`
 	// The stage's nodes claimed and not finished, left out of wall_ms.
-	Unfinished int64           `json:"unfinished"`
-	Tokens     BenchmarkTokens `json:"tokens"`
+	Unfinished int64 `json:"unfinished"`
+	// The stage's nodes planned and never claimed, left out of wall_ms, attempts and rounds.
+	Pending int64           `json:"pending"`
+	Tokens  BenchmarkTokens `json:"tokens"`
 	// The source_of_truth values of the stage's usage measurements, sorted.
 	Sources []BenchmarkStageSourcesItem `json:"sources"`
-	// Σ of the settled calls' (ledger.StandingOf) reported cost, per basis and currency.
+	// Σ of the settled calls' (ledger.StandingOf) cost, per basis and currency: a cash call at no less than its tokens at the route's registry price.
 	Charge []BenchmarkAmount `json:"charge"`
-	// The unsettled calls' liabilities, per basis and currency: each the larger of its reported cost and its tokens (the gateway's count included) at its route's registry price; never counted as zero.
+	// The unsettled and unmeasured calls' liabilities, per basis and currency: each the largest of its reported USD cost, its tokens (the gateway's count included) at its route's registry price, and its ledger liability; never counted as zero.
 	Outstanding   []BenchmarkAmount      `json:"outstanding"`
 	Attempts      int64                  `json:"attempts"`
 	Rounds        int64                  `json:"rounds"`

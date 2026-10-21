@@ -15,13 +15,13 @@ from concurrent.futures import ThreadPoolExecutor
 B, C, S = 'internal/bench/bench.go', 'internal/bench/compare.go', 'schemas/records/benchmark-run.json'
 MUTS = [
     ("an unattributed measurement dropped", B, '\t\tif !ok {\n\t\t\treturn bt, fmt.Errorf("measurement %s of attempt %s, which is no node\'s", u.ID, u.Attempt)', '\t\tif !ok {\n\t\t\tcontinue'),
-    ("an attempt of two nodes accepted", B, 'if _, dup := nodeOf[a]; dup {', 'if false {'),
+    ("an attempt of two nodes accepted", B, '} else if _, dup := nodeOf[a.ID]; dup {', '} else if false {'),
     ("an unknown stage accepted", B, 'if !slices.Contains(Stages, n.Stage) {', 'if false {'),
     ("done before claimed accepted", B, '} else if !n.Done.IsZero() && n.Done.Before(n.Claimed) {', '} else if false {'),
     ("closed before approval accepted", B, 'case !t.Closed.IsZero() && t.Closed.Before(t.Approved):', 'case false:'),
-    ("an unsettled call settled", B, '\t\t\tif standing.Settled {\n\t\t\t\tinto, owed', '\t\t\tif true {\n\t\t\t\tinto, owed'),
+    ("an unsettled call settled", B, 'default:\n\t\t\t\tif c == "" || c == "USD" {', 'default:\n\t\t\t\tinto, owed = settled, false\n\t\t\t\tif c == "" || c == "USD" {'),
     ("an unfinished node counted", B, '\t\tif n.Done.IsZero() {\n\t\t\tst.Unfinished++', '\t\tif false {\n\t\t\tst.Unfinished++'),
-    ("rounds as nodes", B, 'used, rounds[n.Round] = true, true', 'used, rounds[len(rounds)] = true, true'),
+    ("rounds as nodes", B, 'rounds[n.Round] = true', 'rounds[len(rounds)] = true'),
     ("cache reads dropped", B, 'add(&err, &st.Tokens.CacheRead, f.CacheRead)', ''),
     ("cache writes dropped", B, 'add(&err, &st.Tokens.CacheWrite, f.CacheWrite)', ''),
     ("rescues as interventions", B, 'if iv.Stage != s || iv.Kind == Rescue {', 'if iv.Stage != s {'),
@@ -33,14 +33,14 @@ MUTS = [
     ("a task gone unreported", C, '\t\tif !seen[t.Task] {', '\t\tif false {'),
     ("wall time growth unreported", C, 'if p.WallMs != nil && t.WallMs != nil && *t.WallMs > *p.WallMs {', 'if false {'),
     # The review of #313 (docs/reviews/2026-10-20-pr313-opus.md): H1.
-    ("settled by Uncertain, not the standing", B, 'if standing.Settled {', 'if !calls[id].Uncertain {'),
+    ("settled by Uncertain, not the standing", B, 'case standing.Settled:\n', 'case !calls[id].Uncertain:\n'),
     ("tokens without the gateway's count", B, 'f := *standing.Usage', 'f := calls[id].Usage'),
     ("an unsettled call not priced", B, 'micros = max(micros, priced)', ''),
     ("a reported cost below the price kept", B, 'micros = max(micros, priced)', 'micros = cmp.Or(micros, priced)'),
     ("an empty currency in the schema", S, '"pattern": "^[A-Z]{3}$"', '"pattern": "^([A-Z]{3})?$"'),
     # M1.
-    ("a call in two stages accepted", B, '} else if t.Nodes[j].Stage != t.Nodes[i].Stage {', '} else if false {'),
-    ("a call on two executors accepted", B, '} else if t.Nodes[j].Executor != t.Nodes[i].Executor {', '} else if false {'),
+    ("a call in two stages accepted", B, '; s != t.Nodes[i].Stage {', '; false {'),
+    ("a call on two executors accepted", B, '} else if exec[ca] != exec[u.Attempt] {', '} else if false {'),
     # M2.
     ("an empty run accepted", B, 'if len(tasks) == 0 {', 'if false {'),
     ("ids twice in the run accepted", B, '\t\tif seen[k] {', '\t\tif false {'),
@@ -51,8 +51,8 @@ MUTS = [
     ("closed without a reason accepted", B, '(t.Outcome == "" || t.Reason.String() == "")', '(t.Outcome == "")'),
     ("an unknown hold accepted", B, 'if _, ok := reg.Holds[t.Hold]; !ok {', 'if false {'),
     ("an intervention at an unknown stage accepted", B, '} else if iv.Kind != Rescue && !slices.Contains(Stages, iv.Stage) {', '} else if false {'),
-    ("no claimed time accepted", B, '} else if n.Claimed.IsZero() {', '} else if false {'),
-    ("no route's executor accepted", B, 'len(n.Attempts) > 0 && !ok {', 'false {'),
+    ("no claimed time accepted", B, '} else if n.Claimed.IsZero() && (', '} else if false && ('),
+    ("no route's executor accepted", B, 'if _, ok := route[a.Executor]; !ok {', 'if false {'),
     ("a route without a price accepted", B, 'if _, ok := m.Prices[r.Executor]; !ok {', 'if false {'),
     ("the output not validated", B, '_, err = contract.Decode[types.BenchmarkRun]("records/benchmark-run", raw)', '_ = raw'),
     # M3.
@@ -73,7 +73,7 @@ MUTS = [
     ("amounts summed across currencies", C, 'w[string(a.Basis)+" "+a.Currency] = a.AmountMicros', 'w[string(a.Basis)] += a.AmountMicros'),
     ("a cell not escaped", C, 'return strings.ReplaceAll(s, "|", `\\|`)', 'return s'),
     ("the path with a slash", C, 'strings.ReplaceAll(run.Arch, "/", "-")', 'run.Arch'),
-    ("unfinished not summarised", C, 'seconds(s.WallMs), s.Unfinished,', 'seconds(s.WallMs), int64(0),'),
+    ("unfinished not summarised", C, 'unfinished := fmt.Sprint(s.Unfinished)', 'unfinished := "0"'),
     # The review of #313 by Astra (docs/reviews/2026-10-21-pr313-astra.md).
     # H1.
     ("an unsettled call at zero accepted", B, 'if owed && micros <= 0 {', 'if false {'),
@@ -83,18 +83,37 @@ MUTS = [
     ("a stage of unmeasured calls dropped", B, 'if err != nil || len(bound) == 0 {', 'if err != nil || len(usage) == 0 {'),
     ("an unbound measurement accepted", B, '\t\tif !ok {\n\t\t\treturn bt, fmt.Errorf("measurement %s of call %s', '\t\tif false {\n\t\t\treturn bt, fmt.Errorf("measurement %s of call %s'),
     ("a bound call of no node's attempt accepted", B, '\t\tif !ok {\n\t\t\treturn bt, fmt.Errorf("bound call', '\t\tif false {\n\t\t\treturn bt, fmt.Errorf("bound call'),
-    ("a call bound twice accepted", B, '} else if _, dup := callNode[c.ID]; dup {', '} else if false {'),
+    ("a call bound twice accepted", B, '} else if _, dup := callAttempt[c.ID]; dup {', '} else if false {'),
     ("a negative liability accepted", B, '} else if c.Liability < 0 {', '} else if false {'),
     ("no sources as null", B, 'st.Sources = append(st.Sources, slices.Sorted(maps.Keys(sources))...)', 'st.Sources = slices.Sorted(maps.Keys(sources))'),
     # H3.
-    ("an unsettled non-USD amount kept", B, 'c != "" && c != "USD" && reported != 0 {', 'false {'),
+    ("an unsettled non-USD amount kept", B, 'case c != "" && c != "USD" && reported != 0:', 'case false:'),
     # H4.
     ("a sum unchecked", B, 'v > maxSum-*dst', 'false'),
     ("tokens added unchecked", B, 'add(&err, &st.Tokens.In, f.In)', 'st.Tokens.In += f.In'),
     ("money added unchecked", B, 'add(&err, &into[k].AmountMicros, micros)', 'into[k].AmountMicros += micros'),
     # M5.
-    ("a price for a route", B, '} else if _, ok := route[n.Executor]; len', '} else if _, ok := m.Prices[n.Executor]; len'),
+    ("a price for a route", B, 'route[a.Executor]; !ok', 'm.Prices[a.Executor]; !ok'),
     ("a conflicting route accepted", B, 'ok && q != r {', 'false {'),
+    # Opus's re-check of #313 (docs/reviews/2026-10-21-pr313-opus-r2.md).
+    # M1.
+    ("a settled cash call not floored", B, 'max(reported, priced), c', 'reported, c'),
+    ("a settled non-USD cash call kept", B, 'case standing.Settled && c != "" && c != "USD":', 'case false:'),
+    ("the floor on every basis", B, 'case standing.Settled && basis != "cash":', 'case false:'),
+    # M3.
+    ("pending not counted", B, 'st.Pending++\n', '\n'),
+    ("pending counted as unfinished", B, '\t\t\tst.Pending++\n\t\t\tcontinue\n', '\t\t\tst.Pending++\n'),
+    ("pending not compared", C, '{"pending", q.Pending, s.Pending}, ', ''),
+    ("pending not summarised", C, 'if s.Pending > 0 {', 'if false {'),
+    # L1.
+    ("a task after the recording accepted", B, 'case t.Approved.After(m.RecordedAt) || t.Closed.After(m.RecordedAt):', 'case false:'),
+    ("a node after the recording accepted", B, '} else if n.Claimed.After(m.RecordedAt) || n.Done.After(m.RecordedAt) {', '} else if false {'),
+    ("a saturated duration accepted", B, 'd == time.Duration(math.MaxInt64)', 'false'),
+    ("a node's saturated duration accepted", B, 'err = cmp.Or(err, serr)', '_ = serr'),
+    # L2.
+    ("a negative cost accepted", B, '} else if u.Cost.AmountMicros < 0 {', '} else if false {'),
+    # L3.
+    ("a node's first executor prices its calls", B, 'price[c] = m.Prices[exec[a]]', 'price[c] = m.Prices[t.Nodes[nodeOf[a]].Attempts[0].Executor]'),
 ]
 
 

@@ -57,15 +57,16 @@
     "BenchmarkStage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["stage", "wall_ms", "unfinished", "tokens", "sources", "charge", "outstanding", "attempts", "rounds", "interventions"],
+      "required": ["stage", "wall_ms", "unfinished", "pending", "tokens", "sources", "charge", "outstanding", "attempts", "rounds", "interventions"],
       "properties": {
         "stage": {"enum": ["build", "accept", "gate", "review", "rebase", "review_fresh", "gate_refresh", "merge", "closure"]},
         "wall_ms": {"description": "Σ over the stage's finished nodes of node.claimed to its result.selected (merge: to the effect's observed or reconciled completed).", "type": "integer", "minimum": 0, "maximum": 9007199254740991},
         "unfinished": {"description": "The stage's nodes claimed and not finished, left out of wall_ms.", "type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "pending": {"description": "The stage's nodes planned and never claimed, left out of wall_ms, attempts and rounds.", "type": "integer", "minimum": 0, "maximum": 9007199254740991},
         "tokens": {"$ref": "#/$defs/BenchmarkTokens"},
         "sources": {"description": "The source_of_truth values of the stage's usage measurements, sorted.", "type": "array", "uniqueItems": true, "items": {"enum": ["provider_usage", "adapter_report", "gateway_count", "gateway_floor", "none"]}},
-        "charge": {"description": "Σ of the settled calls' (ledger.StandingOf) reported cost, per basis and currency.", "type": "array", "items": {"$ref": "#/$defs/BenchmarkAmount"}},
-        "outstanding": {"description": "The unsettled calls' liabilities, per basis and currency: each the larger of its reported cost and its tokens (the gateway's count included) at its route's registry price; never counted as zero.", "type": "array", "items": {"$ref": "#/$defs/BenchmarkAmount"}},
+        "charge": {"description": "Σ of the settled calls' (ledger.StandingOf) cost, per basis and currency: a cash call at no less than its tokens at the route's registry price.", "type": "array", "items": {"$ref": "#/$defs/BenchmarkAmount"}},
+        "outstanding": {"description": "The unsettled and unmeasured calls' liabilities, per basis and currency: each the largest of its reported USD cost, its tokens (the gateway's count included) at its route's registry price, and its ledger liability; never counted as zero.", "type": "array", "items": {"$ref": "#/$defs/BenchmarkAmount"}},
         "attempts": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
         "rounds": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
         "interventions": {"$ref": "#/$defs/BenchmarkInterventions"}

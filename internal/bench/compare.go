@@ -56,7 +56,7 @@ func Compare(prev, cur types.BenchmarkRun) []Delta {
 				name    string
 				was, is int64
 			}{
-				{"wall_ms", q.WallMs, s.WallMs}, {"unfinished", q.Unfinished, s.Unfinished}, {"attempts", q.Attempts, s.Attempts}, {"rounds", q.Rounds, s.Rounds},
+				{"wall_ms", q.WallMs, s.WallMs}, {"unfinished", q.Unfinished, s.Unfinished}, {"pending", q.Pending, s.Pending}, {"attempts", q.Attempts, s.Attempts}, {"rounds", q.Rounds, s.Rounds},
 				{"tokens.in", q.Tokens.In, s.Tokens.In}, {"tokens.out", q.Tokens.Out, s.Tokens.Out},
 				{"tokens.cache_read", q.Tokens.CacheRead, s.Tokens.CacheRead}, {"tokens.cache_write", q.Tokens.CacheWrite, s.Tokens.CacheWrite},
 				{"interventions", interventions(q), interventions(s)},
@@ -113,7 +113,7 @@ func interventions(s types.BenchmarkStage) int64 {
 }
 
 // Summary is the Markdown summary of run an exit record carries: per task
-// its verdict and wall time, and per stage its wall time, unfinished nodes,
+// its verdict and wall time, and per stage its wall time, unfinished (and pending) nodes,
 // tokens, sources, charge, outstanding liabilities, attempts, rounds and
 // interventions; the task's rescues apart.
 func Summary(run types.BenchmarkRun) string {
@@ -132,7 +132,11 @@ func Summary(run types.BenchmarkRun) string {
 			for _, x := range s.Sources {
 				src = append(src, string(x))
 			}
-			fmt.Fprintf(&b, "| | %s | %s | %d | %d / %d / %d / %d | %s | %s | %s | %d | %d | %d / %d / %d |\n", s.Stage, seconds(s.WallMs), s.Unfinished,
+			unfinished := fmt.Sprint(s.Unfinished)
+			if s.Pending > 0 {
+				unfinished += fmt.Sprintf(" (+%d pending)", s.Pending)
+			}
+			fmt.Fprintf(&b, "| | %s | %s | %s | %d / %d / %d / %d | %s | %s | %s | %d | %d | %d / %d / %d |\n", s.Stage, seconds(s.WallMs), cell(unfinished),
 				s.Tokens.In, s.Tokens.Out, s.Tokens.CacheRead, s.Tokens.CacheWrite, cmp.Or(strings.Join(src, ", "), "–"), money(s.Charge), money(s.Outstanding),
 				s.Attempts, s.Rounds, s.Interventions.Approvals, s.Interventions.Answers, s.Interventions.RailRaises)
 		}

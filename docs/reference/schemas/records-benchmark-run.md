@@ -76,10 +76,11 @@ Conditional rules (1, `if`/`then`/`else` in the schema):
 | `stage` | yes | one of `build`, `accept`, `gate`, `review`, `rebase`, `review_fresh`, `gate_refresh`, `merge`, `closure` |  |
 | `wall_ms` | yes | integer (minimum `0`, maximum `9007199254740991`) | Σ over the stage's finished nodes of node.claimed to its result.selected (merge: to the effect's observed or reconciled completed). |
 | `unfinished` | yes | integer (minimum `0`, maximum `9007199254740991`) | The stage's nodes claimed and not finished, left out of wall_ms. |
+| `pending` | yes | integer (minimum `0`, maximum `9007199254740991`) | The stage's nodes planned and never claimed, left out of wall_ms, attempts and rounds. |
 | `tokens` | yes | [BenchmarkTokens](#benchmarktokens) |  |
 | `sources` | yes | array of one of `provider_usage`, `adapter_report`, `gateway_count`, `gateway_floor`, `none` (unique items) | The source_of_truth values of the stage's usage measurements, sorted. |
-| `charge` | yes | array of [BenchmarkAmount](#benchmarkamount) | Σ of the settled calls' (ledger.StandingOf) reported cost, per basis and currency. |
-| `outstanding` | yes | array of [BenchmarkAmount](#benchmarkamount) | The unsettled calls' liabilities, per basis and currency: each the larger of its reported cost and its tokens (the gateway's count included) at its route's registry price; never counted as zero. |
+| `charge` | yes | array of [BenchmarkAmount](#benchmarkamount) | Σ of the settled calls' (ledger.StandingOf) cost, per basis and currency: a cash call at no less than its tokens at the route's registry price. |
+| `outstanding` | yes | array of [BenchmarkAmount](#benchmarkamount) | The unsettled and unmeasured calls' liabilities, per basis and currency: each the largest of its reported USD cost, its tokens (the gateway's count included) at its route's registry price, and its ledger liability; never counted as zero. |
 | `attempts` | yes | integer (minimum `0`, maximum `9007199254740991`) |  |
 | `rounds` | yes | integer (minimum `0`, maximum `9007199254740991`) |  |
 | `interventions` | yes | [BenchmarkInterventions](#benchmarkinterventions) |  |

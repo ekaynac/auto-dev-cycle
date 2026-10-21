@@ -519,14 +519,15 @@ Repair rounds count as their kind.
 
 | Metric, per task and per stage | How it is measured |
 |---|---|
-| wall time (s) | **Stage:** from a node's `node.claimed` to its `result.selected`; for `merge`, to `effect.observed` or `effect.reconciled{completed}`; summed over the stage's nodes. **Task:** from `approval.recorded` to the closure's `result.selected`. Controller event times only |
+| wall time (s) | **Stage:** from a node's `node.claimed` to its `result.selected`; for `merge`, to `effect.observed` or `effect.reconciled{completed}`; summed over the stage's nodes. A node not finished is counted `unfinished`, one never claimed `pending`, both apart. **Task:** from `approval.recorded` to the closure's `result.selected`. Controller event times only |
 | tokens: in, out, cache_read, cache_write | Σ each call's `ledger.StandingOf` figure (the gateway's count included) over the calls of the stage's attempts (attempt → node, P8a; a call of two stages is refused), with each call's `source_of_truth` |
-| charge | Σ `cost.amount` of the settled calls per `cost.basis` (the adapter's or provider's, never the gateway's). Outstanding liabilities, the unsettled calls at the larger of their cost and their tokens at the route's registry price, are listed apart, never counted as zero |
+| charge | Σ `cost.amount` of the settled calls per `cost.basis` (the adapter's or provider's, never the gateway's); a settled `cash` call at no less than its standing figure at the route's registry price (`ledger.PriceMicros`), as the ledger never trusts a reported cost (#226 entry 62). Outstanding liabilities, the unsettled or unmeasured calls at the largest of their USD cost, their tokens at the route's registry price and their ledger liability, are listed apart, never counted as zero. No currency is converted: a cash call in another currency (settled, or unsettled with an amount) is refused |
 | attempts, rounds | attempts per stage; review and repair rounds |
 | interventions | operator and supervisor commands attributed to the task, per stage (approvals, answers, rail raises); rescues are counted apart and must be zero in (c) |
 | outcome | the closure's `(outcome, reason)`, or the task's hold |
 
 - **Recorder:** `adc dev bench record --task T… --json` (P25), reading `adc task show` and the ledger over the API, then `internal/bench.Record`, which computes the metrics from them, project-agnostic.
+  `Record` trusts, and the command must pass: as `Task.Calls`, every call `ledger.BoundTo` returns for each lease of the task, each with the attempt it is attributed to; as a call's liability, the `usd_micros` group's amount of `capacity.LiabilitiesOf` once its lease has settled, and the lease's `usd_micros` reservation while it has not; and each route's registry price (a zero price removes the floor).
 - **Output:** `benchmarks/m1/<date>-<GOOS>-<GOARCH>-<checkpoint>.json` (`bench.Path`) (`records/benchmark-run`, P25), one file per checkpoint, with the build commit, schema set,
   routes (executor ids and families) and fixture digests. A summary goes in the exit record.
 - **Re-runs:** every later exit re-runs it with the same command and records the deltas (`bench.Compare`, rendered by `bench.Deltas`). It reports regressions and

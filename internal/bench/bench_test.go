@@ -34,11 +34,20 @@ func measure(t *testing.T, call types.CallID, a types.AttemptID, kind types.Usag
 		SourceOfTruth: src}
 }
 
+// on is the attempts ids, each on executor e.
+func on(e types.ExecutorID, ids ...types.AttemptID) []Attempt {
+	out := make([]Attempt, 0, len(ids))
+	for _, a := range ids {
+		out = append(out, Attempt{ID: a, Executor: e})
+	}
+	return out
+}
+
 const builder, reviewer = types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pa"), types.ExecutorID("exe_01m4tm99haemr8ajyf09v4ytzb")
 
 func meta() Meta {
 	price := types.RegistryPrice{InputUsdMicrosPerMtok: 1_000_000, OutputUsdMicrosPerMtok: 10_000_000}
-	return Meta{Checkpoint: "a", RecordedAt: t0, Arch: "linux/arm64", Commit: types.GitID("git:" + strings.Repeat("a", 40)),
+	return Meta{Checkpoint: "a", RecordedAt: at(3600), Arch: "linux/arm64", Commit: types.GitID("git:" + strings.Repeat("a", 40)),
 		SchemaSet: types.Digest("sha256:" + strings.Repeat("b", 64)),
 		Routes:    []types.BenchmarkRoute{{Executor: builder, Role: "builder", Family: "stub-builder"}, {Executor: reviewer, Role: "reviewer", Family: "stub-reviewer"}},
 		Prices:    map[types.ExecutorID]types.RegistryPrice{builder: price, reviewer: price},
@@ -56,11 +65,11 @@ func worked(t *testing.T) (Task, map[string]types.AttemptID) {
 	c1, c2, c3, c4 := types.CallID(id(t, "cal")), types.CallID(id(t, "cal")), types.CallID(id(t, "cal")), types.CallID(id(t, "cal"))
 	return Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Closed: at(900), Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean,
 		Nodes: []Node{
-			{Stage: "build", Round: 1, Executor: builder, Claimed: at(10), Done: at(110), Attempts: []types.AttemptID{a["b1"], a["b1x"]}},
+			{Stage: "build", Round: 1, Claimed: at(10), Done: at(110), Attempts: on(builder, a["b1"], a["b1x"])},
 			{Stage: "accept", Round: 1, Claimed: at(110), Done: at(111)},
-			{Stage: "build", Round: 2, Executor: builder, Claimed: at(200), Done: at(260), Attempts: []types.AttemptID{a["b2"]}},
+			{Stage: "build", Round: 2, Claimed: at(200), Done: at(260), Attempts: on(builder, a["b2"])},
 			{Stage: "gate", Round: 1, Claimed: at(300), Done: at(340)},
-			{Stage: "review", Round: 1, Executor: reviewer, Claimed: at(400), Done: at(430), Attempts: []types.AttemptID{a["r"]}},
+			{Stage: "review", Round: 1, Claimed: at(400), Done: at(430), Attempts: on(reviewer, a["r"])},
 			{Stage: "review", Round: 1, Claimed: at(440), Done: at(450)}, // a replacement keeps its round
 		},
 		Usage: []types.UsageMeasurement{
@@ -103,12 +112,12 @@ func many(t *testing.T, tk *Task, a types.AttemptID, in, micros int64) {
 func TestRecord(t *testing.T) {
 	tk, _ := worked(t)
 	m := meta()
-	m.RecordedAt = t0.In(time.FixedZone("TRT", 3*3600)) // recorded in UTC
+	m.RecordedAt = at(3600).In(time.FixedZone("TRT", 11*3600)) // recorded in UTC (the 21st at +11)
 	run, err := Record(m, []Task{tk})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.RecordedAt != "2026-10-20T12:00:00Z" || Path(run) != "benchmarks/m1/2026-10-20-linux-arm64-a.json" {
+	if run.RecordedAt != "2026-10-20T13:00:00Z" || Path(run) != "benchmarks/m1/2026-10-20-linux-arm64-a.json" {
 		t.Errorf("recorded at %s, to %s", run.RecordedAt, Path(run))
 	}
 	raw, err := json.Marshal(run)
@@ -180,11 +189,12 @@ func strs(ss []types.BenchmarkStageStage) (out []string) {
 }
 
 // A held task: its hold, no closure and no wall time; an unfinished node is
-// counted apart from the stage's wall time.
+// counted apart from the stage's wall time, and a node never claimed (Opus
+// r2 M3: admission-held) apart as pending, in no round.
 func TestRecordHeld(t *testing.T) {
 	tk, _ := worked(t)
 	tk.Closed, tk.Hold = time.Time{}, "budget_rail"
-	tk.Nodes = append(tk.Nodes, Node{Stage: "build", Round: 3, Claimed: at(500)})
+	tk.Nodes = append(tk.Nodes, Node{Stage: "build", Round: 3, Claimed: at(500)}, Node{Stage: "build", Round: 4})
 	run, err := Record(meta(), []Task{tk})
 	if err != nil {
 		t.Fatal(err)
@@ -193,10 +203,10 @@ func TestRecordHeld(t *testing.T) {
 	if got.WallMs != nil || got.Outcome != nil || got.Reason != nil || got.Hold == nil || *got.Hold != "budget_rail" {
 		t.Fatalf("a held task: %+v", got)
 	}
-	if b := got.Stages[0]; b.Unfinished != 1 || b.WallMs != 160_000 || b.Rounds != 3 {
+	if b := got.Stages[0]; b.Unfinished != 1 || b.Pending != 1 || b.WallMs != 160_000 || b.Rounds != 3 {
 		t.Errorf("an unfinished node: %+v", b)
 	}
-	if s := Summary(run); !strings.Contains(s, "**held: budget_rail**") || !strings.Contains(s, "| | build | 160.000 | 1 |") {
+	if s := Summary(run); !strings.Contains(s, "**held: budget_rail**") || !strings.Contains(s, "| | build | 160.000 | 1 (+1 pending) |") {
 		t.Errorf("the summary of a held task:\n%s", s)
 	}
 	raw, _ := json.Marshal(run)
@@ -218,7 +228,7 @@ func TestRecordRefuses(t *testing.T) {
 			(*ts)[0].Usage = append((*ts)[0].Usage, measure(t, types.CallID(id(t, "cal")), types.AttemptID(id(t, "att")), "final", 0, 1, 1, 1, "adapter_report"))
 		}},
 		{"an attempt of two nodes", "two nodes", func(_ *Meta, ts *[]Task, a map[string]types.AttemptID) {
-			(*ts)[0].Nodes[1].Attempts, (*ts)[0].Nodes[1].Executor = []types.AttemptID{a["b1"]}, builder
+			(*ts)[0].Nodes[1].Attempts = on(builder, a["b1"])
 		}},
 		{"an unknown stage", "unknown stage", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) { (*ts)[0].Nodes[1].Stage = "deploy" }},
 		{"done before it was claimed", "before it was claimed", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) { (*ts)[0].Nodes[1].Done = at(100) }},
@@ -259,14 +269,14 @@ func TestRecordRefuses(t *testing.T) {
 		}},
 		{"a call on two executors", "two executors", func(_ *Meta, ts *[]Task, a map[string]types.AttemptID) {
 			x := types.AttemptID(id(t, "att"))
-			(*ts)[0].Nodes[5].Attempts, (*ts)[0].Nodes[5].Executor = []types.AttemptID{x}, builder
+			(*ts)[0].Nodes[5].Attempts = on(builder, x)
 			(*ts)[0].Usage = append((*ts)[0].Usage, gw((*ts)[0].Usage[3].Call, x))
 		}},
 		{"a settled call in no currency", "the run", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) {
 			(*ts)[0].Usage[0].Cost.Currency = ""
 		}},
 		{"a node on no route's executor", "no route's", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) {
-			(*ts)[0].Nodes[0].Executor = "exe_01m4tm99haemqt8es2qfbwj8pb"
+			(*ts)[0].Nodes[0].Attempts[0].Executor = "exe_01m4tm99haemqt8es2qfbwj8pb"
 		}},
 		{"a route without a price", "no price", func(m *Meta, _ *[]Task, _ map[string]types.AttemptID) { delete(m.Prices, reviewer) }},
 		{"an empty run", "no tasks", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) { *ts = nil }},
@@ -277,12 +287,12 @@ func TestRecordRefuses(t *testing.T) {
 		}},
 		{"an attempt in two tasks", "twice", func(_ *Meta, ts *[]Task, a map[string]types.AttemptID) {
 			*ts = append(*ts, Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Hold: "budget_rail",
-				Nodes: []Node{{Stage: "build", Executor: builder, Claimed: at(1), Attempts: []types.AttemptID{a["b2"]}}}})
+				Nodes: []Node{{Stage: "build", Claimed: at(1), Attempts: on(builder, a["b2"])}}})
 		}},
 		{"a call in two tasks", "twice", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) {
 			x := types.AttemptID(id(t, "att"))
 			*ts = append(*ts, Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Hold: "budget_rail",
-				Nodes: []Node{{Stage: "build", Executor: builder, Claimed: at(1), Attempts: []types.AttemptID{x}}},
+				Nodes: []Node{{Stage: "build", Claimed: at(1), Attempts: on(builder, x)}},
 				Usage: []types.UsageMeasurement{gw((*ts)[0].Usage[0].Call, x)}, Calls: []Call{{ID: (*ts)[0].Usage[0].Call, Attempt: x}}})
 		}},
 		// The review of #313 by Astra (docs/reviews/2026-10-21-pr313-astra.md).
@@ -323,10 +333,33 @@ func TestRecordRefuses(t *testing.T) {
 		{"M5: a priced executor no route declares", "no route's", func(m *Meta, ts *[]Task, _ map[string]types.AttemptID) {
 			x := types.ExecutorID("exe_01m4tm99haemqt8es2qfbwj8pb")
 			m.Prices[x] = m.Prices[builder]
-			(*ts)[0].Nodes[0].Executor = x
+			(*ts)[0].Nodes[0].Attempts[0].Executor = x
 		}},
 		{"M5: a route declared twice, conflicting", "conflicting", func(m *Meta, _ *[]Task, _ map[string]types.AttemptID) {
 			m.Routes = append(m.Routes, types.BenchmarkRoute{Executor: builder, Role: "reviewer", Family: "stub-builder"})
+		}},
+		// Opus's re-check of #313 (docs/reviews/2026-10-21-pr313-opus-r2.md).
+		{"M1: a settled cash call in EUR", "a settled cash EUR", func(_ *Meta, ts *[]Task, a map[string]types.AttemptID) {
+			c := types.CallID(id(t, "cal"))
+			f, g := measure(t, c, a["r"], "final", 0, 100, 10, 300, "adapter_report"), measure(t, c, a["r"], "delta", 0, 100, 10, 0, "gateway_count")
+			f.Cost.Currency, g.Cost.Currency = "EUR", "EUR"
+			(*ts)[0].Calls = append((*ts)[0].Calls, Call{ID: c, Attempt: a["r"]})
+			(*ts)[0].Usage = append((*ts)[0].Usage, f, g)
+		}},
+		{"M3: an attempted node never claimed", "no claimed time", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) {
+			(*ts)[0].Nodes[2].Claimed, (*ts)[0].Nodes[2].Done = time.Time{}, time.Time{}
+		}},
+		{"L1: closed after the run was recorded", "after the run was recorded", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) { (*ts)[0].Closed = at(3601) }},
+		{"L1: a node done after the run was recorded", "after the run was recorded", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) { (*ts)[0].Nodes[5].Done = at(3601) }},
+		{"L1: a task's duration past the maximum", "past the maximum", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) {
+			(*ts)[0].Approved = time.Date(1, 1, 1, 0, 0, 1, 0, time.UTC)
+		}},
+		{"L1: a node's duration past the maximum", "past the maximum", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) {
+			(*ts)[0].Nodes[3].Claimed = time.Date(1, 1, 1, 0, 0, 1, 0, time.UTC)
+		}},
+		{"L2: a negative cost", "negative cost", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) { (*ts)[0].Usage[1].Cost.AmountMicros = -1 }},
+		{"L3: an attempt on no route's executor beside one on a route", "no route's", func(_ *Meta, ts *[]Task, _ map[string]types.AttemptID) {
+			(*ts)[0].Nodes[0].Attempts[1].Executor = "exe_01m4tm99haemqt8es2qfbwj8pb"
 		}},
 		{"a run its schema refuses", "the run", func(m *Meta, _ *[]Task, _ map[string]types.AttemptID) { m.Arch = "linux_arm64" }},
 	} {
@@ -336,6 +369,64 @@ func TestRecordRefuses(t *testing.T) {
 		if _, err := Record(m, ts); err == nil || !strings.Contains(err.Error(), row.want) {
 			t.Errorf("%s: %v", row.name, err)
 		}
+	}
+}
+
+// A settled cash call is charged no less than its standing figure at its
+// route's registry price (Opus r2 M1: the ledger never trusts a reported
+// cost); a settled call on another basis keeps its reported cost.
+func TestRecordSettledFloor(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		usage  func(types.CallID, types.AttemptID) []types.UsageMeasurement
+		basis  types.BenchmarkAmountBasis
+		micros int64
+	}{
+		{"a zero final the count bears out", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			return []types.UsageMeasurement{measure(t, c, a, "final", 0, 2000, 10, 0, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count")}
+		}, "cash", 2100},
+		{"a zero provider reconciliation below the count", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			return []types.UsageMeasurement{measure(t, c, a, "provider_reconciliation", 0, 0, 0, 0, "provider_usage"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count")}
+		}, "cash", 2100},
+		{"a reported cost above the price kept", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			return []types.UsageMeasurement{measure(t, c, a, "final", 0, 2000, 10, 9000, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count")}
+		}, "cash", 9000},
+		{"a zero subscription-equivalent final", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			m := measure(t, c, a, "final", 0, 2000, 10, 0, "adapter_report")
+			m.Cost.Basis = "subscription_equivalent"
+			return []types.UsageMeasurement{m, measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count")}
+		}, "subscription_equivalent", 0},
+	} {
+		a, c := types.AttemptID(id(t, "att")), types.CallID(id(t, "cal"))
+		tk := Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Hold: "budget_rail",
+			Nodes: []Node{{Stage: "review", Claimed: at(1), Attempts: on(reviewer, a)}}, Usage: row.usage(c, a), Calls: []Call{{ID: c, Attempt: a}}}
+		run, err := Record(meta(), []Task{tk})
+		if err != nil {
+			t.Fatalf("%s: %v", row.name, err)
+		}
+		r := run.Tasks[0].Stages[0]
+		if r.Tokens.In != 2000 || r.Tokens.Out != 10 || len(r.Outstanding) != 0 ||
+			len(r.Charge) != 1 || r.Charge[0] != (types.BenchmarkAmount{Basis: row.basis, Currency: "USD", AmountMicros: row.micros, Calls: 1}) {
+			t.Errorf("%s: %+v", row.name, r)
+		}
+	}
+}
+
+// Opus r2 L3: each attempt carries its executor, so a node's replacement
+// attempt on another route is priced at that route's price.
+func TestRecordAttemptExecutor(t *testing.T) {
+	m := meta()
+	m.Prices[reviewer] = types.RegistryPrice{InputUsdMicrosPerMtok: 2_000_000, OutputUsdMicrosPerMtok: 20_000_000}
+	a, b, c := types.AttemptID(id(t, "att")), types.AttemptID(id(t, "att")), types.CallID(id(t, "cal"))
+	tk := Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Hold: "budget_rail",
+		Nodes: []Node{{Stage: "review", Claimed: at(1), Attempts: append(on(builder, a), on(reviewer, b)...)}},
+		Usage: []types.UsageMeasurement{measure(t, c, b, "delta", 0, 700, 70, 0, "adapter_report")}, Calls: []Call{{ID: c, Attempt: b}}}
+	run, err := Record(m, []Task{tk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := run.Tasks[0].Stages[0]; len(r.Outstanding) != 1 || r.Outstanding[0].AmountMicros != 2800 || r.Attempts != 2 {
+		t.Errorf("the replacement attempt's price: %+v", r)
 	}
 }
 
@@ -374,7 +465,7 @@ func TestRecordStanding(t *testing.T) {
 		a := types.AttemptID(id(t, "att"))
 		c := types.CallID(id(t, "cal"))
 		tk := Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Hold: "budget_rail",
-			Nodes: []Node{{Stage: "review", Executor: reviewer, Claimed: at(1), Attempts: []types.AttemptID{a}}}, Usage: row.usage(c, a), Calls: []Call{{ID: c, Attempt: a, Liability: row.liability}}}
+			Nodes: []Node{{Stage: "review", Claimed: at(1), Attempts: on(reviewer, a)}}, Usage: row.usage(c, a), Calls: []Call{{ID: c, Attempt: a, Liability: row.liability}}}
 		run, err := Record(meta(), []Task{tk})
 		if err != nil {
 			t.Fatalf("%s: %v", row.name, err)
@@ -396,7 +487,7 @@ func TestRecordBasis(t *testing.T) {
 	count := measure(t, c, a, "delta", 0, 1000, 100, 0, "gateway_count")
 	for _, usage := range [][]types.UsageMeasurement{{final, count}, {count, final}} {
 		tk := Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Hold: "budget_rail",
-			Nodes: []Node{{Stage: "build", Executor: builder, Claimed: at(1), Attempts: []types.AttemptID{a}}}, Usage: usage, Calls: []Call{{ID: c, Attempt: a}}}
+			Nodes: []Node{{Stage: "build", Claimed: at(1), Attempts: on(builder, a)}}, Usage: usage, Calls: []Call{{ID: c, Attempt: a}}}
 		run, err := Record(meta(), []Task{tk})
 		if err != nil {
 			t.Fatal(err)
@@ -434,7 +525,8 @@ func TestCompare(t *testing.T) {
 		got = append(got, string(d.Stage)+":"+d.Metric+":"+d.Was+"->"+d.Is)
 	}
 	want := []string{":outcome:empty/completed_clean->held: budget_rail", "build:wall_ms:160000->200000",
-		"review:tokens.in:2000->2010", "review:tokens.out:10->11", "review:charge_micros cash USD:5000->5007", ":task:absent->present"}
+		// The added call reports 7 micros, floored at its price, 10 + 10 micros.
+		"review:tokens.in:2000->2010", "review:tokens.out:10->11", "review:charge_micros cash USD:5000->5020", ":task:absent->present"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("deltas:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
@@ -461,10 +553,11 @@ func TestCompareMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	x := types.AttemptID(id(t, "att"))
-	tk.Nodes = append(tk.Nodes, Node{Stage: "build", Round: 3, Executor: builder, Claimed: at(500), Attempts: []types.AttemptID{x}})
+	tk.Nodes = append(tk.Nodes, Node{Stage: "build", Round: 3, Claimed: at(500), Attempts: on(builder, x)})
 	cx := types.CallID(id(t, "cal"))
 	tk.Usage, tk.Calls = append(tk.Usage, measure(t, cx, x, "delta", 0, 100, 10, 300, "adapter_report")), append(tk.Calls, Call{ID: cx, Attempt: x})
 	tk.Interventions = append(tk.Interventions, Intervention{Stage: "review", Kind: Answer}, Intervention{Kind: Rescue})
+	tk.Nodes = append(tk.Nodes, Node{Stage: "gate", Round: 2}) // planned, never claimed
 	cur, err := Record(meta(), []Task{tk})
 	if err != nil {
 		t.Fatal(err)
@@ -474,7 +567,7 @@ func TestCompareMetrics(t *testing.T) {
 		got = append(got, string(d.Stage)+":"+d.Metric+":"+d.Was+"->"+d.Is)
 	}
 	want := []string{":rescues:2->3", "build:unfinished:0->1", "build:attempts:3->4", "build:rounds:2->3", "build:tokens.in:2200->2300",
-		"build:tokens.out:220->230", "build:outstanding_micros cash USD:2100->2400", "review:interventions:1->2"}
+		"build:tokens.out:220->230", "build:outstanding_micros cash USD:2100->2400", "gate:pending:0->1", "review:interventions:1->2"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("deltas:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
