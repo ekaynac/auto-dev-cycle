@@ -94,16 +94,14 @@ MUTS = [
     ("every id redacted", R, 'len(v) >= minRedacted && ', ''),
     ("a cut id's ellipsis kept", R, '\t\tid = strings.TrimSuffix(id, "…")\n', ''),
     ("an id's segments not redacted", R, '\t\tfor _, seg := range strings.Split(id, "/") {\n\t\t\tadd(seg)\n\t\t}\n', ''),
-    ("an id's words not redacted", R, '[]string{id, strings.ReplaceAll(id, "_", " ")}', '[]string{id}'),
-    ("format characters kept in titles", R, '\t\tcase unicode.Is(unicode.Cf, r):\n\t\tcase unicode.IsControl(r):', '\t\tcase unicode.IsControl(r):'),
-    ("control characters kept in titles", R, 'case unicode.IsControl(r):\n\t\t\tout.WriteByte', 'case false:\n\t\t\tout.WriteByte'),
-    # Ids and titles normalized alike, Unicode-aware (Astra #321 L6).
-    ("ids matched in their case", R, 'f := cases.Fold().String(string(q))', 'f := string(q)'),
-    ("a simple lower case for a full fold", R, 'f := cases.Fold().String(string(q))', 'f := string(unicode.ToLower(q))'),
-    ("no compatibility decomposition", R, 'range norm.NFKD.String(string(r))', 'range string(r)'),
-    ("white space runs not one space", R, 'case unicode.IsSpace(r) || unicode.IsControl(r):', 'case unicode.IsControl(r):'),
-    ("a title not UTF-8 matched in part", R, 'if !utf8.ValidString(title) {', 'if false {'),
-    ("a match's runes not all redacted", R, '\t\tfor o := first; o <= last; {', '\t\tfor o := first; o < last; {'),
+    ("control characters kept in titles", R, 'case c < \' \' || c == 0x7f:', 'case false:'),
+    # Ids and titles normalized alike, ASCII only, fail closed (Astra #321 L6).
+    ("ids matched in their case", R, "c += 'a' - 'A'", 'c += 0'),
+    ("white space runs not one space", R, '\t\t\tif !space {\n', '\t\t\tif true {\n'),
+    ("separators not spaces", R, " || c == '_' || c == '-':", ':'),
+    ("a title not ASCII matched in part", R, 'case c >= 0x80:\n\t\t\treturn "", nil, false', 'case false:\n\t\t\treturn "", nil, false'),
+    ("an id not ASCII ignored", R, 'all = all && ok', 'all = true'),
+    ("a match's bytes not all redacted", R, 'for o := first; o <= last; o++ {', 'for o := first; o < last; o++ {'),
 ]
 
 

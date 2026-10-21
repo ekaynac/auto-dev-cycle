@@ -26,9 +26,10 @@
 //     entry 94(2), the operator's decision; 22a-6L): each finding's
 //     severity and title only, every gate id of at least minRedacted
 //     bytes (Facts.GateIDs, which a no_go requires; its "/" segments, its
-//     words; ids and titles normalized alike, Unicode-aware: normalize) in
-//     a title replaced by "[test]", and control and format characters
-//     dropped; the view names its decision and round, so each round's
+//     words; ids and titles normalized alike, ASCII only: normalize; a
+//     title that is not ASCII, or every title when an id is not, is
+//     redacted whole) in a title replaced by "[test]", and control
+//     characters made spaces; the view names its decision and round, so each round's
 //     view is its own ref; it is a view ref whose lineage is the
 //     decision's (truthful): graph.Records marks it a BuilderSafe
 //     candidate, and intent honours it only when its bytes are this view
@@ -51,7 +52,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -62,8 +62,6 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab/exitmap"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -279,10 +277,10 @@ func ViewBytes(d Decision, decision string, round int64, gateIDs []string) ([]by
 	if gateIDs == nil {
 		return nil, errors.New("review: no gate ids supplied for the findings view (an empty list: none)")
 	}
-	ids := redacted(gateIDs)
+	ids, all := redacted(gateIDs)
 	findings := []viewFinding{}
 	for _, x := range d.Findings {
-		findings = append(findings, viewFinding{x.Severity, redact(x.Title, ids)})
+		findings = append(findings, viewFinding{x.Severity, redact(x.Title, ids, all)})
 	}
 	return json.Marshal(viewRecord{viewSchema, decision, round, findings})
 }
@@ -313,18 +311,19 @@ func CheckView(view, dec []byte, decision string, gateIDs []string) error {
 	return err
 }
 
-// redacted are the marks a view's titles lose, normalized (normalize), the
-// longest first (no mark redacted inside another's), each at least
-// minRedacted bytes (Opus #321 L2): every gate id, its report's ellipsis
-// cut off, each of its "/" segments, and each of these with its
-// underscores as spaces (a test name's words).
-func redacted(gateIDs []string) []string {
-	var ids []string
+// redacted are the marks a view's titles lose, normalized (normalize, so
+// a test name's words, "_" or "-" apart, are its id's), the longest first
+// (no mark redacted inside another's), each at least minRedacted bytes
+// (Opus #321 L2): every gate id, its report's ellipsis cut off, and each
+// of its "/" segments. all is false when an id is not ASCII, so could not
+// be normalized: then every title is redacted whole (fail closed).
+func redacted(gateIDs []string) (ids []string, all bool) {
+	all = true
 	add := func(id string) {
-		for _, v := range []string{id, strings.ReplaceAll(id, "_", " ")} {
-			if v, _ = normalize(v); len(v) >= minRedacted && !slices.Contains(ids, v) {
-				ids = append(ids, v)
-			}
+		v, _, ok := normalize(id)
+		all = all && ok
+		if len(v) >= minRedacted && !slices.Contains(ids, v) {
+			ids = append(ids, v)
 		}
 	}
 	for _, id := range gateIDs {
@@ -335,60 +334,52 @@ func redacted(gateIDs []string) []string {
 		}
 	}
 	slices.SortFunc(ids, func(a, b string) int { return len(b) - len(a) })
-	return ids
+	return ids, all
 }
 
 // normalize is s as ids and titles are both matched, the one function for
-// both (Astra #321 L6): each rune in its compatibility decomposition
-// (NFKD: a full-width or ligature form is its letters), its combining
-// marks dropped, case-folded in full (Unicode: a fold that changes the
-// byte length is kept, "ß" is "ss"); a format character dropped (a
-// zero-width space splits no id); each run of white space and control
-// characters one space. at[i] is the byte offset in s of the rune that
-// normalize's byte i came from.
-func normalize(s string) (n string, at []int) {
-	var b strings.Builder
+// both (Astra #321 L6), standard library only, so ASCII only: each letter
+// in lower case, and each run of white space, control characters and the
+// separators '_' and '-' one space. at[i] is the byte offset in s of the
+// byte normalize's byte i came from. ok is false when s holds a byte that
+// is not ASCII: such a string is not normalized (its matches cannot be
+// shown complete), and the caller fails closed.
+func normalize(s string) (n string, at []int, ok bool) {
+	b := make([]byte, 0, len(s))
 	space := false
-	for o, r := range s {
+	for o := range len(s) {
+		c := s[o]
 		switch {
-		case unicode.Is(unicode.Cf, r):
-			continue
-		case unicode.IsSpace(r) || unicode.IsControl(r):
+		case c >= 0x80:
+			return "", nil, false
+		case c <= ' ' || c == 0x7f || c == '_' || c == '-':
 			if !space {
-				b.WriteByte(' ')
-				at = append(at, o)
+				b, at = append(b, ' '), append(at, o)
 			}
 			space = true
 			continue
+		case 'A' <= c && c <= 'Z':
+			c += 'a' - 'A'
 		}
 		space = false
-		for _, q := range norm.NFKD.String(string(r)) {
-			if unicode.Is(unicode.Mn, q) || unicode.Is(unicode.Cf, q) {
-				continue
-			}
-			f := cases.Fold().String(string(q))
-			b.WriteString(f)
-			for range len(f) {
-				at = append(at, o)
-			}
-		}
+		b, at = append(b, c), append(at, o)
 	}
-	return b.String(), at
+	return string(b), at, true
 }
 
 // redact is title for the view: every mark of ids (redacted) found in the
-// title normalized (normalize) and each rune of the title it covers
+// title normalized (normalize), and every byte of the title it covers,
 // replaced, as one "[test]" a match; every other control character a
-// space and format character gone (no newline, fence break or bidi
-// override reaches the repair builder's renderer: Opus #321 L3). A title
-// that is not valid UTF-8, which cannot be normalized, is redacted whole
-// (fail closed).
-func redact(title string, ids []string) string {
-	if !utf8.ValidString(title) {
+// space (no newline or fence break reaches the repair builder's renderer:
+// Opus #321 L3). A title holding any character that is not ASCII, which
+// normalize cannot fold, and every title when an id could not be
+// normalized (all false), is redacted whole: fail closed.
+func redact(title string, ids []string, all bool) string {
+	n, at, ok := normalize(title)
+	if !ok || !all {
 		return "[test]"
 	}
-	n, at := normalize(title)
-	covered, starts := map[int]bool{}, map[int]bool{}
+	covered, starts := make([]bool, len(title)), make([]bool, len(title))
 	for i := 0; i < len(n); {
 		j := slices.IndexFunc(ids, func(id string) bool { return strings.HasPrefix(n[i:], id) })
 		if j < 0 {
@@ -397,29 +388,23 @@ func redact(title string, ids []string) string {
 		}
 		first, last := at[i], at[i+len(ids[j])-1]
 		starts[first] = true
-		for o := first; o <= last; {
+		for o := first; o <= last; o++ {
 			covered[o] = true
-			_, w := utf8.DecodeRuneInString(title[o:])
-			o += w
 		}
 		i += len(ids[j])
 	}
 	var out strings.Builder
-	prev := false // the last rune written was covered
-	for o, r := range title {
+	for o := range len(title) {
+		c := title[o]
 		switch {
 		case covered[o]:
-			if !prev || starts[o] {
+			if o == 0 || !covered[o-1] || starts[o] {
 				out.WriteString("[test]")
 			}
-			prev = true
-		case unicode.Is(unicode.Cf, r):
-		case unicode.IsControl(r):
+		case c < ' ' || c == 0x7f:
 			out.WriteByte(' ')
-			prev = false
 		default:
-			out.WriteRune(r)
-			prev = false
+			out.WriteByte(c)
 		}
 	}
 	return out.String()
