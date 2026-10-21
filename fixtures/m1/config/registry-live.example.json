@@ -23,7 +23,8 @@
       "credential_ref": "api-reviewer",
       "group": "rg_01m4tm99haemts9wqw2ch5m488",
       "cost_basis": "cash",
-      "price": {"input_usd_micros_per_mtok": 3000000, "output_usd_micros_per_mtok": 15000000}
+      "price": {"input_usd_micros_per_mtok": 3000000, "output_usd_micros_per_mtok": 15000000},
+      "footprint_prior": {"context_tokens": 32000, "expected_turns": 20}
     }
   ]
 }

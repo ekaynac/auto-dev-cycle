@@ -85,33 +85,28 @@ func priced(micros int64, err error) int64 {
 
 // usdRail is the budget check of placing res for card's node on executor:
 // a pass, or the rail it reaches and that rail's hold.
-func (d Dispatcher) usdRail(tx *eventstore.Tx, card Card, executor types.ExecutorID, res types.LeaseReservationsItem) (types.PlacementCheck, *types.NodeHold, error) {
+func (d Dispatcher) usdRail(tx *eventstore.Tx, card Card, executor types.ExecutorID, res types.LeaseReservationsItem, read *spend) (types.PlacementCheck, *types.NodeHold, error) {
 	pass := types.PlacementCheck{Outcome: types.OutcomeEmpty, Reason: vocab.ReasonCompletedClean}
-	task, err := graph.TaskOf(tx, card.Node)
-	if err != nil {
-		return pass, nil, err
-	}
 	e, _ := d.Registry.Executor(executor)
 	if e.Price == nil {
 		pass.Detail = "an unpriced executor"
 		return pass, nil, nil
 	}
-	caps := graph.DefaultCaps
-	if d.Rails != nil {
-		if caps, err = d.Rails(tx, task); err != nil {
+	var b spend
+	if read != nil { // the spend reservation read (Opus 22a-5c-1 L2)
+		b = *read
+	} else {
+		var err error
+		if b, err = d.budget(tx, card); err != nil {
 			return pass, nil, err
 		}
 	}
-	if caps.PerTaskMicros < 0 || caps.PerDayMicros < 0 {
-		return types.PlacementCheck{Outcome: types.OutcomeCouldNotRun, Reason: vocab.ReasonPreconditionFailed,
-			Detail: "no USD rails: a priced executor is placed only under them"}, nil, nil
+	if b.unrailed { // configuration: the profile states no USD rail (Opus 22a-5c-1 M1)
+		r, err := configRefusal("budget", "profile "+string(card.Project), "no USD rails: a priced executor is placed only under them")
+		return r.PlacementCheck, r.Hold, err
 	}
+	caps, perTask, perDay, day := b.caps, b.perTask, b.perDay, b.day
 	next := reserved(res, e.Price)
-	day := tx.Now().UTC().Format(time.DateOnly)
-	perTask, perDay, err := spent(tx, task, card.Project, day)
-	if err != nil {
-		return pass, nil, err
-	}
 	for _, r := range []struct {
 		rail       string
 		cap, spent int64

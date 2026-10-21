@@ -16,6 +16,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/capability"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity"
 	"github.com/ekaynac/auto-dev-cycle/internal/capacity/ledger"
+	"github.com/ekaynac/auto-dev-cycle/internal/dispatch"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
 	"github.com/ekaynac/auto-dev-cycle/internal/identity"
@@ -68,14 +69,22 @@ const reconcileEvery = 5 * time.Second
 // reconcileEvery): it admits only while the admission capability is active
 // (Opus #312 L4), and evaluates the admitted task's nodes only once launch
 // is active, under adcd's Env (env).
-func reconciler(d *Daemon, reg registry.Registry, every time.Duration, logw io.Writer) *reconcile.Loop {
+func reconciler(d *Daemon, reg registry.Registry, images dispatch.Images, every time.Duration, logw io.Writer) *reconcile.Loop {
 	admission, _ := capability.Of("admission")
 	launch, _ := capability.Of("launch")
 	if every == 0 {
 		every = reconcileEvery
 	}
-	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: env(d, reg)}
+	x := reconcile.Executor{Store: d.store, System: d.system, Kinds: nodeKinds(), Env: env(d, reg), Placer: placerOf(reg, images)}
 	return reconcile.NewLoop(x, reconcile.Gates{Admits: admission.Active(), Evaluates: launch.Active()}, every, logw)
+}
+
+// placerOf is adcd's placer over reg: the task's rails (authority.Rails)
+// and, for the launch, the sandbox's images; the gateway confirms
+// credentials once the attempt run constructs it (22a-5c-2), so until then
+// a credentialed launch misses (fail closed).
+func placerOf(reg registry.Registry, images dispatch.Images) placer {
+	return placer{d: dispatch.Dispatcher{Registry: reg, Images: images, Rails: authority.Rails}}
 }
 
 // env is what evaluation reads in adcd (P22a-5b; Opus #312 L5): the

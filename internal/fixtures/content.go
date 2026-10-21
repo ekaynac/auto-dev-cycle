@@ -52,7 +52,8 @@ func (g *graphFix) runIn(n types.NodeID, setting map[string]string, foreign bool
 // nextAttempt starts n's next attempt under a fresh lease on n's unit (M1
 // P8a), with its result submitted (finishing): its first, or the successor
 // of its last, finishing at its second revision, which is sealed with the
-// minimal record, then superseded.
+// minimal record, its lease revoked and settled (a replacement waits for
+// its predecessor's lease, #226 entry 83), then superseded.
 func (g *graphFix) nextAttempt(n types.NodeID) (types.AttemptID, error) {
 	l, att, err := freshLease()
 	l.Unit = graph.UnitOf(n)
@@ -78,6 +79,8 @@ func (g *graphFix) nextAttempt(n types.NodeID) (types.AttemptID, error) {
 			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 				return lease.SealMinimal(tx, last, 2, graph.Units{}, g.blobs, nil, types.ActorID(g.actor))
 			},
+			endLease(last, lease.LeaseEvent{Kind: lease.Revoked, Reason: "grant_revoked"}),
+			endLease(last, lease.LeaseEvent{Kind: lease.Settled, Settlement: &types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: []types.CallID{}}}),
 			func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 				return lease.SupersedeAttempt(tx, last, 3, l.ID, 2, att, base)
 			})
@@ -249,4 +252,19 @@ func (g *graphFix) artifact(name string) (types.Ref, error) {
 // hasRef: refs hold r, by identity.
 func hasRef(refs []types.Ref, r types.Ref) bool {
 	return slices.ContainsFunc(refs, func(x types.Ref) bool { return x.IdentityDigest == r.IdentityDigest })
+}
+
+// endLease applies e to the lease of attempt a at its revision.
+func endLease(a types.AttemptID, e lease.LeaseEvent) func(*eventstore.Tx) ([]eventstore.Event, error) {
+	return func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		at, _, _, err := lease.AttemptOf(tx, a)
+		if err != nil {
+			return nil, err
+		}
+		_, rev, _, err := lease.LeaseOf(tx, at.Lease)
+		if err != nil {
+			return nil, err
+		}
+		return lease.ChangeLease(tx, at.Lease, rev, e, nil)
+	}
 }

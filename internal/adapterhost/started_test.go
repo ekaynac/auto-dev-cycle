@@ -120,6 +120,16 @@ func TestTheReplacementRunsUnderItsToken(t *testing.T) {
 	w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.SealMinimal(tx, attID, 2, boundUnit{}, w.host.Blobs, nil, actID)
 	})
+	for _, e := range []lease.LeaseEvent{{Kind: lease.Revoked, Reason: "grant_revoked"}, // the old lease ends first (#226 entry 83)
+		{Kind: lease.Settled, Settlement: &types.LeaseSettlementValue{Calls: []types.CallID{}, Liabilities: []types.CallID{}}}} {
+		w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			_, rev, _, err := lease.LeaseOf(tx, leaID)
+			if err != nil {
+				return nil, err
+			}
+			return lease.ChangeLease(tx, leaID, rev, e, nil)
+		})
+	}
 	second, replacement := types.LeaseID("lea_01m3250v57fhm9v1z9xd1wk8gy"), types.AttemptID("att_01m3250vnfeyrv67x6w0ddqr6b")
 	w.secondLease(second)
 	w.do(func(tx *eventstore.Tx) ([]eventstore.Event, error) {

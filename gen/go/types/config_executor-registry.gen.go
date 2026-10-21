@@ -43,6 +43,15 @@ type RegistryExecutor struct {
 	CostBasis RegistryExecutorCostBasis `json:"cost_basis"`
 	// The price basis of the USD rails; null exactly when the cost basis is free or local (zero cost).
 	Price *RegistryPrice `json:"price"`
+	// The operator's prior of one attempt's footprint on this executor (#226 entries 103, 120): the lease's footprint, and a direct API's token reservation, at most context_tokens × expected_turns, shrunk to what the USD rails leave but never below context_tokens (one turn). Optional: a direct_api executor without it is refused at placement (precondition_failed), its node held source_invalid_config. A local endpoint reserves a slot.
+	FootprintPrior *FootprintPrior `json:"footprint_prior,omitempty"`
+}
+
+type FootprintPrior struct {
+	// The tokens one turn's context holds, at most.
+	ContextTokens int64 `json:"context_tokens"`
+	// The turns one attempt is expected to take.
+	ExpectedTurns int64 `json:"expected_turns"`
 }
 
 // RegistryDestinationKind: M1 admits direct_api and local_endpoint (no credential; a loopback, RFC 1918 or fc00::/7 IP literal; the only kind whose trust class can be own); broker and governed_upstream (M2 or later) are refused.

@@ -230,13 +230,14 @@ func Ended(s types.LeaseState) bool {
 	return s == types.LeaseStateSettled || s == types.LeaseStateReleased
 }
 
-// Replaceable refuses to replace an attempt whose lease old is settling (or
-// restoring): its settlement comes first (P21: X3's step 4 before steps 5
-// and 6). SupersedeAttempt checks it at admission; replay does not. An
-// active old lease is M0's continuation, which its contract fixtures keep;
-// dispatch.placed refuses it for M1's placement.
+// Replaceable refuses to replace an attempt whose lease old has not ended
+// (settled or released): its settlement comes first (P21: X3's step 4
+// before steps 5 and 6), and an active old lease is refused too, so a
+// replacement never runs beside its predecessor's lease (#226 entry 83;
+// I8's admission row). SupersedeAttempt checks it at admission; replay does
+// not.
 func Replaceable(old types.Lease) error {
-	if !Ended(old.State) && old.State != types.LeaseStateActive {
+	if !Ended(old.State) {
 		return fmt.Errorf("lease: lease %s is %s; it settles before its attempt is replaced", old.ID, old.State)
 	}
 	return nil

@@ -46,6 +46,7 @@ export interface RegistryExecutor {
    * The price basis of the USD rails; null exactly when the cost basis is free or local (zero cost).
    */
   price: null | RegistryPrice;
+  footprint_prior?: FootprintPrior;
 }
 /**
  * This interface was referenced by `ExecutorRegistry`'s JSON-Schema
@@ -84,4 +85,31 @@ export interface RegistryDestination {
 export interface RegistryPrice {
   input_usd_micros_per_mtok: number;
   output_usd_micros_per_mtok: number;
+}
+/**
+ * The operator's prior of one attempt's footprint on this executor (#226 entries 103, 120): the lease's footprint, and a direct API's token reservation, at most context_tokens × expected_turns, shrunk to what the USD rails leave but never below context_tokens (one turn). Optional: a direct_api executor without it is refused at placement (precondition_failed), its node held source_invalid_config. A local endpoint reserves a slot.
+ */
+export interface FootprintPrior {
+  /**
+   * The tokens one turn's context holds, at most.
+   */
+  context_tokens: number;
+  /**
+   * The turns one attempt is expected to take.
+   */
+  expected_turns: number;
+}
+/**
+ * This interface was referenced by `ExecutorRegistry`'s JSON-Schema
+ * via the `definition` "FootprintPrior".
+ */
+export interface FootprintPrior1 {
+  /**
+   * The tokens one turn's context holds, at most.
+   */
+  context_tokens: number;
+  /**
+   * The turns one attempt is expected to take.
+   */
+  expected_turns: number;
 }

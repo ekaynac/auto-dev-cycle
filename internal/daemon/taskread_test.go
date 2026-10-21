@@ -199,6 +199,7 @@ func TestTaskReadFirstAttemptOwnResult(t *testing.T) {
 				return lease.ChangeLease(tx, ls.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, w.holds)
 			})
 			second := types.AttemptID(newID(t, "att"))
+			ended(w, w.sys, first)
 			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 				return lease.SupersedeAttempt(tx, first, 3, ls.ID, 2, second, types.AttemptBase{Tree: "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904", ContractRevision: "1"})
 			})
@@ -289,6 +290,7 @@ func attemptsOn(t *testing.T, w *seeder, node types.NodeID, k int) {
 			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 				return lease.SealMinimal(tx, prev, 2, units, w.blobs, nil, w.sys)
 			})
+			ended(w, w.sys, prev)
 			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 				return lease.SupersedeAttempt(tx, prev, 3, ls.ID, 2, a, base)
 			})
