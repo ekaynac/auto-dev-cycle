@@ -75,8 +75,8 @@ func TestKeptIsTheInventory(t *testing.T) {
 
 // TestTable: names are unique, I15 gates every capability (all four rows
 // but intake's admission alone), an action or effect kind belongs to one
-// capability's actions at most, and this build activates intake and answers
-// only.
+// capability's actions at most, and this build activates intake, answers
+// and admission only (P22a-3).
 func TestTable(t *testing.T) {
 	seen, actions := map[string]bool{}, map[string]string{}
 	var active []string
@@ -114,7 +114,7 @@ func TestTable(t *testing.T) {
 			t.Errorf("Of(%s)", c.Name)
 		}
 	}
-	if !slices.Equal(active, []string{"intake", "answers"}) {
+	if !slices.Equal(active, []string{"intake", "answers", "admission"}) {
 		t.Errorf("active: %v", active)
 	}
 	if ks := EffectKinds(); len(ks) != 0 {

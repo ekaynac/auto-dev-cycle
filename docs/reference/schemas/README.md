@@ -92,7 +92,9 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`records/review-node-params.json`](records-review-node-params.md) | ReviewNodeParams |
 | [`records/review-requirement.json`](records-review-requirement.md) | ReviewRequirement |
 | [`records/seat-event.json`](records-seat-event.md) | SeatEvent |
+| [`records/task-admitted.json`](records-task-admitted.md) | TaskAdmitted |
 | [`records/task-cancelled.json`](records-task-cancelled.md) | TaskCancelled |
+| [`records/task-done.json`](records-task-done.md) | TaskDone |
 | [`records/task.json`](records-task.md) | Task |
 | [`records/token-recovered.json`](records-token-recovered.md) | TokenRecovered |
 | [`records/token.json`](records-token.md) | Token |

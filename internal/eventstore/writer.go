@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -262,6 +263,7 @@ func (t *Tx) Get(projection, key string) (json.RawMessage, bool, error) {
 		return nil, false, err
 	}
 	var v string
+	projectionRows.Add(1)
 	err := t.tx.QueryRowContext(t.ctx, `SELECT value FROM `+t.table()+` WHERE projection = ? AND key = ?`, projection, key).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
@@ -301,12 +303,34 @@ func (t *Tx) Delete(projection, key string) error {
 	return t.io(err)
 }
 
-// Keys lists the projection's keys that start with prefix, sorted.
+// Keys lists the projection's keys that start with prefix, sorted. Only
+// the keys in the prefix's range are read (the primary key's order), so a
+// prefix bounds the work (Astra #316 M3).
 func (t *Tx) Keys(projection, prefix string) ([]string, error) {
+	return t.keys(projection, prefix, -1)
+}
+
+// FirstKey is the projection's first key that starts with prefix, in
+// order; false: none. It reads one key.
+func (t *Tx) FirstKey(projection, prefix string) (string, bool, error) {
+	keys, err := t.keys(projection, prefix, 1)
+	if err != nil || len(keys) == 0 {
+		return "", false, err
+	}
+	return keys[0], true, nil
+}
+
+// keys are the projection's keys in prefix's range, at most limit (-1: no
+// limit).
+func (t *Tx) keys(projection, prefix string, limit int) ([]string, error) {
 	if !projectionName.MatchString(projection) {
 		return nil, fmt.Errorf("eventstore: projection name %q", projection)
 	}
-	rows, err := t.tx.QueryContext(t.ctx, `SELECT key FROM `+t.table()+` WHERE projection = ? ORDER BY key`, projection)
+	q, args := `SELECT key FROM `+t.table()+` WHERE projection = ? AND key >= ?`, []any{projection, prefix}
+	if end, ok := prefixEnd(prefix); ok {
+		q, args = q+` AND key < ?`, append(args, end)
+	}
+	rows, err := t.tx.QueryContext(t.ctx, q+` ORDER BY key LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, t.io(err)
 	}
@@ -317,12 +341,35 @@ func (t *Tx) Keys(projection, prefix string) ([]string, error) {
 		if err := rows.Scan(&k); err != nil {
 			return nil, t.io(err)
 		}
+		projectionRows.Add(1)
 		if strings.HasPrefix(k, prefix) { // bytes, as Go compares them
 			keys = append(keys, k)
 		}
 	}
 	return keys, t.io(rows.Err())
 }
+
+// prefixEnd is the least string after every one that starts with prefix
+// (its last byte below 0xff incremented, the bytes after it dropped);
+// false: no such bound (an empty prefix, or one of 0xff bytes).
+func prefixEnd(prefix string) (string, bool) {
+	b := []byte(prefix)
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] < 0xff {
+			b[i]++
+			return string(b[:i+1]), true
+		}
+	}
+	return "", false
+}
+
+// projectionRows counts the projection rows every read returns (Get's one,
+// each key Keys reads), for tests that count work rather than time it.
+var projectionRows atomic.Int64
+
+// ProjectionRowsRead is how many projection rows reads have returned in
+// this process.
+func ProjectionRowsRead() int64 { return projectionRows.Load() }
 
 // SubjectVersion is the seq of the subject's last event, or 0.
 func (t *Tx) SubjectVersion(subject string) (int64, error) {

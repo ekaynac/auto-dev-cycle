@@ -108,10 +108,12 @@ func askedSuccessor(t *testing.T, w *seeder) (types.ActorID, types.NodeID) {
 	op := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindOperator, Name: "operator", CreatedBy: sys.ID}
 	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(sys) })
 	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(op) })
+	w.sys, w.op = sys.ID, op.ID
+	_, task := admittedTask(t, w, sys.ID) // a node is recorded only for an admitted task (P22a-3)
 	asker := types.Node{ID: types.NodeID(newID(t, "nod")), Kind: types.NodeKindPlan, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{}`),
 		Inputs: []types.InputSpec{}, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
 	w.do(op.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.Record(types.NodeRecorded{Task: types.TaskID(newID(t, "tsk")), Project: graphProject, Node: asker})
+		return graph.Record(types.NodeRecorded{Task: task, Project: graphProject, Node: asker})
 	})
 	o := types.OwedInput{ID: types.OwedInputID(newID(t, "own")), Project: graphProject, RequestedBy: asker.ID, Owner: op.ID,
 		Kind: types.OwedInputKindRuling, Question: "q", Subject: types.ObjectRef{Type: "node", ID: string(asker.ID), Version: new(int64)}, Revision: 1}
@@ -156,7 +158,8 @@ func TestDaemonFoldChecksAnswers(t *testing.T) {
 
 	dir := stateDir(t)
 	raw := seed(t, dir, func(lease.Blobs, map[string]types.Hold) func(*eventstore.Tx, []eventstore.Event) error {
-		return eventstore.ProjectEach(identity.Projector{}.Project, authority.OwedProjector{}.Project, graph.ProjectM0)
+		return eventstore.ProjectEach(identity.Projector{}.Project, authority.ProposalProjector{}.Project, authority.ProjectProjector{}.Project,
+			authority.TaskProjector{}.Project, authority.OwedProjector{}.Project, graph.ProjectM0) // the task admitted, as adcd folds it
 	})
 	op, next = askedSuccessor(t, raw)
 	raw.do(op, rawClaim(t, next))
@@ -176,8 +179,10 @@ func TestHoldsReadProjectIsolation(t *testing.T) {
 	var nodeA types.NodeID
 	var reader identity.Secret
 	c := runCommanded(t, func(w *seeder, op types.ActorID) {
-		nodeA = heldNodeIn(t, w, op, graphProject)
-		heldNodeIn(t, w, op, other)
+		nodeA = plannedIn(t, w, graphProject)
+		nodeB := plannedIn(t, w, other) // A done, B admitted: then both held
+		raiseOn(t, w, op, nodeA)
+		raiseOn(t, w, op, nodeB)
 		w.heldLease(op)
 		now := time.Now().UTC()
 		sup := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "holds reader", CreatedBy: op}

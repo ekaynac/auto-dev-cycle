@@ -4,6 +4,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
 	"os"
@@ -57,24 +58,19 @@ func (f *fixture) task(project string, approved bool) types.Task {
 	return t
 }
 
-// admit writes task's record as admitted, as P22a's task.admitted fold
-// will (no fold writes it before P22a).
+// admit records task's task.admitted as the controller's system actor,
+// with no template (the test records its own nodes; AdmitTask records only
+// the candidate's): the real fold admits it.
 func (f *fixture) admit(task types.TaskID) {
-	f.must(f.op.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+	f.must(f.sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		raw, _, err := tx.Get(authority.TaskProjection, task)
 		var r authority.TaskRecord
 		if err == nil {
 			err = json.Unmarshal(raw, &r)
 		}
-		r.State = authority.TaskAdmitted
-		b, merr := json.Marshal(r)
-		if err == nil {
-			err = merr
-		}
-		if err == nil {
-			err = tx.Put(authority.TaskProjection, task, b)
-		}
-		return []eventstore.Event{{ID: newID(f.t, "evt"), Kind: "fixture.appended/v1", Subject: prjA, Payload: []byte(`{}`)}}, err
+		project := string(r.Project)
+		payload, merr := json.Marshal(types.TaskAdmitted{Task: task, Project: r.Project, Approval: r.Approval.ID, At: types.Time(tx.Now().Format(time.RFC3339Nano))})
+		return []eventstore.Event{{ID: newID(f.t, "evt"), Kind: authority.TaskAdmittedEvent, Subject: string(task), Project: &project, Payload: payload}}, errors.Join(err, merr)
 	})
 }
 
@@ -293,12 +289,22 @@ func TestBoardColumns(t *testing.T) {
 		"a structural waiting(input)":        {authority.TaskAdmitted, nil, []graph.NodeView{waitingOn(gate, "candidate", &types.ResultSource{Type: "result", Producer: build.Node.ID})}, types.BoardPlacedCardColumnReady},
 		"a review_requirement claimed":       {authority.TaskAdmitted, nil, []graph.NodeView{node(t, types.NodeKindReviewRequirement, types.NodeStateStateClaimed)}, types.BoardPlacedCardColumnReady},
 		"a cancelled task":                   {authority.TaskCancelledState, approval(authority.ApprovalInForce), nil, types.BoardPlacedCardColumnDone},
+		"a done task (task.done)":            {authority.TaskDoneState, approval(authority.ApprovalInForce), done, types.BoardPlacedCardColumnDoneCandidate},
+		"a done task with no review node":    {authority.TaskDoneState, nil, []graph.NodeView{completed(build, types.OutcomeEmpty)}, types.BoardPlacedCardColumnDoneCandidate},
 	} {
 		card, ok := api.BoardCard(taskIn(t, c.state, c.approval), c.nodes, now, true).Variant.(*types.BoardPlacedCard)
 		if !ok || card.Column != c.column || card.Admitted != (c.state == authority.TaskAdmitted) || card.Cancelled != (c.state == authority.TaskCancelledState) ||
-			len(card.Nodes) != len(c.nodes) {
+			card.Abandoned || len(card.Nodes) != len(c.nodes) {
 			t.Errorf("%s: %+v; want %s", name, card, c.column)
 		}
+	}
+	// An abandoned task (task.done as abandoned: its approval revoked) is
+	// done, with the abandoned badge and its nodes (#226 entry 100).
+	abandoned := taskIn(t, authority.TaskDoneState, approval(authority.ApprovalRevoked))
+	abandoned.DoneAs = string(types.TaskDoneAsAbandoned)
+	card, ok := api.BoardCard(abandoned, []graph.NodeView{build}, now, true).Variant.(*types.BoardPlacedCard)
+	if !ok || card.Column != types.BoardPlacedCardColumnDone || !card.Abandoned || card.Admitted || card.Cancelled || len(card.Nodes) != 1 {
+		t.Errorf("an abandoned task: %+v", card)
 	}
 }
 

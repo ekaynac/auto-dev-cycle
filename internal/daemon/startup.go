@@ -160,18 +160,36 @@ var markPending = (*eventstore.Store).MarkPendingUncertain
 // runRecovery runs restart recovery; a test makes it fail.
 var runRecovery = func(ctx context.Context, r recovery.Recovery) error { return r.Run(ctx) }
 
-// recoverAtStart runs restart recovery (P21a: X3's steps 1-4, each its own
-// command, recovery.Recovery.Run) as the system actor, units bound to graph
-// nodes and seals published to the blob store. Step 1 must hold: an attempt
-// still running after it refuses the start, since its fence would stay
-// open (I8). A later step that fails stops that attempt's recovery only; it
-// is reported in the startup note and resumed at the next start (its
-// cleanup never blocks start, #226 entry 81). The orphan stage needs the
-// adapter host's exchange root, which launch constructs (P22a-5).
-func recoverAtStart(ctx context.Context, store *eventstore.Store, system identity.Principal, blobs lease.Publisher) (note string, err error) {
+// recoveredStore is a store that restart recovery has run on, or an
+// offline command's store, on which recovery does not run: only
+// recoverAtStart makes one. openBootstrap takes it, so the bootstrap can
+// write nothing before recovery (#226 entry 81, Opus #297 M2). The types
+// keep that order, not a test of the log: every store that holds a cut
+// attempt has an operator (a claim takes an admitted task, P22a-3), so the
+// bootstrap writes nothing there, and swapping the two calls would change
+// no event.
+type recoveredStore struct {
+	store *eventstore.Store
+	note  string // what recovery left for the next start, if anything
+}
+
+// recoverAtStart runs restart recovery unless offline (P21a: X3's steps
+// 1-4, each its own command, recovery.Recovery.Run) as the system actor,
+// units bound to graph nodes and seals published to the blob store. Step 1
+// must hold: an attempt still running after it refuses the start, since
+// its fence would stay open (I8). A later step that fails stops that
+// attempt's recovery only; it is reported in the note and resumed at the
+// next start (its cleanup never blocks start, #226 entry 81). The orphan
+// stage needs the adapter host's exchange root, which launch constructs
+// (P22a-5).
+func recoverAtStart(ctx context.Context, store *eventstore.Store, system identity.Principal, blobs lease.Publisher, offline bool) (recoveredStore, error) {
+	r := recoveredStore{store: store}
+	if offline {
+		return r, nil
+	}
 	rerr := runRecovery(ctx, recovery.Recovery{Store: store, Actor: system.Actor(), Units: graph.Units{}, Blobs: blobs, Principal: system})
 	if rerr == nil {
-		return "", nil
+		return r, nil
 	}
 	running := false
 	verr := store.View(ctx, func(tx *eventstore.Tx) error {
@@ -186,12 +204,13 @@ func recoverAtStart(ctx context.Context, store *eventstore.Store, system identit
 	})
 	switch {
 	case verr != nil:
-		return "", couldNotRun(vocab.ReasonStoreUnreadable, "the attempts cannot be read after restart recovery failed", errors.Join(rerr, verr))
+		return r, couldNotRun(vocab.ReasonStoreUnreadable, "the attempts cannot be read after restart recovery failed", errors.Join(rerr, verr))
 	case running: // the store reads fine: recovery did not run (Opus #297 L3)
-		return "", couldNotRun(vocab.ReasonAmbiguousState, "restart recovery did not close every running attempt", rerr)
+		return r, couldNotRun(vocab.ReasonAmbiguousState, "restart recovery did not close every running attempt", rerr)
 	}
 	// Its cause names attempts, steps and errnos, never a secret (Opus #297 M1).
-	return fmt.Sprintf("adcd: restart recovery left work for the next start (it resumes there): %v", rerr), nil
+	r.note = fmt.Sprintf("adcd: restart recovery left work for the next start (it resumes there): %v", rerr)
+	return r, nil
 }
 
 // systemActor loads the persisted system actor, or creates it in a store

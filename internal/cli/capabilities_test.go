@@ -14,8 +14,9 @@ import (
 )
 
 // `adc dev capabilities --json` (P22a-2, W7) prints this build's table:
-// intake and answers active; launch inactive, its model_call kind and its
-// unkept rows named; review waiting on P31; merge never active in (a).
+// intake, answers and admission active (P22a-3); launch inactive, its
+// model_call kind and its unkept rows named; review waiting on P31; merge
+// never active in (a).
 func TestDevCapabilities(t *testing.T) {
 	var out, errs bytes.Buffer
 	if code := Main(context.Background(), []string{"dev", "capabilities", "--json"}, &out, &errs, nil); code != entry.ExitOK {
@@ -34,7 +35,7 @@ func TestDevCapabilities(t *testing.T) {
 		t.Fatalf("capabilities: %v", names)
 	}
 	in, launch, review := by["intake"], by["launch"], by["review"]
-	if !in.Active || !by["answers"].Active || !slices.Equal(in.Actions, []string{"project.create", "task.create", "task.cancel"}) {
+	if !in.Active || !by["answers"].Active || !by["admission"].Active || !slices.Equal(in.Actions, []string{"project.create", "task.create", "task.cancel"}) {
 		t.Errorf("intake: %+v", in)
 	}
 	unkept := slices.ContainsFunc(launch.Rows, func(r capabilityRow) bool { return r.Invariant == "I16" && !r.Kept })

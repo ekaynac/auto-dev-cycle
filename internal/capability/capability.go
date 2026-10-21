@@ -111,7 +111,7 @@ var kept = map[Row]bool{
 	{"I17", Fold}:      true,
 	{"I18", Admission}: true, {"I18", Effect}: true,
 	{"I21", Consumption}: true,
-	{"I22", Effect}:      true,
+	{"I22", Admission}:   true, {"I22", Fold}: true, {"I22", Consumption}: true, {"I22", Effect}: true,
 }
 
 // Kept reports whether r is enforced.

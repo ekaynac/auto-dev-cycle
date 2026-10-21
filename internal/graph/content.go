@@ -41,6 +41,7 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/evidence"
+	"github.com/ekaynac/auto-dev-cycle/internal/lease"
 	"github.com/ekaynac/auto-dev-cycle/internal/mutation"
 	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
@@ -84,9 +85,35 @@ func CommitEvidence(tx *eventstore.Tx, node types.NodeID, r types.Result, attemp
 	return r, commitRecorded(tx, types.ResultRecorded{Node: node, Result: r, Attempt: &attempt, Isolation: isolation}, env)
 }
 
+// CommitAttempt is Commit for r, the result attempt recorded: the one way
+// a node an attempt still runs records its result (Astra #316 H1). The
+// fold binds the result to the attempt (AttemptResultProjection), which
+// must be started on node's unit, have submitted its result, and have
+// recorded no other.
+func CommitAttempt(tx *eventstore.Tx, node types.NodeID, r types.Result, attempt types.AttemptID, env Env) error {
+	return commitRecorded(tx, types.ResultRecorded{Node: node, Result: r, Attempt: &attempt}, env)
+}
+
 // isolated is the result.recorded fold's check of p's attempt and
 // isolation proof.
 func isolated(tx *eventstore.Tx, rec nodeRecord, p *types.ResultRecorded) error {
+	// A node an attempt still runs records that attempt's result alone
+	// (Astra #316 H1). Evidence keeps its own rule below (a published result
+	// needs its attempt and proof); adcd records no evidence node (I15).
+	if p.Attempt == nil && rec.Recorded.Node.Kind != types.NodeKindEvidence {
+		if cur, started, err := lease.CurrentAttempt(tx, UnitOf(p.Node)); err != nil {
+			return err
+		} else if started {
+			a, _, _, err := lease.AttemptOf(tx, cur)
+			if err != nil {
+				return err
+			}
+			switch a.Status {
+			case types.AttemptStatusRunning, types.AttemptStatusStopping, types.AttemptStatusFinishing:
+				return fmt.Errorf("attempt %s is %s on node %s: a result with no attempt is not recorded while it runs", cur, a.Status, p.Node)
+			}
+		}
+	}
 	if p.Attempt != nil {
 		if _, used, err := load[types.ResultID](tx, AttemptResultProjection, string(*p.Attempt)); err != nil || used {
 			return errors.Join(err, fmt.Errorf("attempt %s already recorded a result", *p.Attempt))

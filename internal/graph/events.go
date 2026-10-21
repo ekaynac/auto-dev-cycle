@@ -73,6 +73,7 @@ const (
 	RenewalProjection   = "graph_renewals"   // node id → its selection boundary (renewal)
 	SuccessorProjection = "graph_successors" // node id → its one successor
 	TaskProjection      = "graph_tasks"      // task id → its project
+	TaskNodeProjection  = "graph_task_nodes" // "<task>/<node>": each node of a task (Astra #316 M3)
 	ResultProjection    = "graph_results"    // result id → the result.recorded payload
 	GenProjection       = "graph_gens"       // task/identity → its current generation (memoizable kinds)
 	HoldProjection      = "graph_holds"      // hold id → the node that last held it (heldBy)
@@ -159,7 +160,8 @@ func putNode(tx *eventstore.Tx, rec nodeRecord) error {
 	if _, err := contract.Encode("records/node-state", rec.State); err != nil {
 		return err
 	}
-	return put(tx, NodeProjection, string(rec.Recorded.Node.ID), rec)
+	return errors.Join(put(tx, TaskNodeProjection, string(rec.Recorded.Task)+"/"+string(rec.Recorded.Node.ID), true),
+		put(tx, NodeProjection, string(rec.Recorded.Node.ID), rec))
 }
 
 func event(kind, subject string, project types.ProjectID, payload types.GraphEventVariant) ([]eventstore.Event, error) {
@@ -302,11 +304,14 @@ func claimNode(tx *eventstore.Tx, rec nodeRecord, resolved map[string]Resolved, 
 // checks no recorded answer: only the M0 fixtures, whose answers are the
 // owed-answer fake's, and tests use it. adcd folds with Projector
 // (eligible.go).
-func ProjectM0(tx *eventstore.Tx, evs []eventstore.Event) error { return project(tx, evs, nil, nil) }
+func ProjectM0(tx *eventstore.Tx, evs []eventstore.Event) error {
+	return project(tx, evs, nil, nil, nil)
+}
 
 // project folds evs, checking each event's answers first under auth (nil:
-// none, M0's fold).
-func project(tx *eventstore.Tx, evs []eventstore.Event, auth Authority, allowed []types.NodeKind) error {
+// none, M0's fold), then the task a claim or reuse takes under tasks (nil:
+// none).
+func project(tx *eventstore.Tx, evs []eventstore.Event, auth Authority, allowed []types.NodeKind, tasks Tasks) error {
 	for _, ev := range evs {
 		if !slices.Contains(kinds, ev.Kind) {
 			continue
@@ -318,6 +323,9 @@ func project(tx *eventstore.Tx, evs []eventstore.Event, auth Authority, allowed 
 		}
 		if err == nil && auth != nil {
 			err = eligible(tx, ev, g.Variant, auth)
+		}
+		if err == nil {
+			err = taken(tx, ev, g.Variant, tasks)
 		}
 		if err == nil {
 			err = fold(tx, ev, g.Variant, auth != nil)
