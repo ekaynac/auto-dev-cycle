@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
@@ -47,7 +48,21 @@ const (
 	TaskDoneEvent     = "task.done/v1"
 	TaskDoneState     = "done"
 	admittedKey       = "admitted"
+	// admissiblePrefix indexes, in task id order, every task admission may
+	// take: "admissible/<task>" while it is in Ready with its approval in
+	// force (Astra #316 M3). putTask keeps it.
+	admissiblePrefix = "admissible/"
 )
+
+// putTask stores t's record and keeps the admissible index in step with
+// it: every write of a task record goes through it.
+func putTask(tx *eventstore.Tx, t TaskRecord) error {
+	err := putJSON(tx, TaskProjection, t.ID, t)
+	if admissible(t) == nil {
+		return errors.Join(err, putJSON(tx, TaskProjection, admissiblePrefix+t.ID, t.ID))
+	}
+	return errors.Join(err, tx.Delete(TaskProjection, admissiblePrefix+t.ID))
+}
 
 // AdmittedTask is the admitted task that is not done, if any.
 func AdmittedTask(tx *eventstore.Tx) (types.TaskID, bool, error) {
@@ -56,22 +71,14 @@ func AdmittedTask(tx *eventstore.Tx) (types.TaskID, bool, error) {
 
 // NextAdmission is the task admission takes next, if any: none while an
 // admitted task is not done; else the oldest Ready task whose approval is
-// in force.
+// in force: the admissible index's first key, one read whatever the
+// history (Astra #316 M3).
 func NextAdmission(tx *eventstore.Tx) (types.TaskID, bool, error) {
 	if _, busy, err := tx.Get(TaskProjection, admittedKey); err != nil || busy {
 		return "", false, err
 	}
-	ids, err := TaskIDs(tx)
-	for _, id := range ids {
-		t, ok, lerr := loadJSON[TaskRecord](tx, TaskProjection, id)
-		if err = errors.Join(err, lerr); err != nil {
-			return "", false, err
-		}
-		if ok && admissible(t) == nil {
-			return t.ID, true, nil
-		}
-	}
-	return "", false, err
+	key, ok, err := tx.FirstKey(TaskProjection, admissiblePrefix)
+	return types.TaskID(strings.TrimPrefix(key, admissiblePrefix)), ok, err
 }
 
 // admissible refuses t unless it is in Ready with its approval in force.
@@ -153,10 +160,13 @@ func done(tx *eventstore.Tx, task types.TaskID, as types.TaskDoneAs, reason *typ
 		At: types.Time(tx.Now().Format(time.RFC3339Nano))})
 }
 
-// endable refuses t's end as as unless t is admitted and: as a candidate,
-// none of its current nodes is claimed or held (Opus #309 M2); abandoned,
-// its approval is not in force and no lease on any of its nodes is live
-// (no attempt of it runs).
+// endable refuses t's end as as unless t is admitted and: abandoned, its
+// approval is not in force; as a candidate, none of its current nodes is
+// claimed or held (Opus #309 M2); and, either way, nothing runs any of its
+// nodes, superseded ones included, whatever their state: every lease on
+// their units has ended and every attempt on them is sealed (Astra #316
+// H1; Opus #312 M3). It reads the task's node index and each unit's open
+// index, never the whole graph (M3).
 func endable(tx *eventstore.Tx, t TaskRecord, as types.TaskDoneAs) error {
 	if t.State != TaskAdmitted {
 		return fmt.Errorf("task %s is %s, not admitted", t.ID, t.State)
@@ -164,22 +174,19 @@ func endable(tx *eventstore.Tx, t TaskRecord, as types.TaskDoneAs) error {
 	if as == types.TaskDoneAsAbandoned && t.Approval != nil && t.Approval.Status == ApprovalInForce {
 		return fmt.Errorf("task %s's approval is in force: it is not abandoned", t.ID)
 	}
-	nodes, err := graph.Nodes(tx)
+	nodes, err := graph.TaskNodes(tx, t.ID)
+	if err != nil {
+		return err
+	}
 	for _, n := range nodes {
-		if err != nil || n.Task != t.ID {
-			continue
-		}
-		var live bool
-		switch s := n.State.State; {
-		case as == types.TaskDoneAsCandidate && (s == types.NodeStateStateClaimed || s == types.NodeStateStateHeld):
+		if s := n.State.State; as == types.TaskDoneAsCandidate && (s == types.NodeStateStateClaimed || s == types.NodeStateStateHeld) {
 			return fmt.Errorf("task %s's node %s is %s", t.ID, n.Node.ID, s)
-		case as == types.TaskDoneAsAbandoned:
-			if _, live, err = lease.LiveOn(tx, graph.UnitOf(n.Node.ID)); err == nil && live {
-				return fmt.Errorf("task %s's node %s has a live lease", t.ID, n.Node.ID)
-			}
+		}
+		if what, running, err := lease.Unended(tx, graph.UnitOf(n.Node.ID)); err != nil || running {
+			return errors.Join(err, fmt.Errorf("task %s's node %s still runs: %s", t.ID, n.Node.ID, what))
 		}
 	}
-	return err
+	return nil
 }
 
 // systemEvent loads ev's task, under ev's id and project, and refuses ev
@@ -219,7 +226,7 @@ func admitTask(tx *eventstore.Tx, ev eventstore.Event) error {
 		return errors.Join(err, fmt.Errorf("task %s is admitted and not done (I22)", held))
 	}
 	t.State = TaskAdmitted
-	return errors.Join(putJSON(tx, TaskProjection, t.ID, t), putJSON(tx, TaskProjection, admittedKey, t.ID),
+	return errors.Join(putTask(tx, t), putJSON(tx, TaskProjection, admittedKey, t.ID),
 		tx.Delete(TaskProjection, "ready/"+string(t.Project)+"/"+t.ID))
 }
 
@@ -242,7 +249,7 @@ func doneTask(tx *eventstore.Tx, ev eventstore.Event) error {
 		return err
 	}
 	t.State, t.DoneAs = TaskDoneState, string(x.As)
-	return errors.Join(putJSON(tx, TaskProjection, t.ID, t), tx.Delete(TaskProjection, admittedKey))
+	return errors.Join(putTask(tx, t), tx.Delete(TaskProjection, admittedKey))
 }
 
 // Tasks is the graph's task authority (graph.Tasks), over the tasks

@@ -136,7 +136,9 @@ func withSystem(t *testing.T) (*seeder, types.ActorID) {
 // authority_revoked, appending nothing: a build's claim, the plan's
 // re-claim by invalidation, and the attempt start on the plan's granted
 // lease (no attempt recorded). The task is not abandoned while that lease
-// is live; once it ends, it is, and the slot frees.
+// is live, nor once it expires while it is still releasing (a lease that
+// has not ended, Astra #316 H1); once it is released, it is, and the slot
+// frees.
 func TestDaemonClaimTakesAdmission(t *testing.T) {
 	w, sys := withSystem(t)
 	op, ready := readyTask(t, w, sys)
@@ -202,8 +204,14 @@ func TestDaemonClaimTakesAdmission(t *testing.T) {
 	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return lease.ChangeLease(tx, ls.ID, 2, lease.LeaseEvent{Kind: lease.Expired}, nil)
 	})
+	if err := abandon(); !errors.Is(err, eventstore.ErrStaleExpectedState) || !strings.Contains(err.Error(), "releasing") {
+		t.Errorf("an abandonment while the plan's lease is releasing: %v", err)
+	}
+	w.do(sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return lease.ChangeLease(tx, ls.ID, 3, lease.LeaseEvent{Kind: lease.Released}, nil)
+	})
 	if err := abandon(); err != nil {
-		t.Fatalf("the abandonment once no lease is live: %v", err)
+		t.Fatalf("the abandonment once the lease is released: %v", err)
 	}
 	w.view(func(tx *eventstore.Tx) error {
 		if _, busy, err := authority.AdmittedTask(tx); err != nil || busy {

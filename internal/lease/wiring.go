@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/contract"
@@ -23,6 +24,10 @@ const (
 	AttemptProjection = "attempts"
 	UnitProjection    = "unit_attempts"
 	StopProjection    = "attempt_stops" // attempt id → the command that requested its stop
+	// OpenProjection indexes, by unit, what still runs it: "<unit>/<id>" for
+	// each lease that has not ended and each attempt that is not sealed
+	// (Astra #316 M3: a unit's live work read by its prefix, never a scan).
+	OpenProjection = "unit_open"
 )
 
 // StaleRecord refuses a command that expected another revision of a record.
@@ -54,7 +59,45 @@ func put[T any](tx *eventstore.Tx, projection, id string, revision int64, record
 	if err != nil {
 		return err
 	}
-	return tx.Put(projection, id, raw)
+	switch r := any(record).(type) {
+	case types.Lease:
+		err = open(tx, r.Unit, string(r.ID), !Ended(r.State))
+	case types.Attempt:
+		err = open(tx, r.Unit, string(r.ID), !SealedStatus(r.Status))
+	}
+	return errors.Join(err, tx.Put(projection, id, raw))
+}
+
+// open indexes id under unit while running, and drops it once not.
+func open(tx *eventstore.Tx, unit types.UnitID, id string, running bool) error {
+	key := string(unit) + "/" + id
+	if running {
+		return tx.Put(OpenProjection, key, json.RawMessage(`true`))
+	}
+	return tx.Delete(OpenProjection, key)
+}
+
+// SealedStatus: an attempt in s publishes nothing more (sealed, completed or
+// superseded).
+func SealedStatus(s types.AttemptStatus) bool {
+	return s == types.AttemptStatusSealed || s == types.AttemptStatusCompleted || s == types.AttemptStatusSuperseded
+}
+
+// Unended names a lease on unit that has not ended (settled or released),
+// or an attempt on it that is not sealed, if any: what still runs a node,
+// for its task's end (Astra #316 H1). It reads the unit's open index alone.
+func Unended(tx *eventstore.Tx, unit types.UnitID) (string, bool, error) {
+	key, ok, err := tx.FirstKey(OpenProjection, string(unit)+"/")
+	if err != nil || !ok {
+		return "", false, err
+	}
+	id := strings.TrimPrefix(key, string(unit)+"/")
+	if strings.HasPrefix(id, "lea_") {
+		l, _, _, err := load[types.Lease](tx, LeaseProjection, id)
+		return fmt.Sprintf("lease %s is %s", id, l.State), true, err
+	}
+	a, _, _, err := load[types.Attempt](tx, AttemptProjection, id)
+	return fmt.Sprintf("attempt %s is %s", id, a.Status), true, err
 }
 
 func current[T any](tx *eventstore.Tx, projection, id string, expected int64) (T, error) {
@@ -176,19 +219,17 @@ func Replaceable(old types.Lease) error {
 }
 
 // LiveOn is a lease on unit that is requested, waiting, granted or active,
-// if any. It scans every lease: M1 runs one admitted task.
+// if any, from the unit's open index.
 func LiveOn(tx *eventstore.Tx, unit types.UnitID) (types.LeaseID, bool, error) {
-	keys, err := tx.Keys(LeaseProjection, "")
+	keys, err := tx.Keys(OpenProjection, string(unit)+"/lea_")
 	for _, k := range keys {
-		l, _, _, lerr := load[types.Lease](tx, LeaseProjection, k)
+		l, _, _, lerr := load[types.Lease](tx, LeaseProjection, strings.TrimPrefix(k, string(unit)+"/"))
 		if lerr != nil {
 			return "", false, lerr
 		}
 		switch l.State {
 		case types.LeaseStateRequested, types.LeaseStateWaiting, types.LeaseStateGranted, types.LeaseStateActive:
-			if l.Unit == unit {
-				return l.ID, true, nil
-			}
+			return l.ID, true, nil
 		}
 	}
 	return "", false, err

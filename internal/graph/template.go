@@ -112,9 +112,10 @@ func (e ErrNotAdmitted) Error() string {
 	return fmt.Sprintf("graph: task %s is %s, not admitted: its nodes are not recorded or run", e.Task, e.State)
 }
 
-// taken: v takes a task tasks allows: a node recorded, Recordable; a node
-// claimed, reused, invalidated (claimed again at its next generation) or
-// renewed (its key claimed again), Claimable (Opus #309 H1).
+// taken: v takes a task tasks allows: a node recorded, or a review's
+// replacement recorded by its supersession, Recordable (Astra #316 M2); a
+// node claimed, reused, invalidated (claimed again at its next generation)
+// or renewed (its key claimed again), Claimable (Opus #309 H1).
 func taken(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant, tasks Tasks) error {
 	if tasks == nil {
 		return nil
@@ -131,6 +132,12 @@ func taken(tx *eventstore.Tx, ev eventstore.Event, v types.GraphEventVariant, ta
 		node = p.Node
 	case *types.NodeRenewed:
 		node = p.Node
+	case *types.ReviewSuperseded: // it records the replacement: the predecessor's task must be admitted (Astra #316 M2)
+		rec, err := nodeOf(tx, ev, p.Predecessor)
+		if err != nil {
+			return err
+		}
+		return tasks.Recordable(tx, rec.Recorded.Task)
 	default:
 		return nil
 	}
