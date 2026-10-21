@@ -45,6 +45,7 @@ One page per schema file under `schemas/`. The schemas are the contract; these p
 | [`api/scope/token-replace.json`](api-scope-token-replace.md) | TokenReplaceScope |
 | [`api/scope/token-revoke.json`](api-scope-token-revoke.md) | TokenRevokeScope |
 | [`api/seat.json`](api-seat.md) | SeatRead |
+| [`api/task.json`](api-task.md) | TaskRead |
 | [`api/whoami.json`](api-whoami.md) | Whoami |
 | [`common/defs.json`](common-defs.md) | Common definitions |
 | [`config/executor-registry.json`](config-executor-registry.md) | ExecutorRegistry |
