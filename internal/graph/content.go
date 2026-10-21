@@ -94,6 +94,17 @@ func CommitAttempt(tx *eventstore.Tx, node types.NodeID, r types.Result, attempt
 	return commitRecorded(tx, types.ResultRecorded{Node: node, Result: r, Attempt: &attempt}, env)
 }
 
+// AttemptResult is the result attempt itself recorded, if any: never one
+// another attempt, or no attempt, recorded on its node.
+func AttemptResult(tx *eventstore.Tx, attempt types.AttemptID) (types.Result, bool, error) {
+	id, ok, err := load[types.ResultID](tx, AttemptResultProjection, string(attempt))
+	if err != nil || !ok {
+		return types.Result{}, false, err
+	}
+	r, ok, err := load[types.ResultRecorded](tx, ResultProjection, string(id))
+	return r.Result, ok, err
+}
+
 // isolated is the result.recorded fold's check of p's attempt and
 // isolation proof.
 func isolated(tx *eventstore.Tx, rec nodeRecord, p *types.ResultRecorded) error {
