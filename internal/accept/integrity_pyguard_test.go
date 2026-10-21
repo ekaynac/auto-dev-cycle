@@ -1320,11 +1320,11 @@ func TestPyGuardStarWork(t *testing.T) {
 	})
 	old := maxWork
 	t.Cleanup(func() { maxWork = old })
-	maxWork = 52000 // round 8: the binding analysis charges its one scan of the test file (Astra #281 r6 M2)
+	maxWork = 66000 // the binding scan of the test file (Astra #281 r6 M2) and main's base index (widen-b S1) are charged
 	if v := g.guarded(t, map[string]string{"other.py": "O = 2\n"}); len(pyOwn(v.Blocks)) > 0 {
 		t.Errorf("repeated stars within the work bound: %q, want no block", whats(pyOwn(v.Blocks)))
 	}
-	maxWork = 3000
+	maxWork = 17000 // past main's base index (widen-b S1), within the star check
 	if v := g.guarded(t, map[string]string{"other.py": "O = 2\n"}); !pyFinds(pyOwn(v.Blocks), "other.py: a module a condition reads is unread (the package feature is over the guard's work bound)") {
 		t.Errorf("the star check charged to the work bound: %q", whats(pyOwn(v.Blocks)))
 	}
@@ -1869,7 +1869,7 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 		plain(t, src, "add", "--all")
 		plain(t, src, links...)
 	})
-	maxWork = 20000
+	maxWork = 80000 // with main's base index charged (widen-b S1) the rest fits in about 63,000; the gitlinks pass it
 	start = time.Now()
 	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !within(t, time.Since(start), unit, runs) || !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the base conditions' analysis is over the guard's work bound)") {
 		t.Errorf("r3 M1 roots and gitlinks (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))
@@ -1882,6 +1882,7 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 		write(t, src, astra(forms))
 		plain(t, src, "add", "--all")
 	})
+	maxWork = 60000 // the base is unread up to about 75,000 (main's base index charged, widen-b S1); without the forms' charge the run fits in about 44,000
 	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the base conditions' analysis is over the guard's work bound)") {
 		t.Errorf("r3 M1 roots and compiled forms: %q", whats(pyOwn(v.Blocks)))
 	}
@@ -1893,6 +1894,7 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 		write(t, src, astra(nsdirs))
 		plain(t, src, "add", "--all")
 	})
+	maxWork = 60000 // the base is unread up to about 70,000 (main's base index charged, widen-b S1); without the directories' charge the run fits in about 42,000
 	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !pyFinds(pyOwn(v.Blocks), "cfg.py: a module a condition reads is unread (the base conditions' analysis is over the guard's work bound)") {
 		t.Errorf("r5 M1 roots and namespace directories: %q", whats(pyOwn(v.Blocks)))
 	}
@@ -1904,7 +1906,7 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 		write(t, src, pkg)
 		plain(t, src, "add", "--all")
 	})
-	maxWork = 13000 // the seeding charges 2,000 visits and 4,000 directory entries: without either, this run fits
+	maxWork = 26000 // the seeding's directory entries charged: about 28,000 in all, 24,000 without them (main's base index charged too)
 	start = time.Now()
 	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !within(t, time.Since(start), unit, runs) || !pyFinds(pyOwn(v.Blocks), "the candidate's closure is over the guard's work bound") {
 		t.Errorf("r4 M2 the candidate's seeding charged (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))
@@ -1943,7 +1945,7 @@ func TestPyGuardImportTimeR3(t *testing.T) {
 		write(t, src, deep)
 		plain(t, src, "add", "--all")
 	})
-	maxWork = 24000 // each directory walked once: 200 walks per file would pass it
+	maxWork = 40000 // each directory walked once (about 32,000 with main's base index charged): 200 walks per file would pass it
 	start = time.Now()
 	if v := g.guarded(t, map[string]string{"cfg.py": "SKIP = 'True'\n"}); !within(t, time.Since(start), unit, runs) || len(pyOwn(v.Blocks)) > 0 {
 		t.Errorf("r5 M1 a deep directory walked once (%v): %q", time.Since(start), whats(pyOwn(v.Blocks)))

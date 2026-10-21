@@ -40,6 +40,8 @@ type pyBase struct {
 	bad          map[string]bool        // a base closure module that is not inert, writes, imports dynamically or uses sys
 	linkTargets  []string               // a base symlink's target in the root; "" when out of it (Opus #281 H4)
 	opaque       map[string]bool        // a module name under a base symlink or gitlink (Opus #279 M1)
+	folds        map[string]string      // a base module name by its lowercase form (widen-b S3)
+	folded       map[string]bool        // a lowercase form two distinct base names share
 	other        map[string]string      // a module name's non-source form (.pyc, an extension), its path (Astra #281 r4 H3)
 	changed      map[string]bool        // the changes' paths: a changed judged file's own code is P14c-2a-allow's, a changed module's warns
 
@@ -160,7 +162,9 @@ func (pb *pyBase) load() error {
 	for _, q := range pb.paths {
 		if path.Ext(q) != ".py" {
 			continue
-		} else if pb.err = pb.r.ctx.Err(); pb.err != nil { // main's indexing, uncharged (its work-bound rows), but cancellable (Astra #281 r3 M1)
+		} else if pb.r.work += 1 + len(pb.entries) + len(pb.shadowEntries); pb.r.work > maxWork || pb.r.ctx.Err() != nil { // main's index, each root charged (widen-b, #281's residual)
+			pb.overLinks()
+			pb.holderUnread, pb.err = "the base conditions' analysis is over the guard's work bound", pb.r.ctx.Err()
 			return pb.err
 		}
 		for _, n := range pyModNames(q, pb.entries, false) {
@@ -203,6 +207,19 @@ func (pb *pyBase) load() error {
 		}
 	}
 	return nil
+}
+
+// overLinks: the base is over the work bound before closure reads every
+// base symlink's target, so with any symlink every change blocks: a non-.py
+// change under a target is no Python change the unread base blocks (Opus
+// #299 M1).
+func (pb *pyBase) overLinks() {
+	for _, mode := range pb.r.links {
+		if mode == "120000" {
+			pb.linkTargets = append(pb.linkTargets, "")
+			return
+		}
+	}
 }
 
 // file reads base file q once: every import statement, after ; or a
@@ -659,6 +676,10 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 	for _, n := range names {
 		if q := pb.shadowMods[n]; q != "" {
 			return "an added module shadows the base module " + q, nil
+		} else if b := pb.folds[strings.ToLower(n)]; b != "" && b != n { // one file stands in for the other on a case-insensitive filesystem (widen-b S3)
+			return "an added module's name differs from the base module " + b + " only by case", nil
+		} else if !pyASCII(n) { // a Unicode fold ToLower does not make (Opus #299 L1)
+			return "an added module's name is not ASCII (a filesystem may fold it onto a base module)", nil
 		}
 	}
 	split := func(p string) (string, string) {
@@ -671,7 +692,7 @@ func (r *run) pyShadow(c Change, judged bool, pb *pyBase) (string, error) {
 		if err := r.ctx.Err(); err != nil { // Mythos #270 r2 L2
 			return "", err
 		} else if floor && path.Ext(q) == ".py" {
-			if qd, qm := split(q); qm == m && qd != d {
+			if qd, qm := split(q); strings.EqualFold(qm, m) && qd != d {
 				return "an added module shadows the base module " + q, nil
 			}
 		}
