@@ -465,8 +465,9 @@ overlaid on the gate workspace only.
 Added for the replan:
 - `profiles/auto-dev-cycle.json` (P32);
 - `issues/<N>/` (§2.2);
-- `review-qualification/` (P31a): four planted-defect candidates and four clean controls on T0's go-mini (the lead's
-  decision);
+- `review-qualification/` (P31a): four planted-defect candidates and four clean controls on T0's go-mini
+  (`fixtures/t0/go-mini`, the lead's decision of 2026-10-20), one of each per task, with sealed probes and the live
+  runs' records;
 - `cases/fault-required-config/`, `cases/launch-missing-credential/`, `cases/launch-missing-image/`;
 - the scratch-branch overlay;
 - `harness/delayed-apply/`: the HTTP smart-git proxy (`git http-backend`), the bare repository and its
