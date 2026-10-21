@@ -65,11 +65,38 @@ const stallTickMs = 10;
 
 type Msg = Record<string, unknown> & { id?: unknown; result?: any; error?: any; method?: unknown; params?: any };
 
-/** show formats any value for a finding, whatever the adapter sent. */
+/** show formats any value for a finding, whatever the adapter sent: the
+ *  first n characters of its JSON, built only that far. A 4 MiB string is
+ *  never serialized whole to keep n characters of it (#226 entry 104). */
 const show = (v: unknown, n = 200) => {
-  let t: string;
+  let t = "";
+  // put appends s, and is false once t holds n characters: nothing more is built.
+  const put = (s: string) => (t += s).length < n;
+  // The values are JSON's (parsed, or the validator's errors): an undefined is JSON.stringify's omission.
+  const json = (x: unknown): boolean => {
+    if (typeof x === "string") return put(JSON.stringify(x.slice(0, n)));
+    if (Array.isArray(x)) {
+      if (!put("[")) return false;
+      for (let i = 0; i < x.length; i++) {
+        if ((i > 0 && !put(",")) || !json(x[i] ?? null)) return false;
+      }
+      return put("]");
+    }
+    if (x !== null && typeof x === "object" && !("toJSON" in x)) {
+      if (!put("{")) return false;
+      let first = true;
+      for (const k in x) {
+        const e = (x as Record<string, unknown>)[k];
+        if (!Object.hasOwn(x, k) || e === undefined) continue;
+        if ((!first && !put(",")) || !put(`${JSON.stringify(k.slice(0, n))}:`) || !json(e)) return false;
+        first = false;
+      }
+      return put("}");
+    }
+    return put(JSON.stringify(x) ?? String(x));
+  };
   try {
-    t = JSON.stringify(v) ?? String(v);
+    json(v);
   } catch {
     t = String(v);
   }
