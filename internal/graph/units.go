@@ -48,8 +48,12 @@ func NodeOf(unit types.UnitID) (types.NodeID, bool) {
 	return types.NodeID(nodePrefix + suffix), ok && suffix != ""
 }
 
-// Units binds each unit to its node (lease.Units).
-type Units struct{}
+// Units binds each unit to its node (lease.Units). Tasks, when set, is the
+// task authority an attempt start takes, as a claim does (Opus #309 M1:
+// adcd's): a node's attempt starts only while its task is admitted with
+// its approval in force, so a revocation between claim and launch, a
+// retry or a held node's resumption starts nothing.
+type Units struct{ Tasks Tasks }
 
 var _ lease.Units = Units{}
 
@@ -78,8 +82,8 @@ type ErrNotStartable struct{ Detail string }
 func (e ErrNotStartable) Error() string { return "graph: " + e.Detail }
 
 // Startable refuses an attempt starting on unit unless its node is
-// recorded and claimed (ErrNotStartable).
-func (Units) Startable(tx *eventstore.Tx, unit types.UnitID) error {
+// recorded and claimed (ErrNotStartable), and its task is one Tasks allows.
+func (u Units) Startable(tx *eventstore.Tx, unit types.UnitID) error {
 	rec, ok, err := unitNode(tx, unit)
 	switch {
 	case err != nil:
@@ -88,6 +92,8 @@ func (Units) Startable(tx *eventstore.Tx, unit types.UnitID) error {
 		return ErrNotStartable{fmt.Sprintf("unit %s is no recorded node's: an attempt runs for a node", unit)}
 	case rec.State.State != types.NodeStateStateClaimed:
 		return ErrNotStartable{fmt.Sprintf("node %s is %s: an attempt starts only on a claimed node", rec.Recorded.Node.ID, rec.State.State)}
+	case u.Tasks != nil:
+		return u.Tasks.Claimable(tx, rec.Recorded.Task)
 	}
 	return nil
 }

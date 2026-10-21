@@ -33,10 +33,11 @@ func cutStore(t *testing.T) (dir string, cfg Config, a types.AttemptID, l types.
 	sys := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSystem, Name: "system"}
 	sys.CreatedBy = sys.ID
 	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(sys) })
+	_, admitted := admittedTask(t, w, sys.ID) // a claim takes an admitted task (P22a-3)
 	n := types.Node{ID: types.NodeID(newID(t, "nod")), Kind: types.NodeKindPlan, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{}`),
 		Inputs: []types.InputSpec{}, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
 	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) {
-		return graph.Record(types.NodeRecorded{Task: types.TaskID(newID(t, "tsk")), Project: graphProject, Node: n})
+		return graph.Record(types.NodeRecorded{Task: admitted, Project: graphProject, Node: n})
 	})
 	w.do(sys.ID, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
 		return graph.Claim(tx, n.ID, map[string]graph.Resolved{}, 1)
@@ -91,8 +92,11 @@ func minSeq(t *testing.T, dir, where string) int {
 // and sealed, its lease settled with the call, uncertain, kept as a
 // liability, which the model calls' bindings (projected in adcd) give. In
 // the log, the restart rule's transition comes first, then attempt.lost,
-// then whatever else the start appends (here the bootstrap's secret;
-// Opus #297 M2, L5). A second start appends no event; it records one
+// then whatever else the start appends, if anything (Opus #297 M2, L5).
+// This store has an operator, since a claim takes an admitted task
+// (P22a-3), so the bootstrap appends nothing, and on every store with a cut
+// attempt the log cannot show recovery before the bootstrap: the types keep
+// that order (recoveredStore, which openBootstrap takes). A second start appends no event; it records one
 // recovery.lose command with none (Opus #297 L4).
 func TestStartRecoversACutAttempt(t *testing.T) {
 	fresh := restart(t, stateDir(t))
@@ -119,7 +123,7 @@ func TestStartRecoversACutAttempt(t *testing.T) {
 	after := fmt.Sprintf("seq > %d AND ", before)
 	uncertain, lost := minSeq(t, dir, after+`kind = 'effect.uncertain/v1'`), minSeq(t, dir, after+`kind = 'attempt.lost/v1'`)
 	other := minSeq(t, dir, after+`kind NOT LIKE 'effect.%' AND kind NOT LIKE 'attempt.%' AND kind NOT LIKE 'lease.%'`)
-	if uncertain == 0 || lost <= uncertain || other <= lost {
+	if uncertain == 0 || lost <= uncertain || other != 0 && other <= lost {
 		t.Errorf("the start's order: the restart rule at %d, attempt.lost at %d, the first other event at %d", uncertain, lost, other)
 	}
 	head := lastSeq(t, dir)

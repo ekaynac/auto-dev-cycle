@@ -160,18 +160,16 @@ func start(ctx context.Context, cfg Config, offline bool) (d *Daemon, err error)
 	}); err != nil {
 		return nil, couldNotRun(vocab.ReasonAmbiguousState, "the system actor is not live", err)
 	}
-	var recovered string
-	if !offline {
-		if recovered, err = recoverAtStart(ctx, store, system, blobs); err != nil {
-			return nil, err
-		}
-	}
-	boot, note, err := openBootstrap(ctx, store, system, lock.Dir(), clock, !offline)
+	recovered, err := recoverAtStart(ctx, store, system, blobs, offline)
 	if err != nil {
 		return nil, err
 	}
-	if recovered != "" {
-		note = strings.TrimSpace(note + "\n" + recovered)
+	boot, note, err := openBootstrap(ctx, recovered, system, lock.Dir(), clock, !offline)
+	if err != nil {
+		return nil, err
+	}
+	if recovered.note != "" {
+		note = strings.TrimSpace(note + "\n" + recovered.note)
 	}
 	return &Daemon{lock: lock, store: store, blobs: blobs, head: head, system: system, boot: boot, clock: clock, note: note, az: az}, nil
 }

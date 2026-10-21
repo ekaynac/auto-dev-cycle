@@ -11,14 +11,16 @@ package api
 //     approval is in force, else awaiting_approval (none, or revoked). A
 //     cancelled task (authority.TaskCancelledState) is done, with the
 //     cancelled badge; with nodes it is unplaced, as it was never admitted.
-//   - An admitted task's (authority.TaskAdmitted, written by P22a) column
+//   - An admitted task's (authority.TaskAdmitted, task.admitted's) column
 //     is its current (unsuperseded) nodes': running while a plan or build
 //     node is claimed or held; else verifying while an accept, gate or
 //     review node is; else done_candidate when a review node of the task's
 //     latest round (the highest round of its current nodes, so no later
 //     repair) completed go (outcome empty; merge is inactive in M1(a));
 //     else ready, with the admitted badge. A held node keeps its stage's
-//     column and carries its hold badges.
+//     column and carries its hold badges. A done task (task.done) is
+//     done_candidate as a candidate, or done with the abandoned badge when
+//     abandoned (its approval revoked), with its nodes and no admitted badge.
 //   - A column is never guessed. A task whose records do not determine one
 //     (an unknown state, a node kind outside M1(a)'s template, nodes of a
 //     task not admitted or not recorded, a damaged record, ...) is listed
@@ -121,7 +123,7 @@ var board = Resource{
 		_, _, project, err := boardTask(tx, id)
 		return project, err
 	},
-	Fields: []string{"type", "id", "project", "title", "column", "admitted", "cancelled", "approval", "created_at", "nodes", "reason"},
+	Fields: []string{"type", "id", "project", "title", "column", "admitted", "cancelled", "abandoned", "approval", "created_at", "nodes", "reason"},
 }
 
 // boardTask is task id's record (recorded: it exists and reads as one)
@@ -181,7 +183,7 @@ func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ow
 	case t.State == authority.TaskReady:
 		c.Column = types.BoardPlacedCardColumnAwaitingApproval
 		return types.BoardCard{Variant: c}
-	case !c.Admitted:
+	case !c.Admitted && t.State != authority.TaskDoneState:
 		return unplaced(t.ID, &project, types.BoardUnplacedCardReasonUnknownState)
 	}
 	latest, active, goRounds := int64(0), map[types.BoardPlacedCardColumn]bool{}, []int64{}
@@ -210,6 +212,14 @@ func boardCard(t authority.TaskRecord, nodes []graph.NodeView, now time.Time, ow
 		case s == types.NodeStateStateCompleted && n.Node.Kind == types.NodeKindReview && *n.Outcome == types.OutcomeEmpty:
 			goRounds = append(goRounds, n.Node.Round)
 		}
+	}
+	switch {
+	case t.State == authority.TaskDoneState && t.DoneAs == string(types.TaskDoneAsAbandoned):
+		c.Column, c.Abandoned = types.BoardPlacedCardColumnDone, true
+		return types.BoardCard{Variant: c}
+	case t.State == authority.TaskDoneState:
+		c.Column = types.BoardPlacedCardColumnDoneCandidate
+		return types.BoardCard{Variant: c}
 	}
 	active[types.BoardPlacedCardColumnDoneCandidate] = slices.Contains(goRounds, latest)
 	c.Column = types.BoardPlacedCardColumnReady

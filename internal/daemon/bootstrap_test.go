@@ -78,7 +78,7 @@ func TestBootstrapSecretIssuedOnce(t *testing.T) {
 		t.Fatalf("head %d", h)
 	}
 	// Past the expiry, a start only says so.
-	if _, note, err := openBootstrap(context.Background(), d.store, d.system, dir, func() time.Time { return time.Now().Add(25 * time.Hour) }, true); err != nil || note != noteExpired {
+	if _, note, err := openBootstrap(context.Background(), recoveredStore{store: d.store}, d.system, dir, func() time.Time { return time.Now().Add(25 * time.Hour) }, true); err != nil || note != noteExpired {
 		t.Fatalf("expired: %q %v", note, err)
 	}
 	if err := d.Close(); err != nil {

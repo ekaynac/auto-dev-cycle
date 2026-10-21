@@ -51,6 +51,10 @@ type seeder struct {
 	s     *eventstore.Store
 	holds map[string]types.Hold
 	done  func()
+	// sys and op are the system actor and the operator a test seeded, if
+	// any (readyTaskIn, plannedIn).
+	sys, op types.ActorID
+	blobs   *blobstore.Store // the seals' publisher
 }
 
 type projectFor func(blobs lease.Blobs, holds map[string]types.Hold) func(*eventstore.Tx, []eventstore.Event) error
@@ -100,7 +104,7 @@ func seed(t *testing.T, dir string, project projectFor, extra ...string) *seeder
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &seeder{t: t, s: s, holds: reg.Holds, done: func() {
+	return &seeder{t: t, s: s, holds: reg.Holds, blobs: blobs, done: func() {
 		if err := errors.Join(s.Close(), lock.Release()); err != nil {
 			t.Fatal(err)
 		}
@@ -110,14 +114,36 @@ func seed(t *testing.T, dir string, project projectFor, extra ...string) *seeder
 // do submits one command as actor, appending what fn returns.
 func (w *seeder) do(actor types.ActorID, fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) {
 	w.t.Helper()
+	if err := w.try(actor, fn); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+// try is do, returning the command's refusal.
+func (w *seeder) try(actor types.ActorID, fn func(tx *eventstore.Tx) ([]eventstore.Event, error)) error {
 	cmd := newID(w.t, "cmd")
-	if _, err := w.s.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: string(actor), Action: "test.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
+	_, err := w.s.SubmitApplied(context.Background(), eventstore.Command{ID: cmd, Actor: string(actor), Action: "test.command", IdempotencyKey: cmd, Input: []byte(`{}`)}, eventstore.Applies(
 		func(tx *eventstore.Tx) ([]eventstore.Event, json.RawMessage, error) {
 			evs, err := fn(tx)
 			return evs, json.RawMessage(`{}`), err
-		})); err != nil {
+		}))
+	return err
+}
+
+func (w *seeder) view(fn func(tx *eventstore.Tx) error) {
+	w.t.Helper()
+	if err := w.s.View(context.Background(), fn); err != nil {
 		w.t.Fatal(err)
 	}
+}
+
+func (w *seeder) head() int64 {
+	w.t.Helper()
+	h, err := w.s.Head(context.Background())
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return h.Seq
 }
 
 // grantedLease requests a lease reserving amount tokens of the quota group
@@ -165,6 +191,7 @@ func fullHistory(t *testing.T, w *seeder) types.ActorID {
 	sup := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "supervisor", CreatedBy: op.ID}
 	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(sys) })
 	w.do(sys.ID, func(*eventstore.Tx) ([]eventstore.Event, error) { return identity.CreateActor(op) })
+	w.sys, w.op = sys.ID, op.ID
 	now := time.Now().UTC()
 	g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{"prj_01m3250vkwffc979nzjw0g2sa1"}},
 		Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{}},
