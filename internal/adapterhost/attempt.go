@@ -225,7 +225,9 @@ func (r *attemptRun) run(ctx context.Context) (out Outcome, err error) {
 	r.mu.Unlock()
 	switch {
 	case toolRefused != "":
-		return r.finish(fctx, nil, fmt.Errorf("%w: %q", ErrToolRefused, toolRefused), false)
+		// With the tree's own end: an unverified exit (session.ErrUnverified)
+		// is never hidden from a caller that must not clean up (Opus #322 L3).
+		return r.finish(fctx, nil, errors.Join(fmt.Errorf("%w: %q", ErrToolRefused, toolRefused), waitErr), false)
 	case errors.Is(waitErr, session.ErrUnverified):
 		return r.finish(fctx, nil, waitErr, false) // the tree may still write: nothing is ingested (09)
 	case unserved && runErr == nil:

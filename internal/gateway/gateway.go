@@ -446,6 +446,9 @@ func (g *Gateway) forward(r *http.Request, b Binding, f *flight) (*http.Response
 		return nil, none, &refusal{http.StatusForbidden, RouteInBody}
 	}
 	if g.cfg.Capture != nil {
+		if !g.live(r, f) { // unbound meanwhile: nothing captured (Opus #322 L4)
+			return nil, none, &refusal{http.StatusUnauthorized, "unbound"}
+		}
 		if g.cfg.Capture.Keep(ctx, b, out) != nil {
 			return nil, none, &refusal{http.StatusServiceUnavailable, "capture_failed"}
 		}
