@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -640,6 +641,41 @@ func TestAPerDestinationInjector(t *testing.T) {
 	}
 	if h := up.got()[0].header; h.Get("X-Api-Key") != fakeKey || h.Get("Authorization") != "" {
 		t.Fatalf("injected %v", h)
+	}
+}
+
+// F (#226 entry 121): every request sent carries the binding's call and its
+// count sequence; neither the adapter's headers nor an injector set or
+// override them.
+func TestEveryRequestCarriesItsCall(t *testing.T) {
+	up := newUpstream(t, nil)
+	cs := &counts{}
+	g, token := rig(t, up, func(c *Config) {
+		c.Counts = cs
+		c.Inject = map[types.Slug]Injector{"stub": func(h http.Header, cred Credential) {
+			Bearer(h, cred)
+			h.Set(CallHeader, "cal_injector")
+			h.Set(CallSeqHeader, "99")
+		}}
+	})
+	forged := map[string]string{CallHeader: "cal_forged", CallSeqHeader: "7"}
+	for range 2 {
+		if w := call(g, token, "/chat/completions", good, forged); w.Code != http.StatusOK {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+	}
+	got, floors := up.got(), map[int64]bool{}
+	for _, c := range cs.all() {
+		floors[c.seq] = floors[c.seq] || !c.n.Observed
+	}
+	for i, s := range got {
+		seq, err := strconv.ParseInt(s.header.Get(CallSeqHeader), 10, 64)
+		if len(s.header.Values(CallHeader)) != 1 || s.header.Get(CallHeader) != string(callID) || err != nil || !floors[seq] || seq != int64(i) {
+			t.Errorf("request %d carried %v (the floors' sequences: %v)", i, s.header, floors)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("upstream saw %d requests", len(got))
 	}
 }
 

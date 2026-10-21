@@ -146,6 +146,40 @@ test("the usage query and the log: what was served, how, and each query", async 
   assert.equal((await fetch(`${off.base}/usage/${offID}`)).status, 404);
 });
 
+test("the usage query by call: the gateway's X-Adc-Call, a cut request counted once released (#226 entry 121)", async (t) => {
+  const s = await serve(t, { name: "by-call", calls: {
+    b: { persistent: { say: "x", usage: { prompt_tokens: 7, completion_tokens: 3 } } },
+    held: { persistent: { say: "held", barrier: "x3", usage: { prompt_tokens: 11, completion_tokens: 5 } } } } });
+  const as = (call, seq) => ({ headers: { "content-type": "application/json", "x-adc-call": call, "x-adc-call-seq": String(seq) } });
+  const send = (model, call, seq, signal) => fetch(`${s.base}/chat/completions`, { method: "POST", ...as(call, seq), signal: signal ?? AbortSignal.timeout(10_000),
+    body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }) });
+  const usage = async (call) => {
+    const r = await fetch(`${s.base}/usage?call=${encodeURIComponent(call)}`, { signal: AbortSignal.timeout(10_000) });
+    return r.status === 200 ? r.json() : r.status;
+  };
+  for (const [call, seq] of [["cal_1", 0], ["cal_1", 1], ["cal_2", 2]]) assert.equal((await send("b", call, seq)).status, 200);
+  assert.equal((await chat(s, "b")).status, 200, "a request with no call is in no call's usage");
+  // The gateway is killed mid-request: the client goes, the stub holds the reply at its barrier.
+  const cut = new AbortController();
+  const held = send("held", "cal_1", 3, cut.signal).catch(() => "cut");
+  for (let i = 0; i < 100 && !s.log().some((e) => e.kind === "barrier"); i++) await new Promise((r) => setTimeout(r, 20));
+  cut.abort();
+  assert.equal(await held, "cut");
+  assert.deepEqual(await usage("cal_1"), { call: "cal_1", requests: 3, pending: 1, usage: { prompt_tokens: 14, completion_tokens: 6 } }, "held: not complete");
+  writeFileSync(join(s.dir, "x3.release"), "");
+  for (let i = 0; i < 100 && (await usage("cal_1")).pending > 0; i++) await new Promise((r) => setTimeout(r, 20));
+  const done = { call: "cal_1", requests: 3, pending: 0, usage: { prompt_tokens: 25, completion_tokens: 11 } };
+  assert.deepEqual(await usage("cal_1"), done, "released: the cut request counted");
+  assert.deepEqual(await usage("cal_1"), done, "counted once");
+  assert.deepEqual(await usage("cal_2"), { call: "cal_2", requests: 1, pending: 0, usage: { prompt_tokens: 7, completion_tokens: 3 } });
+  assert.equal(await usage("cal_9"), 404);
+  const req = s.log().filter((e) => e.kind === "request").map((e) => [e.adc_call, e.adc_seq]);
+  assert.deepEqual(req, [["cal_1", "0"], ["cal_1", "1"], ["cal_2", "2"], [null, null], ["cal_1", "3"]]);
+  const off = await serve(t, { name: "off", usage_query: false, calls: { b: { persistent: { say: "x" } } } });
+  await fetch(`${off.base}/chat/completions`, { method: "POST", ...as("cal_1", 0), body: JSON.stringify({ model: "b", messages: [] }) });
+  assert.equal((await fetch(`${off.base}/usage?call=cal_1`)).status, 404, "no usage query: no call's usage");
+});
+
 test("faults: a status, a stall before the headers, a trickle byte by byte, a partial body reset", async (t) => {
   const s = await serve(t, { name: "faults", calls: {
     status: { persistent: { body: { error: { message: "no" } }, status: 400 } },
