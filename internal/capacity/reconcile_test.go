@@ -533,7 +533,7 @@ func TestLateUsageAfterTheRunEnd(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/chat/completions", strings.NewReader(asked))
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
-	if g.ServeHTTP(rec, req); rec.Code != http.StatusServiceUnavailable || reached != 1 {
+	if g.ServeHTTP(deadlined{rec}, req); rec.Code != http.StatusServiceUnavailable || reached != 1 {
 		t.Fatalf("a request after the run end: %d, the upstream reached %d times", rec.Code, reached)
 	}
 	b := gateway.Binding{Lease: r.lease, Attempt: r.attempt, Call: r.call}

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,6 +58,8 @@ type stubPlan struct {
 	HeartbeatMs int `json:"heartbeat_ms,omitempty"`
 	// Shutdown is the shutdown reply (default a clean outcome).
 	Shutdown string `json:"shutdown,omitempty"`
+	// Tools is the described tool surface (default none).
+	Tools []string `json:"tools,omitempty"`
 }
 
 const stubDescribe = `{"harness":"stub","harness_version":"1.0.0","adapter_version":"0.1.0","contract_version":"1.0.0",` +
@@ -94,7 +97,12 @@ func runStub(raw string) {
 		}
 		switch req.Method {
 		case "describe":
-			reply(req.ID, stubDescribe)
+			d := stubDescribe
+			if plan.Tools != nil {
+				tools, _ := json.Marshal(plan.Tools)
+				d = strings.Replace(d, `"tool_surface":[]`, `"tool_surface":`+string(tools), 1)
+			}
+			reply(req.ID, d)
 		case "prepare":
 			dir = req.Params.Exchange.Out
 			reply(req.ID, clean)

@@ -837,7 +837,7 @@ Item 1 is recorded as L4 (§6, 01 §4.1) and item 5 as the exception in 04 §2. 
      `scripts/lib/secrets.sh`.
    - The TTL is a concrete, finite 7 days (`P7D`), set on the capture itself; the profile's `blob_payload_ttl` is
      `null`.
-   - Purge evidence: a `blob.purged` event per capture, listed in the exit record.
+   - Purge evidence: a `blob.capture_purged/v1` event per capture (P22a-5a; uploads have their own `blob.upload_purged/v1`), listed in the exit record.
 
    **Recommended:** approve.
 5. **Direct updates to `main` in M1(b): an exception to 04 §2's "nothing is committed to `main` directly".**

@@ -254,7 +254,7 @@ func run(ctx context.Context, command, env []string, workspace string, prompt []
 			return spec, out, err
 		}
 	}
-	spec = adapterhost.Spec{Lease: l.ID, LeaseRevision: 2, Attempt: types.AttemptID(idv["att"]), Call: types.CallID(idv["cal"]), Prompt: prompt, Bounds: b,
+	spec = adapterhost.Spec{AnyTool: true, Lease: l.ID, LeaseRevision: 2, Attempt: types.AttemptID(idv["att"]), Call: types.CallID(idv["cal"]), Prompt: prompt, Bounds: b,
 		Base: types.AttemptBase{Tree: types.GitID("git:" + strings.Repeat("0", 40)), ContractRevision: "1"},
 		Adapter: session.Config{Command: command, Env: append(env, "TMPDIR="+tmp),
 			Deadline: sessionDeadline(b)},
