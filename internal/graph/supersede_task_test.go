@@ -37,7 +37,9 @@ func (d doneTasks) Recordable(tx *eventstore.Tx, task types.TaskID) error {
 	return nil
 }
 
-func (d doneTasks) Claimable(tx *eventstore.Tx, task types.TaskID) error { return d.Recordable(tx, task) }
+func (d doneTasks) Claimable(tx *eventstore.Tx, task types.TaskID) error {
+	return d.Recordable(tx, task)
+}
 
 // openTaskStore is openStore whose fold takes tasks, with the test's task
 // end registered.
