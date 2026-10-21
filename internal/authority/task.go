@@ -316,7 +316,7 @@ func addTask(tx *eventstore.Tx, ev eventstore.Event) error {
 	if err := errors.Join(err1, err2, err3); err != nil || !project || exists || len(ready) >= MaxReadyTasks {
 		return errors.Join(err, errors.New("the project is unregistered, the task exists or the backlog is full"))
 	}
-	if err := putJSON(tx, TaskProjection, t.ID, TaskRecord{Task: t, State: TaskReady, Command: *ev.Command}); err != nil {
+	if err := putTask(tx, TaskRecord{Task: t, State: TaskReady, Command: *ev.Command}); err != nil {
 		return err
 	}
 	return putJSON(tx, TaskProjection, "ready/"+string(t.Project)+"/"+t.ID, t.ID)
@@ -364,7 +364,7 @@ func recordTaskApproval(tx *eventstore.Tx, ev eventstore.Event, a types.Approval
 		return err
 	}
 	t.Approval = &TaskApproval{ID: a.ID, Actor: a.Actor, Digest: t.SpecDigest, At: a.At, Status: ApprovalInForce}
-	if err := putJSON(tx, TaskProjection, t.ID, t); err != nil {
+	if err := putTask(tx, t); err != nil {
 		return err
 	}
 	return putJSON(tx, TaskProjection, "approver/"+string(a.Actor)+"/"+t.ID, t.ID)
@@ -381,7 +381,7 @@ func revokeApprovals(tx *eventstore.Tx, actor types.ActorID, at types.Time) erro
 			return errors.Join(err, fmt.Errorf("the approval index names no approved task: %s", k))
 		}
 		t.Approval.Status, t.Approval.RevokedAt = ApprovalRevoked, &at
-		if err := errors.Join(putJSON(tx, TaskProjection, t.ID, t), tx.Delete(TaskProjection, k)); err != nil {
+		if err := errors.Join(putTask(tx, t), tx.Delete(TaskProjection, k)); err != nil {
 			return err
 		}
 	}
