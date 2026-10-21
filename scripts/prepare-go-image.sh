@@ -18,29 +18,35 @@
 # The adapter is make dist's lib/adc closure of each platform
 # (sandbox.AdapterClosure: node/bin/node, adapters/http-chat,
 # adapters/contract, gen/ts, node_modules), checked against the dist's
-# SHA256SUMS, copied with its symlinks and execute bits under
-# adapter/linux-ARCH/ in the context, and digested by the dist's own adc
-# (adc dev adapter-digest) for the label. build requires a clean checkout
-# whose HEAD the dist's adc was built from.
+# SHA256SUMS, with node/bin/node checked against scripts/node-pins, copied
+# with its symlinks and execute bits under adapter/linux-ARCH/ in the
+# context, and digested by the dist's own adc (adc dev adapter-digest) for
+# the label. build requires a clean checkout whose HEAD the dist's adc was
+# built from, and a NAME podman does not hold yet (podman build --manifest
+# would add to an existing list); after the build, the list must hold one
+# image per platform, and the pinned Node must start in each.
 #
 # Usage:
-#   scripts/prepare-go-image.sh manifest PROJECT        print the label's lockfile part for PROJECT
-#   scripts/prepare-go-image.sh context PROJECT DIST DIR [PLATFORMS]
+#   scripts/prepare-go-image.sh [--pins FILE] manifest PROJECT        print the label's lockfile part for PROJECT
+#   scripts/prepare-go-image.sh [--pins FILE] context PROJECT DIST DIR [PLATFORMS]
 #       assemble lock/ and adapter/ of the build context from the dist
 #       directory DIST into the new directory DIR, and print the label
-#   scripts/prepare-go-image.sh build PROJECT NAME [PLATFORMS]
+#   scripts/prepare-go-image.sh [--pins FILE] build PROJECT NAME [PLATFORMS]
 #       build the manifest list NAME from dist/ (default platforms: linux/amd64,linux/arm64)
+# --pins FILE: the Node pins (default scripts/node-pins), as dist-lib.sh takes them.
 #
-# The build needs network (the base image and the Go module proxy) and
-# podman. It never pushes. The lead's commands, on a clean checkout:
+# The build needs network (the base image and the Go module proxy), podman
+# and jq. It never pushes. The lead's commands, on a clean checkout (the
+# rm only for a NAME podman already holds, e.g. from the previous build):
 #   make dist
+#   podman manifest rm ghcr.io/ekaynac/adc-prepared-go-mini
+#   podman manifest rm ghcr.io/ekaynac/adc-prepared-go
 #   scripts/prepare-go-image.sh build go-mini        ghcr.io/ekaynac/adc-prepared-go-mini
 #   scripts/prepare-go-image.sh build auto-dev-cycle ghcr.io/ekaynac/adc-prepared-go
-#   podman manifest push --all ghcr.io/ekaynac/adc-prepared-go-mini docker://ghcr.io/ekaynac/adc-prepared-go-mini
-#   podman manifest push --all ghcr.io/ekaynac/adc-prepared-go      docker://ghcr.io/ekaynac/adc-prepared-go
-# The index digest for the pin is the pushed list's: add --digestfile FILE
-# to a push and podman writes it (sha256:…) to FILE. The pin,
-# NAME@sha256:…, goes in the project's profile
+#   podman manifest push --all --digestfile go-mini.digest ghcr.io/ekaynac/adc-prepared-go-mini docker://ghcr.io/ekaynac/adc-prepared-go-mini
+#   podman manifest push --all --digestfile go.digest      ghcr.io/ekaynac/adc-prepared-go      docker://ghcr.io/ekaynac/adc-prepared-go
+# Each --digestfile receives the pushed list's index digest (sha256:…). The
+# pin, NAME@sha256:…, goes in the project's profile
 # (fixtures/m1/profiles/PROJECT.json, toolchain.images.go).
 set -euo pipefail
 
@@ -48,6 +54,11 @@ toolchain=go
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 containerfile="$here/fixtures/m1/images/go/Containerfile"
 closure=(node/bin/node adapters/http-chat adapters/contract gen/ts node_modules) # sandbox.AdapterClosure
+pins="$here/scripts/node-pins"
+if [[ "${1:-}" == "--pins" ]]; then
+  pins="${2:?--pins FILE}"
+  shift 2
+fi
 
 die() { printf 'prepare-go-image: %s\n' "$*" >&2; exit 1; }
 
@@ -101,9 +112,18 @@ manifest() {
   printf '%s}%s}\n' "$out" "${1:+,\"adapter\":$1}"
 }
 
+# pin PLATFORM FIELD: the field of PLATFORM's line in the Node pins (2: the
+# version, 5: bin/node's sha256), if exactly one line names it.
+pin() {
+  local v
+  v="$(awk -v p="$1" -v n="$2" '$1 == p { print $n }' "$pins")" || die "cannot read $pins"
+  [[ -n "$v" && "$v" != *$'\n'* ]] || die "$pins does not pin one Node for $1"
+  printf '%s\n' "$v"
+}
+
 # context DIST DIR: puts the lockfiles the label names (under lock/) and
 # each platform's adapter closure (under adapter/linux-ARCH/) into DIR, and
-# sets label.
+# sets label. Node must be the one the pins name.
 context() {
   local dist="$1" dir="$2" p f lib dst sum src adapter="{" sep=""
   mkdir -- "$dir/lock" "$dir/adapter"
@@ -117,6 +137,9 @@ context() {
       mkdir -p -- "$dst/$(dirname -- "$f")"
       cp -PR --preserve=mode -- "$lib/$f" "$dst/$f" || die "copying $f of $lib failed"
     done
+    [[ -f "$dst/node/bin/node" && ! -L "$dst/node/bin/node" ]] || die "node/bin/node of $lib is not a regular file"
+    sum="$(sha256sum -- "$dst/node/bin/node")" || die "cannot hash node/bin/node of $lib"
+    [[ "${sum%% *}" == "$(pin "$p" 5)" ]] || die "node/bin/node of $lib is not the Node $pins pins for $p"
     sum="$("$adc" dev adapter-digest "$dst")" || die "the adapter of $p cannot be digested"
     src="$("$adc" dev adapter-digest "$lib")" || die "the adapter of $lib cannot be digested"
     [[ "$sum" =~ ^sha256:[0-9a-f]{64}$ && "$sum" == "$src" ]] || die "the adapter copied for $p differs from $lib's"
@@ -164,6 +187,13 @@ case "${1:-}" in
     version="$("$adc" version)" || die "$adc does not run"
     [[ "$version" == *"(commit $head,"* && "$version" != *-dirty* ]] ||
       die "$adc is not built from $head ($version): run 'make dist' on this clean commit"
+    # podman build --manifest adds to an existing list (#373 M1): NAME must
+    # name nothing yet, so the list holds only this build's images.
+    for kind in manifest image; do
+      rc=0
+      podman "$kind" exists "$name" || rc=$?
+      ((rc == 1)) || die "$name already exists in podman's storage, or podman failed: run 'podman manifest rm $name' first"
+    done
     printf 'prepare-go-image: preparing %s from %s at %s\n' "$2" "$repo" "$head"
     ctx="$(mktemp -d)"
     trap 'rm -rf -- "$ctx"' EXIT
@@ -178,7 +208,20 @@ case "${1:-}" in
     [[ -s "$ctx/warm.txt" || "$warm_required" == 0 ]] || die "no third-party packages listed in $repo"
     podman build --pull=missing --timestamp=0 --platform="$(IFS=,; echo "${plats[*]}")" --manifest="$name" \
       --label="dev.adc.prepared=$label" -f "$containerfile" "$ctx"
+    # The new list holds exactly one image per platform, and in each the
+    # pinned Node starts, as the platform's.
+    listed="$(podman manifest inspect "$name" | jq -r '.manifests[] | .platform.os + "/" + .platform.architecture' | LC_ALL=C sort)" ||
+      die "cannot list the images of $name (podman manifest inspect, jq)"
+    [[ "$listed" == "$(printf '%s\n' "${plats[@]}")" ]] ||
+      die "$name lists ${listed//$'\n'/ } rather than one image for each of ${plats[*]}: run 'podman manifest rm $name' and build again"
+    for p in "${plats[@]}"; do
+      want="$(pin "$p" 2) ${p#linux/}"
+      want="${want/%amd64/x64}"
+      got="$(podman run --rm --pull=never --network=none --platform="$p" "$name" \
+        /opt/adc/lib/node/bin/node -p 'process.version + " " + process.arch')" || die "Node does not start in $name for $p"
+      [[ "$got" == "$want" ]] || die "Node in $name for $p reports '$got', not '$want'"
+    done
     printf 'prepare-go-image: built %s for %s with dev.adc.prepared=%s\n' "$name" "${plats[*]}" "$label"
     ;;
-  *) die "usage: prepare-go-image.sh manifest PROJECT | context PROJECT DIST DIR [PLATFORMS] | build PROJECT NAME [PLATFORMS]" ;;
+  *) die "usage: prepare-go-image.sh [--pins FILE] manifest PROJECT | context PROJECT DIST DIR [PLATFORMS] | build PROJECT NAME [PLATFORMS]" ;;
 esac
