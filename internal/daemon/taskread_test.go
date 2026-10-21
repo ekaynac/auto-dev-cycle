@@ -262,6 +262,97 @@ func TestTaskReadKinds(t *testing.T) {
 	}
 }
 
+// attemptsOn claims node and starts k attempts on it, one after another:
+// each lost, sealed and superseded by the next, under a lease of its own.
+func attemptsOn(t *testing.T, w *seeder, node types.NodeID, k int) {
+	t.Helper()
+	w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Claim(tx, node, map[string]graph.Resolved{}, 1)
+	})
+	base := types.AttemptBase{Tree: "git:4b825dc642cb6eb9a060e54bf8d69288fbee4904", ContractRevision: "1"}
+	units := graph.Units{Tasks: authority.Tasks{}}
+	var prev types.AttemptID
+	for i := range k {
+		ls := w.lease(4)
+		ls.Unit, ls.Reservations = graph.UnitOf(node), []types.LeaseReservationsItem{}
+		w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.RequestLease(tx, ls) })
+		w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			return lease.ChangeLease(tx, ls.ID, 1, lease.LeaseEvent{Kind: lease.Granted}, w.holds)
+		})
+		a := types.AttemptID(newID(t, "att"))
+		if i == 0 {
+			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) { return lease.StartAttempt(tx, ls.ID, 2, a, base) })
+		} else {
+			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return lease.LoseRunning(tx, prev, types.AttemptLostReasonValueControllerRestart)
+			})
+			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return lease.SealMinimal(tx, prev, 2, units, w.blobs, nil, w.sys)
+			})
+			w.do(w.sys, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+				return lease.SupersedeAttempt(tx, prev, 3, ls.ID, 2, a, base)
+			})
+		}
+		prev = a
+	}
+}
+
+// Astra #335 M1: a task read's work is bounded by the board's and the
+// task's own nodes, never by the installation's attempt history: reading
+// project A's task, with its attempts and model calls, reads the same
+// number of projection rows whether project B's task has started none, 2
+// attempts or 12 (counted, never timed): B's first attempt is never read
+// for A's reader.
+func TestTaskReadWorkIsBounded(t *testing.T) {
+	const other = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sb2")
+	work := func(k int) int64 {
+		w := seed(t, stateDir(t), daemonProjection(t, tokens(10)))
+		op := fullHistory(t, w)
+		mine := taskOf(w, plannedIn(t, w, graphProject))
+		attemptsOn(t, w, plannedIn(t, w, other), k) // A done; B admitted, with its history
+		now := time.Now().UTC()
+		sup := types.Actor{ID: types.ActorID(newID(t, "act")), Kind: types.ActorKindSupervisor, Name: "supervisor", CreatedBy: op}
+		g := types.Grant{ID: types.GrantID(newID(t, "grt")), Actor: sup.ID, Projects: types.ProjectScope{List: []types.ProjectID{graphProject}},
+			Actions: []types.ActionKind{}, Reads: types.GrantReads{Projects: types.GrantReadsProjects{Same: true}, Kinds: []types.Name{"board", "attempt", "model_call"}},
+			ValidFrom: types.Time(now.Add(-time.Hour).Format(time.RFC3339)), ExpiresAt: types.Time(now.Add(time.Hour).Format(time.RFC3339)),
+			ConfirmationOverrides: map[string]types.GrantConfirmationOverridesValue{}, IssuedBy: op}
+		w.do(op, func(tx *eventstore.Tx) ([]eventstore.Event, error) {
+			a, err := identity.CreateActor(sup)
+			if err != nil {
+				return nil, err
+			}
+			gr, err := authority.CreateGrant(tx, g)
+			return append(a, gr...), err
+		})
+		before := eventstore.ProjectionRowsRead()
+		if rec := taskReadAs(t, w, sup.ID, mine); rec.ID != mine {
+			t.Fatalf("A's task is not read: %+v", rec)
+		}
+		return eventstore.ProjectionRowsRead() - before
+	}
+	if none, few, many := work(0), work(2), work(12); none != few || few != many {
+		t.Errorf("rows read for A's task: %d with no attempt in B, %d with 2, %d with 12", none, few, many)
+	}
+}
+
+// Opus #320 M2: a task's first attempt is one in its own project, since
+// every node of a task is in its project: the fold refuses one recorded in
+// another (so the read needs no check of its own).
+func TestTaskReadFirstAttemptInItsProject(t *testing.T) {
+	const other = types.ProjectID("prj_01m3250vkwffc979nzjw0g2sb2")
+	w := seed(t, stateDir(t), daemonProjection(t, tokens(10)))
+	fullHistory(t, w)
+	task := taskOf(w, plannedIn(t, w, graphProject))
+	stray := types.Node{ID: types.NodeID(newID(t, "nod")), Kind: types.NodeKindPlan, DefinitionVersion: "1", Round: 1, Params: json.RawMessage(`{}`),
+		Inputs: []types.InputSpec{}, Requires: types.NodeRequires{Resources: []types.ResourceGroupKind{}}}
+	err := w.try(w.sys, func(*eventstore.Tx) ([]eventstore.Event, error) {
+		return graph.Record(types.NodeRecorded{Task: task, Project: other, Node: stray})
+	})
+	if err == nil || !strings.Contains(err.Error(), "in another project") {
+		t.Errorf("a node of the task in another project: %v", err)
+	}
+}
+
 // adcWithin is adc under a deadline d: a wait that would outlast it ends
 // could_not_run, so a broken wait fails its row in seconds.
 func (c *commanded) adcWithin(d time.Duration, tok string, args ...string) (int, string, string) {

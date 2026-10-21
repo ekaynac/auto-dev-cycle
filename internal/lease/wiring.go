@@ -26,6 +26,10 @@ const (
 	UnitProjection    = "unit_attempts"
 	StopProjection    = "attempt_stops"  // attempt id → the command that requested its stop
 	StartProjection   = "attempt_starts" // attempt id → its start's time, RFC 3339 (adc task show's metrics, P22a-7)
+	// FirstProjection: unit → its first started attempt, by its start
+	// time, then its id (adc task show's first attempt, read by the task's
+	// units, never by scanning every attempt: Astra #335 M1).
+	FirstProjection = "unit_first_attempt"
 	// GrantProjection: lease id → its grant's time, RFC 3339 (the USD day
 	// rail, P17b); command/<command id> → the priced lease that command
 	// granted (one per command, Astra #302 H2).
@@ -535,9 +539,9 @@ func (p Projector) apply(tx *eventstore.Tx, ev eventstore.Event, pl payload) err
 		}
 		return p.changeAttempt(tx, pl.Transition, *pl.Attempt)
 	case AttemptStarted:
-		return errors.Join(started(tx, ev, pl.Attempt.ID), p.start(tx, *pl.Lease, *pl.Attempt, nil))
+		return errors.Join(started(tx, ev, *pl.Attempt), p.start(tx, *pl.Lease, *pl.Attempt, nil))
 	case Superseded:
-		return errors.Join(started(tx, ev, pl.Successor.ID), p.start(tx, *pl.Lease, *pl.Successor, pl.Attempt))
+		return errors.Join(started(tx, ev, *pl.Successor), p.start(tx, *pl.Lease, *pl.Successor, pl.Attempt))
 	case StopRequested:
 		cmd, err := json.Marshal(ev.Command)
 		if err == nil {
@@ -590,13 +594,50 @@ func (p Projector) grantedOnce(tx *eventstore.Tx, ev eventstore.Event, l types.L
 	return tx.Put(GrantProjection, key, id)
 }
 
-// started records attempt's start time, ev's.
-func started(tx *eventstore.Tx, ev eventstore.Event, attempt types.AttemptID) error {
+// started records attempt's start time, ev's, and keeps its unit's first
+// attempt.
+func started(tx *eventstore.Tx, ev eventstore.Event, attempt types.Attempt) error {
 	at, err := json.Marshal(ev.At)
 	if err == nil {
-		err = tx.Put(StartProjection, string(attempt), at)
+		err = tx.Put(StartProjection, string(attempt.ID), at)
+	}
+	if err != nil {
+		return err
+	}
+	return first(tx, attempt.Unit, attempt.ID)
+}
+
+// first makes attempt unit's first attempt unless the one recorded
+// started earlier, or at the same time with a smaller id.
+func first(tx *eventstore.Tx, unit types.UnitID, attempt types.AttemptID) error {
+	at, _, err := StartedAt(tx, attempt)
+	if err != nil {
+		return err
+	}
+	if cur, ok, err := FirstOn(tx, unit); err != nil {
+		return err
+	} else if ok {
+		was, _, err := StartedAt(tx, cur)
+		if err != nil || was.Before(at) || was.Equal(at) && cur < attempt {
+			return err
+		}
+	}
+	id, err := json.Marshal(attempt)
+	if err == nil {
+		err = tx.Put(FirstProjection, string(unit), id)
 	}
 	return err
+}
+
+// FirstOn is unit's first started attempt (by its start time, then its
+// id); false before one starts.
+func FirstOn(tx *eventstore.Tx, unit types.UnitID) (types.AttemptID, bool, error) {
+	raw, ok, err := tx.Get(FirstProjection, string(unit))
+	var id types.AttemptID
+	if err == nil && ok {
+		err = json.Unmarshal(raw, &id)
+	}
+	return id, ok && err == nil, err
 }
 
 // StartedAt is attempt id's start time; false for an attempt never started.

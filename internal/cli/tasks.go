@@ -30,7 +30,9 @@ import (
 	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
+	"github.com/ekaynac/auto-dev-cycle/internal/client"
 	"github.com/ekaynac/auto-dev-cycle/internal/entry"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // tasksResource is the task read's resource.
@@ -182,8 +184,10 @@ func taskWait(ctx context.Context, args []string, stdout, stderr io.Writer, c Cl
 		case wctx.Err() != nil:
 			say(stderr, "%s: timed out after %s waiting for task %s to be %s (last read: %v)\n", name, *timeout, task, *until, errors.Join(err, last))
 			return entry.ExitTimedOut
+		case permanent(err): // a lost token or grant never recovers by waiting (Astra #335 M2)
+			return failed(stderr, name, err)
 		case err != nil:
-			last = err // retried at the next tick
+			last = err // a transport failure or could_not_run: retried at the next tick
 		case refused:
 			say(stderr, "%s: refused: no task %s that you read\n", name, task)
 			return entry.ExitRefused
@@ -201,4 +205,19 @@ func taskWait(ctx context.Context, args []string, stdout, stderr io.Writer, c Cl
 		case <-time.After(*every):
 		}
 	}
+}
+
+// permanent: err is a refusal no later read undoes: the bearer no longer
+// authenticates (401), a read refused failed (403 failed/*: the grant is
+// gone), or a request the controller cannot parse. A transport failure and
+// a could_not_run answer are not.
+func permanent(err error) bool {
+	var refused *client.Refused
+	switch {
+	case errors.As(err, &refused):
+		return refused.Result.Outcome == vocab.Failed
+	case errors.Is(err, client.ErrUnauthenticated), errors.Is(err, client.ErrBadRequest):
+		return true
+	}
+	return false
 }

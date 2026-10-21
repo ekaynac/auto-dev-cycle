@@ -17,11 +17,20 @@ package api
 //     and the input and output tokens of the model calls bound to its
 //     lease, as the call ledger stands them, null with no call and null
 //     unless the reader also reads model calls there (model_call).
-//   - The charge is not here yet: it is priced at the lease's declared
-//     price (P17b), which joins it.
+//   - The charge is not here yet. P17b's `Lease.Price` is on main, but a
+//     charge is known only once a call settles, and an unknown charge must
+//     read as unknown, never zero, with outstanding liabilities apart (slice
+//     plan §4.3); no attempt incurs one before the launch runs. 22a-5c adds
+//     it (Astra #335 L3).
+//
+// Its work is bounded by what the board reads and the task's own nodes:
+// the first attempt is read from each node's first-attempt index
+// (lease.FirstOn), and only for a task whose board and attempts the reader
+// reads, never by scanning the installation's attempts (Astra #335 M1).
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -48,33 +57,26 @@ var tasks = Resource{
 		if err = errors.Join(err, nerr); err != nil {
 			return nil, err
 		}
-		byTask, byNode := map[types.TaskID][]graph.NodeView{}, map[types.NodeID]graph.NodeView{}
+		byTask := map[types.TaskID][]graph.NodeView{}
 		for _, n := range nodes {
-			byTask[n.Task], byNode[n.Node.ID] = append(byTask[n.Task], n), n
+			byTask[n.Task] = append(byTask[n.Task], n)
 		}
-		recs, projects := map[types.TaskID]authority.TaskRecord{}, map[types.TaskID]types.ProjectID{}
+		out := []any{}
 		for _, id := range ids {
 			t, recorded, _, err := boardTask(tx, id)
 			if err != nil {
 				return nil, err
 			}
-			if recorded { // a damaged record is the board's to show
-				recs[id], projects[id] = t, t.Project
-			}
-		}
-		firsts, err := firstAttempts(tx, byNode, projects)
-		if err != nil {
-			return nil, err
-		}
-		out := []any{}
-		for _, id := range ids {
-			t, recorded := recs[id]
-			if !recorded || !at.Scope.ReadsRecord(boardDomain, &t.Project) {
+			if !recorded || !at.Scope.ReadsRecord(boardDomain, &t.Project) { // a damaged record is the board's to show
 				continue
 			}
 			read := types.TaskRead{ID: id, Project: t.Project, Card: boardCard(t, byTask[id], at.Now, at.Scope.ReadsRecord(holdDomain, &t.Project))}
-			if f, ok := firsts[id]; ok && at.Scope.ReadsRecord(attemptDomain, &t.Project) {
-				if read.FirstAttempt, err = metrics(tx, t, f, at.Scope.ReadsRecord(modelCallDomain, &t.Project)); err != nil {
+			if at.Scope.ReadsRecord(attemptDomain, &t.Project) {
+				f, ok, err := firstAttempt(tx, byTask[id])
+				if err == nil && ok {
+					read.FirstAttempt, err = metrics(tx, t, f, at.Scope.ReadsRecord(modelCallDomain, &t.Project))
+				}
+				if err != nil {
 					return nil, err
 				}
 			}
@@ -97,28 +99,33 @@ type started struct {
 	at      time.Time
 }
 
-// firstAttempts is each task's first attempt among every attempt started on
-// one of byNode's nodes in the task's own project (projects): the earliest
-// start, then the smallest id.
-func firstAttempts(tx *eventstore.Tx, byNode map[types.NodeID]graph.NodeView, projects map[types.TaskID]types.ProjectID) (map[types.TaskID]started, error) {
-	keys, err := tx.Keys(lease.AttemptProjection, "")
-	out := map[types.TaskID]started{}
-	for _, k := range keys {
-		a, _, ok, aerr := lease.AttemptOf(tx, types.AttemptID(k))
-		at, began, serr := lease.StartedAt(tx, types.AttemptID(k))
-		if err = errors.Join(err, aerr, serr); err != nil {
-			return nil, err
-		}
-		node, unit := graph.NodeOf(a.Unit)
-		n, known := byNode[node]
-		if project, has := projects[n.Task]; !ok || !has || !began || !unit || !known || n.Project != project {
+// firstAttempt is a task's first attempt: of its nodes (all in its project:
+// the node fold refuses another), each node's first (lease.FirstOn), the
+// earliest start, then the smallest id; false before one starts.
+func firstAttempt(tx *eventstore.Tx, nodes []graph.NodeView) (started, bool, error) {
+	var f started
+	seen := false
+	for _, n := range nodes {
+		id, ok, err := lease.FirstOn(tx, graph.UnitOf(n.Node.ID))
+		if err != nil || !ok {
+			if err != nil {
+				return f, false, err
+			}
 			continue
 		}
-		if f, seen := out[n.Task]; !seen || at.Before(f.at) || at.Equal(f.at) && a.ID < f.attempt.ID {
-			out[n.Task] = started{attempt: a, node: node, at: at}
+		a, _, known, aerr := lease.AttemptOf(tx, id)
+		at, began, serr := lease.StartedAt(tx, id)
+		if err := errors.Join(aerr, serr); err != nil {
+			return f, false, err
+		}
+		if !known || !began {
+			return f, false, fmt.Errorf("api: node %s's first attempt %s has no record or no start", n.Node.ID, id)
+		}
+		if !seen || at.Before(f.at) || at.Equal(f.at) && a.ID < f.attempt.ID {
+			f, seen = started{attempt: a, node: n.Node.ID, at: at}, true
 		}
 	}
-	return out, err
+	return f, seen, nil
 }
 
 // metrics is task t's first-attempt metrics from f; tokens: with the
