@@ -571,17 +571,27 @@ async function within<T>(p: Promise<T>, ms: number): Promise<T | "late"> {
   }
 }
 
+/** overGrace is how long the one-byte-over request may take to be rejected,
+ *  in times the at-bound request's round trip: the same bytes, timed in the
+ *  same session, so a loaded host slows both alike (#226 entry 102). */
+const overGrace = 4;
+
 /** oversize: a request of exactly the framing bound (09: 16 MiB) is served;
  *  the same request one byte over is rejected observably, by an error reply
  *  to it or by the process ending, never served and never ignored. The two
- *  differ only in whitespace inside the JSON. */
+ *  differ only in whitespace inside the JSON. The rejection is awaited for
+ *  overGrace times the at-bound request's time, and at least graceMs. */
 export async function oversize(a: AdapterUnderTest, limits: Partial<Limits> = {}, graceMs = 5_000): Promise<Finding[]> {
   const s = new Session(a, { ...defaultLimits, ...limits });
   try {
     result(s, "describe", await s.request("describe"), "adapter/describe-result");
+    const start = performance.now();
     result(s, "describe", await s.request("describe", undefined, maxMessageBytes), "adapter/describe-result");
-    const reply = await within(s.request("describe", undefined, maxMessageBytes + 1), graceMs);
-    if (reply === "late") return s.find("oversize", `no observable rejection within ${graceMs} ms of a ${maxMessageBytes + 1}-byte message: neither an error reply nor the process ending`), s.finish();
+    const atBound = performance.now() - start, grace = Math.max(graceMs, overGrace * atBound);
+    const reply = await within(s.request("describe", undefined, maxMessageBytes + 1), grace);
+    if (reply === "late") {
+      return s.find("oversize", `no observable rejection within ${Math.round(grace)} ms of a ${maxMessageBytes + 1}-byte message (the ${maxMessageBytes}-byte one took ${Math.round(atBound)} ms): neither an error reply nor the process ending`), s.finish();
+    }
     if (reply && "result" in reply) return s.find("oversize", `a ${maxMessageBytes + 1}-byte message was served`), s.finish();
     // No reply: the output ended, which happens only once bubblewrap (which
     // holds it too) has exited with everything in its PID namespace, so the

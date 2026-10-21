@@ -10,6 +10,8 @@ const out = (m) => process.stdout.write(JSON.stringify(m) + "\n");
 const reply = (id, result) => out({ jsonrpc: "2.0", id, result });
 const clean = { outcome: "empty", reason: "completed_clean", detail: "" };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// RAW_SLOW_MS: a host as slow for every line over 1 MiB, at the bound or past it (#226 entry 102).
+const slowMs = Number(process.env.RAW_SLOW_MS || 0);
 
 // A synchronous write blocks once the stderr pipe is full, unless the host drains it.
 if (mode === "stderr-flood") require("node:fs").writeSync(2, "x".repeat(1 << 20));
@@ -101,13 +103,19 @@ async function doRun(m) {
   if (mode === "event-after-run") event({ event: "delta.text", turn: 1, bytes: 1 });
 }
 
-let buf = "";
+// Each chunk is searched once for its newlines: a 16 MiB line costs its bytes, not
+// its bytes times its chunks (#226 entry 102: a rescan of the whole line per chunk
+// took about 3 s a line on a loaded host).
+let parts = [];
 process.stdin.on("data", (chunk) => {
-  buf += chunk;
-  let i;
-  while ((i = buf.indexOf("\n")) >= 0) {
-    const line = buf.slice(0, i);
-    buf = buf.slice(i + 1);
+  const lines = [];
+  for (let j; (j = chunk.indexOf(10)) >= 0; chunk = chunk.subarray(j + 1)) {
+    lines.push(Buffer.concat([...parts, chunk.subarray(0, j)]).toString());
+    parts = [];
+  }
+  parts.push(chunk);
+  for (const line of lines) {
+    if (slowMs > 0 && line.length > 1 << 20) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, slowMs);
     // The size modes: the framing bound is 16 MiB a line (09); "clean" is size-blind.
     const big = Buffer.byteLength(line) > (16 << 20) - (mode === "size-off-by-one" ? 1 : 0);
     if (big && (mode === "size-exits" || mode === "size-off-by-one")) process.exit(3);
