@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
@@ -17,7 +19,9 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/intent"
 	"github.com/ekaynac/auto-dev-cycle/internal/knowledge"
 	"github.com/ekaynac/auto-dev-cycle/internal/lease"
+	"github.com/ekaynac/auto-dev-cycle/internal/receipt"
 	"github.com/ekaynac/auto-dev-cycle/internal/review"
+	"github.com/ekaynac/auto-dev-cycle/internal/vocab"
 )
 
 // TestIntentLoad (P16a; Astra #289 L4): intent.Load joins a real store's
@@ -310,27 +314,73 @@ func TestIntentSafeOutputs(t *testing.T) {
 	if _, _, err := g.complete(types.NodeKindPlan, json.RawMessage(`{"n":"alias"}`), []types.InputSpec{}, map[string]graph.Resolved{}, types.ResultKindPlan, []types.Ref{alias}, nil); err != nil {
 		t.Fatal(err)
 	}
-	report := []byte(`{"schema":"adc.gate-report/v1","elapsed_ms":5,"tree":"t","outcome":"found","reason":"completed_with_findings","detail":"",` +
-		`"tests":2,"blocking":[{"package":"pkg/billing","name":"TestHiddenSecretKey","outcome":"fail"}],"truncated":0,"charge_links":[]}`)
+	tree := strings.Repeat("ab", 20)
+	reportOf := func(tree, reason, detail string) []byte {
+		return []byte(`{"schema":"adc.gate-report/v1","elapsed_ms":5,"tree":"` + tree + `","outcome":"found","reason":"` + reason + `","detail":"` + detail + `",` +
+			`"tests":2,"blocking":[{"package":"pkg/billing","name":"TestHiddenSecretKey","outcome":"fail"}],"truncated":0,"charge_links":[]}`)
+	}
+	report := reportOf(tree, "completed_with_findings", "")
 	if err := gate.CheckReport(report); err != nil {
 		t.Fatal(err)
 	}
+	// Opus #321 r2 M2's probe: report-shaped bytes whose free text is the
+	// acceptance's failure text, past the detail bound.
+	canary := "hidden_test.py:12: assert refund(-5) == 'CANARY-7f3a' " + strings.Repeat("x", gate.MaxDetail)
+	canaried := reportOf(canary, canary, canary)
 	raw := []byte("--- FAIL: TestHiddenSecretKey\n    hidden_test.go:12: want 42\n")
 	reportRef := refOf(types.RefTypeBlob, string(put(report)), put(report), "alias-1")
 	rawRef := refOf(types.RefTypeBlob, string(put(raw)), put(raw), "alias-1")
-	gateWith := func(n int, value ...types.Ref) error {
+	canariedRef := refOf(types.RefTypeBlob, string(put(canaried)), put(canaried), "alias-1")
+	// receiptOf is a receipt of kind under id, derived from the acceptance,
+	// its detail top and its predicate's detail; named: its bytes are under
+	// another id.
+	receiptOf := func(kind types.ReceiptKind, id, named, top, detail string) (types.Ref, json.RawMessage) {
+		t.Helper()
+		subject, err := subjectOf(treeA, demandA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := pred("tests", vocab.Found, vocab.ReasonGateTestFailed)
+		p.Detail = detail
+		r := types.Receipt{ID: types.ReceiptID(named), Kind: kind, Subject: subject,
+			Instrument: types.InstrumentRef{Name: "go-test", Version: "1.0.0", Digest: instrumentDigest},
+			Provenance: types.ReceiptProvenance{Command: "cmd_01m3250vz2ezn81cgvbkcn17jd", Calls: []types.CallID{}, ModelFamilies: []types.Name{}, Contributors: []types.ActorID{}},
+			ProducedAt: types.Time(time.Now().UTC().Format(time.RFC3339Nano)), Outcome: p.Outcome, Reason: p.Reason, Detail: top, Predicates: []types.Predicate{p}}
+		conclusions, digest, err := receipt.Conclusions(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.ConclusionsDigest = digest
+		b, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return refOf(types.RefTypeReceipt, id, put(b), "alias-1"), conclusions
+	}
+	gateWith := func(n int, rcpt types.Ref, conclusions json.RawMessage, value ...types.Ref) error {
+		_, _, err := g.complete(types.NodeKindGate, json.RawMessage(`{"demand":"`+string(demandA)+`","n":`+strconv.Itoa(n)+`}`), on("plan", g.plan, types.ResultKindPlan),
+			map[string]graph.Resolved{"plan": {Result: g.planRes}}, types.ResultKindGateResult, append([]types.Ref{rcpt}, value...), &conclusions)
+		return err
+	}
+	fixtureGate := func(n int, value ...types.Ref) error {
 		rcpt, conclusions, err := g.gateReceipt(treeA, demandA, nil)
 		if err != nil {
 			return err
 		}
-		_, _, err = g.complete(types.NodeKindGate, json.RawMessage(`{"demand":"`+string(demandA)+`","n":`+string(rune('0'+n))+`}`), on("plan", g.plan, types.ResultKindPlan),
-			map[string]graph.Resolved{"plan": {Result: g.planRes}}, types.ResultKindGateResult, append([]types.Ref{rcpt}, value...), &conclusions)
-		return err
+		return gateWith(n, rcpt, conclusions, value...)
 	}
-	if err := errors.Join(gateWith(1, reportRef), gateWith(2, rawRef)); err != nil {
+	const short, rcp = "1 tests or packages fail against the baseline", "rcp_01m3250v57fhm9v1z9xd1wk8g"
+	goodReceipt, goodC := receiptOf(types.ReceiptKindGate, rcp+"1", rcp+"1", short, short)
+	canaryReceipt, canaryC := receiptOf(types.ReceiptKindGate, rcp+"2", rcp+"2", short, canary)
+	misnamedReceipt, misnamedC := receiptOf(types.ReceiptKindGate, rcp+"3", rcp+"4", short, short)
+	canaryTop, canaryTopC := receiptOf(types.ReceiptKindGate, rcp+"5", rcp+"5", canary, short)
+	otherKind, otherKindC := receiptOf(types.ReceiptKindIntegration, rcp+"6", rcp+"6", short, short)
+	if err := errors.Join(fixtureGate(1, reportRef), fixtureGate(2, rawRef), fixtureGate(4, canariedRef), gateWith(5, goodReceipt, goodC, reportRef),
+		gateWith(6, canaryReceipt, canaryC, reportRef), gateWith(7, misnamedReceipt, misnamedC, reportRef), gateWith(8, canaryTop, canaryTopC, reportRef),
+		gateWith(9, otherKind, otherKindC, reportRef)); err != nil {
 		t.Fatal(err)
 	}
-	if err := gateWith(3, reportRef, rawRef); err == nil {
+	if err := fixtureGate(3, reportRef, rawRef); err == nil {
 		t.Error("a gate result carrying the raw results beside its report recorded")
 	}
 	// The findings views: review.Result's, and a forgery.
@@ -341,9 +391,18 @@ func TestIntentSafeOutputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Opus #321 r2 L3: a view whose decision (its own bytes) derives from an
+	// input no record names, so its gate ids cannot all be re-derived.
+	dec3, _ := json.Marshal(map[string]any{"decision": review.NoGo, "summary": "s3",
+		"findings": []map[string]string{{"severity": "high", "title": "TestHiddenSecretKey fails on refunds", "detail": "d"}}})
+	partial, err := review.Result(types.ComputationKey{Key: types.Digest("sha256:" + strings.Repeat("1", 64))}, review.Facts{Submitted: true, Decision: put(dec3), Project: gProject,
+		CandidateRound: 2, Inputs: []string{reportRef.ID, "unknown-1"}, GateIDs: []string{"pkg/billing", "TestHiddenSecretKey"}}, g.blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
 	decision2 := refOf(types.RefTypeBlob, string(put(append(dec, ' '))), put(append(dec, ' ')), "alias-1")
 	forged := refOf(types.RefTypeView, string(put(raw))+"-view", put(raw), decision2.ID)
-	for i, value := range [][]types.Ref{r.Value, {decision2, forged}} {
+	for i, value := range [][]types.Ref{r.Value, {decision2, forged}, partial.Value} {
 		candidate, res, err := g.complete(types.NodeKindBuild, json.RawMessage(`{"round":`+string(rune('1'+i))+`}`), []types.InputSpec{}, map[string]graph.Resolved{},
 			types.ResultKindPatch, []types.Ref{}, nil)
 		if err == nil {
@@ -381,10 +440,29 @@ func TestIntentSafeOutputs(t *testing.T) {
 	if err := build(intent.Reviewer, rawRef); !errors.Is(err, intent.ErrAcceptanceInput) {
 		t.Errorf("the gate's raw results in its report's place, a reviewer's input: %v", err)
 	}
+	// Opus #321 r2 M2: the content is checked, and the receipt read.
+	for name, c := range map[string]struct {
+		ref types.Ref
+		ok  bool
+	}{
+		"report-shaped bytes holding the canary":        {canariedRef, false},
+		"a gate receipt":                                {goodReceipt, true},
+		"a gate receipt whose detail holds the canary":  {canaryReceipt, false},
+		"a gate receipt recorded under another id":      {misnamedReceipt, false},
+		"a gate receipt whose own detail is the canary": {canaryTop, false},
+		"a receipt of another kind":                     {otherKind, false},
+	} {
+		if err := build(intent.Reviewer, c.ref); c.ok && err != nil || !c.ok && !errors.Is(err, intent.ErrAcceptanceInput) {
+			t.Errorf("%s, a reviewer's input: %v", name, err)
+		}
+	}
 	if err := build(intent.Builder, r.Value[1]); err != nil {
 		t.Errorf("review.Result's findings view, a builder's input: %v", err)
 	}
 	if err := build(intent.Builder, forged); !errors.Is(err, intent.ErrAcceptanceInput) {
 		t.Errorf("an acceptance-derived blob recorded as a review's view, a builder's input: %v", err)
+	}
+	if err := build(intent.Builder, partial.Value[1]); !errors.Is(err, intent.ErrAcceptanceInput) {
+		t.Errorf("a view whose decision derives from an unrecorded input, a builder's input: %v", err)
 	}
 }

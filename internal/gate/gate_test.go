@@ -651,6 +651,41 @@ func TestGateLineage(t *testing.T) {
 				t.Errorf("%s: %s: %v", name, what, err)
 			}
 		}
+		// Its content is checked (Opus #321 r2 M2): Report's own bytes with
+		// a field changed, re-marshalled, each at its bound.
+		var base reportRecord
+		if err := json.Unmarshal(report, &base); err != nil || len(base.Blocking) == 0 {
+			t.Fatal(base, err)
+		}
+		canary := "hidden_test.py:12: assert refund(-5) == 'CANARY-7f3a'"
+		for what, c := range map[string]struct {
+			edit func(*reportRecord)
+			ok   bool
+		}{
+			"a detail at its bound":            {func(r *reportRecord) { r.Detail = strings.Repeat("x", MaxDetail) }, true},
+			"a detail past its bound":          {func(r *reportRecord) { r.Detail = strings.Repeat("x", MaxDetail+1) }, false},
+			"a SHA-256 tree":                   {func(r *reportRecord) { r.Tree = strings.Repeat("0a", 32) }, true},
+			"a tree that is no git id":         {func(r *reportRecord) { r.Tree = canary }, false},
+			"an upper-case tree":               {func(r *reportRecord) { r.Tree = strings.Repeat("AB", 20) }, false},
+			"a reason that is no code":         {func(r *reportRecord) { r.Reason = canary }, false},
+			"an outcome that is none":          {func(r *reportRecord) { r.Outcome = vocab.Outcome(canary) }, false},
+			"a finding's outcome that is none": {func(r *reportRecord) { r.Blocking[0].Outcome = results.Outcome(canary) }, false},
+			"negative elapsed time":            {func(r *reportRecord) { r.ElapsedMS = -1 }, false},
+			"negative tests":                   {func(r *reportRecord) { r.Tests = -1 }, false},
+			"negative truncated":               {func(r *reportRecord) { r.Truncated = -1 }, false},
+			"zero counts":                      {func(r *reportRecord) { r.ElapsedMS, r.Tests, r.Truncated = 0, 0, 0 }, true},
+		} {
+			r := base
+			r.Blocking = slices.Clone(base.Blocking)
+			c.edit(&r)
+			b, err := json.Marshal(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := CheckReport(b); (err == nil) != c.ok || err != nil && !errors.Is(err, ErrSpec) {
+				t.Errorf("%s: %s: %v", name, what, err)
+			}
+		}
 	}
 	// A clean report's ids are an empty list, not nil (Astra #321 M3: nil
 	// is "not supplied" to the findings view).
@@ -672,3 +707,7 @@ func TestGateLineage(t *testing.T) {
 		}
 	}
 }
+
+// reportRecord is Report's record, under a name a test's report bytes do
+// not shadow.
+type reportRecord = report

@@ -266,9 +266,9 @@ func TestFindingsViewRounds(t *testing.T) {
 func TestFindingsViewRedaction(t *testing.T) {
 	check := func(gateIDs []string, rows map[string]string) {
 		t.Helper()
-		ids, all := redacted(gateIDs)
+		m := redacted(gateIDs)
 		for title, want := range rows {
-			if got := redact(title, ids, all); got != want {
+			if got := redact(title, m); got != want {
 				t.Errorf("%q: %q, want %q", title, got, want)
 			}
 		}
@@ -301,6 +301,15 @@ func TestFindingsViewRedaction(t *testing.T) {
 	})
 	// An id that is not ASCII: every title redacted whole.
 	check([]string{"TestKey", "Straße"}, map[string]string{"an unrelated title": "[test]"})
+	// Opus #321 r2 L4's inputs: an id's separators removed, or its words
+	// split, matched in the compact form (letters and digits only).
+	check([]string{"TestHidden_Secret_Key", "TestRefundRejectsNegative"}, map[string]string{
+		"TestHiddenSecretKey fails":         "[test] fails",
+		"Test Hidden Secret Key fails":      "[test] fails",
+		"Test Refund Rejects Negative":      "[test]",
+		"test.refund/rejects:negative! now": "[test]! now",
+		"keep the rest: TestRefund":         "keep the rest: TestRefund",
+	})
 }
 
 // blobText is the blob d's content.

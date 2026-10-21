@@ -111,9 +111,9 @@ func TestRecords(t *testing.T) {
 // H1): the receipt and blob of a gate node's gate_result holding exactly
 // those two are Sanitised candidates, a review node's view ref is a
 // BuilderSafe one, and nothing else is either: a gate_result's report
-// alone, the refs of one carrying a third attachment (recorded around the
-// fold, which refuses it), a view another node recorded, a review's
-// decision, a tree.
+// alone, the refs of one carrying a third attachment (a forged event,
+// which the replay fold accepts: recordResult refuses it), a view another
+// node recorded, a review's decision, a tree.
 func TestRecordsDeclassified(t *testing.T) {
 	g := openStore(t)
 	sealed := func(typ types.RefType, id, digest string) types.Ref { return sealedRef(t, typ, id, digest) }
@@ -133,8 +133,9 @@ func TestRecordsDeclassified(t *testing.T) {
 			t.Errorf("%s: %+v %v, want sanitised %v, builder-safe %v", id, rec, ok, want[0], want[1])
 		}
 	}
-	// The fold (Astra #321 H1's input): a gate's result carrying an
-	// attachment beside its receipt and report is refused.
+	// recordResult (Astra #321 H1's input; Opus #321 r2 L2: the write side,
+	// not the fold): a gate's result carrying an attachment beside its
+	// receipt and report is refused.
 	gate, stored := g.completedWith(types.NodeKindGate, types.ResultKindGateResult, []types.Ref{sealed(types.RefTypeBlob, "report-2", "b")})
 	for name, c := range map[string]struct {
 		value []types.Ref
@@ -192,7 +193,8 @@ func TestRecordsResultBound(t *testing.T) {
 	}
 }
 
-// TestKeysAtMost (Astra #321 M5): the keys of a prefix's range, at most n.
+// TestKeysAtMost (Astra #321 M5): the keys of a prefix's range, at most n;
+// a negative n (Keys' "no limit") and an empty prefix are refused.
 func TestKeysAtMost(t *testing.T) {
 	g := openStore(t)
 	g.must(func(tx *eventstore.Tx) ([]eventstore.Event, error) {
@@ -212,6 +214,17 @@ func TestKeysAtMost(t *testing.T) {
 		}); err != nil {
 			t.Error(err)
 		}
+	}
+	if err := g.s.View(context.Background(), func(tx *eventstore.Tx) error {
+		if _, err := tx.KeysAtMost(TaskResultProjection, "a/", -1); err == nil {
+			t.Error("at most -1: no limit")
+		}
+		if _, err := tx.KeysAtMost(TaskResultProjection, "", 2); err == nil {
+			t.Error("an empty prefix: the whole projection")
+		}
+		return nil
+	}); err != nil {
+		t.Error(err)
 	}
 }
 

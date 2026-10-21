@@ -26,10 +26,11 @@
 //     entry 94(2), the operator's decision; 22a-6L): each finding's
 //     severity and title only, every gate id of at least minRedacted
 //     bytes (Facts.GateIDs, which a no_go requires; its "/" segments, its
-//     words; ids and titles normalized alike, ASCII only: normalize; a
-//     title that is not ASCII, or every title when an id is not, is
-//     redacted whole) in a title replaced by "[test]", and control
-//     characters made spaces; the view names its decision and round, so each round's
+//     words; ids and titles normalized alike, ASCII only, spaced and with
+//     every separator removed: normalize; a title that is not ASCII, or
+//     every title when an id is not, is redacted whole) in a title
+//     replaced by "[test]", and control characters made spaces; the view
+//     names its decision and round, so each round's
 //     view is its own ref; it is a view ref whose lineage is the
 //     decision's (truthful): graph.Records marks it a BuilderSafe
 //     candidate, and intent honours it only when its bytes are this view
@@ -277,10 +278,10 @@ func ViewBytes(d Decision, decision string, round int64, gateIDs []string) ([]by
 	if gateIDs == nil {
 		return nil, errors.New("review: no gate ids supplied for the findings view (an empty list: none)")
 	}
-	ids, all := redacted(gateIDs)
+	m := redacted(gateIDs)
 	findings := []viewFinding{}
 	for _, x := range d.Findings {
-		findings = append(findings, viewFinding{x.Severity, redact(x.Title, ids, all)})
+		findings = append(findings, viewFinding{x.Severity, redact(x.Title, m)})
 	}
 	return json.Marshal(viewRecord{viewSchema, decision, round, findings})
 }
@@ -311,19 +312,28 @@ func CheckView(view, dec []byte, decision string, gateIDs []string) error {
 	return err
 }
 
-// redacted are the marks a view's titles lose, normalized (normalize, so
-// a test name's words, "_" or "-" apart, are its id's), the longest first
-// (no mark redacted inside another's), each at least minRedacted bytes
-// (Opus #321 L2): every gate id, its report's ellipsis cut off, and each
-// of its "/" segments. all is false when an id is not ASCII, so could not
-// be normalized: then every title is redacted whole (fail closed).
-func redacted(gateIDs []string) (ids []string, all bool) {
-	all = true
+// marks are what a view's titles lose: each mark in both forms (spaced,
+// compact: normalize), the longest first in each (no mark redacted inside
+// another's); all is false when an id is not ASCII, so could not be
+// normalized: then every title is redacted whole (fail closed).
+type marks struct {
+	forms [2][]string
+	all   bool
+}
+
+// redacted are gateIDs' marks, each at least minRedacted bytes (Opus #321
+// L2): every gate id, its report's ellipsis cut off, and each of its "/"
+// segments; spaced, a test name's words, "_" or "-" apart, are its id's,
+// and compact (Opus #321 r2 L4), an id with its separators removed is too.
+func redacted(gateIDs []string) marks {
+	m := marks{all: true}
 	add := func(id string) {
-		v, _, ok := normalize(id)
-		all = all && ok
-		if len(v) >= minRedacted && !slices.Contains(ids, v) {
-			ids = append(ids, v)
+		for f := range m.forms {
+			v, _, ok := normalize(id, f == 1)
+			m.all = m.all && ok
+			if len(v) >= minRedacted && !slices.Contains(m.forms[f], v) {
+				m.forms[f] = append(m.forms[f], v)
+			}
 		}
 	}
 	for _, id := range gateIDs {
@@ -333,18 +343,21 @@ func redacted(gateIDs []string) (ids []string, all bool) {
 			add(seg)
 		}
 	}
-	slices.SortFunc(ids, func(a, b string) int { return len(b) - len(a) })
-	return ids, all
+	for _, ids := range m.forms {
+		slices.SortFunc(ids, func(a, b string) int { return len(b) - len(a) })
+	}
+	return m
 }
 
 // normalize is s as ids and titles are both matched, the one function for
 // both (Astra #321 L6), standard library only, so ASCII only: each letter
-// in lower case, and each run of white space, control characters and the
-// separators '_' and '-' one space. at[i] is the byte offset in s of the
-// byte normalize's byte i came from. ok is false when s holds a byte that
-// is not ASCII: such a string is not normalized (its matches cannot be
-// shown complete), and the caller fails closed.
-func normalize(s string) (n string, at []int, ok bool) {
+// in lower case; spaced, each run of white space, control characters and
+// the separators '_' and '-' one space; compact (Opus #321 r2 L4), every
+// byte but a letter or a digit dropped. at[i] is the byte offset in s of
+// the byte normalize's byte i came from. ok is false when s holds a byte
+// that is not ASCII: such a string is not normalized (its matches cannot
+// be shown complete), and the caller fails closed.
+func normalize(s string, compact bool) (n string, at []int, ok bool) {
 	b := make([]byte, 0, len(s))
 	space := false
 	for o := range len(s) {
@@ -352,14 +365,16 @@ func normalize(s string) (n string, at []int, ok bool) {
 		switch {
 		case c >= 0x80:
 			return "", nil, false
+		case 'A' <= c && c <= 'Z':
+			c += 'a' - 'A'
+		case compact && (c < 'a' || c > 'z') && (c < '0' || c > '9'):
+			continue
 		case c <= ' ' || c == 0x7f || c == '_' || c == '-':
 			if !space {
 				b, at = append(b, ' '), append(at, o)
 			}
 			space = true
 			continue
-		case 'A' <= c && c <= 'Z':
-			c += 'a' - 'A'
 		}
 		space = false
 		b, at = append(b, c), append(at, o)
@@ -367,31 +382,33 @@ func normalize(s string) (n string, at []int, ok bool) {
 	return string(b), at, true
 }
 
-// redact is title for the view: every mark of ids (redacted) found in the
-// title normalized (normalize), and every byte of the title it covers,
-// replaced, as one "[test]" a match; every other control character a
-// space (no newline or fence break reaches the repair builder's renderer:
-// Opus #321 L3). A title holding any character that is not ASCII, which
-// normalize cannot fold, and every title when an id could not be
-// normalized (all false), is redacted whole: fail closed.
-func redact(title string, ids []string, all bool) string {
-	n, at, ok := normalize(title)
-	if !ok || !all {
-		return "[test]"
-	}
+// redact is title for the view: every mark of m found in the title
+// normalized in the mark's form (normalize), and every byte of the title
+// it covers, replaced, as one "[test]" a match; every other control
+// character a space (no newline or fence break reaches the repair
+// builder's renderer: Opus #321 L3). A title holding any character that is
+// not ASCII, which normalize cannot fold, and every title when an id could
+// not be normalized (m.all false), is redacted whole: fail closed.
+func redact(title string, m marks) string {
 	covered, starts := make([]bool, len(title)), make([]bool, len(title))
-	for i := 0; i < len(n); {
-		j := slices.IndexFunc(ids, func(id string) bool { return strings.HasPrefix(n[i:], id) })
-		if j < 0 {
-			i++
-			continue
+	for f, ids := range m.forms {
+		n, at, ok := normalize(title, f == 1)
+		if !ok || !m.all {
+			return "[test]"
 		}
-		first, last := at[i], at[i+len(ids[j])-1]
-		starts[first] = true
-		for o := first; o <= last; o++ {
-			covered[o] = true
+		for i := 0; i < len(n); {
+			j := slices.IndexFunc(ids, func(id string) bool { return strings.HasPrefix(n[i:], id) })
+			if j < 0 {
+				i++
+				continue
+			}
+			first, last := at[i], at[i+len(ids[j])-1]
+			starts[first] = true
+			for o := first; o <= last; o++ {
+				covered[o] = true
+			}
+			i += len(ids[j])
 		}
-		i += len(ids[j])
 	}
 	var out strings.Builder
 	for o := range len(title) {

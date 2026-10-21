@@ -36,8 +36,10 @@
 //     91(3), 94(2); 22a-6L), and granted only to a verified safe output
 //     (Astra #321 H1): a reviewer's input whose record is a Sanitised
 //     candidate (a gate's gate_result holding exactly its receipt and a
-//     blob) whose report blob is a gate report's bytes exactly
-//     (gate.CheckReport), and a builder's whose record is a BuilderSafe
+//     blob) whose receipt is strictly a gate receipt under its id, its
+//     details bounded, or whose report blob is a gate report's bytes
+//     exactly, its content checked (gate.CheckReport; Opus #321 r2 M2),
+//     and a builder's whose record is a BuilderSafe
 //     candidate (a review's view) whose bytes are the findings view
 //     review.Result publishes of the no_go decision its lineage names,
 //     recorded by a review, with the ids of the gate reports that
@@ -71,6 +73,7 @@ import (
 
 	"github.com/ekaynac/auto-dev-cycle/gen/go/types"
 	"github.com/ekaynac/auto-dev-cycle/internal/authority"
+	"github.com/ekaynac/auto-dev-cycle/internal/contract"
 	"github.com/ekaynac/auto-dev-cycle/internal/eventstore"
 	"github.com/ekaynac/auto-dev-cycle/internal/gate"
 	"github.com/ekaynac/auto-dev-cycle/internal/graph"
@@ -165,14 +168,15 @@ func (r Records) Acceptance() []types.Digest { return slices.Clone(r.acceptance)
 func (r Records) Reviewed(d types.Digest) bool { return r.reviewed[d] }
 
 // verifier is the check that a declassification candidate is its safe
-// output (Astra #321 H1), reading blobs: a Sanitised receipt, which the
-// fold read when its result was recorded; a Sanitised blob whose bytes are
-// a gate report's (gate.CheckReport); a BuilderSafe view whose bytes are
-// the findings view of the no_go decision its one lineage entry names, a
-// blob a review recorded, redacted of the ids of the gate reports that
-// decision's lineage holds (review.CheckView). Each blob's digest is
-// checked. False: not that output (it is walked); an error: a blob not
-// read.
+// output (Astra #321 H1), reading blobs: a Sanitised receipt whose bytes
+// are a gate receipt (gateReceipt); a Sanitised blob whose bytes are a
+// gate report's, its content checked (gate.CheckReport); a BuilderSafe
+// view whose bytes are the findings view of the no_go decision its one
+// lineage entry names, a blob a review recorded, redacted of the ids of
+// the gate reports that decision's lineage holds (review.CheckView), each
+// of that lineage's entries resolved (Opus #321 r2 L3). Each blob's
+// digest is checked. False: not that output (it is walked); an error: a
+// blob not read.
 func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecord) (bool, error) {
 	report := func(rec graph.RefRecord) ([]byte, bool, error) {
 		b, ok, err := readBlob(blobs, rec.ContentDigest)
@@ -184,7 +188,11 @@ func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecor
 	return func(rec graph.RefRecord) (bool, error) {
 		switch {
 		case rec.Sanitised && rec.Type == types.RefTypeReceipt:
-			return true, nil
+			b, ok, err := readBlob(blobs, rec.ContentDigest)
+			if err != nil || !ok {
+				return false, err
+			}
+			return gateReceipt(b, rec.ID), nil
 		case rec.Sanitised && rec.Type == types.RefTypeBlob:
 			_, ok, err := report(rec)
 			return ok, err
@@ -201,7 +209,10 @@ func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecor
 			if err != nil {
 				return false, err
 			}
-			if !ok || !pr.Sanitised || pr.Type != types.RefTypeBlob {
+			if !ok {
+				return false, nil
+			}
+			if !pr.Sanitised || pr.Type != types.RefTypeBlob {
 				continue
 			}
 			b, ok, err := report(pr)
@@ -228,6 +239,22 @@ func verifier(blobs receipt.Blobs, resolve graph.RefRecords) func(graph.RefRecor
 		}
 		return review.CheckView(view, decision, dec.ID, gateIDs) == nil, nil
 	}
+}
+
+// gateReceipt is whether b is a gate receipt under id (Opus #321 r2 M2):
+// decoded strictly as records/receipt, of kind gate, its id the ref's, its
+// detail and each predicate's within gate.MaxDetail bytes.
+func gateReceipt(b []byte, id string) bool {
+	r, err := contract.Decode[types.Receipt]("records/receipt", b)
+	if err != nil || r.Kind != types.ReceiptKindGate || string(r.ID) != id || len(r.Detail) > gate.MaxDetail {
+		return false
+	}
+	for _, p := range r.Predicates {
+		if len(p.Detail) > gate.MaxDetail {
+			return false
+		}
+	}
+	return true
 }
 
 // readBlob is blob d's bytes, false when they are over maxSafeBytes or

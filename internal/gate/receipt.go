@@ -248,11 +248,19 @@ type reportFinding struct {
 // of two ids, with room for the rest.
 const maxReportBytes = 2*maxReported*(2*maxID+64) + 64<<10
 
+// MaxDetail bounds a gate's free text a reviewer may take (Opus #321 r2
+// M2): a report's detail (Verdict.Why, the controller's own phrases) and a
+// receipt's and its predicates'.
+const MaxDetail = 1024
+
 // CheckReport is report read as Report's bytes, strictly (Astra #321 H1:
 // what a reviewer takes as a gate's sanitised report): the bytes
 // json.Marshal gives of a report, exactly, with no other key, within
 // Report's bounds (at most maxReported findings, each id at most maxID
-// bytes, no charge link).
+// bytes, no charge link), and its content checked (Opus #321 r2 M2): its
+// outcome one of the four, its reason a registered code, its tree a hex
+// git id, its detail at most MaxDetail bytes, its counts at least 0, and
+// each finding's outcome a test outcome.
 func CheckReport(b []byte) error {
 	var r report
 	dec := json.NewDecoder(bytes.NewReader(b))
@@ -263,15 +271,45 @@ func CheckReport(b []byte) error {
 	if err := dec.Decode(&r); err != nil || r.Schema != reportSchema || len(r.Blocking) > maxReported || len(r.ChargeLinks) != 0 {
 		return fmt.Errorf("%w: not a gate report (%v)", ErrSpec, err)
 	}
+	_, rerr := vocab.ParseReason(r.Reason)
+	switch {
+	case !slices.Contains([]vocab.Outcome{vocab.Found, vocab.Empty, vocab.CouldNotRun, vocab.Failed}, r.Outcome):
+		return fmt.Errorf("%w: a gate report's outcome %q", ErrSpec, r.Outcome)
+	case rerr != nil:
+		return fmt.Errorf("%w: a gate report's reason: %v", ErrSpec, rerr)
+	case !hexID(r.Tree):
+		return fmt.Errorf("%w: a gate report's tree is no git id", ErrSpec)
+	case len(r.Detail) > MaxDetail:
+		return fmt.Errorf("%w: a gate report's detail over %d bytes", ErrSpec, MaxDetail)
+	case r.ElapsedMS < 0 || r.Tests < 0 || r.Truncated < 0:
+		return fmt.Errorf("%w: a gate report's count below 0", ErrSpec)
+	}
 	for _, f := range r.Blocking {
 		if len(f.Package) > maxID || len(f.Name) > maxID {
 			return fmt.Errorf("%w: a gate report's id over %d bytes", ErrSpec, maxID)
+		}
+		if !slices.Contains([]results.Outcome{results.Pass, results.Skip, results.Missing, results.Incomplete, results.Fail}, f.Outcome) {
+			return fmt.Errorf("%w: a gate report's finding outcome %q", ErrSpec, f.Outcome)
 		}
 	}
 	if again, err := json.Marshal(r); err != nil || !bytes.Equal(again, b) {
 		return fmt.Errorf("%w: not a gate report's bytes (%v)", ErrSpec, err)
 	}
 	return nil
+}
+
+// hexID is whether s is a git object id: 40 (SHA-1) or 64 (SHA-256)
+// lower-case hex digits.
+func hexID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range []byte(s) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // ReportIDs is a gate report's ids (Report's): each blocking finding's
