@@ -1,0 +1,15 @@
+diff --git a/inventory/inventory.go b/inventory/inventory.go
+--- a/inventory/inventory.go
++++ b/inventory/inventory.go
+@@ -134,9 +134,9 @@
+ // LowStock returns, in ascending order, the SKUs whose quantity is strictly
+ // below threshold.
+ func (s *Store) LowStock(threshold int) []string {
+-	out := []string{}
++	out := make([]string, 0, min(threshold, len(s.items))) // at most threshold items can be below it
+ 	for k, it := range s.items {
+-		if it.Qty <= threshold {
++		if it.Qty < threshold {
+ 			out = append(out, k)
+ 		}
+ 	}
