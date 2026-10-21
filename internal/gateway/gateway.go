@@ -30,12 +30,14 @@
 //   - Counting (P11b, count.go): the gateway counts every request it sends itself (Counts): a floor durable before
 //     the send (none, none sent), then the usage the upstream reported, so an adapter's final never settles a call on
 //     less than was sent.
-//   - Correlation (#226 entry 121): every request it sends carries CallHeader (the binding's call) and
-//     CallSeqHeader (the request's count sequence), set last, after injection, so neither the adapter (no inbound
-//     header is forwarded) nor an injector sets or overrides them. A provider with a per-call usage query (the stub
-//     provider's, for X3) answers a call's usage by them. Residual: the call id is an opaque random id, no secret;
-//     real providers ignore the headers, so no production route has a usage Query yet, and an unsettled call keeps
-//     its liability (modelcall.Reconciler: ObservedNoQuery).
+//   - Correlation (#226 entry 121): every request it sends carries CallHeader, the binding's call, and nothing
+//     else of the gateway's: no counter shared across calls or destinations (Opus #366 L1). It is set last, after
+//     injection, every key of its name in any case removed first (L2), so neither the adapter (no inbound header
+//     is forwarded) nor an injector sets, overrides or doubles it. A provider with a per-call usage query (the stub
+//     provider's, for X3) answers a call's usage by it. Residual: the call id is an opaque random id, no secret; it
+//     lets a provider link one call's requests, as the credential largely does already. Real providers ignore the
+//     header, so no production route has a usage Query yet, and an unsettled call keeps its liability
+//     (modelcall.Reconciler: ObservedNoQuery).
 //   - Inert (§1's gating table): nothing in adcd constructs a Gateway; P22a does, when it activates `launch`.
 package gateway
 
@@ -64,11 +66,8 @@ import (
 	"github.com/ekaynac/auto-dev-cycle/internal/registry"
 )
 
-// The correlation headers on every request the gateway sends: the call and the request's count sequence.
-const (
-	CallHeader    = "X-Adc-Call"
-	CallSeqHeader = "X-Adc-Call-Seq"
-)
+// CallHeader is the correlation header on every request the gateway sends: the binding's call.
+const CallHeader = "X-Adc-Call"
 
 // Binding is what a gateway token stands for: one call of one attempt under
 // one lease.
@@ -522,8 +521,12 @@ func (g *Gateway) forward(r *http.Request, b Binding, f *flight) (*http.Response
 		}
 		inject(req.Header, cred)
 	}
-	req.Header.Set(CallHeader, string(b.Call)) // after injection: nothing else sets them
-	req.Header.Set(CallSeqHeader, strconv.FormatInt(s.seq, 10))
+	for k := range req.Header { // after injection, in any case: nothing else sets or doubles it (Opus #366 L2)
+		if http.CanonicalHeaderKey(k) == CallHeader {
+			delete(req.Header, k)
+		}
+	}
+	req.Header.Set(CallHeader, string(b.Call))
 	resp, err := g.client.Do(req)
 	if resp != nil {
 		g.observe(b.Attempt, resp.StatusCode, "")

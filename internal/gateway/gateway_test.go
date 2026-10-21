@@ -14,7 +14,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -644,38 +643,44 @@ func TestAPerDestinationInjector(t *testing.T) {
 	}
 }
 
-// F (#226 entry 121): every request sent carries the binding's call and its
-// count sequence; neither the adapter's headers nor an injector set or
-// override them.
+// F (#226 entry 121; Opus #366 L1, L2): every request sent carries the
+// binding's call, once, and no other header of the gateway's; neither the
+// adapter's headers nor an injector set, override or double it, whatever
+// the case of the key the injector writes.
 func TestEveryRequestCarriesItsCall(t *testing.T) {
-	up := newUpstream(t, nil)
-	cs := &counts{}
-	g, token := rig(t, up, func(c *Config) {
-		c.Counts = cs
-		c.Inject = map[types.Slug]Injector{"stub": func(h http.Header, cred Credential) {
-			Bearer(h, cred)
-			h.Set(CallHeader, "cal_injector")
-			h.Set(CallSeqHeader, "99")
-		}}
-	})
-	forged := map[string]string{CallHeader: "cal_forged", CallSeqHeader: "7"}
-	for range 2 {
-		if w := call(g, token, "/chat/completions", good, forged); w.Code != http.StatusOK {
-			t.Fatalf("%d %s", w.Code, w.Body)
-		}
-	}
-	got, floors := up.got(), map[int64]bool{}
-	for _, c := range cs.all() {
-		floors[c.seq] = floors[c.seq] || !c.n.Observed
-	}
-	for i, s := range got {
-		seq, err := strconv.ParseInt(s.header.Get(CallSeqHeader), 10, 64)
-		if len(s.header.Values(CallHeader)) != 1 || s.header.Get(CallHeader) != string(callID) || err != nil || !floors[seq] || seq != int64(i) {
-			t.Errorf("request %d carried %v (the floors' sequences: %v)", i, s.header, floors)
-		}
-	}
-	if len(got) != 2 {
-		t.Fatalf("upstream saw %d requests", len(got))
+	for name, inject := range map[string]func(http.Header){
+		"a canonical key":  func(h http.Header) { h.Set(CallHeader, "cal_injector") },
+		"a lower-case key": func(h http.Header) { h["x-adc-call"] = []string{"cal_injector"} },
+		"keys in three cases": func(h http.Header) {
+			h["x-adc-call"], h["X-ADC-CALL"], h[CallHeader] = []string{"a"}, []string{"b"}, []string{"c"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			up := newUpstream(t, nil)
+			g, token := rig(t, up, func(c *Config) {
+				c.Inject = map[types.Slug]Injector{"stub": func(h http.Header, cred Credential) { Bearer(h, cred); inject(h) }}
+			})
+			for range 2 {
+				if w := call(g, token, "/chat/completions", good, map[string]string{CallHeader: "cal_forged"}); w.Code != http.StatusOK {
+					t.Fatalf("%d %s", w.Code, w.Body)
+				}
+			}
+			got := up.got()
+			for i, s := range got {
+				var adc []string // every header of the gateway's, by its prefix
+				for k, vs := range s.header {
+					if strings.HasPrefix(strings.ToLower(k), "x-adc-") {
+						adc = append(adc, k+": "+strings.Join(vs, ", "))
+					}
+				}
+				if len(adc) != 1 || adc[0] != CallHeader+": "+string(callID) {
+					t.Errorf("request %d carried %q", i, adc)
+				}
+			}
+			if len(got) != 2 {
+				t.Fatalf("upstream saw %d requests", len(got))
+			}
+		})
 	}
 }
 

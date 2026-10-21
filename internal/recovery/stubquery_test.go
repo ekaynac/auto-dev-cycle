@@ -189,9 +189,9 @@ func stubProvider(t *testing.T, scenario string) (base, barriers string, held <-
 	return base, dir, ids
 }
 
-// cutRequest sends c's request as the gateway did before the kill (its call and count sequence stamped:
-// TestEveryRequestCarriesItsCall is the gateway's own row), waits until the stub holds it at its barrier, and then
-// cuts it, as the kill cut it at the gateway.
+// cutRequest sends c's request as the gateway did before the kill (its call stamped: TestEveryRequestCarriesItsCall is
+// the gateway's own row), waits until the stub holds it at its barrier, and then cuts it, as the kill cut it at the
+// gateway.
 func cutRequest(t *testing.T, base string, held <-chan string, c cut) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -202,7 +202,6 @@ func cutRequest(t *testing.T, base string, held <-chan string, c cut) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(gateway.CallHeader, string(c.Call))
-	req.Header.Set(gateway.CallSeqHeader, "0")
 	sent := make(chan error, 1)
 	go func() {
 		resp, err := http.DefaultClient.Do(req)
@@ -264,7 +263,8 @@ func (w *world) effect(c cut) eventstore.Effect {
 // After the restart and recovery's steps 1-4, the call is a liability of 550 and its effect uncertain.
 //   - kill-mid-build: while the cut request is still held, the stub's answer is incomplete, and the effect stays
 //     uncertain with its liability. Released, the stub serves its usage, 400/220, once; the reconciler, past
-//     FloorGrace, records it as the call's provider reconciliation, and the effect is completed.
+//     FloorGrace, records it as the call's provider reconciliation, and the effect is completed. Asked again, it
+//     records nothing more (Opus #366 L4).
 //   - kill-mid-build-noquery (the stub's usage query disabled): the effect stays uncertain and the liability is kept.
 func TestKillMidBuildReconciles(t *testing.T) {
 	for _, v := range []struct {
@@ -284,27 +284,29 @@ func TestKillMidBuildReconciles(t *testing.T) {
 				t.Fatalf("while the cut request is held: %+v, %v; want uncertain, not found", e, err)
 			}
 			released(t, q, barriers, c)
-			e, err := rc.Reconcile(context.Background(), c.Call)
-			liable, _ := w.liable()
-			var ms []types.UsageMeasurement
-			w.view(func(tx *eventstore.Tx) (err error) { ms, err = ledger.Measurements(tx, c.Call); return err })
-			var answered []types.UsageMeasurementTokens
-			for _, m := range ms {
-				if m.Kind == types.UsageMeasurementKindProviderReconciliation {
-					answered = append(answered, m.Tokens)
+			for round := 1; round <= 2; round++ { // the second: the answer counted once, the state kept
+				e, err := rc.Reconcile(context.Background(), c.Call)
+				liable, _ := w.liable()
+				var ms []types.UsageMeasurement
+				w.view(func(tx *eventstore.Tx) (err error) { ms, err = ledger.Measurements(tx, c.Call); return err })
+				var answered []types.UsageMeasurementTokens
+				for _, m := range ms {
+					if m.Kind == types.UsageMeasurementKindProviderReconciliation {
+						answered = append(answered, m.Tokens)
+					}
 				}
-			}
-			switch {
-			case err != nil:
-				t.Fatalf("the reconciliation: %v", err)
-			case v.query && (e.State != eventstore.EffectCompleted || e.LastObservation != modelcall.ObservedQueried || len(answered) != 1 ||
-				answered[0] != types.UsageMeasurementTokens{In: 400, Out: 220} || !ledger.StandingOf(ms, c.Call).Settled):
-				t.Fatalf("kill-mid-build: %+v, answered %+v; want completed by the stub's 400/220", e, answered)
-			case !v.query && (e.State != eventstore.EffectUncertain || e.LastObservation != modelcall.ObservedNotFound || len(answered) != 0 || liable != 550):
-				t.Fatalf("kill-mid-build-noquery: %+v, answered %+v, liable %d; want uncertain, the liability of 550 kept", e, answered, liable)
-			}
-			if got := w.effect(c); got.State != e.State {
-				t.Fatalf("the effect is %+v after the reconciliation returned %+v", got, e)
+				switch {
+				case err != nil:
+					t.Fatalf("reconciliation %d: %v", round, err)
+				case v.query && (e.State != eventstore.EffectCompleted || round == 1 && e.LastObservation != modelcall.ObservedQueried || len(answered) != 1 ||
+					answered[0] != types.UsageMeasurementTokens{In: 400, Out: 220} || !ledger.StandingOf(ms, c.Call).Settled):
+					t.Fatalf("kill-mid-build, reconciliation %d: %+v, answered %+v; want completed by the stub's 400/220, once", round, e, answered)
+				case !v.query && (e.State != eventstore.EffectUncertain || e.LastObservation != modelcall.ObservedNotFound || len(answered) != 0 || liable != 550):
+					t.Fatalf("kill-mid-build-noquery, reconciliation %d: %+v, answered %+v, liable %d; want uncertain, the liability of 550 kept", round, e, answered, liable)
+				}
+				if got := w.effect(c); got.State != e.State {
+					t.Fatalf("the effect is %+v after reconciliation %d returned %+v", got, round, e)
+				}
 			}
 		})
 	}
