@@ -26,6 +26,7 @@ MUTS = [
     ("a minted base_url with a path", S, 'return types.AdapterPrepareParamsGatewayValue{BaseUrl: BaseURL, Token: token}, nil', 'return types.AdapterPrepareParamsGatewayValue{BaseUrl: BaseURL + "/v1", Token: token}, nil'),
     ("the request not cancellable", G, '\tf := &flight{cancel}\n\tb, no := g.enter(r, f)', '\tf := &flight{func() {}}\n\tb, no := g.enter(r, f)'),
     ("the body read before the cap refuses", G, '\tb, no := g.enter(r, f)\n\tif no != nil {\n\t\trefuse(w, no)', '\tb, no := g.enter(r, f)\n\tif no != nil {\n\t\t_, _ = io.ReadAll(r.Body)\n\t\trefuse(w, no)'),
+    ("a capture after Unbind (Opus #322 L4)", G, '\tif !g.live(r, f) { // unbound meanwhile: nothing captured (Opus #322 L4)', '\tif false { // unbound meanwhile: nothing captured (Opus #322 L4)'),
     ("an intent after Unbind", G, '\tif !g.live(r, f) { // unbound meanwhile: no intent (Opus #308 M2)', '\tif false { // unbound meanwhile: no intent (Opus #308 M2)'),
     ("a floor after Unbind", G, 'if !g.inflight[key][f] || ctx.Err() != nil { // unbound meanwhile: no floor (Opus #308 M2)', 'if false { // unbound meanwhile: no floor (Opus #308 M2)'),
     ("a slot held through its count", G, '\trelease() // the upstream exchange is over', '\t// the upstream exchange is over'),

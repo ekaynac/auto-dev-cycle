@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -320,6 +321,57 @@ func TestUnbindBeforeTheIntent(t *testing.T) {
 	<-bl.arrived
 	g.Unbind(token)
 	close(bl.release)
+	<-done
+	if n, counted, sent := g.cfg.Intents.(*intents).n(), countsOf(g).all(), up.got(); n != 0 || len(counted) != 0 || len(sent) != 0 {
+		t.Errorf("after Unbind: %d intents, counts %+v, %d sent", n, counted, len(sent))
+	}
+}
+
+// countCapture counts the bodies it keeps.
+type countCapture struct{ n *atomic.Int64 }
+
+func (c countCapture) Keep(context.Context, Binding, []byte) error { c.n.Add(1); return nil }
+
+// Opus #322 L4: a request admitted before Unbind, still on its checks when
+// Unbind returns, records no capture (an exit run's), and sends nothing.
+func TestUnbindBeforeTheCapture(t *testing.T) {
+	up := newUpstream(t, nil)
+	bl := blockingLeases{arrived: make(chan bool, 1), release: make(chan bool)}
+	kept := new(atomic.Int64)
+	g, token := rig(t, up, func(c *Config) { bl.Leases = c.Leases; c.Leases = bl; c.Capture = countCapture{kept} })
+	done := make(chan bool, 1)
+	c := overSocket(serveOn(t, g, done))
+	go func() { _, _, _ = post(c, token) }()
+	<-bl.arrived
+	g.Unbind(token)
+	close(bl.release)
+	<-done
+	if n, sent := kept.Load(), up.got(); n != 0 || len(sent) != 0 {
+		t.Errorf("after Unbind: %d captured, %d sent", n, len(sent))
+	}
+}
+
+// holdCapture holds every capture until release is closed, signalling it.
+type holdCapture struct{ arrived, release chan bool }
+
+func (h holdCapture) Keep(context.Context, Binding, []byte) error {
+	h.arrived <- true
+	<-h.release
+	return nil
+}
+
+// Opus #308 M2, past the capture: a request Unbind finds between its
+// capture and its intent records no intent and no floor, and sends nothing.
+func TestUnbindAfterTheCapture(t *testing.T) {
+	up := newUpstream(t, nil)
+	hc := holdCapture{make(chan bool, 1), make(chan bool)}
+	g, token := rig(t, up, func(c *Config) { c.Capture = hc })
+	done := make(chan bool, 1)
+	c := overSocket(serveOn(t, g, done))
+	go func() { _, _, _ = post(c, token) }()
+	<-hc.arrived
+	g.Unbind(token)
+	close(hc.release)
 	<-done
 	if n, counted, sent := g.cfg.Intents.(*intents).n(), countsOf(g).all(), up.got(); n != 0 || len(counted) != 0 || len(sent) != 0 {
 		t.Errorf("after Unbind: %d intents, counts %+v, %d sent", n, counted, len(sent))
