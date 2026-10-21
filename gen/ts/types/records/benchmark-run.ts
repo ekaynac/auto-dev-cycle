@@ -110,11 +110,11 @@ export interface BenchmarkStage {
    */
   sources: ("provider_usage" | "adapter_report" | "gateway_count" | "gateway_floor" | "none")[];
   /**
-   * Σ of the settled calls' (ledger.StandingOf) cost, per basis and currency: a cash call at no less than its tokens at the route's registry price.
+   * Σ of the settled calls' (ledger.StandingOf) cost, per basis and currency: each call, on any basis, at no less than its tokens at the route's registry price.
    */
   charge: BenchmarkAmount[];
   /**
-   * The unsettled and unmeasured calls' liabilities, per basis and currency: each the largest of its reported USD cost, its tokens (the gateway's count included) at its route's registry price, and its ledger liability; never counted as zero.
+   * The unsettled and unmeasured calls' liabilities, under basis cash, per currency: each the largest of its reported USD cost, its tokens (the gateway's count included) at its route's registry price, and its ledger liability; never counted as zero.
    */
   outstanding: BenchmarkAmount[];
   attempts: number;

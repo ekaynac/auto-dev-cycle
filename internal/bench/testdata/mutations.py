@@ -19,7 +19,7 @@ MUTS = [
     ("an unknown stage accepted", B, 'if !slices.Contains(Stages, n.Stage) {', 'if false {'),
     ("done before claimed accepted", B, '} else if !n.Done.IsZero() && n.Done.Before(n.Claimed) {', '} else if false {'),
     ("closed before approval accepted", B, 'case !t.Closed.IsZero() && t.Closed.Before(t.Approved):', 'case false:'),
-    ("an unsettled call settled", B, 'default:\n\t\t\t\tif c == "" || c == "USD" {', 'default:\n\t\t\t\tinto, owed = settled, false\n\t\t\t\tif c == "" || c == "USD" {'),
+    ("an unsettled call settled", B, '\t\t\t\tbasis = "cash"\n\t\t\t\tif c == "" || c == "USD" {', '\t\t\t\tbasis, into, owed = "cash", settled, false\n\t\t\t\tif c == "" || c == "USD" {'),
     ("an unfinished node counted", B, '\t\tif n.Done.IsZero() {\n\t\t\tst.Unfinished++', '\t\tif false {\n\t\t\tst.Unfinished++'),
     ("rounds as nodes", B, 'rounds[n.Round] = true', 'rounds[len(rounds)] = true'),
     ("cache reads dropped", B, 'add(&err, &st.Tokens.CacheRead, f.CacheRead)', ''),
@@ -98,8 +98,7 @@ MUTS = [
     # Opus's re-check of #313 (docs/reviews/2026-10-21-pr313-opus-r2.md).
     # M1.
     ("a settled cash call not floored", B, 'max(reported, priced), c', 'reported, c'),
-    ("a settled non-USD cash call kept", B, 'case standing.Settled && c != "" && c != "USD":', 'case false:'),
-    ("the floor on every basis", B, 'case standing.Settled && basis != "cash":', 'case false:'),
+    ("a settled non-USD call kept at a positive floor", B, 'c != "USD" && priced > 0:', 'c != "USD" && false:'),
     # M3.
     ("pending not counted", B, 'st.Pending++\n', '\n'),
     ("pending counted as unfinished", B, '\t\t\tst.Pending++\n\t\t\tcontinue\n', '\t\t\tst.Pending++\n'),
@@ -114,6 +113,12 @@ MUTS = [
     ("a negative cost accepted", B, '} else if u.Cost.AmountMicros < 0 {', '} else if false {'),
     # L3.
     ("a node's first executor prices its calls", B, 'price[c] = m.Prices[exec[a]]', 'price[c] = m.Prices[t.Nodes[nodeOf[a]].Attempts[0].Executor]'),
+    # The review of #313 by Mythos (docs/reviews/2026-10-21-pr313-mythos.md).
+    # H1.
+    ("the floor skipped off cash", B, '\t\t\tcase standing.Settled:\n', '\t\t\tcase standing.Settled && basis != "cash":\n\t\t\t\tinto, owed, micros, currency = settled, false, reported, c\n\t\t\tcase standing.Settled:\n'),
+    ("a settled non-USD call refused at a zero floor", B, 'c != "USD" && priced > 0:', 'c != "USD":'),
+    # L2.
+    ("an unsettled floor under its reported basis", B, '\t\t\t\tbasis = "cash"\n', ''),
 ]
 
 

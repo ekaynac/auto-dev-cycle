@@ -16,14 +16,18 @@
 //     route's registry price. The command that reads them, adc dev bench
 //     record, comes with W18.
 //   - Trusted, not checked: that Task.Calls is complete (an unmeasured call
-//     left out of it disappears), each Call.Attempt (for an unmeasured call
-//     it alone decides the stage), Meta.Prices (a zero price removes the
-//     floor), and each Call.Liability (a positive wrong one is recorded).
-//     adc dev bench record must therefore pass every call ledger.BoundTo
-//     returns for each lease of the task; as its liability, the usd_micros
-//     group's amount of capacity.LiabilitiesOf once the lease has settled,
-//     and the lease's usd_micros reservation while it has not; zero only
-//     when the lease has neither.
+//     left out of it disappears); that Task.Usage carries every report of
+//     each bound call (a dropped gateway count leaves a call unsettled at a
+//     lower figure, with no trace); the reported cost.basis and currency
+//     labels (they select which rule prices a call); each Call.Attempt (for
+//     an unmeasured call it alone decides the stage); Meta.Prices (a zero
+//     price removes the floor); and each Call.Liability (a positive wrong
+//     one is recorded). adc dev bench record must therefore pass every call
+//     ledger.BoundTo returns for each lease of the task, every measurement
+//     the ledger holds for each of them, and as a call's liability the
+//     usd_micros group's amount of capacity.LiabilitiesOf once the lease
+//     has settled, and the lease's usd_micros reservation while it has
+//     not; zero only when the lease has neither.
 //   - Wall time uses controller event times only. A stage's wall time sums
 //     its nodes', so two nodes running side by side count twice (§2.8,
 //     "summed over the stage's nodes"). A node never claimed is counted
@@ -31,16 +35,17 @@
 //   - Each call belongs to one stage, then its standing is
 //     ledger.StandingOf over the stage's reports: only a settled call is
 //     charged; its tokens are the standing's figure, the gateway's count
-//     included. A settled cash call is charged at no less than its tokens
-//     at the route's registry price (ledger.PriceMicros), as the ledger
-//     never trusts a reported cost (#226 entry 62); a settled call on
-//     another basis at its reported cost. An unsettled call is outstanding
-//     at the largest of its reported USD cost, that price and its
-//     liability, never as zero nor as settled. No currency is converted: a
-//     cash call in another currency (settled, or unsettled with a reported
-//     amount) is refused. A call's basis is its adapter and provider
-//     reports' (the gateway's only when it has no other), never the first
-//     report's.
+//     included. A settled call, on any basis, is charged at no less than
+//     its tokens at the route's registry price (ledger.PriceMicros), as the
+//     ledger never trusts a reported cost nor its basis label (#226 entry
+//     62); free and local routes declare a zero price, so there it leaves
+//     no floor. An unsettled call is outstanding, under basis cash, at the
+//     largest of its reported USD cost, that price and its liability, never
+//     as zero nor as settled. No currency is converted: a settled call in
+//     another currency is refused when its floor is positive, and an
+//     unsettled one when it reports an amount. A call's basis is its
+//     adapter and provider reports' (the gateway's only when it has no
+//     other), never the first report's.
 //   - The calls are the ledger's bound-call inventory (Task.Calls), not the
 //     measurements: every measured call must be bound, and a bound call
 //     with no measurement is outstanding at its liability (cash, USD).
@@ -422,17 +427,22 @@ func stage(s types.BenchmarkStageStage, t Task, usage []types.UsageMeasurement, 
 				return st, false, fmt.Errorf("call %s: %w", id, perr)
 			}
 			switch {
-			case standing.Settled && basis != "cash":
-				into, owed, micros, currency = settled, false, reported, c
+			case standing.Settled && c != "" && c != "USD" && priced > 0:
+				return st, false, fmt.Errorf("call %s: a settled %s amount, which cannot be compared with its USD valuation", id, c)
 			case standing.Settled && c != "" && c != "USD":
-				return st, false, fmt.Errorf("call %s: a settled cash %s amount, which cannot be compared with its USD valuation", id, c)
+				into, owed, micros, currency = settled, false, reported, c
 			case standing.Settled:
-				// A settled cash call at no less than its registry price: the
-				// ledger never trusts a reported cost (#226 entry 62).
+				// A settled call, on any basis, at no less than its registry
+				// price: the ledger never trusts a reported cost nor its
+				// basis label (#226 entry 62); a free or local route's zero
+				// price leaves no floor.
 				into, owed, micros, currency = settled, false, max(reported, priced), c
 			case c != "" && c != "USD" && reported != 0:
 				return st, false, fmt.Errorf("call %s: an unsettled %s amount, which cannot be compared with its USD valuation", id, c)
 			default:
+				// An unsettled call's floor is a cash valuation, recorded
+				// under cash whatever its reported basis.
+				basis = "cash"
 				if c == "" || c == "USD" {
 					micros = max(micros, reported)
 				}

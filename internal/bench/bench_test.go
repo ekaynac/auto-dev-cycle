@@ -339,7 +339,7 @@ func TestRecordRefuses(t *testing.T) {
 			m.Routes = append(m.Routes, types.BenchmarkRoute{Executor: builder, Role: "reviewer", Family: "stub-builder"})
 		}},
 		// Opus's re-check of #313 (docs/reviews/2026-10-21-pr313-opus-r2.md).
-		{"M1: a settled cash call in EUR", "a settled cash EUR", func(_ *Meta, ts *[]Task, a map[string]types.AttemptID) {
+		{"M1: a settled cash call in EUR", "a settled EUR", func(_ *Meta, ts *[]Task, a map[string]types.AttemptID) {
 			c := types.CallID(id(t, "cal"))
 			f, g := measure(t, c, a["r"], "final", 0, 100, 10, 300, "adapter_report"), measure(t, c, a["r"], "delta", 0, 100, 10, 0, "gateway_count")
 			f.Cost.Currency, g.Cost.Currency = "EUR", "EUR"
@@ -372,41 +372,66 @@ func TestRecordRefuses(t *testing.T) {
 	}
 }
 
-// A settled cash call is charged no less than its standing figure at its
-// route's registry price (Opus r2 M1: the ledger never trusts a reported
-// cost); a settled call on another basis keeps its reported cost.
+// A settled call, on any basis, is charged no less than its standing figure
+// at its route's registry price (Opus r2 M1, Mythos H1: the ledger never
+// trusts a reported cost nor its basis label); a zero-priced route leaves no
+// floor, and there a settled call in another currency keeps its amount.
 func TestRecordSettledFloor(t *testing.T) {
+	basis := func(b string, ms ...types.UsageMeasurement) []types.UsageMeasurement {
+		ms[0].Cost.Basis = types.UsageMeasurementCostBasis(b)
+		return ms
+	}
+	eur := func(ms ...types.UsageMeasurement) []types.UsageMeasurement {
+		for i := range ms {
+			ms[i].Cost.Currency = "EUR"
+		}
+		return ms
+	}
 	for _, row := range []struct {
-		name   string
-		usage  func(types.CallID, types.AttemptID) []types.UsageMeasurement
-		basis  types.BenchmarkAmountBasis
-		micros int64
+		name     string
+		usage    func(types.CallID, types.AttemptID) []types.UsageMeasurement
+		free     bool
+		basis    types.BenchmarkAmountBasis
+		currency string
+		micros   int64
 	}{
 		{"a zero final the count bears out", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
 			return []types.UsageMeasurement{measure(t, c, a, "final", 0, 2000, 10, 0, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count")}
-		}, "cash", 2100},
+		}, false, "cash", "USD", 2100},
 		{"a zero provider reconciliation below the count", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
 			return []types.UsageMeasurement{measure(t, c, a, "provider_reconciliation", 0, 0, 0, 0, "provider_usage"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count")}
-		}, "cash", 2100},
+		}, false, "cash", "USD", 2100},
 		{"a reported cost above the price kept", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
 			return []types.UsageMeasurement{measure(t, c, a, "final", 0, 2000, 10, 9000, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count")}
-		}, "cash", 9000},
-		{"a zero subscription-equivalent final", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
-			m := measure(t, c, a, "final", 0, 2000, 10, 0, "adapter_report")
-			m.Cost.Basis = "subscription_equivalent"
-			return []types.UsageMeasurement{m, measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count")}
-		}, "subscription_equivalent", 0},
+		}, false, "cash", "USD", 9000},
+		{"a zero subscription-equivalent final, floored", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			return basis("subscription_equivalent", measure(t, c, a, "final", 0, 2000, 10, 0, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count"))
+		}, false, "subscription_equivalent", "USD", 2100},
+		// Mythos H1: Opus's input 1, its adapter labelling it free.
+		{"a zero final labelled free on a priced route, floored", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			return basis("free", measure(t, c, a, "final", 0, 2000, 10, 0, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count"))
+		}, false, "free", "USD", 2100},
+		{"a zero free final on a zero-priced route", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			return basis("free", measure(t, c, a, "final", 0, 2000, 10, 0, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count"))
+		}, true, "free", "USD", 0},
+		{"a settled EUR call on a zero-priced route kept", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			return eur(measure(t, c, a, "final", 0, 2000, 10, 50, "adapter_report"), measure(t, c, a, "delta", 0, 2000, 10, 0, "gateway_count"))
+		}, true, "cash", "EUR", 50},
 	} {
 		a, c := types.AttemptID(id(t, "att")), types.CallID(id(t, "cal"))
 		tk := Task{ID: types.TaskID(id(t, "tsk")), Approved: at(0), Hold: "budget_rail",
 			Nodes: []Node{{Stage: "review", Claimed: at(1), Attempts: on(reviewer, a)}}, Usage: row.usage(c, a), Calls: []Call{{ID: c, Attempt: a}}}
-		run, err := Record(meta(), []Task{tk})
+		m := meta()
+		if row.free {
+			m.Prices[reviewer] = types.RegistryPrice{}
+		}
+		run, err := Record(m, []Task{tk})
 		if err != nil {
 			t.Fatalf("%s: %v", row.name, err)
 		}
 		r := run.Tasks[0].Stages[0]
 		if r.Tokens.In != 2000 || r.Tokens.Out != 10 || len(r.Outstanding) != 0 ||
-			len(r.Charge) != 1 || r.Charge[0] != (types.BenchmarkAmount{Basis: row.basis, Currency: "USD", AmountMicros: row.micros, Calls: 1}) {
+			len(r.Charge) != 1 || r.Charge[0] != (types.BenchmarkAmount{Basis: row.basis, Currency: row.currency, AmountMicros: row.micros, Calls: 1}) {
 			t.Errorf("%s: %+v", row.name, r)
 		}
 	}
@@ -461,6 +486,13 @@ func TestRecordStanding(t *testing.T) {
 		{"a liability above its price", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
 			return []types.UsageMeasurement{measure(t, c, a, "delta", 0, 700, 70, 100, "adapter_report")}
 		}, 700, 3000, 3000},
+		// Mythos L2: an unsettled subscription-equivalent call's floor, a
+		// cash valuation, is recorded under cash.
+		{"an unsettled subscription-equivalent delta, under cash", func(c types.CallID, a types.AttemptID) []types.UsageMeasurement {
+			m := measure(t, c, a, "delta", 0, 700, 70, 0, "adapter_report")
+			m.Cost.Basis = "subscription_equivalent"
+			return []types.UsageMeasurement{m}
+		}, 700, 1400, 0},
 	} {
 		a := types.AttemptID(id(t, "att"))
 		c := types.CallID(id(t, "cal"))
